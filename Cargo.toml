@@ -21,3 +21,13 @@ framework-core = { path = "crates/framework-core" }
 backend-web = { path = "crates/backend-web" }
 backend-ios = { path = "crates/backend-ios" }
 backend-android = { path = "crates/backend-android" }
+
+# Size-tuned release profile. We optimize for size rather than speed —
+# UI workloads aren't CPU-bound, but bytes-over-the-wire matter for the
+# WASM target. `format!` and friends are kept; they're too useful.
+[profile.release]
+opt-level = "z"          # Smallest code (LLVM size-prioritized).
+codegen-units = 1        # Maximum cross-module optimization.
+lto = true               # Link-time optimization.
+panic = "abort"          # Drops unwinding tables (~10-20 KB win).
+strip = "symbols"        # Strip symbol info from the final binary.

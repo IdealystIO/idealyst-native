@@ -3,7 +3,7 @@
 //! Compile-only spike. Real JNI calls under `target_os = "android"`; stub
 //! elsewhere so the crate type-checks during cross-compile validation.
 
-use framework_core::Backend;
+use framework_core::{Backend, StyleRules};
 use std::rc::Rc;
 
 #[cfg(target_os = "android")]
@@ -98,6 +98,12 @@ mod imp {
                 .unwrap();
         }
 
+        fn apply_style(&mut self, _node: &Self::Node, _style: &Rc<StyleRules>) {
+            // Real Android styling would call View setters (setBackgroundColor,
+            // setPadding, etc.) or apply theme attributes. Stubbed for the
+            // spike; trait shape is what we're validating.
+        }
+
         fn finish(&mut self, _root: Self::Node) {}
     }
 }
@@ -127,6 +133,9 @@ mod imp {
             unreachable!()
         }
         fn clear_children(&mut self, _node: &Self::Node) {
+            unreachable!()
+        }
+        fn apply_style(&mut self, _node: &Self::Node, _style: &Rc<StyleRules>) {
             unreachable!()
         }
         fn finish(&mut self, _root: Self::Node) {

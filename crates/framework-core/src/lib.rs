@@ -1,7 +1,13 @@
 //! Framework core: primitives, Backend trait, render walker, reactivity.
 
 mod reactive;
+mod style;
+
 pub use reactive::{untrack, Effect, Signal};
+pub use style::{
+    install_theme, pregenerate_for_theme, resolve as resolve_style, set_theme, Border, Color,
+    Length, StyleApplication, StyleRules, StyleSheet, VariantAxis, VariantSet, VariantValue,
+};
 
 pub use framework_macros::{component, ui};
 
@@ -44,14 +50,30 @@ where
     }
 }
 
+/// A style source: either a fixed application (resolved once) or a
+/// closure that re-runs (resolved every effect fire, picking up signal
+/// changes the closure reads).
+pub type StyleSource = Box<dyn Fn() -> StyleApplication>;
+
+/// Primitives are the structural skeleton of the UI. Every primitive
+/// optionally carries a `style` slot — styling is orthogonal to
+/// structure, so authors can style any primitive without each primitive
+/// having to know about styling. The renderer applies the style via an
+/// independent `Effect` per primitive, so a content signal change
+/// doesn't re-fire the style effect and vice versa.
 pub enum Primitive {
     View {
         children: Vec<Primitive>,
+        style: Option<StyleSource>,
     },
-    Text(TextSource),
+    Text {
+        source: TextSource,
+        style: Option<StyleSource>,
+    },
     Button {
         label: String,
         on_click: Rc<dyn Fn()>,
+        style: Option<StyleSource>,
     },
     /// Reactive conditional. Renders `then()` while `cond()` is true and
     /// `otherwise()` when it's false. The renderer wraps the subtree
@@ -62,11 +84,53 @@ pub enum Primitive {
         cond: Box<dyn Fn() -> bool>,
         then: Box<dyn Fn() -> Primitive>,
         otherwise: Box<dyn Fn() -> Primitive>,
+        style: Option<StyleSource>,
     },
 }
 
+/// Allows `with_style(...)` to accept either a fixed `StyleApplication`
+/// or a closure that produces one. Closures enable reactive styling —
+/// any signal the closure reads becomes a dependency, and changes
+/// re-fire the apply-style effect.
+pub trait IntoStyleSource {
+    fn into_style_source(self) -> StyleSource;
+}
+
+impl IntoStyleSource for StyleApplication {
+    fn into_style_source(self) -> StyleSource {
+        Box::new(move || self.clone())
+    }
+}
+
+impl<F> IntoStyleSource for F
+where
+    F: Fn() -> StyleApplication + 'static,
+{
+    fn into_style_source(self) -> StyleSource {
+        Box::new(self)
+    }
+}
+
+impl Primitive {
+    /// Attaches a style to this primitive. Replaces any previously-set
+    /// style. The style argument can be either a `StyleApplication`
+    /// (static) or a closure returning one (reactive).
+    pub fn with_style<S: IntoStyleSource>(mut self, style: S) -> Self {
+        let src = style.into_style_source();
+        match &mut self {
+            Primitive::View { style, .. }
+            | Primitive::Text { style, .. }
+            | Primitive::Button { style, .. }
+            | Primitive::When { style, .. } => {
+                *style = Some(src);
+            }
+        }
+        self
+    }
+}
+
 pub fn view(children: Vec<Primitive>) -> Primitive {
-    Primitive::View { children }
+    Primitive::View { children, style: None }
 }
 
 /// Flexible-shape source for a child-list slot. Implementors say how to
@@ -136,13 +200,14 @@ macro_rules! children {
 }
 
 pub fn text<T: IntoTextSource>(source: T) -> Primitive {
-    Primitive::Text(source.into_text_source())
+    Primitive::Text { source: source.into_text_source(), style: None }
 }
 
 pub fn button<F: Fn() + 'static>(label: impl Into<String>, on_click: F) -> Primitive {
     Primitive::Button {
         label: label.into(),
         on_click: Rc::new(on_click),
+        style: None,
     }
 }
 
@@ -164,6 +229,7 @@ where
         cond: Box::new(cond),
         then: Box::new(then),
         otherwise: Box::new(otherwise),
+        style: None,
     }
 }
 
@@ -178,6 +244,47 @@ pub trait Backend {
     /// Remove every child from `node`. Used by reactive conditionals when
     /// the active branch flips and the old subtree needs to be unmounted.
     fn clear_children(&mut self, node: &Self::Node);
+    /// Apply a resolved style to a node. The framework has already run
+    /// the stylesheet's closure against the active theme; the backend
+    /// receives concrete `StyleRules` with literal values.
+    fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>);
+
+    /// Pre-generate any backend-side state for a stylesheet against the
+    /// current theme. Web backends typically use this to mint CSS
+    /// classes for every variant + compound combination up front, so
+    /// `apply_style` is a cache hit. Other backends can leave the
+    /// default no-op implementation.
+    ///
+    /// Called by the framework:
+    /// - The first time a stylesheet is `resolve`d.
+    /// - After every `set_theme(...)`, for every still-live stylesheet,
+    ///   so the backend's pre-generated state is refreshed.
+    ///
+    /// The framework passes pre-resolved `StyleRules` (one per relevant
+    /// variant combination) so the backend doesn't have to think about
+    /// theme tokens — it gets concrete property bags.
+    #[allow(unused_variables)]
+    fn register_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
+        // default: no-op
+    }
+
+    /// Release a previously-registered stylesheet's pre-generated state.
+    /// Called when the stylesheet is no longer reachable (its last
+    /// `Rc<StyleSheet>` has been dropped) and after every theme change
+    /// (before re-registering, so old state is cleaned up).
+    #[allow(unused_variables)]
+    fn unregister_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
+        // default: no-op
+    }
+
+    /// Called when a styled node is being torn down (its surrounding
+    /// `Effect` scope is dropping). Lets backends free per-node state —
+    /// e.g. the web backend drops the node's dynamic CSS class slot
+    /// and its node-id entry. Other backends typically don't need this.
+    #[allow(unused_variables)]
+    fn on_node_unstyled(&mut self, node: &Self::Node) {
+        // default: no-op
+    }
     fn finish(&mut self, root: Self::Node);
 }
 
@@ -203,15 +310,47 @@ pub fn render<B: Backend + 'static>(backend: Rc<RefCell<B>>, tree: Primitive) ->
 
 fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::Node {
     match node {
-        Primitive::Text(TextSource::Static(content)) => {
-            backend.borrow_mut().create_text(&content)
+        Primitive::Text { source, style } => {
+            let n = build_text(backend, source);
+            if let Some(s) = style {
+                attach_style(backend, &n, s);
+            }
+            n
         }
-        Primitive::Text(TextSource::Reactive(compute)) => build_reactive_text(backend, compute),
-        Primitive::View { children } => build_view(backend, children),
-        Primitive::Button { label, on_click } => {
-            backend.borrow_mut().create_button(&label, on_click)
+        Primitive::View { children, style } => {
+            let n = build_view(backend, children);
+            if let Some(s) = style {
+                attach_style(backend, &n, s);
+            }
+            n
         }
-        Primitive::When { cond, then, otherwise } => build_when(backend, cond, then, otherwise),
+        Primitive::Button { label, on_click, style } => {
+            let n = backend.borrow_mut().create_button(&label, on_click);
+            if let Some(s) = style {
+                attach_style(backend, &n, s);
+            }
+            n
+        }
+        Primitive::When { cond, then, otherwise, style } => {
+            let n = build_when(backend, cond, then, otherwise);
+            if let Some(s) = style {
+                attach_style(backend, &n, s);
+            }
+            n
+        }
+    }
+}
+
+/// Builds a Text primitive (static or reactive). Style application is
+/// handled by the caller via `attach_style` so the content effect and
+/// the style effect stay independent.
+fn build_text<B: Backend + 'static>(
+    backend: &Rc<RefCell<B>>,
+    source: TextSource,
+) -> B::Node {
+    match source {
+        TextSource::Static(content) => backend.borrow_mut().create_text(&content),
+        TextSource::Reactive(compute) => build_reactive_text(backend, compute),
     }
 }
 
@@ -243,6 +382,71 @@ fn build_view<B: Backend + 'static>(
         backend.borrow_mut().insert(&mut parent, child_node);
     }
     parent
+}
+
+/// RAII wrapper that calls `Backend::on_node_unstyled` when dropped.
+/// Captured by the styled effect's closure so backend per-node state
+/// (e.g. the web backend's dynamic CSS class slot) gets cleaned up
+/// when the effect's scope drops — which happens on `when()` rebuilds
+/// and on `Owner` teardown.
+struct StyleHandle<B: Backend + 'static> {
+    backend: Rc<RefCell<B>>,
+    node: B::Node,
+}
+
+impl<B: Backend + 'static> Drop for StyleHandle<B> {
+    fn drop(&mut self) {
+        self.backend.borrow_mut().on_node_unstyled(&self.node);
+    }
+}
+
+/// Attaches a style to an already-constructed node by spawning an
+/// independent reactive Effect that re-applies on each signal change.
+/// The effect captures a `StyleHandle` so that when its scope drops
+/// the backend gets `on_node_unstyled` notification for per-node
+/// cleanup (e.g. dropping the web backend's dynamic CSS rule).
+///
+/// Independent of any content effect on the same node — a content
+/// signal change doesn't re-fire the style effect, and vice versa.
+fn attach_style<B: Backend + 'static>(
+    backend: &Rc<RefCell<B>>,
+    node: &B::Node,
+    style: StyleSource,
+) {
+    let node_for_effect = node.clone();
+    let backend_for_effect = backend.clone();
+
+    let handle = StyleHandle {
+        backend: backend.clone(),
+        node: node.clone(),
+    };
+
+    let _e = Effect::new(move || {
+        // Anchor the handle inside the closure so it's dropped iff the
+        // effect is dropped.
+        let _ = &handle.node;
+
+        let app = style();
+
+        let backend_for_register = backend_for_effect.clone();
+        let backend_for_unregister = backend_for_effect.clone();
+        style::ensure_registered_with(
+            &app.sheet,
+            |rules| {
+                backend_for_register.borrow_mut().register_stylesheet(rules);
+            },
+            |rules| {
+                backend_for_unregister
+                    .borrow_mut()
+                    .unregister_stylesheet(rules);
+            },
+        );
+
+        let resolved = resolve_style(&app);
+        backend_for_effect
+            .borrow_mut()
+            .apply_style(&node_for_effect, &resolved);
+    });
 }
 
 /// Renders a `When` primitive as a placeholder container whose subtree is

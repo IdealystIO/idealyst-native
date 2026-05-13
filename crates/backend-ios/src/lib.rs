@@ -3,7 +3,7 @@
 //! Compile-only spike. Real `objc2-ui-kit` calls under `target_os = "ios"`;
 //! a stub on other hosts so the crate type-checks during cross-compile.
 
-use framework_core::Backend;
+use framework_core::{Backend, StyleRules};
 use std::rc::Rc;
 
 #[cfg(target_os = "ios")]
@@ -83,6 +83,13 @@ mod imp {
             }
         }
 
+        fn apply_style(&mut self, _node: &Self::Node, _style: &Rc<StyleRules>) {
+            // Real iOS styling would resolve the StyleApplication to
+            // UIColor/CALayer/UIFont property updates here. Stubbed for
+            // the spike; the trait shape is what we're validating across
+            // platforms.
+        }
+
         fn finish(&mut self, _root: Self::Node) {}
     }
 }
@@ -112,6 +119,9 @@ mod imp {
             unreachable!()
         }
         fn clear_children(&mut self, _node: &Self::Node) {
+            unreachable!()
+        }
+        fn apply_style(&mut self, _node: &Self::Node, _style: &Rc<StyleRules>) {
             unreachable!()
         }
         fn finish(&mut self, _root: Self::Node) {

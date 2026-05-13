@@ -12,3 +12,13 @@ framework-core = { workspace = true }
 backend-web = { workspace = true }
 hello = { path = "../hello" }
 wasm-bindgen = "0.2"
+# Smaller allocator for WASM. Skips the chunked-arena machinery the
+# default allocator pulls in. Trade-off: slightly higher per-alloc
+# cost in exchange for much less code.
+lol_alloc = "0.4"
+
+# wasm-opt flags. The newer Rust toolchains emit `memory.fill` (bulk
+# memory) ops that wasm-opt rejects without the matching enable flag.
+# `-Oz` prioritizes size like `opt-level = "z"` does for rustc.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-Oz", "--enable-bulk-memory"]
