@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/framework-core",
+    "crates/framework-macros",
+    "crates/backend-web",
+    "crates/backend-ios",
+    "crates/backend-android",
+    "examples/hello",
+    "examples/hello-web",
+]
+
+[workspace.package]
+edition = "2021"
+version = "0.0.1"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+framework-core = { path = "crates/framework-core" }
+backend-web = { path = "crates/backend-web" }
+backend-ios = { path = "crates/backend-ios" }
+backend-android = { path = "crates/backend-android" }

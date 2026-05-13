@@ -1,0 +1,15 @@
+{
+  "name": "Rust",
+  "image": "mcr.microsoft.com/devcontainers/rust:1",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {}
+  },
+  "postCreateCommand": "npm install -g @anthropic-ai/claude-code && rustup target add wasm32-unknown-unknown aarch64-apple-ios aarch64-linux-android && curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer"
+      ]
+    }
+  }
+}

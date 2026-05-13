@@ -1,0 +1,802 @@
+//! `#[component]` proc-macro.
+//!
+//! Analyzes a function body and rewrites `text(expr)` calls so that the
+//! expression is wrapped in a reactive closure whenever it contains a
+//! `.get()` method call — the convention for "this reads a signal."
+//!
+//! Capture model: each unique field-path read (e.g. `count`, `props.value`,
+//! `state.user.name`) is cloned into a freshly named local at the closure
+//! boundary, and references to the path inside the closure are rewritten to
+//! use that local. This means components can take props by reference
+//! (`fn counter(props: &CounterProps)`) — only the individual fields we
+//! actually read get cloned, not the whole props struct.
+//!
+//! Limitations:
+//! - Recognizes the literal name `text`. Fully-qualified paths
+//!   (`framework_core::text`) and renamed imports are not detected.
+//! - Heuristic: any `.get()` is treated as a signal read. False positives
+//!   (e.g. `HashMap::get`) waste work but don't break anything.
+//! - The path's root must be a plain identifier. Reads off the result of
+//!   a function call (`foo().bar.get()`) are not detected.
+//! - `vec![...]` is special-cased; other list-shaped macros are opaque.
+
+use proc_macro::TokenStream;
+use proc_macro2::{Span, TokenStream as TokenStream2, TokenTree};
+use quote::quote;
+use syn::parse::{Parse, ParseStream};
+use syn::punctuated::Punctuated;
+use syn::visit_mut::{self, VisitMut};
+use syn::{parse_macro_input, Expr, ExprCall, ExprMethodCall, Ident, ItemFn, Token};
+
+/// Parser for `expr, expr, expr` — the body of a `vec![...]` literal.
+struct CommaExprs {
+    exprs: Vec<Expr>,
+}
+impl Parse for CommaExprs {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let p: Punctuated<Expr, Token![,]> = Punctuated::parse_terminated(input)?;
+        Ok(CommaExprs { exprs: p.into_iter().collect() })
+    }
+}
+
+#[proc_macro_attribute]
+pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let attr = match parse_component_attr(attr.into()) {
+        Ok(a) => a,
+        Err(e) => return e.to_compile_error().into(),
+    };
+    let mut item_fn = parse_macro_input!(item as ItemFn);
+    let param_idents = extract_param_idents(&item_fn);
+    let mut rewriter = TextRewriter { param_idents };
+    rewriter.visit_block_mut(&mut item_fn.block);
+
+    // Generate the sibling invocation macro `<fn>!(name = expr, ...)`.
+    // Requires the function to take exactly one parameter of the shape
+    // `props: &SomeProps` so we can name the struct to construct.
+    let invocation = generate_invocation_macro(&item_fn, &attr);
+
+    let out = quote! {
+        #item_fn
+        #invocation
+    };
+    TokenStream::from(out)
+}
+
+/// One `field = expr` pair declared in `#[component(default(...))]`.
+struct DefaultEntry {
+    name: Ident,
+    expr: Expr,
+}
+
+/// Parsed `#[component(...)]` attribute arguments.
+struct ComponentAttr {
+    defaults: Vec<DefaultEntry>,
+    /// True when `children` appears in the attribute list. Recorded today
+    /// for future use: the eventual `view! { ... }` proc-macro will use this
+    /// to distinguish container components from leaves. The per-component
+    /// invocation macro is unchanged whether the flag is set or not —
+    /// `children` is just another struct field passed via `children = vec![...]`.
+    #[allow(dead_code)]
+    has_children: bool,
+}
+
+/// Parses the attribute argument list. Recognized shapes (any order, any subset):
+///   `default(field = expr, field = expr, ...)` — declare per-field defaults
+///   `children`                                 — opt in to trailing-block sugar
+/// Empty input is valid.
+fn parse_component_attr(input: TokenStream2) -> syn::Result<ComponentAttr> {
+    if input.is_empty() {
+        return Ok(ComponentAttr { defaults: Vec::new(), has_children: false });
+    }
+    syn::parse2::<ComponentAttr>(input)
+}
+
+impl Parse for ComponentAttr {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let mut defaults = Vec::new();
+        let mut has_children = false;
+        while !input.is_empty() {
+            let ident: Ident = input.parse()?;
+            match ident.to_string().as_str() {
+                "default" => {
+                    let content;
+                    syn::parenthesized!(content in input);
+                    let pairs: Punctuated<DefaultPair, Token![,]> =
+                        content.parse_terminated(DefaultPair::parse, Token![,])?;
+                    defaults.extend(
+                        pairs.into_iter().map(|p| DefaultEntry { name: p.name, expr: p.expr }),
+                    );
+                }
+                "children" => {
+                    has_children = true;
+                }
+                other => {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        format!(
+                            "unexpected argument `{}`; only `default(...)` and `children` are supported",
+                            other
+                        ),
+                    ));
+                }
+            }
+            if input.is_empty() {
+                break;
+            }
+            let _: Token![,] = input.parse()?;
+        }
+        Ok(ComponentAttr { defaults, has_children })
+    }
+}
+
+struct DefaultPair {
+    name: Ident,
+    expr: Expr,
+}
+
+impl Parse for DefaultPair {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let name: Ident = input.parse()?;
+        let _: Token![=] = input.parse()?;
+        let expr: Expr = input.parse()?;
+        Ok(DefaultPair { name, expr })
+    }
+}
+
+/// Generates a `macro_rules!` invocation macro for a component, or nothing
+/// if the function signature doesn't fit the expected shape (one parameter
+/// typed as `&SomeProps`).
+///
+/// When defaults are declared, the generated macro performs TT-munching
+/// to fill in any defaulted field the caller omitted. Missing required
+/// fields surface as ordinary "missing field `x`" errors from the struct
+/// construction site.
+fn generate_invocation_macro(item_fn: &ItemFn, attr: &ComponentAttr) -> TokenStream2 {
+    let fn_name = &item_fn.sig.ident;
+    let Some(props_type) = props_type_from_sig(&item_fn.sig) else {
+        return TokenStream2::new();
+    };
+    let defaults = &attr.defaults;
+    // Build the `(&Path { ... })` or `(Path { ... })` argument form once.
+    let path = &props_type.path;
+    let amp = if props_type.by_ref { quote!(&) } else { quote!() };
+
+    if defaults.is_empty() {
+        // Fast path: no defaults, straightforward macro.
+        return quote! {
+            #[allow(unused_macros)]
+            macro_rules! #fn_name {
+                ($($name:ident = $value:expr),* $(,)?) => {
+                    #fn_name(#amp #path {
+                        $($name: $value),*
+                    })
+                };
+            }
+        };
+    }
+
+    // For each declared default, generate a per-name `@find_NAME` helper
+    // that walks the user-ident list one element at a time. Order of arms
+    // matters: the "found" arm must come before the "not found" arm.
+    //
+    // The `@step_i` chain forwards to `@find_NAME` which calls back into
+    // `@step_{i+1}` once it knows whether to skip or fill.
+    let n = defaults.len();
+    let mut helper_arms = Vec::with_capacity(n * 3 + n * 2);
+    for (i, d) in defaults.iter().enumerate() {
+        let name = &d.name;
+        let expr = &d.expr;
+        let find_label = Ident::new(&format!("__find_{}", name), Span::call_site());
+        let this_step = Ident::new(&format!("__step_{}", i), Span::call_site());
+        let next_step = if i + 1 < n {
+            Ident::new(&format!("__step_{}", i + 1), Span::call_site())
+        } else {
+            Ident::new("__done", Span::call_site())
+        };
+
+        // Step entry: kick off the search by forwarding to @find_NAME.
+        helper_arms.push(quote! {
+            (@#this_step
+                user_idents   [ $($u:ident)* ]
+                user_fields   [ $($uf:tt)* ]
+                fill          [ $($f:tt)* ]
+            ) => {
+                #fn_name!(@#find_label
+                    remaining     [ $($u)* ]
+                    user_idents   [ $($u)* ]
+                    user_fields   [ $($uf)* ]
+                    fill          [ $($f)* ]
+                )
+            };
+        });
+
+        // Found: head of remaining is literally `name`. Skip the default.
+        helper_arms.push(quote! {
+            (@#find_label
+                remaining     [ #name $($_rest:ident)* ]
+                user_idents   [ $($u:ident)* ]
+                user_fields   [ $($uf:tt)* ]
+                fill          [ $($f:tt)* ]
+            ) => {
+                #fn_name!(@#next_step
+                    user_idents   [ $($u)* ]
+                    user_fields   [ $($uf)* ]
+                    fill          [ $($f)* ]
+                )
+            };
+        });
+
+        // Not the head: chop one off and keep searching.
+        helper_arms.push(quote! {
+            (@#find_label
+                remaining     [ $_other:ident $($rest:ident)* ]
+                user_idents   [ $($u:ident)* ]
+                user_fields   [ $($uf:tt)* ]
+                fill          [ $($f:tt)* ]
+            ) => {
+                #fn_name!(@#find_label
+                    remaining     [ $($rest)* ]
+                    user_idents   [ $($u)* ]
+                    user_fields   [ $($uf)* ]
+                    fill          [ $($f)* ]
+                )
+            };
+        });
+
+        // Exhausted: user didn't provide it. Fill the default.
+        helper_arms.push(quote! {
+            (@#find_label
+                remaining     [ ]
+                user_idents   [ $($u:ident)* ]
+                user_fields   [ $($uf:tt)* ]
+                fill          [ $($f:tt)* ]
+            ) => {
+                #fn_name!(@#next_step
+                    user_idents   [ $($u)* ]
+                    user_fields   [ $($uf)* ]
+                    fill          [ $($f)* #name: #expr, ]
+                )
+            };
+        });
+    }
+
+    let first_step = Ident::new("__step_0", Span::call_site());
+
+    quote! {
+        #[allow(unused_macros)]
+        macro_rules! #fn_name {
+            // Public entry.
+            ($($name:ident = $value:expr),* $(,)?) => {
+                #fn_name!(@#first_step
+                    user_idents   [ $($name)* ]
+                    user_fields   [ $($name: $value,)* ]
+                    fill          [ ]
+                )
+            };
+
+            #(#helper_arms)*
+
+            // Terminal: all defaults processed; emit the struct literal.
+            (@__done
+                user_idents   [ $($_u:ident)* ]
+                user_fields   [ $($uf:tt)* ]
+                fill          [ $($f:tt)* ]
+            ) => {
+                #fn_name(#amp #path {
+                    $($uf)*
+                    $($f)*
+                })
+            };
+        }
+    }
+}
+
+/// Describes the props parameter shape so the invocation macro can pick
+/// between `func(&Type { ... })` and `func(Type { ... })`.
+struct PropsType {
+    /// Tokens naming the type (e.g. `CardProps`).
+    path: TokenStream2,
+    /// True when the function takes `props: &Type` (the common case).
+    /// False when it takes `props: Type` (owned, used for container
+    /// components that need to consume their children).
+    by_ref: bool,
+}
+
+/// If the function has exactly one parameter, returns its props type info.
+/// Accepts both `_: &T` and `_: T` (where T is a path type).
+fn props_type_from_sig(sig: &syn::Signature) -> Option<PropsType> {
+    if sig.inputs.len() != 1 {
+        return None;
+    }
+    let syn::FnArg::Typed(pt) = &sig.inputs[0] else {
+        return None;
+    };
+    match &*pt.ty {
+        syn::Type::Reference(ref_ty) => {
+            let syn::Type::Path(path_ty) = &*ref_ty.elem else {
+                return None;
+            };
+            let path = &path_ty.path;
+            Some(PropsType { path: quote! { #path }, by_ref: true })
+        }
+        syn::Type::Path(path_ty) => {
+            let path = &path_ty.path;
+            Some(PropsType { path: quote! { #path }, by_ref: false })
+        }
+        _ => None,
+    }
+}
+
+/// Pulls the plain-ident parameter names out of a function signature.
+/// `fn counter(props: &CounterProps)` → `[props]`. Skips destructuring
+/// patterns (no support for `fn(SomeStruct { a, b }: T)` yet).
+fn extract_param_idents(item_fn: &ItemFn) -> Vec<String> {
+    item_fn
+        .sig
+        .inputs
+        .iter()
+        .filter_map(|arg| match arg {
+            syn::FnArg::Typed(pat_type) => match &*pat_type.pat {
+                syn::Pat::Ident(pi) => Some(pi.ident.to_string()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
+}
+
+struct TextRewriter {
+    param_idents: Vec<String>,
+}
+
+impl VisitMut for TextRewriter {
+    fn visit_expr_mut(&mut self, expr: &mut Expr) {
+        // `visit_mut` doesn't descend into macro bodies (they're opaque
+        // tokens). For `vec![...]` specifically — the canonical way to
+        // build a children list — re-parse the body as a comma-separated
+        // list of expressions, rewrite each, and re-emit.
+        if let Expr::Macro(em) = expr {
+            // `vec!` and `children!` are the canonical list-shaped macros
+            // we descend into so reactivity analysis can rewrite text/button
+            // calls inside their bodies.
+            if em.mac.path.is_ident("vec") || em.mac.path.is_ident("children") {
+                if let Ok(mut parsed) = syn::parse2::<CommaExprs>(em.mac.tokens.clone()) {
+                    for e in &mut parsed.exprs {
+                        self.visit_expr_mut(e);
+                    }
+                    let exprs = parsed.exprs;
+                    em.mac.tokens = quote! { #(#exprs),* };
+                }
+            }
+        }
+
+        // Recurse first so inner text() calls are rewritten before the outer.
+        visit_mut::visit_expr_mut(self, expr);
+
+        if let Expr::Call(call) = expr {
+            if is_button_call(call) && call.args.len() == 2 {
+                rewrite_button_callback(call, &self.param_idents);
+                return;
+            }
+            if !is_text_call(call) {
+                return;
+            }
+            if call.args.len() != 1 {
+                return;
+            }
+            let arg = call.args.first().unwrap();
+            // A text() argument is reactive iff it contains a .get() call.
+            let signal_paths = collect_field_paths(arg);
+            if signal_paths.is_empty() {
+                return;
+            }
+            // Once we know we're building a reactive closure, capture every
+            // path whose root is a function parameter — not just the .get()
+            // receivers. Otherwise non-reactive fields like `props.label`
+            // get captured by reference and the closure can't be 'static.
+            let mut paths = signal_paths;
+            for extra in collect_param_paths(arg, &self.param_idents) {
+                if !paths.contains(&extra) {
+                    paths.push(extra);
+                }
+            }
+
+            // Generate one `let __rc_… = path.clone();` for each unique
+            // path, then rewrite the argument so each path becomes the
+            // fresh local.
+            let bindings: Vec<TokenStream2> = paths
+                .iter()
+                .map(|p| {
+                    let local = p.local_ident();
+                    let path = p.as_tokens();
+                    quote! { let #local = #path.clone(); }
+                })
+                .collect();
+
+            let mut rewritten_arg = call.args.first().unwrap().clone();
+            substitute_in_expr(&mut rewritten_arg, &paths);
+
+            let func = call.func.clone();
+            let new_expr: Expr = syn::parse2(quote! {
+                #func({
+                    #(#bindings)*
+                    move || #rewritten_arg
+                })
+            })
+            .expect("rewrite produced invalid expr");
+
+            *expr = new_expr;
+        }
+    }
+}
+
+fn is_text_call(call: &ExprCall) -> bool {
+    is_named_call(call, "text")
+}
+
+fn is_button_call(call: &ExprCall) -> bool {
+    is_named_call(call, "button")
+}
+
+fn is_named_call(call: &ExprCall, name: &str) -> bool {
+    if let Expr::Path(p) = &*call.func {
+        if p.qself.is_none() && p.path.segments.len() == 1 {
+            return p.path.segments[0].ident == name;
+        }
+    }
+    false
+}
+
+/// Rewrites `button(label, on_click)` so that any parameter-rooted path read
+/// by `on_click` is cloned into a fresh local before the closure. Same model
+/// as the text() rewrite, but unconditional — buttons are always callbacks,
+/// not value-shaped reactivity.
+fn rewrite_button_callback(call: &mut ExprCall, param_idents: &[String]) {
+    let label = call.args[0].clone();
+    let callback = call.args[1].clone();
+    let paths = collect_param_paths(&callback, param_idents);
+    if paths.is_empty() {
+        return;
+    }
+    let bindings: Vec<TokenStream2> = paths
+        .iter()
+        .map(|p| {
+            let local = p.local_ident();
+            let path = p.as_tokens();
+            quote! { let #local = #path.clone(); }
+        })
+        .collect();
+    let mut rewritten = callback;
+    substitute_in_expr(&mut rewritten, &paths);
+    let func = call.func.clone();
+    let new_expr: Expr = syn::parse2(quote! {
+        #func(#label, {
+            #(#bindings)*
+            #rewritten
+        })
+    })
+    .expect("button rewrite produced invalid expr");
+    *call = match new_expr {
+        Expr::Call(c) => c,
+        _ => unreachable!("we just emitted a Call"),
+    };
+}
+
+/// A dotted path like `props.value` represented as its segments.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FieldPath {
+    segments: Vec<String>,
+}
+
+impl FieldPath {
+    /// `__rc_props_value` for `props.value`. A single-segment path produces
+    /// `__rc_count` for `count`. The leading `__rc_` keeps these names from
+    /// colliding with user identifiers.
+    fn local_ident(&self) -> Ident {
+        let mangled = format!("__rc_{}", self.segments.join("_"));
+        Ident::new(&mangled, Span::call_site())
+    }
+
+    /// Render the original path back as a token stream: `props.value`.
+    fn as_tokens(&self) -> TokenStream2 {
+        let parts: Vec<Ident> = self
+            .segments
+            .iter()
+            .map(|s| Ident::new(s, Span::call_site()))
+            .collect();
+        let head = &parts[0];
+        let tail = &parts[1..];
+        quote! { #head #(. #tail)* }
+    }
+}
+
+/// Walks an expression and returns every unique field path whose root is one
+/// of the given parameter idents. Captures *all* reads, not just `.get()`
+/// receivers — used to ensure a move-closure can be `'static` when the
+/// underlying parameter is borrowed.
+fn collect_param_paths(expr: &Expr, param_idents: &[String]) -> Vec<FieldPath> {
+    let mut out: Vec<FieldPath> = Vec::new();
+    let mut push = |out: &mut Vec<FieldPath>, p: FieldPath| {
+        if !out.contains(&p) {
+            out.push(p);
+        }
+    };
+
+    struct AstCollector<'a, F: FnMut(&mut Vec<FieldPath>, FieldPath)> {
+        out: &'a mut Vec<FieldPath>,
+        push: F,
+        params: &'a [String],
+    }
+    impl<'ast, 'a, F: FnMut(&mut Vec<FieldPath>, FieldPath)> syn::visit::Visit<'ast>
+        for AstCollector<'a, F>
+    {
+        fn visit_expr(&mut self, e: &'ast Expr) {
+            if let Some(path) = field_path_of(e) {
+                if !path.segments.is_empty()
+                    && self.params.iter().any(|p| *p == path.segments[0])
+                {
+                    (self.push)(self.out, path);
+                    // Don't descend further; the path is a leaf in our model.
+                    return;
+                }
+            }
+            syn::visit::visit_expr(self, e);
+        }
+        fn visit_macro(&mut self, m: &'ast syn::Macro) {
+            scan_param_paths_in_tokens(
+                m.tokens.clone(),
+                self.params,
+                self.out,
+                &mut self.push,
+            );
+            syn::visit::visit_macro(self, m);
+        }
+    }
+
+    let mut collector = AstCollector { out: &mut out, push: &mut push, params: param_idents };
+    syn::visit::Visit::visit_expr(&mut collector, expr);
+    out
+}
+
+/// Token-level mirror of `collect_param_paths`. Finds every `IDENT (. IDENT)*`
+/// in the token stream where the root IDENT is a parameter name.
+fn scan_param_paths_in_tokens<F: FnMut(&mut Vec<FieldPath>, FieldPath)>(
+    tokens: TokenStream2,
+    params: &[String],
+    out: &mut Vec<FieldPath>,
+    push: &mut F,
+) {
+    let trees: Vec<TokenTree> = tokens.into_iter().collect();
+    let mut i = 0;
+    while i < trees.len() {
+        if let TokenTree::Ident(root) = &trees[i] {
+            if params.iter().any(|p| *p == root.to_string()) {
+                if let Some((path, consumed)) = try_match_field_path(&trees, i) {
+                    push(out, path);
+                    i += consumed;
+                    continue;
+                }
+            }
+        }
+        if let TokenTree::Group(g) = &trees[i] {
+            scan_param_paths_in_tokens(g.stream(), params, out, push);
+        }
+        i += 1;
+    }
+}
+
+/// Walks an expression and returns the unique field paths that appear as the
+/// receiver of a parameterless `.get()` call. Order-preserving deduplication.
+fn collect_field_paths(expr: &Expr) -> Vec<FieldPath> {
+    let mut out: Vec<FieldPath> = Vec::new();
+    let mut push = |out: &mut Vec<FieldPath>, p: FieldPath| {
+        if !out.contains(&p) {
+            out.push(p);
+        }
+    };
+
+    struct AstCollector<'a, F: FnMut(&mut Vec<FieldPath>, FieldPath)> {
+        out: &'a mut Vec<FieldPath>,
+        push: F,
+    }
+    impl<'ast, 'a, F: FnMut(&mut Vec<FieldPath>, FieldPath)> syn::visit::Visit<'ast>
+        for AstCollector<'a, F>
+    {
+        fn visit_expr_method_call(&mut self, m: &'ast ExprMethodCall) {
+            if m.method == "get" && m.args.is_empty() {
+                if let Some(path) = field_path_of(&m.receiver) {
+                    (self.push)(self.out, path);
+                }
+            }
+            syn::visit::visit_expr_method_call(self, m);
+        }
+        fn visit_macro(&mut self, m: &'ast syn::Macro) {
+            scan_tokens(m.tokens.clone(), self.out, &mut self.push);
+            syn::visit::visit_macro(self, m);
+        }
+    }
+
+    let mut collector = AstCollector { out: &mut out, push: &mut push };
+    syn::visit::Visit::visit_expr(&mut collector, expr);
+    out
+}
+
+/// Extracts a `FieldPath` from an expression, or `None` if it doesn't
+/// bottom out in a plain identifier.
+fn field_path_of(expr: &Expr) -> Option<FieldPath> {
+    match expr {
+        Expr::Path(p) if p.qself.is_none() && p.path.segments.len() == 1 => {
+            Some(FieldPath {
+                segments: vec![p.path.segments[0].ident.to_string()],
+            })
+        }
+        Expr::Field(f) => {
+            let mut base = field_path_of(&f.base)?;
+            if let syn::Member::Named(id) = &f.member {
+                base.segments.push(id.to_string());
+                Some(base)
+            } else {
+                None // tuple indexing like `.0` — out of scope
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Walk the expression and substitute each known field path with its local.
+fn substitute_in_expr(expr: &mut Expr, paths: &[FieldPath]) {
+    struct Sub<'a> {
+        paths: &'a [FieldPath],
+    }
+    impl<'a> VisitMut for Sub<'a> {
+        fn visit_expr_mut(&mut self, expr: &mut Expr) {
+            if let Some(path) = field_path_of(expr) {
+                if let Some(target) = self.paths.iter().find(|p| **p == path) {
+                    let local = target.local_ident();
+                    *expr = syn::parse2(quote! { #local })
+                        .expect("local ident must parse as expr");
+                    return;
+                }
+            }
+            // Inside macros, syn doesn't descend; we need to rewrite tokens
+            // manually for known list-shapes. For `format!`-family macros the
+            // argument is `lit, expr, expr, …` so we'd have to tokenize. For
+            // the spike, also do token-level rewriting on every macro body
+            // we encounter — same substitution rule.
+            if let Expr::Macro(em) = expr {
+                em.mac.tokens = substitute_in_tokens(em.mac.tokens.clone(), self.paths);
+            }
+            visit_mut::visit_expr_mut(self, expr);
+        }
+    }
+    Sub { paths }.visit_expr_mut(expr);
+}
+
+/// Token-stream version of substitution. Finds `IDENT (. IDENT)*` sequences
+/// matching a known path and replaces them with the corresponding local.
+/// Recurses into nested groups.
+fn substitute_in_tokens(tokens: TokenStream2, paths: &[FieldPath]) -> TokenStream2 {
+    let trees: Vec<TokenTree> = tokens.into_iter().collect();
+    let mut out = Vec::with_capacity(trees.len());
+    let mut i = 0;
+    while i < trees.len() {
+        if let TokenTree::Ident(_) = &trees[i] {
+            if let Some((path, consumed)) = try_match_field_path(&trees, i) {
+                if paths.contains(&path) {
+                    let local = path.local_ident();
+                    out.push(TokenTree::Ident(local));
+                    i += consumed;
+                    continue;
+                }
+            }
+        }
+        if let TokenTree::Group(g) = &trees[i] {
+            let sub = substitute_in_tokens(g.stream(), paths);
+            let new_group = proc_macro2::Group::new(g.delimiter(), sub);
+            out.push(TokenTree::Group(new_group));
+            i += 1;
+            continue;
+        }
+        out.push(trees[i].clone());
+        i += 1;
+    }
+    out.into_iter().collect()
+}
+
+/// Greedy match: from `start`, consume the longest `IDENT (. IDENT)*` and
+/// return the path plus the number of tokens consumed.
+fn try_match_field_path(trees: &[TokenTree], start: usize) -> Option<(FieldPath, usize)> {
+    let TokenTree::Ident(root) = &trees[start] else {
+        return None;
+    };
+    let mut segs = vec![root.to_string()];
+    let mut j = start + 1;
+    loop {
+        let dot = matches!(trees.get(j), Some(TokenTree::Punct(p)) if p.as_char() == '.');
+        if !dot {
+            break;
+        }
+        let after = trees.get(j + 1);
+        // Don't extend across `.method(...)` calls — a path of fields ends
+        // when the next token after `.` is followed by `(...)` (a method
+        // call) or is anything other than an ident.
+        let is_ident = matches!(after, Some(TokenTree::Ident(_)));
+        if !is_ident {
+            break;
+        }
+        let followed_by_call = matches!(
+            trees.get(j + 2),
+            Some(TokenTree::Group(g)) if g.delimiter() == proc_macro2::Delimiter::Parenthesis
+        );
+        if followed_by_call {
+            // This is `.method(...)`. The IDENT we'd consume is the method
+            // name, not a field. Stop the path here.
+            break;
+        }
+        if let Some(TokenTree::Ident(id)) = after {
+            segs.push(id.to_string());
+            j += 2;
+        } else {
+            break;
+        }
+    }
+    Some((FieldPath { segments: segs }, j - start))
+}
+
+/// Lexical scan for `(IDENT.)*IDENT.get()` patterns. For each, records the
+/// receiver path (everything before the final `.get()`).
+fn scan_tokens<F: FnMut(&mut Vec<FieldPath>, FieldPath)>(
+    tokens: TokenStream2,
+    out: &mut Vec<FieldPath>,
+    push: &mut F,
+) {
+    let trees: Vec<TokenTree> = tokens.into_iter().collect();
+    let mut i = 0;
+    while i < trees.len() {
+        if let TokenTree::Ident(_) = &trees[i] {
+            if let Some((path, consumed)) = try_match_get_chain(&trees, i) {
+                push(out, path);
+                i += consumed;
+                continue;
+            }
+        }
+        if let TokenTree::Group(g) = &trees[i] {
+            scan_tokens(g.stream(), out, push);
+        }
+        i += 1;
+    }
+}
+
+/// Match `IDENT (. IDENT)* . get ( )` and return the receiver path
+/// (excluding the `.get()`) and the number of tokens consumed.
+fn try_match_get_chain(trees: &[TokenTree], start: usize) -> Option<(FieldPath, usize)> {
+    let TokenTree::Ident(root) = &trees[start] else {
+        return None;
+    };
+    let mut segs = vec![root.to_string()];
+    let mut j = start + 1;
+    loop {
+        let dot = matches!(trees.get(j), Some(TokenTree::Punct(p)) if p.as_char() == '.');
+        if !dot {
+            return None;
+        }
+        let next = trees.get(j + 1)?;
+        let is_get = matches!(next, TokenTree::Ident(id) if id == "get");
+        let is_call = is_get
+            && matches!(
+                trees.get(j + 2),
+                Some(TokenTree::Group(g))
+                    if g.delimiter() == proc_macro2::Delimiter::Parenthesis
+                        && g.stream().is_empty()
+            );
+        if is_call {
+            return Some((FieldPath { segments: segs }, j + 3 - start));
+        }
+        if let TokenTree::Ident(id) = next {
+            segs.push(id.to_string());
+            j += 2;
+            continue;
+        }
+        return None;
+    }
+}
