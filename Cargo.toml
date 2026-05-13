@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/framework-core",
     "crates/framework-macros",
+    "crates/reactive-arena",
     "crates/backend-web",
     "crates/backend-ios",
     "crates/backend-android",

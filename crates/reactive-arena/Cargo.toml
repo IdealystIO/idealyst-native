@@ -1,0 +1,9 @@
+[package]
+name = "reactive-arena"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Prototype crate validating Copy-handle reactive primitives via a thread-local
+# arena. Not integrated with framework-core; lives here so we can prove the
+# design works before committing to a framework-wide refactor.

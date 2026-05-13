@@ -1,37 +1,99 @@
 //! Single-threaded fine-grained reactivity.
 //!
-//! Spike scope:
-//! - `Signal<T>` holds a value and a subscriber list.
-//! - `Effect` runs a closure with a thread-local "current effect" set;
-//!   any `Signal::get()` during that run registers a subscription.
-//! - `Signal::set()` re-runs every live subscriber.
+//! Implementation note: storage for signals and effects lives in a
+//! thread-local arena. The handles you hold (`Signal<T>`, `EffectHandle`)
+//! are small `Copy`-able tokens that index into the arena, rather than
+//! `Rc<...>`-style owning references. This is what makes `Signal<T>: Copy`,
+//! which eliminates the manual `.clone()` boilerplate at closure boundaries.
 //!
-//! All UI work happens on a single thread on every target we care about,
-//! so we use `Rc`/`RefCell` + thread-locals rather than `Arc`/`Mutex`.
+//! ## Lifetime model
+//!
+//! - Slots in the arena are owned by a `Scope`. When the scope drops, its
+//!   slots are freed.
+//! - The renderer's `Owner` holds a `Scope`, so a UI tree's reactive state
+//!   is freed when the owner drops.
+//! - Reactive subtrees (e.g. inside `when()`) create nested scopes that
+//!   drop independently when the subtree is replaced.
+//!
+//! ## Failure modes
+//!
+//! - Reading from a `Signal<T>` after its owning scope drops panics with a
+//!   diagnostic message. There is no silent corruption.
+//! - Subscriber lists may contain `EffectId`s pointing at freed slots;
+//!   these are silently skipped during `notify`.
 
+use std::any::Any;
 use std::cell::RefCell;
-use std::rc::{Rc, Weak};
+use std::marker::PhantomData;
+
+// =============================================================================
+// IDs and arena storage
+// =============================================================================
+
+/// Opaque index into the arena's signal slot table.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+struct SignalId(u32);
+
+/// Opaque index into the arena's effect slot table.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+struct EffectId(u32);
 
 thread_local! {
-    static CURRENT: RefCell<Option<Weak<EffectInner>>> = const { RefCell::new(None) };
+    static ARENA: RefCell<Arena> = RefCell::new(Arena::new());
+    static CURRENT: RefCell<Option<EffectId>> = const { RefCell::new(None) };
+}
+
+struct Arena {
+    signals: Vec<Option<Box<dyn Any>>>,
+    effects: Vec<Option<Box<dyn Any>>>,
+}
+
+impl Arena {
+    fn new() -> Self {
+        Self { signals: Vec::new(), effects: Vec::new() }
+    }
+
+    fn insert_signal<T: 'static>(&mut self, inner: SignalInner<T>) -> SignalId {
+        let id = SignalId(self.signals.len() as u32);
+        self.signals.push(Some(Box::new(inner)));
+        id
+    }
+
+    fn insert_effect(&mut self, inner: EffectInner) -> EffectId {
+        let id = EffectId(self.effects.len() as u32);
+        self.effects.push(Some(Box::new(inner)));
+        id
+    }
+
+    fn free_signal(&mut self, id: SignalId) {
+        if let Some(slot) = self.signals.get_mut(id.0 as usize) {
+            *slot = None;
+        }
+    }
+
+    fn free_effect(&mut self, id: EffectId) {
+        if let Some(slot) = self.effects.get_mut(id.0 as usize) {
+            *slot = None;
+        }
+    }
+}
+
+struct SignalInner<T> {
+    value: T,
+    subscribers: Vec<EffectId>,
 }
 
 struct EffectInner {
-    run: RefCell<Box<dyn FnMut()>>,
+    run: Box<dyn FnMut()>,
 }
 
-fn run_effect(inner: &Rc<EffectInner>) {
-    let weak = Rc::downgrade(inner);
-    let prev = CURRENT.with(|c| c.replace(Some(weak)));
-    (inner.run.borrow_mut())();
-    CURRENT.with(|c| *c.borrow_mut() = prev);
-}
+// =============================================================================
+// untrack
+// =============================================================================
 
 /// Runs `f` with subscription tracking disabled. Any `Signal::get()` calls
 /// inside `f` will return their current value without subscribing the
-/// enclosing effect. Use this when you need to read a signal during effect
-/// setup without taking a dependency on it (for example, when constructing
-/// a child subtree whose own effects will re-subscribe independently).
+/// enclosing effect.
 pub fn untrack<R, F: FnOnce() -> R>(f: F) -> R {
     let prev = CURRENT.with(|c| c.borrow_mut().take());
     let result = f();
@@ -39,81 +101,426 @@ pub fn untrack<R, F: FnOnce() -> R>(f: F) -> R {
     result
 }
 
+// =============================================================================
+// Signal<T>
+// =============================================================================
+
+/// A copy-handle to a reactive value.
+///
+/// `Signal<T>` is `Copy`, so it can be captured into multiple closures
+/// without explicit `.clone()` calls. The underlying storage lives in a
+/// thread-local arena owned by the enclosing render `Owner` (which holds
+/// a `Scope`); when the owner drops, the signal's slot is freed.
+pub struct Signal<T> {
+    id: SignalId,
+    _phantom: PhantomData<T>,
+}
+
+impl<T> Copy for Signal<T> {}
+impl<T> Clone for Signal<T> {
+    fn clone(&self) -> Self { *self }
+}
+
+impl<T: Clone + 'static> Signal<T> {
+    /// Creates a signal in the global arena. The slot is freed when the
+    /// surrounding render `Owner` drops. (For tests and ad-hoc usage outside
+    /// a render tree, the slot leaks until the thread exits.)
+    pub fn new(value: T) -> Self {
+        let id = ARENA.with(|a| {
+            a.borrow_mut().insert_signal(SignalInner {
+                value,
+                subscribers: Vec::new(),
+            })
+        });
+        register_signal(id);
+        Self { id, _phantom: PhantomData }
+    }
+
+    pub fn get(&self) -> T {
+        // Record subscription if an effect is currently running.
+        CURRENT.with(|c| {
+            if let Some(eid) = *c.borrow() {
+                with_signal_mut::<T, _>(self.id, |inner| {
+                    if !inner.subscribers.contains(&eid) {
+                        inner.subscribers.push(eid);
+                    }
+                });
+            }
+        });
+        with_signal::<T, _>(self.id, |inner| inner.value.clone())
+    }
+
+    pub fn set(&self, value: T) {
+        let to_run: Vec<EffectId> = with_signal_mut::<T, _>(self.id, |inner| {
+            inner.value = value;
+            inner.subscribers.clone()
+        });
+        run_effects(&to_run);
+        prune_subscribers::<T>(self.id);
+    }
+
+    pub fn update<F: FnOnce(&mut T)>(&self, f: F) {
+        let to_run: Vec<EffectId> = with_signal_mut::<T, _>(self.id, |inner| {
+            f(&mut inner.value);
+            inner.subscribers.clone()
+        });
+        run_effects(&to_run);
+        prune_subscribers::<T>(self.id);
+    }
+}
+
+fn with_signal<T: 'static, R>(id: SignalId, f: impl FnOnce(&SignalInner<T>) -> R) -> R {
+    ARENA.with(|arena| {
+        let arena = arena.borrow();
+        let slot = arena
+            .signals
+            .get(id.0 as usize)
+            .and_then(|o| o.as_ref())
+            .unwrap_or_else(|| panic!("signal used after its scope was dropped (id {:?})", id));
+        let inner = slot
+            .downcast_ref::<SignalInner<T>>()
+            .expect("internal: signal type mismatch");
+        f(inner)
+    })
+}
+
+fn with_signal_mut<T: 'static, R>(id: SignalId, f: impl FnOnce(&mut SignalInner<T>) -> R) -> R {
+    ARENA.with(|arena| {
+        let mut arena = arena.borrow_mut();
+        let slot = arena
+            .signals
+            .get_mut(id.0 as usize)
+            .and_then(|o| o.as_mut())
+            .unwrap_or_else(|| panic!("signal used after its scope was dropped (id {:?})", id));
+        let inner = slot
+            .downcast_mut::<SignalInner<T>>()
+            .expect("internal: signal type mismatch");
+        f(inner)
+    })
+}
+
+/// After running a signal's effects, prune any subscriber IDs that point
+/// at freed effect slots. Keeps subscriber lists bounded over time.
+fn prune_subscribers<T: 'static>(sig: SignalId) {
+    let live: Vec<EffectId> = with_signal::<T, _>(sig, |inner| inner.subscribers.clone());
+    let kept: Vec<EffectId> = live
+        .into_iter()
+        .filter(|eid| {
+            ARENA.with(|a| {
+                a.borrow()
+                    .effects
+                    .get(eid.0 as usize)
+                    .and_then(|o| o.as_ref())
+                    .is_some()
+            })
+        })
+        .collect();
+    with_signal_mut::<T, _>(sig, |inner| inner.subscribers = kept);
+}
+
+// =============================================================================
+// Effect
+// =============================================================================
+
 /// Handle to a reactive effect. Drop it to stop the effect from re-running.
+///
+/// The handle owns the effect's slot in the arena; dropping the handle
+/// frees the slot. Existing subscriber references in signals are
+/// silently skipped on the next notify pass and pruned.
 pub struct Effect {
-    _inner: Rc<EffectInner>,
+    id: EffectId,
+    /// If true, dropping this handle should free the effect slot. The
+    /// renderer's `Scope` takes ownership by setting this to false on the
+    /// handle it received; the scope then frees the slot at its own drop.
+    owns: bool,
+}
+
+impl Drop for Effect {
+    fn drop(&mut self) {
+        if self.owns {
+            ARENA.with(|a| a.borrow_mut().free_effect(self.id));
+        }
+    }
 }
 
 impl Effect {
     /// Creates an effect and runs it once. Any signals read during the run
-    /// will fire the effect again when they change.
+    /// re-fire the effect on change.
+    ///
+    /// If a `Scope` is active (via `with_scope`), the effect's slot is
+    /// owned by that scope — the returned `Effect` handle's drop is a
+    /// no-op and the slot is freed when the scope drops. If no scope is
+    /// active, the returned handle owns the slot directly.
     pub fn new<F: FnMut() + 'static>(f: F) -> Self {
-        let inner = Rc::new(EffectInner {
-            run: RefCell::new(Box::new(f)),
+        let id = ARENA.with(|a| {
+            a.borrow_mut().insert_effect(EffectInner { run: Box::new(f) })
         });
-        run_effect(&inner);
-        Effect { _inner: inner }
+        let registered = register_effect(id);
+        run_effect(id);
+        Effect { id, owns: !registered }
     }
 }
 
-struct SignalInner<T> {
-    value: RefCell<T>,
-    subscribers: RefCell<Vec<Weak<EffectInner>>>,
-}
-
-/// Reactive value. `get()` reads and subscribes the current effect (if any);
-/// `set()` writes and re-runs subscribed effects.
-pub struct Signal<T> {
-    inner: Rc<SignalInner<T>>,
-}
-
-impl<T> Clone for Signal<T> {
-    fn clone(&self) -> Self {
-        Self { inner: self.inner.clone() }
-    }
-}
-
-impl<T: Clone + 'static> Signal<T> {
-    pub fn new(value: T) -> Self {
-        Self {
-            inner: Rc::new(SignalInner {
-                value: RefCell::new(value),
-                subscribers: RefCell::new(Vec::new()),
-            }),
-        }
-    }
-
-    pub fn get(&self) -> T {
-        CURRENT.with(|c| {
-            if let Some(weak) = c.borrow().as_ref() {
-                let mut subs = self.inner.subscribers.borrow_mut();
-                if !subs.iter().any(|w| w.ptr_eq(weak)) {
-                    subs.push(weak.clone());
+/// Run the effect with `id`. The closure is temporarily moved out of the
+/// arena slot during execution so signal callbacks can re-borrow the arena
+/// without conflict. Restored on completion.
+fn run_effect(id: EffectId) {
+    let mut run_fn: Option<Box<dyn FnMut()>> = ARENA.with(|a| {
+        let mut a = a.borrow_mut();
+        let slot = a.effects.get_mut(id.0 as usize)?.as_mut()?;
+        let inner = slot.downcast_mut::<EffectInner>()?;
+        // Replace with a no-op while we run, to detect re-entry and avoid
+        // a double-borrow of the arena. We restore the original afterward.
+        Some(std::mem::replace(&mut inner.run, Box::new(|| {})))
+    });
+    if let Some(f) = run_fn.as_mut() {
+        let prev = CURRENT.with(|c| c.replace(Some(id)));
+        f();
+        CURRENT.with(|c| *c.borrow_mut() = prev);
+        // Restore the actual function. If the slot has been freed during
+        // the run (effect disposed by its own action), do nothing.
+        ARENA.with(|a| {
+            let mut a = a.borrow_mut();
+            if let Some(Some(slot)) = a.effects.get_mut(id.0 as usize) {
+                if let Some(inner) = slot.downcast_mut::<EffectInner>() {
+                    inner.run = run_fn.take().unwrap();
                 }
             }
         });
-        self.inner.value.borrow().clone()
     }
+}
 
-    pub fn set(&self, value: T) {
-        *self.inner.value.borrow_mut() = value;
-        self.notify();
-    }
-
-    pub fn update<F: FnOnce(&mut T)>(&self, f: F) {
-        f(&mut self.inner.value.borrow_mut());
-        self.notify();
-    }
-
-    fn notify(&self) {
-        let snapshot: Vec<Weak<EffectInner>> = self.inner.subscribers.borrow().clone();
-        let mut still_alive = Vec::with_capacity(snapshot.len());
-        for weak in snapshot {
-            if let Some(strong) = weak.upgrade() {
-                still_alive.push(Rc::downgrade(&strong));
-                run_effect(&strong);
-            }
+fn run_effects(ids: &[EffectId]) {
+    for &id in ids {
+        // Skip freed effects gracefully.
+        let alive = ARENA.with(|a| {
+            a.borrow()
+                .effects
+                .get(id.0 as usize)
+                .and_then(|o| o.as_ref())
+                .is_some()
+        });
+        if alive {
+            run_effect(id);
         }
-        *self.inner.subscribers.borrow_mut() = still_alive;
+    }
+}
+
+// =============================================================================
+// Scope
+// =============================================================================
+
+/// Lifetime container for arena slots created within it. Drop the scope
+/// to free its signals and effects.
+///
+/// Scopes are typically owned by the renderer's `Owner` or by a reactive
+/// subtree (e.g. inside a `when()`). User code rarely constructs scopes
+/// directly — instead, signals created in a render call register
+/// themselves with the active scope via the thread-local ACTIVE_SCOPE.
+pub(crate) struct Scope {
+    signals: Vec<SignalId>,
+    effects: Vec<EffectId>,
+}
+
+impl Scope {
+    #[allow(dead_code)]
+    pub(crate) fn new() -> Self {
+        Self { signals: Vec::new(), effects: Vec::new() }
+    }
+
+    /// Adopts the given effect into this scope. The original `Effect`
+    /// handle has its `owns` flag cleared so drop becomes a no-op; the
+    /// scope is now responsible for freeing the slot. Reserved for the
+    /// future integration where the renderer's `Owner` directly wraps a
+    /// `Scope` instead of a `Vec<Effect>`.
+    #[allow(dead_code)]
+    pub(crate) fn adopt_effect(&mut self, mut e: Effect) {
+        self.effects.push(e.id);
+        e.owns = false;
+    }
+}
+
+impl Drop for Scope {
+    fn drop(&mut self) {
+        ARENA.with(|a| {
+            let mut a = a.borrow_mut();
+            for id in self.signals.drain(..) {
+                a.free_signal(id);
+            }
+            for id in self.effects.drain(..) {
+                a.free_effect(id);
+            }
+        });
+    }
+}
+
+// =============================================================================
+// Active-scope registration
+// =============================================================================
+
+thread_local! {
+    /// The currently-active scope, if any. `Signal::new` and `Effect::new`
+    /// register their IDs here so the scope can free them on drop.
+    static ACTIVE_SCOPE: RefCell<Vec<*mut Scope>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Runs `f` with `scope` as the active scope. While active, any signals or
+/// effects created inside `f` are registered to `scope`. The scope is
+/// removed from the active list after `f` returns.
+pub(crate) fn with_scope<R>(scope: &mut Scope, f: impl FnOnce() -> R) -> R {
+    let ptr = scope as *mut Scope;
+    ACTIVE_SCOPE.with(|s| s.borrow_mut().push(ptr));
+    let result = f();
+    ACTIVE_SCOPE.with(|s| {
+        let last = s.borrow_mut().pop();
+        debug_assert_eq!(last, Some(ptr), "scope stack imbalance");
+    });
+    result
+}
+
+/// Registers a signal ID with the topmost active scope, if any. Returns
+/// true if a scope took ownership.
+fn register_signal(id: SignalId) -> bool {
+    ACTIVE_SCOPE.with(|s| {
+        if let Some(&top) = s.borrow().last() {
+            // SAFETY: ACTIVE_SCOPE only holds pointers to Scope values that
+            // are currently borrowed by `with_scope`. The borrow extends for
+            // the entire `f()` call, during which `register_signal` is the
+            // only path that touches the pointer, and only mutably for a
+            // brief push to the Vec. No aliasing.
+            unsafe { (*top).signals.push(id); }
+            true
+        } else {
+            false
+        }
+    })
+}
+
+/// Registers an effect ID with the topmost active scope. Returns true if
+/// a scope took ownership.
+fn register_effect(id: EffectId) -> bool {
+    ACTIVE_SCOPE.with(|s| {
+        if let Some(&top) = s.borrow().last() {
+            unsafe { (*top).effects.push(id); }
+            true
+        } else {
+            false
+        }
+    })
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn signal_is_copy_and_works() {
+        let s = Signal::new(7i32);
+        let s2 = s; // Copy: no .clone() needed.
+        s.set(42);
+        assert_eq!(s2.get(), 42);
+    }
+
+    #[test]
+    fn effect_fires_on_change() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let count = Signal::new(0i32);
+        let observed = Rc::new(Cell::new(0));
+        let obs = observed.clone();
+        let _e = Effect::new(move || {
+            obs.set(count.get());
+        });
+        assert_eq!(observed.get(), 0);
+        count.set(5);
+        assert_eq!(observed.get(), 5);
+        count.set(11);
+        assert_eq!(observed.get(), 11);
+    }
+
+    #[test]
+    fn untrack_blocks_subscription() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let s = Signal::new(0i32);
+        let runs = Rc::new(Cell::new(0));
+        let r = runs.clone();
+        let _e = Effect::new(move || {
+            untrack(|| {
+                let _ = s.get();
+            });
+            r.set(r.get() + 1);
+        });
+        assert_eq!(runs.get(), 1);
+        s.set(99); // should NOT re-fire effect
+        assert_eq!(runs.get(), 1);
+    }
+
+    /// Returns (signals_in_use, effects_in_use) — counts of `Some` slots in
+    /// the arena. Used by leak tests.
+    fn arena_inuse_counts() -> (usize, usize) {
+        ARENA.with(|a| {
+            let a = a.borrow();
+            (
+                a.signals.iter().filter(|s| s.is_some()).count(),
+                a.effects.iter().filter(|e| e.is_some()).count(),
+            )
+        })
+    }
+
+    #[test]
+    fn scope_frees_signals_and_effects_on_drop() {
+        let (s0, e0) = arena_inuse_counts();
+        {
+            let mut scope = Scope::new();
+            with_scope(&mut scope, || {
+                let _a = Signal::new(1i32);
+                let _b = Signal::new(2i32);
+                let _e = Effect::new(|| {});
+                let (s1, e1) = arena_inuse_counts();
+                assert_eq!(s1, s0 + 2, "two new signal slots in use inside scope");
+                assert_eq!(e1, e0 + 1, "one new effect slot in use inside scope");
+            });
+            // Scope still alive (just not active). Slots still in use.
+            let (s_active, e_active) = arena_inuse_counts();
+            assert_eq!(s_active, s0 + 2);
+            assert_eq!(e_active, e0 + 1);
+            // Scope drops here.
+        }
+        let (s_after, e_after) = arena_inuse_counts();
+        assert_eq!(s_after, s0, "all signal slots returned to baseline");
+        assert_eq!(e_after, e0, "all effect slots returned to baseline");
+    }
+
+    #[test]
+    fn nested_scopes_drop_independently() {
+        let (s0, e0) = arena_inuse_counts();
+        let mut outer = Scope::new();
+        with_scope(&mut outer, || {
+            let _outer_sig = Signal::new("outer".to_string());
+            {
+                let mut inner = Scope::new();
+                with_scope(&mut inner, || {
+                    let _inner_sig = Signal::new("inner".to_string());
+                    let _inner_eff = Effect::new(|| {});
+                    let (s, e) = arena_inuse_counts();
+                    assert_eq!(s, s0 + 2);
+                    assert_eq!(e, e0 + 1);
+                });
+                // inner drops here
+            }
+            // After inner drops, only outer's signal remains.
+            let (s, e) = arena_inuse_counts();
+            assert_eq!(s, s0 + 1, "inner scope's signal freed");
+            assert_eq!(e, e0, "inner scope's effect freed");
+        });
+        drop(outer);
+        let (s, e) = arena_inuse_counts();
+        assert_eq!(s, s0);
+        assert_eq!(e, e0);
     }
 }
