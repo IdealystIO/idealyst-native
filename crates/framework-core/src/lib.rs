@@ -99,6 +99,20 @@ impl ChildList for Vec<Primitive> {
     }
 }
 
+/// Shorthand for `Signal::new(value)`. Equivalent in every way; just less
+/// typing at the call site.
+///
+/// ```ignore
+/// let count = signal!(0);
+/// // same as: let count = Signal::new(0);
+/// ```
+#[macro_export]
+macro_rules! signal {
+    ($value:expr) => {
+        $crate::Signal::new($value)
+    };
+}
+
 /// Builds a `Vec<Primitive>` from a mixed-shape list of children.
 ///
 /// Each argument must implement [`ChildList`]; the macro flattens
@@ -192,77 +206,94 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
         Primitive::Text(TextSource::Static(content)) => {
             backend.borrow_mut().create_text(&content)
         }
-        Primitive::Text(TextSource::Reactive(compute)) => {
-            let node = backend.borrow_mut().create_text("");
-            let node_for_effect = node.clone();
-            let backend = backend.clone();
-            // Effect auto-registers with the active scope (set by render()
-            // or by a when() rebuild). Drop is a no-op; the scope frees it.
-            let _e = Effect::new(move || {
-                let value = compute();
-                backend.borrow_mut().update_text(&node_for_effect, &value);
-            });
-            node
-        }
-        Primitive::View { children } => {
-            let mut parent = backend.borrow_mut().create_view();
-            for child in children {
-                let child_node = build(backend, child);
-                backend.borrow_mut().insert(&mut parent, child_node);
-            }
-            parent
-        }
+        Primitive::Text(TextSource::Reactive(compute)) => build_reactive_text(backend, compute),
+        Primitive::View { children } => build_view(backend, children),
         Primitive::Button { label, on_click } => {
             backend.borrow_mut().create_button(&label, on_click)
         }
-        Primitive::When { cond, then, otherwise } => {
-            // The placeholder hosts the active branch's subtree. Each time
-            // the condition flips, we drop the previous branch's scope
-            // (freeing its signals + effects), clear the placeholder, and
-            // build a fresh subtree under a brand-new nested scope.
-            let placeholder = backend.borrow_mut().create_view();
-            let backend_for_effect = backend.clone();
-            let placeholder_for_effect = placeholder.clone();
+        Primitive::When { cond, then, otherwise } => build_when(backend, cond, then, otherwise),
+    }
+}
 
-            // The branch scope lives across effect re-runs. We use
-            // Rc<RefCell<Option<Scope>>> so we can replace it atomically.
-            let branch_scope: Rc<RefCell<Option<Box<reactive::Scope>>>> =
-                Rc::new(RefCell::new(None));
-            let branch_scope_for_effect = branch_scope.clone();
+/// Creates an empty text node and an effect that re-runs `compute()` and
+/// writes the result whenever the signals it reads change.
+fn build_reactive_text<B: Backend + 'static>(
+    backend: &Rc<RefCell<B>>,
+    compute: Box<dyn Fn() -> String>,
+) -> B::Node {
+    let node = backend.borrow_mut().create_text("");
+    let node_for_effect = node.clone();
+    let backend = backend.clone();
+    // Effect auto-registers with the active scope (set by render() or by a
+    // when() rebuild). Drop is a no-op; the scope frees the slot.
+    let _e = Effect::new(move || {
+        let value = compute();
+        backend.borrow_mut().update_text(&node_for_effect, &value);
+    });
+    node
+}
 
-            // The outer effect tracks cond() and rebuilds the subtree on
-            // every change. Effect itself auto-registers with the outer
-            // (render) scope, so when the whole UI tears down, this effect
-            // is freed too — which drops branch_scope on the way out.
-            let _e = Effect::new(move || {
-                let active = cond();
+fn build_view<B: Backend + 'static>(
+    backend: &Rc<RefCell<B>>,
+    children: Vec<Primitive>,
+) -> B::Node {
+    let mut parent = backend.borrow_mut().create_view();
+    for child in children {
+        let child_node = build(backend, child);
+        backend.borrow_mut().insert(&mut parent, child_node);
+    }
+    parent
+}
 
-                // Drop the previous branch's scope BEFORE building the new
-                // one. This frees its signals + effects atomically.
-                *branch_scope_for_effect.borrow_mut() = None;
+/// Renders a `When` primitive as a placeholder container whose subtree is
+/// swapped each time `cond()` flips.
+///
+/// Lifecycle: the outer effect (registered with the surrounding scope)
+/// reads `cond()` to track its dependencies. On every change it drops
+/// the previous branch's nested `Scope` — freeing every signal and effect
+/// in the old subtree atomically — and builds the new branch inside a
+/// fresh nested scope.
+fn build_when<B: Backend + 'static>(
+    backend: &Rc<RefCell<B>>,
+    cond: Box<dyn Fn() -> bool>,
+    then: Box<dyn Fn() -> Primitive>,
+    otherwise: Box<dyn Fn() -> Primitive>,
+) -> B::Node {
+    let placeholder = backend.borrow_mut().create_view();
+    let backend_for_effect = backend.clone();
+    let placeholder_for_effect = placeholder.clone();
+
+    // The branch scope lives across effect re-runs. Rc<RefCell<Option<…>>>
+    // so we can replace it atomically when the condition flips.
+    let branch_scope: Rc<RefCell<Option<Box<reactive::Scope>>>> = Rc::new(RefCell::new(None));
+    let branch_scope_for_effect = branch_scope.clone();
+
+    let _e = Effect::new(move || {
+        let active = cond();
+
+        // Drop the previous branch's scope before building the new one,
+        // freeing its signals + effects atomically.
+        *branch_scope_for_effect.borrow_mut() = None;
+        backend_for_effect
+            .borrow_mut()
+            .clear_children(&placeholder_for_effect);
+
+        // Build inside a fresh nested scope. `untrack` keeps inner setup
+        // reads from subscribing to *this* outer effect — inner effects
+        // subscribe themselves when they run.
+        let mut new_scope = Box::new(reactive::Scope::new());
+        untrack(|| {
+            reactive::with_scope(&mut new_scope, || {
+                let branch = if active { then() } else { otherwise() };
+                let child_node = build(&backend_for_effect, branch);
+                let mut placeholder_mut = placeholder_for_effect.clone();
                 backend_for_effect
                     .borrow_mut()
-                    .clear_children(&placeholder_for_effect);
-
-                // Build the new subtree inside a fresh nested scope. We
-                // untrack to avoid subscribing inner effect setup reads to
-                // this outer effect — inner effects subscribe themselves
-                // when they run.
-                let mut new_scope = Box::new(reactive::Scope::new());
-                untrack(|| {
-                    reactive::with_scope(&mut new_scope, || {
-                        let active_branch = if active { then() } else { otherwise() };
-                        let child_node = build(&backend_for_effect, active_branch);
-                        let mut placeholder_mut = placeholder_for_effect.clone();
-                        backend_for_effect
-                            .borrow_mut()
-                            .insert(&mut placeholder_mut, child_node);
-                    });
-                });
-                *branch_scope_for_effect.borrow_mut() = Some(new_scope);
+                    .insert(&mut placeholder_mut, child_node);
             });
+        });
+        *branch_scope_for_effect.borrow_mut() = Some(new_scope);
+    });
 
-            placeholder
-        }
-    }
+    placeholder
 }

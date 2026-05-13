@@ -1,6 +1,6 @@
 //! The shared sample tree, used by every backend.
 
-use framework_core::{button, component, text, ui, view, Primitive, Signal};
+use framework_core::{button, component, signal, text, ui, view, Primitive, Signal};
 
 pub struct CardProps {
     pub title: String,
@@ -36,9 +36,9 @@ pub fn counter(props: &CounterProps) -> Primitive {
 
 #[component]
 pub fn app() -> Primitive {
-    let score = Signal::new(0);
-    let lives = Signal::new(3);
-    let logged_in = Signal::new(false);
+    let score = signal!(0);
+    let lives = signal!(3);
+    let logged_in = signal!(false);
     let names = vec!["Ada", "Grace", "Linus"];
 
     ui! {
