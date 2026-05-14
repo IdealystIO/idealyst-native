@@ -21,8 +21,11 @@
 
 mod component_attr;
 mod invocation_macro;
+mod jsx;
+mod methods_block;
 mod path_analysis;
 mod reactivity;
+mod stylesheet;
 mod ui;
 
 use proc_macro::TokenStream;
@@ -37,6 +40,24 @@ use syn::ItemFn;
 pub fn ui(input: TokenStream) -> TokenStream {
     let parsed = parse_macro_input!(input as ui::Ui);
     ui::emit(parsed).into()
+}
+
+/// `jsx! { ... }` — JSX-flavored variant of `ui!`. Same emission backend,
+/// angle-bracket syntax: `<Foo prop="x" expr={e} ref={r}>...</Foo>` or
+/// `<Foo />`. See the [`jsx`] module for the full grammar.
+#[proc_macro]
+pub fn jsx(input: TokenStream) -> TokenStream {
+    let parsed = parse_macro_input!(input as jsx::Jsx);
+    jsx::emit(parsed).into()
+}
+
+/// `stylesheet! { ... }` — declaration macro for a typed stylesheet
+/// with variants and overrides. See the [`stylesheet`] module for the
+/// grammar.
+#[proc_macro]
+pub fn stylesheet(input: TokenStream) -> TokenStream {
+    let parsed = parse_macro_input!(input as stylesheet::StyleSheetDecl);
+    stylesheet::emit(parsed).into()
 }
 
 /// `#[component]` — annotates a component function. Rewrites its body for
@@ -55,9 +76,17 @@ pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
     };
     let mut item_fn = parse_macro_input!(item as ItemFn);
+    // Look for a `methods!` block inside the body and lift it out into
+    // a generated handle struct + Bindable wiring. The fn's body and
+    // return type are rewritten in place when methods! is present.
+    let methods_extra = match methods_block::extract_and_rewrite(&mut item_fn) {
+        Ok(extra) => extra,
+        Err(e) => return e.to_compile_error().into(),
+    };
     reactivity::rewrite(&mut item_fn);
     let invocation = invocation_macro::generate_invocation_macro(&item_fn, &attr);
     TokenStream::from(quote! {
+        #methods_extra
         #item_fn
         #invocation
     })

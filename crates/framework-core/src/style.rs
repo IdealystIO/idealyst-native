@@ -56,21 +56,256 @@ impl From<String> for Color {
     }
 }
 
-/// Length in logical pixels. Backends scale appropriately.
-pub type Length = f32;
+/// A measurable length value. Authors mostly write `Length::Px(16.0)`
+/// — or just `16.0`/`16` directly, since `From<f32>` and `From<i32>`
+/// produce `Length::Px`. Percent is for "X% of parent on the relevant
+/// axis". Auto defers to layout (only meaningful on a subset of
+/// properties — `width`, `height`, `margin`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Length {
+    Px(f32),
+    Percent(f32),
+    Auto,
+}
 
-/// A border specification — width plus color. Backends translate to
-/// their native form (CSS `border: 2px solid #abc`, iOS layer border,
-/// Android stroke).
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Border {
-    pub width: u32, // u32 instead of f32 so Border is Hash/Eq
+impl Length {
+    /// Shorthand for `Length::Percent(value)`.
+    pub fn pct(value: f32) -> Self { Length::Percent(value) }
+}
+
+impl From<f32> for Length {
+    fn from(v: f32) -> Self { Length::Px(v) }
+}
+
+impl From<i32> for Length {
+    fn from(v: i32) -> Self { Length::Px(v as f32) }
+}
+
+/// Bit-cast for hashing, since `f32` isn't `Eq`/`Hash`. Variant tag in
+/// the high byte so `Px(0.0)` and `Percent(0.0)` hash differently.
+fn length_bits(l: Length) -> u64 {
+    match l {
+        Length::Px(v) => (1u64 << 32) | v.to_bits() as u64,
+        Length::Percent(v) => (2u64 << 32) | v.to_bits() as u64,
+        Length::Auto => 3u64 << 32,
+    }
+}
+
+// =============================================================================
+// Flex layout enums (mobile-first defaults match React Native)
+// =============================================================================
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum FlexDirection {
+    /// Children stack top-to-bottom. RN default; what `View {}` does
+    /// without explicit configuration.
+    #[default]
+    Column,
+    Row,
+    ColumnReverse,
+    RowReverse,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum FlexWrap {
+    #[default]
+    NoWrap,
+    Wrap,
+    WrapReverse,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum JustifyContent {
+    #[default]
+    FlexStart,
+    FlexEnd,
+    Center,
+    SpaceBetween,
+    SpaceAround,
+    SpaceEvenly,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum AlignItems {
+    FlexStart,
+    FlexEnd,
+    Center,
+    /// RN default. Children fill the cross axis.
+    #[default]
+    Stretch,
+    Baseline,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum AlignContent {
+    #[default]
+    FlexStart,
+    FlexEnd,
+    Center,
+    Stretch,
+    SpaceBetween,
+    SpaceAround,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum AlignSelf {
+    #[default]
+    Auto,
+    FlexStart,
+    FlexEnd,
+    Center,
+    Stretch,
+    Baseline,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Position {
+    #[default]
+    Relative,
+    Absolute,
+}
+
+// =============================================================================
+// Typography enums
+// =============================================================================
+
+/// Font weight, ladder-style. Backends map to their native weight axis:
+/// CSS numeric weights (100..900), iOS `UIFontWeight`, Android typeface
+/// constants. RN-compatible enum; authors don't think in numeric scales.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum FontWeight {
+    Thin,
+    ExtraLight,
+    Light,
+    #[default]
+    Normal,
+    Medium,
+    SemiBold,
+    Bold,
+    ExtraBold,
+    Black,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum FontStyle {
+    #[default]
+    Normal,
+    Italic,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum TextAlign {
+    #[default]
+    Left,
+    Right,
+    Center,
+    Justify,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum TextTransform {
+    #[default]
+    None,
+    Uppercase,
+    Lowercase,
+    Capitalize,
+}
+
+// =============================================================================
+// Visual: Overflow / Shadow / Transform
+// =============================================================================
+
+/// Overflow handling at the node's edges. `Scroll` is intentionally not
+/// supported as a style property — scrolling needs a `ScrollView`
+/// primitive (separate concern). Authors who want overflow:hidden for
+/// clipping (e.g. rounded-corner clipping of children) get the option.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Overflow {
+    #[default]
+    Visible,
+    Hidden,
+}
+
+/// Drop shadow. Mobile-shaped — no CSS `spread` (which doesn't map
+/// cleanly to UIView/Android shadow APIs). Backends translate:
+/// - Web: `box-shadow: {x}px {y}px {blur}px {color}`
+/// - iOS: `layer.shadowOffset/Opacity/Radius/Color` setters
+/// - Android: `setElevation` + tinting (approximation)
+#[derive(Clone, Debug, PartialEq)]
+pub struct Shadow {
+    pub x: f32,
+    pub y: f32,
+    pub blur: f32,
     pub color: Color,
 }
 
-impl Border {
-    pub fn new(width: u32, color: impl Into<Color>) -> Self {
-        Self { width, color: color.into() }
+/// One element of a transform stack. The full transform is a
+/// `Vec<Transform>` applied in order — matches RN's `transform: [...]`
+/// shape. Backends:
+/// - Web: emits a single `transform: ...` string joining all entries.
+/// - Native: applies each transform to the view's layer matrix in order.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Transform {
+    TranslateX(Length),
+    TranslateY(Length),
+    /// Uniform scale on both axes.
+    Scale(f32),
+    /// Independent scale per axis.
+    ScaleXY { x: f32, y: f32 },
+    /// Rotation in degrees, clockwise.
+    Rotate(f32),
+    SkewX(f32),
+    SkewY(f32),
+}
+
+// =============================================================================
+// Animated transitions
+// =============================================================================
+//
+// A `Transition` declares "when this property's resolved value changes,
+// interpolate over `duration_ms` using `easing`." It does NOT drive
+// per-frame ticking — the backend's native transition machinery does
+// that (CSS `transition` on web, `CATransaction` / `UIView.animate` on
+// iOS, `ObjectAnimator` on Android). The framework just declares
+// intent; backends interpolate.
+//
+// Each animatable property in `StyleRules` has a sibling
+// `*_transition: Option<Transition>` field. The macro's per-property
+// transition shorthands (`padding: 200ms EaseOut`) fan out to all
+// four sides, matching the property shorthand fanout.
+
+/// Easing curve for an animated transition. Five named curves plus a
+/// cubic-bezier escape hatch — covers the cross-platform set.
+/// Backends map to their native primitive:
+/// - Web: CSS timing-function names + `cubic-bezier(...)`
+/// - iOS: `CAMediaTimingFunction` named constants + custom control points
+/// - Android: `Interpolator` subclasses + `PathInterpolator` for custom
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Easing {
+    Linear,
+    /// CSS default — quick start, slow end. Equivalent to
+    /// `cubic-bezier(0.25, 0.1, 0.25, 1.0)`.
+    #[default]
+    Ease,
+    EaseIn,
+    EaseOut,
+    EaseInOut,
+    /// Custom cubic-bezier control points `(x1, y1, x2, y2)`.
+    CubicBezier(f32, f32, f32, f32),
+}
+
+/// Animation timing for a single property. `duration_ms` is integer
+/// milliseconds (no floats — keeps `Hash`/`Eq` straightforward, and
+/// sub-millisecond timing isn't meaningful for UI transitions).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Transition {
+    pub duration_ms: u32,
+    pub easing: Easing,
+}
+
+impl Transition {
+    pub fn new(duration_ms: u32, easing: Easing) -> Self {
+        Self { duration_ms, easing }
     }
 }
 
@@ -82,75 +317,404 @@ impl Border {
 /// only carries properties the author cared about. Values are concrete —
 /// no tokens, no indirection. Stylesheets produce these by running their
 /// theme-fed closure.
+///
+/// Property scope is **flex layout only**: this struct intentionally has
+/// no display/grid/float/etc. properties. Every node lays out its
+/// children via flexbox; the framework relies on Yoga (or the web
+/// browser) to do the actual math. RN defaults apply: `flex_direction`
+/// = `Column`, `align_items` = `Stretch`, `flex_shrink` = 0.
+///
+/// Per-side properties (padding/margin/border-radius/border-width) are
+/// stored as four separate fields per axis. Author-facing shorthand
+/// like `padding: 16` is expanded by the `stylesheet!` macro at
+/// compile time and by builder methods at runtime — the data model
+/// itself has only per-side state.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct StyleRules {
+    // --- Color + text ---
     pub background: Option<Color>,
     pub color: Option<Color>,
-    pub padding: Option<Length>,
     pub font_size: Option<Length>,
-    pub border_radius: Option<Length>,
-    pub border: Option<Border>,
+
+    // --- Flex container (applies when this node has children) ---
+    pub flex_direction: Option<FlexDirection>,
+    pub flex_wrap: Option<FlexWrap>,
+    pub justify_content: Option<JustifyContent>,
+    pub align_items: Option<AlignItems>,
+    pub align_content: Option<AlignContent>,
+    pub gap: Option<Length>,
+    pub row_gap: Option<Length>,
+    pub column_gap: Option<Length>,
+
+    // --- Flex item (this node's behavior inside its parent) ---
+    pub flex_grow: Option<f32>,
+    pub flex_shrink: Option<f32>,
+    pub flex_basis: Option<Length>,
+    pub align_self: Option<AlignSelf>,
+
+    // --- Sizing ---
+    pub width: Option<Length>,
+    pub height: Option<Length>,
+    pub min_width: Option<Length>,
+    pub min_height: Option<Length>,
+    pub max_width: Option<Length>,
+    pub max_height: Option<Length>,
+
+    // --- Padding (per-side; no shorthand field) ---
+    pub padding_top: Option<Length>,
+    pub padding_right: Option<Length>,
+    pub padding_bottom: Option<Length>,
+    pub padding_left: Option<Length>,
+
+    // --- Margin (per-side; no shorthand field) ---
+    pub margin_top: Option<Length>,
+    pub margin_right: Option<Length>,
+    pub margin_bottom: Option<Length>,
+    pub margin_left: Option<Length>,
+
+    // --- Border radius (per-corner) ---
+    pub border_top_left_radius: Option<Length>,
+    pub border_top_right_radius: Option<Length>,
+    pub border_bottom_left_radius: Option<Length>,
+    pub border_bottom_right_radius: Option<Length>,
+
+    // --- Border widths (per-side, `f32` not `Length` — borders aren't
+    //     percentages). All four are independent. ---
+    pub border_top_width: Option<f32>,
+    pub border_right_width: Option<f32>,
+    pub border_bottom_width: Option<f32>,
+    pub border_left_width: Option<f32>,
+
+    // --- Border colors (per-side). ---
+    pub border_top_color: Option<Color>,
+    pub border_right_color: Option<Color>,
+    pub border_bottom_color: Option<Color>,
+    pub border_left_color: Option<Color>,
+
+    // --- Position ---
+    pub position: Option<Position>,
+    pub top: Option<Length>,
+    pub right: Option<Length>,
+    pub bottom: Option<Length>,
+    pub left: Option<Length>,
+
+    // --- Typography (text-only on native; cascade on web) ---
+    pub font_family: Option<String>,
+    pub font_weight: Option<FontWeight>,
+    pub font_style: Option<FontStyle>,
+    pub line_height: Option<f32>,
+    pub letter_spacing: Option<f32>,
+    pub text_align: Option<TextAlign>,
+    pub underline: Option<bool>,
+    pub strikethrough: Option<bool>,
+    pub text_transform: Option<TextTransform>,
+
+    // --- Visual ---
+    pub opacity: Option<f32>,
+    pub overflow: Option<Overflow>,
+    pub shadow: Option<Shadow>,
+    /// Empty vec means "no transforms"; the field's `Option` distinguishes
+    /// "not set, fall through to other layers" from "explicitly empty".
+    pub transform: Option<Vec<Transform>>,
+
+    // --- Transitions ---
+    // One per animatable property. Set via `transitions { ... }` in
+    // the `stylesheet!` macro. When the property's resolved value
+    // changes, the backend interpolates over `duration_ms` using
+    // `easing`. Properties without a transition spec change instantly.
+    pub background_transition: Option<Transition>,
+    pub color_transition: Option<Transition>,
+    pub opacity_transition: Option<Transition>,
+    pub transform_transition: Option<Transition>,
+    pub width_transition: Option<Transition>,
+    pub height_transition: Option<Transition>,
+    pub top_transition: Option<Transition>,
+    pub right_transition: Option<Transition>,
+    pub bottom_transition: Option<Transition>,
+    pub left_transition: Option<Transition>,
+    pub padding_top_transition: Option<Transition>,
+    pub padding_right_transition: Option<Transition>,
+    pub padding_bottom_transition: Option<Transition>,
+    pub padding_left_transition: Option<Transition>,
+    pub margin_top_transition: Option<Transition>,
+    pub margin_right_transition: Option<Transition>,
+    pub margin_bottom_transition: Option<Transition>,
+    pub margin_left_transition: Option<Transition>,
+    pub border_top_left_radius_transition: Option<Transition>,
+    pub border_top_right_radius_transition: Option<Transition>,
+    pub border_bottom_left_radius_transition: Option<Transition>,
+    pub border_bottom_right_radius_transition: Option<Transition>,
+    pub border_top_width_transition: Option<Transition>,
+    pub border_right_width_transition: Option<Transition>,
+    pub border_bottom_width_transition: Option<Transition>,
+    pub border_left_width_transition: Option<Transition>,
+    pub border_top_color_transition: Option<Transition>,
+    pub border_right_color_transition: Option<Transition>,
+    pub border_bottom_color_transition: Option<Transition>,
+    pub border_left_color_transition: Option<Transition>,
 }
 
 impl StyleRules {
     /// Layer `other` on top of `self`: properties set in `other` override
     /// the corresponding fields in `self`.
     pub fn merge(mut self, other: &StyleRules) -> Self {
-        if other.background.is_some() {
-            self.background = other.background.clone();
+        macro_rules! overlay {
+            ($($f:ident),* $(,)?) => {
+                $(
+                    if other.$f.is_some() {
+                        self.$f = other.$f.clone();
+                    }
+                )*
+            };
         }
-        if other.color.is_some() {
-            self.color = other.color.clone();
-        }
-        if other.padding.is_some() {
-            self.padding = other.padding;
-        }
-        if other.font_size.is_some() {
-            self.font_size = other.font_size;
-        }
-        if other.border_radius.is_some() {
-            self.border_radius = other.border_radius;
-        }
-        if other.border.is_some() {
-            self.border = other.border.clone();
-        }
+        overlay!(
+            background, color, font_size,
+            flex_direction, flex_wrap, justify_content, align_items, align_content,
+            gap, row_gap, column_gap,
+            flex_grow, flex_shrink, flex_basis, align_self,
+            width, height, min_width, min_height, max_width, max_height,
+            padding_top, padding_right, padding_bottom, padding_left,
+            margin_top, margin_right, margin_bottom, margin_left,
+            border_top_left_radius, border_top_right_radius,
+            border_bottom_left_radius, border_bottom_right_radius,
+            border_top_width, border_right_width, border_bottom_width, border_left_width,
+            border_top_color, border_right_color, border_bottom_color, border_left_color,
+            position, top, right, bottom, left,
+            font_family, font_weight, font_style, line_height, letter_spacing,
+            text_align, underline, strikethrough, text_transform,
+            opacity, overflow, shadow, transform,
+            background_transition, color_transition, opacity_transition,
+            transform_transition, width_transition, height_transition,
+            top_transition, right_transition, bottom_transition, left_transition,
+            padding_top_transition, padding_right_transition,
+            padding_bottom_transition, padding_left_transition,
+            margin_top_transition, margin_right_transition,
+            margin_bottom_transition, margin_left_transition,
+            border_top_left_radius_transition, border_top_right_radius_transition,
+            border_bottom_left_radius_transition, border_bottom_right_radius_transition,
+            border_top_width_transition, border_right_width_transition,
+            border_bottom_width_transition, border_left_width_transition,
+            border_top_color_transition, border_right_color_transition,
+            border_bottom_color_transition, border_left_color_transition,
+        );
         self
     }
 
     /// Stable content key suitable for backend caches that should be
-    /// immune to allocator-reuse hazards. `f32` is bit-cast to `u32`
-    /// for hashing (NaN style values are not expected).
+    /// immune to allocator-reuse hazards. Each property writes a tagged
+    /// segment so distinct values always produce distinct keys.
     pub fn content_key(&self) -> String {
-        // Manual concat to avoid the `format!` monomorphization. The key
-        // is opaque (only used as a hash map key + hashed into a class
-        // name), so its exact spelling doesn't matter — only that it
-        // distinguishes different content. We use the same labeled
-        // layout as before for debuggability.
-        let bg = self.background.as_ref().map(|c| c.0.as_str()).unwrap_or("");
-        let fg = self.color.as_ref().map(|c| c.0.as_str()).unwrap_or("");
-        let p = self.padding.map(|n| n.to_bits()).unwrap_or(0);
-        let fs = self.font_size.map(|n| n.to_bits()).unwrap_or(0);
-        let br = self.border_radius.map(|n| n.to_bits()).unwrap_or(0);
-        let (bw, bc) = match &self.border {
-            Some(b) => (b.width, b.color.0.as_str()),
-            None => (0, ""),
-        };
-        let mut s = String::with_capacity(64);
-        s.push_str("bg=");
-        s.push_str(bg);
-        s.push_str(";fg=");
-        s.push_str(fg);
-        s.push_str(";p=");
-        push_u32_hex(&mut s, p);
-        s.push_str(";fs=");
-        push_u32_hex(&mut s, fs);
-        s.push_str(";br=");
-        push_u32_hex(&mut s, br);
-        s.push_str(";bw=");
-        push_u32_hex(&mut s, bw);
-        s.push_str(";bc=");
-        s.push_str(bc);
+        let mut s = String::with_capacity(256);
+        write_color(&mut s, "bg", &self.background);
+        write_color(&mut s, "fg", &self.color);
+        write_length(&mut s, "fs", self.font_size);
+
+        write_enum(&mut s, "fd", self.flex_direction.map(|x| x as u8));
+        write_enum(&mut s, "fw", self.flex_wrap.map(|x| x as u8));
+        write_enum(&mut s, "jc", self.justify_content.map(|x| x as u8));
+        write_enum(&mut s, "ai", self.align_items.map(|x| x as u8));
+        write_enum(&mut s, "ac", self.align_content.map(|x| x as u8));
+        write_length(&mut s, "gap", self.gap);
+        write_length(&mut s, "rgap", self.row_gap);
+        write_length(&mut s, "cgap", self.column_gap);
+
+        write_f32(&mut s, "fg-grow", self.flex_grow);
+        write_f32(&mut s, "fs-shrink", self.flex_shrink);
+        write_length(&mut s, "fb", self.flex_basis);
+        write_enum(&mut s, "as", self.align_self.map(|x| x as u8));
+
+        write_length(&mut s, "w", self.width);
+        write_length(&mut s, "h", self.height);
+        write_length(&mut s, "minw", self.min_width);
+        write_length(&mut s, "minh", self.min_height);
+        write_length(&mut s, "maxw", self.max_width);
+        write_length(&mut s, "maxh", self.max_height);
+
+        write_length(&mut s, "pt", self.padding_top);
+        write_length(&mut s, "pr", self.padding_right);
+        write_length(&mut s, "pb", self.padding_bottom);
+        write_length(&mut s, "pl", self.padding_left);
+        write_length(&mut s, "mt", self.margin_top);
+        write_length(&mut s, "mr", self.margin_right);
+        write_length(&mut s, "mb", self.margin_bottom);
+        write_length(&mut s, "ml", self.margin_left);
+
+        write_length(&mut s, "rtl", self.border_top_left_radius);
+        write_length(&mut s, "rtr", self.border_top_right_radius);
+        write_length(&mut s, "rbl", self.border_bottom_left_radius);
+        write_length(&mut s, "rbr", self.border_bottom_right_radius);
+
+        write_f32(&mut s, "bwt", self.border_top_width);
+        write_f32(&mut s, "bwr", self.border_right_width);
+        write_f32(&mut s, "bwb", self.border_bottom_width);
+        write_f32(&mut s, "bwl", self.border_left_width);
+        write_color(&mut s, "bct", &self.border_top_color);
+        write_color(&mut s, "bcr", &self.border_right_color);
+        write_color(&mut s, "bcb", &self.border_bottom_color);
+        write_color(&mut s, "bcl", &self.border_left_color);
+
+        write_enum(&mut s, "pos", self.position.map(|x| x as u8));
+        write_length(&mut s, "top", self.top);
+        write_length(&mut s, "right", self.right);
+        write_length(&mut s, "bot", self.bottom);
+        write_length(&mut s, "left", self.left);
+
+        // Typography
+        write_str(&mut s, "ff", self.font_family.as_deref());
+        write_enum(&mut s, "fw", self.font_weight.map(|x| x as u8));
+        write_enum(&mut s, "fst", self.font_style.map(|x| x as u8));
+        write_f32(&mut s, "lh", self.line_height);
+        write_f32(&mut s, "ls", self.letter_spacing);
+        write_enum(&mut s, "ta", self.text_align.map(|x| x as u8));
+        write_enum(&mut s, "ul", self.underline.map(|b| b as u8));
+        write_enum(&mut s, "st", self.strikethrough.map(|b| b as u8));
+        write_enum(&mut s, "tt", self.text_transform.map(|x| x as u8));
+
+        // Visual
+        write_f32(&mut s, "op", self.opacity);
+        write_enum(&mut s, "ov", self.overflow.map(|x| x as u8));
+        if let Some(sh) = &self.shadow {
+            s.push_str("sh=");
+            push_u32_hex(&mut s, sh.x.to_bits());
+            push_u32_hex(&mut s, sh.y.to_bits());
+            push_u32_hex(&mut s, sh.blur.to_bits());
+            s.push_str(&sh.color.0);
+            s.push(';');
+        } else {
+            s.push_str("sh=;");
+        }
+        if let Some(xs) = &self.transform {
+            s.push_str("tr=");
+            for t in xs {
+                match t {
+                    Transform::TranslateX(l) => { s.push_str("tx"); push_u64_hex(&mut s, length_bits(*l)); }
+                    Transform::TranslateY(l) => { s.push_str("ty"); push_u64_hex(&mut s, length_bits(*l)); }
+                    Transform::Scale(v) => { s.push_str("sc"); push_u32_hex(&mut s, v.to_bits()); }
+                    Transform::ScaleXY { x, y } => { s.push_str("sxy"); push_u32_hex(&mut s, x.to_bits()); push_u32_hex(&mut s, y.to_bits()); }
+                    Transform::Rotate(v) => { s.push_str("rt"); push_u32_hex(&mut s, v.to_bits()); }
+                    Transform::SkewX(v) => { s.push_str("skx"); push_u32_hex(&mut s, v.to_bits()); }
+                    Transform::SkewY(v) => { s.push_str("sky"); push_u32_hex(&mut s, v.to_bits()); }
+                }
+            }
+            s.push(';');
+        } else {
+            s.push_str("tr=;");
+        }
+
+        // Transitions — one labeled segment per animatable property.
+        // Inactive (None) transitions write an empty value so the
+        // cache key remains stable in shape regardless of which
+        // transitions are set.
+        macro_rules! tr {
+            ($label:literal, $field:ident) => {
+                write_transition(&mut s, $label, self.$field);
+            };
+        }
+        tr!("tbg", background_transition);
+        tr!("tco", color_transition);
+        tr!("top_t", opacity_transition);
+        tr!("ttr", transform_transition);
+        tr!("tw", width_transition);
+        tr!("th", height_transition);
+        tr!("ttt", top_transition);
+        tr!("trt", right_transition);
+        tr!("tbt", bottom_transition);
+        tr!("tlt", left_transition);
+        tr!("tpt", padding_top_transition);
+        tr!("tpr", padding_right_transition);
+        tr!("tpb", padding_bottom_transition);
+        tr!("tpl", padding_left_transition);
+        tr!("tmt", margin_top_transition);
+        tr!("tmr", margin_right_transition);
+        tr!("tmb", margin_bottom_transition);
+        tr!("tml", margin_left_transition);
+        tr!("trtl", border_top_left_radius_transition);
+        tr!("trtr", border_top_right_radius_transition);
+        tr!("trbl", border_bottom_left_radius_transition);
+        tr!("trbr", border_bottom_right_radius_transition);
+        tr!("tbwt", border_top_width_transition);
+        tr!("tbwr", border_right_width_transition);
+        tr!("tbwb", border_bottom_width_transition);
+        tr!("tbwl", border_left_width_transition);
+        tr!("tbct", border_top_color_transition);
+        tr!("tbcr", border_right_color_transition);
+        tr!("tbcb", border_bottom_color_transition);
+        tr!("tbcl", border_left_color_transition);
+
         s
+    }
+}
+
+fn write_transition(out: &mut String, label: &str, t: Option<Transition>) {
+    out.push_str(label);
+    out.push('=');
+    if let Some(t) = t {
+        push_u32_hex(out, t.duration_ms);
+        // Easing encodes as a small tag; CubicBezier appends four f32s.
+        match t.easing {
+            Easing::Linear => out.push_str("lin"),
+            Easing::Ease => out.push_str("eas"),
+            Easing::EaseIn => out.push_str("ein"),
+            Easing::EaseOut => out.push_str("eou"),
+            Easing::EaseInOut => out.push_str("eio"),
+            Easing::CubicBezier(a, b, c, d) => {
+                out.push_str("cb");
+                push_u32_hex(out, a.to_bits());
+                push_u32_hex(out, b.to_bits());
+                push_u32_hex(out, c.to_bits());
+                push_u32_hex(out, d.to_bits());
+            }
+        }
+    }
+    out.push(';');
+}
+
+fn write_str(out: &mut String, label: &str, v: Option<&str>) {
+    out.push_str(label);
+    out.push('=');
+    if let Some(v) = v { out.push_str(v); }
+    out.push(';');
+}
+
+fn write_color(out: &mut String, label: &str, c: &Option<Color>) {
+    out.push_str(label);
+    out.push('=');
+    if let Some(c) = c { out.push_str(&c.0); }
+    out.push(';');
+}
+
+fn write_length(out: &mut String, label: &str, l: Option<Length>) {
+    out.push_str(label);
+    out.push('=');
+    if let Some(l) = l {
+        push_u64_hex(out, length_bits(l));
+    }
+    out.push(';');
+}
+
+fn write_f32(out: &mut String, label: &str, v: Option<f32>) {
+    out.push_str(label);
+    out.push('=');
+    if let Some(v) = v {
+        push_u32_hex(out, v.to_bits());
+    }
+    out.push(';');
+}
+
+fn write_enum(out: &mut String, label: &str, v: Option<u8>) {
+    out.push_str(label);
+    out.push('=');
+    if let Some(v) = v {
+        push_u32_hex(out, v as u32);
+    }
+    out.push(';');
+}
+
+fn push_u64_hex(out: &mut String, n: u64) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for shift in (0..16).rev() {
+        let nibble = ((n >> (shift * 4)) & 0xf) as usize;
+        out.push(HEX[nibble] as char);
     }
 }
 
@@ -457,22 +1021,95 @@ impl StyleApplication {
         self
     }
 
-    /// Override padding with a per-call-site value.
-    pub fn override_padding(mut self, v: Length) -> Self {
-        self.overrides.padding = Some(v);
+    /// Override font size with a per-call-site value.
+    pub fn override_font_size(mut self, v: impl Into<Length>) -> Self {
+        self.overrides.font_size = Some(v.into());
         self
     }
 
-    /// Override font size with a per-call-site value. Useful for cases
-    /// like user-controlled zoom where the value is continuous.
-    pub fn override_font_size(mut self, v: Length) -> Self {
-        self.overrides.font_size = Some(v);
+    /// Shorthand override: set padding on all four sides. Equivalent to
+    /// calling `override_padding_top`, `_right`, `_bottom`, `_left`
+    /// with the same value.
+    pub fn override_padding(mut self, v: impl Into<Length>) -> Self {
+        let v = v.into();
+        self.overrides.padding_top = Some(v);
+        self.overrides.padding_right = Some(v);
+        self.overrides.padding_bottom = Some(v);
+        self.overrides.padding_left = Some(v);
         self
     }
 
-    /// Override border radius with a per-call-site value.
-    pub fn override_border_radius(mut self, v: Length) -> Self {
-        self.overrides.border_radius = Some(v);
+    pub fn override_padding_horizontal(mut self, v: impl Into<Length>) -> Self {
+        let v = v.into();
+        self.overrides.padding_left = Some(v);
+        self.overrides.padding_right = Some(v);
+        self
+    }
+
+    pub fn override_padding_vertical(mut self, v: impl Into<Length>) -> Self {
+        let v = v.into();
+        self.overrides.padding_top = Some(v);
+        self.overrides.padding_bottom = Some(v);
+        self
+    }
+
+    pub fn override_padding_top(mut self, v: impl Into<Length>) -> Self {
+        self.overrides.padding_top = Some(v.into()); self
+    }
+    pub fn override_padding_right(mut self, v: impl Into<Length>) -> Self {
+        self.overrides.padding_right = Some(v.into()); self
+    }
+    pub fn override_padding_bottom(mut self, v: impl Into<Length>) -> Self {
+        self.overrides.padding_bottom = Some(v.into()); self
+    }
+    pub fn override_padding_left(mut self, v: impl Into<Length>) -> Self {
+        self.overrides.padding_left = Some(v.into()); self
+    }
+
+    /// Shorthand override: margin on all four sides.
+    pub fn override_margin(mut self, v: impl Into<Length>) -> Self {
+        let v = v.into();
+        self.overrides.margin_top = Some(v);
+        self.overrides.margin_right = Some(v);
+        self.overrides.margin_bottom = Some(v);
+        self.overrides.margin_left = Some(v);
+        self
+    }
+
+    pub fn override_margin_horizontal(mut self, v: impl Into<Length>) -> Self {
+        let v = v.into();
+        self.overrides.margin_left = Some(v);
+        self.overrides.margin_right = Some(v);
+        self
+    }
+
+    pub fn override_margin_vertical(mut self, v: impl Into<Length>) -> Self {
+        let v = v.into();
+        self.overrides.margin_top = Some(v);
+        self.overrides.margin_bottom = Some(v);
+        self
+    }
+
+    pub fn override_margin_top(mut self, v: impl Into<Length>) -> Self {
+        self.overrides.margin_top = Some(v.into()); self
+    }
+    pub fn override_margin_right(mut self, v: impl Into<Length>) -> Self {
+        self.overrides.margin_right = Some(v.into()); self
+    }
+    pub fn override_margin_bottom(mut self, v: impl Into<Length>) -> Self {
+        self.overrides.margin_bottom = Some(v.into()); self
+    }
+    pub fn override_margin_left(mut self, v: impl Into<Length>) -> Self {
+        self.overrides.margin_left = Some(v.into()); self
+    }
+
+    /// Shorthand override: border-radius on all four corners.
+    pub fn override_border_radius(mut self, v: impl Into<Length>) -> Self {
+        let v = v.into();
+        self.overrides.border_top_left_radius = Some(v);
+        self.overrides.border_top_right_radius = Some(v);
+        self.overrides.border_bottom_left_radius = Some(v);
+        self.overrides.border_bottom_right_radius = Some(v);
         self
     }
 }
@@ -738,6 +1375,69 @@ pub fn resolve(app: &StyleApplication) -> Rc<StyleRules> {
     resolved
 }
 
+// ----------------------------------------------------------------------------
+// Builder support traits — used by the `stylesheet!` macro
+// ----------------------------------------------------------------------------
+//
+// Variant setters (`.size(...)`) and override setters (`.padding(...)`)
+// on a generated builder accept *anything that converts to a closure*
+// reading the value. The same setter shape works for:
+//
+//   - a static enum value:        `.size(CardSize::Small)`
+//   - a static primitive value:   `.padding(16.0)`
+//   - a reactive signal:          `.padding(my_signal)`
+//
+// In the reactive case the builder's `IntoStyleSource` closure picks
+// up the signal subscription naturally because it reads the value
+// inside the apply-style effect.
+//
+// Each generated variant enum has a `pub fn as_variant_str(self) ->
+// &'static str` accessor (emitted by the macro). The
+// `IntoVariantSource` trait's impl for `E` uses that method to
+// convert; the impl for `Signal<E>` reads the signal and converts.
+
+pub trait IntoVariantSource<E: Copy + 'static> {
+    fn into_variant_source(self) -> Box<dyn Fn() -> &'static str>;
+}
+
+pub trait IntoOverrideSource<T: Clone + 'static> {
+    fn into_override_source(self) -> Box<dyn Fn() -> T>;
+}
+
+// A bit of plumbing: variant enums have `as_variant_str`. We can't
+// require it via a trait the macro defines (orphan rules), so we
+// instead expose a marker trait `VariantEnum` that the macro impl's
+// on each generated enum.
+
+pub trait VariantEnum: Copy + 'static {
+    fn as_variant_str(self) -> &'static str;
+}
+
+impl<E: VariantEnum> IntoVariantSource<E> for E {
+    fn into_variant_source(self) -> Box<dyn Fn() -> &'static str> {
+        let s = self.as_variant_str();
+        Box::new(move || s)
+    }
+}
+
+impl<E: VariantEnum> IntoVariantSource<E> for crate::Signal<E> {
+    fn into_variant_source(self) -> Box<dyn Fn() -> &'static str> {
+        Box::new(move || self.get().as_variant_str())
+    }
+}
+
+impl<T: Clone + 'static> IntoOverrideSource<T> for T {
+    fn into_override_source(self) -> Box<dyn Fn() -> T> {
+        Box::new(move || self.clone())
+    }
+}
+
+impl<T: Clone + 'static> IntoOverrideSource<T> for crate::Signal<T> {
+    fn into_override_source(self) -> Box<dyn Fn() -> T> {
+        Box::new(move || self.get())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -759,13 +1459,13 @@ mod tests {
     fn closure_stylesheet_reads_theme() {
         let sheet = StyleSheet::new(|t: &TestTheme| StyleRules {
             background: Some(Color(t.surface.clone())),
-            padding: Some(t.medium),
+            padding_top: Some(Length::Px(t.medium)),
             ..Default::default()
         });
         let l = light();
         let r = sheet.resolve(&VariantSet::new(), &l);
         assert_eq!(r.background, Some(Color("#fff".into())));
-        assert_eq!(r.padding, Some(16.0));
+        assert_eq!(r.padding_top, Some(Length::Px(16.0)));
     }
 
     #[test]
@@ -783,17 +1483,17 @@ mod tests {
     fn variant_overlays_layer_on_top_of_base() {
         let sheet = StyleSheet::new(|t: &TestTheme| StyleRules {
             background: Some(Color(t.surface.clone())),
-            padding: Some(t.medium),
+            padding_top: Some(Length::Px(t.medium)),
             ..Default::default()
         })
         .variant("size", "large", |t: &TestTheme| StyleRules {
-            padding: Some(t.medium * 2.0),
+            padding_top: Some(Length::Px(t.medium * 2.0)),
             ..Default::default()
         });
         let l = light();
         let r = sheet.resolve(&VariantSet::new().with("size", "large"), &l);
         assert_eq!(r.background, Some(Color("#fff".into())));
-        assert_eq!(r.padding, Some(32.0));
+        assert_eq!(r.padding_top, Some(Length::Px(32.0)));
     }
 
     #[test]
@@ -819,23 +1519,23 @@ mod tests {
         let sheet = Rc::new(
             StyleSheet::new(|t: &TestTheme| StyleRules {
                 background: Some(Color(t.surface.clone())),
-                font_size: Some(14.0),
-                padding: Some(t.medium),
+                font_size: Some(Length::Px(14.0)),
+                padding_top: Some(Length::Px(t.medium)),
                 ..Default::default()
             })
             .variant("size", "large", |_t: &TestTheme| StyleRules {
-                font_size: Some(20.0),
+                font_size: Some(Length::Px(20.0)),
                 ..Default::default()
             }),
         );
 
         // Base only: background from theme, font 14, padding from theme.
         let r1 = resolve(&StyleApplication::new(sheet.clone()));
-        assert_eq!(r1.font_size, Some(14.0));
+        assert_eq!(r1.font_size, Some(Length::Px(14.0)));
 
         // With variant: font becomes 20.
         let r2 = resolve(&StyleApplication::new(sheet.clone()).with("size", "large"));
-        assert_eq!(r2.font_size, Some(20.0));
+        assert_eq!(r2.font_size, Some(Length::Px(20.0)));
 
         // With variant + override: override wins.
         let r3 = resolve(
@@ -843,9 +1543,9 @@ mod tests {
                 .with("size", "large")
                 .override_font_size(17.5),
         );
-        assert_eq!(r3.font_size, Some(17.5));
+        assert_eq!(r3.font_size, Some(Length::Px(17.5)));
         // Other properties unaffected by the override.
-        assert_eq!(r3.padding, Some(16.0));
+        assert_eq!(r3.padding_top, Some(Length::Px(16.0)));
 
         // Different override values produce distinct cache entries.
         let r4 = resolve(
@@ -853,7 +1553,7 @@ mod tests {
                 .with("size", "large")
                 .override_font_size(99.0),
         );
-        assert_eq!(r4.font_size, Some(99.0));
+        assert_eq!(r4.font_size, Some(Length::Px(99.0)));
         assert!(!Rc::ptr_eq(&r3, &r4));
     }
 
@@ -861,33 +1561,33 @@ mod tests {
     fn variant_default_applies_when_axis_unselected() {
         let sheet = StyleSheet::new(|t: &TestTheme| StyleRules {
             background: Some(Color(t.surface.clone())),
-            padding: Some(8.0),
+            padding_top: Some(Length::Px(8.0)),
             ..Default::default()
         })
         .variant("size", "small", |_t: &TestTheme| StyleRules {
-            padding: Some(4.0),
+            padding_top: Some(Length::Px(4.0)),
             ..Default::default()
         })
         .variant("size", "large", |_t: &TestTheme| StyleRules {
-            padding: Some(16.0),
+            padding_top: Some(Length::Px(16.0)),
             ..Default::default()
         })
         .variant_default("size", "large");
 
         // Call site omits `size` → default "large" applies → padding 16.
         let r = sheet.resolve(&VariantSet::new(), &light());
-        assert_eq!(r.padding, Some(16.0));
+        assert_eq!(r.padding_top, Some(Length::Px(16.0)));
 
         // Call site picks "small" → padding 4.
         let r2 = sheet.resolve(&VariantSet::new().with("size", "small"), &light());
-        assert_eq!(r2.padding, Some(4.0));
+        assert_eq!(r2.padding_top, Some(Length::Px(4.0)));
     }
 
     #[test]
     fn compound_variant_applies_only_when_all_match() {
         let sheet = StyleSheet::new(|_t: &TestTheme| StyleRules::default())
             .variant("size", "large", |_t: &TestTheme| StyleRules {
-                padding: Some(16.0),
+                padding_top: Some(Length::Px(16.0)),
                 ..Default::default()
             })
             .variant("kind", "primary", |_t: &TestTheme| StyleRules {
@@ -897,14 +1597,14 @@ mod tests {
             .compound::<TestTheme, _>(
                 vec![("size", "large"), ("kind", "primary")],
                 |_t| StyleRules {
-                    font_size: Some(24.0),
+                    font_size: Some(Length::Px(24.0)),
                     ..Default::default()
                 },
             );
 
         // Only size=large → compound NOT applied.
         let r1 = sheet.resolve(&VariantSet::new().with("size", "large"), &light());
-        assert_eq!(r1.padding, Some(16.0));
+        assert_eq!(r1.padding_top, Some(Length::Px(16.0)));
         assert_eq!(r1.font_size, None);
 
         // Both axes match → compound APPLIED.
@@ -912,9 +1612,9 @@ mod tests {
             &VariantSet::new().with("size", "large").with("kind", "primary"),
             &light(),
         );
-        assert_eq!(r2.padding, Some(16.0));
+        assert_eq!(r2.padding_top, Some(Length::Px(16.0)));
         assert_eq!(r2.background, Some(Color("primary-bg".into())));
-        assert_eq!(r2.font_size, Some(24.0));
+        assert_eq!(r2.font_size, Some(Length::Px(24.0)));
     }
 
     #[test]

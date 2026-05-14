@@ -21,11 +21,64 @@ use crate::path_analysis::{
 };
 
 /// Walks the function body, rewriting reactive `text(...)` and
-/// `button(...)` calls.
+/// `button(...)` calls. If the function's declared return type is
+/// `Primitive`, also wraps the trailing expression with
+/// `IntoPrimitive::into_primitive(...)` so components can return
+/// either a bare `Primitive` or a `Bound<H>` (from a primitive
+/// constructor like `view(...)`) and have it coerced automatically —
+/// matching the coercion `ui!` applies at the top level.
+///
+/// Components that declare a richer return type — e.g.
+/// `Bindable<CounterHandle>` — are left alone so the body's actual
+/// return value reaches the caller without being flattened.
 pub(crate) fn rewrite(item_fn: &mut ItemFn) {
     let param_idents = extract_param_idents(item_fn);
     let mut rewriter = TextRewriter { param_idents };
     rewriter.visit_block_mut(&mut item_fn.block);
+    if returns_primitive(item_fn) {
+        coerce_return_to_primitive(item_fn);
+    }
+}
+
+/// Checks whether the function's declared return type is bare
+/// `Primitive`. We do a simple token-level match — this catches the
+/// common spellings (`Primitive`, `framework_core::Primitive`,
+/// `::framework_core::Primitive`) without trying to be a full type
+/// resolver. Anything else — `Bindable<H>`, `Bound<H>`, `impl Into<…>`,
+/// etc. — is left as-is.
+fn returns_primitive(item_fn: &ItemFn) -> bool {
+    use syn::ReturnType;
+    let ty = match &item_fn.sig.output {
+        ReturnType::Type(_, ty) => ty,
+        ReturnType::Default => return false,
+    };
+    let rendered = quote::quote!(#ty).to_string();
+    // Strip whitespace to normalize `:: framework_core :: Primitive`
+    // vs `::framework_core::Primitive`.
+    let normalized: String = rendered.chars().filter(|c| !c.is_whitespace()).collect();
+    matches!(
+        normalized.as_str(),
+        "Primitive" | "framework_core::Primitive" | "::framework_core::Primitive"
+    )
+}
+
+/// Wraps the function's final expression (the implicit return) with
+/// `IntoPrimitive::into_primitive(...)`. We only wrap if the body's
+/// trailing expression is a "real" expression (i.e. the function
+/// implicitly returns it); we don't try to find explicit `return`
+/// statements deeper in the body. That's fine — if you write
+/// `return view(...)` in the middle of a component, you can still add
+/// `.into()` yourself. The common case is a tail expression.
+fn coerce_return_to_primitive(item_fn: &mut ItemFn) {
+    use syn::Stmt;
+    let block = &mut item_fn.block;
+    let Some(last) = block.stmts.last_mut() else { return };
+    if let Stmt::Expr(expr, None) = last {
+        let inner = std::mem::replace(expr, syn::parse_quote!(()));
+        *expr = syn::parse_quote! {
+            ::framework_core::IntoPrimitive::into_primitive(#inner)
+        };
+    }
 }
 
 /// Pulls the plain-ident parameter names out of a function signature.

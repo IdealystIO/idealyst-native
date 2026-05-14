@@ -38,6 +38,10 @@ struct SignalId(u32);
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 struct EffectId(u32);
 
+/// Opaque index into the arena's ref slot table.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+struct RefId(u32);
+
 thread_local! {
     static ARENA: RefCell<Arena> = RefCell::new(Arena::new());
     static CURRENT: RefCell<Option<EffectId>> = const { RefCell::new(None) };
@@ -46,11 +50,19 @@ thread_local! {
 struct Arena {
     signals: Vec<Option<Box<dyn Any>>>,
     effects: Vec<Option<Box<dyn Any>>>,
+    /// Outer `Option`: `None` once the slot is freed by its owning scope.
+    /// Inner `Option<Box<dyn Any>>`: `None` while the ref exists but hasn't
+    /// been filled by a mount yet; `Some` once mounted.
+    refs: Vec<Option<Option<Box<dyn Any>>>>,
 }
 
 impl Arena {
     fn new() -> Self {
-        Self { signals: Vec::new(), effects: Vec::new() }
+        Self {
+            signals: Vec::new(),
+            effects: Vec::new(),
+            refs: Vec::new(),
+        }
     }
 
     fn insert_signal<T: 'static>(&mut self, inner: SignalInner<T>) -> SignalId {
@@ -65,6 +77,12 @@ impl Arena {
         id
     }
 
+    fn insert_ref(&mut self) -> RefId {
+        let id = RefId(self.refs.len() as u32);
+        self.refs.push(Some(None));
+        id
+    }
+
     fn free_signal(&mut self, id: SignalId) {
         if let Some(slot) = self.signals.get_mut(id.0 as usize) {
             *slot = None;
@@ -73,6 +91,12 @@ impl Arena {
 
     fn free_effect(&mut self, id: EffectId) {
         if let Some(slot) = self.effects.get_mut(id.0 as usize) {
+            *slot = None;
+        }
+    }
+
+    fn free_ref(&mut self, id: RefId) {
+        if let Some(slot) = self.refs.get_mut(id.0 as usize) {
             *slot = None;
         }
     }
@@ -307,25 +331,155 @@ fn run_effects(ids: &[EffectId]) {
 }
 
 // =============================================================================
+// Ref<H>
+// =============================================================================
+
+/// A copy-handle pointing at an arena slot that holds an `H` once a
+/// component has mounted. The parent of a component owns the `Ref<H>`
+/// (typically inside its own reactive scope); the child component's
+/// mount path calls [`Ref::fill`] to populate the slot, and unmount
+/// calls [`Ref::clear`]. Reading via [`Ref::with`] returns `None` if
+/// the slot has not been filled yet — pre-mount calls are silently
+/// skipped, the same way `ref.current` is `null` in React before mount.
+///
+/// `Ref<H>` is `Copy`, so it can be captured into multiple closures
+/// without explicit `.clone()` calls — matching `Signal<T>`'s ergonomics.
+/// The slot itself is owned by the active `Scope` at creation time, so
+/// it's freed deterministically when the surrounding `Owner` (or
+/// `when()` branch scope) drops.
+pub struct Ref<H> {
+    id: RefId,
+    _phantom: PhantomData<H>,
+}
+
+impl<H> Copy for Ref<H> {}
+impl<H> Clone for Ref<H> {
+    fn clone(&self) -> Self { *self }
+}
+
+impl<H: 'static> Ref<H> {
+    /// Allocates a fresh ref slot. The slot's lifetime is bound to the
+    /// active `Scope` (set by `render()` or by a `when()` rebuild). If
+    /// no scope is active, the slot leaks until the thread exits — same
+    /// rules as `Signal::new`.
+    pub fn new() -> Self {
+        let id = ARENA.with(|a| a.borrow_mut().insert_ref());
+        register_ref(id);
+        Self { id, _phantom: PhantomData }
+    }
+
+    /// Populates the slot with `handle`. The framework's mount path
+    /// calls this; user code typically does not. Overwrite is legal
+    /// (a `when()` rebuild may remount a component bearing the same
+    /// ref) and replaces the previous handle cleanly.
+    pub fn fill(&self, handle: H) {
+        ARENA.with(|a| {
+            let mut a = a.borrow_mut();
+            if let Some(Some(inner)) = a.refs.get_mut(self.id.0 as usize) {
+                *inner = Some(Box::new(handle));
+            }
+        });
+    }
+
+    /// Clears the slot, leaving the ref un-mounted. Called by the
+    /// framework when the component bearing this ref unmounts (e.g.
+    /// because a `when()` branch flipped away from it).
+    pub fn clear(&self) {
+        ARENA.with(|a| {
+            let mut a = a.borrow_mut();
+            if let Some(Some(inner)) = a.refs.get_mut(self.id.0 as usize) {
+                *inner = None;
+            }
+        });
+    }
+
+    /// Runs `f` against the filled handle, if any. Returns `None` if
+    /// the component hasn't mounted yet (or has been torn down).
+    ///
+    /// The handle is held by `&` inside `f`, so methods on `H` must
+    /// take `&self`. Since handles mutate via Signals (which use
+    /// interior mutability) or via backend dispatch, this restriction
+    /// is what we want anyway.
+    ///
+    /// Most call sites should prefer [`Ref::get`] — same semantics but
+    /// returns an owned `Option<H>`, so chaining reads like
+    /// `r.get().map(|h| h.foo())` without the explicit closure.
+    /// `with` is the right tool only when you specifically need to
+    /// avoid cloning the handle (e.g. inside a hot path).
+    pub fn with<R>(&self, f: impl FnOnce(&H) -> R) -> Option<R> {
+        ARENA.with(|arena| {
+            let arena = arena.borrow();
+            let slot = arena.refs.get(self.id.0 as usize)?.as_ref()?;
+            let inner = slot.as_ref()?;
+            let handle = inner.downcast_ref::<H>()
+                .expect("internal: ref handle type mismatch");
+            Some(f(handle))
+        })
+    }
+
+    /// True if the slot has been filled and not subsequently cleared.
+    pub fn is_mounted(&self) -> bool {
+        ARENA.with(|arena| {
+            arena.borrow()
+                .refs
+                .get(self.id.0 as usize)
+                .and_then(|s| s.as_ref())
+                .map(|inner| inner.is_some())
+                .unwrap_or(false)
+        })
+    }
+}
+
+impl<H: Clone + 'static> Ref<H> {
+    /// Returns an owned clone of the filled handle, or `None` if the
+    /// component hasn't mounted yet (or has been torn down).
+    ///
+    /// Cheap: handle types are designed so `Clone` is at most an `Rc`
+    /// bump plus copying small pointers. The owned clone lets call
+    /// sites read naturally:
+    ///
+    /// ```ignore
+    /// pad_plus_ref.get().map(|h| h.click());
+    /// // or
+    /// if let Some(h) = pad_plus_ref.get() { h.click(); }
+    /// ```
+    ///
+    /// Pre-mount calls return `None` — matching React's
+    /// `ref.current === null` semantics but without nullable-by-default.
+    pub fn get(&self) -> Option<H> {
+        ARENA.with(|arena| {
+            let arena = arena.borrow();
+            let slot = arena.refs.get(self.id.0 as usize)?.as_ref()?;
+            let inner = slot.as_ref()?;
+            let handle = inner.downcast_ref::<H>()
+                .expect("internal: ref handle type mismatch");
+            Some(handle.clone())
+        })
+    }
+}
+
+// =============================================================================
 // Scope
 // =============================================================================
 
 /// Lifetime container for arena slots created within it. Drop the scope
-/// to free its signals and effects.
+/// to free its signals, effects, and refs.
 ///
 /// Scopes are typically owned by the renderer's `Owner` or by a reactive
 /// subtree (e.g. inside a `when()`). User code rarely constructs scopes
-/// directly — instead, signals created in a render call register
-/// themselves with the active scope via the thread-local ACTIVE_SCOPE.
+/// directly — instead, signals/effects/refs created in a render call
+/// register themselves with the active scope via the thread-local
+/// ACTIVE_SCOPE.
 pub(crate) struct Scope {
     signals: Vec<SignalId>,
     effects: Vec<EffectId>,
+    refs: Vec<RefId>,
 }
 
 impl Scope {
     #[allow(dead_code)]
     pub(crate) fn new() -> Self {
-        Self { signals: Vec::new(), effects: Vec::new() }
+        Self { signals: Vec::new(), effects: Vec::new(), refs: Vec::new() }
     }
 
     /// Adopts the given effect into this scope. The original `Effect`
@@ -349,6 +503,9 @@ impl Drop for Scope {
             }
             for id in self.effects.drain(..) {
                 a.free_effect(id);
+            }
+            for id in self.refs.drain(..) {
+                a.free_ref(id);
             }
         });
     }
@@ -402,6 +559,19 @@ fn register_effect(id: EffectId) -> bool {
     ACTIVE_SCOPE.with(|s| {
         if let Some(&top) = s.borrow().last() {
             unsafe { (*top).effects.push(id); }
+            true
+        } else {
+            false
+        }
+    })
+}
+
+/// Registers a ref ID with the topmost active scope. Returns true if a
+/// scope took ownership.
+fn register_ref(id: RefId) -> bool {
+    ACTIVE_SCOPE.with(|s| {
+        if let Some(&top) = s.borrow().last() {
+            unsafe { (*top).refs.push(id); }
             true
         } else {
             false
@@ -522,5 +692,86 @@ mod tests {
         let (s, e) = arena_inuse_counts();
         assert_eq!(s, s0);
         assert_eq!(e, e0);
+    }
+
+    fn arena_refs_inuse() -> usize {
+        ARENA.with(|a| a.borrow().refs.iter().filter(|r| r.is_some()).count())
+    }
+
+    /// Stand-in for a component-defined handle. Closes over a Cell so we
+    /// can assert that `with(|h| h.method())` reaches the body. Clone
+    /// is required so `Ref::get()` can hand back an owned copy.
+    #[derive(Clone)]
+    struct DummyHandle {
+        counter: std::rc::Rc<std::cell::Cell<u32>>,
+    }
+    impl DummyHandle {
+        fn bump(&self) { self.counter.set(self.counter.get() + 1); }
+    }
+
+    #[test]
+    fn ref_fills_and_clears() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let mut scope = Scope::new();
+        let r: Ref<DummyHandle> = with_scope(&mut scope, Ref::new);
+        let counter = Rc::new(Cell::new(0));
+
+        // Pre-mount: with() is None, bump never reaches handle.
+        assert!(!r.is_mounted());
+        assert!(r.with(|h| h.bump()).is_none());
+        assert_eq!(counter.get(), 0);
+
+        r.fill(DummyHandle { counter: counter.clone() });
+        assert!(r.is_mounted());
+        r.with(|h| h.bump());
+        assert_eq!(counter.get(), 1);
+
+        r.clear();
+        assert!(!r.is_mounted());
+        assert!(r.with(|h| h.bump()).is_none());
+        assert_eq!(counter.get(), 1);
+    }
+
+    #[test]
+    fn scope_drop_frees_ref_slot() {
+        let baseline = arena_refs_inuse();
+        {
+            let mut scope = Scope::new();
+            let r: Ref<DummyHandle> = with_scope(&mut scope, Ref::new);
+            r.fill(DummyHandle { counter: std::rc::Rc::new(std::cell::Cell::new(0)) });
+            assert_eq!(arena_refs_inuse(), baseline + 1, "ref slot in use inside scope");
+            // scope drops here
+        }
+        assert_eq!(arena_refs_inuse(), baseline, "ref slot freed at scope drop");
+    }
+
+    #[test]
+    fn ref_get_returns_owned_clone() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let mut scope = Scope::new();
+        let r: Ref<DummyHandle> = with_scope(&mut scope, Ref::new);
+        let counter = Rc::new(Cell::new(0));
+
+        // Pre-mount: get() returns None.
+        assert!(r.get().is_none());
+
+        r.fill(DummyHandle { counter: counter.clone() });
+
+        // The ergonomic call site: get a handle, call a method on it,
+        // no closure needed.
+        r.get().map(|h| h.bump());
+        assert_eq!(counter.get(), 1);
+
+        // Cloned handle outlives the temporary inside get(): the Rc
+        // bump means the underlying counter is still reachable.
+        let owned = r.get().unwrap();
+        owned.bump();
+        owned.bump();
+        assert_eq!(counter.get(), 3);
+
+        r.clear();
+        assert!(r.get().is_none(), "post-unmount get() returns None");
     }
 }

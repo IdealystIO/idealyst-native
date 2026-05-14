@@ -1,0 +1,9 @@
+[package]
+name = "reactive-refs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Prototype crate for first-class component refs. Validates the
+# `Ref<H>` + trait-dispatched handle design before threading it through
+# framework-core, framework-macros, and the backend trait.

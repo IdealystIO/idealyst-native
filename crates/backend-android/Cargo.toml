@@ -12,3 +12,5 @@ framework-core = { workspace = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"
+log = "0.4"
+android_logger = "0.13"

@@ -23,7 +23,8 @@
 //! contention for per-instance values and keeps dynamic-class lifecycle
 //! simple (one class per node, replaced atomically).
 
-use framework_core::{Backend, Border, Color, StyleRules};
+use framework_core::{Backend, ButtonHandle, ButtonOps, Color, StyleRules};
+use std::any::Any;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -188,27 +189,345 @@ fn push_u64_hex(out: &mut String, n: u64) {
     }
 }
 
+/// Render a `Length` as a CSS value string.
+fn length_css(l: framework_core::Length) -> String {
+    use framework_core::Length;
+    match l {
+        Length::Px(v) => format!("{}px", v),
+        Length::Percent(v) => format!("{}%", v),
+        Length::Auto => "auto".to_string(),
+    }
+}
+
+fn flex_direction_css(v: framework_core::FlexDirection) -> &'static str {
+    use framework_core::FlexDirection;
+    match v {
+        FlexDirection::Row => "row",
+        FlexDirection::Column => "column",
+        FlexDirection::RowReverse => "row-reverse",
+        FlexDirection::ColumnReverse => "column-reverse",
+    }
+}
+
+fn flex_wrap_css(v: framework_core::FlexWrap) -> &'static str {
+    use framework_core::FlexWrap;
+    match v {
+        FlexWrap::NoWrap => "nowrap",
+        FlexWrap::Wrap => "wrap",
+        FlexWrap::WrapReverse => "wrap-reverse",
+    }
+}
+
+fn justify_content_css(v: framework_core::JustifyContent) -> &'static str {
+    use framework_core::JustifyContent;
+    match v {
+        JustifyContent::FlexStart => "flex-start",
+        JustifyContent::FlexEnd => "flex-end",
+        JustifyContent::Center => "center",
+        JustifyContent::SpaceBetween => "space-between",
+        JustifyContent::SpaceAround => "space-around",
+        JustifyContent::SpaceEvenly => "space-evenly",
+    }
+}
+
+fn align_items_css(v: framework_core::AlignItems) -> &'static str {
+    use framework_core::AlignItems;
+    match v {
+        AlignItems::FlexStart => "flex-start",
+        AlignItems::FlexEnd => "flex-end",
+        AlignItems::Center => "center",
+        AlignItems::Stretch => "stretch",
+        AlignItems::Baseline => "baseline",
+    }
+}
+
+fn align_content_css(v: framework_core::AlignContent) -> &'static str {
+    use framework_core::AlignContent;
+    match v {
+        AlignContent::FlexStart => "flex-start",
+        AlignContent::FlexEnd => "flex-end",
+        AlignContent::Center => "center",
+        AlignContent::Stretch => "stretch",
+        AlignContent::SpaceBetween => "space-between",
+        AlignContent::SpaceAround => "space-around",
+    }
+}
+
+fn align_self_css(v: framework_core::AlignSelf) -> &'static str {
+    use framework_core::AlignSelf;
+    match v {
+        AlignSelf::Auto => "auto",
+        AlignSelf::FlexStart => "flex-start",
+        AlignSelf::FlexEnd => "flex-end",
+        AlignSelf::Center => "center",
+        AlignSelf::Stretch => "stretch",
+        AlignSelf::Baseline => "baseline",
+    }
+}
+
+fn position_css(v: framework_core::Position) -> &'static str {
+    use framework_core::Position;
+    match v {
+        Position::Relative => "relative",
+        Position::Absolute => "absolute",
+    }
+}
+
+/// Compile a `StyleRules` to a CSS body. RN-style: every styled node
+/// is implicitly `display: flex`, so the emitter always prepends that.
+/// Per-side padding/margin/border are emitted as their CSS long-form
+/// (`padding-top`, etc.) — the browser handles them just like the
+/// shorthand, but we get exact-match cache keys.
 fn rules_to_css(rules: &StyleRules) -> String {
-    let mut parts = Vec::new();
-    if let Some(Color(c)) = &rules.background {
-        parts.push(format!("background: {}", c));
+    let mut parts: Vec<String> = Vec::new();
+
+    // RN-style: every styled view is a flex container.
+    parts.push("display: flex".to_string());
+
+    // Color + text.
+    if let Some(Color(c)) = &rules.background { parts.push(format!("background: {}", c)); }
+    if let Some(Color(c)) = &rules.color { parts.push(format!("color: {}", c)); }
+    if let Some(v) = rules.font_size { parts.push(format!("font-size: {}", length_css(v))); }
+
+    // Flex container.
+    if let Some(v) = rules.flex_direction { parts.push(format!("flex-direction: {}", flex_direction_css(v))); }
+    if let Some(v) = rules.flex_wrap { parts.push(format!("flex-wrap: {}", flex_wrap_css(v))); }
+    if let Some(v) = rules.justify_content { parts.push(format!("justify-content: {}", justify_content_css(v))); }
+    if let Some(v) = rules.align_items { parts.push(format!("align-items: {}", align_items_css(v))); }
+    if let Some(v) = rules.align_content { parts.push(format!("align-content: {}", align_content_css(v))); }
+    if let Some(v) = rules.gap { parts.push(format!("gap: {}", length_css(v))); }
+    if let Some(v) = rules.row_gap { parts.push(format!("row-gap: {}", length_css(v))); }
+    if let Some(v) = rules.column_gap { parts.push(format!("column-gap: {}", length_css(v))); }
+
+    // Flex item.
+    if let Some(v) = rules.flex_grow { parts.push(format!("flex-grow: {}", v)); }
+    if let Some(v) = rules.flex_shrink { parts.push(format!("flex-shrink: {}", v)); }
+    if let Some(v) = rules.flex_basis { parts.push(format!("flex-basis: {}", length_css(v))); }
+    if let Some(v) = rules.align_self { parts.push(format!("align-self: {}", align_self_css(v))); }
+
+    // Sizing.
+    if let Some(v) = rules.width { parts.push(format!("width: {}", length_css(v))); }
+    if let Some(v) = rules.height { parts.push(format!("height: {}", length_css(v))); }
+    if let Some(v) = rules.min_width { parts.push(format!("min-width: {}", length_css(v))); }
+    if let Some(v) = rules.min_height { parts.push(format!("min-height: {}", length_css(v))); }
+    if let Some(v) = rules.max_width { parts.push(format!("max-width: {}", length_css(v))); }
+    if let Some(v) = rules.max_height { parts.push(format!("max-height: {}", length_css(v))); }
+
+    // Per-side padding.
+    if let Some(v) = rules.padding_top { parts.push(format!("padding-top: {}", length_css(v))); }
+    if let Some(v) = rules.padding_right { parts.push(format!("padding-right: {}", length_css(v))); }
+    if let Some(v) = rules.padding_bottom { parts.push(format!("padding-bottom: {}", length_css(v))); }
+    if let Some(v) = rules.padding_left { parts.push(format!("padding-left: {}", length_css(v))); }
+
+    // Per-side margin.
+    if let Some(v) = rules.margin_top { parts.push(format!("margin-top: {}", length_css(v))); }
+    if let Some(v) = rules.margin_right { parts.push(format!("margin-right: {}", length_css(v))); }
+    if let Some(v) = rules.margin_bottom { parts.push(format!("margin-bottom: {}", length_css(v))); }
+    if let Some(v) = rules.margin_left { parts.push(format!("margin-left: {}", length_css(v))); }
+
+    // Per-corner border radius.
+    if let Some(v) = rules.border_top_left_radius { parts.push(format!("border-top-left-radius: {}", length_css(v))); }
+    if let Some(v) = rules.border_top_right_radius { parts.push(format!("border-top-right-radius: {}", length_css(v))); }
+    if let Some(v) = rules.border_bottom_left_radius { parts.push(format!("border-bottom-left-radius: {}", length_css(v))); }
+    if let Some(v) = rules.border_bottom_right_radius { parts.push(format!("border-bottom-right-radius: {}", length_css(v))); }
+
+    // Per-side border width + color. Emit `solid` style so the browser
+    // actually paints the line.
+    if let Some(v) = rules.border_top_width { parts.push(format!("border-top-width: {}px", v)); parts.push("border-top-style: solid".to_string()); }
+    if let Some(v) = rules.border_right_width { parts.push(format!("border-right-width: {}px", v)); parts.push("border-right-style: solid".to_string()); }
+    if let Some(v) = rules.border_bottom_width { parts.push(format!("border-bottom-width: {}px", v)); parts.push("border-bottom-style: solid".to_string()); }
+    if let Some(v) = rules.border_left_width { parts.push(format!("border-left-width: {}px", v)); parts.push("border-left-style: solid".to_string()); }
+    if let Some(Color(c)) = &rules.border_top_color { parts.push(format!("border-top-color: {}", c)); }
+    if let Some(Color(c)) = &rules.border_right_color { parts.push(format!("border-right-color: {}", c)); }
+    if let Some(Color(c)) = &rules.border_bottom_color { parts.push(format!("border-bottom-color: {}", c)); }
+    if let Some(Color(c)) = &rules.border_left_color { parts.push(format!("border-left-color: {}", c)); }
+
+    // Position.
+    if let Some(v) = rules.position { parts.push(format!("position: {}", position_css(v))); }
+    if let Some(v) = rules.top { parts.push(format!("top: {}", length_css(v))); }
+    if let Some(v) = rules.right { parts.push(format!("right: {}", length_css(v))); }
+    if let Some(v) = rules.bottom { parts.push(format!("bottom: {}", length_css(v))); }
+    if let Some(v) = rules.left { parts.push(format!("left: {}", length_css(v))); }
+
+    // Typography.
+    if let Some(ff) = &rules.font_family { parts.push(format!("font-family: {}", ff)); }
+    if let Some(v) = rules.font_weight { parts.push(format!("font-weight: {}", font_weight_css(v))); }
+    if let Some(v) = rules.font_style { parts.push(format!("font-style: {}", font_style_css(v))); }
+    if let Some(v) = rules.line_height { parts.push(format!("line-height: {}px", v)); }
+    if let Some(v) = rules.letter_spacing { parts.push(format!("letter-spacing: {}px", v)); }
+    if let Some(v) = rules.text_align { parts.push(format!("text-align: {}", text_align_css(v))); }
+    // Underline + strikethrough are independent booleans; emit them as
+    // a single CSS `text-decoration-line` shorthand combining both.
+    let underline = rules.underline.unwrap_or(false);
+    let strikethrough = rules.strikethrough.unwrap_or(false);
+    if underline || strikethrough {
+        let mut deco = String::new();
+        if underline { deco.push_str("underline"); }
+        if strikethrough {
+            if !deco.is_empty() { deco.push(' '); }
+            deco.push_str("line-through");
+        }
+        parts.push(format!("text-decoration-line: {}", deco));
+    } else if rules.underline == Some(false) || rules.strikethrough == Some(false) {
+        // Explicit override to remove decoration.
+        parts.push("text-decoration-line: none".to_string());
     }
-    if let Some(Color(c)) = &rules.color {
-        parts.push(format!("color: {}", c));
+    if let Some(v) = rules.text_transform { parts.push(format!("text-transform: {}", text_transform_css(v))); }
+
+    // Visual.
+    if let Some(v) = rules.opacity { parts.push(format!("opacity: {}", v)); }
+    if let Some(v) = rules.overflow { parts.push(format!("overflow: {}", overflow_css(v))); }
+    if let Some(sh) = &rules.shadow {
+        parts.push(format!(
+            "box-shadow: {}px {}px {}px {}",
+            sh.x, sh.y, sh.blur, sh.color.0
+        ));
     }
-    if let Some(p) = rules.padding {
-        parts.push(format!("padding: {}px", p));
+    if let Some(xs) = &rules.transform {
+        if !xs.is_empty() {
+            let joined: Vec<String> = xs.iter().map(transform_css).collect();
+            parts.push(format!("transform: {}", joined.join(" ")));
+        }
     }
-    if let Some(s) = rules.font_size {
-        parts.push(format!("font-size: {}px", s));
+
+    // Transitions: emit a single CSS `transition` declaration listing
+    // every active per-property transition. The browser interpolates
+    // the property whenever its value changes — no per-frame work on
+    // the framework side. Comma-separated entries.
+    let transitions = collect_transitions(rules);
+    if !transitions.is_empty() {
+        parts.push(format!("transition: {}", transitions.join(", ")));
     }
-    if let Some(r) = rules.border_radius {
-        parts.push(format!("border-radius: {}px", r));
-    }
-    if let Some(Border { width, color }) = &rules.border {
-        parts.push(format!("border: {}px solid {}", width, color.0));
-    }
+
     parts.join("; ")
+}
+
+/// Walk every per-property transition field on `rules` and produce a
+/// list of CSS transition entries (`"<prop> <duration>ms <easing>"`).
+/// Property names use CSS hyphenation, not the Rust field names.
+fn collect_transitions(rules: &StyleRules) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    macro_rules! tr {
+        ($field:ident, $css_name:literal) => {
+            if let Some(t) = rules.$field {
+                out.push(format!(
+                    "{} {}ms {}",
+                    $css_name,
+                    t.duration_ms,
+                    easing_css(t.easing)
+                ));
+            }
+        };
+    }
+    tr!(background_transition, "background");
+    tr!(color_transition, "color");
+    tr!(opacity_transition, "opacity");
+    tr!(transform_transition, "transform");
+    tr!(width_transition, "width");
+    tr!(height_transition, "height");
+    tr!(top_transition, "top");
+    tr!(right_transition, "right");
+    tr!(bottom_transition, "bottom");
+    tr!(left_transition, "left");
+    tr!(padding_top_transition, "padding-top");
+    tr!(padding_right_transition, "padding-right");
+    tr!(padding_bottom_transition, "padding-bottom");
+    tr!(padding_left_transition, "padding-left");
+    tr!(margin_top_transition, "margin-top");
+    tr!(margin_right_transition, "margin-right");
+    tr!(margin_bottom_transition, "margin-bottom");
+    tr!(margin_left_transition, "margin-left");
+    tr!(border_top_left_radius_transition, "border-top-left-radius");
+    tr!(border_top_right_radius_transition, "border-top-right-radius");
+    tr!(border_bottom_left_radius_transition, "border-bottom-left-radius");
+    tr!(border_bottom_right_radius_transition, "border-bottom-right-radius");
+    tr!(border_top_width_transition, "border-top-width");
+    tr!(border_right_width_transition, "border-right-width");
+    tr!(border_bottom_width_transition, "border-bottom-width");
+    tr!(border_left_width_transition, "border-left-width");
+    tr!(border_top_color_transition, "border-top-color");
+    tr!(border_right_color_transition, "border-right-color");
+    tr!(border_bottom_color_transition, "border-bottom-color");
+    tr!(border_left_color_transition, "border-left-color");
+    out
+}
+
+fn easing_css(e: framework_core::Easing) -> String {
+    use framework_core::Easing;
+    match e {
+        Easing::Linear => "linear".to_string(),
+        Easing::Ease => "ease".to_string(),
+        Easing::EaseIn => "ease-in".to_string(),
+        Easing::EaseOut => "ease-out".to_string(),
+        Easing::EaseInOut => "ease-in-out".to_string(),
+        Easing::CubicBezier(a, b, c, d) => {
+            format!("cubic-bezier({}, {}, {}, {})", a, b, c, d)
+        }
+    }
+}
+
+fn font_weight_css(v: framework_core::FontWeight) -> &'static str {
+    use framework_core::FontWeight;
+    match v {
+        FontWeight::Thin => "100",
+        FontWeight::ExtraLight => "200",
+        FontWeight::Light => "300",
+        FontWeight::Normal => "400",
+        FontWeight::Medium => "500",
+        FontWeight::SemiBold => "600",
+        FontWeight::Bold => "700",
+        FontWeight::ExtraBold => "800",
+        FontWeight::Black => "900",
+    }
+}
+
+fn font_style_css(v: framework_core::FontStyle) -> &'static str {
+    use framework_core::FontStyle;
+    match v {
+        FontStyle::Normal => "normal",
+        FontStyle::Italic => "italic",
+    }
+}
+
+fn text_align_css(v: framework_core::TextAlign) -> &'static str {
+    use framework_core::TextAlign;
+    match v {
+        TextAlign::Left => "left",
+        TextAlign::Right => "right",
+        TextAlign::Center => "center",
+        TextAlign::Justify => "justify",
+    }
+}
+
+fn text_transform_css(v: framework_core::TextTransform) -> &'static str {
+    use framework_core::TextTransform;
+    match v {
+        TextTransform::None => "none",
+        TextTransform::Uppercase => "uppercase",
+        TextTransform::Lowercase => "lowercase",
+        TextTransform::Capitalize => "capitalize",
+    }
+}
+
+fn overflow_css(v: framework_core::Overflow) -> &'static str {
+    use framework_core::Overflow;
+    match v {
+        Overflow::Visible => "visible",
+        Overflow::Hidden => "hidden",
+    }
+}
+
+fn transform_css(t: &framework_core::Transform) -> String {
+    use framework_core::Transform;
+    match t {
+        Transform::TranslateX(l) => format!("translateX({})", length_css(*l)),
+        Transform::TranslateY(l) => format!("translateY({})", length_css(*l)),
+        Transform::Scale(v) => format!("scale({})", v),
+        Transform::ScaleXY { x, y } => format!("scale({}, {})", x, y),
+        Transform::Rotate(v) => format!("rotate({}deg)", v),
+        Transform::SkewX(v) => format!("skewX({}deg)", v),
+        Transform::SkewY(v) => format!("skewY({}deg)", v),
+    }
 }
 
 impl Backend for WebBackend {
@@ -359,10 +678,36 @@ impl Backend for WebBackend {
         }
     }
 
+    fn make_button_handle(&self, node: &Self::Node) -> ButtonHandle {
+        // The node was created via `create_element("button")` then
+        // upcast to `Node`. Cast it back to `HtmlElement` so the ops
+        // table can call `.click()` on it. The clone is cheap — it's
+        // a wasm-bindgen JsValue clone (refcount bump on the JS
+        // object handle, no DOM duplication).
+        let html: web_sys::HtmlElement = node
+            .clone()
+            .dyn_into()
+            .expect("button node is not an HtmlElement");
+        ButtonHandle::new(Rc::new(html), &WebButtonOps)
+    }
+
     fn finish(&mut self, root: Self::Node) {
         self.mount
             .append_child(&root)
             .expect("mount append failed");
+    }
+}
+
+/// `ButtonOps` impl for the web backend. The `node` parameter comes
+/// from the `ButtonHandle`'s internal `Rc<dyn Any>`, which we built
+/// out of an `HtmlElement` in `make_button_handle`. Downcast back to
+/// invoke the DOM API.
+struct WebButtonOps;
+impl ButtonOps for WebButtonOps {
+    fn click(&self, node: &dyn Any) {
+        if let Some(html) = node.downcast_ref::<web_sys::HtmlElement>() {
+            html.click();
+        }
     }
 }
 

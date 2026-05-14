@@ -1,184 +1,378 @@
 //! The shared sample tree, used by every backend.
+//!
+//! Reads as a small dashboard app. Two `Counter` cards sit side by
+//! side in a sectioned page layout; a footer row exposes "Reset" and
+//! "Toggle theme" actions. The reset button drives both counters by
+//! holding a `Ref<CounterHandle>` on each and calling `.reset()` —
+//! exercises custom-component refs naturally. The login banner uses
+//! the reactive `if` form for conditional rendering.
 
 use framework_core::{
-    button, component, install_theme, set_theme, signal, text, ui, view, Border, Color, Primitive,
-    Signal, StyleApplication, StyleRules, StyleSheet,
+    component, install_theme, set_theme, signal, ui, AlignItems, Color, FlexDirection, FontWeight,
+    JustifyContent, Length, Primitive, Ref, Shadow, Signal, TextAlign,
 };
-use std::rc::Rc;
 
 // =============================================================================
 // Theme
 // =============================================================================
 
-/// The app's theme type. Stylesheets reference fields of this struct via
-/// `Color::from_theme(|t: &Theme| ...)` etc. Authors define their own theme
-/// shape; the framework is generic over the concrete type.
+/// App theme. Stylesheets read from this struct; swapping the theme
+/// re-fires every styled effect via the framework's reactivity, so
+/// dark mode propagates without a re-render.
 #[derive(Clone)]
 pub struct Theme {
     pub colors: Colors,
     pub spacing: Spacing,
 }
 
+/// Semantic colors. `primary` is the brand accent (buttons, focus
+/// states), `background` is the page surface, `surface` is the
+/// elevated container surface (cards). `text` and `muted` separate
+/// primary body text from secondary annotations.
 #[derive(Clone)]
 pub struct Colors {
+    pub background: String,
     pub surface: String,
-    pub foreground: String,
+    pub primary: String,
+    pub primary_text: String,
+    pub text: String,
+    pub muted: String,
+    pub border: String,
 }
 
+/// Spacing scale, mobile-friendly. Used as raw px values; the
+/// `stylesheet!` macro auto-converts to `Length::Px` via `From<f32>`.
 #[derive(Clone)]
 pub struct Spacing {
-    pub medium: f32,
+    pub xs: f32,
+    pub sm: f32,
+    pub md: f32,
+    pub lg: f32,
+    pub xl: f32,
 }
+
+const SPACING: Spacing = Spacing { xs: 4.0, sm: 8.0, md: 16.0, lg: 24.0, xl: 32.0 };
 
 pub fn light_theme() -> Theme {
     Theme {
         colors: Colors {
-            surface: "#f5f5f5".into(),
-            foreground: "#111".into(),
+            background: "#f7f7fb".into(),
+            surface: "#ffffff".into(),
+            primary: "#5b6cff".into(),
+            primary_text: "#ffffff".into(),
+            text: "#1a1a1f".into(),
+            muted: "#6b7280".into(),
+            border: "#e4e6ef".into(),
         },
-        spacing: Spacing { medium: 16.0 },
+        spacing: SPACING.clone(),
     }
 }
 
 pub fn dark_theme() -> Theme {
     Theme {
         colors: Colors {
-            surface: "#222".into(),
-            foreground: "#eee".into(),
+            background: "#0f1115".into(),
+            surface: "#1a1d24".into(),
+            primary: "#8b9aff".into(),
+            primary_text: "#0f1115".into(),
+            text: "#e8eaf0".into(),
+            muted: "#9099a8".into(),
+            border: "#2a2e3a".into(),
         },
-        spacing: Spacing { medium: 16.0 },
+        spacing: SPACING.clone(),
     }
 }
 
 // =============================================================================
-// Stylesheets
+// Layout stylesheets
 // =============================================================================
 
-/// Card stylesheet — declares variants. Every (theme × variant)
-/// combination is pre-generated on first use; the CSS classes live
-/// in the document permanently after that.
-///
-/// - Base: theme surface/foreground, 8px border radius.
-/// - Axis `size`: small / medium / large, default `medium`.
-/// - Axis `kind`: elevated / outlined, default `elevated`.
-///   * `elevated` — strong surface fill (the default look).
-///   * `outlined` — transparent fill with a 2px border in the
-///     foreground color.
-/// Style for the page banner — a styled `Text` primitive demonstrating
-/// that primitives accept `style = ...` orthogonally.
-fn banner_style() -> Rc<StyleSheet> {
-    thread_local! {
-        static SHEET: Rc<StyleSheet> = Rc::new(StyleSheet::new(|t: &Theme| StyleRules {
-            color: Some(Color(t.colors.foreground.clone())),
-            font_size: Some(24.0),
-            padding: Some(8.0),
-            ..Default::default()
-        }));
+// Page — the outermost container. Vertical stack with generous gap,
+// centered content with a max width, generous outer padding.
+framework_core::stylesheet! {
+    pub Page<Theme> {
+        base(t) {
+            background: Color(t.colors.background.clone()),
+            color: Color(t.colors.text.clone()),
+            padding: t.spacing.xl,
+            gap: Length::Px(t.spacing.lg),
+            min_height: Length::pct(100.0),
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            color: 250ms EaseInOut,
+        }
     }
-    SHEET.with(|s| s.clone())
 }
 
-fn card_style() -> Rc<StyleSheet> {
-    thread_local! {
-        static SHEET: Rc<StyleSheet> = Rc::new(
-            StyleSheet::new(|theme: &Theme| StyleRules {
-                background: Some(Color(theme.colors.surface.clone())),
-                color: Some(Color(theme.colors.foreground.clone())),
-                padding: Some(theme.spacing.medium),
-                border_radius: Some(8.0),
-                ..Default::default()
-            })
-            .variant("size", "small", |t: &Theme| StyleRules {
-                padding: Some(t.spacing.medium * 0.5),
-                ..Default::default()
-            })
-            .variant("size", "medium", |t: &Theme| StyleRules {
-                padding: Some(t.spacing.medium),
-                ..Default::default()
-            })
-            .variant("size", "large", |t: &Theme| StyleRules {
-                padding: Some(t.spacing.medium * 2.0),
-                font_size: Some(18.0),
-                ..Default::default()
-            })
-            .variant_default("size", "medium")
-            .variant("kind", "elevated", |t: &Theme| StyleRules {
-                // Strong surface; no border. Reads as a filled "raised" card.
-                background: Some(Color(t.colors.surface.clone())),
-                ..Default::default()
-            })
-            .variant("kind", "outlined", |t: &Theme| StyleRules {
-                // Transparent fill with a 2px ring in the foreground color.
-                background: Some(Color("transparent".into())),
-                border: Some(Border::new(2, t.colors.foreground.clone())),
-                ..Default::default()
-            })
-            .variant_default("kind", "elevated"),
-        );
+// Row — horizontal flex container with configurable gap. Default to
+// stretching children to equal height so cards line up cleanly.
+framework_core::stylesheet! {
+    pub Row<Theme> {
+        base(t) {
+            flex_direction: FlexDirection::Row,
+            gap: Length::Px(t.spacing.md),
+            align_items: AlignItems::Stretch,
+        }
     }
-    SHEET.with(|s| s.clone())
+}
+
+// SpacedRow — like Row but pushes children to opposite ends. Used by
+// the footer action bar.
+framework_core::stylesheet! {
+    pub SpacedRow<Theme> {
+        base(t) {
+            flex_direction: FlexDirection::Row,
+            gap: Length::Px(t.spacing.md),
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::SpaceBetween,
+        }
+    }
+}
+
+// =============================================================================
+// Typography stylesheets
+// =============================================================================
+
+// Title — big page-level title. Tracked letterspacing, semibold weight.
+framework_core::stylesheet! {
+    pub Title<Theme> {
+        base(t) {
+            color: Color(t.colors.text.clone()),
+            font_size: 32.0,
+            font_weight: FontWeight::SemiBold,
+            letter_spacing: -0.5,
+            line_height: 38.0,
+        }
+    }
+}
+
+// Subtitle — secondary body text under the title.
+framework_core::stylesheet! {
+    pub Subtitle<Theme> {
+        base(t) {
+            color: Color(t.colors.muted.clone()),
+            font_size: 16.0,
+            line_height: 22.0,
+        }
+    }
+}
+
+// SectionHeading — small uppercase label above a content section.
+framework_core::stylesheet! {
+    pub SectionHeading<Theme> {
+        base(t) {
+            color: Color(t.colors.muted.clone()),
+            font_size: 12.0,
+            font_weight: FontWeight::SemiBold,
+            letter_spacing: 1.0,
+            text_transform: framework_core::TextTransform::Uppercase,
+        }
+    }
+}
+
+// CardTitle — the bold label at the top of a card.
+framework_core::stylesheet! {
+    pub CardTitle<Theme> {
+        base(t) {
+            color: Color(t.colors.text.clone()),
+            font_size: 14.0,
+            font_weight: FontWeight::SemiBold,
+            letter_spacing: 0.5,
+            text_transform: framework_core::TextTransform::Uppercase,
+        }
+    }
+}
+
+// CardValue — the big number inside a stat card.
+framework_core::stylesheet! {
+    pub CardValue<Theme> {
+        base(t) {
+            color: Color(t.colors.text.clone()),
+            font_size: 36.0,
+            font_weight: FontWeight::Bold,
+            letter_spacing: -1.0,
+            line_height: 42.0,
+        }
+    }
+}
+
+// =============================================================================
+// Component stylesheets
+// =============================================================================
+
+// Card — elevated surface, soft shadow, internal vertical layout with
+// a small gap between title and content.
+framework_core::stylesheet! {
+    pub Card<Theme> {
+        base(t) {
+            background: Color(t.colors.surface.clone()),
+            padding: t.spacing.lg,
+            border_radius: 12.0,
+            gap: Length::Px(t.spacing.sm),
+            flex_grow: 1.0,
+            shadow: Shadow {
+                x: 0.0,
+                y: 4.0,
+                blur: 16.0,
+                color: Color("rgba(15, 17, 21, 0.08)".into()),
+            },
+        }
+
+        variant tone {
+            #[default]
+            neutral(_t) {}
+            primary(t) {
+                background: Color(t.colors.primary.clone()),
+                color: Color(t.colors.primary_text.clone()),
+            }
+        }
+
+        // Animate the surface + text color when the theme swaps or
+        // the variant flips. The backend handles per-frame
+        // interpolation — no Rust-side ticking.
+        transitions {
+            background: 250ms EaseInOut,
+            color: 250ms EaseInOut,
+        }
+    }
+}
+
+// PrimaryButton — branded action button. The label color comes from
+// the theme's `primary_text` so it stays legible in both themes.
+framework_core::stylesheet! {
+    pub PrimaryButton<Theme> {
+        base(t) {
+            background: Color(t.colors.primary.clone()),
+            color: Color(t.colors.primary_text.clone()),
+            padding_vertical: t.spacing.sm,
+            padding_horizontal: t.spacing.md,
+            border_radius: 8.0,
+            font_weight: FontWeight::SemiBold,
+            font_size: 14.0,
+            letter_spacing: 0.3,
+            text_align: TextAlign::Center,
+        }
+        transitions {
+            background: 200ms EaseOut,
+            color: 200ms EaseOut,
+        }
+    }
+}
+
+// SecondaryButton — outlined alternative for less-prominent actions.
+framework_core::stylesheet! {
+    pub SecondaryButton<Theme> {
+        base(t) {
+            background: Color("transparent".into()),
+            color: Color(t.colors.text.clone()),
+            padding_vertical: t.spacing.sm,
+            padding_horizontal: t.spacing.md,
+            border_radius: 8.0,
+            border_width: 1.0,
+            border_color: Color(t.colors.border.clone()),
+            font_weight: FontWeight::Medium,
+            font_size: 14.0,
+            letter_spacing: 0.3,
+            text_align: TextAlign::Center,
+        }
+        transitions {
+            color: 200ms EaseOut,
+            border_color: 200ms EaseOut,
+        }
+    }
+}
+
+// CounterButton — the small "+ 1" button inside a stat card.
+framework_core::stylesheet! {
+    pub CounterButton<Theme> {
+        base(t) {
+            background: Color(t.colors.primary.clone()),
+            color: Color(t.colors.primary_text.clone()),
+            padding_vertical: t.spacing.xs,
+            padding_horizontal: t.spacing.md,
+            border_radius: 6.0,
+            font_weight: FontWeight::SemiBold,
+            font_size: 12.0,
+            letter_spacing: 0.5,
+            text_align: TextAlign::Center,
+            margin_top: t.spacing.sm,
+        }
+        transitions {
+            background: 200ms EaseOut,
+            color: 200ms EaseOut,
+        }
+    }
+}
+
+// LoginBanner — the conditional welcome strip shown until the user
+// "logs in". Subtle, takes the primary tone.
+framework_core::stylesheet! {
+    pub LoginBanner<Theme> {
+        base(t) {
+            background: Color(t.colors.primary.clone()),
+            color: Color(t.colors.primary_text.clone()),
+            padding_vertical: t.spacing.sm,
+            padding_horizontal: t.spacing.md,
+            border_radius: 8.0,
+            font_size: 14.0,
+            text_align: TextAlign::Center,
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            color: 250ms EaseInOut,
+        }
+    }
 }
 
 // =============================================================================
 // Components
 // =============================================================================
 
-pub struct CardProps {
-    pub title: String,
-    pub children: Vec<Primitive>,
-    /// Discrete variant for size. Pre-generated.
-    pub size: String,
-    /// Discrete variant for kind. Pre-generated.
-    pub kind: String,
-    /// Continuous override for padding. When present, the style
-    /// closure reads `.get()` on every re-fire so signal changes
-    /// propagate without re-rendering the card.
-    pub padding_override: Option<Signal<f32>>,
-}
-
-#[component(
-    children,
-    default(
-        size = "medium".to_string(),
-        kind = "elevated".to_string(),
-        padding_override = None
-    )
-)]
-pub fn card(props: CardProps) -> Primitive {
-    let CardProps { title, children, size, kind, padding_override } = props;
-    view(vec![text(title), view(children)]).with_style(move || {
-        let mut app = StyleApplication::new(card_style())
-            .with("size", size.clone())
-            .with("kind", kind.clone());
-        // `.get()` here subscribes the surrounding effect to `pad`,
-        // so signal changes re-fire the effect → re-resolve → re-apply.
-        if let Some(sig) = padding_override {
-            app = app.override_padding(sig.get());
-        }
-        app
-    })
-}
-
 pub struct CounterProps {
     pub label: String,
     pub value: Signal<i32>,
     pub step: i32,
+    pub tone: CardTone,
 }
 
-#[component(default(step = 1))]
-pub fn counter(props: &CounterProps) -> Primitive {
-    view(vec![
-        text(format!(
-            "{} (+{}): {}",
-            props.label,
-            props.step,
-            props.value.get()
-        )),
-        button("Increment", move || {
-            let step = props.step;
-            props.value.update(move |n| *n += step)
-        }),
-    ])
+/// `Counter` is a stat card: it renders a labeled value and exposes an
+/// increment button. The component declares a `reset()` method via
+/// `methods!`, which the macro turns into a `CounterHandle` the parent
+/// can bind to via `Ref<CounterHandle>`. The reset button in the
+/// footer uses this to zero all counters at once.
+#[component(default(step = 1, tone = CardTone::Neutral))]
+pub fn counter(props: &CounterProps) -> framework_core::Bindable<CounterHandle> {
+    // Pull the relevant fields out of `props` into owned/Copy locals
+    // so the resulting `Bindable` doesn't borrow the props ref. The
+    // component receives `&CounterProps` for ergonomics at the call
+    // site; the body is responsible for projecting what it needs.
+    let value = props.value;
+    let step = props.step;
+    let tone = props.tone;
+    let label = props.label.clone();
+    let label_for_button = format!("+{}", step);
+
+    methods! {
+        fn reset(&self) {
+            value.set(0);
+        }
+    }
+
+    ui! {
+        View(style = Card().tone(tone)) {
+            Text(style = card_title_style()) { label }
+            // Reactive text: `.get()` inside `text(...)` (which the
+            // macro emits from this position) triggers the reactivity
+            // rewriter to wrap the argument in a closure automatically.
+            Text(style = card_value_style()) { format!("{}", value.get()) }
+            Button(
+                label = label_for_button,
+                on_click = move || value.update(move |n| *n += step),
+                style = counter_button_style()
+            )
+        }
+    }
 }
 
 // =============================================================================
@@ -187,73 +381,84 @@ pub fn counter(props: &CounterProps) -> Primitive {
 
 #[component]
 pub fn app() -> Primitive {
-    // Install the initial theme. Subsequent `set_theme(...)` calls will
-    // propagate to every styled component without re-rendering.
     install_theme(light_theme());
 
     let score = signal!(0);
     let lives = signal!(3);
-    let logged_in = signal!(false);
     let is_dark = signal!(false);
-    // Continuous-value override: padding driven by buttons. Each unique
-    // value mints a fresh CSS class via the framework's cache.
-    let pad = signal!(16.0_f32);
+    let logged_in = signal!(false);
+
+    // Refs for resetting both counters in one parent action.
+    let score_ref: Ref<CounterHandle> = Ref::new();
+    let lives_ref: Ref<CounterHandle> = Ref::new();
 
     ui! {
-        // Styled primitive: a Text node with its own style. The macro
-        // strips `style = ...` and emits `.with_style(...)` on the
-        // resulting primitive — same `with_style` you can call manually
-        // outside `ui!`.
-        Text(style = StyleApplication::new(banner_style())) {
-            "Hello from idealyst-native"
-        }
-
-        Button(
-            label = "Toggle theme",
-            on_click = move || {
-                let now_dark = !is_dark.get();
-                is_dark.set(now_dark);
-                if now_dark {
-                    set_theme(dark_theme());
-                } else {
-                    set_theme(light_theme());
+        View(style = page_style()) {
+            // Header section: title + subtitle.
+            View {
+                Text(style = title_style()) { "idealyst dashboard" }
+                Text(style = subtitle_style()) {
+                    "A tiny demo of the framework's signals, refs, and styles."
                 }
             }
-        )
 
-        Button(label = "Pad +4", on_click = move || pad.update(|p| *p += 4.0))
-        Button(label = "Pad -4", on_click = move || pad.update(|p| *p = (*p - 4.0).max(0.0)))
+            // Welcome banner — visible until the user dismisses it via
+            // "Reset all". The reactive `if` form rebuilds the subtree
+            // when `logged_in` flips.
+            if !logged_in.get() {
+                View(style = login_banner_style()) {
+                    Text { "Welcome — try incrementing a counter or toggling the theme." }
+                }
+            } else {
+                View {}
+            }
 
-        // Discrete variants — pre-generated; no mint on apply.
-        Card(title = "Default card") {
-            Counter(label = "Score", value = score)
+            // Stats section: section heading + two counter cards laid
+            // horizontally with equal width (each Card has flex_grow: 1).
+            View {
+                Text(style = section_heading_style()) { "Stats" }
+                View(style = row_style()) {
+                    Counter(
+                        label = "Score",
+                        value = score,
+                        step = 5,
+                        tone = CardTone::Primary
+                    ).bind(score_ref)
+                    Counter(
+                        label = "Lives",
+                        value = lives
+                    ).bind(lives_ref)
+                }
+            }
+
+            // Action bar: primary "Reset all" pushes left, secondary
+            // theme toggle pushes right. Demonstrates ref-driven
+            // multi-component action: one click resets two independent
+            // components by calling their handles.
+            View(style = spaced_row_style()) {
+                Button(
+                    label = "Reset all",
+                    on_click = move || {
+                        if let Some(h) = score_ref.get() { h.reset(); }
+                        if let Some(h) = lives_ref.get() { h.reset(); }
+                        logged_in.set(true);
+                    },
+                    style = primary_button_style()
+                )
+                Button(
+                    label = if is_dark.get() { "Light mode".to_string() } else { "Dark mode".to_string() },
+                    on_click = move || {
+                        let now_dark = !is_dark.get();
+                        is_dark.set(now_dark);
+                        if now_dark {
+                            set_theme(dark_theme());
+                        } else {
+                            set_theme(light_theme());
+                        }
+                    },
+                    style = secondary_button_style()
+                )
+            }
         }
-        Card(title = "Outlined", size = "large".to_string(), kind = "outlined".to_string()) {
-            Counter(label = "Lives", value = lives)
-        }
-        // Variant + continuous override — variant class is a cache hit;
-        // override mints a fresh class lazily because padding is dynamic.
-        // We pass `pad` (the Signal handle, not a snapshot value) so
-        // the style closure can read it reactively.
-        Card(
-            title = "Override demo",
-            size = "small".to_string(),
-            padding_override = Some(pad)
-        ) {
-            Counter(label = "Score (in card)", value = score)
-        }
-
-        Counter(label = "Score (view B)", value = score)
-
-        if logged_in.get() {
-            Text { "Welcome back!" }
-        } else {
-            Button(
-                label = "Login",
-                on_click = move || logged_in.set(true)
-            )
-        }
-
-        Text { format!("Echo: score={}, lives={}", score.get(), lives.get()) }
     }
 }

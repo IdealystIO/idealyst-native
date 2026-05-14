@@ -3,13 +3,18 @@
 mod reactive;
 mod style;
 
-pub use reactive::{untrack, Effect, Signal};
+pub use reactive::{untrack, Effect, Ref, Signal};
+
+use std::any::Any;
 pub use style::{
-    install_theme, pregenerate_for_theme, resolve as resolve_style, set_theme, Border, Color,
-    Length, StyleApplication, StyleRules, StyleSheet, VariantAxis, VariantSet, VariantValue,
+    install_theme, pregenerate_for_theme, resolve as resolve_style, set_theme,
+    AlignContent, AlignItems, AlignSelf, Color, Easing, FlexDirection, FlexWrap, FontStyle,
+    FontWeight, IntoOverrideSource, IntoVariantSource, JustifyContent, Length, Overflow, Position,
+    Shadow, StyleApplication, StyleRules, StyleSheet, TextAlign, TextTransform, Transform,
+    Transition, VariantAxis, VariantEnum, VariantSet, VariantValue,
 };
 
-pub use framework_macros::{component, ui};
+pub use framework_macros::{component, jsx, stylesheet, ui};
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -55,6 +60,113 @@ where
 /// changes the closure reads).
 pub type StyleSource = Box<dyn Fn() -> StyleApplication>;
 
+// =============================================================================
+// Primitive handles + backend ops
+// =============================================================================
+//
+// Each primitive kind has a corresponding handle type that the parent
+// reaches via a `Ref<Handle>`. A handle is a thin record:
+//   - `node`: an `Rc<dyn Any>` holding the backend's concrete node value
+//     (`web_sys::HtmlButtonElement` on web, `View` on Android, …).
+//   - `ops`: a `&'static dyn …Ops` trait object providing the kind's
+//     methods. Backends ship a single ZST `Ops` impl per kind.
+//
+// This shape keeps `Ref<Handle>` backend-agnostic in user code while
+// letting the backend implement methods against its native node type
+// via a single downcast inside each op.
+
+/// A handle to a mounted `Button` primitive.
+///
+/// `Clone` is cheap: an `Rc` bump plus copying a `'static` pointer.
+/// Cloning is what lets `Ref::get()` hand back an owned handle rather
+/// than forcing callers through a `.with(|h| ...)` closure.
+#[derive(Clone)]
+pub struct ButtonHandle {
+    node: Rc<dyn Any>,
+    ops: &'static dyn ButtonOps,
+}
+
+impl ButtonHandle {
+    /// Backend constructor. Called by `Backend::make_button_handle`
+    /// impls. The `node` is type-erased here so user code can hold
+    /// `Ref<ButtonHandle>` without naming the backend's node type.
+    pub fn new(node: Rc<dyn Any>, ops: &'static dyn ButtonOps) -> Self {
+        Self { node, ops }
+    }
+
+    /// Programmatically triggers the button's click handler (and on
+    /// platforms with native click semantics, dispatches the native
+    /// event).
+    pub fn click(&self) {
+        self.ops.click(&*self.node);
+    }
+}
+
+pub trait ButtonOps {
+    fn click(&self, node: &dyn Any);
+}
+
+/// A handle to a mounted `View` primitive.
+#[derive(Clone)]
+pub struct ViewHandle {
+    #[allow(dead_code)]
+    node: Rc<dyn Any>,
+    #[allow(dead_code)]
+    ops: &'static dyn ViewOps,
+}
+
+impl ViewHandle {
+    pub fn new(node: Rc<dyn Any>, ops: &'static dyn ViewOps) -> Self {
+        Self { node, ops }
+    }
+}
+
+pub trait ViewOps {
+    // No methods yet — reserved for measure(), scroll_to(), etc.
+}
+
+/// A handle to a mounted `Text` primitive.
+#[derive(Clone)]
+pub struct TextHandle {
+    #[allow(dead_code)]
+    node: Rc<dyn Any>,
+    #[allow(dead_code)]
+    ops: &'static dyn TextOps,
+}
+
+impl TextHandle {
+    pub fn new(node: Rc<dyn Any>, ops: &'static dyn TextOps) -> Self {
+        Self { node, ops }
+    }
+}
+
+pub trait TextOps {
+    // Reserved for future text-specific operations.
+}
+
+/// Per-backend bundle of `Ops` trait objects, returned from
+/// `Backend::ref_ops()`. The framework asks the backend for these once
+/// (during render setup) and uses them to construct primitive handles
+/// at mount time.
+pub struct RefOps {
+    pub button: &'static dyn ButtonOps,
+    pub view: &'static dyn ViewOps,
+    pub text: &'static dyn TextOps,
+}
+
+/// The mount-time closure that populates a `Ref<H>` slot. One variant
+/// per primitive kind so the framework can build the correctly-typed
+/// handle without runtime kind-matching on the closure itself. The
+/// closure is monomorphic to `H`, so type-checking against the
+/// call-site `Ref<H>` happens at `.bind()`. User code never constructs
+/// this directly; it's exposed only because `Primitive`'s variants
+/// carry it.
+pub enum RefFill {
+    Button(Box<dyn FnOnce(ButtonHandle)>),
+    View(Box<dyn FnOnce(ViewHandle)>),
+    Text(Box<dyn FnOnce(TextHandle)>),
+}
+
 /// Primitives are the structural skeleton of the UI. Every primitive
 /// optionally carries a `style` slot — styling is orthogonal to
 /// structure, so authors can style any primitive without each primitive
@@ -65,15 +177,18 @@ pub enum Primitive {
     View {
         children: Vec<Primitive>,
         style: Option<StyleSource>,
+        ref_fill: Option<RefFill>,
     },
     Text {
         source: TextSource,
         style: Option<StyleSource>,
+        ref_fill: Option<RefFill>,
     },
     Button {
         label: String,
         on_click: Rc<dyn Fn()>,
         style: Option<StyleSource>,
+        ref_fill: Option<RefFill>,
     },
     /// Reactive conditional. Renders `then()` while `cond()` is true and
     /// `otherwise()` when it's false. The renderer wraps the subtree
@@ -88,12 +203,28 @@ pub enum Primitive {
     },
 }
 
-/// Allows `with_style(...)` to accept either a fixed `StyleApplication`
-/// or a closure that produces one. Closures enable reactive styling —
-/// any signal the closure reads becomes a dependency, and changes
-/// re-fire the apply-style effect.
+/// Allows `with_style(...)` to accept any of:
+///   - a bare `Rc<StyleSheet>` — applies the stylesheet with no
+///     variant selection, no overrides. Best for static one-shot
+///     styles like `banner_style()`.
+///   - a fixed `StyleApplication` — for the case where you already
+///     have a built-up application with variants/overrides.
+///   - a closure returning a `StyleApplication` — enables reactive
+///     styling: signals read inside the closure become dependencies
+///     and changes re-fire the apply-style effect.
+///
+/// The `Rc<StyleSheet>` impl exists so authors don't have to write
+/// `StyleApplication::new(sheet)` for the trivial case — most styles
+/// are like that, and the wrapping was pure ceremony.
 pub trait IntoStyleSource {
     fn into_style_source(self) -> StyleSource;
+}
+
+impl IntoStyleSource for Rc<StyleSheet> {
+    fn into_style_source(self) -> StyleSource {
+        let app = StyleApplication::new(self);
+        Box::new(move || app.clone())
+    }
 }
 
 impl IntoStyleSource for StyleApplication {
@@ -129,8 +260,164 @@ impl Primitive {
     }
 }
 
-pub fn view(children: Vec<Primitive>) -> Primitive {
-    Primitive::View { children, style: None }
+// =============================================================================
+// Bound<H> — primitive + phantom handle type for .bind() type-checking
+// =============================================================================
+//
+// A constructor like `button(...)` returns `Bound<ButtonHandle>` rather
+// than a bare `Primitive`. Carrying the handle type in the type system
+// makes `.bind(r: Ref<ButtonHandle>)` a compile-time check — passing
+// `Ref<ViewHandle>` to a button's `.bind` is a type error, no runtime
+// dispatch needed.
+//
+// `Bound<H>` implements `Into<Primitive>` and `ChildList`, so call sites
+// and the rest of the framework continue to work with `Primitive` after
+// `.bind()` (or without ever calling it). Authors who don't care about
+// refs never see `Bound` — the constructors return it, the children
+// macro coerces it, no friction.
+
+/// A `Primitive` plus a phantom handle type. Constructed by primitive
+/// builder functions (`button(...)`, `view(...)`, …); coerced back to
+/// `Primitive` automatically for child lists. Only purpose: type-check
+/// `.bind(r)` against the call-site `Ref<H>`.
+pub struct Bound<H> {
+    primitive: Primitive,
+    _handle: std::marker::PhantomData<H>,
+}
+
+impl<H> Bound<H> {
+    fn new(primitive: Primitive) -> Self {
+        Self { primitive, _handle: std::marker::PhantomData }
+    }
+
+    /// Attaches a style. Same semantics as `Primitive::with_style`.
+    pub fn with_style<S: IntoStyleSource>(mut self, style: S) -> Self {
+        self.primitive = self.primitive.with_style(style);
+        self
+    }
+}
+
+// `bind` is implemented per handle type so it can both (a) take the
+// correctly-typed `Ref<H>` and (b) install the appropriate `RefFill`
+// variant on the underlying primitive.
+
+impl Bound<ButtonHandle> {
+    /// Binds this button to `r`. At mount time the framework constructs
+    /// a `ButtonHandle` from the just-created backend node and calls
+    /// `r.fill(handle)`. Pre-mount calls on `r` are no-ops.
+    pub fn bind(mut self, r: Ref<ButtonHandle>) -> Self {
+        if let Primitive::Button { ref_fill, .. } = &mut self.primitive {
+            *ref_fill = Some(RefFill::Button(Box::new(move |h| r.fill(h))));
+        }
+        self
+    }
+}
+
+impl Bound<ViewHandle> {
+    pub fn bind(mut self, r: Ref<ViewHandle>) -> Self {
+        if let Primitive::View { ref_fill, .. } = &mut self.primitive {
+            *ref_fill = Some(RefFill::View(Box::new(move |h| r.fill(h))));
+        }
+        self
+    }
+}
+
+impl Bound<TextHandle> {
+    pub fn bind(mut self, r: Ref<TextHandle>) -> Self {
+        if let Primitive::Text { ref_fill, .. } = &mut self.primitive {
+            *ref_fill = Some(RefFill::Text(Box::new(move |h| r.fill(h))));
+        }
+        self
+    }
+}
+
+impl<H> From<Bound<H>> for Primitive {
+    fn from(b: Bound<H>) -> Primitive { b.primitive }
+}
+
+// =============================================================================
+// Bindable<H> — user-component primitive + already-constructed handle
+// =============================================================================
+//
+// Sister type to `Bound<H>` for *user components* (the things wrapped by
+// `#[component]`), not primitives. Differences:
+//
+// - `Bound<H>` is for primitives. The framework constructs the `H` lazily
+//   at mount, using `Backend::make_*_handle` against the just-created
+//   backend node. The ref is filled inside the framework's `build`
+//   walker via a `RefFill` closure.
+//
+// - `Bindable<H>` is for user components. By the time the component
+//   function returns, the handle `H` already exists (the component
+//   body constructed it explicitly, closing over its own Signals or
+//   Refs). `.bind(r)` fills the ref synchronously — no `RefFill`
+//   plumbing through `Primitive` needed.
+//
+// Both implement `Into<Primitive>` and `ChildList` so the rest of the
+// framework (children lists, `IntoPrimitive` coercion) doesn't care
+// whether the call site uses one or the other.
+
+/// A `Primitive` plus an already-constructed component handle. Returned
+/// by user `#[component]` functions that expose imperative methods.
+/// Authors construct this in their component body and `.bind(r)` to
+/// hook it up to a `Ref<H>` owned by the parent.
+pub struct Bindable<H> {
+    primitive: Primitive,
+    handle: H,
+}
+
+impl<H: 'static> Bindable<H> {
+    /// Constructs a `Bindable` from the component's primitive tree and
+    /// the handle it exposes. Called from inside the component body —
+    /// typically as the final expression.
+    pub fn new(primitive: Primitive, handle: H) -> Self {
+        Self { primitive, handle }
+    }
+
+    /// Attaches a style to the component's root primitive. Same
+    /// semantics as `Primitive::with_style` / `Bound::with_style` —
+    /// the inner primitive's style slot is overwritten, and the chain
+    /// returns `Self` so subsequent calls like `.bind(r)` keep the
+    /// handle type.
+    pub fn with_style<S: IntoStyleSource>(mut self, style: S) -> Self {
+        self.primitive = self.primitive.with_style(style);
+        self
+    }
+
+    /// Fills `r` with this component's handle and returns the
+    /// underlying `Primitive`. The fill happens *immediately* — the
+    /// handle exists by the time the component function returned, so
+    /// there's no mount-time deferral.
+    ///
+    /// Compile-time type checking: `r: Ref<H>` and the component
+    /// returns `Bindable<H>`, so passing the wrong ref type is a type
+    /// error.
+    pub fn bind(self, r: Ref<H>) -> Primitive {
+        r.fill(self.handle);
+        self.primitive
+    }
+}
+
+impl<H> From<Bindable<H>> for Primitive {
+    fn from(b: Bindable<H>) -> Primitive { b.primitive }
+}
+
+impl<H> ChildList for Bindable<H> {
+    fn append_to(self, out: &mut Vec<Primitive>) {
+        out.push(self.primitive);
+    }
+}
+
+impl<H> ChildList for Option<Bindable<H>> {
+    fn append_to(self, out: &mut Vec<Primitive>) {
+        if let Some(b) = self {
+            out.push(b.primitive);
+        }
+    }
+}
+
+pub fn view(children: Vec<Primitive>) -> Bound<ViewHandle> {
+    Bound::new(Primitive::View { children, style: None, ref_fill: None })
 }
 
 /// Flexible-shape source for a child-list slot. Implementors say how to
@@ -149,10 +436,24 @@ impl ChildList for Primitive {
     }
 }
 
+impl<H> ChildList for Bound<H> {
+    fn append_to(self, out: &mut Vec<Primitive>) {
+        out.push(self.primitive);
+    }
+}
+
 impl ChildList for Option<Primitive> {
     fn append_to(self, out: &mut Vec<Primitive>) {
         if let Some(p) = self {
             out.push(p);
+        }
+    }
+}
+
+impl<H> ChildList for Option<Bound<H>> {
+    fn append_to(self, out: &mut Vec<Primitive>) {
+        if let Some(b) = self {
+            out.push(b.primitive);
         }
     }
 }
@@ -199,16 +500,21 @@ macro_rules! children {
     }};
 }
 
-pub fn text<T: IntoTextSource>(source: T) -> Primitive {
-    Primitive::Text { source: source.into_text_source(), style: None }
+pub fn text<T: IntoTextSource>(source: T) -> Bound<TextHandle> {
+    Bound::new(Primitive::Text {
+        source: source.into_text_source(),
+        style: None,
+        ref_fill: None,
+    })
 }
 
-pub fn button<F: Fn() + 'static>(label: impl Into<String>, on_click: F) -> Primitive {
-    Primitive::Button {
+pub fn button<F: Fn() + 'static>(label: impl Into<String>, on_click: F) -> Bound<ButtonHandle> {
+    Bound::new(Primitive::Button {
         label: label.into(),
         on_click: Rc::new(on_click),
         style: None,
-    }
+        ref_fill: None,
+    })
 }
 
 /// Reactive conditional. Author code provides three closures:
@@ -231,6 +537,27 @@ where
         otherwise: Box::new(otherwise),
         style: None,
     }
+}
+
+/// Coercion helper: lets `when()`'s `then`/`otherwise` closures return
+/// either a bare `Primitive` or a `Bound<H>`. `Into<Primitive>` is
+/// already implemented for `Bound<H>`; this trait makes the implicit
+/// conversion happen in argument position so users don't have to spell
+/// `.into()`. Used by the `ui!` macro and by direct `when(...)` callers.
+pub trait IntoPrimitive {
+    fn into_primitive(self) -> Primitive;
+}
+
+impl IntoPrimitive for Primitive {
+    fn into_primitive(self) -> Primitive { self }
+}
+
+impl<H> IntoPrimitive for Bound<H> {
+    fn into_primitive(self) -> Primitive { self.primitive }
+}
+
+impl<H> IntoPrimitive for Bindable<H> {
+    fn into_primitive(self) -> Primitive { self.primitive }
 }
 
 pub trait Backend {
@@ -285,8 +612,45 @@ pub trait Backend {
     fn on_node_unstyled(&mut self, node: &Self::Node) {
         // default: no-op
     }
+
+    /// Constructs a `ButtonHandle` for the just-created button `node`.
+    /// Called by the framework when a `Bound<ButtonHandle>` with a
+    /// `.bind(r)` is mounted. The handle internally holds an
+    /// `Rc<dyn Any>` wrapping the backend's concrete node value, so
+    /// `ButtonOps` methods can downcast to operate on it. Default
+    /// impl returns a handle with a no-op ops table — backends that
+    /// don't support refs don't have to think about it.
+    #[allow(unused_variables)]
+    fn make_button_handle(&self, node: &Self::Node) -> ButtonHandle {
+        ButtonHandle { node: Rc::new(()), ops: &NoopButtonOps }
+    }
+
+    #[allow(unused_variables)]
+    fn make_view_handle(&self, node: &Self::Node) -> ViewHandle {
+        ViewHandle { node: Rc::new(()), ops: &NoopViewOps }
+    }
+
+    #[allow(unused_variables)]
+    fn make_text_handle(&self, node: &Self::Node) -> TextHandle {
+        TextHandle { node: Rc::new(()), ops: &NoopTextOps }
+    }
+
     fn finish(&mut self, root: Self::Node);
 }
+
+// Default ZST `Ops` impls used by backends that haven't opted into ref
+// support yet (or by the `()` Node used in tests).
+
+struct NoopButtonOps;
+impl ButtonOps for NoopButtonOps {
+    fn click(&self, _node: &dyn Any) {}
+}
+
+struct NoopViewOps;
+impl ViewOps for NoopViewOps {}
+
+struct NoopTextOps;
+impl TextOps for NoopTextOps {}
 
 /// Owns the reactive state created by a render call. Dropping the `Owner`
 /// drops its `Scope`, which frees every signal and effect created during
@@ -310,24 +674,36 @@ pub fn render<B: Backend + 'static>(backend: Rc<RefCell<B>>, tree: Primitive) ->
 
 fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::Node {
     match node {
-        Primitive::Text { source, style } => {
+        Primitive::Text { source, style, ref_fill } => {
             let n = build_text(backend, source);
             if let Some(s) = style {
                 attach_style(backend, &n, s);
             }
+            if let Some(RefFill::Text(fill)) = ref_fill {
+                let handle = backend.borrow().make_text_handle(&n);
+                fill(handle);
+            }
             n
         }
-        Primitive::View { children, style } => {
+        Primitive::View { children, style, ref_fill } => {
             let n = build_view(backend, children);
             if let Some(s) = style {
                 attach_style(backend, &n, s);
             }
+            if let Some(RefFill::View(fill)) = ref_fill {
+                let handle = backend.borrow().make_view_handle(&n);
+                fill(handle);
+            }
             n
         }
-        Primitive::Button { label, on_click, style } => {
+        Primitive::Button { label, on_click, style, ref_fill } => {
             let n = backend.borrow_mut().create_button(&label, on_click);
             if let Some(s) = style {
                 attach_style(backend, &n, s);
+            }
+            if let Some(RefFill::Button(fill)) = ref_fill {
+                let handle = backend.borrow().make_button_handle(&n);
+                fill(handle);
             }
             n
         }

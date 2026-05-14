@@ -4,11 +4,13 @@ members = [
     "crates/framework-core",
     "crates/framework-macros",
     "crates/reactive-arena",
+    "crates/reactive-refs",
     "crates/backend-web",
     "crates/backend-ios",
     "crates/backend-android",
     "examples/hello",
     "examples/hello-web",
+    "examples/hello-android",
 ]
 
 [workspace.package]
@@ -31,3 +33,10 @@ codegen-units = 1        # Maximum cross-module optimization.
 lto = true               # Link-time optimization.
 panic = "abort"          # Drops unwinding tables (~10-20 KB win).
 strip = "symbols"        # Strip symbol info from the final binary.
+
+# Same as release but keeps symbols + DWARF so `twiggy` can attribute
+# bytes to specific functions. Build with `--profile release-debug`.
+[profile.release-debug]
+inherits = "release"
+strip = "none"
+debug = 1
