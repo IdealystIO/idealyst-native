@@ -6,12 +6,12 @@ plugins {
 }
 
 android {
-    namespace = "com.idealyst.hello"
+    namespace = "io.idealyst.hello"
     compileSdk = 34
     ndkVersion = "26.1.10909125"
 
     defaultConfig {
-        applicationId = "com.idealyst.hello"
+        applicationId = "io.idealyst.hello"
         minSdk = 24
         targetSdk = 34
         versionCode = 1
@@ -37,9 +37,20 @@ android {
     // below). We point `jniLibs.srcDirs` at the cargo-ndk output so the
     // resulting `.so`s land in the APK at the expected
     // `lib/<abi>/lib<name>.so` paths.
+    //
+    // The Kotlin runtime for backend-android (RustClickListener +
+    // Animators) lives next to the Rust crate at
+    // `crates/backend-android/runtime/kotlin`. It's pulled in here as
+    // an extra source root so the JVM-side glue compiles into this
+    // app — the Rust backend calls into these classes via JNI by
+    // name, so they must end up in the APK's classpath.
     sourceSets {
         getByName("main") {
             jniLibs.srcDirs("src/main/jniLibs")
+            java.srcDirs(
+                "src/main/java",
+                "../../../../crates/backend-android/runtime/kotlin",
+            )
         }
     }
 

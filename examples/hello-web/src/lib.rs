@@ -21,6 +21,11 @@ thread_local! {
 
 #[wasm_bindgen(start)]
 pub fn start() {
+    // Print Rust panics with their message + stack instead of the
+    // default `RuntimeError: unreachable` from __rust_abort. Saves
+    // the diagnostic dance during development.
+    console_error_panic_hook::set_once();
+
     let backend = Rc::new(RefCell::new(WebBackend::new("#app")));
     let owner = framework_core::render(backend, hello::app());
     OWNER.with(|slot| *slot.borrow_mut() = Some(owner));

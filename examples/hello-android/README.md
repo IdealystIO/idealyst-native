@@ -17,7 +17,7 @@ hello-android/
         ├── build.gradle.kts            # Invokes cargo-ndk via tasks.
         ├── src/main/AndroidManifest.xml
         ├── src/main/res/values/strings.xml
-        └── src/main/java/com/idealyst/
+        └── src/main/java/io/idealyst/
             ├── hello/MainActivity.kt   # Activity + setContentView.
             ├── hello/NativeBridge.kt   # Kotlin facade for JNI entry points.
             └── runtime/RustClickListener.kt  # Click-event trampoline.
@@ -88,7 +88,7 @@ That single command will:
 3. Build the APK with those `.so` files embedded.
 4. Install via `adb` to the attached device/emulator.
 
-Launch the app from the device's launcher (or `adb shell am start -n com.idealyst.hello/.MainActivity`).
+Launch the app from the device's launcher (or `adb shell am start -n io.idealyst.hello/.MainActivity`).
 
 ## Iterating
 
@@ -132,7 +132,7 @@ Known limits in this first pass:
   `./gradlew cargoBuildDebug --info` from `examples/hello-android/android`
   to see the cargo output, or run the cargo command manually from the
   workspace root.
-- **`Java_com_idealyst_..._attach` undefined**: the cdylib was built
+- **`Java_io_idealyst_..._attach` undefined**: the cdylib was built
   but doesn't export the symbol. Check that `examples/hello-android/src/lib.rs`
   still has the `#[no_mangle] pub extern "system" fn Java_...` block
   and that you're not stripping symbols in debug builds.

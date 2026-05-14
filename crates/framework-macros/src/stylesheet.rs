@@ -80,6 +80,24 @@ pub struct StyleSheetDecl {
     variants: Vec<VariantAxisDecl>,
     overrides: Vec<OverrideDecl>,
     transitions: Vec<TransitionDecl>,
+    /// Interaction states (`hovered`, `pressed`, `focused`,
+    /// `disabled`). Stored as overlays under the reserved
+    /// `__state` axis — same machinery as variants, so resolution
+    /// and pre-generation Just Work. Each backend listens for the
+    /// relevant native event and flips the corresponding bit on
+    /// the node's active-state set; unsupported states (e.g.
+    /// `hovered` on mobile) are silent no-ops.
+    states: Vec<StateArm>,
+}
+
+/// One `state name(theme) { ... }` block. The name must be one of
+/// the four well-known interaction states; arbitrary names are
+/// rejected so the cross-platform contract is enforced at compile
+/// time.
+struct StateArm {
+    name: Ident,
+    theme_binding: Ident,
+    rules: RulesBlock,
 }
 
 /// One line inside a `transitions { ... }` block. The `property` name
@@ -149,14 +167,16 @@ impl Parse for StyleSheetDecl {
         let base = BaseBlock { theme_binding, rules };
 
         // Then any number of `variant axis { ... }`, `override field: Type`,
-        // and `transitions { ... }` lines, in any order.
+        // `transitions { ... }`, and `state name(theme) { ... }` lines, in
+        // any order.
         let mut variants = Vec::new();
         let mut overrides = Vec::new();
         let mut transitions = Vec::new();
+        let mut states = Vec::new();
         while !body.is_empty() {
             // `override` is a reserved Rust keyword, so we can't parse
             // it as an Ident. Detect it specifically via Token![override]
-            // and treat `variant` / `transitions` as soft keywords.
+            // and treat `variant` / `transitions` / `state` as soft keywords.
             if body.peek(Token![override]) {
                 let _: Token![override] = body.parse()?;
                 let name: Ident = body.parse()?;
@@ -186,11 +206,32 @@ impl Parse for StyleSheetDecl {
                         transitions.push(parse_transition_decl(&block)?);
                     }
                 }
+                "state" => {
+                    let name: Ident = body.parse()?;
+                    // Whitelist the four well-known states. Arbitrary
+                    // names would silently never activate (no backend
+                    // listens for them), so we reject at parse time.
+                    let allowed = ["hovered", "pressed", "focused", "disabled"];
+                    if !allowed.contains(&name.to_string().as_str()) {
+                        return Err(syn::Error::new(
+                            name.span(),
+                            format!(
+                                "unknown state `{}`; expected one of: hovered, pressed, focused, disabled",
+                                name
+                            ),
+                        ));
+                    }
+                    let theme_args;
+                    parenthesized!(theme_args in body);
+                    let theme_binding: Ident = theme_args.parse()?;
+                    let rules = parse_rules_block(&body)?;
+                    states.push(StateArm { name, theme_binding, rules });
+                }
                 other => {
                     return Err(syn::Error::new(
                         kw.span(),
                         format!(
-                            "expected `variant`, `override`, or `transitions`, got `{}`",
+                            "expected `variant`, `override`, `transitions`, or `state`, got `{}`",
                             other
                         ),
                     ));
@@ -198,7 +239,16 @@ impl Parse for StyleSheetDecl {
             }
         }
 
-        Ok(StyleSheetDecl { vis, name, theme_ty, base, variants, overrides, transitions })
+        Ok(StyleSheetDecl {
+            vis,
+            name,
+            theme_ty,
+            base,
+            variants,
+            overrides,
+            transitions,
+            states,
+        })
     }
 }
 
@@ -348,6 +398,22 @@ fn emit_stylesheet_fn(decl: &StyleSheetDecl) -> TokenStream2 {
         arm_calls.into_iter().chain(default_calls)
     });
 
+    // States: each is its own variant axis with a single "on" value,
+    // so multiple states can be active simultaneously (a hovered +
+    // focused button gets both overlays merged). The axis names are
+    // namespaced with `__state_` to keep them out of the regular
+    // variant namespace. Resolution and pre-generation reuse the
+    // variant machinery — applying a state change at runtime is a
+    // class swap, not a rule mint.
+    let state_chain = decl.states.iter().map(|arm| {
+        let axis = format!("__state_{}", arm.name);
+        let arm_theme = &arm.theme_binding;
+        let rules = emit_rules_struct(&arm.rules);
+        quote! {
+            .variant(#axis, "on", |#arm_theme: &#theme_ty| #rules)
+        }
+    });
+
     quote! {
         #vis fn #fn_name() -> ::std::rc::Rc<::framework_core::StyleSheet> {
             ::std::thread_local! {
@@ -355,6 +421,7 @@ fn emit_stylesheet_fn(decl: &StyleSheetDecl) -> TokenStream2 {
                     ::std::rc::Rc::new(
                         ::framework_core::StyleSheet::new(|#base_theme: &#theme_ty| #base_rules)
                             #(#variant_chain)*
+                            #(#state_chain)*
                     );
             }
             SHEET.with(|s| ::std::clone::Clone::clone(s))

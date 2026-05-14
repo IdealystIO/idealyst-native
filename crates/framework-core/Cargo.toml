@@ -4,5 +4,28 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# When enabled, the framework records component/build/backend timing
+# events into an in-memory log. Author-facing API lives in
+# `framework_core::debug`. Off by default — when off, the `debug`
+# module + all instrumentation are entirely compiled out (no atomic
+# check, no symbol pollution, no binary growth).
+#
+# Forwards to the matching feature on `framework-macros` so the
+# `#[component]` macro emits the corresponding enter/exit calls.
+# `dep:js-sys` / `dep:wasm-bindgen` are only consulted on wasm32 (the
+# deps themselves are target-gated below), so native builds stay
+# dep-free.
+debug-stats = ["framework-macros/debug-stats", "dep:js-sys", "dep:wasm-bindgen"]
+
 [dependencies]
 framework-macros = { path = "../framework-macros" }
+
+# Web timing source for `debug-stats`. Only pulled in when the feature
+# is on AND the target is wasm32 — framework-core stays dep-free
+# otherwise. We need a function that reads `performance.now()`; doing
+# that through `js_sys` keeps us off of `web-sys` (heavier) while
+# matching what backend-web already uses.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = { version = "0.3", optional = true }
+wasm-bindgen = { version = "0.2", optional = true }

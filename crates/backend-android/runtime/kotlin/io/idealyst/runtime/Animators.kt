@@ -1,4 +1,4 @@
-package com.idealyst.runtime
+package io.idealyst.runtime
 
 import android.animation.ArgbEvaluator
 import android.animation.ValueAnimator

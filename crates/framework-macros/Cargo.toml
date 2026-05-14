@@ -7,6 +7,13 @@ license.workspace = true
 [lib]
 proc-macro = true
 
+[features]
+# Forwarded from framework-core's debug-stats. Toggles whether
+# `#[component]` emits enter/exit instrumentation calls into the
+# generated component function bodies. When off, the macro emits
+# no instrumentation at all.
+debug-stats = []
+
 [dependencies]
 syn = { version = "2", features = ["full", "visit", "visit-mut", "extra-traits"] }
 quote = "1"

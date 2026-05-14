@@ -2,7 +2,7 @@
 //!
 //! The Kotlin Activity calls `NativeBridge.attach(context, rootLayout)`
 //! once after `setContentView`. That method is implemented by the
-//! `Java_com_idealyst_hello_NativeBridge_attach` native function below,
+//! `Java_io_idealyst_hello_NativeBridge_attach` native function below,
 //! which builds an `AndroidBackend` and calls `framework_core::render`
 //! with the shared `hello::app()` tree.
 //!
@@ -32,7 +32,7 @@ thread_local! {
 /// before building a new one. (Useful if you want to hot-reload by
 /// calling `detach` then `attach` again.)
 #[no_mangle]
-pub extern "system" fn Java_com_idealyst_hello_NativeBridge_attach<'local>(
+pub extern "system" fn Java_io_idealyst_hello_NativeBridge_attach<'local>(
     env: JNIEnv<'local>,
     _class: JClass<'local>,
     context: JObject<'local>,
@@ -61,7 +61,7 @@ pub extern "system" fn Java_com_idealyst_hello_NativeBridge_attach<'local>(
 /// Detach the active mount. Drops every signal/effect and (in a future
 /// version that wires it) releases the per-button click callbacks.
 #[no_mangle]
-pub extern "system" fn Java_com_idealyst_hello_NativeBridge_detach<'local>(
+pub extern "system" fn Java_io_idealyst_hello_NativeBridge_detach<'local>(
     _env: JNIEnv<'local>,
     _class: JClass<'local>,
 ) {

@@ -34,10 +34,14 @@ pub struct Colors {
     pub background: String,
     pub surface: String,
     pub primary: String,
+    pub primary_hover: String,
+    pub primary_pressed: String,
     pub primary_text: String,
     pub text: String,
     pub muted: String,
     pub border: String,
+    pub border_hover: String,
+    pub focus_ring: String,
 }
 
 /// Spacing scale, mobile-friendly. Used as raw px values; the
@@ -59,10 +63,14 @@ pub fn light_theme() -> Theme {
             background: "#f7f7fb".into(),
             surface: "#ffffff".into(),
             primary: "#5b6cff".into(),
+            primary_hover: "#4a5cf0".into(),
+            primary_pressed: "#3947d6".into(),
             primary_text: "#ffffff".into(),
             text: "#1a1a1f".into(),
             muted: "#6b7280".into(),
             border: "#e4e6ef".into(),
+            border_hover: "#b9bdcc".into(),
+            focus_ring: "#5b6cff".into(),
         },
         spacing: SPACING.clone(),
     }
@@ -74,10 +82,14 @@ pub fn dark_theme() -> Theme {
             background: "#0f1115".into(),
             surface: "#1a1d24".into(),
             primary: "#8b9aff".into(),
+            primary_hover: "#9eabff".into(),
+            primary_pressed: "#7383f5".into(),
             primary_text: "#0f1115".into(),
             text: "#e8eaf0".into(),
             muted: "#9099a8".into(),
             border: "#2a2e3a".into(),
+            border_hover: "#3d4252".into(),
+            focus_ring: "#8b9aff".into(),
         },
         spacing: SPACING.clone(),
     }
@@ -253,9 +265,26 @@ framework_core::stylesheet! {
             letter_spacing: 0.3,
             text_align: TextAlign::Center,
         }
+
+        // Hover (web only — silent no-op on mobile, by design).
+        state hovered(t) {
+            background: Color(t.colors.primary_hover.clone()),
+        }
+
+        // Pressed (web + mobile touch-down).
+        state pressed(t) {
+            background: Color(t.colors.primary_pressed.clone()),
+        }
+
+        // Disabled — driven by `disabled = ...` prop on the Button.
+        state disabled(_t) {
+            opacity: 0.4,
+        }
+
         transitions {
-            background: 200ms EaseOut,
+            background: 150ms EaseOut,
             color: 200ms EaseOut,
+            opacity: 200ms EaseOut,
         }
     }
 }
@@ -276,9 +305,18 @@ framework_core::stylesheet! {
             letter_spacing: 0.3,
             text_align: TextAlign::Center,
         }
+
+        state hovered(t) {
+            border_color: Color(t.colors.border_hover.clone()),
+        }
+
+        state pressed(t) {
+            border_color: Color(t.colors.primary.clone()),
+        }
+
         transitions {
             color: 200ms EaseOut,
-            border_color: 200ms EaseOut,
+            border_color: 150ms EaseOut,
         }
     }
 }
@@ -321,6 +359,39 @@ framework_core::stylesheet! {
         transitions {
             background: 250ms EaseInOut,
             color: 250ms EaseInOut,
+        }
+    }
+}
+
+// FlatList container — fixed height so the inner scroller actually
+// scrolls. Without a bounded height, flex-column ancestors would let
+// the list grow unbounded.
+framework_core::stylesheet! {
+    pub ListContainer<Theme> {
+        base(t) {
+            background: Color(t.colors.surface.clone()),
+            border_radius: 8.0,
+            border_width: 1.0,
+            border_color: Color(t.colors.border.clone()),
+            height: 300.0,
+        }
+    }
+}
+
+// FlatList row — each item is a fixed-height row with subtle
+// separator (via a 1px bottom border).
+framework_core::stylesheet! {
+    pub ListRow<Theme> {
+        base(t) {
+            padding_horizontal: t.spacing.md,
+            padding_vertical: t.spacing.sm,
+            border_bottom_width: 1.0,
+            border_bottom_color: Color(t.colors.border.clone()),
+            font_size: 14.0,
+            color: Color(t.colors.text.clone()),
+            // Match the fixed_size(48.0) we use in the FlatList call.
+            height: 48.0,
+            justify_content: JustifyContent::Center,
         }
     }
 }
@@ -392,6 +463,22 @@ pub fn app() -> Primitive {
     let score_ref: Ref<CounterHandle> = Ref::new();
     let lives_ref: Ref<CounterHandle> = Ref::new();
 
+    // Signals driving the primitives showcase.
+    let name = signal!("".to_string());
+    let notifications_on = signal!(true);
+    let volume = signal!(0.5_f32);
+    let loading = signal!(false);
+
+    // Demo data for the FlatList. Each item has a stable u64 id so
+    // the virtualizer can preserve mounted subtrees across data
+    // changes. 1,000 rows — enough that mounting all would be silly,
+    // demonstrating the windowing.
+    let list_items = signal!(
+        (0..1000u64)
+            .map(|i| (i, format!("Item #{}", i)))
+            .collect::<Vec<(u64, String)>>()
+    );
+
     ui! {
         View(style = page_style()) {
             // Header section: title + subtitle.
@@ -431,11 +518,110 @@ pub fn app() -> Primitive {
                 }
             }
 
+            // Primitives showcase: text input + toggle + image. Each
+            // is controlled — the parent owns the source-of-truth
+            // signal, the primitive's `on_change` updates it, and the
+            // framework writes the new value back to the native widget.
+            View {
+                Text(style = section_heading_style()) { "Primitives" }
+                View {
+                    Text(style = subtitle_style()) {
+                        format!(
+                            "Hello{}",
+                            if name.get().is_empty() {
+                                String::new()
+                            } else {
+                                format!(", {}", name.get())
+                            }
+                        )
+                    }
+                    TextInput(
+                        value = name,
+                        on_change = move |v: String| name.set(v),
+                        placeholder = "Your name"
+                    )
+                    View(style = spaced_row_style()) {
+                        Text(style = subtitle_style()) {
+                            format!(
+                                "Notifications: {}",
+                                if notifications_on.get() { "on" } else { "off" }
+                            )
+                        }
+                        Toggle(
+                            value = notifications_on,
+                            on_change = move |v: bool| notifications_on.set(v)
+                        )
+                    }
+                    // Slider — controlled f32 in [0.0, 1.0], step 0.05
+                    // (so values snap to 0, 5%, 10%, ..., 100%).
+                    View {
+                        Text(style = subtitle_style()) {
+                            format!("Volume: {}%", (volume.get() * 100.0).round() as i32)
+                        }
+                        Slider(
+                            value = volume,
+                            on_change = move |v: f32| volume.set(v),
+                            min = 0.0_f32,
+                            max = 1.0_f32,
+                            step = 0.05_f32
+                        )
+                    }
+                    // ActivityIndicator + toggle to show/hide it. The
+                    // `if` form rebuilds the subtree when `loading`
+                    // flips; mounting an indicator is what triggers
+                    // the keyframes injection on first use.
+                    View(style = spaced_row_style()) {
+                        Button(
+                            label = "Toggle spinner",
+                            on_click = move || loading.update(|b| *b = !*b),
+                            style = secondary_button_style()
+                        )
+                        if loading.get() {
+                            ActivityIndicator()
+                        } else {
+                            View {}
+                        }
+                    }
+                }
+            }
+
+            // FlatList showcase: a virtualized 1,000-row list. The
+            // FlatList primitive owns a scrolling container; only
+            // items near the viewport are mounted (windowing). On
+            // web the JS shim handles the scroll math + ResizeObserver
+            // for measured sizes; on native (Android v1) all items
+            // are mounted up-front pending a RecyclerView follow-up.
+            View {
+                Text(style = section_heading_style()) { "FlatList — 1,000 rows" }
+                FlatList(
+                    data = list_items,
+                    key = |_idx, item: &(u64, String)| item.0,
+                    size = framework_core::primitives::flat_list::fixed_size::<(u64, String)>(48.0),
+                    render = move |_idx, item: &(u64, String)| {
+                        let label = item.1.clone();
+                        ui! {
+                            View(style = list_row_style()) {
+                                Text { label }
+                            }
+                        }
+                    },
+                    style = list_container_style()
+                )
+            }
+
             // Action bar: primary "Reset all" pushes left, secondary
             // theme toggle pushes right. Demonstrates ref-driven
             // multi-component action: one click resets two independent
             // components by calling their handles.
             View(style = spaced_row_style()) {
+                // Primary action — disabled when both counters are
+                // already at zero. The `disabled = ...` closure reads
+                // both signals; the framework wraps it in an Effect
+                // so changes propagate automatically. While disabled,
+                // PrimaryButton's `state disabled { opacity: 0.4 }`
+                // overlay applies via the framework's state
+                // machinery, and the native widget is marked inert
+                // (web: `disabled` attr; Android: `setEnabled(false)`).
                 Button(
                     label = "Reset all",
                     on_click = move || {
@@ -443,7 +629,8 @@ pub fn app() -> Primitive {
                         if let Some(h) = lives_ref.get() { h.reset(); }
                         logged_in.set(true);
                     },
-                    style = primary_button_style()
+                    style = primary_button_style(),
+                    disabled = move || score.get() == 0 && lives.get() == 0
                 )
                 Button(
                     label = if is_dark.get() { "Light mode".to_string() } else { "Dark mode".to_string() },

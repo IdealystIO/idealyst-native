@@ -12,6 +12,7 @@ framework-core = { workspace = true }
 backend-web = { workspace = true }
 hello = { path = "../hello" }
 wasm-bindgen = "0.2"
+console_error_panic_hook = "0.1"
 # Smaller allocator for WASM. Skips the chunked-arena machinery the
 # default allocator pulls in. Trade-off: slightly higher per-alloc
 # cost in exchange for much less code.

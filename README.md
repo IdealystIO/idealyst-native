@@ -388,7 +388,7 @@ cd android && ./gradlew installDebug
 ```
 
 The Kotlin host calls `NativeBridge.attach(context, rootLayout)`, which is the
-exported `Java_com_idealyst_hello_NativeBridge_attach` symbol in
+exported `Java_io_idealyst_hello_NativeBridge_attach` symbol in
 `examples/hello-android/src/lib.rs`. The Rust side builds an `AndroidBackend`
 and hands it to `framework_core::render` with the shared `hello::app()` tree.
 

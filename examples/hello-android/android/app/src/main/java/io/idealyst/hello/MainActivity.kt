@@ -1,4 +1,4 @@
-package com.idealyst.hello
+package io.idealyst.hello
 
 import android.os.Bundle
 import android.view.ViewGroup

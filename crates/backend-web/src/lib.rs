@@ -30,6 +30,7 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 use wasm_bindgen::closure::Closure;
+use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{Document, Node};
 
@@ -37,6 +38,31 @@ pub struct WebBackend {
     doc: Document,
     mount: web_sys::Element,
     _click_closures: Vec<Closure<dyn FnMut()>>,
+    /// Per-node interaction-event closures. Keyed by node-id so we
+    /// can drop them when `on_node_unstyled` fires. Each entry holds
+    /// the listeners for one node (pointerenter, pointerleave,
+    /// pointerdown, pointerup, focusin, focusout) plus the
+    /// pointer-event-type closures so the JS side keeps them alive.
+    state_listeners: HashMap<u32, Vec<Closure<dyn FnMut(web_sys::Event)>>>,
+    /// Has the `@keyframes ui-spin` rule been injected? First
+    /// ActivityIndicator creation injects it; later creations skip
+    /// the work.
+    spinner_keyframes_injected: bool,
+    /// Has the `.ui-default` rule been injected? This rule encodes
+    /// the framework's mobile-first defaults (display: flex;
+    /// flex-direction: column) and is applied to every framework-
+    /// created element alongside any user-provided class. Inserted
+    /// first so its specificity is identical to user classes but
+    /// its position is earlier — user classes win on overlap, the
+    /// default fills the gaps.
+    defaults_class_injected: bool,
+    /// Has the virtualizer JS shim been injected? First Virtualizer
+    /// creation injects `runtime/js/virtualizer.js` into a
+    /// `<script>` tag in the document head.
+    virtualizer_shim_injected: bool,
+    /// Per-virtualizer JS instance map — keyed by node id so we can
+    /// route `virtualizer_data_changed` to the right instance.
+    virtualizer_instances: HashMap<u32, JsValue>,
     /// Shared `<style>` element holding every active CSS rule.
     style_element: Option<web_sys::HtmlStyleElement>,
     /// Pre-generated classes from `register_stylesheet`. Content-keyed,
@@ -62,7 +88,12 @@ struct DynamicSlot {
     /// Kept for debugging — same hash that's set on the element's class.
     #[allow(dead_code)]
     name: String,
+    /// CSS rule index for the base rule. Always set.
     rule_index: u32,
+    /// Additional rule indices for per-state pseudo-class overlays
+    /// (`.cls:hover`, `:active`, `:focus`, `:disabled`). Empty for
+    /// nodes without `state` blocks.
+    state_rule_indices: Vec<u32>,
 }
 
 impl WebBackend {
@@ -79,6 +110,11 @@ impl WebBackend {
             doc,
             mount,
             _click_closures: Vec::new(),
+            state_listeners: HashMap::new(),
+            spinner_keyframes_injected: false,
+            defaults_class_injected: false,
+            virtualizer_shim_injected: false,
+            virtualizer_instances: HashMap::new(),
             style_element: None,
             pregen: HashMap::new(),
             dynamic: HashMap::new(),
@@ -144,6 +180,9 @@ impl WebBackend {
         }
         for s in self.dynamic.values_mut() {
             s.rule_index += 1;
+            for sidx in s.state_rule_indices.iter_mut() {
+                *sidx += 1;
+            }
         }
         new_index
     }
@@ -160,6 +199,11 @@ impl WebBackend {
         for s in self.dynamic.values_mut() {
             if s.rule_index > idx {
                 s.rule_index -= 1;
+            }
+            for sidx in s.state_rule_indices.iter_mut() {
+                if *sidx > idx {
+                    *sidx -= 1;
+                }
             }
         }
     }
@@ -281,8 +325,15 @@ fn position_css(v: framework_core::Position) -> &'static str {
 fn rules_to_css(rules: &StyleRules) -> String {
     let mut parts: Vec<String> = Vec::new();
 
-    // RN-style: every styled view is a flex container.
+    // RN-style: every styled view is a flex container. We also force
+    // `flex-direction: column` when the rules don't pin it themselves
+    // — CSS's own default is `row`, which would diverge from the
+    // framework's mobile-first default. Either the explicit rule (set
+    // below) or this default applies, never both.
     parts.push("display: flex".to_string());
+    if rules.flex_direction.is_none() {
+        parts.push("flex-direction: column".to_string());
+    }
 
     // Color + text.
     if let Some(Color(c)) = &rules.background { parts.push(format!("background: {}", c)); }
@@ -534,10 +585,12 @@ impl Backend for WebBackend {
     type Node = Node;
 
     fn create_view(&mut self) -> Self::Node {
-        self.doc
+        let el = self
+            .doc
             .create_element("div")
-            .expect("create_element failed")
-            .unchecked_into::<Node>()
+            .expect("create_element failed");
+        self.apply_default_class(&el);
+        el.unchecked_into::<Node>()
     }
 
     fn create_text(&mut self, content: &str) -> Self::Node {
@@ -572,6 +625,465 @@ impl Backend for WebBackend {
     fn update_text(&mut self, node: &Self::Node, content: &str) {
         // Works for both Element (e.g. our <span>) and Text node cases.
         node.set_text_content(Some(content));
+    }
+
+    fn create_image(&mut self, src: &str, alt: Option<&str>) -> Self::Node {
+        let img = self
+            .doc
+            .create_element("img")
+            .expect("create_element img failed");
+        let _ = img.set_attribute("src", src);
+        if let Some(a) = alt {
+            let _ = img.set_attribute("alt", a);
+        }
+        img.unchecked_into::<Node>()
+    }
+
+    fn update_image_src(&mut self, node: &Self::Node, src: &str) {
+        if let Ok(el) = node.clone().dyn_into::<web_sys::Element>() {
+            let _ = el.set_attribute("src", src);
+        }
+    }
+
+    fn create_text_input(
+        &mut self,
+        initial_value: &str,
+        placeholder: Option<&str>,
+        on_change: Rc<dyn Fn(String)>,
+    ) -> Self::Node {
+        let input: web_sys::HtmlInputElement = self
+            .doc
+            .create_element("input")
+            .expect("create_element input failed")
+            .unchecked_into();
+        input.set_type("text");
+        input.set_value(initial_value);
+        if let Some(p) = placeholder {
+            input.set_placeholder(p);
+        }
+        // Wire native `input` event to the Rust callback. We use
+        // `input` rather than `change` so every keystroke fires —
+        // matching the controlled-component "single source of truth"
+        // expectation.
+        let input_clone = input.clone();
+        let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |_e: web_sys::Event| {
+            on_change(input_clone.value());
+        });
+        let _ = input.add_event_listener_with_callback(
+            "input",
+            closure.as_ref().unchecked_ref(),
+        );
+        // Stash closure under a fresh node id so it lives as long as
+        // the node does. Reuse `state_listeners` map since it's the
+        // existing per-node closure holder.
+        let id = self.node_id(&input.clone().unchecked_into::<Node>());
+        self.state_listeners
+            .entry(id)
+            .or_default()
+            .push(closure);
+        input.unchecked_into::<Node>()
+    }
+
+    fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {
+        if let Ok(input) = node.clone().dyn_into::<web_sys::HtmlInputElement>() {
+            // Only write if different — avoids cursor-jump artifacts
+            // when our own on_change wrote back to the signal.
+            if input.value() != value {
+                input.set_value(value);
+            }
+        }
+    }
+
+    fn create_toggle(
+        &mut self,
+        initial_value: bool,
+        on_change: Rc<dyn Fn(bool)>,
+    ) -> Self::Node {
+        let input: web_sys::HtmlInputElement = self
+            .doc
+            .create_element("input")
+            .expect("create_element input failed")
+            .unchecked_into();
+        input.set_type("checkbox");
+        // role="switch" gives screen readers a switch UX even
+        // though the underlying widget is a checkbox.
+        let _ = input.set_attribute("role", "switch");
+        input.set_checked(initial_value);
+        let input_clone = input.clone();
+        let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |_e: web_sys::Event| {
+            on_change(input_clone.checked());
+        });
+        let _ = input.add_event_listener_with_callback(
+            "change",
+            closure.as_ref().unchecked_ref(),
+        );
+        let id = self.node_id(&input.clone().unchecked_into::<Node>());
+        self.state_listeners
+            .entry(id)
+            .or_default()
+            .push(closure);
+        input.unchecked_into::<Node>()
+    }
+
+    fn update_toggle_value(&mut self, node: &Self::Node, value: bool) {
+        if let Ok(input) = node.clone().dyn_into::<web_sys::HtmlInputElement>() {
+            if input.checked() != value {
+                input.set_checked(value);
+            }
+        }
+    }
+
+    fn create_scroll_view(&mut self, horizontal: bool) -> Self::Node {
+        let div = self
+            .doc
+            .create_element("div")
+            .expect("create_element div failed");
+        self.apply_default_class(&div);
+        // Apply the overflow style inline (not via the framework's
+        // style system) so it's always present regardless of
+        // user-supplied styling. The inline rules win over class
+        // rules for the overflow properties; the class still
+        // governs flex direction etc.
+        let overflow = if horizontal { "overflow-x: auto; overflow-y: hidden" } else { "overflow-y: auto; overflow-x: hidden" };
+        let _ = div.set_attribute("style", overflow);
+        div.unchecked_into::<Node>()
+    }
+
+    fn create_slider(
+        &mut self,
+        initial_value: f32,
+        min: f32,
+        max: f32,
+        step: Option<f32>,
+        on_change: Rc<dyn Fn(f32)>,
+    ) -> Self::Node {
+        let input: web_sys::HtmlInputElement = self
+            .doc
+            .create_element("input")
+            .expect("create_element input failed")
+            .unchecked_into();
+        input.set_type("range");
+        let _ = input.set_attribute("min", &min.to_string());
+        let _ = input.set_attribute("max", &max.to_string());
+        if let Some(s) = step {
+            let _ = input.set_attribute("step", &s.to_string());
+        } else {
+            // "any" enables continuous values in the browser.
+            let _ = input.set_attribute("step", "any");
+        }
+        input.set_value(&initial_value.to_string());
+
+        // Fire on every `input` event (continuous drag).
+        let input_clone = input.clone();
+        let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |_e: web_sys::Event| {
+            // Parse the string value back to f32; bail on parse error
+            // (shouldn't happen with a range input).
+            if let Ok(v) = input_clone.value().parse::<f32>() {
+                on_change(v);
+            }
+        });
+        let _ = input.add_event_listener_with_callback("input", closure.as_ref().unchecked_ref());
+        let id = self.node_id(&input.clone().unchecked_into::<Node>());
+        self.state_listeners.entry(id).or_default().push(closure);
+        input.unchecked_into::<Node>()
+    }
+
+    fn update_slider_value(&mut self, node: &Self::Node, value: f32) {
+        if let Ok(input) = node.clone().dyn_into::<web_sys::HtmlInputElement>() {
+            let s = value.to_string();
+            if input.value() != s {
+                input.set_value(&s);
+            }
+        }
+    }
+
+    fn create_web_view(&mut self, url: &str) -> Self::Node {
+        let iframe = self
+            .doc
+            .create_element("iframe")
+            .expect("create_element iframe failed");
+        let _ = iframe.set_attribute("src", url);
+        // Minimal default styling: take a sensible size; authors can
+        // override via .with_style(...).
+        let _ = iframe.set_attribute("style", "width: 100%; height: 400px; border: 0");
+        iframe.unchecked_into::<Node>()
+    }
+
+    fn update_web_view_url(&mut self, node: &Self::Node, url: &str) {
+        if let Ok(el) = node.clone().dyn_into::<web_sys::Element>() {
+            let _ = el.set_attribute("src", url);
+        }
+    }
+
+    fn create_video(
+        &mut self,
+        src: &str,
+        autoplay: bool,
+        controls: bool,
+        loop_playback: bool,
+    ) -> Self::Node {
+        let video = self
+            .doc
+            .create_element("video")
+            .expect("create_element video failed");
+        let _ = video.set_attribute("src", src);
+        if autoplay {
+            let _ = video.set_attribute("autoplay", "");
+            // Most browsers require `muted` for autoplay to work
+            // without user gesture; matches RN's autoplay-friendly
+            // default.
+            let _ = video.set_attribute("muted", "");
+        }
+        if controls {
+            let _ = video.set_attribute("controls", "");
+        }
+        if loop_playback {
+            let _ = video.set_attribute("loop", "");
+        }
+        video.unchecked_into::<Node>()
+    }
+
+    fn update_video_src(&mut self, node: &Self::Node, src: &str) {
+        if let Ok(el) = node.clone().dyn_into::<web_sys::Element>() {
+            let _ = el.set_attribute("src", src);
+        }
+    }
+
+    fn create_activity_indicator(
+        &mut self,
+        size: framework_core::primitives::activity_indicator::ActivityIndicatorSize,
+        color: Option<&framework_core::Color>,
+    ) -> Self::Node {
+        // Inject the keyframes rule once. Subsequent creations reuse
+        // the same rule by checking a static flag in the style sheet.
+        self.ensure_spinner_keyframes();
+
+        let span = self
+            .doc
+            .create_element("span")
+            .expect("create_element span failed");
+        let diameter = match size {
+            framework_core::primitives::activity_indicator::ActivityIndicatorSize::Small => 16,
+            framework_core::primitives::activity_indicator::ActivityIndicatorSize::Large => 36,
+        };
+        let accent = color
+            .map(|c| c.0.as_str())
+            .unwrap_or("currentColor");
+        // Inline style: thin ring, accent on top, animated rotation.
+        // Authors can override via .with_style(...) — these are just
+        // defaults so the spinner renders meaningfully without one.
+        let style = format!(
+            "display: inline-block; width: {d}px; height: {d}px; \
+             border: 2px solid transparent; border-top-color: {c}; \
+             border-radius: 50%; animation: ui-spin 0.8s linear infinite",
+            d = diameter,
+            c = accent
+        );
+        let _ = span.set_attribute("style", &style);
+        span.unchecked_into::<Node>()
+    }
+
+    fn create_virtualizer(
+        &mut self,
+        callbacks: framework_core::VirtualizerCallbacks<Self::Node>,
+        overscan: f32,
+        horizontal: bool,
+    ) -> Self::Node {
+        // 1) Make sure the JS-side recycler shim is in the page.
+        self.ensure_virtualizer_shim();
+
+        // 2) Create the outer scrolling container.
+        let container = self
+            .doc
+            .create_element("div")
+            .expect("create_element div failed");
+        let container_node: Node = container.clone().unchecked_into();
+        let id = self.node_id(&container_node);
+
+        // 3) Build the JS callbacks object. Each Rust callback is
+        //    wrapped in a Closure so JS can invoke it; we keep the
+        //    closures alive in `virtualizer_closures[id]`.
+        //
+        //    NOTE: js-sys-typed Closures are FnMut even when the
+        //    underlying Rust closure is Fn — that's fine, we just
+        //    invoke through the immutable signature.
+
+        // Closures are kept alive by attaching them as JS-side
+        // properties on the Virtualizer instance below; the
+        // instance owns them for its lifetime. Rust-side we just
+        // construct, `.forget()`, and let JS hold the references.
+
+        let item_count_cb = {
+            let f = callbacks.item_count.clone();
+            Closure::<dyn FnMut() -> JsValue>::new(move || {
+                JsValue::from_f64(f() as f64)
+            })
+        };
+        let item_count_js = item_count_cb.as_ref().clone();
+
+        let item_key_cb = {
+            let f = callbacks.item_key.clone();
+            Closure::<dyn FnMut(JsValue) -> JsValue>::new(move |idx: JsValue| {
+                let i = idx.as_f64().unwrap_or(0.0) as usize;
+                // Item key is a u64; JS numbers handle up to 2^53.
+                JsValue::from_f64(f(i) as f64)
+            })
+        };
+        let item_key_js = item_key_cb.as_ref().clone();
+
+        let item_size_cb = {
+            let f = callbacks.item_size.clone();
+            Closure::<dyn FnMut(JsValue) -> JsValue>::new(move |idx: JsValue| {
+                let i = idx.as_f64().unwrap_or(0.0) as usize;
+                JsValue::from_f64(f(i) as f64)
+            })
+        };
+        let item_size_js = item_size_cb.as_ref().clone();
+
+        let mount_item_cb = {
+            let f = callbacks.mount_item.clone();
+            Closure::<dyn FnMut(JsValue) -> JsValue>::new(move |idx: JsValue| {
+                let i = idx.as_f64().unwrap_or(0.0) as usize;
+                let (node, scope_id) = f(i);
+                // Return a 2-element array: [node, scopeId].
+                let arr = js_sys::Array::new_with_length(2);
+                arr.set(0, node.into());
+                arr.set(1, JsValue::from_f64(scope_id as f64));
+                arr.into()
+            })
+        };
+        let mount_item_js = mount_item_cb.as_ref().clone();
+
+        let release_item_cb = {
+            let f = callbacks.release_item.clone();
+            Closure::<dyn FnMut(JsValue)>::new(move |scope_id: JsValue| {
+                let id = scope_id.as_f64().unwrap_or(0.0) as u64;
+                f(id);
+            })
+        };
+        let release_item_js = release_item_cb.as_ref().clone();
+
+        let set_measured_size_cb = {
+            let f = callbacks.set_measured_size.clone();
+            Closure::<dyn FnMut(JsValue, JsValue)>::new(
+                move |scope_id: JsValue, size: JsValue| {
+                    let id = scope_id.as_f64().unwrap_or(0.0) as u64;
+                    let sz = size.as_f64().unwrap_or(0.0) as f32;
+                    f(id, sz);
+                },
+            )
+        };
+        let set_measured_size_js = set_measured_size_cb.as_ref().clone();
+
+        // Build the callbacks object.
+        let cb_obj = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(&cb_obj, &JsValue::from_str("itemCount"), &item_count_js);
+        let _ = js_sys::Reflect::set(&cb_obj, &JsValue::from_str("itemKey"), &item_key_js);
+        let _ = js_sys::Reflect::set(&cb_obj, &JsValue::from_str("itemSize"), &item_size_js);
+        let _ = js_sys::Reflect::set(&cb_obj, &JsValue::from_str("mountItem"), &mount_item_js);
+        let _ = js_sys::Reflect::set(&cb_obj, &JsValue::from_str("releaseItem"), &release_item_js);
+        let _ = js_sys::Reflect::set(
+            &cb_obj,
+            &JsValue::from_str("setMeasuredSize"),
+            &set_measured_size_js,
+        );
+        let _ = js_sys::Reflect::set(
+            &cb_obj,
+            &JsValue::from_str("measureSizes"),
+            &JsValue::from_bool(callbacks.measure_sizes),
+        );
+        let _ = js_sys::Reflect::set(
+            &cb_obj,
+            &JsValue::from_str("overscan"),
+            &JsValue::from_f64(overscan as f64),
+        );
+        let _ = js_sys::Reflect::set(
+            &cb_obj,
+            &JsValue::from_str("horizontal"),
+            &JsValue::from_bool(horizontal),
+        );
+
+        // 4) Construct the Virtualizer JS class.
+        let window = web_sys::window().expect("no window");
+        let ctor_raw = match js_sys::Reflect::get(&window, &JsValue::from_str("__idealystVirtualizer")) {
+            Ok(v) => v,
+            Err(e) => {
+                web_sys::console::error_2(
+                    &JsValue::from_str("[virtualizer] Reflect::get(window, __idealystVirtualizer) failed:"),
+                    &e,
+                );
+                panic!("Reflect::get failed");
+            }
+        };
+        if ctor_raw.is_undefined() || ctor_raw.is_null() {
+            web_sys::console::error_1(&JsValue::from_str(
+                "[virtualizer] window.__idealystVirtualizer is undefined/null — shim never installed",
+            ));
+            panic!("shim missing");
+        }
+        if !ctor_raw.is_function() {
+            web_sys::console::error_2(
+                &JsValue::from_str("[virtualizer] window.__idealystVirtualizer is not a function. Value:"),
+                &ctor_raw,
+            );
+            panic!("shim not a function");
+        }
+        let ctor: js_sys::Function = ctor_raw.unchecked_into();
+        let args = js_sys::Array::new_with_length(2);
+        args.set(0, container.clone().into());
+        args.set(1, cb_obj.into());
+        let instance = match js_sys::Reflect::construct(&ctor, &args) {
+            Ok(v) => v,
+            Err(e) => {
+                web_sys::console::error_2(
+                    &JsValue::from_str("[virtualizer] Reflect::construct(Virtualizer) failed:"),
+                    &e,
+                );
+                panic!("construct failed");
+            }
+        };
+
+        // 5) Keep the closures alive — leak via a side store. The
+        //    closures get dropped (and thus invalidate the JS-side
+        //    function references) when the virtualizer's
+        //    `on_node_unstyled` cleans up. The closures hold the Rcs
+        //    so the underlying framework callbacks survive too.
+        //
+        //    We type-erase by `forget`ing each into a Vec<()> sentinel
+        //    that we identify by node id. The real fix is per-closure
+        //    storage; this Vec is heterogeneous and we hold them via
+        //    forget. Simpler: hold them in the JS instance object
+        //    itself by setting properties — JS keeps them alive.
+        let _ = js_sys::Reflect::set(&instance, &JsValue::from_str("_rust_cb_item_count"), item_count_cb.as_ref());
+        let _ = js_sys::Reflect::set(&instance, &JsValue::from_str("_rust_cb_item_key"), item_key_cb.as_ref());
+        let _ = js_sys::Reflect::set(&instance, &JsValue::from_str("_rust_cb_item_size"), item_size_cb.as_ref());
+        let _ = js_sys::Reflect::set(&instance, &JsValue::from_str("_rust_cb_mount"), mount_item_cb.as_ref());
+        let _ = js_sys::Reflect::set(&instance, &JsValue::from_str("_rust_cb_release"), release_item_cb.as_ref());
+        let _ = js_sys::Reflect::set(&instance, &JsValue::from_str("_rust_cb_set_size"), set_measured_size_cb.as_ref());
+        // Then forget the Rust-side Closure wrappers — JS now holds
+        // them via the instance properties, so they'll live as long
+        // as the JS instance.
+        item_count_cb.forget();
+        item_key_cb.forget();
+        item_size_cb.forget();
+        mount_item_cb.forget();
+        release_item_cb.forget();
+        set_measured_size_cb.forget();
+
+        // Store the JS instance so virtualizer_data_changed can find it.
+        self.virtualizer_instances.insert(id, instance);
+
+        container_node
+    }
+
+    fn virtualizer_data_changed(&mut self, node: &Self::Node) {
+        let p: *const web_sys::Node = node;
+        let Some(&id) = self.node_ids.get(&p) else { return };
+        let Some(instance) = self.virtualizer_instances.get(&id) else { return };
+        let _ = js_sys::Reflect::get(instance, &JsValue::from_str("dataChanged"))
+            .ok()
+            .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
+            .map(|f| f.call0(instance));
     }
 
     fn clear_children(&mut self, node: &Self::Node) {
@@ -659,10 +1171,99 @@ impl Backend for WebBackend {
             DynamicSlot {
                 name: class_name,
                 rule_index: new_index,
+                state_rule_indices: Vec::new(),
             },
         );
         if let Some(old) = prev {
             self.delete_rule(old.rule_index);
+            // Delete any state-overlay rules from the previous slot.
+            for idx in old.state_rule_indices {
+                self.delete_rule(idx);
+            }
+        }
+    }
+
+    /// Web handles interaction states via CSS pseudo-classes
+    /// (`:hover`, `:active`, `:focus`, `:disabled`) — the browser
+    /// tracks transitions natively and no Rust-side state signal is
+    /// needed. The framework calls `apply_styled_states` instead of
+    /// `apply_style` when this returns true.
+    fn handles_states_natively(&self) -> bool {
+        true
+    }
+
+    fn apply_styled_states(
+        &mut self,
+        node: &Self::Node,
+        base: &Rc<StyleRules>,
+        overlays: &[(framework_core::StateBits, Rc<StyleRules>)],
+    ) {
+        let Ok(element) = node.clone().dyn_into::<web_sys::Element>() else {
+            return;
+        };
+        let id = self.node_id(node);
+
+        // Mint a dedicated dynamic class for the base rules, with
+        // pseudo-class overlay rules attached for each declared state.
+        // Even when the base content key matches a pre-generated class,
+        // we still need separate state overlay rules — the pre-gen
+        // path only mints base classes, so we always take the dynamic
+        // path when state overlays exist.
+        //
+        // Key: include the overlay states in the cache key so distinct
+        // (base, overlays) combinations get distinct class names. We
+        // do this by concatenating each overlay's content_key with a
+        // pseudo-class tag.
+        let mut key = base.content_key();
+        for (bit, ov) in overlays {
+            key.push(';');
+            key.push_str(state_bit_tag(*bit));
+            key.push(':');
+            key.push_str(&ov.content_key());
+        }
+
+        let class_name = hash_class_name(&key);
+        // Insert the base rule.
+        let base_body = rules_to_css(base);
+        let base_idx = self.insert_rule(&class_name, &base_body);
+
+        // Insert each state overlay as a pseudo-class scoped rule.
+        let mut state_indices: Vec<u32> = Vec::with_capacity(overlays.len());
+        for (bit, overlay) in overlays {
+            let pseudo = match *bit {
+                framework_core::StateBits::HOVERED => ":hover",
+                framework_core::StateBits::PRESSED => ":active",
+                framework_core::StateBits::FOCUSED => ":focus",
+                framework_core::StateBits::DISABLED => ":disabled",
+                _ => continue,
+            };
+            // We emit just the overlay's rules — the browser already
+            // applies the base class, and pseudo-class rules with
+            // matching specificity layered on top override only the
+            // properties they declare.
+            let selector = format!("{}{}", class_name, pseudo);
+            let body = rules_to_css(overlay);
+            let idx = self.insert_rule(&selector, &body);
+            state_indices.push(idx);
+        }
+
+        let _ = element.set_attribute("class", &class_name);
+
+        // Swap in the new dynamic slot; delete the previous one's
+        // rules (base + states).
+        let prev = self.dynamic.insert(
+            id,
+            DynamicSlot {
+                name: class_name,
+                rule_index: base_idx,
+                state_rule_indices: state_indices,
+            },
+        );
+        if let Some(old) = prev {
+            self.delete_rule(old.rule_index);
+            for idx in old.state_rule_indices {
+                self.delete_rule(idx);
+            }
         }
     }
 
@@ -673,9 +1274,47 @@ impl Backend for WebBackend {
         if let Some(&id) = self.node_ids.get(&p) {
             // Drop the dynamic slot (deletes its CSS rule if any).
             self.drop_dynamic_slot(id);
+            // Drop any state-listener closures (so they stop firing
+            // on the now-removed DOM element).
+            self.state_listeners.remove(&id);
             // Remove the node-id mapping itself.
             self.node_ids.remove(&p);
         }
+    }
+
+    fn set_disabled(&mut self, node: &Self::Node, disabled: bool) {
+        // Most disable-able elements (button, input, select) accept
+        // the `disabled` attribute. We set/remove it as appropriate.
+        // For non-form elements, this is a no-op visually but doesn't
+        // hurt.
+        let Ok(element) = node.clone().dyn_into::<web_sys::Element>() else {
+            return;
+        };
+        if disabled {
+            let _ = element.set_attribute("disabled", "");
+        } else {
+            let _ = element.remove_attribute("disabled");
+        }
+    }
+
+    /// Web state styling uses native CSS pseudo-classes (`:hover`,
+    /// `:active`, `:focus`, `:disabled`) rather than reactive JS
+    /// listeners. That happens at CSS-emit time in `apply_style` (see
+    /// `rules_to_css` / pseudo-class rule generation), not here. We
+    /// override `attach_states` to a no-op so the framework's
+    /// signal-driven state machinery doesn't fire on web.
+    ///
+    /// Why not listeners + signal-driven re-style? It causes wasm-
+    /// bindgen `WasmRefCell` re-entry crashes when DOM events fire
+    /// while a style is being applied, and the CSS path is both
+    /// simpler and faster (browser tracks the state natively, no
+    /// per-event Rust↔JS round trip).
+    fn attach_states(
+        &mut self,
+        _node: &Self::Node,
+        _setter: Rc<dyn Fn(framework_core::StateBits, bool)>,
+    ) {
+        // intentional no-op on web; CSS pseudo-classes drive states.
     }
 
     fn make_button_handle(&self, node: &Self::Node) -> ButtonHandle {
@@ -691,6 +1330,51 @@ impl Backend for WebBackend {
         ButtonHandle::new(Rc::new(html), &WebButtonOps)
     }
 
+    fn make_text_input_handle(
+        &self,
+        node: &Self::Node,
+    ) -> framework_core::primitives::text_input::TextInputHandle {
+        let input: web_sys::HtmlInputElement = node
+            .clone()
+            .dyn_into()
+            .expect("text_input node is not an HtmlInputElement");
+        framework_core::primitives::text_input::TextInputHandle::new(
+            Rc::new(input),
+            &WebTextInputOps,
+        )
+    }
+
+    fn make_scroll_view_handle(
+        &self,
+        node: &Self::Node,
+    ) -> framework_core::primitives::scroll_view::ScrollViewHandle {
+        let el: web_sys::HtmlElement = node
+            .clone()
+            .dyn_into()
+            .expect("scroll_view node is not an HtmlElement");
+        framework_core::primitives::scroll_view::ScrollViewHandle::new(
+            Rc::new(el),
+            &WebScrollViewOps,
+        )
+    }
+
+    fn make_video_handle(
+        &self,
+        node: &Self::Node,
+    ) -> framework_core::primitives::video::VideoHandle {
+        // `HtmlMediaElement` exposes play/pause/currentTime, so we
+        // downcast to that. Both `<video>` and `<audio>` are
+        // HtmlMediaElement subclasses.
+        let el: web_sys::HtmlMediaElement = node
+            .clone()
+            .dyn_into()
+            .expect("video node is not an HtmlMediaElement");
+        framework_core::primitives::video::VideoHandle::new(
+            Rc::new(el),
+            &WebVideoOps,
+        )
+    }
+
     fn finish(&mut self, root: Self::Node) {
         self.mount
             .append_child(&root)
@@ -702,6 +1386,20 @@ impl Backend for WebBackend {
 /// from the `ButtonHandle`'s internal `Rc<dyn Any>`, which we built
 /// out of an `HtmlElement` in `make_button_handle`. Downcast back to
 /// invoke the DOM API.
+/// Short string tag for a `StateBits` flag, used as part of the
+/// content key for state-bearing dynamic slots. Distinct tags ensure
+/// distinct keys (and thus distinct minted class names) for
+/// different state combinations.
+fn state_bit_tag(b: framework_core::StateBits) -> &'static str {
+    match b {
+        framework_core::StateBits::HOVERED => "h",
+        framework_core::StateBits::PRESSED => "p",
+        framework_core::StateBits::FOCUSED => "f",
+        framework_core::StateBits::DISABLED => "d",
+        _ => "?",
+    }
+}
+
 struct WebButtonOps;
 impl ButtonOps for WebButtonOps {
     fn click(&self, node: &dyn Any) {
@@ -711,11 +1409,154 @@ impl ButtonOps for WebButtonOps {
     }
 }
 
+struct WebTextInputOps;
+impl framework_core::primitives::text_input::TextInputOps for WebTextInputOps {
+    fn focus(&self, node: &dyn Any) {
+        if let Some(input) = node.downcast_ref::<web_sys::HtmlInputElement>() {
+            let _ = input.focus();
+        }
+    }
+    fn blur(&self, node: &dyn Any) {
+        if let Some(input) = node.downcast_ref::<web_sys::HtmlInputElement>() {
+            let _ = input.blur();
+        }
+    }
+    fn select_all(&self, node: &dyn Any) {
+        if let Some(input) = node.downcast_ref::<web_sys::HtmlInputElement>() {
+            input.select();
+        }
+    }
+}
+
+struct WebScrollViewOps;
+impl framework_core::primitives::scroll_view::ScrollViewOps for WebScrollViewOps {
+    fn scroll_to(&self, node: &dyn Any, x: f32, y: f32) {
+        if let Some(html) = node.downcast_ref::<web_sys::HtmlElement>() {
+            html.set_scroll_left(x as i32);
+            html.set_scroll_top(y as i32);
+        }
+    }
+}
+
+struct WebVideoOps;
+impl framework_core::primitives::video::VideoOps for WebVideoOps {
+    fn play(&self, node: &dyn Any) {
+        if let Some(v) = node.downcast_ref::<web_sys::HtmlMediaElement>() {
+            // play() returns a Promise; we ignore it. Browsers may
+            // reject if autoplay rules block playback — caller can
+            // catch via JS if they care, not worth surfacing here.
+            let _ = v.play();
+        }
+    }
+    fn pause(&self, node: &dyn Any) {
+        if let Some(v) = node.downcast_ref::<web_sys::HtmlMediaElement>() {
+            let _ = v.pause();
+        }
+    }
+    fn seek(&self, node: &dyn Any, seconds: f32) {
+        if let Some(v) = node.downcast_ref::<web_sys::HtmlMediaElement>() {
+            v.set_current_time(seconds as f64);
+        }
+    }
+}
+
 impl WebBackend {
-    /// Removes a node's dynamic slot, if any, and deletes its CSS rule.
+    /// Inject `@keyframes ui-spin` into the stylesheet on first use.
+    /// Subsequent ActivityIndicator constructions reuse the same
+    /// keyframes — the rule is identity-stable, no need to re-create.
+    /// Inject the `.ui-default` rule the first time a framework
+    /// element is created. The rule encodes the framework's
+    /// mobile-first defaults so every node gets `display: flex;
+    /// flex-direction: column` even before any user style is
+    /// applied. User-minted classes override on overlap because
+    /// they're inserted later (later wins at equal specificity).
+    fn ensure_defaults_class(&mut self) {
+        if self.defaults_class_injected {
+            return;
+        }
+        // We use `insert_rule` directly rather than the framework's
+        // own class minting because this rule isn't owned by any
+        // particular stylesheet — it's a global baseline. Bump
+        // recorded indices on the existing per-rule caches since
+        // this insertion shifts every existing rule up by 1.
+        let rule = ".ui-default { display: flex; flex-direction: column; }";
+        let _ = self.sheet().insert_rule(rule);
+        for e in self.pregen.values_mut() {
+            e.rule_index += 1;
+        }
+        for s in self.dynamic.values_mut() {
+            s.rule_index += 1;
+            for sidx in s.state_rule_indices.iter_mut() {
+                *sidx += 1;
+            }
+        }
+        self.defaults_class_injected = true;
+    }
+
+    /// Attach the framework's default class to a freshly created
+    /// element. `apply_style` later concatenates the user-minted
+    /// class alongside this one — see the className-merge logic
+    /// inside `apply_style`.
+    fn apply_default_class(&mut self, element: &web_sys::Element) {
+        self.ensure_defaults_class();
+        let _ = element.set_attribute("class", "ui-default");
+    }
+
+    /// Inject the virtualizer JS shim into the document on first
+    /// use. The shim defines `window.__idealystVirtualizer` (the
+    /// recycler class the backend then constructs). Inlined via
+    /// `include_str!` so consumers don't need to ship a separate
+    /// JS file or set up a build pipeline.
+    ///
+    /// We use `Function::new_no_args(src).call0()` (which evals the
+    /// source in the global scope) rather than appending a `<script>`
+    /// element — the latter has subtle browser-specific quirks
+    /// around when dynamically-inserted scripts execute, and some
+    /// configurations (CSP, certain WASM hosts) don't run them at
+    /// all. Eval-via-Function is unambiguous and reliable.
+    fn ensure_virtualizer_shim(&mut self) {
+        if self.virtualizer_shim_injected {
+            return;
+        }
+        let src = include_str!("../runtime/js/virtualizer.js");
+        // Wrap in a function that returns nothing and call it. The
+        // shim's body is wrapped in an IIFE itself; this outer
+        // Function::new_no_args is just our way of executing it.
+        let f = js_sys::Function::new_no_args(src);
+        let _ = f.call0(&JsValue::NULL);
+        self.virtualizer_shim_injected = true;
+    }
+
+    fn ensure_spinner_keyframes(&mut self) {
+        if self.spinner_keyframes_injected {
+            return;
+        }
+        let rule = "@keyframes ui-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }";
+        let _ = self.sheet().insert_rule(rule);
+        // The rule's insertion shifts every recorded index up by 1.
+        // The existing per-rule cache machinery does this for normal
+        // class rules; @keyframes is a different rule type and
+        // doesn't currently bump indices, so we manually do it here.
+        for e in self.pregen.values_mut() {
+            e.rule_index += 1;
+        }
+        for s in self.dynamic.values_mut() {
+            s.rule_index += 1;
+            for sidx in s.state_rule_indices.iter_mut() {
+                *sidx += 1;
+            }
+        }
+        self.spinner_keyframes_injected = true;
+    }
+
+    /// Removes a node's dynamic slot, if any, and deletes its CSS rules
+    /// (base + any per-state pseudo-class overlays).
     fn drop_dynamic_slot(&mut self, id: u32) {
         if let Some(slot) = self.dynamic.remove(&id) {
             self.delete_rule(slot.rule_index);
+            for idx in slot.state_rule_indices {
+                self.delete_rule(idx);
+            }
         }
     }
 }

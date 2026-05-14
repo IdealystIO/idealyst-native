@@ -302,26 +302,41 @@ fn emit_component(
     chain: &[TokenStream2],
 ) -> TokenStream2 {
     let lower = name.to_string().to_ascii_lowercase();
-    // For primitives, `style = ...` is the one prop we still pull out
-    // of the prop list and translate into a `.with_style(...)` call —
-    // styles are conceptually attached at construction. Method-shaped
-    // builders like `.bind(...)` belong in the trailing chain (parsed
-    // separately).
-    let is_primitive = matches!(lower.as_str(), "text" | "button" | "view" | "when");
+    // For primitives, special-case two props that attach as method
+    // calls rather than constructor arguments:
+    //   - `style = ...` → `.with_style(...)`
+    //   - `disabled = ...` → `.disabled(...)` (Button only)
+    // Other builder methods (`.bind(...)`, etc.) belong in the
+    // trailing chain — parsed separately.
+    let is_primitive = matches!(
+        lower.as_str(),
+        "text" | "button" | "view" | "when"
+        | "image" | "textinput" | "toggle" | "scrollview"
+        | "slider" | "webview" | "video" | "activityindicator"
+        | "flatlist"
+    );
+    let supports_disabled = lower.as_str() == "button";
 
-    let (style_prop, other_props): (Vec<&Prop>, Vec<&Prop>) = if is_primitive {
+    let (style_prop, disabled_prop, other_props): (Vec<&Prop>, Vec<&Prop>, Vec<&Prop>) = if is_primitive {
         let mut style = None;
+        let mut disabled = None;
         let mut rest = Vec::with_capacity(props.len());
         for p in props {
             if p.name == "style" && style.is_none() {
                 style = Some(p);
+            } else if supports_disabled && p.name == "disabled" && disabled.is_none() {
+                disabled = Some(p);
             } else {
                 rest.push(p);
             }
         }
-        (style.into_iter().collect(), rest)
+        (
+            style.into_iter().collect(),
+            disabled.into_iter().collect(),
+            rest,
+        )
     } else {
-        (Vec::new(), props.iter().collect())
+        (Vec::new(), Vec::new(), props.iter().collect())
     };
 
     let other_props: Vec<Prop> = other_props
@@ -334,6 +349,15 @@ fn emit_component(
         "button" => emit_button(&other_props, children),
         "view" => emit_view(&other_props, children),
         "when" => emit_when(&other_props, children),
+        "image" => emit_image(&other_props, children),
+        "textinput" => emit_text_input(&other_props, children),
+        "toggle" => emit_toggle(&other_props, children),
+        "scrollview" => emit_scroll_view(&other_props, children),
+        "slider" => emit_slider(&other_props, children),
+        "webview" => emit_web_view(&other_props, children),
+        "video" => emit_video(&other_props, children),
+        "activityindicator" => emit_activity_indicator(&other_props, children),
+        "flatlist" => emit_flat_list(&other_props, children),
         _ => emit_user(name, props, children),
     };
 
@@ -344,48 +368,73 @@ fn emit_component(
         inner
     };
 
+    let with_disabled = if let Some(p) = disabled_prop.first() {
+        let v = &p.value;
+        quote! { (#with_style).disabled(#v) }
+    } else {
+        with_style
+    };
+
     // Append any trailing `.method(args)` calls verbatim. The
     // expression is parenthesized once so the chain attaches to the
     // final value of the inner expression, not to its head.
     if chain.is_empty() {
-        with_style
+        with_disabled
     } else {
-        quote! { (#with_style) #(#chain)* }
+        quote! { (#with_disabled) #(#chain)* }
     }
 }
 
 fn emit_text(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
     // Text takes its content from either a `content` prop or a children
     // block. The children block is preferred when present.
-    if let Some(kids) = children {
-        // Single Rust expression preferred; if multi-item, concatenate via
-        // a String build expression. Keep it simple: single-item only for now.
+    //
+    // Reactivity: if the resolved content expression reads any
+    // signal (detected by the same `.get()` heuristic as elsewhere),
+    // we wrap it in a `move ||` closure so `IntoTextSource` routes
+    // it through `Reactive(...)` — the runtime then subscribes the
+    // text node to whichever signals the closure reads, and
+    // re-renders on change. Without this, `Text { format!("{}",
+    // count.get()) }` would render the initial value and never
+    // update.
+    let content: TokenStream2 = if let Some(kids) = children {
         match kids.len() {
-            0 => quote! { ::framework_core::text("") },
-            1 => {
-                let e = emit_node(&kids[0]);
-                quote! { ::framework_core::text(#e) }
-            }
+            0 => quote! { "" },
+            1 => emit_node(&kids[0]),
             _ => {
                 let parts = kids.iter().map(emit_node);
                 quote! {
-                    ::framework_core::text({
+                    {
                         let mut __s = ::std::string::String::new();
                         #( __s.push_str(&::std::string::ToString::to_string(&#parts)); )*
                         __s
-                    })
+                    }
                 }
             }
         }
+    } else if let Some(p) = props.iter().find(|p| p.name == "content") {
+        p.value.to_token_stream()
     } else {
-        // No children block. Look for a `content` prop.
-        if let Some(p) = props.iter().find(|p| p.name == "content") {
-            let v = &p.value;
-            quote! { ::framework_core::text(#v) }
-        } else {
-            quote! { ::framework_core::text("") }
-        }
+        quote! { "" }
+    };
+
+    if expression_reads_signal(&content) {
+        // Wrap in a move closure so the text node treats this as
+        // reactive content (closure → re-fires on signal change).
+        quote! { ::framework_core::text(move || ::std::string::ToString::to_string(&{ #content })) }
+    } else {
+        quote! { ::framework_core::text(#content) }
     }
+}
+
+/// Heuristic: does the token stream contain `.get()`? Used to decide
+/// whether `Text { ... }` bodies should be wrapped in a reactive
+/// closure. Matches the same heuristic `condition_is_reactive` uses
+/// for `if` conditions, so authors who reach for `.get()` in their
+/// content get the reactive behavior they expect.
+fn expression_reads_signal(tokens: &TokenStream2) -> bool {
+    let s = tokens.to_string();
+    s.contains(".get()") || s.contains(". get ()")
 }
 
 fn emit_button(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
@@ -420,6 +469,235 @@ fn emit_when(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
     let then_e = props.iter().find(|p| p.name == "then").map(|p| p.value.to_token_stream()).unwrap_or_else(|| quote! { || ::framework_core::view(::std::vec::Vec::new()) });
     let other = props.iter().find(|p| p.name == "otherwise").map(|p| p.value.to_token_stream()).unwrap_or_else(|| quote! { || ::framework_core::view(::std::vec::Vec::new()) });
     quote! { ::framework_core::when(#cond, #then_e, #other) }
+}
+
+/// `Image(src = ..., alt = ...)`. Takes a `src` prop (required) and
+/// optional `alt`. Both are reactive via `IntoImageSource`.
+fn emit_image(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
+    let src = props
+        .iter()
+        .find(|p| p.name == "src")
+        .map(|p| p.value.to_token_stream())
+        .unwrap_or_else(|| quote! { "" });
+    let alt_call = if let Some(a) = props.iter().find(|p| p.name == "alt") {
+        let v = emit_attr_value(&a.value);
+        quote! { .alt(#v) }
+    } else {
+        quote! {}
+    };
+    quote! { ::framework_core::primitives::image::image(#src) #alt_call }
+}
+
+/// `TextInput(value = signal, on_change = closure, placeholder = ...)`.
+fn emit_text_input(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
+    let value = props
+        .iter()
+        .find(|p| p.name == "value")
+        .map(|p| p.value.to_token_stream())
+        .unwrap_or_else(|| quote! { ::framework_core::Signal::new(::std::string::String::new()) });
+    let on_change = props
+        .iter()
+        .find(|p| p.name == "on_change")
+        .map(|p| p.value.to_token_stream())
+        .unwrap_or_else(|| quote! { |_| {} });
+    let placeholder_call = if let Some(p) = props.iter().find(|p| p.name == "placeholder") {
+        let v = emit_attr_value(&p.value);
+        quote! { .placeholder(#v) }
+    } else {
+        quote! {}
+    };
+    quote! {
+        ::framework_core::primitives::text_input::text_input(#value, #on_change) #placeholder_call
+    }
+}
+
+/// `Toggle(value = signal, on_change = closure)`.
+fn emit_toggle(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
+    let value = props
+        .iter()
+        .find(|p| p.name == "value")
+        .map(|p| p.value.to_token_stream())
+        .unwrap_or_else(|| quote! { ::framework_core::Signal::new(false) });
+    let on_change = props
+        .iter()
+        .find(|p| p.name == "on_change")
+        .map(|p| p.value.to_token_stream())
+        .unwrap_or_else(|| quote! { |_| {} });
+    quote! { ::framework_core::primitives::toggle::toggle(#value, #on_change) }
+}
+
+/// `ScrollView(horizontal = bool) { children }`. Children list works
+/// just like `View`.
+fn emit_scroll_view(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
+    let kids = children.unwrap_or(&[]);
+    let parts = kids.iter().map(emit_node);
+    let horizontal_call = if let Some(p) = props.iter().find(|p| p.name == "horizontal") {
+        let v = &p.value;
+        quote! { .horizontal(#v) }
+    } else {
+        quote! {}
+    };
+    quote! {
+        ::framework_core::primitives::scroll_view::scroll_view({
+            let mut __c: ::std::vec::Vec<::framework_core::Primitive>
+                = ::std::vec::Vec::new();
+            #( ::framework_core::ChildList::append_to(#parts, &mut __c); )*
+            __c
+        }) #horizontal_call
+    }
+}
+
+/// `Slider(value = signal, on_change = closure, min = f32, max = f32, step = f32)`.
+fn emit_slider(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
+    let value = props
+        .iter()
+        .find(|p| p.name == "value")
+        .map(|p| p.value.to_token_stream())
+        .unwrap_or_else(|| quote! { ::framework_core::Signal::new(0.0f32) });
+    let on_change = props
+        .iter()
+        .find(|p| p.name == "on_change")
+        .map(|p| p.value.to_token_stream())
+        .unwrap_or_else(|| quote! { |_| {} });
+    let range_call = match (
+        props.iter().find(|p| p.name == "min"),
+        props.iter().find(|p| p.name == "max"),
+    ) {
+        (Some(mn), Some(mx)) => {
+            let a = &mn.value;
+            let b = &mx.value;
+            quote! { .range(#a, #b) }
+        }
+        _ => quote! {},
+    };
+    let step_call = if let Some(p) = props.iter().find(|p| p.name == "step") {
+        let v = &p.value;
+        quote! { .step(#v) }
+    } else {
+        quote! {}
+    };
+    quote! {
+        ::framework_core::primitives::slider::slider(#value, #on_change)
+            #range_call
+            #step_call
+    }
+}
+
+/// `WebView(url = ...)`.
+fn emit_web_view(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
+    let url = props
+        .iter()
+        .find(|p| p.name == "url")
+        .map(|p| p.value.to_token_stream())
+        .unwrap_or_else(|| quote! { "" });
+    quote! { ::framework_core::primitives::web_view::web_view(#url) }
+}
+
+/// `Video(src = ..., autoplay = bool, controls = bool, loop_playback = bool)`.
+fn emit_video(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
+    let src = props
+        .iter()
+        .find(|p| p.name == "src")
+        .map(|p| p.value.to_token_stream())
+        .unwrap_or_else(|| quote! { "" });
+    let autoplay_call = if let Some(p) = props.iter().find(|p| p.name == "autoplay") {
+        let v = &p.value;
+        quote! { .autoplay(#v) }
+    } else {
+        quote! {}
+    };
+    let controls_call = if let Some(p) = props.iter().find(|p| p.name == "controls") {
+        let v = &p.value;
+        quote! { .controls(#v) }
+    } else {
+        quote! {}
+    };
+    let loop_call = if let Some(p) = props.iter().find(|p| p.name == "loop_playback") {
+        let v = &p.value;
+        quote! { .loop_playback(#v) }
+    } else {
+        quote! {}
+    };
+    quote! {
+        ::framework_core::primitives::video::video(#src)
+            #autoplay_call
+            #controls_call
+            #loop_call
+    }
+}
+
+/// `ActivityIndicator(size = ..., color = ...)`.
+fn emit_activity_indicator(
+    props: &[Prop],
+    _children: Option<&[UiNode]>,
+) -> TokenStream2 {
+    let size_call = if let Some(p) = props.iter().find(|p| p.name == "size") {
+        let v = &p.value;
+        quote! { .size(#v) }
+    } else {
+        quote! {}
+    };
+    let color_call = if let Some(p) = props.iter().find(|p| p.name == "color") {
+        let v = &p.value;
+        quote! { .color(#v) }
+    } else {
+        quote! {}
+    };
+    quote! {
+        ::framework_core::primitives::activity_indicator::activity_indicator()
+            #size_call
+            #color_call
+    }
+}
+
+/// `FlatList(data = signal, key = |idx, item| ..., size = FlatListItemSize<T>, render = |idx, item| ...)`.
+///
+/// `size` accepts a `FlatListItemSize<T>` value (Known/Measured). Use
+/// `framework_core::primitives::flat_list::fixed_size(48.0)` for the
+/// fixed-height common case.
+fn emit_flat_list(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
+    let data = props
+        .iter()
+        .find(|p| p.name == "data")
+        .map(|p| p.value.to_token_stream())
+        .unwrap_or_else(|| quote! { ::framework_core::Signal::new(::std::vec::Vec::new()) });
+    let key = props
+        .iter()
+        .find(|p| p.name == "key")
+        .map(|p| p.value.to_token_stream())
+        .unwrap_or_else(|| quote! { |idx, _item| idx as u64 });
+    let size = props
+        .iter()
+        .find(|p| p.name == "size")
+        .map(|p| p.value.to_token_stream())
+        .unwrap_or_else(|| {
+            quote! { ::framework_core::primitives::flat_list::fixed_size(48.0) }
+        });
+    let render = props
+        .iter()
+        .find(|p| p.name == "render")
+        .map(|p| p.value.to_token_stream())
+        .unwrap_or_else(|| quote! { |_idx, _item| ::framework_core::view(::std::vec::Vec::new()).into() });
+
+    let overscan_call = if let Some(p) = props.iter().find(|p| p.name == "overscan") {
+        let v = &p.value;
+        quote! { .overscan(#v) }
+    } else {
+        quote! {}
+    };
+    let horizontal_call = if let Some(p) = props.iter().find(|p| p.name == "horizontal") {
+        let v = &p.value;
+        quote! { .horizontal(#v) }
+    } else {
+        quote! {}
+    };
+
+    // The third generic on flat_list is unused — fall through.
+    quote! {
+        ::framework_core::primitives::flat_list::flat_list::<_, _, (), _>(#data, #key, #size, #render)
+            #overscan_call
+            #horizontal_call
+    }
 }
 
 /// Emit a user-defined component invocation. Lowercases the name and calls

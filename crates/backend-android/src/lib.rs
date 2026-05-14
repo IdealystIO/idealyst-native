@@ -19,7 +19,7 @@
 //! - `LinearLayout` for views (vertical by default).
 //! - `TextView` for text, with `setText` for reactive updates.
 //! - `Button` widgets with click bridging through a small Kotlin
-//!   listener (`com.idealyst.runtime.RustClickListener`) that holds a
+//!   listener (`io.idealyst.runtime.RustClickListener`) that holds a
 //!   native pointer and calls back into Rust.
 //! - Style application: background color, padding, text color, font
 //!   size, border, and border-radius. Border + radius are rendered via
@@ -93,6 +93,36 @@ mod imp {
     /// to drop these.
     struct ClickCallback(Rc<dyn Fn()>);
 
+    /// Owned holder for the per-node state setter the framework
+    /// hands us in `attach_states`. JVM side keeps the raw pointer
+    /// in `RustStateListener` and passes it back via
+    /// `nativeStateEvent` on every touch/focus transition.
+    ///
+    /// Same lifetime model as `ClickCallback`: leaked at allocation,
+    /// freed by `on_node_unstyled` when the node detaches.
+    struct StateCallback(Rc<dyn Fn(framework_core::StateBits, bool)>);
+
+    /// Holder for `TextInput.on_change`. JVM-side
+    /// `RustTextWatcher.afterTextChanged` calls
+    /// `nativeChanged(ptr, text)`.
+    struct TextChangeCallback(Rc<dyn Fn(String)>);
+
+    /// Holder for `Toggle.on_change`. JVM-side
+    /// `RustToggleListener.onCheckedChanged` calls
+    /// `nativeChanged(ptr, checked)`.
+    struct ToggleChangeCallback(Rc<dyn Fn(bool)>);
+
+    /// Holder for `Slider.on_change`. The Kotlin
+    /// `RustSliderListener` passes back the SeekBar's integer
+    /// progress value, which we convert to the user's [min, max]
+    /// f32 range before invoking the closure.
+    struct SliderChangeCallback {
+        on_change: Rc<dyn Fn(f32)>,
+        min: f32,
+        max: f32,
+        resolution: i32,
+    }
+
     /// Per-node animation state. Keyed by the raw `*JObject` pointer
     /// extracted from each node's `GlobalRef` — the JVM keeps the
     /// underlying object alive as long as we hold the `GlobalRef`, so
@@ -135,6 +165,12 @@ mod imp {
         // Held so corner/stroke animators can mutate one drawable
         // instead of `setBackground`-ing a fresh one every tick.
         drawable: Option<GlobalRef>,
+
+        /// Raw pointer to the leaked `Box<StateCallback>` held by the
+        /// JVM-side `RustStateListener`. Freed (via
+        /// `Box::from_raw`) when the node is unstyled. Zero means
+        /// none allocated yet.
+        state_callback_ptr: jlong,
     }
 
     pub struct AndroidBackend {
@@ -224,7 +260,7 @@ mod imp {
                 let ptr = Box::into_raw(boxed) as jlong;
 
                 let listener_class =
-                    env.find_class("com/idealyst/runtime/RustClickListener").unwrap();
+                    env.find_class("io/idealyst/runtime/RustClickListener").unwrap();
                 let listener = env
                     .new_object(&listener_class, "(J)V", &[JValue::Long(ptr)])
                     .unwrap();
@@ -256,6 +292,502 @@ mod imp {
             with_env(|env| set_text(env, &node.as_obj(), content));
         }
 
+        fn create_image(&mut self, _src: &str, _alt: Option<&str>) -> Self::Node {
+            // Stub: produce a bare ImageView so the tree builds. Actual
+            // URL loading on Android needs a third-party loader (Glide,
+            // Coil, etc.) — not in v1. Authors who need images today
+            // should wrap a custom component over this.
+            with_env(|env| {
+                let class = env.find_class("android/widget/ImageView").unwrap();
+                let local = env
+                    .new_object(
+                        &class,
+                        "(Landroid/content/Context;)V",
+                        &[JValue::Object(&self.context.as_obj())],
+                    )
+                    .unwrap();
+                env.new_global_ref(local).unwrap()
+            })
+        }
+
+        fn create_text_input(
+            &mut self,
+            initial_value: &str,
+            placeholder: Option<&str>,
+            on_change: Rc<dyn Fn(String)>,
+        ) -> Self::Node {
+            // EditText with a TextWatcher dispatched through Kotlin
+            // `RustTextWatcher`. Same lifecycle/leak pattern as
+            // RustClickListener: box + leak the on_change closure, free
+            // it in on_node_unstyled. The native widget calls back into
+            // `Java_io_idealyst_runtime_RustTextWatcher_nativeChanged`
+            // on every keystroke.
+            with_env(|env| {
+                let class = env.find_class("android/widget/EditText").unwrap();
+                let local = env
+                    .new_object(
+                        &class,
+                        "(Landroid/content/Context;)V",
+                        &[JValue::Object(&self.context.as_obj())],
+                    )
+                    .unwrap();
+                set_text(env, &local, initial_value);
+                if let Some(p) = placeholder {
+                    let java_str = env.new_string(p).unwrap();
+                    let _ = env.call_method(
+                        &local,
+                        "setHint",
+                        "(Ljava/lang/CharSequence;)V",
+                        &[JValue::Object(&JObject::from(java_str))],
+                    );
+                }
+                // Wire the watcher.
+                let boxed = Box::new(TextChangeCallback(on_change));
+                let ptr = Box::into_raw(boxed) as jlong;
+                let watcher_class = env
+                    .find_class("io/idealyst/runtime/RustTextWatcher")
+                    .unwrap();
+                let watcher = env
+                    .new_object(&watcher_class, "(J)V", &[JValue::Long(ptr)])
+                    .unwrap();
+                let _ = env.call_method(
+                    &local,
+                    "addTextChangedListener",
+                    "(Landroid/text/TextWatcher;)V",
+                    &[JValue::Object(&watcher)],
+                );
+                env.new_global_ref(local).unwrap()
+            })
+        }
+
+        fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {
+            with_env(|env| {
+                // Only update if the text differs, to avoid cursor
+                // jumps when our own listener wrote back to the signal.
+                let current = env
+                    .call_method(node.as_obj(), "getText", "()Landroid/text/Editable;", &[])
+                    .ok()
+                    .and_then(|v| v.l().ok());
+                let same = current
+                    .as_ref()
+                    .map(|cur| {
+                        env.call_method(cur, "toString", "()Ljava/lang/String;", &[])
+                            .ok()
+                            .and_then(|v| v.l().ok())
+                            .and_then(|s| {
+                                let jstr: jni::objects::JString = s.into();
+                                env.get_string(&jstr).ok().map(|js| js.to_str().unwrap_or("").to_string())
+                            })
+                            .map(|s| s == value)
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(false);
+                if !same {
+                    set_text(env, &node.as_obj(), value);
+                }
+            });
+        }
+
+        fn create_toggle(
+            &mut self,
+            initial_value: bool,
+            on_change: Rc<dyn Fn(bool)>,
+        ) -> Self::Node {
+            with_env(|env| {
+                let class = env.find_class("android/widget/Switch").unwrap();
+                let local = env
+                    .new_object(
+                        &class,
+                        "(Landroid/content/Context;)V",
+                        &[JValue::Object(&self.context.as_obj())],
+                    )
+                    .unwrap();
+                // Initial value.
+                let _ = env.call_method(
+                    &local,
+                    "setChecked",
+                    "(Z)V",
+                    &[JValue::Bool(if initial_value { 1 } else { 0 })],
+                );
+                // Wire the listener.
+                let boxed = Box::new(ToggleChangeCallback(on_change));
+                let ptr = Box::into_raw(boxed) as jlong;
+                let listener_class = env
+                    .find_class("io/idealyst/runtime/RustToggleListener")
+                    .unwrap();
+                let listener = env
+                    .new_object(&listener_class, "(J)V", &[JValue::Long(ptr)])
+                    .unwrap();
+                let _ = env.call_method(
+                    &local,
+                    "setOnCheckedChangeListener",
+                    "(Landroid/widget/CompoundButton$OnCheckedChangeListener;)V",
+                    &[JValue::Object(&listener)],
+                );
+                env.new_global_ref(local).unwrap()
+            })
+        }
+
+        fn update_toggle_value(&mut self, node: &Self::Node, value: bool) {
+            with_env(|env| {
+                let _ = env.call_method(
+                    node.as_obj(),
+                    "setChecked",
+                    "(Z)V",
+                    &[JValue::Bool(if value { 1 } else { 0 })],
+                );
+            });
+        }
+
+        fn create_scroll_view(&mut self, horizontal: bool) -> Self::Node {
+            // ScrollView is a single-child ViewGroup. To accept multiple
+            // children we wrap a LinearLayout inside the ScrollView and
+            // call `addView` on the inner layout. We expose the inner
+            // layout as the node so the framework's `insert` calls hit
+            // it directly.
+            with_env(|env| {
+                let outer_class = if horizontal {
+                    env.find_class("android/widget/HorizontalScrollView").unwrap()
+                } else {
+                    env.find_class("android/widget/ScrollView").unwrap()
+                };
+                let outer = env
+                    .new_object(
+                        &outer_class,
+                        "(Landroid/content/Context;)V",
+                        &[JValue::Object(&self.context.as_obj())],
+                    )
+                    .unwrap();
+                let inner_class = env.find_class("android/widget/LinearLayout").unwrap();
+                let inner = env
+                    .new_object(
+                        &inner_class,
+                        "(Landroid/content/Context;)V",
+                        &[JValue::Object(&self.context.as_obj())],
+                    )
+                    .unwrap();
+                let orient = if horizontal { 0 } else { 1 };
+                let _ = env.call_method(
+                    &inner,
+                    "setOrientation",
+                    "(I)V",
+                    &[JValue::Int(orient)],
+                );
+                let _ = env.call_method(
+                    &outer,
+                    "addView",
+                    "(Landroid/view/View;)V",
+                    &[JValue::Object(&inner)],
+                );
+                // We return the inner LinearLayout as the framework's
+                // node so child additions go into the scrollable area.
+                // Style application targets the inner too — outer is
+                // just a chrome wrapper. This is a v1 compromise; if
+                // padding/margin behaves oddly on the outer
+                // ScrollView, we can revisit.
+                env.new_global_ref(inner).unwrap()
+            })
+        }
+
+        fn create_slider(
+            &mut self,
+            initial_value: f32,
+            min: f32,
+            max: f32,
+            step: Option<f32>,
+            on_change: Rc<dyn Fn(f32)>,
+        ) -> Self::Node {
+            // SeekBar is the simplest native slider widget. Its
+            // progress is an integer in [0, max], so we scale our
+            // f32 value range to that integer range and reverse the
+            // mapping in the listener. Step is forwarded too — the
+            // framework applies the snap in its on_change wrapper
+            // before we get here, so we just pick a reasonable
+            // integer resolution.
+            //
+            // Resolution: 1000 integer steps if continuous; otherwise
+            // use enough steps to cover the requested step granularity.
+            with_env(|env| {
+                let class = env.find_class("android/widget/SeekBar").unwrap();
+                let local = env
+                    .new_object(
+                        &class,
+                        "(Landroid/content/Context;)V",
+                        &[JValue::Object(&self.context.as_obj())],
+                    )
+                    .unwrap();
+                let resolution = match step {
+                    Some(s) if s > 0.0 => ((max - min) / s).round().max(1.0) as i32,
+                    _ => 1000,
+                };
+                let _ = env.call_method(
+                    &local,
+                    "setMax",
+                    "(I)V",
+                    &[JValue::Int(resolution)],
+                );
+                let initial_int = ((initial_value - min) / (max - min) * resolution as f32)
+                    .round() as i32;
+                let _ = env.call_method(
+                    &local,
+                    "setProgress",
+                    "(I)V",
+                    &[JValue::Int(initial_int)],
+                );
+                // Wire the listener via Kotlin trampoline.
+                let boxed = Box::new(SliderChangeCallback {
+                    on_change,
+                    min,
+                    max,
+                    resolution,
+                });
+                let ptr = Box::into_raw(boxed) as jlong;
+                let listener_class = env
+                    .find_class("io/idealyst/runtime/RustSliderListener")
+                    .unwrap();
+                let listener = env
+                    .new_object(&listener_class, "(J)V", &[JValue::Long(ptr)])
+                    .unwrap();
+                let _ = env.call_method(
+                    &local,
+                    "setOnSeekBarChangeListener",
+                    "(Landroid/widget/SeekBar$OnSeekBarChangeListener;)V",
+                    &[JValue::Object(&listener)],
+                );
+                env.new_global_ref(local).unwrap()
+            })
+        }
+
+        fn update_slider_value(&mut self, node: &Self::Node, value: f32) {
+            // Without min/max here we can't convert back to integer
+            // progress generically. For v1 we accept that the
+            // framework-side controlled write-back doesn't refresh
+            // SeekBar visually after on_change — Android's SeekBar
+            // tracks user drag visually itself, so this only matters
+            // when the parent programmatically `.set()`s a value.
+            // Worth revisiting when this becomes an issue.
+            let _ = (node, value);
+        }
+
+        fn create_web_view(&mut self, url: &str) -> Self::Node {
+            with_env(|env| {
+                let class = env.find_class("android/webkit/WebView").unwrap();
+                let local = env
+                    .new_object(
+                        &class,
+                        "(Landroid/content/Context;)V",
+                        &[JValue::Object(&self.context.as_obj())],
+                    )
+                    .unwrap();
+                let java_url = env.new_string(url).unwrap();
+                let _ = env.call_method(
+                    &local,
+                    "loadUrl",
+                    "(Ljava/lang/String;)V",
+                    &[JValue::Object(&JObject::from(java_url))],
+                );
+                env.new_global_ref(local).unwrap()
+            })
+        }
+
+        fn update_web_view_url(&mut self, node: &Self::Node, url: &str) {
+            with_env(|env| {
+                let java_url = env.new_string(url).unwrap();
+                let _ = env.call_method(
+                    node.as_obj(),
+                    "loadUrl",
+                    "(Ljava/lang/String;)V",
+                    &[JValue::Object(&JObject::from(java_url))],
+                );
+            });
+        }
+
+        fn create_video(
+            &mut self,
+            src: &str,
+            autoplay: bool,
+            _controls: bool,
+            _loop_playback: bool,
+        ) -> Self::Node {
+            // VideoView is the simple-case primitive. Production apps
+            // typically use ExoPlayer; we ship the simple path.
+            // `_controls`/`_loop_playback` would require a
+            // MediaController and an OnCompletionListener — both
+            // straightforward to add but skipped for v1.
+            with_env(|env| {
+                let class = env.find_class("android/widget/VideoView").unwrap();
+                let local = env
+                    .new_object(
+                        &class,
+                        "(Landroid/content/Context;)V",
+                        &[JValue::Object(&self.context.as_obj())],
+                    )
+                    .unwrap();
+                // setVideoPath(String) for local files; setVideoURI for
+                // URIs. Use setVideoURI by parsing the string.
+                let uri_class = env.find_class("android/net/Uri").unwrap();
+                let java_src = env.new_string(src).unwrap();
+                let uri = env
+                    .call_static_method(
+                        &uri_class,
+                        "parse",
+                        "(Ljava/lang/String;)Landroid/net/Uri;",
+                        &[JValue::Object(&JObject::from(java_src))],
+                    )
+                    .unwrap()
+                    .l()
+                    .unwrap();
+                let _ = env.call_method(
+                    &local,
+                    "setVideoURI",
+                    "(Landroid/net/Uri;)V",
+                    &[JValue::Object(&uri)],
+                );
+                if autoplay {
+                    let _ = env.call_method(&local, "start", "()V", &[]);
+                }
+                env.new_global_ref(local).unwrap()
+            })
+        }
+
+        fn update_video_src(&mut self, node: &Self::Node, src: &str) {
+            with_env(|env| {
+                let uri_class = env.find_class("android/net/Uri").unwrap();
+                let java_src = env.new_string(src).unwrap();
+                let uri = env
+                    .call_static_method(
+                        &uri_class,
+                        "parse",
+                        "(Ljava/lang/String;)Landroid/net/Uri;",
+                        &[JValue::Object(&JObject::from(java_src))],
+                    )
+                    .unwrap()
+                    .l()
+                    .unwrap();
+                let _ = env.call_method(
+                    node.as_obj(),
+                    "setVideoURI",
+                    "(Landroid/net/Uri;)V",
+                    &[JValue::Object(&uri)],
+                );
+            });
+        }
+
+        fn create_virtualizer(
+            &mut self,
+            callbacks: framework_core::VirtualizerCallbacks<Self::Node>,
+            _overscan: f32,
+            horizontal: bool,
+        ) -> Self::Node {
+            // v1 Android implementation: a ScrollView wrapping a
+            // LinearLayout that mounts ALL items up-front. No native
+            // windowing or recycling yet — that's the follow-up that
+            // wires RecyclerView with a Kotlin Adapter + JNI bridge.
+            //
+            // For lists of a few hundred items this works fine. The
+            // contract (mount_item / release_item) is correct; only
+            // the windowing-vs-mount-all policy is the v1 compromise.
+            // Switching to RecyclerView later doesn't change the
+            // framework-side API.
+            with_env(|env| {
+                let outer_class = if horizontal {
+                    env.find_class("android/widget/HorizontalScrollView").unwrap()
+                } else {
+                    env.find_class("android/widget/ScrollView").unwrap()
+                };
+                let outer = env
+                    .new_object(
+                        &outer_class,
+                        "(Landroid/content/Context;)V",
+                        &[JValue::Object(&self.context.as_obj())],
+                    )
+                    .unwrap();
+                let inner_class = env.find_class("android/widget/LinearLayout").unwrap();
+                let inner = env
+                    .new_object(
+                        &inner_class,
+                        "(Landroid/content/Context;)V",
+                        &[JValue::Object(&self.context.as_obj())],
+                    )
+                    .unwrap();
+                let orient = if horizontal { 0 } else { 1 };
+                let _ = env.call_method(
+                    &inner,
+                    "setOrientation",
+                    "(I)V",
+                    &[JValue::Int(orient)],
+                );
+                let _ = env.call_method(
+                    &outer,
+                    "addView",
+                    "(Landroid/view/View;)V",
+                    &[JValue::Object(&inner)],
+                );
+
+                // Mount every item up-front and attach to the inner
+                // LinearLayout. Scope ids are kept by the framework;
+                // we don't release any of them in v1 (since we don't
+                // virtualize on this platform yet). They free when
+                // the surrounding scope drops.
+                let n = (callbacks.item_count)();
+                for i in 0..n {
+                    let (child, _scope_id) = (callbacks.mount_item)(i);
+                    let _ = env.call_method(
+                        &inner,
+                        "addView",
+                        "(Landroid/view/View;)V",
+                        &[JValue::Object(&child.as_obj())],
+                    );
+                }
+
+                env.new_global_ref(inner).unwrap()
+            })
+        }
+
+        fn virtualizer_data_changed(&mut self, _node: &Self::Node) {
+            // v1: mount-all means we don't re-diff on data change.
+            // RecyclerView follow-up will wire this to
+            // adapter.notifyDataSetChanged() or a DiffUtil swap.
+        }
+
+        fn create_activity_indicator(
+            &mut self,
+            _size: framework_core::primitives::activity_indicator::ActivityIndicatorSize,
+            _color: Option<&framework_core::Color>,
+        ) -> Self::Node {
+            // Indeterminate ProgressBar — matches Material default.
+            // Size is approximate; ProgressBar's default size is
+            // ~36dp which is closer to RN's "Large". Custom sizing
+            // requires LayoutParams which is beyond v1 scope.
+            with_env(|env| {
+                let class = env.find_class("android/widget/ProgressBar").unwrap();
+                let local = env
+                    .new_object(
+                        &class,
+                        "(Landroid/content/Context;)V",
+                        &[JValue::Object(&self.context.as_obj())],
+                    )
+                    .unwrap();
+                let _ = env.call_method(
+                    &local,
+                    "setIndeterminate",
+                    "(Z)V",
+                    &[JValue::Bool(1)],
+                );
+                env.new_global_ref(local).unwrap()
+            })
+        }
+
+        fn make_video_handle(
+            &self,
+            node: &Self::Node,
+        ) -> framework_core::primitives::video::VideoHandle {
+            framework_core::primitives::video::VideoHandle::new(
+                Rc::new(node.clone()),
+                &AndroidVideoOps,
+            )
+        }
+
         fn clear_children(&mut self, node: &Self::Node) {
             with_env(|env| {
                 env.call_method(node.as_obj(), "removeAllViews", "()V", &[])
@@ -273,14 +805,87 @@ mod imp {
         }
 
         fn on_node_unstyled(&mut self, node: &Self::Node) {
-            // Free per-node animator state when the node detaches.
-            // Drops the held `GlobalRef`s, which lets the JVM GC the
-            // animator objects.
-            self.anim_state.remove(&Self::node_key(node));
+            // Free per-node animator state + the leaked state-callback
+            // box when the node detaches. Drops the held `GlobalRef`s,
+            // which lets the JVM GC the animator/listener objects.
+            if let Some(entry) = self.anim_state.remove(&Self::node_key(node)) {
+                if entry.state_callback_ptr != 0 {
+                    // SAFETY: the pointer was produced by Box::into_raw
+                    // on a `Box<StateCallback>` in `attach_states`. We
+                    // own it again here.
+                    unsafe {
+                        drop(Box::from_raw(entry.state_callback_ptr as *mut StateCallback));
+                    }
+                }
+            }
         }
 
         fn make_button_handle(&self, node: &Self::Node) -> ButtonHandle {
             ButtonHandle::new(Rc::new(node.clone()), &AndroidButtonOps)
+        }
+
+        fn set_disabled(&mut self, node: &Self::Node, disabled: bool) {
+            with_env(|env| {
+                let _ = env.call_method(
+                    node.as_obj(),
+                    "setEnabled",
+                    "(Z)V",
+                    &[JValue::Bool(if disabled { 0 } else { 1 })],
+                );
+            });
+        }
+
+        fn attach_states(
+            &mut self,
+            node: &Self::Node,
+            setter: ::std::rc::Rc<dyn Fn(framework_core::StateBits, bool)>,
+        ) {
+            // Box the setter behind a stable raw pointer the JVM can
+            // hand back via JNI on event firings, mirroring the
+            // RustClickListener pattern. The Kotlin side holds the
+            // pointer in a small wrapper class (RustStateListener)
+            // whose listener methods call back into `nativeStateEvent`
+            // with the bit (PRESSED/FOCUSED) and on/off boolean.
+            //
+            // Note: Android has no `hovered` for touch devices. We
+            // wire only PRESSED + FOCUSED — HOVERED bit never flips on
+            // mobile, which is the intended cross-platform no-op.
+            let boxed: Box<StateCallback> = Box::new(StateCallback(setter));
+            let ptr = Box::into_raw(boxed) as jlong;
+
+            with_env(|env| {
+                let listener_class = match env
+                    .find_class("io/idealyst/runtime/RustStateListener")
+                {
+                    Ok(c) => c,
+                    Err(_) => return,
+                };
+                let Ok(listener) = env.new_object(&listener_class, "(J)V", &[JValue::Long(ptr)])
+                else {
+                    return;
+                };
+                // Touch listener — drives PRESSED.
+                let _ = env.call_method(
+                    node.as_obj(),
+                    "setOnTouchListener",
+                    "(Landroid/view/View$OnTouchListener;)V",
+                    &[JValue::Object(&listener)],
+                );
+                // Focus listener — drives FOCUSED.
+                let _ = env.call_method(
+                    node.as_obj(),
+                    "setOnFocusChangeListener",
+                    "(Landroid/view/View$OnFocusChangeListener;)V",
+                    &[JValue::Object(&listener)],
+                );
+            });
+
+            // Stash the pointer in the per-node state so we can free
+            // it on unstyle. The animation cache already keys by
+            // node; reuse it.
+            let key = Self::node_key(node);
+            let entry = self.anim_state.entry(key).or_default();
+            entry.state_callback_ptr = ptr;
         }
 
         fn finish(&mut self, root: Self::Node) {
@@ -307,7 +912,7 @@ mod imp {
     /// is *not* freed here — it stays valid for as long as the listener
     /// object is alive.
     #[no_mangle]
-    pub unsafe extern "system" fn Java_com_idealyst_runtime_RustClickListener_nativeInvoke(
+    pub unsafe extern "system" fn Java_io_idealyst_runtime_RustClickListener_nativeInvoke(
         _env: JNIEnv,
         // Instance method on RustClickListener; second JNI arg is `this`.
         // We don't need it — `ptr` carries everything.
@@ -323,11 +928,40 @@ mod imp {
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (cb.0)()));
     }
 
+    /// State-event trampoline. The Kotlin `RustStateListener`
+    /// forwards touch and focus events here. `bit` is the integer
+    /// value of the `StateBits` flag to flip (matches
+    /// `StateBits::PRESSED.0` etc.); `on` is the new value of that
+    /// bit (1 for entering the state, 0 for leaving).
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must have been produced by `Box::into_raw` on a
+    /// `Box<StateCallback>` in `attach_states` and must still be live.
+    /// The framework's `on_node_unstyled` frees it; the JVM-side
+    /// listener should not invoke this after the View detaches.
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_io_idealyst_runtime_RustStateListener_nativeStateEvent(
+        _env: JNIEnv,
+        _this: JObject,
+        ptr: jlong,
+        bit: jint,
+        on: jint,
+    ) {
+        if ptr == 0 {
+            return;
+        }
+        let cb = &*(ptr as *const StateCallback);
+        let bit = framework_core::StateBits(bit as u8);
+        let on = on != 0;
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (cb.0)(bit, on)));
+    }
+
     /// Free a leaked `ClickCallback`. Currently unused (see lifetime
     /// note on `ClickCallback`); exposed so the Kotlin side can call
     /// it from `RustClickListener.finalize()` once we wire that.
     #[no_mangle]
-    pub unsafe extern "system" fn Java_com_idealyst_runtime_RustClickListener_nativeDrop(
+    pub unsafe extern "system" fn Java_io_idealyst_runtime_RustClickListener_nativeDrop(
         _env: JNIEnv,
         _this: JObject,
         ptr: jlong,
@@ -335,6 +969,64 @@ mod imp {
         if ptr != 0 {
             drop(Box::from_raw(ptr as *mut ClickCallback));
         }
+    }
+
+    /// `RustTextWatcher.afterTextChanged` dispatch. Hands the new
+    /// string content to the Rust `on_change` closure.
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_io_idealyst_runtime_RustTextWatcher_nativeChanged<'l>(
+        mut env: JNIEnv<'l>,
+        _this: JObject<'l>,
+        ptr: jlong,
+        text: jni::objects::JString<'l>,
+    ) {
+        if ptr == 0 {
+            return;
+        }
+        let s = env
+            .get_string(&text)
+            .ok()
+            .map(|js| js.to_str().unwrap_or("").to_string())
+            .unwrap_or_default();
+        let cb = &*(ptr as *const TextChangeCallback);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (cb.0)(s)));
+    }
+
+    /// `RustToggleListener.onCheckedChanged` dispatch.
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_io_idealyst_runtime_RustToggleListener_nativeChanged(
+        _env: JNIEnv,
+        _this: JObject,
+        ptr: jlong,
+        checked: jint,
+    ) {
+        if ptr == 0 {
+            return;
+        }
+        let cb = &*(ptr as *const ToggleChangeCallback);
+        let v = checked != 0;
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (cb.0)(v)));
+    }
+
+    /// `RustSliderListener.onProgressChanged` dispatch. Converts the
+    /// SeekBar's integer progress back to the user's [min, max] f32
+    /// range using the stashed callback metadata.
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_io_idealyst_runtime_RustSliderListener_nativeChanged(
+        _env: JNIEnv,
+        _this: JObject,
+        ptr: jlong,
+        progress: jint,
+    ) {
+        if ptr == 0 {
+            return;
+        }
+        let cb = &*(ptr as *const SliderChangeCallback);
+        // Map int progress in [0, resolution] back to f32 [min, max].
+        let t = progress as f32 / cb.resolution as f32;
+        let value = cb.min + t * (cb.max - cb.min);
+        let on_change = cb.on_change.clone();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| on_change(value)));
     }
 
     // ---- ButtonOps ---------------------------------------------------------
@@ -348,6 +1040,34 @@ mod imp {
             };
             with_env(|env| {
                 let _ = env.call_method(gref.as_obj(), "performClick", "()Z", &[]);
+            });
+        }
+    }
+
+    struct AndroidVideoOps;
+    impl framework_core::primitives::video::VideoOps for AndroidVideoOps {
+        fn play(&self, node: &dyn Any) {
+            let Some(gref) = node.downcast_ref::<GlobalRef>() else { return };
+            with_env(|env| {
+                let _ = env.call_method(gref.as_obj(), "start", "()V", &[]);
+            });
+        }
+        fn pause(&self, node: &dyn Any) {
+            let Some(gref) = node.downcast_ref::<GlobalRef>() else { return };
+            with_env(|env| {
+                let _ = env.call_method(gref.as_obj(), "pause", "()V", &[]);
+            });
+        }
+        fn seek(&self, node: &dyn Any, seconds: f32) {
+            let Some(gref) = node.downcast_ref::<GlobalRef>() else { return };
+            with_env(|env| {
+                // seekTo(int milliseconds).
+                let _ = env.call_method(
+                    gref.as_obj(),
+                    "seekTo",
+                    "(I)V",
+                    &[JValue::Int((seconds * 1000.0) as i32)],
+                );
             });
         }
     }
@@ -887,7 +1607,7 @@ mod imp {
         // Locate the Kotlin helper. The helper is a small companion-
         // method on the Activity-side runtime that wraps a
         // ValueAnimator and applies the padding via setPadding.
-        let class = env.find_class("com/idealyst/runtime/Animators").ok()?;
+        let class = env.find_class("io/idealyst/runtime/Animators").ok()?;
         let interpolator = build_interpolator(env, transition.easing)?;
         let anim = env
             .call_static_method(
@@ -923,7 +1643,7 @@ mod imp {
         to_c: i32,
         transition: Transition,
     ) -> Option<GlobalRef> {
-        let class = env.find_class("com/idealyst/runtime/Animators").ok()?;
+        let class = env.find_class("io/idealyst/runtime/Animators").ok()?;
         let interpolator = build_interpolator(env, transition.easing)?;
         let anim = env
             .call_static_method(
@@ -955,7 +1675,7 @@ mod imp {
         to: [f32; 4],
         transition: Transition,
     ) -> Option<GlobalRef> {
-        let class = env.find_class("com/idealyst/runtime/Animators").ok()?;
+        let class = env.find_class("io/idealyst/runtime/Animators").ok()?;
         let interpolator = build_interpolator(env, transition.easing)?;
         let from_arr = env.new_float_array(4).ok()?;
         env.set_float_array_region(&from_arr, 0, &from).ok()?;
