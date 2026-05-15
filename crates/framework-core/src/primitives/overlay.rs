@@ -187,7 +187,7 @@ pub trait AnchorableHandle: Clone + 'static {
 
 /// Viewport-relative rect, in CSS pixels (or the backend's
 /// equivalent point unit). Origin is top-left of the viewport.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Default)]
 pub struct ViewportRect {
     pub x: f32,
     pub y: f32,

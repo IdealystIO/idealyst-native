@@ -51,7 +51,6 @@ use framework_core::primitives::overlay::{
     BackdropMode, ElementAlign, ElementSide, OverlayAnchor, OverlayHandle, OverlayOps,
     ViewportPlacement, ViewportRect,
 };
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use wasm_bindgen::closure::Closure;
@@ -393,23 +392,13 @@ fn anchor_vertical(rect: ViewportRect, align: ElementAlign) -> f32 {
 // CSS injection
 // ---------------------------------------------------------------------------
 
-/// Idempotent — first overlay mount adds the global overlay base
-/// rules to the shared `<style>` element; subsequent mounts skip.
+/// Idempotent — first overlay mount stamps the flag so future calls
+/// short-circuit. No global rules are needed today; every overlay
+/// sets its position inline. Reserved for future use (e.g. focus-trap
+/// styling, scrollbar suppression while a modal is open).
 fn inject_overlay_css(b: &mut WebBackend) {
     if b.overlay_css_injected {
         return;
     }
-    let _ = b;
-    // No global rules needed yet — every overlay sets its position
-    // inline. Reserved for future use (e.g. focus-trap styling).
-    // The flag is still toggled so we know the injection step ran.
-    let mut b_mut = b;
-    b_mut.overlay_css_injected = true;
-}
-
-// Silence: keep wasm_bindgen imports referenced even when only
-// some branches use them.
-#[allow(dead_code)]
-fn _wasm_keepalive() {
-    let _: Option<&RefCell<()>> = None;
+    b.overlay_css_injected = true;
 }

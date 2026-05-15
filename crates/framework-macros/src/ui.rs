@@ -369,7 +369,7 @@ fn emit_component(
         "text" | "button" | "view" | "when"
         | "image" | "textinput" | "toggle" | "scrollview"
         | "slider" | "webview" | "video" | "activityindicator"
-        | "flatlist" | "link"
+        | "flatlist" | "link" | "overlay"
     );
     let supports_disabled = lower.as_str() == "button";
 
@@ -416,6 +416,7 @@ fn emit_component(
         "flatlist" => emit_flat_list(&other_props, children),
         "graphics" => emit_graphics(&other_props, children),
         "link" => emit_link(&other_props, children),
+        "overlay" => emit_overlay(&other_props, children),
         _ => emit_user(name, props, children),
     };
 
@@ -777,6 +778,73 @@ fn emit_link(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
     }
 }
 
+/// `Overlay(anchor = ..., backdrop = ..., backdrop_style = ...,
+///          on_dismiss = ..., trap_focus = ...) { children }`.
+/// Lowers to `overlay(children).anchor(...).backdrop(...)…` chain,
+/// using the builder so any subset of optional props compiles. The
+/// `.with_style(...)` / `.bind(...)` calls flow through the shared
+/// `style_prop` / chain machinery in `emit_component` like every
+/// other primitive.
+fn emit_overlay(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
+    let kids = children.unwrap_or(&[]);
+    let parts = kids.iter().map(emit_node);
+
+    let anchor_call = props
+        .iter()
+        .find(|p| p.name == "anchor")
+        .map(|p| {
+            let v = &p.value;
+            quote! { .anchor(#v) }
+        })
+        .unwrap_or_default();
+    let backdrop_call = props
+        .iter()
+        .find(|p| p.name == "backdrop")
+        .map(|p| {
+            let v = &p.value;
+            quote! { .backdrop(#v) }
+        })
+        .unwrap_or_default();
+    let backdrop_style_call = props
+        .iter()
+        .find(|p| p.name == "backdrop_style")
+        .map(|p| {
+            let v = &p.value;
+            quote! { .backdrop_style(#v) }
+        })
+        .unwrap_or_default();
+    let on_dismiss_call = props
+        .iter()
+        .find(|p| p.name == "on_dismiss")
+        .map(|p| {
+            let v = &p.value;
+            quote! { .on_dismiss(#v) }
+        })
+        .unwrap_or_default();
+    let trap_focus_call = props
+        .iter()
+        .find(|p| p.name == "trap_focus")
+        .map(|p| {
+            let v = &p.value;
+            quote! { .trap_focus(#v) }
+        })
+        .unwrap_or_default();
+
+    quote! {
+        ::framework_core::primitives::overlay::overlay({
+            let mut __c: ::std::vec::Vec<::framework_core::Primitive>
+                = ::std::vec::Vec::new();
+            #( ::framework_core::ChildList::append_to(#parts, &mut __c); )*
+            __c
+        })
+        #anchor_call
+        #backdrop_call
+        #backdrop_style_call
+        #on_dismiss_call
+        #trap_focus_call
+    }
+}
+
 fn emit_flat_list(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
     let data = props
         .iter()
@@ -859,7 +927,16 @@ fn emit_if(cond: &Expr, then_body: &[UiNode], else_body: Option<&[UiNode]>) -> T
     let then_expr = emit_block_as_primitive(then_body);
     let else_expr = match else_body {
         Some(body) => emit_block_as_primitive(body),
-        None => quote! { ::framework_core::view(::std::vec::Vec::new()) },
+        // No `else` clause — emit an empty View as a Primitive so
+        // both branches of the surrounding `if` have the same type.
+        // Without `into_primitive`, `view(vec![])` returns
+        // `Bound<ViewHandle>` while the `then` branch returns
+        // `Primitive`, and rustc rejects the mismatched arms.
+        None => quote! {
+            ::framework_core::IntoPrimitive::into_primitive(
+                ::framework_core::view(::std::vec::Vec::new())
+            )
+        },
     };
 
     // Reactivity heuristic: if the condition contains `.get()`, dispatch

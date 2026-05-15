@@ -415,3 +415,39 @@ macro_rules! tabs {
         })
     };
 }
+
+// =============================================================================
+// modal / popover — by-value (own their children)
+// =============================================================================
+
+#[macro_export]
+#[doc(hidden)]
+macro_rules! modal {
+    () => {
+        $crate::components::modal::modal(
+            <$crate::components::modal::ModalProps as ::core::default::Default>::default(),
+        )
+    };
+    ( $( $field:ident = $value:expr ),+ $(,)? ) => {
+        $crate::components::modal::modal($crate::components::modal::ModalProps {
+            $( $field: $value, )+
+            ..<$crate::components::modal::ModalProps as ::core::default::Default>::default()
+        })
+    };
+}
+
+#[macro_export]
+#[doc(hidden)]
+macro_rules! popover {
+    () => {
+        $crate::components::popover::popover(
+            <$crate::components::popover::PopoverProps as ::core::default::Default>::default(),
+        )
+    };
+    ( $( $field:ident = $value:expr ),+ $(,)? ) => {
+        $crate::components::popover::popover($crate::components::popover::PopoverProps {
+            $( $field: $value, )+
+            ..<$crate::components::popover::PopoverProps as ::core::default::Default>::default()
+        })
+    };
+}

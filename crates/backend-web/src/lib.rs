@@ -593,4 +593,22 @@ impl Backend for WebBackend {
 /// additions. We still need an instance to satisfy
 /// `ViewHandle::new`'s `&'static dyn ViewOps` parameter.
 struct WebViewOps;
-impl framework_core::ViewOps for WebViewOps {}
+impl framework_core::ViewOps for WebViewOps {
+    fn rect(&self, node: &dyn std::any::Any) -> framework_core::ViewportRect {
+        let el: &web_sys::Node = match node.downcast_ref::<web_sys::Node>() {
+            Some(n) => n,
+            None => return framework_core::ViewportRect::default(),
+        };
+        let element: web_sys::Element = match el.clone().dyn_into() {
+            Ok(e) => e,
+            Err(_) => return framework_core::ViewportRect::default(),
+        };
+        let r = element.get_bounding_client_rect();
+        framework_core::ViewportRect {
+            x: r.x() as f32,
+            y: r.y() as f32,
+            width: r.width() as f32,
+            height: r.height() as f32,
+        }
+    }
+}

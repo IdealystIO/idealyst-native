@@ -14,6 +14,10 @@ pub use primitives::navigator::{
     match_pattern, LayoutPlan, LayoutProps, NavCommand, NavState, Navigator, NavigatorCallbacks,
     NavigatorControl, NavigatorHandle, NavigatorOps, Route, RouteParams,
 };
+pub use primitives::overlay::{
+    overlay, AnchorTarget, AnchorableHandle, BackdropMode, ElementAlign, ElementAnchor,
+    ElementSide, OverlayAnchor, OverlayHandle, OverlayOps, ViewportPlacement, ViewportRect,
+};
 pub use reactive::{arena_stats, untrack, ArenaStats, Effect, Ref, Signal};
 pub use scheduling::{
     after_animation_frame, after_ms, raf_loop, schedule_microtask, RafLoop, ScheduledTask,
@@ -202,6 +206,22 @@ impl ButtonHandle {
 
 pub trait ButtonOps {
     fn click(&self, node: &dyn Any);
+    /// Viewport-relative rect, used when a `Button` is the anchor
+    /// target of an `Overlay`. Default returns the zero rect, which
+    /// causes overlays to fall back to viewport-centered placement.
+    /// Backends that can measure (web `getBoundingClientRect`,
+    /// iOS `UIView.frame`, Android `View.getLocationOnScreen`)
+    /// override to return real values.
+    #[allow(unused_variables)]
+    fn rect(&self, node: &dyn Any) -> primitives::overlay::ViewportRect {
+        primitives::overlay::ViewportRect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 }
+    }
+}
+
+impl primitives::overlay::AnchorableHandle for ButtonHandle {
+    fn rect(&self) -> primitives::overlay::ViewportRect {
+        self.ops.rect(&*self.node)
+    }
 }
 
 /// A handle to a mounted `View` primitive.
@@ -227,7 +247,19 @@ impl ViewHandle {
 }
 
 pub trait ViewOps {
-    // No methods yet — reserved for measure(), scroll_to(), etc.
+    /// Viewport-relative rect for overlay anchoring. Same shape as
+    /// `ButtonOps::rect`; see that docstring for the contract.
+    /// Default returns the zero rect → centered fallback.
+    #[allow(unused_variables)]
+    fn rect(&self, node: &dyn Any) -> primitives::overlay::ViewportRect {
+        primitives::overlay::ViewportRect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 }
+    }
+}
+
+impl primitives::overlay::AnchorableHandle for ViewHandle {
+    fn rect(&self) -> primitives::overlay::ViewportRect {
+        self.ops.rect(&*self.node)
+    }
 }
 
 /// A handle to a mounted `Text` primitive.

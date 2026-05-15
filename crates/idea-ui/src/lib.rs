@@ -72,6 +72,8 @@ pub use components::divider::{divider, DividerAxis, DividerProps};
 pub use components::field::{field, FieldProps, FieldSize, FieldTone};
 pub use components::heading::{heading, HeadingProps};
 pub use components::icon_button::{icon_button, IconButtonProps, IconButtonSize};
+pub use components::modal::{modal, ModalProps};
+pub use components::popover::{popover, PopoverProps};
 pub use components::pressable::{pressable, PressableProps, PressableSize};
 pub use components::skeleton::{skeleton, SkeletonProps, SkeletonWidth};
 pub use components::spacer::{spacer, SpacerProps};

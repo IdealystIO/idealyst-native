@@ -45,4 +45,20 @@ impl ButtonOps for WebButtonOps {
             html.click();
         }
     }
+
+    fn rect(&self, node: &dyn Any) -> framework_core::ViewportRect {
+        node.downcast_ref::<web_sys::HtmlElement>()
+            .map(measure_element_rect)
+            .unwrap_or_default()
+    }
+}
+
+fn measure_element_rect(el: &web_sys::HtmlElement) -> framework_core::ViewportRect {
+    let r = el.get_bounding_client_rect();
+    framework_core::ViewportRect {
+        x: r.x() as f32,
+        y: r.y() as f32,
+        width: r.width() as f32,
+        height: r.height() as f32,
+    }
 }

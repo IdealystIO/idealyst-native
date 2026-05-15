@@ -32,6 +32,7 @@ features = [
     "CssStyleSheet",
     "Document",
     "DocumentFragment",
+    "DomRect",
     "Element",
     "Event",
     "History",

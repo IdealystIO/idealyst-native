@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Arena · Vue (naive: reactive ref, runtime template)</title>
+<style>
+  /*
+   * Naive Vue take: theme + row count live in `ref`s, the template
+   * binds row styles inline through computed-per-row expressions.
+   * Vue's reactivity runtime tracks which DOM nodes depend on which
+   * refs and re-applies on change — analogous to React's re-render
+   * but with finer-grained patching.
+   *
+   * "Naive" in the same sense as the React variant: idiomatic code
+   * a competent dev would write, no premature optimization. No
+   * v-memo, no manual scheduler tricks, no CSS variables — every
+   * row's `:style` binding re-runs when `theme` changes.
+   *
+   * Build step: none. Uses the runtime+compiler bundle from esm.sh
+   * so the template string compiles in the browser. That has a
+   * one-time cold-start cost but doesn't enter the `apply`
+   * measurement (which only times the toggle/setRows handler).
+   */
+  html, body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  #root { display: flex; flex-direction: column; min-height: 100vh; }
+  #stats { font-size: 13px; font-variant-numeric: tabular-nums; opacity: 0.85; }
+  .rows-input {
+    width: 90px; padding: 4px 8px; border-radius: 6px;
+    border: 1px solid #888; background: #fff; color: #000;
+    font-size: 13px; font-variant-numeric: tabular-nums;
+  }
+  .rows-label { font-size: 13px; opacity: 0.7; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="module">
+// `vue/dist/vue.esm-browser.js` ships runtime + compiler so we can
+// pass a template string. The `runtime-only` build is faster but
+// requires a precompiled component, which would add a build step.
+import { createApp, ref, computed, h, nextTick } from 'https://esm.sh/vue@3.4.21/dist/vue.esm-browser.js';
+import { runToggle, runSuite, LIGHT, DARK } from '../instrument.js';
+
+// Style builders. Identical hex values to other variants — imported
+// from instrument.js via LIGHT/DARK so a typo in one variant can't
+// drift from the rest of the arena.
+const pageStyle = (t) => ({
+  display: 'flex', flexDirection: 'column',
+  padding: '32px', gap: '24px', minHeight: '100%',
+  background: t.background, color: t.text,
+  transition: 'background 250ms ease-in-out, color 250ms ease-in-out',
+});
+const controlsStyle = (t) => ({
+  display: 'flex', flexDirection: 'row',
+  gap: '16px', alignItems: 'center',
+  padding: '8px 16px', borderRadius: '10px',
+  background: t.surface, border: `1px solid ${t.border}`, color: t.text,
+  transition: 'background 250ms ease-in-out, border-color 250ms ease-in-out, color 250ms ease-in-out',
+});
+const buttonStyle = (t) => ({
+  padding: '4px 16px', borderRadius: '6px',
+  fontWeight: 600, fontSize: '12px', letterSpacing: '0.5px',
+  border: 0, cursor: 'pointer',
+  background: t.primary, color: t.primary_text,
+  transition: 'background 250ms ease-in-out, color 250ms ease-in-out',
+});
+const listStyle = (t) => ({
+  display: 'flex', flexDirection: 'column',
+  borderRadius: '10px',
+  background: t.surface, border: `1px solid ${t.border}`,
+  height: '500px', overflow: 'hidden', overflowY: 'auto',
+  transition: 'background 250ms ease-in-out, border-color 250ms ease-in-out',
+});
+const rowStyle = (t, parity) => ({
+  display: 'flex', flexDirection: 'column',
+  background: parity === 'odd' ? t.surface_alt : t.surface,
+  color: t.text,
+  padding: '8px 16px',
+  borderBottom: `1px solid ${t.border}`,
+  fontSize: '13px', height: '36px', justifyContent: 'center',
+  transition: 'background 250ms ease-in-out, color 250ms ease-in-out, border-bottom-color 250ms ease-in-out',
+});
+
+const app = createApp({
+  // Vue's reactivity tracks reads of `theme.value` inside `:style`
+  // bindings — when `theme.value` changes, every row's style binding
+  // re-runs. Same shape as the React variant: no manual memoization.
+  setup() {
+    const theme = ref(LIGHT);
+    const rowCount = ref(1000);
+    const running = ref(false);
+
+    const isDark = computed(() => theme.value === DARK);
+
+    const onToggle = () => {
+      const next = isDark.value ? LIGHT : DARK;
+      runToggle(() => {
+        // Vue 3 commits synchronously when you set a ref inside an
+        // event handler — there's no React-style batched-then-deferred
+        // step that would land work after our `apply` timer closes.
+        // No `flushSync` equivalent needed; the assignment + downstream
+        // effects run on the current task.
+        theme.value = next;
+      }, { theme: isDark.value ? 'light' : 'dark', rows: rowCount.value });
+    };
+
+    const onStart = async () => {
+      running.value = true;
+      try {
+        await runSuite({
+          setRows: async (n) => {
+            rowCount.value = n;
+            // Wait for the resulting reactive updates to flush to the
+            // DOM. Vue queues a microtask scheduler; without this, the
+            // suite's `applyDone = performance.now()` could fire before
+            // the new rows are actually mounted, and apply time would
+            // be wildly under-reported.
+            await nextTick();
+          },
+          resultsEl: document.getElementById('results'),
+        });
+      } finally {
+        running.value = false;
+      }
+    };
+
+    // Vue's template compiler infers reactive dependencies from the
+    // template string. Each row's `:style="rowStyle(theme, ...)"`
+    // reads `theme`, so the row's binding re-runs on theme change.
+    // The `v-for` re-uses DOM nodes between rebuilds when the keys
+    // match — analogous to React's `key`-driven reconciliation.
+    return {
+      theme, rowCount, running, isDark,
+      onToggle, onStart,
+      pageStyle, controlsStyle, buttonStyle, listStyle, rowStyle,
+    };
+  },
+  template: `
+    <div :style="pageStyle(theme)">
+      <div :style="controlsStyle(theme)">
+        <button :style="buttonStyle(theme)" @click="onToggle">Toggle theme</button>
+        <button :style="buttonStyle(theme)" @click="onStart" :disabled="running">
+          {{ running ? 'Running…' : 'Start test' }}
+        </button>
+        <span id="stats">Click toggle to measure, or Start test to run the suite</span>
+      </div>
+      <div :style="listStyle(theme)">
+        <div v-for="i in rowCount" :key="i - 1"
+             :style="rowStyle(theme, (i - 1) % 2 === 0 ? 'even' : 'odd')">
+          <span>Row #{{ i - 1 }}</span>
+        </div>
+      </div>
+      <div id="results" style="padding: 0 32px 32px"></div>
+    </div>
+  `,
+});
+
+app.mount('#root');
+</script>
+</body>
+</html>

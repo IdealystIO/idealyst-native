@@ -706,3 +706,63 @@ stylesheet! {
         }
     }
 }
+
+// =============================================================================
+// Modal / Popover — overlay content surfaces.
+// =============================================================================
+//
+// These style the inner content container of an Overlay, not the
+// overlay itself (which is positioned by the framework). Modal is
+// the card-like centered surface; Popover is a smaller floating
+// panel anchored to a trigger.
+
+stylesheet! {
+    pub Modal<IdeaThemeRef> {
+        base(t) {
+            background: Color(t.colors().surface.clone()),
+            padding: t.spacing().lg,
+            border_radius: t.radius().lg,
+            border_width: 1.0,
+            border_color: Color(t.colors().border.clone()),
+            gap: Length::Px(t.spacing().md),
+            flex_direction: FlexDirection::Column,
+            min_width: 320.0,
+            max_width: 560.0,
+            shadow: framework_core::Shadow {
+                x: 0.0,
+                y: 12.0,
+                blur: 32.0,
+                color: Color("rgba(15, 17, 21, 0.25)".into()),
+            },
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            border_color: 250ms EaseInOut,
+        }
+    }
+}
+
+stylesheet! {
+    pub Popover<IdeaThemeRef> {
+        base(t) {
+            background: Color(t.colors().surface.clone()),
+            padding: t.spacing().sm,
+            border_radius: t.radius().md,
+            border_width: 1.0,
+            border_color: Color(t.colors().border.clone()),
+            gap: Length::Px(t.spacing().xs),
+            flex_direction: FlexDirection::Column,
+            min_width: 180.0,
+            shadow: framework_core::Shadow {
+                x: 0.0,
+                y: 6.0,
+                blur: 18.0,
+                color: Color("rgba(15, 17, 21, 0.18)".into()),
+            },
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            border_color: 250ms EaseInOut,
+        }
+    }
+}

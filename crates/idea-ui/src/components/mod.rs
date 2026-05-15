@@ -14,6 +14,8 @@ pub mod divider;
 pub mod field;
 pub mod heading;
 pub mod icon_button;
+pub mod modal;
+pub mod popover;
 pub mod pressable;
 pub mod skeleton;
 pub mod spacer;
