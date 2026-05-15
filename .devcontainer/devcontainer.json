@@ -2,11 +2,12 @@
   "name": "Rust",
   "dockerComposeFile": "docker-compose.yml",
   "service": "dev",
+  "runServices": ["dev", "chrome"],
   "workspaceFolder": "/workspaces/idealyst-native",
   "features": {
     "ghcr.io/devcontainers/features/node:1": {}
   },
-  "postCreateCommand": "npm install -g @anthropic-ai/claude-code && rustup target add wasm32-unknown-unknown aarch64-apple-ios aarch64-linux-android && curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh",
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
   "customizations": {
     "vscode": {
       "extensions": [

@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "playwright": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp",
+        "--cdp-endpoint",
+        "ws://chrome:3000"
+      ],
+      "env": {}
+    }
+  }
+}

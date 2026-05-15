@@ -3,6 +3,7 @@ services:
     image: mcr.microsoft.com/devcontainers/rust:1
     volumes:
       - ../..:/workspaces:cached
+      - claude-home:/home/vscode/.claude
     command: sleep infinity
     networks:
       - devnet
@@ -24,3 +25,6 @@ services:
 networks:
   devnet:
     driver: bridge
+
+volumes:
+  claude-home:
