@@ -150,6 +150,18 @@ pub struct WebBackend {
     pub(crate) free_rule_indices: Vec<u32>,
 }
 
+/// Diagnostic snapshot returned by [`WebBackend::debug_counts`].
+#[derive(Debug, Clone, Copy)]
+pub struct WebBackendCounts {
+    pub node_ids: usize,
+    pub dynamic: usize,
+    pub state_listeners: usize,
+    pub pregen: usize,
+    pub pregen_by_ptr: usize,
+    pub free_rule_indices: usize,
+    pub next_node_id: u32,
+}
+
 pub(crate) struct PregenEntry {
     #[allow(dead_code)]
     pub(crate) name: String,
@@ -201,6 +213,24 @@ impl WebBackend {
             next_node_id: 0,
             node_ids: HashMap::new(),
             free_rule_indices: Vec::new(),
+        }
+    }
+
+    /// Diagnostic: snapshot of all the per-node HashMaps the backend
+    /// owns. Used by the arena bench to detect when a rebuild loop
+    /// leaves stale entries behind. Each field is a `usize` count of
+    /// live entries; `free_rule_indices` shows how many CSS-rule
+    /// slots are recycled (waiting to be reused) — large values
+    /// indicate a previously-grown sheet that hasn't been compacted.
+    pub fn debug_counts(&self) -> WebBackendCounts {
+        WebBackendCounts {
+            node_ids: self.node_ids.len(),
+            dynamic: self.dynamic.len(),
+            state_listeners: self.state_listeners.len(),
+            pregen: self.pregen.len(),
+            pregen_by_ptr: self.pregen_by_ptr.len(),
+            free_rule_indices: self.free_rule_indices.len(),
+            next_node_id: self.next_node_id,
         }
     }
 

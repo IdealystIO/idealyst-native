@@ -174,6 +174,13 @@ thread_local! {
     /// tear down everything immediately.
     static OWNER: RefCell<Option<framework_core::Owner>> = const { RefCell::new(None) };
 
+    /// Diagnostic-only: a second handle to the backend so we can
+    /// inspect its per-node HashMaps from the arena_stats accessor.
+    /// The framework's render path owns the primary reference; this
+    /// is just an `Rc::clone` so we can peek without going through
+    /// the framework.
+    static BACKEND: RefCell<Option<Rc<RefCell<WebBackend>>>> = const { RefCell::new(None) };
+
     /// Tracks current theme so `toggle()` knows what to flip to.
     /// Lives at module scope (not inside the framework's reactive
     /// graph) because the JS side calls `toggle()` directly.
@@ -243,9 +250,11 @@ pub fn start(initial_rows: usize) {
     console_error_panic_hook::set_once();
     let rows = initial_rows.clamp(1, ROW_MAX);
     let backend = Rc::new(RefCell::new(WebBackend::new("#app")));
+    BACKEND.with(|slot| *slot.borrow_mut() = Some(backend.clone()));
     let owner = framework_core::render(backend, app(rows));
     OWNER.with(|slot| *slot.borrow_mut() = Some(owner));
 }
+
 
 /// Flip the theme. Wrapped by the arena's `runToggle(...)` so the
 /// click handler can measure the synchronous JS cost. Returns the
@@ -288,4 +297,31 @@ pub fn row_count() -> usize {
     ROW_COUNT
         .with(|c| c.borrow().as_ref().map(|sig| sig.get()))
         .unwrap_or(DEFAULT_ROWS)
+}
+
+/// Diagnostic: return arena slot counts so JS can detect when the
+/// rebuild loop is leaving state behind. Each field returns
+/// `in_use` × 1_000_000 + `total` so we can shove the full snapshot
+/// over the wasm boundary as a small struct of plain numbers without
+/// inventing a wrapper type. Tooling-only — call `arena_stats_json`
+/// for human-readable output.
+#[wasm_bindgen]
+pub fn arena_stats_json() -> String {
+    let s = framework_core::arena_stats();
+    let b = BACKEND.with(|slot| slot.borrow().as_ref().map(|rc| rc.borrow().debug_counts()));
+    let backend_json = match b {
+        Some(b) => format!(
+            "{{\"node_ids\":{},\"dynamic\":{},\"state_listeners\":{},\"pregen\":{},\"pregen_by_ptr\":{},\"free_rule_indices\":{},\"next_node_id\":{}}}",
+            b.node_ids, b.dynamic, b.state_listeners, b.pregen, b.pregen_by_ptr, b.free_rule_indices, b.next_node_id,
+        ),
+        None => "null".into(),
+    };
+    format!(
+        "{{\"signals_in_use\":{},\"signals_total\":{},\"effects_in_use\":{},\"effects_total\":{},\"refs_in_use\":{},\"refs_total\":{},\"total_subscribers\":{},\"total_deps\":{},\"backend\":{}}}",
+        s.signals_in_use, s.signals_total,
+        s.effects_in_use, s.effects_total,
+        s.refs_in_use, s.refs_total,
+        s.total_subscribers, s.total_deps,
+        backend_json,
+    )
 }

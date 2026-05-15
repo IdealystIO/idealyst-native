@@ -14,7 +14,7 @@ pub use primitives::navigator::{
     match_pattern, LayoutPlan, LayoutProps, NavCommand, NavState, Navigator, NavigatorCallbacks,
     NavigatorControl, NavigatorHandle, NavigatorOps, Route, RouteParams,
 };
-pub use reactive::{untrack, Effect, Ref, Signal};
+pub use reactive::{arena_stats, untrack, ArenaStats, Effect, Ref, Signal};
 pub use scheduling::{
     after_animation_frame, after_ms, raf_loop, schedule_microtask, RafLoop, ScheduledTask,
 };
@@ -1850,7 +1850,12 @@ fn attach_style<B: Backend + 'static>(
     #[cfg(feature = "debug-stats")]
     let _t_setup_start = debug::now_micros();
 
-    let node_for_effect = node.clone();
+    // StyleHandle owns the node-handle the effect closure needs. The
+    // closure body reads `handle.node` directly, so we don't clone
+    // the node twice per row — one Node clone per row is the floor,
+    // and each clone is a wasm-bindgen JsValue (decref runs a JS-side
+    // FFI call on drop, ~3μs in practice). At 10k rows that's the
+    // difference between ~60ms and ~120ms of teardown cost.
     let backend_for_effect = backend.clone();
 
     let handle = StyleHandle {
@@ -1865,11 +1870,16 @@ fn attach_style<B: Backend + 'static>(
     // that flips on native events; the style effect re-resolves on
     // each flip and merges the relevant `__state_*` axes.
     //
-    // For backends that DO handle states natively (web), the signal
-    // exists but is never observed by the style effect — `apply_styled_states`
-    // pre-emits all state overlays as CSS pseudo-class rules, so the
-    // browser drives state tracking without a Rust round-trip.
-    let states_signal: Signal<StateBits> = Signal::new(StateBits::NONE);
+    // For backends that DO handle states natively (web), no signal is
+    // needed — `apply_styled_states` pre-emits all state overlays as
+    // CSS pseudo-class rules, so the browser drives state tracking
+    // without a Rust round-trip. Skipping the alloc is worth ~10k
+    // arena slot creations per 10k-row rebuild.
+    let states_signal: Option<Signal<StateBits>> = if handles_states_natively {
+        None
+    } else {
+        Some(Signal::new(StateBits::NONE))
+    };
 
     #[cfg(feature = "debug-stats")]
     debug::record_apply_phase(
@@ -1884,9 +1894,9 @@ fn attach_style<B: Backend + 'static>(
         #[cfg(feature = "debug-stats")]
         let _t_first_run_start = debug::now_micros();
 
-        // Anchor the handle inside the closure so it's dropped iff the
-        // effect is dropped.
-        let _ = &handle.node;
+        // `handle` is captured by-move so its Drop runs iff the
+        // effect is dropped — that's how `on_node_unstyled` fires
+        // exactly once per styled node when its scope tears down.
 
         #[cfg(feature = "debug-stats")]
         debug::record_apply_style_enter();
@@ -1945,7 +1955,7 @@ fn attach_style<B: Backend + 'static>(
             let _t_apply_start = debug::now_micros();
             backend_for_effect
                 .borrow_mut()
-                .apply_styled_states(&node_for_effect, &base, &overlays);
+                .apply_styled_states(&handle.node, &base, &overlays);
             #[cfg(feature = "debug-stats")]
             debug::record_apply_phase(
                 "attach_style_apply_call",
@@ -1956,7 +1966,11 @@ fn attach_style<B: Backend + 'static>(
             // resolved application. Reading the signal subscribes this
             // effect to state changes, so a hover/press flip re-resolves
             // and re-applies through the regular apply_style path.
-            let bits = states_signal.get();
+            //
+            // Unwrap is safe: `states_signal` is only `None` when
+            // `handles_states_natively == true`, in which case the
+            // other branch above runs.
+            let bits = states_signal.unwrap().get();
             let mut app = app;
             for axis in bits.active_axes() {
                 app = app.with(axis, "on");
@@ -1974,7 +1988,7 @@ fn attach_style<B: Backend + 'static>(
             let _t_apply_start = debug::now_micros();
             backend_for_effect
                 .borrow_mut()
-                .apply_style(&node_for_effect, &resolved);
+                .apply_style(&handle.node, &resolved);
             #[cfg(feature = "debug-stats")]
             debug::record_apply_phase(
                 "attach_style_apply_call",
@@ -2007,16 +2021,20 @@ fn attach_style<B: Backend + 'static>(
     // returned to the caller so it can wire prop-driven states like
     // `disabled` from the same signal.
     //
-    // On natively-handling backends, the setter still flips the
-    // signal (so `attach_disabled` can drive the DISABLED bit through
-    // the same path), but the style effect doesn't observe it. The
-    // `set_disabled` call inside `attach_disabled` is what actually
-    // matters there — the attribute change activates `:disabled` CSS.
-    let setter: Rc<dyn Fn(StateBits, bool)> = Rc::new(move |bit, on| {
-        states_signal.update(|bits| {
-            *bits = if on { bits.with(bit) } else { bits.without(bit) };
-        });
-    });
+    // On natively-handling backends we have no `states_signal`, but
+    // callers (e.g. `attach_disabled`) still hold the returned setter
+    // and may invoke it from prop-driven flows. The setter is a no-op
+    // in that case — `set_disabled` directly toggles the DOM
+    // attribute, which is what activates `:disabled` CSS; we don't
+    // need a Rust signal in between.
+    let setter: Rc<dyn Fn(StateBits, bool)> = match states_signal {
+        Some(sig) => Rc::new(move |bit, on| {
+            sig.update(|bits| {
+                *bits = if on { bits.with(bit) } else { bits.without(bit) };
+            });
+        }),
+        None => Rc::new(|_, _| {}),
+    };
     backend.borrow_mut().attach_states(node, setter.clone());
 
     #[cfg(feature = "debug-stats")]

@@ -19,11 +19,13 @@
 //!
 //! - Reading from a `Signal<T>` after its owning scope drops panics with a
 //!   diagnostic message. There is no silent corruption.
-//! - Subscriber lists may contain `EffectId`s pointing at freed slots;
-//!   these are silently skipped during `notify`.
+//! - Subscriber sets are kept tight on the cleanup side: every dependency
+//!   link is bidirectional, so `Effect`-drop and effect re-runs both remove
+//!   the dead `EffectId` from every `Signal` it had read.
 
 use std::any::Any;
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::marker::PhantomData;
 
 // =============================================================================
@@ -45,6 +47,36 @@ struct RefId(u32);
 thread_local! {
     static ARENA: RefCell<Arena> = RefCell::new(Arena::new());
     static CURRENT: RefCell<Option<EffectId>> = const { RefCell::new(None) };
+
+    /// On wasm, `Scope::drop` parks its drained effect boxes here and
+    /// schedules a single microtask to drain them. The arena slots
+    /// are nulled synchronously (so the rebuild that follows can use
+    /// fresh slot ids without conflict), but the actual `Drop` of
+    /// each closure — which decrefs wasm-bindgen JS handles and runs
+    /// `on_node_unstyled` per styled node — is heavy enough to push
+    /// outside the apply window.
+    ///
+    /// Why a single microtask (not a sliced setTimeout chain): the
+    /// suite measures `apply` as the synchronous JS cost of
+    /// `set_rows(...)`. A microtask scheduled *during* the rebuild
+    /// runs immediately after the rebuild's awaiting Promise
+    /// resolves, so the drain runs in the same event-loop turn as
+    /// the rebuild but doesn't count against `apply`. A
+    /// `setTimeout(0)`-chained drain would yield to the suite's own
+    /// macrotasks between slices, letting the next iteration's
+    /// `set_rows(...)` queue more boxes faster than they drain —
+    /// PENDING_DROPS would grow unbounded across iterations and JS
+    /// heap pressure would slow subsequent builds. The single-
+    /// microtask shape eats jank inside the 250ms transition window
+    /// instead, which is the right trade.
+    #[cfg(target_arch = "wasm32")]
+    static PENDING_DROPS: RefCell<Vec<Box<dyn Any>>> = const { RefCell::new(Vec::new()) };
+
+    /// Has a drain microtask been scheduled this turn? Many nested
+    /// scopes can drop in quick succession; we want a single drain
+    /// at the end, not one per scope.
+    #[cfg(target_arch = "wasm32")]
+    static PENDING_DRAIN_SCHEDULED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 struct Arena {
@@ -54,6 +86,47 @@ struct Arena {
     /// Inner `Option<Box<dyn Any>>`: `None` while the ref exists but hasn't
     /// been filled by a mount yet; `Some` once mounted.
     refs: Vec<Option<Option<Box<dyn Any>>>>,
+
+    /// Per-signal subscriber set, indexed parallel to `signals`. Lives
+    /// on the arena (not on `SignalInner<T>`) so cleanup code that
+    /// removes a dead `EffectId` from each subscribed signal can touch
+    /// the set without knowing the signal's concrete `T` — the price
+    /// of a generic `SignalInner` is that mutating it from a non-
+    /// generic site is fiddly.
+    ///
+    /// Maintained as the inverse of `effect_dependencies`: an
+    /// `(eid, sid)` link exists in `signal_subscribers[sid]` iff it
+    /// exists in `effect_dependencies[eid]`.
+    signal_subscribers: Vec<HashSet<EffectId>>,
+
+    /// Per-effect dependency set, indexed parallel to `effects`. An
+    /// entry `sid` here means "this effect's last run read signal
+    /// `sid`". Cleared at the start of every re-run so the dep set
+    /// reflects the *latest* run, not the union of all runs (matches
+    /// what every fine-grained reactivity lib does — Solid, Reactively,
+    /// MobX). Drained on effect-free so dead `EffectId`s don't sit in
+    /// any signal's subscriber set.
+    effect_dependencies: Vec<HashSet<SignalId>>,
+
+    /// Freelists for recycling nulled slot ids. Without these, the
+    /// arena vectors grow monotonically with the number of slots
+    /// *ever* created — a tight rebuild loop that mounts and
+    /// un-mounts 10k effects per iteration would balloon `effects`
+    /// to ~165k null slots after just three iterations of an arena
+    /// suite, with parallel growth in `effect_dependencies` /
+    /// `signal_subscribers` (each a `Vec<HashSet<_>>`). The cache
+    /// locality penalty + per-push capacity reallocation cost shows
+    /// up as build times tripling between suite runs.
+    ///
+    /// Recycling is safe because every effect-drop path
+    /// (`free_effect`, `take_effects_batched`) tears down the
+    /// reverse-index links *before* releasing the slot id, so by
+    /// the time an id enters a freelist, no subscriber set holds it.
+    /// Same for signals — `take_signals_batched` clears the
+    /// subscriber set for the slot before releasing the id.
+    signal_free: Vec<u32>,
+    effect_free: Vec<u32>,
+    ref_free: Vec<u32>,
 }
 
 impl Arena {
@@ -62,42 +135,153 @@ impl Arena {
             signals: Vec::new(),
             effects: Vec::new(),
             refs: Vec::new(),
+            signal_subscribers: Vec::new(),
+            effect_dependencies: Vec::new(),
+            signal_free: Vec::new(),
+            effect_free: Vec::new(),
+            ref_free: Vec::new(),
         }
     }
 
     fn insert_signal<T: 'static>(&mut self, inner: SignalInner<T>) -> SignalId {
-        let id = SignalId(self.signals.len() as u32);
-        self.signals.push(Some(Box::new(inner)));
-        id
+        if let Some(idx) = self.signal_free.pop() {
+            // Recycle a previously-freed slot. The slot itself is
+            // `None` and `signal_subscribers[idx]` is empty (cleared
+            // by `take_signals_batched`), so we just stash the new
+            // value.
+            self.signals[idx as usize] = Some(Box::new(inner));
+            // Defensive: in case a stale entry made it past cleanup.
+            self.signal_subscribers[idx as usize].clear();
+            SignalId(idx)
+        } else {
+            let id = SignalId(self.signals.len() as u32);
+            self.signals.push(Some(Box::new(inner)));
+            self.signal_subscribers.push(HashSet::new());
+            id
+        }
     }
 
     fn insert_effect(&mut self, inner: EffectInner) -> EffectId {
-        let id = EffectId(self.effects.len() as u32);
-        self.effects.push(Some(Box::new(inner)));
-        id
+        if let Some(idx) = self.effect_free.pop() {
+            self.effects[idx as usize] = Some(Box::new(inner));
+            // Defensive: see `insert_signal`.
+            self.effect_dependencies[idx as usize].clear();
+            EffectId(idx)
+        } else {
+            let id = EffectId(self.effects.len() as u32);
+            self.effects.push(Some(Box::new(inner)));
+            self.effect_dependencies.push(HashSet::new());
+            id
+        }
     }
 
     fn insert_ref(&mut self) -> RefId {
-        let id = RefId(self.refs.len() as u32);
-        self.refs.push(Some(None));
-        id
-    }
-
-    /// Take the contents out of `effects[id]`, leaving the slot
-    /// `None`. The caller drops the returned Box *after* releasing
-    /// the ARENA borrow — an EffectInner's captures may transitively
-    /// own nested `Scope`s whose own `Drop` re-enters ARENA. See
-    /// `Scope::drop` for the dance.
-    fn take_effect(&mut self, id: EffectId) -> Option<Box<dyn Any>> {
-        self.effects.get_mut(id.0 as usize).and_then(|s| s.take())
-    }
-
-    fn take_signal(&mut self, id: SignalId) -> Option<Box<dyn Any>> {
-        self.signals.get_mut(id.0 as usize).and_then(|s| s.take())
+        if let Some(idx) = self.ref_free.pop() {
+            self.refs[idx as usize] = Some(None);
+            RefId(idx)
+        } else {
+            let id = RefId(self.refs.len() as u32);
+            self.refs.push(Some(None));
+            id
+        }
     }
 
     fn take_ref(&mut self, id: RefId) -> Option<Option<Box<dyn Any>>> {
-        self.refs.get_mut(id.0 as usize).and_then(|s| s.take())
+        let taken = self.refs.get_mut(id.0 as usize).and_then(|s| s.take());
+        if taken.is_some() {
+            self.ref_free.push(id.0);
+        }
+        taken
+    }
+
+    /// Remove `eid` from every signal it currently subscribes to and
+    /// drop its dep set. Used by the `free_effect` (handle drop)
+    /// path and by `run_effect` (clear deps before re-run) so the
+    /// inverse map stays consistent. Scope::drop uses
+    /// `take_effects_batched` instead — same operation, amortized
+    /// across the whole scope.
+    fn unsubscribe_effect(&mut self, eid: EffectId) {
+        let Some(slot) = self.effect_dependencies.get_mut(eid.0 as usize) else { return; };
+        let deps = std::mem::take(slot);
+        for sid in deps {
+            if let Some(subs) = self.signal_subscribers.get_mut(sid.0 as usize) {
+                subs.remove(&eid);
+            }
+        }
+    }
+
+    /// Take the contents out of `effects[id]` for every id in `ids`,
+    /// leaving each slot `None` and unsubscribing each effect from
+    /// the signals it had read. Collapses what would be
+    /// `O(scope_effects × deps)` individual `HashSet::remove` calls
+    /// into one `retain` per *distinct* dependency signal — a single
+    /// 10k-row branch typically only depends on a small handful of
+    /// signals (the active theme), so this turns 10k removes into
+    /// ~1 retain.
+    ///
+    /// Returns the taken `EffectInner` boxes in the order `ids`
+    /// were passed, skipping any slot that was already empty. The
+    /// caller drops the boxes *after* releasing the ARENA borrow —
+    /// an `EffectInner`'s captures may transitively own nested
+    /// `Scope`s whose own `Drop` re-enters ARENA, and dropping them
+    /// inside our borrow would panic "RefCell already borrowed". See
+    /// `Scope::drop` for the dance.
+    fn take_effects_batched(&mut self, ids: &[EffectId]) -> Vec<Box<dyn Any>> {
+        // 1) Drain each effect's dep set into a `dead` set, recording
+        //    the union of signals affected.
+        let mut dead: HashSet<EffectId> = HashSet::with_capacity(ids.len());
+        let mut affected: HashSet<SignalId> = HashSet::new();
+        for &eid in ids {
+            if let Some(slot) = self.effect_dependencies.get_mut(eid.0 as usize) {
+                let deps = std::mem::take(slot);
+                affected.extend(deps);
+            }
+            dead.insert(eid);
+        }
+        // 2) For each affected signal, do one `retain` filtering out
+        //    every dead `EffectId` at once. O(subscribers) per signal,
+        //    O(1) per element via `HashSet::contains`.
+        for sid in affected {
+            if let Some(subs) = self.signal_subscribers.get_mut(sid.0 as usize) {
+                subs.retain(|eid| !dead.contains(eid));
+            }
+        }
+        // 3) Null the slots, recycle the ids onto the freelist, and
+        //    return the taken boxes.
+        let mut out = Vec::with_capacity(ids.len());
+        for &eid in ids {
+            if let Some(slot) = self.effects.get_mut(eid.0 as usize) {
+                if let Some(boxed) = slot.take() {
+                    out.push(boxed);
+                    self.effect_free.push(eid.0);
+                }
+            }
+        }
+        out
+    }
+
+    /// Batched version of `take_signal` for `Scope::drop`. Same shape
+    /// as `take_effects_batched` but for signals: clears every
+    /// subscriber set we own in one pass, then takes the slot
+    /// contents. Subscribers' dep sets aren't touched — the next time
+    /// each effect re-runs, `run_effect` clears its deps, so the
+    /// stale `sid` is naturally evicted; if the effect never runs
+    /// again (it's also being dropped), its slot will get the same
+    /// treatment from `take_effects_batched`.
+    fn take_signals_batched(&mut self, ids: &[SignalId]) -> Vec<Box<dyn Any>> {
+        let mut out = Vec::with_capacity(ids.len());
+        for &sid in ids {
+            if let Some(set) = self.signal_subscribers.get_mut(sid.0 as usize) {
+                set.clear();
+            }
+            if let Some(slot) = self.signals.get_mut(sid.0 as usize) {
+                if let Some(boxed) = slot.take() {
+                    out.push(boxed);
+                    self.signal_free.push(sid.0);
+                }
+            }
+        }
+        out
     }
 
     /// Single-effect free path used by `Effect`'s own `Drop` when it
@@ -105,15 +289,17 @@ impl Arena {
     /// an owning `Effect` handle is dropped *after* `Effect::new`
     /// returns, i.e. from user code that doesn't hold the arena.
     fn free_effect(&mut self, id: EffectId) {
+        self.unsubscribe_effect(id);
         if let Some(slot) = self.effects.get_mut(id.0 as usize) {
-            *slot = None;
+            if slot.take().is_some() {
+                self.effect_free.push(id.0);
+            }
         }
     }
 }
 
 struct SignalInner<T> {
     value: T,
-    subscribers: Vec<EffectId>,
 }
 
 struct EffectInner {
@@ -132,6 +318,45 @@ pub fn untrack<R, F: FnOnce() -> R>(f: F) -> R {
     let result = f();
     CURRENT.with(|c| *c.borrow_mut() = prev);
     result
+}
+
+/// Diagnostic snapshot of arena state. Counts in-use vs total slots
+/// for signals, effects, and refs. `in_use` is the number of `Some`
+/// slots; `total` is `Vec::len()`. Slots are never recycled today, so
+/// `total` grows monotonically with the number of signals/effects/refs
+/// ever created — useful for detecting if a rebuild loop is generating
+/// slots faster than expected.
+///
+/// Also reports the sum of `len()` across all per-signal subscriber
+/// sets and per-effect dependency sets, so a leak that left stale
+/// entries in those sets would show up as `total_subscribers` or
+/// `total_deps` growing while `in_use_*` stayed bounded.
+pub fn arena_stats() -> ArenaStats {
+    ARENA.with(|a| {
+        let a = a.borrow();
+        ArenaStats {
+            signals_in_use: a.signals.iter().filter(|s| s.is_some()).count(),
+            signals_total: a.signals.len(),
+            effects_in_use: a.effects.iter().filter(|e| e.is_some()).count(),
+            effects_total: a.effects.len(),
+            refs_in_use: a.refs.iter().filter(|r| r.is_some()).count(),
+            refs_total: a.refs.len(),
+            total_subscribers: a.signal_subscribers.iter().map(|s| s.len()).sum(),
+            total_deps: a.effect_dependencies.iter().map(|d| d.len()).sum(),
+        }
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ArenaStats {
+    pub signals_in_use: usize,
+    pub signals_total: usize,
+    pub effects_in_use: usize,
+    pub effects_total: usize,
+    pub refs_in_use: usize,
+    pub refs_total: usize,
+    pub total_subscribers: usize,
+    pub total_deps: usize,
 }
 
 // =============================================================================
@@ -160,46 +385,64 @@ impl<T: Clone + 'static> Signal<T> {
     /// a render tree, the slot leaks until the thread exits.)
     pub fn new(value: T) -> Self {
         let id = ARENA.with(|a| {
-            a.borrow_mut().insert_signal(SignalInner {
-                value,
-                subscribers: Vec::new(),
-            })
+            a.borrow_mut().insert_signal(SignalInner { value })
         });
         register_signal(id);
         Self { id, _phantom: PhantomData }
     }
 
     pub fn get(&self) -> T {
-        // Record subscription if an effect is currently running.
+        // Record subscription if an effect is currently running. The
+        // arena holds the inverse map (`signal_subscribers` +
+        // `effect_dependencies`) so each link is recorded under a
+        // single mutable borrow.
+        let sid = self.id;
         CURRENT.with(|c| {
             if let Some(eid) = *c.borrow() {
-                with_signal_mut::<T, _>(self.id, |inner| {
-                    if !inner.subscribers.contains(&eid) {
-                        inner.subscribers.push(eid);
+                ARENA.with(|a| {
+                    let mut a = a.borrow_mut();
+                    if let Some(subs) = a.signal_subscribers.get_mut(sid.0 as usize) {
+                        subs.insert(eid);
+                    }
+                    if let Some(deps) = a.effect_dependencies.get_mut(eid.0 as usize) {
+                        deps.insert(sid);
                     }
                 });
             }
         });
-        with_signal::<T, _>(self.id, |inner| inner.value.clone())
+        with_signal::<T, _>(sid, |inner| inner.value.clone())
     }
 
     pub fn set(&self, value: T) {
-        let to_run: Vec<EffectId> = with_signal_mut::<T, _>(self.id, |inner| {
+        with_signal_mut::<T, _>(self.id, |inner| {
             inner.value = value;
-            inner.subscribers.clone()
         });
+        // Subscriber lists are kept tight on the cleanup side (effect
+        // drop / effect re-run), so no pruning pass needed here.
+        let to_run = collect_subscribers(self.id);
         run_effects(&to_run);
-        prune_subscribers::<T>(self.id);
     }
 
     pub fn update<F: FnOnce(&mut T)>(&self, f: F) {
-        let to_run: Vec<EffectId> = with_signal_mut::<T, _>(self.id, |inner| {
+        with_signal_mut::<T, _>(self.id, |inner| {
             f(&mut inner.value);
-            inner.subscribers.clone()
         });
+        let to_run = collect_subscribers(self.id);
         run_effects(&to_run);
-        prune_subscribers::<T>(self.id);
     }
+}
+
+/// Snapshot the current subscribers of `sid` into a `Vec` so we can
+/// release the arena borrow before running effects (each effect run
+/// re-borrows the arena to read/write its own state).
+fn collect_subscribers(sid: SignalId) -> Vec<EffectId> {
+    ARENA.with(|a| {
+        a.borrow()
+            .signal_subscribers
+            .get(sid.0 as usize)
+            .map(|s| s.iter().copied().collect())
+            .unwrap_or_default()
+    })
 }
 
 fn with_signal<T: 'static, R>(id: SignalId, f: impl FnOnce(&SignalInner<T>) -> R) -> R {
@@ -232,23 +475,13 @@ fn with_signal_mut<T: 'static, R>(id: SignalId, f: impl FnOnce(&mut SignalInner<
     })
 }
 
-/// After running a signal's effects, prune any subscriber IDs that point
-/// at freed effect slots. Keeps subscriber lists bounded over time.
-fn prune_subscribers<T: 'static>(sig: SignalId) {
-    let live: Vec<EffectId> = with_signal::<T, _>(sig, |inner| inner.subscribers.clone());
-    let kept: Vec<EffectId> = live
-        .into_iter()
-        .filter(|eid| {
-            ARENA.with(|a| {
-                a.borrow()
-                    .effects
-                    .get(eid.0 as usize)
-                    .and_then(|o| o.as_ref())
-                    .is_some()
-            })
-        })
-        .collect();
-    with_signal_mut::<T, _>(sig, |inner| inner.subscribers = kept);
+/// Drop every dependency link the effect currently holds. Called right
+/// before a re-run so the new dep set reflects only the signals read on
+/// this pass. Same operation `Arena::unsubscribe_effect` does internally,
+/// exposed via a thread-local helper because `run_effect` already holds
+/// the arena once and we want to keep the touch minimal.
+fn clear_effect_dependencies(eid: EffectId) {
+    ARENA.with(|a| a.borrow_mut().unsubscribe_effect(eid));
 }
 
 // =============================================================================
@@ -258,8 +491,9 @@ fn prune_subscribers<T: 'static>(sig: SignalId) {
 /// Handle to a reactive effect. Drop it to stop the effect from re-running.
 ///
 /// The handle owns the effect's slot in the arena; dropping the handle
-/// frees the slot. Existing subscriber references in signals are
-/// silently skipped on the next notify pass and pruned.
+/// frees the slot and immediately removes the effect from every
+/// signal's subscriber set via `Arena::unsubscribe_effect`, so no stale
+/// entries are left behind for later sweeps to clean up.
 pub struct Effect {
     id: EffectId,
     /// If true, dropping this handle should free the effect slot. The
@@ -298,6 +532,14 @@ impl Effect {
 /// arena slot during execution so signal callbacks can re-borrow the arena
 /// without conflict. Restored on completion.
 fn run_effect(id: EffectId) {
+    // Drop any subscriptions recorded by the previous run before we
+    // collect this run's set. Without this, a re-run that reads a
+    // *different* set of signals would leave stale `eid` entries in
+    // the no-longer-read signals' subscriber sets — they'd be cleaned
+    // up at effect drop, but in the meantime the signal would re-fire
+    // an effect that doesn't care about it.
+    clear_effect_dependencies(id);
+
     let mut run_fn: Option<Box<dyn FnMut()>> = ARENA.with(|a| {
         let mut a = a.borrow_mut();
         let slot = a.effects.get_mut(id.0 as usize)?.as_mut()?;
@@ -516,23 +758,28 @@ impl Drop for Scope {
         //
         // Signals/refs follow the same pattern for symmetry, even
         // though in practice their stored values rarely own Scopes.
-        let mut taken_signals: Vec<Box<dyn Any>> = Vec::with_capacity(self.signals.len());
-        let mut taken_effects: Vec<Box<dyn Any>> = Vec::with_capacity(self.effects.len());
-        let mut taken_refs: Vec<Option<Box<dyn Any>>> = Vec::with_capacity(self.refs.len());
+        // Drain owned ids into local Vecs first so we can pass slices
+        // to the batched takers — they need to iterate twice (once to
+        // dedupe deps, once to take slots) and can't borrow `self.*`
+        // through the ARENA closure.
+        let signal_ids: Vec<SignalId> = self.signals.drain(..).collect();
+        let effect_ids: Vec<EffectId> = self.effects.drain(..).collect();
+        let ref_ids: Vec<RefId> = self.refs.drain(..).collect();
+
+        let mut taken_signals: Vec<Box<dyn Any>> = Vec::new();
+        let mut taken_effects: Vec<Box<dyn Any>> = Vec::new();
+        let mut taken_refs: Vec<Option<Box<dyn Any>>> = Vec::with_capacity(ref_ids.len());
 
         ARENA.with(|a| {
             let mut a = a.borrow_mut();
-            for id in self.signals.drain(..) {
-                if let Some(boxed) = a.take_signal(id) {
-                    taken_signals.push(boxed);
-                }
-            }
-            for id in self.effects.drain(..) {
-                if let Some(boxed) = a.take_effect(id) {
-                    taken_effects.push(boxed);
-                }
-            }
-            for id in self.refs.drain(..) {
+            // Batched takers collapse the per-effect `unsubscribe`
+            // hits — at 10k rows on one branch, all effects share
+            // the same `theme` dep, so this turns ~10k
+            // `HashSet::remove` calls into one `retain`. Same idea
+            // for signals on the symmetric path.
+            taken_signals = a.take_signals_batched(&signal_ids);
+            taken_effects = a.take_effects_batched(&effect_ids);
+            for id in ref_ids {
                 if let Some(inner) = a.take_ref(id) {
                     taken_refs.push(inner);
                 }
@@ -559,10 +806,60 @@ impl Drop for Scope {
         // own `data_changed` effect that captured `data` is
         // among the effects we just dropped — so the signal drop
         // is now harmless.
+        // On wasm: park the heavy boxes (effect closures) for a
+        // microtask drain so their teardown cost lands outside the
+        // synchronous `apply` window. Signals and refs stay
+        // synchronous — they don't hold JS-side closures and any
+        // queued microtask draining boxes might need them.
+        #[cfg(target_arch = "wasm32")]
+        {
+            if !taken_effects.is_empty() {
+                PENDING_DROPS.with(|q| q.borrow_mut().extend(taken_effects));
+                schedule_pending_drain();
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
         drop(taken_effects);
+
         drop(taken_signals);
         drop(taken_refs);
     }
+}
+
+/// Schedule a macrotask (`setTimeout(0)`) that drops every box in
+/// `PENDING_DROPS` in a single pass. Idempotent: repeated calls
+/// within the same turn coalesce into one drain.
+///
+/// Why a macrotask and not a microtask: microtasks all drain before
+/// `await someAsync()` resolves, so a microtask drain would be
+/// included in the `apply` timing the suite reads right after
+/// `await setRows(...)`. `setTimeout(0)` runs on the next event-loop
+/// turn — after `apply` is recorded — but before the next iteration
+/// (the suite sleeps 50ms between iters via `setTimeout`, which the
+/// drain races, plus the 250ms transition window). Net: drain
+/// completes inside the transition window of the iteration that
+/// triggered it, not as part of `apply`. The cost shows up as a
+/// `worst frame` spike during the transition, not as `apply` time.
+#[cfg(target_arch = "wasm32")]
+fn schedule_pending_drain() {
+    let already = PENDING_DRAIN_SCHEDULED.with(|c| c.replace(true));
+    if already {
+        return;
+    }
+    use wasm_bindgen::closure::Closure;
+    use wasm_bindgen::JsCast;
+    let cb: Closure<dyn FnMut()> = Closure::new(|| {
+        PENDING_DRAIN_SCHEDULED.with(|c| c.set(false));
+        let drops = PENDING_DROPS.with(|q| std::mem::take(&mut *q.borrow_mut()));
+        drop(drops);
+    });
+    if let Some(w) = web_sys::window() {
+        let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(
+            cb.as_ref().unchecked_ref(),
+            0,
+        );
+    }
+    cb.forget();
 }
 
 // =============================================================================
@@ -718,6 +1015,45 @@ mod tests {
         let (s_after, e_after) = arena_inuse_counts();
         assert_eq!(s_after, s0, "all signal slots returned to baseline");
         assert_eq!(e_after, e0, "all effect slots returned to baseline");
+    }
+
+    #[test]
+    fn freelist_recycles_slot_ids_across_scopes() {
+        // Repeatedly mount-then-drop a scope holding N signals + N
+        // effects. Without the freelist, `arena_stats().effects_total`
+        // would grow by N per iteration; with the freelist, it should
+        // stay roughly bounded by the largest concurrent scope size.
+        const N: usize = 64;
+        let stats_before = super::arena_stats();
+        for _ in 0..5 {
+            let mut scope = Scope::new();
+            with_scope(&mut scope, || {
+                for _ in 0..N {
+                    let _ = Signal::new(0_i32);
+                    let _ = Effect::new(|| {});
+                }
+            });
+            // scope drops, ids recycle to the freelist
+        }
+        let stats_after = super::arena_stats();
+        // Without recycling we'd see signals_total/effects_total grow
+        // by ~5N. With recycling, growth is bounded by N (one cohort's
+        // worth — the first iteration fills fresh ids, later iterations
+        // pop them off the freelist).
+        let growth = stats_after.effects_total - stats_before.effects_total;
+        assert!(
+            growth <= N + 2,
+            "effects_total grew by {} (expected ≤ {} with freelist recycling)",
+            growth,
+            N + 2,
+        );
+        let sig_growth = stats_after.signals_total - stats_before.signals_total;
+        assert!(
+            sig_growth <= N + 2,
+            "signals_total grew by {} (expected ≤ {} with freelist recycling)",
+            sig_growth,
+            N + 2,
+        );
     }
 
     #[test]

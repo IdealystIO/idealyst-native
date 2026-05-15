@@ -17,10 +17,25 @@ services:
       - devnet
     ports:
       - "3000:3000"
+    # /dev/shm defaults to 64MB inside the container, which Chromium will
+    # exhaust on pages with thousands of DOM nodes; expanding to 2g matches
+    # what Playwright's own docker image uses.
+    shm_size: 2gb
+    # Bench pages mount 1000–10000 styled rows; the browser tab needs
+    # plenty of RAM to survive repeated rebuilds without the OOM killer
+    # tearing down the renderer mid-test.
+    mem_limit: 8g
+    mem_reservation: 2g
     environment:
       CONCURRENT: "5"
       TOKEN: ""
       MAX_QUEUE_LENGTH: "10"
+      # Bump per-tab timeouts: the rebuild suite holds a single connection
+      # open for ~20s while it runs 10 measured iterations.
+      CONNECTION_TIMEOUT: "300000"
+      # Allow large `evaluate`/`snapshot` payloads — the bench page returns
+      # multi-MB JSON when the DOM is fully expanded.
+      MAX_PAYLOAD_SIZE: "100000000"
 
 networks:
   devnet:
