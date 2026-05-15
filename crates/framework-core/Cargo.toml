@@ -13,19 +13,34 @@ license.workspace = true
 #
 # Forwards to the matching feature on `framework-macros` so the
 # `#[component]` macro emits the corresponding enter/exit calls.
-# `dep:js-sys` / `dep:wasm-bindgen` are only consulted on wasm32 (the
-# deps themselves are target-gated below), so native builds stay
-# dep-free.
-debug-stats = ["framework-macros/debug-stats", "dep:js-sys", "dep:wasm-bindgen"]
+# The wasm32-only deps (`js-sys`, `wasm-bindgen`) used here are now
+# unconditional on wasm32 — see the `[target.'cfg(target_arch = "wasm32")']`
+# section below.
+debug-stats = ["framework-macros/debug-stats"]
 
 [dependencies]
 framework-macros = { path = "../framework-macros" }
+# The `Graphics` primitive exposes its surface as a standard
+# `raw_window_handle` handle so authors can plug any GPU library
+# (wgpu, glow, vello, softbuffer, …) on top. Tiny dep — a handful of
+# enums and traits, no platform code.
+raw-window-handle = "0.6"
 
-# Web timing source for `debug-stats`. Only pulled in when the feature
-# is on AND the target is wasm32 — framework-core stays dep-free
-# otherwise. We need a function that reads `performance.now()`; doing
-# that through `js_sys` keeps us off of `web-sys` (heavier) while
-# matching what backend-web already uses.
+# Wasm-only deps:
+# - `js-sys` is used for `performance.now()` under `debug-stats` AND
+#   for `Promise.resolve().then(...)` in `schedule_microtask` (used
+#   to break synchronous reactivity chains that would otherwise
+#   re-enter wasm-bindgen `FnMut` closures — e.g. a click handler
+#   that triggers a screen swap which drops the click's own button
+#   tree).
+# - `wasm-bindgen` is required for the JsCast / Closure types both
+#   call sites need.
+# Both are unconditional on wasm32 (no longer `optional`) because
+# `schedule_microtask` is now part of the framework's public API
+# regardless of features.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-js-sys = { version = "0.3", optional = true }
-wasm-bindgen = { version = "0.2", optional = true }
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+# `Window` for the rAF/setTimeout helpers in `scheduling`; nothing
+# else from web-sys is currently used by framework-core.
+web-sys = { version = "0.3", features = ["Window"] }

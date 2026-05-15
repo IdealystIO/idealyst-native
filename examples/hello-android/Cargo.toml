@@ -10,6 +10,14 @@ license.workspace = true
 # loads at Activity start.
 crate-type = ["cdylib"]
 
+[features]
+# On by default for the demo APK so the gradient renders on device.
+# Forwards to hello's graphics feature, which pulls in wgpu (with
+# Vulkan + GLES backends on Android) plus the Android-flavored
+# gradient demo (`gradient_android.rs`).
+default = ["graphics"]
+graphics = ["hello/graphics"]
+
 [dependencies]
 framework-core = { workspace = true }
 hello = { path = "../hello" }

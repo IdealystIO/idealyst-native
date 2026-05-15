@@ -52,7 +52,10 @@ pub enum PrimitiveKind {
     Video,
     ActivityIndicator,
     Virtualizer,
+    Graphics,
+    Navigator,
     When,
+    Switch,
 }
 
 /// One recorded telemetry event. `at_us` is monotonic microseconds
@@ -110,6 +113,22 @@ pub struct ComponentSummary {
     pub max_inclusive_us: u64,
 }
 
+/// Aggregate counters for the backend's apply-style sub-phases. Each
+/// entry pairs a call count with total time spent. We use aggregated
+/// counters rather than per-call events because the perf screen fires
+/// 1000+ calls per theme toggle and that would flood the event log.
+///
+/// Backends report into these via [`record_apply_phase`]. Phase names
+/// are backend-specific strings — the web backend reports things like
+/// "set_attribute", "insert_rule", "key_hash". Phases that don't
+/// apply on a given backend simply never get recorded.
+#[derive(Default, Clone, Debug)]
+pub struct PhaseCounter {
+    pub call_count: u64,
+    pub total_us: u64,
+    pub max_us: u64,
+}
+
 // ---------------------------------------------------------------------------
 // Public API — readers
 // ---------------------------------------------------------------------------
@@ -118,6 +137,10 @@ thread_local! {
     static EVENT_LOG: RefCell<Vec<DebugEvent>> = const { RefCell::new(Vec::new()) };
     static EVENT_LIMIT: RefCell<Option<usize>> = const { RefCell::new(None) };
     static START_INSTANT: RefCell<Option<TimeOrigin>> = const { RefCell::new(None) };
+    /// Aggregated phase counters. Keyed by `&'static str` phase name so
+    /// backends can report into it cheaply with no allocation.
+    static PHASE_COUNTERS: RefCell<HashMap<&'static str, PhaseCounter>> =
+        RefCell::new(HashMap::new());
 }
 
 /// Drain the event log. Returns everything recorded since the last
@@ -254,6 +277,35 @@ pub fn record_virtualizer_mount(index: usize, scope_id: u64) {
 
 pub fn record_virtualizer_release(scope_id: u64) {
     push(DebugEvent::VirtualizerRelease { scope_id, at_us: now_micros() });
+}
+
+/// Record one phase observation: `phase` ran for `duration_us`. Backends
+/// call this from inside `apply_style` / `apply_styled_states` with
+/// fine-grained labels (`"set_attribute"`, `"insert_rule"`,
+/// `"key_hash"`, etc.) so we can see which sub-step dominates a
+/// theme-toggle storm.
+pub fn record_apply_phase(phase: &'static str, duration_us: u64) {
+    PHASE_COUNTERS.with(|c| {
+        let mut c = c.borrow_mut();
+        let entry = c.entry(phase).or_default();
+        entry.call_count += 1;
+        entry.total_us += duration_us;
+        if duration_us > entry.max_us {
+            entry.max_us = duration_us;
+        }
+    });
+}
+
+/// Drain the phase counters. Returns a snapshot and resets all
+/// counters to zero. Pair with `take_events` when collecting both
+/// per-component and per-phase numbers for one measurement window.
+pub fn take_phase_counters() -> HashMap<&'static str, PhaseCounter> {
+    PHASE_COUNTERS.with(|c| std::mem::take(&mut *c.borrow_mut()))
+}
+
+/// Clear the phase counters without returning them.
+pub fn clear_phase_counters() {
+    PHASE_COUNTERS.with(|c| c.borrow_mut().clear());
 }
 
 // ---------------------------------------------------------------------------

@@ -1,16 +1,64 @@
 //! The shared sample tree, used by every backend.
 //!
-//! Reads as a small dashboard app. Two `Counter` cards sit side by
-//! side in a sectioned page layout; a footer row exposes "Reset" and
-//! "Toggle theme" actions. The reset button drives both counters by
-//! holding a `Ref<CounterHandle>` on each and calling `.reset()` —
-//! exercises custom-component refs naturally. The login banner uses
-//! the reactive `if` form for conditional rendering.
+//! Two-screen demo app. A persistent `Header` at the top renders nav
+//! buttons (Summary / Performance) and a theme toggle; the body
+//! switches between screens based on a `Signal<Screen>` via the
+//! framework's reactive `match` lowering (`ui!`'s `match` arm emits a
+//! `framework_core::switch(...)` so only the active screen is mounted).
+//!
+//! - [`summary`] — a quick tour of every primitive category.
+//! - [`performance`] — 1000 styled rows, alternating surface /
+//!   surfaceAlt backgrounds. Toggling the theme re-runs every row's
+//!   style effect; useful for eyeballing how the framework handles
+//!   1000-fold style invalidation.
 
 use framework_core::{
-    component, install_theme, set_theme, signal, ui, AlignItems, Color, FlexDirection, FontWeight,
-    JustifyContent, Length, Primitive, Ref, Shadow, Signal, TextAlign,
+    component, derived, install_theme, set_theme, signal, ui, AlignItems, Color, FlexDirection,
+    FontWeight, JustifyContent, Length, Navigator, NavigatorHandle, Overflow, Primitive, Ref,
+    Route, RouteParams, Shadow, Signal, TextAlign,
 };
+use std::collections::HashMap;
+
+// Animated gradient demo. Two flavors share the same WGSL shader
+// + pipeline; only the platform glue differs:
+//
+//   gradient_web.rs       — wasm32: requestAnimationFrame loop,
+//                           wasm-bindgen-futures for async init,
+//                           js_sys::Date for time.
+//   gradient_android.rs   — Android: dedicated render thread,
+//                           pollster for async init, std::time
+//                           for the clock.
+//
+// Without the `graphics` feature (or on platforms that don't
+// implement Graphics yet), `gradient::gradient_canvas()` returns a
+// static placeholder so the app still runs.
+#[cfg(all(feature = "graphics", target_arch = "wasm32"))]
+#[path = "gradient_web.rs"]
+mod gradient;
+
+#[cfg(all(feature = "graphics", target_os = "android"))]
+#[path = "gradient_android.rs"]
+mod gradient;
+
+#[cfg(not(any(
+    all(feature = "graphics", target_arch = "wasm32"),
+    all(feature = "graphics", target_os = "android"),
+)))]
+mod gradient {
+    use framework_core::{ui, Primitive};
+    /// Stand-in used when no platform-specific gradient module is
+    /// active (graphics feature off, or platform without a
+    /// Graphics-primitive backend yet — currently iOS).
+    pub fn gradient_canvas() -> Primitive {
+        ui! {
+            View(style = crate::gradient_canvas_style()) {
+                Text(style = crate::subtitle_style()) {
+                    "GPU canvas — enable the `graphics` feature on a supported platform to render the live gradient."
+                }
+            }
+        }
+    }
+}
 
 // =============================================================================
 // Theme
@@ -25,14 +73,14 @@ pub struct Theme {
     pub spacing: Spacing,
 }
 
-/// Semantic colors. `primary` is the brand accent (buttons, focus
-/// states), `background` is the page surface, `surface` is the
-/// elevated container surface (cards). `text` and `muted` separate
-/// primary body text from secondary annotations.
 #[derive(Clone)]
 pub struct Colors {
     pub background: String,
     pub surface: String,
+    /// Alternating surface for striped lists (perf screen rows).
+    /// Distinct enough from `surface` that the parity is visible
+    /// at a glance.
+    pub surface_alt: String,
     pub primary: String,
     pub primary_hover: String,
     pub primary_pressed: String,
@@ -44,8 +92,6 @@ pub struct Colors {
     pub focus_ring: String,
 }
 
-/// Spacing scale, mobile-friendly. Used as raw px values; the
-/// `stylesheet!` macro auto-converts to `Length::Px` via `From<f32>`.
 #[derive(Clone)]
 pub struct Spacing {
     pub xs: f32,
@@ -62,6 +108,7 @@ pub fn light_theme() -> Theme {
         colors: Colors {
             background: "#f7f7fb".into(),
             surface: "#ffffff".into(),
+            surface_alt: "#eef0f7".into(),
             primary: "#5b6cff".into(),
             primary_hover: "#4a5cf0".into(),
             primary_pressed: "#3947d6".into(),
@@ -81,6 +128,7 @@ pub fn dark_theme() -> Theme {
         colors: Colors {
             background: "#0f1115".into(),
             surface: "#1a1d24".into(),
+            surface_alt: "#262a35".into(),
             primary: "#8b9aff".into(),
             primary_hover: "#9eabff".into(),
             primary_pressed: "#7383f5".into(),
@@ -96,11 +144,9 @@ pub fn dark_theme() -> Theme {
 }
 
 // =============================================================================
-// Layout stylesheets
+// Stylesheets — page chrome
 // =============================================================================
 
-// Page — the outermost container. Vertical stack with generous gap,
-// centered content with a max width, generous outer padding.
 framework_core::stylesheet! {
     pub Page<Theme> {
         base(t) {
@@ -117,8 +163,6 @@ framework_core::stylesheet! {
     }
 }
 
-// Row — horizontal flex container with configurable gap. Default to
-// stretching children to equal height so cards line up cleanly.
 framework_core::stylesheet! {
     pub Row<Theme> {
         base(t) {
@@ -129,8 +173,6 @@ framework_core::stylesheet! {
     }
 }
 
-// SpacedRow — like Row but pushes children to opposite ends. Used by
-// the footer action bar.
 framework_core::stylesheet! {
     pub SpacedRow<Theme> {
         base(t) {
@@ -143,10 +185,9 @@ framework_core::stylesheet! {
 }
 
 // =============================================================================
-// Typography stylesheets
+// Stylesheets — typography
 // =============================================================================
 
-// Title — big page-level title. Tracked letterspacing, semibold weight.
 framework_core::stylesheet! {
     pub Title<Theme> {
         base(t) {
@@ -159,7 +200,6 @@ framework_core::stylesheet! {
     }
 }
 
-// Subtitle — secondary body text under the title.
 framework_core::stylesheet! {
     pub Subtitle<Theme> {
         base(t) {
@@ -170,7 +210,6 @@ framework_core::stylesheet! {
     }
 }
 
-// SectionHeading — small uppercase label above a content section.
 framework_core::stylesheet! {
     pub SectionHeading<Theme> {
         base(t) {
@@ -183,7 +222,6 @@ framework_core::stylesheet! {
     }
 }
 
-// CardTitle — the bold label at the top of a card.
 framework_core::stylesheet! {
     pub CardTitle<Theme> {
         base(t) {
@@ -196,7 +234,6 @@ framework_core::stylesheet! {
     }
 }
 
-// CardValue — the big number inside a stat card.
 framework_core::stylesheet! {
     pub CardValue<Theme> {
         base(t) {
@@ -210,11 +247,9 @@ framework_core::stylesheet! {
 }
 
 // =============================================================================
-// Component stylesheets
+// Stylesheets — components
 // =============================================================================
 
-// Card — elevated surface, soft shadow, internal vertical layout with
-// a small gap between title and content.
 framework_core::stylesheet! {
     pub Card<Theme> {
         base(t) {
@@ -240,9 +275,6 @@ framework_core::stylesheet! {
             }
         }
 
-        // Animate the surface + text color when the theme swaps or
-        // the variant flips. The backend handles per-frame
-        // interpolation — no Rust-side ticking.
         transitions {
             background: 250ms EaseInOut,
             color: 250ms EaseInOut,
@@ -250,8 +282,6 @@ framework_core::stylesheet! {
     }
 }
 
-// PrimaryButton — branded action button. The label color comes from
-// the theme's `primary_text` so it stays legible in both themes.
 framework_core::stylesheet! {
     pub PrimaryButton<Theme> {
         base(t) {
@@ -265,22 +295,15 @@ framework_core::stylesheet! {
             letter_spacing: 0.3,
             text_align: TextAlign::Center,
         }
-
-        // Hover (web only — silent no-op on mobile, by design).
         state hovered(t) {
             background: Color(t.colors.primary_hover.clone()),
         }
-
-        // Pressed (web + mobile touch-down).
         state pressed(t) {
             background: Color(t.colors.primary_pressed.clone()),
         }
-
-        // Disabled — driven by `disabled = ...` prop on the Button.
         state disabled(_t) {
             opacity: 0.4,
         }
-
         transitions {
             background: 150ms EaseOut,
             color: 200ms EaseOut,
@@ -289,7 +312,6 @@ framework_core::stylesheet! {
     }
 }
 
-// SecondaryButton — outlined alternative for less-prominent actions.
 framework_core::stylesheet! {
     pub SecondaryButton<Theme> {
         base(t) {
@@ -305,15 +327,12 @@ framework_core::stylesheet! {
             letter_spacing: 0.3,
             text_align: TextAlign::Center,
         }
-
         state hovered(t) {
             border_color: Color(t.colors.border_hover.clone()),
         }
-
         state pressed(t) {
             border_color: Color(t.colors.primary.clone()),
         }
-
         transitions {
             color: 200ms EaseOut,
             border_color: 150ms EaseOut,
@@ -321,7 +340,7 @@ framework_core::stylesheet! {
     }
 }
 
-// CounterButton — the small "+ 1" button inside a stat card.
+// CounterButton — the small "+ N" button inside a stat card.
 framework_core::stylesheet! {
     pub CounterButton<Theme> {
         base(t) {
@@ -343,61 +362,207 @@ framework_core::stylesheet! {
     }
 }
 
-// LoginBanner — the conditional welcome strip shown until the user
-// "logs in". Subtle, takes the primary tone.
 framework_core::stylesheet! {
-    pub LoginBanner<Theme> {
-        base(t) {
-            background: Color(t.colors.primary.clone()),
-            color: Color(t.colors.primary_text.clone()),
-            padding_vertical: t.spacing.sm,
-            padding_horizontal: t.spacing.md,
-            border_radius: 8.0,
-            font_size: 14.0,
-            text_align: TextAlign::Center,
-        }
-        transitions {
-            background: 250ms EaseInOut,
-            color: 250ms EaseInOut,
-        }
-    }
-}
-
-// FlatList container — fixed height so the inner scroller actually
-// scrolls. Without a bounded height, flex-column ancestors would let
-// the list grow unbounded.
-framework_core::stylesheet! {
-    pub ListContainer<Theme> {
+    pub GradientCanvas<Theme> {
         base(t) {
             background: Color(t.colors.surface.clone()),
             border_radius: 8.0,
             border_width: 1.0,
             border_color: Color(t.colors.border.clone()),
-            height: 300.0,
+            height: 200.0,
+            overflow: Overflow::Hidden,
         }
     }
 }
 
-// FlatList row — each item is a fixed-height row with subtle
-// separator (via a 1px bottom border).
+// Header — full-width nav bar with screen buttons + theme toggle.
 framework_core::stylesheet! {
-    pub ListRow<Theme> {
+    pub HeaderBar<Theme> {
+        base(t) {
+            background: Color(t.colors.surface.clone()),
+            padding_vertical: t.spacing.sm,
+            padding_horizontal: t.spacing.md,
+            border_radius: 10.0,
+            border_width: 1.0,
+            border_color: Color(t.colors.border.clone()),
+            flex_direction: FlexDirection::Row,
+            gap: Length::Px(t.spacing.sm),
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::SpaceBetween,
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            border_color: 250ms EaseInOut,
+        }
+    }
+}
+
+// HeaderTitle — brand label on the left side of the header.
+framework_core::stylesheet! {
+    pub HeaderTitle<Theme> {
+        base(t) {
+            color: Color(t.colors.text.clone()),
+            font_size: 18.0,
+            font_weight: FontWeight::SemiBold,
+            letter_spacing: -0.2,
+        }
+        transitions {
+            color: 250ms EaseInOut,
+        }
+    }
+}
+
+// NavGroup — horizontal grouping of nav buttons + theme toggle.
+framework_core::stylesheet! {
+    pub NavGroup<Theme> {
+        base(t) {
+            flex_direction: FlexDirection::Row,
+            gap: Length::Px(t.spacing.xs),
+            align_items: AlignItems::Center,
+        }
+    }
+}
+
+// NavButton — header nav button. The `active` variant marks the
+// current screen so the highlighted button stands out without us
+// rebuilding the header on every navigation.
+framework_core::stylesheet! {
+    pub NavButton<Theme> {
+        base(t) {
+            background: Color("transparent".into()),
+            color: Color(t.colors.muted.clone()),
+            padding_vertical: t.spacing.xs,
+            padding_horizontal: t.spacing.md,
+            border_radius: 6.0,
+            font_weight: FontWeight::Medium,
+            font_size: 14.0,
+        }
+        variant active {
+            #[default]
+            off(_t) {}
+            on(t) {
+                background: Color(t.colors.primary.clone()),
+                color: Color(t.colors.primary_text.clone()),
+            }
+        }
+        state hovered(t) {
+            color: Color(t.colors.text.clone()),
+        }
+        transitions {
+            background: 200ms EaseOut,
+            color: 200ms EaseOut,
+        }
+    }
+}
+
+// PerfRow — the row stylesheet used 1000× by the performance screen.
+// `parity` variant flips between surface and surface_alt so adjacent
+// rows alternate. Both base and variant read from the theme, so a
+// theme toggle re-fires every row's apply-style effect.
+framework_core::stylesheet! {
+    pub PerfRow<Theme> {
         base(t) {
             padding_horizontal: t.spacing.md,
             padding_vertical: t.spacing.sm,
+            background: Color(t.colors.surface.clone()),
+            color: Color(t.colors.text.clone()),
             border_bottom_width: 1.0,
             border_bottom_color: Color(t.colors.border.clone()),
-            font_size: 14.0,
-            color: Color(t.colors.text.clone()),
-            // Match the fixed_size(48.0) we use in the FlatList call.
-            height: 48.0,
+            font_size: 13.0,
+            height: 36.0,
             justify_content: JustifyContent::Center,
+        }
+        variant parity {
+            #[default]
+            even(_t) {}
+            odd(t) {
+                background: Color(t.colors.surface_alt.clone()),
+            }
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            color: 250ms EaseInOut,
+            border_bottom_color: 250ms EaseInOut,
+        }
+    }
+}
+
+// PerfList — outer container for the perf-screen scroller.
+framework_core::stylesheet! {
+    pub PerfList<Theme> {
+        base(t) {
+            background: Color(t.colors.surface.clone()),
+            border_radius: 10.0,
+            border_width: 1.0,
+            border_color: Color(t.colors.border.clone()),
+            height: 500.0,
+            overflow: Overflow::Hidden,
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            border_color: 250ms EaseInOut,
+        }
+    }
+}
+
+// PerfControls — horizontal row hosting the count input, Apply button,
+// and the virtualized toggle. Tight padding, soft background, sits
+// directly above the list.
+framework_core::stylesheet! {
+    pub PerfControls<Theme> {
+        base(t) {
+            flex_direction: FlexDirection::Row,
+            gap: Length::Px(t.spacing.md),
+            align_items: AlignItems::Center,
+            background: Color(t.colors.surface.clone()),
+            padding_vertical: t.spacing.sm,
+            padding_horizontal: t.spacing.md,
+            border_radius: 10.0,
+            border_width: 1.0,
+            border_color: Color(t.colors.border.clone()),
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            border_color: 250ms EaseInOut,
+        }
+    }
+}
+
+// PerfCountInput — the numeric TextInput. Fixed width so it doesn't
+// stretch the rest of the controls row.
+framework_core::stylesheet! {
+    pub PerfCountInput<Theme> {
+        base(t) {
+            background: Color(t.colors.background.clone()),
+            color: Color(t.colors.text.clone()),
+            padding_vertical: t.spacing.xs,
+            padding_horizontal: t.spacing.sm,
+            border_radius: 6.0,
+            border_width: 1.0,
+            border_color: Color(t.colors.border.clone()),
+            font_size: 14.0,
+            width: 120.0,
+        }
+    }
+}
+
+// PerfToggleGroup — Toggle + label, packed side-by-side on the right
+// edge of the controls row.
+framework_core::stylesheet! {
+    pub PerfToggleGroup<Theme> {
+        base(t) {
+            flex_direction: FlexDirection::Row,
+            gap: Length::Px(t.spacing.sm),
+            align_items: AlignItems::Center,
+            // Push to the end of the row; the input + button occupy
+            // the start.
+            margin_left: Length::Auto,
         }
     }
 }
 
 // =============================================================================
-// Components
+// Counter (carried over — used by the Summary screen)
 // =============================================================================
 
 pub struct CounterProps {
@@ -407,17 +572,8 @@ pub struct CounterProps {
     pub tone: CardTone,
 }
 
-/// `Counter` is a stat card: it renders a labeled value and exposes an
-/// increment button. The component declares a `reset()` method via
-/// `methods!`, which the macro turns into a `CounterHandle` the parent
-/// can bind to via `Ref<CounterHandle>`. The reset button in the
-/// footer uses this to zero all counters at once.
 #[component(default(step = 1, tone = CardTone::Neutral))]
 pub fn counter(props: &CounterProps) -> framework_core::Bindable<CounterHandle> {
-    // Pull the relevant fields out of `props` into owned/Copy locals
-    // so the resulting `Bindable` doesn't borrow the props ref. The
-    // component receives `&CounterProps` for ergonomics at the call
-    // site; the body is responsible for projecting what it needs.
     let value = props.value;
     let step = props.step;
     let tone = props.tone;
@@ -433,9 +589,6 @@ pub fn counter(props: &CounterProps) -> framework_core::Bindable<CounterHandle> 
     ui! {
         View(style = Card().tone(tone)) {
             Text(style = card_title_style()) { label }
-            // Reactive text: `.get()` inside `text(...)` (which the
-            // macro emits from this position) triggers the reactivity
-            // rewriter to wrap the argument in a closure automatically.
             Text(style = card_value_style()) { format!("{}", value.get()) }
             Button(
                 label = label_for_button,
@@ -447,190 +600,99 @@ pub fn counter(props: &CounterProps) -> framework_core::Bindable<CounterHandle> 
 }
 
 // =============================================================================
-// App
+// Routing — see Navigator usage at the bottom of this file.
 // =============================================================================
 
+/// Typed params for the "detail" screen. The web backend serializes
+/// these to `:id` in the URL and parses them back on deep links.
+/// Native backends pass the struct unchanged across the framework's
+/// type-erased command channel.
+#[derive(Clone, Debug)]
+pub struct DetailParams {
+    pub id: u32,
+}
+
+impl RouteParams for DetailParams {
+    fn to_path(&self, pattern: &str) -> String {
+        // Substitute `:id` with our `id` field. The framework only
+        // supports literal substitution; anything more complex
+        // (encoding, multi-segment slugs) is the impl's problem.
+        pattern.replace(":id", &self.id.to_string())
+    }
+
+    fn from_segments(segments: &HashMap<String, String>) -> Option<Self> {
+        let raw = segments.get("id")?;
+        let id = raw.parse().ok()?;
+        Some(Self { id })
+    }
+}
+
+/// The static set of routes the app declares. We use module-level
+/// `Route` constants so call sites elsewhere (header buttons, deep
+/// links) reference the same path patterns the navigator registers.
+pub const HOME_ROUTE: Route<()> = Route::<()>::new("home", "/");
+pub const PERF_ROUTE: Route<()> = Route::<()>::new("performance", "/performance");
+pub const DETAIL_ROUTE: Route<DetailParams> = Route::<DetailParams>::new("detail", "/detail/:id");
+
+// =============================================================================
+// Header
+// =============================================================================
+
+pub struct HeaderProps {
+    /// The navigator the header drives. The header issues `reset`
+    /// for top-level tabs (Summary / Performance) since these are
+    /// destinations rather than push-stack steps; deeper screens
+    /// pushed elsewhere don't end up below them in the stack.
+    pub nav: Ref<NavigatorHandle>,
+    /// Active route name, used purely for highlighting the matching
+    /// tab. Driven by the buttons themselves — the framework doesn't
+    /// expose "what's mounted" from the navigator, so we track it
+    /// here. Initialized to the home route at mount time.
+    pub active: Signal<&'static str>,
+    pub is_dark: Signal<bool>,
+}
+
+/// The app's persistent header. Three buttons drive the navigator
+/// (two tabs + a theme toggle); the navigator owns the actual
+/// screen rendering, so the header itself never rebuilds on
+/// navigation — just the styles re-resolve via the `active` axis.
 #[component]
-pub fn app() -> Primitive {
-    install_theme(light_theme());
-
-    let score = signal!(0);
-    let lives = signal!(3);
-    let is_dark = signal!(false);
-    let logged_in = signal!(false);
-
-    // Refs for resetting both counters in one parent action.
-    let score_ref: Ref<CounterHandle> = Ref::new();
-    let lives_ref: Ref<CounterHandle> = Ref::new();
-
-    // Signals driving the primitives showcase.
-    let name = signal!("".to_string());
-    let notifications_on = signal!(true);
-    let volume = signal!(0.5_f32);
-    let loading = signal!(false);
-
-    // Demo data for the FlatList. Each item has a stable u64 id so
-    // the virtualizer can preserve mounted subtrees across data
-    // changes. 1,000 rows — enough that mounting all would be silly,
-    // demonstrating the windowing.
-    let list_items = signal!(
-        (0..1000u64)
-            .map(|i| (i, format!("Item #{}", i)))
-            .collect::<Vec<(u64, String)>>()
-    );
+pub fn header(props: &HeaderProps) -> Primitive {
+    let nav = props.nav;
+    let active = props.active;
+    let is_dark = props.is_dark;
 
     ui! {
-        View(style = page_style()) {
-            // Header section: title + subtitle.
-            View {
-                Text(style = title_style()) { "idealyst dashboard" }
-                Text(style = subtitle_style()) {
-                    "A tiny demo of the framework's signals, refs, and styles."
-                }
-            }
-
-            // Welcome banner — visible until the user dismisses it via
-            // "Reset all". The reactive `if` form rebuilds the subtree
-            // when `logged_in` flips.
-            if !logged_in.get() {
-                View(style = login_banner_style()) {
-                    Text { "Welcome — try incrementing a counter or toggling the theme." }
-                }
-            } else {
-                View {}
-            }
-
-            // Stats section: section heading + two counter cards laid
-            // horizontally with equal width (each Card has flex_grow: 1).
-            View {
-                Text(style = section_heading_style()) { "Stats" }
-                View(style = row_style()) {
-                    Counter(
-                        label = "Score",
-                        value = score,
-                        step = 5,
-                        tone = CardTone::Primary
-                    ).bind(score_ref)
-                    Counter(
-                        label = "Lives",
-                        value = lives
-                    ).bind(lives_ref)
-                }
-            }
-
-            // Primitives showcase: text input + toggle + image. Each
-            // is controlled — the parent owns the source-of-truth
-            // signal, the primitive's `on_change` updates it, and the
-            // framework writes the new value back to the native widget.
-            View {
-                Text(style = section_heading_style()) { "Primitives" }
-                View {
-                    Text(style = subtitle_style()) {
-                        format!(
-                            "Hello{}",
-                            if name.get().is_empty() {
-                                String::new()
-                            } else {
-                                format!(", {}", name.get())
-                            }
-                        )
-                    }
-                    TextInput(
-                        value = name,
-                        on_change = move |v: String| name.set(v),
-                        placeholder = "Your name"
-                    )
-                    View(style = spaced_row_style()) {
-                        Text(style = subtitle_style()) {
-                            format!(
-                                "Notifications: {}",
-                                if notifications_on.get() { "on" } else { "off" }
-                            )
-                        }
-                        Toggle(
-                            value = notifications_on,
-                            on_change = move |v: bool| notifications_on.set(v)
-                        )
-                    }
-                    // Slider — controlled f32 in [0.0, 1.0], step 0.05
-                    // (so values snap to 0, 5%, 10%, ..., 100%).
-                    View {
-                        Text(style = subtitle_style()) {
-                            format!("Volume: {}%", (volume.get() * 100.0).round() as i32)
-                        }
-                        Slider(
-                            value = volume,
-                            on_change = move |v: f32| volume.set(v),
-                            min = 0.0_f32,
-                            max = 1.0_f32,
-                            step = 0.05_f32
-                        )
-                    }
-                    // ActivityIndicator + toggle to show/hide it. The
-                    // `if` form rebuilds the subtree when `loading`
-                    // flips; mounting an indicator is what triggers
-                    // the keyframes injection on first use.
-                    View(style = spaced_row_style()) {
-                        Button(
-                            label = "Toggle spinner",
-                            on_click = move || loading.update(|b| *b = !*b),
-                            style = secondary_button_style()
-                        )
-                        if loading.get() {
-                            ActivityIndicator()
-                        } else {
-                            View {}
-                        }
-                    }
-                }
-            }
-
-            // FlatList showcase: a virtualized 1,000-row list. The
-            // FlatList primitive owns a scrolling container; only
-            // items near the viewport are mounted (windowing). On
-            // web the JS shim handles the scroll math + ResizeObserver
-            // for measured sizes; on native (Android v1) all items
-            // are mounted up-front pending a RecyclerView follow-up.
-            View {
-                Text(style = section_heading_style()) { "FlatList — 1,000 rows" }
-                FlatList(
-                    data = list_items,
-                    key = |_idx, item: &(u64, String)| item.0,
-                    size = framework_core::primitives::flat_list::fixed_size::<(u64, String)>(48.0),
-                    render = move |_idx, item: &(u64, String)| {
-                        let label = item.1.clone();
-                        ui! {
-                            View(style = list_row_style()) {
-                                Text { label }
-                            }
-                        }
-                    },
-                    style = list_container_style()
-                )
-            }
-
-            // Action bar: primary "Reset all" pushes left, secondary
-            // theme toggle pushes right. Demonstrates ref-driven
-            // multi-component action: one click resets two independent
-            // components by calling their handles.
-            View(style = spaced_row_style()) {
-                // Primary action — disabled when both counters are
-                // already at zero. The `disabled = ...` closure reads
-                // both signals; the framework wraps it in an Effect
-                // so changes propagate automatically. While disabled,
-                // PrimaryButton's `state disabled { opacity: 0.4 }`
-                // overlay applies via the framework's state
-                // machinery, and the native widget is marked inert
-                // (web: `disabled` attr; Android: `setEnabled(false)`).
+        View(style = header_bar_style()) {
+            Text(style = header_title_style()) { "idealyst" }
+            View(style = nav_group_style()) {
                 Button(
-                    label = "Reset all",
+                    label = "Summary",
                     on_click = move || {
-                        if let Some(h) = score_ref.get() { h.reset(); }
-                        if let Some(h) = lives_ref.get() { h.reset(); }
-                        logged_in.set(true);
+                        if let Some(h) = nav.get() {
+                            h.reset(&HOME_ROUTE, ());
+                        }
+                        active.set(HOME_ROUTE.name());
                     },
-                    style = primary_button_style(),
-                    disabled = move || score.get() == 0 && lives.get() == 0
+                    style = NavButton().active(derived(move || if active.get() == HOME_ROUTE.name() {
+                        NavButtonActive::On
+                    } else {
+                        NavButtonActive::Off
+                    }))
+                )
+                Button(
+                    label = "Performance",
+                    on_click = move || {
+                        if let Some(h) = nav.get() {
+                            h.reset(&PERF_ROUTE, ());
+                        }
+                        active.set(PERF_ROUTE.name());
+                    },
+                    style = NavButton().active(derived(move || if active.get() == PERF_ROUTE.name() {
+                        NavButtonActive::On
+                    } else {
+                        NavButtonActive::Off
+                    }))
                 )
                 Button(
                     label = if is_dark.get() { "Light mode".to_string() } else { "Dark mode".to_string() },
@@ -646,6 +708,420 @@ pub fn app() -> Primitive {
                     style = secondary_button_style()
                 )
             }
+        }
+    }
+}
+
+// =============================================================================
+// Summary screen — one card per primitive category
+// =============================================================================
+
+pub struct SummaryProps {
+    /// Handle to the navigator so we can push the detail screen.
+    /// `Ref` is `Copy`-ish (numeric id), so passing it costs nothing.
+    pub nav: Ref<NavigatorHandle>,
+}
+
+#[component]
+pub fn summary(props: &SummaryProps) -> Primitive {
+    let nav = props.nav;
+    let score = signal!(0);
+    let lives = signal!(3);
+
+    // Form-control demos.
+    let name = signal!("".to_string());
+    let notifications_on = signal!(true);
+    let volume = signal!(0.5_f32);
+    let loading = signal!(false);
+
+    let score_ref: Ref<CounterHandle> = Ref::new();
+    let lives_ref: Ref<CounterHandle> = Ref::new();
+
+    ui! {
+        View {
+            // Interactive: counters drive a Ref-based "reset all".
+            View {
+                Text(style = section_heading_style()) { "Interactive" }
+                View(style = row_style()) {
+                    Counter(
+                        label = "Score",
+                        value = score,
+                        step = 5,
+                        tone = CardTone::Primary
+                    ).bind(score_ref)
+                    Counter(
+                        label = "Lives",
+                        value = lives
+                    ).bind(lives_ref)
+                }
+                Button(
+                    label = "Reset all counters",
+                    on_click = move || {
+                        if let Some(h) = score_ref.get() { h.reset(); }
+                        if let Some(h) = lives_ref.get() { h.reset(); }
+                    },
+                    style = primary_button_style(),
+                    disabled = move || score.get() == 0 && lives.get() == 0
+                )
+            }
+
+            // Form controls: text input + toggle + slider.
+            View {
+                Text(style = section_heading_style()) { "Form controls" }
+                Text(style = subtitle_style()) {
+                    format!(
+                        "Hello{}",
+                        if name.get().is_empty() {
+                            String::new()
+                        } else {
+                            format!(", {}", name.get())
+                        }
+                    )
+                }
+                TextInput(
+                    value = name,
+                    on_change = move |v: String| name.set(v),
+                    placeholder = "Your name"
+                )
+                View(style = spaced_row_style()) {
+                    Text(style = subtitle_style()) {
+                        format!(
+                            "Notifications: {}",
+                            if notifications_on.get() { "on" } else { "off" }
+                        )
+                    }
+                    Toggle(
+                        value = notifications_on,
+                        on_change = move |v: bool| notifications_on.set(v)
+                    )
+                }
+                Text(style = subtitle_style()) {
+                    format!("Volume: {}%", (volume.get() * 100.0).round() as i32)
+                }
+                Slider(
+                    value = volume,
+                    on_change = move |v: f32| volume.set(v),
+                    min = 0.0_f32,
+                    max = 1.0_f32,
+                    step = 0.05_f32
+                )
+            }
+
+            // Feedback: activity indicator with a manual toggle.
+            View {
+                Text(style = section_heading_style()) { "Feedback" }
+                View(style = spaced_row_style()) {
+                    Button(
+                        label = "Toggle spinner",
+                        on_click = move || loading.update(|b| *b = !*b),
+                        style = secondary_button_style()
+                    )
+                    if loading.get() {
+                        ActivityIndicator()
+                    } else {
+                        View {}
+                    }
+                }
+            }
+
+            // Navigation: push a typed-param detail screen onto the
+            // navigator stack. Web: URL becomes /detail/42; native:
+            // pushes a child VC / fragment. Either way the back
+            // affordance returns you here.
+            View {
+                Text(style = section_heading_style()) { "Navigation" }
+                Text(style = subtitle_style()) {
+                    "Push a detail screen with a typed `:id` param. \
+                     On web the URL bar updates and the browser back \
+                     button works; on native the platform back \
+                     gesture pops the stack."
+                }
+                View(style = row_style()) {
+                    Button(
+                        label = "Open detail #42",
+                        on_click = move || {
+                            if let Some(h) = nav.get() {
+                                h.push(&DETAIL_ROUTE, DetailParams { id: 42 });
+                            }
+                        },
+                        style = secondary_button_style()
+                    )
+                    Button(
+                        label = "Open detail #1337",
+                        on_click = move || {
+                            if let Some(h) = nav.get() {
+                                h.push(&DETAIL_ROUTE, DetailParams { id: 1337 });
+                            }
+                        },
+                        style = secondary_button_style()
+                    )
+                }
+            }
+
+            // Graphics: GPU-rendered animated gradient. Feature-gated
+            // so non-graphics builds get a flat tile.
+            View {
+                Text(style = section_heading_style()) { "GPU canvas" }
+                gradient::gradient_canvas()
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Detail screen — typed `:id` param demo
+// =============================================================================
+
+pub struct DetailProps {
+    /// The id from the URL / push call. Lives only as long as this
+    /// screen's per-screen scope — popping the screen drops every
+    /// signal/effect that captured it.
+    pub id: u32,
+    /// Handle to the navigator so the back button works on web (the
+    /// browser back button works automatically; this is for the
+    /// in-page button).
+    pub nav: Ref<NavigatorHandle>,
+}
+
+#[component]
+pub fn detail(props: &DetailProps) -> Primitive {
+    let id = props.id;
+    let nav = props.nav;
+
+    // Per-screen state: a click counter. Lives in this screen's
+    // scope; popping the screen drops it. The point of this signal
+    // is to show that per-screen state really is isolated — push
+    // detail #42, click 3 times, pop, push detail #42 again: the
+    // counter resets to 0 because the previous scope was dropped.
+    // i32 to match Counter's expected `Signal<i32>`.
+    let clicks = signal!(0_i32);
+
+    ui! {
+        View {
+            Text(style = title_style()) {
+                format!("Detail #{}", id)
+            }
+            Text(style = subtitle_style()) {
+                "This screen owns its own reactive scope. Anything \
+                 the screen body captured (the counter below) goes \
+                 away when you pop back, even if you push the same \
+                 route again."
+            }
+            View(style = row_style()) {
+                Counter(
+                    label = "Clicks on this screen",
+                    value = clicks
+                )
+            }
+            View(style = row_style()) {
+                Button(
+                    label = "Back",
+                    on_click = move || {
+                        if let Some(h) = nav.get() {
+                            h.pop();
+                        }
+                    },
+                    style = secondary_button_style()
+                )
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Performance screen — 1000 styled rows
+// =============================================================================
+
+/// Hard cap so a stray typo can't trigger a 10M-row rebuild.
+const PERF_MAX_COUNT: usize = 10_000;
+
+#[component]
+pub fn performance() -> Primitive {
+    // Three signals drive this screen:
+    //
+    // - `count_input`: the editing buffer the TextInput is bound to.
+    //   Updates per keystroke; nothing else reads it until Apply.
+    // - `count`: the *applied* count. Only changes when Apply parses
+    //   `count_input` and clamps the result. The list rebuilds when
+    //   this changes.
+    // - `virtualized`: true means render through `FlatList`
+    //   (windowed); false means render every row inline inside a
+    //   `ScrollView`. The full point of the comparison.
+    //
+    // The list itself sits inside a reactive `match` on
+    // `(virtualized, count)` so changing either rebuilds the
+    // appropriate variant from scratch.
+    let count = signal!(1000_usize);
+    let count_input = signal!("1000".to_string());
+    let virtualized = signal!(true);
+
+    ui! {
+        View {
+            Text(style = section_heading_style()) { "N styled views" }
+            Text(style = subtitle_style()) {
+                "Compare windowed vs. all-at-once rendering. Toggle the theme to stress every row's style effect."
+            }
+
+            // Controls row.
+            View(style = perf_controls_style()) {
+                TextInput(
+                    value = count_input,
+                    on_change = move |v: String| count_input.set(v),
+                    placeholder = "Item count",
+                    style = perf_count_input_style()
+                )
+                Button(
+                    label = "Apply",
+                    on_click = move || {
+                        let parsed = count_input.get().trim().parse::<usize>().unwrap_or(0);
+                        let clamped = parsed.min(PERF_MAX_COUNT);
+                        count.set(clamped);
+                        // Echo the clamped value back into the input
+                        // so the user sees what actually got applied.
+                        count_input.set(clamped.to_string());
+                    },
+                    style = primary_button_style()
+                )
+                View(style = perf_toggle_group_style()) {
+                    // Wrap the if in a single expression so the `ui!`
+                    // parser treats this as reactive text content
+                    // rather than a `when()` branch that would expect
+                    // each arm to produce a `Primitive`.
+                    Text(style = subtitle_style()) {
+                        (if virtualized.get() { "Virtualized" } else { "All-at-once" }).to_string()
+                    }
+                    Toggle(
+                        value = virtualized,
+                        on_change = move |v: bool| virtualized.set(v)
+                    )
+                }
+            }
+
+            // The list. Reactive `match` over (mode, count): both
+            // signals contribute to the switch key, so changing
+            // either triggers a full rebuild via the framework's
+            // `switch` primitive. Captured `n` is `&usize` (match
+            // ergonomics over `&(bool, usize)`); we copy it out with
+            // `&n` patterns and pass it to either arm's renderer.
+            match (virtualized.get(), count.get()) {
+                // `__v: &(bool, usize)` inside the switch closure.
+                // Match ergonomics: the outer `(_, _)` auto-derefs,
+                // and `n` binds as `&usize` under ref mode — we
+                // copy it into a `usize` local at the top of the
+                // arm body.
+                (true, n) => {
+                    // Wrap in a Rust block expression so the macro
+                    // parser accepts the `let` statements (the
+                    // arm body itself only accepts UI nodes; this
+                    // inner `{ ... }` goes through the fallback
+                    // expression path).
+                    //
+                    // Virtualized: fresh per-rebuild data signal.
+                    // The framework windows what's visible; rows
+                    // outside the scroll viewport are not mounted.
+                    {
+                        let n: usize = *n;
+                        let data = signal!((0..n as u64).collect::<Vec<u64>>());
+                        framework_core::IntoPrimitive::into_primitive(
+                            framework_core::primitives::flat_list::flat_list::<
+                                u64, _, (), _,
+                            >(
+                                data,
+                                |_idx, item: &u64| *item,
+                                framework_core::primitives::flat_list::fixed_size::<u64>(36.0),
+                                move |idx, _item: &u64| {
+                                    ui! {
+                                        View(style = PerfRow().parity(if idx % 2 == 0 {
+                                            PerfRowParity::Even
+                                        } else {
+                                            PerfRowParity::Odd
+                                        })) {
+                                            Text { format!("Row #{}", idx) }
+                                        }
+                                    }
+                                },
+                            )
+                            .with_style(perf_list_style()),
+                        )
+                    }
+                }
+                (false, n) => {
+                    // Same wrapping trick as the virtualized arm:
+                    // the inner `{ ... }` is a Rust block expression
+                    // that hosts the `let` and ends with a single
+                    // `ui!`-built expression.
+                    {
+                        let n: usize = *n;
+                        ui! {
+                            ScrollView(style = perf_list_style()) {
+                                for i in 0..n {
+                                    View(style = PerfRow().parity(if i % 2 == 0 {
+                                        PerfRowParity::Even
+                                    } else {
+                                        PerfRowParity::Odd
+                                    })) {
+                                        Text { format!("Row #{}", i) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// App
+// =============================================================================
+
+#[component]
+pub fn app() -> Primitive {
+    install_theme(light_theme());
+
+    let is_dark = signal!(false);
+    let active = signal!(HOME_ROUTE.name());
+    let nav: Ref<NavigatorHandle> = Ref::new();
+
+    ui! {
+        View(style = page_style()) {
+            // Wrapping View prevents the `ui!` parser from treating
+            // the navigator block below as Header's children block.
+            View { Header(nav = nav, active = active, is_dark = is_dark) }
+
+            // The navigator is the screen-rendering substrate. It
+            // declares every route up-front via `.screen(...)` and
+            // exposes an imperative handle through `.bind(nav)`. On
+            // web the navigator uses `history.pushState` + popstate
+            // so URLs and the back button work; on native it
+            // pushes/pops fragments (Android) or view controllers
+            // (iOS). Routes are typed: `DETAIL_ROUTE` takes
+            // `DetailParams`, so `nav.push(&DETAIL_ROUTE, ...)` is a
+            // compile-time check that the call site supplies the
+            // right param type.
+            //
+            // Each `.screen(...)` closure runs every time that
+            // screen is mounted — push, replace, deep link, etc.
+            // Inside each closure we re-enter `ui!` so the screen
+            // builder reads as plain UI; the outer `ui!` doesn't
+            // expand the body of closures, so calls like
+            // `summary!(...)` would otherwise have to be written
+            // raw.
+            { Navigator::new(&HOME_ROUTE)
+                .screen(HOME_ROUTE, move |_| {
+                    let nav = nav;
+                    ui! { Summary(nav = nav) }
+                })
+                .screen(PERF_ROUTE, |_| {
+                    ui! { Performance() }
+                })
+                .screen(DETAIL_ROUTE, move |params: DetailParams| {
+                    let nav = nav;
+                    let id = params.id;
+                    ui! { Detail(id = id, nav = nav) }
+                })
+                .bind(nav) }
         }
     }
 }

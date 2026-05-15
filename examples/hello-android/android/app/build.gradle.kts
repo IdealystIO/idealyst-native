@@ -62,6 +62,12 @@ android {
 dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.core:core-ktx:1.13.1")
+    // RecyclerView powers the framework's Virtualizer primitive on
+    // Android. The backend's Kotlin glue (RustListAdapter,
+    // RustLinearLayoutManager) lives under
+    // `crates/backend-android/runtime/kotlin/` and is bundled into the
+    // app via the sourceSets configuration above.
+    implementation("androidx.recyclerview:recyclerview:1.3.2")
 }
 
 // ---------------------------------------------------------------------------

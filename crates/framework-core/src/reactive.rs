@@ -83,20 +83,29 @@ impl Arena {
         id
     }
 
-    fn free_signal(&mut self, id: SignalId) {
-        if let Some(slot) = self.signals.get_mut(id.0 as usize) {
-            *slot = None;
-        }
+    /// Take the contents out of `effects[id]`, leaving the slot
+    /// `None`. The caller drops the returned Box *after* releasing
+    /// the ARENA borrow — an EffectInner's captures may transitively
+    /// own nested `Scope`s whose own `Drop` re-enters ARENA. See
+    /// `Scope::drop` for the dance.
+    fn take_effect(&mut self, id: EffectId) -> Option<Box<dyn Any>> {
+        self.effects.get_mut(id.0 as usize).and_then(|s| s.take())
     }
 
+    fn take_signal(&mut self, id: SignalId) -> Option<Box<dyn Any>> {
+        self.signals.get_mut(id.0 as usize).and_then(|s| s.take())
+    }
+
+    fn take_ref(&mut self, id: RefId) -> Option<Option<Box<dyn Any>>> {
+        self.refs.get_mut(id.0 as usize).and_then(|s| s.take())
+    }
+
+    /// Single-effect free path used by `Effect`'s own `Drop` when it
+    /// owns the slot. Doesn't have the nested-Scope problem because
+    /// an owning `Effect` handle is dropped *after* `Effect::new`
+    /// returns, i.e. from user code that doesn't hold the arena.
     fn free_effect(&mut self, id: EffectId) {
         if let Some(slot) = self.effects.get_mut(id.0 as usize) {
-            *slot = None;
-        }
-    }
-
-    fn free_ref(&mut self, id: RefId) {
-        if let Some(slot) = self.refs.get_mut(id.0 as usize) {
             *slot = None;
         }
     }
@@ -496,18 +505,63 @@ impl Scope {
 
 impl Drop for Scope {
     fn drop(&mut self) {
+        // Take each slot's contents out under the ARENA borrow, then
+        // drop them after releasing the borrow. The contents of an
+        // EffectInner can transitively own *nested* Scopes (via
+        // `Rc<RefCell<Option<Box<Scope>>>>` captured by an inner
+        // `when`/`switch` effect closure). Those nested Scopes' Drop
+        // also re-enters ARENA — and would panic "RefCell already
+        // borrowed" if we drop them while still holding our own
+        // borrow.
+        //
+        // Signals/refs follow the same pattern for symmetry, even
+        // though in practice their stored values rarely own Scopes.
+        let mut taken_signals: Vec<Box<dyn Any>> = Vec::with_capacity(self.signals.len());
+        let mut taken_effects: Vec<Box<dyn Any>> = Vec::with_capacity(self.effects.len());
+        let mut taken_refs: Vec<Option<Box<dyn Any>>> = Vec::with_capacity(self.refs.len());
+
         ARENA.with(|a| {
             let mut a = a.borrow_mut();
             for id in self.signals.drain(..) {
-                a.free_signal(id);
+                if let Some(boxed) = a.take_signal(id) {
+                    taken_signals.push(boxed);
+                }
             }
             for id in self.effects.drain(..) {
-                a.free_effect(id);
+                if let Some(boxed) = a.take_effect(id) {
+                    taken_effects.push(boxed);
+                }
             }
             for id in self.refs.drain(..) {
-                a.free_ref(id);
+                if let Some(inner) = a.take_ref(id) {
+                    taken_refs.push(inner);
+                }
             }
         });
+
+        // Borrow released; safe to drop the captured contents now.
+        //
+        // Drop order matters: **effects first, signals second**.
+        // Backend cleanup hooks (`release_virtualizer`,
+        // `release_graphics`, etc.) run from inside an
+        // EffectInner's drop — they tear down JS-side listeners
+        // and drop the wasm-bindgen Closures that JS was holding.
+        // During that teardown, a queued browser event (scroll,
+        // ResizeObserver, microtask-deferred refresh) can fire
+        // synchronously into a Rust callback that reads a user
+        // signal. If we'd already dropped the signal, that read
+        // panics with "signal used after its scope was dropped".
+        //
+        // By draining effects first, every cleanup hook runs
+        // while the surrounding scope's signals are still live.
+        // Once all effects are gone, no Rust code holds a
+        // `Signal<T>` reference into this scope — the framework's
+        // own `data_changed` effect that captured `data` is
+        // among the effects we just dropped — so the signal drop
+        // is now harmless.
+        drop(taken_effects);
+        drop(taken_signals);
+        drop(taken_refs);
     }
 }
 

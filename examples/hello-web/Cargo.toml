@@ -7,19 +7,37 @@ license.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = ["graphics"]
+# Enable framework render telemetry. Forwards to framework-core's
+# `debug-stats` feature. When on, `dump_debug_events()` is exported
+# from the JS bindings and prints a per-component render summary.
+debug-stats = ["framework-core/debug-stats", "backend-web/debug-stats"]
+# Pulls in the gradient demo (and its `wgpu` dep) into the hello
+# app. The Graphics primitive itself is now always-available on
+# the web backend (no wgpu cost) — this feature only gates the
+# *demo's* GPU code.
+graphics = ["hello/graphics"]
+
 [dependencies]
 framework-core = { workspace = true }
 backend-web = { workspace = true }
 hello = { path = "../hello" }
 wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = ["console"] }
 console_error_panic_hook = "0.1"
 # Smaller allocator for WASM. Skips the chunked-arena machinery the
 # default allocator pulls in. Trade-off: slightly higher per-alloc
 # cost in exchange for much less code.
 lol_alloc = "0.4"
 
-# wasm-opt flags. The newer Rust toolchains emit `memory.fill` (bulk
-# memory) ops that wasm-opt rejects without the matching enable flag.
+# wasm-opt flags. The newer Rust toolchains and wgpu emit several
+# WebAssembly extensions that wasm-opt rejects without their
+# matching enable flags:
+#   - `memory.fill` (bulk-memory) — std vec ops on recent toolchains
+#   - `i32.trunc_sat_f32_*` (nontrapping-float-to-int) — wgpu's f32→i32
+#     conversions and clamped casts
+#   - `memory.copy` etc. (also bulk-memory)
 # `-Oz` prioritizes size like `opt-level = "z"` does for rustc.
 [package.metadata.wasm-pack.profile.release]
-wasm-opt = ["-Oz", "--enable-bulk-memory"]
+wasm-opt = ["-Oz", "--strip-debug", "--strip-producers", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]

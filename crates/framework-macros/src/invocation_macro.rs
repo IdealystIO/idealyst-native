@@ -40,6 +40,14 @@ struct PropsType {
 /// shape (one parameter typed as `&SomeProps` or `SomeProps`).
 pub(crate) fn generate_invocation_macro(item_fn: &ItemFn, attr: &ComponentAttr) -> TokenStream2 {
     let fn_name = &item_fn.sig.ident;
+
+    // No props: emit a thin invocation macro that just calls the fn.
+    // Lets `ui!` write `Summary()` (which lowers to `summary!()`) for
+    // components that take no arguments.
+    if item_fn.sig.inputs.is_empty() {
+        return emit_no_args_macro(fn_name);
+    }
+
     let Some(props_type) = props_type_from_sig(&item_fn.sig) else {
         return TokenStream2::new();
     };
@@ -51,6 +59,23 @@ pub(crate) fn generate_invocation_macro(item_fn: &ItemFn, attr: &ComponentAttr) 
         return emit_trivial_macro(fn_name, &amp, path);
     }
     emit_tt_munching_macro(fn_name, &amp, path, defaults)
+}
+
+/// Zero-prop invocation macro: `name!()` (or `name!(children = ...)`
+/// if the component accepts children, though no-arg components
+/// can't, by definition — we accept the form for parser uniformity).
+fn emit_no_args_macro(fn_name: &Ident) -> TokenStream2 {
+    quote! {
+        #[allow(unused_macros)]
+        macro_rules! #fn_name {
+            () => { #fn_name() };
+            // Accept (and ignore) a `children = …` clause so the
+            // ui! emitter's user-component path doesn't error on
+            // child-bearing call sites — though a no-prop component
+            // wouldn't have any use for them.
+            (children = $children:expr $(,)?) => { #fn_name() };
+        }
+    }
 }
 
 /// Fast path: no defaults, straight pass-through macro.

@@ -12,7 +12,9 @@
 
 pub mod activity_indicator;
 pub mod flat_list;
+pub mod graphics;
 pub mod image;
+pub mod navigator;
 pub mod scroll_view;
 pub mod slider;
 pub mod text_input;

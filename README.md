@@ -373,7 +373,7 @@ examples/
 ```bash
 cd examples/hello-web
 wasm-pack build --target web --release
-python3 -m http.server 8080
+python3 serve.py 8080
 ```
 
 Open `http://localhost:8080` and you should see the shared `hello::app()` tree

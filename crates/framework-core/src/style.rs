@@ -1356,8 +1356,12 @@ pub fn resolve(app: &StyleApplication) -> Rc<StyleRules> {
 
     // Cache hit? Try upgrading the Weak.
     if let Some(rc) = RESOLUTION_CACHE.with(|c| c.borrow().get(&key).and_then(|w| w.upgrade())) {
+        #[cfg(feature = "debug-stats")]
+        crate::debug::record_style_cache_hit();
         return rc;
     }
+    #[cfg(feature = "debug-stats")]
+    crate::debug::record_style_cache_miss();
 
     // Miss (or dead Weak). Resolve fresh.
     let base_and_variants = app.sheet.resolve(&app.variants, &*theme);
@@ -1423,6 +1427,41 @@ impl<E: VariantEnum> IntoVariantSource<E> for E {
 impl<E: VariantEnum> IntoVariantSource<E> for crate::Signal<E> {
     fn into_variant_source(self) -> Box<dyn Fn() -> &'static str> {
         Box::new(move || self.get().as_variant_str())
+    }
+}
+
+/// Closure-form wrapper. Lets author code derive a variant axis
+/// reactively from any combination of signals — useful when the axis
+/// is a function of state (e.g. `screen == Summary`) rather than the
+/// value of a single `Signal<E>`. The framework's style-effect calls
+/// the closure inside its re-resolution pass, so any signal the
+/// closure reads becomes a dependency.
+///
+/// Wrapped via the [`derive`] free function to dodge Rust's coherence
+/// rules (a blanket `impl<F: Fn() -> E> IntoVariantSource<E> for F`
+/// conflicts with the existing `impl IntoVariantSource<E> for E`).
+pub struct Derive<F>(pub F);
+
+/// Convenience constructor: `derived(move || ...)`. Named with a
+/// trailing `d` so it doesn't collide visually with `#[derive(...)]`
+/// at the call site (and so a `use framework_core::derived;` doesn't
+/// shadow std's `derive` attribute, even though they're in distinct
+/// namespaces).
+pub fn derived<F, T>(f: F) -> Derive<F>
+where
+    F: Fn() -> T + 'static,
+{
+    Derive(f)
+}
+
+impl<E, F> IntoVariantSource<E> for Derive<F>
+where
+    E: VariantEnum,
+    F: Fn() -> E + 'static,
+{
+    fn into_variant_source(self) -> Box<dyn Fn() -> &'static str> {
+        let f = self.0;
+        Box::new(move || f().as_variant_str())
     }
 }
 

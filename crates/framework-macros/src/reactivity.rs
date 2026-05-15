@@ -127,7 +127,7 @@ impl VisitMut for TextRewriter {
 
         if let Expr::Call(call) = expr {
             if is_button_call(call) && call.args.len() == 2 {
-                rewrite_button_callback(call, &self.param_idents);
+                rewrite_button_args(call, &self.param_idents);
                 return;
             }
             if is_text_call(call) && call.args.len() == 1 {
@@ -175,25 +175,69 @@ fn rewrite_text_arg(call: &mut ExprCall, param_idents: &[String]) {
     };
 }
 
-/// Rewrites `button(label, on_click)` so that any parameter-rooted path
-/// read by `on_click` is cloned into a fresh local before the closure.
-fn rewrite_button_callback(call: &mut ExprCall, param_idents: &[String]) {
-    let label = call.args[0].clone();
+/// Rewrites `button(label, on_click)` for reactivity:
+///
+/// - `label`: if it reads a signal (contains `.get()`), wrap it in a
+///   `move || <expr>` closure so the framework's walker installs an
+///   Effect that re-evaluates the label on every signal change.
+///   Parameter-rooted paths the closure reads are cloned at the
+///   closure boundary so the closure is `'static`.
+/// - `on_click`: clone any parameter-rooted paths into fresh locals
+///   before the closure body so it doesn't borrow.
+///
+/// Both rewrites are independent; either, both, or neither may
+/// fire. The static-label case keeps the original label expression
+/// verbatim so `IntoTextSource for &str / String` covers it.
+fn rewrite_button_args(call: &mut ExprCall, param_idents: &[String]) {
+    let label_orig = call.args[0].clone();
     let callback = call.args[1].clone();
-    let paths = collect_param_paths(&callback, param_idents);
-    if paths.is_empty() {
-        return;
-    }
-    let bindings = emit_clone_bindings(&paths);
-    let mut rewritten = callback;
-    substitute_in_expr(&mut rewritten, &paths);
-    let func = call.func.clone();
 
-    let new_expr: Expr = syn::parse2(quote! {
-        #func(#label, {
+    // --- Label: wrap in reactive closure iff it reads a signal.
+    let label_signal_paths = collect_signal_reads(&label_orig);
+    let label_expr: Expr = if label_signal_paths.is_empty() {
+        label_orig
+    } else {
+        // Same machinery as rewrite_text_arg: clone every signal +
+        // param path at the closure boundary; substitute the
+        // rewritten paths in the body; wrap in a `move ||` closure.
+        let mut paths = label_signal_paths;
+        for extra in collect_param_paths(&label_orig, param_idents) {
+            if !paths.contains(&extra) {
+                paths.push(extra);
+            }
+        }
+        let bindings = emit_clone_bindings(&paths);
+        let mut rewritten = label_orig;
+        substitute_in_expr(&mut rewritten, &paths);
+        // Coerce to `String` inside the closure so `IntoTextSource`'s
+        // closure impl picks it up. Without this, expressions
+        // returning `&str` would fail the `Fn() -> String` bound the
+        // framework requires for reactive sources.
+        syn::parse2(quote! {{
+            #(#bindings)*
+            move || ::std::string::String::from(#rewritten)
+        }})
+        .expect("button label reactive rewrite produced invalid expr")
+    };
+
+    // --- Callback: clone parameter-rooted paths it reads.
+    let callback_paths = collect_param_paths(&callback, param_idents);
+    let callback_expr: Expr = if callback_paths.is_empty() {
+        callback
+    } else {
+        let bindings = emit_clone_bindings(&callback_paths);
+        let mut rewritten = callback;
+        substitute_in_expr(&mut rewritten, &callback_paths);
+        syn::parse2(quote! {{
             #(#bindings)*
             #rewritten
-        })
+        }})
+        .expect("button callback rewrite produced invalid expr")
+    };
+
+    let func = call.func.clone();
+    let new_expr: Expr = syn::parse2(quote! {
+        #func(#label_expr, #callback_expr)
     })
     .expect("button rewrite produced invalid expr");
     *call = match new_expr {

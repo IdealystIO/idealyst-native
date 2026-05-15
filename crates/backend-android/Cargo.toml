@@ -9,8 +9,16 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 framework-core = { workspace = true }
+# Used by the Graphics primitive to expose the SurfaceView's
+# `Surface` as a standard raw-window-handle so any GPU library
+# (wgpu, etc.) can plug in. Tiny dep; trait + enum definitions only.
+raw-window-handle = "0.6"
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"
 log = "0.4"
 android_logger = "0.13"
+# `ndk-sys` exposes `ANativeWindow_fromSurface` etc., which we need
+# to convert the Java-side `android.view.Surface` into the native
+# window pointer wgpu expects in `AndroidNdkWindowHandle`.
+ndk-sys = "0.6"

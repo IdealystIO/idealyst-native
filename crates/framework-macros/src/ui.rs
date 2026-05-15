@@ -84,8 +84,27 @@ enum UiNode {
         then_body: Vec<UiNode>,
         else_body: Option<Vec<UiNode>>,
     },
+    /// A reactive `match` over an arbitrary scrutinee. When the
+    /// scrutinee reads a signal (heuristic: `.get()` in its tokens),
+    /// the emitter lowers to a `framework_core::switch(...)` call so
+    /// the active arm re-evaluates whenever the scrutinee changes.
+    /// Non-reactive `match` emits plain Rust `match`.
+    ///
+    /// Each arm's body is a UI block ({ child child child ... }) just
+    /// like `if`'s branches.
+    Match {
+        scrutinee: Expr,
+        arms: Vec<MatchArm>,
+    },
     /// Arbitrary Rust expression to be flattened via ChildList.
     Expr(Expr),
+}
+
+struct MatchArm {
+    pat: syn::Pat,
+    /// Optional `if guard` after the pattern.
+    guard: Option<Expr>,
+    body: Vec<UiNode>,
 }
 
 struct Prop {
@@ -118,6 +137,9 @@ fn parse_ui_node(input: ParseStream) -> syn::Result<UiNode> {
     }
     if input.peek(Token![for]) {
         return parse_for(input);
+    }
+    if input.peek(Token![match]) {
+        return parse_match(input);
     }
     // Identifier followed by `(` or `{` is a component invocation:
     //   Foo()              Foo(props)              Foo { children }
@@ -229,6 +251,39 @@ fn parse_for(input: ParseStream) -> syn::Result<UiNode> {
     Ok(UiNode::For { pat, iter, body })
 }
 
+/// Parse `match scrutinee { pat => { ui_nodes }, pat if guard => { ui_nodes }, ... }`.
+///
+/// Each arm's body must be a brace-delimited UI block; we don't
+/// accept the shorter `pat => single_node` form because the parser
+/// would have to decide between "single UiNode" and "single Rust
+/// expression that happens to be a tuple, etc." — the brace
+/// requirement removes the ambiguity at zero ergonomic cost.
+fn parse_match(input: ParseStream) -> syn::Result<UiNode> {
+    let _match_token: Token![match] = input.parse()?;
+    let scrutinee: Expr = Expr::parse_without_eager_brace(input)?;
+    let body_content;
+    braced!(body_content in input);
+
+    let mut arms = Vec::new();
+    while !body_content.is_empty() {
+        let pat = syn::Pat::parse_multi_with_leading_vert(&body_content)?;
+        let guard = if body_content.peek(Token![if]) {
+            let _: Token![if] = body_content.parse()?;
+            Some(Expr::parse_without_eager_brace(&body_content)?)
+        } else {
+            None
+        };
+        let _: Token![=>] = body_content.parse()?;
+        let arm_content;
+        braced!(arm_content in &body_content);
+        let body = parse_ui_nodes(&arm_content)?;
+        arms.push(MatchArm { pat, guard, body });
+        // Optional comma between arms.
+        let _ = body_content.parse::<Token![,]>();
+    }
+    Ok(UiNode::Match { scrutinee, arms })
+}
+
 impl Parse for Prop {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let name: Ident = input.parse()?;
@@ -276,6 +331,7 @@ fn emit_node(node: &UiNode) -> TokenStream2 {
         }
         UiNode::If { cond, then_body, else_body } => emit_if(cond, then_body, else_body.as_deref()),
         UiNode::For { pat, iter, body } => emit_for(pat, iter, body),
+        UiNode::Match { scrutinee, arms } => emit_match(scrutinee, arms),
         UiNode::Expr(e) => e.to_token_stream(),
     }
 }
@@ -358,6 +414,7 @@ fn emit_component(
         "video" => emit_video(&other_props, children),
         "activityindicator" => emit_activity_indicator(&other_props, children),
         "flatlist" => emit_flat_list(&other_props, children),
+        "graphics" => emit_graphics(&other_props, children),
         _ => emit_user(name, props, children),
     };
 
@@ -626,6 +683,39 @@ fn emit_video(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
     }
 }
 
+/// `Graphics(on_ready = ..., on_resize = ..., on_lost = ...)`.
+/// `on_ready` is required; the others default to no-ops.
+///
+/// The framework provides a platform-native drawable surface via
+/// `OnReadyEvent.surface`, which implements `raw_window_handle`'s
+/// `HasWindowHandle + HasDisplayHandle`. The author plugs in their
+/// GPU library of choice (`wgpu::Instance::create_surface(&surface)`,
+/// or any other lib that takes those traits).
+fn emit_graphics(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
+    let on_ready = props
+        .iter()
+        .find(|p| p.name == "on_ready")
+        .map(|p| p.value.to_token_stream())
+        .unwrap_or_else(|| quote! { |_event| {} });
+    let on_resize_call = if let Some(p) = props.iter().find(|p| p.name == "on_resize") {
+        let v = &p.value;
+        quote! { .on_resize(#v) }
+    } else {
+        quote! {}
+    };
+    let on_lost_call = if let Some(p) = props.iter().find(|p| p.name == "on_lost") {
+        let v = &p.value;
+        quote! { .on_lost(#v) }
+    } else {
+        quote! {}
+    };
+    quote! {
+        ::framework_core::primitives::graphics::graphics(#on_ready)
+            #on_resize_call
+            #on_lost_call
+    }
+}
+
 /// `ActivityIndicator(size = ..., color = ...)`.
 fn emit_activity_indicator(
     props: &[Prop],
@@ -760,11 +850,70 @@ fn emit_if(cond: &Expr, then_body: &[UiNode], else_body: Option<&[UiNode]>) -> T
 
 /// Returns true iff the condition's token stream contains a `.get()` call,
 /// using the same heuristic the component macro already uses elsewhere.
+///
+/// `proc_macro2` token-stream `to_string()` inserts whitespace between
+/// tokens, and the exact spacing varies across versions and depending
+/// on how the input was reconstructed. To avoid false negatives we
+/// strip *all* whitespace first and then look for the literal
+/// `.get()` substring. This correctly fires for both simple
+/// scrutinees like `screen.get()` and compound ones like
+/// `(a.get(), b.get())`.
 fn condition_is_reactive(cond: &Expr) -> bool {
-    let tokens = cond.to_token_stream().to_string();
-    // Crude but effective: look for the pattern `. get (` after stripping
-    // whitespace. Matches `.get()` regardless of spacing.
-    tokens.contains(".get()") || tokens.contains(". get ()")
+    let raw = cond.to_token_stream().to_string();
+    let compact: String = raw.chars().filter(|c| !c.is_whitespace()).collect();
+    compact.contains(".get()")
+}
+
+/// Emit a `match` UI node. Same reactivity heuristic as `emit_if`:
+/// if the scrutinee reads a signal, lower to `framework_core::switch`
+/// so the arm re-evaluates on signal changes (and surviving subtrees
+/// stay mounted across unrelated signal updates, courtesy of the
+/// PartialEq dedup in `build_switch`). Otherwise emit a plain Rust
+/// `match`.
+///
+/// The `switch` lowering binds the scrutinee value as `__v: &S` and
+/// dispatches via a regular `match`, so Rust's match ergonomics
+/// handle the implicit `&` coercion on patterns. The user writes
+/// `Screen::Summary => ui!{...}` and it matches the borrowed value.
+fn emit_match(scrutinee: &Expr, arms: &[MatchArm]) -> TokenStream2 {
+    let reactive = condition_is_reactive(scrutinee);
+
+    // Each arm becomes `pat [if guard] => <ui_body_as_primitive>`.
+    let arm_tokens: Vec<TokenStream2> = arms
+        .iter()
+        .map(|arm| {
+            let pat = &arm.pat;
+            let body = emit_block_as_primitive(&arm.body);
+            let body_coerced = quote! {
+                ::framework_core::IntoPrimitive::into_primitive(#body)
+            };
+            match &arm.guard {
+                Some(g) => quote! { #pat if #g => #body_coerced },
+                None => quote! { #pat => #body_coerced },
+            }
+        })
+        .collect();
+
+    if reactive {
+        quote! {
+            ::framework_core::switch(
+                move || #scrutinee,
+                move |__v| match __v {
+                    #( #arm_tokens, )*
+                },
+            )
+        }
+    } else {
+        // Non-reactive match: emit verbatim, coercing each arm's
+        // body to `Primitive` so the whole expression has a uniform
+        // type. No `switch` wrapping — the value never changes after
+        // construction.
+        quote! {
+            match #scrutinee {
+                #( #arm_tokens, )*
+            }
+        }
+    }
 }
 
 fn emit_for(pat: &syn::Pat, iter: &Expr, body: &[UiNode]) -> TokenStream2 {

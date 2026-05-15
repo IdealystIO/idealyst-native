@@ -1,18 +1,28 @@
 //! Framework core: primitives, Backend trait, render walker, reactivity.
 
+mod backend;
 mod reactive;
+mod scheduling;
 mod style;
 pub mod primitives;
 
 #[cfg(feature = "debug-stats")]
 pub mod debug;
 
+pub use backend::{Backend, VirtualizerCallbacks};
+pub use primitives::navigator::{
+    match_pattern, NavCommand, Navigator, NavigatorCallbacks, NavigatorControl, NavigatorHandle,
+    NavigatorOps, Route, RouteParams,
+};
 pub use reactive::{untrack, Effect, Ref, Signal};
+pub use scheduling::{
+    after_animation_frame, after_ms, raf_loop, schedule_microtask, RafLoop, ScheduledTask,
+};
 
 use std::any::Any;
 pub use style::{
-    install_theme, pregenerate_for_theme, resolve as resolve_style, set_theme,
-    AlignContent, AlignItems, AlignSelf, Color, Easing, FlexDirection, FlexWrap, FontStyle,
+    derived, install_theme, pregenerate_for_theme, resolve as resolve_style, set_theme,
+    AlignContent, AlignItems, AlignSelf, Color, Derive, Easing, FlexDirection, FlexWrap, FontStyle,
     FontWeight, IntoOverrideSource, IntoVariantSource, JustifyContent, Length, Overflow, Position,
     Shadow, StyleApplication, StyleRules, StyleSheet, TextAlign, TextTransform, Transform,
     Transition, VariantAxis, VariantEnum, VariantSet, VariantValue,
@@ -23,6 +33,19 @@ pub use framework_macros::{component, jsx, stylesheet, ui};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+
+// `pkind!` produces a `PrimitiveKind` tag when the debug feature is
+// on, and `()` when off. Paired with `time_backend_create`, this keeps
+// call sites identical between build modes without scattering
+// `#[cfg]` attributes through the walker.
+#[cfg(feature = "debug-stats")]
+macro_rules! pkind {
+    ($variant:ident) => { $crate::debug::PrimitiveKind::$variant };
+}
+#[cfg(not(feature = "debug-stats"))]
+macro_rules! pkind {
+    ($variant:ident) => { () };
+}
 
 /// Source for a text node. Static is rendered once; Reactive is wrapped in
 /// an `Effect` during rendering so the node updates whenever its dependencies
@@ -235,6 +258,8 @@ pub enum RefFill {
     Video(Box<dyn FnOnce(primitives::video::VideoHandle)>),
     ActivityIndicator(Box<dyn FnOnce(primitives::activity_indicator::ActivityIndicatorHandle)>),
     Virtualizer(Box<dyn FnOnce(primitives::virtualizer::VirtualizerHandle)>),
+    Graphics(Box<dyn FnOnce(primitives::graphics::GraphicsHandle)>),
+    Navigator(Box<dyn FnOnce(primitives::navigator::NavigatorHandle)>),
 }
 
 /// Primitives are the structural skeleton of the UI. Every primitive
@@ -255,7 +280,12 @@ pub enum Primitive {
         ref_fill: Option<RefFill>,
     },
     Button {
-        label: String,
+        /// Label source. `TextSource::Static` for a fixed string;
+        /// `TextSource::Reactive` for a closure that reads signals
+        /// and produces a fresh label string on each fire. The
+        /// walker installs an Effect on the latter so the native
+        /// widget's text updates when the underlying signals change.
+        label: TextSource,
         on_click: Rc<dyn Fn()>,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
@@ -364,6 +394,34 @@ pub enum Primitive {
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
     },
+    /// GPU canvas. The author owns rendering: `on_init` runs once
+    /// after the backend has a `wgpu` device ready and produces the
+    /// user's render state; `on_paint` runs on every requested redraw
+    /// and mutates that state. The framework does not interpret any
+    /// of it — the GPU context is type-erased so framework-core
+    /// stays wgpu-free.
+    ///
+    /// `on_init` is wrapped in `Option` because it's `FnOnce`: the
+    /// build walker takes it out of the primitive when it hands
+    /// ownership to the backend.
+    Graphics {
+        on_ready: primitives::graphics::OnReady,
+        on_resize: primitives::graphics::OnResize,
+        on_lost: primitives::graphics::OnLost,
+        style: Option<StyleSource>,
+        ref_fill: Option<RefFill>,
+    },
+    /// Stack-based navigator. Holds a route table built up via
+    /// `.screen(...)` declarations and an initial route to mount as
+    /// the root. The framework hands `Backend::create_navigator` the
+    /// callbacks it needs to mount/release screens; the backend owns
+    /// the platform-native stack (UINavigationController on iOS,
+    /// FragmentManager on Android, inline subtree swap on web).
+    ///
+    /// Boxed so the enum stays compact — the navigator carries a
+    /// `HashMap<&'static str, _>` of screen builders that we don't
+    /// want bloating every other primitive variant.
+    Navigator(Box<primitives::navigator::Navigator>),
     /// Reactive conditional. Renders `then()` while `cond()` is true and
     /// `otherwise()` when it's false. The renderer wraps the subtree
     /// construction in an `Effect` so the choice re-evaluates when any
@@ -373,6 +431,22 @@ pub enum Primitive {
         cond: Box<dyn Fn() -> bool>,
         then: Box<dyn Fn() -> Primitive>,
         otherwise: Box<dyn Fn() -> Primitive>,
+        style: Option<StyleSource>,
+    },
+    /// Reactive multi-way conditional, the type-erased shape behind
+    /// the `switch()` constructor. The walker re-runs `key()` inside
+    /// an Effect, compares the result to the previously-seen key via
+    /// `eq`, and only re-builds the subtree (dropping the old scope)
+    /// when the key actually changes. State inside the old subtree
+    /// is freed atomically, mirroring `When`.
+    ///
+    /// `key` / `eq` / `build` operate on `Box<dyn Any>` so the
+    /// `Primitive` enum stays non-generic; the constructor monomorphizes
+    /// the type-aware logic into the closures.
+    Switch {
+        key: Box<dyn Fn() -> Box<dyn Any>>,
+        eq: Box<dyn Fn(&dyn Any, &dyn Any) -> bool>,
+        build: Box<dyn Fn(&dyn Any) -> Primitive>,
         style: Option<StyleSource>,
     },
 }
@@ -435,8 +509,13 @@ impl Primitive {
             | Primitive::Video { style, .. }
             | Primitive::ActivityIndicator { style, .. }
             | Primitive::Virtualizer { style, .. }
-            | Primitive::When { style, .. } => {
+            | Primitive::Graphics { style, .. }
+            | Primitive::When { style, .. }
+            | Primitive::Switch { style, .. } => {
                 *style = Some(src);
+            }
+            Primitive::Navigator(nav) => {
+                nav.style = Some(src);
             }
         }
         self
@@ -728,9 +807,12 @@ pub fn text<T: IntoTextSource>(source: T) -> Bound<TextHandle> {
     })
 }
 
-pub fn button<F: Fn() + 'static>(label: impl Into<String>, on_click: F) -> Bound<ButtonHandle> {
+pub fn button<L: IntoTextSource, F: Fn() + 'static>(
+    label: L,
+    on_click: F,
+) -> Bound<ButtonHandle> {
     Bound::new(Primitive::Button {
-        label: label.into(),
+        label: label.into_text_source(),
         on_click: Rc::new(on_click),
         style: None,
         ref_fill: None,
@@ -760,6 +842,54 @@ where
     }
 }
 
+/// Reactive multi-way conditional. `scrutinee` reads one or more
+/// signals and returns a value of any `PartialEq + 'static` type
+/// (typically an enum or a small key). `branches` is a function that
+/// builds the active subtree for a given scrutinee value — usually a
+/// `match` over the enum.
+///
+/// The walker wraps the scrutinee in an `Effect` so any signal change
+/// the closure reads re-runs it; the result is compared with the
+/// previously-seen value via `PartialEq` and the subtree is rebuilt
+/// only when the value actually changes. State inside the prior
+/// subtree is freed atomically, mirroring `when()`.
+///
+/// Idiomatic use is via `ui!`'s `match` lowering — author code writes
+/// a normal `match expr { Variant => ui!{...}, … }` and the macro
+/// emits this call. Direct calls work too:
+///
+/// ```ignore
+/// switch(|| screen.get(), |s| match s {
+///     Screen::Summary => summary().into(),
+///     Screen::Performance => performance().into(),
+/// })
+/// ```
+pub fn switch<S, F, B>(scrutinee: F, branches: B) -> Primitive
+where
+    S: PartialEq + 'static,
+    F: Fn() -> S + 'static,
+    B: Fn(&S) -> Primitive + 'static,
+{
+    Primitive::Switch {
+        key: Box::new(move || Box::new(scrutinee()) as Box<dyn Any>),
+        eq: Box::new(|a, b| {
+            // Both keys are produced by the same scrutinee closure
+            // above, so both downcasts succeed. The `expect` paths
+            // mark the type-system contract — failure means someone
+            // constructed `Primitive::Switch` directly with mismatched
+            // types, which the constructor signature forbids.
+            let a = a.downcast_ref::<S>().expect("switch key type mismatch");
+            let b = b.downcast_ref::<S>().expect("switch key type mismatch");
+            a == b
+        }),
+        build: Box::new(move |k| {
+            let s = k.downcast_ref::<S>().expect("switch key type mismatch");
+            branches(s)
+        }),
+        style: None,
+    }
+}
+
 /// Coercion helper: lets `when()`'s `then`/`otherwise` closures return
 /// either a bare `Primitive` or a `Bound<H>`. `Into<Primitive>` is
 /// already implemented for `Bound<H>`; this trait makes the implicit
@@ -781,442 +911,6 @@ impl<H> IntoPrimitive for Bindable<H> {
     fn into_primitive(self) -> Primitive { self.primitive }
 }
 
-/// Callbacks handed to `Backend::create_virtualizer`. All Rc'd so
-/// the backend can clone into per-event closures (scroll handler,
-/// cell binder, etc.). Generic over the backend's `Node` type so
-/// the mount callback returns the backend's actual native node
-/// type, no type erasure.
-pub struct VirtualizerCallbacks<N: Clone + 'static> {
-    /// Current item count. Backend calls this on data-changed.
-    pub item_count: Rc<dyn Fn() -> usize>,
-    /// Stable identity for an index. Backend uses this to do
-    /// keyed diffs across data updates.
-    pub item_key: Rc<dyn Fn(usize) -> primitives::virtualizer::ItemKey>,
-    /// Initial size for an index (Known: authoritative;
-    /// Measured: estimate). For Measured mode, the backend should
-    /// observe the rendered size after mount and update its
-    /// internal layout when the value changes.
-    pub item_size: Rc<dyn Fn(usize) -> f32>,
-    /// True if `item_size` is an estimate that should be refined
-    /// by measuring the mounted node. False if the size is
-    /// authoritative.
-    pub measure_sizes: bool,
-    /// Mount an item: build its subtree inside a fresh per-item
-    /// Scope. Returns the freshly-built native node plus the
-    /// scope's id. The backend should hold the id alongside its
-    /// pooled/mounted cell so it can call `release_item` later.
-    pub mount_item: Rc<dyn Fn(usize) -> (N, u64)>,
-    /// Release a previously-mounted item by scope id. Drops the
-    /// scope, freeing every signal/effect/ref inside the item's
-    /// subtree. Backend should NOT try to use the node after this;
-    /// it should also detach the node from its parent.
-    pub release_item: Rc<dyn Fn(u64)>,
-    /// Backend may call this to inform the framework that an
-    /// observed item's measured size has changed (Measured mode).
-    /// The framework stores the new size and the backend uses it
-    /// for future layout passes.
-    pub set_measured_size: Rc<dyn Fn(u64, f32)>,
-}
-
-pub trait Backend {
-    type Node: Clone;
-
-    fn create_view(&mut self) -> Self::Node;
-    fn create_text(&mut self, content: &str) -> Self::Node;
-    fn create_button(&mut self, label: &str, on_click: Rc<dyn Fn()>) -> Self::Node;
-    fn insert(&mut self, parent: &mut Self::Node, child: Self::Node);
-    fn update_text(&mut self, node: &Self::Node, content: &str);
-
-    /// Create an image node with the initial URL. The framework
-    /// wraps the user's `src` source in an effect that calls
-    /// `update_image_src` whenever the source changes.
-    #[allow(unused_variables)]
-    fn create_image(&mut self, src: &str, alt: Option<&str>) -> Self::Node {
-        unimplemented!("create_image not implemented for this backend")
-    }
-    #[allow(unused_variables)]
-    fn update_image_src(&mut self, node: &Self::Node, src: &str) {
-        // default: no-op; backends that don't implement images just
-        // leave the URL static.
-    }
-
-    /// Create a text input with the initial value, placeholder, and
-    /// an `on_change` callback fired on every native input event.
-    /// The framework wraps the controlled `value` signal in an
-    /// effect that calls `update_text_input_value` on signal change.
-    #[allow(unused_variables)]
-    fn create_text_input(
-        &mut self,
-        initial_value: &str,
-        placeholder: Option<&str>,
-        on_change: Rc<dyn Fn(String)>,
-    ) -> Self::Node {
-        unimplemented!("create_text_input not implemented for this backend")
-    }
-    #[allow(unused_variables)]
-    fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {}
-
-    /// Create a toggle (switch / checkbox) with the initial value and
-    /// an `on_change` callback. Same controlled-update pattern as
-    /// text input.
-    #[allow(unused_variables)]
-    fn create_toggle(
-        &mut self,
-        initial_value: bool,
-        on_change: Rc<dyn Fn(bool)>,
-    ) -> Self::Node {
-        unimplemented!("create_toggle not implemented for this backend")
-    }
-    #[allow(unused_variables)]
-    fn update_toggle_value(&mut self, node: &Self::Node, value: bool) {}
-
-    /// Create a scrolling container. `horizontal` selects the
-    /// scrolling axis (false = vertical, the default; true = horizontal).
-    #[allow(unused_variables)]
-    fn create_scroll_view(&mut self, horizontal: bool) -> Self::Node {
-        unimplemented!("create_scroll_view not implemented for this backend")
-    }
-
-    /// Create a slider widget. `min`/`max`/`step` are static after
-    /// creation; controlled value updates flow through
-    /// `update_slider_value`. `on_change` fires on every drag tick.
-    #[allow(unused_variables)]
-    fn create_slider(
-        &mut self,
-        initial_value: f32,
-        min: f32,
-        max: f32,
-        step: Option<f32>,
-        on_change: Rc<dyn Fn(f32)>,
-    ) -> Self::Node {
-        unimplemented!("create_slider not implemented for this backend")
-    }
-    #[allow(unused_variables)]
-    fn update_slider_value(&mut self, node: &Self::Node, value: f32) {}
-
-    /// Create a WebView with the initial URL. `update_web_view_url`
-    /// drives subsequent navigations from the reactive source.
-    #[allow(unused_variables)]
-    fn create_web_view(&mut self, url: &str) -> Self::Node {
-        unimplemented!("create_web_view not implemented for this backend")
-    }
-    #[allow(unused_variables)]
-    fn update_web_view_url(&mut self, node: &Self::Node, url: &str) {}
-
-    /// Create a Video element. Static autoplay/controls/loop are
-    /// passed at construction time; reactive `src` updates flow
-    /// through `update_video_src`.
-    #[allow(unused_variables)]
-    fn create_video(
-        &mut self,
-        src: &str,
-        autoplay: bool,
-        controls: bool,
-        loop_playback: bool,
-    ) -> Self::Node {
-        unimplemented!("create_video not implemented for this backend")
-    }
-    #[allow(unused_variables)]
-    fn update_video_src(&mut self, node: &Self::Node, src: &str) {}
-
-    /// Create a loading spinner. Size/color are static at construction.
-    #[allow(unused_variables)]
-    fn create_activity_indicator(
-        &mut self,
-        size: primitives::activity_indicator::ActivityIndicatorSize,
-        color: Option<&Color>,
-    ) -> Self::Node {
-        unimplemented!("create_activity_indicator not implemented for this backend")
-    }
-
-    /// Create a virtualized list. The backend gets a bundle of
-    /// callbacks (via `VirtualizerCallbacks`) it uses to query the
-    /// current data set, request mounted subtrees, and release
-    /// them when items leave the viewport / get recycled.
-    ///
-    /// The backend owns the scroll handler and the visible-window
-    /// math. It calls `mount_item(idx)` when an index needs to
-    /// become visible, getting back `(node, scope_id)`. When the
-    /// index leaves the visible window (web: scrolled out; native:
-    /// cell recycled), the backend calls `release_item(scope_id)`
-    /// to free the framework's per-item Scope — which drops every
-    /// signal, effect, and ref nested inside that item.
-    #[allow(unused_variables)]
-    fn create_virtualizer(
-        &mut self,
-        callbacks: VirtualizerCallbacks<Self::Node>,
-        overscan: f32,
-        horizontal: bool,
-    ) -> Self::Node {
-        unimplemented!("create_virtualizer not implemented for this backend")
-    }
-
-    /// Signal that the underlying data set has changed. The backend
-    /// re-queries item_count + item_key + item_size to figure out
-    /// what changed, runs its diff, and updates the mounted set
-    /// accordingly. Called from an Effect that reads the data signal,
-    /// so it fires on every data update automatically.
-    #[allow(unused_variables)]
-    fn virtualizer_data_changed(&mut self, node: &Self::Node) {}
-
-    /// Remove every child from `node`. Used by reactive conditionals when
-    /// the active branch flips and the old subtree needs to be unmounted.
-    fn clear_children(&mut self, node: &Self::Node);
-    /// Apply a resolved style to a node. The framework has already run
-    /// the stylesheet's closure against the active theme; the backend
-    /// receives concrete `StyleRules` with literal values.
-    fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>);
-
-    /// Apply a base style plus per-state overlays. Called when the
-    /// stylesheet declares interaction-state blocks (`state hovered`,
-    /// `state pressed`, etc.) AND the backend reports native state
-    /// handling via [`Backend::handles_states_natively`].
-    ///
-    /// Web overrides this to emit the overlays as CSS pseudo-class
-    /// rules scoped to the base class — the browser then handles
-    /// state tracking natively. No Rust↔JS round trip per event.
-    ///
-    /// Backends that rely on event-driven state activation
-    /// (`attach_states` + signal-driven re-resolve) leave both the
-    /// default impl AND `handles_states_natively() = false`. State
-    /// overlays reach those backends through the regular
-    /// `apply_style` path when the state signal flips.
-    fn apply_styled_states(
-        &mut self,
-        node: &Self::Node,
-        base: &Rc<StyleRules>,
-        #[allow(unused_variables)] overlays: &[(StateBits, Rc<StyleRules>)],
-    ) {
-        // Default: just apply the base style. Mobile backends drive
-        // state overlays via signal-flip → re-resolve → apply_style.
-        self.apply_style(node, base);
-    }
-
-    /// Backend capability flag. `true` means the backend wants to
-    /// receive state overlays declaratively via `apply_styled_states`
-    /// and handle state tracking natively (e.g. CSS pseudo-classes
-    /// on web). `false` means the backend uses the event-driven path:
-    /// `attach_states` registers native event listeners that flip the
-    /// framework's per-node state signal, and each state change
-    /// re-fires the style effect with the appropriate overlay merged
-    /// into a fresh `StyleApplication`.
-    ///
-    /// The framework reads this once per `attach_style` to choose
-    /// between the two paths. Default is `false` — backends opt in.
-    fn handles_states_natively(&self) -> bool {
-        false
-    }
-
-    /// Pre-generate any backend-side state for a stylesheet against the
-    /// current theme. Web backends typically use this to mint CSS
-    /// classes for every variant + compound combination up front, so
-    /// `apply_style` is a cache hit. Other backends can leave the
-    /// default no-op implementation.
-    ///
-    /// Called by the framework:
-    /// - The first time a stylesheet is `resolve`d.
-    /// - After every `set_theme(...)`, for every still-live stylesheet,
-    ///   so the backend's pre-generated state is refreshed.
-    ///
-    /// The framework passes pre-resolved `StyleRules` (one per relevant
-    /// variant combination) so the backend doesn't have to think about
-    /// theme tokens — it gets concrete property bags.
-    #[allow(unused_variables)]
-    fn register_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
-        // default: no-op
-    }
-
-    /// Release a previously-registered stylesheet's pre-generated state.
-    /// Called when the stylesheet is no longer reachable (its last
-    /// `Rc<StyleSheet>` has been dropped) and after every theme change
-    /// (before re-registering, so old state is cleaned up).
-    #[allow(unused_variables)]
-    fn unregister_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
-        // default: no-op
-    }
-
-    /// Called when a styled node is being torn down (its surrounding
-    /// `Effect` scope is dropping). Lets backends free per-node state —
-    /// e.g. the web backend drops the node's dynamic CSS class slot
-    /// and its node-id entry. Other backends typically don't need this.
-    #[allow(unused_variables)]
-    fn on_node_unstyled(&mut self, node: &Self::Node) {
-        // default: no-op
-    }
-
-    /// Wires the backend's native interaction events (hover, press,
-    /// focus) to the framework's per-node state machinery. The
-    /// framework allocates a `Signal<StateBits>` per styled node and
-    /// passes a setter closure here; backends call the setter when
-    /// the corresponding native event fires.
-    ///
-    /// The setter takes `(state, on)` where `state` is a
-    /// `StateBits` flag (`StateBits::HOVERED`, etc.) and `on` is
-    /// true for entering / false for leaving the state. The framework
-    /// re-resolves and re-applies the node's style when state bits
-    /// change — backends don't need to do any style work themselves.
-    ///
-    /// Default impl is a no-op for backends that don't yet support
-    /// interaction states (states declared in the stylesheet simply
-    /// never activate on those platforms — a documented no-op).
-    #[allow(unused_variables)]
-    fn attach_states(&mut self, node: &Self::Node, setter: Rc<dyn Fn(StateBits, bool)>) {
-        // default: no-op
-    }
-
-    /// Mark the native widget as disabled or enabled. Distinct from
-    /// the `DISABLED` style-state bit (which controls overlay
-    /// styling) — this one is about the widget being inert: web's
-    /// `disabled` attribute, `setEnabled(false)` on native. Backends
-    /// that don't distinguish leave the default no-op.
-    #[allow(unused_variables)]
-    fn set_disabled(&mut self, node: &Self::Node, disabled: bool) {
-        // default: no-op
-    }
-
-    /// Constructs a `ButtonHandle` for the just-created button `node`.
-    /// Called by the framework when a `Bound<ButtonHandle>` with a
-    /// `.bind(r)` is mounted. The handle internally holds an
-    /// `Rc<dyn Any>` wrapping the backend's concrete node value, so
-    /// `ButtonOps` methods can downcast to operate on it. Default
-    /// impl returns a handle with a no-op ops table — backends that
-    /// don't support refs don't have to think about it.
-    #[allow(unused_variables)]
-    fn make_button_handle(&self, node: &Self::Node) -> ButtonHandle {
-        ButtonHandle { node: Rc::new(()), ops: &NoopButtonOps }
-    }
-
-    #[allow(unused_variables)]
-    fn make_view_handle(&self, node: &Self::Node) -> ViewHandle {
-        ViewHandle { node: Rc::new(()), ops: &NoopViewOps }
-    }
-
-    #[allow(unused_variables)]
-    fn make_text_handle(&self, node: &Self::Node) -> TextHandle {
-        TextHandle { node: Rc::new(()), ops: &NoopTextOps }
-    }
-
-    #[allow(unused_variables)]
-    fn make_image_handle(&self, node: &Self::Node) -> primitives::image::ImageHandle {
-        primitives::image::ImageHandle::new(Rc::new(()), &NoopImageOps)
-    }
-
-    #[allow(unused_variables)]
-    fn make_text_input_handle(
-        &self,
-        node: &Self::Node,
-    ) -> primitives::text_input::TextInputHandle {
-        primitives::text_input::TextInputHandle::new(Rc::new(()), &NoopTextInputOps)
-    }
-
-    #[allow(unused_variables)]
-    fn make_toggle_handle(&self, node: &Self::Node) -> primitives::toggle::ToggleHandle {
-        primitives::toggle::ToggleHandle::new(Rc::new(()), &NoopToggleOps)
-    }
-
-    #[allow(unused_variables)]
-    fn make_scroll_view_handle(
-        &self,
-        node: &Self::Node,
-    ) -> primitives::scroll_view::ScrollViewHandle {
-        primitives::scroll_view::ScrollViewHandle::new(Rc::new(()), &NoopScrollViewOps)
-    }
-
-    #[allow(unused_variables)]
-    fn make_slider_handle(&self, node: &Self::Node) -> primitives::slider::SliderHandle {
-        primitives::slider::SliderHandle::new(Rc::new(()), &NoopSliderOps)
-    }
-
-    #[allow(unused_variables)]
-    fn make_web_view_handle(
-        &self,
-        node: &Self::Node,
-    ) -> primitives::web_view::WebViewHandle {
-        primitives::web_view::WebViewHandle::new(Rc::new(()), &NoopWebViewOps)
-    }
-
-    #[allow(unused_variables)]
-    fn make_video_handle(&self, node: &Self::Node) -> primitives::video::VideoHandle {
-        primitives::video::VideoHandle::new(Rc::new(()), &NoopVideoOps)
-    }
-
-    #[allow(unused_variables)]
-    fn make_activity_indicator_handle(
-        &self,
-        node: &Self::Node,
-    ) -> primitives::activity_indicator::ActivityIndicatorHandle {
-        primitives::activity_indicator::ActivityIndicatorHandle::new(
-            Rc::new(()),
-            &NoopActivityIndicatorOps,
-        )
-    }
-
-    #[allow(unused_variables)]
-    fn make_virtualizer_handle(
-        &self,
-        node: &Self::Node,
-    ) -> primitives::virtualizer::VirtualizerHandle {
-        primitives::virtualizer::VirtualizerHandle::new(
-            Rc::new(()),
-            &NoopVirtualizerOps,
-        )
-    }
-
-    fn finish(&mut self, root: Self::Node);
-}
-
-// Default ZST `Ops` impls used by backends that haven't opted into ref
-// support yet (or by the `()` Node used in tests).
-
-struct NoopImageOps;
-impl primitives::image::ImageOps for NoopImageOps {}
-
-struct NoopTextInputOps;
-impl primitives::text_input::TextInputOps for NoopTextInputOps {
-    fn focus(&self, _: &dyn Any) {}
-    fn blur(&self, _: &dyn Any) {}
-    fn select_all(&self, _: &dyn Any) {}
-}
-
-struct NoopToggleOps;
-impl primitives::toggle::ToggleOps for NoopToggleOps {}
-
-struct NoopScrollViewOps;
-impl primitives::scroll_view::ScrollViewOps for NoopScrollViewOps {
-    fn scroll_to(&self, _: &dyn Any, _: f32, _: f32) {}
-}
-
-struct NoopSliderOps;
-impl primitives::slider::SliderOps for NoopSliderOps {}
-
-struct NoopWebViewOps;
-impl primitives::web_view::WebViewOps for NoopWebViewOps {}
-
-struct NoopVideoOps;
-impl primitives::video::VideoOps for NoopVideoOps {
-    fn play(&self, _: &dyn Any) {}
-    fn pause(&self, _: &dyn Any) {}
-    fn seek(&self, _: &dyn Any, _: f32) {}
-}
-
-struct NoopActivityIndicatorOps;
-impl primitives::activity_indicator::ActivityIndicatorOps for NoopActivityIndicatorOps {}
-
-struct NoopVirtualizerOps;
-impl primitives::virtualizer::VirtualizerOps for NoopVirtualizerOps {
-    fn scroll_to_index(&self, _: &dyn Any, _: usize) {}
-}
-
-struct NoopButtonOps;
-impl ButtonOps for NoopButtonOps {
-    fn click(&self, _node: &dyn Any) {}
-}
-
-struct NoopViewOps;
-impl ViewOps for NoopViewOps {}
-
-struct NoopTextOps;
-impl TextOps for NoopTextOps {}
 
 /// Owns the reactive state created by a render call. Dropping the `Owner`
 /// drops its `Scope`, which frees every signal and effect created during
@@ -1239,7 +933,16 @@ pub fn render<B: Backend + 'static>(backend: Rc<RefCell<B>>, tree: Primitive) ->
 }
 
 fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::Node {
-    match node {
+    // Walker-level timing. Record the kind once on entry; the matching
+    // exit fires after the match returns. Tag covers the full subtree
+    // build (children inclusive). Each backend create call below
+    // records its own narrower BackendCreate pair.
+    #[cfg(feature = "debug-stats")]
+    let _debug_kind = debug_kind_of(&node);
+    #[cfg(feature = "debug-stats")]
+    debug::record_build_enter(_debug_kind);
+
+    let result = match node {
         Primitive::Text { source, style, ref_fill } => {
             let n = build_text(backend, source);
             if let Some(s) = style {
@@ -1263,7 +966,18 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
             n
         }
         Primitive::Button { label, on_click, style, ref_fill, disabled } => {
-            let n = backend.borrow_mut().create_button(&label, on_click);
+            // Pull the initial label from the source and create the
+            // native widget with it. For reactive labels we install
+            // an Effect below that calls `update_button_label` on
+            // every signal change the closure subscribes to —
+            // mirroring how Image's `src` works.
+            let (initial_label, reactive_label) = match label {
+                TextSource::Static(s) => (s, None),
+                TextSource::Reactive(f) => (f(), Some(f)),
+            };
+            let n = time_backend_create(pkind!(Button), || {
+                backend.borrow_mut().create_button(&initial_label, on_click)
+            });
             // attach_style returns the state setter so we can drive
             // the DISABLED bit reactively from `disabled` below. If
             // there's no style, we still need to react to disabled to
@@ -1277,6 +991,19 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
             if let Some(d) = disabled {
                 attach_disabled(backend, &n, d, state_setter);
             }
+            // Reactive label effect. The first invocation re-reads
+            // the closure (so the initial label and the first
+            // effect run produce the same string), but signal reads
+            // inside the closure subscribe this effect for future
+            // updates.
+            if let Some(f) = reactive_label {
+                let backend = backend.clone();
+                let node = n.clone();
+                let _e = Effect::new(move || {
+                    let s = f();
+                    backend.borrow_mut().update_button_label(&node, &s);
+                });
+            }
             n
         }
         Primitive::Image { src, alt, style, ref_fill } => {
@@ -1284,7 +1011,7 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
             // initial URL, then wrap it in an effect that updates the
             // image whenever signals it reads change.
             let initial = src();
-            let n = backend.borrow_mut().create_image(&initial, alt.as_deref());
+            let n = time_backend_create(pkind!(Image), || backend.borrow_mut().create_image(&initial, alt.as_deref()));
             if let Some(s) = style {
                 attach_style(backend, &n, s);
             }
@@ -1306,11 +1033,13 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
         }
         Primitive::TextInput { value, on_change, placeholder, style, ref_fill } => {
             let initial = value.get();
-            let n = backend.borrow_mut().create_text_input(
-                &initial,
-                placeholder.as_deref(),
-                on_change,
-            );
+            let n = time_backend_create(pkind!(TextInput), || {
+                backend.borrow_mut().create_text_input(
+                    &initial,
+                    placeholder.as_deref(),
+                    on_change,
+                )
+            });
             if let Some(s) = style {
                 attach_style(backend, &n, s);
             }
@@ -1334,7 +1063,7 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
         }
         Primitive::Toggle { value, on_change, style, ref_fill } => {
             let initial = value.get();
-            let n = backend.borrow_mut().create_toggle(initial, on_change);
+            let n = time_backend_create(pkind!(Toggle), || backend.borrow_mut().create_toggle(initial, on_change));
             if let Some(s) = style {
                 attach_style(backend, &n, s);
             }
@@ -1353,7 +1082,7 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
             n
         }
         Primitive::ScrollView { children, horizontal, style, ref_fill } => {
-            let mut n = backend.borrow_mut().create_scroll_view(horizontal);
+            let mut n = time_backend_create(pkind!(ScrollView), || backend.borrow_mut().create_scroll_view(horizontal));
             for child in children {
                 let child_node = build(backend, child);
                 backend.borrow_mut().insert(&mut n, child_node);
@@ -1382,7 +1111,9 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
             } else {
                 on_change.clone()
             };
-            let n = backend.borrow_mut().create_slider(initial, min, max, step, on_change_snap);
+            let n = time_backend_create(pkind!(Slider), || {
+                backend.borrow_mut().create_slider(initial, min, max, step, on_change_snap)
+            });
             if let Some(s) = style {
                 attach_style(backend, &n, s);
             }
@@ -1404,7 +1135,7 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
         }
         Primitive::WebView { url, style, ref_fill } => {
             let initial = url();
-            let n = backend.borrow_mut().create_web_view(&initial);
+            let n = time_backend_create(pkind!(WebView), || backend.borrow_mut().create_web_view(&initial));
             if let Some(s) = style {
                 attach_style(backend, &n, s);
             }
@@ -1424,7 +1155,9 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
         }
         Primitive::Video { src, autoplay, controls, loop_playback, style, ref_fill } => {
             let initial = src();
-            let n = backend.borrow_mut().create_video(&initial, autoplay, controls, loop_playback);
+            let n = time_backend_create(pkind!(Video), || {
+                backend.borrow_mut().create_video(&initial, autoplay, controls, loop_playback)
+            });
             if let Some(s) = style {
                 attach_style(backend, &n, s);
             }
@@ -1443,7 +1176,9 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
             n
         }
         Primitive::ActivityIndicator { size, color, style, ref_fill } => {
-            let n = backend.borrow_mut().create_activity_indicator(size, color.as_ref());
+            let n = time_backend_create(pkind!(ActivityIndicator), || {
+                backend.borrow_mut().create_activity_indicator(size, color.as_ref())
+            });
             if let Some(s) = style {
                 attach_style(backend, &n, s);
             }
@@ -1469,9 +1204,81 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
             if let Some(s) = style {
                 attach_style(backend, &n, s);
             }
+            // Cleanup hook: when the surrounding scope drops, this
+            // Effect drops, dropping `cleanup`, which calls
+            // `release_virtualizer`. Without this, the backend's
+            // queued scroll/resize events keep firing into
+            // user-supplied callbacks whose captured `Signal`s have
+            // been freed → "signal used after its scope was
+            // dropped" panic. Same shape as the Graphics cleanup
+            // below.
+            {
+                let cleanup = VirtualizerHandleCleanup {
+                    backend: backend.clone(),
+                    node: n.clone(),
+                };
+                let _e = Effect::new(move || {
+                    let _ = &cleanup.node;
+                });
+            }
             if let Some(RefFill::Virtualizer(fill)) = ref_fill {
                 let handle = backend.borrow().make_virtualizer_handle(&n);
                 fill(handle);
+            }
+            n
+        }
+        Primitive::Graphics { on_ready, on_resize, on_lost, style, ref_fill } => {
+            let n = time_backend_create(pkind!(Graphics), || {
+                backend.borrow_mut().create_graphics(on_ready, on_resize, on_lost)
+            });
+            if let Some(s) = style {
+                attach_style(backend, &n, s);
+            }
+            // Install an unconditional cleanup hook. The empty Effect
+            // captures a `GraphicsHandleCleanup` whose Drop calls
+            // `release_graphics`. Independent of the style effect so
+            // unstyled Graphics still get torn down. Same scope-drop
+            // mechanics: `when()` branch flips, list recycling, and
+            // `Owner` drop all cascade through here.
+            {
+                let cleanup = GraphicsHandleCleanup {
+                    backend: backend.clone(),
+                    node: n.clone(),
+                };
+                let _e = Effect::new(move || {
+                    let _ = &cleanup.node;
+                });
+            }
+            if let Some(RefFill::Graphics(fill)) = ref_fill {
+                let handle = backend.borrow().make_graphics_handle(&n);
+                fill(handle);
+            }
+            n
+        }
+        Primitive::Navigator(nav) => {
+            let primitives::navigator::Navigator {
+                initial,
+                initial_path,
+                screens,
+                style,
+                ref_fill,
+            } = *nav;
+            let n = build_navigator(backend, initial, initial_path, screens, ref_fill);
+            if let Some(s) = style {
+                attach_style(backend, &n, s);
+            }
+            // Cleanup: when the surrounding scope drops, this empty
+            // Effect drops, dropping the `NavigatorHandleCleanup`,
+            // which tells the backend to tear down its native stack.
+            // Same pattern as Virtualizer / Graphics.
+            {
+                let cleanup = NavigatorHandleCleanup {
+                    backend: backend.clone(),
+                    node: n.clone(),
+                };
+                let _e = Effect::new(move || {
+                    let _ = &cleanup.node;
+                });
             }
             n
         }
@@ -1482,6 +1289,68 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
             }
             n
         }
+        Primitive::Switch { key, eq, build: build_fn, style } => {
+            let n = build_switch(backend, key, eq, build_fn);
+            if let Some(s) = style {
+                attach_style(backend, &n, s);
+            }
+            n
+        }
+    };
+
+    #[cfg(feature = "debug-stats")]
+    debug::record_build_exit(_debug_kind);
+
+    result
+}
+
+/// Wrap a backend create call with BackendCreate enter/exit recording.
+/// When `debug-stats` is off this is a transparent passthrough — both
+/// the kind argument and the wrapper itself become no-ops the compiler
+/// inlines away.
+#[inline(always)]
+#[cfg(feature = "debug-stats")]
+fn time_backend_create<R>(kind: debug::PrimitiveKind, f: impl FnOnce() -> R) -> R {
+    debug::record_backend_create_enter(kind);
+    let r = f();
+    debug::record_backend_create_exit(kind);
+    r
+}
+
+/// No-op variant: the `kind` parameter doesn't even exist, so call
+/// sites pass `()` instead. Keeps the call-site shape identical to the
+/// debug-on path while emitting nothing when off.
+#[inline(always)]
+#[cfg(not(feature = "debug-stats"))]
+fn time_backend_create<R>(_kind: (), f: impl FnOnce() -> R) -> R {
+    f()
+}
+
+// (`pkind!` is defined near the top of this module so it's in scope
+// for all callers below.)
+
+/// Map a primitive to the coarse-grained `PrimitiveKind` tag used by
+/// debug events. Only compiled when `debug-stats` is enabled.
+#[cfg(feature = "debug-stats")]
+fn debug_kind_of(node: &Primitive) -> debug::PrimitiveKind {
+    use debug::PrimitiveKind;
+    match node {
+        Primitive::Text { .. } => PrimitiveKind::Text,
+        Primitive::View { .. } => PrimitiveKind::View,
+        Primitive::Button { .. } => PrimitiveKind::Button,
+        Primitive::Image { .. } => PrimitiveKind::Image,
+        Primitive::TextInput { .. } => PrimitiveKind::TextInput,
+        Primitive::Toggle { .. } => PrimitiveKind::Toggle,
+        Primitive::ScrollView { .. } => PrimitiveKind::ScrollView,
+        Primitive::Slider { .. } => PrimitiveKind::Slider,
+        Primitive::WebView { .. } => PrimitiveKind::WebView,
+        Primitive::Video { .. } => PrimitiveKind::Video,
+        Primitive::ActivityIndicator { .. } => PrimitiveKind::ActivityIndicator,
+        Primitive::Virtualizer { .. } => PrimitiveKind::Virtualizer,
+        Primitive::Graphics { .. } => PrimitiveKind::Graphics,
+        Primitive::Navigator(_) => PrimitiveKind::Navigator,
+        Primitive::When { .. } => PrimitiveKind::When,
+        Primitive::Switch { .. } => PrimitiveKind::Switch,
     }
 }
 
@@ -1493,7 +1362,9 @@ fn build_text<B: Backend + 'static>(
     source: TextSource,
 ) -> B::Node {
     match source {
-        TextSource::Static(content) => backend.borrow_mut().create_text(&content),
+        TextSource::Static(content) => {
+            time_backend_create(pkind!(Text), || backend.borrow_mut().create_text(&content))
+        }
         TextSource::Reactive(compute) => build_reactive_text(backend, compute),
     }
 }
@@ -1504,7 +1375,7 @@ fn build_reactive_text<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
     compute: Box<dyn Fn() -> String>,
 ) -> B::Node {
-    let node = backend.borrow_mut().create_text("");
+    let node = time_backend_create(pkind!(Text), || backend.borrow_mut().create_text(""));
     let node_for_effect = node.clone();
     let backend = backend.clone();
     // Effect auto-registers with the active scope (set by render() or by a
@@ -1520,7 +1391,7 @@ fn build_view<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
     children: Vec<Primitive>,
 ) -> B::Node {
-    let mut parent = backend.borrow_mut().create_view();
+    let mut parent = time_backend_create(pkind!(View), || backend.borrow_mut().create_view());
     for child in children {
         let child_node = build(backend, child);
         backend.borrow_mut().insert(&mut parent, child_node);
@@ -1542,6 +1413,197 @@ impl<B: Backend + 'static> Drop for StyleHandle<B> {
     fn drop(&mut self) {
         self.backend.borrow_mut().on_node_unstyled(&self.node);
     }
+}
+
+/// RAII wrapper that calls `Backend::release_graphics` when dropped.
+/// Installed unconditionally per Graphics primitive (i.e. doesn't
+/// depend on a user-supplied style) by a dedicated cleanup `Effect`
+/// in the build walker. When the surrounding scope drops — `when()`
+/// branch flip, list-item recycling, `Owner` teardown — the effect
+/// drops, this handle drops, and the backend tears down its wgpu
+/// state.
+struct GraphicsHandleCleanup<B: Backend + 'static> {
+    backend: Rc<RefCell<B>>,
+    node: B::Node,
+}
+
+impl<B: Backend + 'static> Drop for GraphicsHandleCleanup<B> {
+    fn drop(&mut self) {
+        self.backend.borrow_mut().release_graphics(&self.node);
+    }
+}
+
+/// RAII wrapper that calls `Backend::release_virtualizer` when
+/// dropped. Same lifecycle shape as `GraphicsHandleCleanup`:
+/// installed per Virtualizer primitive by the walker via an empty
+/// `Effect`; when that effect's scope drops, the backend detaches
+/// listeners + drops the closures it handed the JS shim. Critical
+/// for preventing "signal used after its scope was dropped"
+/// panics from late-firing scroll/resize events whose Rust
+/// callbacks captured the now-freed `Signal`.
+struct VirtualizerHandleCleanup<B: Backend + 'static> {
+    backend: Rc<RefCell<B>>,
+    node: B::Node,
+}
+
+impl<B: Backend + 'static> Drop for VirtualizerHandleCleanup<B> {
+    fn drop(&mut self) {
+        self.backend.borrow_mut().release_virtualizer(&self.node);
+    }
+}
+
+/// RAII wrapper that calls `Backend::release_navigator` when dropped.
+/// Same shape as Virtualizer / Graphics cleanup. The navigator owns a
+/// stack of per-screen scopes; when the cleanup fires, the backend's
+/// `release_navigator` impl is responsible for releasing every still-
+/// mounted scope via the `release_screen` callback the framework
+/// handed it at create time.
+struct NavigatorHandleCleanup<B: Backend + 'static> {
+    backend: Rc<RefCell<B>>,
+    node: B::Node,
+}
+
+impl<B: Backend + 'static> Drop for NavigatorHandleCleanup<B> {
+    fn drop(&mut self) {
+        self.backend.borrow_mut().release_navigator(&self.node);
+    }
+}
+
+/// Build a Navigator. Stands up the per-screen scope registry, builds
+/// the `NavigatorCallbacks` bundle, wires the user-facing handle's
+/// control plane, mounts the initial screen, and returns the native
+/// container node. Mirrors `build_virtualizer` — both manage a set of
+/// nested scopes that map 1:1 with a backend-owned UI container.
+fn build_navigator<B: Backend + 'static>(
+    backend: &Rc<RefCell<B>>,
+    initial: &'static str,
+    initial_path: &'static str,
+    screens: HashMap<&'static str, primitives::navigator::RouteEntry>,
+    ref_fill: Option<RefFill>,
+) -> B::Node {
+    use primitives::navigator::{match_pattern, NavigatorCallbacks, NavigatorControl};
+
+    // Per-screen scope registry. The framework owns the scopes — the
+    // backend stores opaque scope ids alongside its native cells and
+    // calls `release_screen(id)` to drop the matching scope. Same
+    // discipline as Virtualizer.
+    let scopes: Rc<RefCell<HashMap<u64, Box<reactive::Scope>>>> =
+        Rc::new(RefCell::new(HashMap::new()));
+    let next_scope_id: Rc<RefCell<u64>> = Rc::new(RefCell::new(0));
+
+    // Screen table is `Rc`'d so the mount + match closures can clone it.
+    // Each entry holds the route's path pattern + typed builder + segment-parser
+    // (see `RouteEntry`).
+    let screens = Rc::new(screens);
+
+    // Control plane — handed to the handle now; populated by the
+    // backend's `create_navigator` impl.
+    let control = Rc::new(NavigatorControl::new());
+
+    // mount_screen: look up the screen builder, build the screen
+    // inside a fresh per-screen Scope, return (node, scope_id).
+    // Panics on unregistered route — declaring routes is the
+    // navigator's contract.
+    let mount_screen: Rc<dyn Fn(&'static str, Box<dyn Any>) -> (B::Node, u64)> = {
+        let scopes = scopes.clone();
+        let next_id = next_scope_id.clone();
+        let screens = screens.clone();
+        let backend = backend.clone();
+        Rc::new(move |name, params| {
+            let builder = screens
+                .get(name)
+                .map(|e| e.build.clone())
+                .unwrap_or_else(|| panic!("Navigator: route '{}' is not registered", name));
+            let mut scope = Box::new(reactive::Scope::new());
+            // Wrap BOTH `builder(...)` and the subsequent `build(...)`
+            // inside `with_scope`. Any Effects that the build walker
+            // creates (e.g. switch/when/style/data_changed effects)
+            // must register with this screen's scope so they stay
+            // alive until the screen is released. Without this,
+            // those Effects get `owns: true` and free immediately
+            // when their handle drops at end of `build` —
+            // unintentionally dropping shared `Rc<RefCell<...>>`
+            // state the framework's microtasks depend on.
+            let node = reactive::with_scope(&mut scope, || {
+                let primitive = builder(params);
+                build(&backend, primitive)
+            });
+            let id = {
+                let mut n = next_id.borrow_mut();
+                let v = *n;
+                *n = n.checked_add(1).unwrap_or(0);
+                v
+            };
+            scopes.borrow_mut().insert(id, scope);
+            (node, id)
+        })
+    };
+
+    // release_screen: drop the scope. The Drop impl on `Scope` frees
+    // every signal/effect/ref scoped to the screen, including the
+    // child subtree's `Effect`s.
+    let release_screen: Rc<dyn Fn(u64)> = {
+        let scopes = scopes.clone();
+        Rc::new(move |id| {
+            scopes.borrow_mut().remove(&id);
+        })
+    };
+
+    // match_path: pure function from URL → (route name, typed params).
+    // Walks the screen table and tries each pattern in registration
+    // order; returns the first match whose segments parse cleanly.
+    // The web backend calls this on mount + popstate; an SSR backend
+    // would call it once per request.
+    let match_path: Rc<dyn Fn(&str) -> Option<(&'static str, Box<dyn Any>)>> = {
+        let screens = screens.clone();
+        Rc::new(move |path| {
+            for (name, entry) in screens.iter() {
+                if let Some(segs) = match_pattern(path, entry.path) {
+                    if let Some(params) = (entry.from_segments)(&segs) {
+                        return Some((*name, params));
+                    }
+                }
+            }
+            None
+        })
+    };
+
+    // depth_changed: backend reports stack depth after each commit;
+    // the framework caches it on the control plane so
+    // `handle.depth()` is a cheap probe.
+    let depth_changed: Rc<dyn Fn(usize)> = {
+        let control = control.clone();
+        Rc::new(move |d| control.set_depth(d))
+    };
+
+    let callbacks = NavigatorCallbacks {
+        initial_route: initial,
+        initial_path,
+        mount_screen,
+        release_screen,
+        match_path,
+        depth_changed,
+    };
+
+    // Create the native navigator. The backend stores the callbacks,
+    // installs a dispatcher on `control`, and mounts the initial
+    // screen by calling `callbacks.mount_screen(initial, Box::new(()))`.
+    let node = time_backend_create(pkind!(Navigator), || {
+        backend.borrow_mut().create_navigator(callbacks, control.clone())
+    });
+
+    if let Some(RefFill::Navigator(fill)) = ref_fill {
+        // The default handle the trait builds is a no-op (`control: None`).
+        // For backends that override `make_navigator_handle` and wire up
+        // the control plane, the user gets the live handle. Default-no-op
+        // backends produce a handle whose calls are silent no-ops —
+        // matching every other "primitive ref that the backend doesn't
+        // support yet" path in the framework.
+        let handle = backend.borrow().make_navigator_handle(&node);
+        fill(handle);
+    }
+
+    node
 }
 
 /// Attaches a style to an already-constructed node by spawning an
@@ -1582,6 +1644,11 @@ fn attach_style<B: Backend + 'static>(
         // Anchor the handle inside the closure so it's dropped iff the
         // effect is dropped.
         let _ = &handle.node;
+
+        #[cfg(feature = "debug-stats")]
+        debug::record_apply_style_enter();
+        #[cfg(feature = "debug-stats")]
+        debug::record_effect_fired();
 
         let app = style();
 
@@ -1629,6 +1696,9 @@ fn attach_style<B: Backend + 'static>(
                 .borrow_mut()
                 .apply_style(&node_for_effect, &resolved);
         }
+
+        #[cfg(feature = "debug-stats")]
+        debug::record_apply_style_exit();
     });
 
     // Hand the backend a setter so it can flip state bits from native
@@ -1786,8 +1856,18 @@ fn build_virtualizer<B: Backend + 'static>(
         let backend = backend.clone();
         Rc::new(move |idx| {
             let mut scope = Box::new(reactive::Scope::new());
-            let primitive = reactive::with_scope(&mut scope, || render(idx));
-            let node = build(&backend, primitive);
+            // Build inside the scope so any Effects the walker creates
+            // (switch/when/style/etc.) register with this per-item
+            // scope and stay alive for the item's lifetime. See the
+            // matching comment in `build_navigator`'s `mount_screen`
+            // for why this matters — Effects built outside any scope
+            // get `owns: true` and free immediately when the handle
+            // drops at end of `build`, taking their shared
+            // `Rc<RefCell<...>>` state with them.
+            let node = reactive::with_scope(&mut scope, || {
+                let primitive = render(idx);
+                build(&backend, primitive)
+            });
             let id = {
                 let mut n = next_id.borrow_mut();
                 let v = *n;
@@ -1795,6 +1875,8 @@ fn build_virtualizer<B: Backend + 'static>(
                 v
             };
             scopes.borrow_mut().insert(id, scope);
+            #[cfg(feature = "debug-stats")]
+            debug::record_virtualizer_mount(idx, id);
             (node, id)
         })
     };
@@ -1805,6 +1887,8 @@ fn build_virtualizer<B: Backend + 'static>(
         let scopes = scopes.clone();
         let measured = measured_sizes.clone();
         Rc::new(move |id| {
+            #[cfg(feature = "debug-stats")]
+            debug::record_virtualizer_release(id);
             // Drop the scope. Its Drop impl frees the reactive slots.
             scopes.borrow_mut().remove(&id);
             // We can't safely free the measured-size entry here
@@ -1871,7 +1955,9 @@ fn build_virtualizer<B: Backend + 'static>(
         set_measured_size,
     };
 
-    let node = backend.borrow_mut().create_virtualizer(callbacks, overscan, horizontal);
+    let node = time_backend_create(pkind!(Virtualizer), || {
+        backend.borrow_mut().create_virtualizer(callbacks, overscan, horizontal)
+    });
 
     // Effect: re-fires whenever the data signal changes (any reads
     // inside item_count / item_key / etc. subscribe). We tell the
@@ -1898,7 +1984,7 @@ fn build_when<B: Backend + 'static>(
     then: Box<dyn Fn() -> Primitive>,
     otherwise: Box<dyn Fn() -> Primitive>,
 ) -> B::Node {
-    let placeholder = backend.borrow_mut().create_view();
+    let placeholder = time_backend_create(pkind!(View), || backend.borrow_mut().create_view());
     let backend_for_effect = backend.clone();
     let placeholder_for_effect = placeholder.clone();
 
@@ -1932,6 +2018,119 @@ fn build_when<B: Backend + 'static>(
             });
         });
         *branch_scope_for_effect.borrow_mut() = Some(new_scope);
+    });
+
+    placeholder
+}
+
+/// Build a `Primitive::Switch`. Same shape as `build_when`, but the
+/// rebuild decision is driven by an arbitrary `PartialEq` key instead
+/// of a bool. The branch scope is preserved across effect re-runs
+/// whose key matches the previously-seen key, so an unrelated signal
+/// change won't tear down the active subtree.
+fn build_switch<B: Backend + 'static>(
+    backend: &Rc<RefCell<B>>,
+    key: Box<dyn Fn() -> Box<dyn Any>>,
+    eq: Box<dyn Fn(&dyn Any, &dyn Any) -> bool>,
+    build_fn: Box<dyn Fn(&dyn Any) -> Primitive>,
+) -> B::Node {
+    let placeholder = time_backend_create(pkind!(View), || backend.borrow_mut().create_view());
+    let backend_for_effect = backend.clone();
+    let placeholder_for_effect = placeholder.clone();
+
+    // Branch scope + the last-seen key, both kept alive across effect
+    // re-runs. `Rc<RefCell<...>>` so we can mutate from inside the
+    // Effect closure without borrowing-rule pain.
+    let branch_scope: Rc<RefCell<Option<Box<reactive::Scope>>>> = Rc::new(RefCell::new(None));
+    let last_key: Rc<RefCell<Option<Box<dyn Any>>>> = Rc::new(RefCell::new(None));
+    let branch_scope_for_effect = branch_scope.clone();
+    let last_key_for_effect = last_key.clone();
+
+    // Share the `key`/`eq`/`build_fn` across both the inner effect
+    // body and the deferred microtask. They're `Box<dyn Fn>` so we
+    // wrap once in an Rc to hand both a clone.
+    let key: Rc<dyn Fn() -> Box<dyn Any>> = key.into();
+    let eq: Rc<dyn Fn(&dyn Any, &dyn Any) -> bool> = eq.into();
+    let build_fn: Rc<dyn Fn(&dyn Any) -> Primitive> = build_fn.into();
+
+    let _e = Effect::new(move || {
+        let new_key = key();
+
+        // Short-circuit if the key hasn't changed. The Effect itself
+        // still subscribes to whatever signals `key()` read — but we
+        // skip the costly subtree rebuild. This is what makes the
+        // Switch primitive "rebuild only when the discriminator
+        // actually changes."
+        let same_as_last = last_key_for_effect
+            .borrow()
+            .as_deref()
+            .map(|prev| eq(prev, &*new_key))
+            .unwrap_or(false);
+        if same_as_last {
+            return;
+        }
+
+        // Defer the teardown + rebuild to a microtask. The trigger
+        // for this effect is typically a wasm-bindgen `FnMut`
+        // closure (a click handler that called `screen.set(...)`).
+        // Tearing down the OLD branch synchronously drops every
+        // closure it owns; any of those closures whose queued
+        // browser event hadn't yet fired will then trip
+        // wasm-bindgen's "closure invoked recursively or after
+        // being dropped" check when the browser later dispatches.
+        //
+        // Running the teardown one microtask later lets the
+        // triggering FnMut closure return first, so the browser
+        // finishes draining queued events for the old subtree
+        // before any of its closures are dropped.
+        let placeholder_for_microtask = placeholder_for_effect.clone();
+        let backend_for_microtask = backend_for_effect.clone();
+        let branch_scope_for_microtask = branch_scope_for_effect.clone();
+        let last_key_for_microtask = last_key_for_effect.clone();
+        let build_fn_for_microtask = build_fn.clone();
+        let eq_for_microtask = eq.clone();
+
+        schedule_microtask(move || {
+            // Local alias so the closure body keeps reading `eq`.
+            let eq = eq_for_microtask;
+            // Re-check the dedup guard under the microtask too. A
+            // second `screen.set(...)` may have landed before the
+            // microtask drained; in that case its own scheduled
+            // teardown will pick up the latest key.
+            let same_as_last = last_key_for_microtask
+                .borrow()
+                .as_deref()
+                .map(|prev| eq(prev, &*new_key))
+                .unwrap_or(false);
+            if same_as_last {
+                return;
+            }
+
+            // Drop the previous branch's scope before building the
+            // new one, freeing its signals + effects atomically.
+            *branch_scope_for_microtask.borrow_mut() = None;
+            backend_for_microtask
+                .borrow_mut()
+                .clear_children(&placeholder_for_microtask);
+
+            // Build inside a fresh nested scope. `untrack` keeps
+            // inner setup reads from subscribing to *this* outer
+            // effect — inner effects subscribe themselves when
+            // they run.
+            let mut new_scope = Box::new(reactive::Scope::new());
+            untrack(|| {
+                reactive::with_scope(&mut new_scope, || {
+                    let branch = build_fn_for_microtask(&*new_key);
+                    let child_node = build(&backend_for_microtask, branch);
+                    let mut placeholder_mut = placeholder_for_microtask.clone();
+                    backend_for_microtask
+                        .borrow_mut()
+                        .insert(&mut placeholder_mut, child_node);
+                });
+            });
+            *branch_scope_for_microtask.borrow_mut() = Some(new_scope);
+            *last_key_for_microtask.borrow_mut() = Some(new_key);
+        });
     });
 
     placeholder

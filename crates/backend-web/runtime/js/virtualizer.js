@@ -71,13 +71,24 @@
             this.totalSize = 0;
             this.prefixSize = []; // prefixSize[i] = cumulative size of items [0, i)
 
-            container.addEventListener('scroll', () => this.update(), { passive: true });
+            // Store the scroll handler as a named property so
+            // `release()` can detach it. An anonymous arrow would
+            // be impossible to removeEventListener.
+            this._scrollHandler = () => {
+                if (this._released) return;
+                this.update();
+            };
+            container.addEventListener('scroll', this._scrollHandler, { passive: true });
             // Also re-update on container resize so viewport changes
             // trigger a re-window.
             if (typeof ResizeObserver !== 'undefined') {
-                this._containerObserver = new ResizeObserver(() => this.update());
+                this._containerObserver = new ResizeObserver(() => {
+                    if (this._released) return;
+                    this.update();
+                });
                 this._containerObserver.observe(container);
             }
+            this._released = false;
 
             // Defer the initial mount pass to a microtask: the Rust
             // side that constructed us still holds a `borrow_mut` on
@@ -85,11 +96,15 @@
             // `mountItem()` would re-enter the same RefCell from a
             // different call chain and trigger a "RefCell already
             // borrowed" panic.
-            queueMicrotask(() => this.refresh());
+            queueMicrotask(() => {
+                if (this._released) return;
+                this.refresh();
+            });
         }
 
         /** Recompute prefix sums + spacer extent + visible range from scratch. */
         refresh() {
+            if (this._released) return;
             const n = this.cb.itemCount();
             this.prefixSize = new Array(n + 1);
             this.prefixSize[0] = 0;
@@ -162,6 +177,7 @@
          * Recompute visible range and apply mount/unmount diff.
          */
         update() {
+            if (this._released) return;
             const scroll = this.horizontal ? this.container.scrollLeft : this.container.scrollTop;
             const viewport = this.horizontal ? this.container.clientWidth : this.container.clientHeight;
             const buffer = viewport * (this.cb.overscan || 1.0);
@@ -281,7 +297,60 @@
          * `borrow_mut` from the call site that fired the data-change
          * effect. */
         dataChanged() {
-            queueMicrotask(() => this.refresh());
+            if (this._released) return;
+            queueMicrotask(() => {
+                if (this._released) return;
+                this.refresh();
+            });
+        }
+
+        /** Called by Rust from `release_virtualizer` when the
+         * surrounding scope (a `when` branch, a `switch` arm, the
+         * containing `Owner`) drops. Detaches every DOM listener,
+         * disconnects all observers, unmounts everything currently
+         * mounted, and flips `_released` so any late-firing handlers
+         * (queued scroll/resize events, layout-change callbacks)
+         * short-circuit instead of calling back into Rust closures
+         * that may already have had their captured Signal scope
+         * dropped.
+         *
+         * After `release()` the instance is inert; callers should
+         * drop their references so JS can GC the instance + its
+         * attached `_rust_cb_*` Closure wrappers. */
+        release() {
+            // Idempotent: a separate `_releasedFully` flag tracks
+            // whether the full teardown has run. The Rust side may
+            // set `_released = true` synchronously before invoking
+            // `release()` from a microtask (see `release` in the
+            // Rust virtualizer module). The `_released` flag is the
+            // event-guard for queued listeners; this flag prevents
+            // double-running the unmount loop.
+            if (this._releasedFully) return;
+            this._releasedFully = true;
+            console.log('[virt] release() called, setting _released=true');
+            this._released = true;
+            // 1. Stop listening for new scroll/resize events.
+            this.container.removeEventListener('scroll', this._scrollHandler);
+            if (this._containerObserver) {
+                this._containerObserver.disconnect();
+                this._containerObserver = null;
+            }
+            // 2. Unmount everything currently in the window. This
+            //    detaches each item's ResizeObserver too.
+            //    `_unmountEntry` calls `releaseItem(scopeId)` back
+            //    into Rust to drop the per-item Scope. By this
+            //    point the framework's outer `borrow_mut()` has
+            //    been released (the Rust caller microtask-defers
+            //    this release call), so per-item Scope drops are
+            //    free to re-borrow the backend via
+            //    `on_node_unstyled` / similar paths.
+            for (const idx of Array.from(this.mountedByIdx.keys())) {
+                this._unmountEntry(idx);
+            }
+            // 3. Clear the spacer so the DOM tree is empty too.
+            if (this.spacer && this.spacer.parentNode === this.container) {
+                this.container.removeChild(this.spacer);
+            }
         }
     }
 

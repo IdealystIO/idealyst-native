@@ -1,0 +1,69 @@
+//! Owned holders for each kind of JNI-bridged callback. Each is leaked
+//! at construction (`Box::into_raw`) so the JVM-side listener can
+//! hold a `jlong` pointer to it; the matching JNI export dereferences
+//! the pointer and invokes the inner closure.
+//!
+//! Lifetime: most of these leak for the activity's lifetime. The
+//! state-callback case is special — see [`StateCallback`] — and
+//! supports clearing the inner closure without freeing the box, since
+//! late touch/focus events from Android's input dispatcher can fire
+//! after the view detaches.
+
+use jni::sys::jlong;
+use std::cell::RefCell;
+use std::rc::Rc;
+
+/// `Button.onClick`. JVM-side `RustClickListener` holds the pointer
+/// and dispatches via `nativeInvoke`.
+///
+/// Lifetime: leaked at the listener's construction. The Activity
+/// owning the view tree lives for the app's lifetime in this demo,
+/// so explicit drop-on-detach isn't wired. A production backend
+/// would call back into Rust from the Kotlin listener's `finalize`
+/// to drop these.
+pub(crate) struct ClickCallback(pub(crate) Rc<dyn Fn()>);
+
+/// Owned holder for the per-node state setter the framework hands
+/// us in `attach_states`. JVM side keeps the raw pointer in
+/// `RustStateListener` and passes it back via `nativeStateEvent` on
+/// every touch/focus transition.
+///
+/// `inner` is a `RefCell<Option<...>>` so `on_node_unstyled` can
+/// blank it out (drop the inner closure + the `Signal` setter it
+/// captures) without freeing the box itself. Freeing the box is
+/// unsafe: the Kotlin `RustStateListener` is wired as an
+/// `OnTouchListener` + `OnFocusChangeListener` on the row view, and
+/// Android's input dispatcher can deliver an event to a detached
+/// View moments after we drop the per-item Scope. A freed pointer
+/// here was the source of a SIGSEGV inside `nativeStateEvent`.
+/// Leaking the wrapper box is the simple safe fix — at recycler
+/// scale only a handful of holders are alive at once, so the bound
+/// on accumulated boxes is small.
+pub(crate) struct StateCallback {
+    pub(crate) inner: RefCell<Option<Rc<dyn Fn(framework_core::StateBits, bool)>>>,
+}
+
+/// `TextInput.on_change`. JVM-side `RustTextWatcher.afterTextChanged`
+/// calls `nativeChanged(ptr, text)`.
+pub(crate) struct TextChangeCallback(pub(crate) Rc<dyn Fn(String)>);
+
+/// `Toggle.on_change`. JVM-side `RustToggleListener.onCheckedChanged`
+/// calls `nativeChanged(ptr, checked)`.
+pub(crate) struct ToggleChangeCallback(pub(crate) Rc<dyn Fn(bool)>);
+
+/// `Slider.on_change`. The Kotlin `RustSliderListener` passes back
+/// the SeekBar's integer progress; we convert to the user's
+/// [min, max] f32 range before invoking the closure.
+pub(crate) struct SliderChangeCallback {
+    pub(crate) on_change: Rc<dyn Fn(f32)>,
+    pub(crate) min: f32,
+    pub(crate) max: f32,
+    pub(crate) resolution: i32,
+}
+
+/// Leak a `Box<T>` and return its raw pointer as a `jlong`. Trivial
+/// helper exposed for symmetry with the per-callback construction
+/// sites scattered across the primitive modules.
+pub(crate) fn leak<T>(value: T) -> jlong {
+    Box::into_raw(Box::new(value)) as jlong
+}

@@ -100,6 +100,55 @@ Launch the app from the device's launcher (or `adb shell am start -n io.idealyst
   adb logcat -s idealyst:I
   ```
 
+## Graphics primitive (wgpu-based gradient demo)
+
+`hello-android`'s `graphics` feature is on by default. The shared
+`hello::app()` tree includes a `Graphics(...)` panel that renders an
+animated gradient via wgpu, dispatched to **Vulkan** on devices that
+support it and **GLES** otherwise.
+
+### How it's wired
+
+- The framework's `Graphics` primitive maps to an
+  `android.view.SurfaceView` on this backend
+  ([crates/backend-android/src/imp/primitives/graphics.rs](../../crates/backend-android/src/imp/primitives/graphics.rs)).
+- `SurfaceHolder.Callback` events forward to Rust through
+  [`RustGraphicsCallback`](../../crates/backend-android/runtime/kotlin/io/idealyst/runtime/RustGraphicsCallback.kt).
+  `surfaceCreated` → `on_ready`, `surfaceChanged` → `on_resize`,
+  `surfaceDestroyed` → `on_lost`.
+- The framework hands the user a `GraphicsSurface` implementing
+  `raw_window_handle::HasWindowHandle + HasDisplayHandle`. The
+  gradient demo ([examples/hello/src/gradient_android.rs](../hello/src/gradient_android.rs))
+  passes it directly to `wgpu::Instance::create_surface(...)`.
+- A dedicated render thread (spawned in `on_ready`) does device
+  init via `pollster::block_on` and runs the draw loop. Vsync is
+  paced by `PresentMode::Fifo`. `on_resize` sends a message;
+  `on_lost` joins the thread and drops state.
+
+### Toggling it off
+
+For a smaller APK (or to test on a device without a working wgpu
+adapter), edit `hello-android/Cargo.toml` and remove
+`default = ["graphics"]`. Without the feature, the gradient panel
+falls back to the static placeholder defined in
+[examples/hello/src/lib.rs](../hello/src/lib.rs).
+
+### Known issues
+
+- The `nativeDrop` finalizer in `RustGraphicsCallback` runs
+  whenever the JVM gets around to GCing the listener — typically
+  some time after the Activity tears down. For long-lived apps
+  that mount/unmount many `Graphics` instances at runtime, the
+  leaked callback boxes will linger. A `PhantomReference`-based
+  cleanup is the production answer; for this demo `finalize()` is
+  bounded enough.
+- The render thread is per-surface. Backgrounding the Activity
+  fires `surfaceDestroyed` → `on_lost` → thread joins; resuming
+  fires `surfaceCreated` → `on_ready` → fresh thread. The shader
+  uniforms reset (the gradient phase restarts), which is fine for
+  this demo but something a real app would want to persist
+  across the surface gap.
+
 ## What's exercised vs. what's missing
 
 The `hello::app()` tree (shared with the web example) exercises:

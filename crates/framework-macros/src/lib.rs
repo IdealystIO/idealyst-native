@@ -84,10 +84,42 @@ pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
     };
     reactivity::rewrite(&mut item_fn);
+
+    // When the `debug-stats` feature is on (forwarded from
+    // `framework-core/debug-stats`), wrap the rewritten body with
+    // component enter/exit recording. The wrap happens at the macro
+    // level so it covers every `#[component]` automatically — no
+    // per-component decorator needed.
+    #[cfg(feature = "debug-stats")]
+    wrap_component_body_for_debug(&mut item_fn);
+
     let invocation = invocation_macro::generate_invocation_macro(&item_fn, &attr);
     TokenStream::from(quote! {
         #methods_extra
         #item_fn
         #invocation
     })
+}
+
+/// Wrap the component's body with `record_component_enter` /
+/// `record_component_exit` calls. The component's name (the literal
+/// fn ident) is passed as `&'static str` so it survives into the
+/// recorded event without allocation.
+#[cfg(feature = "debug-stats")]
+fn wrap_component_body_for_debug(item_fn: &mut ItemFn) {
+    use proc_macro2::Span;
+    use syn::{parse_quote, Block};
+    let name_lit = syn::LitStr::new(&item_fn.sig.ident.to_string(), Span::call_site());
+    let original: Block = std::mem::replace(
+        &mut *item_fn.block,
+        Block { brace_token: Default::default(), stmts: Vec::new() },
+    );
+    *item_fn.block = parse_quote! {
+        {
+            ::framework_core::debug::record_component_enter(#name_lit);
+            let __idealyst_debug_result = #original;
+            ::framework_core::debug::record_component_exit(#name_lit);
+            __idealyst_debug_result
+        }
+    };
 }

@@ -17,4 +17,6 @@ objc2-ui-kit = { version = "0.2", features = [
     "UIResponder",
     "UIView",
     "UILabel",
+    "UIViewController",
+    "UINavigationController",
 ] }
