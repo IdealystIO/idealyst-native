@@ -102,23 +102,27 @@
 import React, { useState, useCallback, useEffect, useRef, memo } from 'react';
 import { createRoot } from 'react-dom/client';
 import { flushSync } from 'https://esm.sh/react-dom@18.3.1?dev&deps=react@18.3.1';
-import { runToggle, getRowCount, setRowCount } from '../instrument.js';
+import { runToggle, runSuite } from '../instrument.js';
 
 const e = React.createElement;
 
 // Row is memoized — but more importantly, its props NEVER change after
 // mount. The whole point of the CSS-variable approach is that rows
 // don't need to be re-rendered when the theme flips.
+//
+// Text wrapped in a <span> to match the idealyst-native DOM shape.
+// See react-naive/index.html for the rationale.
 const Row = memo(function Row({ index }) {
-  return e('div', { className: 'row ' + (index % 2 === 0 ? 'even' : 'odd') }, `Row #${index}`);
+  return e('div',
+    { className: 'row ' + (index % 2 === 0 ? 'even' : 'odd') },
+    e('span', null, `Row #${index}`),
+  );
 });
 
 function App() {
   const [isDark, setIsDark] = useState(false);
-  const [rowCount, setRowCountState] = useState(getRowCount());
-  // Uncontrolled input: read on Apply, don't re-render the 1000-row
-  // tree on every keystroke.
-  const rowsInputRef = useRef(null);
+  const [rowCount, setRowCountState] = useState(1000);
+  const [running, setRunning] = useState(false);
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', isDark);
@@ -134,14 +138,22 @@ function App() {
     }, { theme: next ? 'dark' : 'light', rows: rowCount });
   }, [isDark, rowCount]);
 
-  const onApply = useCallback(() => {
-    const raw = rowsInputRef.current?.value;
-    const n = parseInt(raw, 10);
-    if (!Number.isFinite(n) || n < 1) return;
-    setRowCount(n);
-    runToggle(() => {
-      flushSync(() => setRowCountState(n));
-    }, { theme: 'rebuild', rows: n });
+  const onStart = useCallback(async () => {
+    setRunning(true);
+    try {
+      await runSuite({
+        // `flushSync` keeps the rebuild commit synchronous inside
+        // the suite's measurement window — without it, React 18
+        // would batch the update and the rebuild would land after
+        // `apply` closed.
+        setRows: async (n) => {
+          flushSync(() => setRowCountState(n));
+        },
+        resultsEl: document.getElementById('results'),
+      });
+    } finally {
+      setRunning(false);
+    }
   }, []);
 
   // Rows are memoized per row count. They still never re-render on
@@ -155,19 +167,13 @@ function App() {
   return e('div', { className: 'page' },
     e('div', { className: 'controls' },
       e('button', { onClick: onToggle }, 'Toggle theme'),
-      e('span', { className: 'rows-label' }, 'rows:'),
-      e('input', {
-        ref: rowsInputRef,
-        className: 'rows-input',
-        type: 'number',
-        min: 1,
-        step: 100,
-        defaultValue: rowCount,
-      }),
-      e('button', { onClick: onApply }, 'Apply'),
-      e('span', { id: 'stats' }, 'Click toggle to measure'),
+      e('button', { onClick: onStart, disabled: running },
+        running ? 'Running…' : 'Start test',
+      ),
+      e('span', { id: 'stats' }, 'Click toggle to measure, or Start test to run the suite'),
     ),
     e('div', { className: 'perf-list' }, rows),
+    e('div', { id: 'results', style: { padding: '0 32px 32px' } }),
   );
 }
 

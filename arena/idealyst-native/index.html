@@ -50,12 +50,11 @@
 <body>
   <div class="controls">
     <button id="toggle">Toggle theme</button>
-    <span class="rows-label">rows:</span>
-    <input id="rows" class="rows-input" type="number" min="1" step="100">
-    <button id="apply">Apply</button>
-    <span id="stats">Click toggle to measure</span>
+    <button id="start">Start test</button>
+    <span id="stats">Click toggle to measure, or Start test to run the suite</span>
   </div>
   <div id="app"></div>
+  <div id="results"></div>
 
   <script type="module">
     // Path is relative to this file. wasm-pack with --target=web
@@ -63,14 +62,10 @@
     // bootstraps the module.
     import init, { start, toggle, set_rows, row_count }
       from './wasm/pkg/arena_idealyst_native.js';
-    import { runToggle, getRowCount, setRowCount } from '../instrument.js';
+    import { runToggle, runSuite } from '../instrument.js';
 
     await init();
-    const initialRows = getRowCount();
-    start(initialRows);
-
-    const rowsInput = document.getElementById('rows');
-    rowsInput.value = String(initialRows);
+    start(1000);
 
     let currentRows = row_count();
     let activeTheme = 'light';
@@ -81,14 +76,20 @@
       }, { theme: activeTheme === 'light' ? 'dark' : 'light', rows: currentRows });
     });
 
-    document.getElementById('apply').addEventListener('click', () => {
-      const n = parseInt(rowsInput.value, 10);
-      if (!Number.isFinite(n) || n < 1) return;
-      setRowCount(n);
-      runToggle(() => {
-        set_rows(n);
-      }, { theme: 'rebuild', rows: n });
-      currentRows = row_count();
+    document.getElementById('start').addEventListener('click', async () => {
+      const btn = document.getElementById('start');
+      btn.disabled = true;
+      try {
+        await runSuite({
+          setRows: async (n) => {
+            set_rows(n);
+            currentRows = n;
+          },
+          resultsEl: document.getElementById('results'),
+        });
+      } finally {
+        btn.disabled = false;
+      }
     });
   </script>
 </body>

@@ -38,7 +38,7 @@
 import React, { useState, useCallback, useMemo, useRef, memo } from 'react';
 import { createRoot } from 'react-dom/client';
 import { flushSync } from 'https://esm.sh/react-dom@18.3.1?dev&deps=react@18.3.1';
-import { runToggle, LIGHT, DARK, getRowCount, setRowCount } from '../instrument.js';
+import { runToggle, runSuite, LIGHT, DARK } from '../instrument.js';
 
 const e = React.createElement;
 
@@ -82,17 +82,23 @@ const rowStyle = (t, parity) => ({
 // Memoizing the row in the naive variant wouldn't help — its `theme`
 // prop changes on every toggle. Left unmemoized on purpose so the cost
 // of re-rendering 1000 leaf components is honestly visible.
+//
+// The text is wrapped in a <span> so the DOM shape matches the
+// idealyst-native variant's `View { Text { ... } }` output exactly
+// (its `Text` primitive emits a <span> as a stable styling target).
+// Without this, idealyst would be unfairly mounting 2× DOM nodes
+// per row vs React's 1× for the same logical structure.
 function Row({ index, theme }) {
-  return e('div', { style: rowStyle(theme, index % 2 === 0 ? 'even' : 'odd') }, `Row #${index}`);
+  return e('div',
+    { style: rowStyle(theme, index % 2 === 0 ? 'even' : 'odd') },
+    e('span', null, `Row #${index}`),
+  );
 }
 
 function App() {
   const [theme, setTheme] = useState(LIGHT);
-  const [rowCount, setRowCountState] = useState(getRowCount());
-  // Uncontrolled input via ref — the input's value is read on
-  // Apply click, not on every keystroke. Avoids re-rendering the
-  // 1000-row tree on every digit the user types.
-  const rowsInputRef = useRef(null);
+  const [rowCount, setRowCountState] = useState(1000);
+  const [running, setRunning] = useState(false);
   const isDark = theme === DARK;
 
   const onToggle = useCallback(() => {
@@ -109,14 +115,22 @@ function App() {
     }, { theme: isDark ? 'light' : 'dark', rows: rowCount });
   }, [isDark, rowCount]);
 
-  const onApply = useCallback(() => {
-    const raw = rowsInputRef.current?.value;
-    const n = parseInt(raw, 10);
-    if (!Number.isFinite(n) || n < 1) return;
-    setRowCount(n);
-    runToggle(() => {
-      flushSync(() => setRowCountState(n));
-    }, { theme: 'rebuild', rows: n });
+  const onStart = useCallback(async () => {
+    setRunning(true);
+    try {
+      await runSuite({
+        // Drive the row count through React state. `flushSync` keeps
+        // the commit synchronous inside the suite's measurement
+        // window — without it, React 18 would batch the update and
+        // the rebuild work would land *after* `apply` closes.
+        setRows: async (n) => {
+          flushSync(() => setRowCountState(n));
+        },
+        resultsEl: document.getElementById('results'),
+      });
+    } finally {
+      setRunning(false);
+    }
   }, []);
 
   const rows = useMemo(
@@ -127,19 +141,14 @@ function App() {
   return e('div', { style: pageStyle(theme) },
     e('div', { style: controlsStyle(theme) },
       e('button', { style: buttonStyle(theme), onClick: onToggle }, 'Toggle theme'),
-      e('span', { className: 'rows-label' }, 'rows:'),
-      e('input', {
-        ref: rowsInputRef,
-        className: 'rows-input',
-        type: 'number',
-        min: 1,
-        step: 100,
-        defaultValue: rowCount,
-      }),
-      e('button', { style: buttonStyle(theme), onClick: onApply }, 'Apply'),
-      e('span', { id: 'stats' }, 'Click toggle to measure'),
+      e('button',
+        { style: buttonStyle(theme), onClick: onStart, disabled: running },
+        running ? 'Running…' : 'Start test',
+      ),
+      e('span', { id: 'stats' }, 'Click toggle to measure, or Start test to run the suite'),
     ),
     e('div', { style: listStyle(theme) }, rows),
+    e('div', { id: 'results', style: { padding: '0 32px 32px' } }),
   );
 }
 

@@ -96,58 +96,62 @@
   <div class="page">
     <div class="controls">
       <button id="toggle">Toggle theme</button>
-      <span class="rows-label">rows:</span>
-      <input id="rows" class="rows-input" type="number" min="1" step="100">
-      <button id="apply">Apply</button>
-      <span id="stats">Click toggle to measure</span>
+      <button id="start">Start test</button>
+      <span id="stats">Click toggle to measure, or Start test to run the suite</span>
     </div>
     <div class="perf-list" id="list"></div>
+    <div id="results"></div>
   </div>
 
   <script type="module">
-    import { runToggle, getRowCount, setRowCount } from '../instrument.js';
-
-    let rowCount = getRowCount();
-    const rowsInput = document.getElementById('rows');
-    rowsInput.value = String(rowCount);
+    import { runToggle, runSuite } from '../instrument.js';
 
     const list = document.getElementById('list');
+    let currentRows = 0;
 
-    // (Re)build the list with the current row count. Uses a
+    // (Re)build the list with the given row count. Uses a
     // DocumentFragment so a single attach hits layout instead of
     // N — the fair comparison for vanilla.
-    function buildRows() {
+    //
+    // Text is wrapped in a <span> so the DOM shape matches every
+    // other variant (idealyst-native's Text primitive emits a
+    // <span> as a styling target; for a fair benchmark all
+    // variants mount the same number of DOM nodes).
+    function buildRows(rowCount) {
       while (list.firstChild) list.removeChild(list.firstChild);
       const frag = document.createDocumentFragment();
       for (let i = 0; i < rowCount; i++) {
         const row = document.createElement('div');
         row.className = 'row ' + (i % 2 === 0 ? 'even' : 'odd');
-        row.textContent = `Row #${i}`;
+        const span = document.createElement('span');
+        span.textContent = `Row #${i}`;
+        row.appendChild(span);
         frag.appendChild(row);
       }
       list.appendChild(frag);
+      currentRows = rowCount;
     }
-    buildRows();
+    buildRows(1000);
 
     let isDark = false;
     document.getElementById('toggle').addEventListener('click', () => {
       isDark = !isDark;
       runToggle(() => {
         document.documentElement.classList.toggle('dark', isDark);
-      }, { theme: isDark ? 'dark' : 'light', rows: rowCount });
+      }, { theme: isDark ? 'dark' : 'light', rows: currentRows });
     });
 
-    document.getElementById('apply').addEventListener('click', () => {
-      const next = parseInt(rowsInput.value, 10);
-      if (!Number.isFinite(next) || next < 1) return;
-      rowCount = next;
-      setRowCount(rowCount);
-      // Measure the mount cost the same way we measure toggle cost —
-      // same harness, same readout shape. The `theme` label reads
-      // "rebuild" so it's obvious this row isn't a toggle.
-      runToggle(() => {
-        buildRows();
-      }, { theme: 'rebuild', rows: rowCount });
+    document.getElementById('start').addEventListener('click', async () => {
+      const btn = document.getElementById('start');
+      btn.disabled = true;
+      try {
+        await runSuite({
+          setRows: async (n) => { buildRows(n); },
+          resultsEl: document.getElementById('results'),
+        });
+      } finally {
+        btn.disabled = false;
+      }
     });
   </script>
 </body>

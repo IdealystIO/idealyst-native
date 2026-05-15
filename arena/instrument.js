@@ -130,3 +130,184 @@ export function setRowCount(n) {
   url.searchParams.set('rows', String(n));
   window.history.replaceState(null, '', url.toString());
 }
+
+// ---------------------------------------------------------------
+// Automated suite
+// ---------------------------------------------------------------
+//
+// Each variant exposes a single `setRows(n)` function and calls
+// `runSuite({ setRows, ... })` to drive it. The suite alternates
+// between two row counts (default 1000 ↔ 10000) for `iterations`
+// rebuilds, measuring each with the same harness `runToggle` uses.
+// A pre-flight rebuild at the first count is discarded as warmup —
+// the JIT, wasm caches, and font-rendering pipeline all warm up
+// during it and would otherwise skew run 1's numbers high.
+//
+// Results are written into the passed `resultsEl` as a table:
+// per-iteration rows during execution, then a per-count summary
+// (median / min / max of `apply` and `first paint`) at the end.
+//
+// The suite is sequential and waits a full transition window
+// between iterations (via runToggle's built-in rAF loop), so the
+// browser settles before the next rebuild. Runs synchronously
+// w.r.t. JS — there's no concurrent work to confound the numbers.
+
+function median(xs) {
+  if (xs.length === 0) return 0;
+  const sorted = [...xs].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? (sorted[mid - 1] + sorted[mid]) / 2
+    : sorted[mid];
+}
+
+function makeResultsTable() {
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'font: 13px/1.4 monospace; margin-top: 16px;';
+  return wrap;
+}
+
+function renderProgress(resultsEl, runs) {
+  // Render a live progress table — one row per completed iteration.
+  // Cheap to re-render on each tick; the suite isn't speed-critical
+  // on the JS side (the timed work is the rebuild call, not the
+  // table render that happens around it).
+  let html = '<table style="border-collapse: collapse; width: 100%;">';
+  html += '<thead><tr>';
+  for (const h of ['#', 'rows', 'apply (ms)', 'first paint (ms)', 'worst frame (ms)']) {
+    html += `<th style="text-align: right; padding: 4px 8px; border-bottom: 1px solid #888;">${h}</th>`;
+  }
+  html += '</tr></thead><tbody>';
+  for (const r of runs) {
+    html += '<tr>';
+    html += `<td style="text-align: right; padding: 2px 8px;">${r.iter}</td>`;
+    html += `<td style="text-align: right; padding: 2px 8px;">${r.rows}</td>`;
+    html += `<td style="text-align: right; padding: 2px 8px;">${r.apply.toFixed(1)}</td>`;
+    html += `<td style="text-align: right; padding: 2px 8px;">${r.firstPaint.toFixed(1)}</td>`;
+    html += `<td style="text-align: right; padding: 2px 8px;">${r.worstFrame.toFixed(1)}</td>`;
+    html += '</tr>';
+  }
+  html += '</tbody></table>';
+  resultsEl.innerHTML = html;
+}
+
+function renderSummary(resultsEl, runs) {
+  // Group by row count, drop the warmup (iter 0), report
+  // median/min/max of `apply` and `first paint`.
+  const byCount = new Map();
+  for (const r of runs) {
+    if (!byCount.has(r.rows)) byCount.set(r.rows, []);
+    byCount.get(r.rows).push(r);
+  }
+  let html = renderProgress(resultsEl, runs);
+  // re-use the existing per-iter table by re-rendering it then
+  // appending the summary; renderProgress wrote into innerHTML, so
+  // we read it back and append.
+  html = resultsEl.innerHTML;
+  html += '<div style="margin-top: 16px; font-weight: 600;">summary (median / min / max)</div>';
+  html += '<table style="border-collapse: collapse; width: 100%; margin-top: 4px;">';
+  html += '<thead><tr>';
+  for (const h of ['rows', 'apply median', 'apply min', 'apply max', 'paint median', 'paint min', 'paint max']) {
+    html += `<th style="text-align: right; padding: 4px 8px; border-bottom: 1px solid #888;">${h}</th>`;
+  }
+  html += '</tr></thead><tbody>';
+  for (const [rows, rs] of [...byCount.entries()].sort((a, b) => a[0] - b[0])) {
+    const applies = rs.map(r => r.apply);
+    const paints = rs.map(r => r.firstPaint);
+    html += '<tr>';
+    html += `<td style="text-align: right; padding: 2px 8px;">${rows}</td>`;
+    html += `<td style="text-align: right; padding: 2px 8px;">${median(applies).toFixed(1)}</td>`;
+    html += `<td style="text-align: right; padding: 2px 8px;">${Math.min(...applies).toFixed(1)}</td>`;
+    html += `<td style="text-align: right; padding: 2px 8px;">${Math.max(...applies).toFixed(1)}</td>`;
+    html += `<td style="text-align: right; padding: 2px 8px;">${median(paints).toFixed(1)}</td>`;
+    html += `<td style="text-align: right; padding: 2px 8px;">${Math.min(...paints).toFixed(1)}</td>`;
+    html += `<td style="text-align: right; padding: 2px 8px;">${Math.max(...paints).toFixed(1)}</td>`;
+    html += '</tr>';
+  }
+  html += '</tbody></table>';
+  resultsEl.innerHTML = html;
+}
+
+/// Run the automated benchmark suite.
+///
+///   setRows(n)   — async fn the variant supplies. Should rebuild
+///                  the row list at count `n`. The harness wraps
+///                  this in a `runToggle`-style measurement, so
+///                  the call should be the rebuild work *only* —
+///                  no extra setup.
+///   iterations   — how many measured rebuilds to run (default 10).
+///                  Plus one unmeasured warmup at the start.
+///   counts       — array of row counts to alternate between
+///                  (default [1000, 10000]). Iteration k uses
+///                  `counts[k % counts.length]`.
+///   resultsEl    — DOM node to render the live + final tables into.
+export async function runSuite({
+  setRows,
+  iterations = 10,
+  counts = [1000, 10000],
+  resultsEl,
+}) {
+  if (typeof setRows !== 'function') {
+    throw new Error('runSuite: setRows must be a function');
+  }
+  if (!resultsEl) {
+    throw new Error('runSuite: resultsEl is required');
+  }
+
+  // Warmup: rebuild once at the first count. Numbers from this
+  // iteration are discarded — the first run after page load
+  // includes JIT warmup, font-rendering setup, and a few other
+  // one-time costs that would inflate it 50-100%.
+  resultsEl.innerHTML = '<div style="opacity: 0.7;">warmup…</div>';
+  await runToggle(() => setRows(counts[0]), { theme: 'warmup', rows: counts[0] });
+
+  const runs = [];
+  for (let i = 0; i < iterations; i++) {
+    const rows = counts[i % counts.length];
+    const startedAt = performance.now();
+    let applyMs = 0;
+    let firstPaintMs = 0;
+    let worstFrameMs = 0;
+    // Inline the runToggle math here so we can record the
+    // individual numbers without parsing them back out of the
+    // string the original writes to #stats.
+    await new Promise(async (resolve) => {
+      const t0 = performance.now();
+      await setRows(rows);
+      const applyDone = performance.now();
+      applyMs = applyDone - t0;
+
+      let lastFrame = applyDone;
+      const firstFrame = await new Promise(r => requestAnimationFrame(r));
+      firstPaintMs = firstFrame - t0;
+      let gap = firstFrame - lastFrame;
+      if (gap > worstFrameMs) worstFrameMs = gap;
+      lastFrame = firstFrame;
+
+      const deadline = t0 + TRANSITION_MS + SLACK_MS;
+      while (performance.now() < deadline) {
+        const t = await new Promise(r => requestAnimationFrame(r));
+        gap = t - lastFrame;
+        if (gap > worstFrameMs) worstFrameMs = gap;
+        lastFrame = t;
+      }
+      resolve();
+    });
+
+    runs.push({
+      iter: i + 1,
+      rows,
+      apply: applyMs,
+      firstPaint: firstPaintMs,
+      worstFrame: worstFrameMs,
+    });
+    renderProgress(resultsEl, runs);
+    // Yield briefly between iterations. Not strictly needed (the
+    // transition window above already drained a few frames), but
+    // gives the browser a beat to settle queued GC / paint work.
+    await new Promise(r => setTimeout(r, 50));
+  }
+
+  renderSummary(resultsEl, runs);
+  return runs;
+}
