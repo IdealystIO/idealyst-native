@@ -24,7 +24,70 @@ pub(crate) fn create(b: &mut WebBackend) -> Node {
 }
 
 pub(crate) fn insert(parent: &mut Node, child: Node) {
+    // Overlay primitives portal themselves to `<body>` inside
+    // `create_overlay`, so the framework's subsequent
+    // `insert(surrounding_parent, overlay_node)` call would yank
+    // the overlay back into the layout tree. The web backend
+    // stamps overlay-content containers with
+    // `data-overlay-skip-insert`; treat that attribute as a "do
+    // not parent me" marker.
+    if let Some(el) = child.dyn_ref::<web_sys::Element>() {
+        if el.has_attribute("data-overlay-skip-insert") {
+            return;
+        }
+    }
     parent.append_child(&child).expect("append_child failed");
+}
+
+/// Batched insertion. Builds a `DocumentFragment`, appends every
+/// child to it (wasm→JS one FFI per child but no parent-side
+/// layout invalidation per call — the parent only sees one
+/// mutation when the fragment is finally appended), then appends
+/// the fragment to the parent in a single `append_child` call.
+///
+/// `DocumentFragment` is a Real Browser Trick: appending a fragment
+/// moves its children to the new parent and leaves the fragment
+/// empty, all without firing per-child mutation observers or
+/// triggering per-child layout reflow on the parent. The wasm→JS
+/// boundary cost per child is unchanged, but the parent-side
+/// browser work scales O(1) in the number of insertions rather
+/// than O(N).
+pub(crate) fn insert_many(b: &mut crate::WebBackend, parent: &mut Node, children: Vec<Node>) {
+    if children.is_empty() {
+        return;
+    }
+    // Filter out overlay-portaled nodes — they already live under
+    // `<body>` and must not be moved into the surrounding parent.
+    // See `insert` for the single-child rationale.
+    let children: Vec<Node> = children
+        .into_iter()
+        .filter(|c| {
+            c.dyn_ref::<web_sys::Element>()
+                .map(|el| !el.has_attribute("data-overlay-skip-insert"))
+                .unwrap_or(true)
+        })
+        .collect();
+    if children.is_empty() {
+        return;
+    }
+    if children.len() == 1 {
+        // No point paying for the fragment dance for a single child.
+        // The repeat path can legitimately hit this when the loop
+        // bound is 1 at runtime.
+        let mut iter = children.into_iter();
+        parent
+            .append_child(&iter.next().unwrap())
+            .expect("append_child failed");
+        return;
+    }
+    let frag = b
+        .doc
+        .create_document_fragment()
+        .unchecked_into::<Node>();
+    for child in children {
+        frag.append_child(&child).expect("append_child to fragment failed");
+    }
+    parent.append_child(&frag).expect("append fragment to parent failed");
 }
 
 pub(crate) fn clear_children(node: &Node) {

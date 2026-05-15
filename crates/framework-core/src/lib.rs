@@ -282,6 +282,7 @@ pub enum RefFill {
     Graphics(Box<dyn FnOnce(primitives::graphics::GraphicsHandle)>),
     Navigator(Box<dyn FnOnce(primitives::navigator::NavigatorHandle)>),
     Link(Box<dyn FnOnce(primitives::link::LinkHandle)>),
+    Overlay(Box<dyn FnOnce(primitives::overlay::OverlayHandle)>),
 }
 
 /// Primitives are the structural skeleton of the UI. Every primitive
@@ -471,6 +472,23 @@ pub enum Primitive {
         build: Box<dyn Fn(&dyn Any) -> Primitive>,
         style: Option<StyleSource>,
     },
+    /// Bulk children: build `count` rows from `row_builder(i)` and
+    /// insert them in one batch. The build walker uses this to
+    /// collapse `for i in 0..n { ... }` lowerings — instead of
+    /// walking N child primitives and calling `insert()` N times,
+    /// the backend gets ONE `insert_many` call with all the row
+    /// nodes preassembled.
+    ///
+    /// On web this maps to a `DocumentFragment`: append each row
+    /// to the fragment, then append the fragment to the parent
+    /// view in a single FFI call. Future optimization: detect that
+    /// rows are structurally identical and use `cloneNode` to
+    /// build them, which collapses per-row `createElement` calls
+    /// into one `cloneNode` each.
+    Repeat {
+        count: usize,
+        row_builder: Box<dyn Fn(usize) -> Primitive>,
+    },
     /// Declarative navigation. Wraps content; activation dispatches
     /// a `NavCommand` against an ambient navigator captured at
     /// construction time. See [`primitives::link`] for the surface
@@ -493,6 +511,41 @@ pub enum Primitive {
         /// `None` ⇒ no navigator was active and activation silently
         /// no-ops (matches handle-before-build posture).
         target: Option<Rc<primitives::navigator::NavigatorControl>>,
+        style: Option<StyleSource>,
+        ref_fill: Option<RefFill>,
+    },
+    /// Overlay — a floating subtree rendered above the rest of the
+    /// UI, escaping the parent's layout/clipping. Used for modals,
+    /// popovers, tooltips, dropdowns, drawers, context menus.
+    ///
+    /// The host owns the open/close state — typically a `Signal<bool>`
+    /// driving a surrounding `when(...)` or `if` inside `ui!`.
+    /// Mounting the primitive opens the overlay; unmounting closes
+    /// it. Backends ignore the primitive's position in the normal
+    /// layout flow; they render the children at the location
+    /// dictated by `anchor` instead.
+    ///
+    /// See [`primitives::overlay`] for the placement, anchoring,
+    /// backdrop, and dismiss model.
+    Overlay {
+        children: Vec<Primitive>,
+        anchor: primitives::overlay::OverlayAnchor,
+        backdrop: primitives::overlay::BackdropMode,
+        /// Optional stylesheet applied to the backdrop / scrim
+        /// layer. Independent from `style` (which applies to the
+        /// overlay content container).
+        backdrop_style: Option<StyleSource>,
+        /// Fired when the platform requests dismissal (Escape, back
+        /// gesture, click-outside on a `Dismiss` backdrop). Hosts
+        /// wire this to flip their open-state signal; the framework
+        /// doesn't auto-tear-down — reactive state is the source of
+        /// truth.
+        on_dismiss: Option<Rc<dyn Fn()>>,
+        /// When `true`, the backend confines keyboard / accessibility
+        /// focus inside the overlay subtree until it closes. Default
+        /// `true` for modals; set `false` for non-modal popovers and
+        /// tooltips.
+        trap_focus: bool,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
     },
@@ -558,11 +611,20 @@ impl Primitive {
             | Primitive::Graphics { style, .. }
             | Primitive::When { style, .. }
             | Primitive::Switch { style, .. }
-            | Primitive::Link { style, .. } => {
+            | Primitive::Link { style, .. }
+            | Primitive::Overlay { style, .. } => {
                 *style = Some(src);
             }
             Primitive::Navigator(nav) => {
                 nav.style = Some(src);
+            }
+            Primitive::Repeat { .. } => {
+                // Repeat is a children-list primitive; styling
+                // doesn't apply at this level. The caller should
+                // style the surrounding View/ScrollView instead.
+                // No-op (we ignore the style) so the surrounding
+                // `.with_style(...)` builder pattern doesn't panic
+                // when a macro emits it unconditionally.
             }
         }
         self
@@ -1130,10 +1192,7 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
         }
         Primitive::ScrollView { children, horizontal, style, ref_fill } => {
             let mut n = time_backend_create(pkind!(ScrollView), || backend.borrow_mut().create_scroll_view(horizontal));
-            for child in children {
-                let child_node = build(backend, child);
-                backend.borrow_mut().insert(&mut n, child_node);
-            }
+            insert_children(backend, &mut n, children);
             if let Some(s) = style {
                 attach_style(backend, &n, s);
             }
@@ -1374,10 +1433,7 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
             // backend is responsible for making the container
             // tappable / clickable as a whole; children are just
             // visual content.
-            for child in children {
-                let child_node = build(backend, child);
-                backend.borrow_mut().insert(&mut n, child_node);
-            }
+            insert_children(backend, &mut n, children);
             if let Some(s) = style {
                 attach_style(backend, &n, s);
             }
@@ -1386,6 +1442,99 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
                 fill(handle);
             }
             n
+        }
+        Primitive::Overlay {
+            children,
+            anchor,
+            backdrop,
+            backdrop_style,
+            on_dismiss,
+            trap_focus,
+            style,
+            ref_fill,
+        } => {
+            // Hand the platform-side floating layer everything it
+            // needs to position itself + wire system dismissal at
+            // creation time. The framework drives mount/unmount via
+            // the surrounding scope (the host's open-state signal
+            // flipping a `when` triggers our release wrapper);
+            // backends don't have to manage the open state
+            // themselves.
+            let dismiss_for_backend = on_dismiss.clone();
+            let mut n = time_backend_create(pkind!(Overlay), || {
+                backend.borrow_mut().create_overlay(
+                    anchor,
+                    backdrop,
+                    dismiss_for_backend,
+                    trap_focus,
+                )
+            });
+
+            // Children mount INTO the overlay node, not the
+            // surrounding parent — backends keep the floating
+            // layer's content tree rooted at the portal/dialog/
+            // window-level subview.
+            insert_children(backend, &mut n, children);
+
+            // `style` and `backdrop_style` are independent slots.
+            // The first targets the overlay's content container;
+            // the second targets the scrim. Backdrop style runs
+            // through `apply_overlay_backdrop_style` rather than the
+            // shared `apply_style` path because it lives on a
+            // different DOM/native node and has no interaction-state
+            // machinery (no hover/press on a scrim).
+            if let Some(s) = style {
+                attach_style(backend, &n, s);
+            }
+            if let Some(bs) = backdrop_style {
+                let backend_clone = backend.clone();
+                let node_for_backdrop = n.clone();
+                let _e = Effect::new(move || {
+                    let app = match &bs {
+                        StyleSource::Static(a) => a.clone(),
+                        StyleSource::Reactive(f) => f(),
+                    };
+                    let resolved = style::resolve(&app);
+                    backend_clone
+                        .borrow_mut()
+                        .apply_overlay_backdrop_style(&node_for_backdrop, &resolved);
+                });
+            }
+
+            if let Some(RefFill::Overlay(fill)) = ref_fill {
+                let handle = backend.borrow().make_overlay_handle(&n);
+                fill(handle);
+            }
+
+            // RAII cleanup: when the surrounding scope drops (host
+            // flipped its open signal → `when` rebuilt → this scope
+            // drops), the backend tears down its floating layer.
+            // Same pattern as Virtualizer / Graphics / Navigator.
+            let cleanup = OverlayHandleCleanup {
+                backend: backend.clone(),
+                node: n.clone(),
+            };
+            let _cleanup_effect = Effect::new(move || {
+                // Touch the cleanup so it gets owned by this
+                // effect's scope. The effect body itself does no
+                // work; the value's `Drop` fires on scope teardown.
+                let _ = &cleanup;
+            });
+
+            n
+        }
+        Primitive::Repeat { .. } => {
+            // `Repeat` represents N sibling nodes, not a single
+            // node. It can only appear inside a parent's children
+            // list, where `insert_children` expands it inline.
+            // Reaching this arm means a `Repeat` was used outside
+            // a children context — author or macro bug.
+            panic!(
+                "Primitive::Repeat encountered as a standalone subtree root. \
+                 Repeat is a children-list primitive (used for `for` loops \
+                 inside `ui!`); it cannot be the result of a `build()` call \
+                 on its own. Wrap it in a View / ScrollView / fragment."
+            );
         }
     };
 
@@ -1443,6 +1592,12 @@ fn debug_kind_of(node: &Primitive) -> debug::PrimitiveKind {
         Primitive::When { .. } => PrimitiveKind::When,
         Primitive::Switch { .. } => PrimitiveKind::Switch,
         Primitive::Link { .. } => PrimitiveKind::Link,
+        Primitive::Overlay { .. } => PrimitiveKind::Overlay,
+        // Repeat is expanded into siblings by `insert_children`
+        // and never reaches the build walker as a standalone
+        // subtree, so this arm is dead in practice. Tag as View
+        // to keep the debug timing breakdown defined.
+        Primitive::Repeat { .. } => PrimitiveKind::View,
     }
 }
 
@@ -1484,11 +1639,48 @@ fn build_view<B: Backend + 'static>(
     children: Vec<Primitive>,
 ) -> B::Node {
     let mut parent = time_backend_create(pkind!(View), || backend.borrow_mut().create_view());
-    for child in children {
-        let child_node = build(backend, child);
-        backend.borrow_mut().insert(&mut parent, child_node);
-    }
+    insert_children(backend, &mut parent, children);
     parent
+}
+
+/// Walk a children vec and append each child to `parent`. Expands
+/// `Primitive::Repeat` inline: instead of `count` individual `insert`
+/// calls, builds all `count` child nodes first and hands them to the
+/// backend's `insert_many` for batched DOM insertion (typically via
+/// a `DocumentFragment` on web). For non-Repeat children this is the
+/// same `build + insert` loop as before.
+///
+/// Why expand Repeat here and not as a regular Primitive in the
+/// match: Repeat doesn't correspond to a single backend node — it
+/// stands for N sibling nodes. So it can only appear inside a
+/// children list, never as the root of a subtree.
+fn insert_children<B: Backend + 'static>(
+    backend: &Rc<RefCell<B>>,
+    parent: &mut B::Node,
+    children: Vec<Primitive>,
+) {
+    for child in children {
+        match child {
+            Primitive::Repeat { count, row_builder } => {
+                // Build every row first, then hand the lot to the
+                // backend for one batched insert. Building eagerly
+                // means each row's own subtree may have done its own
+                // backend FFI calls (createElement etc.) — those
+                // can't be batched further at this layer, but the
+                // *parent insert* is.
+                let mut rows: Vec<B::Node> = Vec::with_capacity(count);
+                for i in 0..count {
+                    let row_prim = row_builder(i);
+                    rows.push(build(backend, row_prim));
+                }
+                backend.borrow_mut().insert_many(parent, rows);
+            }
+            other => {
+                let child_node = build(backend, other);
+                backend.borrow_mut().insert(parent, child_node);
+            }
+        }
+    }
 }
 
 /// RAII wrapper that calls `Backend::on_node_unstyled` when dropped.
@@ -1696,6 +1888,30 @@ struct NavigatorHandleCleanup<B: Backend + 'static> {
 impl<B: Backend + 'static> Drop for NavigatorHandleCleanup<B> {
     fn drop(&mut self) {
         self.backend.borrow_mut().release_navigator(&self.node);
+    }
+}
+
+/// RAII wrapper that calls `Backend::release_overlay` when dropped.
+/// Installed unconditionally per Overlay primitive by a dedicated
+/// `Effect` in the build walker. When the surrounding scope drops —
+/// host's open-state signal flips, `when` rebuilds the surrounding
+/// branch, this scope drops — the backend tears down its floating
+/// layer (detaches the portal node, removes Escape/back listeners,
+/// drops the wasm-bindgen / JNI closure handles wired to system
+/// dismiss events).
+///
+/// Without this, browser-queued dismissal events or anchor-tracking
+/// observers firing after the scope dropped would invoke Rust
+/// callbacks against freed `Signal` / `Effect` slots — same failure
+/// mode `release_virtualizer` was added to prevent.
+struct OverlayHandleCleanup<B: Backend + 'static> {
+    backend: Rc<RefCell<B>>,
+    node: B::Node,
+}
+
+impl<B: Backend + 'static> Drop for OverlayHandleCleanup<B> {
+    fn drop(&mut self) {
+        self.backend.borrow_mut().release_overlay(&self.node);
     }
 }
 

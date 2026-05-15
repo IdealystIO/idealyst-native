@@ -148,6 +148,22 @@ pub struct WebBackend {
     /// unchanged, so insert+delete are both O(1) regardless of how
     /// many rules are live.
     pub(crate) free_rule_indices: Vec<u32>,
+    /// Per-overlay state, keyed by the `data-overlay-id` attribute
+    /// stamped on the portal root. Holds the wasm-bindgen `Closure`
+    /// handles wired to dismiss events (Escape key, scrim click) so
+    /// they stay alive while the overlay is mounted; dropping the
+    /// instance entry in `release_overlay` is what frees the
+    /// JS-side closures and prevents late-firing events from
+    /// reaching a freed `Signal` slot.
+    pub(crate) overlay_instances: primitives::overlay::OverlayInstances,
+    /// Monotonic id counter for overlays. Same pattern as
+    /// `next_navigator_id` — stamped as `data-overlay-id` on the
+    /// portal root.
+    pub(crate) next_overlay_id: u32,
+    /// Has the (currently-empty) global overlay CSS been injected?
+    /// Reserved for future focus-trap rules; the flag exists now so
+    /// the injection step is idempotent.
+    pub(crate) overlay_css_injected: bool,
 }
 
 /// Diagnostic snapshot returned by [`WebBackend::debug_counts`].
@@ -213,6 +229,9 @@ impl WebBackend {
             next_node_id: 0,
             node_ids: HashMap::new(),
             free_rule_indices: Vec::new(),
+            overlay_instances: HashMap::new(),
+            next_overlay_id: 0,
+            overlay_css_injected: false,
         }
     }
 
@@ -270,6 +289,10 @@ impl Backend for WebBackend {
 
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
         primitives::view::insert(parent, child)
+    }
+
+    fn insert_many(&mut self, parent: &mut Self::Node, children: Vec<Self::Node>) {
+        primitives::view::insert_many(self, parent, children)
     }
 
     fn update_text(&mut self, node: &Self::Node, content: &str) {
@@ -422,6 +445,35 @@ impl Backend for WebBackend {
         node: &Self::Node,
     ) -> framework_core::primitives::link::LinkHandle {
         primitives::link::make_handle(node)
+    }
+
+    fn create_overlay(
+        &mut self,
+        anchor: framework_core::primitives::overlay::OverlayAnchor,
+        backdrop: framework_core::primitives::overlay::BackdropMode,
+        on_dismiss: Option<Rc<dyn Fn()>>,
+        trap_focus: bool,
+    ) -> Self::Node {
+        primitives::overlay::create(self, anchor, backdrop, on_dismiss, trap_focus)
+    }
+
+    fn apply_overlay_backdrop_style(
+        &mut self,
+        node: &Self::Node,
+        style: &Rc<StyleRules>,
+    ) {
+        primitives::overlay::apply_backdrop_style(self, node, style)
+    }
+
+    fn release_overlay(&mut self, node: &Self::Node) {
+        primitives::overlay::release(self, node)
+    }
+
+    fn make_overlay_handle(
+        &self,
+        node: &Self::Node,
+    ) -> framework_core::primitives::overlay::OverlayHandle {
+        primitives::overlay::make_handle(node)
     }
 
     fn clear_children(&mut self, node: &Self::Node) {

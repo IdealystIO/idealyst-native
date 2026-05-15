@@ -16,6 +16,7 @@ pub mod graphics;
 pub mod image;
 pub mod link;
 pub mod navigator;
+pub mod overlay;
 pub mod scroll_view;
 pub mod slider;
 pub mod text_input;

@@ -57,6 +57,7 @@ pub enum PrimitiveKind {
     When,
     Switch,
     Link,
+    Overlay,
 }
 
 /// One recorded telemetry event. `at_us` is monotonic microseconds

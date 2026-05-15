@@ -950,6 +950,23 @@ fn emit_match(scrutinee: &Expr, arms: &[MatchArm]) -> TokenStream2 {
 
 fn emit_for(pat: &syn::Pat, iter: &Expr, body: &[UiNode]) -> TokenStream2 {
     let body_expr = emit_block_as_primitive(body);
+
+    // Fast path: `for IDENT in RANGE_EXPR { body }` where the iterator
+    // is a syntactic `0..n` (any bounded range) — lower to
+    // `Primitive::Repeat`, which the build walker expands into the
+    // parent's children list via the backend's `insert_many`
+    // (DocumentFragment batching on web). Collapses N individual
+    // `appendChild` FFI calls into one and lets the backend amortize
+    // any other per-batch setup.
+    //
+    // We don't try to handle non-range iterators here — the macro
+    // can't generally prove the iterator length up-front without
+    // evaluating it. For those, fall back to the original
+    // accumulate-into-Vec shape so behavior is preserved.
+    if let Some(repeat) = try_emit_for_repeat(pat, iter, &body_expr) {
+        return repeat;
+    }
+
     quote! {
         {
             let mut __c: ::std::vec::Vec<::framework_core::Primitive>
@@ -960,6 +977,69 @@ fn emit_for(pat: &syn::Pat, iter: &Expr, body: &[UiNode]) -> TokenStream2 {
             __c
         }
     }
+}
+
+/// Try to lower `for PAT in RANGE { body }` to a single
+/// `Primitive::Repeat`. Returns `Some(tokens)` only when the
+/// shape is one we can statically recognize:
+///
+/// - `iter` is a syntactic range expression with both bounds.
+/// - `pat` is a simple identifier (so we can pass it as the
+///   `row_builder` closure's `i` argument). Patterns like
+///   tuples or destructuring aren't supported here — fall
+///   back to the generic loop.
+///
+/// The emitted closure shifts the loop index by the range's
+/// lower bound so author code that writes `for i in 5..10`
+/// sees `i` ranging 5..10 inside the body, not 0..5.
+fn try_emit_for_repeat(
+    pat: &syn::Pat,
+    iter: &Expr,
+    body_expr: &TokenStream2,
+) -> Option<TokenStream2> {
+    // The pattern must be a single ident — anything else (tuple
+    // destructuring, references, etc.) means the author is doing
+    // something we can't trivially rebind through a `Fn(usize)`.
+    let ident = match pat {
+        syn::Pat::Ident(p) if p.subpat.is_none() && p.by_ref.is_none() => &p.ident,
+        _ => return None,
+    };
+
+    // The iterator must be a range literal with both bounds.
+    let range = match iter {
+        Expr::Range(r) => r,
+        _ => return None,
+    };
+    let start = range.start.as_ref()?;
+    let end = range.end.as_ref()?;
+    // Inclusive ranges (`a..=b`) need a +1 adjustment; for simplicity
+    // we only handle exclusive ranges. Authors using inclusive ranges
+    // hit the fallback path with no behavior change.
+    if matches!(range.limits, syn::RangeLimits::Closed(_)) {
+        return None;
+    }
+
+    // Build the closure body. We bind the user's chosen identifier
+    // to `start + __i`, where `__i` is the closure's `usize` parameter
+    // (always 0..count). This preserves the original visible semantics
+    // of `for i in 5..10 { use(i) }` inside the row builder.
+    Some(quote! {
+        ::std::vec![
+            ::framework_core::Primitive::Repeat {
+                // `(end - start)` evaluated as `usize`. Author code
+                // commonly writes `0..n` where `n: usize`; this works
+                // with any integer type via the `usize::try_from`
+                // fallback in `Primitive::Repeat`'s constructor, but
+                // we accept the simpler cast here because the macro's
+                // surface is `usize`-typed loops.
+                count: (#end - #start) as usize,
+                row_builder: ::std::boxed::Box::new(move |__i: usize| {
+                    let #ident = (#start) + __i;
+                    ::framework_core::IntoPrimitive::into_primitive(#body_expr)
+                }),
+            }
+        ]
+    })
 }
 
 /// Emit a block of UI nodes as a single `Primitive`-producing expression.

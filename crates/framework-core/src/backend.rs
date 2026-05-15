@@ -68,6 +68,20 @@ pub trait Backend {
     fn create_text(&mut self, content: &str) -> Self::Node;
     fn create_button(&mut self, label: &str, on_click: Rc<dyn Fn()>) -> Self::Node;
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node);
+
+    /// Batched insertion of many siblings into `parent`. Default
+    /// implementation falls back to N `insert` calls — backends
+    /// override this to collapse N FFI crossings into one (e.g.
+    /// web uses a `DocumentFragment` to push 10 000 children in
+    /// a single `appendChild` call). Called by the build walker
+    /// when it expands a `Primitive::Repeat` produced by `ui!`'s
+    /// `for` lowering.
+    fn insert_many(&mut self, parent: &mut Self::Node, children: Vec<Self::Node>) {
+        for child in children {
+            self.insert(parent, child);
+        }
+    }
+
     fn update_text(&mut self, node: &Self::Node, content: &str);
 
     /// Create an image node with the initial URL. The framework
@@ -555,6 +569,82 @@ pub trait Backend {
         primitives::navigator::NavigatorHandle::new(Rc::new(()), &NoopNavigatorOps)
     }
 
+    /// Create an overlay — a floating subtree rendered above the
+    /// rest of the UI. Backends stand up their platform-native
+    /// presentation:
+    ///
+    /// - **Web**: append a portal `<div>` to `<body>` (so it
+    ///   escapes parent overflow/transform stacking contexts),
+    ///   apply `position: fixed`, wire Escape-key + click-on-scrim
+    ///   handlers.
+    /// - **iOS**: add a window-level `UIView` to the active
+    ///   `UIWindow`, or `presentViewController:` for full-screen
+    ///   modals.
+    /// - **Android**: render through `Dialog` (for modals) or
+    ///   `PopupWindow` (for anchored popovers); wire the activity's
+    ///   `OnBackPressedDispatcher` to fire `on_dismiss`.
+    ///
+    /// The `on_dismiss` closure is invoked when the platform fires
+    /// a dismissal event the backend recognizes — Escape, back
+    /// gesture, click on `Dismiss` backdrop. The framework does NOT
+    /// auto-unmount on dismissal; the host is expected to flip its
+    /// open-state signal in response, which causes the surrounding
+    /// `when` to drop the overlay's scope and trigger `release_overlay`.
+    ///
+    /// Default: panic. Backends that don't implement overlays
+    /// shouldn't have authors trying to mount them.
+    #[allow(unused_variables)]
+    fn create_overlay(
+        &mut self,
+        anchor: primitives::overlay::OverlayAnchor,
+        backdrop: primitives::overlay::BackdropMode,
+        on_dismiss: Option<Rc<dyn Fn()>>,
+        trap_focus: bool,
+    ) -> Self::Node {
+        unimplemented!("create_overlay not implemented for this backend")
+    }
+
+    /// Apply a resolved style to an overlay's backdrop / scrim
+    /// layer. Independent of the overlay's content style. Backends
+    /// that don't render a backdrop (or that don't expose its
+    /// styling) can leave the default no-op.
+    #[allow(unused_variables)]
+    fn apply_overlay_backdrop_style(
+        &mut self,
+        node: &Self::Node,
+        style: &Rc<StyleRules>,
+    ) {
+        // default: no-op
+    }
+
+    /// Tear down an overlay's backend-side state. The framework
+    /// calls this when the primitive's enclosing scope drops —
+    /// host's open-state signal flips and the surrounding `when`
+    /// branch rebuilds.
+    ///
+    /// Backends should: detach the portal/dialog from its host,
+    /// remove Escape/back/scroll/resize listeners, drop the
+    /// wasm-bindgen / JNI closure handles wired to the dismiss
+    /// callback, and remove any per-node instance entry.
+    ///
+    /// Default impl is a no-op for backends that don't yet
+    /// implement Overlay.
+    #[allow(unused_variables)]
+    fn release_overlay(&mut self, node: &Self::Node) {
+        // default no-op
+    }
+
+    /// Default no-op handle for overlays. Backends with imperative
+    /// overlay APIs (future: `present()` / `dismiss()` /
+    /// `set_anchor()`) override to return a real handle.
+    #[allow(unused_variables)]
+    fn make_overlay_handle(
+        &self,
+        node: &Self::Node,
+    ) -> primitives::overlay::OverlayHandle {
+        primitives::overlay::OverlayHandle::new(Rc::new(()), &NoopOverlayOps)
+    }
+
     /// Create a navigable container — the `Link` primitive.
     ///
     /// Backends are responsible for:
@@ -649,6 +739,9 @@ struct NoopLinkOps;
 impl primitives::link::LinkOps for NoopLinkOps {
     fn activate(&self, _node: &dyn Any) {}
 }
+
+struct NoopOverlayOps;
+impl primitives::overlay::OverlayOps for NoopOverlayOps {}
 
 struct NoopButtonOps;
 impl ButtonOps for NoopButtonOps {
