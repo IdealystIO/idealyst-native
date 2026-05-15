@@ -11,12 +11,31 @@ crate-type = ["staticlib", "rlib"]
 framework-core = { workspace = true }
 
 [target.'cfg(target_os = "ios")'.dependencies]
+block2 = "0.5"
 objc2 = "0.5"
-objc2-foundation = { version = "0.2", features = ["NSString", "NSArray", "NSEnumerator"] }
+objc2-foundation = { version = "0.2", features = [
+    "NSString",
+    "NSArray",
+    "NSEnumerator",
+    "NSObject",
+] }
 objc2-ui-kit = { version = "0.2", features = [
     "UIResponder",
     "UIView",
     "UILabel",
+    "UIButton",
+    "UIControl",
+    "UITextField",
+    "UISwitch",
+    "UISlider",
+    "UIScrollView",
+    "UIActivityIndicatorView",
+    "UIStackView",
     "UIViewController",
     "UINavigationController",
+    "UIColor",
+    "UIGestureRecognizer",
+    "UITapGestureRecognizer",
+    "UITextInputTraits",
 ] }
+raw-window-handle = "0.6"

@@ -1,2 +1,4 @@
 target/
 .playwright-mcp/
+.DS_Store
+/examples/hello-ios/ios/build

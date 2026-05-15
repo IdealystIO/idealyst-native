@@ -40,9 +40,14 @@ mod gradient;
 #[path = "gradient_android.rs"]
 mod gradient;
 
+#[cfg(all(feature = "graphics", target_os = "ios"))]
+#[path = "gradient_ios.rs"]
+mod gradient;
+
 #[cfg(not(any(
     all(feature = "graphics", target_arch = "wasm32"),
     all(feature = "graphics", target_os = "android"),
+    all(feature = "graphics", target_os = "ios"),
 )))]
 mod gradient {
     use framework_core::{ui, Primitive};
@@ -1285,58 +1290,37 @@ pub fn app() -> Primitive {
     let is_dark = signal!(false);
     let nav: Ref<NavigatorHandle> = Ref::new();
 
+    // The navigator is the root primitive. Each screen owns its own
+    // `page_style()` wrapper with padding/background, so no outer
+    // View is needed. On native (iOS, Android) the navigator maps
+    // to the platform nav container (UINavigationController /
+    // FragmentManager) and should be full-bleed; on web the
+    // `.layout()` chrome provides the surrounding page structure.
     ui! {
-        View(style = page_style()) {
-            // No persistent header — each screen renders its own.
-            // The navigator owns the screen-rendering substrate; it
-            // declares every route up-front via `.screen(...)` and
-            // exposes an imperative handle through `.bind(nav)`. On
-            // web the navigator uses `history.pushState` + popstate
-            // so URLs and the back button work; on native it
-            // pushes/pops fragments (Android) or view controllers
-            // (iOS). Routes are typed: `DETAIL_ROUTE` takes
-            // `DetailParams`, so `nav.push(&DETAIL_ROUTE, ...)` is a
-            // compile-time check that the call site supplies the
-            // right param type.
-            //
-            // Each `.screen(...)` closure runs every time that
-            // screen is mounted — push, replace, deep link, etc.
-            // Inside each closure we re-enter `ui!` so the screen
-            // builder reads as plain UI; the outer `ui!` doesn't
-            // expand the body of closures, so calls like
-            // `home!(...)` would otherwise have to be written raw.
-            { Navigator::new(&HOME_ROUTE)
-                .screen(HOME_ROUTE, move |_| {
-                    let nav = nav;
-                    let is_dark = is_dark;
-                    ui! { Home(nav = nav, is_dark = is_dark) }
-                })
-                .screen(SHOWCASE_ROUTE, move |_| {
-                    let nav = nav;
-                    ui! { Showcase(nav = nav) }
-                })
-                .screen(PERF_ROUTE, move |_| {
-                    let nav = nav;
-                    ui! { Performance(nav = nav) }
-                })
-                .screen(LISTS_ROUTE, move |_| {
-                    let nav = nav;
-                    ui! { Lists(nav = nav) }
-                })
-                .screen(DETAIL_ROUTE, move |params: DetailParams| {
-                    let nav = nav;
-                    let id = params.id;
-                    ui! { Detail(id = id, nav = nav) }
-                })
-                // Web-only layout chrome. Native backends (iOS,
-                // Android) ignore `.layout()` entirely — they use
-                // UINavigationController / FragmentManager nav
-                // chrome instead. The closure receives reactive
-                // signals for the current route, depth, and a
-                // back-button activator; embed `props.outlet` to
-                // tell the navigator where the active screen goes.
-                .layout(web_layout_with_theme(is_dark))
-                .bind(nav) }
-        }
+        { Navigator::new(&HOME_ROUTE)
+            .screen(HOME_ROUTE, move |_| {
+                let nav = nav;
+                let is_dark = is_dark;
+                ui! { Home(nav = nav, is_dark = is_dark) }
+            })
+            .screen(SHOWCASE_ROUTE, move |_| {
+                let nav = nav;
+                ui! { Showcase(nav = nav) }
+            })
+            .screen(PERF_ROUTE, move |_| {
+                let nav = nav;
+                ui! { Performance(nav = nav) }
+            })
+            .screen(LISTS_ROUTE, move |_| {
+                let nav = nav;
+                ui! { Lists(nav = nav) }
+            })
+            .screen(DETAIL_ROUTE, move |params: DetailParams| {
+                let nav = nav;
+                let id = params.id;
+                ui! { Detail(id = id, nav = nav) }
+            })
+            .layout(web_layout_with_theme(is_dark))
+            .bind(nav) }
     }
 }

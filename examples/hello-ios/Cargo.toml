@@ -1,0 +1,25 @@
+[package]
+name = "hello-ios"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+# `staticlib` produces the `libhello_ios.a` that Xcode links into the
+# iOS app bundle. The Swift host calls the C-exported `ios_main` entry
+# point from the ViewController.
+crate-type = ["staticlib"]
+
+[dependencies]
+framework-core = { workspace = true }
+hello = { path = "../hello" }
+
+[features]
+default = ["graphics"]
+graphics = ["hello/graphics"]
+
+[target.'cfg(target_os = "ios")'.dependencies]
+backend-ios = { workspace = true }
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSString"] }
+objc2-ui-kit = { version = "0.2", features = ["UIResponder", "UIView"] }

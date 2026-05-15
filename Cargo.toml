@@ -11,6 +11,7 @@ members = [
     "examples/hello",
     "examples/hello-web",
     "examples/hello-android",
+    "examples/hello-ios",
     "arena/idealyst-native/wasm",
 ]
 

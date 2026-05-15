@@ -42,3 +42,13 @@ wasm-bindgen-futures = { version = "0.4" }
 wgpu = { version = "29", default-features = false, features = ["vulkan", "gles", "wgsl"], optional = true }
 pollster = "0.4"
 log = "0.4"
+
+# iOS build of wgpu: Metal backend. `pollster` for blocking on
+# async device init from the render thread.
+[target.'cfg(target_os = "ios")'.dependencies]
+wgpu = { version = "29", default-features = false, features = ["metal", "wgsl"], optional = true }
+pollster = "0.4"
+log = "0.4"
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSString"] }
+block2 = "0.5"
