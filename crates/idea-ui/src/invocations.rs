@@ -257,3 +257,161 @@ macro_rules! badge {
         })
     };
 }
+
+// =============================================================================
+// spacer / center — layout helpers
+// =============================================================================
+
+#[macro_export]
+#[doc(hidden)]
+macro_rules! spacer {
+    () => {
+        $crate::components::spacer::spacer(
+            &<$crate::components::spacer::SpacerProps as ::core::default::Default>::default(),
+        )
+    };
+    ( $( $field:ident = $value:expr ),+ $(,)? ) => {
+        $crate::components::spacer::spacer(&$crate::components::spacer::SpacerProps {
+            $( $field: $value, )+
+            ..<$crate::components::spacer::SpacerProps as ::core::default::Default>::default()
+        })
+    };
+}
+
+#[macro_export]
+#[doc(hidden)]
+macro_rules! center {
+    () => {
+        $crate::components::center::center(
+            <$crate::components::center::CenterProps as ::core::default::Default>::default(),
+        )
+    };
+    ( $( $field:ident = $value:expr ),+ $(,)? ) => {
+        $crate::components::center::center($crate::components::center::CenterProps {
+            $( $field: $value, )+
+            ..<$crate::components::center::CenterProps as ::core::default::Default>::default()
+        })
+    };
+}
+
+// =============================================================================
+// iconbutton — by-ref
+// =============================================================================
+
+#[macro_export]
+#[doc(hidden)]
+macro_rules! iconbutton {
+    () => {
+        $crate::components::icon_button::icon_button(
+            &<$crate::components::icon_button::IconButtonProps as ::core::default::Default>::default(),
+        )
+    };
+    ( $( $field:ident = $value:expr ),+ $(,)? ) => {
+        $crate::components::icon_button::icon_button(
+            &$crate::components::icon_button::IconButtonProps {
+                $( $field: $value, )+
+                ..<$crate::components::icon_button::IconButtonProps as ::core::default::Default>::default()
+            }
+        )
+    };
+}
+
+// =============================================================================
+// avatar — by-ref
+// =============================================================================
+
+#[macro_export]
+#[doc(hidden)]
+macro_rules! avatar {
+    () => {
+        $crate::components::avatar::avatar(
+            &<$crate::components::avatar::AvatarProps as ::core::default::Default>::default(),
+        )
+    };
+    ( $( $field:ident = $value:expr ),+ $(,)? ) => {
+        $crate::components::avatar::avatar(&$crate::components::avatar::AvatarProps {
+            $( $field: $value, )+
+            ..<$crate::components::avatar::AvatarProps as ::core::default::Default>::default()
+        })
+    };
+}
+
+// =============================================================================
+// tag — by-ref
+// =============================================================================
+
+#[macro_export]
+#[doc(hidden)]
+macro_rules! tag {
+    () => {
+        $crate::components::tag::tag(
+            &<$crate::components::tag::TagProps as ::core::default::Default>::default(),
+        )
+    };
+    ( $( $field:ident = $value:expr ),+ $(,)? ) => {
+        $crate::components::tag::tag(&$crate::components::tag::TagProps {
+            $( $field: $value, )+
+            ..<$crate::components::tag::TagProps as ::core::default::Default>::default()
+        })
+    };
+}
+
+// =============================================================================
+// alert — by-ref
+// =============================================================================
+
+#[macro_export]
+#[doc(hidden)]
+macro_rules! alert {
+    () => {
+        $crate::components::alert::alert(
+            &<$crate::components::alert::AlertProps as ::core::default::Default>::default(),
+        )
+    };
+    ( $( $field:ident = $value:expr ),+ $(,)? ) => {
+        $crate::components::alert::alert(&$crate::components::alert::AlertProps {
+            $( $field: $value, )+
+            ..<$crate::components::alert::AlertProps as ::core::default::Default>::default()
+        })
+    };
+}
+
+// =============================================================================
+// skeleton — by-ref
+// =============================================================================
+
+#[macro_export]
+#[doc(hidden)]
+macro_rules! skeleton {
+    () => {
+        $crate::components::skeleton::skeleton(
+            &<$crate::components::skeleton::SkeletonProps as ::core::default::Default>::default(),
+        )
+    };
+    ( $( $field:ident = $value:expr ),+ $(,)? ) => {
+        $crate::components::skeleton::skeleton(&$crate::components::skeleton::SkeletonProps {
+            $( $field: $value, )+
+            ..<$crate::components::skeleton::SkeletonProps as ::core::default::Default>::default()
+        })
+    };
+}
+
+// =============================================================================
+// tabs — by-value (owns the Vec<Tab>)
+// =============================================================================
+
+#[macro_export]
+#[doc(hidden)]
+macro_rules! tabs {
+    () => {
+        $crate::components::tabs::tabs(
+            <$crate::components::tabs::TabsProps as ::core::default::Default>::default(),
+        )
+    };
+    ( $( $field:ident = $value:expr ),+ $(,)? ) => {
+        $crate::components::tabs::tabs($crate::components::tabs::TabsProps {
+            $( $field: $value, )+
+            ..<$crate::components::tabs::TabsProps as ::core::default::Default>::default()
+        })
+    };
+}

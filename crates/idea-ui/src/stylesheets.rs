@@ -412,3 +412,297 @@ stylesheet! {
         }
     }
 }
+
+// =============================================================================
+// Spacer — grow to fill.
+// =============================================================================
+
+stylesheet! {
+    pub Spacer<IdeaThemeRef> {
+        base(_t) {
+            flex_grow: 1.0,
+        }
+    }
+}
+
+// =============================================================================
+// Center — align/justify both axes.
+// =============================================================================
+
+stylesheet! {
+    pub Center<IdeaThemeRef> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+        }
+    }
+}
+
+// =============================================================================
+// IconButton — square, content-sized variant of Pressable.
+// =============================================================================
+
+stylesheet! {
+    pub IconButton<IdeaThemeRef> {
+        base(t) {
+            padding: t.spacing().sm,
+            border_radius: t.radius().pill,
+            font_size: t.typography().size_md,
+            font_weight: FontWeight::SemiBold,
+            text_align: TextAlign::Center,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+        }
+        variant size {
+            sm(t) {
+                padding: t.spacing().xs,
+                font_size: t.typography().size_sm,
+                width: t.spacing().xl,
+                height: t.spacing().xl,
+            }
+            #[default]
+            md(t) {
+                padding: t.spacing().sm,
+                font_size: t.typography().size_md,
+                width: t.spacing().xxl,
+                height: t.spacing().xxl,
+            }
+            lg(t) {
+                padding: t.spacing().md,
+                font_size: t.typography().size_lg,
+                width: 48.0,
+                height: 48.0,
+            }
+        }
+        state disabled(_t) {
+            opacity: 0.45,
+        }
+        transitions {
+            background: 150ms EaseOut,
+            color: 200ms EaseOut,
+            opacity: 200ms EaseOut,
+            border_color: 150ms EaseOut,
+        }
+    }
+}
+
+// =============================================================================
+// Avatar — circular container + text overlay.
+// =============================================================================
+
+stylesheet! {
+    pub Avatar<IdeaThemeRef> {
+        base(t) {
+            border_radius: t.radius().pill,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            overflow: framework_core::Overflow::Hidden,
+        }
+        variant size {
+            xs(_t) { width: 24.0, height: 24.0 }
+            sm(_t) { width: 32.0, height: 32.0 }
+            #[default]
+            md(_t) { width: 40.0, height: 40.0 }
+            lg(_t) { width: 56.0, height: 56.0 }
+            xl(_t) { width: 80.0, height: 80.0 }
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            color: 250ms EaseInOut,
+        }
+    }
+}
+
+stylesheet! {
+    pub AvatarText<IdeaThemeRef> {
+        base(_t) {
+            font_weight: FontWeight::SemiBold,
+            text_align: TextAlign::Center,
+            letter_spacing: 0.5,
+            text_transform: TextTransform::Uppercase,
+        }
+        variant size {
+            xs(_t) { font_size: 10.0, line_height: 24.0 }
+            sm(_t) { font_size: 12.0, line_height: 32.0 }
+            #[default]
+            md(_t) { font_size: 14.0, line_height: 40.0 }
+            lg(_t) { font_size: 20.0, line_height: 56.0 }
+            xl(_t) { font_size: 28.0, line_height: 80.0 }
+        }
+    }
+}
+
+// =============================================================================
+// Tag — pill container with optional close button.
+// =============================================================================
+
+stylesheet! {
+    pub Tag<IdeaThemeRef> {
+        base(t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            gap: Length::Px(t.spacing().xs),
+            padding_vertical: t.spacing().xs,
+            padding_horizontal: t.spacing().sm,
+            border_radius: t.radius().pill,
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            color: 250ms EaseInOut,
+        }
+    }
+}
+
+stylesheet! {
+    pub TagLabel<IdeaThemeRef> {
+        base(t) {
+            font_size: t.typography().size_sm,
+            font_weight: FontWeight::SemiBold,
+            letter_spacing: 0.3,
+        }
+    }
+}
+
+stylesheet! {
+    pub TagClose<IdeaThemeRef> {
+        base(_t) {
+            // Inherit the parent's foreground; no fill of its own.
+            background: Color("transparent".into()),
+            padding: 0.0,
+            font_size: 14.0,
+            font_weight: FontWeight::Bold,
+            text_align: TextAlign::Center,
+            line_height: 14.0,
+            width: 16.0,
+            height: 16.0,
+            border_radius: 999.0,
+        }
+        transitions {
+            background: 150ms EaseOut,
+            opacity: 150ms EaseOut,
+        }
+    }
+}
+
+// =============================================================================
+// Alert — full-width banner with title + body + dismiss.
+// =============================================================================
+
+stylesheet! {
+    pub Alert<IdeaThemeRef> {
+        base(t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::FlexStart,
+            gap: Length::Px(t.spacing().md),
+            padding: t.spacing().lg,
+            border_radius: t.radius().md,
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            color: 250ms EaseInOut,
+        }
+    }
+}
+
+stylesheet! {
+    pub AlertTitle<IdeaThemeRef> {
+        base(t) {
+            font_size: t.typography().size_md,
+            font_weight: FontWeight::SemiBold,
+            line_height: 20.0,
+        }
+    }
+}
+
+stylesheet! {
+    pub AlertBody<IdeaThemeRef> {
+        base(t) {
+            font_size: t.typography().size_sm,
+            line_height: 18.0,
+        }
+    }
+}
+
+// =============================================================================
+// Skeleton — muted placeholder block.
+// =============================================================================
+
+stylesheet! {
+    pub Skeleton<IdeaThemeRef> {
+        base(t) {
+            background: Color(t.colors().surface_alt.clone()),
+        }
+        transitions {
+            background: 250ms EaseInOut,
+        }
+    }
+}
+
+// =============================================================================
+// Tabs — horizontal tab bar + content panel.
+// =============================================================================
+//
+// `TabBar` is the row holding tab buttons. The active button gets
+// the `on` variant on the `active` axis — that styles its background
+// + foreground to look selected. `TabPanel` is the content area
+// below the bar; padding sits there, not on the bar, so the active
+// row sits flush with the bar's bottom border.
+
+stylesheet! {
+    pub TabBar<IdeaThemeRef> {
+        base(t) {
+            flex_direction: FlexDirection::Row,
+            gap: Length::Px(t.spacing().xs),
+            border_bottom_width: 1.0,
+            border_bottom_color: Color(t.colors().border.clone()),
+        }
+        transitions {
+            border_bottom_color: 250ms EaseInOut,
+        }
+    }
+}
+
+stylesheet! {
+    pub TabButton<IdeaThemeRef> {
+        base(t) {
+            background: Color("transparent".into()),
+            color: Color(t.colors().text_muted.clone()),
+            padding_vertical: t.spacing().sm,
+            padding_horizontal: t.spacing().md,
+            font_weight: FontWeight::Medium,
+            font_size: t.typography().size_md,
+            border_radius: 0.0,
+            // Bottom border draws under the active tab to mark
+            // selection; off-state is transparent so the bar's
+            // own bottom border shows through.
+            border_bottom_width: 2.0,
+            border_bottom_color: Color("transparent".into()),
+        }
+        variant active {
+            #[default]
+            off(_t) {}
+            on(t) {
+                color: Color(t.colors().text.clone()),
+                border_bottom_color: Color(t.colors().primary.clone()),
+            }
+        }
+        state hovered(t) {
+            color: Color(t.colors().text.clone()),
+        }
+        transitions {
+            color: 150ms EaseOut,
+            border_bottom_color: 200ms EaseOut,
+        }
+    }
+}
+
+stylesheet! {
+    pub TabPanel<IdeaThemeRef> {
+        base(t) {
+            padding_vertical: t.spacing().lg,
+            flex_direction: FlexDirection::Column,
+            gap: Length::Px(t.spacing().md),
+        }
+    }
+}

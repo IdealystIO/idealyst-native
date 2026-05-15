@@ -797,12 +797,24 @@ fn emit_builder(decl: &StyleSheetDecl) -> TokenStream2 {
 
         impl ::framework_core::IntoStyleSource for #name {
             fn into_style_source(self) -> ::framework_core::StyleSource {
-                ::std::boxed::Box::new(move || {
-                    let mut __app = ::framework_core::StyleApplication::new(#stylesheet_fn());
-                    #(#axis_applies)*
-                    #(#override_applies)*
-                    __app
-                })
+                // Evaluate the builder eagerly into a `StyleApplication`
+                // so the framework can route us through the static-style
+                // fast path (no per-node Effect, cohort theme reactivity).
+                //
+                // Trade-off: if any axis setter was given a closure that
+                // reads a signal (e.g. `.tone(move || current.get())`),
+                // the closure runs ONCE here at construction time and
+                // the resulting value is frozen. To get a reactive
+                // variant, the caller should pass an explicit
+                // `move || PerfRow().parity(...)` closure to
+                // `with_style` — that routes through `StyleSource::Reactive`.
+                //
+                // For the common case (variant values are plain enums),
+                // this is a strict win: no Effect allocation per node.
+                let mut __app = ::framework_core::StyleApplication::new(#stylesheet_fn());
+                #(#axis_applies)*
+                #(#override_applies)*
+                ::framework_core::StyleSource::Static(__app)
             }
         }
 

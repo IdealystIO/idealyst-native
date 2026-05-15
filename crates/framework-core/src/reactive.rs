@@ -725,12 +725,27 @@ pub(crate) struct Scope {
     signals: Vec<SignalId>,
     effects: Vec<EffectId>,
     refs: Vec<RefId>,
+    /// Boxed RAII guards adopted by the scope. Used by the
+    /// static-style path so a styled node can register a cleanup
+    /// (cohort unregister + backend on_node_unstyled) without
+    /// allocating an `Effect` slot per node — a 10k-row scope keeps
+    /// 10k guards in a tight `Vec<Box<dyn Drop>>` instead of 10k
+    /// arena effect slots + 10k subscriber-set entries.
+    guards: Vec<Box<dyn Any>>,
 }
 
 impl Scope {
     #[allow(dead_code)]
     pub(crate) fn new() -> Self {
-        Self { signals: Vec::new(), effects: Vec::new(), refs: Vec::new() }
+        Self { signals: Vec::new(), effects: Vec::new(), refs: Vec::new(), guards: Vec::new() }
+    }
+
+    /// Adopt an arbitrary RAII guard into the scope. The guard's
+    /// `Drop` impl fires when the scope drops, in the same batch as
+    /// the effect/signal drops. Used by `attach_style_static` to
+    /// hold a `StyleHandle` without allocating an Effect.
+    pub(crate) fn adopt_guard<G: 'static>(&mut self, guard: G) {
+        self.guards.push(Box::new(guard));
     }
 
     /// Adopts the given effect into this scope. The original `Effect`
@@ -765,6 +780,7 @@ impl Drop for Scope {
         let signal_ids: Vec<SignalId> = self.signals.drain(..).collect();
         let effect_ids: Vec<EffectId> = self.effects.drain(..).collect();
         let ref_ids: Vec<RefId> = self.refs.drain(..).collect();
+        let guards: Vec<Box<dyn Any>> = self.guards.drain(..).collect();
 
         let mut taken_signals: Vec<Box<dyn Any>> = Vec::new();
         let mut taken_effects: Vec<Box<dyn Any>> = Vec::new();
@@ -817,9 +833,20 @@ impl Drop for Scope {
                 PENDING_DROPS.with(|q| q.borrow_mut().extend(taken_effects));
                 schedule_pending_drain();
             }
+            // Same deferral applies to the scope's guards: they
+            // typically hold `StyleHandle`s that decref a JS-side
+            // Node on drop, which is the same kind of FFI-heavy
+            // work we're trying to keep out of the apply window.
+            if !guards.is_empty() {
+                PENDING_DROPS.with(|q| q.borrow_mut().extend(guards));
+                schedule_pending_drain();
+            }
         }
         #[cfg(not(target_arch = "wasm32"))]
-        drop(taken_effects);
+        {
+            drop(taken_effects);
+            drop(guards);
+        }
 
         drop(taken_signals);
         drop(taken_refs);
@@ -923,6 +950,25 @@ fn register_ref(id: RefId) -> bool {
     ACTIVE_SCOPE.with(|s| {
         if let Some(&top) = s.borrow().last() {
             unsafe { (*top).refs.push(id); }
+            true
+        } else {
+            false
+        }
+    })
+}
+
+/// Hands a guard to the topmost active scope. Used by the
+/// static-style path so a styled node can attach its
+/// `on_node_unstyled` + cohort-unregister cleanup without burning
+/// an arena effect slot. Returns `true` if a scope adopted the
+/// guard; `false` if there's no active scope, in which case the
+/// caller is responsible for holding the guard themselves (or
+/// dropping it immediately, which is fine for `StyleHandle` since
+/// the apply work already happened inline).
+pub(crate) fn adopt_guard_into_active_scope<G: 'static>(guard: G) -> bool {
+    ACTIVE_SCOPE.with(|s| {
+        if let Some(&top) = s.borrow().last() {
+            unsafe { (*top).adopt_guard(guard); }
             true
         } else {
             false

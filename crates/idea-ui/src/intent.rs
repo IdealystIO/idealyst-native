@@ -98,17 +98,10 @@ pub trait Intent: 'static {
     fn cache_key(&self) -> u64;
 }
 
-// Allow `Box<dyn Intent>` to itself be used as an Intent — useful for
-// component props that own a boxed intent.
-impl Intent for Box<dyn Intent> {
-    fn palette(&self, theme: &dyn IdeaTheme) -> IntentPalette {
-        (**self).palette(theme)
-    }
-    fn cache_key(&self) -> u64 {
-        (**self).cache_key()
-    }
-}
-
+// Let `Rc<dyn Intent>` itself act as an Intent — component code that
+// holds an intent in a prop already has the `Rc`, and forwarding the
+// trait through means the apply-style closure can call `.palette()`
+// on it directly without un-Rc-ing first.
 impl Intent for Rc<dyn Intent> {
     fn palette(&self, theme: &dyn IdeaTheme) -> IntentPalette {
         (**self).palette(theme)
@@ -118,15 +111,15 @@ impl Intent for Rc<dyn Intent> {
     }
 }
 
-/// Convenience for turning a marker type into a `Box<dyn Intent>` —
+/// Convenience for turning a marker type into a `Rc<dyn Intent>` —
 /// the shape component props store internally.
-pub trait IntoBoxedIntent {
-    fn into_boxed(self) -> Box<dyn Intent>;
+pub trait IntoRcIntent {
+    fn into_rc(self) -> Rc<dyn Intent>;
 }
 
-impl<I: Intent + 'static> IntoBoxedIntent for I {
-    fn into_boxed(self) -> Box<dyn Intent> {
-        Box::new(self)
+impl<I: Intent + 'static> IntoRcIntent for I {
+    fn into_rc(self) -> Rc<dyn Intent> {
+        Rc::new(self)
     }
 }
 
@@ -262,4 +255,45 @@ impl Intent for Danger {
         }
     }
     fn cache_key(&self) -> u64 { KEY_DANGER }
+}
+
+// =============================================================================
+// Applying a palette to a StyleApplication
+// =============================================================================
+
+/// Merge an [`IntentPalette`] into a [`framework_core::StyleApplication`]'s
+/// overrides. The palette's background → `override_background`,
+/// foreground → `override_color`, and (if `palette.border` is set)
+/// a 1px border on all four sides with the palette's border color.
+///
+/// State-aware intent shades (hover, pressed) live on `IntentPalette`
+/// but aren't applied today — the framework's `StyleApplication`
+/// override mechanism is state-agnostic. A future `state_overrides`
+/// field would unlock per-state intent shades; for now intents apply
+/// a single static coloring and the stylesheet's `state hovered/pressed`
+/// blocks (if any) still drive interaction feedback.
+pub fn apply_palette(
+    mut style: framework_core::StyleApplication,
+    palette: &IntentPalette,
+) -> framework_core::StyleApplication {
+    style = style
+        .override_background(palette.background.clone())
+        .override_color(palette.foreground.clone());
+
+    if let Some(border) = &palette.border {
+        // No `override_border_color` builder yet — poke `overrides`
+        // directly. (Framework follow-up: add per-side and
+        // shorthand builders for border color + width.)
+        let r = &mut style.overrides;
+        r.border_top_color = Some(border.clone());
+        r.border_right_color = Some(border.clone());
+        r.border_bottom_color = Some(border.clone());
+        r.border_left_color = Some(border.clone());
+        r.border_top_width = Some(1.0);
+        r.border_right_width = Some(1.0);
+        r.border_bottom_width = Some(1.0);
+        r.border_left_width = Some(1.0);
+    }
+
+    style
 }

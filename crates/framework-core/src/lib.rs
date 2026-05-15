@@ -21,11 +21,11 @@ pub use scheduling::{
 
 use std::any::Any;
 pub use style::{
-    derived, install_theme, pregenerate_for_theme, resolve as resolve_style, set_theme,
-    AlignContent, AlignItems, AlignSelf, Color, Derive, Easing, FlexDirection, FlexWrap, FontStyle,
-    FontWeight, IntoOverrideSource, IntoVariantSource, JustifyContent, Length, Overflow, Position,
-    Shadow, StyleApplication, StyleRules, StyleSheet, TextAlign, TextTransform, Transform,
-    Transition, VariantAxis, VariantEnum, VariantSet, VariantValue,
+    active_theme, derived, install_theme, pregenerate_for_theme, resolve as resolve_style,
+    set_theme, AlignContent, AlignItems, AlignSelf, Color, Derive, Easing, FlexDirection,
+    FlexWrap, FontStyle, FontWeight, IntoOverrideSource, IntoVariantSource, JustifyContent,
+    Length, Overflow, Position, Shadow, StyleApplication, StyleRules, StyleSheet, TextAlign,
+    TextTransform, Transform, Transition, VariantAxis, VariantEnum, VariantSet, VariantValue,
 };
 
 pub use framework_macros::{component, jsx, stylesheet, ui};
@@ -83,10 +83,24 @@ where
     }
 }
 
-/// A style source: either a fixed application (resolved once) or a
-/// closure that re-runs (resolved every effect fire, picking up signal
-/// changes the closure reads).
-pub type StyleSource = Box<dyn Fn() -> StyleApplication>;
+/// A style source. `Static` is a fixed `StyleApplication` known at
+/// build time — no signal subscriptions, no per-node `Effect`. The
+/// node is registered with the global theme cohort so a `set_theme`
+/// call re-applies it in bulk. `Reactive` is a closure that re-runs
+/// inside an `Effect`; signals it reads become deps and changes
+/// re-fire the apply path. Most styles are `Static`; the `Reactive`
+/// path exists for cases that need per-node reactive overrides.
+///
+/// The split matters at scale: 10 000 styled rows used to allocate
+/// 10 000 `Effect`s + 10 000 `Box<dyn Fn>` closures + 10 000 entries
+/// in the active-theme signal's subscriber set. With `Static`, those
+/// per-node allocations vanish — the cohort holds a single entry per
+/// node and a single `Effect` subscribes to the theme on behalf of
+/// the whole set.
+pub enum StyleSource {
+    Static(StyleApplication),
+    Reactive(Box<dyn Fn() -> StyleApplication>),
+}
 
 // =============================================================================
 // Primitive handles + backend ops
@@ -503,14 +517,13 @@ pub trait IntoStyleSource {
 
 impl IntoStyleSource for Rc<StyleSheet> {
     fn into_style_source(self) -> StyleSource {
-        let app = StyleApplication::new(self);
-        Box::new(move || app.clone())
+        StyleSource::Static(StyleApplication::new(self))
     }
 }
 
 impl IntoStyleSource for StyleApplication {
     fn into_style_source(self) -> StyleSource {
-        Box::new(move || self.clone())
+        StyleSource::Static(self)
     }
 }
 
@@ -519,7 +532,7 @@ where
     F: Fn() -> StyleApplication + 'static,
 {
     fn into_style_source(self) -> StyleSource {
-        Box::new(self)
+        StyleSource::Reactive(Box::new(self))
     }
 }
 
@@ -1486,12 +1499,150 @@ fn build_view<B: Backend + 'static>(
 struct StyleHandle<B: Backend + 'static> {
     backend: Rc<RefCell<B>>,
     node: B::Node,
+    /// For nodes attached via the static-style path: id into the
+    /// theme cohort. `None` for reactive-style nodes (those re-apply
+    /// via their own `Effect`'s theme subscription, not the cohort).
+    cohort_id: Option<CohortId>,
 }
 
 impl<B: Backend + 'static> Drop for StyleHandle<B> {
     fn drop(&mut self) {
+        // Remove from the theme cohort first, if registered. The
+        // cohort holds a `Box<dyn Any>` that owns a clone of the
+        // node; dropping it triggers the JS-side decref. Doing it
+        // before `on_node_unstyled` keeps the backend's per-node
+        // maps consistent during the unwind.
+        if let Some(id) = self.cohort_id.take() {
+            theme_cohort_unregister(id);
+        }
         self.backend.borrow_mut().on_node_unstyled(&self.node);
     }
+}
+
+/// Opaque id for a cohort entry. Returned by
+/// [`theme_cohort_register`] and consumed by
+/// [`theme_cohort_unregister`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct CohortId(u32);
+
+/// One entry in the theme cohort. The framework doesn't know how to
+/// re-apply on its own — backends are type-erased. So each entry
+/// carries the typed re-apply closure inside, and the cohort just
+/// iterates and calls them.
+///
+/// The closure captures everything it needs (backend, node, app),
+/// so dropping the entry tears down those captures. A 10 000-row
+/// cohort holds 10 000 closures — but each is small (Rc clones +
+/// one Node clone + one `StyleApplication` clone) and we never
+/// allocate `Effect` slots / arena entries for them.
+struct CohortEntry {
+    reapply: Box<dyn Fn()>,
+}
+
+thread_local! {
+    /// Theme cohort: every static-style-attached node lives in this
+    /// dense slab. A single framework-installed Effect subscribes
+    /// to the active theme and iterates the slab on every fire,
+    /// calling each entry's `reapply` closure. So we pay one Effect
+    /// for the whole app instead of one per styled node.
+    ///
+    /// Layout: `Vec<Option<CohortEntry>>` indexed by the `CohortId`'s
+    /// inner `u32`. Freed slots become `None` and their ids go on
+    /// the freelist. Same shape as the reactive arena's signal /
+    /// effect storage — and chosen for the same reason: a HashMap
+    /// keyed by the same `u32` paid a ~30 ms hashing cost during a
+    /// 10k-row mount that the slab avoids entirely.
+    static THEME_COHORT: RefCell<Vec<Option<CohortEntry>>> = const { RefCell::new(Vec::new()) };
+
+    /// Recycled slot ids. Popped on register, pushed on unregister.
+    /// Without this, monotonic ids would grow per rebuild and the
+    /// `Vec<Option<_>>` would balloon with None slots over time —
+    /// same issue we fixed in the reactive arena.
+    static THEME_COHORT_FREE: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+
+    /// Has the cohort driver effect been installed? Set on first
+    /// register; never cleared. The effect lives in the root
+    /// `Owner`'s scope and is dropped when that scope drops.
+    static THEME_COHORT_DRIVER_INSTALLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn theme_cohort_register(reapply: Box<dyn Fn()>) -> CohortId {
+    let entry = CohortEntry { reapply };
+    let id = THEME_COHORT.with(|slab| {
+        let mut slab = slab.borrow_mut();
+        if let Some(idx) = THEME_COHORT_FREE.with(|f| f.borrow_mut().pop()) {
+            slab[idx as usize] = Some(entry);
+            idx
+        } else {
+            let idx = slab.len() as u32;
+            slab.push(Some(entry));
+            idx
+        }
+    });
+    CohortId(id)
+}
+
+fn theme_cohort_unregister(id: CohortId) {
+    THEME_COHORT.with(|slab| {
+        if let Some(slot) = slab.borrow_mut().get_mut(id.0 as usize) {
+            if slot.take().is_some() {
+                THEME_COHORT_FREE.with(|f| f.borrow_mut().push(id.0));
+            }
+        }
+    });
+}
+
+/// Install (idempotently) the cohort driver effect: subscribes to
+/// the active theme signal and re-applies every cohort entry when
+/// the theme changes. Created lazily on the first
+/// `theme_cohort_register` call so we only pay for it when the
+/// static-style path is actually used.
+///
+/// The driver registers with the currently-active `Scope` (the
+/// root `Owner`'s scope at first call). When that scope drops, the
+/// driver effect drops and we clear the flag so a subsequent
+/// render reinstalls. The cohort map itself is also cleared on
+/// driver drop — its entries' `reapply` closures captured Rcs to
+/// the old backend, which is gone.
+fn install_theme_cohort_driver() {
+    if THEME_COHORT_DRIVER_INSTALLED.with(|c| c.get()) {
+        return;
+    }
+    THEME_COHORT_DRIVER_INSTALLED.with(|c| c.set(true));
+
+    // RAII guard captured by the driver closure. On drop (scope
+    // teardown), clears the installed flag and drops every cohort
+    // entry. Putting the cleanup on a captured guard rather than a
+    // separate cleanup effect avoids ordering hazards.
+    struct DriverGuard;
+    impl Drop for DriverGuard {
+        fn drop(&mut self) {
+            THEME_COHORT_DRIVER_INSTALLED.with(|c| c.set(false));
+            THEME_COHORT.with(|m| m.borrow_mut().clear());
+            THEME_COHORT_FREE.with(|f| f.borrow_mut().clear());
+        }
+    }
+    let _guard = DriverGuard;
+
+    let _e = Effect::new(move || {
+        // Anchor the guard inside the effect closure so it lives
+        // exactly as long as the effect.
+        let _ = &_guard;
+        // Subscribe to the active theme. We don't use the value
+        // directly — the cohort entries' `reapply` closures each
+        // call `active_theme()` themselves through `resolve_style`.
+        let _ = style::active_theme();
+        // Iterate the slab under a single immutable borrow. Skip
+        // empty slots. The `reapply` closure does DOM/backend work
+        // only — never touches the cohort slab — so the long
+        // borrow is safe.
+        THEME_COHORT.with(|slab| {
+            for entry in slab.borrow().iter().flatten() {
+                (entry.reapply)();
+            }
+        });
+    });
+    let _ = _e;
 }
 
 /// RAII wrapper that calls `Backend::release_graphics` when dropped.
@@ -1827,6 +1978,125 @@ fn attach_style<B: Backend + 'static>(
     node: &B::Node,
     style: StyleSource,
 ) -> Rc<dyn Fn(StateBits, bool)> {
+    match style {
+        StyleSource::Static(app) => attach_style_static(backend, node, app),
+        StyleSource::Reactive(f) => attach_style_reactive(backend, node, f),
+    }
+}
+
+/// Static-style fast path: no per-node `Effect`, no signal
+/// subscription. The style is applied inline at mount, and the node
+/// is registered with the framework's theme cohort so a `set_theme`
+/// call re-applies it in bulk via a single shared `Effect`. Saves
+/// 10k arena slots + 10k closure boxes for a 10k-row scoreboard
+/// vs. the reactive path. RAII guard inside the build walker (via
+/// the returned `StyleHandle` captured by the cleanup effect)
+/// removes the cohort entry on teardown.
+fn attach_style_static<B: Backend + 'static>(
+    backend: &Rc<RefCell<B>>,
+    node: &B::Node,
+    app: StyleApplication,
+) -> Rc<dyn Fn(StateBits, bool)> {
+    // Make sure the cohort driver is alive before we register.
+    install_theme_cohort_driver();
+
+    let handles_states_natively = backend.borrow().handles_states_natively();
+
+    // Inline first apply. Identical work to what the reactive
+    // path's Effect would do on its first run — just without
+    // wrapping it in an Effect closure.
+    apply_one(backend, node, &app, handles_states_natively);
+
+    // Register the node with the theme cohort. We wrap the
+    // `StyleApplication` in an `Rc` so the cohort closure pays
+    // only a pointer-clone on registration — `StyleApplication`
+    // itself transitively owns a `StyleRules` overrides struct
+    // that's ~1 KB, and at 10k rows the per-row clone of that
+    // was the dominant new allocation cost vs. the reactive path.
+    let backend_for_cohort = backend.clone();
+    let node_for_cohort = node.clone();
+    let app_for_cohort = Rc::new(app);
+    let cohort_id = theme_cohort_register(Box::new(move || {
+        apply_one(&backend_for_cohort, &node_for_cohort, &app_for_cohort, handles_states_natively);
+    }));
+
+    // Attach the cleanup guard directly to the active scope —
+    // bypasses the arena entirely (no `Effect` slot, no subscriber
+    // set entry, no dependency set entry). The guard is held in
+    // `Scope::guards`, dropped in the same batch as effects when
+    // the scope tears down. For a 10k-row scope this is the
+    // difference between 10k arena allocs and ~10k cheap Vec
+    // pushes — the underlying `Box<dyn Any>` and the `StyleHandle`
+    // contents are the same shape either way, but we save the
+    // arena bookkeeping.
+    let cleanup_handle = StyleHandle {
+        backend: backend.clone(),
+        node: node.clone(),
+        cohort_id: Some(cohort_id),
+    };
+    let adopted = reactive::adopt_guard_into_active_scope(cleanup_handle);
+    debug_assert!(
+        adopted,
+        "attach_style_static called outside an active Scope — \
+         StyleHandle would leak (cohort entry + per-node backend state \
+         never cleaned). The renderer's `Owner` always sets a scope, \
+         so this fires only for ad-hoc top-level use."
+    );
+
+    // The setter is a no-op on natively-handling backends — `setter`
+    // is exposed for `attach_disabled` etc., but with no Signal in
+    // play it has nothing to flip. For event-driven backends the
+    // static path doesn't apply (we'd lose state reactivity), but
+    // those backends would route through `attach_style_reactive`
+    // anyway because the macro emits a closure for state-bearing
+    // styles. Returning a no-op keeps the return type aligned.
+    //
+    // TODO: revisit when adding native iOS/Android backends. The
+    // static path may need to keep a Signal<StateBits> after all.
+    Rc::new(|_, _| {})
+}
+
+/// Apply a style to a single node. Pulled out as a free function
+/// so both the static path (called inline at mount) and the cohort
+/// driver (called on theme change) can re-use it.
+fn apply_one<B: Backend + 'static>(
+    backend: &Rc<RefCell<B>>,
+    node: &B::Node,
+    app: &StyleApplication,
+    handles_states_natively: bool,
+) {
+    {
+        let backend_for_register = backend.clone();
+        let backend_for_unregister = backend.clone();
+        style::ensure_registered_with(
+            &app.sheet,
+            |rules| {
+                backend_for_register.borrow_mut().register_stylesheet(rules);
+            },
+            |rules| {
+                backend_for_unregister
+                    .borrow_mut()
+                    .unregister_stylesheet(rules);
+            },
+        );
+    }
+    if handles_states_natively {
+        let base = resolve_style(app);
+        let overlays = resolve_state_overlays(app);
+        backend
+            .borrow_mut()
+            .apply_styled_states(node, &base, &overlays);
+    } else {
+        let resolved = resolve_style(app);
+        backend.borrow_mut().apply_style(node, &resolved);
+    }
+}
+
+fn attach_style_reactive<B: Backend + 'static>(
+    backend: &Rc<RefCell<B>>,
+    node: &B::Node,
+    style: Box<dyn Fn() -> StyleApplication>,
+) -> Rc<dyn Fn(StateBits, bool)> {
     // Per-phase timing of attach_style. The point is to separate
     // "framework overhead per styled node" (Effect alloc, Signal
     // alloc, scope registration, clones) from "actual style work"
@@ -1861,6 +2131,7 @@ fn attach_style<B: Backend + 'static>(
     let handle = StyleHandle {
         backend: backend.clone(),
         node: node.clone(),
+        cohort_id: None,
     };
 
     let handles_states_natively = backend.borrow().handles_states_natively();
