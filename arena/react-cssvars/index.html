@@ -57,6 +57,12 @@
     transition: background 250ms ease-in-out, color 250ms ease-in-out;
   }
   #stats { font-size: 13px; font-variant-numeric: tabular-nums; opacity: 0.85; }
+  .rows-input {
+    width: 90px; padding: 4px 8px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--surface); color: var(--text);
+    font-size: 13px; font-variant-numeric: tabular-nums;
+  }
+  .rows-label { font-size: 13px; opacity: 0.7; }
 
   .perf-list {
     display: flex; flex-direction: column;
@@ -93,10 +99,10 @@
 <body>
 <div id="root"></div>
 <script type="module">
-import React, { useState, useCallback, useEffect, memo } from 'react';
+import React, { useState, useCallback, useEffect, useRef, memo } from 'react';
 import { createRoot } from 'react-dom/client';
 import { flushSync } from 'https://esm.sh/react-dom@18.3.1?dev&deps=react@18.3.1';
-import { runToggle, ROW_COUNT } from '../instrument.js';
+import { runToggle, getRowCount, setRowCount } from '../instrument.js';
 
 const e = React.createElement;
 
@@ -109,6 +115,10 @@ const Row = memo(function Row({ index }) {
 
 function App() {
   const [isDark, setIsDark] = useState(false);
+  const [rowCount, setRowCountState] = useState(getRowCount());
+  // Uncontrolled input: read on Apply, don't re-render the 1000-row
+  // tree on every keystroke.
+  const rowsInputRef = useRef(null);
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', isDark);
@@ -121,20 +131,40 @@ function App() {
       // same as react-naive — even though here the commit is trivial
       // (one className on <html> via the effect).
       flushSync(() => setIsDark(next));
-    }, { theme: next ? 'dark' : 'light', rows: ROW_COUNT });
-  }, [isDark]);
+    }, { theme: next ? 'dark' : 'light', rows: rowCount });
+  }, [isDark, rowCount]);
 
-  // Build rows once. They never re-render because their `index` prop
-  // is stable and the component is memoized. The theme toggle doesn't
-  // touch them.
+  const onApply = useCallback(() => {
+    const raw = rowsInputRef.current?.value;
+    const n = parseInt(raw, 10);
+    if (!Number.isFinite(n) || n < 1) return;
+    setRowCount(n);
+    runToggle(() => {
+      flushSync(() => setRowCountState(n));
+    }, { theme: 'rebuild', rows: n });
+  }, []);
+
+  // Rows are memoized per row count. They still never re-render on
+  // theme toggle because the CSS-variable approach keeps the rows'
+  // own props stable.
   const rows = React.useMemo(
-    () => Array.from({ length: ROW_COUNT }, (_, i) => e(Row, { key: i, index: i })),
-    []
+    () => Array.from({ length: rowCount }, (_, i) => e(Row, { key: i, index: i })),
+    [rowCount]
   );
 
   return e('div', { className: 'page' },
     e('div', { className: 'controls' },
       e('button', { onClick: onToggle }, 'Toggle theme'),
+      e('span', { className: 'rows-label' }, 'rows:'),
+      e('input', {
+        ref: rowsInputRef,
+        className: 'rows-input',
+        type: 'number',
+        min: 1,
+        step: 100,
+        defaultValue: rowCount,
+      }),
+      e('button', { onClick: onApply }, 'Apply'),
       e('span', { id: 'stats' }, 'Click toggle to measure'),
     ),
     e('div', { className: 'perf-list' }, rows),

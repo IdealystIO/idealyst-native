@@ -31,6 +31,12 @@
     border: 0; cursor: pointer;
   }
   #stats { font-size: 13px; font-variant-numeric: tabular-nums; opacity: 0.85; }
+  .rows-input {
+    width: 90px; padding: 4px 8px; border-radius: 6px;
+    border: 1px solid #888; background: #fff; color: #000;
+    font-size: 13px; font-variant-numeric: tabular-nums;
+  }
+  .rows-label { font-size: 13px; opacity: 0.7; }
   .perf-list {
     border-radius: 10px; border: 1px solid;
     height: 500px; overflow: hidden; overflow-y: auto;
@@ -42,13 +48,20 @@
   <div class="ui-default page" id="page">
     <div class="ui-default controls" id="controls">
       <button id="toggle">Toggle theme</button>
+      <span class="rows-label">rows:</span>
+      <input id="rows" class="rows-input" type="number" min="1" step="100">
+      <button id="apply">Apply</button>
       <span id="stats">Click toggle to measure</span>
     </div>
     <div class="ui-default perf-list" id="list"></div>
   </div>
 
   <script type="module">
-    import { runToggle, LIGHT, DARK, ROW_COUNT } from '../instrument.js';
+    import { runToggle, LIGHT, DARK, getRowCount, setRowCount } from '../instrument.js';
+
+    let rowCount = getRowCount();
+    const rowsInput = document.getElementById('rows');
+    rowsInput.value = String(rowCount);
 
     // Shared <style> element + insert/delete rule machinery, exactly
     // like the framework's StyleStore. Per-toggle, we mint new rules
@@ -110,10 +123,17 @@
     }
 
     const list = document.getElementById('list');
-    const rows = [], texts = [];
-    {
+    let rows = [], texts = [];
+
+    // (Re)build the list. Mutates the module-level `rows`/`texts`
+    // arrays in place so `applyTheme` always operates on the
+    // current row set. DocumentFragment so a single attach pays
+    // the layout cost, not N.
+    function buildRows() {
+      while (list.firstChild) list.removeChild(list.firstChild);
+      rows = []; texts = [];
       const frag = document.createDocumentFragment();
-      for (let i = 0; i < ROW_COUNT; i++) {
+      for (let i = 0; i < rowCount; i++) {
         const row = document.createElement('div');
         row.className = 'ui-default';
         const text = document.createElement('div');
@@ -126,6 +146,7 @@
       }
       list.appendChild(frag);
     }
+    buildRows();
 
     let activeRules = null;
     let toggleN = 0;
@@ -151,7 +172,7 @@
       };
 
       const setAttr = Element.prototype.setAttribute;
-      for (let i = 0; i < ROW_COUNT; i++) {
+      for (let i = 0; i < rows.length; i++) {
         const cls = (i % 2 === 0) ? rowEven : rowOdd;
         setAttr.call(rows[i], 'class', `ui-default ${cls}`);
         setAttr.call(texts[i], 'class', `ui-default ${textCls}`);
@@ -187,7 +208,23 @@
       const theme = isDark ? DARK : LIGHT;
       runToggle(() => {
         applyTheme(theme, `t-${toggleN}`);
-      }, { theme: isDark ? 'dark' : 'light', rows: ROW_COUNT });
+      }, { theme: isDark ? 'dark' : 'light', rows: rowCount });
+    });
+
+    document.getElementById('apply').addEventListener('click', () => {
+      const next = parseInt(rowsInput.value, 10);
+      if (!Number.isFinite(next) || next < 1) return;
+      rowCount = next;
+      setRowCount(rowCount);
+      // Rebuild rows + re-apply the current theme to them. Both
+      // happen inside one `runToggle` so the readout reflects the
+      // mount + restyle cost in one number.
+      toggleN++;
+      const theme = isDark ? DARK : LIGHT;
+      runToggle(() => {
+        buildRows();
+        applyTheme(theme, `r-${toggleN}`);
+      }, { theme: 'rebuild', rows: rowCount });
     });
   </script>
 </body>

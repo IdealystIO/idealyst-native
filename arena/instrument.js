@@ -95,3 +95,38 @@ export const DARK = {
 };
 
 export const ROW_COUNT = 1000;
+
+// Row count — read from the URL query string so the same variant
+// can be tested at multiple scales without code changes. Defaults
+// to `ROW_COUNT` (1000) when no `?rows=` param is set. Bounded to
+// a sane max so a stray `?rows=999999999` doesn't lock the browser
+// before the user can type a correction.
+const ROW_MAX = 100_000;
+
+/// Read the row count from the URL's `?rows=` param. Returns
+/// `ROW_COUNT` when the param is missing or invalid. Clamps to
+/// `[1, ROW_MAX]`.
+export function getRowCount() {
+  const raw = new URLSearchParams(window.location.search).get('rows');
+  if (raw == null) return ROW_COUNT;
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 1) {
+    console.warn(`[arena] invalid ?rows=${raw}, falling back to ${ROW_COUNT}`);
+    return ROW_COUNT;
+  }
+  if (n > ROW_MAX) {
+    console.warn(`[arena] ?rows=${n} exceeds cap; clamping to ${ROW_MAX}`);
+    return ROW_MAX;
+  }
+  return n;
+}
+
+/// Write the row count back to the URL. Uses `replaceState` so
+/// the change doesn't push a back-button entry — the user can hit
+/// back to leave the variant and not have to step through every
+/// count they tried.
+export function setRowCount(n) {
+  const url = new URL(window.location.href);
+  url.searchParams.set('rows', String(n));
+  window.history.replaceState(null, '', url.toString());
+}

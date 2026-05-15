@@ -66,14 +66,6 @@ pub struct WebBackend {
     /// ActivityIndicator creation injects it; later creations skip
     /// the work.
     pub(crate) spinner_keyframes_injected: bool,
-    /// Has the `.ui-default` rule been injected? This rule encodes
-    /// the framework's mobile-first defaults (display: flex;
-    /// flex-direction: column) and is applied to every framework-
-    /// created element alongside any user-provided class. Inserted
-    /// first so its specificity is identical to user classes but
-    /// its position is earlier — user classes win on overlap, the
-    /// default fills the gaps.
-    pub(crate) defaults_class_injected: bool,
     /// Has the virtualizer JS shim been injected? First Virtualizer
     /// creation injects `runtime/js/virtualizer.js` into a
     /// `<script>` tag in the document head.
@@ -194,7 +186,6 @@ impl WebBackend {
             _link_click_closures: Vec::new(),
             state_listeners: HashMap::new(),
             spinner_keyframes_injected: false,
-            defaults_class_injected: false,
             virtualizer_shim_injected: false,
             virtualizer_instances: HashMap::new(),
             next_virtualizer_id: 0,

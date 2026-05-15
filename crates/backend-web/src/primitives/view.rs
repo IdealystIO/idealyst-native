@@ -1,6 +1,15 @@
-//! `Primitive::View` — a styled `<div>`. The framework's flex-column
-//! default reaches every view via the `.ui-default` baseline class
-//! stamped in `apply_default_class`.
+//! `Primitive::View` — a plain `<div>`. The framework used to stamp
+//! every View with a `.ui-default { display: flex; flex-direction:
+//! column }` class so authors got React-Native-style flex
+//! semantics for free. That class is gone: at 10k+ rows the
+//! O(N) flex-container tracking cost in the browser was the
+//! single biggest contributor to post-mount layout time.
+//!
+//! Equivalent semantics now happen at the CSS-emit layer: when a
+//! stylesheet sets any flex-container property (`gap`,
+//! `flex_direction`, `align_items`, etc.), `rules_to_css`
+//! auto-promotes the rule to `display: flex`. Views without flex
+//! props are plain blocks — cheap.
 
 use crate::WebBackend;
 use wasm_bindgen::JsCast;
@@ -11,7 +20,6 @@ pub(crate) fn create(b: &mut WebBackend) -> Node {
         .doc
         .create_element("div")
         .expect("create_element failed");
-    b.apply_default_class(&el);
     el.unchecked_into::<Node>()
 }
 

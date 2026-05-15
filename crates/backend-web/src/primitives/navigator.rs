@@ -393,7 +393,9 @@ pub(crate) fn create(
         .doc
         .create_element("div")
         .expect("create_element nav container failed");
-    b.apply_default_class(&container);
+    // No `.ui-default` — see view.rs. The `.ui-nav-root` rule
+    // sets `position: relative` on the container; layout chrome
+    // (when present) stacks via normal block flow inside.
     set_class_present(&container, "ui-nav-root", true);
 
     let nav_id = b.next_navigator_id;

@@ -10,36 +10,14 @@ use crate::WebBackend;
 use wasm_bindgen::prelude::*;
 
 impl WebBackend {
-    /// Inject the `.ui-default` rule the first time a framework
-    /// element is created. The rule encodes the framework's
-    /// mobile-first defaults so every node gets `display: flex;
-    /// flex-direction: column` even before any user style is applied.
-    /// User-minted classes override on overlap because they're
-    /// inserted later (later wins at equal specificity).
-    pub(crate) fn ensure_defaults_class(&mut self) {
-        if self.defaults_class_injected {
-            return;
-        }
-        // Append at the sheet's end. This rule isn't owned by any
-        // particular stylesheet — it's a global baseline. Appending
-        // doesn't shift any existing index, so we don't need to
-        // walk `pregen`/`dynamic` afterwards (which would defeat
-        // the O(1) insert_rule contract).
-        let rule = ".ui-default { display: flex; flex-direction: column; }";
-        let sheet = self.sheet();
-        let end = sheet.css_rules().map(|r| r.length()).unwrap_or(0);
-        let _ = sheet.insert_rule_with_index(rule, end);
-        self.defaults_class_injected = true;
-    }
-
-    /// Attach the framework's default class to a freshly created
-    /// element. `apply_style` later concatenates the user-minted
-    /// class alongside this one — see the className-merge logic
-    /// inside `apply_style`.
-    pub(crate) fn apply_default_class(&mut self, element: &web_sys::Element) {
-        self.ensure_defaults_class();
-        let _ = element.set_attribute("class", "ui-default");
-    }
+    // The framework used to stamp every framework-created element
+    // with `class="ui-default"` and inject a
+    // `.ui-default { display: flex; flex-direction: column }`
+    // baseline. Both removed for perf: at 10k+ rows the per-node
+    // flex-container tracking cost dominated post-mount layout.
+    // Flex semantics now happen at CSS-emit time —
+    // `rules_to_css` auto-promotes a style to `display: flex`
+    // when the rules use any flex-container property.
 
     /// Inject the virtualizer JS shim into the document on first
     /// use. The shim defines `window.__idealystVirtualizer` (the

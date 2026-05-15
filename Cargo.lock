@@ -45,6 +45,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "arena-idealyst-native"
+version = "0.0.1"
+dependencies = [
+ "backend-web",
+ "console_error_panic_hook",
+ "framework-core",
+ "lol_alloc",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "arrayvec"
 version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"

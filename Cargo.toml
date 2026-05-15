@@ -11,6 +11,7 @@ members = [
     "examples/hello",
     "examples/hello-web",
     "examples/hello-android",
+    "arena/idealyst-native/wasm",
 ]
 
 [workspace.package]

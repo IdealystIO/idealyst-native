@@ -786,6 +786,26 @@ pub struct StyleSheet {
     /// ~10μs of per-row variant-map iteration, which compounded to
     /// ~100ms across the whole render.
     state_axes: Vec<(crate::StateBits, VariantAxis)>,
+    /// Per-sheet pointer-friendly variant cache. Keyed on
+    /// `(theme_ptr, variants)`; value is the pre-resolved
+    /// `Rc<StyleRules>` for the no-overrides case. Populated by
+    /// [`ensure_registered_with`] at registration time; pruned on
+    /// `unregister`.
+    ///
+    /// This is the hot lookup path in `resolve()` — when an
+    /// application has no overrides (the common case for
+    /// stylesheet-only styling), the resolve function consults
+    /// this map first and bypasses the global `RESOLUTION_CACHE`
+    /// entirely. Saves one thread_local RefCell borrow + one
+    /// global HashMap lookup + one `Rc::as_ptr(&app.sheet)`
+    /// indirection per styled node.
+    ///
+    /// `RefCell` for interior mutability — the sheet itself is
+    /// shared via `Rc<StyleSheet>` so we can't take `&mut self` to
+    /// populate the cache at registration time.
+    variant_cache: std::cell::RefCell<
+        HashMap<(*const (), VariantSet), Rc<StyleRules>>,
+    >,
 }
 
 impl StyleSheet {
@@ -800,6 +820,7 @@ impl StyleSheet {
             variants: BTreeMap::new(),
             compounds: Vec::new(),
             state_axes: Vec::new(),
+            variant_cache: std::cell::RefCell::new(HashMap::new()),
         }
     }
 
@@ -810,6 +831,7 @@ impl StyleSheet {
             variants: BTreeMap::new(),
             compounds: Vec::new(),
             state_axes: Vec::new(),
+            variant_cache: std::cell::RefCell::new(HashMap::new()),
         }
     }
 
@@ -852,6 +874,59 @@ impl StyleSheet {
     /// full variants map.
     pub(crate) fn state_axes(&self) -> &[(crate::StateBits, VariantAxis)] {
         &self.state_axes
+    }
+
+    /// Per-sheet variant-cache lookup. Returns the pre-resolved
+    /// `Rc<StyleRules>` if `(theme_ptr, variants)` has been
+    /// registered, `None` otherwise. The hot path in [`resolve`]
+    /// hits this before the global resolution cache.
+    pub(crate) fn lookup_variant(
+        &self,
+        theme_ptr: *const (),
+        variants: &VariantSet,
+    ) -> Option<Rc<StyleRules>> {
+        // The hash key tuple takes `(theme_ptr, variants)` by value.
+        // Cloning the `VariantSet` here would defeat the purpose —
+        // for the no-overrides path we want to avoid that clone.
+        //
+        // HashMap's `get` takes a `&K` (so it'd require a key by
+        // value to hash against), which means we'd clone. Trick:
+        // use a borrowed-key adapter via `raw_entry` on nightly,
+        // OR change the cache to use a `BTreeMap<&VariantSet>`-
+        // style structure. Simpler: hash the variants once and use
+        // the HashMap's `Q: Borrow<...>` lookup via `&(theme_ptr,
+        // variants)` only after wrapping the key in a referenced
+        // form.
+        //
+        // For this v1 we accept the small `variants.clone()` cost
+        // on the hot path — the previous code path was already
+        // cloning the `VariantSet` *and* doing a global RefCell
+        // borrow + global HashMap lookup. We just keep the clone
+        // and drop the rest.
+        let key = (theme_ptr, variants.clone());
+        self.variant_cache.borrow().get(&key).cloned()
+    }
+
+    /// Insert a pre-resolved rule into the variant cache. Called
+    /// from [`ensure_registered_with`] for each pregen entry.
+    pub(crate) fn insert_variant(
+        &self,
+        theme_ptr: *const (),
+        variants: VariantSet,
+        rc: Rc<StyleRules>,
+    ) {
+        self.variant_cache
+            .borrow_mut()
+            .insert((theme_ptr, variants), rc);
+    }
+
+    /// Drop every entry for `theme_ptr`. Called from
+    /// [`ensure_registered_with`] on the dead-registration sweep
+    /// (theme change, sheet drop).
+    pub(crate) fn forget_theme(&self, theme_ptr: *const ()) {
+        self.variant_cache
+            .borrow_mut()
+            .retain(|(t, _), _| *t != theme_ptr);
     }
 
     /// Sets the default value for an axis. When a call site omits this
@@ -1287,12 +1362,26 @@ pub fn set_theme<Theme: Any + 'static>(theme: Theme) {
 
     // Move every current registration into the pending-unregister queue.
     // The next styled effect that fires will flush it with the backend
-    // in scope.
+    // in scope. Also opportunistically prune each registered sheet's
+    // per-sheet variant cache for the *old* theme — those entries
+    // would never be looked up again (new theme has a different
+    // `theme_ptr`) but would linger on the `Rc<StyleSheet>` until the
+    // sheet itself drops.
+    let old_theme_ptr = ACTIVE_THEME
+        .with(|t| t.borrow().as_ref().map(|sig| Rc::as_ptr(&sig.get()) as *const ()))
+        .unwrap_or(std::ptr::null());
     REGISTRATIONS.with(|r| {
         let mut regs = r.borrow_mut();
         PENDING_UNREGISTER.with(|p| {
             let mut pending = p.borrow_mut();
             for (_, reg) in regs.drain() {
+                // Try to upgrade the Weak to a live sheet and prune
+                // its variant_cache for the old theme. If the
+                // upgrade fails, the sheet is already dead and its
+                // cache will drop along with it.
+                if let Some(sheet) = reg.weak.upgrade() {
+                    sheet.forget_theme(old_theme_ptr);
+                }
                 pending.push(reg.rules);
             }
         });
@@ -1401,6 +1490,14 @@ where
             cache.insert(cache_key, rc.clone());
         }
     });
+    // Also populate the per-sheet pointer-keyed cache. This is the
+    // fast path `resolve()` consults first — local map on the
+    // sheet, no global RefCell, no `Rc::as_ptr(&app.sheet)`. The
+    // existing `RESOLUTION_CACHE` insert above is kept so the
+    // overrides-bearing path still benefits from caching.
+    for (variants, rc) in &keyed {
+        sheet.insert_variant(theme_ptr, variants.clone(), rc.clone());
+    }
     let rules: Vec<Rc<StyleRules>> = keyed.into_iter().map(|(_, rc)| rc).collect();
     register(&rules);
     REGISTRATIONS.with(|r| {
@@ -1492,12 +1589,44 @@ pub(crate) fn pregenerate_keyed(
 pub fn resolve(app: &StyleApplication) -> Rc<StyleRules> {
     let theme = active_theme();
     let theme_ptr = Rc::as_ptr(&theme) as *const ();
-    // Skip `overrides.content_key()` when no override builders
-    // were called on this application — that function walks every
-    // field on `StyleRules` and formats a ~600-byte hex string.
-    // For 10k styled rows without overrides (the common case
-    // including PerfRow) skipping it drops `resolve_style` from
-    // ~12μs to ~3μs per row, saving ~90ms total.
+
+    // Fast path: no overrides + pre-registered variants. The most
+    // common shape — a stylesheet-only `View(style = MySheet().axis(value))`
+    // hits this. Lookup is a per-sheet RefCell borrow + one
+    // HashMap probe, no global state touched.
+    //
+    // Skips:
+    //   - `Rc::as_ptr(&app.sheet)` indirection (we already have the sheet)
+    //   - global RESOLUTION_CACHE thread_local + RefCell borrow
+    //   - building a full `ResolutionKey` with an empty-string
+    //     overrides field
+    //
+    // Falls through to the slow path for any app with overrides
+    // or with variant combinations the pregen didn't enumerate
+    // (e.g. ad-hoc multi-axis selections).
+    if !app.has_overrides {
+        #[cfg(feature = "debug-stats")]
+        let _t_fast = crate::debug::now_micros();
+        if let Some(rc) = app.sheet.lookup_variant(theme_ptr, &app.variants) {
+            #[cfg(feature = "debug-stats")]
+            {
+                crate::debug::record_apply_phase(
+                    "resolve_fast_path_hit",
+                    crate::debug::now_micros().saturating_sub(_t_fast),
+                );
+                crate::debug::record_style_cache_hit();
+            }
+            return rc;
+        }
+        #[cfg(feature = "debug-stats")]
+        crate::debug::record_apply_phase(
+            "resolve_fast_path_miss",
+            crate::debug::now_micros().saturating_sub(_t_fast),
+        );
+    }
+
+    // Slow path: build the full ResolutionKey and consult the
+    // global cache.
     let overrides_key = if app.has_overrides {
         app.overrides.content_key()
     } else {

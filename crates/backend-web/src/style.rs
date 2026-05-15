@@ -604,22 +604,48 @@ fn state_bit_tag(b: framework_core::StateBits) -> &'static str {
     }
 }
 
-/// Compile a `StyleRules` to a CSS body. RN-style: every styled node
-/// is implicitly `display: flex`, so the emitter always prepends that.
-/// Per-side padding/margin/border are emitted as their CSS long-form
-/// (`padding-top`, etc.) — the browser handles them just like the
-/// shorthand, but we get exact-match cache keys.
+/// Compile a `StyleRules` to a CSS body. Per-side padding/margin/
+/// border are emitted as their CSS long-form (`padding-top`, etc.) —
+/// the browser handles them just like the shorthand, but we get
+/// exact-match cache keys.
+///
+/// **Flex semantics** are auto-promoted: if the rules use any
+/// flex-container property (`gap`, `flex_direction`, `align_items`,
+/// `justify_content`, `align_content`, `flex_wrap`, `row_gap`,
+/// `column_gap`), the emitter prepends `display: flex` so the
+/// property actually works. When none of those are set, the rule
+/// stays a normal block — fewer CSS rules for the browser to
+/// track, and large lists of unstyled rows don't pay the flex-
+/// layout cost.
+///
+/// The framework historically stamped every node with a
+/// `.ui-default { display: flex; flex-direction: column }` class
+/// to match React Native's "every View is a flex container" idiom.
+/// That class is gone now: it gave large lists O(N) flex-tracker
+/// overhead even when the rows did nothing flex-shaped. The
+/// auto-promotion below preserves the *intent* of the RN-style
+/// API — author writes `gap: 16` and gets flex semantics for free
+/// — without paying for nodes that don't use it.
 pub(crate) fn rules_to_css(rules: &StyleRules) -> String {
     let mut parts: Vec<String> = Vec::new();
 
-    // RN-style: every styled view is a flex container. We also force
-    // `flex-direction: column` when the rules don't pin it themselves
-    // — CSS's own default is `row`, which would diverge from the
-    // framework's mobile-first default. Either the explicit rule (set
-    // below) or this default applies, never both.
-    parts.push("display: flex".to_string());
-    if rules.flex_direction.is_none() {
-        parts.push("flex-direction: column".to_string());
+    // Auto-promote: any flex-container property implies the node
+    // wants flex semantics. We also pin `flex-direction: column`
+    // when the user didn't, matching RN's mobile-first default
+    // (CSS's own default is `row`).
+    let uses_flex = rules.flex_direction.is_some()
+        || rules.flex_wrap.is_some()
+        || rules.justify_content.is_some()
+        || rules.align_items.is_some()
+        || rules.align_content.is_some()
+        || rules.gap.is_some()
+        || rules.row_gap.is_some()
+        || rules.column_gap.is_some();
+    if uses_flex {
+        parts.push("display: flex".to_string());
+        if rules.flex_direction.is_none() {
+            parts.push("flex-direction: column".to_string());
+        }
     }
 
     // Color + text.

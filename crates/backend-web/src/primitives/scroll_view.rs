@@ -13,7 +13,10 @@ pub(crate) fn create(b: &mut WebBackend, horizontal: bool) -> Node {
         .doc
         .create_element("div")
         .expect("create_element div failed");
-    b.apply_default_class(&div);
+    // No `.ui-default` class — see view.rs for the rationale.
+    // ScrollView's only fixed layout is the overflow we set inline
+    // below; children stack via normal block flow unless the user's
+    // style on the ScrollView itself opts into flex.
     // Apply the overflow style inline (not via the framework's style
     // system) so it's always present regardless of user-supplied
     // styling. The inline rules win over class rules for the overflow

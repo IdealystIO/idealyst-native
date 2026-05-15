@@ -1,0 +1,30 @@
+[package]
+name = "arena-idealyst-native"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+# `cdylib` for wasm-pack's web target; `rlib` so the workspace can
+# still link this if anything depends on it (nothing does today).
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+framework-core = { workspace = true }
+backend-web = { workspace = true }
+wasm-bindgen = "0.2"
+console_error_panic_hook = "0.1"
+# Smaller allocator for the wasm target. The default `dlmalloc` pulls
+# in a lot of code that the benchmark doesn't need; `lol_alloc`'s
+# `FreeListAllocator` is a few KB. Pure perf trade-off — no behavior
+# difference for the benchmark.
+lol_alloc = "0.4"
+
+[dependencies.web-sys]
+version = "0.3"
+features = ["console"]
+
+# wasm-opt flags. Matches `examples/hello-web` so the per-instruction
+# perf is comparable.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-Oz", "--strip-debug", "--strip-producers", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]
