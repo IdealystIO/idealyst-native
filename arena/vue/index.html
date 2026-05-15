@@ -38,8 +38,8 @@
 // `vue/dist/vue.esm-browser.js` ships runtime + compiler so we can
 // pass a template string. The `runtime-only` build is faster but
 // requires a precompiled component, which would add a build step.
-import { createApp, ref, computed, h, nextTick } from 'https://esm.sh/vue@3.4.21/dist/vue.esm-browser.js';
-import { runToggle, runSuite, LIGHT, DARK } from '../instrument.js';
+import { createApp, ref, nextTick } from 'https://esm.sh/vue@3.4.21/dist/vue.esm-browser.js';
+import { autoRunIfRequested, LIGHT } from '../instrument.js';
 
 // Style builders. Identical hex values to other variants — imported
 // from instrument.js via LIGHT/DARK so a typo in one variant can't
@@ -81,72 +81,46 @@ const rowStyle = (t, parity) => ({
   transition: 'background 250ms ease-in-out, color 250ms ease-in-out, border-bottom-color 250ms ease-in-out',
 });
 
+// External setRows hook for the runner-iframe path. Vue refs are
+// referentially stable, so we publish the setter once inside setup()
+// and let the outer module call it.
+let externalSetRows = null;
+
 const app = createApp({
   // Vue's reactivity tracks reads of `theme.value` inside `:style`
   // bindings — when `theme.value` changes, every row's style binding
-  // re-runs. Same shape as the React variant: no manual memoization.
+  // re-runs.
   setup() {
     const theme = ref(LIGHT);
     const rowCount = ref(1000);
-    const running = ref(false);
 
-    const isDark = computed(() => theme.value === DARK);
-
-    const onToggle = () => {
-      const next = isDark.value ? LIGHT : DARK;
-      runToggle(() => {
-        // Vue 3 commits synchronously when you set a ref inside an
-        // event handler — there's no React-style batched-then-deferred
-        // step that would land work after our `apply` timer closes.
-        // No `flushSync` equivalent needed; the assignment + downstream
-        // effects run on the current task.
-        theme.value = next;
-      }, { theme: isDark.value ? 'light' : 'dark', rows: rowCount.value });
+    externalSetRows = async (n) => {
+      rowCount.value = n;
+      // Wait for Vue's microtask-scheduled DOM patch to flush
+      // before resolving — without this the suite's apply timer
+      // would close before the mount lands.
+      await nextTick();
     };
 
-    const onStart = async () => {
-      running.value = true;
-      try {
-        await runSuite({
-          setRows: async (n) => {
-            rowCount.value = n;
-            // Wait for the resulting reactive updates to flush to the
-            // DOM. Vue queues a microtask scheduler; without this, the
-            // suite's `applyDone = performance.now()` could fire before
-            // the new rows are actually mounted, and apply time would
-            // be wildly under-reported.
-            await nextTick();
-          },
-          resultsEl: document.getElementById('results'),
-        });
-      } finally {
-        running.value = false;
-      }
-    };
+    // Reference `theme` so the closure subscribes (the rebuild
+    // suite doesn't toggle it, but a future theme-toggle suite
+    // would; keeping the dep wiring in place avoids surprises).
+    void theme;
 
-    // Vue's template compiler infers reactive dependencies from the
-    // template string. Each row's `:style="rowStyle(theme, ...)"`
-    // reads `theme`, so the row's binding re-runs on theme change.
-    // The `v-for` re-uses DOM nodes between rebuilds when the keys
-    // match — analogous to React's `key`-driven reconciliation.
     return {
-      theme, rowCount, running, isDark,
-      onToggle, onStart,
-      pageStyle, controlsStyle, buttonStyle, listStyle, rowStyle,
+      rowCount,
+      pageStyle, listStyle, rowStyle,
+      // Pass through whatever the template needs.
+      themeLight: LIGHT,
     };
   },
   template: `
-    <div :style="pageStyle(theme)">
-      <div :style="controlsStyle(theme)">
-        <button :style="buttonStyle(theme)" @click="onToggle">Toggle theme</button>
-        <button :style="buttonStyle(theme)" @click="onStart" :disabled="running">
-          {{ running ? 'Running…' : 'Start test' }}
-        </button>
-        <span id="stats">Click toggle to measure, or Start test to run the suite</span>
-      </div>
-      <div :style="listStyle(theme)">
+    <div :style="pageStyle(themeLight)">
+      <!-- #stats kept hidden; instrumentation may write into it. -->
+      <span id="stats" style="display: none"></span>
+      <div :style="listStyle(themeLight)">
         <div v-for="i in rowCount" :key="i - 1"
-             :style="rowStyle(theme, (i - 1) % 2 === 0 ? 'even' : 'odd')">
+             :style="rowStyle(themeLight, (i - 1) % 2 === 0 ? 'even' : 'odd')">
           <span>Row #{{ i - 1 }}</span>
         </div>
       </div>
@@ -156,6 +130,11 @@ const app = createApp({
 });
 
 app.mount('#root');
+
+// `app.mount` runs synchronously, so `externalSetRows` is filled
+// by the time we get here. Hand it to the runner if we're in
+// iframe mode.
+autoRunIfRequested({ setRows: (n) => externalSetRows(n) });
 </script>
 </body>
 </html>

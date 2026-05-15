@@ -61,7 +61,7 @@
 //! configurable duration after its `when` condition flips, letting
 //! exit transitions on stylesheets actually play.
 
-use crate::{Bound, Primitive, Ref, RefFill, StyleSource};
+use crate::{Bound, Primitive, Ref, RefFill};
 use std::any::Any;
 use std::rc::Rc;
 
@@ -280,9 +280,9 @@ impl Bound<OverlayHandle> {
         self
     }
 
-    pub fn backdrop_style<S: Into<StyleSource>>(mut self, s: S) -> Self {
+    pub fn backdrop_style<S: crate::IntoStyleSource>(mut self, s: S) -> Self {
         if let Primitive::Overlay { backdrop_style, .. } = &mut self.primitive {
-            *backdrop_style = Some(s.into());
+            *backdrop_style = Some(s.into_style_source());
         }
         self
     }

@@ -34,8 +34,8 @@
 // NOT measure" section. If a cold-start arena slot lands later, the
 // honest Svelte answer there is "precompile during build."
 import { compile } from 'https://esm.sh/svelte@5.0.0/compiler';
-import { mount, unmount } from 'https://esm.sh/svelte@5.0.0';
-import { runToggle, runSuite, LIGHT, DARK } from '../instrument.js';
+import { mount } from 'https://esm.sh/svelte@5.0.0';
+import { autoRunIfRequested, LIGHT } from '../instrument.js';
 
 // The `.svelte` source. Kept inline so the variant is a single
 // self-contained file like the others. We pass `theme` + `rowCount`
@@ -43,7 +43,7 @@ import { runToggle, runSuite, LIGHT, DARK } from '../instrument.js';
 // expression, so Svelte wires per-row reactive deps automatically.
 const SOURCE = String.raw`
 <script>
-  let { theme, rowCount, onToggle, onStart, running } = $props();
+  let { theme, rowCount } = $props();
 
   const pageStyle = (t) =>
     "display: flex; flex-direction: column; padding: 32px; gap: 24px; min-height: 100%;"
@@ -75,13 +75,8 @@ const SOURCE = String.raw`
 </scr` + `ipt>
 
 <div style={pageStyle(theme)}>
-  <div style={controlsStyle(theme)}>
-    <button style={buttonStyle(theme)} onclick={onToggle}>Toggle theme</button>
-    <button style={buttonStyle(theme)} onclick={onStart} disabled={running}>
-      {running ? 'Running…' : 'Start test'}
-    </button>
-    <span id="stats">Click toggle to measure, or Start test to run the suite</span>
-  </div>
+  <!-- #stats kept hidden; instrumentation may write into it. -->
+  <span id="stats" style="display: none"></span>
   <div style={listStyle(theme)}>
     {#each Array(rowCount) as _, i (i)}
       <div style={rowStyle(theme, i % 2 === 0 ? 'even' : 'odd')}>
@@ -147,30 +142,18 @@ const App = (await import(moduleUrl)).default;
 const SHELL_SOURCE = String.raw`
 <script>
   import App from './App.svelte';
-  import { LIGHT, DARK } from '../instrument.js';
+  import { LIGHT } from '../instrument.js';
   let theme = $state(LIGHT);
   let rowCount = $state(1000);
-  let running = $state(false);
   // Expose mutators on the global so the outer module can drive them.
-  // This is ugly but the cleanest path without a build pipeline:
   // Svelte 5's mount API doesn't directly expose a setter for $state
-  // bindings on mounted instances.
+  // bindings on mounted instances, so we publish writers here from
+  // inside the shell.
   window.__svelteShellSetTheme = (t) => { theme = t; };
-  window.__svelteShellGetTheme = () => theme;
   window.__svelteShellSetRows  = (n) => { rowCount = n; };
-  window.__svelteShellGetRunning = () => running;
-  window.__svelteShellSetRunning = (b) => { running = b; };
-  window.__svelteShellOnToggle = null; // outer script sets these
-  window.__svelteShellOnStart  = null;
 </scr` + `ipt>
 
-<App
-  {theme}
-  {rowCount}
-  {running}
-  onToggle={() => window.__svelteShellOnToggle()}
-  onStart={() => window.__svelteShellOnStart()}
-/>
+<App {theme} {rowCount} />
 `;
 
 // Same compile + import dance for the shell. The shell's compiled
@@ -203,33 +186,16 @@ const Shell = (await import(shellUrl)).default;
 // live and we can drive the component from outside.
 mount(Shell, { target: document.getElementById('root') });
 
-// Wire up the toggle/start handlers via the globals the shell set.
-window.__svelteShellOnToggle = () => {
-  const cur = window.__svelteShellGetTheme();
-  const next = cur === DARK ? LIGHT : DARK;
-  runToggle(() => {
-    window.__svelteShellSetTheme(next);
-  }, { theme: next === DARK ? 'dark' : 'light', rows: 1000 /* approximate; suite tracks its own */ });
+// setRows for the runner-iframe path. Svelte 5's $state writes
+// flush synchronously, but Svelte batches the resulting DOM patches
+// inside its scheduler — we yield one frame so they settle before
+// the suite measures `apply`.
+const setRows = async (n) => {
+  window.__svelteShellSetRows(n);
+  await new Promise(r => requestAnimationFrame(r));
 };
 
-window.__svelteShellOnStart = async () => {
-  window.__svelteShellSetRunning(true);
-  try {
-    await runSuite({
-      setRows: async (n) => {
-        window.__svelteShellSetRows(n);
-        // Svelte 5 flushes synchronously when state is mutated outside
-        // an effect — the assignment above triggers any subscribed
-        // effects on the current task. No equivalent of `nextTick`
-        // needed before the suite measures `apply`.
-        await new Promise(r => requestAnimationFrame(r));
-      },
-      resultsEl: document.getElementById('results'),
-    });
-  } finally {
-    window.__svelteShellSetRunning(false);
-  }
-};
+autoRunIfRequested({ setRows });
 </script>
 </body>
 </html>

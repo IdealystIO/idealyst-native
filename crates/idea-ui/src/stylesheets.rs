@@ -118,7 +118,7 @@ stylesheet! {
 stylesheet! {
     pub Heading<IdeaThemeRef> {
         base(t) {
-            color: Color(t.colors().text.clone()),
+            color: t.colors().text.clone(),
             font_weight: FontWeight::SemiBold,
             letter_spacing: -0.3,
         }
@@ -158,18 +158,18 @@ stylesheet! {
 stylesheet! {
     pub Body<IdeaThemeRef> {
         base(t) {
-            color: Color(t.colors().text.clone()),
+            color: t.colors().text.clone(),
             font_size: t.typography().size_md,
             line_height: 20.0,
         }
         variant tone {
             #[default]
             default(_t) {}
-            muted(t)    { color: Color(t.colors().text_muted.clone()) }
-            primary(t)  { color: Color(t.colors().primary.clone()) }
-            danger(t)   { color: Color(t.colors().danger.clone()) }
-            success(t)  { color: Color(t.colors().success.clone()) }
-            warning(t)  { color: Color(t.colors().warning.clone()) }
+            muted(t)    { color: t.colors().text_muted.clone() }
+            primary(t)  { color: t.colors().primary.clone() }
+            danger(t)   { color: t.colors().danger.clone() }
+            success(t)  { color: t.colors().success.clone() }
+            warning(t)  { color: t.colors().warning.clone() }
         }
         variant align {
             #[default]
@@ -186,15 +186,15 @@ stylesheet! {
 stylesheet! {
     pub Caption<IdeaThemeRef> {
         base(t) {
-            color: Color(t.colors().text_muted.clone()),
+            color: t.colors().text_muted.clone(),
             font_size: t.typography().size_sm,
             line_height: 16.0,
         }
         variant tone {
             #[default]
-            default(t) { color: Color(t.colors().text_muted.clone()) }
-            danger(t)  { color: Color(t.colors().danger.clone()) }
-            success(t) { color: Color(t.colors().success.clone()) }
+            default(t) { color: t.colors().text_muted.clone() }
+            danger(t)  { color: t.colors().danger.clone() }
+            success(t) { color: t.colors().success.clone() }
         }
         variant align {
             #[default]
@@ -215,20 +215,20 @@ stylesheet! {
 stylesheet! {
     pub Card<IdeaThemeRef> {
         base(t) {
-            background: Color(t.colors().surface.clone()),
+            background: t.colors().surface.clone(),
             padding: t.spacing().lg,
             border_radius: t.radius().lg,
             gap: Length::Px(t.spacing().sm),
             border_width: 1.0,
-            border_color: Color(t.colors().border.clone()),
+            border_color: t.colors().border.clone(),
         }
         variant tone {
             #[default]
             surface(t) {
-                background: Color(t.colors().surface.clone()),
+                background: t.colors().surface.clone(),
             }
             elevated(t) {
-                background: Color(t.colors().surface.clone()),
+                background: t.colors().surface.clone(),
                 shadow: framework_core::Shadow {
                     x: 0.0,
                     y: 4.0,
@@ -237,12 +237,12 @@ stylesheet! {
                 },
             }
             primary(t) {
-                background: Color(t.colors().primary.clone()),
-                color: Color(t.colors().primary_text.clone()),
-                border_color: Color(t.colors().primary.clone()),
+                background: t.colors().primary.clone(),
+                color: t.colors().primary_text.clone(),
+                border_color: t.colors().primary.clone(),
             }
             muted(t) {
-                background: Color(t.colors().surface_alt.clone()),
+                background: t.colors().surface_alt.clone(),
             }
         }
         variant padding {
@@ -267,13 +267,13 @@ stylesheet! {
 stylesheet! {
     pub Field<IdeaThemeRef> {
         base(t) {
-            background: Color(t.colors().surface.clone()),
-            color: Color(t.colors().text.clone()),
+            background: t.colors().surface.clone(),
+            color: t.colors().text.clone(),
             padding_vertical: t.spacing().sm,
             padding_horizontal: t.spacing().md,
             border_radius: t.radius().md,
             border_width: 1.0,
-            border_color: Color(t.colors().border.clone()),
+            border_color: t.colors().border.clone(),
             font_size: t.typography().size_md,
         }
         variant size {
@@ -298,11 +298,11 @@ stylesheet! {
             #[default]
             default(_t) {}
             error(t) {
-                border_color: Color(t.colors().danger.clone()),
+                border_color: t.colors().danger.clone(),
             }
         }
         state focused(t) {
-            border_color: Color(t.colors().focus_ring.clone()),
+            border_color: t.colors().focus_ring.clone(),
         }
         state disabled(_t) {
             opacity: 0.55,
@@ -327,7 +327,7 @@ stylesheet! {
 stylesheet! {
     pub FieldLabel<IdeaThemeRef> {
         base(t) {
-            color: Color(t.colors().text.clone()),
+            color: t.colors().text.clone(),
             font_size: t.typography().size_sm,
             font_weight: FontWeight::Medium,
         }
@@ -337,13 +337,13 @@ stylesheet! {
 stylesheet! {
     pub FieldHelp<IdeaThemeRef> {
         base(t) {
-            color: Color(t.colors().text_muted.clone()),
+            color: t.colors().text_muted.clone(),
             font_size: t.typography().size_sm,
         }
         variant tone {
             #[default]
-            default(t) { color: Color(t.colors().text_muted.clone()) }
-            error(t)   { color: Color(t.colors().danger.clone()) }
+            default(t) { color: t.colors().text_muted.clone() }
+            error(t)   { color: t.colors().danger.clone() }
         }
     }
 }
@@ -355,7 +355,7 @@ stylesheet! {
 stylesheet! {
     pub Divider<IdeaThemeRef> {
         base(t) {
-            background: Color(t.colors().border.clone()),
+            background: t.colors().border.clone(),
             height: 1.0,
             width: Length::pct(100.0),
         }
@@ -631,7 +631,7 @@ stylesheet! {
 stylesheet! {
     pub Skeleton<IdeaThemeRef> {
         base(t) {
-            background: Color(t.colors().surface_alt.clone()),
+            background: t.colors().surface_alt.clone(),
         }
         transitions {
             background: 250ms EaseInOut,
@@ -655,7 +655,7 @@ stylesheet! {
             flex_direction: FlexDirection::Row,
             gap: Length::Px(t.spacing().xs),
             border_bottom_width: 1.0,
-            border_bottom_color: Color(t.colors().border.clone()),
+            border_bottom_color: t.colors().border.clone(),
         }
         transitions {
             border_bottom_color: 250ms EaseInOut,
@@ -667,7 +667,7 @@ stylesheet! {
     pub TabButton<IdeaThemeRef> {
         base(t) {
             background: Color("transparent".into()),
-            color: Color(t.colors().text_muted.clone()),
+            color: t.colors().text_muted.clone(),
             padding_vertical: t.spacing().sm,
             padding_horizontal: t.spacing().md,
             font_weight: FontWeight::Medium,
@@ -683,12 +683,12 @@ stylesheet! {
             #[default]
             off(_t) {}
             on(t) {
-                color: Color(t.colors().text.clone()),
-                border_bottom_color: Color(t.colors().primary.clone()),
+                color: t.colors().text.clone(),
+                border_bottom_color: t.colors().primary.clone(),
             }
         }
         state hovered(t) {
-            color: Color(t.colors().text.clone()),
+            color: t.colors().text.clone(),
         }
         transitions {
             color: 150ms EaseOut,
@@ -719,11 +719,11 @@ stylesheet! {
 stylesheet! {
     pub Modal<IdeaThemeRef> {
         base(t) {
-            background: Color(t.colors().surface.clone()),
+            background: t.colors().surface.clone(),
             padding: t.spacing().lg,
             border_radius: t.radius().lg,
             border_width: 1.0,
-            border_color: Color(t.colors().border.clone()),
+            border_color: t.colors().border.clone(),
             gap: Length::Px(t.spacing().md),
             flex_direction: FlexDirection::Column,
             min_width: 320.0,
@@ -745,11 +745,11 @@ stylesheet! {
 stylesheet! {
     pub Popover<IdeaThemeRef> {
         base(t) {
-            background: Color(t.colors().surface.clone()),
+            background: t.colors().surface.clone(),
             padding: t.spacing().sm,
             border_radius: t.radius().md,
             border_width: 1.0,
-            border_color: Color(t.colors().border.clone()),
+            border_color: t.colors().border.clone(),
             gap: Length::Px(t.spacing().xs),
             flex_direction: FlexDirection::Column,
             min_width: 180.0,

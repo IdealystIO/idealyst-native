@@ -94,17 +94,16 @@
 </head>
 <body>
   <div class="page">
-    <div class="controls">
-      <button id="toggle">Toggle theme</button>
-      <button id="start">Start test</button>
-      <span id="stats">Click toggle to measure, or Start test to run the suite</span>
-    </div>
     <div class="perf-list" id="list"></div>
+    <!-- #stats is read by the instrumentation harness for the
+         per-toggle text line; kept hidden so the iframe shows only
+         the row list. -->
+    <span id="stats" style="display: none"></span>
     <div id="results"></div>
   </div>
 
   <script type="module">
-    import { runToggle, runSuite } from '../instrument.js';
+    import { autoRunIfRequested } from '../instrument.js';
 
     const list = document.getElementById('list');
     let currentRows = 0;
@@ -133,26 +132,9 @@
     }
     buildRows(1000);
 
-    let isDark = false;
-    document.getElementById('toggle').addEventListener('click', () => {
-      isDark = !isDark;
-      runToggle(() => {
-        document.documentElement.classList.toggle('dark', isDark);
-      }, { theme: isDark ? 'dark' : 'light', rows: currentRows });
-    });
+    const setRows = async (n) => { buildRows(n); };
 
-    document.getElementById('start').addEventListener('click', async () => {
-      const btn = document.getElementById('start');
-      btn.disabled = true;
-      try {
-        await runSuite({
-          setRows: async (n) => { buildRows(n); },
-          resultsEl: document.getElementById('results'),
-        });
-      } finally {
-        btn.disabled = false;
-      }
-    });
+    autoRunIfRequested({ setRows });
   </script>
 </body>
 </html>

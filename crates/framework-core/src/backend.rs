@@ -358,6 +358,26 @@ pub trait Backend {
         // default: no-op
     }
 
+    /// Install or update the theme's named tokens as runtime variables.
+    /// Called by the framework after `install_theme` / `set_theme` —
+    /// once per theme change, with the full token list for the new
+    /// theme.
+    ///
+    /// Backends with a runtime variable layer (web's CSS custom
+    /// properties) implement this to write `--{name}: {value}` on the
+    /// document root (or update existing values in place). Subsequent
+    /// theme swaps mutate the existing declarations rather than
+    /// re-emitting any rules — one DOM op per changed token,
+    /// regardless of how many elements consume the variable.
+    ///
+    /// Backends without a variable system (iOS, Android) leave the
+    /// default no-op; they read `Tokenized::value()` at apply time and
+    /// behave as if the literal were set.
+    #[allow(unused_variables)]
+    fn install_theme_variables(&mut self, tokens: &[crate::TokenEntry]) {
+        // default: no-op
+    }
+
     /// Called when a styled node is being torn down (its surrounding
     /// `Effect` scope is dropping). Lets backends free per-node state —
     /// e.g. the web backend drops the node's dynamic CSS class slot
@@ -645,6 +665,47 @@ pub trait Backend {
         primitives::overlay::OverlayHandle::new(Rc::new(()), &NoopOverlayOps)
     }
 
+    /// Apply a presence-style transform (opacity + 2D translate +
+    /// uniform scale) to a node. Called by the walker's presence
+    /// arm at three points:
+    ///
+    /// - **Pre-mount enter** — `state = enter.from`, `transition =
+    ///   None`. The node is snapped to the entering state before
+    ///   its first paint.
+    /// - **Animate to resting** — `state = PresenceState::rest()`,
+    ///   `transition = Some((duration, easing))`. The next animation
+    ///   frame after mount; the backend interpolates from the
+    ///   pre-mount state to identity.
+    /// - **Exit** — `state = exit.to`, `transition = Some((duration,
+    ///   easing))`. The walker schedules a scope-drop after the
+    ///   transition completes.
+    /// - **Reversal** — same as "animate to resting" when an exit
+    ///   is interrupted by `present()` flipping back true.
+    ///
+    /// `PresenceState::rest()` means "no presence override is
+    /// active." Backends that don't implement presence leave the
+    /// default no-op; presence-controlled subtrees still mount and
+    /// unmount, just without animation.
+    #[allow(unused_variables)]
+    fn apply_presence(
+        &mut self,
+        node: &Self::Node,
+        state: primitives::presence::PresenceState,
+        transition: Option<(u32, crate::style::Easing)>,
+    ) {
+        // default: no-op
+    }
+
+    /// Default no-op handle for presence. Backends with an imperative
+    /// presence API can override.
+    #[allow(unused_variables)]
+    fn make_presence_handle(
+        &self,
+        node: &Self::Node,
+    ) -> primitives::presence::PresenceHandle {
+        primitives::presence::PresenceHandle::new(Rc::new(()), &NoopPresenceOps)
+    }
+
     /// Create a navigable container — the `Link` primitive.
     ///
     /// Backends are responsible for:
@@ -742,6 +803,9 @@ impl primitives::link::LinkOps for NoopLinkOps {
 
 struct NoopOverlayOps;
 impl primitives::overlay::OverlayOps for NoopOverlayOps {}
+
+struct NoopPresenceOps;
+impl primitives::presence::PresenceOps for NoopPresenceOps {}
 
 struct NoopButtonOps;
 impl ButtonOps for NoopButtonOps {

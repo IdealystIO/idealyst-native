@@ -52,6 +52,7 @@ use framework_core::primitives::overlay::{
     ViewportPlacement, ViewportRect,
 };
 use std::collections::HashMap;
+use std::cell::RefCell;
 use std::rc::Rc;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
@@ -76,6 +77,29 @@ pub(crate) struct OverlayInstance {
     /// `on_dismiss` callback.
     #[allow(dead_code)]
     escape_handler: Option<Closure<dyn FnMut(web_sys::KeyboardEvent)>>,
+    /// Document-level mousedown handler that fires `on_dismiss`
+    /// when the click target is OUTSIDE the overlay's content
+    /// element. Only populated for `BackdropMode::None` overlays
+    /// (popovers, dropdowns, tooltips) whose host wants
+    /// click-outside-to-close behavior. Modal/Drawer use a real
+    /// scrim (handled by `backdrop_click_handler`) so this stays
+    /// `None` for them.
+    ///
+    /// Wrapped in `Rc<RefCell<Option<…>>>` because installation is
+    /// deferred — a `requestAnimationFrame` callback writes into
+    /// this slot one frame after mount. Sharing the slot between
+    /// the install task and the instance lets `release_overlay`
+    /// retrieve the closure (if it was installed) and call
+    /// `removeEventListener` so the document doesn't keep firing
+    /// callbacks against freed Rust state.
+    document_click_handler: Rc<RefCell<Option<Closure<dyn FnMut(web_sys::Event)>>>>,
+    /// Pending install task for `document_click_handler`. Holding
+    /// it lets a quick teardown cancel the install before it runs
+    /// — otherwise the wasm-bindgen `Closure` inside the task
+    /// would be dropped while the browser still had it queued.
+    /// Dropped together with the rest of the instance.
+    #[allow(dead_code)]
+    deferred_install: Option<framework_core::ScheduledTask>,
 }
 
 /// All live overlay instances, keyed by `data-overlay-id`.
@@ -181,6 +205,65 @@ pub(crate) fn create(
         let _ = body.append_child(&portal_root);
     }
 
+    // ---- Click-outside dismissal for BackdropMode::None ----
+    //
+    // Modal/Drawer get click-outside dismissal via their scrim
+    // element (already wired above). Popovers / dropdowns /
+    // tooltips use `BackdropMode::None` — no scrim — but the host
+    // usually wants clicking elsewhere on the page to close the
+    // overlay. So when there's no scrim AND an on_dismiss, we
+    // install a document-level `mousedown` listener that fires
+    // dismiss when the click target isn't inside our content
+    // element.
+    //
+    // Two subtleties:
+    //
+    // 1. The install is deferred to the next animation frame.
+    //    Otherwise the *same click* that originally opened the
+    //    overlay (still in flight through the browser's click
+    //    dispatch after the host's on_click flipped the signal)
+    //    would be caught as an outside-click and re-close the
+    //    overlay immediately.
+    //
+    // 2. The closure handle has to be reachable from `release` so
+    //    we can `removeEventListener` — otherwise the listener
+    //    keeps firing for the rest of the session, referencing a
+    //    dismiss callback that's been freed. We share the closure
+    //    via an `Rc<RefCell<Option<Closure>>>` slot: the install
+    //    task writes the closure in when it runs; release reads it
+    //    out and detaches the listener.
+    let document_click_handler: Rc<RefCell<Option<Closure<dyn FnMut(web_sys::Event)>>>> =
+        Rc::new(RefCell::new(None));
+    let deferred_install: Option<framework_core::ScheduledTask> =
+        if matches!(backdrop, BackdropMode::None) {
+            on_dismiss.clone().map(|dismiss| {
+                let doc = b.doc.clone();
+                let content_for_listener = content.clone();
+                let slot_for_install = document_click_handler.clone();
+                framework_core::after_animation_frame(move || {
+                    let closure: Closure<dyn FnMut(web_sys::Event)> =
+                        Closure::wrap(Box::new(move |ev: web_sys::Event| {
+                            let target_node: Option<web_sys::Node> = ev
+                                .target()
+                                .and_then(|t| t.dyn_into::<web_sys::Node>().ok());
+                            let Some(target_node) = target_node else {
+                                return;
+                            };
+                            if !content_for_listener.contains(Some(&target_node)) {
+                                (dismiss)();
+                            }
+                        }) as Box<dyn FnMut(web_sys::Event)>);
+                    let _ = doc.add_event_listener_with_callback(
+                        "mousedown",
+                        closure.as_ref().unchecked_ref(),
+                    );
+                    *slot_for_install.borrow_mut() = Some(closure);
+                })
+            })
+        } else {
+            None
+        };
+
     // ---- Stash the instance for cleanup ----
     b.overlay_instances.insert(
         id,
@@ -188,6 +271,8 @@ pub(crate) fn create(
             portal_root: portal_root.clone(),
             backdrop_click_handler,
             escape_handler,
+            document_click_handler,
+            deferred_install,
         },
     );
 
@@ -272,6 +357,25 @@ pub(crate) fn release(b: &mut WebBackend, node: &Node) {
         let _ = body.remove_child(portal_root.unchecked_ref());
     }
 
+    // The document-level click-outside listener (popover case)
+    // doesn't go away just because the overlay's content was
+    // detached from the DOM. We have to explicitly
+    // removeEventListener with the same closure that was added;
+    // otherwise the browser keeps invoking it for the rest of the
+    // page session, and after the instance drops below the
+    // closure's captured `dismiss` Rc points at freed framework
+    // state.
+    if id != u32::MAX {
+        if let Some(inst) = b.overlay_instances.get(&id) {
+            if let Some(closure) = inst.document_click_handler.borrow().as_ref() {
+                let _ = b.doc.remove_event_listener_with_callback(
+                    "mousedown",
+                    closure.as_ref().unchecked_ref(),
+                );
+            }
+        }
+    }
+
     // Drop the instance — fires Closure::Drop on the held handlers,
     // freeing wasm-bindgen state JS-side.
     if id != u32::MAX {
@@ -300,12 +404,24 @@ impl OverlayOps for WebOverlayOps {}
 /// yet (its `Ref` is still empty), we fall back to centering as a
 /// safe default.
 fn position_styles_for_anchor(anchor: &OverlayAnchor) -> String {
+    // Important: positioning must NOT use the `transform` CSS
+    // property. Presence animations write to `transform` for their
+    // own translate/scale, and CSS doesn't compose two inline
+    // `transform` writes — the later one overwrites the earlier.
+    // So Center uses the `inset: 0; margin: auto` centering trick
+    // (modern CSS, works on every shipping browser) which leaves
+    // `transform` free for presence.
     let base = "position: absolute; pointer-events: auto;";
     match anchor {
         OverlayAnchor::Viewport(p) => {
             let placement = match p {
+                // Centering without transform: `inset: 0` pins the
+                // box to all four edges; `margin: auto` distributes
+                // remaining space equally on each axis; `width:
+                // max-content` lets the box size to its content
+                // rather than expanding to the viewport.
                 ViewportPlacement::Center => {
-                    "top: 50%; left: 50%; transform: translate(-50%, -50%);"
+                    "inset: 0; margin: auto; width: max-content; height: max-content;"
                 }
                 ViewportPlacement::Top => "top: 0; left: 0; right: 0;",
                 ViewportPlacement::Bottom => "bottom: 0; left: 0; right: 0;",
@@ -318,10 +434,11 @@ fn position_styles_for_anchor(anchor: &OverlayAnchor) -> String {
         OverlayAnchor::Element(e) => {
             // Measure target now. If the target isn't filled yet
             // (Ref hasn't been bound at mount time), fall back to
-            // centering — better than positioning at (0, 0).
+            // viewport-centered (same transform-free centering as
+            // above).
             let Some(rect) = e.target.rect() else {
                 return format!(
-                    "{} top: 50%; left: 50%; transform: translate(-50%, -50%);",
+                    "{} inset: 0; margin: auto; width: max-content; height: max-content;",
                     base
                 );
             };

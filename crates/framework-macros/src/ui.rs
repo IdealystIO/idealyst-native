@@ -369,7 +369,7 @@ fn emit_component(
         "text" | "button" | "view" | "when"
         | "image" | "textinput" | "toggle" | "scrollview"
         | "slider" | "webview" | "video" | "activityindicator"
-        | "flatlist" | "link" | "overlay"
+        | "flatlist" | "link" | "overlay" | "presence"
     );
     let supports_disabled = lower.as_str() == "button";
 
@@ -417,6 +417,7 @@ fn emit_component(
         "graphics" => emit_graphics(&other_props, children),
         "link" => emit_link(&other_props, children),
         "overlay" => emit_overlay(&other_props, children),
+        "presence" => emit_presence(&other_props, children),
         _ => emit_user(name, props, children),
     };
 
@@ -842,6 +843,51 @@ fn emit_overlay(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
         #backdrop_style_call
         #on_dismiss_call
         #trap_focus_call
+    }
+}
+
+/// `Presence(present = ..., enter = ..., exit = ...) { child }`.
+/// Lowers to a `presence(move || <child primitive>)` call, chained
+/// with the optional `.present(...)`, `.enter(...)`, `.exit(...)`
+/// builder methods. The children block builds the child primitive —
+/// if it has multiple nodes they wrap in a View, exactly like
+/// `emit_block_as_primitive` does for `when` / `switch` branches.
+///
+/// The child expression is captured by-move into the closure so its
+/// reactive scope subscribes correctly on each (re)mount.
+fn emit_presence(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
+    let child_expr = emit_block_as_primitive(children.unwrap_or(&[]));
+
+    let present_call = props
+        .iter()
+        .find(|p| p.name == "present")
+        .map(|p| {
+            let v = &p.value;
+            quote! { .present(#v) }
+        })
+        .unwrap_or_default();
+    let enter_call = props
+        .iter()
+        .find(|p| p.name == "enter")
+        .map(|p| {
+            let v = &p.value;
+            quote! { .enter(#v) }
+        })
+        .unwrap_or_default();
+    let exit_call = props
+        .iter()
+        .find(|p| p.name == "exit")
+        .map(|p| {
+            let v = &p.value;
+            quote! { .exit(#v) }
+        })
+        .unwrap_or_default();
+
+    quote! {
+        ::framework_core::primitives::presence::presence(move || #child_expr)
+            #present_call
+            #enter_call
+            #exit_call
     }
 }
 

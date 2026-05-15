@@ -48,11 +48,8 @@
 </style>
 </head>
 <body>
-  <div class="controls">
-    <button id="toggle">Toggle theme</button>
-    <button id="start">Start test</button>
-    <span id="stats">Click toggle to measure, or Start test to run the suite</span>
-  </div>
+  <!-- #stats kept hidden; instrumentation may write into it. -->
+  <span id="stats" style="display: none"></span>
   <div id="app"></div>
   <div id="results"></div>
 
@@ -60,37 +57,23 @@
     // Path is relative to this file. wasm-pack with --target=web
     // emits a JS shim alongside the .wasm; importing the shim
     // bootstraps the module.
-    import init, { start, toggle, set_rows, row_count }
+    import init, { start, set_rows }
       from './wasm/pkg/arena_idealyst_native.js';
-    import { runToggle, runSuite } from '../instrument.js';
+    import { autoRunIfRequested } from '../instrument.js';
 
     await init();
     start(1000);
 
-    let currentRows = row_count();
-    let activeTheme = 'light';
+    // setRows for the runner-iframe path.
+    const setRows = async (n) => {
+      set_rows(n);
+    };
 
-    document.getElementById('toggle').addEventListener('click', () => {
-      runToggle(() => {
-        activeTheme = toggle();
-      }, { theme: activeTheme === 'light' ? 'dark' : 'light', rows: currentRows });
-    });
-
-    document.getElementById('start').addEventListener('click', async () => {
-      const btn = document.getElementById('start');
-      btn.disabled = true;
-      try {
-        await runSuite({
-          setRows: async (n) => {
-            set_rows(n);
-            currentRows = n;
-          },
-          resultsEl: document.getElementById('results'),
-        });
-      } finally {
-        btn.disabled = false;
-      }
-    });
+    // When the page is loaded inside the runner's iframe with a
+    // `?suite=NAME` query param, this auto-runs the suite and posts
+    // results back via `postMessage`. Standalone tab usage sees no
+    // `?suite=` and this is a no-op.
+    autoRunIfRequested({ setRows });
   </script>
 </body>
 </html>

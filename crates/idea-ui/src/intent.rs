@@ -39,7 +39,7 @@
 
 use std::rc::Rc;
 
-use framework_core::Color;
+use framework_core::{Color, Tokenized};
 
 use crate::theme::IdeaTheme;
 
@@ -47,23 +47,28 @@ use crate::theme::IdeaTheme;
 /// trait that consumes this is responsible for picking which fields
 /// matter — Pressable uses bg + hover + pressed + fg; Badge uses
 /// bg + fg; future components may use the same struct's other slots.
+///
+/// Each color is a `Tokenized<Color>` — built-in intents pull theme
+/// tokens by reference, so swapping themes updates every component
+/// styled by an intent without re-minting any classes. Custom intents
+/// can use `Tokenized::Literal(Color(...))` for hard-coded values.
 #[derive(Clone)]
 pub struct IntentPalette {
-    pub background: Color,
-    pub background_hover: Color,
-    pub background_pressed: Color,
-    pub foreground: Color,
+    pub background: Tokenized<Color>,
+    pub background_hover: Tokenized<Color>,
+    pub background_pressed: Tokenized<Color>,
+    pub foreground: Tokenized<Color>,
     /// Optional border color. `None` means "no border for this
     /// intent" — useful for ghost / outlined intents that want a
     /// border without a fill.
-    pub border: Option<Color>,
+    pub border: Option<Tokenized<Color>>,
 }
 
 impl IntentPalette {
     /// Helper for intents that don't differentiate hover / pressed
     /// from the base background. Components are free to ignore the
     /// hover/pressed slots if they don't use them.
-    pub fn flat(background: Color, foreground: Color) -> Self {
+    pub fn flat(background: Tokenized<Color>, foreground: Tokenized<Color>) -> Self {
         Self {
             background: background.clone(),
             background_hover: background.clone(),
@@ -147,10 +152,10 @@ impl Intent for Primary {
     fn palette(&self, theme: &dyn IdeaTheme) -> IntentPalette {
         let c = theme.colors();
         IntentPalette {
-            background:         Color(c.primary.clone()),
-            background_hover:   Color(c.primary_hover.clone()),
-            background_pressed: Color(c.primary_pressed.clone()),
-            foreground:         Color(c.primary_text.clone()),
+            background:         c.primary.clone(),
+            background_hover:   c.primary_hover.clone(),
+            background_pressed: c.primary_pressed.clone(),
+            foreground:         c.primary_text.clone(),
             border:             None,
         }
     }
@@ -164,10 +169,10 @@ impl Intent for Secondary {
     fn palette(&self, theme: &dyn IdeaTheme) -> IntentPalette {
         let c = theme.colors();
         IntentPalette {
-            background:         Color(c.surface_alt.clone()),
-            background_hover:   Color(c.surface_alt.clone()),
-            background_pressed: Color(c.border.clone()),
-            foreground:         Color(c.text.clone()),
+            background:         c.surface_alt.clone(),
+            background_hover:   c.surface_alt.clone(),
+            background_pressed: c.border.clone(),
+            foreground:         c.text.clone(),
             border:             None,
         }
     }
@@ -182,11 +187,11 @@ impl Intent for Neutral {
     fn palette(&self, theme: &dyn IdeaTheme) -> IntentPalette {
         let c = theme.colors();
         IntentPalette {
-            background:         Color("transparent".into()),
-            background_hover:   Color(c.surface_alt.clone()),
-            background_pressed: Color(c.border.clone()),
-            foreground:         Color(c.text.clone()),
-            border:             Some(Color(c.border.clone())),
+            background:         Tokenized::Literal(Color("transparent".into())),
+            background_hover:   c.surface_alt.clone(),
+            background_pressed: c.border.clone(),
+            foreground:         c.text.clone(),
+            border:             Some(c.border.clone()),
         }
     }
     fn cache_key(&self) -> u64 { KEY_NEUTRAL }
@@ -199,10 +204,10 @@ impl Intent for Ghost {
     fn palette(&self, theme: &dyn IdeaTheme) -> IntentPalette {
         let c = theme.colors();
         IntentPalette {
-            background:         Color("transparent".into()),
-            background_hover:   Color(c.surface_alt.clone()),
-            background_pressed: Color(c.border.clone()),
-            foreground:         Color(c.text.clone()),
+            background:         Tokenized::Literal(Color("transparent".into())),
+            background_hover:   c.surface_alt.clone(),
+            background_pressed: c.border.clone(),
+            foreground:         c.text.clone(),
             border:             None,
         }
     }
@@ -215,10 +220,10 @@ impl Intent for Success {
     fn palette(&self, theme: &dyn IdeaTheme) -> IntentPalette {
         let c = theme.colors();
         IntentPalette {
-            background:         Color(c.success.clone()),
-            background_hover:   Color(c.success.clone()),
-            background_pressed: Color(c.success.clone()),
-            foreground:         Color("#ffffff".into()),
+            background:         c.success.clone(),
+            background_hover:   c.success.clone(),
+            background_pressed: c.success.clone(),
+            foreground:         Tokenized::Literal(Color("#ffffff".into())),
             border:             None,
         }
     }
@@ -231,10 +236,10 @@ impl Intent for Warning {
     fn palette(&self, theme: &dyn IdeaTheme) -> IntentPalette {
         let c = theme.colors();
         IntentPalette {
-            background:         Color(c.warning.clone()),
-            background_hover:   Color(c.warning.clone()),
-            background_pressed: Color(c.warning.clone()),
-            foreground:         Color("#1a1a1f".into()),
+            background:         c.warning.clone(),
+            background_hover:   c.warning.clone(),
+            background_pressed: c.warning.clone(),
+            foreground:         Tokenized::Literal(Color("#1a1a1f".into())),
             border:             None,
         }
     }
@@ -247,10 +252,10 @@ impl Intent for Danger {
     fn palette(&self, theme: &dyn IdeaTheme) -> IntentPalette {
         let c = theme.colors();
         IntentPalette {
-            background:         Color(c.danger.clone()),
-            background_hover:   Color(c.danger_hover.clone()),
-            background_pressed: Color(c.danger_pressed.clone()),
-            foreground:         Color(c.danger_text.clone()),
+            background:         c.danger.clone(),
+            background_hover:   c.danger_hover.clone(),
+            background_pressed: c.danger_pressed.clone(),
+            foreground:         c.danger_text.clone(),
             border:             None,
         }
     }
@@ -289,10 +294,10 @@ pub fn apply_palette(
         r.border_right_color = Some(border.clone());
         r.border_bottom_color = Some(border.clone());
         r.border_left_color = Some(border.clone());
-        r.border_top_width = Some(1.0);
-        r.border_right_width = Some(1.0);
-        r.border_bottom_width = Some(1.0);
-        r.border_left_width = Some(1.0);
+        r.border_top_width = Some(Tokenized::Literal(1.0));
+        r.border_right_width = Some(Tokenized::Literal(1.0));
+        r.border_bottom_width = Some(Tokenized::Literal(1.0));
+        r.border_left_width = Some(Tokenized::Literal(1.0));
     }
 
     style

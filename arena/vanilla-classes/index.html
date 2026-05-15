@@ -40,6 +40,15 @@
   }
   .rows-label { font-size: 13px; opacity: 0.7; }
   .perf-list {
+    /* `flex` parent so rows behave as flex children with the
+       default `flex-shrink: 1`, which collapses each row to its
+       content height + padding (~34px). Matches the other arena
+       variants (react / vue / svelte / vanilla-css-vars all use
+       flex-column lists). Without this the list would be a
+       `display: block` and rows would honor their declared
+       `height: 36` literally, ending up visually taller than
+       everywhere else. */
+    display: flex; flex-direction: column;
     border-radius: 10px; border: 1px solid;
     height: 500px; overflow: hidden; overflow-y: auto;
     transition: background 250ms ease-in-out, border-color 250ms ease-in-out;
@@ -48,17 +57,14 @@
 </head>
 <body>
   <div class="page" id="page">
-    <div class="controls" id="controls">
-      <button id="toggle">Toggle theme</button>
-      <button id="start">Start test</button>
-      <span id="stats">Click toggle to measure, or Start test to run the suite</span>
-    </div>
     <div class="perf-list" id="list"></div>
+    <!-- #stats kept hidden; instrumentation may write into it. -->
+    <span id="stats" style="display: none"></span>
     <div id="results"></div>
   </div>
 
   <script type="module">
-    import { runToggle, runSuite, LIGHT, DARK } from '../instrument.js';
+    import { autoRunIfRequested, LIGHT, DARK } from '../instrument.js';
 
     let rowCount = 1000;
 
@@ -122,51 +128,43 @@
     }
 
     const list = document.getElementById('list');
-    let rows = [], texts = [];
 
-    // (Re)build the list. Mutates the module-level `rows`/`texts`
-    // arrays in place so `applyTheme` always operates on the
-    // current row set. DocumentFragment so a single attach pays
-    // the layout cost, not N.
+    // "Vanilla as fast as possible" — single-FFI bulk construction
+    // via `innerHTML`. Builds one big HTML string with every row's
+    // className already baked in, hands it to the browser to parse
+    // in C++. One Rust→JS crossing for 10 000 rows of DOM, vs the
+    // ~30 000 crossings a per-element `createElement`+`appendChild`
+    // loop would pay even with a `DocumentFragment` collecting the
+    // children.
     //
-    // Row text is wrapped in a <span> to match the
-    // idealyst-native variant's DOM shape. Its `Text` primitive
-    // emits a <span> as a stable styling target; for a fair
-    // benchmark every variant mounts the same number of DOM
-    // nodes per row.
-    function buildRows(count) {
-      while (list.firstChild) list.removeChild(list.firstChild);
-      rows = []; texts = [];
-      rowCount = count;
-      const frag = document.createDocumentFragment();
-      for (let i = 0; i < count; i++) {
-        const row = document.createElement('div');
-        // No class at mount — `applyTheme` paints the row's
-        // current-theme class on its first run. Matches the
-        // framework's "no `.ui-default` baseline" behavior.
-        const text = document.createElement('span');
-        text.textContent = `Row #${i}`;
-        row.appendChild(text);
-        frag.appendChild(row);
-        rows.push(row);
-        texts.push(text);
-      }
-      list.appendChild(frag);
-    }
-    buildRows(1000);
-
+    // Why this is the right ceiling for the arena:
+    //   - The framework's `Primitive::Repeat` lowers to a
+    //     `DocumentFragment`-collected loop. Vanilla using
+    //     `innerHTML` represents the best a DOM-driven UI can do
+    //     short of writing raw bytes into a Canvas — it sets the
+    //     "what's physically possible" floor the framework chases.
+    //   - The escaping cost is negligible at this row-text shape
+    //     (just digits — no user-controlled strings). For variants
+    //     with arbitrary text, the `textContent` setter path would
+    //     be required and `innerHTML` would be unsafe.
+    //
+    // Row shape: `<div class="<rowCls>"><span class="<textCls>">Row #N</span></div>` —
+    // same DOM nodes per row as the other variants (div + span).
     let activeRules = null;
     let toggleN = 0;
 
-    function applyTheme(theme, tag) {
-      // Force a fresh hash each toggle — worst case for cache.
+    // Mint fresh per-theme CSS rules and return their `className`s
+    // for the per-row bake-in. Each toggle invents a new hash so
+    // the framework's "worst case" — fresh class minting + old-
+    // class teardown — is faithfully reproduced. We don't reuse
+    // class names across applies because the framework doesn't
+    // either.
+    function mintRules(theme, tag) {
       const rowEven = hashName(`PerfRow|even|${tag}`);
       const rowOdd  = hashName(`PerfRow|odd|${tag}`);
       const textCls = hashName(`Text|${tag}`);
       const pageCls = hashName(`Page|${tag}`);
       const listCls = hashName(`PerfList|${tag}`);
-      const ctrlCls = hashName(`PerfControls|${tag}`);
-      const btnCls  = hashName(`PrimaryButton|${tag}`);
 
       const newRules = {
         rowEven: insertRule(rowEven, rowCss(theme, 'even')),
@@ -174,76 +172,76 @@
         text:    insertRule(textCls, `color: ${theme.text}; transition: color 250ms ease-in-out`),
         page:    insertRule(pageCls, `background: ${theme.background}; color: ${theme.text}`),
         list:    insertRule(listCls, `background: ${theme.surface}; border-color: ${theme.border}`),
-        ctrl:    insertRule(ctrlCls, `background: ${theme.surface}; border-color: ${theme.border}; color: ${theme.text}`),
-        btn:     insertRule(btnCls,  `background: ${theme.primary}; color: ${theme.primary_text}`),
       };
 
-      // No `ui-default` prefix — the framework recently dropped that
-      // per-node baseline (flex semantics now happen at CSS-emit
-      // time when the rule actually uses flex props). This variant
-      // mirrors the framework's web backend; tracks the change so
-      // the comparison stays fair.
+      // Apply page/list classes to the static chrome (cheap — two
+      // setAttribute calls, the runner has #page and #list mounted).
       const setAttr = Element.prototype.setAttribute;
-      for (let i = 0; i < rows.length; i++) {
-        const cls = (i % 2 === 0) ? rowEven : rowOdd;
-        setAttr.call(rows[i], 'class', cls);
-        setAttr.call(texts[i], 'class', textCls);
-      }
       setAttr.call(document.getElementById('page'), 'class', `page ${pageCls}`);
       setAttr.call(document.getElementById('list'), 'class', `perf-list ${listCls}`);
-      setAttr.call(document.getElementById('controls'), 'class', `controls ${ctrlCls}`);
-      setAttr.call(document.getElementById('toggle'), 'class', btnCls);
 
-      // Drop previous theme's rules. Delete highest indices first.
+      // Drop previous theme's rules. The framework does this on
+      // every toggle too, so the cost is part of an honest apply
+      // measurement.
       if (activeRules) {
         const prev = Object.values(activeRules).sort((a, b) => b - a);
         for (const idx of prev) { sheet.deleteRule(idx); liveRules.delete(idx); }
-        // Re-resolve the just-inserted indices by class name.
+        // After deletes, our cached indices are stale. Re-resolve
+        // by class-name lookup so subsequent applies can delete
+        // the right rules.
         newRules.rowEven = findRuleIdx(rowEven);
         newRules.rowOdd  = findRuleIdx(rowOdd);
         newRules.text    = findRuleIdx(textCls);
         newRules.page    = findRuleIdx(pageCls);
         newRules.list    = findRuleIdx(listCls);
-        newRules.ctrl    = findRuleIdx(ctrlCls);
-        newRules.btn     = findRuleIdx(btnCls);
       }
       activeRules = newRules;
+      return { rowEven, rowOdd, textCls };
     }
 
-    // Prime with light.
-    applyTheme(LIGHT, `init-${toggleN}`);
+    // Prime with light so the initial unmeasured render has a
+    // theme. The runner will then drive `setRows` for each
+    // measured iteration.
+    {
+      const tag = `init-${toggleN}`;
+      const { rowEven, rowOdd, textCls } = mintRules(LIGHT, tag);
+      // Build the initial 1000 rows with the just-minted classes.
+      let html = '';
+      for (let i = 0; i < rowCount; i++) {
+        const rowCls = (i % 2 === 0) ? rowEven : rowOdd;
+        html += `<div class="${rowCls}"><span class="${textCls}">Row #${i}</span></div>`;
+      }
+      list.innerHTML = html;
+    }
 
     let isDark = false;
-    document.getElementById('toggle').addEventListener('click', () => {
+
+    // setRows for the runner-iframe path. Mints fresh classes for
+    // the current theme, builds the row HTML with them baked in,
+    // and swaps the list contents in one `innerHTML` write.
+    //
+    // The HTML-string assembly is pure JS-side concatenation (no
+    // FFI) — even for 10 000 rows that's a single ~500 KB string,
+    // built in microseconds. The single `innerHTML` setter call
+    // is the only Rust→JS crossing for the entire mount.
+    const setRows = async (n) => {
       toggleN++;
-      isDark = !isDark;
+      rowCount = n;
       const theme = isDark ? DARK : LIGHT;
-      runToggle(() => {
-        applyTheme(theme, `t-${toggleN}`);
-      }, { theme: isDark ? 'dark' : 'light', rows: rowCount });
-    });
+      const tag = `r-${toggleN}`;
+      const { rowEven, rowOdd, textCls } = mintRules(theme, tag);
 
-    document.getElementById('start').addEventListener('click', async () => {
-      const btn = document.getElementById('start');
-      btn.disabled = true;
-      try {
-        await runSuite({
-          setRows: async (n) => {
-            toggleN++;
-            buildRows(n);
-            // Re-apply the current theme to the freshly-built rows.
-            // Both the build and the re-paint are inside the suite's
-            // `runToggle` window, so they're measured together — same
-            // shape as the previous Apply button.
-            applyTheme(isDark ? DARK : LIGHT, `r-${toggleN}`);
-          },
-          resultsEl: document.getElementById('results'),
-        });
-      } finally {
-        btn.disabled = false;
+      let html = '';
+      for (let i = 0; i < n; i++) {
+        const rowCls = (i % 2 === 0) ? rowEven : rowOdd;
+        html += `<div class="${rowCls}"><span class="${textCls}">Row #${i}</span></div>`;
       }
-    });
+      // Single FFI for the whole subtree. Browser parses + builds
+      // all N rows in C++ from one string.
+      list.innerHTML = html;
+    };
 
+    autoRunIfRequested({ setRows });
   </script>
 </body>
 </html>

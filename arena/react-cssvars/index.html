@@ -99,10 +99,10 @@
 <body>
 <div id="root"></div>
 <script type="module">
-import React, { useState, useCallback, useEffect, useRef, memo } from 'react';
+import React, { useState, useEffect, memo } from 'react';
 import { createRoot } from 'react-dom/client';
 import { flushSync } from 'https://esm.sh/react-dom@18.3.1?dev&deps=react@18.3.1';
-import { runToggle, runSuite } from '../instrument.js';
+import { autoRunIfRequested } from '../instrument.js';
 
 const e = React.createElement;
 
@@ -119,65 +119,52 @@ const Row = memo(function Row({ index }) {
   );
 });
 
+// External setRows hook for the runner-iframe path. See react-naive
+// for the rationale.
+let externalSetRows = null;
+
 function App() {
   const [isDark, setIsDark] = useState(false);
   const [rowCount, setRowCountState] = useState(1000);
-  const [running, setRunning] = useState(false);
+
+  if (!externalSetRows) {
+    externalSetRows = async (n) => {
+      flushSync(() => setRowCountState(n));
+    };
+  }
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', isDark);
   }, [isDark]);
+  // `setIsDark` is unused under the current rebuild suite; reference
+  // it so React doesn't warn. A future theme-toggle suite would
+  // surface this to the runner the same way `externalSetRows` does.
+  void setIsDark;
 
-  const onToggle = useCallback(() => {
-    const next = !isDark;
-    runToggle(() => {
-      // flushSync to keep the React commit inside the apply window,
-      // same as react-naive — even though here the commit is trivial
-      // (one className on <html> via the effect).
-      flushSync(() => setIsDark(next));
-    }, { theme: next ? 'dark' : 'light', rows: rowCount });
-  }, [isDark, rowCount]);
-
-  const onStart = useCallback(async () => {
-    setRunning(true);
-    try {
-      await runSuite({
-        // `flushSync` keeps the rebuild commit synchronous inside
-        // the suite's measurement window — without it, React 18
-        // would batch the update and the rebuild would land after
-        // `apply` closed.
-        setRows: async (n) => {
-          flushSync(() => setRowCountState(n));
-        },
-        resultsEl: document.getElementById('results'),
-      });
-    } finally {
-      setRunning(false);
-    }
-  }, []);
-
-  // Rows are memoized per row count. They still never re-render on
-  // theme toggle because the CSS-variable approach keeps the rows'
-  // own props stable.
   const rows = React.useMemo(
     () => Array.from({ length: rowCount }, (_, i) => e(Row, { key: i, index: i })),
     [rowCount]
   );
 
   return e('div', { className: 'page' },
-    e('div', { className: 'controls' },
-      e('button', { onClick: onToggle }, 'Toggle theme'),
-      e('button', { onClick: onStart, disabled: running },
-        running ? 'Running…' : 'Start test',
-      ),
-      e('span', { id: 'stats' }, 'Click toggle to measure, or Start test to run the suite'),
-    ),
+    // No on-page controls — the runner drives setRows via postMessage.
+    e('span', { id: 'stats', style: { display: 'none' } }),
     e('div', { className: 'perf-list' }, rows),
     e('div', { id: 'results', style: { padding: '0 32px 32px' } }),
   );
 }
 
 createRoot(document.getElementById('root')).render(e(App));
+
+async function waitForReady() {
+  for (let i = 0; i < 50 && !externalSetRows; i++) {
+    await new Promise(r => requestAnimationFrame(r));
+  }
+  if (!externalSetRows) throw new Error('React mount never filled externalSetRows');
+}
+waitForReady().then(() =>
+  autoRunIfRequested({ setRows: (n) => externalSetRows(n) })
+);
 </script>
 </body>
 </html>

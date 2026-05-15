@@ -28,7 +28,10 @@ raw-window-handle = "0.6"
 version = "0.3"
 features = [
     "console",
+    "CssRule",
     "CssRuleList",
+    "CssStyleDeclaration",
+    "CssStyleRule",
     "CssStyleSheet",
     "Document",
     "DocumentFragment",

@@ -148,6 +148,13 @@ pub struct WebBackend {
     /// unchanged, so insert+delete are both O(1) regardless of how
     /// many rules are live.
     pub(crate) free_rule_indices: Vec<u32>,
+    /// CSS rule index of the `:root { --token: value; ... }` block
+    /// that holds the active theme's token variables. `None` until the
+    /// first `install_theme_variables` call. On theme swap we reach
+    /// into the existing rule's `CSSStyleDeclaration` and `setProperty`
+    /// each token in place — the rule itself is never deleted, so no
+    /// other rule indices shift and no minted class re-emits.
+    pub(crate) theme_root_rule_index: Option<u32>,
     /// Per-overlay state, keyed by the `data-overlay-id` attribute
     /// stamped on the portal root. Holds the wasm-bindgen `Closure`
     /// handles wired to dismiss events (Escape key, scrim click) so
@@ -229,6 +236,7 @@ impl WebBackend {
             next_node_id: 0,
             node_ids: HashMap::new(),
             free_rule_indices: Vec::new(),
+            theme_root_rule_index: None,
             overlay_instances: HashMap::new(),
             next_overlay_id: 0,
             overlay_css_injected: false,
@@ -476,6 +484,15 @@ impl Backend for WebBackend {
         primitives::overlay::make_handle(node)
     }
 
+    fn apply_presence(
+        &mut self,
+        node: &Self::Node,
+        state: framework_core::PresenceState,
+        transition: Option<(u32, framework_core::Easing)>,
+    ) {
+        primitives::presence::apply(self, node, state, transition)
+    }
+
     fn clear_children(&mut self, node: &Self::Node) {
         primitives::view::clear_children(node)
     }
@@ -486,6 +503,10 @@ impl Backend for WebBackend {
 
     fn unregister_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
         self.impl_unregister_stylesheet(rules)
+    }
+
+    fn install_theme_variables(&mut self, tokens: &[framework_core::TokenEntry]) {
+        self.impl_install_theme_variables(tokens)
     }
 
     fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {

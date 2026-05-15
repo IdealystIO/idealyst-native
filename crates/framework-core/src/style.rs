@@ -91,6 +91,99 @@ fn length_bits(l: Length) -> u64 {
     }
 }
 
+// ----------------------------------------------------------------------------
+// Tokenized<T> — values that may resolve through a named theme token
+// ----------------------------------------------------------------------------
+
+/// A property value that is either a literal or a reference to a named
+/// theme token. The `name` is theme-independent; the `fallback` is the
+/// concrete value that should be used when no theme variable system is
+/// available (mobile backends, SSR, etc.) or when the variable hasn't
+/// been installed yet.
+///
+/// **Why this exists.** Backends that support runtime variables (web's
+/// CSS custom properties) can emit `var(--name, fallback)` instead of
+/// the literal value. Theme swap then becomes a single write per token
+/// — no class regeneration, no per-element style mutation. Backends
+/// without a variable system (iOS, Android) just read `.value()` and
+/// behave like the literal was set.
+///
+/// **Identity for caching.** [`StyleRules::content_key`] hashes the
+/// **token name** for `Tokenized::Token` (not the fallback). So two
+/// themes that bind `color-accent` to different colors produce the
+/// **same** content key for a stylesheet that uses `color-accent` —
+/// which is what makes class names theme-stable.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Tokenized<T> {
+    Literal(T),
+    Token { name: &'static str, fallback: T },
+}
+
+impl<T> Tokenized<T> {
+    /// The concrete value to use when no variable system is available.
+    /// For `Literal(v)` returns `v`; for `Token { fallback, .. }`
+    /// returns the fallback.
+    pub fn value(&self) -> &T {
+        match self {
+            Tokenized::Literal(v) => v,
+            Tokenized::Token { fallback, .. } => fallback,
+        }
+    }
+
+    /// The token name, if this is a token reference.
+    pub fn name(&self) -> Option<&'static str> {
+        match self {
+            Tokenized::Token { name, .. } => Some(name),
+            Tokenized::Literal(_) => None,
+        }
+    }
+
+    /// Construct a token reference. Authors typically don't call this
+    /// directly — themes expose `Tokenized<T>` fields built once at
+    /// theme construction.
+    pub const fn token(name: &'static str, fallback: T) -> Self {
+        Tokenized::Token { name, fallback }
+    }
+}
+
+impl<T: Copy> Copy for Tokenized<T> where T: Copy {}
+
+// `From<T> for Tokenized<T>` so the stylesheet macro's
+// `Some(Into::into(expr))` accepts plain literal values.
+impl<T> From<T> for Tokenized<T> {
+    fn from(v: T) -> Self {
+        Tokenized::Literal(v)
+    }
+}
+
+// Allow `f32`/`i32` to flow into `Tokenized<Length>` so existing
+// authoring patterns like `padding: 16` still work after the field
+// type change. Two-step `From` chains aren't transitive in Rust, so
+// we provide the bridges explicitly.
+impl From<f32> for Tokenized<Length> {
+    fn from(v: f32) -> Self {
+        Tokenized::Literal(Length::Px(v))
+    }
+}
+impl From<i32> for Tokenized<Length> {
+    fn from(v: i32) -> Self {
+        Tokenized::Literal(Length::Px(v as f32))
+    }
+}
+
+// `Color` from `&str`/`String` is already provided; bridge those into
+// `Tokenized<Color>` so authors can keep writing `background: "#fff"`.
+impl From<&str> for Tokenized<Color> {
+    fn from(s: &str) -> Self {
+        Tokenized::Literal(Color(s.to_string()))
+    }
+}
+impl From<String> for Tokenized<Color> {
+    fn from(s: String) -> Self {
+        Tokenized::Literal(Color(s))
+    }
+}
+
 // =============================================================================
 // Flex layout enums (mobile-first defaults match React Native)
 // =============================================================================
@@ -332,9 +425,9 @@ impl Transition {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct StyleRules {
     // --- Color + text ---
-    pub background: Option<Color>,
-    pub color: Option<Color>,
-    pub font_size: Option<Length>,
+    pub background: Option<Tokenized<Color>>,
+    pub color: Option<Tokenized<Color>>,
+    pub font_size: Option<Tokenized<Length>>,
 
     // --- Flex container (applies when this node has children) ---
     pub flex_direction: Option<FlexDirection>,
@@ -342,75 +435,75 @@ pub struct StyleRules {
     pub justify_content: Option<JustifyContent>,
     pub align_items: Option<AlignItems>,
     pub align_content: Option<AlignContent>,
-    pub gap: Option<Length>,
-    pub row_gap: Option<Length>,
-    pub column_gap: Option<Length>,
+    pub gap: Option<Tokenized<Length>>,
+    pub row_gap: Option<Tokenized<Length>>,
+    pub column_gap: Option<Tokenized<Length>>,
 
     // --- Flex item (this node's behavior inside its parent) ---
-    pub flex_grow: Option<f32>,
-    pub flex_shrink: Option<f32>,
-    pub flex_basis: Option<Length>,
+    pub flex_grow: Option<Tokenized<f32>>,
+    pub flex_shrink: Option<Tokenized<f32>>,
+    pub flex_basis: Option<Tokenized<Length>>,
     pub align_self: Option<AlignSelf>,
 
     // --- Sizing ---
-    pub width: Option<Length>,
-    pub height: Option<Length>,
-    pub min_width: Option<Length>,
-    pub min_height: Option<Length>,
-    pub max_width: Option<Length>,
-    pub max_height: Option<Length>,
+    pub width: Option<Tokenized<Length>>,
+    pub height: Option<Tokenized<Length>>,
+    pub min_width: Option<Tokenized<Length>>,
+    pub min_height: Option<Tokenized<Length>>,
+    pub max_width: Option<Tokenized<Length>>,
+    pub max_height: Option<Tokenized<Length>>,
 
     // --- Padding (per-side; no shorthand field) ---
-    pub padding_top: Option<Length>,
-    pub padding_right: Option<Length>,
-    pub padding_bottom: Option<Length>,
-    pub padding_left: Option<Length>,
+    pub padding_top: Option<Tokenized<Length>>,
+    pub padding_right: Option<Tokenized<Length>>,
+    pub padding_bottom: Option<Tokenized<Length>>,
+    pub padding_left: Option<Tokenized<Length>>,
 
     // --- Margin (per-side; no shorthand field) ---
-    pub margin_top: Option<Length>,
-    pub margin_right: Option<Length>,
-    pub margin_bottom: Option<Length>,
-    pub margin_left: Option<Length>,
+    pub margin_top: Option<Tokenized<Length>>,
+    pub margin_right: Option<Tokenized<Length>>,
+    pub margin_bottom: Option<Tokenized<Length>>,
+    pub margin_left: Option<Tokenized<Length>>,
 
     // --- Border radius (per-corner) ---
-    pub border_top_left_radius: Option<Length>,
-    pub border_top_right_radius: Option<Length>,
-    pub border_bottom_left_radius: Option<Length>,
-    pub border_bottom_right_radius: Option<Length>,
+    pub border_top_left_radius: Option<Tokenized<Length>>,
+    pub border_top_right_radius: Option<Tokenized<Length>>,
+    pub border_bottom_left_radius: Option<Tokenized<Length>>,
+    pub border_bottom_right_radius: Option<Tokenized<Length>>,
 
     // --- Border widths (per-side, `f32` not `Length` — borders aren't
     //     percentages). All four are independent. ---
-    pub border_top_width: Option<f32>,
-    pub border_right_width: Option<f32>,
-    pub border_bottom_width: Option<f32>,
-    pub border_left_width: Option<f32>,
+    pub border_top_width: Option<Tokenized<f32>>,
+    pub border_right_width: Option<Tokenized<f32>>,
+    pub border_bottom_width: Option<Tokenized<f32>>,
+    pub border_left_width: Option<Tokenized<f32>>,
 
     // --- Border colors (per-side). ---
-    pub border_top_color: Option<Color>,
-    pub border_right_color: Option<Color>,
-    pub border_bottom_color: Option<Color>,
-    pub border_left_color: Option<Color>,
+    pub border_top_color: Option<Tokenized<Color>>,
+    pub border_right_color: Option<Tokenized<Color>>,
+    pub border_bottom_color: Option<Tokenized<Color>>,
+    pub border_left_color: Option<Tokenized<Color>>,
 
     // --- Position ---
     pub position: Option<Position>,
-    pub top: Option<Length>,
-    pub right: Option<Length>,
-    pub bottom: Option<Length>,
-    pub left: Option<Length>,
+    pub top: Option<Tokenized<Length>>,
+    pub right: Option<Tokenized<Length>>,
+    pub bottom: Option<Tokenized<Length>>,
+    pub left: Option<Tokenized<Length>>,
 
     // --- Typography (text-only on native; cascade on web) ---
     pub font_family: Option<String>,
     pub font_weight: Option<FontWeight>,
     pub font_style: Option<FontStyle>,
-    pub line_height: Option<f32>,
-    pub letter_spacing: Option<f32>,
+    pub line_height: Option<Tokenized<f32>>,
+    pub letter_spacing: Option<Tokenized<f32>>,
     pub text_align: Option<TextAlign>,
     pub underline: Option<bool>,
     pub strikethrough: Option<bool>,
     pub text_transform: Option<TextTransform>,
 
     // --- Visual ---
-    pub opacity: Option<f32>,
+    pub opacity: Option<Tokenized<f32>>,
     pub overflow: Option<Overflow>,
     pub shadow: Option<Shadow>,
     /// Empty vec means "no transforms"; the field's `Option` distinguishes
@@ -503,75 +596,82 @@ impl StyleRules {
     /// Stable content key suitable for backend caches that should be
     /// immune to allocator-reuse hazards. Each property writes a tagged
     /// segment so distinct values always produce distinct keys.
+    ///
+    /// **Tokenized fields hash the token name, not the fallback value.**
+    /// Two themes that bind `color-accent` to different concrete colors
+    /// produce the same content key — so the same `(sheet, variants)`
+    /// always maps to the same minted class regardless of which theme
+    /// is active. Theme swap then only updates the variable values, not
+    /// any element's `className`.
     pub fn content_key(&self) -> String {
         let mut s = String::with_capacity(256);
-        write_color(&mut s, "bg", &self.background);
-        write_color(&mut s, "fg", &self.color);
-        write_length(&mut s, "fs", self.font_size);
+        write_tokenized_color(&mut s, "bg", &self.background);
+        write_tokenized_color(&mut s, "fg", &self.color);
+        write_tokenized_length(&mut s, "fs", &self.font_size);
 
         write_enum(&mut s, "fd", self.flex_direction.map(|x| x as u8));
         write_enum(&mut s, "fw", self.flex_wrap.map(|x| x as u8));
         write_enum(&mut s, "jc", self.justify_content.map(|x| x as u8));
         write_enum(&mut s, "ai", self.align_items.map(|x| x as u8));
         write_enum(&mut s, "ac", self.align_content.map(|x| x as u8));
-        write_length(&mut s, "gap", self.gap);
-        write_length(&mut s, "rgap", self.row_gap);
-        write_length(&mut s, "cgap", self.column_gap);
+        write_tokenized_length(&mut s, "gap", &self.gap);
+        write_tokenized_length(&mut s, "rgap", &self.row_gap);
+        write_tokenized_length(&mut s, "cgap", &self.column_gap);
 
-        write_f32(&mut s, "fg-grow", self.flex_grow);
-        write_f32(&mut s, "fs-shrink", self.flex_shrink);
-        write_length(&mut s, "fb", self.flex_basis);
+        write_tokenized_f32(&mut s, "fg-grow", &self.flex_grow);
+        write_tokenized_f32(&mut s, "fs-shrink", &self.flex_shrink);
+        write_tokenized_length(&mut s, "fb", &self.flex_basis);
         write_enum(&mut s, "as", self.align_self.map(|x| x as u8));
 
-        write_length(&mut s, "w", self.width);
-        write_length(&mut s, "h", self.height);
-        write_length(&mut s, "minw", self.min_width);
-        write_length(&mut s, "minh", self.min_height);
-        write_length(&mut s, "maxw", self.max_width);
-        write_length(&mut s, "maxh", self.max_height);
+        write_tokenized_length(&mut s, "w", &self.width);
+        write_tokenized_length(&mut s, "h", &self.height);
+        write_tokenized_length(&mut s, "minw", &self.min_width);
+        write_tokenized_length(&mut s, "minh", &self.min_height);
+        write_tokenized_length(&mut s, "maxw", &self.max_width);
+        write_tokenized_length(&mut s, "maxh", &self.max_height);
 
-        write_length(&mut s, "pt", self.padding_top);
-        write_length(&mut s, "pr", self.padding_right);
-        write_length(&mut s, "pb", self.padding_bottom);
-        write_length(&mut s, "pl", self.padding_left);
-        write_length(&mut s, "mt", self.margin_top);
-        write_length(&mut s, "mr", self.margin_right);
-        write_length(&mut s, "mb", self.margin_bottom);
-        write_length(&mut s, "ml", self.margin_left);
+        write_tokenized_length(&mut s, "pt", &self.padding_top);
+        write_tokenized_length(&mut s, "pr", &self.padding_right);
+        write_tokenized_length(&mut s, "pb", &self.padding_bottom);
+        write_tokenized_length(&mut s, "pl", &self.padding_left);
+        write_tokenized_length(&mut s, "mt", &self.margin_top);
+        write_tokenized_length(&mut s, "mr", &self.margin_right);
+        write_tokenized_length(&mut s, "mb", &self.margin_bottom);
+        write_tokenized_length(&mut s, "ml", &self.margin_left);
 
-        write_length(&mut s, "rtl", self.border_top_left_radius);
-        write_length(&mut s, "rtr", self.border_top_right_radius);
-        write_length(&mut s, "rbl", self.border_bottom_left_radius);
-        write_length(&mut s, "rbr", self.border_bottom_right_radius);
+        write_tokenized_length(&mut s, "rtl", &self.border_top_left_radius);
+        write_tokenized_length(&mut s, "rtr", &self.border_top_right_radius);
+        write_tokenized_length(&mut s, "rbl", &self.border_bottom_left_radius);
+        write_tokenized_length(&mut s, "rbr", &self.border_bottom_right_radius);
 
-        write_f32(&mut s, "bwt", self.border_top_width);
-        write_f32(&mut s, "bwr", self.border_right_width);
-        write_f32(&mut s, "bwb", self.border_bottom_width);
-        write_f32(&mut s, "bwl", self.border_left_width);
-        write_color(&mut s, "bct", &self.border_top_color);
-        write_color(&mut s, "bcr", &self.border_right_color);
-        write_color(&mut s, "bcb", &self.border_bottom_color);
-        write_color(&mut s, "bcl", &self.border_left_color);
+        write_tokenized_f32(&mut s, "bwt", &self.border_top_width);
+        write_tokenized_f32(&mut s, "bwr", &self.border_right_width);
+        write_tokenized_f32(&mut s, "bwb", &self.border_bottom_width);
+        write_tokenized_f32(&mut s, "bwl", &self.border_left_width);
+        write_tokenized_color(&mut s, "bct", &self.border_top_color);
+        write_tokenized_color(&mut s, "bcr", &self.border_right_color);
+        write_tokenized_color(&mut s, "bcb", &self.border_bottom_color);
+        write_tokenized_color(&mut s, "bcl", &self.border_left_color);
 
         write_enum(&mut s, "pos", self.position.map(|x| x as u8));
-        write_length(&mut s, "top", self.top);
-        write_length(&mut s, "right", self.right);
-        write_length(&mut s, "bot", self.bottom);
-        write_length(&mut s, "left", self.left);
+        write_tokenized_length(&mut s, "top", &self.top);
+        write_tokenized_length(&mut s, "right", &self.right);
+        write_tokenized_length(&mut s, "bot", &self.bottom);
+        write_tokenized_length(&mut s, "left", &self.left);
 
         // Typography
         write_str(&mut s, "ff", self.font_family.as_deref());
         write_enum(&mut s, "fw", self.font_weight.map(|x| x as u8));
         write_enum(&mut s, "fst", self.font_style.map(|x| x as u8));
-        write_f32(&mut s, "lh", self.line_height);
-        write_f32(&mut s, "ls", self.letter_spacing);
+        write_tokenized_f32(&mut s, "lh", &self.line_height);
+        write_tokenized_f32(&mut s, "ls", &self.letter_spacing);
         write_enum(&mut s, "ta", self.text_align.map(|x| x as u8));
         write_enum(&mut s, "ul", self.underline.map(|b| b as u8));
         write_enum(&mut s, "st", self.strikethrough.map(|b| b as u8));
         write_enum(&mut s, "tt", self.text_transform.map(|x| x as u8));
 
         // Visual
-        write_f32(&mut s, "op", self.opacity);
+        write_tokenized_f32(&mut s, "op", &self.opacity);
         write_enum(&mut s, "ov", self.overflow.map(|x| x as u8));
         if let Some(sh) = &self.shadow {
             s.push_str("sh=");
@@ -676,27 +776,61 @@ fn write_str(out: &mut String, label: &str, v: Option<&str>) {
     out.push(';');
 }
 
-fn write_color(out: &mut String, label: &str, c: &Option<Color>) {
+/// Tokenized-color content-key segment. Token references hash by
+/// **name** (`t:color-accent`) so two themes binding the same name to
+/// different colors produce identical keys; literals hash by value.
+/// The literal/token discriminator (`L:` / `T:`) prevents a token
+/// named "ff0000" from colliding with the literal hex `#ff0000`.
+fn write_tokenized_color(out: &mut String, label: &str, c: &Option<Tokenized<Color>>) {
     out.push_str(label);
     out.push('=');
-    if let Some(c) = c { out.push_str(&c.0); }
-    out.push(';');
-}
-
-fn write_length(out: &mut String, label: &str, l: Option<Length>) {
-    out.push_str(label);
-    out.push('=');
-    if let Some(l) = l {
-        push_u64_hex(out, length_bits(l));
+    if let Some(t) = c {
+        match t {
+            Tokenized::Literal(c) => {
+                out.push_str("L:");
+                out.push_str(&c.0);
+            }
+            Tokenized::Token { name, .. } => {
+                out.push_str("T:");
+                out.push_str(name);
+            }
+        }
     }
     out.push(';');
 }
 
-fn write_f32(out: &mut String, label: &str, v: Option<f32>) {
+fn write_tokenized_length(out: &mut String, label: &str, l: &Option<Tokenized<Length>>) {
     out.push_str(label);
     out.push('=');
-    if let Some(v) = v {
-        push_u32_hex(out, v.to_bits());
+    if let Some(t) = l {
+        match t {
+            Tokenized::Literal(v) => {
+                out.push_str("L:");
+                push_u64_hex(out, length_bits(*v));
+            }
+            Tokenized::Token { name, .. } => {
+                out.push_str("T:");
+                out.push_str(name);
+            }
+        }
+    }
+    out.push(';');
+}
+
+fn write_tokenized_f32(out: &mut String, label: &str, v: &Option<Tokenized<f32>>) {
+    out.push_str(label);
+    out.push('=');
+    if let Some(t) = v {
+        match t {
+            Tokenized::Literal(v) => {
+                out.push_str("L:");
+                push_u32_hex(out, v.to_bits());
+            }
+            Tokenized::Token { name, .. } => {
+                out.push_str("T:");
+                out.push_str(name);
+            }
+        }
     }
     out.push(';');
 }
@@ -920,9 +1054,12 @@ impl StyleSheet {
             .insert((theme_ptr, variants), rc);
     }
 
-    /// Drop every entry for `theme_ptr`. Called from
-    /// [`ensure_registered_with`] on the dead-registration sweep
-    /// (theme change, sheet drop).
+    /// Drop every entry for `theme_ptr`. Currently unused — theme swap
+    /// no longer purges per-sheet variant caches because tokenized
+    /// rules are theme-stable in the backend (content-key dedup makes
+    /// re-registration cost-free). Kept as a hook in case a future
+    /// non-tokenized path needs it.
+    #[allow(dead_code)]
     pub(crate) fn forget_theme(&self, theme_ptr: *const ()) {
         self.variant_cache
             .borrow_mut()
@@ -1144,21 +1281,21 @@ impl StyleApplication {
     }
 
     /// Override the background color with a per-call-site value.
-    pub fn override_background(mut self, c: impl Into<Color>) -> Self {
+    pub fn override_background(mut self, c: impl Into<Tokenized<Color>>) -> Self {
         self.has_overrides = true;
         self.overrides.background = Some(c.into());
         self
     }
 
     /// Override the foreground color with a per-call-site value.
-    pub fn override_color(mut self, c: impl Into<Color>) -> Self {
+    pub fn override_color(mut self, c: impl Into<Tokenized<Color>>) -> Self {
         self.has_overrides = true;
         self.overrides.color = Some(c.into());
         self
     }
 
     /// Override font size with a per-call-site value.
-    pub fn override_font_size(mut self, v: impl Into<Length>) -> Self {
+    pub fn override_font_size(mut self, v: impl Into<Tokenized<Length>>) -> Self {
         self.has_overrides = true;
         self.overrides.font_size = Some(v.into());
         self
@@ -1167,103 +1304,145 @@ impl StyleApplication {
     /// Shorthand override: set padding on all four sides. Equivalent to
     /// calling `override_padding_top`, `_right`, `_bottom`, `_left`
     /// with the same value.
-    pub fn override_padding(mut self, v: impl Into<Length>) -> Self {
+    pub fn override_padding(mut self, v: impl Into<Tokenized<Length>>) -> Self {
         self.has_overrides = true;
         let v = v.into();
-        self.overrides.padding_top = Some(v);
-        self.overrides.padding_right = Some(v);
-        self.overrides.padding_bottom = Some(v);
+        self.overrides.padding_top = Some(v.clone());
+        self.overrides.padding_right = Some(v.clone());
+        self.overrides.padding_bottom = Some(v.clone());
         self.overrides.padding_left = Some(v);
         self
     }
 
-    pub fn override_padding_horizontal(mut self, v: impl Into<Length>) -> Self {
+    pub fn override_padding_horizontal(mut self, v: impl Into<Tokenized<Length>>) -> Self {
         self.has_overrides = true;
         let v = v.into();
-        self.overrides.padding_left = Some(v);
+        self.overrides.padding_left = Some(v.clone());
         self.overrides.padding_right = Some(v);
         self
     }
 
-    pub fn override_padding_vertical(mut self, v: impl Into<Length>) -> Self {
+    pub fn override_padding_vertical(mut self, v: impl Into<Tokenized<Length>>) -> Self {
         self.has_overrides = true;
         let v = v.into();
-        self.overrides.padding_top = Some(v);
+        self.overrides.padding_top = Some(v.clone());
         self.overrides.padding_bottom = Some(v);
         self
     }
 
-    pub fn override_padding_top(mut self, v: impl Into<Length>) -> Self {
+    pub fn override_padding_top(mut self, v: impl Into<Tokenized<Length>>) -> Self {
         self.has_overrides = true;
         self.overrides.padding_top = Some(v.into()); self
     }
-    pub fn override_padding_right(mut self, v: impl Into<Length>) -> Self {
+    pub fn override_padding_right(mut self, v: impl Into<Tokenized<Length>>) -> Self {
         self.has_overrides = true;
         self.overrides.padding_right = Some(v.into()); self
     }
-    pub fn override_padding_bottom(mut self, v: impl Into<Length>) -> Self {
+    pub fn override_padding_bottom(mut self, v: impl Into<Tokenized<Length>>) -> Self {
         self.has_overrides = true;
         self.overrides.padding_bottom = Some(v.into()); self
     }
-    pub fn override_padding_left(mut self, v: impl Into<Length>) -> Self {
+    pub fn override_padding_left(mut self, v: impl Into<Tokenized<Length>>) -> Self {
         self.has_overrides = true;
         self.overrides.padding_left = Some(v.into()); self
     }
 
     /// Shorthand override: margin on all four sides.
-    pub fn override_margin(mut self, v: impl Into<Length>) -> Self {
+    pub fn override_margin(mut self, v: impl Into<Tokenized<Length>>) -> Self {
         self.has_overrides = true;
         let v = v.into();
-        self.overrides.margin_top = Some(v);
-        self.overrides.margin_right = Some(v);
-        self.overrides.margin_bottom = Some(v);
+        self.overrides.margin_top = Some(v.clone());
+        self.overrides.margin_right = Some(v.clone());
+        self.overrides.margin_bottom = Some(v.clone());
         self.overrides.margin_left = Some(v);
         self
     }
 
-    pub fn override_margin_horizontal(mut self, v: impl Into<Length>) -> Self {
+    pub fn override_margin_horizontal(mut self, v: impl Into<Tokenized<Length>>) -> Self {
         self.has_overrides = true;
         let v = v.into();
-        self.overrides.margin_left = Some(v);
+        self.overrides.margin_left = Some(v.clone());
         self.overrides.margin_right = Some(v);
         self
     }
 
-    pub fn override_margin_vertical(mut self, v: impl Into<Length>) -> Self {
+    pub fn override_margin_vertical(mut self, v: impl Into<Tokenized<Length>>) -> Self {
         self.has_overrides = true;
         let v = v.into();
-        self.overrides.margin_top = Some(v);
+        self.overrides.margin_top = Some(v.clone());
         self.overrides.margin_bottom = Some(v);
         self
     }
 
-    pub fn override_margin_top(mut self, v: impl Into<Length>) -> Self {
+    pub fn override_margin_top(mut self, v: impl Into<Tokenized<Length>>) -> Self {
         self.has_overrides = true;
         self.overrides.margin_top = Some(v.into()); self
     }
-    pub fn override_margin_right(mut self, v: impl Into<Length>) -> Self {
+    pub fn override_margin_right(mut self, v: impl Into<Tokenized<Length>>) -> Self {
         self.has_overrides = true;
         self.overrides.margin_right = Some(v.into()); self
     }
-    pub fn override_margin_bottom(mut self, v: impl Into<Length>) -> Self {
+    pub fn override_margin_bottom(mut self, v: impl Into<Tokenized<Length>>) -> Self {
         self.has_overrides = true;
         self.overrides.margin_bottom = Some(v.into()); self
     }
-    pub fn override_margin_left(mut self, v: impl Into<Length>) -> Self {
+    pub fn override_margin_left(mut self, v: impl Into<Tokenized<Length>>) -> Self {
         self.has_overrides = true;
         self.overrides.margin_left = Some(v.into()); self
     }
 
     /// Shorthand override: border-radius on all four corners.
-    pub fn override_border_radius(mut self, v: impl Into<Length>) -> Self {
+    pub fn override_border_radius(mut self, v: impl Into<Tokenized<Length>>) -> Self {
         self.has_overrides = true;
         let v = v.into();
-        self.overrides.border_top_left_radius = Some(v);
-        self.overrides.border_top_right_radius = Some(v);
-        self.overrides.border_bottom_left_radius = Some(v);
+        self.overrides.border_top_left_radius = Some(v.clone());
+        self.overrides.border_top_right_radius = Some(v.clone());
+        self.overrides.border_bottom_left_radius = Some(v.clone());
         self.overrides.border_bottom_right_radius = Some(v);
         self
     }
+}
+
+// ----------------------------------------------------------------------------
+// ThemeTokens — opt-in declaration of named token values
+// ----------------------------------------------------------------------------
+
+/// A theme that exposes its tokens by name and concrete value. Backends
+/// that support a runtime variable system (web's CSS custom properties)
+/// install these once at theme boot and update them on theme swap; the
+/// theme swap then becomes one write per token, no class regeneration,
+/// no per-element style mutation.
+///
+/// Backends without a variable layer (iOS, Android) ignore this — they
+/// read `Tokenized::value()` at apply time and behave as if the literal
+/// were set.
+///
+/// # Implementing
+///
+/// The theme struct holds whatever fields it likes; `tokens()` returns
+/// the `(name, value)` pairs that should be installed as runtime
+/// variables. The names should match the `name` fields of the
+/// `Tokenized::Token { name, .. }` variants the stylesheets construct.
+pub trait ThemeTokens: Any {
+    fn tokens(&self) -> Vec<TokenEntry>;
+}
+
+/// A single token entry — name plus concrete value. The backend
+/// translates the value to its variable system (e.g. CSS
+/// `--{name}: {value}`).
+#[derive(Clone, Debug)]
+pub struct TokenEntry {
+    pub name: &'static str,
+    pub value: TokenValue,
+}
+
+/// The concrete value carried by a token. The variant determines how
+/// the backend formats it (color string, pixel length, raw number).
+#[derive(Clone, Debug)]
+pub enum TokenValue {
+    Color(Color),
+    Length(Length),
+    Number(f32),
 }
 
 // ----------------------------------------------------------------------------
@@ -1276,28 +1455,27 @@ thread_local! {
     static ACTIVE_THEME: RefCell<Option<crate::Signal<Rc<dyn Any>>>> = const { RefCell::new(None) };
 
     /// Memoization: `(stylesheet pointer, variants, theme pointer,
-    /// override content)` → `Weak<StyleRules>`. Strong refs are held by
+    /// override content)` → `Rc<StyleRules>`. Strong refs are held by
     /// `REGISTRATIONS` for pre-generated styles, and transiently by the
-    /// caller of `resolve(...)` for dynamic ones. When the last strong
-    /// Memoizes resolved `StyleRules` by `ResolutionKey`. Entries
-    /// are strong `Rc`s — the cache itself is what keeps resolved
-    /// rules alive across back-to-back applies. Without strong
-    /// refs, the resolved rules would drop the moment the caller's
-    /// transient `Rc` went out of scope (right after each
-    /// `apply_styled_states` call), and the next row's resolve
-    /// would re-compute from scratch — exactly the leak that
-    /// caused 10k-row perf-screen renders to miss the cache 10k
-    /// times.
+    /// caller of `resolve(...)` for dynamic ones.
     ///
-    /// Memory cost: one `StyleRules` per distinct
-    /// `(sheet, variants, theme, overrides)` combination. For most
-    /// apps this is bounded by the number of variant combinations
-    /// the author actually uses — a few hundred entries at most.
+    /// **Theme stays in the key** so mobile backends (which read
+    /// `Tokenized::value()` literal-or-fallback) re-resolve on swap and
+    /// see the new theme's fallbacks. Web doesn't care — it emits
+    /// `var(--name, fallback)` and the variable layer handles the
+    /// visual change.
+    ///
+    /// **What makes theme swap cheap**: the backend's content-keyed
+    /// stylesheet cache (`PregenEntry { refcount, .. }` on web)
+    /// deduplicates by the rule's `content_key()`. Tokenized fields
+    /// hash by token name (theme-independent), so the same `(sheet,
+    /// variants)` produces the same key under any theme. Theme swap
+    /// re-registers but the dedup turns it into a refcount bump, no
+    /// rule emission, no class regeneration, no `className` mutation
+    /// on any node.
     ///
     /// Cleared on theme change (entries reference the old theme
-    /// pointer and would never be reused). Per-stylesheet sweep
-    /// runs on `ensure_registered_with` when it detects dead
-    /// `Weak<StyleSheet>` registrations.
+    /// pointer and would never be reused).
     static RESOLUTION_CACHE: RefCell<HashMap<ResolutionKey, Rc<StyleRules>>> =
         RefCell::new(HashMap::new());
 
@@ -1316,6 +1494,14 @@ thread_local! {
     /// by `ensure_registered_with`, which has the backend in scope.
     static PENDING_UNREGISTER: RefCell<Vec<Vec<Rc<StyleRules>>>> =
         RefCell::new(Vec::new());
+
+    /// Tokens queued for the next backend interaction. `install_theme`
+    /// and `set_theme` push here; `ensure_registered_with` flushes via
+    /// `Backend::install_theme_variables`. We can't call the backend
+    /// directly from `install_theme` because the backend doesn't exist
+    /// yet at app boot.
+    static PENDING_THEME_TOKENS: RefCell<Option<Vec<TokenEntry>>> =
+        const { RefCell::new(None) };
 }
 
 #[derive(PartialEq, Eq, Hash, Clone)]
@@ -1342,50 +1528,44 @@ struct ResolutionKey {
 }
 
 /// Install the initial active theme. Call once at app startup before
-/// rendering.
-pub fn install_theme<Theme: Any + 'static>(theme: Theme) {
+/// rendering. The theme's tokens are queued and flushed to the backend
+/// via `install_theme_variables` on the first `ensure_registered_with`
+/// call (which has the backend in scope).
+pub fn install_theme<Theme: ThemeTokens + 'static>(theme: Theme) {
+    let tokens = theme.tokens();
     let rc: Rc<dyn Any> = Rc::new(theme);
     let sig = crate::Signal::new(rc);
     ACTIVE_THEME.with(|t| *t.borrow_mut() = Some(sig));
+    PENDING_THEME_TOKENS.with(|p| *p.borrow_mut() = Some(tokens));
 }
 
-/// Swap the active theme. Every styled component subscribed via the
-/// reactive renderer re-fires its apply-style effect and re-applies
-/// with the new theme's values.
+/// Swap the active theme. Push the new theme's tokens to the backend
+/// (via the pending-token queue, drained on the next
+/// `ensure_registered_with`), wipe the resolution cache so resolves
+/// produce fresh `Rc<StyleRules>` against the new theme, and re-fire
+/// the active-theme signal so every styled effect re-applies.
 ///
-/// All currently-registered `(stylesheet, theme)` pairs are queued for
-/// `unregister_stylesheet`; the backend hears about them on the next
-/// `ensure_registered_with` call (which has it in scope).
-pub fn set_theme<Theme: Any + 'static>(theme: Theme) {
+/// **What this is NOT doing**: it doesn't queue old registrations for
+/// unregister. The previous theme's `(sheet, theme)` registration
+/// remains live, holding strong refs to its rule set. The new theme
+/// adds a separate registration. On the backend, both registrations'
+/// rules dedupe by `content_key()` — tokenized fields hash by token
+/// name, which is theme-stable, so the same `(sheet, variants)`
+/// produces the same key regardless of theme. The web backend's
+/// refcounted `pregen` map turns the new registration into a refcount
+/// bump rather than a fresh class mint, so **no `className` mutates
+/// on any node** during a swap.
+///
+/// On mobile (where `Tokenized::value()` is read directly), the
+/// resolved `StyleRules` for the new theme carry the new fallback
+/// values, and re-firing the signal causes each styled effect to
+/// re-apply with them.
+pub fn set_theme<Theme: ThemeTokens + 'static>(theme: Theme) {
+    let tokens = theme.tokens();
+    PENDING_THEME_TOKENS.with(|p| *p.borrow_mut() = Some(tokens));
+
     let rc: Rc<dyn Any> = Rc::new(theme);
     RESOLUTION_CACHE.with(|c| c.borrow_mut().clear());
-
-    // Move every current registration into the pending-unregister queue.
-    // The next styled effect that fires will flush it with the backend
-    // in scope. Also opportunistically prune each registered sheet's
-    // per-sheet variant cache for the *old* theme — those entries
-    // would never be looked up again (new theme has a different
-    // `theme_ptr`) but would linger on the `Rc<StyleSheet>` until the
-    // sheet itself drops.
-    let old_theme_ptr = ACTIVE_THEME
-        .with(|t| t.borrow().as_ref().map(|sig| Rc::as_ptr(&sig.get()) as *const ()))
-        .unwrap_or(std::ptr::null());
-    REGISTRATIONS.with(|r| {
-        let mut regs = r.borrow_mut();
-        PENDING_UNREGISTER.with(|p| {
-            let mut pending = p.borrow_mut();
-            for (_, reg) in regs.drain() {
-                // Try to upgrade the Weak to a live sheet and prune
-                // its variant_cache for the old theme. If the
-                // upgrade fails, the sheet is already dead and its
-                // cache will drop along with it.
-                if let Some(sheet) = reg.weak.upgrade() {
-                    sheet.forget_theme(old_theme_ptr);
-                }
-                pending.push(reg.rules);
-            }
-        });
-    });
 
     ACTIVE_THEME.with(|t| {
         if let Some(sig) = t.borrow().as_ref() {
@@ -1404,13 +1584,29 @@ pub fn set_theme<Theme: Any + 'static>(theme: Theme) {
 /// Also opportunistically:
 /// - Flushes the pending-unregister queue, calling `unregister` for
 ///   each rule set queued by `set_theme` or a dead-stylesheet sweep.
+/// - Flushes the pending-tokens queue, calling `install_tokens` with
+///   the most recent theme's token list (if any was queued by
+///   `install_theme` / `set_theme`).
 /// - Sweeps registrations whose `Weak<StyleSheet>` no longer upgrades
 ///   into the pending-unregister queue.
-pub fn ensure_registered_with<R, U>(sheet: &Rc<StyleSheet>, register: R, unregister: U)
-where
+pub fn ensure_registered_with<R, U, I>(
+    sheet: &Rc<StyleSheet>,
+    register: R,
+    unregister: U,
+    install_tokens: I,
+) where
     R: FnOnce(&[Rc<StyleRules>]),
     U: Fn(&[Rc<StyleRules>]),
+    I: FnOnce(&[TokenEntry]),
 {
+    // Flush pending tokens first — backends that emit `var(--…)` need
+    // the variables installed before any rule that references them
+    // is parsed, otherwise the initial paint uses the fallback.
+    let pending_tokens = PENDING_THEME_TOKENS.with(|p| p.borrow_mut().take());
+    if let Some(tokens) = pending_tokens {
+        install_tokens(&tokens);
+    }
+
     let theme = active_theme();
     let sheet_ptr = Rc::as_ptr(sheet);
     let theme_ptr = Rc::as_ptr(&theme) as *const ();
@@ -1763,74 +1959,100 @@ mod tests {
     use super::*;
 
     struct TestTheme {
-        surface: String,
+        surface: Tokenized<Color>,
         medium: f32,
     }
 
+    impl ThemeTokens for TestTheme {
+        fn tokens(&self) -> Vec<TokenEntry> {
+            vec![TokenEntry {
+                name: "surface",
+                value: TokenValue::Color(self.surface.value().clone()),
+            }]
+        }
+    }
+
     fn light() -> TestTheme {
-        TestTheme { surface: "#fff".into(), medium: 16.0 }
+        TestTheme {
+            surface: Tokenized::token("surface", Color("#fff".into())),
+            medium: 16.0,
+        }
     }
 
     fn dark() -> TestTheme {
-        TestTheme { surface: "#111".into(), medium: 24.0 }
+        TestTheme {
+            surface: Tokenized::token("surface", Color("#111".into())),
+            medium: 24.0,
+        }
+    }
+
+    /// Helper: assert a `Tokenized<Color>` resolves to a particular
+    /// fallback string. Tests express the visible color, not whether
+    /// the rule used a token vs literal.
+    fn color_eq(actual: &Option<Tokenized<Color>>, expected_hex: &str) {
+        let value = actual
+            .as_ref()
+            .expect("expected Some color")
+            .value();
+        assert_eq!(value.0, expected_hex);
     }
 
     #[test]
     fn closure_stylesheet_reads_theme() {
         let sheet = StyleSheet::new(|t: &TestTheme| StyleRules {
-            background: Some(Color(t.surface.clone())),
-            padding_top: Some(Length::Px(t.medium)),
+            background: Some(t.surface.clone()),
+            padding_top: Some(Tokenized::Literal(Length::Px(t.medium))),
             ..Default::default()
         });
         let l = light();
         let r = sheet.resolve(&VariantSet::new(), &l);
-        assert_eq!(r.background, Some(Color("#fff".into())));
-        assert_eq!(r.padding_top, Some(Length::Px(16.0)));
+        color_eq(&r.background, "#fff");
+        assert_eq!(r.padding_top, Some(Tokenized::Literal(Length::Px(16.0))));
     }
 
     #[test]
     fn static_stylesheet_ignores_theme() {
         let sheet = StyleSheet::r#static(StyleRules {
-            background: Some(Color("#abc".into())),
+            background: Some(Tokenized::Literal(Color("#abc".into()))),
             ..Default::default()
         });
         let l = light();
         let r = sheet.resolve(&VariantSet::new(), &l);
-        assert_eq!(r.background, Some(Color("#abc".into())));
+        color_eq(&r.background, "#abc");
     }
 
     #[test]
     fn variant_overlays_layer_on_top_of_base() {
         let sheet = StyleSheet::new(|t: &TestTheme| StyleRules {
-            background: Some(Color(t.surface.clone())),
-            padding_top: Some(Length::Px(t.medium)),
+            background: Some(t.surface.clone()),
+            padding_top: Some(Tokenized::Literal(Length::Px(t.medium))),
             ..Default::default()
         })
         .variant("size", "large", |t: &TestTheme| StyleRules {
-            padding_top: Some(Length::Px(t.medium * 2.0)),
+            padding_top: Some(Tokenized::Literal(Length::Px(t.medium * 2.0))),
             ..Default::default()
         });
         let l = light();
         let r = sheet.resolve(&VariantSet::new().with("size", "large"), &l);
-        assert_eq!(r.background, Some(Color("#fff".into())));
-        assert_eq!(r.padding_top, Some(Length::Px(32.0)));
+        color_eq(&r.background, "#fff");
+        assert_eq!(r.padding_top, Some(Tokenized::Literal(Length::Px(32.0))));
     }
 
     #[test]
     fn theme_swap_changes_resolution() {
         install_theme(light());
         let sheet = Rc::new(StyleSheet::new(|t: &TestTheme| StyleRules {
-            background: Some(Color(t.surface.clone())),
+            background: Some(t.surface.clone()),
             ..Default::default()
         }));
         let app = StyleApplication::new(sheet);
 
         let r1 = resolve(&app);
-        assert_eq!(r1.background, Some(Color("#fff".into())));
+        color_eq(&r1.background, "#fff");
 
         set_theme(dark());
         let r2 = resolve(&app);
-        assert_eq!(r2.background, Some(Color("#111".into())));
+        color_eq(&r2.background, "#111");
     }
 
     #[test]
@@ -1838,24 +2060,24 @@ mod tests {
         install_theme(light());
         let sheet = Rc::new(
             StyleSheet::new(|t: &TestTheme| StyleRules {
-                background: Some(Color(t.surface.clone())),
-                font_size: Some(Length::Px(14.0)),
-                padding_top: Some(Length::Px(t.medium)),
+                background: Some(t.surface.clone()),
+                font_size: Some(Tokenized::Literal(Length::Px(14.0))),
+                padding_top: Some(Tokenized::Literal(Length::Px(t.medium))),
                 ..Default::default()
             })
             .variant("size", "large", |_t: &TestTheme| StyleRules {
-                font_size: Some(Length::Px(20.0)),
+                font_size: Some(Tokenized::Literal(Length::Px(20.0))),
                 ..Default::default()
             }),
         );
 
         // Base only: background from theme, font 14, padding from theme.
         let r1 = resolve(&StyleApplication::new(sheet.clone()));
-        assert_eq!(r1.font_size, Some(Length::Px(14.0)));
+        assert_eq!(r1.font_size, Some(Tokenized::Literal(Length::Px(14.0))));
 
         // With variant: font becomes 20.
         let r2 = resolve(&StyleApplication::new(sheet.clone()).with("size", "large"));
-        assert_eq!(r2.font_size, Some(Length::Px(20.0)));
+        assert_eq!(r2.font_size, Some(Tokenized::Literal(Length::Px(20.0))));
 
         // With variant + override: override wins.
         let r3 = resolve(
@@ -1863,9 +2085,9 @@ mod tests {
                 .with("size", "large")
                 .override_font_size(17.5),
         );
-        assert_eq!(r3.font_size, Some(Length::Px(17.5)));
+        assert_eq!(r3.font_size, Some(Tokenized::Literal(Length::Px(17.5))));
         // Other properties unaffected by the override.
-        assert_eq!(r3.padding_top, Some(Length::Px(16.0)));
+        assert_eq!(r3.padding_top, Some(Tokenized::Literal(Length::Px(16.0))));
 
         // Different override values produce distinct cache entries.
         let r4 = resolve(
@@ -1873,58 +2095,58 @@ mod tests {
                 .with("size", "large")
                 .override_font_size(99.0),
         );
-        assert_eq!(r4.font_size, Some(Length::Px(99.0)));
+        assert_eq!(r4.font_size, Some(Tokenized::Literal(Length::Px(99.0))));
         assert!(!Rc::ptr_eq(&r3, &r4));
     }
 
     #[test]
     fn variant_default_applies_when_axis_unselected() {
         let sheet = StyleSheet::new(|t: &TestTheme| StyleRules {
-            background: Some(Color(t.surface.clone())),
-            padding_top: Some(Length::Px(8.0)),
+            background: Some(t.surface.clone()),
+            padding_top: Some(Tokenized::Literal(Length::Px(8.0))),
             ..Default::default()
         })
         .variant("size", "small", |_t: &TestTheme| StyleRules {
-            padding_top: Some(Length::Px(4.0)),
+            padding_top: Some(Tokenized::Literal(Length::Px(4.0))),
             ..Default::default()
         })
         .variant("size", "large", |_t: &TestTheme| StyleRules {
-            padding_top: Some(Length::Px(16.0)),
+            padding_top: Some(Tokenized::Literal(Length::Px(16.0))),
             ..Default::default()
         })
         .variant_default("size", "large");
 
         // Call site omits `size` → default "large" applies → padding 16.
         let r = sheet.resolve(&VariantSet::new(), &light());
-        assert_eq!(r.padding_top, Some(Length::Px(16.0)));
+        assert_eq!(r.padding_top, Some(Tokenized::Literal(Length::Px(16.0))));
 
         // Call site picks "small" → padding 4.
         let r2 = sheet.resolve(&VariantSet::new().with("size", "small"), &light());
-        assert_eq!(r2.padding_top, Some(Length::Px(4.0)));
+        assert_eq!(r2.padding_top, Some(Tokenized::Literal(Length::Px(4.0))));
     }
 
     #[test]
     fn compound_variant_applies_only_when_all_match() {
         let sheet = StyleSheet::new(|_t: &TestTheme| StyleRules::default())
             .variant("size", "large", |_t: &TestTheme| StyleRules {
-                padding_top: Some(Length::Px(16.0)),
+                padding_top: Some(Tokenized::Literal(Length::Px(16.0))),
                 ..Default::default()
             })
             .variant("kind", "primary", |_t: &TestTheme| StyleRules {
-                background: Some(Color("primary-bg".into())),
+                background: Some(Tokenized::Literal(Color("primary-bg".into()))),
                 ..Default::default()
             })
             .compound::<TestTheme, _>(
                 vec![("size", "large"), ("kind", "primary")],
                 |_t| StyleRules {
-                    font_size: Some(Length::Px(24.0)),
+                    font_size: Some(Tokenized::Literal(Length::Px(24.0))),
                     ..Default::default()
                 },
             );
 
         // Only size=large → compound NOT applied.
         let r1 = sheet.resolve(&VariantSet::new().with("size", "large"), &light());
-        assert_eq!(r1.padding_top, Some(Length::Px(16.0)));
+        assert_eq!(r1.padding_top, Some(Tokenized::Literal(Length::Px(16.0))));
         assert_eq!(r1.font_size, None);
 
         // Both axes match → compound APPLIED.
@@ -1932,9 +2154,9 @@ mod tests {
             &VariantSet::new().with("size", "large").with("kind", "primary"),
             &light(),
         );
-        assert_eq!(r2.padding_top, Some(Length::Px(16.0)));
-        assert_eq!(r2.background, Some(Color("primary-bg".into())));
-        assert_eq!(r2.font_size, Some(Length::Px(24.0)));
+        assert_eq!(r2.padding_top, Some(Tokenized::Literal(Length::Px(16.0))));
+        color_eq(&r2.background, "primary-bg");
+        assert_eq!(r2.font_size, Some(Tokenized::Literal(Length::Px(24.0))));
     }
 
     #[test]
@@ -1959,12 +2181,47 @@ mod tests {
     fn resolve_memoizes_same_inputs() {
         install_theme(light());
         let sheet = Rc::new(StyleSheet::r#static(StyleRules {
-            background: Some(Color("#abc".into())),
+            background: Some(Tokenized::Literal(Color("#abc".into()))),
             ..Default::default()
         }));
         let app = StyleApplication::new(sheet);
         let r1 = resolve(&app);
         let r2 = resolve(&app);
         assert!(Rc::ptr_eq(&r1, &r2));
+    }
+
+    /// **The core invariant of the tokenization rework**: two themes
+    /// that bind the same token name to different colors must produce
+    /// rules whose `content_key()` is identical. That's what lets the
+    /// backend's content-keyed dedup turn theme swap into a refcount
+    /// bump rather than a class regeneration.
+    #[test]
+    fn tokenized_rules_have_theme_stable_content_keys() {
+        let sheet = StyleSheet::new(|t: &TestTheme| StyleRules {
+            background: Some(t.surface.clone()),
+            ..Default::default()
+        });
+        let r_light = sheet.resolve(&VariantSet::new(), &light());
+        let r_dark = sheet.resolve(&VariantSet::new(), &dark());
+        assert_eq!(r_light.content_key(), r_dark.content_key());
+        // Sanity: the *fallbacks* differ so we know the test is real.
+        assert_ne!(r_light.background.as_ref().unwrap().value().0,
+                   r_dark.background.as_ref().unwrap().value().0);
+    }
+
+    /// Literal values should NOT collide with token references that
+    /// happen to share a string. The content key encoder tags
+    /// literals with `L:` and tokens with `T:` to disambiguate.
+    #[test]
+    fn literal_and_token_with_same_string_have_distinct_keys() {
+        let lit_rules = StyleRules {
+            background: Some(Tokenized::Literal(Color("surface".into()))),
+            ..Default::default()
+        };
+        let tok_rules = StyleRules {
+            background: Some(Tokenized::token("surface", Color("anything".into()))),
+            ..Default::default()
+        };
+        assert_ne!(lit_rules.content_key(), tok_rules.content_key());
     }
 }

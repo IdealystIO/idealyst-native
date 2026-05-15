@@ -503,7 +503,7 @@ mod imp {
         };
         if let Some(bg) = &style.background {
             if !is_metal_view {
-                let c = color_to_uicolor(bg);
+                let c = color_to_uicolor(bg.value());
                 if let Some(trans) = &style.background_transition {
                     let view_ref: Retained<UIView> = unsafe { Retained::retain(view as *const UIView as *mut UIView).unwrap() };
                     let trans = *trans;
@@ -538,13 +538,13 @@ mod imp {
                 msg_send![view, isKindOfClass: objc2::class!(UIStackView)]
             };
             if is_stack {
-                let px = length_to_px(gap);
+                let px = length_to_px(gap.value());
                 let _: () = unsafe { msg_send![view, setSpacing: px] };
             }
         }
 
         // Opacity
-        if let Some(opacity) = style.opacity {
+        if let Some(opacity) = style.opacity.as_ref().map(|t| *t.value()) {
             if let Some(trans) = &style.opacity_transition {
                 let view_ref: Retained<UIView> = unsafe { Retained::retain(view as *const UIView as *mut UIView).unwrap() };
                 let trans = *trans;
@@ -567,7 +567,7 @@ mod imp {
             style.border_bottom_right_radius.as_ref(),
         ]
         .iter()
-        .filter_map(|r| r.map(|l| length_to_px(l)))
+        .filter_map(|r| r.map(|t| length_to_px(t.value())))
         .fold(0.0_f64, f64::max);
         if radius > 0.0 {
             let _: () = unsafe { msg_send![&layer, setCornerRadius: radius] };
@@ -576,13 +576,13 @@ mod imp {
 
         // Border width (use max of all sides for the uniform layer border)
         let border_w = [
-            style.border_top_width,
-            style.border_right_width,
-            style.border_bottom_width,
-            style.border_left_width,
+            style.border_top_width.as_ref(),
+            style.border_right_width.as_ref(),
+            style.border_bottom_width.as_ref(),
+            style.border_left_width.as_ref(),
         ]
         .iter()
-        .filter_map(|w| *w)
+        .filter_map(|w| w.map(|t| *t.value()))
         .fold(0.0_f32, f32::max);
         if border_w > 0.0 {
             let _: () = unsafe { msg_send![&layer, setBorderWidth: border_w as CGFloat] };
@@ -596,7 +596,7 @@ mod imp {
             .or(style.border_bottom_color.as_ref())
             .or(style.border_left_color.as_ref());
         if let Some(bc) = border_color {
-            let c = color_to_uicolor(bc);
+            let c = color_to_uicolor(bc.value());
             let cg: CGColorRef = unsafe { msg_send![&c, CGColor] };
             if !cg.0.is_null() {
                 let _: () = unsafe { msg_send![&layer, setBorderColor: cg] };
@@ -623,10 +623,10 @@ mod imp {
 
         // Padding via layoutMargins (works on UIStackView with
         // isLayoutMarginsRelativeArrangement = YES)
-        let pad_top = style.padding_top.as_ref().map(length_to_px).unwrap_or(0.0);
-        let pad_left = style.padding_left.as_ref().map(length_to_px).unwrap_or(0.0);
-        let pad_bottom = style.padding_bottom.as_ref().map(length_to_px).unwrap_or(0.0);
-        let pad_right = style.padding_right.as_ref().map(length_to_px).unwrap_or(0.0);
+        let pad_top = style.padding_top.as_ref().map(|t| length_to_px(t.value())).unwrap_or(0.0);
+        let pad_left = style.padding_left.as_ref().map(|t| length_to_px(t.value())).unwrap_or(0.0);
+        let pad_bottom = style.padding_bottom.as_ref().map(|t| length_to_px(t.value())).unwrap_or(0.0);
+        let pad_right = style.padding_right.as_ref().map(|t| length_to_px(t.value())).unwrap_or(0.0);
         if pad_top > 0.0 || pad_left > 0.0 || pad_bottom > 0.0 || pad_right > 0.0 {
             let is_stack: bool = unsafe {
                 msg_send![view, isKindOfClass: objc2::class!(UIStackView)]
@@ -666,7 +666,7 @@ mod imp {
         // Height / width via Auto Layout constraints. Frame-based
         // sizing doesn't work inside UIStackView arranged subviews.
         if let Some(w) = &style.width {
-            if let Length::Px(px) = w {
+            if let Length::Px(px) = w.value() {
                 let anchor: Retained<NSObject> = unsafe { msg_send_id![view, widthAnchor] };
                 let c: Retained<NSObject> = unsafe {
                     msg_send_id![&anchor, constraintEqualToConstant: *px as CGFloat]
@@ -675,7 +675,7 @@ mod imp {
             }
         }
         if let Some(h) = &style.height {
-            if let Length::Px(px) = h {
+            if let Length::Px(px) = h.value() {
                 let anchor: Retained<NSObject> = unsafe { msg_send_id![view, heightAnchor] };
                 let c: Retained<NSObject> = unsafe {
                     msg_send_id![&anchor, constraintEqualToConstant: *px as CGFloat]
@@ -702,7 +702,7 @@ mod imp {
     fn apply_text_style(view: &UIView, style: &StyleRules, is_label: bool) {
         // Text color
         if let Some(color) = &style.color {
-            let c = color_to_uicolor(color);
+            let c = color_to_uicolor(color.value());
             if let Some(trans) = &style.color_transition {
                 let view_ref: Retained<UIView> = unsafe { Retained::retain(view as *const UIView as *mut UIView).unwrap() };
                 let trans = *trans;
@@ -716,7 +716,7 @@ mod imp {
 
         // Font size
         if let Some(fs) = &style.font_size {
-            let size = length_to_px(fs);
+            let size = length_to_px(fs.value());
             if size > 0.0 {
                 let weight = style.font_weight.as_ref().copied().unwrap_or(framework_core::FontWeight::Normal);
                 let ui_weight = font_weight_to_uikit(weight);
@@ -1194,7 +1194,7 @@ mod imp {
                 IosNode::Label(_) => apply_text_style(view, style, true),
                 IosNode::Button(button) => {
                     if let Some(color) = &style.color {
-                        let c = color_to_uicolor(color);
+                        let c = color_to_uicolor(color.value());
                         if let Some(trans) = &style.color_transition {
                             let btn_ref: Retained<UIButton> = button.clone();
                             let trans = *trans;
@@ -1206,7 +1206,7 @@ mod imp {
                         }
                     }
                     if let Some(fs) = &style.font_size {
-                        let size = length_to_px(fs);
+                        let size = length_to_px(fs.value());
                         if size > 0.0 {
                             let weight = style.font_weight.as_ref().copied().unwrap_or(framework_core::FontWeight::Normal);
                             let ui_weight = font_weight_to_uikit(weight);

@@ -186,11 +186,12 @@ pub struct Hype;
 
 impl Intent for Hype {
     fn palette(&self, _theme: &dyn IdeaTheme) -> IntentPalette {
+        use framework_core::Tokenized;
         IntentPalette {
-            background:         Color("#ff00aa".into()),
-            background_hover:   Color("#ff44bb".into()),
-            background_pressed: Color("#cc0088".into()),
-            foreground:         Color("#ffffff".into()),
+            background:         Tokenized::Literal(Color("#ff00aa".into())),
+            background_hover:   Tokenized::Literal(Color("#ff44bb".into())),
+            background_pressed: Tokenized::Literal(Color("#cc0088".into())),
+            foreground:         Tokenized::Literal(Color("#ffffff".into())),
             border:             None,
         }
     }

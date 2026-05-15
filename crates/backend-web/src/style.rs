@@ -17,7 +17,7 @@
 
 use crate::phase_timer::PhaseTimer;
 use crate::{DynamicSlot, PregenEntry, WebBackend};
-use framework_core::{Color, StyleRules};
+use framework_core::StyleRules;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use wasm_bindgen::JsCast;
@@ -154,6 +154,79 @@ impl WebBackend {
             let ptr = std::rc::Rc::as_ptr(r);
             self.pregen_by_ptr.insert(ptr, class_name);
         }
+    }
+
+    /// Install or update the active theme's tokens as CSS custom
+    /// properties on `:root`. First call inserts a single
+    /// `:root { --t1: v1; --t2: v2; ... }` rule; subsequent calls
+    /// reach into the same rule's `style` declaration and call
+    /// `setProperty` for each token. Theme swap is then **N
+    /// `setProperty` calls** for N tokens — no rule churn, no
+    /// `className` mutation on any node, no resolution-cache wipe
+    /// felt by the DOM.
+    pub(crate) fn impl_install_theme_variables(
+        &mut self,
+        tokens: &[framework_core::TokenEntry],
+    ) {
+        use framework_core::TokenValue;
+        // Format helpers — one match per variant, kept inline so we
+        // never allocate a temp Vec for the value-to-string step.
+        fn token_value_css(v: &TokenValue) -> String {
+            match v {
+                TokenValue::Color(c) => c.0.clone(),
+                TokenValue::Length(l) => length_css(*l),
+                TokenValue::Number(n) => n.to_string(),
+            }
+        }
+
+        if let Some(idx) = self.theme_root_rule_index {
+            // Update path: reach into the existing :root rule and
+            // setProperty each token. Browsers treat this as a single
+            // style invalidation per changed value; no rule object is
+            // created or destroyed.
+            let sheet = self.sheet();
+            if let Ok(rules) = sheet.css_rules() {
+                if let Some(rule) = rules.get(idx) {
+                    if let Ok(style_rule) = rule.dyn_into::<web_sys::CssStyleRule>() {
+                        let decl = style_rule.style();
+                        for entry in tokens {
+                            let prop = format!("--{}", entry.name);
+                            let value = token_value_css(&entry.value);
+                            // The third arg ("priority") is empty —
+                            // we never want `!important` on token
+                            // declarations.
+                            let _ = decl.set_property(&prop, &value);
+                        }
+                        return;
+                    }
+                }
+            }
+            // Fall through to insertion if anything went wrong (rule
+            // disappeared underneath us). This shouldn't happen, but
+            // keeps us from getting stuck pointing at an invalid
+            // index.
+            self.theme_root_rule_index = None;
+        }
+
+        // Insert path: emit a single `:root { ... }` rule. We bypass
+        // `insert_rule` (which prepends `.` for class selectors) and
+        // call the CSSOM directly, then track the index.
+        let mut rule = String::with_capacity(tokens.len() * 32 + 16);
+        rule.push_str(":root { ");
+        for entry in tokens {
+            rule.push_str("--");
+            rule.push_str(entry.name);
+            rule.push_str(": ");
+            rule.push_str(&token_value_css(&entry.value));
+            rule.push_str("; ");
+        }
+        rule.push('}');
+        let sheet = self.sheet();
+        let end = sheet.css_rules().map(|r| r.length()).unwrap_or(0);
+        let idx = sheet
+            .insert_rule_with_index(&rule, end)
+            .expect("insert :root rule (append)");
+        self.theme_root_rule_index = Some(idx);
     }
 
     pub(crate) fn impl_unregister_stylesheet(&mut self, rules: &[std::rc::Rc<StyleRules>]) {
@@ -438,6 +511,66 @@ fn length_css(l: framework_core::Length) -> String {
     }
 }
 
+/// Render a tokenized color: literal as the raw color string, token as
+/// `var(--name, fallback)`. The fallback is what the browser uses if
+/// the variable hasn't been installed (theme not yet booted, SSR
+/// without a `:root` declaration, etc.) — we always emit it so first
+/// paint never shows an unstyled element.
+fn tokenized_color_css(t: &framework_core::Tokenized<framework_core::Color>) -> String {
+    use framework_core::Tokenized;
+    match t {
+        Tokenized::Literal(c) => c.0.clone(),
+        Tokenized::Token { name, fallback } => {
+            format!("var(--{}, {})", name, fallback.0)
+        }
+    }
+}
+
+/// Render a tokenized length: literal as `{n}px` / `{n}%` / `auto`,
+/// token as `var(--name, fallback)`.
+fn tokenized_length_css(t: &framework_core::Tokenized<framework_core::Length>) -> String {
+    use framework_core::Tokenized;
+    match t {
+        Tokenized::Literal(l) => length_css(*l),
+        Tokenized::Token { name, fallback } => {
+            format!("var(--{}, {})", name, length_css(*fallback))
+        }
+    }
+}
+
+/// Render a tokenized raw number (used for `opacity`, `flex_grow`).
+/// The literal is just the number; tokens emit `var(--name, fallback)`.
+fn tokenized_f32_css(t: &framework_core::Tokenized<f32>) -> String {
+    use framework_core::Tokenized;
+    match t {
+        Tokenized::Literal(v) => v.to_string(),
+        Tokenized::Token { name, fallback } => {
+            format!("var(--{}, {})", name, fallback)
+        }
+    }
+}
+
+/// Render a tokenized number with the `px` suffix (border widths,
+/// line-height, letter-spacing). Literal becomes `{n}px`; token
+/// becomes `calc(var(--name, fallback) * 1px)` so the unit applies
+/// regardless of how the variable is resolved.
+fn tokenized_border_width_css(t: &framework_core::Tokenized<f32>) -> String {
+    use framework_core::Tokenized;
+    match t {
+        Tokenized::Literal(v) => format!("{}px", v),
+        Tokenized::Token { name, fallback } => {
+            format!("calc(var(--{}, {}) * 1px)", name, fallback)
+        }
+    }
+}
+
+/// Same shape as `tokenized_border_width_css` — kept as a separate
+/// helper so semantic call sites read clearly. (Both line-height and
+/// letter-spacing want the `px` unit attached.)
+fn tokenized_px_f32_css(t: &framework_core::Tokenized<f32>) -> String {
+    tokenized_border_width_css(t)
+}
+
 fn flex_direction_css(v: framework_core::FlexDirection) -> &'static str {
     use framework_core::FlexDirection;
     match v {
@@ -649,9 +782,9 @@ pub(crate) fn rules_to_css(rules: &StyleRules) -> String {
     }
 
     // Color + text.
-    if let Some(Color(c)) = &rules.background { parts.push(format!("background: {}", c)); }
-    if let Some(Color(c)) = &rules.color { parts.push(format!("color: {}", c)); }
-    if let Some(v) = rules.font_size { parts.push(format!("font-size: {}", length_css(v))); }
+    if let Some(t) = &rules.background { parts.push(format!("background: {}", tokenized_color_css(t))); }
+    if let Some(t) = &rules.color { parts.push(format!("color: {}", tokenized_color_css(t))); }
+    if let Some(t) = &rules.font_size { parts.push(format!("font-size: {}", tokenized_length_css(t))); }
 
     // Flex container.
     if let Some(v) = rules.flex_direction { parts.push(format!("flex-direction: {}", flex_direction_css(v))); }
@@ -659,66 +792,81 @@ pub(crate) fn rules_to_css(rules: &StyleRules) -> String {
     if let Some(v) = rules.justify_content { parts.push(format!("justify-content: {}", justify_content_css(v))); }
     if let Some(v) = rules.align_items { parts.push(format!("align-items: {}", align_items_css(v))); }
     if let Some(v) = rules.align_content { parts.push(format!("align-content: {}", align_content_css(v))); }
-    if let Some(v) = rules.gap { parts.push(format!("gap: {}", length_css(v))); }
-    if let Some(v) = rules.row_gap { parts.push(format!("row-gap: {}", length_css(v))); }
-    if let Some(v) = rules.column_gap { parts.push(format!("column-gap: {}", length_css(v))); }
+    if let Some(t) = &rules.gap { parts.push(format!("gap: {}", tokenized_length_css(t))); }
+    if let Some(t) = &rules.row_gap { parts.push(format!("row-gap: {}", tokenized_length_css(t))); }
+    if let Some(t) = &rules.column_gap { parts.push(format!("column-gap: {}", tokenized_length_css(t))); }
 
     // Flex item.
-    if let Some(v) = rules.flex_grow { parts.push(format!("flex-grow: {}", v)); }
-    if let Some(v) = rules.flex_shrink { parts.push(format!("flex-shrink: {}", v)); }
-    if let Some(v) = rules.flex_basis { parts.push(format!("flex-basis: {}", length_css(v))); }
+    if let Some(t) = &rules.flex_grow { parts.push(format!("flex-grow: {}", tokenized_f32_css(t))); }
+    if let Some(t) = &rules.flex_shrink { parts.push(format!("flex-shrink: {}", tokenized_f32_css(t))); }
+    if let Some(t) = &rules.flex_basis { parts.push(format!("flex-basis: {}", tokenized_length_css(t))); }
     if let Some(v) = rules.align_self { parts.push(format!("align-self: {}", align_self_css(v))); }
 
     // Sizing.
-    if let Some(v) = rules.width { parts.push(format!("width: {}", length_css(v))); }
-    if let Some(v) = rules.height { parts.push(format!("height: {}", length_css(v))); }
-    if let Some(v) = rules.min_width { parts.push(format!("min-width: {}", length_css(v))); }
-    if let Some(v) = rules.min_height { parts.push(format!("min-height: {}", length_css(v))); }
-    if let Some(v) = rules.max_width { parts.push(format!("max-width: {}", length_css(v))); }
-    if let Some(v) = rules.max_height { parts.push(format!("max-height: {}", length_css(v))); }
+    if let Some(t) = &rules.width { parts.push(format!("width: {}", tokenized_length_css(t))); }
+    if let Some(t) = &rules.height { parts.push(format!("height: {}", tokenized_length_css(t))); }
+    if let Some(t) = &rules.min_width { parts.push(format!("min-width: {}", tokenized_length_css(t))); }
+    if let Some(t) = &rules.min_height { parts.push(format!("min-height: {}", tokenized_length_css(t))); }
+    if let Some(t) = &rules.max_width { parts.push(format!("max-width: {}", tokenized_length_css(t))); }
+    if let Some(t) = &rules.max_height { parts.push(format!("max-height: {}", tokenized_length_css(t))); }
 
     // Per-side padding.
-    if let Some(v) = rules.padding_top { parts.push(format!("padding-top: {}", length_css(v))); }
-    if let Some(v) = rules.padding_right { parts.push(format!("padding-right: {}", length_css(v))); }
-    if let Some(v) = rules.padding_bottom { parts.push(format!("padding-bottom: {}", length_css(v))); }
-    if let Some(v) = rules.padding_left { parts.push(format!("padding-left: {}", length_css(v))); }
+    if let Some(t) = &rules.padding_top { parts.push(format!("padding-top: {}", tokenized_length_css(t))); }
+    if let Some(t) = &rules.padding_right { parts.push(format!("padding-right: {}", tokenized_length_css(t))); }
+    if let Some(t) = &rules.padding_bottom { parts.push(format!("padding-bottom: {}", tokenized_length_css(t))); }
+    if let Some(t) = &rules.padding_left { parts.push(format!("padding-left: {}", tokenized_length_css(t))); }
 
     // Per-side margin.
-    if let Some(v) = rules.margin_top { parts.push(format!("margin-top: {}", length_css(v))); }
-    if let Some(v) = rules.margin_right { parts.push(format!("margin-right: {}", length_css(v))); }
-    if let Some(v) = rules.margin_bottom { parts.push(format!("margin-bottom: {}", length_css(v))); }
-    if let Some(v) = rules.margin_left { parts.push(format!("margin-left: {}", length_css(v))); }
+    if let Some(t) = &rules.margin_top { parts.push(format!("margin-top: {}", tokenized_length_css(t))); }
+    if let Some(t) = &rules.margin_right { parts.push(format!("margin-right: {}", tokenized_length_css(t))); }
+    if let Some(t) = &rules.margin_bottom { parts.push(format!("margin-bottom: {}", tokenized_length_css(t))); }
+    if let Some(t) = &rules.margin_left { parts.push(format!("margin-left: {}", tokenized_length_css(t))); }
 
     // Per-corner border radius.
-    if let Some(v) = rules.border_top_left_radius { parts.push(format!("border-top-left-radius: {}", length_css(v))); }
-    if let Some(v) = rules.border_top_right_radius { parts.push(format!("border-top-right-radius: {}", length_css(v))); }
-    if let Some(v) = rules.border_bottom_left_radius { parts.push(format!("border-bottom-left-radius: {}", length_css(v))); }
-    if let Some(v) = rules.border_bottom_right_radius { parts.push(format!("border-bottom-right-radius: {}", length_css(v))); }
+    if let Some(t) = &rules.border_top_left_radius { parts.push(format!("border-top-left-radius: {}", tokenized_length_css(t))); }
+    if let Some(t) = &rules.border_top_right_radius { parts.push(format!("border-top-right-radius: {}", tokenized_length_css(t))); }
+    if let Some(t) = &rules.border_bottom_left_radius { parts.push(format!("border-bottom-left-radius: {}", tokenized_length_css(t))); }
+    if let Some(t) = &rules.border_bottom_right_radius { parts.push(format!("border-bottom-right-radius: {}", tokenized_length_css(t))); }
 
     // Per-side border width + color. Emit `solid` style so the browser
-    // actually paints the line.
-    if let Some(v) = rules.border_top_width { parts.push(format!("border-top-width: {}px", v)); parts.push("border-top-style: solid".to_string()); }
-    if let Some(v) = rules.border_right_width { parts.push(format!("border-right-width: {}px", v)); parts.push("border-right-style: solid".to_string()); }
-    if let Some(v) = rules.border_bottom_width { parts.push(format!("border-bottom-width: {}px", v)); parts.push("border-bottom-style: solid".to_string()); }
-    if let Some(v) = rules.border_left_width { parts.push(format!("border-left-width: {}px", v)); parts.push("border-left-style: solid".to_string()); }
-    if let Some(Color(c)) = &rules.border_top_color { parts.push(format!("border-top-color: {}", c)); }
-    if let Some(Color(c)) = &rules.border_right_color { parts.push(format!("border-right-color: {}", c)); }
-    if let Some(Color(c)) = &rules.border_bottom_color { parts.push(format!("border-bottom-color: {}", c)); }
-    if let Some(Color(c)) = &rules.border_left_color { parts.push(format!("border-left-color: {}", c)); }
+    // actually paints the line. Width is tokenized but the `px` suffix
+    // is fixed — token fallbacks are in the same unit so `var(--w, 1)px`
+    // would be wrong; we instead emit `calc(var(--w, 1) * 1px)` only
+    // when the value is a token, so unit math works either way.
+    if let Some(t) = &rules.border_top_width {
+        parts.push(format!("border-top-width: {}", tokenized_border_width_css(t)));
+        parts.push("border-top-style: solid".to_string());
+    }
+    if let Some(t) = &rules.border_right_width {
+        parts.push(format!("border-right-width: {}", tokenized_border_width_css(t)));
+        parts.push("border-right-style: solid".to_string());
+    }
+    if let Some(t) = &rules.border_bottom_width {
+        parts.push(format!("border-bottom-width: {}", tokenized_border_width_css(t)));
+        parts.push("border-bottom-style: solid".to_string());
+    }
+    if let Some(t) = &rules.border_left_width {
+        parts.push(format!("border-left-width: {}", tokenized_border_width_css(t)));
+        parts.push("border-left-style: solid".to_string());
+    }
+    if let Some(t) = &rules.border_top_color { parts.push(format!("border-top-color: {}", tokenized_color_css(t))); }
+    if let Some(t) = &rules.border_right_color { parts.push(format!("border-right-color: {}", tokenized_color_css(t))); }
+    if let Some(t) = &rules.border_bottom_color { parts.push(format!("border-bottom-color: {}", tokenized_color_css(t))); }
+    if let Some(t) = &rules.border_left_color { parts.push(format!("border-left-color: {}", tokenized_color_css(t))); }
 
     // Position.
     if let Some(v) = rules.position { parts.push(format!("position: {}", position_css(v))); }
-    if let Some(v) = rules.top { parts.push(format!("top: {}", length_css(v))); }
-    if let Some(v) = rules.right { parts.push(format!("right: {}", length_css(v))); }
-    if let Some(v) = rules.bottom { parts.push(format!("bottom: {}", length_css(v))); }
-    if let Some(v) = rules.left { parts.push(format!("left: {}", length_css(v))); }
+    if let Some(t) = &rules.top { parts.push(format!("top: {}", tokenized_length_css(t))); }
+    if let Some(t) = &rules.right { parts.push(format!("right: {}", tokenized_length_css(t))); }
+    if let Some(t) = &rules.bottom { parts.push(format!("bottom: {}", tokenized_length_css(t))); }
+    if let Some(t) = &rules.left { parts.push(format!("left: {}", tokenized_length_css(t))); }
 
     // Typography.
     if let Some(ff) = &rules.font_family { parts.push(format!("font-family: {}", ff)); }
     if let Some(v) = rules.font_weight { parts.push(format!("font-weight: {}", font_weight_css(v))); }
     if let Some(v) = rules.font_style { parts.push(format!("font-style: {}", font_style_css(v))); }
-    if let Some(v) = rules.line_height { parts.push(format!("line-height: {}px", v)); }
-    if let Some(v) = rules.letter_spacing { parts.push(format!("letter-spacing: {}px", v)); }
+    if let Some(t) = &rules.line_height { parts.push(format!("line-height: {}", tokenized_px_f32_css(t))); }
+    if let Some(t) = &rules.letter_spacing { parts.push(format!("letter-spacing: {}", tokenized_px_f32_css(t))); }
     if let Some(v) = rules.text_align { parts.push(format!("text-align: {}", text_align_css(v))); }
     // Underline + strikethrough are independent booleans; emit them as
     // a single CSS `text-decoration-line` shorthand combining both.
@@ -739,7 +887,7 @@ pub(crate) fn rules_to_css(rules: &StyleRules) -> String {
     if let Some(v) = rules.text_transform { parts.push(format!("text-transform: {}", text_transform_css(v))); }
 
     // Visual.
-    if let Some(v) = rules.opacity { parts.push(format!("opacity: {}", v)); }
+    if let Some(t) = &rules.opacity { parts.push(format!("opacity: {}", tokenized_f32_css(t))); }
     if let Some(v) = rules.overflow { parts.push(format!("overflow: {}", overflow_css(v))); }
     if let Some(sh) = &rules.shadow {
         parts.push(format!(

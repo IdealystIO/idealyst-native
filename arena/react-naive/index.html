@@ -35,10 +35,10 @@
 <body>
 <div id="root"></div>
 <script type="module">
-import React, { useState, useCallback, useMemo, useRef, memo } from 'react';
+import React, { useState, useMemo } from 'react';
 import { createRoot } from 'react-dom/client';
 import { flushSync } from 'https://esm.sh/react-dom@18.3.1?dev&deps=react@18.3.1';
-import { runToggle, runSuite, LIGHT, DARK } from '../instrument.js';
+import { autoRunIfRequested, LIGHT, DARK } from '../instrument.js';
 
 const e = React.createElement;
 
@@ -95,43 +95,29 @@ function Row({ index, theme }) {
   );
 }
 
+// External setRows hook for the runner-iframe path. Filled in by the
+// App component once it mounts so `autoRunIfRequested` can drive the
+// React state from outside the component. `useState`'s setter is
+// referentially stable so we only need to fill this once.
+let externalSetRows = null;
+
 function App() {
   const [theme, setTheme] = useState(LIGHT);
   const [rowCount, setRowCountState] = useState(1000);
-  const [running, setRunning] = useState(false);
-  const isDark = theme === DARK;
 
-  const onToggle = useCallback(() => {
-    const next = isDark ? LIGHT : DARK;
-    runToggle(() => {
-      // flushSync forces React to commit synchronously inside the
-      // handler. Without it, React 18 batches state updates and the
-      // commit happens *after* our `apply` measurement closes — we'd
-      // be measuring the cost of scheduling, not of rendering. The
-      // honest question is "how long until the user can see the new
-      // theme?" and that's bounded below by the commit, so it has to
-      // be in the measurement window.
-      flushSync(() => setTheme(next));
-    }, { theme: isDark ? 'light' : 'dark', rows: rowCount });
-  }, [isDark, rowCount]);
-
-  const onStart = useCallback(async () => {
-    setRunning(true);
-    try {
-      await runSuite({
-        // Drive the row count through React state. `flushSync` keeps
-        // the commit synchronous inside the suite's measurement
-        // window — without it, React 18 would batch the update and
-        // the rebuild work would land *after* `apply` closes.
-        setRows: async (n) => {
-          flushSync(() => setRowCountState(n));
-        },
-        resultsEl: document.getElementById('results'),
-      });
-    } finally {
-      setRunning(false);
-    }
-  }, []);
+  // Publish setRowCountState (wrapped in flushSync so the commit
+  // happens inside the suite's apply window) for the runner path.
+  // Also publish setTheme so the rebuild's transition target is
+  // still reachable if a future suite wants to drive it.
+  if (!externalSetRows) {
+    externalSetRows = async (n) => {
+      flushSync(() => setRowCountState(n));
+    };
+  }
+  // Reference `setTheme` so React doesn't warn about an unused
+  // state setter. The current rebuild suite doesn't touch it; a
+  // future theme-toggle suite would.
+  void setTheme;
 
   const rows = useMemo(
     () => Array.from({ length: rowCount }, (_, i) => e(Row, { key: i, index: i, theme })),
@@ -139,20 +125,31 @@ function App() {
   );
 
   return e('div', { style: pageStyle(theme) },
-    e('div', { style: controlsStyle(theme) },
-      e('button', { style: buttonStyle(theme), onClick: onToggle }, 'Toggle theme'),
-      e('button',
-        { style: buttonStyle(theme), onClick: onStart, disabled: running },
-        running ? 'Running…' : 'Start test',
-      ),
-      e('span', { id: 'stats' }, 'Click toggle to measure, or Start test to run the suite'),
-    ),
+    // No on-page controls — the runner drives setRows via postMessage.
+    // Hidden #stats span retained because the original runToggle code
+    // path writes into it; harmless when not used.
+    e('span', { id: 'stats', style: { display: 'none' } }),
     e('div', { style: listStyle(theme) }, rows),
     e('div', { id: 'results', style: { padding: '0 32px 32px' } }),
   );
 }
 
 createRoot(document.getElementById('root')).render(e(App));
+
+// The initial mount may be deferred to a microtask by React's
+// scheduler. Wait until `externalSetRows` is filled before handing
+// off to the runner — otherwise the runner's first `setRows(n)`
+// call would crash before the component is ready. Polling a few
+// times is enough; the mount lands within one or two microtask ticks.
+async function waitForReady() {
+  for (let i = 0; i < 50 && !externalSetRows; i++) {
+    await new Promise(r => requestAnimationFrame(r));
+  }
+  if (!externalSetRows) throw new Error('React mount never filled externalSetRows');
+}
+waitForReady().then(() =>
+  autoRunIfRequested({ setRows: (n) => externalSetRows(n) })
+);
 </script>
 </body>
 </html>

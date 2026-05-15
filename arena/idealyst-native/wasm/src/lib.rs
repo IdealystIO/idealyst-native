@@ -20,7 +20,8 @@
 use backend_web::WebBackend;
 use framework_core::{
     install_theme, set_theme, signal, stylesheet, ui, AlignItems, Color, FlexDirection,
-    JustifyContent, Length, Overflow, Primitive, Signal,
+    JustifyContent, Length, Overflow, Primitive, Signal, ThemeTokens, TokenEntry, TokenValue,
+    Tokenized,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -38,38 +39,79 @@ static ALLOCATOR: lol_alloc::AssumeSingleThreaded<lol_alloc::FreeListAllocator> 
 /// Theme fields the perf row + chrome actually read. Mirrors the
 /// shared `LIGHT`/`DARK` exports in `arena/instrument.js` so every
 /// variant agrees on the exact hex values.
+///
+/// Each field is a `Tokenized<Color>` — a `Token` reference with the
+/// current theme's color as the fallback. Stylesheets close over these
+/// directly; the resulting `StyleRules` carry the token name (not the
+/// fallback) into the content key, so the same `(sheet, variants)`
+/// produces the **same minted CSS class** under any theme. Theme swap
+/// updates the `:root` variable values in place — no class
+/// regeneration, no `className` mutation on any node.
 #[derive(Clone)]
 pub struct Theme {
-    pub background: String,
-    pub surface: String,
-    pub surface_alt: String,
-    pub text: String,
-    pub border: String,
-    pub primary: String,
-    pub primary_text: String,
+    pub background: Tokenized<Color>,
+    pub surface: Tokenized<Color>,
+    pub surface_alt: Tokenized<Color>,
+    pub text: Tokenized<Color>,
+    pub border: Tokenized<Color>,
+    pub primary: Tokenized<Color>,
+    pub primary_text: Tokenized<Color>,
+}
+
+fn tok_color(name: &'static str, fallback: &str) -> Tokenized<Color> {
+    Tokenized::token(name, Color(fallback.into()))
 }
 
 pub fn light() -> Theme {
     Theme {
-        background: "#f7f7fb".into(),
-        surface: "#ffffff".into(),
-        surface_alt: "#eef0f7".into(),
-        text: "#1a1a1f".into(),
-        border: "#e4e6ef".into(),
-        primary: "#5b6cff".into(),
-        primary_text: "#ffffff".into(),
+        background: tok_color("color-background", "#f7f7fb"),
+        surface: tok_color("color-surface", "#ffffff"),
+        surface_alt: tok_color("color-surface-alt", "#eef0f7"),
+        text: tok_color("color-text", "#1a1a1f"),
+        border: tok_color("color-border", "#e4e6ef"),
+        primary: tok_color("color-primary", "#5b6cff"),
+        primary_text: tok_color("color-primary-text", "#ffffff"),
     }
 }
 
 pub fn dark() -> Theme {
     Theme {
-        background: "#0f1115".into(),
-        surface: "#1a1d24".into(),
-        surface_alt: "#262a35".into(),
-        text: "#e8eaf0".into(),
-        border: "#2a2e3a".into(),
-        primary: "#8b9aff".into(),
-        primary_text: "#0f1115".into(),
+        background: tok_color("color-background", "#0f1115"),
+        surface: tok_color("color-surface", "#1a1d24"),
+        surface_alt: tok_color("color-surface-alt", "#262a35"),
+        text: tok_color("color-text", "#e8eaf0"),
+        border: tok_color("color-border", "#2a2e3a"),
+        primary: tok_color("color-primary", "#8b9aff"),
+        primary_text: tok_color("color-primary-text", "#0f1115"),
+    }
+}
+
+/// `ThemeTokens` impl: enumerate every theme color as a
+/// `TokenEntry { name, value }` so the backend can install them on
+/// `:root`. The names here are exactly the names embedded in the
+/// `Tokenized::Token { name, .. }` references — keep these two lists
+/// in sync.
+impl ThemeTokens for Theme {
+    fn tokens(&self) -> Vec<TokenEntry> {
+        fn entry(t: &Tokenized<Color>) -> TokenEntry {
+            // Tokenized::Token always — we never construct literals
+            // for theme fields above, but guard against it anyway:
+            // unwrap to the fallback if a literal slipped in.
+            let name = t.name().expect("theme fields must be Tokenized::Token");
+            TokenEntry {
+                name,
+                value: TokenValue::Color(t.value().clone()),
+            }
+        }
+        vec![
+            entry(&self.background),
+            entry(&self.surface),
+            entry(&self.surface_alt),
+            entry(&self.text),
+            entry(&self.border),
+            entry(&self.primary),
+            entry(&self.primary_text),
+        ]
     }
 }
 
@@ -80,8 +122,8 @@ pub fn dark() -> Theme {
 stylesheet! {
     pub Page<Theme> {
         base(t) {
-            background: Color(t.background.clone()),
-            color: Color(t.text.clone()),
+            background: t.background.clone(),
+            color: t.text.clone(),
             padding: 32.0,
             gap: Length::Px(24.0),
             min_height: Length::pct(100.0),
@@ -103,9 +145,9 @@ stylesheet! {
             padding_horizontal: 16.0,
             border_radius: 10.0,
             border_width: 1.0,
-            border_color: Color(t.border.clone()),
-            background: Color(t.surface.clone()),
-            color: Color(t.text.clone()),
+            border_color: t.border.clone(),
+            background: t.surface.clone(),
+            color: t.text.clone(),
         }
         transitions {
             background: 250ms EaseInOut,
@@ -118,10 +160,21 @@ stylesheet! {
 stylesheet! {
     pub PerfList<Theme> {
         base(t) {
-            background: Color(t.surface.clone()),
+            // `flex_direction: Column` here serves two purposes: it
+            // sets the layout axis for the row children, and it
+            // triggers the framework's CSS-emit auto-promotion to
+            // `display: flex` — so rows behave as flex children
+            // (flex-shrink: 1 by default, which collapses each row
+            // to its content height + padding). Without this, the
+            // list would emit `display: block` and rows would
+            // honor their declared `height: 36` literally, ending
+            // up 53px tall — visibly larger than every other
+            // arena variant's 34px rows.
+            flex_direction: FlexDirection::Column,
+            background: t.surface.clone(),
             border_radius: 10.0,
             border_width: 1.0,
-            border_color: Color(t.border.clone()),
+            border_color: t.border.clone(),
             height: 500.0,
             overflow: Overflow::Hidden,
         }
@@ -137,10 +190,10 @@ stylesheet! {
         base(t) {
             padding_horizontal: 16.0,
             padding_vertical: 8.0,
-            background: Color(t.surface.clone()),
-            color: Color(t.text.clone()),
+            background: t.surface.clone(),
+            color: t.text.clone(),
             border_bottom_width: 1.0,
-            border_bottom_color: Color(t.border.clone()),
+            border_bottom_color: t.border.clone(),
             font_size: 13.0,
             height: 36.0,
             justify_content: JustifyContent::Center,
@@ -149,7 +202,7 @@ stylesheet! {
             #[default]
             even(_t) {}
             odd(t) {
-                background: Color(t.surface_alt.clone()),
+                background: t.surface_alt.clone(),
             }
         }
         transitions {
@@ -207,11 +260,14 @@ fn app(initial_rows: usize) -> Primitive {
 
     ui! {
         View(style = page_style()) {
-            View(style = controls_style()) {
-                // No button or stats here — the arena's index.html
-                // hosts both as static HTML. We just need the
-                // chrome that participates in the transition.
-            }
+            // No controls chrome — the runner (in arena/index.html)
+            // hosts every interactive control as static HTML
+            // outside the iframe, and the variant page focuses on
+            // the row list itself. We previously rendered an empty
+            // `View(style = controls_style())` here as a transition
+            // anchor; with the runner the box-with-no-children
+            // read as a stray empty card above the list.
+            //
             // Reactive `match` on count: changing the signal
             // re-fires the surrounding effect, drops the previous
             // ScrollView's scope (freeing every row's effect), and

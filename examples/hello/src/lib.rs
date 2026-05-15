@@ -13,9 +13,11 @@
 //!   1000-fold style invalidation.
 
 use framework_core::{
-    component, install_theme, set_theme, signal, ui, AlignItems, Color, FlexDirection,
+    component, install_theme, set_theme, signal, ui, AlignItems, AnchorTarget, BackdropMode,
+    ButtonHandle, Color, Easing, ElementAlign, ElementAnchor, ElementSide, FlexDirection,
     FontWeight, JustifyContent, LayoutProps, Length, Navigator, NavigatorHandle, Overflow,
-    Primitive, Ref, Route, RouteParams, Shadow, Signal, TextAlign,
+    OverlayAnchor, PresenceAnim, PresenceState, Primitive, Ref, Route, RouteParams, Shadow,
+    Signal, TextAlign, ViewportPlacement,
 };
 use std::collections::HashMap;
 
@@ -78,23 +80,35 @@ pub struct Theme {
     pub spacing: Spacing,
 }
 
+/// Each color is a `Tokenized<framework_core::Color>` — a token
+/// reference whose fallback is the current theme's literal value.
+/// Stylesheets close over these directly; the resulting `StyleRules`
+/// carry the token name into the content key, so the same minted CSS
+/// class is reused under any theme. Theme swap mutates `:root`
+/// variables in place — no `className` mutation on any node.
 #[derive(Clone)]
 pub struct Colors {
-    pub background: String,
-    pub surface: String,
+    pub background: framework_core::Tokenized<framework_core::Color>,
+    pub surface: framework_core::Tokenized<framework_core::Color>,
     /// Alternating surface for striped lists (perf screen rows).
     /// Distinct enough from `surface` that the parity is visible
     /// at a glance.
-    pub surface_alt: String,
-    pub primary: String,
-    pub primary_hover: String,
-    pub primary_pressed: String,
-    pub primary_text: String,
-    pub text: String,
-    pub muted: String,
-    pub border: String,
-    pub border_hover: String,
-    pub focus_ring: String,
+    pub surface_alt: framework_core::Tokenized<framework_core::Color>,
+    pub primary: framework_core::Tokenized<framework_core::Color>,
+    pub primary_hover: framework_core::Tokenized<framework_core::Color>,
+    pub primary_pressed: framework_core::Tokenized<framework_core::Color>,
+    pub primary_text: framework_core::Tokenized<framework_core::Color>,
+    pub text: framework_core::Tokenized<framework_core::Color>,
+    pub muted: framework_core::Tokenized<framework_core::Color>,
+    pub border: framework_core::Tokenized<framework_core::Color>,
+    pub border_hover: framework_core::Tokenized<framework_core::Color>,
+    pub focus_ring: framework_core::Tokenized<framework_core::Color>,
+    /// Semi-transparent scrim color drawn behind overlays in
+    /// dismiss-on-click / opaque-blocking mode. Read by the overlay
+    /// screen's `OverlayScrim` stylesheet so the scrim adapts to
+    /// theme (darker scrim in dark mode reads better against a
+    /// dark surface).
+    pub overlay: framework_core::Tokenized<framework_core::Color>,
 }
 
 #[derive(Clone)]
@@ -108,21 +122,26 @@ pub struct Spacing {
 
 const SPACING: Spacing = Spacing { xs: 4.0, sm: 8.0, md: 16.0, lg: 24.0, xl: 32.0 };
 
+fn tok_color(name: &'static str, fallback: &str) -> framework_core::Tokenized<framework_core::Color> {
+    framework_core::Tokenized::token(name, framework_core::Color(fallback.into()))
+}
+
 pub fn light_theme() -> Theme {
     Theme {
         colors: Colors {
-            background: "#f7f7fb".into(),
-            surface: "#ffffff".into(),
-            surface_alt: "#eef0f7".into(),
-            primary: "#5b6cff".into(),
-            primary_hover: "#4a5cf0".into(),
-            primary_pressed: "#3947d6".into(),
-            primary_text: "#ffffff".into(),
-            text: "#1a1a1f".into(),
-            muted: "#6b7280".into(),
-            border: "#e4e6ef".into(),
-            border_hover: "#b9bdcc".into(),
-            focus_ring: "#5b6cff".into(),
+            background: tok_color("color-background", "#f7f7fb"),
+            surface: tok_color("color-surface", "#ffffff"),
+            surface_alt: tok_color("color-surface-alt", "#eef0f7"),
+            primary: tok_color("color-primary", "#5b6cff"),
+            primary_hover: tok_color("color-primary-hover", "#4a5cf0"),
+            primary_pressed: tok_color("color-primary-pressed", "#3947d6"),
+            primary_text: tok_color("color-primary-text", "#ffffff"),
+            text: tok_color("color-text", "#1a1a1f"),
+            muted: tok_color("color-muted", "#6b7280"),
+            border: tok_color("color-border", "#e4e6ef"),
+            border_hover: tok_color("color-border-hover", "#b9bdcc"),
+            focus_ring: tok_color("color-focus-ring", "#5b6cff"),
+            overlay: tok_color("color-overlay", "rgba(15, 17, 21, 0.45)"),
         },
         spacing: SPACING.clone(),
     }
@@ -131,20 +150,54 @@ pub fn light_theme() -> Theme {
 pub fn dark_theme() -> Theme {
     Theme {
         colors: Colors {
-            background: "#0f1115".into(),
-            surface: "#1a1d24".into(),
-            surface_alt: "#262a35".into(),
-            primary: "#8b9aff".into(),
-            primary_hover: "#9eabff".into(),
-            primary_pressed: "#7383f5".into(),
-            primary_text: "#0f1115".into(),
-            text: "#e8eaf0".into(),
-            muted: "#9099a8".into(),
-            border: "#2a2e3a".into(),
-            border_hover: "#3d4252".into(),
-            focus_ring: "#8b9aff".into(),
+            background: tok_color("color-background", "#0f1115"),
+            surface: tok_color("color-surface", "#1a1d24"),
+            surface_alt: tok_color("color-surface-alt", "#262a35"),
+            primary: tok_color("color-primary", "#8b9aff"),
+            primary_hover: tok_color("color-primary-hover", "#9eabff"),
+            primary_pressed: tok_color("color-primary-pressed", "#7383f5"),
+            primary_text: tok_color("color-primary-text", "#0f1115"),
+            text: tok_color("color-text", "#e8eaf0"),
+            muted: tok_color("color-muted", "#9099a8"),
+            border: tok_color("color-border", "#2a2e3a"),
+            border_hover: tok_color("color-border-hover", "#3d4252"),
+            focus_ring: tok_color("color-focus-ring", "#8b9aff"),
+            overlay: tok_color("color-overlay", "rgba(0, 0, 0, 0.55)"),
         },
         spacing: SPACING.clone(),
+    }
+}
+
+/// Make this theme installable through the framework's tokenized
+/// theme installation API. Enumerates every color field as a
+/// `TokenEntry` so the web backend can install them as `:root`
+/// custom properties — theme swap then becomes one `setProperty`
+/// per token, no class regeneration.
+impl framework_core::ThemeTokens for Theme {
+    fn tokens(&self) -> Vec<framework_core::TokenEntry> {
+        fn entry(t: &framework_core::Tokenized<framework_core::Color>) -> framework_core::TokenEntry {
+            let name = t.name().expect("hello: Theme color fields must be Tokenized::Token");
+            framework_core::TokenEntry {
+                name,
+                value: framework_core::TokenValue::Color(t.value().clone()),
+            }
+        }
+        let c = &self.colors;
+        vec![
+            entry(&c.background),
+            entry(&c.surface),
+            entry(&c.surface_alt),
+            entry(&c.primary),
+            entry(&c.primary_hover),
+            entry(&c.primary_pressed),
+            entry(&c.primary_text),
+            entry(&c.text),
+            entry(&c.muted),
+            entry(&c.border),
+            entry(&c.border_hover),
+            entry(&c.focus_ring),
+            entry(&c.overlay),
+        ]
     }
 }
 
@@ -155,8 +208,8 @@ pub fn dark_theme() -> Theme {
 framework_core::stylesheet! {
     pub Page<Theme> {
         base(t) {
-            background: Color(t.colors.background.clone()),
-            color: Color(t.colors.text.clone()),
+            background: t.colors.background.clone(),
+            color: t.colors.text.clone(),
             padding: t.spacing.xl,
             gap: Length::Px(t.spacing.lg),
             min_height: Length::pct(100.0),
@@ -196,7 +249,7 @@ framework_core::stylesheet! {
 framework_core::stylesheet! {
     pub Title<Theme> {
         base(t) {
-            color: Color(t.colors.text.clone()),
+            color: t.colors.text.clone(),
             font_size: 32.0,
             font_weight: FontWeight::SemiBold,
             letter_spacing: -0.5,
@@ -208,7 +261,7 @@ framework_core::stylesheet! {
 framework_core::stylesheet! {
     pub Subtitle<Theme> {
         base(t) {
-            color: Color(t.colors.muted.clone()),
+            color: t.colors.muted.clone(),
             font_size: 16.0,
             line_height: 22.0,
         }
@@ -218,7 +271,7 @@ framework_core::stylesheet! {
 framework_core::stylesheet! {
     pub SectionHeading<Theme> {
         base(t) {
-            color: Color(t.colors.muted.clone()),
+            color: t.colors.muted.clone(),
             font_size: 12.0,
             font_weight: FontWeight::SemiBold,
             letter_spacing: 1.0,
@@ -230,7 +283,7 @@ framework_core::stylesheet! {
 framework_core::stylesheet! {
     pub CardTitle<Theme> {
         base(t) {
-            color: Color(t.colors.text.clone()),
+            color: t.colors.text.clone(),
             font_size: 14.0,
             font_weight: FontWeight::SemiBold,
             letter_spacing: 0.5,
@@ -242,7 +295,7 @@ framework_core::stylesheet! {
 framework_core::stylesheet! {
     pub LinkText<Theme> {
         base(t) {
-            color: Color(t.colors.primary.clone()),
+            color: t.colors.primary.clone(),
             font_size: 14.0,
             font_weight: FontWeight::SemiBold,
         }
@@ -252,7 +305,7 @@ framework_core::stylesheet! {
 framework_core::stylesheet! {
     pub CardValue<Theme> {
         base(t) {
-            color: Color(t.colors.text.clone()),
+            color: t.colors.text.clone(),
             font_size: 36.0,
             font_weight: FontWeight::Bold,
             letter_spacing: -1.0,
@@ -268,7 +321,7 @@ framework_core::stylesheet! {
 framework_core::stylesheet! {
     pub Card<Theme> {
         base(t) {
-            background: Color(t.colors.surface.clone()),
+            background: t.colors.surface.clone(),
             padding: t.spacing.lg,
             border_radius: 12.0,
             gap: Length::Px(t.spacing.sm),
@@ -285,8 +338,8 @@ framework_core::stylesheet! {
             #[default]
             neutral(_t) {}
             primary(t) {
-                background: Color(t.colors.primary.clone()),
-                color: Color(t.colors.primary_text.clone()),
+                background: t.colors.primary.clone(),
+                color: t.colors.primary_text.clone(),
             }
         }
 
@@ -300,8 +353,8 @@ framework_core::stylesheet! {
 framework_core::stylesheet! {
     pub PrimaryButton<Theme> {
         base(t) {
-            background: Color(t.colors.primary.clone()),
-            color: Color(t.colors.primary_text.clone()),
+            background: t.colors.primary.clone(),
+            color: t.colors.primary_text.clone(),
             padding_vertical: t.spacing.sm,
             padding_horizontal: t.spacing.md,
             border_radius: 8.0,
@@ -311,10 +364,10 @@ framework_core::stylesheet! {
             text_align: TextAlign::Center,
         }
         state hovered(t) {
-            background: Color(t.colors.primary_hover.clone()),
+            background: t.colors.primary_hover.clone(),
         }
         state pressed(t) {
-            background: Color(t.colors.primary_pressed.clone()),
+            background: t.colors.primary_pressed.clone(),
         }
         state disabled(_t) {
             opacity: 0.4,
@@ -331,22 +384,22 @@ framework_core::stylesheet! {
     pub SecondaryButton<Theme> {
         base(t) {
             background: Color("transparent".into()),
-            color: Color(t.colors.text.clone()),
+            color: t.colors.text.clone(),
             padding_vertical: t.spacing.sm,
             padding_horizontal: t.spacing.md,
             border_radius: 8.0,
             border_width: 1.0,
-            border_color: Color(t.colors.border.clone()),
+            border_color: t.colors.border.clone(),
             font_weight: FontWeight::Medium,
             font_size: 14.0,
             letter_spacing: 0.3,
             text_align: TextAlign::Center,
         }
         state hovered(t) {
-            border_color: Color(t.colors.border_hover.clone()),
+            border_color: t.colors.border_hover.clone(),
         }
         state pressed(t) {
-            border_color: Color(t.colors.primary.clone()),
+            border_color: t.colors.primary.clone(),
         }
         transitions {
             color: 200ms EaseOut,
@@ -359,8 +412,8 @@ framework_core::stylesheet! {
 framework_core::stylesheet! {
     pub CounterButton<Theme> {
         base(t) {
-            background: Color(t.colors.primary.clone()),
-            color: Color(t.colors.primary_text.clone()),
+            background: t.colors.primary.clone(),
+            color: t.colors.primary_text.clone(),
             padding_vertical: t.spacing.xs,
             padding_horizontal: t.spacing.md,
             border_radius: 6.0,
@@ -380,10 +433,10 @@ framework_core::stylesheet! {
 framework_core::stylesheet! {
     pub GradientCanvas<Theme> {
         base(t) {
-            background: Color(t.colors.surface.clone()),
+            background: t.colors.surface.clone(),
             border_radius: 8.0,
             border_width: 1.0,
-            border_color: Color(t.colors.border.clone()),
+            border_color: t.colors.border.clone(),
             height: 200.0,
             overflow: Overflow::Hidden,
         }
@@ -394,12 +447,12 @@ framework_core::stylesheet! {
 framework_core::stylesheet! {
     pub HeaderBar<Theme> {
         base(t) {
-            background: Color(t.colors.surface.clone()),
+            background: t.colors.surface.clone(),
             padding_vertical: t.spacing.sm,
             padding_horizontal: t.spacing.md,
             border_radius: 10.0,
             border_width: 1.0,
-            border_color: Color(t.colors.border.clone()),
+            border_color: t.colors.border.clone(),
             flex_direction: FlexDirection::Row,
             gap: Length::Px(t.spacing.sm),
             align_items: AlignItems::Center,
@@ -416,7 +469,7 @@ framework_core::stylesheet! {
 framework_core::stylesheet! {
     pub HeaderTitle<Theme> {
         base(t) {
-            color: Color(t.colors.text.clone()),
+            color: t.colors.text.clone(),
             font_size: 18.0,
             font_weight: FontWeight::SemiBold,
             letter_spacing: -0.2,
@@ -445,7 +498,7 @@ framework_core::stylesheet! {
     pub NavButton<Theme> {
         base(t) {
             background: Color("transparent".into()),
-            color: Color(t.colors.muted.clone()),
+            color: t.colors.muted.clone(),
             padding_vertical: t.spacing.xs,
             padding_horizontal: t.spacing.md,
             border_radius: 6.0,
@@ -456,12 +509,12 @@ framework_core::stylesheet! {
             #[default]
             off(_t) {}
             on(t) {
-                background: Color(t.colors.primary.clone()),
-                color: Color(t.colors.primary_text.clone()),
+                background: t.colors.primary.clone(),
+                color: t.colors.primary_text.clone(),
             }
         }
         state hovered(t) {
-            color: Color(t.colors.text.clone()),
+            color: t.colors.text.clone(),
         }
         transitions {
             background: 200ms EaseOut,
@@ -479,10 +532,10 @@ framework_core::stylesheet! {
         base(t) {
             padding_horizontal: t.spacing.md,
             padding_vertical: t.spacing.sm,
-            background: Color(t.colors.surface.clone()),
-            color: Color(t.colors.text.clone()),
+            background: t.colors.surface.clone(),
+            color: t.colors.text.clone(),
             border_bottom_width: 1.0,
-            border_bottom_color: Color(t.colors.border.clone()),
+            border_bottom_color: t.colors.border.clone(),
             font_size: 13.0,
             height: 36.0,
             justify_content: JustifyContent::Center,
@@ -491,7 +544,7 @@ framework_core::stylesheet! {
             #[default]
             even(_t) {}
             odd(t) {
-                background: Color(t.colors.surface_alt.clone()),
+                background: t.colors.surface_alt.clone(),
             }
         }
         transitions {
@@ -506,10 +559,10 @@ framework_core::stylesheet! {
 framework_core::stylesheet! {
     pub PerfList<Theme> {
         base(t) {
-            background: Color(t.colors.surface.clone()),
+            background: t.colors.surface.clone(),
             border_radius: 10.0,
             border_width: 1.0,
-            border_color: Color(t.colors.border.clone()),
+            border_color: t.colors.border.clone(),
             height: 500.0,
             overflow: Overflow::Hidden,
         }
@@ -529,12 +582,12 @@ framework_core::stylesheet! {
             flex_direction: FlexDirection::Row,
             gap: Length::Px(t.spacing.md),
             align_items: AlignItems::Center,
-            background: Color(t.colors.surface.clone()),
+            background: t.colors.surface.clone(),
             padding_vertical: t.spacing.sm,
             padding_horizontal: t.spacing.md,
             border_radius: 10.0,
             border_width: 1.0,
-            border_color: Color(t.colors.border.clone()),
+            border_color: t.colors.border.clone(),
         }
         transitions {
             background: 250ms EaseInOut,
@@ -548,13 +601,13 @@ framework_core::stylesheet! {
 framework_core::stylesheet! {
     pub PerfCountInput<Theme> {
         base(t) {
-            background: Color(t.colors.background.clone()),
-            color: Color(t.colors.text.clone()),
+            background: t.colors.background.clone(),
+            color: t.colors.text.clone(),
             padding_vertical: t.spacing.xs,
             padding_horizontal: t.spacing.sm,
             border_radius: 6.0,
             border_width: 1.0,
-            border_color: Color(t.colors.border.clone()),
+            border_color: t.colors.border.clone(),
             font_size: 14.0,
             width: 120.0,
         }
@@ -572,6 +625,115 @@ framework_core::stylesheet! {
             // Push to the end of the row; the input + button occupy
             // the start.
             margin_left: Length::Auto,
+        }
+    }
+}
+
+// =============================================================================
+// Stylesheets — overlay-screen surfaces (modal, popover, drawer, scrim)
+// =============================================================================
+//
+// The overlay primitive itself doesn't draw anything — its job is to
+// portal/position the children. These stylesheets define the *content*
+// surfaces the children render with, plus an example backdrop that
+// reads from the theme so dark mode propagates through.
+
+framework_core::stylesheet! {
+    pub ModalSurface<Theme> {
+        base(t) {
+            background: t.colors.surface.clone(),
+            color: t.colors.text.clone(),
+            padding: t.spacing.xl,
+            border_radius: 14.0,
+            border_width: 1.0,
+            border_color: t.colors.border.clone(),
+            gap: Length::Px(t.spacing.md),
+            flex_direction: FlexDirection::Column,
+            min_width: 360.0,
+            max_width: 520.0,
+            shadow: Shadow {
+                x: 0.0,
+                y: 16.0,
+                blur: 40.0,
+                color: Color("rgba(15, 17, 21, 0.28)".into()),
+            },
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            border_color: 250ms EaseInOut,
+            color: 250ms EaseInOut,
+        }
+    }
+}
+
+framework_core::stylesheet! {
+    pub PopoverSurface<Theme> {
+        base(t) {
+            background: t.colors.surface.clone(),
+            color: t.colors.text.clone(),
+            padding: t.spacing.sm,
+            border_radius: 10.0,
+            border_width: 1.0,
+            border_color: t.colors.border.clone(),
+            gap: Length::Px(t.spacing.xs),
+            flex_direction: FlexDirection::Column,
+            min_width: 200.0,
+            shadow: Shadow {
+                x: 0.0,
+                y: 8.0,
+                blur: 24.0,
+                color: Color("rgba(15, 17, 21, 0.22)".into()),
+            },
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            border_color: 250ms EaseInOut,
+        }
+    }
+}
+
+framework_core::stylesheet! {
+    pub DrawerSurface<Theme> {
+        base(t) {
+            background: t.colors.surface.clone(),
+            color: t.colors.text.clone(),
+            padding: t.spacing.xl,
+            border_left_width: 1.0,
+            border_left_color: t.colors.border.clone(),
+            gap: Length::Px(t.spacing.md),
+            flex_direction: FlexDirection::Column,
+            // Drawers run the full height of the viewport — the
+            // overlay primitive's `Right` placement already pins
+            // top + bottom + right, so we only need to set a fixed
+            // width here.
+            width: 360.0,
+            height: Length::pct(100.0),
+            shadow: Shadow {
+                x: -8.0,
+                y: 0.0,
+                blur: 32.0,
+                color: Color("rgba(15, 17, 21, 0.28)".into()),
+            },
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            border_left_color: 250ms EaseInOut,
+            color: 250ms EaseInOut,
+        }
+    }
+}
+
+// Theme-aware backdrop. The overlay primitive's default scrim is a
+// fixed `rgba(0,0,0,0.45)`; passing `backdrop_style` overrides it
+// with whatever you want — useful for tuning opacity per theme or
+// adding effects like blur.
+framework_core::stylesheet! {
+    pub OverlayScrim<Theme> {
+        base(t) {
+            background: t.colors.overlay.clone(),
+        }
+        transitions {
+            background: 250ms EaseInOut,
         }
     }
 }
@@ -652,6 +814,7 @@ pub const HOME_ROUTE: Route<()> = Route::<()>::new("home", "/");
 pub const SHOWCASE_ROUTE: Route<()> = Route::<()>::new("showcase", "/showcase");
 pub const PERF_ROUTE: Route<()> = Route::<()>::new("performance", "/performance");
 pub const LISTS_ROUTE: Route<()> = Route::<()>::new("lists", "/lists");
+pub const OVERLAY_ROUTE: Route<()> = Route::<()>::new("overlay", "/overlay");
 pub const DETAIL_ROUTE: Route<DetailParams> = Route::<DetailParams>::new("detail", "/detail/:id");
 
 // =============================================================================
@@ -720,6 +883,15 @@ pub fn home(props: &HomeProps) -> Primitive {
                     on_click = move || {
                         if let Some(h) = nav.get() {
                             h.push(&LISTS_ROUTE, ());
+                        }
+                    },
+                    style = primary_button_style()
+                )
+                Button(
+                    label = "Overlays (modal / popover / drawer)",
+                    on_click = move || {
+                        if let Some(h) = nav.get() {
+                            h.push(&OVERLAY_ROUTE, ());
                         }
                     },
                     style = primary_button_style()
@@ -1193,6 +1365,231 @@ pub fn lists(props: &ListsProps) -> Primitive {
 }
 
 // =============================================================================
+// Overlay screen — modal, popover, drawer demos.
+// =============================================================================
+//
+// Each overlay is host-controlled: the screen owns a `Signal<bool>`
+// per overlay; flipping it mounts/unmounts the `Overlay` primitive
+// via `ui!`'s reactive `if`. The framework's walker mounts the
+// floating layer on each `if` flip-on, drops the surrounding scope
+// (and the overlay's portal) on flip-off.
+//
+// Three flavors shown, exercising the primitive's anchoring and
+// backdrop modes:
+//
+// 1. **Modal** — `Viewport(Center)` + `BackdropMode::Dismiss` so
+//    clicking the scrim or pressing Escape fires `on_dismiss`. The
+//    host's `on_dismiss` callback flips the signal to `false` →
+//    the surrounding `if` rebuilds the empty branch → the overlay's
+//    scope drops.
+//
+// 2. **Popover** — `Element` anchored to a `Ref<ButtonHandle>` on
+//    the trigger button, `BackdropMode::None` so the page behind
+//    stays interactive. Escape still dismisses.
+//
+// 3. **Drawer** — `Viewport(Right)` + `BackdropMode::Dismiss`.
+//    Same shape as the modal but pinned to the right edge instead
+//    of centered.
+
+pub struct OverlaysProps {
+    pub nav: Ref<NavigatorHandle>,
+}
+
+#[component]
+pub fn overlays(props: &OverlaysProps) -> Primitive {
+    let nav = props.nav;
+
+    let modal_open = signal!(false);
+    let popover_open = signal!(false);
+    let drawer_open = signal!(false);
+
+    // The popover anchors to this ref. Calling `.bind(popover_trigger)`
+    // on the trigger button fills it at mount time; the overlay's
+    // `Element` anchor measures its rect on each open.
+    let popover_trigger: Ref<ButtonHandle> = Ref::new();
+
+    ui! {
+        View(style = page_style()) {
+            Topbar(title = "Overlays".to_string(), nav = nav)
+            Text(style = subtitle_style()) {
+                "Overlays render above the layout tree, escaping \
+                 parent clipping and stacking contexts. The host \
+                 owns each overlay's open/close signal; flipping it \
+                 mounts/unmounts the floating subtree."
+            }
+
+            // -------- Modal --------
+            View {
+                Text(style = section_heading_style()) { "Modal" }
+                Text(style = subtitle_style()) {
+                    "Viewport-centered overlay with a dismiss-on-\
+                     click scrim. Press Escape or click outside to \
+                     dismiss; both flow through `on_dismiss`."
+                }
+                Button(
+                    label = "Open modal",
+                    on_click = move || modal_open.set(true),
+                    style = primary_button_style()
+                )
+                // Presence wraps the conditional mount: the `if`
+                // moved INSIDE the Presence's `present` reactive
+                // closure. Result: on `modal_open` flipping false,
+                // the modal animates out before its scope drops.
+                Presence(
+                    present = move || modal_open.get(),
+                    enter = PresenceAnim::new(
+                        PresenceState::default().opacity(0.0).translate_y(8.0),
+                        200,
+                        Easing::EaseOut,
+                    ),
+                    exit = PresenceAnim::new(
+                        PresenceState::default().opacity(0.0).translate_y(8.0),
+                        150,
+                        Easing::EaseIn,
+                    ),
+                ) {
+                    Overlay(
+                        anchor = OverlayAnchor::Viewport(ViewportPlacement::Center),
+                        backdrop = BackdropMode::Dismiss,
+                        backdrop_style = overlay_scrim_style(),
+                        on_dismiss = move || modal_open.set(false)
+                    ) {
+                        View(style = modal_surface_style()) {
+                            Text(style = title_style()) { "Confirm" }
+                            Text(style = subtitle_style()) {
+                                "This is a centered modal. Click the \
+                                 scrim or press Escape to dismiss."
+                            }
+                            View(style = row_style()) {
+                                Button(
+                                    label = "Cancel",
+                                    on_click = move || modal_open.set(false),
+                                    style = secondary_button_style()
+                                )
+                                Button(
+                                    label = "OK",
+                                    on_click = move || modal_open.set(false),
+                                    style = primary_button_style()
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // -------- Popover --------
+            View {
+                Text(style = section_heading_style()) { "Popover" }
+                Text(style = subtitle_style()) {
+                    "Element-anchored overlay with no backdrop — \
+                     the page behind stays interactive. Anchors to \
+                     a `Ref<ButtonHandle>` on the trigger."
+                }
+                Button(
+                    label = "Show options",
+                    on_click = move || popover_open.set(true),
+                    style = secondary_button_style()
+                ).bind(popover_trigger)
+                Presence(
+                    present = move || popover_open.get(),
+                    enter = PresenceAnim::new(
+                        PresenceState::default().opacity(0.0).translate_y(-4.0).scale(0.97),
+                        140,
+                        Easing::EaseOut,
+                    ),
+                    exit = PresenceAnim::new(
+                        PresenceState::default().opacity(0.0).scale(0.97),
+                        100,
+                        Easing::EaseIn,
+                    ),
+                ) {
+                    Overlay(
+                        anchor = OverlayAnchor::Element(ElementAnchor {
+                            target: AnchorTarget::from(popover_trigger),
+                            side: ElementSide::Below,
+                            align: ElementAlign::Start,
+                            offset: 6.0,
+                        }),
+                        backdrop = BackdropMode::None,
+                        on_dismiss = move || popover_open.set(false),
+                        trap_focus = false
+                    ) {
+                        View(style = popover_surface_style()) {
+                            Button(
+                                label = "Edit",
+                                on_click = move || popover_open.set(false),
+                                style = secondary_button_style()
+                            )
+                            Button(
+                                label = "Duplicate",
+                                on_click = move || popover_open.set(false),
+                                style = secondary_button_style()
+                            )
+                            Button(
+                                label = "Delete",
+                                on_click = move || popover_open.set(false),
+                                style = secondary_button_style()
+                            )
+                        }
+                    }
+                }
+            }
+
+            // -------- Drawer --------
+            View {
+                Text(style = section_heading_style()) { "Drawer" }
+                Text(style = subtitle_style()) {
+                    "Right-edge drawer — the same `Overlay` primitive, \
+                     placed with `Viewport(Right)` so the backend \
+                     pins it to the right edge full-height instead \
+                     of centering."
+                }
+                Button(
+                    label = "Open drawer",
+                    on_click = move || drawer_open.set(true),
+                    style = primary_button_style()
+                )
+                Presence(
+                    present = move || drawer_open.get(),
+                    enter = PresenceAnim::new(
+                        PresenceState::default().translate_x(360.0),
+                        260,
+                        Easing::EaseOut,
+                    ),
+                    exit = PresenceAnim::new(
+                        PresenceState::default().translate_x(360.0),
+                        220,
+                        Easing::EaseIn,
+                    ),
+                ) {
+                    Overlay(
+                        anchor = OverlayAnchor::Viewport(ViewportPlacement::Right),
+                        backdrop = BackdropMode::Dismiss,
+                        backdrop_style = overlay_scrim_style(),
+                        on_dismiss = move || drawer_open.set(false)
+                    ) {
+                        View(style = drawer_surface_style()) {
+                            Text(style = title_style()) { "Settings" }
+                            Text(style = subtitle_style()) {
+                                "Drawers slide in from a viewport edge. \
+                                 Real motion needs a `Presence` primitive \
+                                 (deferred unmount) — for now the drawer \
+                                 mounts/unmounts instantly."
+                            }
+                            Button(
+                                label = "Close",
+                                on_click = move || drawer_open.set(false),
+                                style = primary_button_style()
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
 // Web layout — chrome wrapper invoked only on backends that opt in
 // (web today; future SSR). Native backends draw their own nav chrome
 // and ignore `.layout()`.
@@ -1314,6 +1711,10 @@ pub fn app() -> Primitive {
             .screen(LISTS_ROUTE, move |_| {
                 let nav = nav;
                 ui! { Lists(nav = nav) }
+            })
+            .screen(OVERLAY_ROUTE, move |_| {
+                let nav = nav;
+                ui! { Overlays(nav = nav) }
             })
             .screen(DETAIL_ROUTE, move |params: DetailParams| {
                 let nav = nav;

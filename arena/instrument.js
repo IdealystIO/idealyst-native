@@ -311,3 +311,99 @@ export async function runSuite({
   renderSummary(resultsEl, runs);
   return runs;
 }
+
+// ---------------------------------------------------------------
+// Runner integration: auto-run a suite when invoked from an iframe
+// ---------------------------------------------------------------
+//
+// The arena runner (arena/index.html) loads each variant inside an
+// iframe with a `?suite=NAME` query param. The variant calls
+// `autoRunIfRequested(...)` after its own setup; this helper:
+//
+//   1. Reads the suite name + params from the URL.
+//   2. Dynamic-imports the suite module from `../suites/NAME.js`
+//      (relative to the variant page, which lives one level below
+//      `arena/`).
+//   3. Calls the suite's `run(...)` with the variant-supplied
+//      `setRows` and the URL params.
+//   4. Posts the resulting per-iteration records back to the
+//      runner via `window.parent.postMessage(...)`.
+//
+// Variants that aren't loaded inside an iframe (i.e. opened
+// directly in a tab) see no `?suite=` and the helper returns
+// immediately — no behavior change for the existing standalone
+// Start-test button path.
+
+const PARENT_ORIGIN = '*';  // runner + variant are same-origin in
+                            // dev, but using '*' avoids breaking
+                            // if someone serves via different hosts
+                            // (CI, GitHub Pages, etc.). The payload
+                            // doesn't contain anything sensitive.
+
+/// Auto-run handler called by each variant page. The variant must
+/// have already finished its own setup (component mounted, theme
+/// installed, etc.) — the suite assumes `setRows` is ready to call
+/// the moment we invoke it.
+///
+/// `opts`:
+///   - `setRows(n)`  the variant's row-count mutator (same shape
+///                   as the standalone Start-test path uses).
+///   - `suitesBase`  optional override for the suites directory URL.
+///                   Defaults to `../suites/` relative to the
+///                   variant page (which is the layout the arena
+///                   ships with).
+export async function autoRunIfRequested({ setRows, suitesBase } = {}) {
+  const url = new URL(window.location.href);
+  const suiteName = url.searchParams.get('suite');
+  if (!suiteName) {
+    // Not in iframe-runner mode — variant is being viewed standalone.
+    return;
+  }
+
+  // Collect every other query param as a string→string map for the
+  // suite. The suite's `run()` casts them to whatever shape it
+  // wants. This intentionally doesn't validate against the suite's
+  // declared `params` schema; the runner is responsible for emitting
+  // values the suite recognizes.
+  const params = {};
+  for (const [k, v] of url.searchParams.entries()) {
+    if (k === 'suite' || k === 'runId') continue;
+    params[k] = v;
+  }
+
+  // Dynamic-import the suite module. Default base assumes the
+  // variant page lives at `arena/<variant>/index.html` and the
+  // suite at `arena/suites/<name>.js`.
+  const base = suitesBase ?? new URL('../suites/', window.location.href).href;
+  let suite;
+  try {
+    suite = await import(`${base}${suiteName}.js`);
+  } catch (err) {
+    postBack({ type: 'arena-error', error: `failed to load suite ${suiteName}: ${err?.message ?? err}` });
+    return;
+  }
+
+  if (typeof suite.run !== 'function') {
+    postBack({ type: 'arena-error', error: `suite ${suiteName} has no run() export` });
+    return;
+  }
+
+  try {
+    const runs = await suite.run({
+      setRows,
+      params,
+      onProgress: (progress) => {
+        postBack({ type: 'arena-progress', suite: suiteName, runs: progress });
+      },
+    });
+    postBack({ type: 'arena-result', suite: suiteName, runs });
+  } catch (err) {
+    postBack({ type: 'arena-error', error: `suite ${suiteName} threw: ${err?.message ?? err}` });
+  }
+}
+
+function postBack(msg) {
+  if (window.parent && window.parent !== window) {
+    window.parent.postMessage(msg, PARENT_ORIGIN);
+  }
+}

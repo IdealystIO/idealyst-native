@@ -76,8 +76,8 @@ pub fn skeleton(props: &SkeletonProps) -> Primitive {
             .override_border_radius(Length::Px(radius));
         // No `override_width` / `override_height` builders yet —
         // poke `overrides` directly. (Framework follow-up.)
-        app.overrides.width = Some(width.clone());
-        app.overrides.height = Some(Length::Px(height));
+        app.overrides.width = Some(framework_core::Tokenized::Literal(width.clone()));
+        app.overrides.height = Some(framework_core::Tokenized::Literal(Length::Px(height)));
         app
     };
 

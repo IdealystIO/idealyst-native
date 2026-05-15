@@ -42,41 +42,51 @@
 use std::any::Any;
 use std::rc::Rc;
 
-use framework_core::{install_theme, set_theme};
+use framework_core::{
+    install_theme, set_theme, Color, ThemeTokens, TokenEntry, TokenValue, Tokenized,
+};
 
 // =============================================================================
 // Tokens — concrete value structs the trait exposes
 // =============================================================================
 
+/// Each color is a `Tokenized<Color>` — a `Token` reference whose
+/// fallback is the current theme's literal value. Stylesheets close
+/// over these directly (`t.colors().primary.clone()` returns a
+/// `Tokenized<Color>`); the resulting `StyleRules` carry the token
+/// name into the content key, so two themes that bind `color-primary`
+/// to different colors produce the **same** minted CSS class. Theme
+/// swap then only writes to the `:root` declaration block — no
+/// `className` mutation on any node.
 #[derive(Clone)]
 pub struct Colors {
-    pub background: String,
-    pub surface: String,
-    pub surface_alt: String,
+    pub background: Tokenized<Color>,
+    pub surface: Tokenized<Color>,
+    pub surface_alt: Tokenized<Color>,
 
-    pub primary: String,
-    pub primary_hover: String,
-    pub primary_pressed: String,
-    pub primary_text: String,
+    pub primary: Tokenized<Color>,
+    pub primary_hover: Tokenized<Color>,
+    pub primary_pressed: Tokenized<Color>,
+    pub primary_text: Tokenized<Color>,
 
-    pub danger: String,
-    pub danger_hover: String,
-    pub danger_pressed: String,
-    pub danger_text: String,
+    pub danger: Tokenized<Color>,
+    pub danger_hover: Tokenized<Color>,
+    pub danger_pressed: Tokenized<Color>,
+    pub danger_text: Tokenized<Color>,
 
-    pub success: String,
-    pub warning: String,
+    pub success: Tokenized<Color>,
+    pub warning: Tokenized<Color>,
 
-    pub text: String,
-    pub text_muted: String,
-    pub text_inverse: String,
+    pub text: Tokenized<Color>,
+    pub text_muted: Tokenized<Color>,
+    pub text_inverse: Tokenized<Color>,
 
-    pub border: String,
-    pub border_hover: String,
-    pub border_strong: String,
+    pub border: Tokenized<Color>,
+    pub border_hover: Tokenized<Color>,
+    pub border_strong: Tokenized<Color>,
 
-    pub focus_ring: String,
-    pub overlay: String,
+    pub focus_ring: Tokenized<Color>,
+    pub overlay: Tokenized<Color>,
 }
 
 #[derive(Clone)]
@@ -170,6 +180,46 @@ impl IdeaTheme for IdeaThemeRef {
     }
 }
 
+impl ThemeTokens for IdeaThemeRef {
+    fn tokens(&self) -> Vec<TokenEntry> {
+        let c = self.colors();
+        // Helper: pull the static name + concrete value out of a
+        // theme-field reference. Themes always populate fields with
+        // `Tokenized::Token { .. }`; if a literal slipped in we'd get
+        // a panic here flagging the misuse.
+        fn entry(t: &Tokenized<Color>) -> TokenEntry {
+            let name = t.name().expect("Colors fields must be Tokenized::Token");
+            TokenEntry {
+                name,
+                value: TokenValue::Color(t.value().clone()),
+            }
+        }
+        vec![
+            entry(&c.background),
+            entry(&c.surface),
+            entry(&c.surface_alt),
+            entry(&c.primary),
+            entry(&c.primary_hover),
+            entry(&c.primary_pressed),
+            entry(&c.primary_text),
+            entry(&c.danger),
+            entry(&c.danger_hover),
+            entry(&c.danger_pressed),
+            entry(&c.danger_text),
+            entry(&c.success),
+            entry(&c.warning),
+            entry(&c.text),
+            entry(&c.text_muted),
+            entry(&c.text_inverse),
+            entry(&c.border),
+            entry(&c.border_hover),
+            entry(&c.border_strong),
+            entry(&c.focus_ring),
+            entry(&c.overlay),
+        ]
+    }
+}
+
 // =============================================================================
 // Default theme implementation
 // =============================================================================
@@ -226,36 +276,42 @@ const DEFAULT_TYPOGRAPHY: Typography = Typography {
     size_display: 36.0,
 };
 
+/// Helper: build a `Tokenized<Color>` reference with the given token
+/// name and a string fallback. Centralizes the `Color(_.into())` boilerplate.
+fn tok_color(name: &'static str, fallback: &str) -> Tokenized<Color> {
+    Tokenized::token(name, Color(fallback.into()))
+}
+
 pub fn light_theme() -> IdeaThemeDefaults {
     IdeaThemeDefaults {
         colors: Colors {
-            background: "#f7f8fb".into(),
-            surface: "#ffffff".into(),
-            surface_alt: "#eef0f7".into(),
+            background: tok_color("color-background", "#f7f8fb"),
+            surface: tok_color("color-surface", "#ffffff"),
+            surface_alt: tok_color("color-surface-alt", "#eef0f7"),
 
-            primary: "#5b6cff".into(),
-            primary_hover: "#4a5cf0".into(),
-            primary_pressed: "#3947d6".into(),
-            primary_text: "#ffffff".into(),
+            primary: tok_color("color-primary", "#5b6cff"),
+            primary_hover: tok_color("color-primary-hover", "#4a5cf0"),
+            primary_pressed: tok_color("color-primary-pressed", "#3947d6"),
+            primary_text: tok_color("color-primary-text", "#ffffff"),
 
-            danger: "#e5484d".into(),
-            danger_hover: "#d63d42".into(),
-            danger_pressed: "#bc2f33".into(),
-            danger_text: "#ffffff".into(),
+            danger: tok_color("color-danger", "#e5484d"),
+            danger_hover: tok_color("color-danger-hover", "#d63d42"),
+            danger_pressed: tok_color("color-danger-pressed", "#bc2f33"),
+            danger_text: tok_color("color-danger-text", "#ffffff"),
 
-            success: "#3ba55d".into(),
-            warning: "#e0a82e".into(),
+            success: tok_color("color-success", "#3ba55d"),
+            warning: tok_color("color-warning", "#e0a82e"),
 
-            text: "#1a1a1f".into(),
-            text_muted: "#6b7280".into(),
-            text_inverse: "#ffffff".into(),
+            text: tok_color("color-text", "#1a1a1f"),
+            text_muted: tok_color("color-text-muted", "#6b7280"),
+            text_inverse: tok_color("color-text-inverse", "#ffffff"),
 
-            border: "#e4e6ef".into(),
-            border_hover: "#b9bdcc".into(),
-            border_strong: "#9097a8".into(),
+            border: tok_color("color-border", "#e4e6ef"),
+            border_hover: tok_color("color-border-hover", "#b9bdcc"),
+            border_strong: tok_color("color-border-strong", "#9097a8"),
 
-            focus_ring: "#5b6cff".into(),
-            overlay: "rgba(15, 17, 21, 0.45)".into(),
+            focus_ring: tok_color("color-focus-ring", "#5b6cff"),
+            overlay: tok_color("color-overlay", "rgba(15, 17, 21, 0.45)"),
         },
         spacing: DEFAULT_SPACING.clone(),
         radius: DEFAULT_RADIUS.clone(),
@@ -266,33 +322,33 @@ pub fn light_theme() -> IdeaThemeDefaults {
 pub fn dark_theme() -> IdeaThemeDefaults {
     IdeaThemeDefaults {
         colors: Colors {
-            background: "#0f1115".into(),
-            surface: "#1a1d24".into(),
-            surface_alt: "#262a35".into(),
+            background: tok_color("color-background", "#0f1115"),
+            surface: tok_color("color-surface", "#1a1d24"),
+            surface_alt: tok_color("color-surface-alt", "#262a35"),
 
-            primary: "#8b9aff".into(),
-            primary_hover: "#9eabff".into(),
-            primary_pressed: "#7383f5".into(),
-            primary_text: "#0f1115".into(),
+            primary: tok_color("color-primary", "#8b9aff"),
+            primary_hover: tok_color("color-primary-hover", "#9eabff"),
+            primary_pressed: tok_color("color-primary-pressed", "#7383f5"),
+            primary_text: tok_color("color-primary-text", "#0f1115"),
 
-            danger: "#ff6369".into(),
-            danger_hover: "#ff7a80".into(),
-            danger_pressed: "#e5484d".into(),
-            danger_text: "#ffffff".into(),
+            danger: tok_color("color-danger", "#ff6369"),
+            danger_hover: tok_color("color-danger-hover", "#ff7a80"),
+            danger_pressed: tok_color("color-danger-pressed", "#e5484d"),
+            danger_text: tok_color("color-danger-text", "#ffffff"),
 
-            success: "#4cc77c".into(),
-            warning: "#f0b942".into(),
+            success: tok_color("color-success", "#4cc77c"),
+            warning: tok_color("color-warning", "#f0b942"),
 
-            text: "#e8eaf0".into(),
-            text_muted: "#9099a8".into(),
-            text_inverse: "#0f1115".into(),
+            text: tok_color("color-text", "#e8eaf0"),
+            text_muted: tok_color("color-text-muted", "#9099a8"),
+            text_inverse: tok_color("color-text-inverse", "#0f1115"),
 
-            border: "#2a2e3a".into(),
-            border_hover: "#3d4252".into(),
-            border_strong: "#525868".into(),
+            border: tok_color("color-border", "#2a2e3a"),
+            border_hover: tok_color("color-border-hover", "#3d4252"),
+            border_strong: tok_color("color-border-strong", "#525868"),
 
-            focus_ring: "#8b9aff".into(),
-            overlay: "rgba(0, 0, 0, 0.55)".into(),
+            focus_ring: tok_color("color-focus-ring", "#8b9aff"),
+            overlay: tok_color("color-overlay", "rgba(0, 0, 0, 0.55)"),
         },
         spacing: DEFAULT_SPACING.clone(),
         radius: DEFAULT_RADIUS.clone(),
