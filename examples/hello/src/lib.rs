@@ -13,9 +13,9 @@
 //!   1000-fold style invalidation.
 
 use framework_core::{
-    component, derived, install_theme, set_theme, signal, ui, AlignItems, Color, FlexDirection,
-    FontWeight, JustifyContent, Length, Navigator, NavigatorHandle, Overflow, Primitive, Ref,
-    Route, RouteParams, Shadow, Signal, TextAlign,
+    component, install_theme, set_theme, signal, ui, AlignItems, Color, FlexDirection,
+    FontWeight, JustifyContent, LayoutProps, Length, Navigator, NavigatorHandle, Overflow,
+    Primitive, Ref, Route, RouteParams, Shadow, Signal, TextAlign,
 };
 use std::collections::HashMap;
 
@@ -230,6 +230,16 @@ framework_core::stylesheet! {
             font_weight: FontWeight::SemiBold,
             letter_spacing: 0.5,
             text_transform: framework_core::TextTransform::Uppercase,
+        }
+    }
+}
+
+framework_core::stylesheet! {
+    pub LinkText<Theme> {
+        base(t) {
+            color: Color(t.colors.primary.clone()),
+            font_size: 14.0,
+            font_weight: FontWeight::SemiBold,
         }
     }
 }
@@ -627,73 +637,95 @@ impl RouteParams for DetailParams {
     }
 }
 
-/// The static set of routes the app declares. We use module-level
-/// `Route` constants so call sites elsewhere (header buttons, deep
-/// links) reference the same path patterns the navigator registers.
+/// The static set of routes the app declares. Module-level `Route`
+/// constants so call sites everywhere (home cards, deep links) point
+/// at the same path patterns the navigator registers.
+///
+/// Routes are organized as a flat list — the navigator is a single
+/// stack, all screens push onto it from `Home`. Back goes home.
 pub const HOME_ROUTE: Route<()> = Route::<()>::new("home", "/");
+pub const SHOWCASE_ROUTE: Route<()> = Route::<()>::new("showcase", "/showcase");
 pub const PERF_ROUTE: Route<()> = Route::<()>::new("performance", "/performance");
+pub const LISTS_ROUTE: Route<()> = Route::<()>::new("lists", "/lists");
 pub const DETAIL_ROUTE: Route<DetailParams> = Route::<DetailParams>::new("detail", "/detail/:id");
 
 // =============================================================================
-// Header
+// Home screen — landing page with cards that push the other screens
 // =============================================================================
 
-pub struct HeaderProps {
-    /// The navigator the header drives. The header issues `reset`
-    /// for top-level tabs (Summary / Performance) since these are
-    /// destinations rather than push-stack steps; deeper screens
-    /// pushed elsewhere don't end up below them in the stack.
+pub struct HomeProps {
+    /// Navigator handle. Every card click pushes a screen onto the
+    /// stack; back from the pushed screen returns here.
     pub nav: Ref<NavigatorHandle>,
-    /// Active route name, used purely for highlighting the matching
-    /// tab. Driven by the buttons themselves — the framework doesn't
-    /// expose "what's mounted" from the navigator, so we track it
-    /// here. Initialized to the home route at mount time.
-    pub active: Signal<&'static str>,
+    /// App-level theme flag, owned at the app level so the theme
+    /// outlives any single screen's scope. Flipped from this
+    /// screen's "Toggle theme" button.
     pub is_dark: Signal<bool>,
 }
 
-/// The app's persistent header. Three buttons drive the navigator
-/// (two tabs + a theme toggle); the navigator owns the actual
-/// screen rendering, so the header itself never rebuilds on
-/// navigation — just the styles re-resolve via the `active` axis.
+/// Home / landing screen. Three nav cards push the matching screen;
+/// the bottom card houses the theme toggle. No persistent header —
+/// each pushed screen owns its own back button (and the platform
+/// back gesture works automatically).
 #[component]
-pub fn header(props: &HeaderProps) -> Primitive {
+pub fn home(props: &HomeProps) -> Primitive {
     let nav = props.nav;
-    let active = props.active;
     let is_dark = props.is_dark;
 
+    // Every pushed screen owns its own background via `page_style`.
+    // Without this, the screen's root would be transparent and a
+    // hidden underlying fragment could bleed through (notably on
+    // Android, where `FragmentTransaction.hide()` interacts oddly
+    // with `setTransition(TRANSIT_FRAGMENT_OPEN)` and may not
+    // actually remove the underlying fragment from drawing).
     ui! {
-        View(style = header_bar_style()) {
-            Text(style = header_title_style()) { "idealyst" }
-            View(style = nav_group_style()) {
+        View(style = page_style()) {
+            Text(style = title_style()) { "idealyst" }
+            Text(style = subtitle_style()) {
+                "Cross-platform Rust UI framework. Pick a demo below; \
+                 each screen pushes a new view-controller / fragment / \
+                 path. Use the platform back gesture or the in-screen \
+                 Back button to return."
+            }
+
+            // Demo cards. Each one pushes its target route. The
+            // outer View uses `row_style` so cards sit side-by-side
+            // when the screen is wide; on phones they wrap.
+            View(style = row_style()) {
                 Button(
-                    label = "Summary",
+                    label = "Primitives showcase",
                     on_click = move || {
                         if let Some(h) = nav.get() {
-                            h.reset(&HOME_ROUTE, ());
+                            h.push(&SHOWCASE_ROUTE, ());
                         }
-                        active.set(HOME_ROUTE.name());
                     },
-                    style = NavButton().active(derived(move || if active.get() == HOME_ROUTE.name() {
-                        NavButtonActive::On
-                    } else {
-                        NavButtonActive::Off
-                    }))
+                    style = primary_button_style()
                 )
                 Button(
-                    label = "Performance",
+                    label = "Performance stress",
                     on_click = move || {
                         if let Some(h) = nav.get() {
-                            h.reset(&PERF_ROUTE, ());
+                            h.push(&PERF_ROUTE, ());
                         }
-                        active.set(PERF_ROUTE.name());
                     },
-                    style = NavButton().active(derived(move || if active.get() == PERF_ROUTE.name() {
-                        NavButtonActive::On
-                    } else {
-                        NavButtonActive::Off
-                    }))
+                    style = primary_button_style()
                 )
+                Button(
+                    label = "Lists / virtualizer",
+                    on_click = move || {
+                        if let Some(h) = nav.get() {
+                            h.push(&LISTS_ROUTE, ());
+                        }
+                    },
+                    style = primary_button_style()
+                )
+            }
+
+            // Theme toggle. Pushing a screen and changing theme
+            // are orthogonal — theme lives at the app level so it
+            // persists across navigation.
+            View {
+                Text(style = section_heading_style()) { "Settings" }
                 Button(
                     label = if is_dark.get() { "Light mode".to_string() } else { "Dark mode".to_string() },
                     on_click = move || {
@@ -712,18 +744,53 @@ pub fn header(props: &HeaderProps) -> Primitive {
     }
 }
 
+/// Small reusable top bar for pushed screens. Shows the screen
+/// title and a Back button that pops the navigator. The platform
+/// back gesture (Android back / iOS swipe / browser back) also
+/// works; this is just the in-screen affordance.
+///
+/// Named `topbar` rather than the more natural `screen_header`
+/// because the `ui!` macro lower-cases CamelCase identifiers without
+/// snake-casing (`ScreenHeader` -> `screenheader`, not
+/// `screen_header`). A single-token name avoids the mismatch.
+#[component]
+pub fn topbar(props: &TopbarProps) -> Primitive {
+    let title = props.title.clone();
+    let nav = props.nav;
+    ui! {
+        View(style = spaced_row_style()) {
+            Text(style = title_style()) { title }
+            Button(
+                label = "Back",
+                on_click = move || {
+                    if let Some(h) = nav.get() {
+                        h.pop();
+                    }
+                },
+                style = secondary_button_style()
+            )
+        }
+    }
+}
+
+pub struct TopbarProps {
+    pub title: String,
+    pub nav: Ref<NavigatorHandle>,
+}
+
 // =============================================================================
-// Summary screen — one card per primitive category
+// Showcase screen — one card per primitive category
 // =============================================================================
 
-pub struct SummaryProps {
-    /// Handle to the navigator so we can push the detail screen.
-    /// `Ref` is `Copy`-ish (numeric id), so passing it costs nothing.
+pub struct ShowcaseProps {
+    /// Handle to the navigator so we can push the detail screen
+    /// (and back-pop to home). `Ref` is `Copy`-ish (numeric id), so
+    /// passing it costs nothing.
     pub nav: Ref<NavigatorHandle>,
 }
 
 #[component]
-pub fn summary(props: &SummaryProps) -> Primitive {
+pub fn showcase(props: &ShowcaseProps) -> Primitive {
     let nav = props.nav;
     let score = signal!(0);
     let lives = signal!(3);
@@ -738,7 +805,9 @@ pub fn summary(props: &SummaryProps) -> Primitive {
     let lives_ref: Ref<CounterHandle> = Ref::new();
 
     ui! {
-        View {
+        View(style = page_style()) {
+            Topbar(title = "Primitives showcase".to_string(), nav = nav)
+
             // Interactive: counters drive a Ref-based "reset all".
             View {
                 Text(style = section_heading_style()) { "Interactive" }
@@ -828,17 +897,25 @@ pub fn summary(props: &SummaryProps) -> Primitive {
             // navigator stack. Web: URL becomes /detail/42; native:
             // pushes a child VC / fragment. Either way the back
             // affordance returns you here.
+            //
+            // Three shapes for the same navigation, side by side:
+            // - Imperative `nav.push` from a Button on_click.
+            // - Declarative `Link` primitive with no plumbing — it
+            //   finds the ambient navigator automatically. On web
+            //   this renders a real `<a href>` so middle-click /
+            //   cmd-click "open in new tab" works.
             View {
                 Text(style = section_heading_style()) { "Navigation" }
                 Text(style = subtitle_style()) {
-                    "Push a detail screen with a typed `:id` param. \
-                     On web the URL bar updates and the browser back \
-                     button works; on native the platform back \
-                     gesture pops the stack."
+                    "Three shapes for the same hop: imperative \
+                     `nav.push` from a Button, and the `Link` \
+                     primitive (declarative, finds the ambient \
+                     navigator on its own — on web it's a real \
+                     `<a href>` so middle-click opens a new tab)."
                 }
                 View(style = row_style()) {
                     Button(
-                        label = "Open detail #42",
+                        label = "Open detail #42 (imperative)",
                         on_click = move || {
                             if let Some(h) = nav.get() {
                                 h.push(&DETAIL_ROUTE, DetailParams { id: 42 });
@@ -846,15 +923,9 @@ pub fn summary(props: &SummaryProps) -> Primitive {
                         },
                         style = secondary_button_style()
                     )
-                    Button(
-                        label = "Open detail #1337",
-                        on_click = move || {
-                            if let Some(h) = nav.get() {
-                                h.push(&DETAIL_ROUTE, DetailParams { id: 1337 });
-                            }
-                        },
-                        style = secondary_button_style()
-                    )
+                    Link(route = &DETAIL_ROUTE, params = DetailParams { id: 1337 }) {
+                        Text(style = link_text_style()) { "Open detail #1337 (link)" }
+                    }
                 }
             }
 
@@ -897,10 +968,8 @@ pub fn detail(props: &DetailProps) -> Primitive {
     let clicks = signal!(0_i32);
 
     ui! {
-        View {
-            Text(style = title_style()) {
-                format!("Detail #{}", id)
-            }
+        View(style = page_style()) {
+            Topbar(title = format!("Detail #{}", id), nav = nav)
             Text(style = subtitle_style()) {
                 "This screen owns its own reactive scope. Anything \
                  the screen body captured (the counter below) goes \
@@ -913,56 +982,47 @@ pub fn detail(props: &DetailProps) -> Primitive {
                     value = clicks
                 )
             }
-            View(style = row_style()) {
-                Button(
-                    label = "Back",
-                    on_click = move || {
-                        if let Some(h) = nav.get() {
-                            h.pop();
-                        }
-                    },
-                    style = secondary_button_style()
-                )
-            }
         }
     }
 }
 
 // =============================================================================
-// Performance screen — 1000 styled rows
+// Performance screen — pure 1000-row styled-views stress
 // =============================================================================
+//
+// All-at-once rendering: every row is mounted inline inside a
+// `ScrollView`. The point is to stress per-styled-node effects —
+// toggling the theme re-fires every row's apply-style effect. No
+// virtualization here on purpose; for the windowed comparison see
+// the Lists screen.
 
-/// Hard cap so a stray typo can't trigger a 10M-row rebuild.
-const PERF_MAX_COUNT: usize = 10_000;
+/// Hard cap so a stray typo can't trigger a 10M-row rebuild. Same
+/// limit on both Performance and Lists for consistency.
+const PERF_MAX_COUNT: usize = 100_000;
+
+pub struct PerformanceProps {
+    pub nav: Ref<NavigatorHandle>,
+}
 
 #[component]
-pub fn performance() -> Primitive {
-    // Three signals drive this screen:
-    //
-    // - `count_input`: the editing buffer the TextInput is bound to.
-    //   Updates per keystroke; nothing else reads it until Apply.
-    // - `count`: the *applied* count. Only changes when Apply parses
-    //   `count_input` and clamps the result. The list rebuilds when
-    //   this changes.
-    // - `virtualized`: true means render through `FlatList`
-    //   (windowed); false means render every row inline inside a
-    //   `ScrollView`. The full point of the comparison.
-    //
-    // The list itself sits inside a reactive `match` on
-    // `(virtualized, count)` so changing either rebuilds the
-    // appropriate variant from scratch.
+pub fn performance(props: &PerformanceProps) -> Primitive {
+    let nav = props.nav;
+    // Two signals: the editing-buffer for the TextInput, and the
+    // applied count that drives the rebuild. `count_input` updates
+    // per keystroke; `count` only changes when Apply parses + clamps.
     let count = signal!(1000_usize);
     let count_input = signal!("1000".to_string());
-    let virtualized = signal!(true);
 
     ui! {
-        View {
-            Text(style = section_heading_style()) { "N styled views" }
+        View(style = page_style()) {
+            Topbar(title = "Performance".to_string(), nav = nav)
             Text(style = subtitle_style()) {
-                "Compare windowed vs. all-at-once rendering. Toggle the theme to stress every row's style effect."
+                "Inline rendering of N styled rows. Toggling the theme \
+                 re-fires every row's apply-style effect; this is the \
+                 worst case for the style pipeline."
             }
 
-            // Controls row.
+            // Controls row: count input + Apply button.
             View(style = perf_controls_style()) {
                 TextInput(
                     value = count_input,
@@ -976,17 +1036,92 @@ pub fn performance() -> Primitive {
                         let parsed = count_input.get().trim().parse::<usize>().unwrap_or(0);
                         let clamped = parsed.min(PERF_MAX_COUNT);
                         count.set(clamped);
-                        // Echo the clamped value back into the input
-                        // so the user sees what actually got applied.
+                        // Echo the clamped value back so the user sees
+                        // what actually got applied.
+                        count_input.set(clamped.to_string());
+                    },
+                    style = primary_button_style()
+                )
+            }
+
+            // Reactive `match` on `count` — the list rebuilds from
+            // scratch when Apply commits a new count. Wrapping in a
+            // single-arm match (instead of a `for`-loop sitting
+            // directly in the View) lets us scope the count read.
+            match count.get() {
+                n => {
+                    {
+                        let n: usize = *n;
+                        ui! {
+                            ScrollView(style = perf_list_style()) {
+                                for i in 0..n {
+                                    View(style = PerfRow().parity(if i % 2 == 0 {
+                                        PerfRowParity::Even
+                                    } else {
+                                        PerfRowParity::Odd
+                                    })) {
+                                        Text { format!("Row #{}", i) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Lists screen — virtualizer / FlatList demo
+// =============================================================================
+//
+// Same row stylesheet as Performance, but with a virtualized-vs-
+// all-at-once toggle. The point is to compare the windowing behavior
+// of `FlatList` against the inline `for` loop: scrolling, theme
+// invalidation cost, and the per-item scope teardown that
+// virtualization gives you for free.
+
+pub struct ListsProps {
+    pub nav: Ref<NavigatorHandle>,
+}
+
+#[component]
+pub fn lists(props: &ListsProps) -> Primitive {
+    let nav = props.nav;
+    let count = signal!(1000_usize);
+    let count_input = signal!("1000".to_string());
+    let virtualized = signal!(true);
+
+    ui! {
+        View(style = page_style()) {
+            Topbar(title = "Lists".to_string(), nav = nav)
+            Text(style = subtitle_style()) {
+                "Windowed (FlatList) vs. all-at-once rendering. With \
+                 virtualization on, rows outside the viewport are not \
+                 mounted — scroll a large list to see the per-item \
+                 mount/release lifecycle in action."
+            }
+
+            // Controls row: count + Apply + virtualization toggle.
+            View(style = perf_controls_style()) {
+                TextInput(
+                    value = count_input,
+                    on_change = move |v: String| count_input.set(v),
+                    placeholder = "Item count",
+                    style = perf_count_input_style()
+                )
+                Button(
+                    label = "Apply",
+                    on_click = move || {
+                        let parsed = count_input.get().trim().parse::<usize>().unwrap_or(0);
+                        let clamped = parsed.min(PERF_MAX_COUNT);
+                        count.set(clamped);
                         count_input.set(clamped.to_string());
                     },
                     style = primary_button_style()
                 )
                 View(style = perf_toggle_group_style()) {
-                    // Wrap the if in a single expression so the `ui!`
-                    // parser treats this as reactive text content
-                    // rather than a `when()` branch that would expect
-                    // each arm to produce a `Primitive`.
                     Text(style = subtitle_style()) {
                         (if virtualized.get() { "Virtualized" } else { "All-at-once" }).to_string()
                     }
@@ -997,28 +1132,12 @@ pub fn performance() -> Primitive {
                 }
             }
 
-            // The list. Reactive `match` over (mode, count): both
-            // signals contribute to the switch key, so changing
-            // either triggers a full rebuild via the framework's
-            // `switch` primitive. Captured `n` is `&usize` (match
-            // ergonomics over `&(bool, usize)`); we copy it out with
-            // `&n` patterns and pass it to either arm's renderer.
+            // Reactive `match` over (mode, count): both signals
+            // contribute to the switch key, so changing either
+            // triggers a full rebuild via the framework's `switch`
+            // primitive.
             match (virtualized.get(), count.get()) {
-                // `__v: &(bool, usize)` inside the switch closure.
-                // Match ergonomics: the outer `(_, _)` auto-derefs,
-                // and `n` binds as `&usize` under ref mode — we
-                // copy it into a `usize` local at the top of the
-                // arm body.
                 (true, n) => {
-                    // Wrap in a Rust block expression so the macro
-                    // parser accepts the `let` statements (the
-                    // arm body itself only accepts UI nodes; this
-                    // inner `{ ... }` goes through the fallback
-                    // expression path).
-                    //
-                    // Virtualized: fresh per-rebuild data signal.
-                    // The framework windows what's visible; rows
-                    // outside the scroll viewport are not mounted.
                     {
                         let n: usize = *n;
                         let data = signal!((0..n as u64).collect::<Vec<u64>>());
@@ -1046,10 +1165,6 @@ pub fn performance() -> Primitive {
                     }
                 }
                 (false, n) => {
-                    // Same wrapping trick as the virtualized arm:
-                    // the inner `{ ... }` is a Rust block expression
-                    // that hosts the `let` and ends with a single
-                    // `ui!`-built expression.
                     {
                         let n: usize = *n;
                         ui! {
@@ -1073,6 +1188,89 @@ pub fn performance() -> Primitive {
 }
 
 // =============================================================================
+// Web layout — chrome wrapper invoked only on backends that opt in
+// (web today; future SSR). Native backends draw their own nav chrome
+// and ignore `.layout()`.
+// =============================================================================
+
+/// Build the web layout subtree. Receives reactive nav-state
+/// signals + the outlet primitive; returns the chrome subtree with
+/// the outlet embedded.
+///
+/// The signals are framework-owned and re-fire dependent effects on
+/// each push/pop — so the route-name `Text` re-renders whenever
+/// `active_route` changes, but the surrounding chrome (sidebar
+/// background, layout boxes) stays mounted.
+/// Build the web layout for the app. Takes the app-level
+/// `is_dark` signal so the persistent header can host a theme
+/// toggle that survives navigation — the layout chrome stays
+/// mounted across push/pop, so the toggle is exactly one click
+/// away regardless of which screen the user is on.
+///
+/// Returns a closure suitable for `Navigator::new(...).layout(...)`.
+/// Each per-screen mount re-evaluates the layout's reactive bits
+/// (route name, back-button visibility, dark-mode label) but the
+/// surrounding chrome stays mounted.
+pub fn web_layout_with_theme(is_dark: Signal<bool>) -> impl Fn(LayoutProps) -> Primitive + 'static {
+    move |props: LayoutProps| {
+        let active_route = props.active_route;
+        let can_go_back = props.can_go_back;
+        let on_back = props.on_back;
+
+        ui! {
+            View(style = page_style()) {
+                // Persistent web chrome. Lives across navigation; only
+                // its reactive bits (active route name, back-button
+                // visibility, dark-mode label) re-fire on push/pop.
+                // The outlet below hosts the active screen — the
+                // framework physically swaps the outlet's child
+                // without rebuilding this surrounding tree.
+                View(style = header_bar_style()) {
+                    Text(style = header_title_style()) {
+                        format!("idealyst — {}", active_route.get())
+                    }
+                    View(style = nav_group_style()) {
+                        Button(
+                            label = if is_dark.get() {
+                                "Light mode".to_string()
+                            } else {
+                                "Dark mode".to_string()
+                            },
+                            on_click = move || {
+                                let now_dark = !is_dark.get();
+                                is_dark.set(now_dark);
+                                if now_dark {
+                                    set_theme(dark_theme());
+                                } else {
+                                    set_theme(light_theme());
+                                }
+                            },
+                            style = secondary_button_style()
+                        )
+                        if can_go_back.get() {
+                            Button(
+                                label = "Back",
+                                on_click = {
+                                    let on_back = on_back.clone();
+                                    move || on_back()
+                                },
+                                style = secondary_button_style()
+                            )
+                        } else {
+                            View {}
+                        }
+                    }
+                }
+
+                // The outlet: where the active screen renders. The
+                // framework swaps the child of this View on push/pop.
+                props.outlet
+            }
+        }
+    }
+}
+
+// =============================================================================
 // App
 // =============================================================================
 
@@ -1080,17 +1278,17 @@ pub fn performance() -> Primitive {
 pub fn app() -> Primitive {
     install_theme(light_theme());
 
+    // App-level state lives here so it survives navigation — every
+    // pushed screen drops its own per-screen scope on pop, but the
+    // theme flag is owned by `app` whose scope is the framework's
+    // root scope.
     let is_dark = signal!(false);
-    let active = signal!(HOME_ROUTE.name());
     let nav: Ref<NavigatorHandle> = Ref::new();
 
     ui! {
         View(style = page_style()) {
-            // Wrapping View prevents the `ui!` parser from treating
-            // the navigator block below as Header's children block.
-            View { Header(nav = nav, active = active, is_dark = is_dark) }
-
-            // The navigator is the screen-rendering substrate. It
+            // No persistent header — each screen renders its own.
+            // The navigator owns the screen-rendering substrate; it
             // declares every route up-front via `.screen(...)` and
             // exposes an imperative handle through `.bind(nav)`. On
             // web the navigator uses `history.pushState` + popstate
@@ -1106,21 +1304,38 @@ pub fn app() -> Primitive {
             // Inside each closure we re-enter `ui!` so the screen
             // builder reads as plain UI; the outer `ui!` doesn't
             // expand the body of closures, so calls like
-            // `summary!(...)` would otherwise have to be written
-            // raw.
+            // `home!(...)` would otherwise have to be written raw.
             { Navigator::new(&HOME_ROUTE)
                 .screen(HOME_ROUTE, move |_| {
                     let nav = nav;
-                    ui! { Summary(nav = nav) }
+                    let is_dark = is_dark;
+                    ui! { Home(nav = nav, is_dark = is_dark) }
                 })
-                .screen(PERF_ROUTE, |_| {
-                    ui! { Performance() }
+                .screen(SHOWCASE_ROUTE, move |_| {
+                    let nav = nav;
+                    ui! { Showcase(nav = nav) }
+                })
+                .screen(PERF_ROUTE, move |_| {
+                    let nav = nav;
+                    ui! { Performance(nav = nav) }
+                })
+                .screen(LISTS_ROUTE, move |_| {
+                    let nav = nav;
+                    ui! { Lists(nav = nav) }
                 })
                 .screen(DETAIL_ROUTE, move |params: DetailParams| {
                     let nav = nav;
                     let id = params.id;
                     ui! { Detail(id = id, nav = nav) }
                 })
+                // Web-only layout chrome. Native backends (iOS,
+                // Android) ignore `.layout()` entirely — they use
+                // UINavigationController / FragmentManager nav
+                // chrome instead. The closure receives reactive
+                // signals for the current route, depth, and a
+                // back-button activator; embed `props.outlet` to
+                // tell the navigator where the active screen goes.
+                .layout(web_layout_with_theme(is_dark))
                 .bind(nav) }
         }
     }

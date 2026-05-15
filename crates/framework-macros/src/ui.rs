@@ -369,7 +369,7 @@ fn emit_component(
         "text" | "button" | "view" | "when"
         | "image" | "textinput" | "toggle" | "scrollview"
         | "slider" | "webview" | "video" | "activityindicator"
-        | "flatlist"
+        | "flatlist" | "link"
     );
     let supports_disabled = lower.as_str() == "button";
 
@@ -415,6 +415,7 @@ fn emit_component(
         "activityindicator" => emit_activity_indicator(&other_props, children),
         "flatlist" => emit_flat_list(&other_props, children),
         "graphics" => emit_graphics(&other_props, children),
+        "link" => emit_link(&other_props, children),
         _ => emit_user(name, props, children),
     };
 
@@ -745,6 +746,37 @@ fn emit_activity_indicator(
 /// `size` accepts a `FlatListItemSize<T>` value (Known/Measured). Use
 /// `framework_core::primitives::flat_list::fixed_size(48.0)` for the
 /// fixed-height common case.
+fn emit_link(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
+    // `Link(route = ..., params = ...) { children }`. Mirrors the
+    // `link<P>(route, params, children)` constructor's three
+    // positional arguments. Both `route` and `params` are
+    // required at the type level (compile error if omitted —
+    // unwrap defaults to a unit fallback so the error message
+    // points at the unit type, not at a confusing missing-arg
+    // expansion).
+    let route = props
+        .iter()
+        .find(|p| p.name == "route")
+        .map(|p| p.value.to_token_stream())
+        .unwrap_or_else(|| quote! { compile_error!("Link: missing required `route` prop") });
+    let params = props
+        .iter()
+        .find(|p| p.name == "params")
+        .map(|p| p.value.to_token_stream())
+        .unwrap_or_else(|| quote! { () });
+
+    let kids = children.unwrap_or(&[]);
+    let parts = kids.iter().map(emit_node);
+    quote! {
+        ::framework_core::primitives::link::link(#route, #params, {
+            let mut __c: ::std::vec::Vec<::framework_core::Primitive>
+                = ::std::vec::Vec::new();
+            #( ::framework_core::ChildList::append_to(#parts, &mut __c); )*
+            __c
+        })
+    }
+}
+
 fn emit_flat_list(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
     let data = props
         .iter()

@@ -128,26 +128,42 @@ impl WebBackend {
     pub(crate) fn impl_register_stylesheet(&mut self, rules: &[std::rc::Rc<StyleRules>]) {
         for r in rules {
             let key = r.content_key();
-            if let Some(entry) = self.pregen.get_mut(&key) {
+            let class_name = if let Some(entry) = self.pregen.get_mut(&key) {
                 entry.refcount += 1;
-                continue;
-            }
-            let class_name = hash_class_name(&key);
-            let body = rules_to_css(r);
-            let rule_index = self.insert_rule(&class_name, &body);
-            self.pregen.insert(
-                key,
-                PregenEntry {
-                    name: class_name,
-                    rule_index,
-                    refcount: 1,
-                },
-            );
+                entry.name.clone()
+            } else {
+                let class_name = hash_class_name(&key);
+                let body = rules_to_css(r);
+                let rule_index = self.insert_rule(&class_name, &body);
+                self.pregen.insert(
+                    key,
+                    PregenEntry {
+                        name: class_name.clone(),
+                        rule_index,
+                        refcount: 1,
+                    },
+                );
+                class_name
+            };
+            // Pointer-index this Rc so the hot apply path can skip
+            // `content_key()` when the framework's resolution cache
+            // hands us this exact Rc back. The pointer is stable for
+            // the Rc's lifetime; we clear the entry in
+            // `impl_unregister_stylesheet` when the matching
+            // registration refcount hits zero.
+            let ptr = std::rc::Rc::as_ptr(r);
+            self.pregen_by_ptr.insert(ptr, class_name);
         }
     }
 
     pub(crate) fn impl_unregister_stylesheet(&mut self, rules: &[std::rc::Rc<StyleRules>]) {
         for r in rules {
+            // Always drop the pointer-keyed entry — the Rc is going
+            // away with this unregister, so its pointer will no
+            // longer be valid for future apply-time lookups.
+            let ptr = std::rc::Rc::as_ptr(r);
+            self.pregen_by_ptr.remove(&ptr);
+
             let key = r.content_key();
             let should_drop = if let Some(entry) = self.pregen.get_mut(&key) {
                 entry.refcount = entry.refcount.saturating_sub(1);
@@ -231,19 +247,43 @@ impl WebBackend {
             return;
         };
         let id = self.node_id(node);
+
+        // Fast-fast path: pointer-keyed pregen hit. When the
+        // framework's resolution cache returns the same
+        // `Rc<StyleRules>` for many nodes (the 10k-row case, where
+        // every "even" row gets one shared Rc), we can identify the
+        // class by Rc identity without computing `content_key()` at
+        // all. The pointer is stable for the Rc's lifetime; the
+        // pregen_by_ptr map is populated alongside content-keyed
+        // pregen during `register_stylesheet`.
+        if overlays.is_empty() {
+            let ptr = std::rc::Rc::as_ptr(base);
+            let ptr_hit = {
+                let _t = PhaseTimer::start("pregen_lookup_ptr");
+                self.pregen_by_ptr.get(&ptr).cloned()
+            };
+            if let Some(class_name) = ptr_hit {
+                {
+                    let _t = PhaseTimer::start("set_attribute_fast");
+                    element.set_attribute("class", &class_name).expect("set class");
+                }
+                {
+                    let _t = PhaseTimer::start("drop_dynamic_slot");
+                    self.drop_dynamic_slot(id);
+                }
+                return;
+            }
+        }
+
+        // Content-keyed fast path. Used when the Rc identity didn't
+        // hit (e.g. the user passed `.override_*` builder methods
+        // that produce a fresh Rc each time, but with content
+        // identical to a pre-gen entry).
         let base_key = {
             let _t = PhaseTimer::start("content_key");
             base.content_key()
         };
 
-        // Fast path: no state overlays AND the base is already in the
-        // pre-generated cache. Just point the element's class at the
-        // shared pregen entry — no rule insert/delete, no CSS-sheet
-        // bookkeeping. This is the common case for styles that have
-        // only `variant`/`transition` blocks (no `state hovered{...}`
-        // etc.) — e.g. the perf screen's 1000 rows, which would
-        // otherwise mint 1000 dynamic classes every theme toggle and
-        // pay an O(N²) index-shift cost.
         if overlays.is_empty() {
             let pregen_hit = {
                 let _t = PhaseTimer::start("pregen_lookup");

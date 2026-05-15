@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Arena · React (naive: inline style props)</title>
+<style>
+  /*
+   * Naive React take: theme lives in useState at the top of the tree,
+   * threaded down through props or context, and every row reads it via
+   * inline style={...}. Toggling theme re-renders every row.
+   *
+   * This is what a competent dev would write before reaching for
+   * any perf tricks. It's the "Just Use React" baseline.
+   */
+  html, body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  #root { display: flex; flex-direction: column; min-height: 100vh; }
+  #stats { font-size: 13px; font-variant-numeric: tabular-nums; opacity: 0.85; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@18.3.1?dev",
+    "react/jsx-runtime": "https://esm.sh/react@18.3.1/jsx-runtime?dev",
+    "react-dom/client": "https://esm.sh/react-dom@18.3.1/client?dev&deps=react@18.3.1"
+  }
+}
+</script>
+</head>
+<body>
+<div id="root"></div>
+<script type="module">
+import React, { useState, useCallback, useMemo, memo } from 'react';
+import { createRoot } from 'react-dom/client';
+import { flushSync } from 'https://esm.sh/react-dom@18.3.1?dev&deps=react@18.3.1';
+import { runToggle, LIGHT, DARK, ROW_COUNT } from '../instrument.js';
+
+const e = React.createElement;
+
+const pageStyle = (t) => ({
+  display: 'flex', flexDirection: 'column',
+  padding: 32, gap: 24, minHeight: '100%',
+  background: t.background, color: t.text,
+  transition: 'background 250ms ease-in-out, color 250ms ease-in-out',
+});
+const controlsStyle = (t) => ({
+  display: 'flex', flexDirection: 'row',
+  gap: 16, alignItems: 'center',
+  padding: '8px 16px', borderRadius: 10,
+  background: t.surface, border: `1px solid ${t.border}`, color: t.text,
+  transition: 'background 250ms ease-in-out, border-color 250ms ease-in-out, color 250ms ease-in-out',
+});
+const buttonStyle = (t) => ({
+  padding: '4px 16px', borderRadius: 6,
+  fontWeight: 600, fontSize: 12, letterSpacing: 0.5,
+  border: 0, cursor: 'pointer',
+  background: t.primary, color: t.primary_text,
+  transition: 'background 250ms ease-in-out, color 250ms ease-in-out',
+});
+const listStyle = (t) => ({
+  display: 'flex', flexDirection: 'column',
+  borderRadius: 10,
+  background: t.surface, border: `1px solid ${t.border}`,
+  height: 500, overflow: 'hidden', overflowY: 'auto',
+  transition: 'background 250ms ease-in-out, border-color 250ms ease-in-out',
+});
+const rowStyle = (t, parity) => ({
+  display: 'flex', flexDirection: 'column',
+  background: parity === 'odd' ? t.surface_alt : t.surface,
+  color: t.text,
+  padding: '8px 16px',
+  borderBottom: `1px solid ${t.border}`,
+  fontSize: 13, height: 36, justifyContent: 'center',
+  transition: 'background 250ms ease-in-out, color 250ms ease-in-out, border-bottom-color 250ms ease-in-out',
+});
+
+// Memoizing the row in the naive variant wouldn't help — its `theme`
+// prop changes on every toggle. Left unmemoized on purpose so the cost
+// of re-rendering 1000 leaf components is honestly visible.
+function Row({ index, theme }) {
+  return e('div', { style: rowStyle(theme, index % 2 === 0 ? 'even' : 'odd') }, `Row #${index}`);
+}
+
+function App() {
+  const [theme, setTheme] = useState(LIGHT);
+  const isDark = theme === DARK;
+
+  const onToggle = useCallback(() => {
+    const next = isDark ? LIGHT : DARK;
+    runToggle(() => {
+      // flushSync forces React to commit synchronously inside the
+      // handler. Without it, React 18 batches state updates and the
+      // commit happens *after* our `apply` measurement closes — we'd
+      // be measuring the cost of scheduling, not of rendering. The
+      // honest question is "how long until the user can see the new
+      // theme?" and that's bounded below by the commit, so it has to
+      // be in the measurement window.
+      flushSync(() => setTheme(next));
+    }, { theme: isDark ? 'light' : 'dark', rows: ROW_COUNT });
+  }, [isDark]);
+
+  const rows = useMemo(
+    () => Array.from({ length: ROW_COUNT }, (_, i) => e(Row, { key: i, index: i, theme })),
+    [theme]
+  );
+
+  return e('div', { style: pageStyle(theme) },
+    e('div', { style: controlsStyle(theme) },
+      e('button', { style: buttonStyle(theme), onClick: onToggle }, 'Toggle theme'),
+      e('span', { id: 'stats' }, 'Click toggle to measure'),
+    ),
+    e('div', { style: listStyle(theme) }, rows),
+  );
+}
+
+createRoot(document.getElementById('root')).render(e(App));
+</script>
+</body>
+</html>

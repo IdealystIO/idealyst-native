@@ -62,12 +62,25 @@ class RustHostFragment : Fragment() {
 
     override fun onDestroyView() {
         super.onDestroyView()
-        if (nativePtr != 0L && scopeId != 0L) {
-            nativeReleaseScreen(nativePtr, scopeId)
+        // Distinguish permanent removal from transient teardown.
+        // `onDestroyView` fires in three cases:
+        //   1. Fragment popped off the back stack → `isRemoving` true.
+        //   2. Activity finishing / config change → `activity?.isFinishing` true.
+        //   3. `detach()` (we don't call it anymore, but the platform
+        //      might): isRemoving false, activity not finishing.
+        //
+        // We only want to drop the Rust-side scope + cached view in
+        // case 1 or 2. For case 3 the fragment will come back and
+        // expects its hosted view + scope intact.
+        val permanent = isRemoving || (activity?.isFinishing == true)
+        if (permanent) {
+            if (nativePtr != 0L && scopeId != 0L) {
+                nativeReleaseScreen(nativePtr, scopeId)
+            }
+            hosted = null
+            scopeId = 0
+            nativePtr = 0
         }
-        hosted = null
-        scopeId = 0
-        nativePtr = 0
     }
 
     private external fun nativeReleaseScreen(ptr: Long, scopeId: Long)

@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Arena · vanilla per-element classes</title>
+<style>
+  /*
+   * Mirrors the framework's web backend: on each toggle, mint fresh
+   * stylesheet rules (one class per parity + theme + chrome element)
+   * and write setAttribute('class', ...) on every row + text node.
+   * No CSS variables, no cascade tricks — every node is restyled by
+   * name. This is the path the framework actually walks today.
+   *
+   * Compare against ../vanilla-css-vars/ to see what the cascade can do
+   * for free, and against ../react-*/ to see what React adds on top.
+   */
+  html, body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  .ui-default { display: flex; flex-direction: column; }
+  .page {
+    padding: 32px; gap: 24px; min-height: 100%;
+    transition: background 250ms ease-in-out, color 250ms ease-in-out;
+  }
+  .controls {
+    flex-direction: row; gap: 16px; align-items: center;
+    padding: 8px 16px; border-radius: 10px; border: 1px solid;
+    transition: background 250ms ease-in-out, border-color 250ms ease-in-out;
+  }
+  button {
+    padding: 4px 16px; border-radius: 6px;
+    font-weight: 600; font-size: 12px; letter-spacing: 0.5px;
+    border: 0; cursor: pointer;
+  }
+  #stats { font-size: 13px; font-variant-numeric: tabular-nums; opacity: 0.85; }
+  .perf-list {
+    border-radius: 10px; border: 1px solid;
+    height: 500px; overflow: hidden; overflow-y: auto;
+    transition: background 250ms ease-in-out, border-color 250ms ease-in-out;
+  }
+</style>
+</head>
+<body>
+  <div class="ui-default page" id="page">
+    <div class="ui-default controls" id="controls">
+      <button id="toggle">Toggle theme</button>
+      <span id="stats">Click toggle to measure</span>
+    </div>
+    <div class="ui-default perf-list" id="list"></div>
+  </div>
+
+  <script type="module">
+    import { runToggle, LIGHT, DARK, ROW_COUNT } from '../instrument.js';
+
+    // Shared <style> element + insert/delete rule machinery, exactly
+    // like the framework's StyleStore. Per-toggle, we mint new rules
+    // and delete the previous ones.
+    const styleEl = document.createElement('style');
+    document.head.appendChild(styleEl);
+    const sheet = styleEl.sheet;
+    const liveRules = new Set();
+
+    function insertRule(className, body) {
+      const idx = sheet.cssRules.length;
+      sheet.insertRule(`.${className} { ${body} }`, idx);
+      liveRules.add(idx);
+      return idx;
+    }
+    function findRuleIdx(className) {
+      const target = `.${className}`;
+      for (let i = 0; i < sheet.cssRules.length; i++) {
+        if (sheet.cssRules[i].selectorText === target) return i;
+      }
+      return -1;
+    }
+    // FNV-ish hash matching backend-web::hash_class_name shape: 'ui-' + 16 hex.
+    function hashName(key) {
+      let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+      for (let i = 0; i < key.length; i++) {
+        const ch = key.charCodeAt(i);
+        h1 = Math.imul(h1 ^ ch, 2654435761);
+        h2 = Math.imul(h2 ^ ch, 1597334677);
+      }
+      h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507);
+      h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+      h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507);
+      h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+      return 'ui-' +
+        (h1 >>> 0).toString(16).padStart(8, '0') +
+        (h2 >>> 0).toString(16).padStart(8, '0');
+    }
+
+    function rowCss(theme, parity) {
+      const bg = parity === 'odd' ? theme.surface_alt : theme.surface;
+      return [
+        'display: flex',
+        'flex-direction: column',
+        `background: ${bg}`,
+        `color: ${theme.text}`,
+        'padding-top: 8px',
+        'padding-right: 16px',
+        'padding-bottom: 8px',
+        'padding-left: 16px',
+        'border-bottom-width: 1px',
+        'border-bottom-style: solid',
+        `border-bottom-color: ${theme.border}`,
+        'font-size: 13px',
+        'height: 36px',
+        'justify-content: center',
+        'transition: background 250ms ease-in-out, color 250ms ease-in-out, border-bottom-color 250ms ease-in-out',
+      ].join('; ');
+    }
+
+    const list = document.getElementById('list');
+    const rows = [], texts = [];
+    {
+      const frag = document.createDocumentFragment();
+      for (let i = 0; i < ROW_COUNT; i++) {
+        const row = document.createElement('div');
+        row.className = 'ui-default';
+        const text = document.createElement('div');
+        text.className = 'ui-default';
+        text.textContent = `Row #${i}`;
+        row.appendChild(text);
+        frag.appendChild(row);
+        rows.push(row);
+        texts.push(text);
+      }
+      list.appendChild(frag);
+    }
+
+    let activeRules = null;
+    let toggleN = 0;
+
+    function applyTheme(theme, tag) {
+      // Force a fresh hash each toggle — worst case for cache.
+      const rowEven = hashName(`PerfRow|even|${tag}`);
+      const rowOdd  = hashName(`PerfRow|odd|${tag}`);
+      const textCls = hashName(`Text|${tag}`);
+      const pageCls = hashName(`Page|${tag}`);
+      const listCls = hashName(`PerfList|${tag}`);
+      const ctrlCls = hashName(`PerfControls|${tag}`);
+      const btnCls  = hashName(`PrimaryButton|${tag}`);
+
+      const newRules = {
+        rowEven: insertRule(rowEven, rowCss(theme, 'even')),
+        rowOdd:  insertRule(rowOdd,  rowCss(theme, 'odd')),
+        text:    insertRule(textCls, `color: ${theme.text}; transition: color 250ms ease-in-out`),
+        page:    insertRule(pageCls, `background: ${theme.background}; color: ${theme.text}`),
+        list:    insertRule(listCls, `background: ${theme.surface}; border-color: ${theme.border}`),
+        ctrl:    insertRule(ctrlCls, `background: ${theme.surface}; border-color: ${theme.border}; color: ${theme.text}`),
+        btn:     insertRule(btnCls,  `background: ${theme.primary}; color: ${theme.primary_text}`),
+      };
+
+      const setAttr = Element.prototype.setAttribute;
+      for (let i = 0; i < ROW_COUNT; i++) {
+        const cls = (i % 2 === 0) ? rowEven : rowOdd;
+        setAttr.call(rows[i], 'class', `ui-default ${cls}`);
+        setAttr.call(texts[i], 'class', `ui-default ${textCls}`);
+      }
+      setAttr.call(document.getElementById('page'), 'class', `ui-default page ${pageCls}`);
+      setAttr.call(document.getElementById('list'), 'class', `ui-default perf-list ${listCls}`);
+      setAttr.call(document.getElementById('controls'), 'class', `ui-default controls ${ctrlCls}`);
+      setAttr.call(document.getElementById('toggle'), 'class', btnCls);
+
+      // Drop previous theme's rules. Delete highest indices first.
+      if (activeRules) {
+        const prev = Object.values(activeRules).sort((a, b) => b - a);
+        for (const idx of prev) { sheet.deleteRule(idx); liveRules.delete(idx); }
+        // Re-resolve the just-inserted indices by class name.
+        newRules.rowEven = findRuleIdx(rowEven);
+        newRules.rowOdd  = findRuleIdx(rowOdd);
+        newRules.text    = findRuleIdx(textCls);
+        newRules.page    = findRuleIdx(pageCls);
+        newRules.list    = findRuleIdx(listCls);
+        newRules.ctrl    = findRuleIdx(ctrlCls);
+        newRules.btn     = findRuleIdx(btnCls);
+      }
+      activeRules = newRules;
+    }
+
+    // Prime with light.
+    applyTheme(LIGHT, `init-${toggleN}`);
+
+    let isDark = false;
+    document.getElementById('toggle').addEventListener('click', () => {
+      toggleN++;
+      isDark = !isDark;
+      const theme = isDark ? DARK : LIGHT;
+      runToggle(() => {
+        applyTheme(theme, `t-${toggleN}`);
+      }, { theme: isDark ? 'dark' : 'light', rows: ROW_COUNT });
+    });
+  </script>
+</body>
+</html>

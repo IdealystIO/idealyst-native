@@ -1,6 +1,8 @@
 {
   "name": "Rust",
-  "image": "mcr.microsoft.com/devcontainers/rust:1",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "dev",
+  "workspaceFolder": "/workspaces/idealyst-native",
   "features": {
     "ghcr.io/devcontainers/features/node:1": {}
   },

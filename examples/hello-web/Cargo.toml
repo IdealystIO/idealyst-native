@@ -8,10 +8,14 @@ license.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [features]
-default = ["graphics"]
+# `debug-stats` is on by default for the example so render timings
+# stream to the browser console automatically — drop it for a
+# release build by passing `--no-default-features --features graphics`.
+default = ["graphics", "debug-stats"]
 # Enable framework render telemetry. Forwards to framework-core's
-# `debug-stats` feature. When on, `dump_debug_events()` is exported
-# from the JS bindings and prints a per-component render summary.
+# `debug-stats` feature. When on, render timings stream to the
+# browser console via a per-frame drain (see `start()`), and
+# `dump_debug_events()` is exposed for ad-hoc dumps.
 debug-stats = ["framework-core/debug-stats", "backend-web/debug-stats"]
 # Pulls in the gradient demo (and its `wgpu` dep) into the hello
 # app. The Graphics primitive itself is now always-available on

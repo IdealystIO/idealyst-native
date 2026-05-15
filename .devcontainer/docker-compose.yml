@@ -1,0 +1,26 @@
+services:
+  dev:
+    image: mcr.microsoft.com/devcontainers/rust:1
+    volumes:
+      - ../..:/workspaces:cached
+    command: sleep infinity
+    networks:
+      - devnet
+    environment:
+      PLAYWRIGHT_WS_ENDPOINT: ws://chrome:3000
+
+  chrome:
+    image: ghcr.io/browserless/chromium:latest
+    restart: unless-stopped
+    networks:
+      - devnet
+    ports:
+      - "3000:3000"
+    environment:
+      CONCURRENT: "5"
+      TOKEN: ""
+      MAX_QUEUE_LENGTH: "10"
+
+networks:
+  devnet:
+    driver: bridge

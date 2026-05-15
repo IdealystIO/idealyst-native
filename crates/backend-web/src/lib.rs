@@ -52,6 +52,10 @@ pub struct WebBackend {
     pub(crate) doc: Document,
     pub(crate) mount: web_sys::Element,
     pub(crate) _click_closures: Vec<Closure<dyn FnMut()>>,
+    /// Closures attached to `<a>` elements for `Primitive::Link`.
+    /// Held so JS doesn't drop them while the anchor is still in
+    /// the layout tree. Same posture as `_click_closures`.
+    pub(crate) _link_click_closures: Vec<Closure<dyn FnMut(web_sys::MouseEvent)>>,
     /// Per-node interaction-event closures. Keyed by node-id so we
     /// can drop them when `on_node_unstyled` fires. Each entry holds
     /// the listeners for one node (pointerenter, pointerleave,
@@ -124,6 +128,17 @@ pub struct WebBackend {
     /// shared, refcounted (refcount tracks how many active
     /// registrations hold them — not how many nodes apply them).
     pub(crate) pregen: HashMap<String, PregenEntry>,
+    /// Pointer-keyed mirror of `pregen` for the hot apply path. When
+    /// the framework's resolution cache returns the same
+    /// `Rc<StyleRules>` instance for many nodes (e.g. 10000 rows of
+    /// the same variant), we look up the class name by `Rc::as_ptr`
+    /// in O(1) — without paying for `content_key()` to format a
+    /// 300-byte hex string per row.
+    ///
+    /// Populated by `register_stylesheet` alongside the content-keyed
+    /// `pregen` map. Cleared on `unregister_stylesheet` /
+    /// theme change.
+    pub(crate) pregen_by_ptr: HashMap<*const framework_core::StyleRules, String>,
     /// Per-node dynamic class slot — `node_id -> (class_name, rule_index)`.
     /// At most one dynamic class per node. Replaced atomically when
     /// the node's resolved style changes.
@@ -176,6 +191,7 @@ impl WebBackend {
             doc,
             mount,
             _click_closures: Vec::new(),
+            _link_click_closures: Vec::new(),
             state_listeners: HashMap::new(),
             spinner_keyframes_injected: false,
             defaults_class_injected: false,
@@ -189,6 +205,7 @@ impl WebBackend {
             navigator_css_injected: false,
             style_element: None,
             pregen: HashMap::new(),
+            pregen_by_ptr: HashMap::new(),
             dynamic: HashMap::new(),
             next_node_id: 0,
             node_ids: HashMap::new(),
@@ -372,6 +389,20 @@ impl Backend for WebBackend {
         primitives::navigator::make_handle(self, node)
     }
 
+    fn create_link(
+        &mut self,
+        config: framework_core::primitives::link::LinkConfig,
+    ) -> Self::Node {
+        primitives::link::create(self, config)
+    }
+
+    fn make_link_handle(
+        &self,
+        node: &Self::Node,
+    ) -> framework_core::primitives::link::LinkHandle {
+        primitives::link::make_handle(node)
+    }
+
     fn clear_children(&mut self, node: &Self::Node) {
         primitives::view::clear_children(node)
     }
@@ -449,6 +480,13 @@ impl Backend for WebBackend {
         primitives::button::make_handle(node)
     }
 
+    fn make_view_handle(&self, node: &Self::Node) -> framework_core::ViewHandle {
+        // Wrap the actual `web_sys::Node` (not the trait-default
+        // `Rc<()>`), so framework helpers like `LayoutPlan` can
+        // downcast back to the concrete node and operate on it.
+        framework_core::ViewHandle::new(Rc::new(node.clone()), &WebViewOps)
+    }
+
     fn make_text_input_handle(
         &self,
         node: &Self::Node,
@@ -476,3 +514,10 @@ impl Backend for WebBackend {
             .expect("mount append failed");
     }
 }
+
+/// Marker ops for `ViewHandle`. Views don't have methods yet (no
+/// scroll, no measure) — the trait is reserved for future
+/// additions. We still need an instance to satisfy
+/// `ViewHandle::new`'s `&'static dyn ViewOps` parameter.
+struct WebViewOps;
+impl framework_core::ViewOps for WebViewOps {}

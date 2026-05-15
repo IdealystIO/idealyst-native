@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Arena · framework rendering benchmarks</title>
+<style>
+  html, body {
+    margin: 0; padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0f1115; color: #e8eaf0;
+  }
+  main { max-width: 720px; margin: 0 auto; padding: 48px 24px; }
+  h1 { font-size: 28px; margin: 0 0 8px; font-weight: 600; letter-spacing: -0.5px; }
+  p.lede { color: #9099a8; margin: 0 0 32px; font-size: 15px; line-height: 1.5; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: #9099a8; margin: 32px 0 12px; font-weight: 600; }
+  ul { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
+  li { background: #1a1d24; border: 1px solid #2a2e3a; border-radius: 8px; padding: 12px 16px; }
+  a { color: #8b9aff; text-decoration: none; font-weight: 600; font-size: 15px; }
+  a:hover { text-decoration: underline; }
+  .desc { color: #9099a8; font-size: 13px; margin-top: 4px; line-height: 1.4; }
+  .specs { font-size: 13px; color: #9099a8; }
+  .specs code { background: #262a35; padding: 2px 6px; border-radius: 4px; color: #e8eaf0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Arena</h1>
+  <p class="lede">
+    A head-to-head benchmark of UI frameworks rendering the same screen,
+    doing the same work, measured by the same instrumentation.
+    <a href="spec.md">Read the spec</a> for what we measure and why.
+  </p>
+
+  <p class="specs">
+    Test: <code>1000-row list, theme toggle, 250ms transition</code>.
+    Reported per toggle: <code>apply</code>, <code>first paint</code>,
+    <code>frames</code>, <code>avg fps</code>, <code>worst frame</code>.
+  </p>
+
+  <h2>Baselines</h2>
+  <ul>
+    <li>
+      <a href="vanilla-css-vars/">vanilla · CSS variables</a>
+      <div class="desc">Theoretical ceiling. Toggle = flip a className on &lt;html&gt;. No JS work scales with row count.</div>
+    </li>
+    <li>
+      <a href="vanilla-classes/">vanilla · per-element classes</a>
+      <div class="desc">Mirrors the framework's web backend: mint fresh CSS rules and setAttribute 2000+ times per toggle.</div>
+    </li>
+  </ul>
+
+  <h2>React</h2>
+  <ul>
+    <li>
+      <a href="react-naive/">react · naive (inline styles, re-render)</a>
+      <div class="desc"><code>useState(theme)</code> at the top, threaded down via props. Every row re-renders on toggle.</div>
+    </li>
+    <li>
+      <a href="react-cssvars/">react · idiomatic (CSS variables, no re-render)</a>
+      <div class="desc">Same theme model as the vanilla ceiling. React commits a single className change; rows are inert.</div>
+    </li>
+  </ul>
+
+  <h2>How to read this</h2>
+  <p class="desc" style="margin: 0;">
+    Open two tabs and toggle each a few times. The numbers in
+    <code>#stats</code> reset on every click.
+    The <code>apply</code> column is the synchronous JS cost — that's
+    what the framework is paying. The <code>worst frame</code> column
+    is what the user actually feels.
+  </p>
+</main>
+</body>
+</html>

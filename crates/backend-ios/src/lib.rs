@@ -165,23 +165,15 @@ mod imp {
             // practice (the runtime materializes it on demand).
             let nav_view = nav.view().expect("UINavigationController.view");
 
-            // Build the initial screen and push it as the root VC.
-            let (initial_node, initial_scope_id) =
-                (callbacks.mount_screen)(callbacks.initial_route, Box::new(()));
-            let root_vc = unsafe { UIViewController::new(self.mtm) };
-            root_vc.setView(Some(initial_node.as_view()));
-            unsafe {
-                nav.setViewControllers_animated(
-                    &objc2_foundation::NSArray::from_vec(vec![root_vc.clone()]),
-                    false,
-                );
-            }
-
-            // Build the per-instance state.
-            let stack_rc = Rc::new(RefCell::new(vec![ScreenEntry {
-                vc: root_vc,
-                scope_id: initial_scope_id,
-            }]));
+            // NOTE: we DO NOT call `mount_screen` here — the framework
+            // holds `backend.borrow_mut()` for the entire
+            // create_navigator call and `mount_screen` re-enters the
+            // build walker which also borrow_muts. The framework
+            // builds the initial screen and hands it to us via
+            // `navigator_attach_initial` after this returns.
+            //
+            // Start with an empty stack; `attach_initial` populates it.
+            let stack_rc: Rc<RefCell<Vec<ScreenEntry>>> = Rc::new(RefCell::new(Vec::new()));
             let entry = NavigatorEntry {
                 controller: nav.clone(),
                 control: control.clone(),
@@ -276,6 +268,32 @@ mod imp {
             }));
 
             IosNode::View(nav_view)
+        }
+
+        fn navigator_attach_initial(
+            &mut self,
+            navigator: &Self::Node,
+            screen: Self::Node,
+            scope_id: u64,
+        ) {
+            let key = navigator.view_key();
+            let Some(entry) = self.navigator_instances.get(&key) else {
+                return;
+            };
+            // Wrap the framework-built screen view in a fresh VC and
+            // install it as the navigation controller's root.
+            let root_vc = unsafe { UIViewController::new(self.mtm) };
+            root_vc.setView(Some(screen.as_view()));
+            unsafe {
+                entry.controller.setViewControllers_animated(
+                    &objc2_foundation::NSArray::from_vec(vec![root_vc.clone()]),
+                    false,
+                );
+            }
+            entry
+                .stack
+                .borrow_mut()
+                .push(ScreenEntry { vc: root_vc, scope_id });
         }
 
         fn release_navigator(&mut self, node: &Self::Node) {

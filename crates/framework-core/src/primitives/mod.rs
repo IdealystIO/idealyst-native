@@ -14,6 +14,7 @@ pub mod activity_indicator;
 pub mod flat_list;
 pub mod graphics;
 pub mod image;
+pub mod link;
 pub mod navigator;
 pub mod scroll_view;
 pub mod slider;

@@ -51,6 +51,55 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 
 // ---------------------------------------------------------------------------
+// Ambient navigator stack
+// ---------------------------------------------------------------------------
+//
+// While the navigator's `mount_screen` is building a screen subtree,
+// it pushes its `Rc<NavigatorControl>` onto this thread-local stack
+// and pops on the way out. The `Link` primitive's constructor reads
+// the top of the stack at build time and captures it — that's how
+// `Link(route, params)` finds the right navigator without an
+// explicit ref.
+//
+// Nested navigators stack naturally: a `Link` inside a child
+// navigator's screen sees the child's control plane on top.
+// Authors who want to break out can capture a parent's nav handle
+// explicitly via a future `.via(ref)` override.
+
+thread_local! {
+    static AMBIENT_NAV: RefCell<Vec<Rc<NavigatorControl>>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// RAII guard that pushes a navigator control onto the ambient
+/// stack at construction and pops on drop. Used by
+/// `mount_screen` to wrap each per-screen build.
+pub(crate) struct AmbientNavGuard;
+
+impl AmbientNavGuard {
+    pub(crate) fn push(control: Rc<NavigatorControl>) -> Self {
+        AMBIENT_NAV.with(|s| s.borrow_mut().push(control));
+        AmbientNavGuard
+    }
+}
+
+impl Drop for AmbientNavGuard {
+    fn drop(&mut self) {
+        AMBIENT_NAV.with(|s| {
+            let _ = s.borrow_mut().pop();
+        });
+    }
+}
+
+/// Read the top of the ambient-navigator stack. Returns `None`
+/// when called outside any navigator's `mount_screen`. The `Link`
+/// primitive captures this at build time and dispatches through
+/// the captured control plane on activation.
+pub fn ambient_navigator() -> Option<Rc<NavigatorControl>> {
+    AMBIENT_NAV.with(|s| s.borrow().last().cloned())
+}
+
+// ---------------------------------------------------------------------------
 // RouteParams — URL <-> typed params conversion
 // ---------------------------------------------------------------------------
 
@@ -359,6 +408,11 @@ pub trait NavigatorOps {
 pub struct NavigatorControl {
     dispatch: RefCell<Option<Box<dyn Fn(NavCommand)>>>,
     depth: RefCell<usize>,
+    /// Reactive nav-state mirror. Updated *before* the backend's
+    /// dispatcher runs, so by the time effects re-fire the new
+    /// route name + path are already observable. `None` until
+    /// `attach_nav_state` is called from `build_navigator`.
+    nav_state: RefCell<Option<NavState>>,
 }
 
 impl NavigatorControl {
@@ -366,7 +420,15 @@ impl NavigatorControl {
         Self {
             dispatch: RefCell::new(None),
             depth: RefCell::new(1),
+            nav_state: RefCell::new(None),
         }
+    }
+
+    /// Wire the nav-state signals. Called once from `build_navigator`
+    /// before [`install`] so the dispatch path can update signals
+    /// from the very first command.
+    pub fn attach_nav_state(&self, nav_state: NavState) {
+        *self.nav_state.borrow_mut() = Some(nav_state);
     }
 
     /// Install the dispatcher. Called once from `build_navigator` after
@@ -385,7 +447,51 @@ impl NavigatorControl {
         *self.depth.borrow()
     }
 
-    fn dispatch(&self, cmd: NavCommand) {
+    /// Programmatic pop, equivalent to `handle.pop()`. Exposed
+    /// because layout closures hold an `Rc<NavigatorControl>` (via
+    /// `LayoutProps::on_back`) but don't have direct access to a
+    /// `NavigatorHandle` — they need a way to invoke pop without
+    /// passing a handle around separately.
+    pub fn pop(&self) {
+        self.dispatch(NavCommand::Pop);
+    }
+
+    /// Dispatch a `NavCommand` against this navigator. Public so
+    /// the `Link` primitive (which captures an `Rc<NavigatorControl>`
+    /// from the ambient stack at construction time) can route
+    /// activations through here without going through a
+    /// `NavigatorHandle`.
+    pub fn dispatch(&self, cmd: NavCommand) {
+        // Update the reactive nav-state mirror *before* the backend
+        // sees the command. Effects that read these signals will
+        // re-fire as the backend processes the command, so by the
+        // time animations / fragment transactions finish, any
+        // layout chrome that reads active_route/path is already
+        // pointed at the new screen.
+        if let Some(state) = self.nav_state.borrow().as_ref() {
+            match &cmd {
+                NavCommand::Push { name, url, .. }
+                | NavCommand::Replace { name, url, .. }
+                | NavCommand::Reset { name, url, .. } => {
+                    state.active_route.set(name);
+                    state.active_path.set(url.clone());
+                }
+                NavCommand::Pop => {
+                    // Pop's new active route/path is the entry one
+                    // below the popped one — but the framework
+                    // doesn't track per-entry route/path here. The
+                    // backend, after committing the pop, updates
+                    // active_route/path via depth_changed +
+                    // (TODO) a separate "active_changed" callback.
+                    // For now, leave the signals at the popped
+                    // value; the layout will read stale data
+                    // briefly. Backends that care can call
+                    // `state.active_route.set(...)` directly via
+                    // the `nav_state` field on `NavigatorCallbacks`.
+                }
+            }
+        }
+
         // If the handle is somehow called before the navigator has
         // been built, just drop the command — same posture as a `Ref`
         // that's been used before the matching primitive has mounted.
@@ -464,6 +570,28 @@ pub struct NavigatorCallbacks<N: Clone + 'static> {
     /// to map an HTTP request path to a screen subtree without ever
     /// running a JS dispatcher.
     pub match_path: Rc<dyn Fn(&str) -> Option<(&'static str, Box<dyn Any>)>>,
+    /// Build the layout subtree, if one was registered via
+    /// `.layout(...)`. The framework constructs the outlet
+    /// placeholder + reactive signal bundle (see `LayoutProps`),
+    /// invokes the user's closure, *and runs the build walker* —
+    /// so the returned `LayoutPlan::root` is already a native node
+    /// the backend can insert into its container. The `outlet_ref`
+    /// resolves to the outlet's native node via
+    /// `Ref::get().node()`-style probes once the build completes.
+    ///
+    /// Backends that want to render through a layout (web) call
+    /// this once at create time; native backends never call it.
+    /// `None` means the author didn't supply a layout — backends
+    /// fall back to their default "stack the screens directly in
+    /// the navigator container" behavior.
+    pub build_layout: Option<Rc<dyn Fn() -> LayoutPlan<N>>>,
+    /// Reactive signals the dispatcher updates on every commit.
+    /// Backends that build the layout subtree pass these into the
+    /// layout closure via `LayoutProps`; the layout can subscribe
+    /// to whichever it cares about. Signals exposed here are the
+    /// same instances `LayoutProps` carries, so the user can
+    /// `.set(...)` from layout effects if they need to (advanced).
+    pub nav_state: NavState,
     /// Subscribe to commands from the handle. The backend installs a
     /// dispatcher here (see `Backend::create_navigator` doc); when the
     /// user's code calls `handle.push(...)`, that dispatcher fires.
@@ -482,12 +610,86 @@ pub struct NavigatorCallbacks<N: Clone + 'static> {
 // Navigator builder — author-facing
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Layout — author-supplied chrome wrapper, used by web (and any future
+// SSR / DOM-based backend). Native backends ignore it.
+// ---------------------------------------------------------------------------
+
+/// Props handed to the user's layout closure. The author renders a
+/// chrome subtree (top bar / sidebar / breadcrumbs / whatever) and
+/// drops `outlet` somewhere in it — the framework physically swaps
+/// the outlet's child to the active screen on each push/pop.
+///
+/// All state fields are reactive `Signal`s, so reading them inside a
+/// `derived(...)` or directly via `.get()` subscribes the enclosing
+/// effect — the layout (or just parts of it) re-renders on
+/// navigation without the framework rebuilding the whole layout.
+///
+/// Backends that don't render through the layout (iOS, Android)
+/// never invoke the layout closure; it's a pure web/DOM concept.
+/// Putting layout logic in user code lets the author choose chrome
+/// — a fixed top bar, a sidebar with breadcrumbs, a centered card
+/// stack — without the framework dictating any of it.
+pub struct LayoutProps {
+    /// Where the active screen renders. Embed this in your tree
+    /// exactly once — the framework owns the underlying node and
+    /// swaps its child on push/pop.
+    pub outlet: Primitive,
+    /// Name of the currently-active route (matches `Route::name()`).
+    /// Useful for a top-bar title or to highlight a tab.
+    pub active_route: crate::Signal<&'static str>,
+    /// Concrete URL path of the currently-active screen (e.g.
+    /// `/detail/42`). Distinct from `active_route` — that's the
+    /// route's stable name, this is the rendered URL.
+    pub active_path: crate::Signal<String>,
+    /// Current stack depth (1 = only root). Useful for hiding the
+    /// back button when there's nowhere to go.
+    pub depth: crate::Signal<usize>,
+    /// `depth > 1`, exposed separately so the back button's reactive
+    /// visibility doesn't need a `derived(...)` wrapper.
+    pub can_go_back: crate::Signal<bool>,
+    /// Pop the top screen. Same as calling `handle.pop()` on the
+    /// navigator's handle. Lives here for convenience so layout
+    /// code doesn't need to hold a separate handle.
+    pub on_back: Rc<dyn Fn()>,
+}
+
+pub(crate) type LayoutBuilder = Rc<dyn Fn(LayoutProps) -> Primitive>;
+
+/// Reactive nav-state bundle exposed to layout closures + held by
+/// the framework. The dispatcher mutates these on every push/pop;
+/// any effect reading them re-runs to reflect the new state.
+///
+/// Cloning is cheap — every field is a `Signal<T>` which is a
+/// numeric arena handle.
+#[derive(Clone)]
+pub struct NavState {
+    pub active_route: crate::Signal<&'static str>,
+    pub active_path: crate::Signal<String>,
+    pub depth: crate::Signal<usize>,
+    pub can_go_back: crate::Signal<bool>,
+}
+
+/// Output of [`NavigatorCallbacks::build_layout`]. The framework
+/// already built the layout's subtree into the backend's native
+/// node type; the backend just needs to (1) insert `root` into the
+/// navigator's container, and (2) hold onto `outlet_ref` so it can
+/// look up the outlet's native node and append screens into it.
+///
+/// Generic over `N` (the backend's `Node` type) so the framework
+/// can return the actual node, not a type-erased one.
+pub struct LayoutPlan<N: Clone + 'static> {
+    pub root: N,
+    pub outlet_ref: Ref<crate::ViewHandle>,
+}
+
 /// Author-facing navigator builder. Routes get declared via `.screen(...)`;
 /// the framework wires the rest. See module-level docs for usage.
 pub struct Navigator {
     pub(crate) initial: &'static str,
     pub(crate) initial_path: &'static str,
     pub(crate) screens: HashMap<&'static str, RouteEntry>,
+    pub(crate) layout: Option<LayoutBuilder>,
     pub(crate) style: Option<crate::StyleSource>,
     pub(crate) ref_fill: Option<RefFill>,
 }
@@ -507,6 +709,7 @@ impl Navigator {
             initial: initial.name,
             initial_path: initial.path,
             screens: HashMap::new(),
+            layout: None,
             style: None,
             ref_fill: None,
         })))
@@ -546,6 +749,35 @@ impl Bound<NavigatorHandle> {
                 route.name,
                 RouteEntry { path: route.path, build, from_segments },
             );
+        }
+        self
+    }
+
+    /// Install a layout component — a chrome wrapper that the
+    /// framework renders around the active screen. Useful on web
+    /// (and any future DOM-based backend) for things native nav
+    /// controllers handle automatically: top bars, sidebars,
+    /// breadcrumbs.
+    ///
+    /// The closure receives a [`LayoutProps`] bundle whose fields
+    /// are reactive signals. Reading any of them inside the
+    /// layout's `ui!` body subscribes the effect — the layout
+    /// re-renders only the parts that read changed signals, not
+    /// the whole subtree. `LayoutProps::outlet` is the slot the
+    /// framework physically reuses on each push/pop, so the
+    /// surrounding chrome doesn't rebuild when screens swap.
+    ///
+    /// **Native backends ignore this.** UIKit's
+    /// `UINavigationController` and Android's `FragmentManager`
+    /// draw their own chrome (nav bar, action bar, swipe-to-back);
+    /// inserting a user layout there would just fight the platform.
+    /// The layout closure is invoked only by backends that opt in.
+    pub fn layout<F>(mut self, f: F) -> Self
+    where
+        F: Fn(LayoutProps) -> Primitive + 'static,
+    {
+        if let Primitive::Navigator(nav) = &mut self.primitive {
+            nav.layout = Some(Rc::new(f));
         }
         self
     }

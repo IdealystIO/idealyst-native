@@ -11,8 +11,8 @@ pub mod debug;
 
 pub use backend::{Backend, VirtualizerCallbacks};
 pub use primitives::navigator::{
-    match_pattern, NavCommand, Navigator, NavigatorCallbacks, NavigatorControl, NavigatorHandle,
-    NavigatorOps, Route, RouteParams,
+    match_pattern, LayoutPlan, LayoutProps, NavCommand, NavState, Navigator, NavigatorCallbacks,
+    NavigatorControl, NavigatorHandle, NavigatorOps, Route, RouteParams,
 };
 pub use reactive::{untrack, Effect, Ref, Signal};
 pub use scheduling::{
@@ -193,7 +193,6 @@ pub trait ButtonOps {
 /// A handle to a mounted `View` primitive.
 #[derive(Clone)]
 pub struct ViewHandle {
-    #[allow(dead_code)]
     node: Rc<dyn Any>,
     #[allow(dead_code)]
     ops: &'static dyn ViewOps,
@@ -202,6 +201,14 @@ pub struct ViewHandle {
 impl ViewHandle {
     pub fn new(node: Rc<dyn Any>, ops: &'static dyn ViewOps) -> Self {
         Self { node, ops }
+    }
+
+    /// Type-erased access to the backend's native node. Each
+    /// backend stores its own `Node` type behind an `Rc<dyn Any>`
+    /// here; framework helpers (notably `LayoutPlan`'s outlet
+    /// resolution) downcast it back to the concrete type.
+    pub fn as_any(&self) -> &dyn Any {
+        &*self.node
     }
 }
 
@@ -260,6 +267,7 @@ pub enum RefFill {
     Virtualizer(Box<dyn FnOnce(primitives::virtualizer::VirtualizerHandle)>),
     Graphics(Box<dyn FnOnce(primitives::graphics::GraphicsHandle)>),
     Navigator(Box<dyn FnOnce(primitives::navigator::NavigatorHandle)>),
+    Link(Box<dyn FnOnce(primitives::link::LinkHandle)>),
 }
 
 /// Primitives are the structural skeleton of the UI. Every primitive
@@ -449,6 +457,31 @@ pub enum Primitive {
         build: Box<dyn Fn(&dyn Any) -> Primitive>,
         style: Option<StyleSource>,
     },
+    /// Declarative navigation. Wraps content; activation dispatches
+    /// a `NavCommand` against an ambient navigator captured at
+    /// construction time. See [`primitives::link`] for the surface
+    /// and rationale.
+    Link {
+        children: Vec<Primitive>,
+        /// Route name (stable; matches `Route::name()`).
+        route: &'static str,
+        /// Concrete URL produced by `params.to_path(route.path)`
+        /// at construction time. Web emits `<a href=url>` and uses
+        /// it for right-click affordances; native backends ignore.
+        url: String,
+        /// Type-erased params source. Each activation calls this to
+        /// produce a fresh `Box<dyn Any>` for the `NavCommand`.
+        /// `link<P>` boxes `P: Clone` and reproduces on demand.
+        make_params: Rc<dyn Fn() -> Box<dyn Any>>,
+        /// Push / Replace / Reset.
+        kind: primitives::link::NavKind,
+        /// Captured ambient `NavigatorControl` at construction.
+        /// `None` ⇒ no navigator was active and activation silently
+        /// no-ops (matches handle-before-build posture).
+        target: Option<Rc<primitives::navigator::NavigatorControl>>,
+        style: Option<StyleSource>,
+        ref_fill: Option<RefFill>,
+    },
 }
 
 /// Allows `with_style(...)` to accept any of:
@@ -511,7 +544,8 @@ impl Primitive {
             | Primitive::Virtualizer { style, .. }
             | Primitive::Graphics { style, .. }
             | Primitive::When { style, .. }
-            | Primitive::Switch { style, .. } => {
+            | Primitive::Switch { style, .. }
+            | Primitive::Link { style, .. } => {
                 *style = Some(src);
             }
             Primitive::Navigator(nav) => {
@@ -1260,10 +1294,11 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
                 initial,
                 initial_path,
                 screens,
+                layout,
                 style,
                 ref_fill,
             } = *nav;
-            let n = build_navigator(backend, initial, initial_path, screens, ref_fill);
+            let n = build_navigator(backend, initial, initial_path, screens, layout, ref_fill);
             if let Some(s) = style {
                 attach_style(backend, &n, s);
             }
@@ -1293,6 +1328,49 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
             let n = build_switch(backend, key, eq, build_fn);
             if let Some(s) = style {
                 attach_style(backend, &n, s);
+            }
+            n
+        }
+        Primitive::Link {
+            children,
+            route,
+            url,
+            make_params,
+            kind,
+            target,
+            style,
+            ref_fill,
+        } => {
+            let on_activate = primitives::link::make_on_activate(
+                target,
+                route,
+                url.clone(),
+                kind,
+                make_params,
+            );
+            let config = primitives::link::LinkConfig {
+                route,
+                url,
+                on_activate,
+            };
+            let mut n = time_backend_create(pkind!(Link), || {
+                backend.borrow_mut().create_link(config)
+            });
+            // Children are built recursively (same shape as View)
+            // and inserted into the link's native container. The
+            // backend is responsible for making the container
+            // tappable / clickable as a whole; children are just
+            // visual content.
+            for child in children {
+                let child_node = build(backend, child);
+                backend.borrow_mut().insert(&mut n, child_node);
+            }
+            if let Some(s) = style {
+                attach_style(backend, &n, s);
+            }
+            if let Some(RefFill::Link(fill)) = ref_fill {
+                let handle = backend.borrow().make_link_handle(&n);
+                fill(handle);
             }
             n
         }
@@ -1351,6 +1429,7 @@ fn debug_kind_of(node: &Primitive) -> debug::PrimitiveKind {
         Primitive::Navigator(_) => PrimitiveKind::Navigator,
         Primitive::When { .. } => PrimitiveKind::When,
         Primitive::Switch { .. } => PrimitiveKind::Switch,
+        Primitive::Link { .. } => PrimitiveKind::Link,
     }
 }
 
@@ -1479,9 +1558,12 @@ fn build_navigator<B: Backend + 'static>(
     initial: &'static str,
     initial_path: &'static str,
     screens: HashMap<&'static str, primitives::navigator::RouteEntry>,
+    layout: Option<primitives::navigator::LayoutBuilder>,
     ref_fill: Option<RefFill>,
 ) -> B::Node {
-    use primitives::navigator::{match_pattern, NavigatorCallbacks, NavigatorControl};
+    use primitives::navigator::{
+        match_pattern, LayoutPlan, LayoutProps, NavState, NavigatorCallbacks, NavigatorControl,
+    };
 
     // Per-screen scope registry. The framework owns the scopes — the
     // backend stores opaque scope ids alongside its native cells and
@@ -1509,6 +1591,7 @@ fn build_navigator<B: Backend + 'static>(
         let next_id = next_scope_id.clone();
         let screens = screens.clone();
         let backend = backend.clone();
+        let control_for_mount = control.clone();
         Rc::new(move |name, params| {
             let builder = screens
                 .get(name)
@@ -1524,6 +1607,14 @@ fn build_navigator<B: Backend + 'static>(
             // when their handle drops at end of `build` —
             // unintentionally dropping shared `Rc<RefCell<...>>`
             // state the framework's microtasks depend on.
+            //
+            // Also push this navigator's control plane onto the
+            // ambient stack so any `Link` primitives built inside
+            // the screen capture it as their target. RAII guard
+            // pops on drop, so nested navigators (each pushing in
+            // turn) stack correctly.
+            let _ambient_guard =
+                primitives::navigator::AmbientNavGuard::push(control_for_mount.clone());
             let node = reactive::with_scope(&mut scope, || {
                 let primitive = builder(params);
                 build(&backend, primitive)
@@ -1568,13 +1659,114 @@ fn build_navigator<B: Backend + 'static>(
         })
     };
 
-    // depth_changed: backend reports stack depth after each commit;
-    // the framework caches it on the control plane so
-    // `handle.depth()` is a cheap probe.
+    // Reactive nav-state signals. The dispatcher updates them on
+    // every commit; layout effects subscribe to whichever they care
+    // about. Initial values match the about-to-mount initial route.
+    let nav_state = NavState {
+        active_route: Signal::new(initial),
+        active_path: Signal::new(initial_path.to_string()),
+        depth: Signal::new(1),
+        can_go_back: Signal::new(false),
+    };
+    // Hand the state to the control plane so `dispatch(...)` can
+    // update the signals before the backend's dispatcher runs.
+    control.attach_nav_state(nav_state.clone());
+
+    // depth_changed: backend reports stack depth after each commit.
+    // We update both the control plane (so `handle.depth()` is a
+    // cheap probe) and the `nav_state.depth` signal (so reactive
+    // layouts re-render). `can_go_back` is derived from depth.
     let depth_changed: Rc<dyn Fn(usize)> = {
         let control = control.clone();
-        Rc::new(move |d| control.set_depth(d))
+        let depth_sig = nav_state.depth;
+        let back_sig = nav_state.can_go_back;
+        Rc::new(move |d| {
+            control.set_depth(d);
+            depth_sig.set(d);
+            back_sig.set(d > 1);
+        })
     };
+
+    // Layout-scope. Layouts contain reactive effects (e.g. a
+    // `Text { format!("{}", active_route.get()) }` in the chrome)
+    // that must keep firing on every navigation. Without a scope
+    // owner, those effects would free immediately when the
+    // `Effect` handle drops at the end of `build()` — because the
+    // layout is built from a microtask (web) which runs detached
+    // from the navigator's enclosing render scope, the
+    // thread-local active-scope stack is empty at build time.
+    //
+    // The fix: give the layout its own long-lived scope. We own
+    // it here in `build_navigator`; it stays alive as long as the
+    // navigator does, and effects registered during the layout
+    // build attach to it. Dropping the scope tears down every
+    // layout effect — handled by the cleanup `Effect` the walker
+    // installs around `Primitive::Navigator` (it lives in the
+    // surrounding scope; when *that* drops, this navigator and
+    // its layout_scope go with it).
+    let layout_scope: Rc<RefCell<Option<Box<reactive::Scope>>>> =
+        Rc::new(RefCell::new(None));
+
+    // build_layout: invoked by backends that render through a
+    // user-supplied layout (web). The framework runs the layout
+    // closure with a freshly-created outlet `View` (whose ref the
+    // backend later uses to find the outlet's native node), builds
+    // the resulting `Primitive` into a native node via the standard
+    // build walker — wrapped in `with_scope(layout_scope)` so
+    // layout effects survive past the build call.
+    //
+    // **Borrow safety**: this closure calls `build(&backend, ...)`
+    // which does `backend.borrow_mut()`. Backends must only invoke
+    // build_layout *outside* the `create_navigator` borrow window —
+    // typically from a microtask scheduled during create, the same
+    // pattern web uses for `mount_screen`.
+    let build_layout: Option<Rc<dyn Fn() -> LayoutPlan<B::Node>>> = layout.map(|layout_fn| {
+        let nav_state = nav_state.clone();
+        let control = control.clone();
+        let layout_fn = layout_fn.clone();
+        let backend = backend.clone();
+        let layout_scope_slot = layout_scope.clone();
+        let f: Rc<dyn Fn() -> LayoutPlan<B::Node>> = Rc::new(move || {
+            let outlet_ref: Ref<crate::ViewHandle> = Ref::new();
+            let outlet_primitive: Primitive = crate::view(Vec::new()).bind(outlet_ref).into();
+            let on_back: Rc<dyn Fn()> = {
+                let control = control.clone();
+                Rc::new(move || control.pop())
+            };
+            let props = LayoutProps {
+                outlet: outlet_primitive,
+                active_route: nav_state.active_route,
+                active_path: nav_state.active_path,
+                depth: nav_state.depth,
+                can_go_back: nav_state.can_go_back,
+                on_back,
+            };
+            let root_primitive = layout_fn(props);
+            // Layouts may contain `Link`s in their chrome (a nav bar
+            // with a "Home" link, etc.). Push this navigator's
+            // control plane onto the ambient stack while we build
+            // the layout so those links capture it.
+            let _ambient_guard =
+                primitives::navigator::AmbientNavGuard::push(control.clone());
+            // Build the layout subtree inside its dedicated scope.
+            // Every Effect created during the build (reactive
+            // text, button state, etc.) attaches to this scope and
+            // stays alive across navigation. Without this wrap,
+            // those effects would drop immediately because the
+            // layout build runs detached from any active scope.
+            let mut scope = Box::new(reactive::Scope::new());
+            let root = reactive::with_scope(&mut scope, || {
+                build(&backend, root_primitive)
+            });
+            // Stash the scope on the slot so it stays alive for the
+            // navigator's lifetime. The slot itself is dropped in
+            // `release_navigator` via the cleanup effect, which
+            // drops `layout_scope` along with everything else.
+            *layout_scope_slot.borrow_mut() = Some(scope);
+            LayoutPlan { root, outlet_ref }
+        });
+        f
+    });
 
     let callbacks = NavigatorCallbacks {
         initial_route: initial,
@@ -1582,15 +1774,31 @@ fn build_navigator<B: Backend + 'static>(
         mount_screen,
         release_screen,
         match_path,
+        build_layout,
+        nav_state: nav_state.clone(),
         depth_changed,
     };
 
     // Create the native navigator. The backend stores the callbacks,
-    // installs a dispatcher on `control`, and mounts the initial
-    // screen by calling `callbacks.mount_screen(initial, Box::new(()))`.
+    // installs a dispatcher on `control`, but DOES NOT call
+    // `mount_screen` synchronously (would re-enter the backend's
+    // borrow_mut → panic). The framework handles initial mount below.
+    let mount_screen_for_initial = callbacks.mount_screen.clone();
     let node = time_backend_create(pkind!(Navigator), || {
         backend.borrow_mut().create_navigator(callbacks, control.clone())
     });
+
+    // Mount the initial screen *after* `create_navigator` returns —
+    // i.e. outside the borrow_mut window. The screen build
+    // re-enters the build walker which itself does `borrow_mut`, so
+    // it MUST run outside any active backend borrow. The result is
+    // handed to the backend via `navigator_attach_initial`, which
+    // is a thin "stick this screen into the container" hook with no
+    // borrow contention (it doesn't call back into build).
+    let (initial_node, initial_scope_id) = mount_screen_for_initial(initial, Box::new(()));
+    backend
+        .borrow_mut()
+        .navigator_attach_initial(&node, initial_node, initial_scope_id);
 
     if let Some(RefFill::Navigator(fill)) = ref_fill {
         // The default handle the trait builds is a no-op (`control: None`).
@@ -1619,6 +1827,29 @@ fn attach_style<B: Backend + 'static>(
     node: &B::Node,
     style: StyleSource,
 ) -> Rc<dyn Fn(StateBits, bool)> {
+    // Per-phase timing of attach_style. The point is to separate
+    // "framework overhead per styled node" (Effect alloc, Signal
+    // alloc, scope registration, clones) from "actual style work"
+    // (resolve, apply, register stylesheet) so a high-row-count
+    // render's overhead can be measured rather than guessed at.
+    //
+    // Phases emitted (all only when `debug-stats` is on):
+    //   attach_style_total          wraps the whole call
+    //   attach_style_setup          pre-Effect setup (clones, Signal::new, borrow for caps)
+    //   attach_style_effect_alloc   Effect::new — alloc slot AND first run
+    //   attach_style_first_run      just the closure body inside Effect::new's first run
+    //   attach_style_post_effect    Rc<setter>, backend.attach_states
+    //   attach_style_resolve        resolve_style + resolve_state_overlays per run
+    //   attach_style_apply_call     the backend's apply_styled_states / apply_style call
+    //
+    // The interesting quantity is (effect_alloc - first_run) — the
+    // pure arena/scope-registration cost per styled node.
+    #[cfg(feature = "debug-stats")]
+    let _t_total_start = debug::now_micros();
+
+    #[cfg(feature = "debug-stats")]
+    let _t_setup_start = debug::now_micros();
+
     let node_for_effect = node.clone();
     let backend_for_effect = backend.clone();
 
@@ -1640,7 +1871,19 @@ fn attach_style<B: Backend + 'static>(
     // browser drives state tracking without a Rust round-trip.
     let states_signal: Signal<StateBits> = Signal::new(StateBits::NONE);
 
+    #[cfg(feature = "debug-stats")]
+    debug::record_apply_phase(
+        "attach_style_setup",
+        debug::now_micros().saturating_sub(_t_setup_start),
+    );
+
+    #[cfg(feature = "debug-stats")]
+    let _t_effect_alloc_start = debug::now_micros();
+
     let _e = Effect::new(move || {
+        #[cfg(feature = "debug-stats")]
+        let _t_first_run_start = debug::now_micros();
+
         // Anchor the handle inside the closure so it's dropped iff the
         // effect is dropped.
         let _ = &handle.node;
@@ -1676,11 +1919,38 @@ fn attach_style<B: Backend + 'static>(
             // CSS handles all transitions, so the style effect should
             // re-fire only on theme/variant/override changes, not on
             // hover/press.
+            #[cfg(feature = "debug-stats")]
+            let _t_resolve_start = debug::now_micros();
             let base = resolve_style(&app);
+            #[cfg(feature = "debug-stats")]
+            debug::record_apply_phase(
+                "attach_style_resolve_base",
+                debug::now_micros().saturating_sub(_t_resolve_start),
+            );
+            #[cfg(feature = "debug-stats")]
+            let _t_overlays_start = debug::now_micros();
             let overlays = resolve_state_overlays(&app);
+            #[cfg(feature = "debug-stats")]
+            debug::record_apply_phase(
+                "attach_style_resolve_overlays",
+                debug::now_micros().saturating_sub(_t_overlays_start),
+            );
+            #[cfg(feature = "debug-stats")]
+            debug::record_apply_phase(
+                "attach_style_resolve",
+                debug::now_micros().saturating_sub(_t_resolve_start),
+            );
+
+            #[cfg(feature = "debug-stats")]
+            let _t_apply_start = debug::now_micros();
             backend_for_effect
                 .borrow_mut()
                 .apply_styled_states(&node_for_effect, &base, &overlays);
+            #[cfg(feature = "debug-stats")]
+            debug::record_apply_phase(
+                "attach_style_apply_call",
+                debug::now_micros().saturating_sub(_t_apply_start),
+            );
         } else {
             // Event-driven path: merge active-state axes into the
             // resolved application. Reading the signal subscribes this
@@ -1691,15 +1961,45 @@ fn attach_style<B: Backend + 'static>(
             for axis in bits.active_axes() {
                 app = app.with(axis, "on");
             }
+            #[cfg(feature = "debug-stats")]
+            let _t_resolve_start = debug::now_micros();
             let resolved = resolve_style(&app);
+            #[cfg(feature = "debug-stats")]
+            debug::record_apply_phase(
+                "attach_style_resolve",
+                debug::now_micros().saturating_sub(_t_resolve_start),
+            );
+
+            #[cfg(feature = "debug-stats")]
+            let _t_apply_start = debug::now_micros();
             backend_for_effect
                 .borrow_mut()
                 .apply_style(&node_for_effect, &resolved);
+            #[cfg(feature = "debug-stats")]
+            debug::record_apply_phase(
+                "attach_style_apply_call",
+                debug::now_micros().saturating_sub(_t_apply_start),
+            );
         }
 
         #[cfg(feature = "debug-stats")]
         debug::record_apply_style_exit();
+
+        #[cfg(feature = "debug-stats")]
+        debug::record_apply_phase(
+            "attach_style_first_run",
+            debug::now_micros().saturating_sub(_t_first_run_start),
+        );
     });
+
+    #[cfg(feature = "debug-stats")]
+    debug::record_apply_phase(
+        "attach_style_effect_alloc",
+        debug::now_micros().saturating_sub(_t_effect_alloc_start),
+    );
+
+    #[cfg(feature = "debug-stats")]
+    let _t_post_effect_start = debug::now_micros();
 
     // Hand the backend a setter so it can flip state bits from native
     // event listeners. The setter is `Rc<dyn Fn(StateBits, bool)>`
@@ -1718,6 +2018,18 @@ fn attach_style<B: Backend + 'static>(
         });
     });
     backend.borrow_mut().attach_states(node, setter.clone());
+
+    #[cfg(feature = "debug-stats")]
+    debug::record_apply_phase(
+        "attach_style_post_effect",
+        debug::now_micros().saturating_sub(_t_post_effect_start),
+    );
+    #[cfg(feature = "debug-stats")]
+    debug::record_apply_phase(
+        "attach_style_total",
+        debug::now_micros().saturating_sub(_t_total_start),
+    );
+
     setter
 }
 
@@ -1728,27 +2040,26 @@ fn attach_style<B: Backend + 'static>(
 /// returns `(StateBits, Rc<StyleRules>)` pairs the backend can emit
 /// as pseudo-class CSS.
 fn resolve_state_overlays(app: &StyleApplication) -> Vec<(StateBits, Rc<StyleRules>)> {
-    let mut out: Vec<(StateBits, Rc<StyleRules>)> = Vec::new();
-    for (axis, _value) in app.sheet.variant_keys() {
-        let bit = match axis.as_str() {
-            "__state_hovered" => StateBits::HOVERED,
-            "__state_pressed" => StateBits::PRESSED,
-            "__state_focused" => StateBits::FOCUSED,
-            "__state_disabled" => StateBits::DISABLED,
-            _ => continue,
-        };
-        // Skip duplicates (the keys list contains one entry per
-        // declared value; each `__state_*` axis only has the single
-        // value "on", but check for safety).
-        if out.iter().any(|(b, _)| *b == bit) {
-            continue;
-        }
+    // Fast path: most stylesheets declare zero state blocks. The
+    // cached slice is empty for them, so we skip both the
+    // `variant_keys()` walk (which clones every axis/value String
+    // out of the BTreeMap) AND any per-state resolve work.
+    //
+    // For 10k styled rows with no `state` blocks, this drops
+    // `attach_style_resolve` from ~13μs per row to ~3μs — about a
+    // 100ms total saving on the 10k-row case.
+    let state_axes = app.sheet.state_axes();
+    if state_axes.is_empty() {
+        return Vec::new();
+    }
+    let mut out: Vec<(StateBits, Rc<StyleRules>)> = Vec::with_capacity(state_axes.len());
+    for (bit, axis) in state_axes {
         // Resolve with this single state axis added on top of the
         // application's existing variants.
         let mut state_app = app.clone();
-        state_app = state_app.with(axis, "on");
+        state_app = state_app.with(axis.clone(), "on");
         let resolved = resolve_style(&state_app);
-        out.push((bit, resolved));
+        out.push((*bit, resolved));
     }
     out
 }

@@ -124,6 +124,14 @@ pub struct AndroidBackend {
     /// Entries inserted on `create_navigator`, removed in
     /// `release_navigator`.
     pub(crate) navigator_instances: primitives::navigator::NavigatorInstances,
+    /// ScrollView outer→inner mapping. Keyed by the outer
+    /// (framework-visible) ScrollView's raw `JObject*` pointer; value
+    /// is a `GlobalRef` to its inner LinearLayout, where child
+    /// inserts actually land. Populated by `scroll_view::create`,
+    /// cleared in `on_node_unstyled` (most ScrollViews are styled;
+    /// for unstyled instances the entry persists for the backend's
+    /// lifetime — small and bounded).
+    pub(crate) scroll_view_inner: HashMap<usize, GlobalRef>,
 }
 
 impl AndroidBackend {
@@ -135,6 +143,7 @@ impl AndroidBackend {
             root,
             anim_state: HashMap::new(),
             navigator_instances: HashMap::new(),
+            scroll_view_inner: HashMap::new(),
         }
     }
 
@@ -175,7 +184,7 @@ impl Backend for AndroidBackend {
     }
 
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
-        primitives::view::insert(parent, child)
+        primitives::view::insert(self, parent, child)
     }
 
     fn update_text(&mut self, node: &Self::Node, content: &str) {
@@ -284,6 +293,15 @@ impl Backend for AndroidBackend {
         primitives::navigator::create(self, callbacks, control)
     }
 
+    fn navigator_attach_initial(
+        &mut self,
+        navigator: &Self::Node,
+        screen: Self::Node,
+        scope_id: u64,
+    ) {
+        primitives::navigator::attach_initial(self, navigator, screen, scope_id)
+    }
+
     fn release_navigator(&mut self, node: &Self::Node) {
         primitives::navigator::release(self, node)
     }
@@ -320,7 +338,7 @@ impl Backend for AndroidBackend {
     }
 
     fn clear_children(&mut self, node: &Self::Node) {
-        primitives::view::clear_children(node)
+        primitives::view::clear_children(self, node)
     }
 
     fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
@@ -333,6 +351,10 @@ impl Backend for AndroidBackend {
     }
 
     fn on_node_unstyled(&mut self, node: &Self::Node) {
+        // If this node is a ScrollView outer, drop our held inner
+        // GlobalRef so the JVM can GC the inner LinearLayout once
+        // the outer is released.
+        primitives::scroll_view::forget_inner(self, node);
         // Free per-node animator state + the leaked state-callback
         // box when the node detaches. Drops the held `GlobalRef`s,
         // which lets the JVM GC the animator/listener objects.

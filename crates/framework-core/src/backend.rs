@@ -481,15 +481,11 @@ pub trait Backend {
 
     /// Stand up a navigator. The backend builds its native container
     /// (UINavigationController / FragmentManager root / a `<div>` on
-    /// web), installs the dispatcher closure on the supplied
-    /// `NavigatorControl` so handle calls reach the backend, and
-    /// mounts the initial screen via `callbacks.mount_screen`.
+    /// web) and installs the dispatcher closure on the supplied
+    /// `NavigatorControl` so handle calls reach the backend.
     ///
     /// The backend is responsible for:
-    /// 1. Mounting `callbacks.initial_route` (with `Box::new(())` for
-    ///    param-less routes — the navigator's initial route is
-    ///    always param-less from the typed API surface) as the root
-    ///    screen.
+    /// 1. Returning the navigator's container node.
     /// 2. Calling `control.install(Box::new(...))` with its dispatcher.
     /// 3. Calling `callbacks.depth_changed(new_depth)` after every
     ///    push/pop/replace/reset commits.
@@ -497,10 +493,18 @@ pub trait Backend {
     ///    screen it removes (popped or replaced), so its `Scope`
     ///    drops and the screen's signals/effects/refs are freed.
     ///
+    /// **The backend MUST NOT call `callbacks.mount_screen` synchronously
+    /// inside this method.** `create_navigator` is invoked while the
+    /// framework holds a `borrow_mut` on the backend `RefCell`;
+    /// `mount_screen` re-enters the build walker which would attempt
+    /// another `borrow_mut` — double-borrow panic. The framework
+    /// mounts the initial screen itself *after* this method returns
+    /// and hands the result to [`Backend::navigator_attach_initial`].
+    /// Dispatcher closures saved on `control` run later (outside the
+    /// borrow window), so they're free to call `mount_screen`.
+    ///
     /// Default impl is `unimplemented!()` — most backends will want a
-    /// real implementation. The bundled `NoopNavigatorBackend` helper
-    /// (web's path until pathing lands) wires the dispatcher to a
-    /// simple inline-swap strategy.
+    /// real implementation.
     #[allow(unused_variables)]
     fn create_navigator(
         &mut self,
@@ -508,6 +512,27 @@ pub trait Backend {
         control: Rc<primitives::navigator::NavigatorControl>,
     ) -> Self::Node {
         unimplemented!("create_navigator not implemented for this backend")
+    }
+
+    /// Mount the initial screen into a freshly-created navigator.
+    /// Called by the framework immediately after `create_navigator`
+    /// returns, with the result of mounting the initial route via
+    /// the framework's per-screen scope machinery.
+    ///
+    /// Splitting this from `create_navigator` avoids a re-entrant
+    /// `borrow_mut` — see [`Backend::create_navigator`] for the full
+    /// explanation. Backends that don't implement navigators can
+    /// leave the default no-op.
+    #[allow(unused_variables)]
+    fn navigator_attach_initial(
+        &mut self,
+        navigator: &Self::Node,
+        screen: Self::Node,
+        scope_id: u64,
+    ) {
+        // default: no-op; backends that don't implement Navigator
+        // never get called here (the framework only invokes this
+        // alongside `create_navigator`).
     }
 
     /// Tear down a navigator. The framework calls this when the
@@ -528,6 +553,41 @@ pub trait Backend {
         node: &Self::Node,
     ) -> primitives::navigator::NavigatorHandle {
         primitives::navigator::NavigatorHandle::new(Rc::new(()), &NoopNavigatorOps)
+    }
+
+    /// Create a navigable container — the `Link` primitive.
+    ///
+    /// Backends are responsible for:
+    /// - Producing the platform-native interactive widget that
+    ///   wraps the eventual children. On web this should be a
+    ///   real `<a href=config.url>` so the browser's native link
+    ///   contract works (right-click "copy link," middle-click
+    ///   "open in new tab," screen-reader "link" role, etc.).
+    ///   On native platforms, an accessibility-Link-roled tappable
+    ///   container is the right shape.
+    /// - Wiring activation: when the user taps / clicks / activates
+    ///   the widget, call `config.on_activate()`. The framework
+    ///   has already baked the push/replace/reset dispatch into
+    ///   that closure — the backend just fires it.
+    /// - For web specifically: intercept the click and
+    ///   `preventDefault` to keep the SPA single-page, but only
+    ///   for plain clicks. Modified clicks (cmd/ctrl/middle,
+    ///   shift) should fall through to the browser's default
+    ///   handler so "open in new tab/window" still works.
+    ///
+    /// Default impl is `unimplemented!()` for backends that haven't
+    /// yet implemented Link. Same posture as every other optional
+    /// primitive.
+    #[allow(unused_variables)]
+    fn create_link(&mut self, config: primitives::link::LinkConfig) -> Self::Node {
+        unimplemented!("create_link not implemented for this backend")
+    }
+
+    /// Default no-op handle for `Ref<LinkHandle>`. Backends that
+    /// can synthesize activation events override this.
+    #[allow(unused_variables)]
+    fn make_link_handle(&self, node: &Self::Node) -> primitives::link::LinkHandle {
+        primitives::link::LinkHandle::new(Rc::new(()), &NoopLinkOps)
     }
 
     fn finish(&mut self, root: Self::Node);
@@ -584,6 +644,11 @@ impl primitives::graphics::GraphicsOps for NoopGraphicsOps {}
 
 struct NoopNavigatorOps;
 impl primitives::navigator::NavigatorOps for NoopNavigatorOps {}
+
+struct NoopLinkOps;
+impl primitives::link::LinkOps for NoopLinkOps {
+    fn activate(&self, _node: &dyn Any) {}
+}
 
 struct NoopButtonOps;
 impl ButtonOps for NoopButtonOps {

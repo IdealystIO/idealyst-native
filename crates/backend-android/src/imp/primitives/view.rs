@@ -24,10 +24,15 @@ pub(crate) fn create(b: &AndroidBackend) -> GlobalRef {
     })
 }
 
-pub(crate) fn insert(parent: &mut GlobalRef, child: GlobalRef) {
+/// Insert `child` into `parent`. If `parent` is a registered
+/// ScrollView outer, the addView call is redirected to its inner
+/// LinearLayout (the actual multi-child container) — see
+/// [`super::scroll_view`] for the rationale.
+pub(crate) fn insert(b: &AndroidBackend, parent: &mut GlobalRef, child: GlobalRef) {
+    let target = super::scroll_view::inner_for(b, parent).unwrap_or_else(|| parent.clone());
     with_env(|env| {
         env.call_method(
-            parent.as_obj(),
+            target.as_obj(),
             "addView",
             "(Landroid/view/View;)V",
             &[JValue::Object(&child.as_obj())],
@@ -36,9 +41,13 @@ pub(crate) fn insert(parent: &mut GlobalRef, child: GlobalRef) {
     });
 }
 
-pub(crate) fn clear_children(node: &GlobalRef) {
+/// Remove every child of `node`. If `node` is a registered
+/// ScrollView outer, only its inner LinearLayout is cleared (the
+/// outer's single child — the inner itself — must remain attached).
+pub(crate) fn clear_children(b: &AndroidBackend, node: &GlobalRef) {
+    let target = super::scroll_view::inner_for(b, node).unwrap_or_else(|| node.clone());
     with_env(|env| {
-        env.call_method(node.as_obj(), "removeAllViews", "()V", &[])
+        env.call_method(target.as_obj(), "removeAllViews", "()V", &[])
             .unwrap();
     });
 }

@@ -776,6 +776,16 @@ pub struct StyleSheet {
     variants: BTreeMap<VariantAxis, VariantAxisDef>,
     /// Compound variants are stored as a list (order-preserving).
     compounds: Vec<CompoundVariant>,
+    /// Cached list of state-overlay axes the sheet declares. Populated
+    /// in `.variant(...)` whenever an axis named `__state_*` is added.
+    /// Empty for the very common case of sheets with no `state` blocks
+    /// — `resolve_state_overlays` short-circuits on `is_empty()` and
+    /// avoids walking the variants BTreeMap per styled node.
+    ///
+    /// On the perf screen (10k rows × no state blocks) this removed
+    /// ~10μs of per-row variant-map iteration, which compounded to
+    /// ~100ms across the whole render.
+    state_axes: Vec<(crate::StateBits, VariantAxis)>,
 }
 
 impl StyleSheet {
@@ -789,6 +799,7 @@ impl StyleSheet {
             base: wrap_theme_fn::<Theme, F>(f),
             variants: BTreeMap::new(),
             compounds: Vec::new(),
+            state_axes: Vec::new(),
         }
     }
 
@@ -798,6 +809,7 @@ impl StyleSheet {
             base: Box::new(move |_any: &dyn Any| rules.clone()),
             variants: BTreeMap::new(),
             compounds: Vec::new(),
+            state_axes: Vec::new(),
         }
     }
 
@@ -815,12 +827,31 @@ impl StyleSheet {
     {
         let axis = axis.into();
         let value = value.into();
+        // Cache state-axis presence at construction so
+        // `resolve_state_overlays` can short-circuit per styled node
+        // instead of walking the variants map. Only add once per
+        // axis even if the user declares multiple values for the
+        // same state (unusual — states only have "on" — but defensive).
+        if let Some(bit) = state_axis_bit(&axis) {
+            if !self.state_axes.iter().any(|(_, a)| a == &axis) {
+                self.state_axes.push((bit, axis.clone()));
+            }
+        }
         let entry = self.variants.entry(axis).or_insert_with(|| VariantAxisDef {
             default: None,
             values: BTreeMap::new(),
         });
         entry.values.insert(value, wrap_theme_fn::<Theme, F>(f));
         self
+    }
+
+    /// The cached set of state-overlay axes declared on this
+    /// stylesheet. Returns an empty slice for the common case of
+    /// sheets with no `state` blocks. Used by
+    /// `resolve_state_overlays` to skip per-call iteration of the
+    /// full variants map.
+    pub(crate) fn state_axes(&self) -> &[(crate::StateBits, VariantAxis)] {
+        &self.state_axes
     }
 
     /// Sets the default value for an axis. When a call site omits this
@@ -936,6 +967,20 @@ impl StyleSheet {
 /// Wraps an `Fn(&Theme) -> StyleRules` in the `Fn(&dyn Any) -> StyleRules`
 /// shape we store inside `StyleSheet`. The downcast happens once per
 /// call at the closure boundary — not per property.
+/// Map a variant axis name to its `StateBits` flag, or `None` if
+/// the axis isn't a state overlay. The stylesheet macro emits state
+/// axes namespaced as `__state_<name>` so they don't collide with
+/// regular author variants.
+fn state_axis_bit(axis: &str) -> Option<crate::StateBits> {
+    match axis {
+        "__state_hovered" => Some(crate::StateBits::HOVERED),
+        "__state_pressed" => Some(crate::StateBits::PRESSED),
+        "__state_focused" => Some(crate::StateBits::FOCUSED),
+        "__state_disabled" => Some(crate::StateBits::DISABLED),
+        _ => None,
+    }
+}
+
 fn wrap_theme_fn<Theme: Any + 'static, F: Fn(&Theme) -> StyleRules + 'static>(f: F) -> RulesFn {
     Box::new(move |any: &dyn Any| {
         let theme = any
@@ -989,6 +1034,12 @@ pub struct StyleApplication {
     pub sheet: Rc<StyleSheet>,
     pub variants: VariantSet,
     pub overrides: StyleRules,
+    /// `true` iff any `override_*` builder has been called on this
+    /// application. Lets `resolve()` skip `overrides.content_key()`
+    /// (a ~600-byte string format walking every field) when there
+    /// are no overrides — the common case for stylesheet-only
+    /// styling. On 10k styled rows this saved ~80ms.
+    has_overrides: bool,
 }
 
 impl StyleApplication {
@@ -997,7 +1048,15 @@ impl StyleApplication {
             sheet,
             variants: VariantSet::new(),
             overrides: StyleRules::default(),
+            has_overrides: false,
         }
+    }
+
+    /// Lookup-friendly accessor for the overrides flag. Used by
+    /// `resolve()` to pick between the empty-overrides key (just an
+    /// empty string) and the full content-keyed path.
+    pub fn has_overrides(&self) -> bool {
+        self.has_overrides
     }
 
     pub fn with(
@@ -1011,18 +1070,21 @@ impl StyleApplication {
 
     /// Override the background color with a per-call-site value.
     pub fn override_background(mut self, c: impl Into<Color>) -> Self {
+        self.has_overrides = true;
         self.overrides.background = Some(c.into());
         self
     }
 
     /// Override the foreground color with a per-call-site value.
     pub fn override_color(mut self, c: impl Into<Color>) -> Self {
+        self.has_overrides = true;
         self.overrides.color = Some(c.into());
         self
     }
 
     /// Override font size with a per-call-site value.
     pub fn override_font_size(mut self, v: impl Into<Length>) -> Self {
+        self.has_overrides = true;
         self.overrides.font_size = Some(v.into());
         self
     }
@@ -1031,6 +1093,7 @@ impl StyleApplication {
     /// calling `override_padding_top`, `_right`, `_bottom`, `_left`
     /// with the same value.
     pub fn override_padding(mut self, v: impl Into<Length>) -> Self {
+        self.has_overrides = true;
         let v = v.into();
         self.overrides.padding_top = Some(v);
         self.overrides.padding_right = Some(v);
@@ -1040,6 +1103,7 @@ impl StyleApplication {
     }
 
     pub fn override_padding_horizontal(mut self, v: impl Into<Length>) -> Self {
+        self.has_overrides = true;
         let v = v.into();
         self.overrides.padding_left = Some(v);
         self.overrides.padding_right = Some(v);
@@ -1047,6 +1111,7 @@ impl StyleApplication {
     }
 
     pub fn override_padding_vertical(mut self, v: impl Into<Length>) -> Self {
+        self.has_overrides = true;
         let v = v.into();
         self.overrides.padding_top = Some(v);
         self.overrides.padding_bottom = Some(v);
@@ -1054,20 +1119,25 @@ impl StyleApplication {
     }
 
     pub fn override_padding_top(mut self, v: impl Into<Length>) -> Self {
+        self.has_overrides = true;
         self.overrides.padding_top = Some(v.into()); self
     }
     pub fn override_padding_right(mut self, v: impl Into<Length>) -> Self {
+        self.has_overrides = true;
         self.overrides.padding_right = Some(v.into()); self
     }
     pub fn override_padding_bottom(mut self, v: impl Into<Length>) -> Self {
+        self.has_overrides = true;
         self.overrides.padding_bottom = Some(v.into()); self
     }
     pub fn override_padding_left(mut self, v: impl Into<Length>) -> Self {
+        self.has_overrides = true;
         self.overrides.padding_left = Some(v.into()); self
     }
 
     /// Shorthand override: margin on all four sides.
     pub fn override_margin(mut self, v: impl Into<Length>) -> Self {
+        self.has_overrides = true;
         let v = v.into();
         self.overrides.margin_top = Some(v);
         self.overrides.margin_right = Some(v);
@@ -1077,6 +1147,7 @@ impl StyleApplication {
     }
 
     pub fn override_margin_horizontal(mut self, v: impl Into<Length>) -> Self {
+        self.has_overrides = true;
         let v = v.into();
         self.overrides.margin_left = Some(v);
         self.overrides.margin_right = Some(v);
@@ -1084,6 +1155,7 @@ impl StyleApplication {
     }
 
     pub fn override_margin_vertical(mut self, v: impl Into<Length>) -> Self {
+        self.has_overrides = true;
         let v = v.into();
         self.overrides.margin_top = Some(v);
         self.overrides.margin_bottom = Some(v);
@@ -1091,20 +1163,25 @@ impl StyleApplication {
     }
 
     pub fn override_margin_top(mut self, v: impl Into<Length>) -> Self {
+        self.has_overrides = true;
         self.overrides.margin_top = Some(v.into()); self
     }
     pub fn override_margin_right(mut self, v: impl Into<Length>) -> Self {
+        self.has_overrides = true;
         self.overrides.margin_right = Some(v.into()); self
     }
     pub fn override_margin_bottom(mut self, v: impl Into<Length>) -> Self {
+        self.has_overrides = true;
         self.overrides.margin_bottom = Some(v.into()); self
     }
     pub fn override_margin_left(mut self, v: impl Into<Length>) -> Self {
+        self.has_overrides = true;
         self.overrides.margin_left = Some(v.into()); self
     }
 
     /// Shorthand override: border-radius on all four corners.
     pub fn override_border_radius(mut self, v: impl Into<Length>) -> Self {
+        self.has_overrides = true;
         let v = v.into();
         self.overrides.border_top_left_radius = Some(v);
         self.overrides.border_top_right_radius = Some(v);
@@ -1127,12 +1204,26 @@ thread_local! {
     /// override content)` → `Weak<StyleRules>`. Strong refs are held by
     /// `REGISTRATIONS` for pre-generated styles, and transiently by the
     /// caller of `resolve(...)` for dynamic ones. When the last strong
-    /// ref drops, the Weak in this cache fails to upgrade and the entry
-    /// is opportunistically swept on the next insert.
+    /// Memoizes resolved `StyleRules` by `ResolutionKey`. Entries
+    /// are strong `Rc`s — the cache itself is what keeps resolved
+    /// rules alive across back-to-back applies. Without strong
+    /// refs, the resolved rules would drop the moment the caller's
+    /// transient `Rc` went out of scope (right after each
+    /// `apply_styled_states` call), and the next row's resolve
+    /// would re-compute from scratch — exactly the leak that
+    /// caused 10k-row perf-screen renders to miss the cache 10k
+    /// times.
     ///
-    /// Cleared on theme change because old entries reference the old
-    /// theme pointer and would never be reused.
-    static RESOLUTION_CACHE: RefCell<HashMap<ResolutionKey, std::rc::Weak<StyleRules>>> =
+    /// Memory cost: one `StyleRules` per distinct
+    /// `(sheet, variants, theme, overrides)` combination. For most
+    /// apps this is bounded by the number of variant combinations
+    /// the author actually uses — a few hundred entries at most.
+    ///
+    /// Cleared on theme change (entries reference the old theme
+    /// pointer and would never be reused). Per-stylesheet sweep
+    /// runs on `ensure_registered_with` when it detects dead
+    /// `Weak<StyleSheet>` registrations.
+    static RESOLUTION_CACHE: RefCell<HashMap<ResolutionKey, Rc<StyleRules>>> =
         RefCell::new(HashMap::new());
 
     /// Each currently-registered `(stylesheet, theme)` pair, with the
@@ -1237,7 +1328,10 @@ where
     let key = RegKey { sheet: sheet_ptr, theme: theme_ptr };
 
     // Sweep dead registrations (Weak no longer upgrades). They go to
-    // the pending-unregister queue.
+    // the pending-unregister queue, and any matching entries in the
+    // resolution cache get pruned so we don't pin stale `StyleRules`
+    // alive past their stylesheet's lifetime.
+    let mut dead_sheet_ptrs: Vec<*const StyleSheet> = Vec::new();
     REGISTRATIONS.with(|r| {
         let mut regs = r.borrow_mut();
         let dead_keys: Vec<RegKey> = regs
@@ -1254,6 +1348,7 @@ where
             PENDING_UNREGISTER.with(|p| {
                 let mut pending = p.borrow_mut();
                 for k in dead_keys {
+                    dead_sheet_ptrs.push(k.sheet);
                     if let Some(reg) = regs.remove(&k) {
                         pending.push(reg.rules);
                     }
@@ -1261,6 +1356,11 @@ where
             });
         }
     });
+    if !dead_sheet_ptrs.is_empty() {
+        RESOLUTION_CACHE.with(|c| {
+            c.borrow_mut().retain(|k, _| !dead_sheet_ptrs.contains(&k.sheet));
+        });
+    }
 
     // Flush pending unregistrations now that the backend is in scope.
     let pending: Vec<Vec<Rc<StyleRules>>> =
@@ -1275,8 +1375,33 @@ where
         return;
     }
 
-    // Register fresh.
-    let rules = pregenerate_for_theme(sheet, &*theme);
+    // Register fresh. We pre-populate the resolution cache with
+    // the pregen Rcs so `resolve()` for a known (sheet, variants,
+    // theme, no-overrides) combination returns the *same Rc
+    // instance* the backend just registered. That lets the backend
+    // short-circuit on `Rc::as_ptr` identity instead of paying for
+    // `content_key()` on every node — the difference between
+    // 60ms+ overhead per 10k rows and ~5ms.
+    let keyed = pregenerate_keyed(sheet, &*theme);
+    let sheet_ptr = Rc::as_ptr(sheet);
+    // Use the empty string as the "no overrides" marker — matches
+    // what `resolve()` uses when `StyleApplication::has_overrides`
+    // is false. The full `StyleRules::default().content_key()` is
+    // a ~600-byte hex dump of all-empty fields and would only
+    // create cache-key mismatches.
+    RESOLUTION_CACHE.with(|c| {
+        let mut cache = c.borrow_mut();
+        for (variants, rc) in &keyed {
+            let cache_key = ResolutionKey {
+                sheet: sheet_ptr,
+                variants: variants.clone(),
+                theme: theme_ptr,
+                overrides: String::new(),
+            };
+            cache.insert(cache_key, rc.clone());
+        }
+    });
+    let rules: Vec<Rc<StyleRules>> = keyed.into_iter().map(|(_, rc)| rc).collect();
     register(&rules);
     REGISTRATIONS.with(|r| {
         r.borrow_mut().insert(
@@ -1312,15 +1437,33 @@ pub fn active_theme() -> Rc<dyn Any> {
 /// Backends like the web backend use this to mint CSS classes ahead of
 /// time so `apply_style` is a cache hit.
 pub fn pregenerate_for_theme(sheet: &StyleSheet, theme: &dyn Any) -> Vec<Rc<StyleRules>> {
-    let mut out: Vec<Rc<StyleRules>> = Vec::new();
+    pregenerate_keyed(sheet, theme)
+        .into_iter()
+        .map(|(_, rc)| rc)
+        .collect()
+}
+
+/// Same as `pregenerate_for_theme` but also returns the
+/// `VariantSet` each rule was resolved for. Used by
+/// `ensure_registered_with` to populate the resolution cache so
+/// `resolve()` returns the *same* `Rc<StyleRules>` instances the
+/// backend registered — letting the backend's apply path
+/// short-circuit a `content_key()` recomputation by keying on
+/// `Rc::as_ptr` instead.
+pub(crate) fn pregenerate_keyed(
+    sheet: &StyleSheet,
+    theme: &dyn Any,
+) -> Vec<(VariantSet, Rc<StyleRules>)> {
+    let mut out: Vec<(VariantSet, Rc<StyleRules>)> = Vec::new();
 
     // 1. Base.
-    out.push(Rc::new(sheet.resolve(&VariantSet::new(), theme)));
+    let base_vs = VariantSet::new();
+    out.push((base_vs.clone(), Rc::new(sheet.resolve(&base_vs, theme))));
 
     // 2. Each (axis, value) — every single-axis variant selection.
     for (axis, value) in sheet.variant_keys() {
         let variants = VariantSet::new().with(axis, value);
-        out.push(Rc::new(sheet.resolve(&variants, theme)));
+        out.push((variants.clone(), Rc::new(sheet.resolve(&variants, theme))));
     }
 
     // 3. Each compound — the compound's `when` clause defines the
@@ -1330,32 +1473,45 @@ pub fn pregenerate_for_theme(sheet: &StyleSheet, theme: &dyn Any) -> Vec<Rc<Styl
         for (axis, value) in compound_keys {
             variants.0.insert(axis, value);
         }
-        out.push(Rc::new(sheet.resolve(&variants, theme)));
+        out.push((variants.clone(), Rc::new(sheet.resolve(&variants, theme))));
     }
 
     out
 }
 
 /// Resolve a style application against the current active theme.
-/// Memoized; reads the theme signal so changes re-fire the caller's effect.
+/// Memoized: same key always returns the same `Rc<StyleRules>`
+/// across calls until the cache is cleared (theme change) or
+/// pruned (stylesheet dropped).
 ///
-/// Cache entries are `Weak<StyleRules>`. Pre-generated styles have
-/// long-lived strong refs held by `REGISTRATIONS`; dynamic
-/// (override-bearing) styles have only the transient strong ref
-/// returned to the caller. When that drops, the Weak becomes dead
-/// and the slot is opportunistically swept on the next insert.
+/// Cache entries are strong `Rc`s — that's what makes back-to-back
+/// applies of the same style hit the cache. With `Weak`, the
+/// returned `Rc` is the only strong holder; it dies between
+/// successive applies, the cache always misses, and the framework
+/// re-resolves rules from scratch for every styled node.
 pub fn resolve(app: &StyleApplication) -> Rc<StyleRules> {
     let theme = active_theme();
     let theme_ptr = Rc::as_ptr(&theme) as *const ();
+    // Skip `overrides.content_key()` when no override builders
+    // were called on this application — that function walks every
+    // field on `StyleRules` and formats a ~600-byte hex string.
+    // For 10k styled rows without overrides (the common case
+    // including PerfRow) skipping it drops `resolve_style` from
+    // ~12μs to ~3μs per row, saving ~90ms total.
+    let overrides_key = if app.has_overrides {
+        app.overrides.content_key()
+    } else {
+        String::new()
+    };
     let key = ResolutionKey {
         sheet: Rc::as_ptr(&app.sheet),
         variants: app.variants.clone(),
         theme: theme_ptr,
-        overrides: app.overrides.content_key(),
+        overrides: overrides_key,
     };
 
-    // Cache hit? Try upgrading the Weak.
-    if let Some(rc) = RESOLUTION_CACHE.with(|c| c.borrow().get(&key).and_then(|w| w.upgrade())) {
+    // Cache hit? Return the shared Rc.
+    if let Some(rc) = RESOLUTION_CACHE.with(|c| c.borrow().get(&key).cloned()) {
         #[cfg(feature = "debug-stats")]
         crate::debug::record_style_cache_hit();
         return rc;
@@ -1363,17 +1519,13 @@ pub fn resolve(app: &StyleApplication) -> Rc<StyleRules> {
     #[cfg(feature = "debug-stats")]
     crate::debug::record_style_cache_miss();
 
-    // Miss (or dead Weak). Resolve fresh.
+    // Miss. Resolve fresh and stash a strong Rc.
     let base_and_variants = app.sheet.resolve(&app.variants, &*theme);
     let final_rules = base_and_variants.merge(&app.overrides);
     let resolved = Rc::new(final_rules);
 
-    // Insert as Weak. Also opportunistically sweep dead entries to
-    // keep the cache bounded over time.
     RESOLUTION_CACHE.with(|c| {
-        let mut cache = c.borrow_mut();
-        cache.retain(|_, w| w.strong_count() > 0);
-        cache.insert(key, Rc::downgrade(&resolved));
+        c.borrow_mut().insert(key, resolved.clone());
     });
 
     resolved

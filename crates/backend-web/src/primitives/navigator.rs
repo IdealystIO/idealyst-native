@@ -63,14 +63,55 @@ pub(crate) struct ScreenEntry {
 /// `WebBackend::navigator_instances`, keyed by the container's
 /// `data-navigator-id`.
 pub(crate) struct NavigatorInstance {
-    /// The `<div>` we mount screens into.
+    /// The outer `<div>` whose `data-navigator-id` attribute keys
+    /// this instance. When no layout is set, screens append
+    /// directly here; when a layout is set, screens append into
+    /// `outlet` instead.
     pub(crate) container: Node,
+    /// When a layout is registered, the framework supplies a
+    /// dedicated `<div>` (built by `LayoutPlan.outlet_ref`) and we
+    /// mount screens into that instead of the container. `None`
+    /// means no layout — screens go into `container`.
+    pub(crate) outlet: Option<Node>,
     /// Active stack — top is the visible screen. Always non-empty
     /// while the navigator exists; `pop` of the only entry is a no-op.
+    ///
+    /// In **no-layout mode** every push appends to `stack` and the
+    /// previous entry stays in the DOM (hidden via CSS class) so
+    /// scroll/form state survives navigation. In **layout mode**
+    /// the outlet holds exactly one child — `stack` has exactly
+    /// one entry at all times, and the URL history for "where to
+    /// go back to" is tracked separately in `url_history`.
     pub(crate) stack: Vec<ScreenEntry>,
+    /// Layout-mode-only: URLs of previously-visited screens, in
+    /// push order (top = most recently navigated away from). On
+    /// pop, the URL is matched back against the route table and
+    /// the resulting screen is rebuilt. In no-layout mode this
+    /// stays empty.
+    pub(crate) url_history: Vec<String>,
+    /// `build_layout` closure, retained across the navigator's
+    /// lifetime. The framework's `build_layout` populates an
+    /// internal scope slot during the microtask call; the closure
+    /// itself owns the only `Rc` clone of that slot, so dropping
+    /// the closure also drops the scope (and all layout effects
+    /// die with it). Holding it here keeps the layout's reactive
+    /// effects alive past the microtask. `None` means no layout
+    /// was registered.
+    #[allow(dead_code)]
+    pub(crate) build_layout_retainer:
+        Option<Rc<dyn Fn() -> framework_core::LayoutPlan<Node>>>,
     mount_screen: Rc<dyn Fn(&'static str, Box<dyn Any>) -> (Node, u64)>,
     release_screen: Rc<dyn Fn(u64)>,
     match_path: Rc<dyn Fn(&str) -> Option<(&'static str, Box<dyn Any>)>>,
+    /// Framework-owned reactive nav-state. Updated by
+    /// `mount_internal` on every actual mount so the layout's
+    /// reactive chrome (route-name title, can-go-back button)
+    /// reflects whatever's *currently visible* — not whatever
+    /// command was most recently dispatched. This matters most
+    /// for pop, where `NavigatorControl::dispatch` can't know
+    /// the new active route's name (it knows only that we're
+    /// popping).
+    nav_state: framework_core::NavState,
     depth_changed: Rc<dyn Fn(usize)>,
     /// `true` while the instance is applying a programmatic push /
     /// replace / reset. The popstate handler checks this so it
@@ -80,9 +121,28 @@ pub(crate) struct NavigatorInstance {
 }
 
 impl NavigatorInstance {
-    /// Show the top screen; hide everything else. We toggle the
-    /// `ui-nav-hidden` class to flip display.
+    /// The DOM node screens append to: the layout's outlet `<div>`
+    /// when a layout is registered, otherwise the navigator's own
+    /// container `<div>`.
+    fn mount_point(&self) -> &Node {
+        self.outlet.as_ref().unwrap_or(&self.container)
+    }
+
+    /// True when a user-supplied layout is in effect. In layout
+    /// mode the outlet holds exactly one child at a time
+    /// (React-Router-style); without a layout, screens stack with
+    /// hide/show classes so their DOM survives push/pop.
+    fn has_layout(&self) -> bool {
+        self.outlet.is_some()
+    }
+
+    /// Toggle hide/show on stacked screens. Only meaningful in
+    /// no-layout mode; in layout mode the outlet has a single child
+    /// and visibility is moot.
     fn refocus(&self) {
+        if self.has_layout() {
+            return;
+        }
         for (i, entry) in self.stack.iter().enumerate() {
             let Ok(elem) = entry.node.clone().dyn_into::<web_sys::Element>() else {
                 continue;
@@ -93,28 +153,80 @@ impl NavigatorInstance {
         }
     }
 
+    /// Drop the current top screen's DOM + scope. Called by
+    /// layout-mode push/pop/replace/reset to clear the outlet
+    /// before mounting the next screen. The popped entry's URL is
+    /// preserved in the caller's local — we only clean up DOM +
+    /// scope here.
+    fn detach_top(&mut self) -> Option<ScreenEntry> {
+        let top = self.stack.pop()?;
+        let _ = self.mount_point().remove_child(&top.node);
+        (self.release_screen)(top.scope_id);
+        Some(top)
+    }
+
     /// Mount + append a screen with a known URL. Internal helper —
     /// callers that should also `pushState` do so themselves.
     fn mount_internal(&mut self, name: &'static str, params: Box<dyn Any>, url: String) {
         let (node, scope_id) = (self.mount_screen)(name, params);
-        Self::stamp_screen_class(&node);
-        self.container
+        // The `ui-nav-screen` class adds `position:absolute; inset:0`
+        // so stacked screens overlap inside the `.ui-nav-root`
+        // container — the right behavior for no-layout mode, where
+        // the navigator's own div is the positioning context.
+        //
+        // In layout mode the screen is a normal child of the
+        // outlet (which lives somewhere inside the user's layout
+        // tree). Absolute-positioning to `.ui-nav-root` would
+        // teleport the screen out of the layout's bounds — so we
+        // skip the class entirely and let the screen flow as a
+        // regular block.
+        if !self.has_layout() {
+            Self::stamp_screen_class(&node);
+        }
+        self.mount_point()
             .append_child(&node)
             .expect("append_child screen failed");
+        // Update the reactive nav-state to match the newly visible
+        // screen. `NavigatorControl::dispatch` sets these on
+        // Push/Replace/Reset commands, but it can't on Pop — and
+        // popstate-driven reconciliation never goes through dispatch
+        // at all. Updating from `mount_internal` covers every
+        // path uniformly: every actual visible-screen change runs
+        // through here.
+        self.nav_state.active_route.set(name);
+        self.nav_state.active_path.set(url.clone());
         self.stack.push(ScreenEntry { node, scope_id, url });
         self.refocus();
-        (self.depth_changed)(self.stack.len());
+        (self.depth_changed)(self.logical_depth());
+    }
+
+    /// Logical stack depth, including URL-only history entries
+    /// (layout mode). The framework's `depth` signal mirrors this
+    /// so `can_go_back` works regardless of whether previous
+    /// screens have DOM nodes still attached or are pending
+    /// rebuild from URL history.
+    fn logical_depth(&self) -> usize {
+        self.stack.len() + self.url_history.len()
     }
 
     fn push(&mut self, name: &'static str, params: Box<dyn Any>, url: String) {
         push_state(&url);
         *self.suppress_popstate.borrow_mut() = true;
+        if self.has_layout() {
+            // Layout mode: outlet holds one child at a time.
+            // Remember the URLs we've visited (for pop to rebuild
+            // from) by leaving them in `url_history`. The DOM +
+            // scope of the previous screen are dropped now.
+            if let Some(prev) = self.detach_top() {
+                self.url_history.push(prev.url);
+            }
+        }
         self.mount_internal(name, params, url);
         *self.suppress_popstate.borrow_mut() = false;
     }
 
     fn pop(&mut self) {
-        if self.stack.len() <= 1 {
+        if !self.can_pop() {
             return;
         }
         // Defer to the browser back; the popstate handler does the
@@ -123,81 +235,122 @@ impl NavigatorInstance {
         history_back();
     }
 
+    /// True if there's somewhere to go back to.
+    fn can_pop(&self) -> bool {
+        if self.has_layout() {
+            !self.url_history.is_empty()
+        } else {
+            self.stack.len() > 1
+        }
+    }
+
     /// Pop the top screen without going through history.back. Used
     /// by the popstate handler when reconciling to a deeper URL.
     fn pop_in_place(&mut self) {
-        if self.stack.len() <= 1 {
+        if !self.can_pop() {
             return;
         }
-        let top = self.stack.pop().expect("stack non-empty");
-        let _ = self.container.remove_child(&top.node);
-        (self.release_screen)(top.scope_id);
-        self.refocus();
-        (self.depth_changed)(self.stack.len());
+        if self.has_layout() {
+            // Layout mode: outlet currently shows the active
+            // screen. Pop the previous URL off the history, drop
+            // the active screen, re-match the URL against the
+            // route table, and mount the result.
+            self.detach_top();
+            let prev_url = match self.url_history.pop() {
+                Some(u) => u,
+                None => return,
+            };
+            if let Some((name, params)) = (self.match_path)(&prev_url) {
+                self.mount_internal(name, params, prev_url);
+            }
+        } else {
+            self.detach_top();
+            self.refocus();
+            (self.depth_changed)(self.logical_depth());
+        }
     }
 
     fn replace(&mut self, name: &'static str, params: Box<dyn Any>, url: String) {
         replace_state(&url);
         *self.suppress_popstate.borrow_mut() = true;
-        let (node, scope_id) = (self.mount_screen)(name, params);
-        Self::stamp_screen_class(&node);
-        self.container
-            .append_child(&node)
-            .expect("append_child replacement screen failed");
-        if let Some(prev) = self.stack.pop() {
-            let _ = self.container.remove_child(&prev.node);
-            (self.release_screen)(prev.scope_id);
-        }
-        self.stack.push(ScreenEntry { node, scope_id, url });
-        self.refocus();
-        (self.depth_changed)(self.stack.len());
+        // Replace = drop the active screen, mount a new one in its
+        // place. `url_history` is unchanged because depth is
+        // unchanged.
+        self.detach_top();
+        self.mount_internal(name, params, url);
         *self.suppress_popstate.borrow_mut() = false;
     }
 
     fn reset(&mut self, name: &'static str, params: Box<dyn Any>, url: String) {
         replace_state(&url);
         *self.suppress_popstate.borrow_mut() = true;
-        let (node, scope_id) = (self.mount_screen)(name, params);
-        Self::stamp_screen_class(&node);
-        self.container
-            .append_child(&node)
-            .expect("append_child reset screen failed");
-        while let Some(prev) = self.stack.pop() {
-            let _ = self.container.remove_child(&prev.node);
-            (self.release_screen)(prev.scope_id);
-        }
-        self.stack.push(ScreenEntry { node, scope_id, url });
-        self.refocus();
-        (self.depth_changed)(self.stack.len());
+        // Drop everything and mount the new screen as the only one.
+        while self.detach_top().is_some() {}
+        self.url_history.clear();
+        self.mount_internal(name, params, url);
         *self.suppress_popstate.borrow_mut() = false;
     }
 
     /// Called from the global `popstate` handler. Reconciles the
-    /// current URL with our stack.
+    /// current URL with our internal navigation state.
     fn on_popstate(&mut self) {
         if *self.suppress_popstate.borrow() {
             return;
         }
         let current = current_pathname();
-        // Try to find the URL deeper in our stack — that means the
-        // user hit back one or more times and we need to pop down.
-        let mut target_index: Option<usize> = None;
-        for (i, entry) in self.stack.iter().enumerate() {
-            if paths_equal(&entry.url, &current) {
-                target_index = Some(i);
+
+        if self.has_layout() {
+            // Layout mode: outlet has one active screen; the URL
+            // we navigated *from* sits at the top of url_history.
+            // If `current` matches a URL in url_history, the user
+            // hit back N times — pop down to that URL. Otherwise
+            // they navigated forward to a new URL, push it.
+            let pos = self
+                .url_history
+                .iter()
+                .rposition(|u| paths_equal(u, &current));
+            if let Some(idx) = pos {
+                // Drop the active screen, drop history entries
+                // above `idx`, mount the entry at `idx`.
+                self.detach_top();
+                let prev_url = self.url_history.remove(idx);
+                // Anything between idx and the end is now skipped
+                // — discard those entries too (the user could only
+                // skip forward to them via a `go(n)`-like call,
+                // which the browser collapses into a single
+                // popstate fire).
+                self.url_history.truncate(idx);
+                if let Some((name, params)) = (self.match_path)(&prev_url) {
+                    self.mount_internal(name, params, prev_url);
+                }
+                return;
             }
+            // Forward navigation we haven't seen. Detach the
+            // current top, mount the new URL. The current URL
+            // goes into history.
+            if let Some((name, params)) = (self.match_path)(&current) {
+                if let Some(prev) = self.detach_top() {
+                    self.url_history.push(prev.url);
+                }
+                self.mount_internal(name, params, current);
+            }
+            return;
         }
+
+        // No-layout mode: walk the visible stack and pop down to
+        // the matching URL if found.
+        let target_index = self
+            .stack
+            .iter()
+            .rposition(|entry| paths_equal(&entry.url, &current));
         if let Some(idx) = target_index {
-            // Pop everything above `idx`. The browser already moved
-            // its pointer; we just unmount the visual stack to match.
             while self.stack.len() > idx + 1 {
                 self.pop_in_place();
             }
             return;
         }
-        // The URL isn't in our stack — forward navigation or side-
-        // channel URL change. Match it as a fresh push (without
-        // calling pushState, since the browser already advanced).
+        // Unknown URL — forward navigation. Mount it as a fresh
+        // push.
         if let Some((name, params)) = (self.match_path)(&current) {
             self.mount_internal(name, params, current);
         }
@@ -251,12 +404,22 @@ pub(crate) fn create(
 
     let instance = Rc::new(RefCell::new(NavigatorInstance {
         container: container_node.clone(),
+        outlet: None,
         stack: Vec::new(),
+        url_history: Vec::new(),
         mount_screen: callbacks.mount_screen.clone(),
         release_screen: callbacks.release_screen.clone(),
         match_path: callbacks.match_path.clone(),
         depth_changed: callbacks.depth_changed.clone(),
+        nav_state: callbacks.nav_state.clone(),
         suppress_popstate: RefCell::new(false),
+        // Keep the layout-build closure alive for the navigator's
+        // lifetime. The closure owns the only `Rc` reference to
+        // the layout's reactive `Scope` — if it dropped after the
+        // microtask, every reactive Effect in the layout chrome
+        // (route-name Text, can-go-back Button, …) would free
+        // immediately and stop firing on navigation.
+        build_layout_retainer: callbacks.build_layout.clone(),
     }));
 
     // Mount the initial / deep-linked stack.
@@ -267,12 +430,48 @@ pub(crate) fn create(
     // `build(&backend, ...)`. Calling synchronously here would trip
     // a "RefCell already borrowed" panic. Same defer-trick used by
     // the Virtualizer's initial refresh on the JS side.
+    //
+    // The same microtask also builds the user-supplied layout (if
+    // any) and stashes the outlet DOM node on the instance, so
+    // screens append into the outlet rather than the container.
     let initial_path = callbacks.initial_path;
     let initial_route = callbacks.initial_route;
     let match_path = callbacks.match_path.clone();
+    let build_layout = callbacks.build_layout.clone();
     {
         let instance = instance.clone();
+        let container_for_layout = container_node.clone();
         framework_core::schedule_microtask(move || {
+            // If the author registered a layout, build its subtree
+            // and stash the outlet node before mounting any screens.
+            // `build_layout` invokes the framework's build walker
+            // internally, so this microtask is also the only safe
+            // time to call it (outside the `create_navigator`
+            // borrow window).
+            if let Some(build_layout) = build_layout.as_ref() {
+                let plan = build_layout();
+                // Insert the layout root into the navigator
+                // container. The container is the framework-
+                // visible navigator node; the layout root goes
+                // inside it, and the outlet (somewhere inside the
+                // layout root) is where screens append.
+                container_for_layout
+                    .append_child(&plan.root)
+                    .expect("append_child layout root failed");
+                // Resolve the outlet ref to its native DOM node.
+                // The framework's `bind(outlet_ref)` on the
+                // freshly-created outlet `View` populated this
+                // handle during build. The handle wraps an
+                // `Rc<dyn Any>` over the backend's `Node`, which
+                // for web is `web_sys::Node`.
+                if let Some(handle) = plan.outlet_ref.get() {
+                    let any_node = handle.as_any();
+                    if let Some(node) = any_node.downcast_ref::<Node>() {
+                        instance.borrow_mut().outlet = Some(node.clone());
+                    }
+                }
+            }
+
             let mut inst = instance.borrow_mut();
             let current = current_pathname();
 
@@ -282,14 +481,27 @@ pub(crate) fn create(
                 replace_state(initial_path);
                 inst.mount_internal(initial_route, Box::new(()), initial_path.to_string());
             } else if let Some((name, params)) = match_path(&current) {
-                // Deep link to a non-root screen. Mount initial as the
-                // root (so back returns to home), then push the deep
-                // link. The browser's history gets two entries: root
-                // (via replaceState) + deep link (via pushState).
+                // Deep link to a non-root screen. We want back to
+                // return to the home route, so the browser's
+                // history gets two entries — but the rendered DOM
+                // only shows the deep-linked screen.
+                //
+                // - No-layout mode: mount the home screen as the
+                //   bottom of the visible stack (hidden), then
+                //   push the deep-link on top.
+                // - Layout mode: skip mounting home entirely;
+                //   instead push the home URL into url_history so
+                //   pop can rebuild it later from match_path.
                 replace_state(initial_path);
-                inst.mount_internal(initial_route, Box::new(()), initial_path.to_string());
-                push_state(&current);
-                inst.mount_internal(name, params, current);
+                if inst.has_layout() {
+                    inst.url_history.push(initial_path.to_string());
+                    push_state(&current);
+                    inst.mount_internal(name, params, current);
+                } else {
+                    inst.mount_internal(initial_route, Box::new(()), initial_path.to_string());
+                    push_state(&current);
+                    inst.mount_internal(name, params, current);
+                }
             } else {
                 // Unrecognized URL. Fall back to the initial route.
                 replace_state(initial_path);
@@ -333,8 +545,9 @@ pub(crate) fn release(b: &mut WebBackend, node: &Node) {
         return;
     };
     let mut inst = entry.instance.borrow_mut();
+    let mp = inst.mount_point().clone();
     while let Some(screen) = inst.stack.pop() {
-        let _ = inst.container.remove_child(&screen.node);
+        let _ = mp.remove_child(&screen.node);
         (inst.release_screen)(screen.scope_id);
     }
     drop(inst);

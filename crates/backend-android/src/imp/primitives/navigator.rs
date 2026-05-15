@@ -49,7 +49,7 @@ pub(crate) fn create(
 ) -> GlobalRef {
     // Leak the callbacks box; the pointer is what Kotlin passes back
     // through `nativeReleaseScreen` on every fragment destruction.
-    let initial_route = callbacks.initial_route;
+    // We also clone the closures that the dispatcher needs.
     let depth_changed = callbacks.depth_changed.clone();
     let mount_screen = callbacks.mount_screen.clone();
     let release_screen = callbacks.release_screen.clone();
@@ -57,46 +57,73 @@ pub(crate) fn create(
     let ptr = Box::into_raw(boxed) as jlong;
 
     let (controller_ref, container_ref) = with_env(|env| {
-        let nav_class = env
-            .find_class("io/idealyst/runtime/RustNavigator")
-            .expect("RustNavigator class — backend-android Kotlin runtime missing from APK");
-        let controller = env
-            .new_object(
-                &nav_class,
-                "(Landroid/content/Context;J)V",
-                &[
-                    JValue::Object(&b.context.as_obj()),
-                    JValue::Long(ptr),
-                ],
-            )
-            .expect("RustNavigator construction failed");
+        let nav_class = match env.find_class("io/idealyst/runtime/RustNavigator") {
+            Ok(c) => c,
+            Err(e) => {
+                // Most common cause of a hard failure here: the
+                // backend-android Kotlin runtime root was not added to
+                // the consuming app's Gradle source sets. Surface this
+                // explicitly so the user sees it in logcat.
+                if env.exception_check().unwrap_or(false) {
+                    let _ = env.exception_describe();
+                    let _ = env.exception_clear();
+                }
+                log::error!(
+                    "RustNavigator class not found — make sure the consuming app's \
+                     build.gradle.kts includes \
+                     `crates/backend-android/runtime/kotlin` in its sourceSets, \
+                     and that `androidx.fragment:fragment` is on the classpath \
+                     (appcompat 1.7 pulls it transitively). Underlying error: {:?}",
+                    e
+                );
+                panic!("RustNavigator class missing from APK");
+            }
+        };
+        let controller = match env.new_object(
+            &nav_class,
+            "(Landroid/content/Context;J)V",
+            &[
+                JValue::Object(&b.context.as_obj()),
+                JValue::Long(ptr),
+            ],
+        ) {
+            Ok(c) => c,
+            Err(e) => {
+                if env.exception_check().unwrap_or(false) {
+                    let _ = env.exception_describe();
+                    let _ = env.exception_clear();
+                }
+                log::error!("RustNavigator construction failed: {:?}", e);
+                panic!("RustNavigator construction failed");
+            }
+        };
         // Retrieve the controller's container FrameLayout — we need
         // to insert it into the parent layout.
         let container = env
             .get_field(&controller, "container", "Landroid/widget/FrameLayout;")
             .and_then(|f| f.l())
-            .expect("RustNavigator.container field");
+            .unwrap_or_else(|e| {
+                if env.exception_check().unwrap_or(false) {
+                    let _ = env.exception_describe();
+                    let _ = env.exception_clear();
+                }
+                log::error!("RustNavigator.container field lookup failed: {:?}", e);
+                panic!("RustNavigator.container field");
+            });
+        log::info!("RustNavigator created, container id resolved");
         (
             env.new_global_ref(&controller).unwrap(),
             env.new_global_ref(&container).unwrap(),
         )
     });
 
-    // Mount the initial screen. Param-less from the typed API surface;
-    // box `()` to satisfy the type-erased boundary.
-    let (initial_view, initial_scope_id) = mount_screen(initial_route, Box::new(()));
-    with_env(|env| {
-        env.call_method(
-            controller_ref.as_obj(),
-            "mountRoot",
-            "(Landroid/view/View;J)V",
-            &[
-                JValue::Object(&initial_view.as_obj()),
-                JValue::Long(initial_scope_id as jlong),
-            ],
-        )
-        .expect("RustNavigator.mountRoot failed");
-    });
+    // NOTE: we DO NOT call `mount_screen` here. The framework holds
+    // `backend.borrow_mut()` for the entire create_navigator call,
+    // and `mount_screen` re-enters the build walker which also
+    // borrow_muts the backend — double borrow → panic.
+    // `Backend::navigator_attach_initial` is the hook the framework
+    // calls *after* create_navigator returns, with the already-built
+    // initial screen node.
 
     // Wire the dispatcher onto the control plane. Every command path
     // calls `mount_screen` / the Kotlin controller / `depth_changed`
@@ -106,7 +133,10 @@ pub(crate) fn create(
         let controller = controller_ref.clone();
         let mount_for_dispatch = mount_screen.clone();
         let depth_for_dispatch = depth_changed.clone();
-        let _release_for_dispatch = release_screen.clone(); // kept for parity; Kotlin path handles release via onDestroyView
+        // Kept for parity; the Kotlin path handles release via
+        // RustHostFragment.onDestroyView → nativeReleaseScreen, but
+        // we still want the Rc kept alive on this side.
+        let _release_for_dispatch = release_screen.clone();
         control.install(Box::new(move |cmd| match cmd {
             NavCommand::Push { name, params, url: _ } => {
                 let (view, scope_id) = mount_for_dispatch(name, params);
@@ -190,6 +220,42 @@ pub(crate) fn create(
     );
 
     container_ref
+}
+
+/// Attach the framework-built initial screen to a freshly-created
+/// navigator. Called by the framework after `create_navigator`
+/// returns, outside any active backend borrow — so this is the
+/// first point we can safely do the Kotlin-side `mountRoot` call.
+pub(crate) fn attach_initial(
+    _b: &mut AndroidBackend,
+    navigator: &GlobalRef,
+    screen: GlobalRef,
+    scope_id: u64,
+) {
+    let Some(entry) = _b.navigator_instances.get(&AndroidBackend::node_key_of(navigator)) else {
+        log::error!("attach_initial: no navigator entry for node");
+        return;
+    };
+    let controller = entry.controller.clone();
+    log::info!("Navigator attach_initial: calling Kotlin mountRoot, scope_id={}", scope_id);
+    with_env(|env| {
+        if let Err(e) = env.call_method(
+            controller.as_obj(),
+            "mountRoot",
+            "(Landroid/view/View;J)V",
+            &[
+                JValue::Object(&screen.as_obj()),
+                JValue::Long(scope_id as jlong),
+            ],
+        ) {
+            if env.exception_check().unwrap_or(false) {
+                let _ = env.exception_describe();
+                let _ = env.exception_clear();
+            }
+            log::error!("RustNavigator.mountRoot JNI call failed: {:?}", e);
+        }
+    });
+    log::info!("Navigator attach_initial: mountRoot JNI call returned");
 }
 
 pub(crate) fn release(b: &mut AndroidBackend, node: &GlobalRef) {
