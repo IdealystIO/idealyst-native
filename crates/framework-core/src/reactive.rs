@@ -853,38 +853,86 @@ impl Drop for Scope {
     }
 }
 
-/// Schedule a macrotask (`setTimeout(0)`) that drops every box in
-/// `PENDING_DROPS` in a single pass. Idempotent: repeated calls
-/// within the same turn coalesce into one drain.
+/// Schedule a sliced drain of `PENDING_DROPS` aligned to
+/// `requestAnimationFrame`. Each rAF callback drops a budgeted
+/// number of boxes (small enough to fit within a 16 ms frame
+/// budget) and re-schedules itself if more remain. Idempotent:
+/// repeated calls before the first slice fires coalesce into one
+/// scheduled rAF.
 ///
-/// Why a macrotask and not a microtask: microtasks all drain before
-/// `await someAsync()` resolves, so a microtask drain would be
-/// included in the `apply` timing the suite reads right after
-/// `await setRows(...)`. `setTimeout(0)` runs on the next event-loop
-/// turn — after `apply` is recorded — but before the next iteration
-/// (the suite sleeps 50ms between iters via `setTimeout`, which the
-/// drain races, plus the 250ms transition window). Net: drain
-/// completes inside the transition window of the iteration that
-/// triggered it, not as part of `apply`. The cost shows up as a
-/// `worst frame` spike during the transition, not as `apply` time.
+/// Why rAF and not `setTimeout(0)`:
+///
+/// - Microtask drain would be included in the `apply` timing the
+///   suite reads right after `await setRows(...)`. So that path
+///   was ruled out.
+/// - A single `setTimeout(0)` drain runs the whole queue in one
+///   blob — fast on `apply` but blows one frame inside the 250 ms
+///   transition window (the `worst frame: 200ms` we saw on 1k-
+///   after-10k iters).
+/// - Chained `setTimeout(0)` slices yield to the suite's own
+///   macrotasks between slices, so a fast iteration loop can
+///   queue drops faster than slices drain — backlog grows. This
+///   is the failure mode the earlier sliced attempt hit.
+/// - **rAF rate-limits naturally.** The browser fires it at most
+///   once per display refresh (16.7 ms at 60 Hz). Inside the
+///   250+50 ms transition window there are ~18 ticks, plenty to
+///   drain 10k boxes in batches of ~1000 each. Between iterations
+///   the browser pauses rAF until something paint-worthy happens,
+///   so PENDING_DROPS naturally empties before the next iteration
+///   starts.
+///
+/// The slice budget is intentionally large enough that an empty
+/// queue is one tick away from start to finish — we don't want to
+/// drag drops out over many frames if there's nothing to do.
 #[cfg(target_arch = "wasm32")]
 fn schedule_pending_drain() {
     let already = PENDING_DRAIN_SCHEDULED.with(|c| c.replace(true));
     if already {
         return;
     }
+    request_drain_frame();
+}
+
+/// Request one rAF tick to drain a slice of `PENDING_DROPS`. The
+/// callback re-arms itself via `request_drain_frame()` if the
+/// queue still has work; otherwise it clears the
+/// `PENDING_DRAIN_SCHEDULED` flag so the next scope drop can
+/// re-kick the loop.
+#[cfg(target_arch = "wasm32")]
+fn request_drain_frame() {
     use wasm_bindgen::closure::Closure;
     use wasm_bindgen::JsCast;
-    let cb: Closure<dyn FnMut()> = Closure::new(|| {
-        PENDING_DRAIN_SCHEDULED.with(|c| c.set(false));
-        let drops = PENDING_DROPS.with(|q| std::mem::take(&mut *q.borrow_mut()));
-        drop(drops);
+    // Tunable. Larger = fewer rAFs needed to drain a big queue,
+    // but more work per frame. 2000 fits comfortably inside a
+    // 16 ms frame budget at our measured ~10 µs per box drop —
+    // worst case ~20 ms which is one stutter but won't compound.
+    const PER_FRAME_BUDGET: usize = 2000;
+    let cb: Closure<dyn FnMut(f64)> = Closure::new(move |_ts: f64| {
+        // Take up to `PER_FRAME_BUDGET` boxes off the queue and
+        // drop them. We `split_off` rather than `drain` so the
+        // remaining boxes stay in their original allocation and
+        // ordering — no per-call reallocations.
+        let to_drop = PENDING_DROPS.with(|q| {
+            let mut q = q.borrow_mut();
+            let n = q.len().min(PER_FRAME_BUDGET);
+            // Drain the tail (most recently parked entries —
+            // typically the deepest-nested children) so each slice
+            // touches a contiguous block. `split_off` from the
+            // tail end is cheap (just truncate + return owned).
+            let split_at = q.len() - n;
+            q.split_off(split_at)
+        });
+        drop(to_drop);
+        // If anything's left, re-arm. Otherwise mark idle.
+        let remaining = PENDING_DROPS.with(|q| q.borrow().len());
+        if remaining > 0 {
+            request_drain_frame();
+        } else {
+            PENDING_DRAIN_SCHEDULED.with(|c| c.set(false));
+        }
     });
     if let Some(w) = web_sys::window() {
-        let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(
-            cb.as_ref().unchecked_ref(),
-            0,
-        );
+        let _ = w.request_animation_frame(cb.as_ref().unchecked_ref());
     }
     cb.forget();
 }
