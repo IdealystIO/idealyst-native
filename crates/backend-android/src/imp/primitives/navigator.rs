@@ -139,7 +139,9 @@ pub(crate) fn create(
         let _release_for_dispatch = release_screen.clone();
         control.install(Box::new(move |cmd| match cmd {
             NavCommand::Push { name, params, url: _ } => {
-                let (view, scope_id) = mount_for_dispatch(name, params);
+                let result = mount_for_dispatch(name, params);
+                let view = result.node;
+                let scope_id = result.scope_id;
                 let new_depth = with_env(|env| {
                     let _ = env.call_method(
                         controller.as_obj(),
@@ -166,7 +168,9 @@ pub(crate) fn create(
                 depth_for_dispatch(new_depth as usize);
             }
             NavCommand::Replace { name, params, url: _ } => {
-                let (view, scope_id) = mount_for_dispatch(name, params);
+                let result = mount_for_dispatch(name, params);
+                let view = result.node;
+                let scope_id = result.scope_id;
                 let new_depth = with_env(|env| {
                     let _ = env.call_method(
                         controller.as_obj(),
@@ -184,7 +188,9 @@ pub(crate) fn create(
                 depth_for_dispatch(new_depth as usize);
             }
             NavCommand::Reset { name, params, url: _ } => {
-                let (view, scope_id) = mount_for_dispatch(name, params);
+                let result = mount_for_dispatch(name, params);
+                let view = result.node;
+                let scope_id = result.scope_id;
                 let new_depth = with_env(|env| {
                     let _ = env.call_method(
                         controller.as_obj(),

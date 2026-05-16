@@ -26,7 +26,7 @@ impl Backend for AndroidBackend {
     fn create_text(&mut self, _content: &str) -> Self::Node {
         unreachable!()
     }
-    fn create_button(&mut self, _label: &str, _on_click: Rc<dyn Fn()>) -> Self::Node {
+    fn create_button(&mut self, _label: &str, _on_click: Rc<dyn Fn()>, _leading_icon: Option<&framework_core::IconData>, _trailing_icon: Option<&framework_core::IconData>) -> Self::Node {
         unreachable!()
     }
     fn insert(&mut self, _parent: &mut Self::Node, _child: Self::Node) {

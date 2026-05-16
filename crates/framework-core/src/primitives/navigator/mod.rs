@@ -37,9 +37,10 @@ pub use drawer::{
     DrawerSide, DrawerSidebarProps, DrawerType, SidebarBuilder,
 };
 pub use shared::{
-    ambient_navigator, match_pattern, AmbientNavGuard, DefaultLinkKind, LayoutBuilder, LayoutPlan,
-    LayoutProps, NavCommand, NavState, NavigatorCallbacks, NavigatorControl, NavigatorHandle,
-    NavigatorOps, ParamsFromSegments, Route, RouteEntry, RouteParams, ScreenBuilder,
+    ambient_navigator, match_pattern, AmbientNavGuard, DefaultLinkKind, HeaderButton,
+    LayoutBuilder, LayoutPlan, LayoutProps, MountResult, NavCommand, NavState, NavigatorCallbacks,
+    NavigatorControl, NavigatorHandle, NavigatorOps, ParamsFromSegments, Route, RouteEntry,
+    RouteParams, ScreenBuilder, ScreenOptions, ScreenOptionsProvider,
 };
 pub use stack::Navigator;
 pub use tabs::{

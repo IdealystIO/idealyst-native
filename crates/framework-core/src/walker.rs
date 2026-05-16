@@ -83,8 +83,33 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
     #[cfg(feature = "debug-stats")]
     debug::record_build_enter(_debug_kind);
 
+    // Robot: extract metadata and pre-register so children see us as parent.
+    #[cfg(feature = "robot")]
+    let robot_id = {
+        if let Some(meta) = robot_extract_meta(&node) {
+            use crate::robot::{self, RegistryEntry};
+            let parent = robot::current_parent();
+            let id = robot::register(RegistryEntry {
+                kind: meta.kind,
+                test_id: meta.test_id,
+                label: meta.label,
+                actions: meta.actions,
+                parent,
+                children: Vec::new(),
+            });
+            // Link child → parent.
+            if let Some(pid) = parent {
+                robot::add_child(pid, id);
+            }
+            robot::push_parent(id);
+            Some(id)
+        } else {
+            None
+        }
+    };
+
     let result = match node {
-        Primitive::Text { source, style, ref_fill } => {
+        Primitive::Text { source, style, ref_fill, .. } => {
             let n = build_text(backend, source);
             if let Some(s) = style {
                 attach_style(backend, &n, s);
@@ -95,7 +120,7 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
             }
             n
         }
-        Primitive::View { children, style, ref_fill } => {
+        Primitive::View { children, style, ref_fill, .. } => {
             let n = build_view(backend, children);
             if let Some(s) = style {
                 attach_style(backend, &n, s);
@@ -106,7 +131,7 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
             }
             n
         }
-        Primitive::Pressable { children, on_click, style, ref_fill, disabled } => {
+        Primitive::Pressable { children, on_click, style, ref_fill, disabled, .. } => {
             // Backend creates a bare tappable container with the
             // click handler bound. Children are inserted just like
             // View — the visual is entirely subtree-driven, no UA
@@ -130,7 +155,7 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
             }
             n
         }
-        Primitive::Button { label, on_click, style, ref_fill, disabled } => {
+        Primitive::Button { label, on_click, leading_icon, trailing_icon, style, ref_fill, disabled, .. } => {
             // Pull the initial label from the source and create the
             // native widget with it. For reactive labels we install
             // an Effect below that calls `update_button_label` on
@@ -141,7 +166,12 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
                 TextSource::Reactive(f) => (f(), Some(f)),
             };
             let n = time_backend_create(pkind!(Button), || {
-                backend.borrow_mut().create_button(&initial_label, on_click)
+                backend.borrow_mut().create_button(
+                    &initial_label,
+                    on_click,
+                    leading_icon.as_ref(),
+                    trailing_icon.as_ref(),
+                )
             });
             // attach_style returns the state setter so we can drive
             // the DISABLED bit reactively from `disabled` below. If
@@ -171,7 +201,7 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
             }
             n
         }
-        Primitive::Image { src, alt, style, ref_fill } => {
+        Primitive::Image { src, alt, style, ref_fill, .. } => {
             // Initial mount: call the source closure once for the
             // initial URL, then wrap it in an effect that updates the
             // image whenever signals it reads change.
@@ -196,7 +226,55 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
             }
             n
         }
-        Primitive::TextInput { value, on_change, placeholder, style, ref_fill } => {
+        Primitive::Icon { data, color, stroke, draw_in, style, ref_fill } => {
+            let initial_color = color.as_ref().map(|f| f());
+            let n = time_backend_create(pkind!(Icon), || {
+                backend.borrow_mut().create_icon(&data, initial_color.as_ref())
+            });
+            if let Some(s) = style {
+                attach_style(backend, &n, s);
+            }
+            // Reactive color effect.
+            if let Some(f) = color {
+                let backend = backend.clone();
+                let node = n.clone();
+                let _e = Effect::new(move || {
+                    let c = f();
+                    backend.borrow_mut().update_icon_color(&node, &c);
+                });
+            }
+            // Reactive stroke progress effect.
+            if let Some(f) = stroke {
+                let initial = f();
+                backend.borrow_mut().update_icon_stroke(&n, initial);
+                let backend = backend.clone();
+                let node = n.clone();
+                let _e = Effect::new(move || {
+                    let progress = f();
+                    backend.borrow_mut().update_icon_stroke(&node, progress);
+                });
+            }
+            // Mount draw-in animation: snap to `from`, then animate
+            // to `to` on the next microtask.
+            if let Some(anim) = draw_in {
+                backend.borrow_mut().update_icon_stroke(&n, anim.from);
+                let backend = backend.clone();
+                let node = n.clone();
+                let autoreverses = anim.autoreverses;
+                schedule_microtask(move || {
+                    backend.borrow_mut().animate_icon_stroke(
+                        &node, anim.from, anim.to, anim.duration_ms, anim.easing,
+                        anim.infinite, autoreverses,
+                    );
+                });
+            }
+            if let Some(RefFill::Icon(fill)) = ref_fill {
+                let handle = backend.borrow().make_icon_handle(&n);
+                fill(handle);
+            }
+            n
+        }
+        Primitive::TextInput { value, on_change, placeholder, style, ref_fill, .. } => {
             let initial = value.get();
             let n = time_backend_create(pkind!(TextInput), || {
                 backend.borrow_mut().create_text_input(
@@ -226,7 +304,7 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
             }
             n
         }
-        Primitive::Toggle { value, on_change, style, ref_fill } => {
+        Primitive::Toggle { value, on_change, style, ref_fill, .. } => {
             let initial = value.get();
             let n = time_backend_create(pkind!(Toggle), || backend.borrow_mut().create_toggle(initial, on_change));
             if let Some(s) = style {
@@ -258,7 +336,7 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
             }
             n
         }
-        Primitive::Slider { value, on_change, min, max, step, style, ref_fill } => {
+        Primitive::Slider { value, on_change, min, max, step, style, ref_fill, .. } => {
             let initial = value.get();
             // Wrap the user's on_change to snap to `step` first, so all
             // backends produce identical values regardless of native
@@ -423,12 +501,31 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
                 initial_path,
                 screens,
                 layout,
+                default_options,
                 style,
+                header_style,
+                title_style,
+                button_style,
                 ref_fill,
             } = *nav;
-            let n = build_navigator(backend, initial, initial_path, screens, layout, ref_fill);
+            let n = build_navigator(backend, initial, initial_path, screens, layout, default_options, ref_fill);
             if let Some(s) = style {
                 attach_style(backend, &n, s);
+            }
+            if let Some(s) = header_style {
+                attach_navigator_slot_style(backend, &n, s, |b, node, rules| {
+                    b.borrow_mut().apply_navigator_header_style(node, rules);
+                });
+            }
+            if let Some(s) = title_style {
+                attach_navigator_slot_style(backend, &n, s, |b, node, rules| {
+                    b.borrow_mut().apply_navigator_title_style(node, rules);
+                });
+            }
+            if let Some(s) = button_style {
+                attach_navigator_slot_style(backend, &n, s, |b, node, rules| {
+                    b.borrow_mut().apply_navigator_button_style(node, rules);
+                });
             }
             // Cleanup: when the surrounding scope drops, this empty
             // Effect drops, dropping the `NavigatorHandleCleanup`,
@@ -454,7 +551,14 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
                 layout,
                 placement,
                 mount_policy,
+                default_options,
                 style,
+                header_style,
+                title_style,
+                button_style,
+                tab_bar_style,
+                tab_icon_style,
+                tab_label_style,
                 ref_fill,
             } = *nav;
             let n = build_tab_navigator(
@@ -466,10 +570,41 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
                 layout,
                 placement,
                 mount_policy,
+                default_options,
                 ref_fill,
             );
             if let Some(s) = style {
                 attach_style(backend, &n, s);
+            }
+            if let Some(s) = header_style {
+                attach_navigator_slot_style(backend, &n, s, |b, node, rules| {
+                    b.borrow_mut().apply_navigator_header_style(node, rules);
+                });
+            }
+            if let Some(s) = title_style {
+                attach_navigator_slot_style(backend, &n, s, |b, node, rules| {
+                    b.borrow_mut().apply_navigator_title_style(node, rules);
+                });
+            }
+            if let Some(s) = button_style {
+                attach_navigator_slot_style(backend, &n, s, |b, node, rules| {
+                    b.borrow_mut().apply_navigator_button_style(node, rules);
+                });
+            }
+            if let Some(s) = tab_bar_style {
+                attach_navigator_slot_style(backend, &n, s, |b, node, rules| {
+                    b.borrow_mut().apply_tab_bar_style(node, rules);
+                });
+            }
+            if let Some(s) = tab_icon_style {
+                attach_navigator_slot_style(backend, &n, s, |b, node, rules| {
+                    b.borrow_mut().apply_tab_icon_style(node, rules);
+                });
+            }
+            if let Some(s) = tab_label_style {
+                attach_navigator_slot_style(backend, &n, s, |b, node, rules| {
+                    b.borrow_mut().apply_tab_label_style(node, rules);
+                });
             }
             {
                 let cleanup = TabNavigatorHandleCleanup {
@@ -496,7 +631,13 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
                 pinned_above,
                 swipe_to_open,
                 mount_policy,
+                default_options,
                 style,
+                header_style,
+                title_style,
+                button_style,
+                sidebar_style,
+                scrim_style,
                 ref_fill,
             } = *nav;
             let n = build_drawer_navigator(
@@ -513,10 +654,36 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
                 pinned_above,
                 swipe_to_open,
                 mount_policy,
+                default_options,
                 ref_fill,
             );
             if let Some(s) = style {
                 attach_style(backend, &n, s);
+            }
+            if let Some(s) = header_style {
+                attach_navigator_slot_style(backend, &n, s, |b, node, rules| {
+                    b.borrow_mut().apply_navigator_header_style(node, rules);
+                });
+            }
+            if let Some(s) = title_style {
+                attach_navigator_slot_style(backend, &n, s, |b, node, rules| {
+                    b.borrow_mut().apply_navigator_title_style(node, rules);
+                });
+            }
+            if let Some(s) = button_style {
+                attach_navigator_slot_style(backend, &n, s, |b, node, rules| {
+                    b.borrow_mut().apply_navigator_button_style(node, rules);
+                });
+            }
+            if let Some(s) = sidebar_style {
+                attach_navigator_slot_style(backend, &n, s, |b, node, rules| {
+                    b.borrow_mut().apply_drawer_sidebar_style(node, rules);
+                });
+            }
+            if let Some(s) = scrim_style {
+                attach_navigator_slot_style(backend, &n, s, |b, node, rules| {
+                    b.borrow_mut().apply_drawer_scrim_style(node, rules);
+                });
             }
             {
                 let cleanup = DrawerNavigatorHandleCleanup {
@@ -689,6 +856,12 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
     #[cfg(feature = "debug-stats")]
     debug::record_build_exit(_debug_kind);
 
+    // Robot: pop parent stack now that children are built.
+    #[cfg(feature = "robot")]
+    if robot_id.is_some() {
+        crate::robot::pop_parent();
+    }
+
     result
 }
 
@@ -728,6 +901,7 @@ fn debug_kind_of(node: &Primitive) -> debug::PrimitiveKind {
         Primitive::Button { .. } => PrimitiveKind::Button,
         Primitive::Pressable { .. } => PrimitiveKind::Pressable,
         Primitive::Image { .. } => PrimitiveKind::Image,
+        Primitive::Icon { .. } => PrimitiveKind::Icon,
         Primitive::TextInput { .. } => PrimitiveKind::TextInput,
         Primitive::Toggle { .. } => PrimitiveKind::Toggle,
         Primitive::ScrollView { .. } => PrimitiveKind::ScrollView,
@@ -750,6 +924,160 @@ fn debug_kind_of(node: &Primitive) -> debug::PrimitiveKind {
         // subtree, so this arm is dead in practice. Tag as View
         // to keep the debug timing breakdown defined.
         Primitive::Repeat { .. } => PrimitiveKind::View,
+    }
+}
+
+// =============================================================================
+// Robot: metadata extraction from Primitive before destructuring.
+// =============================================================================
+
+#[cfg(feature = "robot")]
+struct RobotMeta {
+    kind: crate::robot::ElementKind,
+    test_id: Option<&'static str>,
+    label: Option<String>,
+    actions: crate::robot::ElementActions,
+}
+
+/// Extract robot-relevant metadata from a primitive *before* the move
+/// match destructures it. Only interactive primitives (buttons,
+/// inputs, etc.) produce a `Some`; structural primitives that aren't
+/// useful to query (When, Switch, Repeat) produce `None`.
+#[cfg(feature = "robot")]
+fn robot_extract_meta(node: &Primitive) -> Option<RobotMeta> {
+    use crate::robot::{ElementActions, ElementKind};
+    use crate::sources::TextSource;
+
+    match node {
+        Primitive::View { test_id, .. } => Some(RobotMeta {
+            kind: ElementKind::View,
+            test_id: *test_id,
+            label: None,
+            actions: ElementActions::empty(),
+        }),
+        Primitive::Text { source, test_id, .. } => {
+            let label = match source {
+                TextSource::Static(s) => Some(s.clone()),
+                TextSource::Reactive(f) => Some(f()),
+            };
+            Some(RobotMeta {
+                kind: ElementKind::Text,
+                test_id: *test_id,
+                label,
+                actions: ElementActions::empty(),
+            })
+        }
+        Primitive::Button { label, on_click, test_id, .. } => {
+            let label_text = match label {
+                TextSource::Static(s) => Some(s.clone()),
+                TextSource::Reactive(f) => Some(f()),
+            };
+            let click = on_click.clone();
+            Some(RobotMeta {
+                kind: ElementKind::Button,
+                test_id: *test_id,
+                label: label_text,
+                actions: ElementActions {
+                    click: Some(click),
+                    ..ElementActions::empty()
+                },
+            })
+        }
+        Primitive::Pressable { on_click, test_id, .. } => {
+            let click = on_click.clone();
+            Some(RobotMeta {
+                kind: ElementKind::Pressable,
+                test_id: *test_id,
+                label: None,
+                actions: ElementActions {
+                    click: Some(click),
+                    ..ElementActions::empty()
+                },
+            })
+        }
+        Primitive::Image { test_id, .. } => Some(RobotMeta {
+            kind: ElementKind::Image,
+            test_id: *test_id,
+            label: None,
+            actions: ElementActions::empty(),
+        }),
+        Primitive::TextInput { on_change, test_id, .. } => {
+            let set_text = on_change.clone();
+            Some(RobotMeta {
+                kind: ElementKind::TextInput,
+                test_id: *test_id,
+                label: None,
+                actions: ElementActions {
+                    set_text: Some(set_text),
+                    ..ElementActions::empty()
+                },
+            })
+        }
+        Primitive::Toggle { on_change, test_id, .. } => {
+            let set_toggle = on_change.clone();
+            Some(RobotMeta {
+                kind: ElementKind::Toggle,
+                test_id: *test_id,
+                label: None,
+                actions: ElementActions {
+                    set_toggle: Some(set_toggle),
+                    ..ElementActions::empty()
+                },
+            })
+        }
+        Primitive::Slider { on_change, test_id, .. } => {
+            let set_slider = on_change.clone();
+            Some(RobotMeta {
+                kind: ElementKind::Slider,
+                test_id: *test_id,
+                label: None,
+                actions: ElementActions {
+                    set_slider: Some(set_slider),
+                    ..ElementActions::empty()
+                },
+            })
+        }
+        Primitive::Link { route, url, make_params, kind, target, .. } => {
+            // Build the same on_activate the backend wires onto the
+            // native tap target so the robot's `click` triggers the
+            // navigator just like a real tap would.
+            let click = primitives::link::make_on_activate(
+                target.clone(),
+                route,
+                url.clone(),
+                *kind,
+                make_params.clone(),
+            );
+            Some(RobotMeta {
+                kind: ElementKind::Link,
+                test_id: None,
+                label: None,
+                actions: ElementActions {
+                    click: Some(click),
+                    ..ElementActions::empty()
+                },
+            })
+        }
+        Primitive::Navigator(_) => Some(RobotMeta {
+            kind: ElementKind::Navigator,
+            test_id: None,
+            label: None,
+            actions: ElementActions::empty(),
+        }),
+        Primitive::TabNavigator(_) => Some(RobotMeta {
+            kind: ElementKind::TabNavigator,
+            test_id: None,
+            label: None,
+            actions: ElementActions::empty(),
+        }),
+        Primitive::DrawerNavigator(_) => Some(RobotMeta {
+            kind: ElementKind::DrawerNavigator,
+            test_id: None,
+            label: None,
+            actions: ElementActions::empty(),
+        }),
+        // Structural/reactive primitives don't get registered.
+        _ => None,
     }
 }
 
@@ -1104,10 +1432,12 @@ fn build_navigator<B: Backend + 'static>(
     initial_path: &'static str,
     screens: HashMap<&'static str, primitives::navigator::RouteEntry>,
     layout: Option<primitives::navigator::LayoutBuilder>,
+    _default_options: Option<primitives::navigator::ScreenOptions>,
     ref_fill: Option<RefFill>,
 ) -> B::Node {
     use primitives::navigator::{
-        match_pattern, LayoutPlan, LayoutProps, NavState, NavigatorCallbacks, NavigatorControl,
+        match_pattern, LayoutPlan, LayoutProps, MountResult, NavState, NavigatorCallbacks,
+        NavigatorControl, ScreenOptions,
     };
 
     // Per-screen scope registry. The framework owns the scopes — the
@@ -1131,17 +1461,21 @@ fn build_navigator<B: Backend + 'static>(
     // inside a fresh per-screen Scope, return (node, scope_id).
     // Panics on unregistered route — declaring routes is the
     // navigator's contract.
-    let mount_screen: Rc<dyn Fn(&'static str, Box<dyn Any>) -> (B::Node, u64)> = {
+    let mount_screen: Rc<dyn Fn(&'static str, Box<dyn Any>) -> MountResult<B::Node>> = {
         let scopes = scopes.clone();
         let next_id = next_scope_id.clone();
         let screens = screens.clone();
         let backend = backend.clone();
         let control_for_mount = control.clone();
         Rc::new(move |name, params| {
-            let builder = screens
+            let entry = screens
                 .get(name)
-                .map(|e| e.build.clone())
                 .unwrap_or_else(|| panic!("Navigator: route '{}' is not registered", name));
+            let builder = entry.build.clone();
+            let options = match entry.options.as_ref() {
+                Some(provider) => provider(&*params),
+                None => ScreenOptions::default(),
+            };
             let mut scope = Box::new(reactive::Scope::new());
             // Wrap BOTH `builder(...)` and the subsequent `build(...)`
             // inside `with_scope`. Any Effects that the build walker
@@ -1164,14 +1498,14 @@ fn build_navigator<B: Backend + 'static>(
                 let primitive = builder(params);
                 build(&backend, primitive)
             });
-            let id = {
+            let scope_id = {
                 let mut n = next_id.borrow_mut();
                 let v = *n;
                 *n = n.checked_add(1).unwrap_or(0);
                 v
             };
-            scopes.borrow_mut().insert(id, scope);
-            (node, id)
+            scopes.borrow_mut().insert(scope_id, scope);
+            MountResult { node, scope_id, options }
         })
     };
 
@@ -1349,10 +1683,10 @@ fn build_navigator<B: Backend + 'static>(
     // handed to the backend via `navigator_attach_initial`, which
     // is a thin "stick this screen into the container" hook with no
     // borrow contention (it doesn't call back into build).
-    let (initial_node, initial_scope_id) = mount_screen_for_initial(initial, Box::new(()));
+    let initial_result = mount_screen_for_initial(initial, Box::new(()));
     backend
         .borrow_mut()
-        .navigator_attach_initial(&node, initial_node, initial_scope_id);
+        .navigator_attach_initial(&node, initial_result.node, initial_result.scope_id, initial_result.options);
 
     if let Some(RefFill::Navigator(fill)) = ref_fill {
         // The default handle the trait builds is a no-op (`control: None`).
@@ -1364,6 +1698,15 @@ fn build_navigator<B: Backend + 'static>(
         let handle = backend.borrow().make_navigator_handle(&node);
         fill(handle);
     }
+
+    // See `build_drawer_navigator` for the rationale — backends that
+    // don't store `build_layout` in their callbacks would otherwise
+    // drop the layout scope (and every reactive style closure in the
+    // layout) as soon as this function returns.
+    let _layout_scope_keepalive = layout_scope.clone();
+    let _keepalive_effect = Effect::new(move || {
+        let _ = &_layout_scope_keepalive;
+    });
 
     node
 }
@@ -1382,11 +1725,13 @@ fn build_tab_navigator<B: Backend + 'static>(
     layout: Option<primitives::navigator::LayoutBuilder>,
     placement: primitives::navigator::TabPlacement,
     mount_policy: primitives::navigator::MountPolicy,
+    _default_options: Option<primitives::navigator::ScreenOptions>,
     ref_fill: Option<RefFill>,
 ) -> B::Node {
     use primitives::navigator::{
-        match_pattern, DefaultLinkKind, LayoutPlan, LayoutProps, NavState, NavigatorCallbacks,
-        NavigatorControl, TabNavigatorCallbacks, TabRegistration,
+        match_pattern, DefaultLinkKind, LayoutPlan, LayoutProps, MountResult, NavState,
+        NavigatorCallbacks, NavigatorControl, ScreenOptions, TabNavigatorCallbacks,
+        TabRegistration,
     };
 
     // Per-screen scope registry — same discipline as stack.
@@ -1397,17 +1742,21 @@ fn build_tab_navigator<B: Backend + 'static>(
     let control = Rc::new(NavigatorControl::new());
     control.set_default_link_kind(DefaultLinkKind::Select);
 
-    let mount_screen: Rc<dyn Fn(&'static str, Box<dyn Any>) -> (B::Node, u64)> = {
+    let mount_screen: Rc<dyn Fn(&'static str, Box<dyn Any>) -> MountResult<B::Node>> = {
         let scopes = scopes.clone();
         let next_id = next_scope_id.clone();
         let screens = screens.clone();
         let backend = backend.clone();
         let control_for_mount = control.clone();
         Rc::new(move |name, params| {
-            let builder = screens
+            let entry = screens
                 .get(name)
-                .map(|e| e.build.clone())
                 .unwrap_or_else(|| panic!("TabNavigator: route '{}' is not registered", name));
+            let builder = entry.build.clone();
+            let options = match entry.options.as_ref() {
+                Some(provider) => provider(&*params),
+                None => ScreenOptions::default(),
+            };
             let mut scope = Box::new(reactive::Scope::new());
             let _ambient_guard =
                 primitives::navigator::AmbientNavGuard::push(control_for_mount.clone());
@@ -1415,14 +1764,14 @@ fn build_tab_navigator<B: Backend + 'static>(
                 let primitive = builder(params);
                 build(&backend, primitive)
             });
-            let id = {
+            let scope_id = {
                 let mut n = next_id.borrow_mut();
                 let v = *n;
                 *n = n.checked_add(1).unwrap_or(0);
                 v
             };
-            scopes.borrow_mut().insert(id, scope);
-            (node, id)
+            scopes.borrow_mut().insert(scope_id, scope);
+            MountResult { node, scope_id, options }
         })
     };
 
@@ -1561,15 +1910,21 @@ fn build_tab_navigator<B: Backend + 'static>(
     // defer initial mount to a microtask (web) leave the default
     // no-op; backends that mount synchronously (Android) implement
     // `tab_navigator_attach_initial`.
-    let (initial_node, initial_scope_id) = mount_screen_for_initial(initial, Box::new(()));
+    let initial_result = mount_screen_for_initial(initial, Box::new(()));
     backend
         .borrow_mut()
-        .tab_navigator_attach_initial(&node, initial_node, initial_scope_id);
+        .tab_navigator_attach_initial(&node, initial_result.node, initial_result.scope_id, initial_result.options);
 
     if let Some(RefFill::TabNavigator(fill)) = ref_fill {
         let handle = backend.borrow().make_tab_navigator_handle(&node);
         fill(handle);
     }
+
+    // See `build_drawer_navigator` for the rationale.
+    let _layout_scope_keepalive = layout_scope.clone();
+    let _keepalive_effect = Effect::new(move || {
+        let _ = &_layout_scope_keepalive;
+    });
 
     node
 }
@@ -1593,12 +1948,13 @@ fn build_drawer_navigator<B: Backend + 'static>(
     pinned_above: Option<u32>,
     swipe_to_open: bool,
     mount_policy: primitives::navigator::MountPolicy,
+    _default_options: Option<primitives::navigator::ScreenOptions>,
     ref_fill: Option<RefFill>,
 ) -> B::Node {
     use primitives::navigator::{
         match_pattern, DefaultLinkKind, DrawerItemRegistration, DrawerNavigatorCallbacks,
-        DrawerSidebarProps, LayoutPlan, LayoutProps, NavState, NavigatorCallbacks,
-        NavigatorControl,
+        DrawerSidebarProps, LayoutPlan, LayoutProps, MountResult, NavState, NavigatorCallbacks,
+        NavigatorControl, ScreenOptions,
     };
 
     let scopes: Rc<RefCell<HashMap<u64, Box<reactive::Scope>>>> =
@@ -1608,17 +1964,21 @@ fn build_drawer_navigator<B: Backend + 'static>(
     let control = Rc::new(NavigatorControl::new());
     control.set_default_link_kind(DefaultLinkKind::Select);
 
-    let mount_screen: Rc<dyn Fn(&'static str, Box<dyn Any>) -> (B::Node, u64)> = {
+    let mount_screen: Rc<dyn Fn(&'static str, Box<dyn Any>) -> MountResult<B::Node>> = {
         let scopes = scopes.clone();
         let next_id = next_scope_id.clone();
         let screens = screens.clone();
         let backend = backend.clone();
         let control_for_mount = control.clone();
         Rc::new(move |name, params| {
-            let builder = screens
+            let entry = screens
                 .get(name)
-                .map(|e| e.build.clone())
                 .unwrap_or_else(|| panic!("DrawerNavigator: route '{}' is not registered", name));
+            let builder = entry.build.clone();
+            let options = match entry.options.as_ref() {
+                Some(provider) => provider(&*params),
+                None => ScreenOptions::default(),
+            };
             let mut scope = Box::new(reactive::Scope::new());
             let _ambient_guard =
                 primitives::navigator::AmbientNavGuard::push(control_for_mount.clone());
@@ -1626,14 +1986,14 @@ fn build_drawer_navigator<B: Backend + 'static>(
                 let primitive = builder(params);
                 build(&backend, primitive)
             });
-            let id = {
+            let scope_id = {
                 let mut n = next_id.borrow_mut();
                 let v = *n;
                 *n = n.checked_add(1).unwrap_or(0);
                 v
             };
-            scopes.borrow_mut().insert(id, scope);
-            (node, id)
+            scopes.borrow_mut().insert(scope_id, scope);
+            MountResult { node, scope_id, options }
         })
     };
 
@@ -1880,17 +2240,81 @@ fn build_drawer_navigator<B: Backend + 'static>(
     // navigator. Backends that mount via microtask (web) leave the
     // default no-op; backends that mount synchronously (Android)
     // implement `drawer_navigator_attach_initial`.
-    let (initial_node, initial_scope_id) = mount_screen_for_initial(initial, Box::new(()));
+    let initial_result = mount_screen_for_initial(initial, Box::new(()));
     backend
         .borrow_mut()
-        .drawer_navigator_attach_initial(&node, initial_node, initial_scope_id);
+        .drawer_navigator_attach_initial(&node, initial_result.node, initial_result.scope_id, initial_result.options);
 
     if let Some(RefFill::DrawerNavigator(fill)) = ref_fill {
         let handle = backend.borrow().make_drawer_navigator_handle(&node);
         fill(handle);
     }
 
+    // Keep the sidebar's and layout's reactive scopes alive for as
+    // long as the navigator stays mounted. The build closures stash
+    // a `Box<Scope>` into these Rcs; without this keepalive Effect
+    // the only Rc references are the local vars (dropped on return)
+    // and the closures' captures (dropped when `callbacks` and
+    // `build_sidebar_after_create` go out of scope), freeing the
+    // scope and unsubscribing every reactive style closure in the
+    // sidebar/layout (e.g. sidebar item highlights stop updating on
+    // Select). Capturing the Rcs in an Effect that registers with
+    // the surrounding render scope ties their lifetime to the
+    // navigator's enclosing scope.
+    let _sidebar_scope_keepalive = sidebar_scope.clone();
+    let _layout_scope_keepalive = layout_scope.clone();
+    let _keepalive_effect = Effect::new(move || {
+        let _ = &_sidebar_scope_keepalive;
+        let _ = &_layout_scope_keepalive;
+    });
+
     node
+}
+
+/// Attach a style to a navigator sub-component (header, title, etc.).
+/// Same cohort-based theme reactivity as `attach_style_static`, but
+/// calls a custom apply function instead of `backend.apply_style`.
+fn attach_navigator_slot_style<B, F>(
+    backend: &Rc<RefCell<B>>,
+    node: &B::Node,
+    style: StyleSource,
+    apply_fn: F,
+) where
+    B: Backend + 'static,
+    F: Fn(&Rc<RefCell<B>>, &B::Node, &Rc<StyleRules>) + Clone + 'static,
+{
+    match style {
+        StyleSource::Static(app) => {
+            let resolved = resolve_style(&app);
+            apply_fn(backend, node, &resolved);
+
+            install_theme_cohort_driver();
+            let backend_c = backend.clone();
+            let node_c = node.clone();
+            let app_rc = Rc::new(app);
+            let apply_fn_c = apply_fn.clone();
+            let cohort_id = theme_cohort_register(Box::new(move || {
+                let resolved = resolve_style(&app_rc);
+                apply_fn_c(&backend_c, &node_c, &resolved);
+            }));
+            struct SlotGuard(CohortId);
+            impl Drop for SlotGuard {
+                fn drop(&mut self) {
+                    theme_cohort_unregister(self.0);
+                }
+            }
+            reactive::adopt_guard_into_active_scope(SlotGuard(cohort_id));
+        }
+        StyleSource::Reactive(f) => {
+            let backend_c = backend.clone();
+            let node_c = node.clone();
+            let _e = Effect::new(move || {
+                let app = f();
+                let resolved = resolve_style(&app);
+                apply_fn(&backend_c, &node_c, &resolved);
+            });
+        }
+    }
 }
 
 /// Attaches a style to an already-constructed node by spawning an

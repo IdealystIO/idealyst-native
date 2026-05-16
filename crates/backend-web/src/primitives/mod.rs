@@ -11,6 +11,7 @@
 pub(crate) mod activity_indicator;
 pub(crate) mod button;
 pub(crate) mod graphics;
+pub(crate) mod icon;
 pub(crate) mod image;
 pub(crate) mod link;
 pub(crate) mod navigator;

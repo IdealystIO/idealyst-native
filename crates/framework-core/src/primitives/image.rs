@@ -72,6 +72,8 @@ pub fn image<S: IntoImageSource>(src: S) -> Bound<ImageHandle> {
         alt: None,
         style: None,
         ref_fill: None,
+        #[cfg(feature = "robot")]
+        test_id: None,
     })
 }
 

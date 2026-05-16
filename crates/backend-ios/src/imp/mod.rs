@@ -1,8 +1,31 @@
 pub(crate) mod callbacks;
 pub(crate) mod graphics;
+pub(crate) mod handles;
+pub(crate) mod icon;
 pub(crate) mod navigator;
+pub(crate) mod overlay;
 pub(crate) mod style;
 pub(crate) mod tab_drawer;
+
+/// Platform log via NSLog. Always visible in Xcode console.
+#[allow(dead_code)]
+pub(crate) fn ios_log(msg: &str) {
+    let ns = objc2_foundation::NSString::from_str(msg);
+    // NSLog(@"%@", msg) — the %@ format avoids treating msg as a format string.
+    extern "C" {
+        fn NSLog(fmt: *const objc2_foundation::NSString, ...);
+    }
+    let fmt = objc2_foundation::NSString::from_str("%@");
+    unsafe { NSLog(&*fmt, &*ns) };
+}
+
+/// Platform log with format, for timing etc.
+#[allow(dead_code)]
+macro_rules! ios_log {
+    ($($arg:tt)*) => {
+        $crate::imp::ios_log(&format!($($arg)*))
+    };
+}
 
 use framework_core::primitives::activity_indicator::ActivityIndicatorSize;
 use framework_core::primitives::graphics::{OnLost, OnReady, OnResize};
@@ -44,6 +67,15 @@ pub struct IosBackend {
     tab_drawer_instances: HashMap<usize, TabDrawerEntry>,
     callback_targets: Vec<Retained<NSObject>>,
     scroll_view_inner: HashMap<usize, Retained<UIView>>,
+    /// Cache of rasterized icon UIImages keyed by (icon identity, size).
+    /// Icon identity = pointer address of the `paths` static slice.
+    /// Size = point size as u16 (half-point granularity is enough).
+    /// Only used by `render_to_uiimage` — the standalone `create_icon`
+    /// uses CAShapeLayer (vector, no raster needed).
+    icon_image_cache: HashMap<(usize, u16), Retained<NSObject>>,
+    /// Active overlays keyed by content view pointer. Stores the
+    /// presented UIViewController so release_overlay can dismiss it.
+    overlay_instances: overlay::OverlayInstances,
 }
 
 // =========================================================================
@@ -94,6 +126,8 @@ impl IosBackend {
             tab_drawer_instances: HashMap::new(),
             callback_targets: Vec::new(),
             scroll_view_inner: HashMap::new(),
+            icon_image_cache: HashMap::new(),
+            overlay_instances: HashMap::new(),
         }
     }
 
@@ -137,11 +171,130 @@ pub(crate) fn pin_to_edges(parent: &UIView, child: &UIView) {
 }
 
 /// Mount a framework screen node into a UIViewController.
+/// Pins to the safe area so content sits below the nav bar and
+/// above the home indicator. The navigator's header_style slot
+/// handles the nav bar background color separately.
 pub(crate) fn mount_screen_in_vc(mtm: MainThreadMarker, screen: &UIView) -> Retained<UIViewController> {
     let vc = unsafe { UIViewController::new(mtm) };
     let vc_view = vc.view().expect("vc.view");
-    pin_to_edges(&vc_view, screen);
+
+    let _: () = unsafe {
+        objc2::msg_send![screen, setTranslatesAutoresizingMaskIntoConstraints: false]
+    };
+    unsafe { vc_view.addSubview(screen) };
+
+    // Pin to safe area (below nav bar, above home indicator)
+    let guide: Retained<NSObject> = unsafe { msg_send_id![&vc_view, safeAreaLayoutGuide] };
+    let g_top: Retained<NSObject> = unsafe { msg_send_id![&guide, topAnchor] };
+    let g_bot: Retained<NSObject> = unsafe { msg_send_id![&guide, bottomAnchor] };
+    let g_lead: Retained<NSObject> = unsafe { msg_send_id![&guide, leadingAnchor] };
+    let g_trail: Retained<NSObject> = unsafe { msg_send_id![&guide, trailingAnchor] };
+    let s_top: Retained<NSObject> = unsafe { msg_send_id![screen, topAnchor] };
+    let s_bot: Retained<NSObject> = unsafe { msg_send_id![screen, bottomAnchor] };
+    let s_lead: Retained<NSObject> = unsafe { msg_send_id![screen, leadingAnchor] };
+    let s_trail: Retained<NSObject> = unsafe { msg_send_id![screen, trailingAnchor] };
+
+    // Pin all four edges so the screen ALWAYS fills the safe area.
+    // Without this on the bottom edge, a screen would size to its
+    // intrinsic content height — fine for short screens but breaks
+    // any child with zero intrinsic (UIScrollView, Graphics surface):
+    // the parent stack collapses around the intrinsic-sized siblings
+    // and the zero-intrinsic child gets nothing.
+    //
+    // Children that want to pack-to-top inside a tall screen can use
+    // a Stack with their own layout (the framework's per-stylesheet
+    // alignment rules handle this).
+    for (a, b) in [(&s_top, &g_top), (&s_bot, &g_bot), (&s_lead, &g_lead), (&s_trail, &g_trail)] {
+        let c: Retained<NSObject> = unsafe { msg_send_id![a, constraintEqualToAnchor: &**b] };
+        let _: () = unsafe { msg_send![&c, setActive: true] };
+    }
+
     vc
+}
+
+/// Configure a UIViewController's navigationItem and the parent
+/// UINavigationBar from `ScreenOptions`. Called after mounting a
+/// screen in a stack or drawer navigator.
+/// Configure a UIViewController's navigationItem and the parent
+/// UINavigationBar from `ScreenOptions`. Returns retained callback
+/// targets that must be kept alive (caller stores or forgets them).
+pub(crate) fn apply_header_options(
+    vc: &UIViewController,
+    options: &framework_core::ScreenOptions,
+    mtm: MainThreadMarker,
+) -> Vec<Retained<NSObject>> {
+    let mut retained = Vec::new();
+
+    // Hide/show header
+    if let Some(false) = options.header_shown {
+        let nav_ctrl: *const NSObject = unsafe { msg_send![vc, navigationController] };
+        if !nav_ctrl.is_null() {
+            let _: () = unsafe { msg_send![nav_ctrl, setNavigationBarHidden: true, animated: false] };
+        }
+        return vec![];
+    }
+
+    // Title
+    if let Some(ref title) = options.title {
+        let ns = NSString::from_str(title);
+        let _: () = unsafe { msg_send![vc, setTitle: &*ns] };
+    }
+
+    // Left bar button
+    if let Some(ref btn) = options.header_left {
+        let image: Retained<NSObject> = unsafe {
+            let name = NSString::from_str(&btn.icon);
+            msg_send_id![objc2::class!(UIImage), systemImageNamed: &*name]
+        };
+        let on_press = btn.on_press.clone();
+        let target = CallbackTarget::new(mtm, on_press);
+        let sel = objc2::sel!(invoke);
+        let bar_item: Retained<NSObject> = unsafe {
+            msg_send_id![objc2::class!(UIBarButtonItem), new]
+        };
+        let _: () = unsafe { msg_send![&bar_item, setImage: &*image] };
+        let _: () = unsafe { msg_send![&bar_item, setTarget: &*target] };
+        let _: () = unsafe { msg_send![&bar_item, setAction: sel] };
+        if let Some(ref tint) = btn.tint {
+            let c = color_to_uicolor(tint);
+            let _: () = unsafe { msg_send![&bar_item, setTintColor: &*c] };
+        }
+        let nav_item: Retained<NSObject> = unsafe { msg_send_id![vc, navigationItem] };
+        let _: () = unsafe { msg_send![&nav_item, setLeftBarButtonItem: &*bar_item] };
+        let obj: Retained<NSObject> = unsafe {
+            Retained::retain(Retained::as_ptr(&target) as *mut NSObject).unwrap()
+        };
+        retained.push(obj);
+    }
+
+    // Right bar button
+    if let Some(ref btn) = options.header_right {
+        let image: Retained<NSObject> = unsafe {
+            let name = NSString::from_str(&btn.icon);
+            msg_send_id![objc2::class!(UIImage), systemImageNamed: &*name]
+        };
+        let on_press = btn.on_press.clone();
+        let target = CallbackTarget::new(mtm, on_press);
+        let sel = objc2::sel!(invoke);
+        let bar_item: Retained<NSObject> = unsafe {
+            msg_send_id![objc2::class!(UIBarButtonItem), new]
+        };
+        let _: () = unsafe { msg_send![&bar_item, setImage: &*image] };
+        let _: () = unsafe { msg_send![&bar_item, setTarget: &*target] };
+        let _: () = unsafe { msg_send![&bar_item, setAction: sel] };
+        if let Some(ref tint) = btn.tint {
+            let c = color_to_uicolor(tint);
+            let _: () = unsafe { msg_send![&bar_item, setTintColor: &*c] };
+        }
+        let nav_item: Retained<NSObject> = unsafe { msg_send_id![vc, navigationItem] };
+        let _: () = unsafe { msg_send![&nav_item, setRightBarButtonItem: &*bar_item] };
+        let obj: Retained<NSObject> = unsafe {
+            Retained::retain(Retained::as_ptr(&target) as *mut NSObject).unwrap()
+        };
+        retained.push(obj);
+    }
+
+    retained
 }
 
 // =========================================================================
@@ -150,6 +303,19 @@ pub(crate) fn mount_screen_in_vc(mtm: MainThreadMarker, screen: &UIView) -> Reta
 
 impl Backend for IosBackend {
     type Node = IosNode;
+
+    fn color_scheme(&self) -> framework_core::ColorScheme {
+        // UITraitCollection.currentTraitCollection.userInterfaceStyle
+        // 0 = Unspecified, 1 = Light, 2 = Dark (UIUserInterfaceStyle).
+        let tc: Retained<NSObject> =
+            unsafe { msg_send_id![objc2::class!(UITraitCollection), currentTraitCollection] };
+        let style: isize = unsafe { msg_send![&tc, userInterfaceStyle] };
+        match style {
+            1 => framework_core::ColorScheme::Light,
+            2 => framework_core::ColorScheme::Dark,
+            _ => framework_core::ColorScheme::Auto,
+        }
+    }
 
     fn create_view(&mut self) -> Self::Node {
         let stack = unsafe { UIStackView::new(self.mtm) };
@@ -167,12 +333,26 @@ impl Backend for IosBackend {
         IosNode::Label(label)
     }
 
-    fn create_button(&mut self, label: &str, on_click: Rc<dyn Fn()>) -> Self::Node {
+    fn create_button(
+        &mut self,
+        label: &str,
+        on_click: Rc<dyn Fn()>,
+        leading_icon: Option<&framework_core::IconData>,
+        _trailing_icon: Option<&framework_core::IconData>,
+    ) -> Self::Node {
         let button = unsafe {
             UIButton::buttonWithType(UIButtonType::System, self.mtm)
         };
         let ns_label = NSString::from_str(label);
         let _: () = unsafe { msg_send![&button, setTitle: &*ns_label, forState: 0u64] };
+
+        // Leading icon → UIButton.setImage (renders before title).
+        if let Some(icon_data) = leading_icon {
+            let image = icon::render_to_uiimage(
+                icon_data, 20.0, &mut self.icon_image_cache,
+            );
+            let _: () = unsafe { msg_send![&button, setImage: &*image, forState: 0u64] };
+        }
 
         let target = CallbackTarget::new(self.mtm, on_click);
         let sel = objc2::sel!(invoke);
@@ -256,8 +436,27 @@ impl Backend for IosBackend {
         }
     }
 
-    fn create_scroll_view(&mut self, _horizontal: bool) -> Self::Node {
+    fn create_scroll_view(&mut self, horizontal: bool) -> Self::Node {
         let scroll = unsafe { UIScrollView::new(self.mtm) };
+
+        // UIScrollView has zero intrinsic content size, so a parent
+        // UIStackView would collapse it to 0pt height. Lower its
+        // content-hugging priority on both axes so the stack
+        // distributes leftover space to the scroll view. Priority 1
+        // (vs. default 250 on other children) makes it the greedy one.
+        // UILayoutConstraintAxisHorizontal = 0, Vertical = 1.
+        let _: () = unsafe { msg_send![&scroll, setContentHuggingPriority: 1f32, forAxis: 0isize] };
+        let _: () = unsafe { msg_send![&scroll, setContentHuggingPriority: 1f32, forAxis: 1isize] };
+
+        // Always allow scroll gestures even when content fits — UIKit
+        // otherwise disables them when contentSize ≤ bounds, which
+        // makes the scroll view feel "dead" when content happens to
+        // be short. Matches typical iOS app behavior (Settings, Mail).
+        if horizontal {
+            let _: () = unsafe { msg_send![&scroll, setAlwaysBounceHorizontal: true] };
+        } else {
+            let _: () = unsafe { msg_send![&scroll, setAlwaysBounceVertical: true] };
+        }
 
         let inner = unsafe { UIStackView::new(self.mtm) };
         let _: () = unsafe { msg_send![&inner, setAxis: 1isize] };
@@ -353,6 +552,39 @@ impl Backend for IosBackend {
         IosNode::ActivityIndicator(indicator)
     }
 
+    fn create_icon(
+        &mut self,
+        data: &framework_core::primitives::icon::IconData,
+        color: Option<&Color>,
+    ) -> Self::Node {
+        icon::create_icon(self.mtm, data, color)
+    }
+
+    fn update_icon_color(&mut self, node: &Self::Node, color: &Color) {
+        icon::update_icon_color(node, color)
+    }
+
+    fn update_icon_stroke(&mut self, node: &Self::Node, progress: f32) {
+        icon::update_icon_stroke(node, progress)
+    }
+
+    fn animate_icon_stroke(
+        &mut self,
+        node: &Self::Node,
+        from: f32,
+        to: f32,
+        duration_ms: u32,
+        easing: framework_core::Easing,
+        infinite: bool,
+        autoreverses: bool,
+    ) {
+        icon::animate_icon_stroke(node, from, to, duration_ms, easing, infinite, autoreverses)
+    }
+
+    fn make_icon_handle(&self, node: &Self::Node) -> framework_core::IconHandle {
+        icon::make_handle(node)
+    }
+
     fn create_graphics(
         &mut self,
         on_ready: OnReady,
@@ -363,29 +595,65 @@ impl Backend for IosBackend {
     }
 
     fn create_link(&mut self, config: LinkConfig) -> Self::Node {
-        let button = unsafe {
-            UIButton::buttonWithType(UIButtonType::System, self.mtm)
-        };
-        let ns_route = NSString::from_str(config.route);
-        let _: () = unsafe { msg_send![&button, setAccessibilityLabel: &*ns_route] };
+        // Use a UIStackView (vertical) as a tappable container so
+        // child primitives (Text, etc.) render inside it. A UIButton
+        // would swallow children into its internal title label layout.
+        let stack = unsafe { UIStackView::new(self.mtm) };
+        let _: () = unsafe { msg_send![&stack, setAxis: 1isize] };
+        let _: () = unsafe { msg_send![&stack, setAlignment: 0isize] };
+        let _: () = unsafe { msg_send![&stack, setDistribution: 0isize] };
+        let _: () = unsafe { msg_send![&stack, setUserInteractionEnabled: true] };
 
+        // Accessibility
+        let ns_route = NSString::from_str(config.route);
+        let _: () = unsafe { msg_send![&stack, setAccessibilityLabel: &*ns_route] };
+
+        // Add a tap gesture recognizer for the link activation
         let target = CallbackTarget::new(self.mtm, config.on_activate);
-        let sel = objc2::sel!(invoke);
-        let _: () = unsafe {
-            msg_send![&button, addTarget: &*target, action: sel, forControlEvents: 64u64]
+        let tap_sel = objc2::sel!(invoke);
+        let tap_gr = unsafe {
+            objc2_ui_kit::UITapGestureRecognizer::initWithTarget_action(
+                self.mtm.alloc(),
+                Some(&target),
+                Some(tap_sel),
+            )
         };
+        let _: () = unsafe { msg_send![&stack, addGestureRecognizer: &*tap_gr] };
         self.retain_target(&target);
 
-        IosNode::Button(button)
+        IosNode::View(Retained::into_super(stack))
     }
 
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
         let parent_view = parent.as_view();
         let parent_key = parent_view as *const UIView as usize;
         let child_view = child.as_view();
+        let child_key = child_view as *const UIView as usize;
+
+        // If the CHILD is an overlay container, skip the regular
+        // insert — the overlay already mounted itself to the host
+        // window. Letting the parent's `addSubview`/`addArrangedSubview`
+        // run would briefly put the overlay container inside the
+        // parent's layout (e.g. a UIStackView), reflowing the parent's
+        // other children before the deferred `mount_in_window` moves
+        // the container out. Visible symptom: the surrounding View's
+        // siblings (a Select's trigger button, for example) jump
+        // position when the overlay opens.
+        if self.overlay_instances.contains_key(&child_key) {
+            return;
+        }
 
         if let Some(inner) = self.scroll_view_inner.get(&parent_key) {
             let _: () = unsafe { msg_send![inner, addArrangedSubview: child_view] };
+        } else if let Some(entry) = self.overlay_instances.get(&parent_key) {
+            // Overlay parent: position children absolutely per the
+            // overlay's anchor. This gives content positional
+            // freedom (centered, edge-pinned, element-anchored) and
+            // avoids UIStackView's auto-canvas constraints that
+            // fight overlay layout.
+            unsafe { parent_view.addSubview(child_view) };
+            let anchor = entry.anchor.clone();
+            overlay::apply_anchor_to_child(parent_view, child_view, &anchor);
         } else {
             let is_stack: bool = unsafe {
                 msg_send![parent_view, isKindOfClass: objc2::class!(UIStackView)]
@@ -499,8 +767,42 @@ impl Backend for IosBackend {
         navigator: &Self::Node,
         screen: Self::Node,
         scope_id: u64,
+        options: framework_core::ScreenOptions,
     ) {
-        navigator::navigator_attach_initial(self.mtm, &self.navigator_instances, navigator, screen, scope_id)
+        navigator::navigator_attach_initial(self.mtm, &self.navigator_instances, navigator, screen, scope_id, options)
+    }
+
+    fn apply_navigator_header_style(
+        &mut self,
+        navigator: &Self::Node,
+        style: &Rc<framework_core::StyleRules>,
+    ) {
+        let key = navigator.view_key();
+        if let Some(entry) = self.navigator_instances.get(&key) {
+            navigator::apply_nav_header_style(&entry.controller, navigator.as_view(), style);
+        }
+    }
+
+    fn apply_navigator_title_style(
+        &mut self,
+        navigator: &Self::Node,
+        style: &Rc<framework_core::StyleRules>,
+    ) {
+        let key = navigator.view_key();
+        if let Some(entry) = self.navigator_instances.get(&key) {
+            navigator::apply_nav_title_style(&entry.controller, style);
+        }
+    }
+
+    fn apply_navigator_button_style(
+        &mut self,
+        navigator: &Self::Node,
+        style: &Rc<framework_core::StyleRules>,
+    ) {
+        let key = navigator.view_key();
+        if let Some(entry) = self.navigator_instances.get(&key) {
+            navigator::apply_nav_button_style(&entry.controller, style);
+        }
     }
 
     fn release_navigator(&mut self, node: &Self::Node) {
@@ -509,6 +811,55 @@ impl Backend for IosBackend {
 
     fn make_navigator_handle(&self, node: &Self::Node) -> NavigatorHandle {
         navigator::make_navigator_handle(&self.navigator_instances, node)
+    }
+
+    // =================================================================
+    // Overlay
+    // =================================================================
+
+    fn create_overlay(
+        &mut self,
+        anchor: framework_core::primitives::overlay::OverlayAnchor,
+        backdrop: framework_core::primitives::overlay::BackdropMode,
+        on_dismiss: Option<Rc<dyn Fn()>>,
+        _trap_focus: bool,
+    ) -> Self::Node {
+        let (content_view, entry) = overlay::create_overlay(
+            self.mtm,
+            self.host_root.as_ref(),
+            anchor,
+            backdrop,
+            on_dismiss,
+        );
+        let key = &*content_view as *const UIView as usize;
+        self.overlay_instances.insert(key, entry);
+        IosNode::View(content_view)
+    }
+
+    fn release_overlay(&mut self, node: &Self::Node) {
+        let key = IosBackend::node_key(node);
+        if let Some(entry) = self.overlay_instances.remove(&key) {
+            overlay::release_overlay(entry);
+        }
+    }
+
+    // =================================================================
+    // Handle factories — override defaults so handles carry the
+    // real iOS node, enabling `AnchorableHandle::rect()` to read
+    // viewport coords. Required for element-anchored overlays
+    // (Popover, Select).
+    // =================================================================
+
+    fn make_button_handle(&self, node: &Self::Node) -> framework_core::ButtonHandle {
+        framework_core::ButtonHandle::new(Rc::new(node.clone()), &handles::IOS_BUTTON_OPS)
+    }
+
+    fn make_pressable_handle(&self, node: &Self::Node) -> framework_core::PressableHandle {
+        framework_core::PressableHandle::new(Rc::new(node.clone()), &handles::IOS_PRESSABLE_OPS)
+    }
+
+    fn make_view_handle(&self, node: &Self::Node) -> framework_core::ViewHandle {
+        framework_core::ViewHandle::new(Rc::new(node.clone()), &handles::IOS_VIEW_OPS)
     }
 
     // =================================================================
@@ -528,8 +879,9 @@ impl Backend for IosBackend {
         navigator: &Self::Node,
         screen: Self::Node,
         scope_id: u64,
+        options: framework_core::ScreenOptions,
     ) {
-        tab_drawer::tab_navigator_attach_initial(&self.tab_drawer_instances, navigator, screen, scope_id)
+        tab_drawer::tab_navigator_attach_initial(&self.tab_drawer_instances, navigator, screen, scope_id, options)
     }
 
     fn release_tab_navigator(&mut self, node: &Self::Node) {
@@ -557,10 +909,11 @@ impl Backend for IosBackend {
         navigator: &Self::Node,
         screen: Self::Node,
         scope_id: u64,
+        options: framework_core::ScreenOptions,
     ) {
         tab_drawer::drawer_navigator_attach_initial(
             self.mtm, &self.tab_drawer_instances, &mut self.callback_targets,
-            navigator, screen, scope_id,
+            navigator, screen, scope_id, options,
         )
     }
 
@@ -581,6 +934,22 @@ impl Backend for IosBackend {
 
     fn make_drawer_navigator_handle(&self, node: &Self::Node) -> DrawerHandle {
         tab_drawer::make_drawer_navigator_handle(&self.tab_drawer_instances, node)
+    }
+
+    fn apply_drawer_sidebar_style(
+        &mut self,
+        navigator: &Self::Node,
+        style: &Rc<framework_core::StyleRules>,
+    ) {
+        let key = navigator.view_key();
+        if let Some(entry) = self.tab_drawer_instances.get(&key) {
+            if let Some(ref sidebar) = *entry.sidebar.borrow() {
+                if let Some(ref bg) = style.background {
+                    let c = style::color_to_uicolor(bg.value());
+                    sidebar.setBackgroundColor(Some(&c));
+                }
+            }
+        }
     }
 
     fn finish(&mut self, root: Self::Node) {

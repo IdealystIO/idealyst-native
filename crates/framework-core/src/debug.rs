@@ -44,6 +44,7 @@ pub enum PrimitiveKind {
     Text,
     Button,
     Pressable,
+    Icon,
     Image,
     TextInput,
     Toggle,

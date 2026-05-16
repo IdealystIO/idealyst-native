@@ -126,6 +126,8 @@ pub fn select(props: SelectProps) -> Primitive {
         source: label_source,
         style: None,
         ref_fill: None,
+        #[cfg(feature = "robot")]
+        test_id: None,
     };
     let trigger_style = move || {
         let _ = framework_core::active_theme()
@@ -214,6 +216,8 @@ fn menu_build(
             source: framework_core::TextSource::Static(opt_label),
             style: None,
             ref_fill: None,
+            #[cfg(feature = "robot")]
+            test_id: None,
         };
         let row = framework_core::pressable(vec![label_child], move || (on_click)())
             .with_style(row_style)

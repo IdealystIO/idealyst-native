@@ -258,6 +258,7 @@ pub enum RefFill {
     Pressable(Box<dyn FnOnce(PressableHandle)>),
     View(Box<dyn FnOnce(ViewHandle)>),
     Text(Box<dyn FnOnce(TextHandle)>),
+    Icon(Box<dyn FnOnce(primitives::icon::IconHandle)>),
     Image(Box<dyn FnOnce(primitives::image::ImageHandle)>),
     TextInput(Box<dyn FnOnce(primitives::text_input::TextInputHandle)>),
     Toggle(Box<dyn FnOnce(primitives::toggle::ToggleHandle)>),

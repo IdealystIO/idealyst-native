@@ -7,7 +7,7 @@ use objc2::encode::{Encode, Encoding};
 use objc2::rc::Retained;
 use objc2::{msg_send, msg_send_id};
 use objc2_foundation::{CGFloat, CGRect, MainThreadMarker, NSObject, NSString};
-use objc2_ui_kit::{UIColor, UIView};
+use objc2_ui_kit::{UIColor, UIView, UIViewController};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -16,6 +16,22 @@ use super::callbacks::CallbackTarget;
 use super::navigator::IosNavigatorOps;
 use super::style::animate;
 use super::{pin_to_edges, IosNode};
+
+#[cfg(feature = "debug-stats")]
+fn dump_debug_stats(label: &str) {
+    let events = framework_core::debug::take_events();
+    let summary = framework_core::debug::component_summary(&events);
+    let counters = framework_core::debug::take_phase_counters();
+    super::ios_log(&format!("[profiler] {} — {} events", label, events.len()));
+    for (name, s) in &summary {
+        super::ios_log(&format!("[profiler]   {} — calls: {}, total: {}µs, max: {}µs",
+            name, s.call_count, s.total_inclusive_us, s.max_inclusive_us));
+    }
+    for (phase, c) in &counters {
+        super::ios_log(&format!("[profiler]   phase {} — calls: {}, total: {}µs, max: {}µs",
+            phase, c.call_count, c.total_us, c.max_us));
+    }
+}
 
 /// Per-instance state for tab and drawer navigators.
 pub(crate) struct TabDrawerEntry {
@@ -72,9 +88,9 @@ pub(crate) fn create_tab_navigator(
                 for sub in subviews.iter() {
                     unsafe { sub.removeFromSuperview() };
                 }
-                let (node, scope_id) = mount(name, params);
-                pin_to_edges(&body_for_dispatch, node.as_view());
-                *cs_for_dispatch.borrow_mut() = Some(scope_id);
+                let result = mount(name, params);
+                pin_to_edges(&body_for_dispatch, result.node.as_view());
+                *cs_for_dispatch.borrow_mut() = Some(result.scope_id);
                 depth_changed(1);
                 active_changed(name);
             }
@@ -90,6 +106,7 @@ pub(crate) fn tab_navigator_attach_initial(
     navigator: &IosNode,
     screen: IosNode,
     scope_id: u64,
+    _options: framework_core::ScreenOptions,
 ) {
     let key = navigator.view_key();
     let Some(entry) = tab_drawer_instances.get(&key) else {
@@ -259,7 +276,8 @@ pub(crate) fn create_drawer_navigator(
         let sidebar_anim = sidebar.clone();
         let body_anim = body_for_anim.clone();
         let style = drawer_style;
-        let trans = framework_core::Transition::new(280, framework_core::Easing::EaseInOut);
+
+        let trans = framework_core::Transition::new(300, framework_core::Easing::EaseOut);
         animate(&trans, Rc::new(move || {
             let _: () = unsafe {
                 msg_send![&scrim_anim, setAlpha: if open { 1.0 } else { 0.0 } as CGFloat]
@@ -310,7 +328,7 @@ pub(crate) fn create_drawer_navigator(
                 let _: Retained<NSObject> = unsafe {
                     msg_send_id![
                         objc2::class!(NSTimer),
-                        scheduledTimerWithTimeInterval: 0.3 as f64,
+                        scheduledTimerWithTimeInterval: 0.4 as f64,
                         repeats: false,
                         block: &*timer_block
                     ]
@@ -326,6 +344,7 @@ pub(crate) fn create_drawer_navigator(
     control.install(Box::new(move |cmd| {
         match cmd {
             NavCommand::Select { name, params, url: _ } => {
+                super::ios_log(&format!("[drawer] Select: {}", name));
                 if let Some(old_scope) = cs_for_dispatch.borrow_mut().take() {
                     release(old_scope);
                 }
@@ -333,30 +352,43 @@ pub(crate) fn create_drawer_navigator(
                 for sub in subviews.iter() {
                     unsafe { sub.removeFromSuperview() };
                 }
-                let (node, scope_id) = mount(name, params);
-                pin_to_edges(&body_for_dispatch, node.as_view());
-                *cs_for_dispatch.borrow_mut() = Some(scope_id);
+                let result = mount(name, params);
+                pin_to_edges(&body_for_dispatch, result.node.as_view());
+                *cs_for_dispatch.borrow_mut() = Some(result.scope_id);
                 depth_changed(1);
                 active_changed(name);
+                super::ios_log(&format!("[drawer] Select done: {}", name));
             }
             NavCommand::OpenDrawer => {
+                #[cfg(feature = "debug-stats")]
+                framework_core::debug::clear_events();
                 is_open_for_dispatch.set(true);
                 is_open_signal.set(true);
                 open_fn(true);
                 open_changed(true);
+                #[cfg(feature = "debug-stats")]
+                dump_debug_stats("OpenDrawer");
             }
             NavCommand::CloseDrawer => {
+                #[cfg(feature = "debug-stats")]
+                framework_core::debug::clear_events();
                 is_open_for_dispatch.set(false);
                 is_open_signal.set(false);
                 close_fn(false);
                 open_changed(false);
+                #[cfg(feature = "debug-stats")]
+                dump_debug_stats("CloseDrawer");
             }
             NavCommand::ToggleDrawer => {
+                #[cfg(feature = "debug-stats")]
+                framework_core::debug::clear_events();
                 let new_state = !is_open_for_dispatch.get();
                 is_open_for_dispatch.set(new_state);
                 is_open_signal.set(new_state);
                 toggle_fn(new_state);
                 open_changed(new_state);
+                #[cfg(feature = "debug-stats")]
+                dump_debug_stats(if new_state { "ToggleDrawer(open)" } else { "ToggleDrawer(close)" });
             }
             _ => {}
         }
@@ -372,6 +404,7 @@ pub(crate) fn drawer_navigator_attach_initial(
     navigator: &IosNode,
     screen: IosNode,
     scope_id: u64,
+    options: framework_core::ScreenOptions,
 ) {
     let key = navigator.view_key();
     let Some(entry) = tab_drawer_instances.get(&key) else {
@@ -384,12 +417,12 @@ pub(crate) fn drawer_navigator_attach_initial(
     pin_to_edges(&entry.body, screen.as_view());
     *entry.current_scope.borrow_mut() = Some(scope_id);
 
+    // Defer header setup until the next run loop pass — by then
+    // the stack navigator will have wrapped the drawer's view in a
+    // VC with a navigationItem we can configure via the options.
     let outer_ref = entry.outer.clone();
-    let drawer_control = entry.control.clone();
-    let toggle_callback: Rc<dyn Fn()> = Rc::new(move || {
-        drawer_control.dispatch(NavCommand::ToggleDrawer);
-    });
     let setup: Rc<dyn Fn()> = Rc::new(move || {
+        // Walk up the responder chain to find the parent VC
         let mut resp: *const NSObject = &*outer_ref as *const UIView as *const NSObject;
         loop {
             let next: *const NSObject = unsafe { msg_send![resp, nextResponder] };
@@ -398,38 +431,20 @@ pub(crate) fn drawer_navigator_attach_initial(
                 msg_send![next, isKindOfClass: objc2::class!(UIViewController)]
             };
             if is_vc {
-                let image: Retained<NSObject> = unsafe {
-                    let name = NSString::from_str("line.3.horizontal");
-                    msg_send_id![objc2::class!(UIImage), systemImageNamed: &*name]
-                };
-                let target = CallbackTarget::new(
-                    unsafe { MainThreadMarker::new_unchecked() },
-                    toggle_callback.clone(),
-                );
-                let sel = objc2::sel!(invoke);
-                let button: Retained<NSObject> = unsafe {
-                    msg_send_id![objc2::class!(UIBarButtonItem), new]
-                };
-                let _: () = unsafe { msg_send![&button, setImage: &*image] };
-                let _: () = unsafe { msg_send![&button, setTarget: &*target] };
-                let _: () = unsafe { msg_send![&button, setAction: sel] };
-                let nav_item: Retained<NSObject> = unsafe { msg_send_id![next, navigationItem] };
-                let _: () = unsafe { msg_send![&nav_item, setLeftBarButtonItem: &*button] };
-                let title = NSString::from_str("Home");
-                let _: () = unsafe { msg_send![next, setTitle: &*title] };
-                std::mem::forget(target);
-
-                let nav_ctrl: *const NSObject = unsafe { msg_send![next, navigationController] };
+                let vc: &UIViewController = unsafe { &*(next as *const UIViewController) };
+                // Ensure the nav bar is visible — the stack navigator
+                // may have hidden it if the Home screen set
+                // header_shown(false). The drawer's options override.
+                let nav_ctrl: *const NSObject = unsafe { msg_send![vc, navigationController] };
                 if !nav_ctrl.is_null() {
-                    let nav_bar: Retained<NSObject> = unsafe { msg_send_id![nav_ctrl, navigationBar] };
-                    let appearance: Retained<NSObject> = unsafe {
-                        msg_send_id![objc2::class!(UINavigationBarAppearance), new]
-                    };
-                    let _: () = unsafe { msg_send![&appearance, configureWithOpaqueBackground] };
-                    let white = unsafe { UIColor::colorWithRed_green_blue_alpha(1.0, 1.0, 1.0, 1.0) };
-                    let _: () = unsafe { msg_send![&appearance, setBackgroundColor: &*white] };
-                    let _: () = unsafe { msg_send![&nav_bar, setStandardAppearance: &*appearance] };
-                    let _: () = unsafe { msg_send![&nav_bar, setScrollEdgeAppearance: &*appearance] };
+                    let _: () = unsafe { msg_send![nav_ctrl, setNavigationBarHidden: false, animated: false] };
+                }
+                for target in super::apply_header_options(
+                    vc,
+                    &options,
+                    unsafe { MainThreadMarker::new_unchecked() },
+                ) {
+                    std::mem::forget(target);
                 }
                 break;
             }

@@ -232,6 +232,109 @@ pub struct RouteEntry {
     pub path: &'static str,
     pub build: ScreenBuilder,
     pub from_segments: ParamsFromSegments,
+    /// Per-screen header configuration provider. Called at mount time
+    /// with the typed params (as `&dyn Any`). `None` = use navigator
+    /// defaults.
+    pub options: Option<ScreenOptionsProvider>,
+}
+
+/// Produces `ScreenOptions` from the route's typed params at mount
+/// time. The `&dyn Any` is the boxed params the screen was pushed
+/// with — the closure downcasts if it needs param-dependent titles.
+pub type ScreenOptionsProvider = Rc<dyn Fn(&dyn Any) -> ScreenOptions>;
+
+// ---------------------------------------------------------------------------
+// ScreenOptions — per-screen header configuration
+// ---------------------------------------------------------------------------
+
+/// Per-screen header configuration. Backends read this at mount time
+/// to configure platform-native chrome (UINavigationBar on iOS,
+/// MaterialToolbar on Android). All fields `Option` — `None` means
+/// "inherit from navigator defaults."
+#[derive(Clone, Default)]
+pub struct ScreenOptions {
+    /// Screen title shown in the header bar.
+    pub title: Option<String>,
+    /// Whether the header is visible. Default `true`.
+    pub header_shown: Option<bool>,
+    /// Left header slot (replaces default back button if set).
+    pub header_left: Option<HeaderButton>,
+    /// Right header slot (action button area).
+    pub header_right: Option<HeaderButton>,
+}
+
+impl ScreenOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn title(mut self, t: impl Into<String>) -> Self {
+        self.title = Some(t.into());
+        self
+    }
+
+    pub fn header_shown(mut self, shown: bool) -> Self {
+        self.header_shown = Some(shown);
+        self
+    }
+
+    pub fn header_left(mut self, btn: HeaderButton) -> Self {
+        self.header_left = Some(btn);
+        self
+    }
+
+    pub fn header_right(mut self, btn: HeaderButton) -> Self {
+        self.header_right = Some(btn);
+        self
+    }
+
+    /// Merge `other` on top of `self`: fields set in `other` override
+    /// the corresponding fields in `self`. Used to layer per-screen
+    /// options on top of navigator defaults.
+    pub fn merge(mut self, other: &ScreenOptions) -> Self {
+        if other.title.is_some() { self.title = other.title.clone(); }
+        if other.header_shown.is_some() { self.header_shown = other.header_shown; }
+        if other.header_left.is_some() { self.header_left = other.header_left.clone(); }
+        if other.header_right.is_some() { self.header_right = other.header_right.clone(); }
+        self
+    }
+}
+
+/// An icon button for a header slot (left or right).
+#[derive(Clone)]
+pub struct HeaderButton {
+    /// Icon name — SF Symbol on iOS (e.g. "line.3.horizontal"),
+    /// Material icon name on Android (e.g. "menu").
+    pub icon: String,
+    /// Action when the button is pressed.
+    pub on_press: Rc<dyn Fn()>,
+    /// Override tint for this specific button. `None` = use the
+    /// header style's `tint_color`.
+    pub tint: Option<crate::Color>,
+}
+
+impl HeaderButton {
+    pub fn new(icon: impl Into<String>, on_press: impl Fn() + 'static) -> Self {
+        Self {
+            icon: icon.into(),
+            on_press: Rc::new(on_press),
+            tint: None,
+        }
+    }
+
+    pub fn tint(mut self, color: crate::Color) -> Self {
+        self.tint = Some(color);
+        self
+    }
+}
+
+/// Result of mounting a screen. Returned by
+/// `NavigatorCallbacks.mount_screen` to give backends both the
+/// native node and the resolved header options.
+pub struct MountResult<N> {
+    pub node: N,
+    pub scope_id: u64,
+    pub options: ScreenOptions,
 }
 
 // ---------------------------------------------------------------------------
@@ -621,7 +724,7 @@ pub struct NavigatorCallbacks<N: Clone + 'static> {
     /// the subtree inside a fresh per-screen `Scope` and returns the
     /// resulting native node plus the scope id so the backend can
     /// later release the same screen by id.
-    pub mount_screen: Rc<dyn Fn(&'static str, Box<dyn Any>) -> (N, u64)>,
+    pub mount_screen: Rc<dyn Fn(&'static str, Box<dyn Any>) -> MountResult<N>>,
     /// Release a previously-mounted screen by scope id. Drops the
     /// screen's `Scope`, freeing every signal/effect/ref inside. The
     /// backend should *not* use the node after this and should also

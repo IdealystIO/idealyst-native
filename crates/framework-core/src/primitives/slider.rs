@@ -45,6 +45,8 @@ pub fn slider<F: Fn(f32) + 'static>(
         step: None,
         style: None,
         ref_fill: None,
+        #[cfg(feature = "robot")]
+        test_id: None,
     })
 }
 

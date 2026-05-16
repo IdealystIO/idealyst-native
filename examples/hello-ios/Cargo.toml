@@ -15,8 +15,10 @@ framework-core = { workspace = true }
 hello = { path = "../hello" }
 
 [features]
-default = ["graphics"]
+default = ["graphics", "debug-stats"]
 graphics = ["hello/graphics"]
+debug-stats = ["framework-core/debug-stats", "backend-ios/debug-stats"]
+robot = ["framework-core/robot", "hello/robot"]
 
 [target.'cfg(target_os = "ios")'.dependencies]
 backend-ios = { workspace = true }

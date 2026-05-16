@@ -45,7 +45,7 @@
 
 use super::shared::{
     LayoutBuilder, NavigatorCallbacks, NavigatorHandle, Route, RouteEntry, RouteParams,
-    ScreenBuilder,
+    ScreenBuilder, ScreenOptions,
 };
 use crate::{Bound, Primitive, Ref, RefFill};
 use std::any::Any;
@@ -292,7 +292,13 @@ pub struct DrawerNavigator {
     /// conflict.
     pub swipe_to_open: bool,
     pub mount_policy: MountPolicy,
+    pub default_options: Option<ScreenOptions>,
     pub style: Option<crate::StyleSource>,
+    pub header_style: Option<crate::StyleSource>,
+    pub title_style: Option<crate::StyleSource>,
+    pub button_style: Option<crate::StyleSource>,
+    pub sidebar_style: Option<crate::StyleSource>,
+    pub scrim_style: Option<crate::StyleSource>,
     pub ref_fill: Option<RefFill>,
 }
 
@@ -315,7 +321,13 @@ impl DrawerNavigator {
             pinned_above: None,
             swipe_to_open: true,
             mount_policy: MountPolicy::LazyPersistent,
+            default_options: None,
             style: None,
+            header_style: None,
+            title_style: None,
+            button_style: None,
+            sidebar_style: None,
+            scrim_style: None,
             ref_fill: None,
         })))
     }
@@ -359,8 +371,75 @@ impl Bound<DrawerHandle> {
             });
             nav.screens.insert(
                 route.name(),
-                RouteEntry { path: route.path(), build, from_segments },
+                RouteEntry { path: route.path(), build, from_segments, options: None },
             );
+        }
+        self
+    }
+
+    /// Set per-screen header options for `route`.
+    pub fn options<P: RouteParams>(
+        mut self,
+        route: Route<P>,
+        f: impl Fn(&P) -> ScreenOptions + 'static,
+    ) -> Self {
+        if let Primitive::DrawerNavigator(nav) = &mut self.primitive {
+            if let Some(entry) = nav.screens.get_mut(route.name()) {
+                entry.options = Some(Rc::new(move |any: &dyn Any| {
+                    let params = any.downcast_ref::<P>().expect(
+                        "DrawerNavigator::options: param type mismatch",
+                    );
+                    f(params)
+                }));
+            }
+        }
+        self
+    }
+
+    /// Set default header options for all screens in this drawer.
+    pub fn default_screen_options(mut self, opts: ScreenOptions) -> Self {
+        if let Primitive::DrawerNavigator(nav) = &mut self.primitive {
+            nav.default_options = Some(opts);
+        }
+        self
+    }
+
+    /// Style the drawer navigator's header bar.
+    pub fn header_style(mut self, s: impl crate::IntoStyleSource) -> Self {
+        if let Primitive::DrawerNavigator(nav) = &mut self.primitive {
+            nav.header_style = Some(s.into_style_source());
+        }
+        self
+    }
+
+    /// Style the drawer navigator's title text.
+    pub fn title_style(mut self, s: impl crate::IntoStyleSource) -> Self {
+        if let Primitive::DrawerNavigator(nav) = &mut self.primitive {
+            nav.title_style = Some(s.into_style_source());
+        }
+        self
+    }
+
+    /// Style the drawer navigator's bar button items.
+    pub fn button_style(mut self, s: impl crate::IntoStyleSource) -> Self {
+        if let Primitive::DrawerNavigator(nav) = &mut self.primitive {
+            nav.button_style = Some(s.into_style_source());
+        }
+        self
+    }
+
+    /// Style the drawer's sidebar panel.
+    pub fn sidebar_style(mut self, s: impl crate::IntoStyleSource) -> Self {
+        if let Primitive::DrawerNavigator(nav) = &mut self.primitive {
+            nav.sidebar_style = Some(s.into_style_source());
+        }
+        self
+    }
+
+    /// Style the drawer's scrim (background overlay when open).
+    pub fn scrim_style(mut self, s: impl crate::IntoStyleSource) -> Self {
+        if let Primitive::DrawerNavigator(nav) = &mut self.primitive {
+            nav.scrim_style = Some(s.into_style_source());
         }
         self
     }

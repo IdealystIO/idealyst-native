@@ -42,6 +42,8 @@ pub fn toggle<F: Fn(bool) + 'static>(
         on_change: Rc::new(on_change),
         style: None,
         ref_fill: None,
+        #[cfg(feature = "robot")]
+        test_id: None,
     })
 }
 

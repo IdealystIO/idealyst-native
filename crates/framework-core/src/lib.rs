@@ -19,7 +19,18 @@ pub mod driver;
 #[cfg(feature = "debug-stats")]
 pub mod debug;
 
-pub use backend::{Backend, VirtualizerCallbacks};
+#[cfg(feature = "robot")]
+pub mod robot;
+
+/// Re-export of `serde_json` for use by the `#[component]` macro's
+/// `methods!` auto-registration codegen — proc macros emit absolute
+/// paths and we don't want every consuming crate to take a direct
+/// dep on `serde_json`.
+#[cfg(feature = "robot")]
+#[doc(hidden)]
+pub use serde_json as __serde_json;
+
+pub use backend::{Backend, ColorScheme, VirtualizerCallbacks};
 pub use handles::{
     ButtonHandle, ButtonOps, PressableHandle, PressableOps, RefFill, RefOps, StateBits, TextHandle,
     TextOps, ViewHandle, ViewOps,
@@ -33,11 +44,13 @@ pub use sources::{IntoStyleSource, IntoTextSource, StyleSource, TextSource};
 pub use walker::{render, Owner};
 pub use primitives::navigator::{
     match_pattern, DefaultLinkKind, DrawerHandle, DrawerItem, DrawerItemRegistration,
-    DrawerNavigator, DrawerNavigatorCallbacks, DrawerSide, DrawerSidebarProps, DrawerType, LayoutPlan,
-    LayoutProps, MountPolicy, NavCommand, NavState, Navigator, NavigatorCallbacks,
-    NavigatorControl, NavigatorHandle, NavigatorOps, Route, RouteParams, TabNavigator,
+    DrawerNavigator, DrawerNavigatorCallbacks, DrawerSide, DrawerSidebarProps, DrawerType,
+    HeaderButton, LayoutPlan, LayoutProps, MountPolicy, MountResult, NavCommand,
+    NavState, Navigator, NavigatorCallbacks, NavigatorControl, NavigatorHandle, NavigatorOps,
+    Route, RouteParams, ScreenOptions, ScreenOptionsProvider, TabNavigator,
     TabNavigatorCallbacks, TabPlacement, TabRegistration, TabSpec, TabsHandle,
 };
+pub use primitives::icon::{icon, FillRule, IconData, IconHandle, IconOps, StrokeAnimation};
 pub use primitives::overlay::{
     overlay, AnchorTarget, AnchorableHandle, BackdropMode, ElementAlign, ElementAnchor,
     ElementSide, OverlayAnchor, OverlayHandle, OverlayOps, ViewportPlacement, ViewportRect,

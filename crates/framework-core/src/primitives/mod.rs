@@ -13,6 +13,7 @@
 pub mod activity_indicator;
 pub mod flat_list;
 pub mod graphics;
+pub mod icon;
 pub mod image;
 pub mod link;
 pub mod navigator;

@@ -29,8 +29,15 @@ graphics = [
     "dep:bytemuck",
 ]
 
+# Robot — MCP-style automation surface. Required for the `#[component]`
+# macro's auto-registration of `methods!` blocks: when off, the registry
+# call inside the expansion is `#[cfg]`-skipped and the binary pays
+# nothing.
+robot = ["framework-core/robot"]
+
 [dependencies]
 framework-core = { workspace = true }
+icons-lucide = { workspace = true }
 bytemuck = { version = "1", features = ["derive"], optional = true }
 
 # Web build of wgpu: WebGPU + WebGL2 fallback.

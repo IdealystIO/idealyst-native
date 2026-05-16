@@ -39,8 +39,8 @@
 use crate::imp::helpers::apply_default_layout_params;
 use crate::imp::{with_env, AndroidBackend};
 use framework_core::primitives::navigator::{
-    DrawerHandle, DrawerNavigatorCallbacks, NavCommand, NavigatorCallbacks, NavigatorControl,
-    NavigatorHandle, NavigatorOps, TabNavigatorCallbacks, TabsHandle,
+    DrawerHandle, DrawerNavigatorCallbacks, MountResult, NavCommand, NavigatorCallbacks,
+    NavigatorControl, NavigatorHandle, NavigatorOps, TabNavigatorCallbacks, TabsHandle,
 };
 use jni::objects::{GlobalRef, JValue};
 use jni::sys::jlong;
@@ -110,7 +110,7 @@ pub(crate) struct TabDrawerInstance {
     /// Used to release the previous scope when we swap screens.
     release_screen: Rc<dyn Fn(u64)>,
     /// Used to mount the next screen on `Select`.
-    mount_screen: Rc<dyn Fn(&'static str, Box<dyn Any>) -> (GlobalRef, u64)>,
+    mount_screen: Rc<dyn Fn(&'static str, Box<dyn Any>) -> MountResult<GlobalRef>>,
     /// Per-kind metadata. Drawer carries the leaked listener
     /// pointer that needs freeing on release.
     kind: DrawerKind,
@@ -428,7 +428,7 @@ fn swap_body(
     name: &'static str,
     params: Box<dyn Any>,
 ) {
-    let (new_view, new_scope) = {
+    let result = {
         let inst = instance.borrow();
         // mount_screen re-enters the build walker which calls
         // backend.borrow_mut(). Safe here because dispatcher
@@ -436,6 +436,8 @@ fn swap_body(
         // event handler → JNI → Rust).
         (inst.mount_screen)(name, params)
     };
+    let new_view = result.node;
+    let new_scope = result.scope_id;
     let (body, old_scope) = {
         let mut inst = instance.borrow_mut();
         let old = inst.current.take().map(|(_, s)| s);

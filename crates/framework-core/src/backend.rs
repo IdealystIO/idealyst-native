@@ -61,15 +61,48 @@ pub struct VirtualizerCallbacks<N: Clone + 'static> {
 }
 
 // ---------------------------------------------------------------------------
+// ColorScheme
+// ---------------------------------------------------------------------------
+
+/// The platform's current appearance mode. Backends return this from
+/// [`Backend::color_scheme`] so the app can pick an appropriate
+/// default theme before the first render.
+///
+/// `Auto` means the platform has no explicit preference (e.g. iOS
+/// `UIUserInterfaceStyleUnspecified`, or the browser has no
+/// `prefers-color-scheme` media query match). Apps should fall back
+/// to whichever theme they consider the default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColorScheme {
+    Light,
+    Dark,
+    /// The platform did not report an explicit preference.
+    Auto,
+}
+
+// ---------------------------------------------------------------------------
 // Backend trait
 // ---------------------------------------------------------------------------
 
 pub trait Backend {
     type Node: Clone;
 
+    /// Returns the platform's current color scheme. Called before the
+    /// first render so the app can select a matching default theme.
+    /// Defaults to `ColorScheme::Auto` (no preference).
+    fn color_scheme(&self) -> ColorScheme {
+        ColorScheme::Auto
+    }
+
     fn create_view(&mut self) -> Self::Node;
     fn create_text(&mut self, content: &str) -> Self::Node;
-    fn create_button(&mut self, label: &str, on_click: Rc<dyn Fn()>) -> Self::Node;
+    fn create_button(
+        &mut self,
+        label: &str,
+        on_click: Rc<dyn Fn()>,
+        leading_icon: Option<&primitives::icon::IconData>,
+        trailing_icon: Option<&primitives::icon::IconData>,
+    ) -> Self::Node;
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node);
 
     /// Tappable container node with a click handler attached. Used
@@ -126,6 +159,63 @@ pub trait Backend {
     fn update_image_src(&mut self, node: &Self::Node, src: &str) {
         // default: no-op; backends that don't implement images just
         // leave the URL static.
+    }
+
+    /// Create an icon node from static vector path data. The initial
+    /// color (if any) is provided; reactive color updates flow through
+    /// `update_icon_color`.
+    ///
+    /// Backends render the paths natively:
+    /// - **Web**: inline `<svg>` with `<path>` children.
+    /// - **iOS**: `CAShapeLayer` with `UIBezierPath`.
+    /// - **Android**: `VectorDrawable` or `Canvas.drawPath`.
+    #[allow(unused_variables)]
+    fn create_icon(
+        &mut self,
+        data: &primitives::icon::IconData,
+        color: Option<&Color>,
+    ) -> Self::Node {
+        unimplemented!("create_icon not implemented for this backend")
+    }
+
+    /// Update an icon's fill color reactively. Called by the walker's
+    /// Effect when the color closure re-fires.
+    #[allow(unused_variables)]
+    fn update_icon_color(&mut self, node: &Self::Node, color: &Color) {
+        // default: no-op
+    }
+
+    /// Set the icon's stroke progress immediately (no animation).
+    /// `progress` is 0.0 (nothing drawn) to 1.0 (fully drawn).
+    /// Called by the walker's reactive Effect when the `stroke`
+    /// closure re-fires.
+    #[allow(unused_variables)]
+    fn update_icon_stroke(&mut self, node: &Self::Node, progress: f32) {
+        // default: no-op — icon stays fully drawn
+    }
+
+    /// Animate the icon's stroke from `from` to `to` over `duration_ms`
+    /// with the given easing. Called once on mount for `draw_in`, or
+    /// imperatively via `IconHandle::animate_stroke`.
+    ///
+    /// When `infinite` is true, the animation loops (from→to→from→…).
+    ///
+    /// Platforms implement this with their native animation system:
+    /// - Web: CSS `@keyframes` animation on `stroke-dashoffset`
+    /// - iOS: `CABasicAnimation` on `strokeEnd` with `repeatCount = .infinity`
+    /// - Android: `ObjectAnimator` with `setRepeatCount(INFINITE)`
+    #[allow(unused_variables)]
+    fn animate_icon_stroke(
+        &mut self,
+        node: &Self::Node,
+        from: f32,
+        to: f32,
+        duration_ms: u32,
+        easing: crate::style::Easing,
+        infinite: bool,
+        autoreverses: bool,
+    ) {
+        // default: no-op — icon renders fully drawn
     }
 
     /// Update a button's visible label. Called by the walker's
@@ -481,6 +571,11 @@ pub trait Backend {
     }
 
     #[allow(unused_variables)]
+    fn make_icon_handle(&self, node: &Self::Node) -> primitives::icon::IconHandle {
+        primitives::icon::IconHandle::new(Rc::new(()), &NoopIconOps)
+    }
+
+    #[allow(unused_variables)]
     fn make_text_input_handle(
         &self,
         node: &Self::Node,
@@ -599,11 +694,44 @@ pub trait Backend {
         navigator: &Self::Node,
         screen: Self::Node,
         scope_id: u64,
+        options: primitives::navigator::ScreenOptions,
     ) {
         // default: no-op; backends that don't implement Navigator
         // never get called here (the framework only invokes this
         // alongside `create_navigator`).
     }
+
+    /// Apply style to the navigator's header bar (background, shadow).
+    #[allow(unused_variables)]
+    fn apply_navigator_header_style(&mut self, navigator: &Self::Node, style: &Rc<StyleRules>) {}
+
+    /// Apply style to the navigator's title text (color, font).
+    #[allow(unused_variables)]
+    fn apply_navigator_title_style(&mut self, navigator: &Self::Node, style: &Rc<StyleRules>) {}
+
+    /// Apply style to the navigator's bar button items (tint color).
+    #[allow(unused_variables)]
+    fn apply_navigator_button_style(&mut self, navigator: &Self::Node, style: &Rc<StyleRules>) {}
+
+    /// Apply style to a drawer navigator's sidebar panel.
+    #[allow(unused_variables)]
+    fn apply_drawer_sidebar_style(&mut self, navigator: &Self::Node, style: &Rc<StyleRules>) {}
+
+    /// Apply style to a drawer navigator's scrim overlay.
+    #[allow(unused_variables)]
+    fn apply_drawer_scrim_style(&mut self, navigator: &Self::Node, style: &Rc<StyleRules>) {}
+
+    /// Apply style to a tab navigator's tab bar.
+    #[allow(unused_variables)]
+    fn apply_tab_bar_style(&mut self, navigator: &Self::Node, style: &Rc<StyleRules>) {}
+
+    /// Apply style to a tab navigator's tab icons.
+    #[allow(unused_variables)]
+    fn apply_tab_icon_style(&mut self, navigator: &Self::Node, style: &Rc<StyleRules>) {}
+
+    /// Apply style to a tab navigator's tab labels.
+    #[allow(unused_variables)]
+    fn apply_tab_label_style(&mut self, navigator: &Self::Node, style: &Rc<StyleRules>) {}
 
     /// Tear down a navigator. The framework calls this when the
     /// navigator's enclosing scope drops — owner teardown, a `when`
@@ -661,6 +789,7 @@ pub trait Backend {
         navigator: &Self::Node,
         screen: Self::Node,
         scope_id: u64,
+        options: primitives::navigator::ScreenOptions,
     ) {
     }
 
@@ -716,6 +845,7 @@ pub trait Backend {
         navigator: &Self::Node,
         screen: Self::Node,
         scope_id: u64,
+        options: primitives::navigator::ScreenOptions,
     ) {
     }
 
@@ -921,6 +1051,11 @@ pub trait Backend {
 // can leave the defaults in place and authors get a type-correct
 // no-op handle.
 // ---------------------------------------------------------------------------
+
+struct NoopIconOps;
+impl primitives::icon::IconOps for NoopIconOps {
+    // Default impls in the trait handle no-op behavior.
+}
 
 struct NoopImageOps;
 impl primitives::image::ImageOps for NoopImageOps {}

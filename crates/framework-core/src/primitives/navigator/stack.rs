@@ -42,7 +42,9 @@
 //! mismatch (e.g. user constructs a route at runtime with the wrong
 //! param) panics in the renderer with a clear message.
 
-use super::shared::{LayoutBuilder, LayoutProps, Route, RouteEntry, RouteParams, ScreenBuilder};
+use super::shared::{
+    LayoutBuilder, LayoutProps, Route, RouteEntry, RouteParams, ScreenBuilder, ScreenOptions,
+};
 use crate::{Bound, Primitive, Ref, RefFill};
 use std::any::Any;
 use std::collections::HashMap;
@@ -58,7 +60,11 @@ pub struct Navigator {
     pub initial_path: &'static str,
     pub screens: HashMap<&'static str, RouteEntry>,
     pub layout: Option<LayoutBuilder>,
+    pub default_options: Option<ScreenOptions>,
     pub style: Option<crate::StyleSource>,
+    pub header_style: Option<crate::StyleSource>,
+    pub title_style: Option<crate::StyleSource>,
+    pub button_style: Option<crate::StyleSource>,
     pub ref_fill: Option<RefFill>,
 }
 
@@ -78,7 +84,11 @@ impl Navigator {
             initial_path: initial.path(),
             screens: HashMap::new(),
             layout: None,
+            default_options: None,
             style: None,
+            header_style: None,
+            title_style: None,
+            button_style: None,
             ref_fill: None,
         })))
     }
@@ -115,8 +125,64 @@ impl Bound<NavigatorHandle> {
             });
             nav.screens.insert(
                 route.name(),
-                RouteEntry { path: route.path(), build, from_segments },
+                RouteEntry { path: route.path(), build, from_segments, options: None },
             );
+        }
+        self
+    }
+
+    /// Set per-screen header options for `route`. The closure
+    /// receives the route's typed params and returns `ScreenOptions`.
+    /// Called at mount time — not reactive.
+    pub fn options<P: RouteParams>(
+        mut self,
+        route: Route<P>,
+        f: impl Fn(&P) -> ScreenOptions + 'static,
+    ) -> Self {
+        if let Primitive::Navigator(nav) = &mut self.primitive {
+            if let Some(entry) = nav.screens.get_mut(route.name()) {
+                entry.options = Some(Rc::new(move |any: &dyn Any| {
+                    let params = any.downcast_ref::<P>().expect(
+                        "Navigator::options: param type mismatch",
+                    );
+                    f(params)
+                }));
+            }
+        }
+        self
+    }
+
+    /// Set default header options for all screens in this navigator.
+    /// Per-screen `.options()` overrides these.
+    pub fn default_screen_options(mut self, opts: ScreenOptions) -> Self {
+        if let Primitive::Navigator(nav) = &mut self.primitive {
+            nav.default_options = Some(opts);
+        }
+        self
+    }
+
+    /// Style the navigator's header bar (background, shadow, etc.).
+    /// Reactive: signals read inside a reactive closure re-fire the
+    /// style on theme changes.
+    pub fn header_style(mut self, s: impl crate::IntoStyleSource) -> Self {
+        if let Primitive::Navigator(nav) = &mut self.primitive {
+            nav.header_style = Some(s.into_style_source());
+        }
+        self
+    }
+
+    /// Style the navigator's title text (color, font size, weight).
+    pub fn title_style(mut self, s: impl crate::IntoStyleSource) -> Self {
+        if let Primitive::Navigator(nav) = &mut self.primitive {
+            nav.title_style = Some(s.into_style_source());
+        }
+        self
+    }
+
+    /// Style the navigator's bar button items (back arrow, action buttons).
+    pub fn button_style(mut self, s: impl crate::IntoStyleSource) -> Self {
+        if let Primitive::Navigator(nav) = &mut self.primitive {
+            nav.button_style = Some(s.into_style_source());
         }
         self
     }

@@ -38,8 +38,8 @@
 
 use crate::WebBackend;
 use framework_core::primitives::navigator::{
-    DrawerHandle, DrawerNavigatorCallbacks, NavCommand, NavigatorCallbacks, NavigatorControl,
-    NavigatorHandle, NavigatorOps, TabNavigatorCallbacks, TabsHandle,
+    DrawerHandle, DrawerNavigatorCallbacks, MountResult, NavCommand, NavigatorCallbacks,
+    NavigatorControl, NavigatorHandle, NavigatorOps, TabNavigatorCallbacks, TabsHandle,
 };
 use std::any::Any;
 use std::cell::RefCell;
@@ -101,7 +101,7 @@ pub(crate) struct NavigatorInstance {
     #[allow(dead_code)]
     pub(crate) build_layout_retainer:
         Option<Rc<dyn Fn() -> framework_core::LayoutPlan<Node>>>,
-    mount_screen: Rc<dyn Fn(&'static str, Box<dyn Any>) -> (Node, u64)>,
+    mount_screen: Rc<dyn Fn(&'static str, Box<dyn Any>) -> MountResult<Node>>,
     release_screen: Rc<dyn Fn(u64)>,
     match_path: Rc<dyn Fn(&str) -> Option<(&'static str, Box<dyn Any>)>>,
     /// Framework-owned reactive nav-state. Updated by
@@ -169,7 +169,9 @@ impl NavigatorInstance {
     /// Mount + append a screen with a known URL. Internal helper —
     /// callers that should also `pushState` do so themselves.
     fn mount_internal(&mut self, name: &'static str, params: Box<dyn Any>, url: String) {
-        let (node, scope_id) = (self.mount_screen)(name, params);
+        let result = (self.mount_screen)(name, params);
+        let node = result.node;
+        let scope_id = result.scope_id;
         // The `ui-nav-screen` class adds `position:absolute; inset:0`
         // so stacked screens overlap inside the `.ui-nav-root`
         // container — the right behavior for no-layout mode, where

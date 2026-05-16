@@ -10,6 +10,8 @@ members = [
     "crates/backend-web",
     "crates/backend-ios",
     "crates/backend-android",
+    "crates/icons-lucide",
+    "crates/robot-mcp-proxy",
     "examples/hello",
     "examples/hello-web",
     "examples/hello-android",
@@ -31,6 +33,7 @@ idea-ui-docs-derive = { path = "crates/idea-ui-docs-derive" }
 backend-web = { path = "crates/backend-web" }
 backend-ios = { path = "crates/backend-ios" }
 backend-android = { path = "crates/backend-android" }
+icons-lucide = { path = "crates/icons-lucide" }
 
 # Size-tuned release profile. We optimize for size rather than speed —
 # UI workloads aren't CPU-bound, but bytes-over-the-wire matter for the

@@ -71,6 +71,8 @@ pub fn text_input<F: Fn(String) + 'static>(
         placeholder: None,
         style: None,
         ref_fill: None,
+        #[cfg(feature = "robot")]
+        test_id: None,
     })
 }
 

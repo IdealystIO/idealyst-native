@@ -9,7 +9,13 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use web_sys::Node;
 
-pub(crate) fn create(b: &mut WebBackend, label: &str, on_click: Rc<dyn Fn()>) -> Node {
+pub(crate) fn create(
+    b: &mut WebBackend,
+    label: &str,
+    on_click: Rc<dyn Fn()>,
+    leading_icon: Option<&framework_core::IconData>,
+    trailing_icon: Option<&framework_core::IconData>,
+) -> Node {
     // Ensure the global style element exists so the `:where(button)`
     // UA reset is in place before any author class rules attach to
     // this element. Cheap after the first call (just a flag check).
@@ -19,7 +25,27 @@ pub(crate) fn create(b: &mut WebBackend, label: &str, on_click: Rc<dyn Fn()>) ->
         .create_element("button")
         .expect("create button")
         .unchecked_into::<web_sys::HtmlElement>();
-    button.set_text_content(Some(label));
+
+    // If icons are present, build structured content; otherwise plain text.
+    if leading_icon.is_some() || trailing_icon.is_some() {
+        // Use inline-flex layout for icon + text alignment.
+        let _ = button.set_attribute("style", "display:inline-flex;align-items:center;gap:0.4em;");
+        if let Some(icon_data) = leading_icon {
+            let svg_node = super::icon::create(b, icon_data, None);
+            let _ = button.append_child(&svg_node);
+        }
+        // Label as a <span>.
+        let span = b.doc.create_element("span").expect("create span");
+        span.set_text_content(Some(label));
+        let _ = button.append_child(&span);
+        if let Some(icon_data) = trailing_icon {
+            let svg_node = super::icon::create(b, icon_data, None);
+            let _ = button.append_child(&svg_node);
+        }
+    } else {
+        button.set_text_content(Some(label));
+    }
+
     let closure = Closure::<dyn FnMut()>::new(move || on_click());
     button.set_onclick(Some(closure.as_ref().unchecked_ref()));
     b._click_closures.push(closure);

@@ -10,6 +10,12 @@
         "ws://chrome:3000"
       ],
       "env": {}
+    },
+    "idealyst-robot": {
+      "type": "stdio",
+      "command": "/Users/nicho/Desktop/idealyst-native/target/release/robot-mcp-proxy",
+      "args": ["--port", "9718"],
+      "env": {}
     }
   }
 }

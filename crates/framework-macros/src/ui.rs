@@ -371,7 +371,7 @@ fn emit_component(
     let is_primitive = matches!(
         lower.as_str(),
         "text" | "button" | "view" | "when"
-        | "image" | "textinput" | "toggle" | "scrollview"
+        | "image" | "icon" | "textinput" | "toggle" | "scrollview"
         | "slider" | "webview" | "video" | "activityindicator"
         | "flatlist" | "link" | "overlay" | "presence"
     );
@@ -409,6 +409,7 @@ fn emit_component(
         "button" => emit_button(&other_props, children),
         "view" => emit_view(&other_props, children),
         "when" => emit_when(&other_props, children),
+        "icon" => emit_icon(&other_props, children),
         "image" => emit_image(&other_props, children),
         "textinput" => emit_text_input(&other_props, children),
         "toggle" => emit_toggle(&other_props, children),
@@ -512,7 +513,19 @@ fn emit_button(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
         .find(|p| p.name == "on_click")
         .map(|p| p.value.to_token_stream())
         .unwrap_or_else(|| quote! { || {} });
-    quote! { ::framework_core::button(#label, #on_click) }
+    let leading = if let Some(p) = props.iter().find(|p| p.name == "leading_icon") {
+        let v = &p.value;
+        quote! { .leading_icon(#v) }
+    } else {
+        quote! {}
+    };
+    let trailing = if let Some(p) = props.iter().find(|p| p.name == "trailing_icon") {
+        let v = &p.value;
+        quote! { .trailing_icon(#v) }
+    } else {
+        quote! {}
+    };
+    quote! { ::framework_core::button(#label, #on_click) #leading #trailing }
 }
 
 fn emit_view(_props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
@@ -533,6 +546,43 @@ fn emit_when(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
     let then_e = props.iter().find(|p| p.name == "then").map(|p| p.value.to_token_stream()).unwrap_or_else(|| quote! { || ::framework_core::view(::std::vec::Vec::new()) });
     let other = props.iter().find(|p| p.name == "otherwise").map(|p| p.value.to_token_stream()).unwrap_or_else(|| quote! { || ::framework_core::view(::std::vec::Vec::new()) });
     quote! { ::framework_core::when(#cond, #then_e, #other) }
+}
+
+/// `Icon(data = ..., color = ..., stroke = ..., draw_in = ...)`.
+/// `data` is required (an `IconData` value). Optional props:
+/// - `color`: reactive closure returning a `Color`
+/// - `stroke`: reactive closure returning f32 (0.0–1.0)
+/// - `draw_in`: tuple `(duration_ms, easing)` for mount animation
+fn emit_icon(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
+    let data = props
+        .iter()
+        .find(|p| p.name == "data")
+        .map(|p| p.value.to_token_stream())
+        .unwrap_or_else(|| quote! { compile_error!("Icon requires a `data` prop") });
+    let color_call = if let Some(p) = props.iter().find(|p| p.name == "color") {
+        let v = &p.value;
+        quote! { .color(#v) }
+    } else {
+        quote! {}
+    };
+    let stroke_call = if let Some(p) = props.iter().find(|p| p.name == "stroke") {
+        let v = &p.value;
+        quote! { .stroke(#v) }
+    } else {
+        quote! {}
+    };
+    // `animate` takes a StrokeAnimation struct directly.
+    // `draw_in` is shorthand for (duration, easing) tuple.
+    let anim_call = if let Some(p) = props.iter().find(|p| p.name == "animate") {
+        let v = &p.value;
+        quote! { .animate(#v) }
+    } else if let Some(p) = props.iter().find(|p| p.name == "draw_in") {
+        let v = &p.value;
+        quote! { .draw_in((#v).0, (#v).1) }
+    } else {
+        quote! {}
+    };
+    quote! { ::framework_core::icon(#data) #color_call #stroke_call #anim_call }
 }
 
 /// `Image(src = ..., alt = ...)`. Takes a `src` prop (required) and

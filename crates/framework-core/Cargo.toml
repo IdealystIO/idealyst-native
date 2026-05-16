@@ -18,6 +18,19 @@ license.workspace = true
 # section below.
 debug-stats = ["framework-macros/debug-stats"]
 
+# Programmatic introspection and control of the running UI. When
+# enabled, the render walker registers every mounted primitive into a
+# thread-local registry that can be queried and controlled via the
+# `robot` module's API. Designed as the foundation for:
+# - Cross-platform E2E testing
+# - MCP server for AI-driven in-app control
+# - Live debugging / inspection tools
+#
+# Off by default — adds per-node overhead (one registry entry per
+# mounted element + retained action closures). Production builds
+# should leave this off.
+robot = ["dep:serde_json"]
+
 # Platform-agnostic async + per-frame primitives:
 #
 # - `render_loop(|elapsed| ...)`  ticks a closure once per frame
@@ -47,6 +60,7 @@ async-driver = [
 
 [dependencies]
 framework-macros = { path = "../framework-macros" }
+serde_json = { version = "1", optional = true }
 # The `Graphics` primitive exposes its surface as a standard
 # `raw_window_handle` handle so authors can plug any GPU library
 # (wgpu, glow, vello, softbuffer, …) on top. Tiny dep — a handful of

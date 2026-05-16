@@ -55,6 +55,14 @@ impl<H> Bound<H> {
         self.primitive = self.primitive.with_style(style);
         self
     }
+
+    /// Assigns a test ID for robot/automation queries.
+    /// Only available when the `robot` feature is enabled.
+    #[cfg(feature = "robot")]
+    pub fn test_id(mut self, id: &'static str) -> Self {
+        self.primitive = self.primitive.with_test_id(id);
+        self
+    }
 }
 
 // `bind` is implemented per handle type so it can both (a) take the
@@ -81,6 +89,22 @@ impl Bound<ButtonHandle> {
     pub fn disabled<D: IntoDisabledSource>(mut self, disabled: D) -> Self {
         if let Primitive::Button { disabled: slot, .. } = &mut self.primitive {
             *slot = Some(disabled.into_disabled_source());
+        }
+        self
+    }
+
+    /// Set a leading icon (rendered before the label).
+    pub fn leading_icon(mut self, icon: crate::IconData) -> Self {
+        if let Primitive::Button { leading_icon, .. } = &mut self.primitive {
+            *leading_icon = Some(icon);
+        }
+        self
+    }
+
+    /// Set a trailing icon (rendered after the label).
+    pub fn trailing_icon(mut self, icon: crate::IconData) -> Self {
+        if let Primitive::Button { trailing_icon, .. } = &mut self.primitive {
+            *trailing_icon = Some(icon);
         }
         self
     }
@@ -288,7 +312,13 @@ impl ChildList for Vec<Primitive> {
 // =============================================================================
 
 pub fn view(children: Vec<Primitive>) -> Bound<ViewHandle> {
-    Bound::new(Primitive::View { children, style: None, ref_fill: None })
+    Bound::new(Primitive::View {
+        children,
+        style: None,
+        ref_fill: None,
+        #[cfg(feature = "robot")]
+        test_id: None,
+    })
 }
 
 pub fn text<T: IntoTextSource>(source: T) -> Bound<TextHandle> {
@@ -296,6 +326,8 @@ pub fn text<T: IntoTextSource>(source: T) -> Bound<TextHandle> {
         source: source.into_text_source(),
         style: None,
         ref_fill: None,
+        #[cfg(feature = "robot")]
+        test_id: None,
     })
 }
 
@@ -306,9 +338,13 @@ pub fn button<L: IntoTextSource, F: Fn() + 'static>(
     Bound::new(Primitive::Button {
         label: label.into_text_source(),
         on_click: Rc::new(on_click),
+        leading_icon: None,
+        trailing_icon: None,
         style: None,
         ref_fill: None,
         disabled: None,
+        #[cfg(feature = "robot")]
+        test_id: None,
     })
 }
 
@@ -325,6 +361,8 @@ pub fn pressable<F: Fn() + 'static>(
         style: None,
         ref_fill: None,
         disabled: None,
+        #[cfg(feature = "robot")]
+        test_id: None,
     })
 }
 

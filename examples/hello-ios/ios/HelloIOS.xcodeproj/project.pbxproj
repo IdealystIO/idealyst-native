@@ -135,7 +135,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/bash;
-			shellScript = "export PATH=\"$HOME/.cargo/bin:$PATH\"\ncd \"${SRCROOT}/../..\"\nif [ \"$PLATFORM_NAME\" = \"iphonesimulator\" ]; then\n  RUST_TARGET=\"aarch64-apple-ios-sim\"\nelse\n  RUST_TARGET=\"aarch64-apple-ios\"\nfi\ncargo build --package hello-ios --target \"$RUST_TARGET\" --release\n";
+			shellScript = "export PATH=\"$HOME/.cargo/bin:$PATH\"\ncd \"${SRCROOT}/../..\"\nif [ \"$PLATFORM_NAME\" = \"iphonesimulator\" ]; then\n  RUST_TARGET=\"aarch64-apple-ios-sim\"\nelse\n  RUST_TARGET=\"aarch64-apple-ios\"\nfi\nif [ \"$CONFIGURATION\" = \"Release\" ]; then\n  CARGO_PROFILE=\"--release\"\nelse\n  CARGO_PROFILE=\"--profile release-debug\"\nfi\ncargo build --package hello-ios --target \"$RUST_TARGET\" --features robot $CARGO_PROFILE\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -210,8 +210,8 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				DEVELOPMENT_TEAM = DJ8WV4A7F5;
 				INFOPLIST_FILE = HelloIOS/Info.plist;
-				"LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = "$(SRCROOT)/../../../target/aarch64-apple-ios/release";
-				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = "$(SRCROOT)/../../../target/aarch64-apple-ios-sim/release";
+				"LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = "$(SRCROOT)/../../../target/aarch64-apple-ios/release-debug";
+				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = "$(SRCROOT)/../../../target/aarch64-apple-ios-sim/release-debug";
 				OTHER_LDFLAGS = "-lhello_ios";
 				PRODUCT_BUNDLE_IDENTIFIER = io.idealyst.hello;
 				PRODUCT_NAME = "$(TARGET_NAME)";

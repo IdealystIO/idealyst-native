@@ -17,6 +17,9 @@ crate-type = ["rlib"]
 # generated impls aren't free.
 docs = ["dep:idea-ui-docs-derive"]
 
+# Forward the robot feature to framework-core.
+robot = ["framework-core/robot"]
+
 [dependencies]
 framework-core = { workspace = true }
 idea-ui-docs-derive = { workspace = true, optional = true }

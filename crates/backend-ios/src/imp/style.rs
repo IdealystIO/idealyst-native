@@ -136,6 +136,29 @@ pub(crate) fn animate(transition: &framework_core::Transition, changes: Rc<dyn F
     }
 }
 
+/// Look for an existing width or height constraint on `view` and
+/// update its constant. Returns true if found (no new constraint
+/// needed), false if none exists yet.
+fn update_dimension_constraint(view: &UIView, is_width: bool, value: CGFloat) -> bool {
+    // NSLayoutConstraint attributes: width=7, height=8
+    let target_attr: isize = if is_width { 7 } else { 8 };
+    let constraints: Retained<objc2_foundation::NSArray<NSObject>> = unsafe {
+        msg_send_id![view, constraints]
+    };
+    for i in 0..constraints.len() {
+        let c: &NSObject = &constraints[i];
+        let first_attr: isize = unsafe { msg_send![c, firstAttribute] };
+        let second_item: *const NSObject = unsafe { msg_send![c, secondItem] };
+        // A dimension constraint has firstAttribute == width/height
+        // and secondItem == nil (it's a constant constraint, not relative).
+        if first_attr == target_attr && second_item.is_null() {
+            let _: () = unsafe { msg_send![c, setConstant: value] };
+            return true;
+        }
+    }
+    false
+}
+
 pub(crate) fn apply_style_to_view(view: &UIView, style: &StyleRules) {
     // Background color -- skip for Metal-backed views
     let layer: Retained<NSObject> = unsafe { msg_send_id![view, layer] };
@@ -299,22 +322,32 @@ pub(crate) fn apply_style_to_view(view: &UIView, style: &StyleRules) {
     }
 
     // Height / width via Auto Layout constraints
+    // Width / height via Auto Layout constraints. To avoid
+    // accumulating duplicate constraints on repeated apply_style
+    // calls, we first check if a matching constraint already exists
+    // on the view and update its constant rather than adding a new one.
     if let Some(w) = &style.width {
         if let Length::Px(px) = w.value() {
-            let anchor: Retained<NSObject> = unsafe { msg_send_id![view, widthAnchor] };
-            let c: Retained<NSObject> = unsafe {
-                msg_send_id![&anchor, constraintEqualToConstant: *px as CGFloat]
-            };
-            let _: () = unsafe { msg_send![&c, setActive: true] };
+            let px_val = *px as CGFloat;
+            if !update_dimension_constraint(view, true, px_val) {
+                let anchor: Retained<NSObject> = unsafe { msg_send_id![view, widthAnchor] };
+                let c: Retained<NSObject> = unsafe {
+                    msg_send_id![&anchor, constraintEqualToConstant: px_val]
+                };
+                let _: () = unsafe { msg_send![&c, setActive: true] };
+            }
         }
     }
     if let Some(h) = &style.height {
         if let Length::Px(px) = h.value() {
-            let anchor: Retained<NSObject> = unsafe { msg_send_id![view, heightAnchor] };
-            let c: Retained<NSObject> = unsafe {
-                msg_send_id![&anchor, constraintEqualToConstant: *px as CGFloat]
-            };
-            let _: () = unsafe { msg_send![&c, setActive: true] };
+            let px_val = *px as CGFloat;
+            if !update_dimension_constraint(view, false, px_val) {
+                let anchor: Retained<NSObject> = unsafe { msg_send_id![view, heightAnchor] };
+                let c: Retained<NSObject> = unsafe {
+                    msg_send_id![&anchor, constraintEqualToConstant: px_val]
+                };
+                let _: () = unsafe { msg_send![&c, setActive: true] };
+            }
         }
     }
 }

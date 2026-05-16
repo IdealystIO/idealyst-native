@@ -187,6 +187,32 @@ impl AndroidBackend {
 impl Backend for AndroidBackend {
     type Node = GlobalRef;
 
+    fn color_scheme(&self) -> framework_core::ColorScheme {
+        // context.getResources().getConfiguration().uiMode & UI_MODE_NIGHT_MASK
+        // UI_MODE_NIGHT_UNDEFINED = 0x00, UI_MODE_NIGHT_NO = 0x10,
+        // UI_MODE_NIGHT_YES = 0x20
+        with_env(|env| {
+            let resources = env
+                .call_method(&self.context, "getResources", "()Landroid/content/res/Resources;", &[])
+                .and_then(|r| r.l());
+            let config = resources.and_then(|res| {
+                env.call_method(&res, "getConfiguration", "()Landroid/content/res/Configuration;", &[])
+                    .and_then(|c| c.l())
+            });
+            let ui_mode = config.and_then(|cfg| {
+                env.get_field(&cfg, "uiMode", "I").and_then(|v| v.i())
+            });
+            match ui_mode {
+                Ok(mode) => match mode & 0x30 {
+                    0x10 => framework_core::ColorScheme::Light,
+                    0x20 => framework_core::ColorScheme::Dark,
+                    _ => framework_core::ColorScheme::Auto,
+                },
+                Err(_) => framework_core::ColorScheme::Auto,
+            }
+        })
+    }
+
     fn create_view(&mut self) -> Self::Node {
         primitives::view::create(self)
     }
@@ -195,7 +221,8 @@ impl Backend for AndroidBackend {
         primitives::text::create(self, content)
     }
 
-    fn create_button(&mut self, label: &str, on_click: Rc<dyn Fn()>) -> Self::Node {
+    fn create_button(&mut self, label: &str, on_click: Rc<dyn Fn()>, _leading_icon: Option<&framework_core::IconData>, _trailing_icon: Option<&framework_core::IconData>) -> Self::Node {
+        // TODO: render icons as compound drawables on the button
         primitives::button::create(self, label, on_click)
     }
 
@@ -209,6 +236,35 @@ impl Backend for AndroidBackend {
 
     fn create_image(&mut self, src: &str, alt: Option<&str>) -> Self::Node {
         primitives::image::create(self, src, alt)
+    }
+
+    fn create_icon(
+        &mut self,
+        data: &framework_core::primitives::icon::IconData,
+        color: Option<&framework_core::Color>,
+    ) -> Self::Node {
+        primitives::icon::create(self, data, color)
+    }
+
+    fn update_icon_color(&mut self, node: &Self::Node, color: &framework_core::Color) {
+        primitives::icon::update_color(node, color)
+    }
+
+    fn update_icon_stroke(&mut self, node: &Self::Node, progress: f32) {
+        primitives::icon::update_stroke(node, progress)
+    }
+
+    fn animate_icon_stroke(
+        &mut self,
+        node: &Self::Node,
+        from: f32,
+        to: f32,
+        duration_ms: u32,
+        easing: framework_core::Easing,
+        infinite: bool,
+        autoreverses: bool,
+    ) {
+        primitives::icon::animate_stroke(node, from, to, duration_ms, easing, infinite, autoreverses)
     }
 
     fn create_text_input(
@@ -314,6 +370,7 @@ impl Backend for AndroidBackend {
         navigator: &Self::Node,
         screen: Self::Node,
         scope_id: u64,
+        _options: framework_core::ScreenOptions,
     ) {
         primitives::navigator::attach_initial(self, navigator, screen, scope_id)
     }
@@ -346,6 +403,7 @@ impl Backend for AndroidBackend {
         navigator: &Self::Node,
         screen: Self::Node,
         scope_id: u64,
+        _options: framework_core::ScreenOptions,
     ) {
         primitives::tab_drawer::attach_initial(self, navigator, screen, scope_id)
     }
@@ -374,6 +432,7 @@ impl Backend for AndroidBackend {
         navigator: &Self::Node,
         screen: Self::Node,
         scope_id: u64,
+        _options: framework_core::ScreenOptions,
     ) {
         primitives::tab_drawer::attach_initial(self, navigator, screen, scope_id)
     }

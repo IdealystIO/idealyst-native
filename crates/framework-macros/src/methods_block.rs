@@ -59,9 +59,10 @@ pub(crate) fn extract_and_rewrite(item_fn: &mut ItemFn) -> syn::Result<TokenStre
     };
 
     let handle_name = derive_handle_name(&item_fn.sig.ident);
+    let fn_name = item_fn.sig.ident.clone();
     let extra = generate_handle_type(&handle_name, &methods);
 
-    rewrite_body(item_fn, idx, &handle_name, &methods);
+    rewrite_body(item_fn, idx, &handle_name, &fn_name, &methods);
 
     Ok(extra)
 }
@@ -249,7 +250,13 @@ fn generate_handle_type(name: &Ident, methods: &[MethodDef]) -> TokenStream2 {
 ///      inside an impl method).
 ///   2. Wraps the trailing tail expression with
 ///      `Bindable::new(<tail>.into(), __handle)`.
-fn rewrite_body(item_fn: &mut ItemFn, idx: usize, handle_name: &Ident, methods: &[MethodDef]) {
+fn rewrite_body(
+    item_fn: &mut ItemFn,
+    idx: usize,
+    handle_name: &Ident,
+    fn_name: &Ident,
+    methods: &[MethodDef],
+) {
     // Build the handle construction block.
     let field_inits = methods.iter().map(|m| {
         let f = field_ident(&m.name);
@@ -277,6 +284,66 @@ fn rewrite_body(item_fn: &mut ItemFn, idx: usize, handle_name: &Ident, methods: 
 
     // Replace the methods! macro stmt with the construction binding.
     item_fn.block.stmts[idx] = handle_construction;
+
+    // Insert robot auto-registration directly after the handle binding.
+    // Each `methods!` declaration becomes a JSON-callable adapter that
+    // deserializes each argument by name, then forwards to the handle's
+    // method. The whole block is `#[cfg]`-gated to the consuming crate's
+    // `robot` feature so non-robot builds pay nothing.
+    let component_name_str = fn_name.to_string();
+    let method_entries = methods.iter().map(|m| {
+        let method_name_str = m.name.to_string();
+        let arg_names_str: Vec<String> = m.args.iter().map(|(n, _)| n.to_string()).collect();
+        let arg_idents: Vec<&Ident> = m.args.iter().map(|(n, _)| n).collect();
+        let arg_idents_for_call = arg_idents.clone();
+        let arg_tys: Vec<&Type> = m.args.iter().map(|(_, ty)| ty).collect();
+        let method_ident = &m.name;
+        let arg_extractions = arg_idents.iter().zip(arg_tys.iter()).zip(arg_names_str.iter()).map(|((ident, ty), name)| {
+            quote! {
+                let #ident: #ty = ::framework_core::__serde_json::from_value(
+                    __args.get(#name).cloned().unwrap_or(::framework_core::__serde_json::Value::Null),
+                ).map_err(|e| ::std::format!("arg '{}': {}", #name, e))?;
+            }
+        });
+        quote! {
+            ::framework_core::robot::Method {
+                name: #method_name_str,
+                args: &[#(#arg_names_str),*],
+                invoke: {
+                    let __h = ::std::clone::Clone::clone(&__component_handle);
+                    ::std::rc::Rc::new(move |__args: &::framework_core::__serde_json::Value| -> ::std::result::Result<(), ::std::string::String> {
+                        #(#arg_extractions)*
+                        __h.#method_ident(#(#arg_idents_for_call),*);
+                        ::std::result::Result::Ok(())
+                    })
+                },
+            }
+        }
+    });
+
+    let registration_stmt: Stmt = syn::parse_quote! {
+        #[cfg(feature = "robot")]
+        let __robot_component_registration = {
+            let __methods: ::std::vec::Vec<::framework_core::robot::Method> = ::std::vec![
+                #(#method_entries),*
+            ];
+            ::framework_core::robot::register_component(#component_name_str, __methods)
+        };
+    };
+    // The Effect's closure captures the registration guard by move.
+    // While a `Scope` is active (the build walker runs each Primitive
+    // inside one), the returned `Effect` handle is a no-op on drop —
+    // the scope owns the slot and frees it (and the captured guard)
+    // on scope drop. That ties the component's registration lifetime
+    // to its mounted lifetime.
+    let keepalive_stmt: Stmt = syn::parse_quote! {
+        #[cfg(feature = "robot")]
+        let _ = ::framework_core::Effect::new(move || {
+            let _ = &__robot_component_registration;
+        });
+    };
+    item_fn.block.stmts.insert(idx + 1, registration_stmt);
+    item_fn.block.stmts.insert(idx + 2, keepalive_stmt);
 
     // Now wrap the trailing expression with Bindable::new.
     //

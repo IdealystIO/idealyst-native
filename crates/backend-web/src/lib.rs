@@ -289,6 +289,32 @@ impl WebBackend {
 impl Backend for WebBackend {
     type Node = Node;
 
+    fn color_scheme(&self) -> framework_core::ColorScheme {
+        let window = match self.doc.default_view() {
+            Some(w) => w,
+            None => return framework_core::ColorScheme::Auto,
+        };
+        let prefers_dark = window
+            .match_media("(prefers-color-scheme: dark)")
+            .ok()
+            .flatten()
+            .map(|mql| mql.matches())
+            .unwrap_or(false);
+        let prefers_light = window
+            .match_media("(prefers-color-scheme: light)")
+            .ok()
+            .flatten()
+            .map(|mql| mql.matches())
+            .unwrap_or(false);
+        if prefers_dark {
+            framework_core::ColorScheme::Dark
+        } else if prefers_light {
+            framework_core::ColorScheme::Light
+        } else {
+            framework_core::ColorScheme::Auto
+        }
+    }
+
     fn create_view(&mut self) -> Self::Node {
         primitives::view::create(self)
     }
@@ -301,8 +327,14 @@ impl Backend for WebBackend {
         primitives::text::create(self, content)
     }
 
-    fn create_button(&mut self, label: &str, on_click: Rc<dyn Fn()>) -> Self::Node {
-        primitives::button::create(self, label, on_click)
+    fn create_button(
+        &mut self,
+        label: &str,
+        on_click: Rc<dyn Fn()>,
+        leading_icon: Option<&framework_core::IconData>,
+        trailing_icon: Option<&framework_core::IconData>,
+    ) -> Self::Node {
+        primitives::button::create(self, label, on_click, leading_icon, trailing_icon)
     }
 
     fn create_pressable(&mut self, on_click: Rc<dyn Fn()>) -> Self::Node {
@@ -327,6 +359,35 @@ impl Backend for WebBackend {
 
     fn update_image_src(&mut self, node: &Self::Node, src: &str) {
         primitives::image::update_src(node, src)
+    }
+
+    fn create_icon(
+        &mut self,
+        data: &framework_core::primitives::icon::IconData,
+        color: Option<&framework_core::Color>,
+    ) -> Self::Node {
+        primitives::icon::create(self, data, color)
+    }
+
+    fn update_icon_color(&mut self, node: &Self::Node, color: &framework_core::Color) {
+        primitives::icon::update_color(node, color)
+    }
+
+    fn update_icon_stroke(&mut self, node: &Self::Node, progress: f32) {
+        primitives::icon::update_stroke(node, progress)
+    }
+
+    fn animate_icon_stroke(
+        &mut self,
+        node: &Self::Node,
+        from: f32,
+        to: f32,
+        duration_ms: u32,
+        easing: framework_core::Easing,
+        infinite: bool,
+        _autoreverses: bool,
+    ) {
+        primitives::icon::animate_stroke(node, from, to, duration_ms, easing, infinite)
     }
 
     fn create_text_input(

@@ -26,11 +26,15 @@ pub enum Primitive {
         children: Vec<Primitive>,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
+        #[cfg(feature = "robot")]
+        test_id: Option<&'static str>,
     },
     Text {
         source: TextSource,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
+        #[cfg(feature = "robot")]
+        test_id: Option<&'static str>,
     },
     Button {
         /// Label source. `TextSource::Static` for a fixed string;
@@ -40,6 +44,12 @@ pub enum Primitive {
         /// widget's text updates when the underlying signals change.
         label: TextSource,
         on_click: Rc<dyn Fn()>,
+        /// Icon rendered before the label (left in LTR layouts).
+        /// Backends render this natively: `UIButton.setImage` on iOS,
+        /// compound drawable on Android, inline SVG on web.
+        leading_icon: Option<primitives::icon::IconData>,
+        /// Icon rendered after the label (right in LTR layouts).
+        trailing_icon: Option<primitives::icon::IconData>,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
         /// Optional reactive disabled flag. When the closure returns
@@ -50,6 +60,8 @@ pub enum Primitive {
         /// native). The closure is wrapped in an `Effect` so changes
         /// propagate automatically.
         disabled: Option<Box<dyn Fn() -> bool>>,
+        #[cfg(feature = "robot")]
+        test_id: Option<&'static str>,
     },
     /// Clickable container — like [`Primitive::View`] but with a
     /// press callback. Renders to a tappable native control whose
@@ -74,6 +86,8 @@ pub enum Primitive {
         ref_fill: Option<RefFill>,
         /// Same semantics as [`Primitive::Button::disabled`].
         disabled: Option<Box<dyn Fn() -> bool>>,
+        #[cfg(feature = "robot")]
+        test_id: Option<&'static str>,
     },
     /// Image primitive. Source is reactive (`Box<dyn Fn() -> String>`)
     /// so authors can pass a static URL or a closure reading a signal.
@@ -82,6 +96,31 @@ pub enum Primitive {
         /// Optional accessibility label. Maps to `alt` on web,
         /// `accessibilityLabel` on iOS, `contentDescription` on Android.
         alt: Option<String>,
+        style: Option<StyleSource>,
+        ref_fill: Option<RefFill>,
+        #[cfg(feature = "robot")]
+        test_id: Option<&'static str>,
+    },
+    /// Vector icon primitive. Renders static `IconData` path strings
+    /// as an inline SVG on web, `CAShapeLayer` on iOS, `VectorDrawable`
+    /// on Android. Only icons referenced by application code end up in
+    /// the binary — the linker drops unreferenced `IconData` constants.
+    ///
+    /// Supports stroke-draw animations: the path progressively reveals
+    /// itself, driven either by a reactive `stroke` closure (0.0–1.0)
+    /// or a fire-once `draw_in` animation on mount.
+    Icon {
+        data: primitives::icon::IconData,
+        /// Optional reactive color override. `None` means inherit
+        /// (currentColor on web, label color on native).
+        color: Option<Box<dyn Fn() -> crate::style::Color>>,
+        /// Reactive stroke progress (0.0 = nothing drawn, 1.0 = full).
+        /// When `Some`, the walker installs an Effect that calls
+        /// `update_icon_stroke` on the backend.
+        stroke: Option<Box<dyn Fn() -> f32>>,
+        /// Mount animation: draw the stroke from→to over duration.
+        /// Applied once after creation via `animate_icon_stroke`.
+        draw_in: Option<primitives::icon::StrokeAnimation>,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
     },
@@ -97,6 +136,8 @@ pub enum Primitive {
         placeholder: Option<String>,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
+        #[cfg(feature = "robot")]
+        test_id: Option<&'static str>,
     },
     /// Controlled toggle (switch / checkbox). Same controlled
     /// pattern as `TextInput`: `value: Signal<bool>` round-trips
@@ -106,6 +147,8 @@ pub enum Primitive {
         on_change: Rc<dyn Fn(bool)>,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
+        #[cfg(feature = "robot")]
+        test_id: Option<&'static str>,
     },
     /// Scroll container. Children scroll along `horizontal`'s opposite
     /// axis (vertical by default). Web: a div with `overflow: scroll`.
@@ -130,6 +173,8 @@ pub enum Primitive {
         step: Option<f32>,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
+        #[cfg(feature = "robot")]
+        test_id: Option<&'static str>,
     },
     /// Embedded web content view. Web: a (sandboxed-by-default-no)
     /// `<iframe>`. iOS: `WKWebView`. Android: `android.webkit.WebView`.
@@ -339,6 +384,44 @@ pub enum Primitive {
 }
 
 impl Primitive {
+    /// Attaches a test ID to this primitive for robot/automation queries.
+    /// Only available when the `robot` feature is enabled.
+    #[cfg(feature = "robot")]
+    pub fn with_test_id(mut self, id: &'static str) -> Self {
+        match &mut self {
+            Primitive::View { test_id, .. }
+            | Primitive::Text { test_id, .. }
+            | Primitive::Button { test_id, .. }
+            | Primitive::Pressable { test_id, .. }
+            | Primitive::Image { test_id, .. }
+            | Primitive::TextInput { test_id, .. }
+            | Primitive::Toggle { test_id, .. }
+            | Primitive::Slider { test_id, .. } => {
+                *test_id = Some(id);
+            }
+            _ => {
+                // Other primitives don't carry test_id — no-op.
+            }
+        }
+        self
+    }
+
+    /// Read the test_id if set (robot feature only).
+    #[cfg(feature = "robot")]
+    pub fn test_id(&self) -> Option<&'static str> {
+        match self {
+            Primitive::View { test_id, .. }
+            | Primitive::Text { test_id, .. }
+            | Primitive::Button { test_id, .. }
+            | Primitive::Pressable { test_id, .. }
+            | Primitive::Image { test_id, .. }
+            | Primitive::TextInput { test_id, .. }
+            | Primitive::Toggle { test_id, .. }
+            | Primitive::Slider { test_id, .. } => *test_id,
+            _ => None,
+        }
+    }
+
     /// Attaches a style to this primitive. Replaces any previously-set
     /// style. The style argument can be either a `StyleApplication`
     /// (static) or a closure returning one (reactive).
@@ -350,6 +433,7 @@ impl Primitive {
             | Primitive::Button { style, .. }
             | Primitive::Pressable { style, .. }
             | Primitive::Image { style, .. }
+            | Primitive::Icon { style, .. }
             | Primitive::TextInput { style, .. }
             | Primitive::Toggle { style, .. }
             | Primitive::ScrollView { style, .. }

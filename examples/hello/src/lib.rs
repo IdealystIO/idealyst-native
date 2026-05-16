@@ -13,14 +13,29 @@
 //!   1000-fold style invalidation.
 
 use framework_core::{
-    component, install_theme, set_theme, signal, ui, AlignItems, AnchorTarget, BackdropMode,
+    component, icon, install_theme, set_theme, signal, ui, AlignItems, AnchorTarget, BackdropMode,
     ButtonHandle, Color, DrawerHandle, DrawerItem, DrawerNavigator, Easing, ElementAlign,
-    ElementAnchor, ElementSide, FlexDirection, FontWeight, JustifyContent, LayoutProps, Length,
-    Navigator, NavigatorHandle, Overflow, OverlayAnchor, PresenceAnim, PresenceState, Primitive,
-    Ref, Route, RouteParams, Shadow, Signal, TabNavigator, TabSpec, TabsHandle, TextAlign,
-    ViewportPlacement,
+    ElementAnchor, ElementSide, FillRule, FlexDirection, FontWeight, HeaderButton, IconData,
+    IntoStyleSource, JustifyContent, LayoutProps, Length, Navigator, NavigatorHandle, Overflow, OverlayAnchor,
+    PresenceAnim, PresenceState, Primitive, Ref, Route, RouteParams, ScreenOptions, Shadow,
+    Signal, StrokeAnimation, StyleSource, TabNavigator, TabSpec, TabsHandle, TextAlign, ViewportPlacement,
 };
 use std::collections::HashMap;
+
+/// Custom icon defined inline — no icon pack needed.
+const CUSTOM_TRIANGLE: IconData = IconData {
+    view_box: (24, 24),
+    paths: &["M12 2L2 22h20L12 2z"],
+    fill_rule: FillRule::NonZero,
+};
+
+/// Read the current theme's text color for icons. Reactive — re-fires
+/// when the theme changes.
+fn icon_color() -> Color {
+    let theme = framework_core::active_theme();
+    let t = theme.downcast_ref::<Theme>().expect("Theme not installed");
+    t.colors.text.value().clone()
+}
 
 // Animated gradient demo. One file, three platforms — the same
 // wgpu code runs unmodified because wgpu is already cross-platform.
@@ -235,6 +250,47 @@ framework_core::stylesheet! {
         }
     }
 }
+
+framework_core::stylesheet! {
+    pub Column<Theme> {
+        base(t) {
+            flex_direction: FlexDirection::Column,
+            gap: Length::Px(t.spacing.md),
+            align_items: AlignItems::Stretch,
+        }
+    }
+}
+
+// =============================================================================
+// Stylesheets — navigator chrome (style slots)
+// =============================================================================
+
+framework_core::stylesheet! {
+    pub NavBarHeader<Theme> {
+        base(t) {
+            background: t.colors.surface.clone(),
+        }
+    }
+}
+
+framework_core::stylesheet! {
+    pub NavBarTitle<Theme> {
+        base(t) {
+            color: t.colors.text.clone(),
+            font_size: 17.0,
+            font_weight: FontWeight::SemiBold,
+        }
+    }
+}
+
+framework_core::stylesheet! {
+    pub NavBarButton<Theme> {
+        base(t) {
+            color: t.colors.primary.clone(),
+        }
+    }
+}
+
 
 // =============================================================================
 // Stylesheets — typography
@@ -552,13 +608,10 @@ framework_core::stylesheet! {
             background: t.colors.surface.clone(),
             padding: t.spacing.lg,
             gap: Length::Px(t.spacing.sm),
-            border_right_width: 1.0,
-            border_right_color: t.colors.border.clone(),
             width: 320.0,
         }
         transitions {
             background: 250ms EaseInOut,
-            border_right_color: 250ms EaseInOut,
         }
     }
 }
@@ -950,6 +1003,9 @@ pub fn counter(props: &CounterProps) -> framework_core::Bindable<CounterHandle> 
         fn reset(&self) {
             value.set(0);
         }
+        fn set_to(&self, n: i32) {
+            value.set(n);
+        }
     }
 
     ui! {
@@ -1074,7 +1130,7 @@ pub fn dashboard(props: &DashboardProps) -> Primitive {
                  onto the root stack from the buttons below. Back \
                  returns here."
             }
-            View(style = row_style()) {
+            View(style = column_style()) {
                 Button(
                     label = "Primitives showcase",
                     on_click = move || {
@@ -1314,6 +1370,36 @@ pub fn home(props: &HomeProps) -> Primitive {
                 let is_dark = is_dark;
                 ui! { SettingsBody(is_dark = is_dark) }
             })
+            // Per-screen header options
+            .options(DRAWER_DASHBOARD_ROUTE, {
+                let drawer_ref = drawer_ref;
+                move |_: &()| ScreenOptions::new()
+                    .title("Dashboard")
+                    .header_left(HeaderButton::new("line.3.horizontal", move || {
+                        if let Some(h) = drawer_ref.get() { h.toggle(); }
+                    }))
+            })
+            .options(DRAWER_TABS_ROUTE, {
+                let drawer_ref = drawer_ref;
+                move |_: &()| ScreenOptions::new()
+                    .title("Tab Demo")
+                    .header_left(HeaderButton::new("line.3.horizontal", move || {
+                        if let Some(h) = drawer_ref.get() { h.toggle(); }
+                    }))
+            })
+            .options(DRAWER_SETTINGS_ROUTE, {
+                let drawer_ref = drawer_ref;
+                move |_: &()| ScreenOptions::new()
+                    .title("Settings")
+                    .header_left(HeaderButton::new("line.3.horizontal", move || {
+                        if let Some(h) = drawer_ref.get() { h.toggle(); }
+                    }))
+            })
+            // Navigator-level reactive header style slots
+            .header_style(nav_bar_header_style())
+            .title_style(nav_bar_title_style())
+            .button_style(nav_bar_button_style())
+            .sidebar_style(drawer_sidebar_style())
             // The `.sidebar(...)` slot defines the drawer's side
             // panel. On Android the framework renders it natively
             // beside the body; on web the layout below embeds it
@@ -1346,25 +1432,44 @@ fn home_drawer_sidebar() -> impl Fn(framework_core::DrawerSidebarProps) -> Primi
             View(style = drawer_sidebar_style()) {
                 Text(style = drawer_brand_style()) { "idealyst" }
                 Link(route = &DRAWER_DASHBOARD_ROUTE, params = ()) {
-                    Text(style = DrawerItemButton().active(if active.get() == DRAWER_DASHBOARD_ROUTE.name() {
-                        DrawerItemButtonActive::On
-                    } else {
-                        DrawerItemButtonActive::Off
-                    })) { "Dashboard" }
+                    Text(style = move || {
+                        let current = active.get();
+                        let variant = if current == DRAWER_DASHBOARD_ROUTE.name() {
+                            DrawerItemButtonActive::On
+                        } else {
+                            DrawerItemButtonActive::Off
+                        };
+                        match DrawerItemButton().active(variant).into_style_source() {
+                            framework_core::StyleSource::Static(app) => app,
+                            _ => unreachable!(),
+                        }
+                    }) { "Dashboard" }
                 }
                 Link(route = &DRAWER_TABS_ROUTE, params = ()) {
-                    Text(style = DrawerItemButton().active(if active.get() == DRAWER_TABS_ROUTE.name() {
-                        DrawerItemButtonActive::On
-                    } else {
-                        DrawerItemButtonActive::Off
-                    })) { "Tab demo" }
+                    Text(style = move || {
+                        let variant = if active.get() == DRAWER_TABS_ROUTE.name() {
+                            DrawerItemButtonActive::On
+                        } else {
+                            DrawerItemButtonActive::Off
+                        };
+                        match DrawerItemButton().active(variant).into_style_source() {
+                            framework_core::StyleSource::Static(app) => app,
+                            _ => unreachable!(),
+                        }
+                    }) { "Tab demo" }
                 }
                 Link(route = &DRAWER_SETTINGS_ROUTE, params = ()) {
-                    Text(style = DrawerItemButton().active(if active.get() == DRAWER_SETTINGS_ROUTE.name() {
-                        DrawerItemButtonActive::On
-                    } else {
-                        DrawerItemButtonActive::Off
-                    })) { "Settings" }
+                    Text(style = move || {
+                        let variant = if active.get() == DRAWER_SETTINGS_ROUTE.name() {
+                            DrawerItemButtonActive::On
+                        } else {
+                            DrawerItemButtonActive::Off
+                        };
+                        match DrawerItemButton().active(variant).into_style_source() {
+                            framework_core::StyleSource::Static(app) => app,
+                            _ => unreachable!(),
+                        }
+                    }) { "Settings" }
                 }
             }
         }
@@ -1445,6 +1550,8 @@ pub fn showcase(props: &ShowcaseProps) -> Primitive {
     // Form-control demos.
     let name = signal!("".to_string());
     let notifications_on = signal!(true);
+    let icon_toggled = signal!(false);
+    let replay_ref: Ref<framework_core::IconHandle> = Ref::new();
     let volume = signal!(0.5_f32);
     let loading = signal!(false);
 
@@ -1573,6 +1680,120 @@ pub fn showcase(props: &ShowcaseProps) -> Primitive {
                     Link(route = &DETAIL_ROUTE, params = DetailParams { id: 1337 }) {
                         Text(style = link_text_style()) { "Open detail #1337 (link)" }
                     }
+                }
+            }
+
+            // Icons: standalone icon primitive, button with icons,
+            // and animated stroke draw-in.
+            View {
+                Text(style = section_heading_style()) { "Icons" }
+
+                // Row of standalone icons (using theme text color)
+                Text(style = subtitle_style()) { "Standalone icons" }
+                View(style = row_style()) {
+                    Icon(data = icons_lucide::SEARCH, color = move || icon_color())
+                    Icon(data = icons_lucide::HOME, color = move || icon_color())
+                    Icon(data = icons_lucide::SETTINGS, color = move || icon_color())
+                    Icon(data = icons_lucide::MENU, color = move || icon_color())
+                    Icon(data = icons_lucide::PLUS, color = move || icon_color())
+                    Icon(data = icons_lucide::ARROW_LEFT, color = move || icon_color())
+                }
+
+                // Custom inline icon (no pack needed)
+                Text(style = subtitle_style()) { "Custom icon (triangle)" }
+                View(style = row_style()) {
+                    Icon(data = CUSTOM_TRIANGLE, color = move || icon_color())
+                }
+
+                // Icons with color
+                Text(style = subtitle_style()) { "Colored icons" }
+                View(style = row_style()) {
+                    Icon(data = icons_lucide::HOME, color = move || Color::from("#FF3B30"))
+                    Icon(data = icons_lucide::SEARCH, color = move || Color::from("#007AFF"))
+                    Icon(data = icons_lucide::SETTINGS, color = move || Color::from("#34C759"))
+                }
+
+                // Button with leading icon
+                Text(style = subtitle_style()) { "Button with icon" }
+                Button(
+                    label = "Search",
+                    on_click = || {},
+                    style = primary_button_style(),
+                    leading_icon = icons_lucide::SEARCH
+                )
+
+                // Animated draw-in icons
+                Text(style = subtitle_style()) { "Animated stroke draw-in" }
+                View(style = row_style()) {
+                    // Single-shot draw in
+                    Icon(
+                        data = icons_lucide::HOME,
+                        color = move || icon_color(),
+                        draw_in = (800, Easing::EaseOut)
+                    )
+                    // Infinite loop (no reverse — snaps back)
+                    Icon(
+                        data = icons_lucide::SEARCH,
+                        color = move || icon_color(),
+                        animate = StrokeAnimation::new(1200, Easing::EaseInOut).looping()
+                    )
+                    // Infinite with autoreverse (smooth ping-pong)
+                    Icon(
+                        data = icons_lucide::SETTINGS,
+                        color = move || icon_color(),
+                        animate = StrokeAnimation::new(1000, Easing::Linear).reverse()
+                    )
+                }
+
+                // Reactive stroke (bound to slider)
+                Text(style = subtitle_style()) {
+                    format!("Reactive stroke: {}%", (volume.get() * 100.0).round() as i32)
+                }
+                View(style = row_style()) {
+                    Icon(
+                        data = icons_lucide::X,
+                        color = move || icon_color(),
+                        stroke = move || volume.get()
+                    )
+                    Icon(
+                        data = icons_lucide::CHEVRON_RIGHT,
+                        color = move || icon_color(),
+                        stroke = move || volume.get()
+                    )
+                }
+
+                // Replay animation from handle
+                Text(style = subtitle_style()) { "Replay animation (imperative)" }
+                View(style = spaced_row_style()) {
+                    Icon(
+                        data = icons_lucide::HOME,
+                        color = move || icon_color(),
+                        draw_in = (600, Easing::EaseOut)
+                    ).bind(replay_ref)
+                    Button(
+                        label = "Replay",
+                        on_click = move || {
+                            if let Some(h) = replay_ref.get() {
+                                h.replay(0.0, 1.0, 600, Easing::EaseOut);
+                            }
+                        },
+                        style = secondary_button_style()
+                    )
+                }
+
+                // Swap icon — toggle between two icons with a button
+                Text(style = subtitle_style()) { "Swap icon (reactive)" }
+                View(style = spaced_row_style()) {
+                    if icon_toggled.get() {
+                        Icon(data = icons_lucide::X, color = move || Color::from("#FF3B30"))
+                    } else {
+                        Icon(data = icons_lucide::PLUS, color = move || Color::from("#34C759"))
+                    }
+                    Button(
+                        label = if icon_toggled.get() { "Close → Add" } else { "Add → Close" },
+                        on_click = move || icon_toggled.update(|v| *v = !*v),
+                        style = secondary_button_style()
+                    )
                 }
             }
 
@@ -1881,14 +2102,15 @@ pub fn overlays(props: &OverlaysProps) -> Primitive {
     ui! {
         View(style = page_style()) {
             Topbar(title = "Overlays".to_string(), nav = nav)
-            Text(style = subtitle_style()) {
-                "Overlays render above the layout tree, escaping \
-                 parent clipping and stacking contexts. The host \
-                 owns each overlay's open/close signal; flipping it \
-                 mounts/unmounts the floating subtree."
-            }
+            ScrollView {
+                Text(style = subtitle_style()) {
+                    "Overlays render above the layout tree, escaping \
+                     parent clipping and stacking contexts. The host \
+                     owns each overlay's open/close signal; flipping it \
+                     mounts/unmounts the floating subtree."
+                }
 
-            // -------- Modal --------
+                // -------- Modal --------
             View {
                 Text(style = section_heading_style()) { "Modal" }
                 Text(style = subtitle_style()) {
@@ -2055,6 +2277,7 @@ pub fn overlays(props: &OverlaysProps) -> Primitive {
                     }
                 }
             }
+            }
         }
     }
 }
@@ -2191,6 +2414,30 @@ pub fn app() -> Primitive {
                 let id = params.id;
                 ui! { Detail(id = id, nav = nav) }
             })
+            // Per-screen header options for pushed screens
+            .options(HOME_ROUTE, |_: &()| {
+                // Home screen is the drawer — it sets its own header via
+                // drawer's .options(). Hide the stack nav bar for it.
+                ScreenOptions::new().header_shown(false)
+            })
+            .options(SHOWCASE_ROUTE, |_: &()| {
+                ScreenOptions::new().title("Primitives")
+            })
+            .options(PERF_ROUTE, |_: &()| {
+                ScreenOptions::new().title("Performance")
+            })
+            .options(LISTS_ROUTE, |_: &()| {
+                ScreenOptions::new().title("Lists")
+            })
+            .options(OVERLAY_ROUTE, |_: &()| {
+                ScreenOptions::new().title("Overlays")
+            })
+            .options(DETAIL_ROUTE, |p: &DetailParams| {
+                ScreenOptions::new().title(format!("Detail #{}", p.id))
+            })
+            .header_style(nav_bar_header_style())
+            .title_style(nav_bar_title_style())
+            .button_style(nav_bar_button_style())
             .layout(web_layout_with_theme(is_dark))
             .bind(nav) }
     }

@@ -36,7 +36,7 @@
 
 use super::shared::{
     LayoutBuilder, NavigatorCallbacks, NavigatorHandle, Route, RouteEntry, RouteParams,
-    ScreenBuilder,
+    ScreenBuilder, ScreenOptions,
 };
 use crate::{Bound, Primitive, Ref, RefFill};
 use std::any::Any;
@@ -204,7 +204,14 @@ pub struct TabNavigator {
     pub layout: Option<LayoutBuilder>,
     pub placement: TabPlacement,
     pub mount_policy: MountPolicy,
+    pub default_options: Option<ScreenOptions>,
     pub style: Option<crate::StyleSource>,
+    pub header_style: Option<crate::StyleSource>,
+    pub title_style: Option<crate::StyleSource>,
+    pub button_style: Option<crate::StyleSource>,
+    pub tab_bar_style: Option<crate::StyleSource>,
+    pub tab_icon_style: Option<crate::StyleSource>,
+    pub tab_label_style: Option<crate::StyleSource>,
     pub ref_fill: Option<RefFill>,
 }
 
@@ -221,7 +228,14 @@ impl TabNavigator {
             layout: None,
             placement: TabPlacement::Auto,
             mount_policy: MountPolicy::LazyPersistent,
+            default_options: None,
             style: None,
+            header_style: None,
+            title_style: None,
+            button_style: None,
+            tab_bar_style: None,
+            tab_icon_style: None,
+            tab_label_style: None,
             ref_fill: None,
         })))
     }
@@ -256,8 +270,86 @@ impl Bound<TabsHandle> {
             nav.tab_order.push((route.name(), spec));
             nav.screens.insert(
                 route.name(),
-                RouteEntry { path: route.path(), build, from_segments },
+                RouteEntry { path: route.path(), build, from_segments, options: None },
             );
+        }
+        self
+    }
+
+    /// Set per-screen options for `route`. The closure receives the
+    /// route's typed params and returns `ScreenOptions`. Called at
+    /// mount time — not reactive.
+    pub fn options<P: RouteParams>(
+        mut self,
+        route: Route<P>,
+        f: impl Fn(&P) -> ScreenOptions + 'static,
+    ) -> Self {
+        if let Primitive::TabNavigator(nav) = &mut self.primitive {
+            if let Some(entry) = nav.screens.get_mut(route.name()) {
+                entry.options = Some(Rc::new(move |any: &dyn Any| {
+                    let params = any.downcast_ref::<P>().expect(
+                        "TabNavigator::options: param type mismatch",
+                    );
+                    f(params)
+                }));
+            }
+        }
+        self
+    }
+
+    /// Set default screen options for all screens in this navigator.
+    /// Per-screen `.options()` overrides these.
+    pub fn default_screen_options(mut self, opts: ScreenOptions) -> Self {
+        if let Primitive::TabNavigator(nav) = &mut self.primitive {
+            nav.default_options = Some(opts);
+        }
+        self
+    }
+
+    /// Style the tab navigator's header bar.
+    pub fn header_style(mut self, s: impl crate::IntoStyleSource) -> Self {
+        if let Primitive::TabNavigator(nav) = &mut self.primitive {
+            nav.header_style = Some(s.into_style_source());
+        }
+        self
+    }
+
+    /// Style the tab navigator's title text.
+    pub fn title_style(mut self, s: impl crate::IntoStyleSource) -> Self {
+        if let Primitive::TabNavigator(nav) = &mut self.primitive {
+            nav.title_style = Some(s.into_style_source());
+        }
+        self
+    }
+
+    /// Style the tab navigator's bar button items.
+    pub fn button_style(mut self, s: impl crate::IntoStyleSource) -> Self {
+        if let Primitive::TabNavigator(nav) = &mut self.primitive {
+            nav.button_style = Some(s.into_style_source());
+        }
+        self
+    }
+
+    /// Style the tab bar itself (background, border, etc.).
+    pub fn tab_bar_style(mut self, s: impl crate::IntoStyleSource) -> Self {
+        if let Primitive::TabNavigator(nav) = &mut self.primitive {
+            nav.tab_bar_style = Some(s.into_style_source());
+        }
+        self
+    }
+
+    /// Style the tab icons.
+    pub fn tab_icon_style(mut self, s: impl crate::IntoStyleSource) -> Self {
+        if let Primitive::TabNavigator(nav) = &mut self.primitive {
+            nav.tab_icon_style = Some(s.into_style_source());
+        }
+        self
+    }
+
+    /// Style the tab labels.
+    pub fn tab_label_style(mut self, s: impl crate::IntoStyleSource) -> Self {
+        if let Primitive::TabNavigator(nav) = &mut self.primitive {
+            nav.tab_label_style = Some(s.into_style_source());
         }
         self
     }
