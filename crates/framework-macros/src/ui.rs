@@ -364,11 +364,10 @@ fn emit_component(
     //   - `disabled = ...` → `.disabled(...)` (Button only)
     // Other builder methods (`.bind(...)`, etc.) belong in the
     // trailing chain — parsed separately.
-    // `Pressable` deliberately omitted: that tag is owned by
-    // `idea-ui`'s styled component, which wraps the framework's
-    // `pressable` primitive internally. User code that wants the
-    // bare primitive calls `framework_core::pressable(...)`
-    // directly.
+    // `Pressable` is deliberately omitted: that tag is owned by
+    // idea-ui's styled component (which wraps the framework's
+    // `pressable` primitive internally). User code that wants the
+    // bare primitive calls `framework_core::pressable(...)`.
     let is_primitive = matches!(
         lower.as_str(),
         "text" | "button" | "view" | "when"

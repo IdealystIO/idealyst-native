@@ -1,49 +1,80 @@
-//! `Badge` — small pill-shaped status indicator. Coloring is driven
-//! by an [`Intent`] — the same vocabulary `Pressable` uses.
+//! `Badge` — small pill-shaped status indicator. Same intent +
+//! kind vocabulary as [`Button`](super::button::Button); kinds are
+//! limited to Solid / Soft / Outlined (Ghost doesn't apply — a badge
+//! needs a visible surface to read as a chip).
 //!
 //! ```ignore
-//! use idea_ui::{Primary, IntoRcIntent};
-//!
-//! ui! { Badge(label = "New", intent = Primary.into_rc()) }
+//! ui! { Badge(label = "New", intent = IntentTag::Success, kind = BadgeKind::Soft) }
 //! ```
-
-use std::rc::Rc;
 
 use framework_core::{ui, Primitive, StyleApplication};
 
-use crate::intent::{apply_palette, Intent, IntoRcIntent, Neutral};
+use crate::components::button::IntentTag;
 use crate::stylesheets::Badge;
 use crate::theme::IdeaThemeRef;
+
+/// Visual treatment for a Badge. No Ghost — a borderless transparent
+/// chip would be invisible.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum BadgeKind {
+    Solid,
+    #[default]
+    Soft,
+    Outlined,
+}
+
+impl BadgeKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Solid => "solid",
+            Self::Soft => "soft",
+            Self::Outlined => "outlined",
+        }
+    }
+    pub fn all() -> &'static [BadgeKind] {
+        &[BadgeKind::Solid, BadgeKind::Soft, BadgeKind::Outlined]
+    }
+}
+
+impl framework_core::VariantEnum for BadgeKind {
+    fn as_variant_str(self) -> &'static str {
+        self.as_str()
+    }
+    fn all_variants() -> &'static [Self] {
+        Self::all()
+    }
+}
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct BadgeProps {
     pub label: String,
-    /// Defaults to [`Neutral`] — a muted surface-tinted look.
-    pub intent: Rc<dyn Intent>,
+    pub intent: IntentTag,
+    pub kind: BadgeKind,
 }
 
 impl Default for BadgeProps {
     fn default() -> Self {
         Self {
             label: String::new(),
-            intent: Neutral.into_rc(),
+            // Default to Neutral/Soft — the most generic "this is a
+            // status chip" look.
+            intent: IntentTag::Neutral,
+            kind: BadgeKind::Soft,
         }
     }
 }
 
 pub fn badge(props: &BadgeProps) -> Primitive {
     let label = props.label.clone();
-    let intent: Rc<dyn Intent> = props.intent.clone();
+    let intent = props.intent;
+    let kind = props.kind;
+    let appearance = format!("{}_{}", intent.as_str(), kind.as_str());
 
     let style = move || {
-        let theme = framework_core::active_theme();
-        let theme_ref = theme
+        let _ = framework_core::active_theme()
             .downcast_ref::<IdeaThemeRef>()
             .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
-        let palette = intent.palette(theme_ref);
-
-        let app = StyleApplication::new(Badge::sheet());
-        apply_palette(app, &palette)
+        StyleApplication::new(Badge::sheet()).with("appearance", appearance.clone())
     };
 
     ui! { Text(style = style) { label } }

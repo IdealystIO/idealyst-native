@@ -44,21 +44,28 @@ macro_rules! stack {
 }
 
 // =============================================================================
-// pressable — by-ref
+// btn — by-ref (idea-ui's styled clickable; uses `intent` + `kind`)
+//
+// The ui! tag is `Btn(...)` (lowered to `btn!(...)`) rather than
+// `Button(...)` because the framework's `ui!` macro already
+// recognizes `Button` as a shorthand for the framework's `<button>`
+// primitive (`framework_core::button`). Keeping both tags lets
+// app code mix raw HTML-button-style primitives with idea-ui's
+// styled `Btn` without one taking the other's name.
 // =============================================================================
 
 #[macro_export]
 #[doc(hidden)]
-macro_rules! pressable {
+macro_rules! btn {
     () => {
-        $crate::components::pressable::pressable(
-            &<$crate::components::pressable::PressableProps as ::core::default::Default>::default(),
+        $crate::components::button::button(
+            &<$crate::components::button::ButtonProps as ::core::default::Default>::default(),
         )
     };
     ( $( $field:ident = $value:expr ),+ $(,)? ) => {
-        $crate::components::pressable::pressable(&$crate::components::pressable::PressableProps {
+        $crate::components::button::button(&$crate::components::button::ButtonProps {
             $( $field: $value, )+
-            ..<$crate::components::pressable::PressableProps as ::core::default::Default>::default()
+            ..<$crate::components::button::ButtonProps as ::core::default::Default>::default()
         })
     };
 }

@@ -167,24 +167,13 @@ pub fn derive_doc_controls(input: TokenStream) -> TokenStream {
                 key_reads.push(quote! { state.#f_ident.get() });
             }
             FieldKind::Intent => {
-                state_fields.push(quote! {
-                    pub #f_ident: ::framework_core::Signal<::idea_ui::doc_controls::IntentKind>
-                });
-                init_field_inits.push(quote! {
-                    #f_ident: ::framework_core::Signal::new(
-                        <::idea_ui::doc_controls::IntentKind as ::core::default::Default>::default(),
-                    )
-                });
-                from_state_overrides.push(quote! {
-                    props.#f_ident = state.#f_ident.get().into_rc();
-                });
-                control_rows.push(quote! {
-                    ::idea_ui::doc_controls::control_row(
-                        #f_label,
-                        ::idea_ui::doc_controls::intent_control(state.#f_ident),
-                    )
-                });
-                key_reads.push(quote! { state.#f_ident.get() });
+                // Legacy `Rc<dyn Intent>` props are no longer the
+                // public surface — component props now hold a
+                // typed `IntentTag` enum, which dispatches through
+                // the `VariantEnum` path below. If a custom
+                // component still uses `Rc<dyn Intent>`, the panel
+                // skips it; the field falls through to
+                // `Default::default()`.
             }
             FieldKind::VariantEnum(ty) => {
                 state_fields.push(quote! {
@@ -310,9 +299,11 @@ fn classify_field_type(ty: &Type) -> FieldKind {
     // Variant-enum fallback: simple path types whose name ends in a
     // suffix the stylesheet macro generates (look like
     // `*Size`, `*Kind`, `*Tone`, `*Axis`, `*Padding`, `*Align`,
-    // `*Justify`, `*Gap`). The generated `VariantEnum` impl exists
-    // for these by convention. Anything else falls through to
-    // Unknown so we don't get cryptic trait-bound errors.
+    // `*Justify`, `*Gap`, `*Tag` — the latter covers `IntentTag`,
+    // the per-component "which intent" picker). The generated
+    // `VariantEnum` impl exists for these by convention. Anything
+    // else falls through to Unknown so we don't get cryptic
+    // trait-bound errors.
     if let Some(ident) = simple_path_ident(ty) {
         let s = ident.to_string();
         if [
@@ -324,6 +315,8 @@ fn classify_field_type(ty: &Type) -> FieldKind {
             "Align",
             "Justify",
             "Gap",
+            "Tag",
+            "Color",
         ]
         .iter()
         .any(|suffix| s.ends_with(suffix))

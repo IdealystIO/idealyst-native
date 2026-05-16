@@ -61,17 +61,24 @@ stylesheet! {
 }
 
 // =============================================================================
-// Pressable (button)
+// Button — the styled clickable.
 // =============================================================================
 //
-// Pressable's *visual* (background, text color, hover/pressed shades)
-// is now driven by an `Intent` trait object the component applies as
-// overrides on top of this stylesheet. The stylesheet handles the
-// intent-agnostic bits: size, padding, radius, type weight, and the
-// disabled state.
+// Visual is driven by an `appearance` variant axis that encodes
+// (intent × kind) — 7 intents × 4 kinds = 28 arms. Each arm sets the
+// base background / text / border for the (intent, kind) pair.
+//
+// Hover and pressed feedback are uniform across appearances: a subtle
+// opacity dim. (A future framework feature for per-state property
+// overrides will let us shift colors per-state instead; the opacity
+// dim is the v1 placeholder.)
+//
+// The Button component never speaks the appearance variant directly;
+// it takes `intent` + `kind` props and joins them with an `_` to
+// produce the appearance key (e.g. `(Danger, Outlined) → "danger_outlined"`).
 
 stylesheet! {
-    pub Pressable<IdeaThemeRef> {
+    pub Button<IdeaThemeRef> {
         base(t) {
             padding_vertical: t.spacing().sm,
             padding_horizontal: t.spacing().lg,
@@ -98,6 +105,162 @@ stylesheet! {
                 padding_horizontal: t.spacing().xl,
                 font_size: t.typography().size_lg,
             }
+        }
+        variant appearance {
+            #[default]
+            primary_solid(t) {
+                background: t.intents().primary.solid_bg.clone(),
+                color: t.intents().primary.solid_text.clone(),
+                border_width: 0.0,
+            }
+            primary_soft(t) {
+                background: t.intents().primary.soft_bg.clone(),
+                color: t.intents().primary.soft_text.clone(),
+                border_width: 0.0,
+            }
+            primary_outlined(t) {
+                background: Color("transparent".into()),
+                color: t.intents().primary.fg.clone(),
+                border_width: 1.0,
+                border_color: t.intents().primary.border.clone(),
+            }
+            primary_ghost(t) {
+                background: Color("transparent".into()),
+                color: t.intents().primary.fg.clone(),
+                border_width: 0.0,
+            }
+            secondary_solid(t) {
+                background: t.intents().secondary.solid_bg.clone(),
+                color: t.intents().secondary.solid_text.clone(),
+                border_width: 0.0,
+            }
+            secondary_soft(t) {
+                background: t.intents().secondary.soft_bg.clone(),
+                color: t.intents().secondary.soft_text.clone(),
+                border_width: 0.0,
+            }
+            secondary_outlined(t) {
+                background: Color("transparent".into()),
+                color: t.intents().secondary.fg.clone(),
+                border_width: 1.0,
+                border_color: t.intents().secondary.border.clone(),
+            }
+            secondary_ghost(t) {
+                background: Color("transparent".into()),
+                color: t.intents().secondary.fg.clone(),
+                border_width: 0.0,
+            }
+            neutral_solid(t) {
+                background: t.intents().neutral.solid_bg.clone(),
+                color: t.intents().neutral.solid_text.clone(),
+                border_width: 0.0,
+            }
+            neutral_soft(t) {
+                background: t.intents().neutral.soft_bg.clone(),
+                color: t.intents().neutral.soft_text.clone(),
+                border_width: 0.0,
+            }
+            neutral_outlined(t) {
+                background: Color("transparent".into()),
+                color: t.intents().neutral.fg.clone(),
+                border_width: 1.0,
+                border_color: t.intents().neutral.border.clone(),
+            }
+            neutral_ghost(t) {
+                background: Color("transparent".into()),
+                color: t.intents().neutral.fg.clone(),
+                border_width: 0.0,
+            }
+            success_solid(t) {
+                background: t.intents().success.solid_bg.clone(),
+                color: t.intents().success.solid_text.clone(),
+                border_width: 0.0,
+            }
+            success_soft(t) {
+                background: t.intents().success.soft_bg.clone(),
+                color: t.intents().success.soft_text.clone(),
+                border_width: 0.0,
+            }
+            success_outlined(t) {
+                background: Color("transparent".into()),
+                color: t.intents().success.fg.clone(),
+                border_width: 1.0,
+                border_color: t.intents().success.border.clone(),
+            }
+            success_ghost(t) {
+                background: Color("transparent".into()),
+                color: t.intents().success.fg.clone(),
+                border_width: 0.0,
+            }
+            danger_solid(t) {
+                background: t.intents().danger.solid_bg.clone(),
+                color: t.intents().danger.solid_text.clone(),
+                border_width: 0.0,
+            }
+            danger_soft(t) {
+                background: t.intents().danger.soft_bg.clone(),
+                color: t.intents().danger.soft_text.clone(),
+                border_width: 0.0,
+            }
+            danger_outlined(t) {
+                background: Color("transparent".into()),
+                color: t.intents().danger.fg.clone(),
+                border_width: 1.0,
+                border_color: t.intents().danger.border.clone(),
+            }
+            danger_ghost(t) {
+                background: Color("transparent".into()),
+                color: t.intents().danger.fg.clone(),
+                border_width: 0.0,
+            }
+            warning_solid(t) {
+                background: t.intents().warning.solid_bg.clone(),
+                color: t.intents().warning.solid_text.clone(),
+                border_width: 0.0,
+            }
+            warning_soft(t) {
+                background: t.intents().warning.soft_bg.clone(),
+                color: t.intents().warning.soft_text.clone(),
+                border_width: 0.0,
+            }
+            warning_outlined(t) {
+                background: Color("transparent".into()),
+                color: t.intents().warning.fg.clone(),
+                border_width: 1.0,
+                border_color: t.intents().warning.border.clone(),
+            }
+            warning_ghost(t) {
+                background: Color("transparent".into()),
+                color: t.intents().warning.fg.clone(),
+                border_width: 0.0,
+            }
+            info_solid(t) {
+                background: t.intents().info.solid_bg.clone(),
+                color: t.intents().info.solid_text.clone(),
+                border_width: 0.0,
+            }
+            info_soft(t) {
+                background: t.intents().info.soft_bg.clone(),
+                color: t.intents().info.soft_text.clone(),
+                border_width: 0.0,
+            }
+            info_outlined(t) {
+                background: Color("transparent".into()),
+                color: t.intents().info.fg.clone(),
+                border_width: 1.0,
+                border_color: t.intents().info.border.clone(),
+            }
+            info_ghost(t) {
+                background: Color("transparent".into()),
+                color: t.intents().info.fg.clone(),
+                border_width: 0.0,
+            }
+        }
+        state hovered(_t) {
+            opacity: 0.92,
+        }
+        state pressed(_t) {
+            opacity: 0.85,
         }
         state disabled(_t) {
             opacity: 0.45,
@@ -343,7 +506,7 @@ stylesheet! {
         variant tone {
             #[default]
             default(t) { color: t.colors().text_muted.clone() }
-            error(t)   { color: t.colors().danger.clone() }
+            error(t)   { color: t.intents().danger.fg.clone() }
         }
     }
 }
@@ -389,9 +552,9 @@ stylesheet! {
 // Badge
 // =============================================================================
 //
-// Like Pressable, Badge's coloring is driven by an Intent applied as
-// overrides. The stylesheet handles the shape: padding, radius,
-// typography. Background/color come from the intent.
+// Same intent × kind appearance model as Button, but only three kinds
+// (Solid / Soft / Outlined — no Ghost, since a badge needs a visible
+// surface to read as a chip).
 
 stylesheet! {
     pub Badge<IdeaThemeRef> {
@@ -404,6 +567,126 @@ stylesheet! {
             letter_spacing: 0.4,
             text_transform: TextTransform::Uppercase,
             text_align: TextAlign::Center,
+        }
+        variant appearance {
+            primary_solid(t) {
+                background: t.intents().primary.solid_bg.clone(),
+                color: t.intents().primary.solid_text.clone(),
+                border_width: 0.0,
+            }
+            primary_soft(t) {
+                background: t.intents().primary.soft_bg.clone(),
+                color: t.intents().primary.soft_text.clone(),
+                border_width: 0.0,
+            }
+            primary_outlined(t) {
+                background: Color("transparent".into()),
+                color: t.intents().primary.fg.clone(),
+                border_width: 1.0,
+                border_color: t.intents().primary.border.clone(),
+            }
+            secondary_solid(t) {
+                background: t.intents().secondary.solid_bg.clone(),
+                color: t.intents().secondary.solid_text.clone(),
+                border_width: 0.0,
+            }
+            secondary_soft(t) {
+                background: t.intents().secondary.soft_bg.clone(),
+                color: t.intents().secondary.soft_text.clone(),
+                border_width: 0.0,
+            }
+            secondary_outlined(t) {
+                background: Color("transparent".into()),
+                color: t.intents().secondary.fg.clone(),
+                border_width: 1.0,
+                border_color: t.intents().secondary.border.clone(),
+            }
+            neutral_solid(t) {
+                background: t.intents().neutral.solid_bg.clone(),
+                color: t.intents().neutral.solid_text.clone(),
+                border_width: 0.0,
+            }
+            #[default]
+            neutral_soft(t) {
+                background: t.intents().neutral.soft_bg.clone(),
+                color: t.intents().neutral.soft_text.clone(),
+                border_width: 0.0,
+            }
+            neutral_outlined(t) {
+                background: Color("transparent".into()),
+                color: t.intents().neutral.fg.clone(),
+                border_width: 1.0,
+                border_color: t.intents().neutral.border.clone(),
+            }
+            success_solid(t) {
+                background: t.intents().success.solid_bg.clone(),
+                color: t.intents().success.solid_text.clone(),
+                border_width: 0.0,
+            }
+            success_soft(t) {
+                background: t.intents().success.soft_bg.clone(),
+                color: t.intents().success.soft_text.clone(),
+                border_width: 0.0,
+            }
+            success_outlined(t) {
+                background: Color("transparent".into()),
+                color: t.intents().success.fg.clone(),
+                border_width: 1.0,
+                border_color: t.intents().success.border.clone(),
+            }
+            danger_solid(t) {
+                background: t.intents().danger.solid_bg.clone(),
+                color: t.intents().danger.solid_text.clone(),
+                border_width: 0.0,
+            }
+            danger_soft(t) {
+                background: t.intents().danger.soft_bg.clone(),
+                color: t.intents().danger.soft_text.clone(),
+                border_width: 0.0,
+            }
+            danger_outlined(t) {
+                background: Color("transparent".into()),
+                color: t.intents().danger.fg.clone(),
+                border_width: 1.0,
+                border_color: t.intents().danger.border.clone(),
+            }
+            warning_solid(t) {
+                background: t.intents().warning.solid_bg.clone(),
+                color: t.intents().warning.solid_text.clone(),
+                border_width: 0.0,
+            }
+            warning_soft(t) {
+                background: t.intents().warning.soft_bg.clone(),
+                color: t.intents().warning.soft_text.clone(),
+                border_width: 0.0,
+            }
+            warning_outlined(t) {
+                background: Color("transparent".into()),
+                color: t.intents().warning.fg.clone(),
+                border_width: 1.0,
+                border_color: t.intents().warning.border.clone(),
+            }
+            info_solid(t) {
+                background: t.intents().info.solid_bg.clone(),
+                color: t.intents().info.solid_text.clone(),
+                border_width: 0.0,
+            }
+            info_soft(t) {
+                background: t.intents().info.soft_bg.clone(),
+                color: t.intents().info.soft_text.clone(),
+                border_width: 0.0,
+            }
+            info_outlined(t) {
+                background: Color("transparent".into()),
+                color: t.intents().info.fg.clone(),
+                border_width: 1.0,
+                border_color: t.intents().info.border.clone(),
+            }
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            color: 250ms EaseInOut,
+            border_color: 250ms EaseInOut,
         }
     }
 }
@@ -596,6 +879,163 @@ stylesheet! {
                 height: 48.0,
             }
         }
+        // Identical `appearance` axis as Button — same 7 intents × 4 kinds.
+        variant appearance {
+            primary_solid(t) {
+                background: t.intents().primary.solid_bg.clone(),
+                color: t.intents().primary.solid_text.clone(),
+                border_width: 0.0,
+            }
+            primary_soft(t) {
+                background: t.intents().primary.soft_bg.clone(),
+                color: t.intents().primary.soft_text.clone(),
+                border_width: 0.0,
+            }
+            primary_outlined(t) {
+                background: Color("transparent".into()),
+                color: t.intents().primary.fg.clone(),
+                border_width: 1.0,
+                border_color: t.intents().primary.border.clone(),
+            }
+            primary_ghost(t) {
+                background: Color("transparent".into()),
+                color: t.intents().primary.fg.clone(),
+                border_width: 0.0,
+            }
+            secondary_solid(t) {
+                background: t.intents().secondary.solid_bg.clone(),
+                color: t.intents().secondary.solid_text.clone(),
+                border_width: 0.0,
+            }
+            secondary_soft(t) {
+                background: t.intents().secondary.soft_bg.clone(),
+                color: t.intents().secondary.soft_text.clone(),
+                border_width: 0.0,
+            }
+            secondary_outlined(t) {
+                background: Color("transparent".into()),
+                color: t.intents().secondary.fg.clone(),
+                border_width: 1.0,
+                border_color: t.intents().secondary.border.clone(),
+            }
+            secondary_ghost(t) {
+                background: Color("transparent".into()),
+                color: t.intents().secondary.fg.clone(),
+                border_width: 0.0,
+            }
+            #[default]
+            neutral_solid(t) {
+                background: t.intents().neutral.solid_bg.clone(),
+                color: t.intents().neutral.solid_text.clone(),
+                border_width: 0.0,
+            }
+            neutral_soft(t) {
+                background: t.intents().neutral.soft_bg.clone(),
+                color: t.intents().neutral.soft_text.clone(),
+                border_width: 0.0,
+            }
+            neutral_outlined(t) {
+                background: Color("transparent".into()),
+                color: t.intents().neutral.fg.clone(),
+                border_width: 1.0,
+                border_color: t.intents().neutral.border.clone(),
+            }
+            neutral_ghost(t) {
+                background: Color("transparent".into()),
+                color: t.intents().neutral.fg.clone(),
+                border_width: 0.0,
+            }
+            success_solid(t) {
+                background: t.intents().success.solid_bg.clone(),
+                color: t.intents().success.solid_text.clone(),
+                border_width: 0.0,
+            }
+            success_soft(t) {
+                background: t.intents().success.soft_bg.clone(),
+                color: t.intents().success.soft_text.clone(),
+                border_width: 0.0,
+            }
+            success_outlined(t) {
+                background: Color("transparent".into()),
+                color: t.intents().success.fg.clone(),
+                border_width: 1.0,
+                border_color: t.intents().success.border.clone(),
+            }
+            success_ghost(t) {
+                background: Color("transparent".into()),
+                color: t.intents().success.fg.clone(),
+                border_width: 0.0,
+            }
+            danger_solid(t) {
+                background: t.intents().danger.solid_bg.clone(),
+                color: t.intents().danger.solid_text.clone(),
+                border_width: 0.0,
+            }
+            danger_soft(t) {
+                background: t.intents().danger.soft_bg.clone(),
+                color: t.intents().danger.soft_text.clone(),
+                border_width: 0.0,
+            }
+            danger_outlined(t) {
+                background: Color("transparent".into()),
+                color: t.intents().danger.fg.clone(),
+                border_width: 1.0,
+                border_color: t.intents().danger.border.clone(),
+            }
+            danger_ghost(t) {
+                background: Color("transparent".into()),
+                color: t.intents().danger.fg.clone(),
+                border_width: 0.0,
+            }
+            warning_solid(t) {
+                background: t.intents().warning.solid_bg.clone(),
+                color: t.intents().warning.solid_text.clone(),
+                border_width: 0.0,
+            }
+            warning_soft(t) {
+                background: t.intents().warning.soft_bg.clone(),
+                color: t.intents().warning.soft_text.clone(),
+                border_width: 0.0,
+            }
+            warning_outlined(t) {
+                background: Color("transparent".into()),
+                color: t.intents().warning.fg.clone(),
+                border_width: 1.0,
+                border_color: t.intents().warning.border.clone(),
+            }
+            warning_ghost(t) {
+                background: Color("transparent".into()),
+                color: t.intents().warning.fg.clone(),
+                border_width: 0.0,
+            }
+            info_solid(t) {
+                background: t.intents().info.solid_bg.clone(),
+                color: t.intents().info.solid_text.clone(),
+                border_width: 0.0,
+            }
+            info_soft(t) {
+                background: t.intents().info.soft_bg.clone(),
+                color: t.intents().info.soft_text.clone(),
+                border_width: 0.0,
+            }
+            info_outlined(t) {
+                background: Color("transparent".into()),
+                color: t.intents().info.fg.clone(),
+                border_width: 1.0,
+                border_color: t.intents().info.border.clone(),
+            }
+            info_ghost(t) {
+                background: Color("transparent".into()),
+                color: t.intents().info.fg.clone(),
+                border_width: 0.0,
+            }
+        }
+        state hovered(_t) {
+            opacity: 0.92,
+        }
+        state pressed(_t) {
+            opacity: 0.85,
+        }
         state disabled(_t) {
             opacity: 0.45,
         }
@@ -612,6 +1052,10 @@ stylesheet! {
 // Avatar — circular container + text overlay.
 // =============================================================================
 
+// Avatar takes a `color` axis (not an intent) — the placeholder
+// background uses the named color's soft tint, with the matching
+// soft_text on top. Picked separately from Intent because Avatar is
+// not a semantic action; it's a person/object placeholder.
 stylesheet! {
     pub Avatar<IdeaThemeRef> {
         base(t) {
@@ -619,6 +1063,10 @@ stylesheet! {
             align_items: AlignItems::Center,
             justify_content: JustifyContent::Center,
             overflow: framework_core::Overflow::Hidden,
+            // Default to neutral wash so a no-prop Avatar reads as a
+            // generic placeholder rather than a colored chip.
+            background: t.intents().neutral.soft_bg.clone(),
+            color: t.intents().neutral.soft_text.clone(),
         }
         variant size {
             xs(_t) { width: 24.0, height: 24.0 }
@@ -627,6 +1075,37 @@ stylesheet! {
             md(_t) { width: 40.0, height: 40.0 }
             lg(_t) { width: 56.0, height: 56.0 }
             xl(_t) { width: 80.0, height: 80.0 }
+        }
+        variant color {
+            #[default]
+            neutral(t) {
+                background: t.intents().neutral.soft_bg.clone(),
+                color: t.intents().neutral.soft_text.clone(),
+            }
+            primary(t) {
+                background: t.intents().primary.soft_bg.clone(),
+                color: t.intents().primary.soft_text.clone(),
+            }
+            secondary(t) {
+                background: t.intents().secondary.soft_bg.clone(),
+                color: t.intents().secondary.soft_text.clone(),
+            }
+            success(t) {
+                background: t.intents().success.soft_bg.clone(),
+                color: t.intents().success.soft_text.clone(),
+            }
+            danger(t) {
+                background: t.intents().danger.soft_bg.clone(),
+                color: t.intents().danger.soft_text.clone(),
+            }
+            warning(t) {
+                background: t.intents().warning.soft_bg.clone(),
+                color: t.intents().warning.soft_text.clone(),
+            }
+            info(t) {
+                background: t.intents().info.soft_bg.clone(),
+                color: t.intents().info.soft_text.clone(),
+            }
         }
         transitions {
             background: 250ms EaseInOut,
@@ -668,9 +1147,125 @@ stylesheet! {
             padding_horizontal: t.spacing().sm,
             border_radius: t.radius().pill,
         }
+        variant appearance {
+            primary_solid(t) {
+                background: t.intents().primary.solid_bg.clone(),
+                color: t.intents().primary.solid_text.clone(),
+                border_width: 0.0,
+            }
+            primary_soft(t) {
+                background: t.intents().primary.soft_bg.clone(),
+                color: t.intents().primary.soft_text.clone(),
+                border_width: 0.0,
+            }
+            primary_outlined(t) {
+                background: Color("transparent".into()),
+                color: t.intents().primary.fg.clone(),
+                border_width: 1.0,
+                border_color: t.intents().primary.border.clone(),
+            }
+            secondary_solid(t) {
+                background: t.intents().secondary.solid_bg.clone(),
+                color: t.intents().secondary.solid_text.clone(),
+                border_width: 0.0,
+            }
+            secondary_soft(t) {
+                background: t.intents().secondary.soft_bg.clone(),
+                color: t.intents().secondary.soft_text.clone(),
+                border_width: 0.0,
+            }
+            secondary_outlined(t) {
+                background: Color("transparent".into()),
+                color: t.intents().secondary.fg.clone(),
+                border_width: 1.0,
+                border_color: t.intents().secondary.border.clone(),
+            }
+            neutral_solid(t) {
+                background: t.intents().neutral.solid_bg.clone(),
+                color: t.intents().neutral.solid_text.clone(),
+                border_width: 0.0,
+            }
+            #[default]
+            neutral_soft(t) {
+                background: t.intents().neutral.soft_bg.clone(),
+                color: t.intents().neutral.soft_text.clone(),
+                border_width: 0.0,
+            }
+            neutral_outlined(t) {
+                background: Color("transparent".into()),
+                color: t.intents().neutral.fg.clone(),
+                border_width: 1.0,
+                border_color: t.intents().neutral.border.clone(),
+            }
+            success_solid(t) {
+                background: t.intents().success.solid_bg.clone(),
+                color: t.intents().success.solid_text.clone(),
+                border_width: 0.0,
+            }
+            success_soft(t) {
+                background: t.intents().success.soft_bg.clone(),
+                color: t.intents().success.soft_text.clone(),
+                border_width: 0.0,
+            }
+            success_outlined(t) {
+                background: Color("transparent".into()),
+                color: t.intents().success.fg.clone(),
+                border_width: 1.0,
+                border_color: t.intents().success.border.clone(),
+            }
+            danger_solid(t) {
+                background: t.intents().danger.solid_bg.clone(),
+                color: t.intents().danger.solid_text.clone(),
+                border_width: 0.0,
+            }
+            danger_soft(t) {
+                background: t.intents().danger.soft_bg.clone(),
+                color: t.intents().danger.soft_text.clone(),
+                border_width: 0.0,
+            }
+            danger_outlined(t) {
+                background: Color("transparent".into()),
+                color: t.intents().danger.fg.clone(),
+                border_width: 1.0,
+                border_color: t.intents().danger.border.clone(),
+            }
+            warning_solid(t) {
+                background: t.intents().warning.solid_bg.clone(),
+                color: t.intents().warning.solid_text.clone(),
+                border_width: 0.0,
+            }
+            warning_soft(t) {
+                background: t.intents().warning.soft_bg.clone(),
+                color: t.intents().warning.soft_text.clone(),
+                border_width: 0.0,
+            }
+            warning_outlined(t) {
+                background: Color("transparent".into()),
+                color: t.intents().warning.fg.clone(),
+                border_width: 1.0,
+                border_color: t.intents().warning.border.clone(),
+            }
+            info_solid(t) {
+                background: t.intents().info.solid_bg.clone(),
+                color: t.intents().info.solid_text.clone(),
+                border_width: 0.0,
+            }
+            info_soft(t) {
+                background: t.intents().info.soft_bg.clone(),
+                color: t.intents().info.soft_text.clone(),
+                border_width: 0.0,
+            }
+            info_outlined(t) {
+                background: Color("transparent".into()),
+                color: t.intents().info.fg.clone(),
+                border_width: 1.0,
+                border_color: t.intents().info.border.clone(),
+            }
+        }
         transitions {
             background: 250ms EaseInOut,
             color: 250ms EaseInOut,
+            border_color: 250ms EaseInOut,
         }
     }
 }
@@ -719,9 +1314,125 @@ stylesheet! {
             padding: t.spacing().lg,
             border_radius: t.radius().md,
         }
+        variant appearance {
+            primary_solid(t) {
+                background: t.intents().primary.solid_bg.clone(),
+                color: t.intents().primary.solid_text.clone(),
+                border_width: 0.0,
+            }
+            primary_soft(t) {
+                background: t.intents().primary.soft_bg.clone(),
+                color: t.intents().primary.soft_text.clone(),
+                border_width: 0.0,
+            }
+            primary_outlined(t) {
+                background: Color("transparent".into()),
+                color: t.intents().primary.fg.clone(),
+                border_width: 1.0,
+                border_color: t.intents().primary.border.clone(),
+            }
+            secondary_solid(t) {
+                background: t.intents().secondary.solid_bg.clone(),
+                color: t.intents().secondary.solid_text.clone(),
+                border_width: 0.0,
+            }
+            secondary_soft(t) {
+                background: t.intents().secondary.soft_bg.clone(),
+                color: t.intents().secondary.soft_text.clone(),
+                border_width: 0.0,
+            }
+            secondary_outlined(t) {
+                background: Color("transparent".into()),
+                color: t.intents().secondary.fg.clone(),
+                border_width: 1.0,
+                border_color: t.intents().secondary.border.clone(),
+            }
+            neutral_solid(t) {
+                background: t.intents().neutral.solid_bg.clone(),
+                color: t.intents().neutral.solid_text.clone(),
+                border_width: 0.0,
+            }
+            #[default]
+            neutral_soft(t) {
+                background: t.intents().neutral.soft_bg.clone(),
+                color: t.intents().neutral.soft_text.clone(),
+                border_width: 0.0,
+            }
+            neutral_outlined(t) {
+                background: Color("transparent".into()),
+                color: t.intents().neutral.fg.clone(),
+                border_width: 1.0,
+                border_color: t.intents().neutral.border.clone(),
+            }
+            success_solid(t) {
+                background: t.intents().success.solid_bg.clone(),
+                color: t.intents().success.solid_text.clone(),
+                border_width: 0.0,
+            }
+            success_soft(t) {
+                background: t.intents().success.soft_bg.clone(),
+                color: t.intents().success.soft_text.clone(),
+                border_width: 0.0,
+            }
+            success_outlined(t) {
+                background: Color("transparent".into()),
+                color: t.intents().success.fg.clone(),
+                border_width: 1.0,
+                border_color: t.intents().success.border.clone(),
+            }
+            danger_solid(t) {
+                background: t.intents().danger.solid_bg.clone(),
+                color: t.intents().danger.solid_text.clone(),
+                border_width: 0.0,
+            }
+            danger_soft(t) {
+                background: t.intents().danger.soft_bg.clone(),
+                color: t.intents().danger.soft_text.clone(),
+                border_width: 0.0,
+            }
+            danger_outlined(t) {
+                background: Color("transparent".into()),
+                color: t.intents().danger.fg.clone(),
+                border_width: 1.0,
+                border_color: t.intents().danger.border.clone(),
+            }
+            warning_solid(t) {
+                background: t.intents().warning.solid_bg.clone(),
+                color: t.intents().warning.solid_text.clone(),
+                border_width: 0.0,
+            }
+            warning_soft(t) {
+                background: t.intents().warning.soft_bg.clone(),
+                color: t.intents().warning.soft_text.clone(),
+                border_width: 0.0,
+            }
+            warning_outlined(t) {
+                background: Color("transparent".into()),
+                color: t.intents().warning.fg.clone(),
+                border_width: 1.0,
+                border_color: t.intents().warning.border.clone(),
+            }
+            info_solid(t) {
+                background: t.intents().info.solid_bg.clone(),
+                color: t.intents().info.solid_text.clone(),
+                border_width: 0.0,
+            }
+            info_soft(t) {
+                background: t.intents().info.soft_bg.clone(),
+                color: t.intents().info.soft_text.clone(),
+                border_width: 0.0,
+            }
+            info_outlined(t) {
+                background: Color("transparent".into()),
+                color: t.intents().info.fg.clone(),
+                border_width: 1.0,
+                border_color: t.intents().info.border.clone(),
+            }
+        }
         transitions {
             background: 250ms EaseInOut,
             color: 250ms EaseInOut,
+            border_color: 250ms EaseInOut,
         }
     }
 }

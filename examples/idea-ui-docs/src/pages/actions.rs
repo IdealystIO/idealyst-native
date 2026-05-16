@@ -1,18 +1,14 @@
-//! Actions — Pressable, IconButton, Badge, Tag.
+//! Actions — Button, IconButton, Badge, Tag.
 //!
 //! Each demo wraps its preview in `DocControls::reactive_preview`
-//! so twiddling a control rebuilds the preview subtree. Without
-//! that wrap, the preview snapshots the signal values at page
-//! mount and never updates — user components like Pressable
-//! aren't reactive per-prop the way built-in `Text` / `Button`
-//! are.
+//! so twiddling a control rebuilds the preview subtree.
 
 use std::rc::Rc;
 
 use framework_core::{ui, Primitive};
 use idea_ui::doc_controls::DocControls;
 use idea_ui::{
-    badge, pressable, stack, BadgeProps, IconButtonProps, PressableProps, StackGap, TagProps,
+    badge, btn, stack, BadgeProps, ButtonProps, IconButtonProps, StackGap, TagProps,
 };
 // idea-ui's own component invocation macros must be in scope.
 use idea_ui::{iconbutton, tag};
@@ -24,12 +20,12 @@ pub fn page() -> Primitive {
         Stack(gap = StackGap::Xl) {
             { page_header(
                 "Actions",
-                "Pressable, IconButton, Badge, and Tag. Every action component honors the \
-                 global Intent vocabulary; pick one in each demo's control panel to see the \
-                 themed coloring update live."
+                "Button, IconButton, Badge, and Tag. Every action component pairs an `intent` \
+                 (semantic meaning) with a `kind` (visual treatment) — pick both in each demo's \
+                 control panel to see the live combination."
             ) }
 
-            { pressable_demo() }
+            { button_demo() }
             { icon_button_demo() }
             { badge_demo() }
             { tag_demo() }
@@ -37,28 +33,31 @@ pub fn page() -> Primitive {
     }
 }
 
-fn pressable_demo() -> Primitive {
-    let state = PressableProps::init_state();
+fn button_demo() -> Primitive {
+    let state = ButtonProps::init_state();
     state.label.set("Click me".to_string());
 
-    let preview = PressableProps::reactive_preview(&state, |props| {
+    let preview = ButtonProps::reactive_preview(&state, |props| {
         let label = props.label;
         let intent = props.intent;
+        let kind = props.kind;
         let size = props.size;
         let on_click: Rc<dyn Fn()> = Rc::new(|| {});
         ui! {
-            Pressable(
+            Btn(
                 label = label,
                 on_click = on_click,
                 intent = intent,
-                size = size
+                kind = kind,
+                size = size,
             )
         }
     });
-    let controls = PressableProps::render_controls(&state);
+    let controls = ButtonProps::render_controls(&state);
     demo_card(
-        "Pressable",
-        "Themed button. Intent drives coloring; size drives padding & font.",
+        "Button",
+        "Themed clickable. Intent picks the palette (Primary / Success / Danger / …); kind \
+         picks the visual (Solid filled, Soft tinted, Outlined, Ghost).",
         preview,
         controls,
     )
@@ -71,6 +70,7 @@ fn icon_button_demo() -> Primitive {
     let preview = IconButtonProps::reactive_preview(&state, |props| {
         let glyph = props.glyph;
         let intent = props.intent;
+        let kind = props.kind;
         let size = props.size;
         let on_click: Rc<dyn Fn()> = Rc::new(|| {});
         ui! {
@@ -78,15 +78,16 @@ fn icon_button_demo() -> Primitive {
                 glyph = glyph,
                 on_click = on_click,
                 intent = intent,
-                size = size
+                kind = kind,
+                size = size,
             )
         }
     });
     let controls = IconButtonProps::render_controls(&state);
     demo_card(
         "IconButton",
-        "Square Pressable variant — takes a glyph string (Unicode symbol, font icon ligature, \
-         single character).",
+        "Square Button variant. Takes a glyph string instead of a label — same intent / kind / \
+         size vocabulary as Button.",
         preview,
         controls,
     )
@@ -99,13 +100,14 @@ fn badge_demo() -> Primitive {
     let preview = BadgeProps::reactive_preview(&state, |props| {
         let label = props.label;
         let intent = props.intent;
-        ui! { Badge(label = label, intent = intent) }
+        let kind = props.kind;
+        ui! { Badge(label = label, intent = intent, kind = kind) }
     });
     let controls = BadgeProps::render_controls(&state);
     demo_card(
         "Badge",
-        "Small pill for status indicators. Intent drives the surface; the label is just a \
-         string.",
+        "Small pill for status indicators. Kinds are Solid / Soft / Outlined — no Ghost (a \
+         transparent badge would be invisible).",
         preview,
         controls,
     )
@@ -118,13 +120,14 @@ fn tag_demo() -> Primitive {
     let preview = TagProps::reactive_preview(&state, |props| {
         let label = props.label;
         let intent = props.intent;
-        ui! { Tag(label = label, intent = intent) }
+        let kind = props.kind;
+        ui! { Tag(label = label, intent = intent, kind = kind) }
     });
     let controls = TagProps::render_controls(&state);
     demo_card(
         "Tag",
-        "Like Badge, with an optional close button. The close button is wired through \
-         `on_remove`; the docs panel skips that field (it's a callback).",
+        "Like Badge, with an optional close affordance via `on_remove` (omitted from the docs \
+         panel since it's a callback).",
         preview,
         controls,
     )

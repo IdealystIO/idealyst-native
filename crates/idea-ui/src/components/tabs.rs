@@ -94,13 +94,16 @@ pub fn tabs(props: TabsProps) -> Primitive {
             StyleApplication::new(TabButton::sheet())
                 .with("active", if active { "on" } else { "off" }.to_string())
         };
-        let button = ui! {
-            Button(
-                label = label,
-                on_click = move || selected.set(on_click_id.clone()),
-                style = style
-            )
-        };
+        // Tab "button" is a framework pressable styled by TabButton.
+        // We use the pressable primitive (not idea-ui's Button) so
+        // the TabButton stylesheet fully owns the visual.
+        let label_child = framework_core::text(label).into_primitive();
+        let button = framework_core::pressable(
+            vec![label_child],
+            move || selected.set(on_click_id.clone()),
+        )
+        .with_style(style)
+        .into_primitive();
         ChildList::append_to(button, &mut bar_children);
     }
 

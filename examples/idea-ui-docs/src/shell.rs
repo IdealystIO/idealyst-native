@@ -11,8 +11,8 @@ use std::rc::Rc;
 
 use framework_core::{ui, ChildList, LayoutProps, Primitive, Signal, StyleApplication, VariantEnum};
 use idea_ui::{
-    body, caption, card, dark_theme, divider, heading, light_theme, pressable,
-    set_idea_theme, stack, switch, BodyTone, HeadingKind, IdeaThemeRef, StackGap,
+    body, caption, card, dark_theme, divider, heading, light_theme, set_idea_theme, stack, switch,
+    BodyTone, HeadingKind, IdeaThemeRef, StackGap,
 };
 
 use crate::routes::INDEX;

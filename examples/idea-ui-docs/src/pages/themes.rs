@@ -4,9 +4,9 @@ use std::rc::Rc;
 
 use framework_core::{ui, Primitive, Signal};
 use idea_ui::{
-    badge, body, card, heading, pressable, stack, BodyTone, HeadingKind, StackAxis, StackGap,
+    badge, body, btn, card, heading, stack, BadgeKind, BodyTone, ButtonKind, HeadingKind,
+    IntentTag, StackAxis, StackGap,
 };
-use idea_ui::doc_controls::IntentKind;
 
 use crate::shell::page_header;
 
@@ -15,9 +15,9 @@ pub fn page(_is_dark: Signal<bool>) -> Primitive {
         Stack(gap = StackGap::Xl) {
             { page_header(
                 "Themes & Intents",
-                "Intent is idea-ui's global semantic-coloring vocabulary. The sidebar's \
-                 Dark mode toggle swaps `light_theme()` for `dark_theme()`; every component \
-                 below re-renders against the new tokens automatically."
+                "Intent is idea-ui's global semantic action vocabulary (Primary / Secondary / \
+                 Neutral / Success / Danger / Warning / Info). It pairs with a per-component \
+                 `kind` axis — Solid, Soft, Outlined, Ghost on Button — to produce the visual."
             ) }
 
             { intent_grid() }
@@ -26,28 +26,30 @@ pub fn page(_is_dark: Signal<bool>) -> Primitive {
     }
 }
 
-/// A grid of every built-in intent shown as a Pressable + a Badge.
-/// Two components, same intent — that's the whole point: intent is
-/// shared vocabulary, not per-component variant.
+/// A grid of every built-in intent rendered as a Button + a Badge.
 fn intent_grid() -> Primitive {
-    let intents = IntentKind::all();
+    let intents = IntentTag::all();
     let mut rows: Vec<Primitive> = Vec::with_capacity(intents.len());
-    for &kind in intents {
-        let name = kind.name().to_string();
-        let press_intent = kind.into_rc();
-        let badge_intent = kind.into_rc();
+    for &intent in intents {
+        let name = format!("{:?}", intent);
         let on_click: Rc<dyn Fn()> = Rc::new(|| {});
         rows.push(ui! {
             Stack(axis = StackAxis::Row, gap = StackGap::Md) {
-                Pressable(label = name.clone(), on_click = on_click.clone(), intent = press_intent)
-                Badge(label = name, intent = badge_intent)
+                Btn(
+                    label = name.clone(),
+                    on_click = on_click.clone(),
+                    intent = intent,
+                    kind = ButtonKind::Solid,
+                )
+                Badge(label = name, intent = intent, kind = BadgeKind::Soft)
             }
         });
     }
     ui! {
         Card {
             Heading(content = "Built-in intents".to_string(), kind = HeadingKind::H2)
-            Body(content = "Each row pairs a Pressable and a Badge under the same intent.".to_string(),
+            Body(content = "Each row pairs a Button (Solid) and a Badge (Soft) for the same \
+                              intent. The intent is shared vocabulary; the kind picks the visual.".to_string(),
                  tone = BodyTone::Muted)
             Stack(gap = StackGap::Sm) { rows }
         }
@@ -58,11 +60,10 @@ fn extension_section() -> Primitive {
     ui! {
         Card {
             Heading(content = "Adding a custom intent".to_string(), kind = HeadingKind::H2)
-            Body(content = "An intent is anything implementing `Intent` — typically a \
-                              zero-sized marker type. Its `palette(theme)` method returns a \
-                              `IntentPalette` (background / hover / pressed / foreground / \
-                              optional border). Once implemented, the marker works in every \
-                              intent-aware component without changing idea-ui itself.".to_string(),
+            Body(content = "v1's component props take a built-in `IntentTag` enum directly. \
+                              Custom intents (a `Hype` brand color, a `Beta` flag color) plug in \
+                              by implementing `Intent` and `IntentTag::Custom(\"hype\")` — \
+                              support for that is a follow-up; for v1 use the seven built-ins.".to_string(),
                  tone = BodyTone::Muted)
         }
     }

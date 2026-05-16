@@ -23,7 +23,7 @@
 //!
 //! ```ignore
 //! use framework_core::{component, signal, ui, Primitive};
-//! use idea_ui::{install_idea_theme, light_theme, IntoRcIntent, Primary, StackGap};
+//! use idea_ui::{install_idea_theme, light_theme, ButtonKind, IntentTag, StackGap};
 //!
 //! #[component]
 //! pub fn app() -> Primitive {
@@ -34,10 +34,14 @@
 //!             Heading(content = "Hello, idea-ui".to_string())
 //!             Card {
 //!                 Body(content = format!("Count: {}", count.get()))
-//!                 Pressable(
+//!                 // `Btn` is idea-ui's styled clickable. `Button` (capital B)
+//!                 // is the framework's `<button>` primitive — useful when
+//!                 // you need a native button without the idea-ui styling.
+//!                 Btn(
 //!                     label = "Increment".to_string(),
 //!                     on_click = std::rc::Rc::new(move || count.update(|n| *n += 1)),
-//!                     intent = Primary.into_rc()
+//!                     intent = IntentTag::Primary,
+//!                     kind = ButtonKind::Solid,
 //!                 )
 //!             }
 //!         }
@@ -62,18 +66,22 @@ pub mod theme;
 
 pub use theme::{
     dark_theme, install_idea_theme, light_theme, set_idea_theme, Colors, IdeaTheme,
-    IdeaThemeDefaults, IdeaThemeRef, Radius, Spacing, Typography,
+    IdeaThemeDefaults, IdeaThemeRef, IntentColors, Intents, Radius, Spacing, Typography,
 };
 
+// The `Intent` trait + 7 built-in marker types still exist for apps
+// that want to author custom intents. Component props now take an
+// `IntentTag` enum directly — that's the public, ergonomic surface.
+// The trait is only for advanced theme extensions.
 pub use intent::{
-    apply_palette, Danger, Ghost, Intent, IntentPalette, IntoRcIntent, Neutral, Primary, Secondary,
-    Success, Warning,
+    Danger, Info, Intent, IntoRcIntent, Neutral, Primary, Secondary, Success, Warning,
 };
 
 pub use components::alert::{alert, AlertProps};
-pub use components::avatar::{avatar, AvatarProps, AvatarSize};
-pub use components::badge::{badge, BadgeProps};
+pub use components::avatar::{avatar, AvatarColor, AvatarProps, AvatarSize};
+pub use components::badge::{badge, BadgeKind, BadgeProps};
 pub use components::body::{body, BodyProps};
+pub use components::button::{button, ButtonKind, ButtonProps, ButtonSize, IntentTag};
 pub use components::caption::{caption, CaptionProps};
 pub use components::card::{card, CardPadding, CardProps, CardTone};
 pub use components::center::{center, CenterProps};
@@ -83,7 +91,6 @@ pub use components::heading::{heading, HeadingProps};
 pub use components::icon_button::{icon_button, IconButtonProps, IconButtonSize};
 pub use components::modal::{modal, ModalProps};
 pub use components::popover::{popover, PopoverProps};
-pub use components::pressable::{pressable, PressableProps, PressableSize};
 pub use components::select::{select, SelectOption, SelectProps, SelectSize};
 pub use components::skeleton::{skeleton, SkeletonProps, SkeletonWidth};
 pub use components::spacer::{spacer, SpacerProps};

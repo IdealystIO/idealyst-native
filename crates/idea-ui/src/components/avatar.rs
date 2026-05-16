@@ -1,42 +1,38 @@
 //! `Avatar` — circular user-identity element.
 //!
 //! Renders an image when `src` is set, otherwise falls back to
-//! `initials` rendered on a colored background. Sized via the
-//! `size` variant; coloring of the initials background is driven by
-//! an [`Intent`] so apps can theme it.
+//! `initials` rendered on a colored background. The `color` prop
+//! picks the placeholder tint — not an intent, since an avatar is a
+//! person/object placeholder, not a semantic action.
 //!
 //! ```ignore
-//! use idea_ui::{Primary, IntoRcIntent};
-//!
 //! ui! {
 //!     Avatar(
-//!         src = Some("https://example.com/avatar.png".to_string()),
 //!         initials = "AB".to_string(),
-//!         intent = Primary.into_rc()
+//!         color = AvatarColor::Primary,
+//!         size = AvatarSize::Md,
 //!     )
 //! }
 //! ```
 
-use std::rc::Rc;
-
 use framework_core::{ui, Primitive, StyleApplication, VariantEnum};
 
-use crate::intent::{apply_palette, Intent, IntoRcIntent, Neutral};
 use crate::stylesheets::{Avatar, AvatarText};
 use crate::theme::IdeaThemeRef;
 
-pub use crate::stylesheets::AvatarSize;
+pub use crate::stylesheets::{AvatarColor, AvatarSize};
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct AvatarProps {
     /// Optional image URL. When `Some`, an `Image` primitive renders
     /// and the initials are hidden. When `None`, the initials show.
     pub src: Option<String>,
-    /// Fallback text rendered when `src` is `None`. Typically the
-    /// user's initials ("AB"); the component doesn't crop or
-    /// uppercase, so pass it pre-formatted.
+    /// Fallback text rendered when `src` is `None`.
     pub initials: String,
-    pub intent: Rc<dyn Intent>,
+    /// Placeholder tint. Reads from `theme.intents().<color>.soft_bg`
+    /// and matching `soft_text`. Distinct from `Intent` because an
+    /// avatar doesn't represent a semantic action.
+    pub color: AvatarColor,
     pub size: AvatarSize,
 }
 
@@ -45,7 +41,7 @@ impl Default for AvatarProps {
         Self {
             src: None,
             initials: String::new(),
-            intent: Neutral.into_rc(),
+            color: AvatarColor::default(),
             size: AvatarSize::default(),
         }
     }
@@ -53,31 +49,23 @@ impl Default for AvatarProps {
 
 pub fn avatar(props: &AvatarProps) -> Primitive {
     let size = props.size;
-    let intent: Rc<dyn Intent> = props.intent.clone();
-    let intent_for_text = intent.clone();
+    let color = props.color;
 
-    // Outer container: circular, sized, intent-colored background.
     let container_style = move || {
-        let theme = framework_core::active_theme();
-        let theme_ref = theme
+        let _ = framework_core::active_theme()
             .downcast_ref::<IdeaThemeRef>()
             .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
-        let palette = intent.palette(theme_ref);
-        let app = StyleApplication::new(Avatar::sheet())
-            .with("size", size.as_variant_str().to_string());
-        apply_palette(app, &palette)
+        StyleApplication::new(Avatar::sheet())
+            .with("size", size.as_variant_str().to_string())
+            .with("color", color.as_variant_str().to_string())
     };
 
-    // Text style: foreground from intent, centered, sized to the avatar.
     let text_style = move || {
-        let theme = framework_core::active_theme();
-        let theme_ref = theme
+        let _ = framework_core::active_theme()
             .downcast_ref::<IdeaThemeRef>()
             .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
-        let palette = intent_for_text.palette(theme_ref);
         StyleApplication::new(AvatarText::sheet())
             .with("size", size.as_variant_str().to_string())
-            .override_color(palette.foreground)
     };
 
     let initials = props.initials.clone();

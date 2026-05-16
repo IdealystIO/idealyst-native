@@ -49,8 +49,8 @@ use framework_core::{ui, ChildList, Primitive, Signal, VariantEnum};
 // scope.
 #[allow(unused_imports)]
 use crate::{
-    card, caption, field, heading, select, stack, switch, HeadingKind, Intent,
-    IntoRcIntent, SelectOption as IdeaSelectOption, StackGap,
+    card, caption, field, heading, select, stack, switch, HeadingKind,
+    SelectOption as IdeaSelectOption, StackGap,
 };
 
 pub use idea_ui_docs_derive::DocControls;
@@ -250,130 +250,6 @@ where
     }
 }
 
-/// Intent picker rendered as a `Select`. Same bridging shape as
-/// [`variant_enum_control`] — the user signal holds [`IntentKind`];
-/// a shadow `Signal<String>` drives the Select; an Effect keeps
-/// the two synced.
-pub fn intent_control(value: Signal<IntentKind>) -> Primitive {
-    use framework_core::Effect;
-
-    let kinds = IntentKind::all();
-    let options: Vec<IdeaSelectOption> = kinds
-        .iter()
-        .map(|k| IdeaSelectOption::new(k.id(), k.name()))
-        .collect();
-
-    let initial = value.get().id().to_string();
-    let shadow: Signal<String> = Signal::new(initial);
-    let _e = Effect::new(move || {
-        let s = value.get().id().to_string();
-        if shadow.get() != s {
-            shadow.set(s);
-        }
-    });
-
-    let on_change: Rc<dyn Fn(String)> = Rc::new(move |picked: String| {
-        if let Some(kind) = IntentKind::from_id(&picked) {
-            if value.get() != kind {
-                value.set(kind);
-            }
-        }
-    });
-
-    ui! {
-        Select(
-            value = shadow,
-            on_change = on_change,
-            options = options,
-            placeholder = Some("Pick".to_string())
-        )
-    }
-}
-
-/// Names every built-in idea-ui intent. The docs use this as a
-/// reflective vocabulary — `Rc<dyn Intent>` can't be enumerated
-/// from outside, so we keep a parallel enumerable type for the
-/// control panel.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum IntentKind {
-    Primary,
-    Secondary,
-    Neutral,
-    Ghost,
-    Success,
-    Warning,
-    Danger,
-}
-
-impl Default for IntentKind {
-    fn default() -> Self {
-        IntentKind::Primary
-    }
-}
-
-impl IntentKind {
-    pub fn all() -> &'static [IntentKind] {
-        &[
-            IntentKind::Primary,
-            IntentKind::Secondary,
-            IntentKind::Neutral,
-            IntentKind::Ghost,
-            IntentKind::Success,
-            IntentKind::Warning,
-            IntentKind::Danger,
-        ]
-    }
-
-    pub fn name(&self) -> &'static str {
-        match self {
-            IntentKind::Primary => "Primary",
-            IntentKind::Secondary => "Secondary",
-            IntentKind::Neutral => "Neutral",
-            IntentKind::Ghost => "Ghost",
-            IntentKind::Success => "Success",
-            IntentKind::Warning => "Warning",
-            IntentKind::Danger => "Danger",
-        }
-    }
-
-    /// Stable string identifier. Used when `IntentKind` rides
-    /// through a `Signal<String>` (e.g. as the binding for a
-    /// `Select` whose ids are strings).
-    pub fn id(&self) -> &'static str {
-        match self {
-            IntentKind::Primary => "primary",
-            IntentKind::Secondary => "secondary",
-            IntentKind::Neutral => "neutral",
-            IntentKind::Ghost => "ghost",
-            IntentKind::Success => "success",
-            IntentKind::Warning => "warning",
-            IntentKind::Danger => "danger",
-        }
-    }
-
-    /// Inverse of [`id`]. Returns `None` for unknown ids.
-    pub fn from_id(id: &str) -> Option<Self> {
-        match id {
-            "primary" => Some(IntentKind::Primary),
-            "secondary" => Some(IntentKind::Secondary),
-            "neutral" => Some(IntentKind::Neutral),
-            "ghost" => Some(IntentKind::Ghost),
-            "success" => Some(IntentKind::Success),
-            "warning" => Some(IntentKind::Warning),
-            "danger" => Some(IntentKind::Danger),
-            _ => None,
-        }
-    }
-
-    pub fn into_rc(self) -> Rc<dyn Intent> {
-        match self {
-            IntentKind::Primary => crate::Primary.into_rc(),
-            IntentKind::Secondary => crate::Secondary.into_rc(),
-            IntentKind::Neutral => crate::Neutral.into_rc(),
-            IntentKind::Ghost => crate::Ghost.into_rc(),
-            IntentKind::Success => crate::Success.into_rc(),
-            IntentKind::Warning => crate::Warning.into_rc(),
-            IntentKind::Danger => crate::Danger.into_rc(),
-        }
-    }
-}
+// Legacy IntentKind / intent_control removed: doc-controls now use
+// `IntentTag` directly through the generic `variant_enum_control`
+// path, since `IntentTag` implements `VariantEnum`.

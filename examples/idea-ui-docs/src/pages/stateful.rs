@@ -30,17 +30,18 @@ fn avatar_demo() -> Primitive {
 
     let preview = AvatarProps::reactive_preview(&state, |props| {
         let initials = props.initials;
-        let intent = props.intent;
+        let color = props.color;
         let size = props.size;
         ui! {
-            Avatar(initials = initials, intent = intent, size = size)
+            Avatar(initials = initials, color = color, size = size)
         }
     });
     let controls = AvatarProps::render_controls(&state);
     demo_card(
         "Avatar",
         "Circular user-identity element. Renders an image when `src` is set, otherwise \
-         falls back to initials on an intent-colored background.",
+         falls back to initials on a `color`-tinted background — the color is a separate \
+         axis from Intent because avatars don't represent semantic actions.",
         preview,
         controls,
     )

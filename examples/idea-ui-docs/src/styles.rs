@@ -195,8 +195,8 @@ stylesheet! {
             #[default]
             off(_t) {}
             on(t) {
-                background: t.colors().primary.clone(),
-                color: t.colors().primary_text.clone(),
+                background: t.intents().primary.solid_bg.clone(),
+                color: t.intents().primary.solid_text.clone(),
             }
         }
         state hovered(t) {

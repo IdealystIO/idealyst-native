@@ -3,8 +3,8 @@
 use framework_core::{ui, Primitive};
 use idea_ui::doc_controls::DocControls;
 use idea_ui::{
-    badge, body, card, divider, heading, stack, BadgeProps, CardProps, DividerProps, HeadingKind,
-    IntoRcIntent, Primary, StackGap, StackProps, Success, Warning,
+    badge, body, card, divider, heading, stack, BadgeKind, BadgeProps, CardProps, DividerProps,
+    HeadingKind, IntentTag, StackGap, StackProps,
 };
 
 use crate::shell::{demo_card, page_header};
@@ -27,9 +27,9 @@ pub fn page() -> Primitive {
 
 fn filler_children() -> Vec<Primitive> {
     vec![
-        ui! { Badge(label = "one".to_string(), intent = Primary.into_rc()) },
-        ui! { Badge(label = "two".to_string(), intent = Success.into_rc()) },
-        ui! { Badge(label = "three".to_string(), intent = Warning.into_rc()) },
+        ui! { Badge(label = "one".to_string(), intent = IntentTag::Primary, kind = BadgeKind::Soft) },
+        ui! { Badge(label = "two".to_string(), intent = IntentTag::Success, kind = BadgeKind::Soft) },
+        ui! { Badge(label = "three".to_string(), intent = IntentTag::Warning, kind = BadgeKind::Soft) },
     ]
 }
 

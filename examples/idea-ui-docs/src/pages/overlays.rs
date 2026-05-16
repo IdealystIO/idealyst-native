@@ -12,8 +12,7 @@ use std::rc::Rc;
 use framework_core::primitives::overlay::{BackdropMode, OverlayAnchor, ViewportPlacement};
 use framework_core::{signal, ui, Easing, Primitive, PresenceAnim, PresenceState, Signal};
 use idea_ui::{
-    body, card, heading, pressable, stack, BodyTone, HeadingKind, IntoRcIntent, Neutral, Primary,
-    StackGap,
+    body, btn, card, heading, stack, BodyTone, ButtonKind, HeadingKind, IntentTag, StackGap,
 };
 
 use crate::shell::page_header;
@@ -45,10 +44,11 @@ fn modal_demo() -> Primitive {
             Body(content = "Viewport-centered overlay with a dismiss-on-click scrim. \
                               Press Escape or click outside to dismiss.".to_string(),
                  tone = BodyTone::Muted)
-            Pressable(
+            Btn(
                 label = "Open modal".to_string(),
                 on_click = on_open,
-                intent = Primary.into_rc()
+                intent = IntentTag::Primary,
+                kind = ButtonKind::Solid,
             )
             Presence(
                 present = move || open.get(),
@@ -74,10 +74,11 @@ fn modal_demo() -> Primitive {
                     Card {
                         Heading(content = "Confirm".to_string(), kind = HeadingKind::H3)
                         Body(content = "Click outside or press Escape to dismiss.".to_string())
-                        Pressable(
+                        Btn(
                             label = "OK".to_string(),
                             on_click = on_close.clone(),
-                            intent = Primary.into_rc()
+                            intent = IntentTag::Primary,
+                            kind = ButtonKind::Solid,
                         )
                     }
                 }
@@ -97,10 +98,11 @@ fn drawer_demo() -> Primitive {
             Body(content = "Same Overlay primitive, pinned to the right edge with a slide-in \
                               transition.".to_string(),
                  tone = BodyTone::Muted)
-            Pressable(
+            Btn(
                 label = "Open drawer".to_string(),
                 on_click = on_open,
-                intent = Neutral.into_rc()
+                intent = IntentTag::Neutral,
+                kind = ButtonKind::Soft,
             )
             Presence(
                 present = move || open.get(),
@@ -126,10 +128,11 @@ fn drawer_demo() -> Primitive {
                     Card {
                         Heading(content = "Drawer".to_string(), kind = HeadingKind::H3)
                         Body(content = "Right-edge drawer content.".to_string())
-                        Pressable(
+                        Btn(
                             label = "Close".to_string(),
                             on_click = on_close.clone(),
-                            intent = Neutral.into_rc()
+                            intent = IntentTag::Neutral,
+                            kind = ButtonKind::Soft,
                         )
                     }
                 }
