@@ -103,6 +103,34 @@ impl Default for DrawerSide {
 pub use super::tabs::MountPolicy;
 
 // ---------------------------------------------------------------------------
+// DrawerType — animation style
+// ---------------------------------------------------------------------------
+
+/// How the drawer animates on open/close.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum DrawerType {
+    /// Sidebar slides in from the edge, overlaying the body. The body
+    /// stays still and is dimmed by a scrim. Default on Android;
+    /// matches React Navigation's `"front"` type.
+    Front,
+    /// Both the sidebar and the body slide together. The body moves
+    /// away to reveal the sidebar underneath. Default on iOS; matches
+    /// React Navigation's `"slide"` type.
+    Slide,
+}
+
+impl Default for DrawerType {
+    fn default() -> Self {
+        // Platform-aware default matching React Navigation:
+        // iOS → Slide, everything else → Front.
+        #[cfg(target_os = "ios")]
+        { DrawerType::Slide }
+        #[cfg(not(target_os = "ios"))]
+        { DrawerType::Front }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Handle — the imperative API exposed via .bind(...)
 // ---------------------------------------------------------------------------
 
@@ -244,6 +272,11 @@ pub struct DrawerNavigator {
     pub layout: Option<LayoutBuilder>,
     pub sidebar: Option<SidebarBuilder>,
     pub side: DrawerSide,
+    /// Animation style — `Front` (overlay) or `Slide` (push content).
+    /// Default is platform-aware: `Slide` on iOS, `Front` elsewhere.
+    pub drawer_type: DrawerType,
+    /// Width of the drawer panel in logical points. Default 280.
+    pub drawer_width: f32,
     /// Width breakpoint in CSS pixels above which the drawer is
     /// pinned beside the body region (becomes a sidebar). `None`
     /// (default) keeps the drawer as an overlay at all widths.
@@ -277,6 +310,8 @@ impl DrawerNavigator {
             layout: None,
             sidebar: None,
             side: DrawerSide::Start,
+            drawer_type: DrawerType::default(),
+            drawer_width: 280.0,
             pinned_above: None,
             swipe_to_open: true,
             mount_policy: MountPolicy::LazyPersistent,
@@ -326,6 +361,23 @@ impl Bound<DrawerHandle> {
                 route.name(),
                 RouteEntry { path: route.path(), build, from_segments },
             );
+        }
+        self
+    }
+
+    /// Set the drawer animation type. Default is platform-aware:
+    /// `Slide` on iOS, `Front` on Android/web.
+    pub fn drawer_type(mut self, dt: DrawerType) -> Self {
+        if let Primitive::DrawerNavigator(nav) = &mut self.primitive {
+            nav.drawer_type = dt;
+        }
+        self
+    }
+
+    /// Set the drawer panel width in logical points. Default 280.
+    pub fn drawer_width(mut self, width: f32) -> Self {
+        if let Primitive::DrawerNavigator(nav) = &mut self.primitive {
+            nav.drawer_width = width;
         }
         self
     }
@@ -454,6 +506,8 @@ pub struct DrawerNavigatorCallbacks<N: Clone + 'static> {
     pub navigator: NavigatorCallbacks<N>,
     pub items: Vec<DrawerItemRegistration>,
     pub side: DrawerSide,
+    pub drawer_type: DrawerType,
+    pub drawer_width: f32,
     pub pinned_above: Option<u32>,
     pub swipe_to_open: bool,
     pub mount_policy: MountPolicy,

@@ -33,7 +33,7 @@ pub use sources::{IntoStyleSource, IntoTextSource, StyleSource, TextSource};
 pub use walker::{render, Owner};
 pub use primitives::navigator::{
     match_pattern, DefaultLinkKind, DrawerHandle, DrawerItem, DrawerItemRegistration,
-    DrawerNavigator, DrawerNavigatorCallbacks, DrawerSide, DrawerSidebarProps, LayoutPlan,
+    DrawerNavigator, DrawerNavigatorCallbacks, DrawerSide, DrawerSidebarProps, DrawerType, LayoutPlan,
     LayoutProps, MountPolicy, NavCommand, NavState, Navigator, NavigatorCallbacks,
     NavigatorControl, NavigatorHandle, NavigatorOps, Route, RouteParams, TabNavigator,
     TabNavigatorCallbacks, TabPlacement, TabRegistration, TabSpec, TabsHandle,

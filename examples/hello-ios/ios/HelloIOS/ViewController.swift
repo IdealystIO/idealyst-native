@@ -5,15 +5,15 @@ class ViewController: UIViewController {
         super.viewDidLoad()
         view.backgroundColor = .white
 
-        // Pass our root view to the Rust framework. It will add its
-        // view tree as subviews of this view.
         let rawPtr = Unmanaged.passUnretained(view).toOpaque()
         ios_main(rawPtr)
 
-        // Debug: dump view hierarchy after a short delay so layout runs
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+        // Debug: dump view hierarchy after delay
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
             guard let self = self else { return }
-            self.dumpView(self.view, indent: 0)
+            print("=== VIEW HIERARCHY ===")
+            self.dumpView(self.view.window ?? self.view, indent: 0)
+            print("=== END ===")
         }
     }
 

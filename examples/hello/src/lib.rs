@@ -554,7 +554,7 @@ framework_core::stylesheet! {
             gap: Length::Px(t.spacing.sm),
             border_right_width: 1.0,
             border_right_color: t.colors.border.clone(),
-            width: 260.0,
+            width: 320.0,
         }
         transitions {
             background: 250ms EaseInOut,
