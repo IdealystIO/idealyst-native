@@ -43,14 +43,38 @@
 //!
 //! Web backends ignore this crate entirely — CSS does layout.
 
+use std::collections::HashMap;
+use std::rc::Rc;
+
 use taffy::prelude::*;
 use taffy::TaffyTree;
+
+// Re-export Taffy types backends need to write measure functions.
+// Keeps `taffy` as a non-public dep of consumers.
+pub use taffy::{AvailableSpace, Size};
 
 use framework_core::{
     AlignContent as FwAlignContent, AlignItems as FwAlignItems, AlignSelf as FwAlignSelf,
     FlexDirection as FwFlexDirection, FlexWrap as FwFlexWrap, JustifyContent as FwJustifyContent,
     Length as FwLength, Position as FwPosition, StyleRules,
 };
+
+/// Measure function signature. Taffy calls this for nodes that have
+/// no explicit size, passing the cross-axis constraint (e.g. "you can
+/// be at most this wide") and asking for the intrinsic size in the
+/// remaining axis. Used by Text nodes that wrap — given an available
+/// width, the backend asks the underlying widget (UILabel, TextView)
+/// how tall it needs to be.
+///
+/// Arguments:
+/// - `known_dimensions`: dimensions already pinned by ancestor layout.
+///   `Some(w)` for width means "you must be exactly this wide".
+/// - `available_space`: the space the parent is offering. Definite,
+///   MinContent, or MaxContent.
+///
+/// Returns the size the node would like to be.
+pub type MeasureFn =
+    Rc<dyn Fn(Size<Option<f32>>, Size<AvailableSpace>) -> Size<f32>>;
 
 // =============================================================================
 // Public types
@@ -81,20 +105,41 @@ pub struct Frame {
 /// multi-window backends).
 pub struct LayoutTree {
     tree: TaffyTree<()>,
+    /// Per-node measure functions for intrinsically-sized leaves
+    /// (Text, etc.). Looked up during `compute` and forwarded to
+    /// Taffy's `compute_layout_with_measure`.
+    measure_fns: HashMap<NodeId, MeasureFn>,
 }
 
 impl LayoutTree {
     /// Construct an empty tree.
     pub fn new() -> Self {
-        Self { tree: TaffyTree::new() }
+        Self {
+            tree: TaffyTree::new(),
+            measure_fns: HashMap::new(),
+        }
     }
 
     /// Create a new leaf node (no children yet). Returns the handle
     /// the backend should associate with its native view.
+    ///
+    /// The seed style matches the framework's React-Native-like
+    /// conventions: flex container, column flow, **stretch** in the
+    /// cross axis. Taffy's `Style::default()` is `display: Block,
+    /// flex_direction: Row, align_items: None` — that would arrange
+    /// children of unstyled containers horizontally and size each to
+    /// its intrinsic content width, leaving lots of empty space.
+    /// `translate_style` overwrites all three on `set_style`, so this
+    /// only changes behavior for views the author left unstyled —
+    /// exactly the cases that were rendering wrong.
     pub fn new_node(&mut self) -> LayoutNode {
+        let mut style = Style::default();
+        style.display = Display::Flex;
+        style.flex_direction = FlexDirection::Column;
+        style.align_items = Some(AlignItems::Stretch);
         let id = self
             .tree
-            .new_leaf(Style::default())
+            .new_leaf(style)
             .expect("taffy new_leaf");
         LayoutNode(id)
     }
@@ -142,6 +187,19 @@ impl LayoutTree {
         self.tree
             .set_style(node.0, new_style)
             .expect("taffy set_style");
+    }
+
+    /// Install a measure function for a node. Taffy calls it during
+    /// layout when the node has no explicit size, passing the
+    /// available cross-axis size and expecting the intrinsic main-axis
+    /// size in return. Use this for content that wraps (Text) so the
+    /// engine asks the platform widget for its wrapped height given
+    /// an available width.
+    pub fn set_measure_fn(&mut self, node: LayoutNode, f: MeasureFn) {
+        self.measure_fns.insert(node.0, f);
+        // Tell Taffy this leaf has a measure func so it doesn't
+        // collapse to its `size`.
+        let _ = self.tree.mark_dirty(node.0);
     }
 
     /// Set a node's intrinsic content size. Used by native backends
@@ -193,9 +251,24 @@ impl LayoutTree {
             width: AvailableSpace::Definite(width),
             height: AvailableSpace::Definite(height),
         };
+        // Take the measure_fns out so the closure passed to
+        // `compute_layout_with_measure` doesn't have to borrow `self`
+        // (the closure runs *inside* `self.tree.compute_layout_with_measure`
+        // which holds a mutable borrow on the tree).
+        let measure_fns = std::mem::take(&mut self.measure_fns);
         self.tree
-            .compute_layout(root.0, space)
+            .compute_layout_with_measure(
+                root.0,
+                space,
+                |known_dimensions, available_space, node_id, _ctx, _style| {
+                    match measure_fns.get(&node_id) {
+                        Some(f) => f(known_dimensions, available_space),
+                        None => Size::ZERO,
+                    }
+                },
+            )
             .expect("taffy compute_layout");
+        self.measure_fns = measure_fns;
     }
 
     /// Read the most recently computed frame for `node`. Returns the
@@ -266,15 +339,18 @@ fn translate_style(r: &StyleRules) -> Style {
             FwJustifyContent::SpaceEvenly => JustifyContent::SpaceEvenly,
         });
     }
-    if let Some(ai) = r.align_items {
-        s.align_items = Some(match ai {
-            FwAlignItems::FlexStart => AlignItems::FlexStart,
-            FwAlignItems::FlexEnd => AlignItems::FlexEnd,
-            FwAlignItems::Center => AlignItems::Center,
-            FwAlignItems::Stretch => AlignItems::Stretch,
-            FwAlignItems::Baseline => AlignItems::Baseline,
-        });
-    }
+    // Default to Stretch when the author didn't set align_items.
+    // Matches the React-Native-style mental model: children fill the
+    // cross axis unless explicitly told otherwise. Taffy's spec-correct
+    // default of `None` (which resolves to Stretch in real flexbox)
+    // wasn't actually producing stretch behavior in practice.
+    s.align_items = Some(match r.align_items.unwrap_or(FwAlignItems::Stretch) {
+        FwAlignItems::FlexStart => AlignItems::FlexStart,
+        FwAlignItems::FlexEnd => AlignItems::FlexEnd,
+        FwAlignItems::Center => AlignItems::Center,
+        FwAlignItems::Stretch => AlignItems::Stretch,
+        FwAlignItems::Baseline => AlignItems::Baseline,
+    });
     if let Some(ac) = r.align_content {
         s.align_content = Some(match ac {
             FwAlignContent::FlexStart => AlignContent::FlexStart,

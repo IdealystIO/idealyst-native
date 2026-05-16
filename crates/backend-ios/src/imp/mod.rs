@@ -376,16 +376,48 @@ impl Backend for IosBackend {
         unsafe { label.setText(Some(&ns_text)) };
         let _: () = unsafe { msg_send![&label, setNumberOfLines: 0isize] };
 
-        // Seed the layout node with the label's intrinsic content size
-        // so Taffy can allocate space for the text. Multi-line text is
-        // still approximate (single-line measurement) — a follow-up
-        // wires Taffy's measure_func into UILabel's
-        // systemLayoutSizeFittingSize for proper wrap measurement.
+        // Install a measure function so Taffy can ask UILabel how
+        // tall it needs to be for a given available width. Without
+        // this, multi-line text gets sized to its single-line
+        // intrinsicContentSize (one line ~1300pt wide for a paragraph),
+        // which both prevents wrap and breaks every flex sibling
+        // around it.
         let layout = self.layout_for_view(&label);
-        let isize: objc2_foundation::CGSize =
-            unsafe { msg_send![&label, intrinsicContentSize] };
-        self.layout
-            .set_intrinsic_size(layout, isize.width as f32, isize.height as f32);
+        let label_for_measure = label.clone();
+        self.layout.set_measure_fn(
+            layout,
+            std::rc::Rc::new(move |known_dimensions, available_space| {
+                let avail_w = known_dimensions
+                    .width
+                    .unwrap_or(match available_space.width {
+                        native_layout::AvailableSpace::Definite(w) => w,
+                        native_layout::AvailableSpace::MaxContent => f32::INFINITY,
+                        native_layout::AvailableSpace::MinContent => 0.0,
+                    });
+                let avail_h = known_dimensions
+                    .height
+                    .unwrap_or(match available_space.height {
+                        native_layout::AvailableSpace::Definite(h) => h,
+                        native_layout::AvailableSpace::MaxContent => f32::INFINITY,
+                        native_layout::AvailableSpace::MinContent => 0.0,
+                    });
+
+                // Ask UIKit how the label fits in this much space.
+                // sizeThatFits: returns the smallest rect needed to
+                // render the current text+font, wrapping within the
+                // given width.
+                let target = objc2_foundation::CGSize {
+                    width: if avail_w.is_finite() { avail_w as f64 } else { f64::MAX },
+                    height: if avail_h.is_finite() { avail_h as f64 } else { f64::MAX },
+                };
+                let fitted: objc2_foundation::CGSize =
+                    unsafe { msg_send![&label_for_measure, sizeThatFits: target] };
+                native_layout::Size {
+                    width: known_dimensions.width.unwrap_or(fitted.width as f32),
+                    height: known_dimensions.height.unwrap_or(fitted.height as f32),
+                }
+            }),
+        );
 
         IosNode::Label(label)
     }
