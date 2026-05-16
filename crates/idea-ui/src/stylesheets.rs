@@ -805,7 +805,7 @@ stylesheet! {
             off(_t) {}
             on(t) {
                 color: t.colors().text.clone(),
-                border_bottom_color: t.colors().primary.clone(),
+                border_bottom_color: t.intents().primary.solid_bg.clone(),
             }
         }
         state hovered(t) {

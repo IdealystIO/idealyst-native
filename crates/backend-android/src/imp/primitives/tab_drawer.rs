@@ -374,9 +374,22 @@ fn install_instance(
         match cmd {
             NavCommand::Select { name, params, url: _ } => {
                 swap_body(&dispatcher_instance, name, params);
+                // Auto-close the drawer after selecting an item. On
+                // Android the drawer is a real overlay (DrawerLayout)
+                // that visually covers the body, so leaving it open
+                // would hide the newly-mounted screen. Matches the
+                // web dispatcher's auto-close behavior. No-op for
+                // tab navigators (drawer_jni_call panics on tabs;
+                // gate on kind).
+                if matches!(dispatcher_instance.borrow().kind, DrawerKind::Drawer { .. }) {
+                    drawer_jni_call(&dispatcher_instance, "closeDrawerProgrammatic");
+                }
             }
             NavCommand::Reset { name, params, url: _ } => {
                 swap_body(&dispatcher_instance, name, params);
+                if matches!(dispatcher_instance.borrow().kind, DrawerKind::Drawer { .. }) {
+                    drawer_jni_call(&dispatcher_instance, "closeDrawerProgrammatic");
+                }
             }
             NavCommand::OpenDrawer => {
                 drawer_jni_call(&dispatcher_instance, "openDrawerProgrammatic");
