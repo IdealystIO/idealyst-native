@@ -11,8 +11,8 @@ use std::rc::Rc;
 
 use framework_core::{ui, ChildList, LayoutProps, Primitive, Signal, StyleApplication, VariantEnum};
 use idea_ui::{
-    body, caption, card, dark_theme, divider, heading, hstack, light_theme, pressable,
-    set_idea_theme, switch, vstack, BodyTone, HeadingKind, IdeaThemeRef, StackGap,
+    body, caption, card, dark_theme, divider, heading, light_theme, pressable,
+    set_idea_theme, stack, switch, BodyTone, HeadingKind, IdeaThemeRef, StackGap,
 };
 
 use crate::routes::INDEX;
@@ -97,7 +97,7 @@ fn sidebar(
     // Divider before the theme toggle so it visually anchors to
     // the bottom of the sidebar without us needing a Spacer.
     children.push(ui! { Divider() });
-    children.push(ui! { VStack(gap = StackGap::Xs) { theme_row_children } });
+    children.push(ui! { Stack(gap = StackGap::Xs) { theme_row_children } });
 
     ui! {
         View(style = container_style) { children }
@@ -261,6 +261,6 @@ pub fn page_header(title: &str, description: &str) -> Primitive {
         ui! { Body(content = desc_text, tone = BodyTone::Muted) },
     ];
     ui! {
-        VStack(gap = StackGap::Sm) { children }
+        Stack(gap = StackGap::Sm) { children }
     }
 }

@@ -5,14 +5,14 @@ use std::rc::Rc;
 use framework_core::{signal, ui, Primitive};
 use idea_ui::doc_controls::DocControls;
 use idea_ui::{
-    avatar, body, card, heading, tabs, vstack, AvatarProps, BodyTone, HeadingKind, StackGap, Tab,
+    avatar, body, card, heading, stack, tabs, AvatarProps, BodyTone, HeadingKind, StackGap, Tab,
 };
 
 use crate::shell::{demo_card, page_header};
 
 pub fn page() -> Primitive {
     ui! {
-        VStack(gap = StackGap::Xl) {
+        Stack(gap = StackGap::Xl) {
             { page_header(
                 "Stateful",
                 "Components whose appearance is driven by host-owned signals or runtime data."

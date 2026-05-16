@@ -1,23 +1,26 @@
 //! Animated Mandelbrot demo using the bare `Graphics` surface
-//! primitive + `framework_core::driver` (`render_loop` +
-//! `spawn_async`).
+//! primitive + `framework_core::driver`.
 //!
-//! Before the driver primitives existed, this was three files
-//! (~1450 lines total) duplicating the same wgpu init + render loop
-//! per platform. Now it's one file: the wgpu code runs unmodified on
-//! web/Android/iOS because wgpu is already cross-platform — what
-//! differed across platforms was only the *driver* (frame ticker +
-//! async runtime), which `framework-core::driver` hides.
+//! One file across web, Android, and iOS. The wgpu pipeline + WGSL
+//! shader + animation logic run unmodified everywhere — wgpu is
+//! already cross-platform. What used to require per-platform glue
+//! was the *driver*: how you tick a frame, how you await async wgpu
+//! init, how you handle threading. `framework_core::driver` hides
+//! all three.
 //!
 //! The flow:
 //!
 //! 1. `Graphics(on_ready, on_resize, on_lost, ...)` gets handed a
 //!    `raw_window_handle`-shaped surface from the framework.
-//! 2. `spawn_async` drives our `async fn build_renderer` — on web
-//!    it's `spawn_local`, on native it's `pollster::block_on`. Same
-//!    `.await` shape either way.
+//! 2. `spawn_init` (aliased per-target to `spawn_async` on web/iOS
+//!    and `spawn_async_on_worker` on Android) drives our
+//!    `async fn build_renderer`. Web → `spawn_local`; iOS →
+//!    `pollster::block_on` on main; Android → `pollster::block_on`
+//!    on a worker thread (the UI thread mustn't block on wgpu init
+//!    or Android logs "Skipped N frames" and the activity freezes).
 //! 3. `render_loop(|elapsed| ...)` ticks per frame — `rAF` on web,
-//!    `CADisplayLink`-substitute on iOS, dedicated thread on Android.
+//!    `NSTimer` on iOS, dedicated thread (paced at ~60 Hz) on
+//!    Android.
 
 use framework_core::driver::{render_loop, RenderLoop};
 use framework_core::primitives::graphics::{
@@ -96,8 +99,7 @@ use framework_core::driver::spawn_async_on_worker as spawn_init;
 use framework_core::driver::spawn_async as spawn_init;
 
 // ---------------------------------------------------------------------------
-// Uniforms + shader. Identical to what shipped before — see
-// gradient.rs in the git history for the full annotated version.
+// Uniforms + shader
 // ---------------------------------------------------------------------------
 
 #[repr(C)]

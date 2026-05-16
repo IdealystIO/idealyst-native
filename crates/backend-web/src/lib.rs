@@ -52,6 +52,11 @@ pub struct WebBackend {
     pub(crate) doc: Document,
     pub(crate) mount: web_sys::Element,
     pub(crate) _click_closures: Vec<Closure<dyn FnMut()>>,
+    /// Keyboard handlers for `Primitive::Pressable` (Enter/Space →
+    /// click). Held so JS doesn't drop them while the element is in
+    /// the layout tree. The click handler itself lives in
+    /// `_click_closures` (shared shape: `FnMut()` no-arg).
+    pub(crate) _pressable_key_closures: Vec<Closure<dyn FnMut(web_sys::KeyboardEvent)>>,
     /// Closures attached to `<a>` elements for `Primitive::Link`.
     /// Held so JS doesn't drop them while the anchor is still in
     /// the layout tree. Same posture as `_click_closures`.
@@ -171,23 +176,6 @@ pub struct WebBackend {
     /// Reserved for future focus-trap rules; the flag exists now so
     /// the injection step is idempotent.
     pub(crate) overlay_css_injected: bool,
-    /// Reference count of open overlays that have requested page
-    /// scroll-lock. The Element-anchored overlay path (popovers,
-    /// dropdowns, tooltips) measures the trigger once at mount and
-    /// holds that position — but if the page can scroll, the trigger
-    /// would walk out from under the menu. Locking scroll for the
-    /// duration of the overlay keeps the anchor relationship intact
-    /// (same approach as MUI / Quasar / Radix).
-    ///
-    /// Counter rather than bool because overlays can stack (a popover
-    /// inside a modal): we apply the lock on `0 → 1` and release on
-    /// `1 → 0`, ignoring intermediate transitions.
-    pub(crate) scroll_lock_count: u32,
-    /// The `document.body` `overflow` value at the moment the
-    /// scroll-lock count went from 0 → 1. Restored on the `1 → 0`
-    /// transition so apps that set their own `overflow` style get it
-    /// back unmodified.
-    pub(crate) saved_body_overflow: Option<String>,
 }
 
 /// Diagnostic snapshot returned by [`WebBackend::debug_counts`].
@@ -235,6 +223,7 @@ impl WebBackend {
             doc,
             mount,
             _click_closures: Vec::new(),
+            _pressable_key_closures: Vec::new(),
             _link_click_closures: Vec::new(),
             state_listeners: HashMap::new(),
             spinner_keyframes_injected: false,
@@ -257,8 +246,6 @@ impl WebBackend {
             overlay_instances: HashMap::new(),
             next_overlay_id: 0,
             overlay_css_injected: false,
-            scroll_lock_count: 0,
-            saved_body_overflow: None,
         }
     }
 
@@ -316,6 +303,10 @@ impl Backend for WebBackend {
 
     fn create_button(&mut self, label: &str, on_click: Rc<dyn Fn()>) -> Self::Node {
         primitives::button::create(self, label, on_click)
+    }
+
+    fn create_pressable(&mut self, on_click: Rc<dyn Fn()>) -> Self::Node {
+        primitives::pressable::create(self, on_click)
     }
 
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
@@ -464,6 +455,50 @@ impl Backend for WebBackend {
         primitives::navigator::make_handle(self, node)
     }
 
+    // On web every navigator kind reduces to the same underlying
+    // screen-swap-plus-layout machinery — the layout slot is where
+    // tab bars and drawer panels actually render. So tab + drawer
+    // creation just dispatches into the existing instance code with
+    // a kind-appropriate command dispatcher; teardown reuses
+    // `release` because the entry shape is identical.
+    fn create_tab_navigator(
+        &mut self,
+        callbacks: framework_core::TabNavigatorCallbacks<Self::Node>,
+        control: Rc<framework_core::NavigatorControl>,
+    ) -> Self::Node {
+        primitives::navigator::create_tab(self, callbacks, control)
+    }
+
+    fn release_tab_navigator(&mut self, node: &Self::Node) {
+        primitives::navigator::release(self, node)
+    }
+
+    fn make_tab_navigator_handle(
+        &self,
+        node: &Self::Node,
+    ) -> framework_core::TabsHandle {
+        primitives::navigator::make_tab_handle(self, node)
+    }
+
+    fn create_drawer_navigator(
+        &mut self,
+        callbacks: framework_core::DrawerNavigatorCallbacks<Self::Node>,
+        control: Rc<framework_core::NavigatorControl>,
+    ) -> Self::Node {
+        primitives::navigator::create_drawer(self, callbacks, control)
+    }
+
+    fn release_drawer_navigator(&mut self, node: &Self::Node) {
+        primitives::navigator::release(self, node)
+    }
+
+    fn make_drawer_navigator_handle(
+        &self,
+        node: &Self::Node,
+    ) -> framework_core::DrawerHandle {
+        primitives::navigator::make_drawer_handle(self, node)
+    }
+
     fn create_link(
         &mut self,
         config: framework_core::primitives::link::LinkConfig,
@@ -595,6 +630,13 @@ impl Backend for WebBackend {
 
     fn make_button_handle(&self, node: &Self::Node) -> ButtonHandle {
         primitives::button::make_handle(node)
+    }
+
+    fn make_pressable_handle(
+        &self,
+        node: &Self::Node,
+    ) -> framework_core::PressableHandle {
+        primitives::pressable::make_handle(node)
     }
 
     fn make_view_handle(&self, node: &Self::Node) -> framework_core::ViewHandle {

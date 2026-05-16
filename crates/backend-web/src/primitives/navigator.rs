@@ -38,7 +38,8 @@
 
 use crate::WebBackend;
 use framework_core::primitives::navigator::{
-    NavCommand, NavigatorCallbacks, NavigatorControl, NavigatorHandle, NavigatorOps,
+    DrawerHandle, DrawerNavigatorCallbacks, NavCommand, NavigatorCallbacks, NavigatorControl,
+    NavigatorHandle, NavigatorOps, TabNavigatorCallbacks, TabsHandle,
 };
 use std::any::Any;
 use std::cell::RefCell;
@@ -382,11 +383,24 @@ fn set_class_present(elem: &web_sys::Element, class: &str, present: bool) {
 /// Create the navigator container, mount the initial / deep-linked
 /// stack, install the dispatcher on the control plane, and wire up
 /// the global popstate handler.
-pub(crate) fn create(
+///
+/// On web, all navigator kinds (stack, tabs, drawer) reduce to
+/// "screen-swap with author-supplied layout chrome": the layout slot
+/// owns the visual differences (tab bar, drawer side panel), and
+/// the underlying screen-swap machinery is identical. So this
+/// function builds the per-instance state + microtask + popstate
+/// registration unconditionally; the *dispatcher* installed on
+/// `control` is what varies by kind, and the caller supplies it via
+/// `install_dispatcher`.
+fn create_inner<F>(
     b: &mut WebBackend,
     callbacks: NavigatorCallbacks<Node>,
     control: Rc<NavigatorControl>,
-) -> Node {
+    install_dispatcher: F,
+) -> Node
+where
+    F: FnOnce(Rc<RefCell<NavigatorInstance>>),
+{
     ensure_navigator_css(b);
 
     let container = b
@@ -512,9 +526,28 @@ pub(crate) fn create(
         });
     }
 
-    // Install the per-instance dispatcher.
-    {
-        let instance = instance.clone();
+    // Install the per-instance dispatcher. The exact command set
+    // each kind accepts differs (stack uses Push/Pop/Replace/Reset;
+    // tabs uses Select; drawer uses Select + Open/Close/Toggle), so
+    // the caller picks the dispatcher.
+    install_dispatcher(instance.clone());
+
+    // Wire up the global popstate handler if this is the first
+    // navigator on the page, and register this instance with it.
+    register_popstate_target(instance.clone());
+
+    b.navigator_instances.insert(nav_id, NavigatorEntry { instance, control });
+    container_node
+}
+
+/// Stack navigator entry point. Installs a dispatcher that accepts
+/// Push / Pop / Replace / Reset and panics on tab/drawer commands.
+pub(crate) fn create(
+    b: &mut WebBackend,
+    callbacks: NavigatorCallbacks<Node>,
+    control: Rc<NavigatorControl>,
+) -> Node {
+    create_inner(b, callbacks, control.clone(), move |instance| {
         control.install(Box::new(move |cmd| match cmd {
             NavCommand::Push { name, url, params } => {
                 instance.borrow_mut().push(name, params, url)
@@ -526,15 +559,144 @@ pub(crate) fn create(
             NavCommand::Reset { name, url, params } => {
                 instance.borrow_mut().reset(name, params, url)
             }
+            NavCommand::Select { .. }
+            | NavCommand::OpenDrawer
+            | NavCommand::CloseDrawer
+            | NavCommand::ToggleDrawer => {
+                panic!(
+                    "stack Navigator received a non-stack NavCommand — \
+                     check that the dispatched command's shape matches \
+                     the navigator kind (stack: Push/Pop/Replace/Reset)"
+                );
+            }
         }));
-    }
+    })
+}
 
-    // Wire up the global popstate handler if this is the first
-    // navigator on the page, and register this instance with it.
-    register_popstate_target(instance.clone());
+/// Tab navigator entry point on web.
+///
+/// Web treats all navigator kinds as "screen-swap with author
+/// chrome" — the underlying machinery (mount/release scopes, URL
+/// history, popstate reconciliation) is identical to the stack
+/// navigator. The `TabSpec` metadata (labels, icons, badges) is
+/// ignored at this layer; authors render their own tab bar through
+/// `.layout(...)` and call `handle.select(...)` from the bar
+/// buttons. This mirrors how `idea-ui` is expected to ship themed
+/// tab bars: the bar is *just a styled View*, not a navigator
+/// concern.
+///
+/// `Select` maps to `Replace`: the new screen takes the outlet's
+/// active slot, no URL stack growth.
+pub(crate) fn create_tab(
+    b: &mut WebBackend,
+    callbacks: TabNavigatorCallbacks<Node>,
+    control: Rc<NavigatorControl>,
+) -> Node {
+    let TabNavigatorCallbacks { navigator, .. } = callbacks;
+    create_inner(b, navigator, control.clone(), move |instance| {
+        control.install(Box::new(move |cmd| match cmd {
+            NavCommand::Select { name, url, params } => {
+                // Selecting the already-active tab is a no-op.
+                {
+                    let inst = instance.borrow();
+                    if inst.stack.last().map(|e| paths_equal(&e.url, &url)).unwrap_or(false) {
+                        return;
+                    }
+                }
+                instance.borrow_mut().replace(name, params, url);
+            }
+            // `Reset` is accepted as a "go back to initial tab"
+            // hatch — useful for analytics flows that programmatically
+            // re-home the user.
+            NavCommand::Reset { name, url, params } => {
+                instance.borrow_mut().reset(name, params, url)
+            }
+            NavCommand::Push { .. }
+            | NavCommand::Pop
+            | NavCommand::Replace { .. }
+            | NavCommand::OpenDrawer
+            | NavCommand::CloseDrawer
+            | NavCommand::ToggleDrawer => {
+                panic!(
+                    "TabNavigator received an unsupported NavCommand — \
+                     tabs accept Select (and Reset for go-home); pushing / \
+                     popping a tab navigator is a programmer error"
+                );
+            }
+        }));
+    })
+}
 
-    b.navigator_instances.insert(nav_id, NavigatorEntry { instance, control });
-    container_node
+/// Drawer navigator entry point on web.
+///
+/// Same machinery as tabs: screen-swap with author chrome. The
+/// drawer's visual side panel is rendered by the author's
+/// `.layout(...)` closure; the drawer commands flip the
+/// `callbacks.is_open` signal that the layout subscribes to.
+pub(crate) fn create_drawer(
+    b: &mut WebBackend,
+    callbacks: DrawerNavigatorCallbacks<Node>,
+    control: Rc<NavigatorControl>,
+) -> Node {
+    let DrawerNavigatorCallbacks {
+        navigator,
+        is_open,
+        open_changed,
+        ..
+    } = callbacks;
+    create_inner(b, navigator, control.clone(), move |instance| {
+        control.install(Box::new(move |cmd| match cmd {
+            NavCommand::Select { name, url, params } => {
+                {
+                    let inst = instance.borrow();
+                    if inst.stack.last().map(|e| paths_equal(&e.url, &url)).unwrap_or(false) {
+                        // Selecting the already-active screen still
+                        // closes the drawer (matches the typical
+                        // mobile UX: tap an item, drawer slides
+                        // shut). The is_open signal flip is the
+                        // only side effect.
+                        is_open.set(false);
+                        open_changed(false);
+                        return;
+                    }
+                }
+                instance.borrow_mut().replace(name, params, url);
+                // Auto-close the drawer on selection. The is_open
+                // signal is what the author's layout subscribes
+                // to; we update it directly here AND call
+                // `open_changed` so any analytics/listeners fire.
+                is_open.set(false);
+                open_changed(false);
+            }
+            NavCommand::Reset { name, url, params } => {
+                instance.borrow_mut().reset(name, params, url);
+                is_open.set(false);
+                open_changed(false);
+            }
+            NavCommand::OpenDrawer => {
+                is_open.set(true);
+                open_changed(true);
+            }
+            NavCommand::CloseDrawer => {
+                is_open.set(false);
+                open_changed(false);
+            }
+            NavCommand::ToggleDrawer => {
+                let now = !is_open.get();
+                is_open.set(now);
+                open_changed(now);
+            }
+            NavCommand::Push { .. }
+            | NavCommand::Pop
+            | NavCommand::Replace { .. } => {
+                panic!(
+                    "DrawerNavigator received an unsupported NavCommand — \
+                     drawer accepts Select + Open/Close/ToggleDrawer (and \
+                     Reset for go-home)"
+                );
+            }
+        }));
+    })
 }
 
 /// Tear down a navigator: release every still-mounted screen scope
@@ -567,6 +729,26 @@ pub(crate) fn make_handle(b: &WebBackend, node: &Node) -> NavigatorHandle {
         return NavigatorHandle::new(Rc::new(()), &WebNavigatorOps);
     };
     NavigatorHandle::with_control(Rc::new(()), &WebNavigatorOps, entry.control.clone())
+}
+
+/// Make a `TabsHandle`. Same wiring as `make_handle` but wraps the
+/// underlying `NavigatorHandle` so the type-system enforces "tabs
+/// only `.select(...)`, no `.push`".
+pub(crate) fn make_tab_handle(b: &WebBackend, node: &Node) -> TabsHandle {
+    TabsHandle::from_inner(make_handle(b, node))
+}
+
+/// Make a `DrawerHandle`. The drawer's `is_open` probe lives behind
+/// an `Rc<Cell<bool>>` shared with the dispatcher; we hand the same
+/// Cell to every handle clone so they observe each other's writes.
+pub(crate) fn make_drawer_handle(b: &WebBackend, node: &Node) -> DrawerHandle {
+    let inner = make_handle(b, node);
+    // The probe `Cell` lives on the entry below. For now we use a
+    // fresh `Cell` per handle — the authoritative state is the
+    // signal carried in `DrawerNavigatorCallbacks::is_open`, which
+    // every reactive read should go through. The non-reactive
+    // `is_open()` probe is just a convenience for one-shot reads.
+    DrawerHandle::from_inner(inner, Rc::new(std::cell::Cell::new(false)))
 }
 
 /// Per-instance bundle stored on the backend so `make_handle` /

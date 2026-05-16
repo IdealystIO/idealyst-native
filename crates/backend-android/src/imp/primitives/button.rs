@@ -2,8 +2,9 @@
 //! `OnClickListener` that trampolines back to Rust via JNI.
 
 use crate::imp::callbacks::{leak, ClickCallback};
-use crate::imp::helpers::{apply_default_layout_params, set_text};
+use crate::imp::helpers::{apply_default_layout_params, set_text, view_screen_rect};
 use crate::imp::{with_env, AndroidBackend};
+use framework_core::primitives::overlay::ViewportRect;
 use framework_core::{ButtonHandle, ButtonOps};
 use jni::objects::{GlobalRef, JValue};
 use jni::sys::jlong;
@@ -59,5 +60,19 @@ impl ButtonOps for AndroidButtonOps {
         with_env(|env| {
             let _ = env.call_method(gref.as_obj(), "performClick", "()Z", &[]);
         });
+    }
+
+    /// Screen-relative rect in physical pixels — origin top-left of
+    /// the device screen, including the status bar. We use screen
+    /// coords (not viewport / window coords) because the only
+    /// consumer on Android is `Overlay`'s `PopupWindow` anchoring,
+    /// which itself takes screen coords via `showAtLocation`. The
+    /// framework's `ViewportRect` is otherwise coord-system-agnostic
+    /// — backends just need internal consistency between the
+    /// producer (this method) and the consumer (overlay positioning).
+    fn rect(&self, node: &dyn Any) -> ViewportRect {
+        node.downcast_ref::<GlobalRef>()
+            .map(|gref| view_screen_rect(gref))
+            .unwrap_or_default()
     }
 }

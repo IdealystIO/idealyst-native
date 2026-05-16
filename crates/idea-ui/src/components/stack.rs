@@ -1,7 +1,10 @@
-//! `Stack` / `HStack` / `VStack` — opinionated flex containers.
+//! `Stack` — an opinionated flex container.
 //!
-//! Wrap a `View` with the [`Stack`](crate::stylesheets::Stack) stylesheet
-//! pre-applied. `HStack` / `VStack` are tiny aliases that lock the axis.
+//! Wraps a `View` with the [`Stack`](crate::stylesheets::Stack) stylesheet
+//! pre-applied. One component covers both column and row layouts via the
+//! `axis` prop; the default is `Column` (the common case for screens and
+//! card bodies). Use `axis = StackAxis::Row` for row layouts (toolbars,
+//! button groups, badge rows).
 
 use framework_core::{ui, ChildList, Primitive};
 
@@ -24,50 +27,6 @@ pub fn stack(props: StackProps) -> Primitive {
     let style = Stack()
         .gap(props.gap)
         .axis(props.axis)
-        .align(props.align)
-        .justify(props.justify);
-    let mut children: Vec<Primitive> = Vec::with_capacity(props.children.len());
-    for c in props.children {
-        ChildList::append_to(c, &mut children);
-    }
-    ui! { View(style = style) { children } }
-}
-
-#[derive(Default)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
-pub struct VStackProps {
-    pub gap: StackGap,
-    pub align: StackAlign,
-    pub justify: StackJustify,
-    pub children: Vec<Primitive>,
-}
-
-pub fn vstack(props: VStackProps) -> Primitive {
-    let style = Stack()
-        .gap(props.gap)
-        .axis(StackAxis::Column)
-        .align(props.align)
-        .justify(props.justify);
-    let mut children: Vec<Primitive> = Vec::with_capacity(props.children.len());
-    for c in props.children {
-        ChildList::append_to(c, &mut children);
-    }
-    ui! { View(style = style) { children } }
-}
-
-#[derive(Default)]
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
-pub struct HStackProps {
-    pub gap: StackGap,
-    pub align: StackAlign,
-    pub justify: StackJustify,
-    pub children: Vec<Primitive>,
-}
-
-pub fn hstack(props: HStackProps) -> Primitive {
-    let style = Stack()
-        .gap(props.gap)
-        .axis(StackAxis::Row)
         .align(props.align)
         .justify(props.justify);
     let mut children: Vec<Primitive> = Vec::with_capacity(props.children.len());

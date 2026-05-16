@@ -13,7 +13,7 @@
 //! Each constructor returns a `Bound<HandleType>` so `.bind(r)` is
 //! type-checked against the call-site `Ref<HandleType>`.
 
-use crate::handles::{ButtonHandle, RefFill, TextHandle, ViewHandle};
+use crate::handles::{ButtonHandle, PressableHandle, RefFill, TextHandle, ViewHandle};
 use crate::primitive::Primitive;
 use crate::reactive::Ref;
 use crate::sources::{IntoStyleSource, IntoTextSource};
@@ -114,6 +114,28 @@ impl Bound<ViewHandle> {
     pub fn bind(mut self, r: Ref<ViewHandle>) -> Self {
         if let Primitive::View { ref_fill, .. } = &mut self.primitive {
             *ref_fill = Some(RefFill::View(Box::new(move |h| r.fill(h))));
+        }
+        self
+    }
+}
+
+impl Bound<PressableHandle> {
+    /// Same shape as [`Bound::<ButtonHandle>::bind`] — the framework
+    /// fills the ref with a `PressableHandle` constructed from the
+    /// just-mounted backend node.
+    pub fn bind(mut self, r: Ref<PressableHandle>) -> Self {
+        if let Primitive::Pressable { ref_fill, .. } = &mut self.primitive {
+            *ref_fill = Some(RefFill::Pressable(Box::new(move |h| r.fill(h))));
+        }
+        self
+    }
+
+    /// Reactively disable the pressable. See
+    /// [`Bound::<ButtonHandle>::disabled`] for semantics — same
+    /// state-bit + native-inert behavior.
+    pub fn disabled<D: IntoDisabledSource>(mut self, disabled: D) -> Self {
+        if let Primitive::Pressable { disabled: slot, .. } = &mut self.primitive {
+            *slot = Some(disabled.into_disabled_source());
         }
         self
     }
@@ -283,6 +305,22 @@ pub fn button<L: IntoTextSource, F: Fn() + 'static>(
 ) -> Bound<ButtonHandle> {
     Bound::new(Primitive::Button {
         label: label.into_text_source(),
+        on_click: Rc::new(on_click),
+        style: None,
+        ref_fill: None,
+        disabled: None,
+    })
+}
+
+/// Clickable container — like [`view`] but with a press callback.
+/// See [`Primitive::Pressable`] for why a separate primitive exists
+/// rather than `View` gaining an optional `on_click`.
+pub fn pressable<F: Fn() + 'static>(
+    children: Vec<Primitive>,
+    on_click: F,
+) -> Bound<PressableHandle> {
+    Bound::new(Primitive::Pressable {
+        children,
         on_click: Rc::new(on_click),
         style: None,
         ref_fill: None,

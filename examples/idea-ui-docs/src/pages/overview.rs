@@ -3,13 +3,13 @@
 //! sidebar to each category.
 
 use framework_core::{ui, Primitive};
-use idea_ui::{body, card, heading, vstack, BodyTone, HeadingKind, StackGap};
+use idea_ui::{body, card, heading, stack, BodyTone, HeadingKind, StackGap};
 
 use crate::shell::page_header;
 
 pub fn page() -> Primitive {
     ui! {
-        VStack(gap = StackGap::Xl) {
+        Stack(gap = StackGap::Xl) {
             { page_header(
                 "idea-ui",
                 "A cross-platform component library built on the idealyst framework. \

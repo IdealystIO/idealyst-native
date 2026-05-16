@@ -10,7 +10,7 @@
 //!
 //! ```ignore
 //! ui! {
-//!     VStack(gap = StackGap::Sm) {
+//!     Stack(gap = StackGap::Sm) {
 //!         Skeleton(height = 24.0, width = SkeletonWidth::Full)
 //!         Skeleton(height = 16.0, width = SkeletonWidth::Full)
 //!         Skeleton(height = 16.0, width = SkeletonWidth::Half)

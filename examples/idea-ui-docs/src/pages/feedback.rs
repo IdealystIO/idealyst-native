@@ -3,14 +3,14 @@
 use framework_core::{ui, Primitive};
 use idea_ui::doc_controls::DocControls;
 use idea_ui::{
-    alert, skeleton, spinner, vstack, AlertProps, SkeletonProps, SpinnerProps, StackGap,
+    alert, skeleton, spinner, stack, AlertProps, SkeletonProps, SpinnerProps, StackGap,
 };
 
 use crate::shell::{demo_card, page_header};
 
 pub fn page() -> Primitive {
     ui! {
-        VStack(gap = StackGap::Xl) {
+        Stack(gap = StackGap::Xl) {
             { page_header(
                 "Feedback",
                 "Spinner, Skeleton, Alert. Indications of progress, loading, and status."

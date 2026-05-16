@@ -61,6 +61,19 @@ pub(crate) struct SliderChangeCallback {
     pub(crate) resolution: i32,
 }
 
+/// Overlay dismiss callback. JVM-side `RustOverlayDismissListener`
+/// (wired as `Dialog.OnCancelListener`) fires `nativeDismiss(ptr)`
+/// on tap-outside or back-button. `inner` is an `Option` so that
+/// `release_overlay` can clear it before the dialog finishes
+/// dismissing — otherwise the framework-driven dismissal would
+/// re-fire the user's `on_dismiss` and create a feedback loop
+/// (user closure flips signal → surrounding `when` rebuilds →
+/// `release_overlay` runs → Android dismisses the dialog → cancel
+/// listener fires → user closure runs again).
+pub(crate) struct OverlayDismissCallback {
+    pub(crate) inner: RefCell<Option<Rc<dyn Fn()>>>,
+}
+
 /// Leak a `Box<T>` and return its raw pointer as a `jlong`. Trivial
 /// helper exposed for symmetry with the per-callback construction
 /// sites scattered across the primitive modules.

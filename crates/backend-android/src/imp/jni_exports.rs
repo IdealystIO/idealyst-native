@@ -4,7 +4,8 @@
 //! `catch_unwind` because Rust panics across the FFI boundary are UB.
 
 use super::callbacks::{
-    ClickCallback, SliderChangeCallback, StateCallback, TextChangeCallback, ToggleChangeCallback,
+    ClickCallback, OverlayDismissCallback, SliderChangeCallback, StateCallback,
+    TextChangeCallback, ToggleChangeCallback,
 };
 use jni::objects::{JObject, JValue};
 use jni::sys::{jint, jlong};
@@ -152,6 +153,80 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustSliderListener_native
     let value = cb.min + t * (cb.max - cb.min);
     let on_change = cb.on_change.clone();
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| on_change(value)));
+}
+
+// ---------------------------------------------------------------------------
+// Overlay dismiss
+// ---------------------------------------------------------------------------
+
+/// `RustOverlayDismissListener.onCancel` dispatch. Fires the user's
+/// `on_dismiss` closure (if still set). `release_overlay` clears the
+/// `inner` slot before tearing down the dialog, so framework-driven
+/// dismissal doesn't re-fire and feedback-loop the open-state signal.
+///
+/// # Safety
+///
+/// `ptr` must point to a live `Box<OverlayDismissCallback>` produced
+/// by `create_overlay`. Stays valid until `release_overlay` (which
+/// blanks the inner closure but does NOT free the box — see the doc
+/// on `OverlayDismissCallback` for why we leak rather than drop).
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustOverlayDismissListener_nativeDismiss(
+    _env: JNIEnv,
+    _this: JObject,
+    ptr: jlong,
+) {
+    if ptr == 0 {
+        return;
+    }
+    let cb = &*(ptr as *const OverlayDismissCallback);
+    // Clone out of the RefCell so we release the borrow before
+    // invoking the user closure — it flips a Signal which may
+    // re-enter framework code that also reads backend state.
+    let maybe_cb = cb.inner.borrow().clone();
+    if let Some(dismiss) = maybe_cb {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dismiss()));
+    }
+}
+
+/// Free a leaked `OverlayDismissCallback`. Currently unwired in the
+/// demo (Activity outlives all overlays); exposed so a long-lived
+/// app can call this from the Kotlin listener's `finalize()` to
+/// release the box.
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustOverlayDismissListener_nativeDrop(
+    _env: JNIEnv,
+    _this: JObject,
+    ptr: jlong,
+) {
+    if ptr != 0 {
+        drop(Box::from_raw(ptr as *mut OverlayDismissCallback));
+    }
+}
+
+/// `RustPopupDismissListener.onDismiss` dispatch — element-anchored
+/// overlays' `PopupWindow.OnDismissListener` trampoline. Same
+/// contract as the Dialog-flow dispatch above: invokes the user's
+/// `on_dismiss` if `inner` is still set, no-ops if `release_overlay`
+/// has already blanked it.
+///
+/// # Safety
+///
+/// `ptr` must point to a live `Box<OverlayDismissCallback>`.
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustPopupDismissListener_nativeDismiss(
+    _env: JNIEnv,
+    _this: JObject,
+    ptr: jlong,
+) {
+    if ptr == 0 {
+        return;
+    }
+    let cb = &*(ptr as *const OverlayDismissCallback);
+    let maybe_cb = cb.inner.borrow().clone();
+    if let Some(dismiss) = maybe_cb {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dismiss()));
+    }
 }
 
 // ---------------------------------------------------------------------------

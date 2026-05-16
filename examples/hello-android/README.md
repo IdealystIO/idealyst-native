@@ -118,12 +118,17 @@ support it and **GLES** otherwise.
   `surfaceDestroyed` → `on_lost`.
 - The framework hands the user a `GraphicsSurface` implementing
   `raw_window_handle::HasWindowHandle + HasDisplayHandle`. The
-  gradient demo ([examples/hello/src/gradient_android.rs](../hello/src/gradient_android.rs))
-  passes it directly to `wgpu::Instance::create_surface(...)`.
-- A dedicated render thread (spawned in `on_ready`) does device
-  init via `pollster::block_on` and runs the draw loop. Vsync is
-  paced by `PresentMode::Fifo`. `on_resize` sends a message;
-  `on_lost` joins the thread and drops state.
+  gradient demo ([examples/hello/src/gradient.rs](../hello/src/gradient.rs))
+  passes it directly to `wgpu::Instance::create_surface(...)`. The
+  same file builds on web, Android, and iOS — wgpu's already
+  cross-platform; the framework's `driver::{render_loop,
+  spawn_async, spawn_async_on_worker}` primitives hide the
+  per-platform threading and frame-ticker differences.
+- On Android specifically, `spawn_async_on_worker` runs the wgpu
+  init off the UI thread (Vulkan device + pipeline build can take
+  multiple frames). `render_loop` then ticks the per-frame paint
+  on a dedicated thread paced by a 16 ms `recv_timeout` (and by
+  wgpu's `PresentMode::Fifo` vsync once the surface is healthy).
 
 ### Toggling it off
 

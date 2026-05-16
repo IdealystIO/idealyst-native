@@ -14,10 +14,11 @@
 
 use framework_core::{
     component, install_theme, set_theme, signal, ui, AlignItems, AnchorTarget, BackdropMode,
-    ButtonHandle, Color, Easing, ElementAlign, ElementAnchor, ElementSide, FlexDirection,
-    FontWeight, JustifyContent, LayoutProps, Length, Navigator, NavigatorHandle, Overflow,
-    OverlayAnchor, PresenceAnim, PresenceState, Primitive, Ref, Route, RouteParams, Shadow,
-    Signal, TextAlign, ViewportPlacement,
+    ButtonHandle, Color, DrawerHandle, DrawerItem, DrawerNavigator, Easing, ElementAlign,
+    ElementAnchor, ElementSide, FlexDirection, FontWeight, JustifyContent, LayoutProps, Length,
+    Navigator, NavigatorHandle, Overflow, OverlayAnchor, PresenceAnim, PresenceState, Primitive,
+    Ref, Route, RouteParams, Shadow, Signal, TabNavigator, TabSpec, TabsHandle, TextAlign,
+    ViewportPlacement,
 };
 use std::collections::HashMap;
 
@@ -516,6 +517,201 @@ framework_core::stylesheet! {
     }
 }
 
+// =============================================================================
+// Stylesheets — drawer chrome
+// =============================================================================
+//
+// The home screen's drawer renders a sidebar on the left containing
+// a list of entry buttons. The author's `.layout(...)` closure on
+// the DrawerNavigator draws this — the framework only provides the
+// `is_open` signal and the outlet where the active body screen
+// renders.
+
+// DrawerShell — the outer flex row: sidebar on the left, body on
+// the right. On wide screens the sidebar is always pinned; below
+// the breakpoint it slides over the body via overlay.
+framework_core::stylesheet! {
+    pub DrawerShell<Theme> {
+        base(t) {
+            flex_direction: FlexDirection::Row,
+            min_height: Length::pct(100.0),
+            background: t.colors.background.clone(),
+            color: t.colors.text.clone(),
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            color: 250ms EaseInOut,
+        }
+    }
+}
+
+// DrawerSidebar — the side panel itself.
+framework_core::stylesheet! {
+    pub DrawerSidebar<Theme> {
+        base(t) {
+            background: t.colors.surface.clone(),
+            padding: t.spacing.lg,
+            gap: Length::Px(t.spacing.sm),
+            border_right_width: 1.0,
+            border_right_color: t.colors.border.clone(),
+            width: 260.0,
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            border_right_color: 250ms EaseInOut,
+        }
+    }
+}
+
+// DrawerBody — outlet container, takes the remaining horizontal
+// space. The framework's outlet `View` mounts inside this.
+framework_core::stylesheet! {
+    pub DrawerBody<Theme> {
+        base(t) {
+            flex_grow: 1.0,
+            padding: t.spacing.xl,
+            gap: Length::Px(t.spacing.lg),
+            color: t.colors.text.clone(),
+        }
+        transitions {
+            color: 250ms EaseInOut,
+        }
+    }
+}
+
+// DrawerItem — each drawer entry button. `active` variant marks the
+// currently-visible body screen.
+framework_core::stylesheet! {
+    pub DrawerItemButton<Theme> {
+        base(t) {
+            background: Color("transparent".into()),
+            color: t.colors.text.clone(),
+            padding_vertical: t.spacing.sm,
+            padding_horizontal: t.spacing.md,
+            border_radius: 6.0,
+            font_size: 14.0,
+            font_weight: FontWeight::Medium,
+            text_align: TextAlign::Center,
+        }
+        variant active {
+            #[default]
+            off(_t) {}
+            on(t) {
+                background: t.colors.primary.clone(),
+                color: t.colors.primary_text.clone(),
+            }
+        }
+        state hovered(t) {
+            background: t.colors.surface_alt.clone(),
+        }
+        transitions {
+            background: 200ms EaseOut,
+            color: 200ms EaseOut,
+        }
+    }
+}
+
+framework_core::stylesheet! {
+    pub DrawerBrand<Theme> {
+        base(t) {
+            color: t.colors.text.clone(),
+            font_size: 18.0,
+            font_weight: FontWeight::SemiBold,
+            letter_spacing: -0.2,
+            margin_bottom: t.spacing.md,
+        }
+    }
+}
+
+// =============================================================================
+// Stylesheets — tab navigator (sidebar-placement)
+// =============================================================================
+//
+// The drawer's "Tab demo" body renders a TabNavigator with sidebar
+// placement: a vertical tab strip on the left of the body, with the
+// active tab's screen filling the rest. The TabNavigator's
+// `.layout(...)` draws this — same pattern as the drawer.
+
+framework_core::stylesheet! {
+    pub TabShell<Theme> {
+        base(t) {
+            flex_direction: FlexDirection::Row,
+            gap: Length::Px(t.spacing.md),
+            min_height: 320.0,
+            background: t.colors.surface.clone(),
+            border_radius: 12.0,
+            border_width: 1.0,
+            border_color: t.colors.border.clone(),
+            overflow: Overflow::Hidden,
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            border_color: 250ms EaseInOut,
+        }
+    }
+}
+
+framework_core::stylesheet! {
+    pub TabSidebar<Theme> {
+        base(t) {
+            background: t.colors.surface_alt.clone(),
+            padding: t.spacing.md,
+            gap: Length::Px(t.spacing.xs),
+            border_right_width: 1.0,
+            border_right_color: t.colors.border.clone(),
+            width: 180.0,
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            border_right_color: 250ms EaseInOut,
+        }
+    }
+}
+
+framework_core::stylesheet! {
+    pub TabBody<Theme> {
+        base(t) {
+            flex_grow: 1.0,
+            padding: t.spacing.lg,
+            gap: Length::Px(t.spacing.md),
+            color: t.colors.text.clone(),
+        }
+        transitions {
+            color: 250ms EaseInOut,
+        }
+    }
+}
+
+framework_core::stylesheet! {
+    pub TabPillButton<Theme> {
+        base(t) {
+            background: Color("transparent".into()),
+            color: t.colors.muted.clone(),
+            padding_vertical: t.spacing.xs,
+            padding_horizontal: t.spacing.sm,
+            border_radius: 6.0,
+            font_size: 13.0,
+            font_weight: FontWeight::Medium,
+            text_align: TextAlign::Center,
+        }
+        variant active {
+            #[default]
+            off(_t) {}
+            on(t) {
+                background: t.colors.primary.clone(),
+                color: t.colors.primary_text.clone(),
+            }
+        }
+        state hovered(t) {
+            color: t.colors.text.clone(),
+        }
+        transitions {
+            background: 200ms EaseOut,
+            color: 200ms EaseOut,
+        }
+    }
+}
+
 // PerfRow — the row stylesheet used 1000× by the performance screen.
 // `parity` variant flips between surface and surface_alt so adjacent
 // rows alternate. Both base and variant read from the theme, so a
@@ -810,48 +1006,52 @@ pub const LISTS_ROUTE: Route<()> = Route::<()>::new("lists", "/lists");
 pub const OVERLAY_ROUTE: Route<()> = Route::<()>::new("overlay", "/overlay");
 pub const DETAIL_ROUTE: Route<DetailParams> = Route::<DetailParams>::new("detail", "/detail/:id");
 
+// Routes for the drawer's items. The home screen's body is a
+// drawer; each item picks one of these as the visible body.
+pub const DRAWER_DASHBOARD_ROUTE: Route<()> =
+    Route::<()>::new("drawer/dashboard", "/dashboard");
+pub const DRAWER_TABS_ROUTE: Route<()> = Route::<()>::new("drawer/tabs", "/tabs");
+pub const DRAWER_SETTINGS_ROUTE: Route<()> =
+    Route::<()>::new("drawer/settings", "/settings");
+
+// Routes for the tab navigator that lives inside the drawer's
+// "Tab demo" body. Three tabs — illustrating the framework's
+// nested-navigator + ambient-Link wiring.
+pub const TAB_OVERVIEW_ROUTE: Route<()> =
+    Route::<()>::new("tabs/overview", "/tabs/overview");
+pub const TAB_ACTIVITY_ROUTE: Route<()> =
+    Route::<()>::new("tabs/activity", "/tabs/activity");
+pub const TAB_DETAILS_ROUTE: Route<()> =
+    Route::<()>::new("tabs/details", "/tabs/details");
+
 // =============================================================================
 // Home screen — landing page with cards that push the other screens
 // =============================================================================
 
-pub struct HomeProps {
-    /// Navigator handle. Every card click pushes a screen onto the
-    /// stack; back from the pushed screen returns here.
+// =============================================================================
+// Drawer item bodies
+// =============================================================================
+
+pub struct DashboardProps {
     pub nav: Ref<NavigatorHandle>,
-    /// App-level theme flag, owned at the app level so the theme
-    /// outlives any single screen's scope. Flipped from this
-    /// screen's "Toggle theme" button.
-    pub is_dark: Signal<bool>,
 }
 
-/// Home / landing screen. Three nav cards push the matching screen;
-/// the bottom card houses the theme toggle. No persistent header —
-/// each pushed screen owns its own back button (and the platform
-/// back gesture works automatically).
+/// Dashboard body — the landing card grid + links to the secondary
+/// screens (Showcase, Performance, Lists, Overlays). These all push
+/// onto the *root* stack navigator (the `nav` handle), not the
+/// drawer, because the secondary screens are full takeovers.
 #[component]
-pub fn home(props: &HomeProps) -> Primitive {
+pub fn dashboard(props: &DashboardProps) -> Primitive {
     let nav = props.nav;
-    let is_dark = props.is_dark;
-
-    // Every pushed screen owns its own background via `page_style`.
-    // Without this, the screen's root would be transparent and a
-    // hidden underlying fragment could bleed through (notably on
-    // Android, where `FragmentTransaction.hide()` interacts oddly
-    // with `setTransition(TRANSIT_FRAGMENT_OPEN)` and may not
-    // actually remove the underlying fragment from drawing).
     ui! {
-        View(style = page_style()) {
-            Text(style = title_style()) { "idealyst" }
+        View {
+            Text(style = title_style()) { "Welcome" }
             Text(style = subtitle_style()) {
-                "Cross-platform Rust UI framework. Pick a demo below; \
-                 each screen pushes a new view-controller / fragment / \
-                 path. Use the platform back gesture or the in-screen \
-                 Back button to return."
+                "Cross-platform Rust UI framework. Pick a destination \
+                 from the drawer to switch the body, or push a deeper \
+                 demo onto the root stack from the buttons below. \
+                 Back returns here."
             }
-
-            // Demo cards. Each one pushes its target route. The
-            // outer View uses `row_style` so cards sit side-by-side
-            // when the screen is wide; on phones they wrap.
             View(style = row_style()) {
                 Button(
                     label = "Primitives showcase",
@@ -881,7 +1081,7 @@ pub fn home(props: &HomeProps) -> Primitive {
                     style = primary_button_style()
                 )
                 Button(
-                    label = "Overlays (modal / popover / drawer)",
+                    label = "Overlays",
                     on_click = move || {
                         if let Some(h) = nav.get() {
                             h.push(&OVERLAY_ROUTE, ());
@@ -890,25 +1090,252 @@ pub fn home(props: &HomeProps) -> Primitive {
                     style = primary_button_style()
                 )
             }
+        }
+    }
+}
 
-            // Theme toggle. Pushing a screen and changing theme
-            // are orthogonal — theme lives at the app level so it
-            // persists across navigation.
-            View {
-                Text(style = section_heading_style()) { "Settings" }
-                Button(
-                    label = if is_dark.get() { "Light mode".to_string() } else { "Dark mode".to_string() },
-                    on_click = move || {
-                        let now_dark = !is_dark.get();
-                        is_dark.set(now_dark);
-                        if now_dark {
-                            set_theme(dark_theme());
+#[component]
+pub fn taboverview() -> Primitive {
+    // Each tab has its own per-screen scope. The counter below
+    // is mounted lazily (first visit) and persists across tab
+    // switches — try clicking + a few times, switching to Activity,
+    // then back: the count is preserved.
+    let count = signal!(0_i32);
+    ui! {
+        View {
+            Text(style = section_heading_style()) { "Overview" }
+            Text(style = subtitle_style()) {
+                "This tab demonstrates LazyPersistent mount policy — \
+                 increment the counter, switch tabs, come back: state \
+                 is preserved."
+            }
+            View(style = row_style()) {
+                Counter(label = "Visits", value = count)
+            }
+        }
+    }
+}
+
+#[component]
+pub fn tabactivity() -> Primitive {
+    ui! {
+        View {
+            Text(style = section_heading_style()) { "Activity" }
+            Text(style = subtitle_style()) {
+                "Each tab's content lives in its own reactive scope. \
+                 Switching tabs doesn't rebuild the sidebar, just \
+                 swaps the body — exactly like the drawer above."
+            }
+        }
+    }
+}
+
+#[component]
+pub fn tabdetails() -> Primitive {
+    ui! {
+        View {
+            Text(style = section_heading_style()) { "Details" }
+            Text(style = subtitle_style()) {
+                "The TabNavigator's default Link kind is Select, so \
+                 the sidebar links above don't push onto a stack — \
+                 they just swap this body. Same primitive, different \
+                 dispatch shape; the framework chooses based on the \
+                 ambient navigator."
+            }
+        }
+    }
+}
+
+/// Tab chrome — sidebar with three pill buttons plus the outlet.
+/// Same pattern as the drawer's layout: `Link`s dispatch `Select`
+/// (the default `NavKind` inside a tab navigator).
+fn tab_sidebar_layout() -> impl Fn(LayoutProps) -> Primitive + 'static {
+    move |props: LayoutProps| {
+        let active = props.active_route;
+        ui! {
+            View(style = tab_shell_style()) {
+                View(style = tab_sidebar_style()) {
+                    Link(route = &TAB_OVERVIEW_ROUTE, params = ()) {
+                        Text(style = TabPillButton().active(if active.get() == TAB_OVERVIEW_ROUTE.name() {
+                            TabPillButtonActive::On
                         } else {
-                            set_theme(light_theme());
-                        }
-                    },
-                    style = secondary_button_style()
-                )
+                            TabPillButtonActive::Off
+                        })) { "Overview" }
+                    }
+                    Link(route = &TAB_ACTIVITY_ROUTE, params = ()) {
+                        Text(style = TabPillButton().active(if active.get() == TAB_ACTIVITY_ROUTE.name() {
+                            TabPillButtonActive::On
+                        } else {
+                            TabPillButtonActive::Off
+                        })) { "Activity" }
+                    }
+                    Link(route = &TAB_DETAILS_ROUTE, params = ()) {
+                        Text(style = TabPillButton().active(if active.get() == TAB_DETAILS_ROUTE.name() {
+                            TabPillButtonActive::On
+                        } else {
+                            TabPillButtonActive::Off
+                        })) { "Details" }
+                    }
+                }
+                View(style = tab_body_style()) {
+                    props.outlet
+                }
+            }
+        }
+    }
+}
+
+/// Tab demo body — a `TabNavigator` with sidebar-placed tabs. Each
+/// tab's screen runs in its own reactive scope; `MountPolicy` is
+/// `LazyPersistent` (the default), so first visit mounts the tab's
+/// content and subsequent visits show it from cache (state survives
+/// switching to another tab and back).
+#[component]
+pub fn tabdemo() -> Primitive {
+    let tabs_ref: Ref<TabsHandle> = Ref::new();
+    ui! {
+        { TabNavigator::new(&TAB_OVERVIEW_ROUTE)
+            .tab(TAB_OVERVIEW_ROUTE, TabSpec::new("Overview"), |_| {
+                ui! { TabOverview() }
+            })
+            .tab(TAB_ACTIVITY_ROUTE, TabSpec::new("Activity"), |_| {
+                ui! { TabActivity() }
+            })
+            .tab(TAB_DETAILS_ROUTE, TabSpec::new("Details"), |_| {
+                ui! { TabDetails() }
+            })
+            .placement(framework_core::TabPlacement::Sidebar)
+            .layout(tab_sidebar_layout())
+            .bind(tabs_ref) }
+    }
+}
+
+pub struct SettingsBodyProps {
+    pub is_dark: Signal<bool>,
+}
+
+/// Settings body — currently just the theme toggle. Toggling theme
+/// re-fires every styled effect across the app via the framework's
+/// reactivity, so the change propagates to every mounted screen
+/// (including the hidden ones in the other drawer items, when their
+/// MountPolicy is persistent).
+#[component]
+pub fn settingsbody(props: &SettingsBodyProps) -> Primitive {
+    let is_dark = props.is_dark;
+    ui! {
+        View {
+            Text(style = title_style()) { "Settings" }
+            Text(style = section_heading_style()) { "Appearance" }
+            Button(
+                label = if is_dark.get() { "Light mode".to_string() } else { "Dark mode".to_string() },
+                on_click = move || {
+                    let now_dark = !is_dark.get();
+                    is_dark.set(now_dark);
+                    if now_dark {
+                        set_theme(dark_theme());
+                    } else {
+                        set_theme(light_theme());
+                    }
+                },
+                style = secondary_button_style()
+            )
+        }
+    }
+}
+
+// =============================================================================
+// Home screen — the drawer navigator
+// =============================================================================
+
+pub struct HomeProps {
+    /// Root stack navigator handle. Used by the home screen's body
+    /// content (the drawer items) to push secondary screens —
+    /// Showcase, Performance, Lists, etc. — onto the root stack.
+    pub nav: Ref<NavigatorHandle>,
+    /// App-level theme flag, owned at the app level so the theme
+    /// outlives any single screen's scope.
+    pub is_dark: Signal<bool>,
+}
+
+/// Home screen — a `DrawerNavigator`. Three drawer items:
+///
+/// - **Dashboard**: landing content with cards that push the root
+///   stack's secondary screens (Showcase, Performance, Lists, …).
+/// - **Tab demo**: hosts a nested `TabNavigator` with sidebar tabs.
+/// - **Settings**: app-level controls (theme toggle).
+///
+/// The drawer's chrome (sidebar + brand + entry buttons) is drawn
+/// by the layout closure below. Native backends (Android, iOS) will
+/// override this with their own drawer widget (`DrawerLayout`,
+/// hand-rolled `UIView` overlay), but on web the layout slot *is*
+/// the drawer's visual.
+#[component]
+pub fn home(props: &HomeProps) -> Primitive {
+    let nav = props.nav;
+    let is_dark = props.is_dark;
+    let drawer_ref: Ref<DrawerHandle> = Ref::new();
+
+    ui! {
+        { DrawerNavigator::new(&DRAWER_DASHBOARD_ROUTE)
+            .item(DRAWER_DASHBOARD_ROUTE, DrawerItem::new("Dashboard"))
+            .item(DRAWER_TABS_ROUTE,      DrawerItem::new("Tab demo"))
+            .item(DRAWER_SETTINGS_ROUTE,  DrawerItem::new("Settings"))
+            .screen(DRAWER_DASHBOARD_ROUTE, move |_| {
+                let nav = nav;
+                ui! { Dashboard(nav = nav) }
+            })
+            .screen(DRAWER_TABS_ROUTE, move |_| {
+                ui! { TabDemo() }
+            })
+            .screen(DRAWER_SETTINGS_ROUTE, move |_| {
+                let is_dark = is_dark;
+                ui! { SettingsBody(is_dark = is_dark) }
+            })
+            .layout(home_drawer_layout())
+            .bind(drawer_ref) }
+    }
+}
+
+/// Drawer chrome. Renders a sidebar with three entry buttons + a
+/// body region containing the outlet. `active_route` is read
+/// reactively so the highlighted button updates without rebuilding
+/// the chrome.
+///
+/// Each entry button dispatches a `Link::Select` (the default
+/// `NavKind` inside a drawer navigator), which the drawer's
+/// dispatcher translates to a body-swap.
+fn home_drawer_layout() -> impl Fn(LayoutProps) -> Primitive + 'static {
+    move |props: LayoutProps| {
+        let active = props.active_route;
+        ui! {
+            View(style = drawer_shell_style()) {
+                View(style = drawer_sidebar_style()) {
+                    Text(style = drawer_brand_style()) { "idealyst" }
+                    Link(route = &DRAWER_DASHBOARD_ROUTE, params = ()) {
+                        Text(style = DrawerItemButton().active(if active.get() == DRAWER_DASHBOARD_ROUTE.name() {
+                            DrawerItemButtonActive::On
+                        } else {
+                            DrawerItemButtonActive::Off
+                        })) { "Dashboard" }
+                    }
+                    Link(route = &DRAWER_TABS_ROUTE, params = ()) {
+                        Text(style = DrawerItemButton().active(if active.get() == DRAWER_TABS_ROUTE.name() {
+                            DrawerItemButtonActive::On
+                        } else {
+                            DrawerItemButtonActive::Off
+                        })) { "Tab demo" }
+                    }
+                    Link(route = &DRAWER_SETTINGS_ROUTE, params = ()) {
+                        Text(style = DrawerItemButton().active(if active.get() == DRAWER_SETTINGS_ROUTE.name() {
+                            DrawerItemButtonActive::On
+                        } else {
+                            DrawerItemButtonActive::Off
+                        })) { "Settings" }
+                    }
+                }
+                View(style = drawer_body_style()) {
+                    props.outlet
+                }
             }
         }
     }

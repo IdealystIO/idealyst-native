@@ -130,6 +130,51 @@ impl primitives::overlay::AnchorableHandle for ButtonHandle {
     }
 }
 
+/// A handle to a mounted `Pressable` primitive.
+///
+/// Same shape as [`ButtonHandle`] — the two diverge only in the
+/// underlying primitive's children-vs-label contract. Authors that
+/// want a clickable container with custom children (icon + label,
+/// row of children, etc.) use `Pressable`; authors that want a bare
+/// label button use `Button`.
+///
+/// Like `ButtonHandle`, it carries an `AnchorableHandle` impl so a
+/// `Pressable` can be the anchor target of an `Overlay`.
+#[derive(Clone)]
+pub struct PressableHandle {
+    node: Rc<dyn Any>,
+    ops: &'static dyn PressableOps,
+}
+
+impl PressableHandle {
+    pub fn new(node: Rc<dyn Any>, ops: &'static dyn PressableOps) -> Self {
+        Self { node, ops }
+    }
+
+    /// Fire the press callback. On platforms with native press
+    /// semantics this also dispatches a native event so any UA
+    /// hooks (analytics, focus shifts) run.
+    pub fn click(&self) {
+        self.ops.click(&*self.node);
+    }
+}
+
+pub trait PressableOps {
+    fn click(&self, node: &dyn Any);
+    /// Viewport-relative rect, mirroring [`ButtonOps::rect`]. Used
+    /// when a `Pressable` is the anchor target of an `Overlay`.
+    #[allow(unused_variables)]
+    fn rect(&self, node: &dyn Any) -> primitives::overlay::ViewportRect {
+        primitives::overlay::ViewportRect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 }
+    }
+}
+
+impl primitives::overlay::AnchorableHandle for PressableHandle {
+    fn rect(&self) -> primitives::overlay::ViewportRect {
+        self.ops.rect(&*self.node)
+    }
+}
+
 /// A handle to a mounted `View` primitive.
 #[derive(Clone)]
 pub struct ViewHandle {
@@ -210,6 +255,7 @@ pub struct RefOps {
 /// carry it.
 pub enum RefFill {
     Button(Box<dyn FnOnce(ButtonHandle)>),
+    Pressable(Box<dyn FnOnce(PressableHandle)>),
     View(Box<dyn FnOnce(ViewHandle)>),
     Text(Box<dyn FnOnce(TextHandle)>),
     Image(Box<dyn FnOnce(primitives::image::ImageHandle)>),
@@ -223,6 +269,8 @@ pub enum RefFill {
     Virtualizer(Box<dyn FnOnce(primitives::virtualizer::VirtualizerHandle)>),
     Graphics(Box<dyn FnOnce(primitives::graphics::GraphicsHandle)>),
     Navigator(Box<dyn FnOnce(primitives::navigator::NavigatorHandle)>),
+    TabNavigator(Box<dyn FnOnce(primitives::navigator::TabsHandle)>),
+    DrawerNavigator(Box<dyn FnOnce(primitives::navigator::DrawerHandle)>),
     Link(Box<dyn FnOnce(primitives::link::LinkHandle)>),
     Overlay(Box<dyn FnOnce(primitives::overlay::OverlayHandle)>),
     Presence(Box<dyn FnOnce(primitives::presence::PresenceHandle)>),

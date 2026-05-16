@@ -20,7 +20,9 @@
 
 use std::rc::Rc;
 
-use framework_core::{ui, ButtonHandle, IntoPrimitive, Primitive, Ref, StyleApplication, VariantEnum};
+use framework_core::{
+    text, ui, IntoPrimitive, PressableHandle, Primitive, Ref, StyleApplication, VariantEnum,
+};
 
 use crate::intent::{apply_palette, Intent, IntoRcIntent, Primary};
 use crate::stylesheets::Pressable;
@@ -38,11 +40,11 @@ pub struct PressableProps {
     pub intent: Rc<dyn Intent>,
     pub size: PressableSize,
     pub disabled: Option<Rc<dyn Fn() -> bool>>,
-    /// When `Some`, fills the given `Ref<ButtonHandle>` with the
-    /// underlying Button primitive's handle on mount. Useful for
+    /// When `Some`, fills the given `Ref<PressableHandle>` with the
+    /// underlying Pressable primitive's handle on mount. Useful for
     /// anchoring an `Overlay` to this button — pass the same ref to
     /// the overlay's anchor target.
-    pub bind_to: Option<Ref<ButtonHandle>>,
+    pub bind_to: Option<Ref<PressableHandle>>,
 }
 
 impl Default for PressableProps {
@@ -66,10 +68,8 @@ pub fn pressable(props: &PressableProps) -> Primitive {
     let intent: Rc<dyn Intent> = props.intent.clone();
     let bind_to = props.bind_to;
 
-    // The style closure re-runs whenever the apply-style effect
-    // re-fires — i.e. on theme change or on any signal read inside.
-    // We re-resolve the intent's palette each time so theme swaps
-    // propagate into intent-colored components.
+    // Style closure resolves the intent's palette on each fire so
+    // theme swaps propagate into intent-colored components.
     let style = move || {
         let theme = framework_core::active_theme();
         let theme_ref = theme
@@ -82,13 +82,13 @@ pub fn pressable(props: &PressableProps) -> Primitive {
         apply_palette(app, &palette)
     };
 
-    // Build the underlying `Button` directly (not via `ui! { Button(...) }`)
-    // so we keep the `Bound<ButtonHandle>` and can chain `.bind(r)`
-    // before coercing to Primitive. The macro's lowering would
-    // erase the bound and prevent the bind call.
-    let label_clone = label.clone();
-    let on_click_for_btn = on_click.clone();
-    let mut bound = framework_core::button(label_clone, move || (on_click_for_btn)())
+    // Built on the framework's `pressable` primitive (a tappable
+    // `<div>` on web — no `<button>` UA chrome) so the visual is
+    // entirely owned by the `Pressable` stylesheet. The label
+    // becomes a `Text` child of the pressable.
+    let children: Vec<Primitive> = vec![text(label).into_primitive()];
+    let on_click_for_p = on_click.clone();
+    let mut bound = framework_core::pressable(children, move || (on_click_for_p)())
         .with_style(style);
     if let Some(d) = disabled {
         bound = bound.disabled(move || (d)());

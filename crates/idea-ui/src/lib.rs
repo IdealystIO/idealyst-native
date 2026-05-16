@@ -30,7 +30,7 @@
 //!     install_idea_theme(light_theme());
 //!     let count = signal!(0);
 //!     ui! {
-//!         VStack(gap = StackGap::Lg) {
+//!         Stack(gap = StackGap::Lg) {
 //!             Heading(content = "Hello, idea-ui".to_string())
 //!             Card {
 //!                 Body(content = format!("Count: {}", count.get()))
@@ -89,8 +89,7 @@ pub use components::skeleton::{skeleton, SkeletonProps, SkeletonWidth};
 pub use components::spacer::{spacer, SpacerProps};
 pub use components::spinner::{spinner, SpinnerProps, SpinnerSize};
 pub use components::stack::{
-    hstack, stack, vstack, HStackProps, StackAlign, StackAxis, StackGap, StackJustify, StackProps,
-    VStackProps,
+    stack, StackAlign, StackAxis, StackGap, StackJustify, StackProps,
 };
 pub use components::switch::{switch, SwitchProps};
 pub use components::tabs::{tabs, Tab, TabsProps};

@@ -1,49 +1,41 @@
-//! Navigator + Screen primitives.
+//! Shared navigator substrate — used by every navigator kind.
 //!
-//! A `Navigator` is the framework's stack-based navigation container.
-//! Authors declare a set of `Screen` routes up-front and an initial
-//! route; an imperative `NavigatorHandle` (obtained via `.bind(ref)`)
-//! drives push / pop / replace / reset at runtime.
+//! This module owns the bits that don't depend on whether the
+//! enclosing navigator is a stack, tabs, drawer, or anything else
+//! we might ship later:
 //!
-//! # Per-platform semantics
+//! - `Route<P>` + `RouteParams` — typed route declaration and URL
+//!   <-> typed-params conversion.
+//! - `ScreenBuilder` / `RouteEntry` / `ParamsFromSegments` —
+//!   type-erased screen registry.
+//! - `match_pattern` — pure URL-against-pattern matcher (used by
+//!   web + any future SSR backend).
+//! - `AmbientNavGuard` / `ambient_navigator()` — the thread-local
+//!   stack of `Rc<NavigatorControl>` the `Link` primitive reads at
+//!   construction time. Each navigator kind pushes onto this stack
+//!   while building screens.
+//! - `NavCommand` — the dispatcher's command vocabulary. Stack
+//!   commands (`Push`, `Pop`, `Replace`, `Reset`) and select-style
+//!   commands (`Select`) coexist; per-kind dispatchers handle the
+//!   ones they understand.
+//! - `NavigatorControl` — the bridge between the user-facing
+//!   handle and the framework's per-navigator state. Carries the
+//!   dispatcher closure, the reactive `NavState` mirror, and the
+//!   depth probe.
+//! - `NavigatorHandle` + `NavigatorOps` — the imperative API and
+//!   its backend hook trait.
+//! - `NavigatorCallbacks` — the bundle handed to
+//!   `Backend::create_navigator` (and, eventually, the per-kind
+//!   `create_tab_navigator` / `create_drawer_navigator` siblings).
+//! - `LayoutProps` / `LayoutPlan` / `LayoutBuilder` — author-supplied
+//!   chrome wrapper for backends that render through a layout (web).
+//! - `NavState` — reactive bundle of "what's the active screen?"
+//!   signals layout closures subscribe to.
 //!
-//! - **iOS**: the navigator is a `UINavigationController`. Each pushed
-//!   screen is a child `UIViewController` whose `view` is the screen
-//!   subtree's root. Back-swipe + nav bar come for free.
-//! - **Android**: the navigator is a `FrameLayout` driven by a
-//!   `FragmentManager`. Each push commits a new `Fragment` whose view
-//!   is the screen subtree's root and adds it to the back stack so the
-//!   system back button pops correctly.
-//! - **Web** (no-op): the navigator is a plain container that holds the
-//!   active screen inline. push/pop swap the subtree atomically. URL
-//!   pathing comes later.
-//!
-//! # Lifecycles
-//!
-//! Each *mounted* screen runs inside its own reactive `Scope`. Popping
-//! drops that scope, freeing every signal/effect/ref scoped to the
-//! screen. The pattern mirrors `Virtualizer`'s per-item scopes: backends
-//! get `mount_screen(idx, params)` + `release_screen(scope_id)`
-//! callbacks; the framework owns the scope registry.
-//!
-//! # Route params
-//!
-//! Routes are typed via the generic param `P`:
-//!
-//! ```ignore
-//! let home = Route::<()>::new("home");
-//! let detail = Route::<DetailParams>::new("detail");
-//! ```
-//!
-//! `nav.push(&detail, DetailParams { id: 42 })` is a compile-time check
-//! that the params match the route. Inside the framework the params get
-//! boxed into `Box<dyn Any>` so the navigator's screen table stays
-//! non-generic; each registered screen builder downcasts back to its
-//! declared param type before calling the user's render closure. A
-//! mismatch (e.g. user constructs a route at runtime with the wrong
-//! param) panics in the renderer with a clear message.
+//! Per-kind builders (`Navigator` in `stack`, future `TabNavigator`
+//! / `DrawerNavigator`) compose on top of these.
 
-use crate::{Bound, Primitive, Ref, RefFill};
+use crate::{Primitive, Ref};
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -54,7 +46,7 @@ use std::rc::Rc;
 // Ambient navigator stack
 // ---------------------------------------------------------------------------
 //
-// While the navigator's `mount_screen` is building a screen subtree,
+// While a navigator's `mount_screen` is building a screen subtree,
 // it pushes its `Rc<NavigatorControl>` onto this thread-local stack
 // and pops on the way out. The `Link` primitive's constructor reads
 // the top of the stack at build time and captures it — that's how
@@ -74,10 +66,10 @@ thread_local! {
 /// RAII guard that pushes a navigator control onto the ambient
 /// stack at construction and pops on drop. Used by
 /// `mount_screen` to wrap each per-screen build.
-pub(crate) struct AmbientNavGuard;
+pub struct AmbientNavGuard;
 
 impl AmbientNavGuard {
-    pub(crate) fn push(control: Rc<NavigatorControl>) -> Self {
+    pub fn push(control: Rc<NavigatorControl>) -> Self {
         AMBIENT_NAV.with(|s| s.borrow_mut().push(control));
         AmbientNavGuard
     }
@@ -126,11 +118,7 @@ pub trait RouteParams: 'static + Sized {
     /// is `pattern` (e.g. `/detail/:id`). Returns the concrete URL
     /// path (e.g. `/detail/42`).
     fn to_path(&self, pattern: &str) -> String {
-        // Default impl: only works for `()`. Types with actual params
-        // must override.
         let _ = self;
-        // For the unit type and similar no-segment cases, return the
-        // pattern as-is (no `:placeholder` segments to substitute).
         if pattern.contains(':') {
             panic!(
                 "RouteParams::to_path default impl can't fill placeholder \
@@ -148,9 +136,6 @@ pub trait RouteParams: 'static + Sized {
     /// matched the pattern but had unparseable values for the
     /// declared `P`).
     fn from_segments(_segments: &HashMap<String, String>) -> Option<Self> {
-        // Default impl is for `()` — only matches if there are no
-        // segments (the pattern was a literal path). Custom impls
-        // override to parse their own fields.
         None
     }
 }
@@ -232,21 +217,21 @@ impl<P: RouteParams> Route<P> {
 /// fabricates a `Route<X>` at runtime with the wrong `P`), the
 /// downcast panics with a clear message — same posture as any other
 /// type-erased registry in the framework.
-pub(crate) type ScreenBuilder = Rc<dyn Fn(Box<dyn Any>) -> Primitive>;
+pub type ScreenBuilder = Rc<dyn Fn(Box<dyn Any>) -> Primitive>;
 
 /// Closure that parses a `:placeholder` segment map into the
 /// route's typed param payload, then boxes it as `dyn Any`. Used by
 /// path-matching backends (web, future SSR) to go from a matched URL
 /// to the params the receiving screen expects.
-pub(crate) type ParamsFromSegments = Rc<dyn Fn(&HashMap<String, String>) -> Option<Box<dyn Any>>>;
+pub type ParamsFromSegments = Rc<dyn Fn(&HashMap<String, String>) -> Option<Box<dyn Any>>>;
 
 /// Per-route bookkeeping. Carries everything path-matching backends
 /// need: the pattern, the typed builder, and the segment-parser. The
 /// framework's screen table maps route names to these entries.
-pub(crate) struct RouteEntry {
-    pub(crate) path: &'static str,
-    pub(crate) build: ScreenBuilder,
-    pub(crate) from_segments: ParamsFromSegments,
+pub struct RouteEntry {
+    pub path: &'static str,
+    pub build: ScreenBuilder,
+    pub from_segments: ParamsFromSegments,
 }
 
 // ---------------------------------------------------------------------------
@@ -307,6 +292,14 @@ impl NavigatorHandle {
         control: Rc<NavigatorControl>,
     ) -> Self {
         Self { node, ops, control: Some(control) }
+    }
+
+    /// Access the underlying control plane. Used by the per-kind
+    /// handle wrappers (`StackHandle`, `TabsHandle`, `DrawerHandle`)
+    /// to dispatch their kind-specific commands without re-implementing
+    /// the wiring.
+    pub fn control(&self) -> Option<&Rc<NavigatorControl>> {
+        self.control.as_ref()
     }
 
     /// Push a new screen onto the stack. `route` is what was declared
@@ -397,12 +390,36 @@ pub trait NavigatorOps {
 // Control plane — shared state between handle + framework + backend
 // ---------------------------------------------------------------------------
 
+/// Default activation shape exposed to the `Link` primitive. Stack
+/// navigators expose `Push`; tabs and drawer expose `Select`. The
+/// `Link` constructor reads this off the ambient navigator's
+/// control plane when no explicit `.kind(...)` was specified.
+///
+/// Kept here (in the shared substrate, not in `link.rs`) so the
+/// link module stays free of per-kind knowledge — it just queries
+/// the ambient navigator's default and dispatches.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum DefaultLinkKind {
+    Push,
+    Select,
+}
+
+impl Default for DefaultLinkKind {
+    fn default() -> Self {
+        DefaultLinkKind::Push
+    }
+}
+
 /// The bridge between the user-facing handle and the framework's
 /// per-navigator state. Carries:
 /// - the command dispatcher the handle uses (set by the framework
 ///   during `build_navigator`),
 /// - a read-only depth probe so handles can answer `.depth()` without
-///   reaching into the backend.
+///   reaching into the backend,
+/// - the reactive nav-state mirror (active route/path/depth/can_go_back),
+/// - the navigator's default `Link` activation kind, so a `Link`
+///   inside a tab/drawer navigator's screen dispatches `Select`
+///   instead of `Push` by default.
 ///
 /// Wrapped in `Rc` so handle clones share one control plane.
 pub struct NavigatorControl {
@@ -413,6 +430,11 @@ pub struct NavigatorControl {
     /// route name + path are already observable. `None` until
     /// `attach_nav_state` is called from `build_navigator`.
     nav_state: RefCell<Option<NavState>>,
+    /// Default dispatch shape for `Link` primitives whose ambient
+    /// navigator is this one. Stack navigators leave it at `Push`
+    /// (the default); tabs and drawer set it to `Select` via
+    /// `set_default_link_kind` during their build phase.
+    default_link_kind: RefCell<DefaultLinkKind>,
 }
 
 impl NavigatorControl {
@@ -421,6 +443,7 @@ impl NavigatorControl {
             dispatch: RefCell::new(None),
             depth: RefCell::new(1),
             nav_state: RefCell::new(None),
+            default_link_kind: RefCell::new(DefaultLinkKind::Push),
         }
     }
 
@@ -429,6 +452,19 @@ impl NavigatorControl {
     /// from the very first command.
     pub fn attach_nav_state(&self, nav_state: NavState) {
         *self.nav_state.borrow_mut() = Some(nav_state);
+    }
+
+    /// Set the default activation shape exposed to `Link` primitives.
+    /// Called once from each per-kind builder's `build_*` walker.
+    pub fn set_default_link_kind(&self, kind: DefaultLinkKind) {
+        *self.default_link_kind.borrow_mut() = kind;
+    }
+
+    /// Read the default activation shape. The `Link` primitive
+    /// constructor calls this to pick its initial `NavKind` based on
+    /// the ambient navigator.
+    pub fn default_link_kind(&self) -> DefaultLinkKind {
+        *self.default_link_kind.borrow()
     }
 
     /// Install the dispatcher. Called once from `build_navigator` after
@@ -472,7 +508,8 @@ impl NavigatorControl {
             match &cmd {
                 NavCommand::Push { name, url, .. }
                 | NavCommand::Replace { name, url, .. }
-                | NavCommand::Reset { name, url, .. } => {
+                | NavCommand::Reset { name, url, .. }
+                | NavCommand::Select { name, url, .. } => {
                     state.active_route.set(name);
                     state.active_path.set(url.clone());
                 }
@@ -483,11 +520,14 @@ impl NavigatorControl {
                     // backend, after committing the pop, updates
                     // active_route/path via depth_changed +
                     // (TODO) a separate "active_changed" callback.
-                    // For now, leave the signals at the popped
-                    // value; the layout will read stale data
-                    // briefly. Backends that care can call
-                    // `state.active_route.set(...)` directly via
-                    // the `nav_state` field on `NavigatorCallbacks`.
+                }
+                NavCommand::OpenDrawer
+                | NavCommand::CloseDrawer
+                | NavCommand::ToggleDrawer => {
+                    // Drawer open/close is transient UI state, not
+                    // navigation — leave the active-route signals
+                    // alone. The drawer navigator's dispatcher
+                    // tracks the open-state signal separately.
                 }
             }
         }
@@ -511,7 +551,20 @@ impl Default for NavigatorControl {
 /// Boxed params survive the channel hop and are downcast at the
 /// builder boundary. `url` is the concrete URL string produced by
 /// `RouteParams::to_path` — web pushes it; native backends ignore it.
+///
+/// Not every navigator kind handles every command:
+///
+/// - Stack handles `Push` / `Pop` / `Replace` / `Reset`. `Select` and
+///   drawer commands are programmer errors against a stack nav.
+/// - Tabs handles `Select` (and `Reset` to "go back to initial tab").
+///   `Push` / `Pop` against a tab nav is a programmer error.
+/// - Drawer handles `Select` + `OpenDrawer` / `CloseDrawer` /
+///   `ToggleDrawer`.
+///
+/// Per-kind dispatchers panic on unsupported commands so the mismatch
+/// surfaces at the call site, not as silent no-op.
 pub enum NavCommand {
+    // ----- stack-shaped -----
     Push {
         name: &'static str,
         url: String,
@@ -528,6 +581,20 @@ pub enum NavCommand {
         url: String,
         params: Box<dyn Any>,
     },
+    // ----- select-shaped (tabs + drawer) -----
+    /// Switch the active screen to `name`. Used by tabs and drawer.
+    /// Idempotent: selecting the already-active route is a no-op
+    /// (matches React Navigation's tab tap-to-pop behavior, modulo
+    /// the optional "reset stack on re-tap" we may add later).
+    Select {
+        name: &'static str,
+        url: String,
+        params: Box<dyn Any>,
+    },
+    // ----- drawer-shaped -----
+    OpenDrawer,
+    CloseDrawer,
+    ToggleDrawer,
 }
 
 // ---------------------------------------------------------------------------
@@ -607,10 +674,6 @@ pub struct NavigatorCallbacks<N: Clone + 'static> {
 }
 
 // ---------------------------------------------------------------------------
-// Navigator builder — author-facing
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // Layout — author-supplied chrome wrapper, used by web (and any future
 // SSR / DOM-based backend). Native backends ignore it.
 // ---------------------------------------------------------------------------
@@ -654,7 +717,7 @@ pub struct LayoutProps {
     pub on_back: Rc<dyn Fn()>,
 }
 
-pub(crate) type LayoutBuilder = Rc<dyn Fn(LayoutProps) -> Primitive>;
+pub type LayoutBuilder = Rc<dyn Fn(LayoutProps) -> Primitive>;
 
 /// Reactive nav-state bundle exposed to layout closures + held by
 /// the framework. The dispatcher mutates these on every push/pop;
@@ -681,113 +744,4 @@ pub struct NavState {
 pub struct LayoutPlan<N: Clone + 'static> {
     pub root: N,
     pub outlet_ref: Ref<crate::ViewHandle>,
-}
-
-/// Author-facing navigator builder. Routes get declared via `.screen(...)`;
-/// the framework wires the rest. See module-level docs for usage.
-pub struct Navigator {
-    pub(crate) initial: &'static str,
-    pub(crate) initial_path: &'static str,
-    pub(crate) screens: HashMap<&'static str, RouteEntry>,
-    pub(crate) layout: Option<LayoutBuilder>,
-    pub(crate) style: Option<crate::StyleSource>,
-    pub(crate) ref_fill: Option<RefFill>,
-}
-
-impl Navigator {
-    /// Construct a navigator with `initial` as the root screen. The
-    /// route must be registered via `.screen(...)` before the
-    /// navigator mounts; an unregistered initial route panics.
-    ///
-    /// The initial route's params are always `()` — the root screen
-    /// is unparameterized by construction. Apps that need a
-    /// parameterized "deep-link" root should rely on web's
-    /// path-matching path: declare the screen normally, and the web
-    /// backend will mount it as the root when the URL matches.
-    pub fn new(initial: &Route<()>) -> Bound<NavigatorHandle> {
-        Bound::new(Primitive::Navigator(Box::new(Navigator {
-            initial: initial.name,
-            initial_path: initial.path,
-            screens: HashMap::new(),
-            layout: None,
-            style: None,
-            ref_fill: None,
-        })))
-    }
-}
-
-/// Builder methods. Wrapping in `Bound<NavigatorHandle>` keeps the
-/// `.bind(ref)` type-check working — same pattern as every other
-/// primitive's builder.
-impl Bound<NavigatorHandle> {
-    /// Register a screen. `route` is the typed key; `render` is the
-    /// per-route subtree builder, which receives the route's typed
-    /// params. The `'static` bound on `P` is required to box the
-    /// params across the framework's type-erased boundary; the
-    /// `RouteParams` bound is what lets web/SSR backends map URLs to
-    /// typed payloads.
-    pub fn screen<P: RouteParams>(
-        mut self,
-        route: Route<P>,
-        render: impl Fn(P) -> Primitive + 'static,
-    ) -> Self {
-        if let Primitive::Navigator(nav) = &mut self.primitive {
-            let render = Rc::new(render);
-            let build: ScreenBuilder = Rc::new(move |boxed: Box<dyn Any>| {
-                let params: Box<P> = boxed.downcast().unwrap_or_else(|_| {
-                    panic!(
-                        "Navigator: screen param type mismatch for route — \
-                         declared params don't match dispatched params"
-                    )
-                });
-                render(*params)
-            });
-            let from_segments: ParamsFromSegments = Rc::new(|segs| {
-                P::from_segments(segs).map(|p| Box::new(p) as Box<dyn Any>)
-            });
-            nav.screens.insert(
-                route.name,
-                RouteEntry { path: route.path, build, from_segments },
-            );
-        }
-        self
-    }
-
-    /// Install a layout component — a chrome wrapper that the
-    /// framework renders around the active screen. Useful on web
-    /// (and any future DOM-based backend) for things native nav
-    /// controllers handle automatically: top bars, sidebars,
-    /// breadcrumbs.
-    ///
-    /// The closure receives a [`LayoutProps`] bundle whose fields
-    /// are reactive signals. Reading any of them inside the
-    /// layout's `ui!` body subscribes the effect — the layout
-    /// re-renders only the parts that read changed signals, not
-    /// the whole subtree. `LayoutProps::outlet` is the slot the
-    /// framework physically reuses on each push/pop, so the
-    /// surrounding chrome doesn't rebuild when screens swap.
-    ///
-    /// **Native backends ignore this.** UIKit's
-    /// `UINavigationController` and Android's `FragmentManager`
-    /// draw their own chrome (nav bar, action bar, swipe-to-back);
-    /// inserting a user layout there would just fight the platform.
-    /// The layout closure is invoked only by backends that opt in.
-    pub fn layout<F>(mut self, f: F) -> Self
-    where
-        F: Fn(LayoutProps) -> Primitive + 'static,
-    {
-        if let Primitive::Navigator(nav) = &mut self.primitive {
-            nav.layout = Some(Rc::new(f));
-        }
-        self
-    }
-
-    /// Bind a `Ref<NavigatorHandle>` so the handle is filled at mount
-    /// time. Matches the standard primitive bind shape.
-    pub fn bind(mut self, r: Ref<NavigatorHandle>) -> Self {
-        if let Primitive::Navigator(nav) = &mut self.primitive {
-            nav.ref_fill = Some(RefFill::Navigator(Box::new(move |h| r.fill(h))));
-        }
-        self
-    }
 }

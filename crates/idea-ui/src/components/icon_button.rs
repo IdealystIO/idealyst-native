@@ -18,14 +18,15 @@
 //! }
 //! ```
 //!
-//! Right now the content has to be a string because the framework's
-//! `Button` primitive carries a `String` label, not an arbitrary
-//! primitive child. A future "clickable container" primitive would
-//! let us host any subtree as the icon — that's the natural follow-up.
+//! Built on the framework's `Pressable` primitive (a tappable
+//! `<div>` on web, no UA chrome), so the glyph is just a `Text`
+//! child styled by the `IconButton` stylesheet. A future revision
+//! can host any subtree as the icon if needed — the underlying
+//! primitive already supports it.
 
 use std::rc::Rc;
 
-use framework_core::{ui, Primitive, StyleApplication, VariantEnum};
+use framework_core::{text, IntoPrimitive, Primitive, StyleApplication, VariantEnum};
 
 use crate::intent::{apply_palette, Intent, IntoRcIntent, Neutral};
 use crate::stylesheets::IconButton;
@@ -74,21 +75,11 @@ pub fn icon_button(props: &IconButtonProps) -> Primitive {
         apply_palette(app, &palette)
     };
 
-    match disabled {
-        Some(d) => ui! {
-            Button(
-                label = glyph,
-                on_click = move || (on_click)(),
-                style = style,
-                disabled = move || (d)()
-            )
-        },
-        None => ui! {
-            Button(
-                label = glyph,
-                on_click = move || (on_click)(),
-                style = style
-            )
-        },
+    let glyph_child = text(glyph).into_primitive();
+    let mut bound = framework_core::pressable(vec![glyph_child], move || (on_click)())
+        .with_style(style);
+    if let Some(d) = disabled {
+        bound = bound.disabled(move || (d)());
     }
+    bound.into_primitive()
 }

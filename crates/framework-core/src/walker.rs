@@ -106,6 +106,30 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
             }
             n
         }
+        Primitive::Pressable { children, on_click, style, ref_fill, disabled } => {
+            // Backend creates a bare tappable container with the
+            // click handler bound. Children are inserted just like
+            // View — the visual is entirely subtree-driven, no UA
+            // chrome (no `<button>` border on web; no system
+            // styling on native).
+            let mut n = time_backend_create(pkind!(Pressable), || {
+                backend.borrow_mut().create_pressable(on_click)
+            });
+            insert_children(backend, &mut n, children);
+            // Same attach_style/disabled wiring as Button so
+            // `state hovered`/`state pressed`/`state disabled`
+            // overlays apply and the disabled-bit/native-inert
+            // sync works identically.
+            let state_setter = style.map(|s| attach_style(backend, &n, s));
+            if let Some(RefFill::Pressable(fill)) = ref_fill {
+                let handle = backend.borrow().make_pressable_handle(&n);
+                fill(handle);
+            }
+            if let Some(d) = disabled {
+                attach_disabled(backend, &n, d, state_setter);
+            }
+            n
+        }
         Primitive::Button { label, on_click, style, ref_fill, disabled } => {
             // Pull the initial label from the source and create the
             // native widget with it. For reactive labels we install
@@ -421,6 +445,82 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
             }
             n
         }
+        Primitive::TabNavigator(nav) => {
+            let primitives::navigator::TabNavigator {
+                initial,
+                initial_path,
+                tab_order,
+                screens,
+                layout,
+                placement,
+                mount_policy,
+                style,
+                ref_fill,
+            } = *nav;
+            let n = build_tab_navigator(
+                backend,
+                initial,
+                initial_path,
+                tab_order,
+                screens,
+                layout,
+                placement,
+                mount_policy,
+                ref_fill,
+            );
+            if let Some(s) = style {
+                attach_style(backend, &n, s);
+            }
+            {
+                let cleanup = TabNavigatorHandleCleanup {
+                    backend: backend.clone(),
+                    node: n.clone(),
+                };
+                let _e = Effect::new(move || {
+                    let _ = &cleanup.node;
+                });
+            }
+            n
+        }
+        Primitive::DrawerNavigator(nav) => {
+            let primitives::navigator::DrawerNavigator {
+                initial,
+                initial_path,
+                item_order,
+                screens,
+                layout,
+                side,
+                pinned_above,
+                mount_policy,
+                style,
+                ref_fill,
+            } = *nav;
+            let n = build_drawer_navigator(
+                backend,
+                initial,
+                initial_path,
+                item_order,
+                screens,
+                layout,
+                side,
+                pinned_above,
+                mount_policy,
+                ref_fill,
+            );
+            if let Some(s) = style {
+                attach_style(backend, &n, s);
+            }
+            {
+                let cleanup = DrawerNavigatorHandleCleanup {
+                    backend: backend.clone(),
+                    node: n.clone(),
+                };
+                let _e = Effect::new(move || {
+                    let _ = &cleanup.node;
+                });
+            }
+            n
+        }
         Primitive::When { cond, then, otherwise, style } => {
             let n = build_when(backend, cond, then, otherwise);
             if let Some(s) = style {
@@ -618,6 +718,7 @@ fn debug_kind_of(node: &Primitive) -> debug::PrimitiveKind {
         Primitive::Text { .. } => PrimitiveKind::Text,
         Primitive::View { .. } => PrimitiveKind::View,
         Primitive::Button { .. } => PrimitiveKind::Button,
+        Primitive::Pressable { .. } => PrimitiveKind::Pressable,
         Primitive::Image { .. } => PrimitiveKind::Image,
         Primitive::TextInput { .. } => PrimitiveKind::TextInput,
         Primitive::Toggle { .. } => PrimitiveKind::Toggle,
@@ -629,6 +730,8 @@ fn debug_kind_of(node: &Primitive) -> debug::PrimitiveKind {
         Primitive::Virtualizer { .. } => PrimitiveKind::Virtualizer,
         Primitive::Graphics { .. } => PrimitiveKind::Graphics,
         Primitive::Navigator(_) => PrimitiveKind::Navigator,
+        Primitive::TabNavigator(_) => PrimitiveKind::TabNavigator,
+        Primitive::DrawerNavigator(_) => PrimitiveKind::DrawerNavigator,
         Primitive::When { .. } => PrimitiveKind::When,
         Primitive::Switch { .. } => PrimitiveKind::Switch,
         Primitive::Link { .. } => PrimitiveKind::Link,
@@ -932,6 +1035,32 @@ impl<B: Backend + 'static> Drop for NavigatorHandleCleanup<B> {
     }
 }
 
+/// RAII wrapper that calls `Backend::release_tab_navigator` when
+/// dropped. Same shape as `NavigatorHandleCleanup`.
+struct TabNavigatorHandleCleanup<B: Backend + 'static> {
+    backend: Rc<RefCell<B>>,
+    node: B::Node,
+}
+
+impl<B: Backend + 'static> Drop for TabNavigatorHandleCleanup<B> {
+    fn drop(&mut self) {
+        self.backend.borrow_mut().release_tab_navigator(&self.node);
+    }
+}
+
+/// RAII wrapper that calls `Backend::release_drawer_navigator` when
+/// dropped. Same shape as `NavigatorHandleCleanup`.
+struct DrawerNavigatorHandleCleanup<B: Backend + 'static> {
+    backend: Rc<RefCell<B>>,
+    node: B::Node,
+}
+
+impl<B: Backend + 'static> Drop for DrawerNavigatorHandleCleanup<B> {
+    fn drop(&mut self) {
+        self.backend.borrow_mut().release_drawer_navigator(&self.node);
+    }
+}
+
 /// RAII wrapper that calls `Backend::release_overlay` when dropped.
 /// Installed unconditionally per Overlay primitive by a dedicated
 /// `Effect` in the build walker. When the surrounding scope drops —
@@ -1220,6 +1349,408 @@ fn build_navigator<B: Backend + 'static>(
         // matching every other "primitive ref that the backend doesn't
         // support yet" path in the framework.
         let handle = backend.borrow().make_navigator_handle(&node);
+        fill(handle);
+    }
+
+    node
+}
+
+/// Build a TabNavigator. Shares the per-screen scope registry and
+/// ambient-nav wiring with `build_navigator`; differs in the
+/// callbacks bundle (carries tab metadata + mount policy) and the
+/// backend hook called (`create_tab_navigator`).
+#[allow(clippy::too_many_arguments)]
+fn build_tab_navigator<B: Backend + 'static>(
+    backend: &Rc<RefCell<B>>,
+    initial: &'static str,
+    initial_path: &'static str,
+    tab_order: Vec<(&'static str, primitives::navigator::TabSpec)>,
+    screens: HashMap<&'static str, primitives::navigator::RouteEntry>,
+    layout: Option<primitives::navigator::LayoutBuilder>,
+    placement: primitives::navigator::TabPlacement,
+    mount_policy: primitives::navigator::MountPolicy,
+    ref_fill: Option<RefFill>,
+) -> B::Node {
+    use primitives::navigator::{
+        match_pattern, DefaultLinkKind, LayoutPlan, LayoutProps, NavState, NavigatorCallbacks,
+        NavigatorControl, TabNavigatorCallbacks, TabRegistration,
+    };
+
+    // Per-screen scope registry — same discipline as stack.
+    let scopes: Rc<RefCell<HashMap<u64, Box<reactive::Scope>>>> =
+        Rc::new(RefCell::new(HashMap::new()));
+    let next_scope_id: Rc<RefCell<u64>> = Rc::new(RefCell::new(0));
+    let screens = Rc::new(screens);
+    let control = Rc::new(NavigatorControl::new());
+    control.set_default_link_kind(DefaultLinkKind::Select);
+
+    let mount_screen: Rc<dyn Fn(&'static str, Box<dyn Any>) -> (B::Node, u64)> = {
+        let scopes = scopes.clone();
+        let next_id = next_scope_id.clone();
+        let screens = screens.clone();
+        let backend = backend.clone();
+        let control_for_mount = control.clone();
+        Rc::new(move |name, params| {
+            let builder = screens
+                .get(name)
+                .map(|e| e.build.clone())
+                .unwrap_or_else(|| panic!("TabNavigator: route '{}' is not registered", name));
+            let mut scope = Box::new(reactive::Scope::new());
+            let _ambient_guard =
+                primitives::navigator::AmbientNavGuard::push(control_for_mount.clone());
+            let node = reactive::with_scope(&mut scope, || {
+                let primitive = builder(params);
+                build(&backend, primitive)
+            });
+            let id = {
+                let mut n = next_id.borrow_mut();
+                let v = *n;
+                *n = n.checked_add(1).unwrap_or(0);
+                v
+            };
+            scopes.borrow_mut().insert(id, scope);
+            (node, id)
+        })
+    };
+
+    let release_screen: Rc<dyn Fn(u64)> = {
+        let scopes = scopes.clone();
+        Rc::new(move |id| {
+            scopes.borrow_mut().remove(&id);
+        })
+    };
+
+    let match_path: Rc<dyn Fn(&str) -> Option<(&'static str, Box<dyn Any>)>> = {
+        let screens = screens.clone();
+        Rc::new(move |path| {
+            for (name, entry) in screens.iter() {
+                if let Some(segs) = match_pattern(path, entry.path) {
+                    if let Some(params) = (entry.from_segments)(&segs) {
+                        return Some((*name, params));
+                    }
+                }
+            }
+            None
+        })
+    };
+
+    let nav_state = NavState {
+        active_route: Signal::new(initial),
+        active_path: Signal::new(initial_path.to_string()),
+        // Tabs don't have stack depth; pin to 1 so layouts that
+        // read `depth` see a sensible value (effectively "we're at
+        // the root of the active tab"). Backends with nested stacks
+        // inside tabs report the *active tab's* stack depth via
+        // their own depth_changed; until then, 1 is correct.
+        depth: Signal::new(1),
+        can_go_back: Signal::new(false),
+    };
+    control.attach_nav_state(nav_state.clone());
+
+    let depth_changed: Rc<dyn Fn(usize)> = {
+        let control = control.clone();
+        let depth_sig = nav_state.depth;
+        let back_sig = nav_state.can_go_back;
+        Rc::new(move |d| {
+            control.set_depth(d);
+            depth_sig.set(d);
+            back_sig.set(d > 1);
+        })
+    };
+
+    // Active-changed callback. Backends fire this after the tap
+    // commits (e.g. for analytics); the reactive nav-state signals
+    // have already been updated by `control.dispatch(...)`.
+    let active_changed: Rc<dyn Fn(&'static str)> = Rc::new(|_name| {});
+
+    // Layout slot — same shape as stack's. Tabs may want a top app
+    // bar that spans tabs (e.g. a search field that lives above the
+    // tab bar); the layout closure renders the chrome and embeds
+    // the outlet where the active tab's content goes.
+    let layout_scope: Rc<RefCell<Option<Box<reactive::Scope>>>> =
+        Rc::new(RefCell::new(None));
+    let build_layout: Option<Rc<dyn Fn() -> LayoutPlan<B::Node>>> = layout.map(|layout_fn| {
+        let nav_state = nav_state.clone();
+        let control = control.clone();
+        let layout_fn = layout_fn.clone();
+        let backend = backend.clone();
+        let layout_scope_slot = layout_scope.clone();
+        let f: Rc<dyn Fn() -> LayoutPlan<B::Node>> = Rc::new(move || {
+            let outlet_ref: Ref<crate::ViewHandle> = Ref::new();
+            let outlet_primitive: Primitive = crate::view(Vec::new()).bind(outlet_ref).into();
+            // Tabs don't have a back-button — `on_back` is a no-op.
+            // Layout authors who need one should hide it via the
+            // `can_go_back` signal, which stays false for pure tab
+            // navigators.
+            let on_back: Rc<dyn Fn()> = Rc::new(|| {});
+            let props = LayoutProps {
+                outlet: outlet_primitive,
+                active_route: nav_state.active_route,
+                active_path: nav_state.active_path,
+                depth: nav_state.depth,
+                can_go_back: nav_state.can_go_back,
+                on_back,
+            };
+            let _ambient_guard =
+                primitives::navigator::AmbientNavGuard::push(control.clone());
+            let root_primitive = layout_fn(props);
+            let mut scope = Box::new(reactive::Scope::new());
+            let root = reactive::with_scope(&mut scope, || {
+                build(&backend, root_primitive)
+            });
+            *layout_scope_slot.borrow_mut() = Some(scope);
+            LayoutPlan { root, outlet_ref }
+        });
+        f
+    });
+
+    // Translate the `Vec<(name, TabSpec)>` author input into the
+    // `Vec<TabRegistration>` shape backends receive. Same data,
+    // flat structure (no nested tuples).
+    let tabs: Vec<TabRegistration> = tab_order
+        .into_iter()
+        .map(|(route, spec)| TabRegistration {
+            route,
+            label: spec.label,
+            icon: spec.icon,
+            badge: spec.badge,
+        })
+        .collect();
+
+    let nav_callbacks = NavigatorCallbacks {
+        initial_route: initial,
+        initial_path,
+        mount_screen,
+        release_screen,
+        match_path,
+        build_layout,
+        nav_state,
+        depth_changed,
+    };
+    let callbacks = TabNavigatorCallbacks {
+        navigator: nav_callbacks,
+        tabs,
+        placement,
+        mount_policy,
+        active_changed,
+    };
+
+    let mount_screen_for_initial = callbacks.navigator.mount_screen.clone();
+    let node = time_backend_create(pkind!(TabNavigator), || {
+        backend.borrow_mut().create_tab_navigator(callbacks, control.clone())
+    });
+
+    // Mount the initial tab's screen after create_tab_navigator
+    // returns (outside the borrow_mut window). Same pattern as the
+    // stack navigator's `navigator_attach_initial`. Backends that
+    // defer initial mount to a microtask (web) leave the default
+    // no-op; backends that mount synchronously (Android) implement
+    // `tab_navigator_attach_initial`.
+    let (initial_node, initial_scope_id) = mount_screen_for_initial(initial, Box::new(()));
+    backend
+        .borrow_mut()
+        .tab_navigator_attach_initial(&node, initial_node, initial_scope_id);
+
+    if let Some(RefFill::TabNavigator(fill)) = ref_fill {
+        let handle = backend.borrow().make_tab_navigator_handle(&node);
+        fill(handle);
+    }
+
+    node
+}
+
+/// Build a DrawerNavigator. Same per-screen scope machinery as the
+/// stack and tab navigators; additionally exposes an `is_open`
+/// signal the backend's dispatcher flips on
+/// `OpenDrawer`/`CloseDrawer`/`ToggleDrawer` commands.
+#[allow(clippy::too_many_arguments)]
+fn build_drawer_navigator<B: Backend + 'static>(
+    backend: &Rc<RefCell<B>>,
+    initial: &'static str,
+    initial_path: &'static str,
+    item_order: Vec<(&'static str, primitives::navigator::DrawerItem)>,
+    screens: HashMap<&'static str, primitives::navigator::RouteEntry>,
+    layout: Option<primitives::navigator::LayoutBuilder>,
+    side: primitives::navigator::DrawerSide,
+    pinned_above: Option<u32>,
+    mount_policy: primitives::navigator::MountPolicy,
+    ref_fill: Option<RefFill>,
+) -> B::Node {
+    use primitives::navigator::{
+        match_pattern, DefaultLinkKind, DrawerItemRegistration, DrawerNavigatorCallbacks,
+        LayoutPlan, LayoutProps, NavState, NavigatorCallbacks, NavigatorControl,
+    };
+
+    let scopes: Rc<RefCell<HashMap<u64, Box<reactive::Scope>>>> =
+        Rc::new(RefCell::new(HashMap::new()));
+    let next_scope_id: Rc<RefCell<u64>> = Rc::new(RefCell::new(0));
+    let screens = Rc::new(screens);
+    let control = Rc::new(NavigatorControl::new());
+    control.set_default_link_kind(DefaultLinkKind::Select);
+
+    let mount_screen: Rc<dyn Fn(&'static str, Box<dyn Any>) -> (B::Node, u64)> = {
+        let scopes = scopes.clone();
+        let next_id = next_scope_id.clone();
+        let screens = screens.clone();
+        let backend = backend.clone();
+        let control_for_mount = control.clone();
+        Rc::new(move |name, params| {
+            let builder = screens
+                .get(name)
+                .map(|e| e.build.clone())
+                .unwrap_or_else(|| panic!("DrawerNavigator: route '{}' is not registered", name));
+            let mut scope = Box::new(reactive::Scope::new());
+            let _ambient_guard =
+                primitives::navigator::AmbientNavGuard::push(control_for_mount.clone());
+            let node = reactive::with_scope(&mut scope, || {
+                let primitive = builder(params);
+                build(&backend, primitive)
+            });
+            let id = {
+                let mut n = next_id.borrow_mut();
+                let v = *n;
+                *n = n.checked_add(1).unwrap_or(0);
+                v
+            };
+            scopes.borrow_mut().insert(id, scope);
+            (node, id)
+        })
+    };
+
+    let release_screen: Rc<dyn Fn(u64)> = {
+        let scopes = scopes.clone();
+        Rc::new(move |id| {
+            scopes.borrow_mut().remove(&id);
+        })
+    };
+
+    let match_path: Rc<dyn Fn(&str) -> Option<(&'static str, Box<dyn Any>)>> = {
+        let screens = screens.clone();
+        Rc::new(move |path| {
+            for (name, entry) in screens.iter() {
+                if let Some(segs) = match_pattern(path, entry.path) {
+                    if let Some(params) = (entry.from_segments)(&segs) {
+                        return Some((*name, params));
+                    }
+                }
+            }
+            None
+        })
+    };
+
+    let nav_state = NavState {
+        active_route: Signal::new(initial),
+        active_path: Signal::new(initial_path.to_string()),
+        depth: Signal::new(1),
+        can_go_back: Signal::new(false),
+    };
+    control.attach_nav_state(nav_state.clone());
+
+    // Reactive drawer-open signal. The backend's dispatcher flips
+    // this in response to `OpenDrawer`/`CloseDrawer`/`ToggleDrawer`
+    // commands; layout closures subscribe to it to drive the
+    // hamburger icon's open/close visual.
+    let is_open = Signal::new(false);
+
+    let depth_changed: Rc<dyn Fn(usize)> = {
+        let control = control.clone();
+        let depth_sig = nav_state.depth;
+        let back_sig = nav_state.can_go_back;
+        Rc::new(move |d| {
+            control.set_depth(d);
+            depth_sig.set(d);
+            back_sig.set(d > 1);
+        })
+    };
+
+    let active_changed: Rc<dyn Fn(&'static str)> = Rc::new(|_name| {});
+    let open_changed: Rc<dyn Fn(bool)> = Rc::new(move |open| is_open.set(open));
+
+    let layout_scope: Rc<RefCell<Option<Box<reactive::Scope>>>> =
+        Rc::new(RefCell::new(None));
+    let build_layout: Option<Rc<dyn Fn() -> LayoutPlan<B::Node>>> = layout.map(|layout_fn| {
+        let nav_state = nav_state.clone();
+        let control = control.clone();
+        let layout_fn = layout_fn.clone();
+        let backend = backend.clone();
+        let layout_scope_slot = layout_scope.clone();
+        let f: Rc<dyn Fn() -> LayoutPlan<B::Node>> = Rc::new(move || {
+            let outlet_ref: Ref<crate::ViewHandle> = Ref::new();
+            let outlet_primitive: Primitive = crate::view(Vec::new()).bind(outlet_ref).into();
+            // Drawer's `on_back` toggles the drawer — back action
+            // semantics on a drawer-rooted screen. Layout authors
+            // who want stack-style back can hold a separate handle.
+            let on_back: Rc<dyn Fn()> = {
+                let control = control.clone();
+                Rc::new(move || control.dispatch(primitives::navigator::NavCommand::ToggleDrawer))
+            };
+            let props = LayoutProps {
+                outlet: outlet_primitive,
+                active_route: nav_state.active_route,
+                active_path: nav_state.active_path,
+                depth: nav_state.depth,
+                can_go_back: nav_state.can_go_back,
+                on_back,
+            };
+            let _ambient_guard =
+                primitives::navigator::AmbientNavGuard::push(control.clone());
+            let root_primitive = layout_fn(props);
+            let mut scope = Box::new(reactive::Scope::new());
+            let root = reactive::with_scope(&mut scope, || {
+                build(&backend, root_primitive)
+            });
+            *layout_scope_slot.borrow_mut() = Some(scope);
+            LayoutPlan { root, outlet_ref }
+        });
+        f
+    });
+
+    let items: Vec<DrawerItemRegistration> = item_order
+        .into_iter()
+        .map(|(route, item)| DrawerItemRegistration {
+            route,
+            label: item.label,
+            icon: item.icon,
+        })
+        .collect();
+
+    let nav_callbacks = NavigatorCallbacks {
+        initial_route: initial,
+        initial_path,
+        mount_screen,
+        release_screen,
+        match_path,
+        build_layout,
+        nav_state,
+        depth_changed,
+    };
+    let callbacks = DrawerNavigatorCallbacks {
+        navigator: nav_callbacks,
+        items,
+        side,
+        pinned_above,
+        mount_policy,
+        is_open,
+        active_changed,
+        open_changed,
+    };
+
+    let mount_screen_for_initial = callbacks.navigator.mount_screen.clone();
+    let node = time_backend_create(pkind!(DrawerNavigator), || {
+        backend.borrow_mut().create_drawer_navigator(callbacks, control.clone())
+    });
+
+    // Mount the initial drawer screen — same pattern as the tab
+    // navigator. Backends that mount via microtask (web) leave the
+    // default no-op; backends that mount synchronously (Android)
+    // implement `drawer_navigator_attach_initial`.
+    let (initial_node, initial_scope_id) = mount_screen_for_initial(initial, Box::new(()));
+    backend
+        .borrow_mut()
+        .drawer_navigator_attach_initial(&node, initial_node, initial_scope_id);
+
+    if let Some(RefFill::DrawerNavigator(fill)) = ref_fill {
+        let handle = backend.borrow().make_drawer_navigator_handle(&node);
         fill(handle);
     }
 

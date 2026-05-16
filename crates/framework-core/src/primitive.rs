@@ -51,6 +51,30 @@ pub enum Primitive {
         /// propagate automatically.
         disabled: Option<Box<dyn Fn() -> bool>>,
     },
+    /// Clickable container — like [`Primitive::View`] but with a
+    /// press callback. Renders to a tappable native control whose
+    /// visual is entirely supplied by `children` and `style`. No
+    /// UA chrome (no `<button>` border on web, no
+    /// `UIButton` system styling on iOS) — backends create a bare
+    /// container with a click/tap recognizer attached.
+    ///
+    /// Use when you want button *behavior* without button *visuals*:
+    /// custom-styled buttons whose look is owned by the stylesheet,
+    /// option rows in a menu, tappable card surfaces. For a plain
+    /// label-only button with native semantics (form submission,
+    /// default focus ring, etc.) use [`Primitive::Button`].
+    ///
+    /// The state machinery (`state hovered`, `state pressed`,
+    /// `state focused`, `state disabled`) works just like on any
+    /// other styled primitive.
+    Pressable {
+        children: Vec<Primitive>,
+        on_click: Rc<dyn Fn()>,
+        style: Option<StyleSource>,
+        ref_fill: Option<RefFill>,
+        /// Same semantics as [`Primitive::Button::disabled`].
+        disabled: Option<Box<dyn Fn() -> bool>>,
+    },
     /// Image primitive. Source is reactive (`Box<dyn Fn() -> String>`)
     /// so authors can pass a static URL or a closure reading a signal.
     Image {
@@ -175,6 +199,27 @@ pub enum Primitive {
     /// `HashMap<&'static str, _>` of screen builders that we don't
     /// want bloating every other primitive variant.
     Navigator(Box<primitives::navigator::Navigator>),
+    /// Tab navigator — a tab bar plus a switched content region.
+    /// Holds an ordered list of (route, presentation spec) entries
+    /// and a route table; the framework hands the backend a
+    /// `TabNavigatorCallbacks` bundle so it can build the bar and
+    /// mount/release tab screens.
+    ///
+    /// Phase-3 status: the primitive + walker plumbing is in place
+    /// but backend implementations have not landed. Calling against
+    /// a backend that hasn't implemented `create_tab_navigator`
+    /// panics with `unimplemented!()`.
+    TabNavigator(Box<primitives::navigator::TabNavigator>),
+    /// Drawer navigator — a slide-in side panel plus a switched
+    /// body region. Optionally pinned beside the body above a
+    /// viewport-width breakpoint (becomes a sidebar). Holds an
+    /// ordered list of drawer entries + a route table.
+    ///
+    /// Phase-4 status: the primitive + walker plumbing is in place
+    /// but backend implementations have not landed. Calling against
+    /// a backend that hasn't implemented `create_drawer_navigator`
+    /// panics with `unimplemented!()`.
+    DrawerNavigator(Box<primitives::navigator::DrawerNavigator>),
     /// Reactive conditional. Renders `then()` while `cond()` is true and
     /// `otherwise()` when it's false. The renderer wraps the subtree
     /// construction in an `Effect` so the choice re-evaluates when any
@@ -303,6 +348,7 @@ impl Primitive {
             Primitive::View { style, .. }
             | Primitive::Text { style, .. }
             | Primitive::Button { style, .. }
+            | Primitive::Pressable { style, .. }
             | Primitive::Image { style, .. }
             | Primitive::TextInput { style, .. }
             | Primitive::Toggle { style, .. }
@@ -320,6 +366,12 @@ impl Primitive {
                 *style = Some(src);
             }
             Primitive::Navigator(nav) => {
+                nav.style = Some(src);
+            }
+            Primitive::DrawerNavigator(nav) => {
+                nav.style = Some(src);
+            }
+            Primitive::TabNavigator(nav) => {
                 nav.style = Some(src);
             }
             Primitive::Repeat { .. } => {

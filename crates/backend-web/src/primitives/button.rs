@@ -10,6 +10,10 @@ use wasm_bindgen::JsCast;
 use web_sys::Node;
 
 pub(crate) fn create(b: &mut WebBackend, label: &str, on_click: Rc<dyn Fn()>) -> Node {
+    // Ensure the global style element exists so the `:where(button)`
+    // UA reset is in place before any author class rules attach to
+    // this element. Cheap after the first call (just a flag check).
+    let _ = b.ensure_style_element();
     let button = b
         .doc
         .create_element("button")

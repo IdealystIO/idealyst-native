@@ -22,7 +22,7 @@
 //!             side = ElementSide::Below,
 //!             on_dismiss = move || open.set(false)
 //!         ) {
-//!             VStack {
+//!             Stack {
 //!                 Pressable(label = "Edit".to_string(), on_click = on_edit, intent = Ghost.into_rc())
 //!                 Pressable(label = "Delete".to_string(), on_click = on_delete, intent = Danger.into_rc())
 //!             }

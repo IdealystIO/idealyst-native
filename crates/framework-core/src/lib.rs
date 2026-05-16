@@ -21,18 +21,22 @@ pub mod debug;
 
 pub use backend::{Backend, VirtualizerCallbacks};
 pub use handles::{
-    ButtonHandle, ButtonOps, RefFill, RefOps, StateBits, TextHandle, TextOps, ViewHandle, ViewOps,
+    ButtonHandle, ButtonOps, PressableHandle, PressableOps, RefFill, RefOps, StateBits, TextHandle,
+    TextOps, ViewHandle, ViewOps,
 };
 pub use builder::{
-    button, switch, text, view, when, Bindable, Bound, ChildList, IntoDisabledSource,
+    button, pressable, switch, text, view, when, Bindable, Bound, ChildList, IntoDisabledSource,
     IntoPrimitive,
 };
 pub use primitive::Primitive;
 pub use sources::{IntoStyleSource, IntoTextSource, StyleSource, TextSource};
 pub use walker::{render, Owner};
 pub use primitives::navigator::{
-    match_pattern, LayoutPlan, LayoutProps, NavCommand, NavState, Navigator, NavigatorCallbacks,
-    NavigatorControl, NavigatorHandle, NavigatorOps, Route, RouteParams,
+    match_pattern, DefaultLinkKind, DrawerHandle, DrawerItem, DrawerItemRegistration,
+    DrawerNavigator, DrawerNavigatorCallbacks, DrawerSide, LayoutPlan, LayoutProps, MountPolicy,
+    NavCommand, NavState, Navigator, NavigatorCallbacks, NavigatorControl, NavigatorHandle,
+    NavigatorOps, Route, RouteParams, TabNavigator, TabNavigatorCallbacks, TabPlacement,
+    TabRegistration, TabSpec, TabsHandle,
 };
 pub use primitives::overlay::{
     overlay, AnchorTarget, AnchorableHandle, BackdropMode, ElementAlign, ElementAnchor,

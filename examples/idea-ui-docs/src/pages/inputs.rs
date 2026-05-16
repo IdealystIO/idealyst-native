@@ -3,7 +3,7 @@
 use framework_core::{signal, ui, Primitive};
 use idea_ui::doc_controls::DocControls;
 use idea_ui::{
-    body, card, field, heading, select, switch, vstack, BodyTone, FieldProps, HeadingKind,
+    body, card, field, heading, select, stack, switch, BodyTone, FieldProps, HeadingKind,
     SelectOption, StackGap, SwitchProps,
 };
 
@@ -11,7 +11,7 @@ use crate::shell::{demo_card, page_header};
 
 pub fn page() -> Primitive {
     ui! {
-        VStack(gap = StackGap::Xl) {
+        Stack(gap = StackGap::Xl) {
             { page_header(
                 "Inputs",
                 "Field, Switch, and Select — all controlled by host-owned `Signal<T>` values."

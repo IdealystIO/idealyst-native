@@ -1,27 +1,24 @@
-//! Layout — Stack/HStack/VStack, Card, Divider.
+//! Layout — Stack, Card, Divider.
 
 use framework_core::{ui, Primitive};
 use idea_ui::doc_controls::DocControls;
 use idea_ui::{
-    badge, body, card, divider, heading, hstack, stack, vstack, BadgeProps, CardProps,
-    DividerProps, HStackProps, HeadingKind, IntoRcIntent, Primary, StackGap, StackProps, Success,
-    VStackProps, Warning,
+    badge, body, card, divider, heading, stack, BadgeProps, CardProps, DividerProps, HeadingKind,
+    IntoRcIntent, Primary, StackGap, StackProps, Success, Warning,
 };
 
 use crate::shell::{demo_card, page_header};
 
 pub fn page() -> Primitive {
     ui! {
-        VStack(gap = StackGap::Xl) {
+        Stack(gap = StackGap::Xl) {
             { page_header(
                 "Layout",
-                "Stack, HStack, VStack, Card, Divider. Stack is the workhorse — gap, axis, \
-                 alignment, and justification are all variant axes (discrete and cacheable)."
+                "Stack, Card, Divider. Stack is the workhorse — gap, axis, alignment, and \
+                 justification are all variant axes (discrete and cacheable)."
             ) }
 
             { stack_demo() }
-            { hstack_demo() }
-            { vstack_demo() }
             { card_demo() }
             { divider_demo() }
         }
@@ -56,56 +53,9 @@ fn stack_demo() -> Primitive {
     let controls = StackProps::render_controls(&state);
     demo_card(
         "Stack",
-        "Generic flex container. Axis defaults to column; both axes share the same gap / \
-         align / justify variants.",
-        preview,
-        controls,
-    )
-}
-
-fn hstack_demo() -> Primitive {
-    let state = HStackProps::init_state();
-    let preview = HStackProps::reactive_preview(&state, |props| {
-        let gap = props.gap;
-        let align = props.align;
-        let justify = props.justify;
-        ui! {
-            HStack(
-                gap = gap,
-                align = align,
-                justify = justify,
-                children = filler_children()
-            )
-        }
-    });
-    let controls = HStackProps::render_controls(&state);
-    demo_card(
-        "HStack",
-        "Stack with axis locked to row.",
-        preview,
-        controls,
-    )
-}
-
-fn vstack_demo() -> Primitive {
-    let state = VStackProps::init_state();
-    let preview = VStackProps::reactive_preview(&state, |props| {
-        let gap = props.gap;
-        let align = props.align;
-        let justify = props.justify;
-        ui! {
-            VStack(
-                gap = gap,
-                align = align,
-                justify = justify,
-                children = filler_children()
-            )
-        }
-    });
-    let controls = VStackProps::render_controls(&state);
-    demo_card(
-        "VStack",
-        "Stack with axis locked to column.",
+        "Generic flex container. Axis defaults to column; flip to row for toolbars / button \
+         rows. Gap, alignment, and justification are all enum-typed variant axes — discrete and \
+         cacheable.",
         preview,
         controls,
     )

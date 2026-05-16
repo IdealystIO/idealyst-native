@@ -100,6 +100,37 @@ pub(crate) struct OverlayInstance {
     /// Dropped together with the rest of the instance.
     #[allow(dead_code)]
     deferred_install: Option<framework_core::ScheduledTask>,
+    /// Scroll + resize handlers that re-measure the anchor target
+    /// and rewrite the content's inline `top`/`left` so the overlay
+    /// keeps tracking the trigger as the page scrolls or the
+    /// viewport resizes. Only populated for `OverlayAnchor::Element`
+    /// overlays — viewport-anchored overlays pin via `inset` /
+    /// `margin: auto` already.
+    ///
+    /// `scroll` is registered with `capture: true` because scroll
+    /// events from nested scroll containers don't bubble. Held here
+    /// so `release` can `removeEventListener` with the same closure
+    /// references — otherwise the browser keeps firing them against
+    /// freed Rust state.
+    #[allow(dead_code)]
+    reposition_scroll_handler: Option<Closure<dyn FnMut(web_sys::Event)>>,
+    #[allow(dead_code)]
+    reposition_resize_handler: Option<Closure<dyn FnMut(web_sys::Event)>>,
+    /// First-paint reposition task. The walker calls
+    /// `create_overlay` *before* it inserts the overlay's children,
+    /// so the content element has no size when we install the
+    /// initial inline `top`/`left`. We schedule a one-shot
+    /// `requestAnimationFrame` here that fires once the children
+    /// have mounted and a paint has measured them, at which point
+    /// the shared `reposition` closure replaces the initial
+    /// placement with a measured-and-clamped version.
+    ///
+    /// Held on the instance so a fast teardown (overlay closed
+    /// before the frame fires) drops the rAF and the wasm-bindgen
+    /// `Closure` inside it. Without that the rAF would still fire
+    /// against a freed Rust state.
+    #[allow(dead_code)]
+    initial_measure_task: Option<framework_core::ScheduledTask>,
 }
 
 /// All live overlay instances, keyed by `data-overlay-id`.
@@ -268,14 +299,112 @@ pub(crate) fn create(
             None
         };
 
-    // ---- Page scroll-lock ----
+    // ---- Scroll / resize reposition for Element anchors ----
     //
-    // While any overlay is open we freeze the page so the trigger
-    // can't scroll out from under an Element-anchored overlay
-    // (popover, dropdown), and so the background doesn't move
-    // distractingly behind a modal/drawer. Refcounted, so stacked
-    // overlays release the lock at the right moment.
-    acquire_scroll_lock(b);
+    // The element-anchored overlay measures the trigger once at
+    // mount. Without these handlers the inline `top`/`left` would
+    // become stale as the page scrolls. We re-measure on every
+    // scroll + resize and rewrite *just* `top`/`left` (not the
+    // whole inline `style`, which would clobber presence-driven
+    // `transform`/`opacity` writes).
+    //
+    // `capture: true` on scroll is the standard trick: scroll
+    // events from nested scroll containers don't bubble (spec
+    // disables bubbling for `scroll`), so a `window` listener with
+    // `useCapture=true` is the only way to catch ancestor scrolls
+    // without attaching one listener per scroll container.
+    //
+    // Viewport anchors don't need re-measurement — `inset`/`margin:
+    // auto` already pin them to the viewport regardless of scroll.
+    let (reposition_scroll_handler, reposition_resize_handler, initial_measure_task) =
+        if let OverlayAnchor::Element(element_anchor) = &anchor {
+            let window = web_sys::window().expect("window");
+            let content_html: web_sys::HtmlElement = content.clone().unchecked_into();
+            let anchor_for_reposition = element_anchor.clone();
+            // Measure-based reposition: read the overlay's *rendered*
+            // rect via `getBoundingClientRect`, pick the side with
+            // enough room for it, compute the visual top-left
+            // directly (no transform-translate trick — we know the
+            // size, so we just shift the box manually), and clamp the
+            // top-left so the whole rendered rect stays inside the
+            // viewport.
+            //
+            // No hardcoded estimates: every measurement comes from
+            // the browser. The first tick (post-mount rAF) provides
+            // the initial fit; subsequent scroll/resize ticks
+            // re-evaluate using whatever the overlay measures *now*
+            // (its size can change if the content reflows).
+            let reposition: Rc<dyn Fn()> = Rc::new(move || {
+                let Some(trigger) = anchor_for_reposition.target.rect() else {
+                    return;
+                };
+                let viewport = viewport_size();
+                let overlay_size = measure_overlay_size(&content_html);
+                let side = pick_side(
+                    anchor_for_reposition.side,
+                    trigger,
+                    overlay_size,
+                    viewport,
+                    anchor_for_reposition.offset,
+                );
+                let (top, left) = measured_position(
+                    trigger,
+                    side,
+                    anchor_for_reposition.align,
+                    anchor_for_reposition.offset,
+                    overlay_size,
+                );
+                let (top, left) = clamp_measured(top, left, overlay_size, viewport);
+                let style = content_html.style();
+                // Now that we know the visual top-left exactly,
+                // clear any transform-based origin flip the initial
+                // mount installed. This also frees `transform` for
+                // presence enter/exit animations.
+                let _ = style.remove_property("transform");
+                let _ = style.set_property("top", &format!("{}px", top));
+                let _ = style.set_property("left", &format!("{}px", left));
+            });
+
+            let reposition_scroll = reposition.clone();
+            let scroll_closure: Closure<dyn FnMut(web_sys::Event)> =
+                Closure::wrap(Box::new(move |_ev: web_sys::Event| {
+                    (reposition_scroll)();
+                }) as Box<dyn FnMut(web_sys::Event)>);
+            let _ = window.add_event_listener_with_callback_and_bool(
+                "scroll",
+                scroll_closure.as_ref().unchecked_ref(),
+                true, // useCapture — catch nested scroll containers
+            );
+
+            let reposition_resize = reposition.clone();
+            let resize_closure: Closure<dyn FnMut(web_sys::Event)> =
+                Closure::wrap(Box::new(move |_ev: web_sys::Event| {
+                    (reposition_resize)();
+                }) as Box<dyn FnMut(web_sys::Event)>);
+            let _ = window.add_event_listener_with_callback(
+                "resize",
+                resize_closure.as_ref().unchecked_ref(),
+            );
+
+            // First-paint reposition: the walker hasn't inserted our
+            // children yet, so the content element has no measurable
+            // size right now. The next animation frame runs after
+            // the walker's `insert_children` call completes and the
+            // browser has laid the children out, so we can measure
+            // and re-place from a real `getBoundingClientRect`.
+            let reposition_initial = reposition.clone();
+            let initial_measure_task = framework_core::after_animation_frame(move || {
+                (reposition_initial)();
+            });
+
+            (
+                Some(scroll_closure),
+                Some(resize_closure),
+                Some(initial_measure_task),
+            )
+        } else {
+            (None, None, None)
+        };
 
     // ---- Stash the instance for cleanup ----
     b.overlay_instances.insert(
@@ -286,6 +415,9 @@ pub(crate) fn create(
             escape_handler,
             document_click_handler,
             deferred_install,
+            reposition_scroll_handler,
+            reposition_resize_handler,
+            initial_measure_task,
         },
     );
 
@@ -370,21 +502,48 @@ pub(crate) fn release(b: &mut WebBackend, node: &Node) {
         let _ = body.remove_child(portal_root.unchecked_ref());
     }
 
-    // The document-level click-outside listener (popover case)
-    // doesn't go away just because the overlay's content was
-    // detached from the DOM. We have to explicitly
-    // removeEventListener with the same closure that was added;
-    // otherwise the browser keeps invoking it for the rest of the
-    // page session, and after the instance drops below the
-    // closure's captured `dismiss` Rc points at freed framework
-    // state.
+    // Every document- or window-level listener installed during
+    // `create` has to be explicitly removed here. Dropping the
+    // OverlayInstance below frees the wasm-bindgen `Closure` handle,
+    // which destroys the JS-side wrapper — but the EventTarget (the
+    // `document` / `window`) still has the wrapper registered as a
+    // listener. The next matching event will invoke a freed closure
+    // and throw "closure invoked recursively or after being dropped"
+    // — once per leaked listener, per event. Removing here keeps the
+    // listener count at zero across overlay lifetimes.
+    //
+    // Element-level listeners (the backdrop's click handler) don't
+    // need this dance: the element itself is removed from the DOM
+    // when we detach the portal root, and the browser drops any
+    // pending listeners on detached subtrees.
     if id != u32::MAX {
         if let Some(inst) = b.overlay_instances.get(&id) {
+            if let Some(closure) = inst.escape_handler.as_ref() {
+                let _ = b.doc.remove_event_listener_with_callback(
+                    "keydown",
+                    closure.as_ref().unchecked_ref(),
+                );
+            }
             if let Some(closure) = inst.document_click_handler.borrow().as_ref() {
                 let _ = b.doc.remove_event_listener_with_callback(
                     "mousedown",
                     closure.as_ref().unchecked_ref(),
                 );
+            }
+            if let Some(window) = web_sys::window() {
+                if let Some(closure) = inst.reposition_scroll_handler.as_ref() {
+                    let _ = window.remove_event_listener_with_callback_and_bool(
+                        "scroll",
+                        closure.as_ref().unchecked_ref(),
+                        true,
+                    );
+                }
+                if let Some(closure) = inst.reposition_resize_handler.as_ref() {
+                    let _ = window.remove_event_listener_with_callback(
+                        "resize",
+                        closure.as_ref().unchecked_ref(),
+                    );
+                }
             }
         }
     }
@@ -393,59 +552,6 @@ pub(crate) fn release(b: &mut WebBackend, node: &Node) {
     // freeing wasm-bindgen state JS-side.
     if id != u32::MAX {
         b.overlay_instances.remove(&id);
-    }
-
-    // Drop our scroll-lock refcount. On the final release this
-    // restores `body.overflow` to whatever the app had set
-    // pre-overlay.
-    release_scroll_lock(b);
-}
-
-/// Increment the scroll-lock refcount. On the `0 → 1` transition,
-/// save the current `document.body` `overflow` value and force it
-/// to `hidden`. Subsequent increments are no-ops at the DOM level
-/// (one set is enough).
-fn acquire_scroll_lock(b: &mut WebBackend) {
-    b.scroll_lock_count = b.scroll_lock_count.saturating_add(1);
-    if b.scroll_lock_count != 1 {
-        return;
-    }
-    let Some(body) = b.doc.body() else { return };
-    let html: web_sys::HtmlElement = match body.dyn_into() {
-        Ok(el) => el,
-        Err(_) => return,
-    };
-    // Save whatever the app had set (likely empty / unset) so we can
-    // restore it precisely on release. Using `getPropertyValue` on
-    // the inline style — *not* `getComputedStyle` — because we want
-    // to round-trip only the inline declaration, not bake the
-    // computed value (e.g. "visible") back in as inline.
-    let saved = html.style().get_property_value("overflow").unwrap_or_default();
-    b.saved_body_overflow = Some(saved);
-    let _ = html.style().set_property("overflow", "hidden");
-}
-
-/// Decrement the scroll-lock refcount. On the `1 → 0` transition,
-/// restore the saved `body.overflow` value. Other transitions leave
-/// the lock in place.
-fn release_scroll_lock(b: &mut WebBackend) {
-    if b.scroll_lock_count == 0 {
-        return;
-    }
-    b.scroll_lock_count -= 1;
-    if b.scroll_lock_count != 0 {
-        return;
-    }
-    let Some(body) = b.doc.body() else { return };
-    let html: web_sys::HtmlElement = match body.dyn_into() {
-        Ok(el) => el,
-        Err(_) => return,
-    };
-    let saved = b.saved_body_overflow.take().unwrap_or_default();
-    if saved.is_empty() {
-        let _ = html.style().remove_property("overflow");
-    } else {
-        let _ = html.style().set_property("overflow", &saved);
     }
 }
 
@@ -498,86 +604,67 @@ fn position_styles_for_anchor(anchor: &OverlayAnchor) -> String {
             format!("{} {}", base, placement)
         }
         OverlayAnchor::Element(e) => {
-            // Measure target now. If the target isn't filled yet
-            // (Ref hasn't been bound at mount time), fall back to
-            // viewport-centered (same transform-free centering as
-            // above).
+            // Initial mount only — places the overlay at the
+            // unmeasured anchor point using the requested side. A
+            // `requestAnimationFrame` scheduled after this returns
+            // re-measures the rendered overlay and re-applies a
+            // viewport-fit position (see the post-mount measure pass
+            // in `create`).
             let Some(rect) = e.target.rect() else {
                 return format!(
                     "{} inset: 0; margin: auto; width: max-content; height: max-content;",
                     base
                 );
             };
-            // Flip the requested side if the trigger is too close to
-            // the corresponding viewport edge to fit the overlay. We
-            // don't know the overlay's actual size yet (its children
-            // haven't been inserted), so we use a conservative
-            // 200px estimate — enough for a typical select menu /
-            // tooltip / dropdown to fit in the remaining space test.
-            let viewport = viewport_size();
-            let side = flip_side_to_fit(e.side, rect, viewport, e.offset);
-            element_anchor_styles(base, rect, side, e.align, e.offset, viewport)
+            element_anchor_styles(base, rect, e.side, e.align, e.offset)
         }
     }
 }
 
-/// Pick the actual side the overlay should anchor on. If the
-/// requested side doesn't have room for an estimated overlay size,
-/// flip to the opposite side — *unless* the opposite is even
-/// tighter (then we keep the original and let the overlay overflow,
+/// Pick the side the overlay should anchor on, given the rendered
+/// overlay size. If the requested side doesn't fit the actual
+/// overlay, flip to the opposite side — *unless* the opposite is
+/// even tighter (then keep the original and let it overflow,
 /// matching what most popover libs do).
 ///
-/// Estimate is intentionally rough: we don't know the overlay's
-/// rendered size until after children are inserted, so we use a
-/// 200px slot and compare relative space on each side. This makes
-/// the right call for the common case (trigger near the bottom of
-/// the viewport → flip to Above) without measuring.
-fn flip_side_to_fit(
-    side: ElementSide,
-    rect: ViewportRect,
+/// Caller must supply a measured `overlay_size`. The version of this
+/// function that ran before the overlay had been measured used a
+/// hardcoded estimate; that's now gone — the only caller is the
+/// post-mount rAF / scroll / resize path, which reads the rendered
+/// rect via `getBoundingClientRect`.
+fn pick_side(
+    requested: ElementSide,
+    trigger: ViewportRect,
+    overlay_size: (f32, f32),
     viewport: (f32, f32),
     offset: f32,
 ) -> ElementSide {
-    const ESTIMATED_OVERLAY_SIZE: f32 = 200.0;
+    let (ow, oh) = overlay_size;
     let (vw, vh) = viewport;
-    match side {
-        ElementSide::Below => {
-            let space_below = vh - (rect.y + rect.height + offset);
-            let space_above = rect.y - offset;
-            if space_below < ESTIMATED_OVERLAY_SIZE && space_above > space_below {
-                ElementSide::Above
-            } else {
-                ElementSide::Below
-            }
-        }
-        ElementSide::Above => {
-            let space_above = rect.y - offset;
-            let space_below = vh - (rect.y + rect.height + offset);
-            if space_above < ESTIMATED_OVERLAY_SIZE && space_below > space_above {
-                ElementSide::Below
-            } else {
-                ElementSide::Above
-            }
-        }
-        ElementSide::Start => {
-            let space_start = rect.x - offset;
-            let space_end = vw - (rect.x + rect.width + offset);
-            if space_start < ESTIMATED_OVERLAY_SIZE && space_end > space_start {
-                ElementSide::End
-            } else {
-                ElementSide::Start
-            }
-        }
-        ElementSide::End => {
-            let space_end = vw - (rect.x + rect.width + offset);
-            let space_start = rect.x - offset;
-            if space_end < ESTIMATED_OVERLAY_SIZE && space_start > space_end {
-                ElementSide::Start
-            } else {
-                ElementSide::End
-            }
-        }
+    let needed = match requested {
+        ElementSide::Above | ElementSide::Below => oh + offset,
+        ElementSide::Start | ElementSide::End => ow + offset,
+    };
+    let (have, opposite_have, opposite) = match requested {
+        ElementSide::Below => (vh - (trigger.y + trigger.height), trigger.y, ElementSide::Above),
+        ElementSide::Above => (trigger.y, vh - (trigger.y + trigger.height), ElementSide::Below),
+        ElementSide::Start => (trigger.x, vw - (trigger.x + trigger.width), ElementSide::End),
+        ElementSide::End => (vw - (trigger.x + trigger.width), trigger.x, ElementSide::Start),
+    };
+    if have < needed && opposite_have > have {
+        opposite
+    } else {
+        requested
     }
+}
+
+/// Read the overlay content's rendered `(width, height)` from the
+/// DOM. Returns the bounding client rect's size; if the element has
+/// no layout yet (e.g. called before insertion), returns `(0, 0)`
+/// and the caller's clamp will keep the top-left at the gutter.
+fn measure_overlay_size(content: &web_sys::HtmlElement) -> (f32, f32) {
+    let rect = content.get_bounding_client_rect();
+    (rect.width() as f32, rect.height() as f32)
 }
 
 /// Viewport size in CSS pixels. Used by the flip + clamp logic.
@@ -596,8 +683,11 @@ fn viewport_size() -> (f32, f32) {
     (w, h)
 }
 
-/// Compute `(top, left)` for an element anchor before any
-/// viewport-fit clamping.
+/// Compute the unmeasured `(top, left)` *anchor point* relative to
+/// the trigger. The final visual top-left of the overlay is then
+/// derived from this via a CSS `transform: translate(...)` based on
+/// the requested alignment — see `element_anchor_styles`. Used only
+/// on initial mount, before the overlay has been measured.
 fn anchor_origin_position(
     rect: ViewportRect,
     side: ElementSide,
@@ -612,40 +702,98 @@ fn anchor_origin_position(
     }
 }
 
+/// Compute the overlay's *visual top-left* directly from the
+/// trigger rect, side, align, and the measured overlay size. No
+/// transform translate needed — we shift the box ourselves using
+/// the known dimensions.
+///
+/// This frees the `transform` CSS property for presence animations,
+/// which compose translate/scale of their own.
+fn measured_position(
+    rect: ViewportRect,
+    side: ElementSide,
+    align: ElementAlign,
+    offset: f32,
+    overlay_size: (f32, f32),
+) -> (f32, f32) {
+    let (ow, oh) = overlay_size;
+    let (top, left) = match side {
+        ElementSide::Below => {
+            let top = rect.y + rect.height + offset;
+            let left = match align {
+                ElementAlign::Start => rect.x,
+                ElementAlign::Center => rect.x + rect.width / 2.0 - ow / 2.0,
+                ElementAlign::End => rect.x + rect.width - ow,
+            };
+            (top, left)
+        }
+        ElementSide::Above => {
+            let top = rect.y - offset - oh;
+            let left = match align {
+                ElementAlign::Start => rect.x,
+                ElementAlign::Center => rect.x + rect.width / 2.0 - ow / 2.0,
+                ElementAlign::End => rect.x + rect.width - ow,
+            };
+            (top, left)
+        }
+        ElementSide::Start => {
+            let left = rect.x - offset - ow;
+            let top = match align {
+                ElementAlign::Start => rect.y,
+                ElementAlign::Center => rect.y + rect.height / 2.0 - oh / 2.0,
+                ElementAlign::End => rect.y + rect.height - oh,
+            };
+            (top, left)
+        }
+        ElementSide::End => {
+            let left = rect.x + rect.width + offset;
+            let top = match align {
+                ElementAlign::Start => rect.y,
+                ElementAlign::Center => rect.y + rect.height / 2.0 - oh / 2.0,
+                ElementAlign::End => rect.y + rect.height - oh,
+            };
+            (top, left)
+        }
+    };
+    (top, left)
+}
+
+/// Clamp the overlay's *visual* top-left so its full measured rect
+/// stays inside the viewport with an 8px gutter on every side.
+///
+/// `top` / `left` are the visual top-left of the overlay box (post
+/// transform-origin flip), and `overlay_size` is the measured
+/// `(width, height)` from `getBoundingClientRect`. Used by the
+/// scroll/resize/post-mount reposition path.
+fn clamp_measured(
+    top: f32,
+    left: f32,
+    overlay_size: (f32, f32),
+    viewport: (f32, f32),
+) -> (f32, f32) {
+    const EDGE_GAP: f32 = 8.0;
+    let (ow, oh) = overlay_size;
+    let (vw, vh) = viewport;
+    // For each axis, build `[min, max]` for the *top-left* such that
+    // the full box fits. If the overlay is bigger than the available
+    // gutter-to-gutter span, prefer aligning to the leading edge
+    // (top/left) — the trailing edge will overflow, matching
+    // floating-UI defaults.
+    let max_left = (vw - EDGE_GAP - ow).max(EDGE_GAP);
+    let max_top = (vh - EDGE_GAP - oh).max(EDGE_GAP);
+    let left = left.clamp(EDGE_GAP, max_left);
+    let top = top.clamp(EDGE_GAP, max_top);
+    (top, left)
+}
+
 fn element_anchor_styles(
     base: &str,
     rect: ViewportRect,
     side: ElementSide,
     align: ElementAlign,
     offset: f32,
-    viewport: (f32, f32),
 ) -> String {
-    // Decide the position relative to the target's rect.
     let (top, left) = anchor_origin_position(rect, side, align, offset);
-    // Clamp `left` horizontally so the overlay stays inside the
-    // viewport when the trigger is near a vertical edge. We don't
-    // know the actual overlay width yet (its children haven't been
-    // inserted), but we know the *anchor point* — for `Center`
-    // alignment the overlay grows symmetrically from `left`, so we
-    // bias toward keeping `left` at least one half-width inside each
-    // edge using an estimate. For `Start` / `End` alignment the
-    // overlay grows in one direction so just clamping `left` to
-    // `[edge_gap, viewport - edge_gap]` is enough — if the overlay
-    // is wider than the viewport everything overflows anyway.
-    let (vw, vh) = viewport;
-    const EDGE_GAP: f32 = 8.0;
-    let left = match side {
-        ElementSide::Below | ElementSide::Above => {
-            left.clamp(EDGE_GAP, (vw - EDGE_GAP).max(EDGE_GAP))
-        }
-        _ => left,
-    };
-    let top = match side {
-        ElementSide::Start | ElementSide::End => {
-            top.clamp(EDGE_GAP, (vh - EDGE_GAP).max(EDGE_GAP))
-        }
-        _ => top,
-    };
     // For `Above` and `Start` we want the overlay to grow back
     // toward the anchor — use a translate to flip the origin.
     let transform = match side {

@@ -24,11 +24,23 @@ pub(crate) fn create(b: &AndroidBackend) -> GlobalRef {
     })
 }
 
-/// Insert `child` into `parent`. If `parent` is a registered
-/// ScrollView outer, the addView call is redirected to its inner
-/// LinearLayout (the actual multi-child container) — see
-/// [`super::scroll_view`] for the rationale.
+/// Insert `child` into `parent`. Two special cases:
+///
+/// - If `parent` is a registered ScrollView outer, the addView call
+///   is redirected to its inner LinearLayout (the actual multi-child
+///   container) — see [`super::scroll_view`] for the rationale.
+/// - If `child` is a registered overlay content holder, the insert
+///   is **skipped**. The overlay's content holder is already parented
+///   to the dialog window via `Dialog.setContentView`; attempting
+///   `parent.addView(overlay_child)` would throw
+///   `IllegalStateException("The specified child already has a parent")`.
+///   The walker calls `insert(presence_placeholder, overlay_node)`
+///   for every overlay because the walker doesn't know about portals;
+///   we filter here.
 pub(crate) fn insert(b: &AndroidBackend, parent: &mut GlobalRef, child: GlobalRef) {
+    if super::overlay::is_overlay_node(b, &child) {
+        return;
+    }
     let target = super::scroll_view::inner_for(b, parent).unwrap_or_else(|| parent.clone());
     with_env(|env| {
         env.call_method(

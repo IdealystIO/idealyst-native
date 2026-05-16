@@ -1,11 +1,11 @@
 //! `Spacer` — an empty flex item that grows to fill available space.
 //!
-//! Use it inside an `HStack` or `VStack` to push siblings to opposite
-//! ends without computing margins:
+//! Use it inside a row `Stack` to push siblings to opposite ends
+//! without computing margins:
 //!
 //! ```ignore
 //! ui! {
-//!     HStack {
+//!     Stack(axis = StackAxis::Row) {
 //!         Heading(content = "Title".to_string())
 //!         Spacer()
 //!         Pressable(label = "Save".to_string(), on_click = on_save)

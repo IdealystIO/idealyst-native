@@ -3,14 +3,14 @@
 use framework_core::{ui, Primitive};
 use idea_ui::doc_controls::DocControls;
 use idea_ui::{
-    body, caption, heading, vstack, BodyProps, CaptionProps, HeadingProps, StackGap,
+    body, caption, heading, stack, BodyProps, CaptionProps, HeadingProps, StackGap,
 };
 
 use crate::shell::{demo_card, page_header};
 
 pub fn page() -> Primitive {
     ui! {
-        VStack(gap = StackGap::Xl) {
+        Stack(gap = StackGap::Xl) {
             { page_header(
                 "Typography",
                 "Heading, Body, and Caption. All read color from the active theme and pick \

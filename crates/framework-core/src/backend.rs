@@ -14,7 +14,10 @@ use std::rc::Rc;
 
 use crate::primitives;
 use crate::style::{Color, StyleRules};
-use crate::{ButtonHandle, ButtonOps, StateBits, TextHandle, TextOps, ViewHandle, ViewOps};
+use crate::{
+    ButtonHandle, ButtonOps, PressableHandle, PressableOps, StateBits, TextHandle, TextOps,
+    ViewHandle, ViewOps,
+};
 
 // ---------------------------------------------------------------------------
 // VirtualizerCallbacks
@@ -68,6 +71,19 @@ pub trait Backend {
     fn create_text(&mut self, content: &str) -> Self::Node;
     fn create_button(&mut self, label: &str, on_click: Rc<dyn Fn()>) -> Self::Node;
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node);
+
+    /// Tappable container node with a click handler attached. Used
+    /// by [`Primitive::Pressable`]. Children are inserted into this
+    /// node via the regular `insert` path.
+    ///
+    /// Default impl falls back to `create_view` — appropriate for
+    /// backends that don't yet support pressables (clicks won't
+    /// fire, but the subtree still renders). Web overrides with a
+    /// `<div>` that has `cursor: pointer` and an `onclick` handler.
+    #[allow(unused_variables)]
+    fn create_pressable(&mut self, on_click: Rc<dyn Fn()>) -> Self::Node {
+        self.create_view()
+    }
 
     /// Placeholder node for reactive `when` / `switch` branches.
     /// The walker creates one of these as a stable parent that
@@ -445,6 +461,11 @@ pub trait Backend {
     }
 
     #[allow(unused_variables)]
+    fn make_pressable_handle(&self, node: &Self::Node) -> PressableHandle {
+        PressableHandle::new(Rc::new(()), &NoopPressableOps)
+    }
+
+    #[allow(unused_variables)]
     fn make_view_handle(&self, node: &Self::Node) -> ViewHandle {
         ViewHandle::new(Rc::new(()), &NoopViewOps)
     }
@@ -602,6 +623,119 @@ pub trait Backend {
         node: &Self::Node,
     ) -> primitives::navigator::NavigatorHandle {
         primitives::navigator::NavigatorHandle::new(Rc::new(()), &NoopNavigatorOps)
+    }
+
+    /// Create a tab navigator. Same shape contract as
+    /// [`Backend::create_navigator`]: backend stores the callbacks,
+    /// installs a dispatcher on `control`, but does NOT call
+    /// `mount_screen` synchronously (re-entrant borrow). Per-mount
+    /// timing depends on `callbacks.mount_policy`:
+    ///
+    /// - `EagerPersistent`: mount every tab on creation via
+    ///   microtask (web) / main-queue dispatch (iOS, Android).
+    /// - `LazyPersistent`: mount on first activation; keep mounted.
+    /// - `LazyDisposing`: mount on activation; release the previous
+    ///   tab's scope on switch.
+    ///
+    /// Default: panic. Phase-3 lands the framework-side plumbing;
+    /// each backend implements it in a follow-up.
+    #[allow(unused_variables)]
+    fn create_tab_navigator(
+        &mut self,
+        callbacks: primitives::navigator::TabNavigatorCallbacks<Self::Node>,
+        control: Rc<primitives::navigator::NavigatorControl>,
+    ) -> Self::Node {
+        unimplemented!("create_tab_navigator not implemented for this backend")
+    }
+
+    /// Mount the initial screen into a freshly-created tab
+    /// navigator. Same shape as [`Backend::navigator_attach_initial`]
+    /// — splitting from `create_tab_navigator` avoids the
+    /// re-entrant borrow_mut. Backends that mount the initial
+    /// screen via a microtask (web) can leave this as the default
+    /// no-op; backends that mount synchronously (Android) implement
+    /// it.
+    #[allow(unused_variables)]
+    fn tab_navigator_attach_initial(
+        &mut self,
+        navigator: &Self::Node,
+        screen: Self::Node,
+        scope_id: u64,
+    ) {
+    }
+
+    /// Tear down a tab navigator. Same contract as
+    /// [`Backend::release_navigator`]. Default no-op so backends
+    /// that don't implement tabs aren't required to define this.
+    #[allow(unused_variables)]
+    fn release_tab_navigator(&mut self, node: &Self::Node) {}
+
+    /// Default no-op handle for tab navigators. Backends override to
+    /// return a real handle wired to the control plane.
+    #[allow(unused_variables)]
+    fn make_tab_navigator_handle(
+        &self,
+        node: &Self::Node,
+    ) -> primitives::navigator::TabsHandle {
+        primitives::navigator::TabsHandle::from_inner(
+            primitives::navigator::NavigatorHandle::new(Rc::new(()), &NoopNavigatorOps),
+        )
+    }
+
+    /// Create a drawer navigator. Same shape contract as
+    /// [`Backend::create_navigator`] and
+    /// [`Backend::create_tab_navigator`]: backend stores the
+    /// callbacks, installs a dispatcher on `control`, does NOT call
+    /// `mount_screen` synchronously.
+    ///
+    /// In addition to the screen-mounting machinery shared with
+    /// other navigator kinds, the backend's dispatcher handles
+    /// `OpenDrawer` / `CloseDrawer` / `ToggleDrawer` commands and
+    /// drives the platform's drawer widget (DrawerLayout on
+    /// Android, hand-rolled overlay on iOS, off-canvas aside on
+    /// web). The `callbacks.is_open` signal mirrors the open state
+    /// for reactive layouts.
+    ///
+    /// Default: panic. Phase-4 lands the framework-side plumbing;
+    /// each backend implements it in a follow-up.
+    #[allow(unused_variables)]
+    fn create_drawer_navigator(
+        &mut self,
+        callbacks: primitives::navigator::DrawerNavigatorCallbacks<Self::Node>,
+        control: Rc<primitives::navigator::NavigatorControl>,
+    ) -> Self::Node {
+        unimplemented!("create_drawer_navigator not implemented for this backend")
+    }
+
+    /// Mount the initial screen into a freshly-created drawer
+    /// navigator. Same contract as
+    /// [`Backend::tab_navigator_attach_initial`].
+    #[allow(unused_variables)]
+    fn drawer_navigator_attach_initial(
+        &mut self,
+        navigator: &Self::Node,
+        screen: Self::Node,
+        scope_id: u64,
+    ) {
+    }
+
+    /// Tear down a drawer navigator. Same contract as
+    /// [`Backend::release_navigator`]. Default no-op so backends
+    /// that don't implement drawers aren't required to define this.
+    #[allow(unused_variables)]
+    fn release_drawer_navigator(&mut self, node: &Self::Node) {}
+
+    /// Default no-op handle for drawer navigators. Backends override
+    /// to return a real handle wired to the control plane.
+    #[allow(unused_variables)]
+    fn make_drawer_navigator_handle(
+        &self,
+        node: &Self::Node,
+    ) -> primitives::navigator::DrawerHandle {
+        primitives::navigator::DrawerHandle::from_inner(
+            primitives::navigator::NavigatorHandle::new(Rc::new(()), &NoopNavigatorOps),
+            Rc::new(std::cell::Cell::new(false)),
+        )
     }
 
     /// Create an overlay — a floating subtree rendered above the
@@ -828,6 +962,11 @@ impl primitives::presence::PresenceOps for NoopPresenceOps {}
 
 struct NoopButtonOps;
 impl ButtonOps for NoopButtonOps {
+    fn click(&self, _node: &dyn Any) {}
+}
+
+struct NoopPressableOps;
+impl PressableOps for NoopPressableOps {
     fn click(&self, _node: &dyn Any) {}
 }
 

@@ -12,15 +12,15 @@ use std::rc::Rc;
 use framework_core::primitives::overlay::{BackdropMode, OverlayAnchor, ViewportPlacement};
 use framework_core::{signal, ui, Easing, Primitive, PresenceAnim, PresenceState, Signal};
 use idea_ui::{
-    body, card, heading, hstack, pressable, vstack, BodyTone, HeadingKind, IntoRcIntent, Neutral,
-    Primary, StackGap,
+    body, card, heading, pressable, stack, BodyTone, HeadingKind, IntoRcIntent, Neutral, Primary,
+    StackGap,
 };
 
 use crate::shell::page_header;
 
 pub fn page() -> Primitive {
     ui! {
-        VStack(gap = StackGap::Xl) {
+        Stack(gap = StackGap::Xl) {
             { page_header(
                 "Overlays",
                 "Modal, Drawer, and Popover. All built on the framework's Overlay primitive — \

@@ -36,7 +36,8 @@ use framework_core::primitives::overlay::{
     AnchorTarget, BackdropMode, ElementAlign, ElementAnchor, ElementSide, OverlayAnchor,
 };
 use framework_core::{
-    signal, ui, ButtonHandle, IntoPrimitive, Primitive, Ref, Signal, StyleApplication, VariantEnum,
+    signal, ui, IntoPrimitive, PressableHandle, Primitive, Ref, Signal, StyleApplication,
+    VariantEnum,
 };
 
 use crate::stylesheets::{SelectMenu, SelectOption as SelectOptionStyle, SelectTrigger};
@@ -98,24 +99,33 @@ pub fn select(props: SelectProps) -> Primitive {
 
     // Per-instance state.
     let open: Signal<bool> = signal!(false);
-    let trigger_ref: Ref<ButtonHandle> = Ref::new();
+    let trigger_ref: Ref<PressableHandle> = Ref::new();
 
     // ---- Trigger ----
     //
-    // The trigger is the framework's `Button` primitive with a
-    // reactive label closure: reads `value` + the option list to
-    // resolve the display label. The closure subscribes to `value`
-    // via the framework's apply-label effect, so the trigger
-    // updates when the selection flips programmatically.
+    // Built on the framework's `pressable` primitive (a tappable
+    // `<div>`, no `<button>` UA chrome) so the SelectTrigger
+    // stylesheet drives the whole visual without fighting any
+    // browser defaults. The label is a reactive `Text` child whose
+    // closure reads `value` and resolves it through the option
+    // list, so the trigger label updates whenever the selection
+    // flips programmatically.
     let label_options = options.clone();
     let label_placeholder = placeholder.clone();
-    let label_source = move || {
-        label_options
-            .iter()
-            .find(|o| o.id == value.get())
-            .map(|o| o.label.clone())
-            .or_else(|| label_placeholder.clone())
-            .unwrap_or_default()
+    let label_source: framework_core::TextSource = framework_core::IntoTextSource::into_text_source(
+        move || {
+            label_options
+                .iter()
+                .find(|o| o.id == value.get())
+                .map(|o| o.label.clone())
+                .or_else(|| label_placeholder.clone())
+                .unwrap_or_default()
+        },
+    );
+    let label_child = framework_core::Primitive::Text {
+        source: label_source,
+        style: None,
+        ref_fill: None,
     };
     let trigger_style = move || {
         let _ = framework_core::active_theme()
@@ -125,7 +135,7 @@ pub fn select(props: SelectProps) -> Primitive {
             .with("size", size.as_variant_str().to_string())
     };
     let on_open: Rc<dyn Fn()> = Rc::new(move || open.set(true));
-    let trigger = framework_core::button(label_source, move || (on_open)())
+    let trigger = framework_core::pressable(vec![label_child], move || (on_open)())
         .with_style(trigger_style)
         .bind(trigger_ref)
         .into_primitive();
@@ -171,7 +181,7 @@ fn menu_build(
     options: Rc<Vec<SelectOption>>,
     on_change: Rc<dyn Fn(String)>,
     menu_close: Rc<dyn Fn()>,
-    trigger_ref: Ref<ButtonHandle>,
+    trigger_ref: Ref<PressableHandle>,
 ) -> Primitive {
     let mut rows: Vec<Primitive> = Vec::with_capacity(options.len());
     for option in options.iter() {
@@ -200,13 +210,15 @@ fn menu_build(
                 .with("active", variant.to_string())
         };
 
-        rows.push(ui! {
-            Button(
-                label = opt_label,
-                on_click = move || (on_click)(),
-                style = row_style
-            )
-        });
+        let label_child = framework_core::Primitive::Text {
+            source: framework_core::TextSource::Static(opt_label),
+            style: None,
+            ref_fill: None,
+        };
+        let row = framework_core::pressable(vec![label_child], move || (on_click)())
+            .with_style(row_style)
+            .into_primitive();
+        rows.push(row);
     }
 
     let menu_style = SelectMenu();

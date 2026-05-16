@@ -12,7 +12,7 @@ use std::rc::Rc;
 use framework_core::{ui, Primitive};
 use idea_ui::doc_controls::DocControls;
 use idea_ui::{
-    badge, pressable, vstack, BadgeProps, IconButtonProps, PressableProps, StackGap, TagProps,
+    badge, pressable, stack, BadgeProps, IconButtonProps, PressableProps, StackGap, TagProps,
 };
 // idea-ui's own component invocation macros must be in scope.
 use idea_ui::{iconbutton, tag};
@@ -21,7 +21,7 @@ use crate::shell::{demo_card, page_header};
 
 pub fn page() -> Primitive {
     ui! {
-        VStack(gap = StackGap::Xl) {
+        Stack(gap = StackGap::Xl) {
             { page_header(
                 "Actions",
                 "Pressable, IconButton, Badge, and Tag. Every action component honors the \

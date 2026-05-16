@@ -124,6 +124,13 @@ pub struct AndroidBackend {
     /// Entries inserted on `create_navigator`, removed in
     /// `release_navigator`.
     pub(crate) navigator_instances: primitives::navigator::NavigatorInstances,
+    /// Per-tab/drawer-navigator state. Keyed by the navigator
+    /// container's raw `JObject*` pointer (same scheme
+    /// `navigator_instances` uses). Tab + drawer navigators on
+    /// Android are plain FrameLayout + View-swap; they don't use
+    /// FragmentManager, so they get their own instance table to keep
+    /// the stack navigator's machinery uncluttered.
+    pub(crate) tab_drawer_instances: primitives::tab_drawer::TabDrawerInstances,
     /// ScrollView outer→inner mapping. Keyed by the outer
     /// (framework-visible) ScrollView's raw `JObject*` pointer; value
     /// is a `GlobalRef` to its inner LinearLayout, where child
@@ -132,6 +139,13 @@ pub struct AndroidBackend {
     /// for unstyled instances the entry persists for the backend's
     /// lifetime — small and bounded).
     pub(crate) scroll_view_inner: HashMap<usize, GlobalRef>,
+    /// Per-overlay state. Keyed by the dialog's content-holder
+    /// node's raw `JObject*` pointer. Populated by `overlay::create`,
+    /// removed by `release_overlay`. `view::insert` looks here to
+    /// detect that an overlay's content holder shouldn't be spliced
+    /// into the surrounding parent view — the dialog window owns
+    /// its parenting.
+    pub(crate) overlay_instances: primitives::overlay::OverlayInstances,
 }
 
 impl AndroidBackend {
@@ -143,7 +157,9 @@ impl AndroidBackend {
             root,
             anim_state: HashMap::new(),
             navigator_instances: HashMap::new(),
+            tab_drawer_instances: HashMap::new(),
             scroll_view_inner: HashMap::new(),
+            overlay_instances: HashMap::new(),
         }
     }
 
@@ -313,6 +329,66 @@ impl Backend for AndroidBackend {
         primitives::navigator::make_handle(self, node)
     }
 
+    // Tab + drawer navigators on Android — plain FrameLayout +
+    // View-swap, no FragmentManager involvement. The author's
+    // .layout() closure draws the chrome (tab bar / drawer
+    // sidebar); the framework swaps the active screen on Select.
+    fn create_tab_navigator(
+        &mut self,
+        callbacks: framework_core::TabNavigatorCallbacks<Self::Node>,
+        control: Rc<framework_core::NavigatorControl>,
+    ) -> Self::Node {
+        primitives::tab_drawer::create_tab(self, callbacks, control)
+    }
+
+    fn tab_navigator_attach_initial(
+        &mut self,
+        navigator: &Self::Node,
+        screen: Self::Node,
+        scope_id: u64,
+    ) {
+        primitives::tab_drawer::attach_initial(self, navigator, screen, scope_id)
+    }
+
+    fn release_tab_navigator(&mut self, node: &Self::Node) {
+        primitives::tab_drawer::release(self, node)
+    }
+
+    fn make_tab_navigator_handle(
+        &self,
+        node: &Self::Node,
+    ) -> framework_core::TabsHandle {
+        primitives::tab_drawer::make_tab_handle(self, node)
+    }
+
+    fn create_drawer_navigator(
+        &mut self,
+        callbacks: framework_core::DrawerNavigatorCallbacks<Self::Node>,
+        control: Rc<framework_core::NavigatorControl>,
+    ) -> Self::Node {
+        primitives::tab_drawer::create_drawer(self, callbacks, control)
+    }
+
+    fn drawer_navigator_attach_initial(
+        &mut self,
+        navigator: &Self::Node,
+        screen: Self::Node,
+        scope_id: u64,
+    ) {
+        primitives::tab_drawer::attach_initial(self, navigator, screen, scope_id)
+    }
+
+    fn release_drawer_navigator(&mut self, node: &Self::Node) {
+        primitives::tab_drawer::release(self, node)
+    }
+
+    fn make_drawer_navigator_handle(
+        &self,
+        node: &Self::Node,
+    ) -> framework_core::DrawerHandle {
+        primitives::tab_drawer::make_drawer_handle(self, node)
+    }
+
     fn create_graphics(
         &mut self,
         on_ready: framework_core::primitives::graphics::OnReady,
@@ -331,6 +407,20 @@ impl Backend for AndroidBackend {
         node: &Self::Node,
     ) -> framework_core::primitives::graphics::GraphicsHandle {
         primitives::graphics::make_handle(node)
+    }
+
+    fn create_overlay(
+        &mut self,
+        anchor: framework_core::primitives::overlay::OverlayAnchor,
+        backdrop: framework_core::primitives::overlay::BackdropMode,
+        on_dismiss: Option<Rc<dyn Fn()>>,
+        _trap_focus: bool,
+    ) -> Self::Node {
+        primitives::overlay::create(self, anchor, backdrop, on_dismiss)
+    }
+
+    fn release_overlay(&mut self, node: &Self::Node) {
+        primitives::overlay::release(self, node)
     }
 
     fn make_button_handle(&self, node: &Self::Node) -> ButtonHandle {

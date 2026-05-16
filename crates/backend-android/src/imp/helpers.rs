@@ -92,6 +92,63 @@ pub(crate) fn px_or(value: Option<&framework_core::Tokenized<framework_core::Len
     }
 }
 
+/// Read a View's screen-relative bounding rect, in physical pixels.
+/// Origin is the top-left of the device screen, including the
+/// status bar (the same coordinate space `PopupWindow.showAtLocation`
+/// uses).
+///
+/// Returns the zero rect if the view has no width/height yet (not
+/// laid out) — which gives overlay positioning code a sensible
+/// fallback (it'll center on the viewport instead of anchoring to
+/// nowhere).
+///
+/// Synchronous JNI calls. Cheap enough to call once per overlay
+/// open; not suitable for per-frame use. (`getLocationOnScreen`
+/// internally walks the view ancestry.)
+pub(crate) fn view_screen_rect(
+    node: &jni::objects::GlobalRef,
+) -> framework_core::primitives::overlay::ViewportRect {
+    crate::imp::with_env(|env| {
+        // int[2] for getLocationOnScreen's output param.
+        let Ok(loc) = env.new_int_array(2) else {
+            return framework_core::primitives::overlay::ViewportRect::default();
+        };
+        // `JIntArray` derefs to `JObject` via `AsRef`, but the jni
+        // 0.21 API wants `&JObject` in `JValue::Object`. Pull the
+        // underlying object reference out explicitly.
+        let loc_obj: &JObject = loc.as_ref();
+        if env
+            .call_method(
+                node.as_obj(),
+                "getLocationOnScreen",
+                "([I)V",
+                &[JValue::Object(loc_obj)],
+            )
+            .is_err()
+        {
+            return framework_core::primitives::overlay::ViewportRect::default();
+        }
+        let mut buf = [0i32; 2];
+        if env.get_int_array_region(&loc, 0, &mut buf).is_err() {
+            return framework_core::primitives::overlay::ViewportRect::default();
+        }
+        let width = env
+            .call_method(node.as_obj(), "getWidth", "()I", &[])
+            .and_then(|v| v.i())
+            .unwrap_or(0);
+        let height = env
+            .call_method(node.as_obj(), "getHeight", "()I", &[])
+            .and_then(|v| v.i())
+            .unwrap_or(0);
+        framework_core::primitives::overlay::ViewportRect {
+            x: buf[0] as f32,
+            y: buf[1] as f32,
+            width: width as f32,
+            height: height as f32,
+        }
+    })
+}
+
 pub(crate) fn dp_to_px(env: &mut JNIEnv, view: &JObject, dp: f32) -> i32 {
     // density = view.getResources().getDisplayMetrics().density
     let res = env

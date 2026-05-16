@@ -201,6 +201,20 @@ pub(crate) fn create(
                 });
                 depth_for_dispatch(new_depth as usize);
             }
+            // Stack navigator doesn't accept select-shaped or
+            // drawer-shaped commands. Panic to surface the mismatch
+            // at the call site instead of silently dropping the
+            // command.
+            NavCommand::Select { .. }
+            | NavCommand::OpenDrawer
+            | NavCommand::CloseDrawer
+            | NavCommand::ToggleDrawer => {
+                panic!(
+                    "stack Navigator received a non-stack NavCommand — \
+                     check that the dispatched command's shape matches \
+                     the navigator kind (stack: Push/Pop/Replace/Reset)"
+                );
+            }
         }));
     }
 

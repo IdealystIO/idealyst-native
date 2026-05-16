@@ -19,7 +19,7 @@ use framework_core::{
 use crate::theme::{IdeaTheme, IdeaThemeRef};
 
 // =============================================================================
-// Layout — Stack / HStack / VStack
+// Layout — Stack
 // =============================================================================
 
 stylesheet! {

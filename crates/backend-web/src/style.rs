@@ -28,6 +28,19 @@ use wasm_bindgen::JsCast;
 
 impl WebBackend {
     /// Lazily creates the shared `<style>` element in document.head.
+    ///
+    /// On first creation we seed it with a UA-baseline reset for
+    /// `<button>` — strips the browser's default outset border, gray
+    /// background, and inherited-font override. The reset is scoped
+    /// with `:where(button)`, which CSS gives a specificity of zero.
+    /// Any author class rule the framework attaches via `apply_style`
+    /// (specificity 0,1,0) wins automatically, so authors that want
+    /// to put a border back on a Button just declare `border_width:
+    /// 1.0` in their stylesheet and it works.
+    ///
+    /// Without this reset, the framework's `<button>` element comes
+    /// in with the browser's chunky outset border showing through
+    /// any class rule that doesn't explicitly zero out `border`.
     pub(crate) fn ensure_style_element(&mut self) -> web_sys::HtmlStyleElement {
         if self.style_element.is_none() {
             let elem = self
@@ -38,6 +51,28 @@ impl WebBackend {
             let head = self.doc.head().expect("document has head");
             head.append_child(&elem).expect("append style to head");
             self.style_element = Some(elem);
+            // Seed the reset at index 0. We never delete or shift
+            // index 0, so the rule recycler in `insert_rule` doesn't
+            // need to know about it — it appends or recycles at
+            // index ≥ 1.
+            let reset = ":where(button) { \
+                         all: unset; \
+                         box-sizing: border-box; \
+                         cursor: pointer; \
+                         font: inherit; \
+                         color: inherit; \
+                         display: inline-flex; \
+                         align-items: center; \
+                         justify-content: center; \
+                         }";
+            let sheet = self
+                .style_element
+                .as_ref()
+                .unwrap()
+                .sheet()
+                .expect("sheet")
+                .unchecked_into::<web_sys::CssStyleSheet>();
+            let _ = sheet.insert_rule_with_index(reset, 0);
         }
         self.style_element.as_ref().unwrap().clone()
     }
