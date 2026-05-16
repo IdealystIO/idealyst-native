@@ -25,10 +25,10 @@ pub(crate) fn apply_rules(
     // --- Padding (per-side; framework stores all four independently).
     //     Each side may animate independently.
     let want_padding = [
-        dp_to_px(env, &view, px_or(rules.padding_left, 0.0)),
-        dp_to_px(env, &view, px_or(rules.padding_top, 0.0)),
-        dp_to_px(env, &view, px_or(rules.padding_right, 0.0)),
-        dp_to_px(env, &view, px_or(rules.padding_bottom, 0.0)),
+        dp_to_px(env, &view, px_or(rules.padding_left.as_ref(), 0.0)),
+        dp_to_px(env, &view, px_or(rules.padding_top.as_ref(), 0.0)),
+        dp_to_px(env, &view, px_or(rules.padding_right.as_ref(), 0.0)),
+        dp_to_px(env, &view, px_or(rules.padding_bottom.as_ref(), 0.0)),
     ];
     let padding_transitions = [
         rules.padding_left_transition,
@@ -86,12 +86,15 @@ pub(crate) fn apply_rules(
     if rules.width.is_some() || rules.height.is_some() {
         // Resolve up front to avoid mutably borrowing `env` from
         // inside a closure (the JNI calls all take `&mut JNIEnv`).
-        let w_lp = rules.width.as_ref().map(|len| match len {
+        // `Tokenized<Length>` — resolve to underlying via `.value()`;
+        // native has no CSS-variable equivalent so the fallback IS
+        // the value at apply-time.
+        let w_lp = rules.width.as_ref().map(|tok| match tok.value() {
             framework_core::Length::Px(v) => dp_to_px(env, &view, *v),
             framework_core::Length::Percent(_) => -1,
             framework_core::Length::Auto => -2,
         });
-        let h_lp = rules.height.as_ref().map(|len| match len {
+        let h_lp = rules.height.as_ref().map(|tok| match tok.value() {
             framework_core::Length::Px(v) => dp_to_px(env, &view, *v),
             framework_core::Length::Percent(_) => -1,
             framework_core::Length::Auto => -2,
@@ -139,7 +142,7 @@ pub(crate) fn apply_rules(
     let is_textview = env.is_instance_of(&view, &textview_class).unwrap_or(false);
 
     if is_textview {
-        if let Some(c) = &rules.color {
+        if let Some(c) = rules.color.as_ref().map(|t| t.value()) {
             if let Some(packed) = parse_color(&c.0) {
                 let prev = state.last_text_color;
                 let changed = prev != Some(packed);
@@ -163,7 +166,9 @@ pub(crate) fn apply_rules(
                 }
             }
         }
-        if let Some(framework_core::Length::Px(size)) = rules.font_size {
+        if let Some(framework_core::Length::Px(size)) =
+            rules.font_size.as_ref().map(|t| *t.value())
+        {
             // font-size isn't animatable in v1; snap.
             let _ = env.call_method(
                 &view,
@@ -175,7 +180,9 @@ pub(crate) fn apply_rules(
     }
 
     // --- Opacity (View.alpha). Animatable via ObjectAnimator.ofFloat.
-    if let Some(o) = rules.opacity {
+    //     `rules.opacity` is `Option<Tokenized<f32>>`; resolve to the
+    //     concrete value (native has no token system).
+    if let Some(o) = rules.opacity.as_ref().map(|t| *t.value()) {
         let changed = state.last_alpha.map(|p| (p - o).abs() > 0.001).unwrap_or(true);
         let prev = state.last_alpha;
         state.last_alpha = Some(o);
@@ -208,7 +215,7 @@ pub(crate) fn apply_rules(
 
     if has_border || has_radius {
         apply_drawable_path(env, node, state, rules);
-    } else if let Some(c) = &rules.background {
+    } else if let Some(c) = rules.background.as_ref().map(|t| t.value()) {
         if let Some(packed) = parse_color(&c.0) {
             let prev = state.last_bg;
             let changed = prev != Some(packed);
@@ -271,7 +278,7 @@ fn apply_drawable_path(
     let drawable_obj = drawable.as_obj();
 
     // --- Fill color.
-    if let Some(c) = &rules.background {
+    if let Some(c) = rules.background.as_ref().map(|t| t.value()) {
         if let Some(packed) = parse_color(&c.0) {
             let prev = state.last_bg;
             let changed = prev != Some(packed);
@@ -299,19 +306,23 @@ fn apply_drawable_path(
     // --- Stroke. GradientDrawable.setStroke(width, color) — single
     //     value. We collapse per-side to the first that's set (same
     //     as before). Width + color may each animate.
+    // `border_*_width` is `Option<Tokenized<f32>>` after the
+    // tokenization refactor. Resolve to the literal (native has no
+    // token system) before passing to `dp_to_px`.
     let want_w = rules
         .border_top_width
-        .or(rules.border_right_width)
-        .or(rules.border_bottom_width)
-        .or(rules.border_left_width)
-        .map(|w| dp_to_px(env, &view, w));
+        .as_ref()
+        .or(rules.border_right_width.as_ref())
+        .or(rules.border_bottom_width.as_ref())
+        .or(rules.border_left_width.as_ref())
+        .map(|tok| dp_to_px(env, &view, *tok.value()));
     let want_c = rules
         .border_top_color
         .as_ref()
         .or(rules.border_right_color.as_ref())
         .or(rules.border_bottom_color.as_ref())
         .or(rules.border_left_color.as_ref())
-        .and_then(|c| parse_color(&c.0));
+        .and_then(|c| parse_color(&c.value().0));
 
     if let (Some(w), Some(c)) = (want_w, want_c) {
         let prev_w = state.last_stroke_w;
@@ -358,10 +369,10 @@ fn apply_drawable_path(
     //     ValueAnimator that interpolates each corner's px value and
     //     re-invokes setCornerRadii every tick.
     let want_radii = [
-        dp_to_px(env, &view, px_or(rules.border_top_left_radius, 0.0)) as f32,
-        dp_to_px(env, &view, px_or(rules.border_top_right_radius, 0.0)) as f32,
-        dp_to_px(env, &view, px_or(rules.border_bottom_right_radius, 0.0)) as f32,
-        dp_to_px(env, &view, px_or(rules.border_bottom_left_radius, 0.0)) as f32,
+        dp_to_px(env, &view, px_or(rules.border_top_left_radius.as_ref(), 0.0)) as f32,
+        dp_to_px(env, &view, px_or(rules.border_top_right_radius.as_ref(), 0.0)) as f32,
+        dp_to_px(env, &view, px_or(rules.border_bottom_right_radius.as_ref(), 0.0)) as f32,
+        dp_to_px(env, &view, px_or(rules.border_bottom_left_radius.as_ref(), 0.0)) as f32,
     ];
     let radii_changed = (0..4).any(|i| state.last_radii[i] != Some(want_radii[i]));
     let radii_transitions = [

@@ -17,6 +17,7 @@ use crate::stylesheets::Card;
 pub use crate::stylesheets::{CardPadding, CardTone};
 
 #[derive(Default)]
+#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct CardProps {
     pub tone: CardTone,
     pub padding: CardPadding,

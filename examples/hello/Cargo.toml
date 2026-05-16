@@ -8,47 +8,39 @@ license.workspace = true
 crate-type = ["rlib"]
 
 [features]
-# Pulls in `wgpu` to render an animated gradient via the Graphics
-# primitive in the demo. Off by default — apps that don't use it
-# stay lean. The downstream binary crate's own `graphics` feature
-# (e.g. hello-web's, hello-android's) forwards to this.
+# Render an animated Mandelbrot via the `Graphics` surface primitive.
+# Off by default — apps that don't use the gradient demo don't pay
+# for wgpu or its per-platform fanout.
 #
-# Same WGSL shader runs on every platform — the platform glue
-# (event loop, time source, async runtime) lives in
-# `gradient_web.rs` / `gradient_android.rs`, picked by cfg in
-# `lib.rs`.
-graphics = ["dep:wgpu", "dep:bytemuck"]
+# We pull in:
+# - framework-core's `async-driver` feature for cross-platform
+#   `render_loop` + `spawn_async` (the per-frame ticker and the async
+#   driver wgpu init runs on),
+# - `wgpu` itself, picked per-target below,
+# - `bytemuck` for the `#[repr(C)] Pod` derive on `Uniforms`.
+#
+# The actual wgpu pipeline + shader live in `gradient.rs` and run
+# unmodified on every platform — what differs across platforms is
+# only the *driver* (loop + async init), which is what framework-core
+# now hides.
+graphics = [
+    "framework-core/async-driver",
+    "dep:wgpu",
+    "dep:bytemuck",
+]
 
 [dependencies]
 framework-core = { workspace = true }
-# Optional cross-platform GPU dependencies for the gradient demo.
-# wgpu picks the right native API per platform (Metal on
-# iOS/macOS, Vulkan on Android, WebGPU/WebGL2 on web). The feature
-# set on the wgpu dep needs to differ by target — see the
-# per-target tables below.
 bytemuck = { version = "1", features = ["derive"], optional = true }
 
 # Web build of wgpu: WebGPU + WebGL2 fallback.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wgpu = { version = "29", default-features = false, features = ["webgl", "webgpu", "wgsl"], optional = true }
-js-sys = { version = "0.3" }
-web-sys = { version = "0.3", features = ["console"] }
-wasm-bindgen = { version = "0.2" }
-wasm-bindgen-futures = { version = "0.4" }
 
-# Android build of wgpu: Vulkan + GLES fallback. `pollster` for
-# blocking on async device init from the render thread.
+# Android build of wgpu: Vulkan + GLES fallback.
 [target.'cfg(target_os = "android")'.dependencies]
 wgpu = { version = "29", default-features = false, features = ["vulkan", "gles", "wgsl"], optional = true }
-pollster = "0.4"
-log = "0.4"
 
-# iOS build of wgpu: Metal backend. `pollster` for blocking on
-# async device init from the render thread.
+# iOS build of wgpu: Metal.
 [target.'cfg(target_os = "ios")'.dependencies]
 wgpu = { version = "29", default-features = false, features = ["metal", "wgsl"], optional = true }
-pollster = "0.4"
-log = "0.4"
-objc2 = "0.5"
-objc2-foundation = { version = "0.2", features = ["NSString"] }
-block2 = "0.5"

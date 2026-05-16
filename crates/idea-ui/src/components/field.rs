@@ -24,6 +24,7 @@ use std::rc::Rc;
 use crate::stylesheets::{Field, FieldGroup, FieldHelp, FieldHelpTone, FieldLabel};
 pub use crate::stylesheets::{FieldSize, FieldTone};
 
+#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct FieldProps {
     /// Optional label rendered above the input.
     pub label: Option<String>,

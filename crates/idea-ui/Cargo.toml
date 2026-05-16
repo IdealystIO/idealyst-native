@@ -8,5 +8,15 @@ description = "Cross-platform UI component library for the idealyst framework"
 [lib]
 crate-type = ["rlib"]
 
+[features]
+# Off by default. When on, every component's `*Props` gets a
+# `DocControls` impl + supporting types that the idea-ui-docs app
+# uses to auto-generate live control panels. Production apps that
+# don't need reflective tooling leave this off — the derive
+# expansion is dead code without it but a few hundred kilobytes of
+# generated impls aren't free.
+docs = ["dep:idea-ui-docs-derive"]
+
 [dependencies]
 framework-core = { workspace = true }
+idea-ui-docs-derive = { workspace = true, optional = true }

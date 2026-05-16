@@ -28,6 +28,7 @@ use crate::theme::IdeaThemeRef;
 
 pub use crate::stylesheets::PressableSize;
 
+#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct PressableProps {
     pub label: String,
     pub on_click: Rc<dyn Fn()>,

@@ -26,6 +26,7 @@ use crate::intent::{apply_palette, Intent, IntoRcIntent, Neutral};
 use crate::stylesheets::{Tag, TagClose, TagLabel};
 use crate::theme::IdeaThemeRef;
 
+#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct TagProps {
     pub label: String,
     pub intent: Rc<dyn Intent>,

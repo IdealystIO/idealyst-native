@@ -10,6 +10,7 @@ use crate::stylesheets::Body;
 pub use crate::stylesheets::{BodyAlign, BodyTone};
 
 #[derive(Default)]
+#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct BodyProps {
     pub content: String,
     pub tone: BodyTone,

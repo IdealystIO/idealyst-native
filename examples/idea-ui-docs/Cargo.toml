@@ -1,0 +1,13 @@
+[package]
+name = "idea-ui-docs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Self-referencing documentation app for idea-ui"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+framework-core = { workspace = true }
+idea-ui = { workspace = true, features = ["docs"] }

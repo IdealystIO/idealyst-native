@@ -21,46 +21,39 @@ use framework_core::{
 };
 use std::collections::HashMap;
 
-// Animated gradient demo. Two flavors share the same WGSL shader
-// + pipeline; only the platform glue differs:
+// Animated gradient demo. One file, three platforms — the same
+// wgpu code runs unmodified because wgpu is already cross-platform.
+// What used to require three per-platform files was driver glue
+// (frame ticker + async runtime), which now lives behind
+// `framework_core::driver::{render_loop, spawn_async}` (gated on
+// framework-core's `async-driver` feature, which our `graphics`
+// feature forwards to).
 //
-//   gradient_web.rs       — wasm32: requestAnimationFrame loop,
-//                           wasm-bindgen-futures for async init,
-//                           js_sys::Date for time.
-//   gradient_android.rs   — Android: dedicated render thread,
-//                           pollster for async init, std::time
-//                           for the clock.
-//
-// Without the `graphics` feature (or on platforms that don't
-// implement Graphics yet), `gradient::gradient_canvas()` returns a
-// static placeholder so the app still runs.
-#[cfg(all(feature = "graphics", target_arch = "wasm32"))]
-#[path = "gradient_web.rs"]
+// The example's `wgpu` dependency is only declared for the three
+// targets that actually have a wgpu backend wired up (web / Android
+// / iOS — see Cargo.toml). On the host linux/macOS/Windows dev
+// builds, or with the feature off entirely, we use a placeholder so
+// `cargo check -p hello` still works from a workstation.
+#[cfg(all(
+    feature = "graphics",
+    any(target_arch = "wasm32", target_os = "android", target_os = "ios"),
+))]
 mod gradient;
 
-#[cfg(all(feature = "graphics", target_os = "android"))]
-#[path = "gradient_android.rs"]
-mod gradient;
-
-#[cfg(all(feature = "graphics", target_os = "ios"))]
-#[path = "gradient_ios.rs"]
-mod gradient;
-
-#[cfg(not(any(
-    all(feature = "graphics", target_arch = "wasm32"),
-    all(feature = "graphics", target_os = "android"),
-    all(feature = "graphics", target_os = "ios"),
+#[cfg(not(all(
+    feature = "graphics",
+    any(target_arch = "wasm32", target_os = "android", target_os = "ios"),
 )))]
 mod gradient {
     use framework_core::{ui, Primitive};
-    /// Stand-in used when no platform-specific gradient module is
-    /// active (graphics feature off, or platform without a
-    /// Graphics-primitive backend yet — currently iOS).
+    /// Stand-in for builds where the live gradient can't render —
+    /// the `graphics` feature is off, or this is a host/desktop dev
+    /// build with no wgpu backend wired up.
     pub fn gradient_canvas() -> Primitive {
         ui! {
             View(style = crate::gradient_canvas_style()) {
                 Text(style = crate::subtitle_style()) {
-                    "GPU canvas — enable the `graphics` feature on a supported platform to render the live gradient."
+                    "GPU canvas — enable the `graphics` feature on a supported target (web / Android / iOS) to render the live gradient."
                 }
             }
         }

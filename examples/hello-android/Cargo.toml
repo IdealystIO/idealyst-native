@@ -12,9 +12,9 @@ crate-type = ["cdylib"]
 
 [features]
 # On by default for the demo APK so the gradient renders on device.
-# Forwards to hello's graphics feature, which pulls in wgpu (with
-# Vulkan + GLES backends on Android) plus the Android-flavored
-# gradient demo (`gradient_android.rs`).
+# Forwards to hello's graphics feature, which in turn forwards to
+# framework-core's `graphics` feature — that's where the wgpu helper
+# (with Vulkan + GLES backends on Android) lives.
 default = ["graphics"]
 graphics = ["hello/graphics"]
 

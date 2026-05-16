@@ -20,6 +20,7 @@ use crate::stylesheets::Heading;
 pub use crate::stylesheets::{HeadingAlign, HeadingKind};
 
 #[derive(Default)]
+#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct HeadingProps {
     pub content: String,
     pub kind: HeadingKind,

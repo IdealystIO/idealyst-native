@@ -69,6 +69,21 @@ pub trait Backend {
     fn create_button(&mut self, label: &str, on_click: Rc<dyn Fn()>) -> Self::Node;
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node);
 
+    /// Placeholder node for reactive `when` / `switch` branches.
+    /// The walker creates one of these as a stable parent that
+    /// stays put across branch swaps, with the live branch's
+    /// children re-inserted on each rebuild.
+    ///
+    /// On web the anchor needs to be layout-transparent
+    /// (`display: contents`) so the branch's children inherit the
+    /// surrounding flex / sizing context — otherwise an extra
+    /// `<div>` collapses widths and breaks `flex: 1` / `width:
+    /// 100%` on full-width children. Native backends have no such
+    /// problem; the default `create_view` is fine.
+    fn create_reactive_anchor(&mut self) -> Self::Node {
+        self.create_view()
+    }
+
     /// Batched insertion of many siblings into `parent`. Default
     /// implementation falls back to N `insert` calls — backends
     /// override this to collapse N FFI crossings into one (e.g.
@@ -726,12 +741,16 @@ pub trait Backend {
     ///   shift) should fall through to the browser's default
     ///   handler so "open in new tab/window" still works.
     ///
-    /// Default impl is `unimplemented!()` for backends that haven't
-    /// yet implemented Link. Same posture as every other optional
-    /// primitive.
+    /// Default falls through to `create_view`, dropping
+    /// `on_activate`. Backends that don't implement Link still mount
+    /// the children correctly — the link just isn't tappable. This
+    /// keeps a Link in a primitive tree from panicking the screen
+    /// build on an unimplemented backend, which matches the posture
+    /// of every other optional handle method (return a no-op rather
+    /// than refuse). Backends that want real activation override.
     #[allow(unused_variables)]
     fn create_link(&mut self, config: primitives::link::LinkConfig) -> Self::Node {
-        unimplemented!("create_link not implemented for this backend")
+        self.create_view()
     }
 
     /// Default no-op handle for `Ref<LinkHandle>`. Backends that

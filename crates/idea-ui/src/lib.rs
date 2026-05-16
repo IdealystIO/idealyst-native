@@ -45,7 +45,16 @@
 //! }
 //! ```
 
+// Self-alias so derive macros (like `DocControls`) that expand to
+// `::idea_ui::...` paths resolve correctly when compiling idea-ui
+// itself — without this, `idea_ui` looks like an unknown external
+// crate from inside its own source.
+#[cfg(feature = "docs")]
+extern crate self as idea_ui;
+
 pub mod components;
+#[cfg(feature = "docs")]
+pub mod doc_controls;
 pub mod intent;
 pub mod invocations;
 pub mod stylesheets;
@@ -75,6 +84,7 @@ pub use components::icon_button::{icon_button, IconButtonProps, IconButtonSize};
 pub use components::modal::{modal, ModalProps};
 pub use components::popover::{popover, PopoverProps};
 pub use components::pressable::{pressable, PressableProps, PressableSize};
+pub use components::select::{select, SelectOption, SelectProps, SelectSize};
 pub use components::skeleton::{skeleton, SkeletonProps, SkeletonWidth};
 pub use components::spacer::{spacer, SpacerProps};
 pub use components::spinner::{spinner, SpinnerProps, SpinnerSize};

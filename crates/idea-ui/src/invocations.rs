@@ -417,6 +417,26 @@ macro_rules! tabs {
 }
 
 // =============================================================================
+// select — by-value (owns the Vec<SelectOption>)
+// =============================================================================
+
+#[macro_export]
+#[doc(hidden)]
+macro_rules! select {
+    () => {
+        $crate::components::select::select(
+            <$crate::components::select::SelectProps as ::core::default::Default>::default(),
+        )
+    };
+    ( $( $field:ident = $value:expr ),+ $(,)? ) => {
+        $crate::components::select::select($crate::components::select::SelectProps {
+            $( $field: $value, )+
+            ..<$crate::components::select::SelectProps as ::core::default::Default>::default()
+        })
+    };
+}
+
+// =============================================================================
 // modal / popover — by-value (own their children)
 // =============================================================================
 

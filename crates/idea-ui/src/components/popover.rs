@@ -45,6 +45,7 @@ use framework_core::{ui, ChildList, Primitive};
 
 use crate::stylesheets::Popover;
 
+#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct PopoverProps {
     /// The element to anchor against. Construct via
     /// `AnchorTarget::from(some_ref)` where `some_ref` is a `Ref<H>`
@@ -52,8 +53,10 @@ pub struct PopoverProps {
     pub target: Option<AnchorTarget>,
     /// Which side of the target the popover sits on. Default:
     /// `ElementSide::Below`.
+    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub side: ElementSide,
     /// Alignment along the anchor's edge. Default: `ElementAlign::Start`.
+    #[cfg_attr(feature = "docs", doc_control(skip))]
     pub align: ElementAlign,
     /// Gap in pixels between the anchor and the popover.
     pub offset: f32,

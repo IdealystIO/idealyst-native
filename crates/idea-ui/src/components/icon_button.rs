@@ -33,6 +33,7 @@ use crate::theme::IdeaThemeRef;
 
 pub use crate::stylesheets::IconButtonSize;
 
+#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct IconButtonProps {
     /// The glyph or short string rendered inside the button.
     pub glyph: String,

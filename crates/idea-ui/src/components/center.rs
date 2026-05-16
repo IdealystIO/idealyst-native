@@ -10,6 +10,7 @@ use framework_core::{ui, ChildList, Primitive};
 use crate::stylesheets::Center;
 
 #[derive(Default)]
+#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct CenterProps {
     pub children: Vec<Primitive>,
 }

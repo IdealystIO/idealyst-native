@@ -23,6 +23,29 @@ pub(crate) fn create(b: &mut WebBackend) -> Node {
     el.unchecked_into::<Node>()
 }
 
+/// Placeholder `<div>` for reactive `when` / `switch` branches.
+///
+/// The walker creates this as a stable parent that survives across
+/// branch swaps. It has no class (no stylesheet is ever attached),
+/// so by default the browser treats it as a plain block-level
+/// `<div>` — which collapses widths inside a flex column and
+/// breaks `flex: 1` / `width: 100%` on the branch's children.
+///
+/// `display: contents` removes the placeholder from the layout
+/// tree entirely: its children are promoted to direct children of
+/// the surrounding parent, inheriting the parent's flex / sizing
+/// context as if the anchor weren't there. The anchor still exists
+/// in the DOM (so the walker can `clear_children` + reinsert on
+/// each rebuild), it's just invisible to layout.
+pub(crate) fn create_reactive_anchor(b: &mut WebBackend) -> Node {
+    let el = b
+        .doc
+        .create_element("div")
+        .expect("create_element failed");
+    let _ = el.set_attribute("style", "display: contents");
+    el.unchecked_into::<Node>()
+}
+
 pub(crate) fn insert(parent: &mut Node, child: Node) {
     // Overlay primitives portal themselves to `<body>` inside
     // `create_overlay`, so the framework's subsequent

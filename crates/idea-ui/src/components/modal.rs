@@ -40,6 +40,7 @@ use framework_core::{ui, ChildList, Primitive};
 
 use crate::stylesheets::Modal;
 
+#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct ModalProps {
     /// Fires when the user clicks outside the modal or presses
     /// Escape. The host is expected to flip its open-state signal

@@ -54,6 +54,7 @@ impl Tab {
     }
 }
 
+#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct TabsProps {
     /// Controlled selection. The string is the active tab's `id`.
     pub selected: Signal<String>,

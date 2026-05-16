@@ -171,6 +171,23 @@ pub struct WebBackend {
     /// Reserved for future focus-trap rules; the flag exists now so
     /// the injection step is idempotent.
     pub(crate) overlay_css_injected: bool,
+    /// Reference count of open overlays that have requested page
+    /// scroll-lock. The Element-anchored overlay path (popovers,
+    /// dropdowns, tooltips) measures the trigger once at mount and
+    /// holds that position — but if the page can scroll, the trigger
+    /// would walk out from under the menu. Locking scroll for the
+    /// duration of the overlay keeps the anchor relationship intact
+    /// (same approach as MUI / Quasar / Radix).
+    ///
+    /// Counter rather than bool because overlays can stack (a popover
+    /// inside a modal): we apply the lock on `0 → 1` and release on
+    /// `1 → 0`, ignoring intermediate transitions.
+    pub(crate) scroll_lock_count: u32,
+    /// The `document.body` `overflow` value at the moment the
+    /// scroll-lock count went from 0 → 1. Restored on the `1 → 0`
+    /// transition so apps that set their own `overflow` style get it
+    /// back unmodified.
+    pub(crate) saved_body_overflow: Option<String>,
 }
 
 /// Diagnostic snapshot returned by [`WebBackend::debug_counts`].
@@ -240,6 +257,8 @@ impl WebBackend {
             overlay_instances: HashMap::new(),
             next_overlay_id: 0,
             overlay_css_injected: false,
+            scroll_lock_count: 0,
+            saved_body_overflow: None,
         }
     }
 
@@ -285,6 +304,10 @@ impl Backend for WebBackend {
 
     fn create_view(&mut self) -> Self::Node {
         primitives::view::create(self)
+    }
+
+    fn create_reactive_anchor(&mut self) -> Self::Node {
+        primitives::view::create_reactive_anchor(self)
     }
 
     fn create_text(&mut self, content: &str) -> Self::Node {

@@ -179,8 +179,12 @@ pub(crate) fn create(
         .create_element("div")
         .expect("create_element div failed");
     // Position the content according to the anchor. Element anchors
-    // need measurement, which we do once on mount; the framework
-    // doesn't yet drive re-positioning on scroll/resize.
+    // are measured once at mount; on scroll the overlay stays at its
+    // initial viewport coordinates (same trade-off as MUI/Quasar —
+    // chasing the trigger via scroll events feels floaty because JS
+    // scroll events fire after the compositor has already painted).
+    // We compensate by ensuring the initial placement always fits
+    // inside the viewport (see `position_styles_for_anchor`).
     let content_style = position_styles_for_anchor(&anchor);
     let _ = content.set_attribute("style", &content_style);
     let _ = content.set_attribute("data-overlay-content", "1");
@@ -263,6 +267,15 @@ pub(crate) fn create(
         } else {
             None
         };
+
+    // ---- Page scroll-lock ----
+    //
+    // While any overlay is open we freeze the page so the trigger
+    // can't scroll out from under an Element-anchored overlay
+    // (popover, dropdown), and so the background doesn't move
+    // distractingly behind a modal/drawer. Refcounted, so stacked
+    // overlays release the lock at the right moment.
+    acquire_scroll_lock(b);
 
     // ---- Stash the instance for cleanup ----
     b.overlay_instances.insert(
@@ -381,6 +394,59 @@ pub(crate) fn release(b: &mut WebBackend, node: &Node) {
     if id != u32::MAX {
         b.overlay_instances.remove(&id);
     }
+
+    // Drop our scroll-lock refcount. On the final release this
+    // restores `body.overflow` to whatever the app had set
+    // pre-overlay.
+    release_scroll_lock(b);
+}
+
+/// Increment the scroll-lock refcount. On the `0 → 1` transition,
+/// save the current `document.body` `overflow` value and force it
+/// to `hidden`. Subsequent increments are no-ops at the DOM level
+/// (one set is enough).
+fn acquire_scroll_lock(b: &mut WebBackend) {
+    b.scroll_lock_count = b.scroll_lock_count.saturating_add(1);
+    if b.scroll_lock_count != 1 {
+        return;
+    }
+    let Some(body) = b.doc.body() else { return };
+    let html: web_sys::HtmlElement = match body.dyn_into() {
+        Ok(el) => el,
+        Err(_) => return,
+    };
+    // Save whatever the app had set (likely empty / unset) so we can
+    // restore it precisely on release. Using `getPropertyValue` on
+    // the inline style — *not* `getComputedStyle` — because we want
+    // to round-trip only the inline declaration, not bake the
+    // computed value (e.g. "visible") back in as inline.
+    let saved = html.style().get_property_value("overflow").unwrap_or_default();
+    b.saved_body_overflow = Some(saved);
+    let _ = html.style().set_property("overflow", "hidden");
+}
+
+/// Decrement the scroll-lock refcount. On the `1 → 0` transition,
+/// restore the saved `body.overflow` value. Other transitions leave
+/// the lock in place.
+fn release_scroll_lock(b: &mut WebBackend) {
+    if b.scroll_lock_count == 0 {
+        return;
+    }
+    b.scroll_lock_count -= 1;
+    if b.scroll_lock_count != 0 {
+        return;
+    }
+    let Some(body) = b.doc.body() else { return };
+    let html: web_sys::HtmlElement = match body.dyn_into() {
+        Ok(el) => el,
+        Err(_) => return,
+    };
+    let saved = b.saved_body_overflow.take().unwrap_or_default();
+    if saved.is_empty() {
+        let _ = html.style().remove_property("overflow");
+    } else {
+        let _ = html.style().set_property("overflow", &saved);
+    }
 }
 
 pub(crate) fn make_handle(node: &Node) -> OverlayHandle {
@@ -442,8 +508,107 @@ fn position_styles_for_anchor(anchor: &OverlayAnchor) -> String {
                     base
                 );
             };
-            element_anchor_styles(base, rect, e.side, e.align, e.offset)
+            // Flip the requested side if the trigger is too close to
+            // the corresponding viewport edge to fit the overlay. We
+            // don't know the overlay's actual size yet (its children
+            // haven't been inserted), so we use a conservative
+            // 200px estimate — enough for a typical select menu /
+            // tooltip / dropdown to fit in the remaining space test.
+            let viewport = viewport_size();
+            let side = flip_side_to_fit(e.side, rect, viewport, e.offset);
+            element_anchor_styles(base, rect, side, e.align, e.offset, viewport)
         }
+    }
+}
+
+/// Pick the actual side the overlay should anchor on. If the
+/// requested side doesn't have room for an estimated overlay size,
+/// flip to the opposite side — *unless* the opposite is even
+/// tighter (then we keep the original and let the overlay overflow,
+/// matching what most popover libs do).
+///
+/// Estimate is intentionally rough: we don't know the overlay's
+/// rendered size until after children are inserted, so we use a
+/// 200px slot and compare relative space on each side. This makes
+/// the right call for the common case (trigger near the bottom of
+/// the viewport → flip to Above) without measuring.
+fn flip_side_to_fit(
+    side: ElementSide,
+    rect: ViewportRect,
+    viewport: (f32, f32),
+    offset: f32,
+) -> ElementSide {
+    const ESTIMATED_OVERLAY_SIZE: f32 = 200.0;
+    let (vw, vh) = viewport;
+    match side {
+        ElementSide::Below => {
+            let space_below = vh - (rect.y + rect.height + offset);
+            let space_above = rect.y - offset;
+            if space_below < ESTIMATED_OVERLAY_SIZE && space_above > space_below {
+                ElementSide::Above
+            } else {
+                ElementSide::Below
+            }
+        }
+        ElementSide::Above => {
+            let space_above = rect.y - offset;
+            let space_below = vh - (rect.y + rect.height + offset);
+            if space_above < ESTIMATED_OVERLAY_SIZE && space_below > space_above {
+                ElementSide::Below
+            } else {
+                ElementSide::Above
+            }
+        }
+        ElementSide::Start => {
+            let space_start = rect.x - offset;
+            let space_end = vw - (rect.x + rect.width + offset);
+            if space_start < ESTIMATED_OVERLAY_SIZE && space_end > space_start {
+                ElementSide::End
+            } else {
+                ElementSide::Start
+            }
+        }
+        ElementSide::End => {
+            let space_end = vw - (rect.x + rect.width + offset);
+            let space_start = rect.x - offset;
+            if space_end < ESTIMATED_OVERLAY_SIZE && space_start > space_end {
+                ElementSide::Start
+            } else {
+                ElementSide::End
+            }
+        }
+    }
+}
+
+/// Viewport size in CSS pixels. Used by the flip + clamp logic.
+fn viewport_size() -> (f32, f32) {
+    let Some(window) = web_sys::window() else { return (1024.0, 768.0) };
+    let w = window
+        .inner_width()
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(1024.0) as f32;
+    let h = window
+        .inner_height()
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(768.0) as f32;
+    (w, h)
+}
+
+/// Compute `(top, left)` for an element anchor before any
+/// viewport-fit clamping.
+fn anchor_origin_position(
+    rect: ViewportRect,
+    side: ElementSide,
+    align: ElementAlign,
+    offset: f32,
+) -> (f32, f32) {
+    match side {
+        ElementSide::Below => (rect.y + rect.height + offset, anchor_horizontal(rect, align)),
+        ElementSide::Above => (rect.y - offset, anchor_horizontal(rect, align)),
+        ElementSide::Start => (anchor_vertical(rect, align), rect.x - offset),
+        ElementSide::End => (anchor_vertical(rect, align), rect.x + rect.width + offset),
     }
 }
 
@@ -453,13 +618,33 @@ fn element_anchor_styles(
     side: ElementSide,
     align: ElementAlign,
     offset: f32,
+    viewport: (f32, f32),
 ) -> String {
     // Decide the position relative to the target's rect.
-    let (top, left) = match side {
-        ElementSide::Below => (rect.y + rect.height + offset, anchor_horizontal(rect, align)),
-        ElementSide::Above => (rect.y - offset, anchor_horizontal(rect, align)),
-        ElementSide::Start => (anchor_vertical(rect, align), rect.x - offset),
-        ElementSide::End => (anchor_vertical(rect, align), rect.x + rect.width + offset),
+    let (top, left) = anchor_origin_position(rect, side, align, offset);
+    // Clamp `left` horizontally so the overlay stays inside the
+    // viewport when the trigger is near a vertical edge. We don't
+    // know the actual overlay width yet (its children haven't been
+    // inserted), but we know the *anchor point* — for `Center`
+    // alignment the overlay grows symmetrically from `left`, so we
+    // bias toward keeping `left` at least one half-width inside each
+    // edge using an estimate. For `Start` / `End` alignment the
+    // overlay grows in one direction so just clamping `left` to
+    // `[edge_gap, viewport - edge_gap]` is enough — if the overlay
+    // is wider than the viewport everything overflows anyway.
+    let (vw, vh) = viewport;
+    const EDGE_GAP: f32 = 8.0;
+    let left = match side {
+        ElementSide::Below | ElementSide::Above => {
+            left.clamp(EDGE_GAP, (vw - EDGE_GAP).max(EDGE_GAP))
+        }
+        _ => left,
+    };
+    let top = match side {
+        ElementSide::Start | ElementSide::End => {
+            top.clamp(EDGE_GAP, (vh - EDGE_GAP).max(EDGE_GAP))
+        }
+        _ => top,
     };
     // For `Above` and `Start` we want the overlay to grow back
     // toward the anchor — use a translate to flip the origin.

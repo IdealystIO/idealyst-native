@@ -1,0 +1,341 @@
+//! The `Primitive` enum — the structural skeleton of the UI.
+//!
+//! Every primitive optionally carries a `style` slot — styling is
+//! orthogonal to structure, so authors can style any primitive
+//! without each primitive having to know about styling. The renderer
+//! applies the style via an independent `Effect` per primitive, so a
+//! content signal change doesn't re-fire the style effect and vice
+//! versa.
+
+use crate::handles::RefFill;
+use crate::primitives;
+use crate::sources::{IntoStyleSource, StyleSource, TextSource};
+use crate::style::Color;
+use crate::Signal;
+use std::any::Any;
+use std::rc::Rc;
+
+/// Primitives are the structural skeleton of the UI. Every primitive
+/// optionally carries a `style` slot — styling is orthogonal to
+/// structure, so authors can style any primitive without each primitive
+/// having to know about styling. The renderer applies the style via an
+/// independent `Effect` per primitive, so a content signal change
+/// doesn't re-fire the style effect and vice versa.
+pub enum Primitive {
+    View {
+        children: Vec<Primitive>,
+        style: Option<StyleSource>,
+        ref_fill: Option<RefFill>,
+    },
+    Text {
+        source: TextSource,
+        style: Option<StyleSource>,
+        ref_fill: Option<RefFill>,
+    },
+    Button {
+        /// Label source. `TextSource::Static` for a fixed string;
+        /// `TextSource::Reactive` for a closure that reads signals
+        /// and produces a fresh label string on each fire. The
+        /// walker installs an Effect on the latter so the native
+        /// widget's text updates when the underlying signals change.
+        label: TextSource,
+        on_click: Rc<dyn Fn()>,
+        style: Option<StyleSource>,
+        ref_fill: Option<RefFill>,
+        /// Optional reactive disabled flag. When the closure returns
+        /// true, the framework: (1) flips the `DISABLED` state bit on
+        /// the styled node so any `state disabled { ... }` overlay
+        /// applies, (2) tells the backend to mark the native widget
+        /// inert (`disabled` attr on web, `setEnabled(false)` on
+        /// native). The closure is wrapped in an `Effect` so changes
+        /// propagate automatically.
+        disabled: Option<Box<dyn Fn() -> bool>>,
+    },
+    /// Image primitive. Source is reactive (`Box<dyn Fn() -> String>`)
+    /// so authors can pass a static URL or a closure reading a signal.
+    Image {
+        src: Box<dyn Fn() -> String>,
+        /// Optional accessibility label. Maps to `alt` on web,
+        /// `accessibilityLabel` on iOS, `contentDescription` on Android.
+        alt: Option<String>,
+        style: Option<StyleSource>,
+        ref_fill: Option<RefFill>,
+    },
+    /// Controlled text input. The parent owns the value as a
+    /// `Signal<String>`; on every native input event the framework
+    /// fires `on_change` with the new text, the parent updates the
+    /// signal, the framework's effect re-fires and writes the new
+    /// value back to the native widget. Cyclic but stable — widgets
+    /// no-op when set to their current value.
+    TextInput {
+        value: Signal<String>,
+        on_change: Rc<dyn Fn(String)>,
+        placeholder: Option<String>,
+        style: Option<StyleSource>,
+        ref_fill: Option<RefFill>,
+    },
+    /// Controlled toggle (switch / checkbox). Same controlled
+    /// pattern as `TextInput`: `value: Signal<bool>` round-trips
+    /// through `on_change`.
+    Toggle {
+        value: Signal<bool>,
+        on_change: Rc<dyn Fn(bool)>,
+        style: Option<StyleSource>,
+        ref_fill: Option<RefFill>,
+    },
+    /// Scroll container. Children scroll along `horizontal`'s opposite
+    /// axis (vertical by default). Web: a div with `overflow: scroll`.
+    /// iOS: `UIScrollView`. Android: `ScrollView` or
+    /// `HorizontalScrollView`.
+    ScrollView {
+        children: Vec<Primitive>,
+        horizontal: bool,
+        style: Option<StyleSource>,
+        ref_fill: Option<RefFill>,
+    },
+    /// Controlled numeric slider. Like `TextInput`/`Toggle`, the parent
+    /// owns the value signal. If `step` is set, the framework snaps
+    /// the incoming `on_change` value to the nearest step before
+    /// dispatching — so behavior is identical across web (which clamps
+    /// natively), iOS (no native step), and Android.
+    Slider {
+        value: Signal<f32>,
+        on_change: Rc<dyn Fn(f32)>,
+        min: f32,
+        max: f32,
+        step: Option<f32>,
+        style: Option<StyleSource>,
+        ref_fill: Option<RefFill>,
+    },
+    /// Embedded web content view. Web: a (sandboxed-by-default-no)
+    /// `<iframe>`. iOS: `WKWebView`. Android: `android.webkit.WebView`.
+    WebView {
+        url: Box<dyn Fn() -> String>,
+        style: Option<StyleSource>,
+        ref_fill: Option<RefFill>,
+    },
+    /// Video playback. URL-only; backends use their native players
+    /// so codec/format support is whatever the platform handles.
+    Video {
+        src: Box<dyn Fn() -> String>,
+        autoplay: bool,
+        controls: bool,
+        /// Field name is `loop_playback` to avoid the `loop` keyword.
+        loop_playback: bool,
+        style: Option<StyleSource>,
+        ref_fill: Option<RefFill>,
+    },
+    /// Indeterminate loading spinner. No methods — passive widget.
+    ActivityIndicator {
+        size: primitives::activity_indicator::ActivityIndicatorSize,
+        color: Option<Color>,
+        style: Option<StyleSource>,
+        ref_fill: Option<RefFill>,
+    },
+    /// Virtualized list. The framework supplies the backend with
+    /// type-erased callbacks; the backend manages scroll position,
+    /// visible-window math, and (on native) cell recycling. The
+    /// `flat_list<T>(...)` wrapper in `primitives::flat_list` is the
+    /// author-facing typed entry point.
+    Virtualizer {
+        item_count: Box<dyn Fn() -> usize>,
+        item_key: Box<dyn Fn(usize) -> primitives::virtualizer::ItemKey>,
+        item_size: primitives::virtualizer::ItemSize,
+        render_item: Rc<dyn Fn(usize) -> Primitive>,
+        overscan: f32,
+        horizontal: bool,
+        style: Option<StyleSource>,
+        ref_fill: Option<RefFill>,
+    },
+    /// GPU canvas. The author owns rendering: `on_init` runs once
+    /// after the backend has a `wgpu` device ready and produces the
+    /// user's render state; `on_paint` runs on every requested redraw
+    /// and mutates that state. The framework does not interpret any
+    /// of it — the GPU context is type-erased so framework-core
+    /// stays wgpu-free.
+    ///
+    /// `on_init` is wrapped in `Option` because it's `FnOnce`: the
+    /// build walker takes it out of the primitive when it hands
+    /// ownership to the backend.
+    Graphics {
+        on_ready: primitives::graphics::OnReady,
+        on_resize: primitives::graphics::OnResize,
+        on_lost: primitives::graphics::OnLost,
+        style: Option<StyleSource>,
+        ref_fill: Option<RefFill>,
+    },
+    /// Stack-based navigator. Holds a route table built up via
+    /// `.screen(...)` declarations and an initial route to mount as
+    /// the root. The framework hands `Backend::create_navigator` the
+    /// callbacks it needs to mount/release screens; the backend owns
+    /// the platform-native stack (UINavigationController on iOS,
+    /// FragmentManager on Android, inline subtree swap on web).
+    ///
+    /// Boxed so the enum stays compact — the navigator carries a
+    /// `HashMap<&'static str, _>` of screen builders that we don't
+    /// want bloating every other primitive variant.
+    Navigator(Box<primitives::navigator::Navigator>),
+    /// Reactive conditional. Renders `then()` while `cond()` is true and
+    /// `otherwise()` when it's false. The renderer wraps the subtree
+    /// construction in an `Effect` so the choice re-evaluates when any
+    /// signal `cond()` reads changes; the prior subtree's effects are
+    /// dropped on each flip, so state in the hidden branch is gone.
+    When {
+        cond: Box<dyn Fn() -> bool>,
+        then: Box<dyn Fn() -> Primitive>,
+        otherwise: Box<dyn Fn() -> Primitive>,
+        style: Option<StyleSource>,
+    },
+    /// Reactive multi-way conditional, the type-erased shape behind
+    /// the `switch()` constructor. The walker re-runs `key()` inside
+    /// an Effect, compares the result to the previously-seen key via
+    /// `eq`, and only re-builds the subtree (dropping the old scope)
+    /// when the key actually changes. State inside the old subtree
+    /// is freed atomically, mirroring `When`.
+    ///
+    /// `key` / `eq` / `build` operate on `Box<dyn Any>` so the
+    /// `Primitive` enum stays non-generic; the constructor monomorphizes
+    /// the type-aware logic into the closures.
+    Switch {
+        key: Box<dyn Fn() -> Box<dyn Any>>,
+        eq: Box<dyn Fn(&dyn Any, &dyn Any) -> bool>,
+        build: Box<dyn Fn(&dyn Any) -> Primitive>,
+        style: Option<StyleSource>,
+    },
+    /// Bulk children: build `count` rows from `row_builder(i)` and
+    /// insert them in one batch. The build walker uses this to
+    /// collapse `for i in 0..n { ... }` lowerings — instead of
+    /// walking N child primitives and calling `insert()` N times,
+    /// the backend gets ONE `insert_many` call with all the row
+    /// nodes preassembled.
+    ///
+    /// On web this maps to a `DocumentFragment`: append each row
+    /// to the fragment, then append the fragment to the parent
+    /// view in a single FFI call. Future optimization: detect that
+    /// rows are structurally identical and use `cloneNode` to
+    /// build them, which collapses per-row `createElement` calls
+    /// into one `cloneNode` each.
+    Repeat {
+        count: usize,
+        row_builder: Box<dyn Fn(usize) -> Primitive>,
+    },
+    /// Declarative navigation. Wraps content; activation dispatches
+    /// a `NavCommand` against an ambient navigator captured at
+    /// construction time. See [`primitives::link`] for the surface
+    /// and rationale.
+    Link {
+        children: Vec<Primitive>,
+        /// Route name (stable; matches `Route::name()`).
+        route: &'static str,
+        /// Concrete URL produced by `params.to_path(route.path)`
+        /// at construction time. Web emits `<a href=url>` and uses
+        /// it for right-click affordances; native backends ignore.
+        url: String,
+        /// Type-erased params source. Each activation calls this to
+        /// produce a fresh `Box<dyn Any>` for the `NavCommand`.
+        /// `link<P>` boxes `P: Clone` and reproduces on demand.
+        make_params: Rc<dyn Fn() -> Box<dyn Any>>,
+        /// Push / Replace / Reset.
+        kind: primitives::link::NavKind,
+        /// Captured ambient `NavigatorControl` at construction.
+        /// `None` ⇒ no navigator was active and activation silently
+        /// no-ops (matches handle-before-build posture).
+        target: Option<Rc<primitives::navigator::NavigatorControl>>,
+        style: Option<StyleSource>,
+        ref_fill: Option<RefFill>,
+    },
+    /// Overlay — a floating subtree rendered above the rest of the
+    /// UI, escaping the parent's layout/clipping. Used for modals,
+    /// popovers, tooltips, dropdowns, drawers, context menus.
+    ///
+    /// The host owns the open/close state — typically a `Signal<bool>`
+    /// driving a surrounding `when(...)` or `if` inside `ui!`.
+    /// Mounting the primitive opens the overlay; unmounting closes
+    /// it. Backends ignore the primitive's position in the normal
+    /// layout flow; they render the children at the location
+    /// dictated by `anchor` instead.
+    ///
+    /// See [`primitives::overlay`] for the placement, anchoring,
+    /// backdrop, and dismiss model.
+    Overlay {
+        children: Vec<Primitive>,
+        anchor: primitives::overlay::OverlayAnchor,
+        backdrop: primitives::overlay::BackdropMode,
+        /// Optional stylesheet applied to the backdrop / scrim
+        /// layer. Independent from `style` (which applies to the
+        /// overlay content container).
+        backdrop_style: Option<StyleSource>,
+        /// Fired when the platform requests dismissal (Escape, back
+        /// gesture, click-outside on a `Dismiss` backdrop). Hosts
+        /// wire this to flip their open-state signal; the framework
+        /// doesn't auto-tear-down — reactive state is the source of
+        /// truth.
+        on_dismiss: Option<Rc<dyn Fn()>>,
+        /// When `true`, the backend confines keyboard / accessibility
+        /// focus inside the overlay subtree until it closes. Default
+        /// `true` for modals; set `false` for non-modal popovers and
+        /// tooltips.
+        trap_focus: bool,
+        style: Option<StyleSource>,
+        ref_fill: Option<RefFill>,
+    },
+    /// Presence — mount/unmount with enter and exit animations. See
+    /// [`primitives::presence`] for the model. The host's
+    /// open/close `Signal<bool>` is exposed via `present`; the
+    /// walker defers unmount by `exit.duration_ms` so the exit
+    /// animation can play before the scope drops.
+    Presence {
+        child: Box<dyn Fn() -> Primitive>,
+        present: Box<dyn Fn() -> bool>,
+        enter: Option<primitives::presence::PresenceAnim>,
+        exit: Option<primitives::presence::PresenceAnim>,
+        ref_fill: Option<RefFill>,
+    },
+}
+
+impl Primitive {
+    /// Attaches a style to this primitive. Replaces any previously-set
+    /// style. The style argument can be either a `StyleApplication`
+    /// (static) or a closure returning one (reactive).
+    pub fn with_style<S: IntoStyleSource>(mut self, style: S) -> Self {
+        let src = style.into_style_source();
+        match &mut self {
+            Primitive::View { style, .. }
+            | Primitive::Text { style, .. }
+            | Primitive::Button { style, .. }
+            | Primitive::Image { style, .. }
+            | Primitive::TextInput { style, .. }
+            | Primitive::Toggle { style, .. }
+            | Primitive::ScrollView { style, .. }
+            | Primitive::Slider { style, .. }
+            | Primitive::WebView { style, .. }
+            | Primitive::Video { style, .. }
+            | Primitive::ActivityIndicator { style, .. }
+            | Primitive::Virtualizer { style, .. }
+            | Primitive::Graphics { style, .. }
+            | Primitive::When { style, .. }
+            | Primitive::Switch { style, .. }
+            | Primitive::Link { style, .. }
+            | Primitive::Overlay { style, .. } => {
+                *style = Some(src);
+            }
+            Primitive::Navigator(nav) => {
+                nav.style = Some(src);
+            }
+            Primitive::Repeat { .. } => {
+                // Repeat is a children-list primitive; styling
+                // doesn't apply at this level. The caller should
+                // style the surrounding View/ScrollView instead.
+                // No-op (we ignore the style) so the surrounding
+                // `.with_style(...)` builder pattern doesn't panic
+                // when a macro emits it unconditionally.
+            }
+            Primitive::Presence { .. } => {
+                // Presence is a wrapper that handles mount/unmount
+                // animations on its child; styling belongs on the
+                // child View, not on the Presence node. No-op.
+            }
+        }
+        self
+    }
+}

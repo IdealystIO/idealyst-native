@@ -6,6 +6,7 @@ use crate::stylesheets::Divider;
 pub use crate::stylesheets::DividerAxis;
 
 #[derive(Default)]
+#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct DividerProps {
     pub axis: DividerAxis,
 }

@@ -15,6 +15,7 @@ use crate::intent::{apply_palette, Intent, IntoRcIntent, Neutral};
 use crate::stylesheets::Badge;
 use crate::theme::IdeaThemeRef;
 
+#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct BadgeProps {
     pub label: String,
     /// Defaults to [`Neutral`] — a muted surface-tinted look.

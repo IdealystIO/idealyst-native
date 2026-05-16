@@ -17,6 +17,7 @@ pub mod icon_button;
 pub mod modal;
 pub mod popover;
 pub mod pressable;
+pub mod select;
 pub mod skeleton;
 pub mod spacer;
 pub mod spinner;

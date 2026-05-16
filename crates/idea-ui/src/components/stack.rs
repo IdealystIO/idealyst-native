@@ -11,6 +11,7 @@ use crate::stylesheets::Stack;
 pub use crate::stylesheets::{StackAlign, StackAxis, StackGap, StackJustify};
 
 #[derive(Default)]
+#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct StackProps {
     pub gap: StackGap,
     pub axis: StackAxis,
@@ -33,6 +34,7 @@ pub fn stack(props: StackProps) -> Primitive {
 }
 
 #[derive(Default)]
+#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct VStackProps {
     pub gap: StackGap,
     pub align: StackAlign,
@@ -54,6 +56,7 @@ pub fn vstack(props: VStackProps) -> Primitive {
 }
 
 #[derive(Default)]
+#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct HStackProps {
     pub gap: StackGap,
     pub align: StackAlign,

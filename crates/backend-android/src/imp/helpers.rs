@@ -80,12 +80,12 @@ pub(crate) fn parse_color(input: &str) -> Option<i32> {
 
 /// Pull the first `Length::Px` value from a per-side group, falling
 /// back to `default` when absent. The framework's per-side fields are
-/// all `Option<Length>`; for padding we collapse them with a
-/// saturating max so a single-side override doesn't zero the other
-/// sides.
-pub(crate) fn px_or(value: Option<framework_core::Length>, default: f32) -> f32 {
-    match value {
-        Some(framework_core::Length::Px(v)) => v,
+/// all `Option<Tokenized<Length>>` after the tokenization refactor;
+/// native has no token system to point to so we resolve every token
+/// to its fallback (`.value()`) at apply-time.
+pub(crate) fn px_or(value: Option<&framework_core::Tokenized<framework_core::Length>>, default: f32) -> f32 {
+    match value.map(|t| t.value()) {
+        Some(framework_core::Length::Px(v)) => *v,
         // Percent/Auto don't have a well-defined value here without a
         // layout pass; treat as default.
         _ => default,

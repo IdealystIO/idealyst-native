@@ -6,6 +6,7 @@ use crate::stylesheets::Caption;
 pub use crate::stylesheets::{CaptionAlign, CaptionTone};
 
 #[derive(Default)]
+#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct CaptionProps {
     pub content: String,
     pub tone: CaptionTone,

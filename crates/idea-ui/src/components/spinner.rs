@@ -5,16 +5,33 @@
 //! reach into framework-core for the underlying enum.
 
 use framework_core::primitives::activity_indicator::ActivityIndicatorSize;
-use framework_core::{ui, Primitive};
+use framework_core::{ui, Primitive, VariantEnum};
 
-#[derive(Copy, Clone, Default)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum SpinnerSize {
     #[default]
     Small,
     Large,
 }
 
+// Hand-rolled `VariantEnum` impl so the `DocControls` derive can
+// surface this enum as a Pressable-row picker. The `stylesheet!`
+// macro would generate this automatically; for hand-rolled enums
+// we mirror the shape ourselves.
+impl VariantEnum for SpinnerSize {
+    fn as_variant_str(self) -> &'static str {
+        match self {
+            SpinnerSize::Small => "small",
+            SpinnerSize::Large => "large",
+        }
+    }
+    fn all_variants() -> &'static [Self] {
+        &[SpinnerSize::Small, SpinnerSize::Large]
+    }
+}
+
 #[derive(Default)]
+#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct SpinnerProps {
     pub size: SpinnerSize,
 }

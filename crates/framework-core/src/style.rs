@@ -1892,6 +1892,18 @@ pub trait IntoOverrideSource<T: Clone + 'static> {
 
 pub trait VariantEnum: Copy + 'static {
     fn as_variant_str(self) -> &'static str;
+    /// Every variant of this enum, in declaration order. Used by
+    /// reflective tooling (the docs-app `DocControls` derive) to
+    /// build a control that cycles through all values.
+    ///
+    /// Default returns an empty slice for hand-rolled implementors
+    /// of this trait — `stylesheet!`-generated enums override.
+    fn all_variants() -> &'static [Self]
+    where
+        Self: Sized,
+    {
+        &[]
+    }
 }
 
 impl<E: VariantEnum> IntoVariantSource<E> for E {

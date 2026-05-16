@@ -298,10 +298,16 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 name = "framework-core"
 version = "0.0.1"
 dependencies = [
+ "block2 0.5.1",
  "framework-macros",
  "js-sys",
+ "log",
+ "objc2 0.5.2",
+ "objc2-foundation 0.2.2",
+ "pollster",
  "raw-window-handle",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "web-sys",
 ]
 
@@ -445,17 +451,8 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 name = "hello"
 version = "0.0.1"
 dependencies = [
- "block2 0.5.1",
  "bytemuck",
  "framework-core",
- "js-sys",
- "log",
- "objc2 0.5.2",
- "objc2-foundation 0.2.2",
- "pollster",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
  "wgpu",
 ]
 
@@ -506,6 +503,37 @@ name = "idea-ui"
 version = "0.0.1"
 dependencies = [
  "framework-core",
+ "idea-ui-docs-derive",
+]
+
+[[package]]
+name = "idea-ui-docs"
+version = "0.0.1"
+dependencies = [
+ "framework-core",
+ "idea-ui",
+]
+
+[[package]]
+name = "idea-ui-docs-derive"
+version = "0.0.1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "idea-ui-docs-web"
+version = "0.0.1"
+dependencies = [
+ "backend-web",
+ "console_error_panic_hook",
+ "framework-core",
+ "idea-ui-docs",
+ "lol_alloc",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]

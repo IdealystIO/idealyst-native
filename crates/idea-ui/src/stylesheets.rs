@@ -365,9 +365,18 @@ stylesheet! {
                 height: 1.0,
                 width: Length::pct(100.0),
             }
+            // Vertical dividers fill their parent's cross axis via
+            // `align_self: stretch` (so a vertical divider inside a
+            // flex-row container stretches to the row's height).
+            // `min_height` provides a sensible fallback when the
+            // parent doesn't have a definite height — without it,
+            // `height: 100%` resolves to 0 and the divider becomes
+            // invisible.
             vertical(_t) {
                 width: 1.0,
                 height: Length::pct(100.0),
+                min_height: 24.0,
+                align_self: framework_core::AlignSelf::Stretch,
             }
         }
         transitions {
@@ -409,6 +418,118 @@ stylesheet! {
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::Center,
             gap: Length::Px(t.spacing().sm),
+        }
+    }
+}
+
+// =============================================================================
+// Select — trigger + menu surfaces
+// =============================================================================
+//
+// `SelectTrigger` is the always-visible button. Mirrors Field's
+// shape (background / border / size variants) so a Select sits
+// visually next to a Field without juddering.
+//
+// `SelectMenu` is the popover panel rendered inside an Overlay.
+// `SelectOption` styles each row in the menu, with an `active`
+// variant that highlights the currently-selected option.
+
+stylesheet! {
+    pub SelectTrigger<IdeaThemeRef> {
+        base(t) {
+            background: t.colors().surface.clone(),
+            color: t.colors().text.clone(),
+            padding_vertical: t.spacing().sm,
+            padding_horizontal: t.spacing().md,
+            border_radius: t.radius().md,
+            border_width: 1.0,
+            border_color: t.colors().border.clone(),
+            font_size: t.typography().size_md,
+            text_align: TextAlign::Left,
+            min_width: 160.0,
+        }
+        variant size {
+            sm(t) {
+                padding_vertical: t.spacing().xs,
+                padding_horizontal: t.spacing().sm,
+                font_size: t.typography().size_sm,
+            }
+            #[default]
+            md(t) {
+                padding_vertical: t.spacing().sm,
+                padding_horizontal: t.spacing().md,
+                font_size: t.typography().size_md,
+            }
+            lg(t) {
+                padding_vertical: t.spacing().md,
+                padding_horizontal: t.spacing().lg,
+                font_size: t.typography().size_lg,
+            }
+        }
+        state hovered(t) {
+            border_color: t.colors().border_hover.clone(),
+        }
+        state disabled(_t) {
+            opacity: 0.55,
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            border_color: 150ms EaseOut,
+            color: 250ms EaseInOut,
+        }
+    }
+}
+
+stylesheet! {
+    pub SelectMenu<IdeaThemeRef> {
+        base(t) {
+            background: t.colors().surface.clone(),
+            border_radius: t.radius().md,
+            border_width: 1.0,
+            border_color: t.colors().border.clone(),
+            padding: t.spacing().xs,
+            gap: Length::Px(2.0),
+            flex_direction: FlexDirection::Column,
+            min_width: 200.0,
+            shadow: framework_core::Shadow {
+                x: 0.0,
+                y: 8.0,
+                blur: 24.0,
+                color: framework_core::Color("rgba(15, 17, 21, 0.18)".into()),
+            },
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            border_color: 250ms EaseInOut,
+        }
+    }
+}
+
+stylesheet! {
+    pub SelectOption<IdeaThemeRef> {
+        base(t) {
+            background: Color("transparent".into()),
+            color: t.colors().text.clone(),
+            padding_vertical: t.spacing().xs,
+            padding_horizontal: t.spacing().sm,
+            border_radius: t.radius().sm,
+            font_size: t.typography().size_md,
+            text_align: TextAlign::Left,
+        }
+        variant active {
+            #[default]
+            off(_t) {}
+            on(t) {
+                background: t.colors().primary.clone(),
+                color: t.colors().primary_text.clone(),
+            }
+        }
+        state hovered(t) {
+            background: t.colors().surface_alt.clone(),
+        }
+        transitions {
+            background: 150ms EaseOut,
+            color: 150ms EaseOut,
         }
     }
 }

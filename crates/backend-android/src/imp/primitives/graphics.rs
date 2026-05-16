@@ -126,6 +126,16 @@ pub(crate) struct GraphicsCallback {
     /// Latest known drawable size in physical pixels. Updated
     /// inside `nativeSurfaceChanged`.
     pub(crate) last_size: (u32, u32),
+    /// Pending `ANativeWindow*` captured from `surfaceCreated` when
+    /// we couldn't yet fire `on_ready` (size was 0×0 — see the
+    /// comment on the create handler). Cleared once `on_ready`
+    /// actually fires.
+    pub(crate) pending_window: Option<NonNull<ndk_sys::ANativeWindow>>,
+    /// True between the first `on_ready` fire and the next
+    /// `surfaceDestroyed`. Gates `on_resize` (only fires after
+    /// `on_ready`) and `on_lost` (only fires if we'd previously
+    /// fired `on_ready`).
+    pub(crate) ready_fired: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -144,6 +154,8 @@ pub(crate) fn create(
         on_lost: RefCell::new(on_lost),
         released: false,
         last_size: (0, 0),
+        pending_window: None,
+        ready_fired: false,
     };
     let ptr: jlong = leak(cb);
 
@@ -230,15 +242,22 @@ pub(crate) fn release(_b: &mut AndroidBackend, _node: &GlobalRef) {
 // ---------------------------------------------------------------------------
 
 /// `surfaceCreated` dispatch. Acquires an `ANativeWindow` from the
-/// Java `Surface`, wraps it in a fresh `AndroidSurfaceProvider`,
-/// and fires `on_ready`.
+/// Java `Surface` and either:
 ///
-/// Note that `on_ready` MAY fire before `surfaceChanged` — the
-/// `last_size` field starts at `(0, 0)`. Authors should generally
-/// wait for the first `on_resize` if they care about exact pixels.
-/// In practice the SurfaceView fires `surfaceChanged` immediately
-/// after `surfaceCreated`, so the size is set before the user's
-/// next code path runs.
+/// - fires `on_ready` immediately if we already know a non-zero
+///   drawable size (uncommon — would require a `surfaceChanged`
+///   before `surfaceCreated`, which Android doesn't do in practice
+///   but the lifecycle doesn't forbid);
+/// - OR stashes the surface in `pending_window` and waits for the
+///   first `surfaceChanged` to arrive before firing `on_ready`.
+///
+/// The deferred-fire path is the normal one. Firing `on_ready` with
+/// `size = (0, 0)` is technically allowed by the framework's API
+/// (authors get `event.size.max(1)` on the call site) but produces
+/// a single-pixel wgpu swapchain whose `on_resize` may be missed if
+/// it arrives before the renderer's async init completes — the
+/// renderer then runs at 1×1 forever, which presents as a wildly
+/// distorted image stretched to fill the SurfaceView.
 ///
 /// # Safety
 ///
@@ -260,7 +279,9 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustGraphicsCallback_nati
     }
 
     // ANativeWindow_fromSurface increments the surface's ref count;
-    // the matching release happens when the SurfaceProvider drops.
+    // the matching release happens when the SurfaceProvider drops
+    // (or here, if we stash the window and `surfaceDestroyed`
+    // arrives before we ever fire `on_ready`).
     let raw = env.get_raw();
     let surface_ptr = surface.as_raw();
     let window = ndk_sys::ANativeWindow_fromSurface(raw.cast(), surface_ptr.cast());
@@ -268,27 +289,26 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustGraphicsCallback_nati
         log::error!("[graphics] ANativeWindow_fromSurface returned null");
         return;
     };
-    let provider = Arc::new(AndroidSurfaceProvider { window });
-    let surface_handle = GraphicsSurface::new(provider as Arc<dyn SurfaceProvider + Send + Sync>);
 
-    let event = OnReadyEvent {
-        surface: surface_handle,
-        size: cb.last_size,
-    };
-    // Move-take the user closure to avoid re-entry borrow issues.
-    let mut on_ready = std::mem::replace(
-        &mut *cb.on_ready.borrow_mut(),
-        Box::new(|_| {}),
-    );
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| on_ready(event)));
-    if !cb.released {
-        *cb.on_ready.borrow_mut() = on_ready;
+    if cb.last_size.0 > 0 && cb.last_size.1 > 0 {
+        // Size is already known — fire on_ready immediately. Wrap
+        // the window in the provider so its `Drop` will release
+        // the ref count when wgpu eventually drops the surface.
+        fire_on_ready(cb, window);
+    } else {
+        // Defer. Stash the window; `surfaceChanged` will fire
+        // `on_ready` when the real size arrives.
+        cb.pending_window = Some(window);
     }
 }
 
-/// `surfaceChanged` dispatch. If the size actually changed, fires
-/// `on_resize`. Always updates the cached `last_size` so subsequent
-/// `on_ready` calls report it.
+/// `surfaceChanged` dispatch. If `on_ready` was deferred from
+/// `surfaceCreated`, fires it here with the now-known size.
+/// Otherwise (already fired): fires `on_resize` when the size
+/// actually changes.
+///
+/// Always updates `last_size` first so a subsequent `surfaceCreated`
+/// for the same surface would see it.
 ///
 /// # Safety
 ///
@@ -312,7 +332,23 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustGraphicsCallback_nati
     let new_size = (width.max(0) as u32, height.max(0) as u32);
     let was = cb.last_size;
     cb.last_size = new_size;
-    if was == new_size {
+
+    // Deferred `on_ready` path — fire it now with the real size.
+    if let Some(window) = cb.pending_window.take() {
+        if new_size.0 > 0 && new_size.1 > 0 {
+            fire_on_ready(cb, window);
+        } else {
+            // Still 0×0 (shouldn't normally happen — Android usually
+            // delivers a real size here). Re-stash and wait.
+            cb.pending_window = Some(window);
+        }
+        return;
+    }
+
+    // Normal resize path. Don't dispatch if the size didn't actually
+    // change, and don't dispatch at all unless `on_ready` has fired
+    // (authors expect resize to follow ready, never precede it).
+    if !cb.ready_fired || was == new_size {
         return;
     }
 
@@ -327,10 +363,13 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustGraphicsCallback_nati
     }
 }
 
-/// `surfaceDestroyed` dispatch. Fires `on_lost`. Authors MUST drop
-/// any wgpu Surface / swapchain holding the underlying
-/// ANativeWindow — Android frees the surface as soon as this
-/// returns.
+/// `surfaceDestroyed` dispatch. Fires `on_lost` only if `on_ready`
+/// had previously fired (so author code that does `if on_ready:
+/// build_renderer; if on_lost: drop_renderer` stays balanced).
+///
+/// If we'd stashed a `pending_window` (surfaceCreated arrived but
+/// `surfaceChanged` never delivered a real size before destruction),
+/// release it here so the ANativeWindow ref count is paired.
 ///
 /// # Safety
 ///
@@ -348,6 +387,23 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustGraphicsCallback_nati
     if cb.released {
         return;
     }
+
+    // Release any never-handed-off pending window. If we had handed
+    // it to the user (via on_ready), the wgpu Surface they built
+    // around it owns the ref count and its Drop releases — we MUST
+    // NOT double-release here.
+    if let Some(window) = cb.pending_window.take() {
+        ndk_sys::ANativeWindow_release(window.as_ptr());
+    }
+
+    // Only fire on_lost if on_ready had fired; otherwise the user's
+    // closure never had a renderer to release and would be confused
+    // by an unpaired on_lost.
+    if !cb.ready_fired {
+        return;
+    }
+    cb.ready_fired = false;
+
     let mut on_lost = std::mem::replace(
         &mut *cb.on_lost.borrow_mut(),
         Box::new(|| {}),
@@ -355,6 +411,37 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustGraphicsCallback_nati
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| on_lost()));
     if !cb.released {
         *cb.on_lost.borrow_mut() = on_lost;
+    }
+}
+
+/// Build the `GraphicsSurface` wrapper around the given window and
+/// fire `on_ready`. Shared between the immediate path (size already
+/// known at `surfaceCreated`) and the deferred path (size arrived
+/// via `surfaceChanged` after `surfaceCreated`).
+///
+/// # Safety
+///
+/// `cb` and `window` must be valid; caller ensures `cb.released`
+/// has been checked.
+unsafe fn fire_on_ready(
+    cb: &mut GraphicsCallback,
+    window: NonNull<ndk_sys::ANativeWindow>,
+) {
+    let provider = Arc::new(AndroidSurfaceProvider { window });
+    let surface_handle = GraphicsSurface::new(provider as Arc<dyn SurfaceProvider + Send + Sync>);
+
+    cb.ready_fired = true;
+    let event = OnReadyEvent {
+        surface: surface_handle,
+        size: cb.last_size,
+    };
+    let mut on_ready = std::mem::replace(
+        &mut *cb.on_ready.borrow_mut(),
+        Box::new(|_| {}),
+    );
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| on_ready(event)));
+    if !cb.released {
+        *cb.on_ready.borrow_mut() = on_ready;
     }
 }
 

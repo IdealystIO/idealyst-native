@@ -653,6 +653,13 @@ fn emit_variant_enum(decl: &StyleSheetDecl, axis: &VariantAxisDecl) -> TokenStre
         let s = arm.name.to_string();
         quote! { Self::#v => #s }
     });
+    // all_variants(): every variant in declaration order, as a
+    // 'static slice. Used by reflective tooling (notably the docs
+    // app's `DocControls` derive) to enumerate variant pickers.
+    let all_variants_items = axis.arms.iter().map(|arm| {
+        let v = format_ident!("{}", pascal(&arm.name));
+        quote! { Self::#v }
+    });
     quote! {
         #[derive(::std::clone::Clone, ::std::marker::Copy, ::std::fmt::Debug, ::std::cmp::PartialEq, ::std::cmp::Eq)]
         #vis enum #enum_name {
@@ -663,6 +670,9 @@ fn emit_variant_enum(decl: &StyleSheetDecl, axis: &VariantAxisDecl) -> TokenStre
                 match self {
                     #(#arm_arms,)*
                 }
+            }
+            fn all_variants() -> &'static [Self] {
+                &[ #(#all_variants_items,)* ]
             }
         }
         #default_impl

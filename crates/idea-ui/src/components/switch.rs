@@ -16,6 +16,7 @@ use std::rc::Rc;
 
 use crate::stylesheets::{FieldLabel, SwitchRow};
 
+#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct SwitchProps {
     /// Optional label rendered to the left of the toggle.
     pub label: Option<String>,

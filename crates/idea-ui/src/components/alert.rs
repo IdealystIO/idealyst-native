@@ -27,6 +27,7 @@ use crate::intent::{apply_palette, Intent, IntoRcIntent, Primary};
 use crate::stylesheets::{Alert, AlertBody, AlertTitle, TagClose};
 use crate::theme::IdeaThemeRef;
 
+#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct AlertProps {
     pub title: String,
     /// Optional second-line detail text. Rendered beneath the title.

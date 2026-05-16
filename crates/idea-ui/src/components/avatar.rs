@@ -27,6 +27,7 @@ use crate::theme::IdeaThemeRef;
 
 pub use crate::stylesheets::AvatarSize;
 
+#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct AvatarProps {
     /// Optional image URL. When `Some`, an `Image` primitive renders
     /// and the initials are hidden. When `None`, the initials show.

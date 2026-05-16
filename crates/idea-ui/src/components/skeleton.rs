@@ -37,6 +37,7 @@ pub enum SkeletonWidth {
     Px(f32),
 }
 
+#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct SkeletonProps {
     pub width: SkeletonWidth,
     pub height: f32,
