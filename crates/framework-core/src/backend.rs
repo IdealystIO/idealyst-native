@@ -719,6 +719,24 @@ pub trait Backend {
     ) {
     }
 
+    /// Attach a pre-built sidebar Node to a drawer navigator.
+    /// Called by the walker after `create_drawer_navigator` returns
+    /// and the framework has built the user's `.sidebar(...)`
+    /// closure output into a backend Node.
+    ///
+    /// Native backends (Android) override to position the sidebar
+    /// inside their native drawer-shell. Web ignores this — its
+    /// `.layout(...)` handles sidebar placement via
+    /// `LayoutProps::sidebar`, so a separate attach call isn't
+    /// needed there. Default no-op.
+    #[allow(unused_variables)]
+    fn drawer_navigator_attach_sidebar(
+        &mut self,
+        navigator: &Self::Node,
+        sidebar: Self::Node,
+    ) {
+    }
+
     /// Tear down a drawer navigator. Same contract as
     /// [`Backend::release_navigator`]. Default no-op so backends
     /// that don't implement drawers aren't required to define this.

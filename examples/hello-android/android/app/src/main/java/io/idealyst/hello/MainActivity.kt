@@ -2,14 +2,25 @@ package io.idealyst.hello
 
 import android.os.Bundle
 import android.view.ViewGroup
-import android.widget.LinearLayout
-import android.widget.ScrollView
+import android.widget.FrameLayout
 import androidx.appcompat.app.AppCompatActivity
 
 /**
  * Single Activity that hands a Context + parent ViewGroup down to the
  * Rust side and lets the framework render the shared `hello::app()`
  * tree underneath it.
+ *
+ * The root is a `FrameLayout` sized to fill the activity window
+ * (`MATCH_PARENT × MATCH_PARENT`). A real fill-the-screen parent is
+ * required for `DrawerLayout` to mount inside it — that widget
+ * insists on being measured with `MeasureSpec.EXACTLY` and throws
+ * if its parent doesn't pass an exact height/width. An ancestor
+ * `ScrollView` would give the drawer `UNSPECIFIED` height and the
+ * screen would render as 0px tall.
+ *
+ * App-level screens that need internal scrolling can wrap their
+ * content in a framework `ScrollView` primitive — that's the right
+ * place for "this particular screen has more content than fits."
  */
 class MainActivity : AppCompatActivity() {
 
@@ -25,25 +36,13 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Wrap the framework root in a ScrollView so the demo tree (which
-        // can exceed a phone's screen height) is scrollable instead of
-        // clipped.
-        val scroll = ScrollView(this).apply {
+        val root = FrameLayout(this).apply {
             layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT,
             )
         }
-
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            )
-        }
-        scroll.addView(root)
-        setContentView(scroll)
+        setContentView(root)
 
         NativeBridge.attach(this, root)
     }

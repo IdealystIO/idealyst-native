@@ -248,6 +248,16 @@ pub struct DrawerNavigator {
     /// pinned beside the body region (becomes a sidebar). `None`
     /// (default) keeps the drawer as an overlay at all widths.
     pub pinned_above: Option<u32>,
+    /// Whether the drawer opens on edge-swipe (in addition to
+    /// programmatic open from the handle / hamburger). On Android,
+    /// this maps to `DrawerLayout.setDrawerLockMode` — `true` =
+    /// `LOCK_MODE_UNLOCKED`, `false` = `LOCK_MODE_LOCKED_CLOSED`
+    /// (drawer can only be opened programmatically).
+    ///
+    /// Default `true`. Turn off for screens with horizontal
+    /// content (carousels, sliders) where edge-swipe would
+    /// conflict.
+    pub swipe_to_open: bool,
     pub mount_policy: MountPolicy,
     pub style: Option<crate::StyleSource>,
     pub ref_fill: Option<RefFill>,
@@ -268,6 +278,7 @@ impl DrawerNavigator {
             sidebar: None,
             side: DrawerSide::Start,
             pinned_above: None,
+            swipe_to_open: true,
             mount_policy: MountPolicy::LazyPersistent,
             style: None,
             ref_fill: None,
@@ -334,6 +345,24 @@ impl Bound<DrawerHandle> {
     pub fn pinned_above(mut self, px: u32) -> Self {
         if let Primitive::DrawerNavigator(nav) = &mut self.primitive {
             nav.pinned_above = Some(px);
+        }
+        self
+    }
+
+    /// Toggle the swipe-from-edge gesture. Default is on.
+    ///
+    /// On Android, this controls
+    /// `DrawerLayout.setDrawerLockMode(LOCK_MODE_*)`: when off, the
+    /// drawer can only be opened programmatically (via the handle
+    /// or a hamburger button calling `OpenDrawer`). Turn off when
+    /// the drawer's content includes horizontal-swipe surfaces
+    /// (carousels, sliders) that would conflict with edge-swipe.
+    ///
+    /// On web this setting has no effect — there's no native
+    /// gesture to lock.
+    pub fn swipe_to_open(mut self, enabled: bool) -> Self {
+        if let Primitive::DrawerNavigator(nav) = &mut self.primitive {
+            nav.swipe_to_open = enabled;
         }
         self
     }
@@ -426,6 +455,7 @@ pub struct DrawerNavigatorCallbacks<N: Clone + 'static> {
     pub items: Vec<DrawerItemRegistration>,
     pub side: DrawerSide,
     pub pinned_above: Option<u32>,
+    pub swipe_to_open: bool,
     pub mount_policy: MountPolicy,
     /// Reactive open-state signal. The backend's dispatcher flips
     /// this when `OpenDrawer` / `CloseDrawer` / `ToggleDrawer`

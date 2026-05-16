@@ -492,6 +492,7 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
                 sidebar,
                 side,
                 pinned_above,
+                swipe_to_open,
                 mount_policy,
                 style,
                 ref_fill,
@@ -506,6 +507,7 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
                 sidebar,
                 side,
                 pinned_above,
+                swipe_to_open,
                 mount_policy,
                 ref_fill,
             );
@@ -1583,6 +1585,7 @@ fn build_drawer_navigator<B: Backend + 'static>(
     sidebar: Option<primitives::navigator::SidebarBuilder>,
     side: primitives::navigator::DrawerSide,
     pinned_above: Option<u32>,
+    swipe_to_open: bool,
     mount_policy: primitives::navigator::MountPolicy,
     ref_fill: Option<RefFill>,
 ) -> B::Node {
@@ -1834,6 +1837,7 @@ fn build_drawer_navigator<B: Backend + 'static>(
         items,
         side,
         pinned_above,
+        swipe_to_open,
         mount_policy,
         is_open,
         build_sidebar,
@@ -1842,9 +1846,27 @@ fn build_drawer_navigator<B: Backend + 'static>(
     };
 
     let mount_screen_for_initial = callbacks.navigator.mount_screen.clone();
+    // Capture the sidebar builder before moving `callbacks` into the
+    // backend's `create_drawer_navigator` — we need it after the
+    // create call returns (when the backend's borrow_mut is
+    // released) to build the sidebar Node and hand it back via
+    // `drawer_navigator_attach_sidebar`. Web backends ignore this
+    // path (they build the sidebar via `build_layout`).
+    let build_sidebar_after_create = callbacks.build_sidebar.clone();
     let node = time_backend_create(pkind!(DrawerNavigator), || {
         backend.borrow_mut().create_drawer_navigator(callbacks, control.clone())
     });
+
+    // Build the sidebar (if registered) and hand the resulting Node
+    // to the backend. Runs outside any active borrow_mut window
+    // because build_sidebar re-enters the build walker, which also
+    // borrow_muts.
+    if let Some(build_sidebar) = build_sidebar_after_create {
+        let sidebar_node = build_sidebar();
+        backend
+            .borrow_mut()
+            .drawer_navigator_attach_sidebar(&node, sidebar_node);
+    }
 
     // Mount the initial drawer screen — same pattern as the tab
     // navigator. Backends that mount via microtask (web) leave the

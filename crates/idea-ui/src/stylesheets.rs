@@ -166,10 +166,10 @@ stylesheet! {
             #[default]
             default(_t) {}
             muted(t)    { color: t.colors().text_muted.clone() }
-            primary(t)  { color: t.colors().primary.clone() }
-            danger(t)   { color: t.colors().danger.clone() }
-            success(t)  { color: t.colors().success.clone() }
-            warning(t)  { color: t.colors().warning.clone() }
+            primary(t)  { color: t.intents().primary.fg.clone() }
+            danger(t)   { color: t.intents().danger.fg.clone() }
+            success(t)  { color: t.intents().success.fg.clone() }
+            warning(t)  { color: t.intents().warning.fg.clone() }
         }
         variant align {
             #[default]
@@ -193,8 +193,8 @@ stylesheet! {
         variant tone {
             #[default]
             default(t) { color: t.colors().text_muted.clone() }
-            danger(t)  { color: t.colors().danger.clone() }
-            success(t) { color: t.colors().success.clone() }
+            danger(t)  { color: t.intents().danger.fg.clone() }
+            success(t) { color: t.intents().success.fg.clone() }
         }
         variant align {
             #[default]
@@ -237,9 +237,9 @@ stylesheet! {
                 },
             }
             primary(t) {
-                background: t.colors().primary.clone(),
-                color: t.colors().primary_text.clone(),
-                border_color: t.colors().primary.clone(),
+                background: t.intents().primary.solid_bg.clone(),
+                color: t.intents().primary.solid_text.clone(),
+                border_color: t.intents().primary.solid_bg.clone(),
             }
             muted(t) {
                 background: t.colors().surface_alt.clone(),
@@ -298,7 +298,7 @@ stylesheet! {
             #[default]
             default(_t) {}
             error(t) {
-                border_color: t.colors().danger.clone(),
+                border_color: t.intents().danger.solid_bg.clone(),
             }
         }
         state focused(t) {
@@ -520,8 +520,8 @@ stylesheet! {
             #[default]
             off(_t) {}
             on(t) {
-                background: t.colors().primary.clone(),
-                color: t.colors().primary_text.clone(),
+                background: t.intents().primary.solid_bg.clone(),
+                color: t.intents().primary.solid_text.clone(),
             }
         }
         state hovered(t) {

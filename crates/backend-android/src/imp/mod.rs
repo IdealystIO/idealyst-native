@@ -378,6 +378,14 @@ impl Backend for AndroidBackend {
         primitives::tab_drawer::attach_initial(self, navigator, screen, scope_id)
     }
 
+    fn drawer_navigator_attach_sidebar(
+        &mut self,
+        navigator: &Self::Node,
+        sidebar: Self::Node,
+    ) {
+        primitives::tab_drawer::attach_sidebar(self, navigator, sidebar)
+    }
+
     fn release_drawer_navigator(&mut self, node: &Self::Node) {
         primitives::tab_drawer::release(self, node)
     }

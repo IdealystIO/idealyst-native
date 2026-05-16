@@ -1034,6 +1034,12 @@ pub const TAB_DETAILS_ROUTE: Route<()> =
 
 pub struct DashboardProps {
     pub nav: Ref<NavigatorHandle>,
+    /// Drawer handle, used to render a hamburger button that opens
+    /// the drawer. On Android the drawer is a real native overlay
+    /// (DrawerLayout), so this is the only way for the user to get
+    /// at the sidebar; on web the layout pins the sidebar beside
+    /// the body so the button is still useful but less essential.
+    pub drawer: Ref<DrawerHandle>,
 }
 
 /// Dashboard body — the landing card grid + links to the secondary
@@ -1043,14 +1049,30 @@ pub struct DashboardProps {
 #[component]
 pub fn dashboard(props: &DashboardProps) -> Primitive {
     let nav = props.nav;
+    let drawer = props.drawer;
     ui! {
         View {
-            Text(style = title_style()) { "Welcome" }
+            // Hamburger row — opens the drawer on tap. On Android
+            // this triggers DrawerLayout's slide-in animation; on
+            // web the drawer is already visible so this no-ops
+            // visually (but still flips the is_open signal).
+            View(style = spaced_row_style()) {
+                Button(
+                    label = "☰ Menu",
+                    on_click = move || {
+                        if let Some(h) = drawer.get() {
+                            h.open();
+                        }
+                    },
+                    style = secondary_button_style()
+                )
+                Text(style = title_style()) { "Welcome" }
+            }
             Text(style = subtitle_style()) {
-                "Cross-platform Rust UI framework. Pick a destination \
-                 from the drawer to switch the body, or push a deeper \
-                 demo onto the root stack from the buttons below. \
-                 Back returns here."
+                "Cross-platform Rust UI framework. Tap ☰ to open the \
+                 drawer and pick a destination, or push a deeper demo \
+                 onto the root stack from the buttons below. Back \
+                 returns here."
             }
             View(style = row_style()) {
                 Button(
@@ -1282,7 +1304,8 @@ pub fn home(props: &HomeProps) -> Primitive {
             .item(DRAWER_SETTINGS_ROUTE,  DrawerItem::new("Settings"))
             .screen(DRAWER_DASHBOARD_ROUTE, move |_| {
                 let nav = nav;
-                ui! { Dashboard(nav = nav) }
+                let drawer = drawer_ref;
+                ui! { Dashboard(nav = nav, drawer = drawer) }
             })
             .screen(DRAWER_TABS_ROUTE, move |_| {
                 ui! { TabDemo() }
@@ -1291,48 +1314,75 @@ pub fn home(props: &HomeProps) -> Primitive {
                 let is_dark = is_dark;
                 ui! { SettingsBody(is_dark = is_dark) }
             })
+            // The `.sidebar(...)` slot defines the drawer's side
+            // panel. On Android the framework renders it natively
+            // beside the body; on web the layout below embeds it
+            // via `props.sidebar`. Same closure, both targets.
+            .sidebar(home_drawer_sidebar())
+            // Web-only chrome. Wraps the drawer in a flex row with
+            // the sidebar on the left and the outlet on the right.
+            // Native backends ignore this slot — Android renders
+            // the sidebar (from above) directly inside its native
+            // drawer shell.
             .layout(home_drawer_layout())
             .bind(drawer_ref) }
     }
 }
 
-/// Drawer chrome. Renders a sidebar with three entry buttons + a
-/// body region containing the outlet. `active_route` is read
-/// reactively so the highlighted button updates without rebuilding
-/// the chrome.
+/// Drawer sidebar content. Renders a brand + one entry per
+/// registered drawer item, reactively highlighting the active one.
+/// `active_route` is read inside each item's style closure so
+/// flipping the active route re-styles only the affected
+/// buttons (no rebuild of the panel).
 ///
-/// Each entry button dispatches a `Link::Select` (the default
-/// `NavKind` inside a drawer navigator), which the drawer's
-/// dispatcher translates to a body-swap.
-fn home_drawer_layout() -> impl Fn(LayoutProps) -> Primitive + 'static {
-    move |props: LayoutProps| {
+/// Each entry uses a `Link` primitive — the ambient navigator at
+/// build time is the drawer, so the default `NavKind` is `Select`.
+/// Clicking dispatches `NavCommand::Select`, which the drawer's
+/// dispatcher translates to a body swap.
+fn home_drawer_sidebar() -> impl Fn(framework_core::DrawerSidebarProps) -> Primitive + 'static {
+    move |props: framework_core::DrawerSidebarProps| {
         let active = props.active_route;
         ui! {
-            View(style = drawer_shell_style()) {
-                View(style = drawer_sidebar_style()) {
-                    Text(style = drawer_brand_style()) { "idealyst" }
-                    Link(route = &DRAWER_DASHBOARD_ROUTE, params = ()) {
-                        Text(style = DrawerItemButton().active(if active.get() == DRAWER_DASHBOARD_ROUTE.name() {
-                            DrawerItemButtonActive::On
-                        } else {
-                            DrawerItemButtonActive::Off
-                        })) { "Dashboard" }
-                    }
-                    Link(route = &DRAWER_TABS_ROUTE, params = ()) {
-                        Text(style = DrawerItemButton().active(if active.get() == DRAWER_TABS_ROUTE.name() {
-                            DrawerItemButtonActive::On
-                        } else {
-                            DrawerItemButtonActive::Off
-                        })) { "Tab demo" }
-                    }
-                    Link(route = &DRAWER_SETTINGS_ROUTE, params = ()) {
-                        Text(style = DrawerItemButton().active(if active.get() == DRAWER_SETTINGS_ROUTE.name() {
-                            DrawerItemButtonActive::On
-                        } else {
-                            DrawerItemButtonActive::Off
-                        })) { "Settings" }
-                    }
+            View(style = drawer_sidebar_style()) {
+                Text(style = drawer_brand_style()) { "idealyst" }
+                Link(route = &DRAWER_DASHBOARD_ROUTE, params = ()) {
+                    Text(style = DrawerItemButton().active(if active.get() == DRAWER_DASHBOARD_ROUTE.name() {
+                        DrawerItemButtonActive::On
+                    } else {
+                        DrawerItemButtonActive::Off
+                    })) { "Dashboard" }
                 }
+                Link(route = &DRAWER_TABS_ROUTE, params = ()) {
+                    Text(style = DrawerItemButton().active(if active.get() == DRAWER_TABS_ROUTE.name() {
+                        DrawerItemButtonActive::On
+                    } else {
+                        DrawerItemButtonActive::Off
+                    })) { "Tab demo" }
+                }
+                Link(route = &DRAWER_SETTINGS_ROUTE, params = ()) {
+                    Text(style = DrawerItemButton().active(if active.get() == DRAWER_SETTINGS_ROUTE.name() {
+                        DrawerItemButtonActive::On
+                    } else {
+                        DrawerItemButtonActive::Off
+                    })) { "Settings" }
+                }
+            }
+        }
+    }
+}
+
+/// Drawer outer chrome (web-only). The layout closure receives a
+/// pre-built sidebar Primitive via `props.sidebar` and embeds it in
+/// a flex row alongside the outlet — the framework's hook for
+/// "compose the drawer's parts however the web app wants."
+///
+/// Native backends ignore this slot; Android positions the sidebar
+/// directly inside its native drawer shell.
+fn home_drawer_layout() -> impl Fn(LayoutProps) -> Primitive + 'static {
+    move |props: LayoutProps| {
+        ui! {
+            View(style = drawer_shell_style()) {
+                props.sidebar
                 View(style = drawer_body_style()) {
                     props.outlet
                 }

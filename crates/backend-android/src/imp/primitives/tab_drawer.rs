@@ -43,10 +43,47 @@ use framework_core::primitives::navigator::{
     NavigatorHandle, NavigatorOps, TabNavigatorCallbacks, TabsHandle,
 };
 use jni::objects::{GlobalRef, JValue};
+use jni::sys::jlong;
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+
+/// Leaked-box payload the `RustDrawerLayout`'s JNI callbacks
+/// (`nativeOnDrawerOpened` / `nativeOnDrawerClosed`) dereference
+/// to flip the framework's `is_open` signal + fire the
+/// `open_changed` callback. The pointer is freed in
+/// [`release`] when the navigator's enclosing scope drops.
+///
+/// We use a dedicated box (rather than reusing the navigator's
+/// `TabDrawerEntry`) so the JNI side only sees a stable pointer
+/// it can dereference cheaply, with no hashmap lookup.
+struct DrawerListenerBox {
+    is_open: framework_core::Signal<bool>,
+    open_changed: Rc<dyn Fn(bool)>,
+}
+
+/// Per-kind metadata stashed on the `TabDrawerInstance`. Distinguishes
+/// tab navigators (just a body FrameLayout, no drawer state) from
+/// drawer navigators (RustDrawerLayout with attached listener box).
+enum DrawerKind {
+    /// Tab navigator — no drawer commands, no listener pointer.
+    Tab,
+    /// Drawer navigator. The navigator's `outer` view is a
+    /// `RustExactFrameLayout` wrapper (needed because
+    /// `DrawerLayout.onMeasure` insists on EXACTLY-mode measure
+    /// specs that we can't guarantee through the framework's
+    /// default layout pipeline). `drawer_view` is the actual
+    /// `RustDrawerLayout` instance — drawer commands and
+    /// `attach_sidebar` target this rather than `outer`.
+    /// `listener_ptr` is freed in `release`.
+    Drawer {
+        drawer_view: GlobalRef,
+        listener_ptr: jlong,
+        #[allow(dead_code)] // wired through for future re-application
+        swipe_to_open: bool,
+    },
+}
 
 /// Per-instance state for a tab or drawer navigator. The `body` is
 /// a `FrameLayout` that holds exactly one child (the active
@@ -58,13 +95,14 @@ use std::rc::Rc;
 /// active screen — we release it on swap so the old screen's
 /// signals/effects free deterministically.
 pub(crate) struct TabDrawerInstance {
-    /// The framework-visible navigator container — the outer
-    /// `LinearLayout` for drawer, or the body `FrameLayout` itself
-    /// for tabs.
-    #[allow(dead_code)]
+    /// The framework-visible navigator container — the
+    /// `RustDrawerLayout` for drawer, or the body `FrameLayout`
+    /// for tabs. Drawer commands (open/close/toggle) call methods
+    /// on this object via JNI.
     outer: GlobalRef,
     /// The FrameLayout that holds the active screen. Same as
-    /// `outer` for tabs; a separate child for drawer.
+    /// `outer` for tabs; the DrawerLayout's content child for
+    /// drawer.
     body: GlobalRef,
     /// Currently-mounted screen's view + scope id. `None` only
     /// between creation and the first `attach_initial` call.
@@ -73,6 +111,9 @@ pub(crate) struct TabDrawerInstance {
     release_screen: Rc<dyn Fn(u64)>,
     /// Used to mount the next screen on `Select`.
     mount_screen: Rc<dyn Fn(&'static str, Box<dyn Any>) -> (GlobalRef, u64)>,
+    /// Per-kind metadata. Drawer carries the leaked listener
+    /// pointer that needs freeing on release.
+    kind: DrawerKind,
 }
 
 pub(crate) type TabDrawerInstances = HashMap<usize, TabDrawerEntry>;
@@ -110,15 +151,23 @@ pub(crate) fn create_tab(
         control,
         body.clone(),
         body,
-        /* is_drawer */ false,
-        None,
+        DrawerKind::Tab,
     )
 }
 
-/// Create a drawer navigator. The native shape is a horizontal
-/// `LinearLayout` containing the sidebar (if one was registered)
-/// and a body `FrameLayout`. The outer LinearLayout is what the
-/// framework sees as the navigator's node.
+/// Create a drawer navigator backed by an `androidx.drawerlayout.
+/// widget.DrawerLayout` (via our `RustDrawerLayout` subclass).
+///
+/// The native shape: a `RustDrawerLayout` whose two children are
+///   1. a body `FrameLayout` (the active screen's container), and
+///   2. the sidebar View (attached later by `attach_sidebar`).
+///
+/// Open/close commands trigger DrawerLayout's animations + scrim
+/// for free. Edge-swipe to open is on by default; gated by
+/// `swipe_to_open`. DrawerLayout's `onDrawerOpened` /
+/// `onDrawerClosed` listener fires `nativeOnDrawerOpened` /
+/// `nativeOnDrawerClosed` back to Rust, which updates the
+/// framework's reactive `is_open` signal.
 pub(crate) fn create_drawer(
     b: &mut AndroidBackend,
     callbacks: DrawerNavigatorCallbacks<GlobalRef>,
@@ -129,106 +178,157 @@ pub(crate) fn create_drawer(
         is_open,
         open_changed,
         build_sidebar,
+        side,
+        swipe_to_open,
         ..
     } = callbacks;
+    // build_sidebar runs from the walker after create_drawer
+    // returns (outside the borrow_mut window). Forget it here.
+    let _ = build_sidebar;
 
-    // 1. Build the body FrameLayout (where the active screen mounts).
+    // Leak a listener box so the RustDrawerLayout's JNI callbacks
+    // can find the `is_open` signal + `open_changed` callback.
+    // Freed in `release` below.
+    let listener_box = Box::new(DrawerListenerBox {
+        is_open,
+        open_changed,
+    });
+    let listener_ptr = Box::into_raw(listener_box) as jlong;
+
+    // Build the RustDrawerLayout itself (constructor takes Context
+    // + listener pointer).
+    let drawer_layout_ref = with_env(|env| {
+        let class = match env.find_class("io/idealyst/runtime/RustDrawerLayout") {
+            Ok(c) => c,
+            Err(e) => {
+                if env.exception_check().unwrap_or(false) {
+                    let _ = env.exception_describe();
+                    let _ = env.exception_clear();
+                }
+                log::error!(
+                    "RustDrawerLayout class not found — make sure the consuming app's \
+                     build.gradle.kts includes `androidx.drawerlayout:drawerlayout:1.2.0` \
+                     in its dependencies. Underlying error: {:?}",
+                    e
+                );
+                panic!("RustDrawerLayout class missing from APK");
+            }
+        };
+        let local = env
+            .new_object(
+                &class,
+                "(Landroid/content/Context;J)V",
+                &[
+                    JValue::Object(&b.context.as_obj()),
+                    JValue::Long(listener_ptr),
+                ],
+            )
+            .expect("new RustDrawerLayout failed");
+        // DrawerLayout requires its parent to measure it with
+        // MeasureSpec.EXACTLY. `apply_default_layout_params`
+        // (MATCH_PARENT x WRAP_CONTENT) gives WRAP_CONTENT which
+        // measures as AT_MOST and trips DrawerLayout's
+        // `onMeasure` assertion. Force MATCH_PARENT on both axes
+        // so the parent always measures us exactly.
+        let lp_class = env
+            .find_class("android/view/ViewGroup$LayoutParams")
+            .expect("ViewGroup$LayoutParams class");
+        let lp = env
+            .new_object(
+                &lp_class,
+                "(II)V",
+                // (width=MATCH_PARENT=-1, height=MATCH_PARENT=-1)
+                &[JValue::Int(-1), JValue::Int(-1)],
+            )
+            .expect("new ViewGroup.LayoutParams");
+        let _ = env.call_method(
+            &local,
+            "setLayoutParams",
+            "(Landroid/view/ViewGroup$LayoutParams;)V",
+            &[JValue::Object(&lp)],
+        );
+
+        // Set drawer gravity before attaching the drawer view —
+        // `RustDrawerLayout.setDrawerGravity` stashes it for the
+        // upcoming `attachDrawer` call. Gravity.START = 0x00800003,
+        // Gravity.END = 0x00800005.
+        let gravity = match side {
+            framework_core::DrawerSide::Start => 0x00800003i32,
+            framework_core::DrawerSide::End => 0x00800005i32,
+        };
+        let _ = env.call_method(
+            &local,
+            "setDrawerGravity",
+            "(I)V",
+            &[JValue::Int(gravity)],
+        );
+
+        // Initial swipe-to-open lock mode. Applies globally until
+        // a drawer is attached; then we re-apply per-drawer.
+        let _ = env.call_method(
+            &local,
+            "setSwipeEnabled",
+            "(Z)V",
+            &[JValue::Bool(if swipe_to_open { 1 } else { 0 })],
+        );
+
+        env.new_global_ref(local).expect("global_ref RustDrawerLayout")
+    });
+
+    // Body FrameLayout (the active-screen container, attached as
+    // DrawerLayout's "content" child — the one that fills the
+    // frame and gets covered by the drawer on open).
     let body = make_frame_layout(b);
+    with_env(|env| {
+        let _ = env.call_method(
+            drawer_layout_ref.as_obj(),
+            "attachContent",
+            "(Landroid/view/View;)V",
+            &[JValue::Object(&body.as_obj())],
+        );
+    });
 
-    // 2. Build the outer LinearLayout (horizontal).
+    // Wrap the DrawerLayout in a `RustExactFrameLayout`. This
+    // wrapper measures its child with EXACTLY no matter what spec
+    // its own parent passes in, which is required by
+    // `DrawerLayout.onMeasure`. Without this wrapper, when the
+    // ambient parent (e.g. the root stack navigator's
+    // FrameLayout with MATCH_PARENT × WRAP_CONTENT) measures
+    // AT_MOST, the assertion in DrawerLayout fires and the app
+    // crashes.
     let outer = with_env(|env| {
         let class = env
-            .find_class("android/widget/LinearLayout")
-            .expect("LinearLayout class not found");
+            .find_class("io/idealyst/runtime/RustExactFrameLayout")
+            .expect("RustExactFrameLayout class not found");
         let local = env
             .new_object(
                 &class,
                 "(Landroid/content/Context;)V",
                 &[JValue::Object(&b.context.as_obj())],
             )
-            .expect("new LinearLayout failed");
-        // 0 = HORIZONTAL.
-        let _ = env.call_method(&local, "setOrientation", "(I)V", &[JValue::Int(0)]);
+            .expect("new RustExactFrameLayout failed");
         apply_default_layout_params(env, &local);
-        env.new_global_ref(local).expect("global_ref LinearLayout")
-    });
-
-    // 3. Build the sidebar (if registered) and addView to outer.
-    //    The build_sidebar callback re-enters the build walker, so
-    //    it must run outside any active backend borrow. We're
-    //    currently inside `create_drawer_navigator` which has
-    //    backend.borrow_mut() held by the framework — so this is
-    //    NOT safe to call here.
-    //
-    //    BUT: we're called directly from `create_drawer_navigator`
-    //    which itself runs from within the borrow window. The
-    //    walker holds borrow_mut() across the whole `create_*`
-    //    call. So `build_sidebar()` (which re-enters
-    //    backend.borrow_mut()) would panic with a double-borrow.
-    //
-    //    Workaround: defer the sidebar build + insert to a
-    //    microtask, same pattern the web backend uses for layout.
-    //    The drawer's outer LinearLayout is returned with just the
-    //    body attached; the sidebar gets prepended after we yield.
-    if let Some(build_sidebar) = build_sidebar {
-        let outer_for_microtask = outer.clone();
-        framework_core::schedule_microtask(move || {
-            let sidebar_node = build_sidebar();
-            with_env(|env| {
-                // Add sidebar at index 0 so it's positioned before
-                // the body. We can't use plain addView (appends at
-                // end) — use addView(View, int) with index=0.
-                let _ = env.call_method(
-                    outer_for_microtask.as_obj(),
-                    "addView",
-                    "(Landroid/view/View;I)V",
-                    &[
-                        JValue::Object(&sidebar_node.as_obj()),
-                        JValue::Int(0),
-                    ],
-                );
-            });
-        });
-    }
-
-    // 4. addView body to outer.
-    with_env(|env| {
+        // Add the DrawerLayout as the wrapper's only child.
         let _ = env.call_method(
-            outer.as_obj(),
+            &local,
             "addView",
             "(Landroid/view/View;)V",
-            &[JValue::Object(&body.as_obj())],
+            &[JValue::Object(&drawer_layout_ref.as_obj())],
         );
-        // Give the body weight=1 so it expands to fill the
-        // remaining horizontal space (the sidebar gets its own
-        // intrinsic size).
-        let lp_class = env
-            .find_class("android/widget/LinearLayout$LayoutParams")
-            .expect("LinearLayout$LayoutParams class");
-        // (width=0, height=MATCH_PARENT=-1, weight=1.0)
-        let lp = env
-            .new_object(
-                &lp_class,
-                "(IIF)V",
-                &[JValue::Int(0), JValue::Int(-1), JValue::Float(1.0)],
-            )
-            .expect("new LinearLayout.LayoutParams");
-        let _ = env.call_method(
-            body.as_obj(),
-            "setLayoutParams",
-            "(Landroid/view/ViewGroup$LayoutParams;)V",
-            &[JValue::Object(&lp)],
-        );
+        env.new_global_ref(local).expect("global_ref RustExactFrameLayout")
     });
 
     install_instance(
         b,
         navigator,
         control,
-        outer.clone(),
+        outer,
         body,
-        /* is_drawer */ true,
-        Some((is_open, open_changed)),
+        DrawerKind::Drawer {
+            drawer_view: drawer_layout_ref,
+            listener_ptr,
+            swipe_to_open,
+        },
     )
 }
 
@@ -257,15 +357,16 @@ fn install_instance(
     control: Rc<NavigatorControl>,
     outer: GlobalRef,
     body: GlobalRef,
-    is_drawer: bool,
-    drawer_state: Option<(framework_core::Signal<bool>, Rc<dyn Fn(bool)>)>,
+    kind: DrawerKind,
 ) -> GlobalRef {
+    let is_drawer = matches!(kind, DrawerKind::Drawer { .. });
     let instance = Rc::new(RefCell::new(TabDrawerInstance {
         outer: outer.clone(),
         body,
         current: None,
         release_screen: callbacks.release_screen.clone(),
         mount_screen: callbacks.mount_screen.clone(),
+        kind,
     }));
 
     let dispatcher_instance = instance.clone();
@@ -278,29 +379,13 @@ fn install_instance(
                 swap_body(&dispatcher_instance, name, params);
             }
             NavCommand::OpenDrawer => {
-                if let Some((sig, cb)) = drawer_state.as_ref() {
-                    sig.set(true);
-                    cb(true);
-                } else {
-                    panic!("TabNavigator received OpenDrawer — drawer commands are drawer-only");
-                }
+                drawer_jni_call(&dispatcher_instance, "openDrawerProgrammatic");
             }
             NavCommand::CloseDrawer => {
-                if let Some((sig, cb)) = drawer_state.as_ref() {
-                    sig.set(false);
-                    cb(false);
-                } else {
-                    panic!("TabNavigator received CloseDrawer — drawer commands are drawer-only");
-                }
+                drawer_jni_call(&dispatcher_instance, "closeDrawerProgrammatic");
             }
             NavCommand::ToggleDrawer => {
-                if let Some((sig, cb)) = drawer_state.as_ref() {
-                    let now = !sig.get();
-                    sig.set(now);
-                    cb(now);
-                } else {
-                    panic!("TabNavigator received ToggleDrawer — drawer commands are drawer-only");
-                }
+                drawer_jni_call(&dispatcher_instance, "toggleDrawer");
             }
             NavCommand::Push { .. } | NavCommand::Pop | NavCommand::Replace { .. } => {
                 let kind = if is_drawer { "DrawerNavigator" } else { "TabNavigator" };
@@ -363,6 +448,79 @@ fn swap_body(
     instance.borrow_mut().current = Some((new_view, new_scope));
 }
 
+/// Invoke a no-arg method on the `RustDrawerLayout` (open/close/
+/// toggle). No-op for tab navigators (which don't have a drawer
+/// shell). The method name is one of `openDrawerProgrammatic`,
+/// `closeDrawerProgrammatic`, `toggleDrawer`.
+fn drawer_jni_call(instance: &Rc<RefCell<TabDrawerInstance>>, method: &str) {
+    let drawer_view = {
+        let inst = instance.borrow();
+        match &inst.kind {
+            DrawerKind::Drawer { drawer_view, .. } => drawer_view.clone(),
+            DrawerKind::Tab => {
+                // Drawer commands against a tab nav are a
+                // programmer error — matches the dispatcher's
+                // Push/Pop arm posture for non-stack commands.
+                panic!(
+                    "TabNavigator received a drawer command ({}). \
+                     Drawer commands (Open/Close/ToggleDrawer) are \
+                     only valid against a DrawerNavigator.",
+                    method
+                );
+            }
+        }
+    };
+    with_env(|env| {
+        if let Err(e) = env.call_method(drawer_view.as_obj(), method, "()V", &[]) {
+            if env.exception_check().unwrap_or(false) {
+                let _ = env.exception_describe();
+                let _ = env.exception_clear();
+            }
+            log::error!("RustDrawerLayout.{} JNI call failed: {:?}", method, e);
+        }
+    });
+}
+
+/// Attach the framework-built sidebar to the drawer's
+/// `RustDrawerLayout`. Calls `attachDrawer(view)` which adds the
+/// view as the drawer-child (gravity = START or END as configured
+/// during create_drawer).
+///
+/// Tabs don't have sidebars; calling this on a tab navigator is a
+/// no-op (the walker only calls this for drawer kinds, but defend
+/// against future mis-wiring).
+pub(crate) fn attach_sidebar(
+    b: &mut AndroidBackend,
+    navigator: &GlobalRef,
+    sidebar: GlobalRef,
+) {
+    let Some(entry) = b.tab_drawer_instances.get(&AndroidBackend::node_key_of(navigator)) else {
+        log::error!("tab_drawer attach_sidebar: no instance for node");
+        return;
+    };
+    let drawer_view = match &entry.instance.borrow().kind {
+        DrawerKind::Drawer { drawer_view, .. } => drawer_view.clone(),
+        DrawerKind::Tab => {
+            log::warn!("tab_drawer attach_sidebar: navigator is not a drawer kind, skipping");
+            return;
+        }
+    };
+    with_env(|env| {
+        if let Err(e) = env.call_method(
+            drawer_view.as_obj(),
+            "attachDrawer",
+            "(Landroid/view/View;)V",
+            &[JValue::Object(&sidebar.as_obj())],
+        ) {
+            if env.exception_check().unwrap_or(false) {
+                let _ = env.exception_describe();
+                let _ = env.exception_clear();
+            }
+            log::error!("RustDrawerLayout.attachDrawer JNI call failed: {:?}", e);
+        }
+    });
+}
+
 /// Attach the framework-built initial screen to the body. Called
 /// by the framework after `create_*` returns, outside any active
 /// backend borrow.
@@ -397,7 +555,25 @@ pub(crate) fn release(b: &mut AndroidBackend, node: &GlobalRef) {
         let release = entry.instance.borrow().release_screen.clone();
         release(scope);
     }
+    // Free the leaked DrawerListenerBox if this is a drawer
+    // navigator. The Kotlin DrawerLayout still holds a JNI
+    // reference to this pointer; any in-flight onDrawerOpened /
+    // onDrawerClosed callback after this point would dereference
+    // a freed box. In practice the DrawerLayout's listener fires
+    // synchronously during user interaction (no async dispatch),
+    // and `release` only runs when the enclosing scope drops —
+    // at which point the DrawerLayout itself is detached from its
+    // parent and not receiving new events.
+    let listener_ptr = match entry.instance.borrow().kind {
+        DrawerKind::Drawer { listener_ptr, .. } => listener_ptr,
+        DrawerKind::Tab => 0,
+    };
     drop(entry);
+    if listener_ptr != 0 {
+        unsafe {
+            drop(Box::from_raw(listener_ptr as *mut DrawerListenerBox));
+        }
+    }
 }
 
 pub(crate) fn make_tab_handle(b: &AndroidBackend, node: &GlobalRef) -> TabsHandle {
@@ -421,3 +597,64 @@ fn make_inner_handle(b: &AndroidBackend, node: &GlobalRef) -> NavigatorHandle {
 
 struct TabDrawerOps;
 impl NavigatorOps for TabDrawerOps {}
+
+// ---------------------------------------------------------------------------
+// JNI exports — RustDrawerLayout listener callbacks
+// ---------------------------------------------------------------------------
+//
+// DrawerLayout fires its listener on every state transition. The
+// Kotlin `RustDrawerLayout` forwards the open/closed events here so
+// we can update the framework's reactive `is_open` signal (which
+// drives any author-side effects: hamburger icon toggle, screen
+// dim, etc.).
+
+/// # Safety
+///
+/// `ptr` must be the live pointer produced by `Box::into_raw` on a
+/// `Box<DrawerListenerBox>` in `create_drawer`. Freed by `release`
+/// when the navigator scope drops; in-flight calls between the
+/// release and the Kotlin instance's GC are theoretically possible
+/// but the listener is owned by the DrawerLayout, which is
+/// detached from its parent before `release` runs.
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustDrawerLayout_nativeOnDrawerOpened(
+    _env: jni::JNIEnv,
+    _this: jni::objects::JObject,
+    ptr: jlong,
+) {
+    if ptr == 0 {
+        return;
+    }
+    let listener = &*(ptr as *const DrawerListenerBox);
+    listener.is_open.set(true);
+    (listener.open_changed)(true);
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustDrawerLayout_nativeOnDrawerClosed(
+    _env: jni::JNIEnv,
+    _this: jni::objects::JObject,
+    ptr: jlong,
+) {
+    if ptr == 0 {
+        return;
+    }
+    let listener = &*(ptr as *const DrawerListenerBox);
+    listener.is_open.set(false);
+    (listener.open_changed)(false);
+}
+
+/// Companion to the `RustDrawerLayout.nativeDrop` Kotlin
+/// declaration. Currently unused — `release_drawer_navigator`
+/// frees the listener box. Provided so the Kotlin class's
+/// `external fun nativeDrop(...)` resolves at link time.
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustDrawerLayout_nativeDrop(
+    _env: jni::JNIEnv,
+    _this: jni::objects::JObject,
+    _ptr: jlong,
+) {
+    // No-op. The drawer listener pointer's lifetime is managed
+    // from Rust's `release_drawer_navigator`, not from the Kotlin
+    // class's finalize path.
+}

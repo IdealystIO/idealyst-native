@@ -9,35 +9,17 @@
 //! `&IdeaThemeRef`, then call trait methods on it; the trait dispatch
 //! happens once per resolution, not once per property.
 //!
-//! Two ways to use it:
+//! # Color organization
 //!
-//! ```ignore
-//! // 90% case — install the defaults:
-//! install_idea_theme(light_theme());
+//! Colors are split into:
 //!
-//! // Extension case — implement IdeaTheme on your own struct:
-//! struct MyTheme {
-//!     base: IdeaThemeDefaults,
-//!     brand: BrandColors,
-//! }
-//!
-//! impl IdeaTheme for MyTheme {
-//!     fn colors(&self) -> &Colors    { self.base.colors() }
-//!     fn spacing(&self) -> &Spacing  { self.base.spacing() }
-//!     fn radius(&self) -> &Radius    { self.base.radius() }
-//!     fn typography(&self) -> &Typography { self.base.typography() }
-//! }
-//!
-//! install_idea_theme(MyTheme {
-//!     base: light_theme(),
-//!     brand: BrandColors { hype: "#ff00aa".into() },
-//! });
-//! ```
-//!
-//! The trait only exposes the *minimum* idea-ui's own stylesheets
-//! need. Apps that add fields keep them on the concrete type and
-//! reach for them in their own stylesheets / components — those
-//! don't need to go through the trait.
+//! - **Neutrals**: page background, surfaces, text colors, borders,
+//!   focus ring, overlay — independent of intent.
+//! - **Intent palettes**: one [`IntentColors`] block per built-in
+//!   intent (Primary, Secondary, Neutral, Success, Danger, Warning,
+//!   Info). Each block carries the tokens every intent-aware
+//!   component needs to render across the three visual `kind`s
+//!   (Solid, Soft, Outlined / Ghost).
 
 use std::any::Any;
 use std::rc::Rc;
@@ -47,35 +29,70 @@ use framework_core::{
 };
 
 // =============================================================================
-// Tokens — concrete value structs the trait exposes
+// IntentColors — per-intent palette
 // =============================================================================
 
-/// Each color is a `Tokenized<Color>` — a `Token` reference whose
-/// fallback is the current theme's literal value. Stylesheets close
-/// over these directly (`t.colors().primary.clone()` returns a
-/// `Tokenized<Color>`); the resulting `StyleRules` carry the token
-/// name into the content key, so two themes that bind `color-primary`
-/// to different colors produce the **same** minted CSS class. Theme
-/// swap then only writes to the `:root` declaration block — no
-/// `className` mutation on any node.
+/// Color tokens for a single intent across the visual "kinds":
+///
+/// - **Solid**: filled background (`solid_bg`) + contrasting text (`solid_text`).
+/// - **Soft**: tinted background (`soft_bg`) + intent-colored text (`soft_text`).
+/// - **Outlined / Ghost**: transparent background; intent color used as
+///   text (`fg`) and as the border color (`border`) for Outlined.
+///
+/// Hover and pressed feedback come from a uniform opacity dim at the
+/// component-stylesheet level — no per-state color slots here.
+/// (A future framework feature for per-state overrides would let us
+/// add `*_hover` / `*_pressed` slots without breaking call sites; the
+/// per-component opacity-dim is a v1 placeholder.)
+#[derive(Clone)]
+pub struct IntentColors {
+    /// Filled background (Solid kind).
+    pub solid_bg: Tokenized<Color>,
+    /// Text/icon color rendered on top of `solid_bg`.
+    pub solid_text: Tokenized<Color>,
+    /// Tinted background (Soft kind).
+    pub soft_bg: Tokenized<Color>,
+    /// Text/icon color rendered on top of `soft_bg` — usually the
+    /// intent's "foreground" tone, picked for legibility on the soft
+    /// tint.
+    pub soft_text: Tokenized<Color>,
+    /// The intent color used as text for Outlined / Ghost kinds, and
+    /// as the border color for Outlined. Picked for legibility on the
+    /// page background, not on a filled surface.
+    pub fg: Tokenized<Color>,
+    /// Border color for Outlined kind. Usually equal to `fg`, but kept
+    /// separate so themes can dial it independently.
+    pub border: Tokenized<Color>,
+}
+
+// =============================================================================
+// Intents — bundle of all 7 IntentColors blocks
+// =============================================================================
+
+/// All seven intent palettes a theme exposes. Accessed via the
+/// [`Intents`] getters so call sites don't need to know which fields
+/// the struct has.
+#[derive(Clone)]
+pub struct Intents {
+    pub primary: IntentColors,
+    pub secondary: IntentColors,
+    pub neutral: IntentColors,
+    pub success: IntentColors,
+    pub danger: IntentColors,
+    pub warning: IntentColors,
+    pub info: IntentColors,
+}
+
+// =============================================================================
+// Colors — non-intent neutrals
+// =============================================================================
+
+/// Theme-wide color tokens that aren't tied to a single intent.
 #[derive(Clone)]
 pub struct Colors {
     pub background: Tokenized<Color>,
     pub surface: Tokenized<Color>,
     pub surface_alt: Tokenized<Color>,
-
-    pub primary: Tokenized<Color>,
-    pub primary_hover: Tokenized<Color>,
-    pub primary_pressed: Tokenized<Color>,
-    pub primary_text: Tokenized<Color>,
-
-    pub danger: Tokenized<Color>,
-    pub danger_hover: Tokenized<Color>,
-    pub danger_pressed: Tokenized<Color>,
-    pub danger_text: Tokenized<Color>,
-
-    pub success: Tokenized<Color>,
-    pub warning: Tokenized<Color>,
 
     pub text: Tokenized<Color>,
     pub text_muted: Tokenized<Color>,
@@ -124,13 +141,9 @@ pub struct Typography {
 
 /// The contract idea-ui's stylesheets depend on. Implement this on
 /// any `'static` struct to make it a valid theme.
-///
-/// The trait deliberately exposes only the minimum surface — colors,
-/// spacing, radius, typography. App-level extensions (custom intent
-/// palettes, chart colors, etc.) live on the concrete type and are
-/// accessed through the concrete type, not through this trait.
 pub trait IdeaTheme: Any + 'static {
     fn colors(&self) -> &Colors;
+    fn intents(&self) -> &Intents;
     fn spacing(&self) -> &Spacing;
     fn radius(&self) -> &Radius;
     fn typography(&self) -> &Typography;
@@ -140,13 +153,6 @@ pub trait IdeaTheme: Any + 'static {
 // IdeaThemeRef — the framework-side concrete carrier
 // =============================================================================
 
-/// Wrapper that gives the framework's `Rc<dyn Any>` theme storage a
-/// concrete type to downcast to. Stylesheets close over
-/// `IdeaThemeRef`; inside the closure, `.colors()` / `.spacing()`
-/// dispatch through the inner trait object.
-///
-/// You almost never construct this directly — use
-/// [`install_idea_theme`] / [`set_idea_theme`].
 pub struct IdeaThemeRef {
     inner: Rc<dyn IdeaTheme>,
 }
@@ -169,6 +175,9 @@ impl IdeaTheme for IdeaThemeRef {
     fn colors(&self) -> &Colors {
         self.inner.colors()
     }
+    fn intents(&self) -> &Intents {
+        self.inner.intents()
+    }
     fn spacing(&self) -> &Spacing {
         self.inner.spacing()
     }
@@ -183,31 +192,27 @@ impl IdeaTheme for IdeaThemeRef {
 impl ThemeTokens for IdeaThemeRef {
     fn tokens(&self) -> Vec<TokenEntry> {
         let c = self.colors();
-        // Helper: pull the static name + concrete value out of a
-        // theme-field reference. Themes always populate fields with
-        // `Tokenized::Token { .. }`; if a literal slipped in we'd get
-        // a panic here flagging the misuse.
+        let i = self.intents();
         fn entry(t: &Tokenized<Color>) -> TokenEntry {
-            let name = t.name().expect("Colors fields must be Tokenized::Token");
+            let name = t.name().expect("color fields must be Tokenized::Token");
             TokenEntry {
                 name,
                 value: TokenValue::Color(t.value().clone()),
             }
         }
-        vec![
+        // Helper: emit every field of an IntentColors block.
+        fn intent_entries(ic: &IntentColors, out: &mut Vec<TokenEntry>) {
+            out.push(entry(&ic.solid_bg));
+            out.push(entry(&ic.solid_text));
+            out.push(entry(&ic.soft_bg));
+            out.push(entry(&ic.soft_text));
+            out.push(entry(&ic.fg));
+            out.push(entry(&ic.border));
+        }
+        let mut out = vec![
             entry(&c.background),
             entry(&c.surface),
             entry(&c.surface_alt),
-            entry(&c.primary),
-            entry(&c.primary_hover),
-            entry(&c.primary_pressed),
-            entry(&c.primary_text),
-            entry(&c.danger),
-            entry(&c.danger_hover),
-            entry(&c.danger_pressed),
-            entry(&c.danger_text),
-            entry(&c.success),
-            entry(&c.warning),
             entry(&c.text),
             entry(&c.text_muted),
             entry(&c.text_inverse),
@@ -216,7 +221,15 @@ impl ThemeTokens for IdeaThemeRef {
             entry(&c.border_strong),
             entry(&c.focus_ring),
             entry(&c.overlay),
-        ]
+        ];
+        intent_entries(&i.primary, &mut out);
+        intent_entries(&i.secondary, &mut out);
+        intent_entries(&i.neutral, &mut out);
+        intent_entries(&i.success, &mut out);
+        intent_entries(&i.danger, &mut out);
+        intent_entries(&i.warning, &mut out);
+        intent_entries(&i.info, &mut out);
+        out
     }
 }
 
@@ -224,12 +237,10 @@ impl ThemeTokens for IdeaThemeRef {
 // Default theme implementation
 // =============================================================================
 
-/// The concrete struct idea-ui's `light_theme()` / `dark_theme()`
-/// return. Apps that need extra fields wrap an `IdeaThemeDefaults`
-/// inside their own struct and forward the trait getters.
 #[derive(Clone)]
 pub struct IdeaThemeDefaults {
     pub colors: Colors,
+    pub intents: Intents,
     pub spacing: Spacing,
     pub radius: Radius,
     pub typography: Typography,
@@ -238,6 +249,9 @@ pub struct IdeaThemeDefaults {
 impl IdeaTheme for IdeaThemeDefaults {
     fn colors(&self) -> &Colors {
         &self.colors
+    }
+    fn intents(&self) -> &Intents {
+        &self.intents
     }
     fn spacing(&self) -> &Spacing {
         &self.spacing
@@ -276,42 +290,106 @@ const DEFAULT_TYPOGRAPHY: Typography = Typography {
     size_display: 36.0,
 };
 
-/// Helper: build a `Tokenized<Color>` reference with the given token
-/// name and a string fallback. Centralizes the `Color(_.into())` boilerplate.
-fn tok_color(name: &'static str, fallback: &str) -> Tokenized<Color> {
+fn tok(name: &'static str, fallback: &str) -> Tokenized<Color> {
     Tokenized::token(name, Color(fallback.into()))
+}
+
+/// Helper: build an `IntentColors` from the 6 fields, with token
+/// names auto-derived from the intent name (e.g. `"primary"` → tokens
+/// `intent-primary-solid-bg`, `intent-primary-solid-text`, …).
+///
+/// Order: `solid_bg, solid_text, soft_bg, soft_text, fg, border`.
+fn intent_colors(
+    name: &'static str,
+    solid_bg: &'static str,
+    solid_text: &'static str,
+    soft_bg: &'static str,
+    soft_text: &'static str,
+    fg: &'static str,
+    border: &'static str,
+) -> IntentColors {
+    // Leak the token names as `'static str` — each theme function is
+    // called at most once per app lifetime, and the resulting tokens
+    // are referenced for the lifetime of the program anyway. Cheap.
+    fn tn(s: String) -> &'static str {
+        Box::leak(s.into_boxed_str())
+    }
+    IntentColors {
+        solid_bg: tok(tn(format!("intent-{}-solid-bg", name)), solid_bg),
+        solid_text: tok(tn(format!("intent-{}-solid-text", name)), solid_text),
+        soft_bg: tok(tn(format!("intent-{}-soft-bg", name)), soft_bg),
+        soft_text: tok(tn(format!("intent-{}-soft-text", name)), soft_text),
+        fg: tok(tn(format!("intent-{}-fg", name)), fg),
+        border: tok(tn(format!("intent-{}-border", name)), border),
+    }
 }
 
 pub fn light_theme() -> IdeaThemeDefaults {
     IdeaThemeDefaults {
         colors: Colors {
-            background: tok_color("color-background", "#f7f8fb"),
-            surface: tok_color("color-surface", "#ffffff"),
-            surface_alt: tok_color("color-surface-alt", "#eef0f7"),
+            background: tok("color-background", "#f7f8fb"),
+            surface: tok("color-surface", "#ffffff"),
+            surface_alt: tok("color-surface-alt", "#eef0f7"),
 
-            primary: tok_color("color-primary", "#5b6cff"),
-            primary_hover: tok_color("color-primary-hover", "#4a5cf0"),
-            primary_pressed: tok_color("color-primary-pressed", "#3947d6"),
-            primary_text: tok_color("color-primary-text", "#ffffff"),
+            text: tok("color-text", "#1a1a1f"),
+            text_muted: tok("color-text-muted", "#6b7280"),
+            text_inverse: tok("color-text-inverse", "#ffffff"),
 
-            danger: tok_color("color-danger", "#e5484d"),
-            danger_hover: tok_color("color-danger-hover", "#d63d42"),
-            danger_pressed: tok_color("color-danger-pressed", "#bc2f33"),
-            danger_text: tok_color("color-danger-text", "#ffffff"),
+            border: tok("color-border", "#e4e6ef"),
+            border_hover: tok("color-border-hover", "#b9bdcc"),
+            border_strong: tok("color-border-strong", "#9097a8"),
 
-            success: tok_color("color-success", "#3ba55d"),
-            warning: tok_color("color-warning", "#e0a82e"),
-
-            text: tok_color("color-text", "#1a1a1f"),
-            text_muted: tok_color("color-text-muted", "#6b7280"),
-            text_inverse: tok_color("color-text-inverse", "#ffffff"),
-
-            border: tok_color("color-border", "#e4e6ef"),
-            border_hover: tok_color("color-border-hover", "#b9bdcc"),
-            border_strong: tok_color("color-border-strong", "#9097a8"),
-
-            focus_ring: tok_color("color-focus-ring", "#5b6cff"),
-            overlay: tok_color("color-overlay", "rgba(15, 17, 21, 0.45)"),
+            focus_ring: tok("color-focus-ring", "#5b6cff"),
+            overlay: tok("color-overlay", "rgba(15, 17, 21, 0.45)"),
+        },
+        intents: Intents {
+            // primary: indigo
+            primary: intent_colors(
+                "primary",
+                "#5b6cff", "#ffffff",
+                "rgba(91, 108, 255, 0.12)", "#3947d6",
+                "#3947d6", "#5b6cff",
+            ),
+            // secondary: slate gray
+            secondary: intent_colors(
+                "secondary",
+                "#475569", "#ffffff",
+                "rgba(71, 85, 105, 0.10)", "#334155",
+                "#334155", "#475569",
+            ),
+            // neutral: solid is near-black (think "Cancel" buttons);
+            // soft is the surface-alt wash.
+            neutral: intent_colors(
+                "neutral",
+                "#1a1a1f", "#ffffff",
+                "#eef0f7", "#1a1a1f",
+                "#1a1a1f", "#e4e6ef",
+            ),
+            success: intent_colors(
+                "success",
+                "#3ba55d", "#ffffff",
+                "rgba(59, 165, 93, 0.12)", "#1f6e3a",
+                "#1f6e3a", "#3ba55d",
+            ),
+            danger: intent_colors(
+                "danger",
+                "#e5484d", "#ffffff",
+                "rgba(229, 72, 77, 0.12)", "#a82127",
+                "#a82127", "#e5484d",
+            ),
+            warning: intent_colors(
+                "warning",
+                "#e0a82e", "#1a1a1f",
+                "rgba(224, 168, 46, 0.16)", "#7a5810",
+                "#7a5810", "#e0a82e",
+            ),
+            // info: cyan — visually distinct from primary's indigo.
+            info: intent_colors(
+                "info",
+                "#0ea5e9", "#ffffff",
+                "rgba(14, 165, 233, 0.12)", "#065e85",
+                "#065e85", "#0ea5e9",
+            ),
         },
         spacing: DEFAULT_SPACING.clone(),
         radius: DEFAULT_RADIUS.clone(),
@@ -322,33 +400,64 @@ pub fn light_theme() -> IdeaThemeDefaults {
 pub fn dark_theme() -> IdeaThemeDefaults {
     IdeaThemeDefaults {
         colors: Colors {
-            background: tok_color("color-background", "#0f1115"),
-            surface: tok_color("color-surface", "#1a1d24"),
-            surface_alt: tok_color("color-surface-alt", "#262a35"),
+            background: tok("color-background", "#0f1115"),
+            surface: tok("color-surface", "#1a1d24"),
+            surface_alt: tok("color-surface-alt", "#262a35"),
 
-            primary: tok_color("color-primary", "#8b9aff"),
-            primary_hover: tok_color("color-primary-hover", "#9eabff"),
-            primary_pressed: tok_color("color-primary-pressed", "#7383f5"),
-            primary_text: tok_color("color-primary-text", "#0f1115"),
+            text: tok("color-text", "#e8eaf0"),
+            text_muted: tok("color-text-muted", "#9099a8"),
+            text_inverse: tok("color-text-inverse", "#0f1115"),
 
-            danger: tok_color("color-danger", "#ff6369"),
-            danger_hover: tok_color("color-danger-hover", "#ff7a80"),
-            danger_pressed: tok_color("color-danger-pressed", "#e5484d"),
-            danger_text: tok_color("color-danger-text", "#ffffff"),
+            border: tok("color-border", "#2a2e3a"),
+            border_hover: tok("color-border-hover", "#3d4252"),
+            border_strong: tok("color-border-strong", "#525868"),
 
-            success: tok_color("color-success", "#4cc77c"),
-            warning: tok_color("color-warning", "#f0b942"),
-
-            text: tok_color("color-text", "#e8eaf0"),
-            text_muted: tok_color("color-text-muted", "#9099a8"),
-            text_inverse: tok_color("color-text-inverse", "#0f1115"),
-
-            border: tok_color("color-border", "#2a2e3a"),
-            border_hover: tok_color("color-border-hover", "#3d4252"),
-            border_strong: tok_color("color-border-strong", "#525868"),
-
-            focus_ring: tok_color("color-focus-ring", "#8b9aff"),
-            overlay: tok_color("color-overlay", "rgba(0, 0, 0, 0.55)"),
+            focus_ring: tok("color-focus-ring", "#8b9aff"),
+            overlay: tok("color-overlay", "rgba(0, 0, 0, 0.55)"),
+        },
+        intents: Intents {
+            primary: intent_colors(
+                "primary",
+                "#8b9aff", "#0f1115",
+                "rgba(139, 154, 255, 0.18)", "#b8c2ff",
+                "#b8c2ff", "#8b9aff",
+            ),
+            secondary: intent_colors(
+                "secondary",
+                "#64748b", "#ffffff",
+                "rgba(148, 163, 184, 0.14)", "#cbd5e1",
+                "#cbd5e1", "#64748b",
+            ),
+            neutral: intent_colors(
+                "neutral",
+                "#e8eaf0", "#0f1115",
+                "#262a35", "#e8eaf0",
+                "#e8eaf0", "#2a2e3a",
+            ),
+            success: intent_colors(
+                "success",
+                "#4cc77c", "#0f1115",
+                "rgba(76, 199, 124, 0.16)", "#7fdfa1",
+                "#7fdfa1", "#4cc77c",
+            ),
+            danger: intent_colors(
+                "danger",
+                "#ff6369", "#ffffff",
+                "rgba(255, 99, 105, 0.18)", "#ff9ba0",
+                "#ff9ba0", "#ff6369",
+            ),
+            warning: intent_colors(
+                "warning",
+                "#f0b942", "#0f1115",
+                "rgba(240, 185, 66, 0.18)", "#f5cf7a",
+                "#f5cf7a", "#f0b942",
+            ),
+            info: intent_colors(
+                "info",
+                "#38bdf8", "#0f1115",
+                "rgba(56, 189, 248, 0.16)", "#7dd0f5",
+                "#7dd0f5", "#38bdf8",
+            ),
         },
         spacing: DEFAULT_SPACING.clone(),
         radius: DEFAULT_RADIUS.clone(),
@@ -360,15 +469,10 @@ pub fn dark_theme() -> IdeaThemeDefaults {
 // Installation API
 // =============================================================================
 
-/// Install the given theme as the framework's active theme. Wraps it
-/// in [`IdeaThemeRef`] so idea-ui stylesheets can downcast to one
-/// concrete type regardless of which `IdeaTheme` impl the app uses.
 pub fn install_idea_theme<T: IdeaTheme>(theme: T) {
     install_theme(IdeaThemeRef::new(theme));
 }
 
-/// Swap the active theme at runtime. Every styled effect re-fires;
-/// no rebuild.
 pub fn set_idea_theme<T: IdeaTheme>(theme: T) {
     set_theme(IdeaThemeRef::new(theme));
 }

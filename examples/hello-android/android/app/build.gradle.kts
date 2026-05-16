@@ -68,6 +68,10 @@ dependencies {
     // `crates/backend-android/runtime/kotlin/` and is bundled into the
     // app via the sourceSets configuration above.
     implementation("androidx.recyclerview:recyclerview:1.3.2")
+    // DrawerLayout powers the framework's DrawerNavigator on Android.
+    // Provides the slide-in animation, scrim, and edge-swipe gesture
+    // for free.
+    implementation("androidx.drawerlayout:drawerlayout:1.2.0")
 }
 
 // ---------------------------------------------------------------------------
