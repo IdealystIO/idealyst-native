@@ -34,7 +34,7 @@ pub mod tabs;
 
 pub use drawer::{
     DrawerHandle, DrawerItem, DrawerItemRegistration, DrawerNavigator, DrawerNavigatorCallbacks,
-    DrawerSide,
+    DrawerSide, DrawerSidebarProps, SidebarBuilder,
 };
 pub use shared::{
     ambient_navigator, match_pattern, AmbientNavGuard, DefaultLinkKind, LayoutBuilder, LayoutPlan,

@@ -198,7 +198,7 @@ pub fn variant_enum_control<E>(value: Signal<E>) -> Primitive
 where
     E: VariantEnum + PartialEq + 'static,
 {
-    use framework_core::{untrack, Effect};
+    use framework_core::Effect;
 
     let variants = E::all_variants();
     let options: Vec<IdeaSelectOption> = variants
@@ -215,33 +215,15 @@ where
     let initial = value.get().as_variant_str().to_string();
     let shadow: Signal<String> = Signal::new(initial);
 
-    // Forward typed → string.
-    //
-    // CRITICAL: the `shadow.get()` read and the `shadow.set(...)`
-    // write must NOT subscribe this effect to `shadow`. Otherwise:
-    //
-    // 1. The first run subscribes to both `value` and `shadow`.
-    // 2. When user changes value, this effect re-runs and calls
-    //    `shadow.set(...)`.
-    // 3. `shadow.set` synchronously fires all `shadow` subscribers
-    //    — which includes THIS effect (re-entrantly).
-    // 4. The re-entrant fire calls `clear_effect_dependencies(self)`
-    //    which wipes the outer run's `value` subscription before
-    //    the outer run finishes setting up new deps.
-    // 5. After this clear, the effect is no longer subscribed to
-    //    `value`. Future value changes don't re-fire it — the bridge
-    //    breaks. Only the first user pick updates the Select.
-    //
-    // `untrack` runs the body with subscription tracking disabled,
-    // so the effect ends up subscribed only to `value` (the get at
-    // the top), never to `shadow`.
+    // Forward typed → string. The framework's `run_effect`
+    // short-circuits re-entrant invocations for the same effect id,
+    // so the `shadow.set` below doesn't recursively re-fire this
+    // effect and corrupt its subscription set.
     let _e_typed_to_shadow = Effect::new(move || {
         let s = value.get().as_variant_str().to_string();
-        untrack(|| {
-            if shadow.get() != s {
-                shadow.set(s);
-            }
-        });
+        if shadow.get() != s {
+            shadow.set(s);
+        }
     });
 
     let on_change: Rc<dyn Fn(String)> = {
@@ -273,7 +255,7 @@ where
 /// a shadow `Signal<String>` drives the Select; an Effect keeps
 /// the two synced.
 pub fn intent_control(value: Signal<IntentKind>) -> Primitive {
-    use framework_core::{untrack, Effect};
+    use framework_core::Effect;
 
     let kinds = IntentKind::all();
     let options: Vec<IdeaSelectOption> = kinds
@@ -283,17 +265,11 @@ pub fn intent_control(value: Signal<IntentKind>) -> Primitive {
 
     let initial = value.get().id().to_string();
     let shadow: Signal<String> = Signal::new(initial);
-    // See `variant_enum_control` for why the shadow read/write must
-    // be untracked — without it, the recursive shadow.set inside
-    // this effect wipes the effect's own subscription to `value`,
-    // breaking the bridge after the first user pick.
     let _e = Effect::new(move || {
         let s = value.get().id().to_string();
-        untrack(|| {
-            if shadow.get() != s {
-                shadow.set(s);
-            }
-        });
+        if shadow.get() != s {
+            shadow.set(s);
+        }
     });
 
     let on_change: Rc<dyn Fn(String)> = Rc::new(move |picked: String| {

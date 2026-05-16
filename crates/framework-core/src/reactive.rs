@@ -47,6 +47,18 @@ struct RefId(u32);
 thread_local! {
     static ARENA: RefCell<Arena> = RefCell::new(Arena::new());
     static CURRENT: RefCell<Option<EffectId>> = const { RefCell::new(None) };
+    /// Effects currently on the run-stack. When a signal write inside
+    /// an effect's body fires the same effect's subscribers, we want
+    /// to skip re-firing the effect that's already running — otherwise
+    /// the inner re-run calls `clear_effect_dependencies` and wipes
+    /// the dep set the outer run had just started recording, leaving
+    /// the effect subscribed to nothing after the outer returns.
+    ///
+    /// Used by `run_effect` to short-circuit re-entrant calls for the
+    /// same id. Different-id reentry (effect A's set fires effect B,
+    /// which runs and reads other signals) is fine — only same-id
+    /// reentry corrupts the dep set.
+    static RUNNING: RefCell<HashSet<EffectId>> = RefCell::new(HashSet::new());
 
     /// On wasm, `Scope::drop` parks its drained effect boxes here and
     /// schedules a single microtask to drain them. The arena slots
@@ -532,6 +544,25 @@ impl Effect {
 /// arena slot during execution so signal callbacks can re-borrow the arena
 /// without conflict. Restored on completion.
 fn run_effect(id: EffectId) {
+    // Re-entry guard. If a signal write *inside* this effect's body
+    // fires the effect's own subscribers, the same id will be in the
+    // about-to-run list. Running it now would call
+    // `clear_effect_dependencies(id)`, wiping the dep set the outer
+    // run had partially recorded — and since the inner run executes
+    // through the no-op stub installed below, it never re-records
+    // them. The outer run resumes with no subscriptions and will
+    // never fire again on future signal changes.
+    //
+    // The fix: skip the re-entrant invocation entirely. The outer
+    // run is already executing; it will pick up whatever fresh value
+    // the signal write produced on its next `.get()`. This matches
+    // how Solid / Reactively / MobX handle the same pattern (a
+    // self-writing effect doesn't loop on itself).
+    let reenters = RUNNING.with(|r| r.borrow().contains(&id));
+    if reenters {
+        return;
+    }
+
     // Drop any subscriptions recorded by the previous run before we
     // collect this run's set. Without this, a re-run that reads a
     // *different* set of signals would leave stale `eid` entries in
@@ -549,9 +580,15 @@ fn run_effect(id: EffectId) {
         Some(std::mem::replace(&mut inner.run, Box::new(|| {})))
     });
     if let Some(f) = run_fn.as_mut() {
+        RUNNING.with(|r| {
+            r.borrow_mut().insert(id);
+        });
         let prev = CURRENT.with(|c| c.replace(Some(id)));
         f();
         CURRENT.with(|c| *c.borrow_mut() = prev);
+        RUNNING.with(|r| {
+            r.borrow_mut().remove(&id);
+        });
         // Restore the actual function. If the slot has been freed during
         // the run (effect disposed by its own action), do nothing.
         ARENA.with(|a| {
@@ -1055,6 +1092,53 @@ mod tests {
         assert_eq!(observed.get(), 5);
         count.set(11);
         assert_eq!(observed.get(), 11);
+    }
+
+    /// Regression test for the "self-writing effect breaks after first
+    /// flip" bug. An effect that bridges two signals — reads from
+    /// `value`, writes to `shadow` — used to corrupt its own
+    /// subscription set on the recursive re-fire from `shadow.set`,
+    /// since `run_effect` calls `clear_effect_dependencies` at the
+    /// start of every (re-)entry. After fix: re-entrant invocations
+    /// of the same effect are short-circuited so the outer run's
+    /// dep recording isn't wiped.
+    #[test]
+    fn effect_with_self_write_keeps_firing() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let value = Signal::new(0i32);
+        let shadow = Signal::new(0i32);
+        let mirror_runs = Rc::new(Cell::new(0));
+        let r = mirror_runs.clone();
+        let _e = Effect::new(move || {
+            let v = value.get();
+            // Reads `shadow` AND writes it. Pre-fix, the second
+            // value.set below leaves the effect dead because the
+            // recursive shadow.set wiped its `value` subscription.
+            if shadow.get() != v {
+                shadow.set(v);
+            }
+            r.set(r.get() + 1);
+        });
+        assert_eq!(mirror_runs.get(), 1);
+        assert_eq!(shadow.get(), 0);
+
+        value.set(1);
+        assert_eq!(shadow.get(), 1);
+        let after_first = mirror_runs.get();
+        assert!(after_first >= 2, "effect should re-run after first value.set");
+
+        value.set(2);
+        assert_eq!(
+            shadow.get(),
+            2,
+            "shadow should track value after the second flip too"
+        );
+        assert!(
+            mirror_runs.get() > after_first,
+            "effect must fire again after the second value.set — before \
+             the fix this was the broken case"
+        );
     }
 
     #[test]

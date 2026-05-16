@@ -489,6 +489,7 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
                 item_order,
                 screens,
                 layout,
+                sidebar,
                 side,
                 pinned_above,
                 mount_policy,
@@ -502,6 +503,7 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
                 item_order,
                 screens,
                 layout,
+                sidebar,
                 side,
                 pinned_above,
                 mount_policy,
@@ -1272,6 +1274,11 @@ fn build_navigator<B: Backend + 'static>(
             };
             let props = LayoutProps {
                 outlet: outlet_primitive,
+                // Stack navigators don't have sidebars. Hand the
+                // layout an empty View so authors don't have to
+                // write a None-case branch — they can embed it
+                // unconditionally or ignore it.
+                sidebar: crate::view(Vec::new()).into(),
                 active_route: nav_state.active_route,
                 active_path: nav_state.active_path,
                 depth: nav_state.depth,
@@ -1485,6 +1492,8 @@ fn build_tab_navigator<B: Backend + 'static>(
             let on_back: Rc<dyn Fn()> = Rc::new(|| {});
             let props = LayoutProps {
                 outlet: outlet_primitive,
+                // Tab navigators don't have sidebars either.
+                sidebar: crate::view(Vec::new()).into(),
                 active_route: nav_state.active_route,
                 active_path: nav_state.active_path,
                 depth: nav_state.depth,
@@ -1571,6 +1580,7 @@ fn build_drawer_navigator<B: Backend + 'static>(
     item_order: Vec<(&'static str, primitives::navigator::DrawerItem)>,
     screens: HashMap<&'static str, primitives::navigator::RouteEntry>,
     layout: Option<primitives::navigator::LayoutBuilder>,
+    sidebar: Option<primitives::navigator::SidebarBuilder>,
     side: primitives::navigator::DrawerSide,
     pinned_above: Option<u32>,
     mount_policy: primitives::navigator::MountPolicy,
@@ -1578,7 +1588,8 @@ fn build_drawer_navigator<B: Backend + 'static>(
 ) -> B::Node {
     use primitives::navigator::{
         match_pattern, DefaultLinkKind, DrawerItemRegistration, DrawerNavigatorCallbacks,
-        LayoutPlan, LayoutProps, NavState, NavigatorCallbacks, NavigatorControl,
+        DrawerSidebarProps, LayoutPlan, LayoutProps, NavState, NavigatorCallbacks,
+        NavigatorControl,
     };
 
     let scopes: Rc<RefCell<HashMap<u64, Box<reactive::Scope>>>> =
@@ -1666,6 +1677,65 @@ fn build_drawer_navigator<B: Backend + 'static>(
     let active_changed: Rc<dyn Fn(&'static str)> = Rc::new(|_name| {});
     let open_changed: Rc<dyn Fn(bool)> = Rc::new(move |open| is_open.set(open));
 
+    // Build the items list early so both `build_sidebar` and the
+    // outgoing callbacks can clone it.
+    let items: Vec<DrawerItemRegistration> = item_order
+        .into_iter()
+        .map(|(route, item)| DrawerItemRegistration {
+            route,
+            label: item.label,
+            icon: item.icon,
+        })
+        .collect();
+
+    // Wrap the user's `.sidebar(...)` closure in a factory that
+    // constructs a fresh `DrawerSidebarProps` each call and returns
+    // the rendered Primitive. We need the factory shape because
+    // both `build_layout` (web) and `build_sidebar` (Android) call
+    // the closure, and they may be invoked at different times in
+    // different scopes.
+    let make_sidebar_primitive: Option<Rc<dyn Fn() -> Primitive>> = sidebar.map(|sidebar_fn| {
+        let items = items.clone();
+        let active_route = nav_state.active_route;
+        let is_open = is_open;
+        let control_for_select = control.clone();
+        let control_for_close = control.clone();
+        let f: Rc<dyn Fn() -> Primitive> = Rc::new(move || {
+            let on_select: Rc<dyn Fn(&'static str)> = {
+                let control = control_for_select.clone();
+                Rc::new(move |name: &'static str| {
+                    // The `Select` URL doesn't matter to Android
+                    // (native ignores URLs); on web the dispatch
+                    // path resolves it from the route's `path()`,
+                    // but we don't have a Route<()> here — pass
+                    // an empty URL. The web dispatcher reads URL
+                    // from the active_path signal at activation
+                    // time, so this is fine.
+                    control.dispatch(primitives::navigator::NavCommand::Select {
+                        name,
+                        url: String::new(),
+                        params: Box::new(()),
+                    });
+                })
+            };
+            let on_close: Rc<dyn Fn()> = {
+                let control = control_for_close.clone();
+                Rc::new(move || {
+                    control.dispatch(primitives::navigator::NavCommand::CloseDrawer)
+                })
+            };
+            let props = DrawerSidebarProps {
+                items: items.clone(),
+                active_route,
+                is_open,
+                on_select,
+                on_close,
+            };
+            sidebar_fn(props)
+        });
+        f
+    });
+
     let layout_scope: Rc<RefCell<Option<Box<reactive::Scope>>>> =
         Rc::new(RefCell::new(None));
     let build_layout: Option<Rc<dyn Fn() -> LayoutPlan<B::Node>>> = layout.map(|layout_fn| {
@@ -1674,6 +1744,7 @@ fn build_drawer_navigator<B: Backend + 'static>(
         let layout_fn = layout_fn.clone();
         let backend = backend.clone();
         let layout_scope_slot = layout_scope.clone();
+        let make_sidebar = make_sidebar_primitive.clone();
         let f: Rc<dyn Fn() -> LayoutPlan<B::Node>> = Rc::new(move || {
             let outlet_ref: Ref<crate::ViewHandle> = Ref::new();
             let outlet_primitive: Primitive = crate::view(Vec::new()).bind(outlet_ref).into();
@@ -1684,16 +1755,29 @@ fn build_drawer_navigator<B: Backend + 'static>(
                 let control = control.clone();
                 Rc::new(move || control.dispatch(primitives::navigator::NavCommand::ToggleDrawer))
             };
+            // Push the ambient nav BEFORE building the sidebar so
+            // any `Link`s in it capture this drawer. The guard
+            // covers both the sidebar build and the layout
+            // closure's run; dropped at end of this scope.
+            let _ambient_guard =
+                primitives::navigator::AmbientNavGuard::push(control.clone());
+            // Build the sidebar Primitive (or empty View if no
+            // sidebar was registered). Either way, LayoutProps
+            // carries a Primitive — the layout author embeds it
+            // unconditionally.
+            let sidebar_primitive: Primitive = match make_sidebar.as_ref() {
+                Some(f) => f(),
+                None => crate::view(Vec::new()).into(),
+            };
             let props = LayoutProps {
                 outlet: outlet_primitive,
+                sidebar: sidebar_primitive,
                 active_route: nav_state.active_route,
                 active_path: nav_state.active_path,
                 depth: nav_state.depth,
                 can_go_back: nav_state.can_go_back,
                 on_back,
             };
-            let _ambient_guard =
-                primitives::navigator::AmbientNavGuard::push(control.clone());
             let root_primitive = layout_fn(props);
             let mut scope = Box::new(reactive::Scope::new());
             let root = reactive::with_scope(&mut scope, || {
@@ -1705,14 +1789,35 @@ fn build_drawer_navigator<B: Backend + 'static>(
         f
     });
 
-    let items: Vec<DrawerItemRegistration> = item_order
-        .into_iter()
-        .map(|(route, item)| DrawerItemRegistration {
-            route,
-            label: item.label,
-            icon: item.icon,
-        })
-        .collect();
+    // `build_sidebar` — used by native backends that render the
+    // sidebar themselves (Android's DrawerLayout-style shell).
+    // The closure builds the user's sidebar Primitive into a
+    // backend Node inside a dedicated scope so reactive effects
+    // in the sidebar survive across drawer state changes.
+    let sidebar_scope: Rc<RefCell<Option<Box<reactive::Scope>>>> =
+        Rc::new(RefCell::new(None));
+    let build_sidebar: Option<Rc<dyn Fn() -> B::Node>> = make_sidebar_primitive
+        .as_ref()
+        .map(|make_sidebar| {
+            let make_sidebar = make_sidebar.clone();
+            let backend = backend.clone();
+            let control = control.clone();
+            let sidebar_scope_slot = sidebar_scope.clone();
+            let f: Rc<dyn Fn() -> B::Node> = Rc::new(move || {
+                // Same ambient-nav posture as build_layout: Links
+                // in the sidebar capture this drawer's control.
+                let _ambient_guard =
+                    primitives::navigator::AmbientNavGuard::push(control.clone());
+                let primitive = make_sidebar();
+                let mut scope = Box::new(reactive::Scope::new());
+                let node = reactive::with_scope(&mut scope, || {
+                    build(&backend, primitive)
+                });
+                *sidebar_scope_slot.borrow_mut() = Some(scope);
+                node
+            });
+            f
+        });
 
     let nav_callbacks = NavigatorCallbacks {
         initial_route: initial,
@@ -1731,6 +1836,7 @@ fn build_drawer_navigator<B: Backend + 'static>(
         pinned_above,
         mount_policy,
         is_open,
+        build_sidebar,
         active_changed,
         open_changed,
     };

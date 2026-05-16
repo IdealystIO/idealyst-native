@@ -698,6 +698,17 @@ pub struct LayoutProps {
     /// exactly once — the framework owns the underlying node and
     /// swaps its child on push/pop.
     pub outlet: Primitive,
+    /// Pre-built sidebar subtree.
+    ///
+    /// - For a `DrawerNavigator` with a `.sidebar(...)` registered,
+    ///   this is the rendered sidebar Primitive. Drop it somewhere
+    ///   in your layout subtree (typically a flex row beside the
+    ///   `outlet`).
+    /// - For a stack/tab navigator, or a drawer without
+    ///   `.sidebar(...)`, this is an empty `View` — embed it
+    ///   anyway (or ignore it). Always `Some`-equivalent so layout
+    ///   authors don't have to write a None-case branch.
+    pub sidebar: Primitive,
     /// Name of the currently-active route (matches `Route::name()`).
     /// Useful for a top-bar title or to highlight a tab.
     pub active_route: crate::Signal<&'static str>,
