@@ -217,6 +217,35 @@ fn dispatch(robot: &Robot, cmd: &str, args: &serde_json::Value) -> Result<String
             let kind = args["kind"].as_str().and_then(parse_element_kind);
             Ok(robot.count(kind).to_string())
         }
+        "get_logs" => {
+            // Either `since` (ms timestamp) for incremental polling
+            // or `limit` (N most recent). `limit` defaults to 200 when
+            // neither is given.
+            let entries = if let Some(since) = args["since"].as_u64() {
+                super::logs::since(since)
+            } else {
+                let limit = args["limit"].as_u64().unwrap_or(200) as usize;
+                super::logs::recent(limit)
+            };
+            let rendered: Vec<String> = entries
+                .iter()
+                .map(|e| {
+                    format!(
+                        "{{\"ts\":{},\"source\":{},\"text\":{}}}",
+                        e.timestamp_ms,
+                        serde_json::to_string(&e.source)
+                            .unwrap_or_else(|_| "\"\"".into()),
+                        serde_json::to_string(&e.text)
+                            .unwrap_or_else(|_| "\"\"".into()),
+                    )
+                })
+                .collect();
+            Ok(format!("[{}]", rendered.join(",")))
+        }
+        "clear_logs" => {
+            super::logs::clear();
+            Ok("\"ok\"".into())
+        }
         "list_components" => {
             let snaps = super::list_components();
             let entries: Vec<String> = snaps
@@ -228,7 +257,13 @@ fn dispatch(robot: &Robot, cmd: &str, args: &serde_json::Value) -> Result<String
                         .map(|(name, args)| {
                             let args_json: Vec<String> = args
                                 .iter()
-                                .map(|a| serde_json::to_string(a).unwrap())
+                                .map(|(arg_name, arg_type)| {
+                                    format!(
+                                        "{{\"name\":{},\"type\":{}}}",
+                                        serde_json::to_string(arg_name).unwrap(),
+                                        serde_json::to_string(arg_type).unwrap(),
+                                    )
+                                })
                                 .collect();
                             format!(
                                 "{{\"name\":{},\"args\":[{}]}}",
@@ -246,6 +281,26 @@ fn dispatch(robot: &Robot, cmd: &str, args: &serde_json::Value) -> Result<String
                 })
                 .collect();
             Ok(format!("[{}]", entries.join(",")))
+        }
+        "get_frame" => {
+            let el = resolve_element(args)?;
+            match robot.frame(&el).map_err(|e| e.to_string())? {
+                Some(r) => Ok(format!(
+                    "{{\"x\":{},\"y\":{},\"width\":{},\"height\":{}}}",
+                    r.x, r.y, r.width, r.height
+                )),
+                None => Ok("null".into()),
+            }
+        }
+        "get_absolute_frame" => {
+            let el = resolve_element(args)?;
+            match robot.absolute_frame(&el).map_err(|e| e.to_string())? {
+                Some(r) => Ok(format!(
+                    "{{\"x\":{},\"y\":{},\"width\":{},\"height\":{}}}",
+                    r.x, r.y, r.width, r.height
+                )),
+                None => Ok("null".into()),
+            }
         }
         "invoke_method" => {
             let instance_id = args["instance_id"]

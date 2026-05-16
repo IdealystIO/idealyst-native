@@ -198,12 +198,44 @@ impl ViewHandle {
 }
 
 pub trait ViewOps {
-    /// Viewport-relative rect for overlay anchoring. Same shape as
-    /// `ButtonOps::rect`; see that docstring for the contract.
-    /// Default returns the zero rect → centered fallback.
+    /// Viewport-relative rect for overlay anchoring. Returns the zero
+    /// rect as a sentinel meaning "centered fallback" — overlays rely
+    /// on this contract, so it stays non-`Option`. Public callers
+    /// should prefer [`ViewOps::absolute_frame`] which distinguishes
+    /// "not yet mounted" from "at origin".
     #[allow(unused_variables)]
     fn rect(&self, node: &dyn Any) -> primitives::overlay::ViewportRect {
         primitives::overlay::ViewportRect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 }
+    }
+
+    /// Parent-relative rect. `None` when the view isn't laid out yet
+    /// or the backend doesn't expose it.
+    #[allow(unused_variables)]
+    fn frame(&self, node: &dyn Any) -> Option<primitives::overlay::ViewportRect> {
+        None
+    }
+
+    /// Viewport/window-relative rect. `None` when the view isn't
+    /// mounted in a window yet or the backend doesn't expose it.
+    /// Symmetric with `frame` — neither method invents a zero rect
+    /// to paper over the unmounted case.
+    #[allow(unused_variables)]
+    fn absolute_frame(&self, node: &dyn Any) -> Option<primitives::overlay::ViewportRect> {
+        None
+    }
+}
+
+impl ViewHandle {
+    /// Rect in the parent's coordinate system. `None` if the view
+    /// isn't laid out yet or the backend doesn't expose it.
+    pub fn frame(&self) -> Option<primitives::overlay::ViewportRect> {
+        self.ops.frame(&*self.node)
+    }
+
+    /// Rect in viewport (window) coordinates. `None` if the view
+    /// isn't mounted in a window yet.
+    pub fn absolute_frame(&self) -> Option<primitives::overlay::ViewportRect> {
+        self.ops.absolute_frame(&*self.node)
     }
 }
 

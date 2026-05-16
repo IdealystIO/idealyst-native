@@ -11,6 +11,7 @@ members = [
     "crates/backend-ios",
     "crates/backend-android",
     "crates/icons-lucide",
+    "crates/native-layout",
     "crates/robot-mcp-proxy",
     "examples/hello",
     "examples/hello-web",
@@ -34,6 +35,7 @@ backend-web = { path = "crates/backend-web" }
 backend-ios = { path = "crates/backend-ios" }
 backend-android = { path = "crates/backend-android" }
 icons-lucide = { path = "crates/icons-lucide" }
+native-layout = { path = "crates/native-layout" }
 
 # Size-tuned release profile. We optimize for size rather than speed —
 # UI workloads aren't CPU-bound, but bytes-over-the-wire matter for the

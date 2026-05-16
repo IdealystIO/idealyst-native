@@ -95,6 +95,7 @@ version = "0.0.1"
 dependencies = [
  "block2 0.5.1",
  "framework-core",
+ "native-layout",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "objc2-ui-kit",
@@ -301,6 +302,7 @@ dependencies = [
  "block2 0.5.1",
  "framework-macros",
  "js-sys",
+ "libc",
  "log",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
@@ -409,6 +411,12 @@ checksum = "fdf242682df893b86f33a73828fb09ca4b2d3bb6cc95249707fc684d27484b91"
 dependencies = [
  "bitflags",
 ]
+
+[[package]]
+name = "grid"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "36119f3a540b086b4e436bb2b588cf98a68863470e0e880f4d0842f112a3183a"
 
 [[package]]
 name = "half"
@@ -716,6 +724,14 @@ dependencies = [
  "spirv",
  "thiserror 2.0.18",
  "unicode-ident",
+]
+
+[[package]]
+name = "native-layout"
+version = "0.0.1"
+dependencies = [
+ "framework-core",
+ "taffy",
 ]
 
 [[package]]
@@ -1297,6 +1313,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "taffy"
+version = "0.7.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab4f4d046dd956a47a7e1a2947083d7ac3e6aa3cfaaead36173ceaa5ab11878c"
+dependencies = [
+ "arrayvec",
+ "grid",
+ "serde",
+ "slotmap",
 ]
 
 [[package]]

@@ -508,6 +508,32 @@ pub trait Backend {
         // default: no-op
     }
 
+    /// Node's rect in its **parent's** coordinate system.
+    /// Returns `None` if the node isn't mounted in a layout yet (e.g.
+    /// queried before the first frame) or if the backend can't report
+    /// positions. Default returns `None`.
+    ///
+    /// Use this for "where is X relative to its parent" — e.g. measuring
+    /// a sidebar item's offset within its container. For viewport
+    /// positions, use [`absolute_frame`](Backend::absolute_frame).
+    #[allow(unused_variables)]
+    fn frame(&self, node: &Self::Node) -> Option<primitives::overlay::ViewportRect> {
+        None
+    }
+
+    /// Node's rect in the **window/viewport's** coordinate system.
+    /// Returns `None` if the node isn't mounted in a window yet.
+    /// Default returns `None`.
+    ///
+    /// Backends that already implement `*Ops::rect` for overlay
+    /// anchoring should forward to the same conversion path here
+    /// (e.g. UIKit `convertRect:toView:window`, DOM
+    /// `getBoundingClientRect()`).
+    #[allow(unused_variables)]
+    fn absolute_frame(&self, node: &Self::Node) -> Option<primitives::overlay::ViewportRect> {
+        None
+    }
+
     /// Wires the backend's native interaction events (hover, press,
     /// focus) to the framework's per-node state machinery. The
     /// framework allocates a `Signal<StateBits>` per styled node and

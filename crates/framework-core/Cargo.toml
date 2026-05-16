@@ -29,7 +29,7 @@ debug-stats = ["framework-macros/debug-stats"]
 # Off by default — adds per-node overhead (one registry entry per
 # mounted element + retained action closures). Production builds
 # should leave this off.
-robot = ["dep:serde_json"]
+robot = ["dep:serde_json", "dep:libc"]
 
 # Platform-agnostic async + per-frame primitives:
 #
@@ -61,6 +61,9 @@ async-driver = [
 [dependencies]
 framework-macros = { path = "../framework-macros" }
 serde_json = { version = "1", optional = true }
+# `libc` is only used by the robot feature's stdio-capture path
+# (dup/dup2/pipe/read on UNIX). Optional so non-robot builds don't pull it in.
+libc = { version = "0.2", optional = true }
 # The `Graphics` primitive exposes its surface as a standard
 # `raw_window_handle` handle so authors can plug any GPU library
 # (wgpu, glow, vello, softbuffer, …) on top. Tiny dep — a handful of

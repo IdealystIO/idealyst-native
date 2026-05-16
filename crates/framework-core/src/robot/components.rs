@@ -30,9 +30,12 @@ pub struct ComponentInstanceId(pub u32);
 pub struct Method {
     /// Method name as written in `methods! { fn NAME(...) }`.
     pub name: &'static str,
-    /// Argument names in declaration order. Used to describe the
-    /// method's signature to MCP tool clients.
-    pub args: &'static [&'static str],
+    /// Arguments in declaration order: `(name, rust_type_string)`.
+    /// The type string is the source-form of the declared type
+    /// (e.g. `"i32"`, `"String"`, `"MyStruct"`) — enough for an
+    /// LLM-driven client to construct a valid JSON value, and a
+    /// fallback when there's no formal schema.
+    pub args: &'static [(&'static str, &'static str)],
     /// JSON-callable adapter. Receives the args object verbatim,
     /// deserializes each parameter, invokes the closure. Returns
     /// `Err` if deserialization fails.
@@ -93,7 +96,7 @@ pub fn register_component(name: &'static str, methods: Vec<Method>) -> Component
 pub struct ComponentSnapshot {
     pub id: ComponentInstanceId,
     pub name: &'static str,
-    pub methods: Vec<(&'static str, &'static [&'static str])>,
+    pub methods: Vec<(&'static str, &'static [(&'static str, &'static str)])>,
 }
 
 pub fn list_components() -> Vec<ComponentSnapshot> {

@@ -76,6 +76,19 @@ pub struct IosBackend {
     /// Active overlays keyed by content view pointer. Stores the
     /// presented UIViewController so release_overlay can dismiss it.
     overlay_instances: overlay::OverlayInstances,
+    /// Taffy-backed flex layout tree, parallel to the UIView tree.
+    /// `view_to_layout` maps a view pointer to its layout node so the
+    /// `apply_style` / `insert` / `finish` paths can update it. After
+    /// build, `finish` calls `layout.compute(...)` and walks the
+    /// UIView tree to set each subview's `frame`.
+    pub(crate) layout: native_layout::LayoutTree,
+    /// Map from view pointer (as key) to (retained reference, layout node).
+    /// We hold a `Retained<UIView>` so the layout pass can iterate every
+    /// registered view directly — recursing through `UIView.subviews`
+    /// misses subtrees that aren't yet attached to the host (e.g. a
+    /// `UINavigationController`'s top VC view, which only gets added
+    /// on UIKit's first layout pass, after our `finish()` returns).
+    pub(crate) view_to_layout: HashMap<usize, (Retained<UIView>, native_layout::LayoutNode)>,
 }
 
 // =========================================================================
@@ -128,7 +141,33 @@ impl IosBackend {
             scroll_view_inner: HashMap::new(),
             icon_image_cache: HashMap::new(),
             overlay_instances: HashMap::new(),
+            layout: native_layout::LayoutTree::new(),
+            view_to_layout: HashMap::new(),
         }
+    }
+
+    /// Get or create a layout node for a UIView. Called from every
+    /// `create_*` method so each native view has a corresponding
+    /// node in the layout tree.
+    pub(crate) fn layout_for_view(&mut self, view: &UIView) -> native_layout::LayoutNode {
+        let key = view as *const UIView as usize;
+        if let Some((_, node)) = self.view_to_layout.get(&key) {
+            return *node;
+        }
+        let node = self.layout.new_node();
+        let retained = unsafe {
+            Retained::retain(view as *const UIView as *mut UIView).expect("retain UIView")
+        };
+        self.view_to_layout.insert(key, (retained, node));
+        node
+    }
+
+    /// Look up an existing layout node by view pointer. Returns
+    /// `None` for views that weren't created by this backend
+    /// (e.g. UIKit-internal scroll view internals).
+    pub(crate) fn layout_of(&self, view: &UIView) -> Option<native_layout::LayoutNode> {
+        let key = view as *const UIView as usize;
+        self.view_to_layout.get(&key).map(|(_, n)| *n)
     }
 
     pub fn set_host_root(&mut self, view: Retained<UIView>) {
@@ -318,11 +357,17 @@ impl Backend for IosBackend {
     }
 
     fn create_view(&mut self) -> Self::Node {
-        let stack = unsafe { UIStackView::new(self.mtm) };
-        let _: () = unsafe { msg_send![&stack, setAxis: 1isize] };
-        let _: () = unsafe { msg_send![&stack, setAlignment: 0isize] };
-        let _: () = unsafe { msg_send![&stack, setDistribution: 0isize] };
-        IosNode::View(Retained::into_super(stack))
+        // Plain UIView. Children are positioned via Taffy-computed
+        // frames in `finish`. We no longer use UIStackView — its
+        // arranged-subview model fights with flex semantics (no
+        // flex-grow/shrink, no wrap, zero-intrinsic-collapsing
+        // children, opaque constraint conflicts).
+        let view = unsafe { UIView::new(self.mtm) };
+        // `translatesAutoresizingMaskIntoConstraints` defaults to
+        // YES on `[UIView new]`, which is what we want — frame
+        // assignment becomes authoritative.
+        let _ = self.layout_for_view(&view);
+        IosNode::View(view)
     }
 
     fn create_text(&mut self, content: &str) -> Self::Node {
@@ -330,6 +375,18 @@ impl Backend for IosBackend {
         let ns_text = NSString::from_str(content);
         unsafe { label.setText(Some(&ns_text)) };
         let _: () = unsafe { msg_send![&label, setNumberOfLines: 0isize] };
+
+        // Seed the layout node with the label's intrinsic content size
+        // so Taffy can allocate space for the text. Multi-line text is
+        // still approximate (single-line measurement) — a follow-up
+        // wires Taffy's measure_func into UILabel's
+        // systemLayoutSizeFittingSize for proper wrap measurement.
+        let layout = self.layout_for_view(&label);
+        let isize: objc2_foundation::CGSize =
+            unsafe { msg_send![&label, intrinsicContentSize] };
+        self.layout
+            .set_intrinsic_size(layout, isize.width as f32, isize.height as f32);
+
         IosNode::Label(label)
     }
 
@@ -360,6 +417,14 @@ impl Backend for IosBackend {
             msg_send![&button, addTarget: &*target, action: sel, forControlEvents: 64u64]
         };
         self.retain_target(&target);
+
+        // Seed layout intrinsic from UIButton.intrinsicContentSize
+        // (label width + system padding, ~44pt tall).
+        let layout = self.layout_for_view(&button);
+        let isize: objc2_foundation::CGSize =
+            unsafe { msg_send![&button, intrinsicContentSize] };
+        self.layout
+            .set_intrinsic_size(layout, isize.width as f32, isize.height as f32);
 
         IosNode::Button(button)
     }
@@ -630,40 +695,37 @@ impl Backend for IosBackend {
         let child_view = child.as_view();
         let child_key = child_view as *const UIView as usize;
 
-        // If the CHILD is an overlay container, skip the regular
-        // insert — the overlay already mounted itself to the host
-        // window. Letting the parent's `addSubview`/`addArrangedSubview`
-        // run would briefly put the overlay container inside the
-        // parent's layout (e.g. a UIStackView), reflowing the parent's
-        // other children before the deferred `mount_in_window` moves
-        // the container out. Visible symptom: the surrounding View's
-        // siblings (a Select's trigger button, for example) jump
-        // position when the overlay opens.
+        // Overlay containers mount themselves into the host window —
+        // skip the in-tree insert (see overlay::create_overlay).
         if self.overlay_instances.contains_key(&child_key) {
             return;
         }
 
+        // ScrollView still uses an inner UIStackView for now —
+        // migrating it to Taffy needs separate work (contentSize
+        // management) that's bigger than the View migration.
         if let Some(inner) = self.scroll_view_inner.get(&parent_key) {
             let _: () = unsafe { msg_send![inner, addArrangedSubview: child_view] };
-        } else if let Some(entry) = self.overlay_instances.get(&parent_key) {
-            // Overlay parent: position children absolutely per the
-            // overlay's anchor. This gives content positional
-            // freedom (centered, edge-pinned, element-anchored) and
-            // avoids UIStackView's auto-canvas constraints that
-            // fight overlay layout.
+            return;
+        }
+
+        // Overlay parents — absolute positioning per anchor.
+        if let Some(entry) = self.overlay_instances.get(&parent_key) {
             unsafe { parent_view.addSubview(child_view) };
             let anchor = entry.anchor.clone();
             overlay::apply_anchor_to_child(parent_view, child_view, &anchor);
-        } else {
-            let is_stack: bool = unsafe {
-                msg_send![parent_view, isKindOfClass: objc2::class!(UIStackView)]
-            };
-            if is_stack {
-                let _: () = unsafe { msg_send![parent_view, addArrangedSubview: child_view] };
-            } else {
-                unsafe { parent_view.addSubview(child_view) };
-            }
+            return;
         }
+
+        // Default path: addSubview + add to the parallel Taffy tree.
+        // Lazily allocate layout nodes for both views — covers
+        // terminal primitives (Text, Button, etc.) that don't
+        // pre-register, and the special-case root view passed to
+        // `finish`.
+        unsafe { parent_view.addSubview(child_view) };
+        let p_layout = self.layout_for_view(parent_view);
+        let c_layout = self.layout_for_view(child_view);
+        self.layout.add_child(p_layout, c_layout);
     }
 
     fn update_text(&mut self, node: &Self::Node, content: &str) {
@@ -691,6 +753,12 @@ impl Backend for IosBackend {
     fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
         let view = node.as_view();
         apply_style_to_view(view, style);
+
+        // Mirror the resolved style into the Taffy node so flex
+        // properties (width/height/flex-direction/padding/gap/…) take
+        // effect during the layout pass.
+        let layout_node = self.layout_for_view(view);
+        self.layout.set_style(layout_node, style);
 
         match node {
             IosNode::Label(_) => apply_text_style(view, style, true),
@@ -729,6 +797,41 @@ impl Backend for IosBackend {
             IosNode::TextField(_) => apply_text_style(view, style, false),
             _ => {}
         }
+    }
+
+    fn frame(&self, node: &Self::Node) -> Option<framework_core::primitives::overlay::ViewportRect> {
+        // UIView.frame is already in superview coordinates — that's
+        // the relative-to-parent rect.
+        let view = node.as_view();
+        let frame: objc2_foundation::CGRect = unsafe { msg_send![view, frame] };
+        Some(framework_core::primitives::overlay::ViewportRect {
+            x: frame.origin.x as f32,
+            y: frame.origin.y as f32,
+            width: frame.size.width as f32,
+            height: frame.size.height as f32,
+        })
+    }
+
+    fn absolute_frame(&self, node: &Self::Node) -> Option<framework_core::primitives::overlay::ViewportRect> {
+        // Same conversion as `rect_of_node` in handles.rs: convert
+        // bounds to window coordinates. Returns None if the view
+        // isn't yet mounted in a window.
+        let view = node.as_view();
+        let bounds: objc2_foundation::CGRect = unsafe { msg_send![view, bounds] };
+        let window: Option<Retained<UIView>> = unsafe {
+            let w: *mut UIView = msg_send![view, window];
+            if w.is_null() { None } else { Retained::retain(w) }
+        };
+        let window = window?;
+        let frame_in_window: objc2_foundation::CGRect = unsafe {
+            msg_send![view, convertRect: bounds, toView: &*window]
+        };
+        Some(framework_core::primitives::overlay::ViewportRect {
+            x: frame_in_window.origin.x as f32,
+            y: frame_in_window.origin.y as f32,
+            width: frame_in_window.size.width as f32,
+            height: frame_in_window.size.height as f32,
+        })
     }
 
     fn set_disabled(&mut self, node: &Self::Node, disabled: bool) {
@@ -956,5 +1059,85 @@ impl Backend for IosBackend {
         if let Some(host) = &self.host_root {
             pin_to_edges(host, root.as_view());
         }
+        self.run_layout_pass(&root);
     }
+}
+
+impl IosBackend {
+    /// Run Taffy on every layout-tree root (the app root plus each
+    /// screen mount that landed via `mount_screen_in_vc` rather than
+    /// `insert`), then walk the UIView tree assigning computed
+    /// frames. Uses the host view's bounds as the viewport (falls
+    /// back to UIScreen.main.bounds when the host hasn't laid out
+    /// yet).
+    pub(crate) fn run_layout_pass(&mut self, _root: &IosNode) {
+        let (vw, vh) = self.viewport_size();
+        ios_log(&format!(
+            "[layout] run_layout_pass viewport=({:.1}, {:.1}) registered_views={}",
+            vw, vh, self.view_to_layout.len()
+        ));
+        if vw <= 0.0 || vh <= 0.0 {
+            ios_log("[layout] ABORT: viewport is zero");
+            return;
+        }
+
+        // Find every Taffy root. The framework root is one; each screen
+        // mounted via `mount_screen_in_vc` (which bypasses
+        // `Backend::insert`) is another.
+        let roots: Vec<native_layout::LayoutNode> = self
+            .view_to_layout
+            .values()
+            .map(|(_, n)| *n)
+            .filter(|n| self.layout.is_root(*n))
+            .collect();
+
+        ios_log(&format!("[layout] {} taffy roots to compute", roots.len()));
+        for root_node in &roots {
+            self.layout.compute(*root_node, vw, vh);
+        }
+
+        // Iterate every registered view directly. Recursing via
+        // `UIView.subviews` misses subtrees that aren't yet attached
+        // to the framework root — e.g. a UINavigationController's
+        // top VC view, which UIKit adds lazily after our `finish()`
+        // returns. We hold a `Retained` ref to every view, so direct
+        // iteration is both safe and exhaustive.
+        let mut applied = 0usize;
+        for (_, (view, layout_node)) in self.view_to_layout.iter() {
+            let frame = self.layout.frame_of(*layout_node);
+            let cg = objc2_foundation::CGRect {
+                origin: objc2_foundation::CGPoint {
+                    x: frame.x as f64,
+                    y: frame.y as f64,
+                },
+                size: objc2_foundation::CGSize {
+                    width: frame.width as f64,
+                    height: frame.height as f64,
+                },
+            };
+            let _: () = unsafe { msg_send![view, setFrame: cg] };
+            applied += 1;
+        }
+        ios_log(&format!("[layout] apply_frames done: applied={}", applied));
+    }
+
+    /// Return the viewport size for layout. Tries host_root.bounds
+    /// first (which is non-zero after UIKit has laid out the host),
+    /// then UIScreen.main.bounds.
+    fn viewport_size(&self) -> (f32, f32) {
+        if let Some(host) = &self.host_root {
+            let bounds: objc2_foundation::CGRect = unsafe { msg_send![host, bounds] };
+            if bounds.size.width > 0.0 && bounds.size.height > 0.0 {
+                return (bounds.size.width as f32, bounds.size.height as f32);
+            }
+        }
+        // UIScreen.main.bounds — device screen size.
+        unsafe {
+            let screen: Retained<NSObject> =
+                msg_send_id![objc2::class!(UIScreen), mainScreen];
+            let bounds: objc2_foundation::CGRect = msg_send![&screen, bounds];
+            (bounds.size.width as f32, bounds.size.height as f32)
+        }
+    }
+
 }

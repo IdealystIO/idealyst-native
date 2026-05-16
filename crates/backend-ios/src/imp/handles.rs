@@ -89,5 +89,37 @@ impl ViewOps for IosViewOps {
     fn rect(&self, node: &dyn Any) -> ViewportRect {
         rect_of_node(node)
     }
+    fn frame(&self, node: &dyn Any) -> Option<ViewportRect> {
+        let ios_node = node.downcast_ref::<IosNode>()?;
+        let view = ios_node.as_view();
+        let frame: CGRect = unsafe { msg_send![view, frame] };
+        Some(ViewportRect {
+            x: frame.origin.x as f32,
+            y: frame.origin.y as f32,
+            width: frame.size.width as f32,
+            height: frame.size.height as f32,
+        })
+    }
+    fn absolute_frame(&self, node: &dyn Any) -> Option<ViewportRect> {
+        // Same conversion as `rect_of_node`, but returns None when
+        // not yet in a window instead of the zero-rect sentinel.
+        let ios_node = node.downcast_ref::<IosNode>()?;
+        let view = ios_node.as_view();
+        let bounds: CGRect = unsafe { msg_send![view, bounds] };
+        let window: Option<Retained<UIView>> = unsafe {
+            let w: *mut UIView = msg_send![view, window];
+            if w.is_null() { None } else { Retained::retain(w) }
+        };
+        let window = window?;
+        let frame_in_window: CGRect = unsafe {
+            msg_send![view, convertRect: bounds, toView: &*window]
+        };
+        Some(ViewportRect {
+            x: frame_in_window.origin.x as f32,
+            y: frame_in_window.origin.y as f32,
+            width: frame_in_window.size.width as f32,
+            height: frame_in_window.size.height as f32,
+        })
+    }
 }
 pub(crate) static IOS_VIEW_OPS: IosViewOps = IosViewOps;

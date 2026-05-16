@@ -43,6 +43,16 @@ pub unsafe extern "C" fn ios_main(root_view: *mut std::ffi::c_void) {
         eprintln!("RUST PANIC: {}", info);
     }));
 
+    // Robot: start stdio capture FIRST so every subsequent
+    // eprintln/println/NSLog is recorded into the in-memory log
+    // ring buffer. The Xcode console still gets the bytes too —
+    // the capture mirrors back to the original fds.
+    #[cfg(feature = "robot")]
+    {
+        framework_core::robot::logs::start_stdio_capture();
+        framework_core::robot::logs::push("ios", "ios_main starting");
+    }
+
     // Safety: this function's contract requires it to be called on the
     // main thread — the Swift host calls it from viewDidLoad.
     let mtm = unsafe { MainThreadMarker::new_unchecked() };

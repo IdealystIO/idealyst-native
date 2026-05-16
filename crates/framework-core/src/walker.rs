@@ -74,6 +74,7 @@ pub fn render<B: Backend + 'static>(backend: Rc<RefCell<B>>, tree: Primitive) ->
 }
 
 fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::Node {
+
     // Walker-level timing. Record the kind once on entry; the matching
     // exit fires after the match returns. Tag covers the full subtree
     // build (children inclusive). Each backend create call below
@@ -855,6 +856,23 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
 
     #[cfg(feature = "debug-stats")]
     debug::record_build_exit(_debug_kind);
+
+    // Robot: wire frame-reading closures now that the backend node
+    // exists. Each closure captures the node + backend Rc; they're
+    // called on demand by `Robot::frame` / `Robot::absolute_frame`
+    // via the bridge or in-app paths.
+    #[cfg(feature = "robot")]
+    if let Some(id) = robot_id {
+        let node_for_frame = result.clone();
+        let node_for_abs = result.clone();
+        let backend_for_frame = backend.clone();
+        let backend_for_abs = backend.clone();
+        crate::robot::attach_frame_actions(
+            id,
+            Rc::new(move || backend_for_frame.borrow().frame(&node_for_frame)),
+            Rc::new(move || backend_for_abs.borrow().absolute_frame(&node_for_abs)),
+        );
+    }
 
     // Robot: pop parent stack now that children are built.
     #[cfg(feature = "robot")]

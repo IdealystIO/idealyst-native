@@ -55,6 +55,7 @@
 
 pub mod bridge;
 pub mod components;
+pub mod logs;
 
 pub use components::{
     invoke_method, list_components, register_component, ComponentInstanceId,
@@ -129,6 +130,13 @@ pub(crate) struct ElementActions {
     pub focus: Option<Rc<dyn Fn()>>,
     /// Blur the element.
     pub blur: Option<Rc<dyn Fn()>>,
+    /// Read the element's rect in **parent** coordinates. Wraps
+    /// `Backend::frame`. Returns `None` if the node isn't mounted in
+    /// a layout yet.
+    pub frame: Option<Rc<dyn Fn() -> Option<crate::primitives::overlay::ViewportRect>>>,
+    /// Read the element's rect in **viewport/window** coordinates.
+    /// Wraps `Backend::absolute_frame`.
+    pub absolute_frame: Option<Rc<dyn Fn() -> Option<crate::primitives::overlay::ViewportRect>>>,
 }
 
 impl ElementActions {
@@ -140,6 +148,8 @@ impl ElementActions {
             set_slider: None,
             focus: None,
             blur: None,
+            frame: None,
+            absolute_frame: None,
         }
     }
 }
@@ -564,6 +574,42 @@ impl Robot {
         })
     }
 
+    /// Read the element's rect in its **parent's** coordinate system.
+    /// `Ok(None)` means the element exists but isn't laid out yet;
+    /// `Err` means the element has been unmounted.
+    pub fn frame(
+        &self,
+        element: &Element,
+    ) -> Result<Option<crate::primitives::overlay::ViewportRect>, RobotError> {
+        let cb = REGISTRY.with(|r| {
+            r.borrow()
+                .get(element.id)
+                .map(|e| e.actions.frame.clone())
+                .ok_or(RobotError::ElementGone)
+        })?;
+        match cb {
+            Some(cb) => Ok(cb()),
+            None => Err(RobotError::ActionNotAvailable("frame")),
+        }
+    }
+
+    /// Read the element's rect in **viewport/window** coordinates.
+    pub fn absolute_frame(
+        &self,
+        element: &Element,
+    ) -> Result<Option<crate::primitives::overlay::ViewportRect>, RobotError> {
+        let cb = REGISTRY.with(|r| {
+            r.borrow()
+                .get(element.id)
+                .map(|e| e.actions.absolute_frame.clone())
+                .ok_or(RobotError::ElementGone)
+        })?;
+        match cb {
+            Some(cb) => Ok(cb()),
+            None => Err(RobotError::ActionNotAvailable("absolute_frame")),
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Signal introspection
     // -------------------------------------------------------------------------
@@ -720,6 +766,25 @@ impl Robot {
 /// track parent/child relationships and deregister on scope drop.
 pub(crate) fn register(entry: RegistryEntry) -> ElementId {
     REGISTRY.with(|r| r.borrow_mut().insert(entry))
+}
+
+/// Attach frame-reading closures to an already-registered element.
+/// The walker registers the element from the `Primitive` (which
+/// happens *before* the backend has produced a node), then calls
+/// this with closures that capture the built node so positions can
+/// be read on demand.
+pub(crate) fn attach_frame_actions(
+    id: ElementId,
+    frame: Rc<dyn Fn() -> Option<crate::primitives::overlay::ViewportRect>>,
+    absolute_frame: Rc<dyn Fn() -> Option<crate::primitives::overlay::ViewportRect>>,
+) {
+    REGISTRY.with(|r| {
+        let mut reg = r.borrow_mut();
+        if let Some(Some(entry)) = reg.entries.get_mut(id.0 as usize) {
+            entry.actions.frame = Some(frame);
+            entry.actions.absolute_frame = Some(absolute_frame);
+        }
+    });
 }
 
 /// Remove a previously-registered element. Called when its owning

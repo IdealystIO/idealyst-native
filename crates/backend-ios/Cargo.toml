@@ -12,6 +12,7 @@ debug-stats = ["framework-core/debug-stats"]
 
 [dependencies]
 framework-core = { workspace = true }
+native-layout = { workspace = true }
 
 [target.'cfg(target_os = "ios")'.dependencies]
 block2 = "0.5"

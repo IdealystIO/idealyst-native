@@ -294,6 +294,33 @@ fn rewrite_body(
     let method_entries = methods.iter().map(|m| {
         let method_name_str = m.name.to_string();
         let arg_names_str: Vec<String> = m.args.iter().map(|(n, _)| n.to_string()).collect();
+        // Render each arg's Rust type as a source-form string. `quote!`
+        // produces tokens with spaces; collapse runs of whitespace so
+        // `i32` stays `i32` and `Vec < String >` becomes `Vec<String>` —
+        // closer to what authors typed. Token-level formatting isn't
+        // worth the dep on prettyplease for one-line type renderings.
+        let arg_types_str: Vec<String> = m.args.iter().map(|(_, ty)| {
+            let raw = quote!(#ty).to_string();
+            let mut out = String::with_capacity(raw.len());
+            let mut prev_was_punct = true;
+            for ch in raw.chars() {
+                match ch {
+                    ' ' => continue,
+                    '<' | '>' | ',' | '(' | ')' | '&' | '\'' | ':' => {
+                        out.push(ch);
+                        prev_was_punct = true;
+                    }
+                    _ => {
+                        if !prev_was_punct && out.chars().last().map_or(false, |c| c.is_alphanumeric() || c == '_') {
+                            out.push(' ');
+                        }
+                        out.push(ch);
+                        prev_was_punct = false;
+                    }
+                }
+            }
+            out
+        }).collect();
         let arg_idents: Vec<&Ident> = m.args.iter().map(|(n, _)| n).collect();
         let arg_idents_for_call = arg_idents.clone();
         let arg_tys: Vec<&Type> = m.args.iter().map(|(_, ty)| ty).collect();
@@ -305,10 +332,13 @@ fn rewrite_body(
                 ).map_err(|e| ::std::format!("arg '{}': {}", #name, e))?;
             }
         });
+        let arg_pairs = arg_names_str.iter().zip(arg_types_str.iter()).map(|(n, t)| {
+            quote! { (#n, #t) }
+        });
         quote! {
             ::framework_core::robot::Method {
                 name: #method_name_str,
-                args: &[#(#arg_names_str),*],
+                args: &[#(#arg_pairs),*],
                 invoke: {
                     let __h = ::std::clone::Clone::clone(&__component_handle);
                     ::std::rc::Rc::new(move |__args: &::framework_core::__serde_json::Value| -> ::std::result::Result<(), ::std::string::String> {

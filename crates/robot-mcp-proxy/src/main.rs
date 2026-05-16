@@ -326,13 +326,47 @@ fn tool_definitions() -> Value {
             }
         },
         {
+            "name": "get_logs",
+            "description": "Fetch captured log entries from the running app. Captures both framework/backend logs and anything written to stdout/stderr (NSLog mirrors, Rust eprintln, etc.). Each entry has {ts, source, text}: ts = unix ms, source = 'stdout' | 'stderr' | a label, text = the line. Pass `since` (a previously-returned `ts`) to poll for new entries, or `limit` (default 200) for the N most recent.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "since": { "type": "integer", "description": "Unix ms timestamp; returns entries newer than this" },
+                    "limit": { "type": "integer", "description": "Cap on entries returned (used when `since` is omitted)" }
+                }
+            }
+        },
+        {
+            "name": "clear_logs",
+            "description": "Drop all captured log entries. Useful before reproducing an issue so the buffer only contains relevant lines.",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "get_frame",
+            "description": "Read the element's bounding rect in its PARENT's coordinate system. Returns {x, y, width, height} in pixels, or null if the element exists but hasn't been laid out yet. Use this to ask 'how is X positioned relative to its container'.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "element_id": { "type": "integer" } },
+                "required": ["element_id"]
+            }
+        },
+        {
+            "name": "get_absolute_frame",
+            "description": "Read the element's bounding rect in VIEWPORT (window) coordinates. Returns {x, y, width, height} in pixels, or null if the element isn't mounted in a window yet. Use this for 'where is X on screen'.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "element_id": { "type": "integer" } },
+                "required": ["element_id"]
+            }
+        },
+        {
             "name": "list_components",
-            "description": "List every mounted #[component] instance that declared a methods! block. Each entry has an instance_id, the component's fn name, and the methods it exposes (with arg names). Use invoke_method to call one.",
+            "description": "List every mounted #[component] instance that declared a methods! block. Each entry has an instance_id, the component's fn name, and its methods. Each method's args is a list of {name, type} objects where 'type' is the Rust source-form type (i32, String, Vec<u8>, custom serde structs, etc.) — use it to pick the right JSON shape when calling invoke_method.",
             "inputSchema": { "type": "object", "properties": {} }
         },
         {
             "name": "invoke_method",
-            "description": "Invoke a methods!-declared function on a mounted component instance. Pass instance_id from list_components, the method name, and an args object keyed by parameter name (e.g. {\"n\": 3} for fn bump_by(&self, n: i32)). Returns 'ok' on success.",
+            "description": "Invoke a methods!-declared function on a mounted component instance. Pass instance_id from list_components, the method name, and an args object keyed by parameter name. The args must JSON-deserialize into the parameter types reported by list_components — e.g. for fn set_to(&self, n: i32) pass {\"n\": 42}. Returns 'ok' on success or a typed error.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
