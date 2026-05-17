@@ -10,12 +10,7 @@ mod imp;
 mod stub;
 
 #[cfg(target_os = "ios")]
-pub use imp::{install_global_self, IosBackend};
+pub use imp::IosBackend;
 
 #[cfg(not(target_os = "ios"))]
 pub use stub::IosBackend;
-
-/// No-op stub for `install_global_self` on non-iOS hosts so the
-/// host-platform cross-compile of consumer code still type-checks.
-#[cfg(not(target_os = "ios"))]
-pub fn install_global_self(_weak: std::rc::Weak<std::cell::RefCell<IosBackend>>) {}

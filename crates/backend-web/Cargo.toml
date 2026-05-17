@@ -48,6 +48,7 @@ features = [
     "HtmlStyleElement",
     "KeyboardEvent",
     "Location",
+    "MediaQueryList",
     "MouseEvent",
     "Node",
     "PopStateEvent",

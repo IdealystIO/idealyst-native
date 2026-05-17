@@ -6,21 +6,19 @@
 //! page sheets, no swipe-to-dismiss, no system styling). Higher-level
 //! components (Dialog, Select, Tooltip, Popover) are built on top.
 //!
-//! ## Layout model: absolute positioning
+//! ## Layout model
 //!
-//! The overlay container is a plain `UIView` (not a stack). Author
-//! content is positioned ABSOLUTELY within it based on the
-//! `OverlayAnchor`:
+//! The overlay container is a plain `UIView`. It's registered as a
+//! Taffy root (no parent in the Taffy tree because `insert` skips it),
+//! so the layout tree's viewport auto-fill resizes it to the full
+//! viewport on every layout pass — including orientation flips and
+//! split-view resizes.
 //!
-//! - `Viewport(Center)` — content centered in the viewport
-//! - `Viewport(Top|Bottom|Left|Right)` — pinned to an edge
-//! - `Viewport(FullScreen)` — fills the viewport
-//! - `Element(rect)` — anchored to a referenced element's rect (TODO)
-//!
-//! Absolute positioning avoids `UIStackView`'s `UISV-canvas-connection`
-//! constraints, which fight with overlay positioning, and naturally
-//! supports element-anchored popovers (set `topAnchor`/`leadingAnchor`
-//! constants from the trigger's screen rect).
+//! Author content is positioned via Taffy too: the container's flex
+//! `justify_content` / `align_items` settings — derived from the
+//! `OverlayAnchor` — place the child in the right viewport region.
+//! Element-anchored popovers use `position: absolute` plus computed
+//! `top`/`left` insets from the trigger's viewport rect.
 
 use objc2::rc::Retained;
 use objc2::{msg_send, msg_send_id};
@@ -29,7 +27,10 @@ use objc2_ui_kit::UIView;
 use std::rc::Rc;
 
 use framework_core::primitives::overlay::{
-    BackdropMode, ElementAlign, ElementAnchor, ElementSide, OverlayAnchor, ViewportPlacement,
+    BackdropMode, ElementAlign, ElementSide, OverlayAnchor, ViewportPlacement,
+};
+use framework_core::{
+    AlignItems, FlexDirection, JustifyContent, Length, Position, StyleRules, Tokenized,
 };
 
 use crate::imp::callbacks::CallbackTarget;
@@ -59,15 +60,16 @@ pub(crate) fn create_overlay(
     backdrop: BackdropMode,
     on_dismiss: Option<Rc<dyn Fn()>>,
 ) -> (Retained<UIView>, OverlayEntry) {
-    // Container: a plain full-window UIView. Author content is
-    // positioned absolutely as a subview.
+    // Container: a plain full-window UIView. Taffy sizes it to the
+    // viewport on every layout pass; the anchor-derived flex style
+    // (see `container_style_for_anchor`) positions the child within.
     let container = unsafe { UIView::new(mtm) };
-    let _: () = unsafe {
-        msg_send![&container, setTranslatesAutoresizingMaskIntoConstraints: false]
-    };
 
     // Backdrop (optional). Dismiss + Opaque get a semi-transparent
-    // scrim filling the container. None omits it entirely.
+    // scrim filling the container. None omits it entirely. The scrim
+    // sizes itself via the autoresizing mask (translates default = YES),
+    // so it tracks the container's bounds without participating in the
+    // Taffy tree.
     let mut dismiss_target: Option<Retained<NSObject>> = None;
     let needs_backdrop = !matches!(backdrop, BackdropMode::None);
     if needs_backdrop {
@@ -79,11 +81,11 @@ pub(crate) fn create_overlay(
             ]
         };
         let _: () = unsafe { msg_send![&scrim, setBackgroundColor: &*scrim_color] };
-        let _: () = unsafe {
-            msg_send![&scrim, setTranslatesAutoresizingMaskIntoConstraints: false]
-        };
+        // Match the container's bounds via autoresizing mask.
+        let _: () = unsafe { msg_send![&scrim, setAutoresizingMask: 0x12u64] };
+        let bounds: objc2_foundation::CGRect = unsafe { msg_send![&container, bounds] };
+        let _: () = unsafe { msg_send![&scrim, setFrame: bounds] };
         unsafe { container.addSubview(&scrim) };
-        pin_to_edges(&container, &scrim);
 
         if matches!(backdrop, BackdropMode::Dismiss) {
             if let Some(cb) = on_dismiss.clone() {
@@ -121,215 +123,157 @@ pub(crate) fn create_overlay(
     (container, entry)
 }
 
-/// Position a child view absolutely inside an overlay container,
-/// based on the overlay's anchor. Called by `IosBackend::insert` when
-/// the parent is an overlay container.
-pub(crate) fn apply_anchor_to_child(
-    container: &UIView,
-    child: &UIView,
-    anchor: &OverlayAnchor,
-) {
-    let _: () = unsafe {
-        msg_send![child, setTranslatesAutoresizingMaskIntoConstraints: false]
-    };
-
-    let c_top: Retained<NSObject> = unsafe { msg_send_id![container, topAnchor] };
-    let c_bot: Retained<NSObject> = unsafe { msg_send_id![container, bottomAnchor] };
-    let c_lead: Retained<NSObject> = unsafe { msg_send_id![container, leadingAnchor] };
-    let c_trail: Retained<NSObject> = unsafe { msg_send_id![container, trailingAnchor] };
-    let c_cx: Retained<NSObject> = unsafe { msg_send_id![container, centerXAnchor] };
-    let c_cy: Retained<NSObject> = unsafe { msg_send_id![container, centerYAnchor] };
-
-    let v_top: Retained<NSObject> = unsafe { msg_send_id![child, topAnchor] };
-    let v_bot: Retained<NSObject> = unsafe { msg_send_id![child, bottomAnchor] };
-    let v_lead: Retained<NSObject> = unsafe { msg_send_id![child, leadingAnchor] };
-    let v_trail: Retained<NSObject> = unsafe { msg_send_id![child, trailingAnchor] };
-    let v_cx: Retained<NSObject> = unsafe { msg_send_id![child, centerXAnchor] };
-    let v_cy: Retained<NSObject> = unsafe { msg_send_id![child, centerYAnchor] };
-
-    let activate = |a: &Retained<NSObject>, b: &Retained<NSObject>| {
-        let c: Retained<NSObject> = unsafe { msg_send_id![a, constraintEqualToAnchor: &**b] };
-        let _: () = unsafe { msg_send![&c, setActive: true] };
-    };
-    // For viewport-anchored modes that don't pin both edges, add a
-    // less-than-or-equal width/height to the container so content
-    // can't grow beyond the screen. Author stylesheets can still set
-    // smaller widths (e.g. `max_width: 520`) — those are stricter and
-    // win automatically.
-    let cap = |child_anchor: &Retained<NSObject>, container_anchor: &Retained<NSObject>, inset: f64| {
-        let c: Retained<NSObject> = unsafe {
-            msg_send_id![
-                child_anchor,
-                constraintLessThanOrEqualToAnchor: &**container_anchor,
-                constant: -inset
-            ]
-        };
-        let _: () = unsafe { msg_send![&c, setActive: true] };
-    };
-
-    let v_width: Retained<NSObject> = unsafe { msg_send_id![child, widthAnchor] };
-    let v_height: Retained<NSObject> = unsafe { msg_send_id![child, heightAnchor] };
-    let c_width: Retained<NSObject> = unsafe { msg_send_id![container, widthAnchor] };
-    let c_height: Retained<NSObject> = unsafe { msg_send_id![container, heightAnchor] };
-
+/// Build the `StyleRules` for the overlay container based on its
+/// anchor. The container is a Taffy root that's viewport-filled by
+/// the layout tree's auto-fill; this style positions the overlay's
+/// single child within that frame using flex `justify_content` /
+/// `align_items`. Element-anchored overlays leave the container
+/// neutral — the child is placed via `position: absolute` plus
+/// computed insets (see `child_style_for_anchor`).
+pub(crate) fn container_style_for_anchor(anchor: &OverlayAnchor) -> StyleRules {
+    let mut rules = StyleRules::default();
+    // Single-child flex column: justify (vertical) and align (horizontal)
+    // place the child anywhere from the four corners through the center.
+    rules.flex_direction = Some(FlexDirection::Column);
     match anchor {
         OverlayAnchor::Viewport(placement) => match placement {
             ViewportPlacement::Center => {
-                activate(&v_cx, &c_cx);
-                activate(&v_cy, &c_cy);
-                // Safety caps: child width/height ≤ container − 32px
-                // total padding. Author stylesheet `max_width` is
-                // stricter and overrides automatically.
-                cap(&v_width, &c_width, 32.0);
-                cap(&v_height, &c_height, 32.0);
+                rules.justify_content = Some(JustifyContent::Center);
+                rules.align_items = Some(AlignItems::Center);
+                // Safety inset so an oversized child can't touch the
+                // viewport edges. Author `max_width` on the child is
+                // stricter and wins automatically.
+                let inset = Tokenized::Literal(Length::Px(16.0));
+                rules.padding_top = Some(inset);
+                rules.padding_right = Some(inset);
+                rules.padding_bottom = Some(inset);
+                rules.padding_left = Some(inset);
             }
             ViewportPlacement::Top => {
-                activate(&v_top, &c_top);
-                activate(&v_lead, &c_lead);
-                activate(&v_trail, &c_trail);
+                rules.justify_content = Some(JustifyContent::FlexStart);
+                rules.align_items = Some(AlignItems::Stretch);
             }
             ViewportPlacement::Bottom => {
-                activate(&v_bot, &c_bot);
-                activate(&v_lead, &c_lead);
-                activate(&v_trail, &c_trail);
+                rules.justify_content = Some(JustifyContent::FlexEnd);
+                rules.align_items = Some(AlignItems::Stretch);
             }
             ViewportPlacement::Left => {
-                activate(&v_lead, &c_lead);
-                activate(&v_top, &c_top);
-                activate(&v_bot, &c_bot);
+                rules.justify_content = Some(JustifyContent::FlexStart);
+                rules.align_items = Some(AlignItems::FlexStart);
             }
             ViewportPlacement::Right => {
-                activate(&v_trail, &c_trail);
-                activate(&v_top, &c_top);
-                activate(&v_bot, &c_bot);
+                rules.justify_content = Some(JustifyContent::FlexStart);
+                rules.align_items = Some(AlignItems::FlexEnd);
             }
             ViewportPlacement::FullScreen => {
-                activate(&v_top, &c_top);
-                activate(&v_bot, &c_bot);
-                activate(&v_lead, &c_lead);
-                activate(&v_trail, &c_trail);
+                rules.justify_content = Some(JustifyContent::FlexStart);
+                rules.align_items = Some(AlignItems::Stretch);
             }
         },
-        OverlayAnchor::Element(elem) => {
-            apply_element_anchor(container, child, elem, &v_top, &v_lead, &v_trail, &v_bot,
-                                  &c_top, &c_lead, &v_cx, &v_cy, &c_width, &c_height);
-            // Also cap to container width/height so an overflowing
-            // popover doesn't escape the viewport.
-            cap(&v_width, &c_width, 8.0);
-            cap(&v_height, &c_height, 8.0);
+        OverlayAnchor::Element(_) => {
+            // No flex placement — the child positions itself via
+            // `position: absolute` + insets. The container just needs
+            // to fill the viewport so the absolute coordinates line up
+            // with window coordinates (where `rect.x` / `rect.y` live).
+            rules.justify_content = Some(JustifyContent::FlexStart);
+            rules.align_items = Some(AlignItems::FlexStart);
         }
     }
+    rules
 }
 
-/// Position a popover-style overlay relative to its anchor element's
-/// viewport rect. Uses constraint constants computed from the rect.
-///
-/// Note: this is a one-shot positioning at mount. If the anchor moves
-/// (scroll, layout reflow), the popover doesn't track — a future
-/// version would observe the anchor's bounds and update constants on
-/// change.
-#[allow(clippy::too_many_arguments)]
-fn apply_element_anchor(
-    _container: &UIView,
-    _child: &UIView,
-    elem: &ElementAnchor,
-    v_top: &Retained<NSObject>,
-    v_lead: &Retained<NSObject>,
-    v_trail: &Retained<NSObject>,
-    v_bot: &Retained<NSObject>,
-    c_top: &Retained<NSObject>,
-    c_lead: &Retained<NSObject>,
-    _v_cx: &Retained<NSObject>,
-    _v_cy: &Retained<NSObject>,
-    _c_width: &Retained<NSObject>,
-    _c_height: &Retained<NSObject>,
-) {
-    // Resolve the anchor's viewport rect. If the target isn't mounted
-    // yet (rect returns None or zero), fall back to centered.
+/// For element-anchored overlays, build a style that absolutely
+/// positions the child at the trigger's viewport rect. Returns
+/// `None` for viewport-anchored overlays — those are placed by the
+/// container's flex style alone.
+pub(crate) fn child_style_for_anchor(anchor: &OverlayAnchor) -> Option<StyleRules> {
+    let OverlayAnchor::Element(elem) = anchor else {
+        return None;
+    };
+
+    // If the trigger hasn't measured yet (no window, not mounted),
+    // fall back to a safe top-left default. The Overlay primitive
+    // typically only mounts after the trigger is on screen, so this
+    // is mostly defensive.
     let rect = match elem.target.rect() {
         Some(r) if r.width > 0.0 || r.height > 0.0 => r,
         _ => {
-            // Best-effort placement until the trigger measures.
-            // Future: subscribe to mount + re-apply.
-            let const_eq = |a: &Retained<NSObject>, b: &Retained<NSObject>, k: f64| {
-                let c: Retained<NSObject> = unsafe {
-                    msg_send_id![a, constraintEqualToAnchor: &**b, constant: k]
-                };
-                let _: () = unsafe { msg_send![&c, setActive: true] };
-            };
-            const_eq(v_top, c_top, 100.0);
-            const_eq(v_lead, c_lead, 16.0);
-            return;
+            let mut rules = StyleRules::default();
+            rules.position = Some(Position::Absolute);
+            rules.top = Some(Tokenized::Literal(Length::Px(100.0)));
+            rules.left = Some(Tokenized::Literal(Length::Px(16.0)));
+            return Some(rules);
         }
     };
 
-    let target_x = rect.x as f64;
-    let target_y = rect.y as f64;
-    let target_w = rect.width as f64;
-    let target_h = rect.height as f64;
-    let offset = elem.offset as f64;
+    let target_x = rect.x;
+    let target_y = rect.y;
+    let target_w = rect.width;
+    let target_h = rect.height;
+    let offset = elem.offset;
 
-    // Compute the desired (top, left) of the popover relative to the
-    // container's origin (which is window origin since the container
-    // is pinned to the window).
-    let (popover_top, popover_left) = match elem.side {
-        ElementSide::Below => {
-            let top = target_y + target_h + offset;
-            let left = align_x(target_x, target_w, elem.align);
-            (top, left)
-        }
-        ElementSide::Above => {
-            // For Above, we set bottom relative to target instead —
-            // since we set top here, use top = target_y - popover_height,
-            // but we don't know popover height yet. Approximate by
-            // using a bottom-anchored constraint instead.
-            // Simplification: set top to target_y - estimate; the
-            // child's own height will push from below. This isn't
-            // perfect but works when popover height is known via
-            // intrinsic content.
-            //
-            // Better approach: bind popover.bottom = target.top - offset
-            // using a constraint, which we'll do below as a special
-            // case. Return sentinel to skip the top-anchor branch.
-            (f64::NAN, align_x(target_x, target_w, elem.align))
-        }
-        ElementSide::End => {
-            let top = align_y(target_y, target_h, elem.align);
-            let left = target_x + target_w + offset;
-            (top, left)
-        }
-        ElementSide::Start => {
-            (align_y(target_y, target_h, elem.align), f64::NAN)
-        }
+    // Convert to a (top, left) offset within the container (which
+    // spans the window). `f32::NAN` means "use bottom/right instead";
+    // we translate that to a `bottom: …` / `right: …` style below.
+    let (top, left, bottom, right) = match elem.side {
+        ElementSide::Below => (
+            Some(target_y + target_h + offset),
+            Some(align_x(target_x, target_w, elem.align)),
+            None,
+            None,
+        ),
+        ElementSide::Above => (
+            // Align by bottom edge so the popover grows upward from
+            // the trigger regardless of its (unknown-at-style-time)
+            // height. Bottom is measured from container's bottom edge.
+            None,
+            Some(align_x(target_x, target_w, elem.align)),
+            Some(target_y - offset),
+            None,
+        ),
+        ElementSide::End => (
+            Some(align_y(target_y, target_h, elem.align)),
+            Some(target_x + target_w + offset),
+            None,
+            None,
+        ),
+        ElementSide::Start => (
+            Some(align_y(target_y, target_h, elem.align)),
+            None,
+            None,
+            // Right is measured from container's right edge.
+            Some(target_x - offset),
+        ),
     };
 
-    let constraint_eq = |a: &Retained<NSObject>, b: &Retained<NSObject>, k: f64| {
-        let c: Retained<NSObject> = unsafe {
-            msg_send_id![a, constraintEqualToAnchor: &**b, constant: k]
-        };
-        let _: () = unsafe { msg_send![&c, setActive: true] };
-    };
-
-    // Handle horizontal positioning.
-    if popover_left.is_finite() {
-        constraint_eq(v_lead, c_lead, popover_left);
-    } else if matches!(elem.side, ElementSide::Start) {
-        // Start side: pin trailing = target.x - offset, using
-        // constraint relative to container.leadingAnchor with constant.
-        let trailing_pos = target_x - offset;
-        constraint_eq(v_trail, c_lead, trailing_pos);
+    let mut rules = StyleRules::default();
+    rules.position = Some(Position::Absolute);
+    if let Some(v) = top {
+        rules.top = Some(Tokenized::Literal(Length::Px(v)));
     }
-
-    // Handle vertical positioning.
-    if popover_top.is_finite() {
-        constraint_eq(v_top, c_top, popover_top);
-    } else if matches!(elem.side, ElementSide::Above) {
-        let bottom_pos = target_y - offset;
-        constraint_eq(v_bot, c_top, bottom_pos);
+    if let Some(v) = left {
+        rules.left = Some(Tokenized::Literal(Length::Px(v)));
     }
+    if let Some(v) = bottom {
+        // `bottom` in our style language is "distance from parent's
+        // bottom edge". For Above, the popover's bottom edge sits at
+        // `target_y - offset` measured from the top, which is
+        // `container_h - (target_y - offset)` from the bottom. We
+        // don't know `container_h` here — fall back to top-anchoring
+        // with an estimated height. A complete fix would observe the
+        // popover's measured height and update.
+        let _ = v;
+        rules.top = Some(Tokenized::Literal(Length::Px(target_y - offset - 100.0)));
+    }
+    if let Some(v) = right {
+        let _ = v;
+        // Same story for Start: defer to a conservative left offset.
+        rules.left = Some(Tokenized::Literal(Length::Px((target_x - offset - 200.0).max(8.0))));
+    }
+    Some(rules)
 }
 
-fn align_x(target_x: f64, target_w: f64, align: ElementAlign) -> f64 {
+fn align_x(target_x: f32, target_w: f32, align: ElementAlign) -> f32 {
     match align {
         ElementAlign::Start => target_x,
         ElementAlign::Center => target_x + target_w / 2.0,
@@ -337,7 +281,7 @@ fn align_x(target_x: f64, target_w: f64, align: ElementAlign) -> f64 {
     }
 }
 
-fn align_y(target_y: f64, target_h: f64, align: ElementAlign) -> f64 {
+fn align_y(target_y: f32, target_h: f32, align: ElementAlign) -> f32 {
     match align {
         ElementAlign::Start => target_y,
         ElementAlign::Center => target_y + target_h / 2.0,
@@ -345,30 +289,19 @@ fn align_y(target_y: f64, target_h: f64, align: ElementAlign) -> f64 {
     }
 }
 
-fn pin_to_edges(parent: &UIView, child: &UIView) {
-    let p_top: Retained<NSObject> = unsafe { msg_send_id![parent, topAnchor] };
-    let p_bot: Retained<NSObject> = unsafe { msg_send_id![parent, bottomAnchor] };
-    let p_lead: Retained<NSObject> = unsafe { msg_send_id![parent, leadingAnchor] };
-    let p_trail: Retained<NSObject> = unsafe { msg_send_id![parent, trailingAnchor] };
-    let c_top: Retained<NSObject> = unsafe { msg_send_id![child, topAnchor] };
-    let c_bot: Retained<NSObject> = unsafe { msg_send_id![child, bottomAnchor] };
-    let c_lead: Retained<NSObject> = unsafe { msg_send_id![child, leadingAnchor] };
-    let c_trail: Retained<NSObject> = unsafe { msg_send_id![child, trailingAnchor] };
-
-    for (a, b) in [(&c_top, &p_top), (&c_bot, &p_bot), (&c_lead, &p_lead), (&c_trail, &p_trail)] {
-        let c: Retained<NSObject> = unsafe { msg_send_id![a, constraintEqualToAnchor: &**b] };
-        let _: () = unsafe { msg_send![&c, setActive: true] };
-    }
-}
-
+/// Add the container to the host's window. Sized via autoresizing
+/// mask — the container's bounds track the window's bounds, which is
+/// what Taffy expects for the viewport root.
 fn mount_in_window(host_view: &UIView, container: &UIView) {
     let window: Option<Retained<UIView>> = unsafe { msg_send_id![host_view, window] };
     let Some(window) = window else {
         eprintln!("[ios-overlay] host view has no window — cannot mount");
         return;
     };
+    let window_bounds: objc2_foundation::CGRect = unsafe { msg_send![&window, bounds] };
+    let _: () = unsafe { msg_send![container, setFrame: window_bounds] };
+    let _: () = unsafe { msg_send![container, setAutoresizingMask: 0x12u64] };
     unsafe { window.addSubview(container) };
-    pin_to_edges(&window, container);
 }
 
 pub(crate) fn release_overlay(entry: OverlayEntry) {

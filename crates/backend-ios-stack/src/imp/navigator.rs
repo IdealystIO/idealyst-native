@@ -77,7 +77,6 @@ pub(crate) fn create_navigator(
                 }
                 stack.push(ScreenEntry { vc, scope_id });
                 depth_for_dispatch(stack.len());
-                super::schedule_layout_pass();
             }
             NavCommand::Pop => {
                 if stack.len() <= 1 {
@@ -88,7 +87,6 @@ pub(crate) fn create_navigator(
                     release_for_dispatch(popped.scope_id);
                 }
                 depth_for_dispatch(stack.len());
-                super::schedule_layout_pass();
             }
             NavCommand::Replace { name, params, url: _ } => {
                 let result = mount_for_dispatch(name, params);
@@ -110,7 +108,6 @@ pub(crate) fn create_navigator(
                     );
                 }
                 depth_for_dispatch(stack.len());
-                super::schedule_layout_pass();
             }
             NavCommand::Reset { name, params, url: _ } => {
                 let result = mount_for_dispatch(name, params);
@@ -130,7 +127,6 @@ pub(crate) fn create_navigator(
                     );
                 }
                 depth_for_dispatch(stack.len());
-                super::schedule_layout_pass();
             }
             NavCommand::Select { .. }
             | NavCommand::OpenDrawer

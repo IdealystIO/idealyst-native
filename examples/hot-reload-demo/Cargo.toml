@@ -1,0 +1,33 @@
+[package]
+name = "hot-reload-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Two-binary demonstration of the dev-mode hot-reload wire transport.
+#
+#   cargo run -p hot-reload-demo --bin dev-server
+#   cargo run -p hot-reload-demo --bin app
+#
+# The dev-server hosts the components in `src/components.rs` and
+# serves the resulting wire commands on a WebSocket. The app
+# connects, replays the commands through a `PrintBackend` that
+# logs each call to stdout.
+#
+# Editing `src/components.rs` and restarting `dev-server` ships the
+# new tree to a still-connected app (recompile loop is manual at
+# this stage; file-watch comes next).
+
+[[bin]]
+name = "dev-server"
+path = "src/bin/dev_server.rs"
+
+[[bin]]
+name = "app"
+path = "src/bin/app.rs"
+
+[dependencies]
+framework-core = { workspace = true }
+idealyst-wire = { workspace = true }
+idealyst-dev-server = { workspace = true }
+idealyst-dev-client = { workspace = true, features = ["native"] }

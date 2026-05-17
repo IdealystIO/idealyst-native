@@ -1,0 +1,51 @@
+[package]
+name = "backend-ios-stack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Preserved pre-Taffy iOS backend. Layout is UIStackView-based —
+# every container is an iOS `UIStackView` configured from the
+# framework's flex props (direction / spacing / align / justify).
+# The active backend (`backend-ios`) replaced this with Taffy + plain
+# UIViews; this crate exists so the StackView approach isn't lost.
+# Not wired into examples — opt-in only.
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[features]
+debug-stats = ["framework-core/debug-stats"]
+
+[dependencies]
+framework-core = { workspace = true }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+block2 = "0.5"
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = [
+    "NSString",
+    "NSArray",
+    "NSEnumerator",
+    "NSObject",
+] }
+objc2-ui-kit = { version = "0.2", features = [
+    "UIResponder",
+    "UIView",
+    "UILabel",
+    "UIButton",
+    "UIControl",
+    "UITextField",
+    "UISwitch",
+    "UISlider",
+    "UIScrollView",
+    "UIActivityIndicatorView",
+    "UIStackView",
+    "UIViewController",
+    "UINavigationController",
+    "UIColor",
+    "UIGestureRecognizer",
+    "UITapGestureRecognizer",
+    "UITextInputTraits",
+] }
+raw-window-handle = "0.6"

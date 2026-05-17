@@ -22,6 +22,16 @@ debug-stats = ["framework-core/debug-stats", "backend-web/debug-stats"]
 # the web backend (no wgpu cost) — this feature only gates the
 # *demo's* GPU code.
 graphics = ["hello/graphics"]
+# When on, the wasm bundle connects to a dev server over a
+# browser WebSocket on startup and renders whatever wire commands
+# arrive — instead of running the local `hello::app()` tree.
+#
+# Pulls in `idealyst-dev-client` with its `web` transport. With
+# this feature OFF, neither `idealyst-dev-client` nor any
+# dev-hot-reload code paths are present in the resulting wasm
+# binary — `dep:idealyst-dev-client` keeps the dep out of the
+# graph entirely.
+dev-hot-reload = ["dep:idealyst-dev-client"]
 
 [dependencies]
 framework-core = { workspace = true }
@@ -30,6 +40,10 @@ hello = { path = "../hello" }
 wasm-bindgen = "0.2"
 web-sys = { version = "0.3", features = ["console"] }
 console_error_panic_hook = "0.1"
+# Pulled in only when the host opts into `dev-hot-reload`. The
+# `optional = true` + `dep:idealyst-dev-client` syntax above means
+# Cargo doesn't resolve this crate at all when the feature is off.
+idealyst-dev-client = { workspace = true, features = ["web"], optional = true }
 # Smaller allocator for WASM. Skips the chunked-arena machinery the
 # default allocator pulls in. Trade-off: slightly higher per-alloc
 # cost in exchange for much less code.

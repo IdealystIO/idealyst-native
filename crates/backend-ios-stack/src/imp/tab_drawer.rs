@@ -1,6 +1,6 @@
 use block2::ConcreteBlock;
 use framework_core::primitives::navigator::{
-    DrawerHandle, DrawerNavigatorCallbacks, DrawerType, MountPolicy, NavCommand, NavigatorControl,
+    DrawerHandle, DrawerNavigatorCallbacks, DrawerType, NavCommand, NavigatorControl,
     NavigatorHandle, TabNavigatorCallbacks, TabsHandle,
 };
 use objc2::encode::{Encode, Encoding};
@@ -33,14 +33,6 @@ fn dump_debug_stats(label: &str) {
     }
 }
 
-/// A screen retained across switches under a persistent
-/// `MountPolicy`. The view stays in the body's subview list and is
-/// toggled visible via `setHidden:` rather than torn down.
-pub(crate) struct MountedScreen {
-    pub(crate) view: Retained<UIView>,
-    pub(crate) scope_id: u64,
-}
-
 /// Per-instance state for tab and drawer navigators.
 pub(crate) struct TabDrawerEntry {
     pub(crate) outer: Retained<UIView>,
@@ -50,19 +42,6 @@ pub(crate) struct TabDrawerEntry {
     pub(crate) current_scope: RefCell<Option<u64>>,
     pub(crate) sidebar: Rc<RefCell<Option<Retained<UIView>>>>,
     pub(crate) is_open: Rc<std::cell::Cell<bool>>,
-    pub(crate) mount_policy: MountPolicy,
-    /// Mounted screens keyed by route name. Populated lazily by
-    /// `Select` (and by `*_attach_initial` for the boot route);
-    /// drained only on full navigator teardown when the policy is
-    /// persistent. Empty when the policy is `LazyDisposing`.
-    pub(crate) mounted: Rc<RefCell<HashMap<&'static str, MountedScreen>>>,
-    /// Name of the currently-visible route. Used to find which
-    /// cached view to hide on the next `Select`.
-    pub(crate) current_route: Rc<RefCell<Option<&'static str>>>,
-    /// Mirror of the nav state's active-route signal, so
-    /// `*_attach_initial` (which receives no route name) can ask the
-    /// framework what the initial route is.
-    pub(crate) active_route_sig: framework_core::Signal<&'static str>,
 }
 
 // =========================================================================
@@ -79,10 +58,6 @@ pub(crate) fn create_tab_navigator(
     let outer = body.clone();
 
     let key = &*outer as *const UIView as usize;
-    let mount_policy = callbacks.mount_policy;
-    let active_route_sig = callbacks.navigator.nav_state.active_route;
-    let mounted: Rc<RefCell<HashMap<&'static str, MountedScreen>>> = Rc::new(RefCell::new(HashMap::new()));
-    let current_route: Rc<RefCell<Option<&'static str>>> = Rc::new(RefCell::new(None));
     let entry = TabDrawerEntry {
         outer: outer.clone(),
         content_host: outer.clone(),
@@ -91,10 +66,6 @@ pub(crate) fn create_tab_navigator(
         current_scope: RefCell::new(None),
         sidebar: Rc::new(RefCell::new(None)),
         is_open: Rc::new(std::cell::Cell::new(false)),
-        mount_policy,
-        mounted: mounted.clone(),
-        current_route: current_route.clone(),
-        active_route_sig,
     };
     tab_drawer_instances.insert(key, entry);
 
@@ -106,93 +77,28 @@ pub(crate) fn create_tab_navigator(
 
     let current_scope: Rc<RefCell<Option<u64>>> = Rc::new(RefCell::new(None));
     let cs_for_dispatch = current_scope.clone();
-    let mounted_for_dispatch = mounted.clone();
-    let current_route_for_dispatch = current_route.clone();
 
     control.install(Box::new(move |cmd| {
         match cmd {
             NavCommand::Select { name, params, url: _ } => {
-                select_screen(
-                    mount_policy,
-                    &body_for_dispatch,
-                    &mounted_for_dispatch,
-                    &current_route_for_dispatch,
-                    &cs_for_dispatch,
-                    &mount,
-                    &release,
-                    name,
-                    params,
-                );
+                if let Some(old_scope) = cs_for_dispatch.borrow_mut().take() {
+                    release(old_scope);
+                }
+                let subviews = body_for_dispatch.subviews();
+                for sub in subviews.iter() {
+                    unsafe { sub.removeFromSuperview() };
+                }
+                let result = mount(name, params);
+                pin_to_edges(&body_for_dispatch, result.node.as_view());
+                *cs_for_dispatch.borrow_mut() = Some(result.scope_id);
                 depth_changed(1);
                 active_changed(name);
-                super::schedule_layout_pass();
             }
             _ => {}
         }
     }));
 
     IosNode::View(outer)
-}
-
-/// Shared screen-switch logic for tab and drawer navigators. Honors
-/// `MountPolicy`:
-///
-/// - `LazyDisposing`: tear down the previous screen entirely (release
-///   scope + remove view), then mount the new one fresh.
-/// - `LazyPersistent` / `EagerPersistent`: keep the previous screen
-///   in the subview tree but hide it; mount the new screen on first
-///   visit and cache it; subsequent visits just unhide.
-fn select_screen(
-    policy: MountPolicy,
-    body: &Retained<UIView>,
-    mounted: &Rc<RefCell<HashMap<&'static str, MountedScreen>>>,
-    current_route: &Rc<RefCell<Option<&'static str>>>,
-    current_scope: &Rc<RefCell<Option<u64>>>,
-    mount_fn: &Rc<dyn Fn(&'static str, Box<dyn std::any::Any>) -> framework_core::primitives::navigator::MountResult<IosNode>>,
-    release_fn: &Rc<dyn Fn(u64)>,
-    name: &'static str,
-    params: Box<dyn std::any::Any>,
-) {
-    match policy {
-        MountPolicy::LazyDisposing => {
-            if let Some(old_scope) = current_scope.borrow_mut().take() {
-                release_fn(old_scope);
-            }
-            for sub in body.subviews().iter() {
-                unsafe { sub.removeFromSuperview() };
-            }
-            let result = mount_fn(name, params);
-            pin_to_edges(body, result.node.as_view());
-            *current_scope.borrow_mut() = Some(result.scope_id);
-            *current_route.borrow_mut() = Some(name);
-        }
-        MountPolicy::LazyPersistent | MountPolicy::EagerPersistent => {
-            // Hide the previous screen, if any. We deliberately do
-            // NOT release its scope — the framework's contract is
-            // that persistent screens keep their reactive state
-            // (signals, effects) alive across switches.
-            if let Some(prev) = *current_route.borrow() {
-                if let Some(m) = mounted.borrow().get(prev) {
-                    let _: () = unsafe { msg_send![m.view.as_ref(), setHidden: true] };
-                }
-            }
-            // Reveal the cached view, or build it on first visit.
-            let mut map = mounted.borrow_mut();
-            if let Some(m) = map.get(name) {
-                let _: () = unsafe { msg_send![m.view.as_ref(), setHidden: false] };
-                *current_scope.borrow_mut() = Some(m.scope_id);
-            } else {
-                let result = mount_fn(name, params);
-                let view: Retained<UIView> = unsafe {
-                    Retained::retain(result.node.as_view() as *const UIView as *mut UIView).unwrap()
-                };
-                pin_to_edges(body, &view);
-                *current_scope.borrow_mut() = Some(result.scope_id);
-                map.insert(name, MountedScreen { view, scope_id: result.scope_id });
-            }
-            *current_route.borrow_mut() = Some(name);
-        }
-    }
 }
 
 pub(crate) fn tab_navigator_attach_initial(
@@ -206,27 +112,8 @@ pub(crate) fn tab_navigator_attach_initial(
     let Some(entry) = tab_drawer_instances.get(&key) else {
         return;
     };
-    let view: Retained<UIView> = unsafe {
-        Retained::retain(screen.as_view() as *const UIView as *mut UIView).unwrap()
-    };
-    pin_to_edges(&entry.body, &view);
+    pin_to_edges(&entry.body, screen.as_view());
     *entry.current_scope.borrow_mut() = Some(scope_id);
-
-    // Seed the persistent-mount cache with the initial screen so the
-    // first `Select` away from it hides this one (instead of leaking
-    // a duplicate). For `LazyDisposing` the cache stays empty — the
-    // first `Select` removes this view and mounts a new one.
-    if matches!(
-        entry.mount_policy,
-        MountPolicy::LazyPersistent | MountPolicy::EagerPersistent
-    ) {
-        let initial_name = entry.active_route_sig.get();
-        *entry.current_route.borrow_mut() = Some(initial_name);
-        entry.mounted.borrow_mut().insert(
-            initial_name,
-            MountedScreen { view, scope_id },
-        );
-    }
 }
 
 pub(crate) fn release_tab_navigator(
@@ -296,10 +183,6 @@ pub(crate) fn create_drawer_navigator(
     let key = &*outer as *const UIView as usize;
     let is_open = Rc::new(std::cell::Cell::new(false));
     let sidebar_cell: Rc<RefCell<Option<Retained<UIView>>>> = Rc::new(RefCell::new(None));
-    let mount_policy = callbacks.mount_policy;
-    let active_route_sig = callbacks.navigator.nav_state.active_route;
-    let mounted: Rc<RefCell<HashMap<&'static str, MountedScreen>>> = Rc::new(RefCell::new(HashMap::new()));
-    let current_route: Rc<RefCell<Option<&'static str>>> = Rc::new(RefCell::new(None));
     let entry = TabDrawerEntry {
         outer: outer.clone(),
         content_host: outer.clone(),
@@ -308,10 +191,6 @@ pub(crate) fn create_drawer_navigator(
         current_scope: RefCell::new(None),
         sidebar: sidebar_cell.clone(),
         is_open: is_open.clone(),
-        mount_policy,
-        mounted: mounted.clone(),
-        current_route: current_route.clone(),
-        active_route_sig,
     };
     tab_drawer_instances.insert(key, entry);
 
@@ -325,8 +204,6 @@ pub(crate) fn create_drawer_navigator(
     let current_scope: Rc<RefCell<Option<u64>>> = Rc::new(RefCell::new(None));
     let cs_for_dispatch = current_scope.clone();
     let is_open_for_dispatch = is_open.clone();
-    let mounted_for_dispatch = mounted.clone();
-    let current_route_for_dispatch = current_route.clone();
     let scrim_ref = scrim.clone();
     let sidebar_for_anim = sidebar_cell.clone();
     let body_for_anim = body.clone();
@@ -356,31 +233,26 @@ pub(crate) fn create_drawer_navigator(
                     });
                     if has_bar {
                         let nav_view: &UIView = unsafe { &*parent };
-                        // Move the scrim into the nav controller's view
-                        // so it covers the entire navigator (including
-                        // the nav bar). pin_to_edges puts it in Auto
-                        // Layout mode — fine for the scrim because it's
-                        // not in the framework's layout tree (no Taffy
-                        // node) and just needs to fill.
                         unsafe { scrim_ref.removeFromSuperview() };
                         pin_to_edges(nav_view, &scrim_ref);
-                        // Move the sidebar but KEEP IT FRAME-BASED.
-                        // The earlier version put it in Auto Layout mode
-                        // (top/bot/leading pins, no width) — without a
-                        // width constraint the sidebar collapsed to 0pt
-                        // wide and its background went invisible. Taffy
-                        // already gives the sidebar its frame
-                        // (320×852); the same bounds/center will be
-                        // re-applied to it in its new parent on the
-                        // next layout pass.
                         unsafe { sb.removeFromSuperview() };
+                        let _: () = unsafe {
+                            msg_send![sb.as_ref(), setTranslatesAutoresizingMaskIntoConstraints: false]
+                        };
                         unsafe { nav_view.addSubview(sb) };
+                        let p_top: Retained<NSObject> = unsafe { msg_send_id![nav_view, topAnchor] };
+                        let p_bot: Retained<NSObject> = unsafe { msg_send_id![nav_view, bottomAnchor] };
+                        let p_lead: Retained<NSObject> = unsafe { msg_send_id![nav_view, leadingAnchor] };
+                        let s_top: Retained<NSObject> = unsafe { msg_send_id![sb.as_ref(), topAnchor] };
+                        let s_bot: Retained<NSObject> = unsafe { msg_send_id![sb.as_ref(), bottomAnchor] };
+                        let s_lead: Retained<NSObject> = unsafe { msg_send_id![sb.as_ref(), leadingAnchor] };
+                        for (a, b) in [(&s_top, &p_top), (&s_bot, &p_bot), (&s_lead, &p_lead)] {
+                            let c: Retained<NSObject> = unsafe {
+                                msg_send_id![a, constraintEqualToAnchor: &**b]
+                            };
+                            let _: () = unsafe { msg_send![&c, setActive: true] };
+                        }
                         reparented.set(true);
-                        // Reapply frames after reparenting — UIView's
-                        // frame is interpreted relative to its
-                        // superview, and moving the sidebar to
-                        // nav_view changes that coordinate space.
-                        crate::imp::schedule_layout_pass();
                         break;
                     }
                     cur = parent;
@@ -473,20 +345,18 @@ pub(crate) fn create_drawer_navigator(
         match cmd {
             NavCommand::Select { name, params, url: _ } => {
                 super::ios_log(&format!("[drawer] Select: {}", name));
-                select_screen(
-                    mount_policy,
-                    &body_for_dispatch,
-                    &mounted_for_dispatch,
-                    &current_route_for_dispatch,
-                    &cs_for_dispatch,
-                    &mount,
-                    &release,
-                    name,
-                    params,
-                );
+                if let Some(old_scope) = cs_for_dispatch.borrow_mut().take() {
+                    release(old_scope);
+                }
+                let subviews = body_for_dispatch.subviews();
+                for sub in subviews.iter() {
+                    unsafe { sub.removeFromSuperview() };
+                }
+                let result = mount(name, params);
+                pin_to_edges(&body_for_dispatch, result.node.as_view());
+                *cs_for_dispatch.borrow_mut() = Some(result.scope_id);
                 depth_changed(1);
                 active_changed(name);
-                super::schedule_layout_pass();
                 super::ios_log(&format!("[drawer] Select done: {}", name));
             }
             NavCommand::OpenDrawer => {
@@ -544,25 +414,8 @@ pub(crate) fn drawer_navigator_attach_initial(
     for sub in subviews.iter() {
         unsafe { sub.removeFromSuperview() };
     }
-    let view: Retained<UIView> = unsafe {
-        Retained::retain(screen.as_view() as *const UIView as *mut UIView).unwrap()
-    };
-    pin_to_edges(&entry.body, &view);
+    pin_to_edges(&entry.body, screen.as_view());
     *entry.current_scope.borrow_mut() = Some(scope_id);
-
-    // Seed the persistent-mount cache so subsequent `Select`s hide
-    // this view instead of orphaning it.
-    if matches!(
-        entry.mount_policy,
-        MountPolicy::LazyPersistent | MountPolicy::EagerPersistent
-    ) {
-        let initial_name = entry.active_route_sig.get();
-        *entry.current_route.borrow_mut() = Some(initial_name);
-        entry.mounted.borrow_mut().insert(
-            initial_name,
-            MountedScreen { view, scope_id },
-        );
-    }
 
     // Defer header setup until the next run loop pass — by then
     // the stack navigator will have wrapped the drawer's view in a
@@ -624,13 +477,21 @@ pub(crate) fn drawer_navigator_attach_sidebar(
         return;
     };
     let sidebar_view = sidebar.as_view();
-    // Frame-based: leave `translatesAutoresizingMaskIntoConstraints`
-    // YES (the default) so Taffy's `apply_frames` can write
-    // `view.frame` directly. The sidebar is a Taffy root (it's
-    // attached here, not through `Backend::insert`), so `compute()`
-    // will give it a frame from its own style (explicit width=320
-    // preserved, height filled to viewport on the `Auto` axis).
+    let _: () = unsafe {
+        msg_send![sidebar_view, setTranslatesAutoresizingMaskIntoConstraints: false]
+    };
     unsafe { entry.content_host.addSubview(sidebar_view) };
+
+    let o_top: Retained<NSObject> = unsafe { msg_send_id![&entry.content_host, topAnchor] };
+    let o_bot: Retained<NSObject> = unsafe { msg_send_id![&entry.content_host, bottomAnchor] };
+    let o_lead: Retained<NSObject> = unsafe { msg_send_id![&entry.content_host, leadingAnchor] };
+    let s_top: Retained<NSObject> = unsafe { msg_send_id![sidebar_view, topAnchor] };
+    let s_bot: Retained<NSObject> = unsafe { msg_send_id![sidebar_view, bottomAnchor] };
+    let s_lead: Retained<NSObject> = unsafe { msg_send_id![sidebar_view, leadingAnchor] };
+    for (a, b) in [(&s_top, &o_top), (&s_bot, &o_bot), (&s_lead, &o_lead)] {
+        let c: Retained<NSObject> = unsafe { msg_send_id![a, constraintEqualToAnchor: &**b] };
+        let _: () = unsafe { msg_send![&c, setActive: true] };
+    }
 
     // Start off-screen and hidden
     let t = CGAffineTransform { a: 1.0, b: 0.0, c: 0.0, d: 1.0, tx: -400.0, ty: 0.0 };

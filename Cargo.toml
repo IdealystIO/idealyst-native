@@ -9,16 +9,21 @@ members = [
     "crates/reactive-refs",
     "crates/backend-web",
     "crates/backend-ios",
+    "crates/backend-ios-stack",
     "crates/backend-android",
     "crates/icons-lucide",
     "crates/native-layout",
     "crates/robot-mcp-proxy",
+    "crates/idealyst-wire",
+    "crates/idealyst-dev-client",
+    "crates/idealyst-dev-server",
     "examples/hello",
     "examples/hello-web",
     "examples/hello-android",
     "examples/hello-ios",
     "examples/idea-ui-docs",
     "examples/idea-ui-docs-web",
+    "examples/hot-reload-demo",
     "arena/idealyst-native/wasm",
 ]
 
@@ -33,9 +38,13 @@ idea-ui = { path = "crates/idea-ui" }
 idea-ui-docs-derive = { path = "crates/idea-ui-docs-derive" }
 backend-web = { path = "crates/backend-web" }
 backend-ios = { path = "crates/backend-ios" }
+backend-ios-stack = { path = "crates/backend-ios-stack" }
 backend-android = { path = "crates/backend-android" }
 icons-lucide = { path = "crates/icons-lucide" }
 native-layout = { path = "crates/native-layout" }
+idealyst-wire = { path = "crates/idealyst-wire" }
+idealyst-dev-client = { path = "crates/idealyst-dev-client" }
+idealyst-dev-server = { path = "crates/idealyst-dev-server" }
 
 # Size-tuned release profile. We optimize for size rather than speed —
 # UI workloads aren't CPU-bound, but bytes-over-the-wire matter for the

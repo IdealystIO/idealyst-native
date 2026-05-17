@@ -1,5 +1,7 @@
+#[cfg(not(feature = "dev-hot-reload"))]
 use backend_web::WebBackend;
 use std::cell::RefCell;
+#[cfg(not(feature = "dev-hot-reload"))]
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 
@@ -33,17 +35,119 @@ pub fn start() {
     // the diagnostic dance during development.
     console_error_panic_hook::set_once();
 
-    let backend = Rc::new(RefCell::new(WebBackend::new("#app")));
-    let owner = framework_core::render(backend, hello::app());
-    OWNER.with(|slot| *slot.borrow_mut() = Some(owner));
+    #[cfg(feature = "dev-hot-reload")]
+    {
+        dev_hot_reload::start_dev_client();
+        // The dev client renders into `#app` via the wire instead
+        // of mounting the local tree below. The function returns
+        // immediately; the connection lives in a thread-local so
+        // it survives `start()` returning.
+        #[cfg(feature = "debug-stats")]
+        start_render_telemetry();
+        return;
+    }
 
-    // Start the per-frame render-telemetry pump. The loop drains
-    // the framework's event log every frame; when there are events
-    // (any user interaction triggers some), it formats a single-
-    // line summary + a phase breakdown and logs to the console.
-    // Off in release builds via the feature gate.
-    #[cfg(feature = "debug-stats")]
-    start_render_telemetry();
+    #[cfg(not(feature = "dev-hot-reload"))]
+    {
+        let backend = Rc::new(RefCell::new(WebBackend::new("#app")));
+        let owner = framework_core::render(backend, hello::app());
+        OWNER.with(|slot| *slot.borrow_mut() = Some(owner));
+
+        // Start the per-frame render-telemetry pump. The loop
+        // drains the framework's event log every frame; when there
+        // are events (any user interaction triggers some), it
+        // formats a single-line summary + a phase breakdown and
+        // logs to the console. Off in release builds via the
+        // feature gate.
+        #[cfg(feature = "debug-stats")]
+        start_render_telemetry();
+    }
+}
+
+// --- Hot-reload dev client integration -------------------------------------
+//
+// This whole module is gated behind `dev-hot-reload`. When the
+// feature is off, the module — and the `idealyst-dev-client`
+// dependency it pulls in — disappears entirely from the build.
+
+#[cfg(feature = "dev-hot-reload")]
+mod dev_hot_reload {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use backend_web::WebBackend;
+    use idealyst_dev_client::{connect_web, OutboundSender, WebClientHandle, WireBackend};
+    use wasm_bindgen::JsCast;
+
+    const HOST_SELECTOR: &str = "#app";
+    const DEV_URL: &str = "ws://127.0.0.1:9001";
+
+    type AppWire = Rc<RefCell<WireBackend<WebBackend>>>;
+
+    thread_local! {
+        /// The persistent `WireBackend` — built once on first
+        /// connect, kept alive across reconnects. Its `nodes` map
+        /// is the source of truth for what's currently mounted in
+        /// the DOM; idempotent apply on the next snapshot only
+        /// touches nodes that actually changed.
+        static WIRE: RefCell<Option<AppWire>> = const { RefCell::new(None) };
+        /// The current WebSocket connection. Drop = disconnect.
+        /// Replaced (not torn down with WIRE) on every reconnect.
+        static CLIENT: RefCell<Option<WebClientHandle>> = const { RefCell::new(None) };
+    }
+
+    /// Entry point — called once from `start()`. Builds the wire,
+    /// then attempts the first connect.
+    pub fn start_dev_client() {
+        connect_attempt();
+    }
+
+    fn connect_attempt() {
+        // First call: build the persistent wire. Subsequent calls
+        // (reconnects) re-use the existing wire — its DOM state
+        // survives.
+        WIRE.with(|slot| {
+            if slot.borrow().is_none() {
+                let real_backend = WebBackend::new(HOST_SELECTOR);
+                let outbound = OutboundSender::new();
+                let wire = Rc::new(RefCell::new(WireBackend::new(real_backend, outbound)));
+                *slot.borrow_mut() = Some(wire);
+            }
+        });
+        let wire = WIRE.with(|slot| slot.borrow().as_ref().unwrap().clone());
+
+        let on_disconnect: Rc<dyn Fn()> = Rc::new(|| {
+            connect_attempt();
+        });
+
+        match connect_web(DEV_URL, wire, on_disconnect) {
+            Ok(handle) => {
+                CLIENT.with(|slot| *slot.borrow_mut() = Some(handle));
+                web_sys::console::log_1(
+                    &format!("[hello-web] hot-reload connected to {}", DEV_URL).into(),
+                );
+            }
+            Err(e) => {
+                web_sys::console::warn_2(
+                    &"[hello-web] hot-reload connect failed; retrying:".into(),
+                    &e,
+                );
+                schedule_retry();
+            }
+        }
+    }
+
+    fn schedule_retry() {
+        if let Some(window) = web_sys::window() {
+            let cb = wasm_bindgen::closure::Closure::once_into_js(|| {
+                connect_attempt();
+            });
+            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+                cb.as_ref().unchecked_ref(),
+                250,
+            );
+        }
+    }
 }
 
 /// Per-frame render-telemetry loop. Drains the framework's debug

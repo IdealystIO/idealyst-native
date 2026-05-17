@@ -136,6 +136,29 @@ pub(crate) fn animate(transition: &framework_core::Transition, changes: Rc<dyn F
     }
 }
 
+/// Look for an existing width or height constraint on `view` and
+/// update its constant. Returns true if found (no new constraint
+/// needed), false if none exists yet.
+fn update_dimension_constraint(view: &UIView, is_width: bool, value: CGFloat) -> bool {
+    // NSLayoutConstraint attributes: width=7, height=8
+    let target_attr: isize = if is_width { 7 } else { 8 };
+    let constraints: Retained<objc2_foundation::NSArray<NSObject>> = unsafe {
+        msg_send_id![view, constraints]
+    };
+    for i in 0..constraints.len() {
+        let c: &NSObject = &constraints[i];
+        let first_attr: isize = unsafe { msg_send![c, firstAttribute] };
+        let second_item: *const NSObject = unsafe { msg_send![c, secondItem] };
+        // A dimension constraint has firstAttribute == width/height
+        // and secondItem == nil (it's a constant constraint, not relative).
+        if first_attr == target_attr && second_item.is_null() {
+            let _: () = unsafe { msg_send![c, setConstant: value] };
+            return true;
+        }
+    }
+    false
+}
+
 pub(crate) fn apply_style_to_view(view: &UIView, style: &StyleRules) {
     // Background color -- skip for Metal-backed views
     let layer: Retained<NSObject> = unsafe { msg_send_id![view, layer] };
@@ -144,42 +167,45 @@ pub(crate) fn apply_style_to_view(view: &UIView, style: &StyleRules) {
     };
     if let Some(bg) = &style.background {
         if !is_metal_view {
-            let raw = bg.value().0.clone();
             let c = color_to_uicolor(bg.value());
-            view.setBackgroundColor(Some(&c));
-            // Debug: read back the property to verify the assignment
-            // stuck. Spot the views where `setBackgroundColor:` is
-            // silently dropped.
-            let read_back: Option<Retained<NSObject>> =
-                unsafe { msg_send_id![view, backgroundColor] };
-            crate::imp::ios_log(&format!(
-                "[bg-paint] view {:p} src=\"{}\" set?={} ",
-                view as *const UIView,
-                raw,
-                read_back.is_some()
-            ));
             if let Some(trans) = &style.background_transition {
-                let view_ref: Retained<UIView> = unsafe {
-                    Retained::retain(view as *const UIView as *mut UIView).unwrap()
-                };
+                let view_ref: Retained<UIView> = unsafe { Retained::retain(view as *const UIView as *mut UIView).unwrap() };
                 let trans = *trans;
-                let c2 = c.clone();
                 animate(&trans, Rc::new(move || {
-                    view_ref.setBackgroundColor(Some(&c2));
+                    view_ref.setBackgroundColor(Some(&c));
                 }));
+            } else {
+                view.setBackgroundColor(Some(&c));
             }
         }
     }
 
-    // Flex direction, gap, justify_content, align_items, etc. are
-    // ALL handled by Taffy now. They flow through
-    // `LayoutTree::set_style` → Taffy's flex engine → frame
-    // assignment via `apply_frames`. We deliberately do NOT forward
-    // them to any UIView property: legacy backends used UIStackView
-    // here, but UIStackView's own constraints conflict with Taffy's
-    // frame writes (UISV-canvas-connection forces sizes Taffy didn't
-    // choose). The framework's flex semantics live entirely in
-    // native-layout.
+    // Flex direction -> UIStackView axis
+    if let Some(dir) = &style.flex_direction {
+        let is_stack: bool = unsafe {
+            msg_send![view, isKindOfClass: objc2::class!(UIStackView)]
+        };
+        if is_stack {
+            let axis: isize = match dir {
+                framework_core::FlexDirection::Row
+                | framework_core::FlexDirection::RowReverse => 0,
+                framework_core::FlexDirection::Column
+                | framework_core::FlexDirection::ColumnReverse => 1,
+            };
+            let _: () = unsafe { msg_send![view, setAxis: axis] };
+        }
+    }
+
+    // Gap -> UIStackView spacing
+    if let Some(gap) = &style.gap {
+        let is_stack: bool = unsafe {
+            msg_send![view, isKindOfClass: objc2::class!(UIStackView)]
+        };
+        if is_stack {
+            let px = length_to_px(gap.value());
+            let _: () = unsafe { msg_send![view, setSpacing: px] };
+        }
+    }
 
     // Opacity
     if let Some(opacity) = style.opacity.as_ref().map(|t| *t.value()) {
@@ -255,12 +281,37 @@ pub(crate) fn apply_style_to_view(view: &UIView, style: &StyleRules) {
         unsafe { view.setClipsToBounds(false) };
     }
 
-    // Padding is handled entirely by Taffy now (writes into the
-    // node's `padding` Rect, which insets the content area inside
-    // the view's frame). We don't forward to setLayoutMargins
-    // because UIView's layoutMargins are only consulted by
-    // UIStackView's `layoutMarginsRelativeArrangement`, which we no
-    // longer use.
+    // Padding via layoutMargins
+    let pad_top = style.padding_top.as_ref().map(|t| length_to_px(t.value())).unwrap_or(0.0);
+    let pad_left = style.padding_left.as_ref().map(|t| length_to_px(t.value())).unwrap_or(0.0);
+    let pad_bottom = style.padding_bottom.as_ref().map(|t| length_to_px(t.value())).unwrap_or(0.0);
+    let pad_right = style.padding_right.as_ref().map(|t| length_to_px(t.value())).unwrap_or(0.0);
+    if pad_top > 0.0 || pad_left > 0.0 || pad_bottom > 0.0 || pad_right > 0.0 {
+        let is_stack: bool = unsafe {
+            msg_send![view, isKindOfClass: objc2::class!(UIStackView)]
+        };
+        if is_stack {
+            let _: () = unsafe { msg_send![view, setLayoutMarginsRelativeArrangement: true] };
+        }
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct UIEdgeInsets {
+            top: CGFloat, left: CGFloat, bottom: CGFloat, right: CGFloat,
+        }
+        unsafe impl Encode for UIEdgeInsets {
+            const ENCODING: Encoding = Encoding::Struct(
+                "UIEdgeInsets",
+                &[
+                    CGFloat::ENCODING,
+                    CGFloat::ENCODING,
+                    CGFloat::ENCODING,
+                    CGFloat::ENCODING,
+                ],
+            );
+        }
+        let insets = UIEdgeInsets { top: pad_top, left: pad_left, bottom: pad_bottom, right: pad_right };
+        let _: () = unsafe { msg_send![view, setLayoutMargins: insets] };
+    }
 
     // Overflow
     if let Some(overflow) = &style.overflow {
@@ -270,12 +321,35 @@ pub(crate) fn apply_style_to_view(view: &UIView, style: &StyleRules) {
         }
     }
 
-    // Width / height: owned entirely by Taffy. Authors' explicit
-    // `width` / `height` flow through `translate_style` into Taffy's
-    // `size`, then Taffy writes `view.frame` via `apply_frames`. We
-    // do NOT install Auto Layout constraints here — the goal of the
-    // Taffy migration is to make UIView's Auto Layout system
-    // redundant for framework-managed views.
+    // Height / width via Auto Layout constraints
+    // Width / height via Auto Layout constraints. To avoid
+    // accumulating duplicate constraints on repeated apply_style
+    // calls, we first check if a matching constraint already exists
+    // on the view and update its constant rather than adding a new one.
+    if let Some(w) = &style.width {
+        if let Length::Px(px) = w.value() {
+            let px_val = *px as CGFloat;
+            if !update_dimension_constraint(view, true, px_val) {
+                let anchor: Retained<NSObject> = unsafe { msg_send_id![view, widthAnchor] };
+                let c: Retained<NSObject> = unsafe {
+                    msg_send_id![&anchor, constraintEqualToConstant: px_val]
+                };
+                let _: () = unsafe { msg_send![&c, setActive: true] };
+            }
+        }
+    }
+    if let Some(h) = &style.height {
+        if let Length::Px(px) = h.value() {
+            let px_val = *px as CGFloat;
+            if !update_dimension_constraint(view, false, px_val) {
+                let anchor: Retained<NSObject> = unsafe { msg_send_id![view, heightAnchor] };
+                let c: Retained<NSObject> = unsafe {
+                    msg_send_id![&anchor, constraintEqualToConstant: px_val]
+                };
+                let _: () = unsafe { msg_send![&c, setActive: true] };
+            }
+        }
+    }
 }
 
 pub(crate) fn apply_text_style(view: &UIView, style: &StyleRules, is_label: bool) {

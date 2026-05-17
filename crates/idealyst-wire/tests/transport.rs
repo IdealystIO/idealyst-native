@@ -1,0 +1,254 @@
+//! End-to-end transport test.
+//!
+//! Spins up the dev-side `serve(...)` on an OS-assigned localhost
+//! port in a worker thread, connects from a second worker thread,
+//! and asserts the small tree mounted on the dev side surfaces as
+//! the expected sequence of backend calls on the app side.
+//!
+//! Both threads construct their backends locally (the recorder and
+//! the `WireBackend<TraceBackend>` are both `!Send`, but the closures
+//! only capture `Send` data — channels + strings — and build the
+//! non-`Send` state inside the spawned closure).
+
+use std::cell::RefCell;
+use std::net::TcpListener;
+use std::rc::Rc;
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
+
+use framework_core::{render, Backend, Primitive, StyleRules, TextSource};
+use idealyst_dev_client::{connect_and_run, WireBackend};
+use idealyst_dev_server::{serve, WireRecordingBackend};
+
+#[derive(Debug, Clone, PartialEq)]
+enum Trace {
+    CreateView(u64),
+    CreateText(u64, String),
+    Insert(u64, u64),
+    Finish(u64),
+}
+
+#[derive(Default)]
+struct TraceBackend {
+    next: u64,
+    trace: Vec<Trace>,
+}
+
+impl Backend for TraceBackend {
+    type Node = u64;
+
+    fn create_view(&mut self) -> u64 {
+        self.next += 1;
+        let id = self.next;
+        self.trace.push(Trace::CreateView(id));
+        id
+    }
+
+    fn create_text(&mut self, content: &str) -> u64 {
+        self.next += 1;
+        let id = self.next;
+        self.trace.push(Trace::CreateText(id, content.to_string()));
+        id
+    }
+
+    fn create_button(
+        &mut self,
+        _label: &str,
+        _on_click: Rc<dyn Fn()>,
+        _leading: Option<&framework_core::primitives::icon::IconData>,
+        _trailing: Option<&framework_core::primitives::icon::IconData>,
+    ) -> u64 {
+        self.next += 1;
+        self.next
+    }
+
+    fn insert(&mut self, parent: &mut u64, child: u64) {
+        self.trace.push(Trace::Insert(*parent, child));
+    }
+
+    fn update_text(&mut self, _node: &u64, _content: &str) {}
+
+    fn clear_children(&mut self, _node: &u64) {}
+
+    fn apply_style(&mut self, _node: &u64, _style: &Rc<StyleRules>) {}
+
+    fn finish(&mut self, root: u64) {
+        self.trace.push(Trace::Finish(root));
+    }
+}
+
+fn pick_free_port() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    port
+}
+
+#[test]
+fn websocket_round_trip_basic_tree() {
+    let port = pick_free_port();
+    let server_addr = format!("127.0.0.1:{}", port);
+    let url = format!("ws://{}", &server_addr);
+
+    // --- Server thread ---
+    // Holds the framework runtime + recorder + serve loop.
+    let server_addr_clone = server_addr.clone();
+    thread::spawn(move || {
+        let recorder = WireRecordingBackend::new();
+        let backend_rc = Rc::new(RefCell::new(recorder.clone()));
+        let tree = Primitive::View {
+            children: vec![
+                Primitive::Text {
+                    source: TextSource::Static("hello".into()),
+                    style: None,
+                    ref_fill: None,
+                },
+                Primitive::Text {
+                    source: TextSource::Static("world".into()),
+                    style: None,
+                    ref_fill: None,
+                },
+            ],
+            style: None,
+            ref_fill: None,
+        };
+        let owner = render(backend_rc, tree);
+        std::mem::forget(owner);
+        let _ = serve(server_addr_clone, recorder);
+    });
+
+    // Give the server time to bind.
+    wait_for_port(&server_addr, Duration::from_secs(3));
+
+    // --- Client thread ---
+    let (assert_tx, assert_rx) = mpsc::channel::<Vec<Trace>>();
+    let url_for_thread = url.clone();
+    thread::spawn(move || {
+        let (tx, rx) = mpsc::channel();
+        let mut wire = WireBackend::new(TraceBackend::default(), tx);
+
+        // Run the transport loop until the test signals end-of-data
+        // by dropping the assert_rx. The simplest signal: a watchdog
+        // thread closes the TCP stream from the server side by
+        // running until our assertion has captured the trace, then
+        // exiting (the server's outbound TCP close will return
+        // ConnectionClosed in the read loop).
+        //
+        // For now, run with a wall-clock budget: connect, let the
+        // wire apply for 500ms, then snapshot the trace and ship it.
+        let url = url_for_thread;
+        let trace = run_with_budget(&url, &mut wire, rx, Duration::from_millis(500));
+        let _ = assert_tx.send(trace);
+    });
+
+    let trace = assert_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("client never reported back");
+
+    let texts: Vec<String> = trace
+        .iter()
+        .filter_map(|t| match t {
+            Trace::CreateText(_, s) => Some(s.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        texts,
+        vec!["hello".to_string(), "world".to_string()],
+        "the two Text contents from the dev-side tree must arrive on the app side"
+    );
+
+    assert!(
+        trace.iter().any(|t| matches!(t, Trace::CreateView(_))),
+        "the root View must be created"
+    );
+    assert!(
+        trace.iter().any(|t| matches!(t, Trace::Finish(_))),
+        "Finish must be the terminal call"
+    );
+}
+
+fn wait_for_port(addr: &str, total: Duration) {
+    let deadline = std::time::Instant::now() + total;
+    while std::time::Instant::now() < deadline {
+        if std::net::TcpStream::connect(addr).is_ok() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    panic!("server at {} never came up within {:?}", addr, total);
+}
+
+/// Drive `connect_and_run` with a hard wall-clock budget. We can't
+/// cleanly stop the transport loop without a shutdown hook, so we
+/// run it on a sub-thread and snapshot the backend's trace after
+/// the deadline. The sub-thread leaks beyond the test (the process
+/// exits and reaps it).
+fn run_with_budget(
+    url: &str,
+    wire: &mut WireBackend<TraceBackend>,
+    rx: mpsc::Receiver<idealyst_wire::AppToDev>,
+    budget: Duration,
+) -> Vec<Trace> {
+    // The wire and rx aren't Send/Sync — we own them here on this
+    // thread. We can't move them into another thread. The simplest
+    // workaround: open the TCP connection ourselves, read frames
+    // with a short timeout, dispatch via `wire.apply_batch`, return
+    // when the deadline is hit.
+    use idealyst_wire::DevToApp;
+    use tungstenite::Message;
+
+    let deadline = std::time::Instant::now() + budget;
+    let (mut ws, _) = tungstenite::connect(url).expect("connect");
+    let stream = match ws.get_ref() {
+        tungstenite::stream::MaybeTlsStream::Plain(s) => Some(s),
+        _ => None,
+    };
+    if let Some(s) = stream {
+        s.set_read_timeout(Some(Duration::from_millis(50))).ok();
+    }
+
+    // Greet (matches what connect_and_run does).
+    let hello = idealyst_wire::AppToDev::Hello {
+        app_name: "transport-test".to_string(),
+        color_scheme: idealyst_wire::WireColorScheme::Auto,
+    };
+    let bytes = serde_json::to_vec(&hello).unwrap();
+    ws.send(Message::Binary(bytes.into())).ok();
+
+    while std::time::Instant::now() < deadline {
+        match ws.read() {
+            Ok(Message::Binary(b)) => {
+                let msg: DevToApp = serde_json::from_slice(&b).expect("decode");
+                if let DevToApp::Commands(cmds) = msg {
+                    wire.apply_batch(cmds).expect("replay");
+                }
+            }
+            Ok(Message::Text(t)) => {
+                let msg: DevToApp = serde_json::from_str(t.as_str()).expect("decode");
+                if let DevToApp::Commands(cmds) = msg {
+                    wire.apply_batch(cmds).expect("replay");
+                }
+            }
+            Ok(_) => {}
+            Err(tungstenite::Error::Io(e))
+                if e.kind() == std::io::ErrorKind::WouldBlock =>
+            {
+                // timeout — loop
+            }
+            Err(_) => break,
+        }
+        // drain outbound (won't have anything for a passive client)
+        while rx.try_recv().is_ok() {}
+    }
+
+    std::mem::take(&mut wire.backend_mut().trace)
+}
+
+// Suppress dead-code lints for the imports/types that are
+// "indirectly" exercised through the helper paths.
+#[allow(dead_code)]
+fn _force_uses() {
+    let _ = connect_and_run::<TraceBackend>;
+}

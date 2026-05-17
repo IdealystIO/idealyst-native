@@ -71,6 +71,10 @@ pub unsafe extern "C" fn ios_main(root_view: *mut std::ffi::c_void) {
     let mut backend = IosBackend::new(mtm);
     backend.set_host_root(view);
     let backend = Rc::new(RefCell::new(backend));
+    // Install a global weak self-ref so the navigator dispatch
+    // closures can re-run layout after pushes/replaces/selects
+    // (they don't otherwise capture the backend).
+    backend_ios::install_global_self(Rc::downgrade(&backend));
 
     let owner = framework_core::render(backend, hello::app());
 
