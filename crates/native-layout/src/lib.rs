@@ -376,6 +376,15 @@ impl LayoutTree {
         let _ = self.tree.mark_dirty(node.0);
     }
 
+    /// Mark a node as needing re-measure on the next layout pass.
+    /// Used by native backends when the underlying widget's intrinsic
+    /// content changed (e.g. `UILabel.text` swapped) but neither the
+    /// layout style nor the children topology changed — Taffy would
+    /// otherwise use its cached size.
+    pub fn mark_dirty(&mut self, node: LayoutNode) {
+        let _ = self.tree.mark_dirty(node.0);
+    }
+
     /// Set a node's intrinsic content size. Used by native backends
     /// to seed Text / Button / Image / etc. with the size their
     /// native widget would prefer (UIView.intrinsicContentSize,

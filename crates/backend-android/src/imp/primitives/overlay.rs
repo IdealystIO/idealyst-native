@@ -45,8 +45,7 @@ use crate::imp::callbacks::{leak, OverlayDismissCallback};
 use crate::imp::helpers::view_screen_rect;
 use crate::imp::{with_env, AndroidBackend};
 use framework_core::primitives::overlay::{
-    BackdropMode, ElementAlign, ElementAnchor, ElementSide, OverlayAnchor, ViewportPlacement,
-    ViewportRect,
+    AnchorTarget, BackdropMode, ElementAlign, ElementSide, ViewportPlacement, ViewportRect,
 };
 use jni::objects::{GlobalRef, JObject, JValue};
 use jni::sys::jlong;
@@ -77,23 +76,30 @@ pub(crate) struct OverlayInstance {
 pub(crate) type OverlayInstances = HashMap<usize, OverlayInstance>;
 
 // ---------------------------------------------------------------------------
-// create — dispatches to dialog vs popup based on anchor
+// Public entry points — viewport-anchored vs element-anchored. The
+// framework's `Backend::create_overlay` / `create_anchored_overlay`
+// route here.
 // ---------------------------------------------------------------------------
 
-pub(crate) fn create(
+pub(crate) fn create_viewport(
     b: &mut AndroidBackend,
-    anchor: OverlayAnchor,
+    placement: ViewportPlacement,
     backdrop: BackdropMode,
     on_dismiss: Option<Rc<dyn Fn()>>,
 ) -> GlobalRef {
-    match anchor {
-        OverlayAnchor::Viewport(placement) => {
-            create_dialog_overlay(b, placement, backdrop, on_dismiss)
-        }
-        OverlayAnchor::Element(element_anchor) => {
-            create_popup_overlay(b, element_anchor, backdrop, on_dismiss)
-        }
-    }
+    create_dialog_overlay(b, placement, backdrop, on_dismiss)
+}
+
+pub(crate) fn create_anchored(
+    b: &mut AndroidBackend,
+    target: AnchorTarget,
+    side: ElementSide,
+    align: ElementAlign,
+    offset: f32,
+    backdrop: BackdropMode,
+    on_dismiss: Option<Rc<dyn Fn()>>,
+) -> GlobalRef {
+    create_popup_overlay(b, target, side, align, offset, backdrop, on_dismiss)
 }
 
 // ---------------------------------------------------------------------------
@@ -237,7 +243,10 @@ fn create_dialog_overlay(
 
 fn create_popup_overlay(
     b: &mut AndroidBackend,
-    anchor: ElementAnchor,
+    target: AnchorTarget,
+    side: ElementSide,
+    align: ElementAlign,
+    offset: f32,
     backdrop: BackdropMode,
     on_dismiss: Option<Rc<dyn Fn()>>,
 ) -> GlobalRef {
@@ -251,8 +260,8 @@ fn create_popup_overlay(
     // doesn't (target ref hasn't been filled), fall back to the
     // zero rect which positions at top-left of the screen — visible
     // and obvious, but not crashy.
-    let trigger_rect = anchor.target.rect().unwrap_or_default();
-    let (x_dp, y_dp) = compute_popup_position(&trigger_rect, anchor.side, anchor.align, anchor.offset);
+    let trigger_rect = target.rect().unwrap_or_default();
+    let (x_dp, y_dp) = compute_popup_position(&trigger_rect, side, align, offset);
 
     let (popup, content_holder) = with_env(|env| {
         let content = make_content_holder(env, &b.context);

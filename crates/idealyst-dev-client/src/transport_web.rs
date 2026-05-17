@@ -97,6 +97,11 @@ where
         let hello = AppToDev::Hello {
             app_name: env!("CARGO_PKG_NAME").to_string(),
             color_scheme: idealyst_wire::WireColorScheme::Auto,
+            // Web — tell the server our current URL so it can
+            // reconcile its persisted nav stack with what the
+            // browser preserved across reload.
+            initial_url: web_sys::window()
+                .and_then(|w| w.location().pathname().ok()),
         };
         if let Ok(bytes) = serde_json::to_vec(&hello) {
             // Send as binary to match the dev server's send format.
@@ -203,6 +208,147 @@ fn now_ms() -> u64 {
     js_sys::Date::now() as u64
 }
 
+/// Print a one-line summary of an incoming AAS command batch into
+/// the browser console, then a collapsed group with each command's
+/// kind + the most useful payload bits (text content, node ids,
+/// handler ids). Lets you see at a glance what the server emitted
+/// in response to each interaction.
+fn log_command_batch(cmds: &[idealyst_wire::Command]) {
+    use idealyst_wire::Command;
+    if cmds.is_empty() {
+        return;
+    }
+    // Roll up counts per command kind for the headline.
+    let mut counts: std::collections::BTreeMap<&'static str, u32> =
+        std::collections::BTreeMap::new();
+    for c in cmds {
+        *counts.entry(command_kind(c)).or_insert(0) += 1;
+    }
+    let breakdown = counts
+        .iter()
+        .map(|(k, v)| format!("{}× {}", v, k))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let header = format!("[aas] batch · {} commands · {}", cmds.len(), breakdown);
+    web_sys::console::group_collapsed_1(&header.into());
+    for c in cmds {
+        let line = format_command(c);
+        web_sys::console::log_1(&line.into());
+    }
+    web_sys::console::group_end();
+
+    // Special-case event-shaped commands (UpdateText / UpdateButtonLabel)
+    // with a brief top-level line too, so you can see them in the
+    // console without expanding the group.
+    for c in cmds {
+        match c {
+            Command::UpdateText { node, content } => {
+                web_sys::console::log_1(
+                    &format!("[aas]   {} → text {:?}", node, content).into(),
+                );
+            }
+            Command::UpdateButtonLabel { node, label } => {
+                web_sys::console::log_1(
+                    &format!("[aas]   {} → button label {:?}", node, label).into(),
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
+fn command_kind(c: &idealyst_wire::Command) -> &'static str {
+    use idealyst_wire::Command::*;
+    match c {
+        CreateView { .. } => "CreateView",
+        CreateText { .. } => "CreateText",
+        CreateButton { .. } => "CreateButton",
+        CreatePressable { .. } => "CreatePressable",
+        CreateReactiveAnchor { .. } => "CreateReactiveAnchor",
+        CreateImage { .. } => "CreateImage",
+        CreateIcon { .. } => "CreateIcon",
+        CreateTextInput { .. } => "CreateTextInput",
+        CreateToggle { .. } => "CreateToggle",
+        CreateSlider { .. } => "CreateSlider",
+        CreateScrollView { .. } => "CreateScrollView",
+        CreateWebView { .. } => "CreateWebView",
+        CreateVideo { .. } => "CreateVideo",
+        CreateActivityIndicator { .. } => "CreateActivityIndicator",
+        CreateLink { .. } => "CreateLink",
+        CreateOverlay { .. } => "CreateOverlay",
+        CreateGraphics { .. } => "CreateGraphics",
+        CreateVirtualizer { .. } => "CreateVirtualizer",
+        CreateNavigator { .. } => "CreateNavigator",
+        CreateTabNavigator { .. } => "CreateTabNavigator",
+        CreateDrawerNavigator { .. } => "CreateDrawerNavigator",
+        Insert { .. } => "Insert",
+        InsertMany { .. } => "InsertMany",
+        ClearChildren { .. } => "ClearChildren",
+        UpdateText { .. } => "UpdateText",
+        UpdateButtonLabel { .. } => "UpdateButtonLabel",
+        UpdateImageSrc { .. } => "UpdateImageSrc",
+        UpdateIconColor { .. } => "UpdateIconColor",
+        UpdateIconStroke { .. } => "UpdateIconStroke",
+        AnimateIconStroke { .. } => "AnimateIconStroke",
+        UpdateTextInputValue { .. } => "UpdateTextInputValue",
+        UpdateToggleValue { .. } => "UpdateToggleValue",
+        UpdateSliderValue { .. } => "UpdateSliderValue",
+        UpdateWebViewUrl { .. } => "UpdateWebViewUrl",
+        UpdateVideoSrc { .. } => "UpdateVideoSrc",
+        SetDisabled { .. } => "SetDisabled",
+        RegisterStyle { .. } => "RegisterStyle",
+        UnregisterStyle { .. } => "UnregisterStyle",
+        ApplyStyle { .. } => "ApplyStyle",
+        ApplyStyledStates { .. } => "ApplyStyledStates",
+        AttachStates { .. } => "AttachStates",
+        OnNodeUnstyled { .. } => "OnNodeUnstyled",
+        ApplyPresence { .. } => "ApplyPresence",
+        NavigatorAttachInitial { .. } => "NavigatorAttachInitial",
+        NavigatorPush { .. } => "NavigatorPush",
+        NavigatorPop { .. } => "NavigatorPop",
+        NavigatorReplace { .. } => "NavigatorReplace",
+        NavigatorReset { .. } => "NavigatorReset",
+        NavigatorMountTab { .. } => "NavigatorMountTab",
+        DrawerAttachSidebar { .. } => "DrawerAttachSidebar",
+        OpenDrawer { .. } => "OpenDrawer",
+        CloseDrawer { .. } => "CloseDrawer",
+        ToggleDrawer { .. } => "ToggleDrawer",
+        ApplyNavigatorHeaderStyle { .. } => "ApplyNavigatorHeaderStyle",
+        ApplyNavigatorTitleStyle { .. } => "ApplyNavigatorTitleStyle",
+        ApplyNavigatorButtonStyle { .. } => "ApplyNavigatorButtonStyle",
+        ApplyDrawerSidebarStyle { .. } => "ApplyDrawerSidebarStyle",
+        ApplyDrawerScrimStyle { .. } => "ApplyDrawerScrimStyle",
+        ApplyTabBarStyle { .. } => "ApplyTabBarStyle",
+        ApplyTabIconStyle { .. } => "ApplyTabIconStyle",
+        ApplyTabLabelStyle { .. } => "ApplyTabLabelStyle",
+        VirtualizerDataChanged { .. } => "VirtualizerDataChanged",
+        VirtualizerAttachItem { .. } => "VirtualizerAttachItem",
+        ApplyOverlayBackdropStyle { .. } => "ApplyOverlayBackdropStyle",
+        Finish { .. } => "Finish",
+        ReleaseNode { .. } => "ReleaseNode",
+        InstallThemeVariables { .. } => "InstallThemeVariables",
+    }
+}
+
+fn format_command(c: &idealyst_wire::Command) -> String {
+    use idealyst_wire::Command::*;
+    match c {
+        CreateView { id } => format!("CreateView {}", id),
+        CreateText { id, content } => format!("CreateText {} {:?}", id, content),
+        CreateButton { id, label, .. } => format!("CreateButton {} {:?}", id, label),
+        Insert { parent, child } => format!("Insert {} → {}", child, parent),
+        UpdateText { node, content } => format!("UpdateText {} {:?}", node, content),
+        UpdateButtonLabel { node, label } => {
+            format!("UpdateButtonLabel {} {:?}", node, label)
+        }
+        ApplyStyle { node, style } => format!("ApplyStyle {} ← {}", node, style),
+        RegisterStyle { id, .. } => format!("RegisterStyle {}", id),
+        ReleaseNode { node } => format!("ReleaseNode {}", node),
+        Finish { root } => format!("Finish {}", root),
+        other => format!("{}", command_kind(other)),
+    }
+}
+
 /// Schedule a one-shot Rust callback to run `delay_ms` from now via
 /// `window.setTimeout`. Used by the close handler to give the
 /// browser a moment for the dev server to finish restarting before
@@ -241,6 +387,7 @@ where
             REBUILT_AT_MS.with(|slot| slot.set(rebuilt_at_ms));
         }
         DevToApp::Commands(cmds) => {
+            log_command_batch(&cmds);
             if let Err(e) = wire.borrow_mut().apply_batch(cmds) {
                 web_sys::console::error_1(
                     &format!("[dev-client] replay error: {:?}", e).into(),

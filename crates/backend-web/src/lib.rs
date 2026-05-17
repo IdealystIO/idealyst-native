@@ -576,12 +576,12 @@ impl Backend for WebBackend {
 
     fn create_overlay(
         &mut self,
-        anchor: framework_core::primitives::overlay::OverlayAnchor,
+        placement: framework_core::primitives::overlay::ViewportPlacement,
         backdrop: framework_core::primitives::overlay::BackdropMode,
         on_dismiss: Option<Rc<dyn Fn()>>,
         trap_focus: bool,
     ) -> Self::Node {
-        primitives::overlay::create(self, anchor, backdrop, on_dismiss, trap_focus)
+        primitives::overlay::create_viewport(self, placement, backdrop, on_dismiss, trap_focus)
     }
 
     fn apply_overlay_backdrop_style(
@@ -601,6 +601,42 @@ impl Backend for WebBackend {
         node: &Self::Node,
     ) -> framework_core::primitives::overlay::OverlayHandle {
         primitives::overlay::make_handle(node)
+    }
+
+    fn create_anchored_overlay(
+        &mut self,
+        target: framework_core::primitives::overlay::AnchorTarget,
+        side: framework_core::primitives::overlay::ElementSide,
+        align: framework_core::primitives::overlay::ElementAlign,
+        offset: f32,
+        backdrop: framework_core::primitives::overlay::BackdropMode,
+        on_dismiss: Option<Rc<dyn Fn()>>,
+        trap_focus: bool,
+    ) -> Self::Node {
+        primitives::overlay::create_anchored(
+            self, target, side, align, offset, backdrop, on_dismiss, trap_focus,
+        )
+    }
+
+    fn apply_anchored_overlay_backdrop_style(
+        &mut self,
+        node: &Self::Node,
+        style: &Rc<StyleRules>,
+    ) {
+        // Same plumbing as viewport overlays on the web — backdrop is
+        // a separate child element of the portal root either way.
+        primitives::overlay::apply_backdrop_style(self, node, style)
+    }
+
+    fn release_anchored_overlay(&mut self, node: &Self::Node) {
+        primitives::overlay::release(self, node)
+    }
+
+    fn make_anchored_overlay_handle(
+        &self,
+        node: &Self::Node,
+    ) -> framework_core::primitives::overlay::AnchoredOverlayHandle {
+        primitives::overlay::make_anchored_handle(node)
     }
 
     fn apply_presence(

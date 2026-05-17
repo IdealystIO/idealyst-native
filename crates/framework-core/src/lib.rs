@@ -52,8 +52,9 @@ pub use primitives::navigator::{
 };
 pub use primitives::icon::{icon, FillRule, IconData, IconHandle, IconOps, StrokeAnimation};
 pub use primitives::overlay::{
-    overlay, AnchorTarget, AnchorableHandle, BackdropMode, ElementAlign, ElementAnchor,
-    ElementSide, OverlayAnchor, OverlayHandle, OverlayOps, ViewportPlacement, ViewportRect,
+    anchored_overlay, overlay, AnchoredOverlayHandle, AnchoredOverlayOps, AnchorTarget,
+    AnchorableHandle, BackdropMode, ElementAlign, ElementSide, OverlayHandle, OverlayOps,
+    ViewportPlacement, ViewportRect,
 };
 pub use primitives::presence::{
     presence, PresenceAnim, PresenceHandle, PresenceOps, PresenceState,

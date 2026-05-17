@@ -331,8 +331,12 @@ pub(crate) fn apply_text_style(view: &UIView, style: &StyleRules, is_label: bool
         let _: () = unsafe { msg_send![view, setTextAlignment: align] };
     }
 
-    // Number of lines = 0 for wrapping (UILabel only)
+    // Number of lines = 0 for wrapping (UILabel only). Also pin
+    // lineBreakMode to byWordWrapping (= 0) so wrapping happens
+    // instead of mid-line ellipsis when the assigned frame is a
+    // hair narrower than the text wants (rounding off `sizeThatFits:`).
     if is_label {
         let _: () = unsafe { msg_send![view, setNumberOfLines: 0isize] };
+        let _: () = unsafe { msg_send![view, setLineBreakMode: 0isize] };
     }
 }

@@ -912,34 +912,34 @@ pub trait Backend {
         )
     }
 
-    /// Create an overlay — a floating subtree rendered above the
-    /// rest of the UI. Backends stand up their platform-native
-    /// presentation:
+    /// Create a viewport-anchored overlay — a floating subtree
+    /// positioned somewhere in the window (centered, edge-pinned, or
+    /// full-screen). For element-anchored overlays (popovers,
+    /// dropdowns, tooltips, context menus) see
+    /// [`Backend::create_anchored_overlay`].
     ///
-    /// - **Web**: append a portal `<div>` to `<body>` (so it
-    ///   escapes parent overflow/transform stacking contexts),
-    ///   apply `position: fixed`, wire Escape-key + click-on-scrim
-    ///   handlers.
-    /// - **iOS**: add a window-level `UIView` to the active
-    ///   `UIWindow`, or `presentViewController:` for full-screen
-    ///   modals.
-    /// - **Android**: render through `Dialog` (for modals) or
-    ///   `PopupWindow` (for anchored popovers); wire the activity's
-    ///   `OnBackPressedDispatcher` to fire `on_dismiss`.
+    /// Backends stand up their platform-native presentation:
+    /// - **Web**: portal `<div>` appended to `<body>` (escapes
+    ///   overflow / stacking contexts), `position: fixed`, Escape-key
+    ///   + click-on-scrim handlers.
+    /// - **iOS**: window-level `UIView`, or
+    ///   `presentViewController:` for full-screen modals.
+    /// - **Android**: `Dialog` with gravity / size derived from the
+    ///   placement.
     ///
-    /// The `on_dismiss` closure is invoked when the platform fires
-    /// a dismissal event the backend recognizes — Escape, back
-    /// gesture, click on `Dismiss` backdrop. The framework does NOT
-    /// auto-unmount on dismissal; the host is expected to flip its
-    /// open-state signal in response, which causes the surrounding
-    /// `when` to drop the overlay's scope and trigger `release_overlay`.
+    /// The `on_dismiss` closure is invoked when the platform fires a
+    /// dismissal event the backend recognizes (Escape, back gesture,
+    /// click on `Dismiss` backdrop). The framework does NOT
+    /// auto-unmount on dismissal — the host is expected to flip its
+    /// open-state signal, which causes the surrounding `when` branch
+    /// to drop the overlay's scope and trigger `release_overlay`.
     ///
     /// Default: panic. Backends that don't implement overlays
     /// shouldn't have authors trying to mount them.
     #[allow(unused_variables)]
     fn create_overlay(
         &mut self,
-        anchor: primitives::overlay::OverlayAnchor,
+        placement: primitives::overlay::ViewportPlacement,
         backdrop: primitives::overlay::BackdropMode,
         on_dismiss: Option<Rc<dyn Fn()>>,
         trap_focus: bool,
@@ -986,6 +986,73 @@ pub trait Backend {
         node: &Self::Node,
     ) -> primitives::overlay::OverlayHandle {
         primitives::overlay::OverlayHandle::new(Rc::new(()), &NoopOverlayOps)
+    }
+
+    /// Create an element-anchored overlay — a floating subtree that
+    /// follows a trigger element through scrolls / layout reflows /
+    /// orientation changes. Used for popovers, tooltips, dropdowns,
+    /// context menus.
+    ///
+    /// Backends are free to dispatch this to a native anchored
+    /// presentation API (`UIContextMenuInteraction` /
+    /// `UIPopoverPresentationController` on iOS, `PopupWindow` on
+    /// Android, `popover` attribute + CSS anchor positioning on web)
+    /// or fall back to custom positioning with a scroll-tracking
+    /// observer.
+    ///
+    /// `target.rect()` returns the trigger's current viewport rect;
+    /// backends should treat its result as live (it changes with
+    /// scroll / layout) rather than caching the value at mount.
+    ///
+    /// Same `on_dismiss` contract as [`Backend::create_overlay`] —
+    /// the framework does not auto-unmount; the host flips a signal
+    /// in response, which triggers
+    /// [`Backend::release_anchored_overlay`] on scope drop.
+    ///
+    /// Default: panic.
+    #[allow(unused_variables)]
+    fn create_anchored_overlay(
+        &mut self,
+        target: primitives::overlay::AnchorTarget,
+        side: primitives::overlay::ElementSide,
+        align: primitives::overlay::ElementAlign,
+        offset: f32,
+        backdrop: primitives::overlay::BackdropMode,
+        on_dismiss: Option<Rc<dyn Fn()>>,
+        trap_focus: bool,
+    ) -> Self::Node {
+        unimplemented!("create_anchored_overlay not implemented for this backend")
+    }
+
+    /// Apply a backdrop style to an anchored overlay. Most backends
+    /// use the same plumbing as [`Backend::apply_overlay_backdrop_style`].
+    #[allow(unused_variables)]
+    fn apply_anchored_overlay_backdrop_style(
+        &mut self,
+        node: &Self::Node,
+        style: &Rc<StyleRules>,
+    ) {
+        // default: no-op
+    }
+
+    /// Tear down an anchored overlay's backend-side state. Same
+    /// contract as [`Backend::release_overlay`]; backends release the
+    /// anchor tracker / native popup here.
+    #[allow(unused_variables)]
+    fn release_anchored_overlay(&mut self, node: &Self::Node) {
+        // default no-op
+    }
+
+    /// Default no-op handle for anchored overlays.
+    #[allow(unused_variables)]
+    fn make_anchored_overlay_handle(
+        &self,
+        node: &Self::Node,
+    ) -> primitives::overlay::AnchoredOverlayHandle {
+        primitives::overlay::AnchoredOverlayHandle::new(
+            Rc::new(()),
+            &NoopAnchoredOverlayOps,
+        )
     }
 
     /// Apply a presence-style transform (opacity + 2D translate +
@@ -1135,6 +1202,9 @@ impl primitives::link::LinkOps for NoopLinkOps {
 
 struct NoopOverlayOps;
 impl primitives::overlay::OverlayOps for NoopOverlayOps {}
+
+struct NoopAnchoredOverlayOps;
+impl primitives::overlay::AnchoredOverlayOps for NoopAnchoredOverlayOps {}
 
 struct NoopPresenceOps;
 impl primitives::presence::PresenceOps for NoopPresenceOps {}

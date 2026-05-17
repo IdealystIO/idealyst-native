@@ -181,7 +181,7 @@ impl Backend for PrintBackend {
 
     fn create_overlay(
         &mut self,
-        _anchor: primitives::overlay::OverlayAnchor,
+        _placement: primitives::overlay::ViewportPlacement,
         _backdrop: primitives::overlay::BackdropMode,
         _on_dismiss: Option<Rc<dyn Fn()>>,
         _trap_focus: bool,

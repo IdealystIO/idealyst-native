@@ -15,8 +15,8 @@
 use framework_core::{
     component, icon, install_theme, set_theme, signal, ui, AlignItems, AnchorTarget, BackdropMode,
     ButtonHandle, Color, DrawerHandle, DrawerItem, DrawerNavigator, Easing, ElementAlign,
-    ElementAnchor, ElementSide, FillRule, FlexDirection, FontWeight, HeaderButton, IconData,
-    IntoStyleSource, JustifyContent, LayoutProps, Length, Navigator, NavigatorHandle, Overflow, OverlayAnchor,
+    ElementSide, FillRule, FlexDirection, FontWeight, HeaderButton, IconData,
+    IntoStyleSource, JustifyContent, LayoutProps, Length, Navigator, NavigatorHandle, Overflow,
     PresenceAnim, PresenceState, Primitive, Ref, Route, RouteParams, ScreenOptions, Shadow,
     Signal, StrokeAnimation, StyleSource, TabNavigator, TabSpec, TabsHandle, TextAlign, ViewportPlacement,
 };
@@ -2141,7 +2141,7 @@ pub fn overlays(props: &OverlaysProps) -> Primitive {
                     ),
                 ) {
                     Overlay(
-                        anchor = OverlayAnchor::Viewport(ViewportPlacement::Center),
+                        placement = ViewportPlacement::Center,
                         backdrop = BackdropMode::Dismiss,
                         backdrop_style = overlay_scrim_style(),
                         on_dismiss = move || modal_open.set(false)
@@ -2195,13 +2195,11 @@ pub fn overlays(props: &OverlaysProps) -> Primitive {
                         Easing::EaseIn,
                     ),
                 ) {
-                    Overlay(
-                        anchor = OverlayAnchor::Element(ElementAnchor {
-                            target: AnchorTarget::from(popover_trigger),
-                            side: ElementSide::Below,
-                            align: ElementAlign::Start,
-                            offset: 6.0,
-                        }),
+                    AnchoredOverlay(
+                        target = AnchorTarget::from(popover_trigger),
+                        side = ElementSide::Below,
+                        align = ElementAlign::Start,
+                        offset = 6.0,
                         backdrop = BackdropMode::None,
                         on_dismiss = move || popover_open.set(false),
                         trap_focus = false
@@ -2255,7 +2253,7 @@ pub fn overlays(props: &OverlaysProps) -> Primitive {
                     ),
                 ) {
                     Overlay(
-                        anchor = OverlayAnchor::Viewport(ViewportPlacement::Right),
+                        placement = ViewportPlacement::Right,
                         backdrop = BackdropMode::Dismiss,
                         backdrop_style = overlay_scrim_style(),
                         on_dismiss = move || drawer_open.set(false)

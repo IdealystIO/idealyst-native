@@ -613,6 +613,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "hello-ios-aas"
+version = "0.0.1"
+dependencies = [
+ "backend-ios",
+ "framework-core",
+ "idealyst-dev-client",
+ "idealyst-wire",
+ "objc2 0.5.2",
+ "objc2-foundation 0.2.2",
+ "objc2-ui-kit",
+ "serde_json",
+ "tungstenite",
+]
+
+[[package]]
 name = "hello-web"
 version = "0.0.1"
 dependencies = [
@@ -640,6 +655,7 @@ dependencies = [
  "idealyst-dev-client",
  "idealyst-dev-server",
  "idealyst-wire",
+ "serde_json",
 ]
 
 [[package]]

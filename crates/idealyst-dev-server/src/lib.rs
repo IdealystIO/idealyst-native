@@ -16,6 +16,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use framework_core::primitives;
 use framework_core::{Backend, Color, ColorScheme, StateBits, StyleRules};
@@ -29,6 +30,26 @@ pub mod watch;
 
 pub use transport::serve;
 pub use watch::{spawn_rebuild_loop, RebuildCommand, RebuildConfig};
+
+/// The AAS (Application-as-a-Server) **server-side backend** —
+/// implements `framework_core::Backend` with `Node = NodeId`. Plug
+/// this into `framework_core::render(...)` exactly like you'd plug
+/// in `WebBackend` / `IosBackend` / `AndroidBackend`. Instead of
+/// driving native widgets it records every walker call as a wire
+/// [`idealyst_wire::Command`] for transport to one or more
+/// [`AasClient`](idealyst_dev_client::AasClient)s.
+///
+/// `AasBackend` is the heart of the AAS architecture:
+///
+/// ```text
+/// UI tree → AasBackend → Wire (Commands) → AasClient → Platform Backend → Native
+/// ```
+///
+/// The same `Primitive` tree your iOS/web app would render natively
+/// is what the server runs against this backend. The wire output is
+/// platform-agnostic; an `AasClient` wrapping any platform backend
+/// can replay it.
+pub use crate::WireRecordingBackend as AasBackend;
 
 /// Stores the live dev-side closures the walker has handed us. Each
 /// gets a `HandlerId` minted by the recorder; events arriving back
@@ -97,7 +118,20 @@ impl HandlerTable {
 /// loop holds another.
 pub struct WireRecordingBackend {
     inner: Rc<RefCell<RecorderState>>,
+    /// Send+Sync mirror of per-navigator URL stacks. Updated
+    /// synchronously by the recorder's dispatcher (main thread)
+    /// every time a navigator's stack changes. Read by the file
+    /// watch + rebuild thread just before `exec`, to serialize and
+    /// pass forward as an env var. Survives the process image
+    /// swap, letting the freshly-started server restore the
+    /// navigator hierarchy.
+    nav_state_mirror: Arc<Mutex<NavStateSnapshot>>,
 }
+
+/// Map: navigator `NodeId.0` → stack of route URLs (initial route
+/// first, top-of-stack last). Snapshotted across `exec` to recover
+/// the navigation hierarchy after a hot-reload restart.
+pub type NavStateSnapshot = HashMap<u64, Vec<String>>;
 
 struct RecorderState {
     next_node: u64,
@@ -121,6 +155,10 @@ struct RecorderState {
     /// recorder route an `AppToDev::ScreenReleased { scope }` to the
     /// right navigator's `release_screen` callback.
     scope_to_navigator: HashMap<u64, NodeId>,
+    /// Shared handle to the Send+Sync nav-state mirror, so the
+    /// dispatcher can push updates from inside `borrow_mut` without
+    /// going through the outer `WireRecordingBackend`.
+    nav_state_mirror: Arc<Mutex<NavStateSnapshot>>,
 }
 
 /// Per-navigator dev-side state used by the recording backend's
@@ -137,10 +175,15 @@ pub struct NavigatorRecState {
     /// top of stack = end of vec. Updated by the dispatcher on push
     /// and by app-event handlers on swipe-back.
     pub stack: Vec<u64>,
+    /// URL paths of the screens on the navigator's stack, in lock
+    /// step with `stack`. Persisted across `exec` so the navigation
+    /// hierarchy can be restored on the freshly-started server.
+    pub stack_urls: Vec<String>,
 }
 
 impl WireRecordingBackend {
     pub fn new() -> Self {
+        let nav_state_mirror = Arc::new(Mutex::new(NavStateSnapshot::new()));
         Self {
             inner: Rc::new(RefCell::new(RecorderState {
                 next_node: 0,
@@ -152,7 +195,64 @@ impl WireRecordingBackend {
                 state_handlers: HashMap::new(),
                 navigators: HashMap::new(),
                 scope_to_navigator: HashMap::new(),
+                nav_state_mirror: nav_state_mirror.clone(),
             })),
+            nav_state_mirror,
+        }
+    }
+
+    /// Public handle to the per-navigator URL stack mirror. Send + Sync
+    /// — safe to share with the file-watch / rebuild thread so it can
+    /// serialize the current navigation hierarchy before `exec`.
+    pub fn nav_state_mirror(&self) -> Arc<Mutex<NavStateSnapshot>> {
+        self.nav_state_mirror.clone()
+    }
+
+    /// Restore a previously-snapshotted navigator stack. Called by
+    /// the dev-server's main on startup, after the framework's
+    /// initial render has produced fresh navigators at the same
+    /// `NodeId`s. For each saved URL beyond the initial route, we
+    /// look up the matching `(name, params)` via `match_path` and
+    /// dispatch a `Push` — which goes through the regular dispatcher
+    /// and emits real `NavigatorPush` wire commands, so the same
+    /// screens come back without any client-side cooperation.
+    pub fn restore_nav_state(&self, saved: &NavStateSnapshot) {
+        use framework_core::primitives::navigator::NavCommand;
+        for (nav_id_raw, urls) in saved {
+            let nav_id = NodeId(*nav_id_raw);
+            // Snapshot the callbacks under a short borrow.
+            let callbacks = {
+                let state = self.inner.borrow();
+                let Some(nav) = state.navigators.get(&nav_id) else {
+                    eprintln!(
+                        "[dev-server] restore: no navigator at id {}; the route table may have changed",
+                        nav_id_raw
+                    );
+                    continue;
+                };
+                nav.callbacks.clone()
+            };
+            // Skip the initial route — `navigator_attach_initial`
+            // already put it in place.
+            for url in urls.iter().skip(1) {
+                let Some((name, params)) = (callbacks.match_path)(url) else {
+                    eprintln!(
+                        "[dev-server] restore: no route matches {:?} — stopping replay for navigator {}",
+                        url, nav_id_raw
+                    );
+                    break;
+                };
+                navigator_dispatcher_handle(
+                    &self.inner,
+                    nav_id,
+                    callbacks.clone(),
+                    NavCommand::Push {
+                        name,
+                        url: url.clone(),
+                        params,
+                    },
+                );
+            }
         }
     }
 
@@ -160,11 +260,34 @@ impl WireRecordingBackend {
         self.inner.borrow_mut().color_scheme = scheme;
     }
 
-    /// Drain any pending commands. The dev-side driver flushes these
-    /// over the wire after each unit of work (initial mount, event
-    /// dispatch, scope drop).
+    /// Drain any pending commands, removing them from the recorder's
+    /// log. Used by the legacy single-snapshot path; new code should
+    /// prefer the append-only [`Self::commands_since`] /
+    /// [`Self::command_count`] API which lets multiple clients each
+    /// hold their own cursor into the same shared log.
     pub fn drain_commands(&self) -> Vec<Command> {
         std::mem::take(&mut self.inner.borrow_mut().out)
+    }
+
+    /// Total number of commands ever emitted by the walker into this
+    /// recorder's log. Pair with [`Self::commands_since`] to ferry
+    /// "everything past my cursor" to a connected client.
+    pub fn command_count(&self) -> usize {
+        self.inner.borrow().out.len()
+    }
+
+    /// Return a clone of every command emitted at or after `cursor`.
+    /// The recorder's log is append-only; cursors only ever move
+    /// forward. A new client connecting calls this with cursor=0 to
+    /// catch up to the current state; subsequent polls supply their
+    /// last-seen length to fetch only new commands.
+    pub fn commands_since(&self, cursor: usize) -> Vec<Command> {
+        let state = self.inner.borrow();
+        if cursor >= state.out.len() {
+            Vec::new()
+        } else {
+            state.out[cursor..].to_vec()
+        }
     }
 
     /// Dispatch an event received from the app. Returns true if the
@@ -260,6 +383,7 @@ impl Clone for WireRecordingBackend {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
+            nav_state_mirror: self.nav_state_mirror.clone(),
         }
     }
 }
@@ -702,7 +826,7 @@ impl Backend for WireRecordingBackend {
 
     fn create_overlay(
         &mut self,
-        anchor: primitives::overlay::OverlayAnchor,
+        placement: primitives::overlay::ViewportPlacement,
         backdrop: primitives::overlay::BackdropMode,
         on_dismiss: Option<Rc<dyn Fn()>>,
         trap_focus: bool,
@@ -710,72 +834,34 @@ impl Backend for WireRecordingBackend {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
         let handler = on_dismiss.map(|cb| state.handlers.register_unit(cb));
-        let wire_anchor = match anchor {
-            primitives::overlay::OverlayAnchor::Viewport(p) => {
-                idealyst_wire::WireOverlayAnchor::Viewport(match p {
-                    primitives::overlay::ViewportPlacement::Center => {
-                        idealyst_wire::WireViewportPlacement::Center
-                    }
-                    primitives::overlay::ViewportPlacement::Top => {
-                        idealyst_wire::WireViewportPlacement::Top
-                    }
-                    primitives::overlay::ViewportPlacement::Bottom => {
-                        idealyst_wire::WireViewportPlacement::Bottom
-                    }
-                    primitives::overlay::ViewportPlacement::Left => {
-                        idealyst_wire::WireViewportPlacement::Left
-                    }
-                    primitives::overlay::ViewportPlacement::Right => {
-                        idealyst_wire::WireViewportPlacement::Right
-                    }
-                    primitives::overlay::ViewportPlacement::FullScreen => {
-                        // FullScreen isn't first-class on the wire;
-                        // closest fit is Center (the overlay will
-                        // still cover what it covers based on its
-                        // style sheet).
-                        idealyst_wire::WireViewportPlacement::Center
-                    }
-                })
+        // The framework recently split overlays into viewport
+        // (`Primitive::Overlay`) and element-anchored
+        // (`Primitive::AnchoredOverlay`). This Backend method now
+        // handles the viewport case only; element-anchored ones go
+        // through `create_anchored_overlay` below.
+        let wire_anchor = idealyst_wire::WireOverlayAnchor::Viewport(match placement {
+            primitives::overlay::ViewportPlacement::Center => {
+                idealyst_wire::WireViewportPlacement::Center
             }
-            primitives::overlay::OverlayAnchor::Element(elem) => {
-                idealyst_wire::WireOverlayAnchor::Element {
-                    // Element anchors target a specific node by Ref<H>.
-                    // The wire form needs a NodeId — but element refs
-                    // are opaque type-erased AnchorTargets on the dev
-                    // side, and resolving them to a NodeId requires
-                    // walking through `Ref::get()` and downcasting.
-                    // For the prototype we ship a sentinel NodeId(0);
-                    // the app side falls back to viewport-center
-                    // placement when it sees this.
-                    node: NodeId(0),
-                    side: match elem.side {
-                        primitives::overlay::ElementSide::Above => {
-                            idealyst_wire::WireElementSide::Top
-                        }
-                        primitives::overlay::ElementSide::Below => {
-                            idealyst_wire::WireElementSide::Bottom
-                        }
-                        primitives::overlay::ElementSide::Start => {
-                            idealyst_wire::WireElementSide::Left
-                        }
-                        primitives::overlay::ElementSide::End => {
-                            idealyst_wire::WireElementSide::Right
-                        }
-                    },
-                    align: match elem.align {
-                        primitives::overlay::ElementAlign::Start => {
-                            idealyst_wire::WireElementAlign::Start
-                        }
-                        primitives::overlay::ElementAlign::Center => {
-                            idealyst_wire::WireElementAlign::Center
-                        }
-                        primitives::overlay::ElementAlign::End => {
-                            idealyst_wire::WireElementAlign::End
-                        }
-                    },
-                }
+            primitives::overlay::ViewportPlacement::Top => {
+                idealyst_wire::WireViewportPlacement::Top
             }
-        };
+            primitives::overlay::ViewportPlacement::Bottom => {
+                idealyst_wire::WireViewportPlacement::Bottom
+            }
+            primitives::overlay::ViewportPlacement::Left => {
+                idealyst_wire::WireViewportPlacement::Left
+            }
+            primitives::overlay::ViewportPlacement::Right => {
+                idealyst_wire::WireViewportPlacement::Right
+            }
+            primitives::overlay::ViewportPlacement::FullScreen => {
+                // FullScreen isn't first-class on the wire; closest
+                // fit is Center (the style sheet drives the actual
+                // size).
+                idealyst_wire::WireViewportPlacement::Center
+            }
+        });
         let wire_backdrop = match backdrop {
             primitives::overlay::BackdropMode::None => idealyst_wire::WireBackdropMode::None,
             primitives::overlay::BackdropMode::Dismiss => idealyst_wire::WireBackdropMode::Dismiss,
@@ -833,7 +919,7 @@ impl Backend for WireRecordingBackend {
                 nav_id,
                 NavigatorRecState {
                     callbacks: callbacks_rc.clone(),
-                    stack: Vec::new(),
+                    stack: Vec::new(), stack_urls: Vec::new(),
                 },
             );
         }
@@ -858,18 +944,33 @@ impl Backend for WireRecordingBackend {
         scope_id: u64,
         options: framework_core::primitives::navigator::ScreenOptions,
     ) {
-        let mut state = self.inner.borrow_mut();
-        if let Some(nav) = state.navigators.get_mut(navigator) {
-            nav.stack.push(scope_id);
+        let mirror = self.nav_state_mirror.clone();
+        let mut urls_snapshot: Option<Vec<String>> = None;
+        {
+            let mut state = self.inner.borrow_mut();
+            if let Some(nav) = state.navigators.get_mut(navigator) {
+                nav.stack.push(scope_id);
+                // Seed `stack_urls` with the navigator's declared
+                // initial path so `restore_nav_state` knows what URL
+                // the bottom-of-stack screen corresponds to.
+                let initial_path = nav.callbacks.initial_path.to_string();
+                nav.stack_urls.push(initial_path);
+                urls_snapshot = Some(nav.stack_urls.clone());
+            }
+            state.scope_to_navigator.insert(scope_id, *navigator);
+            let wire_options = screen_options_to_wire(&mut state, &options);
+            state.out.push(Command::NavigatorAttachInitial {
+                navigator: *navigator,
+                screen,
+                scope: idealyst_wire::ScopeId(scope_id),
+                options: wire_options,
+            });
         }
-        state.scope_to_navigator.insert(scope_id, *navigator);
-        let wire_options = screen_options_to_wire(&mut state, &options);
-        state.out.push(Command::NavigatorAttachInitial {
-            navigator: *navigator,
-            screen,
-            scope: idealyst_wire::ScopeId(scope_id),
-            options: wire_options,
-        });
+        if let Some(urls) = urls_snapshot {
+            if let Ok(mut m) = mirror.lock() {
+                m.insert(navigator.0, urls);
+            }
+        }
     }
 
     fn create_tab_navigator(
@@ -926,7 +1027,7 @@ impl Backend for WireRecordingBackend {
                 nav_id,
                 NavigatorRecState {
                     callbacks: inner_callbacks_rc.clone(),
-                    stack: Vec::new(),
+                    stack: Vec::new(), stack_urls: Vec::new(),
                 },
             );
         }
@@ -1021,7 +1122,7 @@ impl Backend for WireRecordingBackend {
                 nav_id,
                 NavigatorRecState {
                     callbacks: inner_callbacks_rc.clone(),
-                    stack: Vec::new(),
+                    stack: Vec::new(), stack_urls: Vec::new(),
                 },
             );
         }
@@ -1228,10 +1329,14 @@ fn navigator_dispatcher_handle(
     // `mount_screen` (which calls back into the recording backend),
     // then translate into wire form. Borrows are released BEFORE
     // mount_screen runs so the walker can re-enter `&mut self`.
-    let push_like = |kind: PushLikeKind, name: &'static str, params: Box<dyn std::any::Any>| {
+    let push_like = |kind: PushLikeKind,
+                     name: &'static str,
+                     url: String,
+                     params: Box<dyn std::any::Any>,
+                     restore: bool| {
         let mount = (cbs.mount_screen)(name, params);
         let scope = idealyst_wire::ScopeId(mount.scope_id);
-        let (released_scopes, new_depth) = {
+        let (released_scopes, new_depth, urls_snapshot, mirror) = {
             let mut state = inner.borrow_mut();
             let wire_options = screen_options_to_wire(&mut state, &mount.options);
             let nav_state = state.navigators.get_mut(&nav_id).unwrap();
@@ -1239,19 +1344,25 @@ fn navigator_dispatcher_handle(
             match kind {
                 PushLikeKind::Push | PushLikeKind::Select => {
                     nav_state.stack.push(mount.scope_id);
+                    nav_state.stack_urls.push(url.clone());
                 }
                 PushLikeKind::Replace => {
                     if let Some(popped) = nav_state.stack.pop() {
                         released.push(popped);
                     }
+                    let _ = nav_state.stack_urls.pop();
                     nav_state.stack.push(mount.scope_id);
+                    nav_state.stack_urls.push(url.clone());
                 }
                 PushLikeKind::Reset => {
                     released.extend(nav_state.stack.drain(..));
+                    nav_state.stack_urls.clear();
                     nav_state.stack.push(mount.scope_id);
+                    nav_state.stack_urls.push(url.clone());
                 }
             }
             let depth = nav_state.stack.len();
+            let urls_snapshot = nav_state.stack_urls.clone();
             state.scope_to_navigator.insert(mount.scope_id, nav_id);
             for r in &released {
                 state.scope_to_navigator.remove(r);
@@ -1262,33 +1373,43 @@ fn navigator_dispatcher_handle(
                     screen: mount.node,
                     scope,
                     options: wire_options,
+                    url: url.clone(),
+                    restore,
                 },
                 PushLikeKind::Replace => Command::NavigatorReplace {
                     navigator: nav_id,
                     screen: mount.node,
                     scope,
                     options: wire_options,
+                    url: url.clone(),
+                    restore,
                 },
                 PushLikeKind::Reset => Command::NavigatorReset {
                     navigator: nav_id,
                     screen: mount.node,
                     scope,
                     options: wire_options,
+                    url: url.clone(),
+                    restore,
                 },
                 PushLikeKind::Select => Command::NavigatorPush {
-                    // Tabs/drawer use Select; their wire equivalent
-                    // depends on whether this is a lazy mount or an
-                    // already-mounted activation. For the prototype,
-                    // ship as NavigatorPush; the app side treats it
-                    // as "attach this screen as the new active one".
                     navigator: nav_id,
                     screen: mount.node,
                     scope,
                     options: wire_options,
+                    url: url.clone(),
+                    restore,
                 },
             });
-            (released, depth)
+            let mirror = state.nav_state_mirror.clone();
+            (released, depth, urls_snapshot, mirror)
         };
+        // Sync the Send+Sync mirror after the borrow is released —
+        // the rebuild thread can read this snapshot just before
+        // `exec` to persist the navigation hierarchy.
+        if let Ok(mut m) = mirror.lock() {
+            m.insert(nav_id.0, urls_snapshot);
+        }
         for scope_id in released_scopes {
             (cbs.release_screen)(scope_id);
         }
@@ -1296,24 +1417,35 @@ fn navigator_dispatcher_handle(
     };
 
     match cmd {
-        NavCommand::Push { name, params, .. } => push_like(PushLikeKind::Push, name, params),
-        NavCommand::Replace { name, params, .. } => {
-            push_like(PushLikeKind::Replace, name, params)
+        NavCommand::Push { name, url, params } => {
+            push_like(PushLikeKind::Push, name, url, params, false)
         }
-        NavCommand::Reset { name, params, .. } => push_like(PushLikeKind::Reset, name, params),
-        NavCommand::Select { name, params, .. } => {
-            push_like(PushLikeKind::Select, name, params)
+        NavCommand::Replace { name, url, params } => {
+            push_like(PushLikeKind::Replace, name, url, params, false)
+        }
+        NavCommand::Reset { name, url, params } => {
+            push_like(PushLikeKind::Reset, name, url, params, false)
+        }
+        NavCommand::Select { name, url, params } => {
+            push_like(PushLikeKind::Select, name, url, params, false)
         }
         NavCommand::Pop => {
             let (popped_scope, new_depth) = {
                 let mut state = inner.borrow_mut();
-                let stack = &mut state.navigators.get_mut(&nav_id).unwrap().stack;
-                let popped = stack.pop();
-                let depth = stack.len();
+                let nav_state = state.navigators.get_mut(&nav_id).unwrap();
+                let popped = nav_state.stack.pop();
+                let _ = nav_state.stack_urls.pop();
+                let depth = nav_state.stack.len();
+                let urls_snapshot = nav_state.stack_urls.clone();
+                let mirror = state.nav_state_mirror.clone();
                 state.out.push(Command::NavigatorPop {
                     navigator: nav_id,
                     count: 1,
                 });
+                // Update mirror outside inner borrow path.
+                if let Ok(mut m) = mirror.lock() {
+                    m.insert(nav_id.0, urls_snapshot);
+                }
                 (popped, depth)
             };
             if let Some(scope) = popped_scope {

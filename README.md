@@ -14,7 +14,9 @@ display — without touching app code.
 
 ## What is Idealyst?
 
-Idealyst is a project I (Nicho) started as a way to bring sanity to cross-platform development in a way I felt made sense. This goes beyond defining components that render everywhere, I wanted to standardize everything in the app development ecosystem: from components, theme, navigation, animations, and much, much more.
+I quit my job and got bored, so I started working on this.
+
+Idealyst is a project started as a way to bring sanity to cross-platform development in a way I felt made sense. This goes beyond defining components that render everywhere, I wanted to standardize everything in the app development ecosystem: from components, theme, navigation, animations, and much, much more.
 
 I started building off what I was comfortable with - React and React Native. I am a big fan of the way React works as a framework, and I have nearly a decade of experience working in it. I love the strong and hardworking community it has built, especially on the React Native side, to make app building simple and performant despite the complexities of using Javascript as your runtime in a native environment. It has come a long way. I decided to make a component library, alongside a vast amount of extensions components for things like Camera, Audio, push notifications, that provided a standardized API that ran on Web and Mobile with very high fidelity on both. This project exists as https://github.com/IdealystIO/idealyst-framework, and I've used it in real production apps.
 
@@ -409,6 +411,12 @@ UI workloads aren't compute-bound, but bytes-over-the-wire matter for the WASM
 target. `opt-level = "z"`, LTO on, single codegen unit, panic = abort,
 symbols stripped. A `release-debug` profile inherits release but keeps DWARF
 so `twiggy` can attribute bytes to specific functions.
+
+## Special Thanks
+
+Dioxus is another really cool initiative creating a Rust based cross platform development framework. I even use one of their tools (Taffy!) as the flex-layout renderer for the ios and android backends. Idealyst's approach is unique from theirs in how we render the applications, but I certainly was inspired by their work. Please check them out and support their development! https://github.com/DioxusLabs/dioxus
+
+Special thanks to @GelScott for dealing with my insane rambles as I designed and implemented the framework.
 
 ## License
 

@@ -29,6 +29,22 @@ pub mod convert;
 pub mod graphics;
 pub mod navigators;
 
+/// The AAS (Application-as-a-Server) **client-side replayer** —
+/// wraps any `framework_core::Backend` and feeds it the wire
+/// [`idealyst_wire::Command`]s shipped by an
+/// [`AasBackend`](idealyst_dev_server::AasBackend). Idempotent
+/// apply means re-sending a snapshot only does DOM work for the
+/// commands that actually changed something.
+///
+/// ```text
+/// UI tree → AasBackend → Wire → AasClient<PlatformBackend> → Native
+/// ```
+///
+/// The same `AasClient` plugs into `WebBackend` on the browser,
+/// `IosBackend` on iOS, `AndroidBackend` on Android — every
+/// platform target the framework supports.
+pub use crate::WireBackend as AasClient;
+
 // Native (tungstenite) transport. Only compiled when the `native`
 // feature is on — typically used for iOS / Android / desktop hosts.
 #[cfg(feature = "native")]
@@ -401,44 +417,46 @@ where
                 on_dismiss,
                 trap_focus,
             } => {
-                use framework_core::primitives::overlay::{
-                    BackdropMode, OverlayAnchor, ViewportPlacement,
-                };
-                let resolved_anchor = match anchor {
-                    idealyst_wire::WireOverlayAnchor::Viewport(p) => {
-                        OverlayAnchor::Viewport(match p {
-                            idealyst_wire::WireViewportPlacement::Center => {
-                                ViewportPlacement::Center
-                            }
-                            idealyst_wire::WireViewportPlacement::Top => ViewportPlacement::Top,
-                            idealyst_wire::WireViewportPlacement::Bottom => {
-                                ViewportPlacement::Bottom
-                            }
-                            idealyst_wire::WireViewportPlacement::Left => ViewportPlacement::Left,
-                            idealyst_wire::WireViewportPlacement::Right => {
-                                ViewportPlacement::Right
-                            }
-                            idealyst_wire::WireViewportPlacement::TopLeft
-                            | idealyst_wire::WireViewportPlacement::TopRight
-                            | idealyst_wire::WireViewportPlacement::BottomLeft
-                            | idealyst_wire::WireViewportPlacement::BottomRight => {
-                                // Corner placements aren't a first-class
-                                // ViewportPlacement variant in framework
-                                // today; fall back to the nearest edge.
-                                // Acceptable for the prototype's wire
-                                // contract — corner overlays are rare.
-                                ViewportPlacement::Center
-                            }
-                        })
-                    }
+                use framework_core::primitives::overlay::{BackdropMode, ViewportPlacement};
+                // The framework recently split overlays into
+                // viewport-anchored (`Primitive::Overlay`) and
+                // element-anchored (`Primitive::AnchoredOverlay`).
+                // The wire still uses one `CreateOverlay` command
+                // with a `WireOverlayAnchor` discriminator. For the
+                // viewport case we drive `create_overlay`. For the
+                // element case we fall back to a centered viewport
+                // overlay (proper element-anchoring on the wire
+                // would need a `CreateAnchoredOverlay` command with
+                // an `AnchorTarget`-equivalent referencing a wire
+                // NodeId — TODO).
+                let placement = match anchor {
+                    idealyst_wire::WireOverlayAnchor::Viewport(p) => match p {
+                        idealyst_wire::WireViewportPlacement::Center => {
+                            ViewportPlacement::Center
+                        }
+                        idealyst_wire::WireViewportPlacement::Top => ViewportPlacement::Top,
+                        idealyst_wire::WireViewportPlacement::Bottom => {
+                            ViewportPlacement::Bottom
+                        }
+                        idealyst_wire::WireViewportPlacement::Left => ViewportPlacement::Left,
+                        idealyst_wire::WireViewportPlacement::Right => ViewportPlacement::Right,
+                        // Corner placements + FullScreen don't have
+                        // first-class variants today; fall back to
+                        // the nearest edge / centered. Acceptable
+                        // for the prototype — corner overlays are
+                        // rare.
+                        idealyst_wire::WireViewportPlacement::TopLeft
+                        | idealyst_wire::WireViewportPlacement::TopRight
+                        | idealyst_wire::WireViewportPlacement::BottomLeft
+                        | idealyst_wire::WireViewportPlacement::BottomRight => {
+                            ViewportPlacement::Center
+                        }
+                    },
                     idealyst_wire::WireOverlayAnchor::Element { .. } => {
-                        // Element anchoring needs an AnchorTarget pointing
-                        // at a NodeId-backed handle. The app-side
-                        // anchoring path is per-backend; for the prototype
-                        // we map to centered viewport so the overlay
-                        // mounts and is visible even when the underlying
-                        // target rect can't be queried over the wire.
-                        OverlayAnchor::Viewport(ViewportPlacement::Center)
+                        // Without a proper wire-side `AnchorTarget`,
+                        // collapse to a centered viewport overlay so
+                        // the overlay still mounts visibly.
+                        ViewportPlacement::Center
                     }
                 };
                 let resolved_backdrop = match backdrop {
@@ -449,7 +467,7 @@ where
                 let dismiss_cb: Option<Rc<dyn Fn()>> =
                     on_dismiss.map(|h| self.handler_unit(h));
                 let node = self.backend.create_overlay(
-                    resolved_anchor,
+                    placement,
                     resolved_backdrop,
                     dismiss_cb,
                     trap_focus,
@@ -720,24 +738,36 @@ where
                 screen,
                 scope,
                 options,
+                url,
+                restore,
             } => {
-                self.dispatch_push_like(navigator, screen, scope, options, NavOp::Push)?;
+                self.dispatch_push_like(
+                    navigator, screen, scope, options, NavOp::Push, url, restore,
+                )?;
             }
             Command::NavigatorReplace {
                 navigator,
                 screen,
                 scope,
                 options,
+                url,
+                restore,
             } => {
-                self.dispatch_push_like(navigator, screen, scope, options, NavOp::Replace)?;
+                self.dispatch_push_like(
+                    navigator, screen, scope, options, NavOp::Replace, url, restore,
+                )?;
             }
             Command::NavigatorReset {
                 navigator,
                 screen,
                 scope,
                 options,
+                url,
+                restore,
             } => {
-                self.dispatch_push_like(navigator, screen, scope, options, NavOp::Reset)?;
+                self.dispatch_push_like(
+                    navigator, screen, scope, options, NavOp::Reset, url, restore,
+                )?;
             }
             Command::NavigatorPop { navigator, count } => {
                 let state = self
@@ -768,6 +798,8 @@ where
                     scope,
                     idealyst_wire::WireScreenOptions::default(),
                     NavOp::Select,
+                    String::new(),
+                    false,
                 )?;
             }
 
@@ -1153,7 +1185,15 @@ where
         scope: ScopeId,
         options: idealyst_wire::WireScreenOptions,
         op: NavOp,
+        _url: String,
+        _restore: bool,
     ) -> Result<(), ReplayError> {
+        // `_url` and `_restore` are passed through to whatever
+        // platform-specific glue handles history (e.g. web's
+        // `pushState`). The current generic dispatch path is
+        // platform-agnostic; backends that care about URL/history
+        // can subscribe to the wire command directly. For now,
+        // accepted and ignored at this layer.
         use framework_core::primitives::navigator::NavCommand;
 
         let state = self

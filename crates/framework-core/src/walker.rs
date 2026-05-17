@@ -753,7 +753,7 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
         }
         Primitive::Overlay {
             children,
-            anchor,
+            placement,
             backdrop,
             backdrop_style,
             on_dismiss,
@@ -771,26 +771,15 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
             let dismiss_for_backend = on_dismiss.clone();
             let mut n = time_backend_create(pkind!(Overlay), || {
                 backend.borrow_mut().create_overlay(
-                    anchor,
+                    placement,
                     backdrop,
                     dismiss_for_backend,
                     trap_focus,
                 )
             });
 
-            // Children mount INTO the overlay node, not the
-            // surrounding parent — backends keep the floating
-            // layer's content tree rooted at the portal/dialog/
-            // window-level subview.
             insert_children(backend, &mut n, children);
 
-            // `style` and `backdrop_style` are independent slots.
-            // The first targets the overlay's content container;
-            // the second targets the scrim. Backdrop style runs
-            // through `apply_overlay_backdrop_style` rather than the
-            // shared `apply_style` path because it lives on a
-            // different DOM/native node and has no interaction-state
-            // machinery (no hover/press on a scrim).
             if let Some(s) = style {
                 attach_style(backend, &n, s);
             }
@@ -814,18 +803,79 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
                 fill(handle);
             }
 
-            // RAII cleanup: when the surrounding scope drops (host
-            // flipped its open signal → `when` rebuilt → this scope
-            // drops), the backend tears down its floating layer.
-            // Same pattern as Virtualizer / Graphics / Navigator.
             let cleanup = OverlayHandleCleanup {
                 backend: backend.clone(),
                 node: n.clone(),
             };
             let _cleanup_effect = Effect::new(move || {
-                // Touch the cleanup so it gets owned by this
-                // effect's scope. The effect body itself does no
-                // work; the value's `Drop` fires on scope teardown.
+                let _ = &cleanup;
+            });
+
+            n
+        }
+        Primitive::AnchoredOverlay {
+            children,
+            target,
+            side,
+            align,
+            offset,
+            backdrop,
+            backdrop_style,
+            on_dismiss,
+            trap_focus,
+            style,
+            ref_fill,
+        } => {
+            // Same lifecycle pattern as `Overlay` above — the only
+            // difference is the backend hook we route to (so backends
+            // can dispatch element-anchored cases to a different
+            // native presentation API). Cleanup goes through the
+            // separate `release_anchored_overlay` so backends can
+            // tear down the anchor tracker / native popup distinctly
+            // from their viewport-overlay machinery.
+            let dismiss_for_backend = on_dismiss.clone();
+            let mut n = time_backend_create(pkind!(AnchoredOverlay), || {
+                backend.borrow_mut().create_anchored_overlay(
+                    target,
+                    side,
+                    align,
+                    offset,
+                    backdrop,
+                    dismiss_for_backend,
+                    trap_focus,
+                )
+            });
+
+            insert_children(backend, &mut n, children);
+
+            if let Some(s) = style {
+                attach_style(backend, &n, s);
+            }
+            if let Some(bs) = backdrop_style {
+                let backend_clone = backend.clone();
+                let node_for_backdrop = n.clone();
+                let _e = Effect::new(move || {
+                    let app = match &bs {
+                        StyleSource::Static(a) => a.clone(),
+                        StyleSource::Reactive(f) => f(),
+                    };
+                    let resolved = style::resolve(&app);
+                    backend_clone
+                        .borrow_mut()
+                        .apply_anchored_overlay_backdrop_style(&node_for_backdrop, &resolved);
+                });
+            }
+
+            if let Some(RefFill::AnchoredOverlay(fill)) = ref_fill {
+                let handle = backend.borrow().make_anchored_overlay_handle(&n);
+                fill(handle);
+            }
+
+            let cleanup = AnchoredOverlayHandleCleanup {
+                backend: backend.clone(),
+                node: n.clone(),
+            };
+            let _cleanup_effect = Effect::new(move || {
                 let _ = &cleanup;
             });
 
@@ -936,6 +986,7 @@ fn debug_kind_of(node: &Primitive) -> debug::PrimitiveKind {
         Primitive::Switch { .. } => PrimitiveKind::Switch,
         Primitive::Link { .. } => PrimitiveKind::Link,
         Primitive::Overlay { .. } => PrimitiveKind::Overlay,
+        Primitive::AnchoredOverlay { .. } => PrimitiveKind::AnchoredOverlay,
         Primitive::Presence { .. } => PrimitiveKind::Presence,
         // Repeat is expanded into siblings by `insert_children`
         // and never reaches the build walker as a standalone
@@ -1436,6 +1487,17 @@ struct OverlayHandleCleanup<B: Backend + 'static> {
 impl<B: Backend + 'static> Drop for OverlayHandleCleanup<B> {
     fn drop(&mut self) {
         self.backend.borrow_mut().release_overlay(&self.node);
+    }
+}
+
+struct AnchoredOverlayHandleCleanup<B: Backend + 'static> {
+    backend: Rc<RefCell<B>>,
+    node: B::Node,
+}
+
+impl<B: Backend + 'static> Drop for AnchoredOverlayHandleCleanup<B> {
+    fn drop(&mut self) {
+        self.backend.borrow_mut().release_anchored_overlay(&self.node);
     }
 }
 

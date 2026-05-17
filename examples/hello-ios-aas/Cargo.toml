@@ -1,0 +1,30 @@
+[package]
+name = "hello-ios-aas"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+# `staticlib` produces the `libhello_ios_aas.a` that Xcode links
+# into the iOS app bundle. The Swift host calls the C-exported
+# `ios_main` entry point from the ViewController.
+crate-type = ["staticlib"]
+
+# The iOS AAS demo doesn't run a local Primitive tree — its job is
+# to be an `AasClient<IosBackend>` wired to the dev server. So
+# `hello` is gone; `idealyst-dev-client` is in.
+[dependencies]
+framework-core = { workspace = true }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+backend-ios = { workspace = true }
+idealyst-dev-client = { workspace = true, features = ["native"] }
+idealyst-wire = { workspace = true }
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSString"] }
+objc2-ui-kit = { version = "0.2", features = ["UIResponder", "UIView"] }
+# The lib runs its own tungstenite-based WS loop on a background
+# thread (so the iOS main thread stays responsive) and JSON-encodes
+# each frame.
+tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
+serde_json = "1"

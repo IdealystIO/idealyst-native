@@ -24,6 +24,7 @@ members = [
     "examples/idea-ui-docs",
     "examples/idea-ui-docs-web",
     "examples/hot-reload-demo",
+    "examples/hello-ios-aas",
     "arena/idealyst-native/wasm",
 ]
 

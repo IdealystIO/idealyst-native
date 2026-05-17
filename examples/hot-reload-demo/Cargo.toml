@@ -31,3 +31,4 @@ framework-core = { workspace = true }
 idealyst-wire = { workspace = true }
 idealyst-dev-server = { workspace = true }
 idealyst-dev-client = { workspace = true, features = ["native"] }
+serde_json = "1"

@@ -478,15 +478,34 @@ impl Backend for AndroidBackend {
 
     fn create_overlay(
         &mut self,
-        anchor: framework_core::primitives::overlay::OverlayAnchor,
+        placement: framework_core::primitives::overlay::ViewportPlacement,
         backdrop: framework_core::primitives::overlay::BackdropMode,
         on_dismiss: Option<Rc<dyn Fn()>>,
         _trap_focus: bool,
     ) -> Self::Node {
-        primitives::overlay::create(self, anchor, backdrop, on_dismiss)
+        primitives::overlay::create_viewport(self, placement, backdrop, on_dismiss)
     }
 
     fn release_overlay(&mut self, node: &Self::Node) {
+        primitives::overlay::release(self, node)
+    }
+
+    fn create_anchored_overlay(
+        &mut self,
+        target: framework_core::primitives::overlay::AnchorTarget,
+        side: framework_core::primitives::overlay::ElementSide,
+        align: framework_core::primitives::overlay::ElementAlign,
+        offset: f32,
+        backdrop: framework_core::primitives::overlay::BackdropMode,
+        on_dismiss: Option<Rc<dyn Fn()>>,
+        _trap_focus: bool,
+    ) -> Self::Node {
+        primitives::overlay::create_anchored(
+            self, target, side, align, offset, backdrop, on_dismiss,
+        )
+    }
+
+    fn release_anchored_overlay(&mut self, node: &Self::Node) {
         primitives::overlay::release(self, node)
     }
 

@@ -45,6 +45,8 @@ where
     let hello = AppToDev::Hello {
         app_name: env!("CARGO_PKG_NAME").to_string(),
         color_scheme: crate::color_scheme_to_wire(wire.color_scheme()),
+        // Native transport — no URL bar to read from.
+        initial_url: None,
     };
     send(&mut ws, &hello)?;
 

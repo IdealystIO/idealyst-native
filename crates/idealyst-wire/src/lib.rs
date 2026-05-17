@@ -113,6 +113,12 @@ pub enum AppToDev {
     Hello {
         app_name: String,
         color_scheme: WireColorScheme,
+        /// Web only: `Some(window.location.pathname)`. Lets the
+        /// server reconcile its persisted nav stack with the URL
+        /// the browser actually has after a reload. Native clients
+        /// send `None`.
+        #[serde(default)]
+        initial_url: Option<String>,
     },
 
     /// A user-driven event fired against a registered handler.
@@ -428,6 +434,17 @@ pub enum Command {
         screen: NodeId,
         scope: ScopeId,
         options: WireScreenOptions,
+        /// URL of the screen being pushed. Drives `history.pushState`
+        /// on web; informational on native.
+        #[serde(default)]
+        url: String,
+        /// `true` when the server is rebuilding stack state after a
+        /// reconnect (the screens were already there before the
+        /// rebuild). Web backends MUST NOT call `history.pushState`
+        /// in this case — the browser already has the URL and the
+        /// history entries. Native backends ignore this flag.
+        #[serde(default)]
+        restore: bool,
     },
     NavigatorPop {
         navigator: NodeId,
@@ -438,12 +455,20 @@ pub enum Command {
         screen: NodeId,
         scope: ScopeId,
         options: WireScreenOptions,
+        #[serde(default)]
+        url: String,
+        #[serde(default)]
+        restore: bool,
     },
     NavigatorReset {
         navigator: NodeId,
         screen: NodeId,
         scope: ScopeId,
         options: WireScreenOptions,
+        #[serde(default)]
+        url: String,
+        #[serde(default)]
+        restore: bool,
     },
     /// Mount a lazy tab's content after the app reports activation.
     NavigatorMountTab {

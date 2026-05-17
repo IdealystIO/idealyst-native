@@ -276,3 +276,122 @@ impl LayoutObserverView {
         unsafe { msg_send_id![super(this), init] }
     }
 }
+
+// =========================================================================
+// OverlayPassthroughView — UIView subclass that only consumes touches
+// in its subviews' frames.
+//
+// Used as the container for overlays with `BackdropMode::None`
+// (popovers, selects). The default `UIView.pointInside:` returns YES
+// for any point in `bounds`, so a viewport-spanning container would
+// intercept every touch on the page beneath it — including scroll
+// gestures. Overriding `pointInside:` to return YES only where a
+// subview lies makes the container act like an invisible parent that
+// "wraps" just the popover content: taps and pan gestures outside the
+// content fall through to whatever's behind the overlay (the page),
+// while touches inside the content still reach the popover.
+// =========================================================================
+
+declare_class!(
+    pub(crate) struct OverlayPassthroughView;
+
+    unsafe impl ClassType for OverlayPassthroughView {
+        type Super = UIView;
+        type Mutability = mutability::MainThreadOnly;
+        const NAME: &'static str = "IdealystOverlayPassthroughView";
+    }
+
+    impl DeclaredClass for OverlayPassthroughView {
+        type Ivars = ();
+    }
+
+    unsafe impl OverlayPassthroughView {
+        #[method(pointInside:withEvent:)]
+        fn point_inside(
+            &self,
+            point: objc2_foundation::CGPoint,
+            _event: *const NSObject,
+        ) -> objc2::runtime::Bool {
+            // Hit only if the point lies inside one of our subviews.
+            // We don't dig recursively — overlay containers have a
+            // small, flat subview list (the single content child,
+            // plus an optional scrim that's only present when a
+            // backdrop is requested, in which case the caller uses a
+            // plain UIView, not this class).
+            let subviews: Retained<objc2_foundation::NSArray<UIView>> =
+                unsafe { msg_send_id![self, subviews] };
+            for sub in subviews.iter() {
+                if sub.isHidden() {
+                    continue;
+                }
+                let frame: objc2_foundation::CGRect = unsafe { msg_send![&*sub, frame] };
+                if point.x >= frame.origin.x
+                    && point.x < frame.origin.x + frame.size.width
+                    && point.y >= frame.origin.y
+                    && point.y < frame.origin.y + frame.size.height
+                {
+                    return objc2::runtime::Bool::YES;
+                }
+            }
+            objc2::runtime::Bool::NO
+        }
+    }
+);
+
+impl OverlayPassthroughView {
+    pub(crate) fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = mtm.alloc::<Self>();
+        let this = this.set_ivars(());
+        unsafe { msg_send_id![super(this), init] }
+    }
+}
+
+// =========================================================================
+// DisplayLinkTarget — CADisplayLink target that calls a Rust closure
+// once per display refresh. Same shape as `CallbackTarget` but the
+// selector accepts the display-link sender (which we ignore).
+//
+// Used by the overlay primitive to track an element-anchored overlay
+// to its trigger as the page scrolls / animates. Cheaper than
+// observing every potential UIScrollView ancestor and re-runs every
+// vsync only while the link is added to a runloop — invalidating it
+// stops all work.
+// =========================================================================
+
+pub(crate) struct DisplayLinkTargetIvars {
+    callback: RefCell<Option<Rc<dyn Fn()>>>,
+}
+
+declare_class!(
+    pub(crate) struct DisplayLinkTarget;
+
+    unsafe impl ClassType for DisplayLinkTarget {
+        type Super = NSObject;
+        type Mutability = mutability::InteriorMutable;
+        const NAME: &'static str = "IdealystDisplayLinkTarget";
+    }
+
+    impl DeclaredClass for DisplayLinkTarget {
+        type Ivars = DisplayLinkTargetIvars;
+    }
+
+    unsafe impl DisplayLinkTarget {
+        #[method(tick:)]
+        fn tick(&self, _sender: &NSObject) {
+            let ivars = self.ivars();
+            if let Some(cb) = ivars.callback.borrow().as_ref() {
+                cb();
+            }
+        }
+    }
+);
+
+impl DisplayLinkTarget {
+    pub(crate) fn new(mtm: MainThreadMarker, callback: Rc<dyn Fn()>) -> Retained<Self> {
+        let this = mtm.alloc::<Self>();
+        let this = this.set_ivars(DisplayLinkTargetIvars {
+            callback: RefCell::new(Some(callback)),
+        });
+        unsafe { msg_send_id![super(this), init] }
+    }
+}

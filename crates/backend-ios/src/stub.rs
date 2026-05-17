@@ -31,3 +31,10 @@ impl Backend for IosBackend {
         unreachable!()
     }
 }
+
+impl IosBackend {
+    /// Stub for the iOS-only `run_layout` so non-iOS hosts that
+    /// reference it (e.g. a shared crate that calls it under cfg)
+    /// link cleanly.
+    pub fn run_layout(&mut self) {}
+}

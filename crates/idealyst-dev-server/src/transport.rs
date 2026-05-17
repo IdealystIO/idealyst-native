@@ -1,19 +1,27 @@
 //! WebSocket transport for the dev-side of the hot-reload protocol.
 //!
-//! Single-threaded blocking server: accept one client at a time,
-//! drive its connection until disconnect, then accept the next. The
-//! framework's reactive runtime lives in the same thread (it's
-//! `Rc`-based, not `Send`), so we can't trivially go async without
-//! moving the framework off `Rc`. Sync is fine for a dev-only tool
-//! talking to a single connected device.
+//! **Multi-client, single-threaded poll loop.** The framework runtime
+//! is `Rc`-based (not `Send`), so we can't spawn threads that touch
+//! it. Instead, [`serve`] runs a single thread that:
+//!
+//! 1. Accepts new TCP connections (non-blocking).
+//! 2. Reads pending WebSocket frames from every connected client
+//!    (non-blocking on each socket).
+//! 3. Dispatches inbound app events through the recorder, which may
+//!    fire reactive effects and append new commands to the log.
+//! 4. Broadcasts any new commands to every connected client (each
+//!    advances its own cursor independently).
+//!
+//! Net effect: an event from any client is visible to all clients
+//! on the next tick. Live collaborative sessions fall out of the
+//! AAS architecture for free — same logical app, multiple
+//! interpreters.
 //!
 //! Wire framing: each WebSocket message body is JSON-encoded
 //! [`DevToApp`] (server → client) or [`AppToDev`] (client → server).
-//! Swap for `postcard` or `bincode` later — `idealyst_wire::codec`
-//! already provides the indirection; pointed at JSON for now to keep
-//! the wire inspectable in network captures.
 
-use std::net::{TcpListener, ToSocketAddrs};
+use std::io::ErrorKind;
+use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 use idealyst_wire::{AppToDev, DevToApp, WireColorScheme, WireTheme, PROTOCOL_VERSION};
@@ -21,56 +29,173 @@ use tungstenite::{Message, WebSocket};
 
 use crate::WireRecordingBackend;
 
+/// Tick between polls. Bounds the worst-case forwarding latency.
+/// 20ms is well under human-perceptible delay for interaction
+/// echo across clients while keeping CPU idle most of the time.
+const TICK_INTERVAL: Duration = Duration::from_millis(20);
+
+/// One connected client. Holds the WebSocket plus the per-client
+/// cursor into the recorder's append-only log.
+struct ClientConn {
+    ws: WebSocket<TcpStream>,
+    cursor: usize,
+    /// Best-effort label for log lines.
+    peer: String,
+}
+
 /// Listen on `addr` and serve dev-mode hot-reload connections from
 /// the supplied recorder. Blocks forever; returns only on a fatal
 /// socket error.
-///
-/// The recorder must already have been populated by an initial
-/// `framework_core::render(...)` call before this is invoked. The
-/// initial command batch (everything the recorder has captured up
-/// to this point) is shipped to each new client on connect.
 pub fn serve(addr: impl ToSocketAddrs, recorder: WireRecordingBackend) -> std::io::Result<()> {
     let listener = TcpListener::bind(addr)?;
-    let local = listener.local_addr().ok();
-    if let Some(addr) = local {
+    listener.set_nonblocking(true)?;
+    if let Ok(addr) = listener.local_addr() {
         eprintln!("[dev-server] listening on ws://{}", addr);
     }
-
-    // Snapshot the initial-mount commands the recorder has buffered
-    // by now (the caller has already run `framework_core::render(...)`
-    // against it). Every new connection gets a fresh copy of this
-    // snapshot — without it, the second client (e.g. after a browser
-    // hard-reload) would see an empty buffer and a blank page.
-    let initial_snapshot = recorder.drain_commands();
     eprintln!(
-        "[dev-server] captured {} initial commands for replay",
-        initial_snapshot.len()
+        "[dev-server] recorder log starts with {} commands",
+        recorder.command_count()
     );
 
+    let mut clients: Vec<ClientConn> = Vec::new();
+
     loop {
-        let (stream, peer) = listener.accept()?;
-        eprintln!("[dev-server] client connected: {}", peer);
-        if let Err(e) = handle_connection(stream, &recorder, &initial_snapshot) {
-            eprintln!("[dev-server] client error: {}", e);
-        }
-        eprintln!("[dev-server] client disconnected");
+        accept_new(&listener, &mut clients, &recorder);
+        poll_reads(&mut clients, &recorder);
+        broadcast_new_commands(&mut clients, &recorder);
+        std::thread::sleep(TICK_INTERVAL);
     }
 }
 
-fn handle_connection(
-    stream: std::net::TcpStream,
+/// Accept any pending connections without blocking. Each accepted
+/// client gets the protocol Hello + a one-shot catch-up batch
+/// with the entire current log, then joins the broadcast set.
+fn accept_new(
+    listener: &TcpListener,
+    clients: &mut Vec<ClientConn>,
     recorder: &WireRecordingBackend,
-    initial_snapshot: &[idealyst_wire::Command],
-) -> Result<(), TransportError> {
-    stream.set_read_timeout(Some(Duration::from_millis(100)))?;
-    let mut ws = tungstenite::accept(stream).map_err(TransportError::Handshake)?;
+) {
+    loop {
+        match listener.accept() {
+            Ok((stream, peer)) => {
+                eprintln!(
+                    "[dev-server] client connected: {} ({} active)",
+                    peer,
+                    clients.len() + 1
+                );
+                // tungstenite's handshake is synchronous; do it on a
+                // briefly-blocking stream, then flip to non-blocking
+                // for the steady-state poll loop.
+                let _ = stream.set_nonblocking(false);
+                let mut ws = match tungstenite::accept(stream) {
+                    Ok(ws) => ws,
+                    Err(e) => {
+                        eprintln!("[dev-server] handshake failed: {}", e);
+                        continue;
+                    }
+                };
+                if send_hello(&mut ws).is_err() {
+                    continue;
+                }
+                let catchup = recorder.commands_since(0);
+                if !catchup.is_empty() {
+                    eprintln!(
+                        "[dev-server] catching up {} with {} commands",
+                        peer,
+                        catchup.len()
+                    );
+                    if send(&mut ws, &DevToApp::Commands(catchup)).is_err() {
+                        continue;
+                    }
+                }
+                let _ = ws.get_mut().set_nonblocking(true);
+                clients.push(ClientConn {
+                    ws,
+                    cursor: recorder.command_count(),
+                    peer: peer.to_string(),
+                });
+            }
+            Err(e) if e.kind() == ErrorKind::WouldBlock => return,
+            Err(e) => {
+                eprintln!("[dev-server] accept error: {}", e);
+                return;
+            }
+        }
+    }
+}
 
-    // Greet. Carries the protocol version + a placeholder theme so
-    // the app can prepare its style state before the first apply.
-    // `IDEALYST_REBUILT_AT_MS` is set by `watch::self_exec` before
-    // restart so the new process can tell the app exactly when the
-    // change was detected — letting the app log a real end-to-end
-    // "change → apply" latency.
+/// Drain any pending WebSocket frames from each connected client.
+/// Disconnected / errored clients are removed.
+fn poll_reads(clients: &mut Vec<ClientConn>, recorder: &WireRecordingBackend) {
+    let mut keep = Vec::with_capacity(clients.len());
+    for mut client in clients.drain(..) {
+        let mut alive = true;
+        // Drain as many frames as are immediately available.
+        loop {
+            match client.ws.read() {
+                Ok(Message::Text(t)) => match serde_json::from_str::<AppToDev>(t.as_str()) {
+                    Ok(msg) => handle_app_msg(recorder, msg),
+                    Err(e) => eprintln!("[dev-server] decode error: {}", e),
+                },
+                Ok(Message::Binary(b)) => match serde_json::from_slice::<AppToDev>(&b) {
+                    Ok(msg) => handle_app_msg(recorder, msg),
+                    Err(e) => eprintln!("[dev-server] decode error: {}", e),
+                },
+                Ok(Message::Close(_)) => {
+                    eprintln!("[dev-server] {} closed", client.peer);
+                    alive = false;
+                    break;
+                }
+                Ok(Message::Ping(p)) => {
+                    let _ = client.ws.send(Message::Pong(p));
+                }
+                Ok(_) => {}
+                Err(tungstenite::Error::Io(e)) if e.kind() == ErrorKind::WouldBlock => break,
+                Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => {
+                    eprintln!("[dev-server] {} disconnected", client.peer);
+                    alive = false;
+                    break;
+                }
+                Err(e) => {
+                    eprintln!("[dev-server] {} read error: {}", client.peer, e);
+                    alive = false;
+                    break;
+                }
+            }
+        }
+        if alive {
+            keep.push(client);
+        }
+    }
+    *clients = keep;
+}
+
+/// Ship every command appended to the log since each client's
+/// cursor. Disconnected clients are pruned.
+fn broadcast_new_commands(
+    clients: &mut Vec<ClientConn>,
+    recorder: &WireRecordingBackend,
+) {
+    let new_count = recorder.command_count();
+    let mut keep = Vec::with_capacity(clients.len());
+    for mut client in clients.drain(..) {
+        if new_count > client.cursor {
+            let cmds = recorder.commands_since(client.cursor);
+            if send(&mut client.ws, &DevToApp::Commands(cmds)).is_err() {
+                eprintln!("[dev-server] {} send failed; dropping", client.peer);
+                continue;
+            }
+            client.cursor = new_count;
+        }
+        keep.push(client);
+    }
+    *clients = keep;
+}
+
+fn send_hello<S>(ws: &mut WebSocket<S>) -> Result<(), TransportError>
+where
+    S: std::io::Read + std::io::Write,
+{
     let rebuilt_at_ms = std::env::var("IDEALYST_REBUILT_AT_MS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok());
@@ -83,65 +208,12 @@ fn handle_connection(
         },
         rebuilt_at_ms,
     };
-    send(&mut ws, &hello)?;
-
-    // Ship the persistent initial-mount snapshot. A clone so
-    // subsequent connections also see it.
-    if !initial_snapshot.is_empty() {
-        eprintln!(
-            "[dev-server] sending {} initial commands",
-            initial_snapshot.len()
-        );
-        send(&mut ws, &DevToApp::Commands(initial_snapshot.to_vec()))?;
-    }
-    // Also drain anything queued since the snapshot (e.g. events
-    // from a previous connection that fired reactivity).
-    let pending_since_snapshot = recorder.drain_commands();
-    if !pending_since_snapshot.is_empty() {
-        send(&mut ws, &DevToApp::Commands(pending_since_snapshot))?;
-    }
-
-    // Receive loop. Read with a short timeout so the loop can
-    // periodically drain any commands the recorder may have queued
-    // (e.g. from a timer effect on the dev side).
-    loop {
-        match ws.read() {
-            Ok(Message::Text(t)) => {
-                let msg: AppToDev = serde_json::from_str(t.as_str())
-                    .map_err(|e| TransportError::Decode(e.to_string()))?;
-                handle_app_msg(recorder, msg);
-            }
-            Ok(Message::Binary(b)) => {
-                let msg: AppToDev = serde_json::from_slice(&b)
-                    .map_err(|e| TransportError::Decode(e.to_string()))?;
-                handle_app_msg(recorder, msg);
-            }
-            Ok(Message::Close(_)) => return Ok(()),
-            Ok(Message::Ping(p)) => {
-                let _ = ws.send(Message::Pong(p));
-            }
-            Ok(_) => {}
-            Err(tungstenite::Error::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                // Timeout — flush any queued commands.
-            }
-            Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => {
-                return Ok(());
-            }
-            Err(e) => return Err(TransportError::Tungstenite(e)),
-        }
-
-        // Flush any commands the recorder produced (from the app
-        // event we just dispatched, or from a side effect).
-        let pending = recorder.drain_commands();
-        if !pending.is_empty() {
-            send(&mut ws, &DevToApp::Commands(pending))?;
-        }
-    }
+    send(ws, &hello)
 }
 
 fn handle_app_msg(recorder: &WireRecordingBackend, msg: AppToDev) {
     match msg {
-        AppToDev::Hello { app_name, color_scheme: _ } => {
+        AppToDev::Hello { app_name, color_scheme: _, initial_url: _ } => {
             eprintln!("[dev-server] app hello: {}", app_name);
         }
         AppToDev::Event { handler, args } => {
@@ -150,15 +222,11 @@ fn handle_app_msg(recorder: &WireRecordingBackend, msg: AppToDev) {
         AppToDev::StateChanged { node, bit, on } => {
             let _ = recorder.dispatch_state(node, bit, on);
         }
-        AppToDev::ColorSchemeChanged { scheme: _ } => {
-            // Theming hook: re-resolve stylesheets here in a follow-up.
-        }
+        AppToDev::ColorSchemeChanged { scheme: _ } => {}
         AppToDev::ScreenReleased { scope } => {
             recorder.handle_screen_released(scope.0);
         }
-        AppToDev::NavigatorDepthChanged { .. } => {
-            // Dev tracks depth from its own stack model; informational.
-        }
+        AppToDev::NavigatorDepthChanged { .. } => {}
         AppToDev::DrawerStateChanged { navigator, is_open } => {
             recorder.handle_drawer_state_changed(navigator, is_open);
         }
@@ -167,10 +235,7 @@ fn handle_app_msg(recorder: &WireRecordingBackend, msg: AppToDev) {
         }
         AppToDev::VirtualizerMountItem { .. }
         | AppToDev::VirtualizerReleaseItem { .. }
-        | AppToDev::VirtualizerMeasuredSize { .. } => {
-            // Virtualizer lazy-mount path — deferred (see
-            // `create_virtualizer` doc in lib.rs for the plan).
-        }
+        | AppToDev::VirtualizerMeasuredSize { .. } => {}
         AppToDev::Error { message } => {
             eprintln!("[dev-server] app reported error: {}", message);
         }

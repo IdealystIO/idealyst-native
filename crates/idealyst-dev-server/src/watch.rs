@@ -44,6 +44,14 @@ pub struct RebuildConfig {
     /// window collapse into one rebuild. 300ms tracks the typical
     /// editor save-burst on macOS.
     pub debounce: Duration,
+    /// Optional snapshot hook. Called on each successful rebuild,
+    /// just before `exec`. Returns a list of `(env_var, value)` to
+    /// set on the re-execed process. Used to persist things like
+    /// the navigator URL stack across the process image swap.
+    ///
+    /// `Send` because it runs on the file-watcher thread; usually
+    /// captures an `Arc<Mutex<...>>` shared with the main thread.
+    pub before_exec: Option<Box<dyn FnMut() -> Vec<(String, String)> + Send>>,
 }
 
 /// Spawn a background thread that watches `config.watch_paths`,
@@ -56,7 +64,7 @@ pub fn spawn_rebuild_loop(config: RebuildConfig) -> std::thread::JoinHandle<()> 
     std::thread::spawn(move || run(config))
 }
 
-fn run(config: RebuildConfig) {
+fn run(mut config: RebuildConfig) {
     let (tx, rx) = std_mpsc::channel::<DebounceEventResult>();
     let mut debouncer = match new_debouncer(config.debounce, tx) {
         Ok(d) => d,
@@ -76,9 +84,6 @@ fn run(config: RebuildConfig) {
     for evt in rx {
         match evt {
             Ok(events) if !events.is_empty() => {
-                // Capture the moment-of-change so we can report
-                // end-to-end "change → apply" latency on the app
-                // side after the rebuild completes.
                 let detected_at_ms = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_millis() as u64)
@@ -87,7 +92,11 @@ fn run(config: RebuildConfig) {
                     "[dev-server] source changed ({} event(s)), rebuilding…",
                     events.len()
                 );
-                rebuild_and_replace(&config.command, detected_at_ms);
+                let extra_env = match &mut config.before_exec {
+                    Some(f) => f(),
+                    None => Vec::new(),
+                };
+                rebuild_and_replace(&config.command, detected_at_ms, &extra_env);
             }
             Ok(_) => {}
             Err(e) => {
@@ -97,14 +106,14 @@ fn run(config: RebuildConfig) {
     }
 }
 
-fn rebuild_and_replace(cmd: &RebuildCommand, detected_at_ms: u64) {
+fn rebuild_and_replace(cmd: &RebuildCommand, detected_at_ms: u64, extra_env: &[(String, String)]) {
     let mut child = std::process::Command::new(&cmd.program);
     child.args(&cmd.args);
 
     match child.status() {
         Ok(status) if status.success() => {
             eprintln!("[dev-server] rebuild OK, restarting…");
-            self_exec(detected_at_ms);
+            self_exec(detected_at_ms, extra_env);
         }
         Ok(status) => {
             eprintln!("[dev-server] rebuild failed (exit {}); keeping current build", status);
@@ -116,7 +125,7 @@ fn rebuild_and_replace(cmd: &RebuildCommand, detected_at_ms: u64) {
 }
 
 #[cfg(unix)]
-fn self_exec(detected_at_ms: u64) {
+fn self_exec(detected_at_ms: u64, extra_env: &[(String, String)]) {
     use std::os::unix::process::CommandExt;
     let exe = match std::env::current_exe() {
         Ok(p) => p,
@@ -126,18 +135,18 @@ fn self_exec(detected_at_ms: u64) {
         }
     };
     let args: Vec<String> = std::env::args().skip(1).collect();
-    // Hand the new process the timestamp via env var; it'll
-    // include it in the next `Hello` so the app can log
-    // end-to-end latency.
-    let err = std::process::Command::new(exe)
-        .args(&args)
-        .env("IDEALYST_REBUILT_AT_MS", detected_at_ms.to_string())
-        .exec();
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(&args)
+        .env("IDEALYST_REBUILT_AT_MS", detected_at_ms.to_string());
+    for (k, v) in extra_env {
+        cmd.env(k, v);
+    }
+    let err = cmd.exec();
     eprintln!("[dev-server] exec failed: {}", err);
 }
 
 #[cfg(not(unix))]
-fn self_exec(_detected_at_ms: u64) {
+fn self_exec(_detected_at_ms: u64, _extra_env: &[(String, String)]) {
     eprintln!(
         "[dev-server] self-exec not implemented on this platform; \
          please restart the dev server manually or run under `cargo watch`"

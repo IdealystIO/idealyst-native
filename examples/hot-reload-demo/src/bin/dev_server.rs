@@ -5,8 +5,9 @@
 //! When source files in this crate change, the dev-server runs
 //! `cargo build -p hot-reload-demo --bin dev-server` and replaces
 //! its own process image with the newly-built binary (Unix only).
-//! The connected browser sees the WebSocket close, waits a moment,
-//! and reloads — automatically picking up the new tree.
+//! Just before `exec`, the current navigator URL stack is
+//! serialized into `IDEALYST_AAS_NAV_STATE` so the freshly-started
+//! server can restore the navigation hierarchy.
 //!
 //! Run:
 //! ```text
@@ -20,7 +21,8 @@ use std::rc::Rc;
 use framework_core::render;
 use hot_reload_demo::app_root;
 use idealyst_dev_server::{
-    serve, spawn_rebuild_loop, RebuildCommand, RebuildConfig, WireRecordingBackend,
+    serve, spawn_rebuild_loop, NavStateSnapshot, RebuildCommand, RebuildConfig,
+    WireRecordingBackend,
 };
 
 const DEFAULT_ADDR: &str = "127.0.0.1:9001";
@@ -28,15 +30,47 @@ const DEFAULT_ADDR: &str = "127.0.0.1:9001";
 fn main() -> std::io::Result<()> {
     let addr = std::env::args().nth(1).unwrap_or_else(|| DEFAULT_ADDR.to_string());
 
-    // File watch + auto-rebuild loop. The thread runs for the
-    // lifetime of the process; on a successful rebuild it replaces
-    // *this* process image with the new binary via exec.
-    //
-    // `CARGO_MANIFEST_DIR` is set at compile time to this crate's
-    // root, so the src/ path is always correct regardless of where
-    // the binary is invoked from.
+    let recorder = WireRecordingBackend::new();
+    let backend_rc = Rc::new(RefCell::new(recorder.clone()));
+
+    // Drive the user's tree through the real walker once at startup.
+    // The recorder accumulates the commands as an append-only log;
+    // new clients catch up from offset 0, existing clients advance
+    // a per-client cursor as events fire reactivity.
+    let owner = render(backend_rc, app_root());
+    // Keep the framework runtime alive for the lifetime of the
+    // process — dropping `owner` would tear down every scope and
+    // free every signal that backs reactive UI.
+    std::mem::forget(owner);
+
+    eprintln!("[dev-server] initial render done");
+
+    // If we were exec'd by a previous instance after a source
+    // change, the previous server passed its navigator stack
+    // forward in `IDEALYST_AAS_NAV_STATE`. Read it now and replay
+    // the pushes against the freshly-built navigators so the
+    // hierarchy comes back exactly where it left off.
+    if let Ok(json) = std::env::var("IDEALYST_AAS_NAV_STATE") {
+        match serde_json::from_str::<NavStateSnapshot>(&json) {
+            Ok(saved) if !saved.is_empty() => {
+                eprintln!(
+                    "[dev-server] restoring nav state for {} navigator(s)",
+                    saved.len()
+                );
+                recorder.restore_nav_state(&saved);
+            }
+            Ok(_) => {}
+            Err(e) => eprintln!("[dev-server] could not parse saved nav state: {}", e),
+        }
+    }
+
+    // File watcher + auto-rebuild. The `before_exec` hook captures
+    // a clone of the nav-state mirror so it can serialize the
+    // current navigator hierarchy *just before* the process image
+    // swap — that's how we survive across `exec`.
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let watch_path = PathBuf::from(manifest_dir).join("src");
+    let nav_mirror = recorder.nav_state_mirror();
     spawn_rebuild_loop(RebuildConfig {
         watch_paths: vec![watch_path],
         command: RebuildCommand::cargo_build("hot-reload-demo", "dev-server"),
@@ -44,18 +78,26 @@ fn main() -> std::io::Result<()> {
         // editor save-bursts (file-watchers commonly see multiple
         // events for one save on macOS).
         debounce: std::time::Duration::from_millis(100),
+        before_exec: Some(Box::new(move || {
+            let snapshot = match nav_mirror.lock() {
+                Ok(g) => g.clone(),
+                Err(_) => return Vec::new(),
+            };
+            if snapshot.is_empty() {
+                return Vec::new();
+            }
+            match serde_json::to_string(&snapshot) {
+                Ok(json) => {
+                    eprintln!(
+                        "[dev-server] snapshotting nav state for {} navigator(s) before exec",
+                        snapshot.len()
+                    );
+                    vec![("IDEALYST_AAS_NAV_STATE".to_string(), json)]
+                }
+                Err(_) => Vec::new(),
+            }
+        })),
     });
 
-    let recorder = WireRecordingBackend::new();
-    let backend_rc = Rc::new(RefCell::new(recorder.clone()));
-
-    // Drive the user's tree through the real walker once at startup
-    // so the recorder captures the initial mount.
-    let owner = render(backend_rc, app_root());
-    // Keep the framework runtime alive for the lifetime of the
-    // process — dropping `owner` would tear down every scope.
-    std::mem::forget(owner);
-
-    eprintln!("[dev-server] initial render captured");
     serve(addr, recorder)
 }

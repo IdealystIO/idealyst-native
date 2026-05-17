@@ -69,22 +69,13 @@ use std::rc::Rc;
 // Placement model
 // =============================================================================
 
-/// How an overlay is positioned. See [`OverlayAnchor::Viewport`] for
-/// "centered modal" / "edge-pinned drawer" use cases, and
-/// [`OverlayAnchor::Element`] for popovers / tooltips that follow a
-/// trigger element.
-#[derive(Clone)]
-pub enum OverlayAnchor {
-    Viewport(ViewportPlacement),
-    Element(ElementAnchor),
-}
-
-impl Default for OverlayAnchor {
-    fn default() -> Self {
-        OverlayAnchor::Viewport(ViewportPlacement::Center)
-    }
-}
-
+/// Where a viewport-anchored [`Primitive::Overlay`] sits in the
+/// window. For element-anchored cases (popovers, tooltips, dropdowns)
+/// use [`Primitive::AnchoredOverlay`] with [`ElementSide`] /
+/// [`ElementAlign`] instead.
+///
+/// [`Primitive::Overlay`]: crate::Primitive::Overlay
+/// [`Primitive::AnchoredOverlay`]: crate::Primitive::AnchoredOverlay
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ViewportPlacement {
     /// Centered in the viewport. Most common for modals.
@@ -101,25 +92,10 @@ pub enum ViewportPlacement {
     FullScreen,
 }
 
-/// Element-anchored positioning — the overlay follows a specific
-/// primitive's rendered bounds. The backend queries the target's
-/// rect on mount and again whenever it changes (scroll, layout,
-/// resize) so the overlay tracks the trigger.
-#[derive(Clone)]
-pub struct ElementAnchor {
-    /// The primitive to anchor against. Held as a type-erased
-    /// reference so the same `ElementAnchor` can target any kind of
-    /// primitive (Button, View, Text, etc).
-    pub target: AnchorTarget,
-    /// Which side of the target the overlay sits on.
-    pub side: ElementSide,
-    /// How the overlay aligns along the anchor's edge. For
-    /// `ElementSide::Below`, `Start` aligns the overlay's left edge
-    /// with the anchor's left; `End` aligns rights; `Center` centers
-    /// horizontally. Symmetric for the other sides.
-    pub align: ElementAlign,
-    /// Gap in pixels between the anchor and the overlay.
-    pub offset: f32,
+impl Default for ViewportPlacement {
+    fn default() -> Self {
+        ViewportPlacement::Center
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -130,6 +106,12 @@ pub enum ElementSide {
     End,
 }
 
+impl Default for ElementSide {
+    fn default() -> Self {
+        ElementSide::Below
+    }
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ElementAlign {
     Start,
@@ -137,15 +119,23 @@ pub enum ElementAlign {
     End,
 }
 
+impl Default for ElementAlign {
+    fn default() -> Self {
+        ElementAlign::Start
+    }
+}
+
 /// Type-erased handle to an anchor target. Constructed via
 /// [`AnchorTarget::from`] on any `Ref<H>` whose handle type
 /// implements [`AnchorableHandle`].
 ///
-/// The erasure here lets a single `ElementAnchor` accept any
-/// primitive's ref without `ElementAnchor` itself being generic.
-/// Backends query the target through the [`AnchorableHandle::rect`]
-/// trait method, which downcasts the type-erased node back to its
-/// concrete backend type at the call site.
+/// The erasure here lets a single [`Primitive::AnchoredOverlay`]
+/// accept any primitive's ref without itself being generic. Backends
+/// query the target through the [`AnchorableHandle::rect`] trait
+/// method, which downcasts the type-erased node back to its concrete
+/// backend type at the call site.
+///
+/// [`Primitive::AnchoredOverlay`]: crate::Primitive::AnchoredOverlay
 #[derive(Clone)]
 pub struct AnchorTarget {
     inner: Rc<dyn AnchorTargetInner>,
@@ -240,22 +230,47 @@ impl OverlayHandle {
 
 pub trait OverlayOps {}
 
+#[derive(Clone)]
+pub struct AnchoredOverlayHandle {
+    node: Rc<dyn Any>,
+    #[allow(dead_code)]
+    ops: &'static dyn AnchoredOverlayOps,
+}
+
+impl AnchoredOverlayHandle {
+    pub fn new(node: Rc<dyn Any>, ops: &'static dyn AnchoredOverlayOps) -> Self {
+        Self { node, ops }
+    }
+
+    pub fn node(&self) -> &dyn Any {
+        &*self.node
+    }
+}
+
+pub trait AnchoredOverlayOps {}
+
 // =============================================================================
-// Constructor + builder
+// Constructor + builder — viewport-anchored
 // =============================================================================
 
-/// Build an Overlay primitive holding the given children. The
-/// returned [`Bound<OverlayHandle>`] supports the usual builder
-/// methods (`.anchor(...)`, `.backdrop(...)`, `.on_dismiss(...)`,
-/// `.trap_focus(...)`, `.with_style(...)`, `.backdrop_style(...)`,
-/// `.bind(...)`).
+/// Build a viewport-anchored [`Primitive::Overlay`] holding the given
+/// children. The returned [`Bound<OverlayHandle>`] supports the usual
+/// builder methods: `.placement(...)`, `.backdrop(...)`,
+/// `.on_dismiss(...)`, `.trap_focus(...)`, `.with_style(...)`,
+/// `.backdrop_style(...)`, `.bind(...)`.
 ///
 /// By default an overlay is centered in the viewport with a
 /// dismiss-on-click backdrop and focus trap enabled.
+///
+/// For element-anchored overlays (popovers, tooltips, dropdowns) use
+/// [`anchored_overlay`] instead — different primitive, so backends
+/// can route to native anchored APIs.
+///
+/// [`Primitive::Overlay`]: crate::Primitive::Overlay
 pub fn overlay(children: Vec<Primitive>) -> Bound<OverlayHandle> {
     Bound::new(Primitive::Overlay {
         children,
-        anchor: OverlayAnchor::default(),
+        placement: ViewportPlacement::default(),
         backdrop: BackdropMode::default(),
         backdrop_style: None,
         on_dismiss: None,
@@ -266,9 +281,9 @@ pub fn overlay(children: Vec<Primitive>) -> Bound<OverlayHandle> {
 }
 
 impl Bound<OverlayHandle> {
-    pub fn anchor(mut self, a: OverlayAnchor) -> Self {
-        if let Primitive::Overlay { anchor, .. } = &mut self.primitive {
-            *anchor = a;
+    pub fn placement(mut self, p: ViewportPlacement) -> Self {
+        if let Primitive::Overlay { placement, .. } = &mut self.primitive {
+            *placement = p;
         }
         self
     }
@@ -304,6 +319,112 @@ impl Bound<OverlayHandle> {
     pub fn bind(mut self, r: Ref<OverlayHandle>) -> Self {
         if let Primitive::Overlay { ref_fill, .. } = &mut self.primitive {
             *ref_fill = Some(RefFill::Overlay(Box::new(move |h| r.fill(h))));
+        }
+        self
+    }
+}
+
+// =============================================================================
+// Constructor + builder — element-anchored
+// =============================================================================
+
+/// Build an element-anchored [`Primitive::AnchoredOverlay`] holding
+/// the given children. The returned [`Bound<AnchoredOverlayHandle>`]
+/// supports `.target(...)`, `.side(...)`, `.align(...)`,
+/// `.offset(...)`, `.backdrop(...)`, `.backdrop_style(...)`,
+/// `.on_dismiss(...)`, `.trap_focus(...)`, `.with_style(...)`,
+/// `.bind(...)`.
+///
+/// Defaults: side `Below`, align `Start`, offset `0`, backdrop
+/// `None` (page behind stays interactive — the typical popover UX),
+/// focus trap disabled.
+///
+/// Backends may choose to route this to a native anchored
+/// presentation API (`UIContextMenuInteraction`,
+/// `PopupWindow.showAsDropDown`, HTML `popover` + CSS anchor
+/// positioning) or fall back to custom positioning with a
+/// scroll-tracking observer.
+///
+/// [`Primitive::AnchoredOverlay`]: crate::Primitive::AnchoredOverlay
+pub fn anchored_overlay(
+    target: AnchorTarget,
+    children: Vec<Primitive>,
+) -> Bound<AnchoredOverlayHandle> {
+    Bound::new(Primitive::AnchoredOverlay {
+        children,
+        target,
+        side: ElementSide::default(),
+        align: ElementAlign::default(),
+        offset: 0.0,
+        backdrop: BackdropMode::None,
+        backdrop_style: None,
+        on_dismiss: None,
+        trap_focus: false,
+        style: None,
+        ref_fill: None,
+    })
+}
+
+impl Bound<AnchoredOverlayHandle> {
+    pub fn target(mut self, t: AnchorTarget) -> Self {
+        if let Primitive::AnchoredOverlay { target, .. } = &mut self.primitive {
+            *target = t;
+        }
+        self
+    }
+
+    pub fn side(mut self, s: ElementSide) -> Self {
+        if let Primitive::AnchoredOverlay { side, .. } = &mut self.primitive {
+            *side = s;
+        }
+        self
+    }
+
+    pub fn align(mut self, a: ElementAlign) -> Self {
+        if let Primitive::AnchoredOverlay { align, .. } = &mut self.primitive {
+            *align = a;
+        }
+        self
+    }
+
+    pub fn offset(mut self, o: f32) -> Self {
+        if let Primitive::AnchoredOverlay { offset, .. } = &mut self.primitive {
+            *offset = o;
+        }
+        self
+    }
+
+    pub fn backdrop(mut self, b: BackdropMode) -> Self {
+        if let Primitive::AnchoredOverlay { backdrop, .. } = &mut self.primitive {
+            *backdrop = b;
+        }
+        self
+    }
+
+    pub fn backdrop_style<S: crate::IntoStyleSource>(mut self, s: S) -> Self {
+        if let Primitive::AnchoredOverlay { backdrop_style, .. } = &mut self.primitive {
+            *backdrop_style = Some(s.into_style_source());
+        }
+        self
+    }
+
+    pub fn on_dismiss<F: Fn() + 'static>(mut self, f: F) -> Self {
+        if let Primitive::AnchoredOverlay { on_dismiss, .. } = &mut self.primitive {
+            *on_dismiss = Some(Rc::new(f));
+        }
+        self
+    }
+
+    pub fn trap_focus(mut self, t: bool) -> Self {
+        if let Primitive::AnchoredOverlay { trap_focus, .. } = &mut self.primitive {
+            *trap_focus = t;
+        }
+        self
+    }
+
+    pub fn bind(mut self, r: Ref<AnchoredOverlayHandle>) -> Self {
+        if let Primitive::AnchoredOverlay { ref_fill, .. } = &mut self.primitive {
+            *ref_fill = Some(RefFill::AnchoredOverlay(Box::new(move |h| r.fill(h))));
         }
         self
     }

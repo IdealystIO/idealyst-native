@@ -62,6 +62,7 @@ pub enum PrimitiveKind {
     Switch,
     Link,
     Overlay,
+    AnchoredOverlay,
     Presence,
 }
 

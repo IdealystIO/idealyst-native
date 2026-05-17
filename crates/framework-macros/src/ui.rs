@@ -373,7 +373,7 @@ fn emit_component(
         "text" | "button" | "view" | "when"
         | "image" | "icon" | "textinput" | "toggle" | "scrollview"
         | "slider" | "webview" | "video" | "activityindicator"
-        | "flatlist" | "link" | "overlay" | "presence"
+        | "flatlist" | "link" | "overlay" | "anchoredoverlay" | "presence"
     );
     let supports_disabled = lower.as_str() == "button";
 
@@ -422,6 +422,7 @@ fn emit_component(
         "graphics" => emit_graphics(&other_props, children),
         "link" => emit_link(&other_props, children),
         "overlay" => emit_overlay(&other_props, children),
+        "anchoredoverlay" => emit_anchored_overlay(&other_props, children),
         "presence" => emit_presence(&other_props, children),
         _ => emit_user(name, props, children),
     };
@@ -833,23 +834,21 @@ fn emit_link(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
     }
 }
 
-/// `Overlay(anchor = ..., backdrop = ..., backdrop_style = ...,
+/// `Overlay(placement = ..., backdrop = ..., backdrop_style = ...,
 ///          on_dismiss = ..., trap_focus = ...) { children }`.
-/// Lowers to `overlay(children).anchor(...).backdrop(...)…` chain,
-/// using the builder so any subset of optional props compiles. The
-/// `.with_style(...)` / `.bind(...)` calls flow through the shared
-/// `style_prop` / chain machinery in `emit_component` like every
-/// other primitive.
+/// Lowers to `overlay(children).placement(...).backdrop(...)…` chain.
+/// Viewport-anchored only; for element-anchored cases use
+/// `AnchoredOverlay` (handled by `emit_anchored_overlay`).
 fn emit_overlay(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
     let kids = children.unwrap_or(&[]);
     let parts = kids.iter().map(emit_node);
 
-    let anchor_call = props
+    let placement_call = props
         .iter()
-        .find(|p| p.name == "anchor")
+        .find(|p| p.name == "placement")
         .map(|p| {
             let v = &p.value;
-            quote! { .anchor(#v) }
+            quote! { .placement(#v) }
         })
         .unwrap_or_default();
     let backdrop_call = props
@@ -892,7 +891,110 @@ fn emit_overlay(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
             #( ::framework_core::ChildList::append_to(#parts, &mut __c); )*
             __c
         })
-        #anchor_call
+        #placement_call
+        #backdrop_call
+        #backdrop_style_call
+        #on_dismiss_call
+        #trap_focus_call
+    }
+}
+
+/// `AnchoredOverlay(target = ..., side = ..., align = ..., offset = ...,
+///                  backdrop = ..., backdrop_style = ...,
+///                  on_dismiss = ..., trap_focus = ...) { children }`.
+/// Lowers to
+/// `anchored_overlay(target, children).side(...).align(...)…` chain.
+/// Element-anchored only; for viewport-anchored cases use `Overlay`.
+fn emit_anchored_overlay(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
+    let kids = children.unwrap_or(&[]);
+    let parts = kids.iter().map(emit_node);
+
+    // `target` is required to build the primitive — pass it
+    // positionally rather than as a `.target(...)` chain call so the
+    // type system enforces it.
+    let target_value = props
+        .iter()
+        .find(|p| p.name == "target")
+        .map(|p| {
+            let v = &p.value;
+            quote! { #v }
+        })
+        .unwrap_or_else(|| {
+            quote! {
+                compile_error!("AnchoredOverlay requires a `target = ...` prop")
+            }
+        });
+
+    let side_call = props
+        .iter()
+        .find(|p| p.name == "side")
+        .map(|p| {
+            let v = &p.value;
+            quote! { .side(#v) }
+        })
+        .unwrap_or_default();
+    let align_call = props
+        .iter()
+        .find(|p| p.name == "align")
+        .map(|p| {
+            let v = &p.value;
+            quote! { .align(#v) }
+        })
+        .unwrap_or_default();
+    let offset_call = props
+        .iter()
+        .find(|p| p.name == "offset")
+        .map(|p| {
+            let v = &p.value;
+            quote! { .offset(#v) }
+        })
+        .unwrap_or_default();
+    let backdrop_call = props
+        .iter()
+        .find(|p| p.name == "backdrop")
+        .map(|p| {
+            let v = &p.value;
+            quote! { .backdrop(#v) }
+        })
+        .unwrap_or_default();
+    let backdrop_style_call = props
+        .iter()
+        .find(|p| p.name == "backdrop_style")
+        .map(|p| {
+            let v = &p.value;
+            quote! { .backdrop_style(#v) }
+        })
+        .unwrap_or_default();
+    let on_dismiss_call = props
+        .iter()
+        .find(|p| p.name == "on_dismiss")
+        .map(|p| {
+            let v = &p.value;
+            quote! { .on_dismiss(#v) }
+        })
+        .unwrap_or_default();
+    let trap_focus_call = props
+        .iter()
+        .find(|p| p.name == "trap_focus")
+        .map(|p| {
+            let v = &p.value;
+            quote! { .trap_focus(#v) }
+        })
+        .unwrap_or_default();
+
+    quote! {
+        ::framework_core::primitives::overlay::anchored_overlay(
+            #target_value,
+            {
+                let mut __c: ::std::vec::Vec<::framework_core::Primitive>
+                    = ::std::vec::Vec::new();
+                #( ::framework_core::ChildList::append_to(#parts, &mut __c); )*
+                __c
+            },
+        )
+        #side_call
+        #align_call
+        #offset_call
         #backdrop_call
         #backdrop_style_call
         #on_dismiss_call

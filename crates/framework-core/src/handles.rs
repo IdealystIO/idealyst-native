@@ -306,5 +306,6 @@ pub enum RefFill {
     DrawerNavigator(Box<dyn FnOnce(primitives::navigator::DrawerHandle)>),
     Link(Box<dyn FnOnce(primitives::link::LinkHandle)>),
     Overlay(Box<dyn FnOnce(primitives::overlay::OverlayHandle)>),
+    AnchoredOverlay(Box<dyn FnOnce(primitives::overlay::AnchoredOverlayHandle)>),
     Presence(Box<dyn FnOnce(primitives::presence::PresenceHandle)>),
 }

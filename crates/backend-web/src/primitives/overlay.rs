@@ -48,9 +48,28 @@
 
 use crate::WebBackend;
 use framework_core::primitives::overlay::{
-    BackdropMode, ElementAlign, ElementSide, OverlayAnchor, OverlayHandle, OverlayOps,
-    ViewportPlacement, ViewportRect,
+    AnchorTarget, AnchoredOverlayHandle, AnchoredOverlayOps, BackdropMode, ElementAlign,
+    ElementSide, OverlayHandle, OverlayOps, ViewportPlacement, ViewportRect,
 };
+
+/// Internal discriminator that lets the shared `create` helper
+/// handle both viewport-anchored ([`Backend::create_overlay`]) and
+/// element-anchored ([`Backend::create_anchored_overlay`]) overlays
+/// without two near-duplicate copies. Public-facing types are split;
+/// the web implementation just routes through here.
+///
+/// [`Backend::create_overlay`]: framework_core::Backend::create_overlay
+/// [`Backend::create_anchored_overlay`]: framework_core::Backend::create_anchored_overlay
+#[derive(Clone)]
+pub(crate) enum OverlaySpec {
+    Viewport(ViewportPlacement),
+    Element {
+        target: AnchorTarget,
+        side: ElementSide,
+        align: ElementAlign,
+        offset: f32,
+    },
+}
 use std::collections::HashMap;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -136,9 +155,41 @@ pub(crate) struct OverlayInstance {
 /// All live overlay instances, keyed by `data-overlay-id`.
 pub(crate) type OverlayInstances = HashMap<u32, OverlayInstance>;
 
+/// Public entry point for viewport-anchored overlays — wraps the
+/// shared `create` helper with `OverlaySpec::Viewport`.
+pub(crate) fn create_viewport(
+    b: &mut WebBackend,
+    placement: ViewportPlacement,
+    backdrop: BackdropMode,
+    on_dismiss: Option<Rc<dyn Fn()>>,
+    trap_focus: bool,
+) -> Node {
+    create(b, OverlaySpec::Viewport(placement), backdrop, on_dismiss, trap_focus)
+}
+
+/// Public entry point for element-anchored overlays.
+pub(crate) fn create_anchored(
+    b: &mut WebBackend,
+    target: AnchorTarget,
+    side: ElementSide,
+    align: ElementAlign,
+    offset: f32,
+    backdrop: BackdropMode,
+    on_dismiss: Option<Rc<dyn Fn()>>,
+    trap_focus: bool,
+) -> Node {
+    create(
+        b,
+        OverlaySpec::Element { target, side, align, offset },
+        backdrop,
+        on_dismiss,
+        trap_focus,
+    )
+}
+
 pub(crate) fn create(
     b: &mut WebBackend,
-    anchor: OverlayAnchor,
+    anchor: OverlaySpec,
     backdrop: BackdropMode,
     on_dismiss: Option<Rc<dyn Fn()>>,
     _trap_focus: bool,
@@ -317,10 +368,15 @@ pub(crate) fn create(
     // Viewport anchors don't need re-measurement — `inset`/`margin:
     // auto` already pin them to the viewport regardless of scroll.
     let (reposition_scroll_handler, reposition_resize_handler, initial_measure_task) =
-        if let OverlayAnchor::Element(element_anchor) = &anchor {
+        if let OverlaySpec::Element { target, side: el_side, align: el_align, offset: el_offset } =
+            &anchor
+        {
             let window = web_sys::window().expect("window");
             let content_html: web_sys::HtmlElement = content.clone().unchecked_into();
-            let anchor_for_reposition = element_anchor.clone();
+            let target_for_reposition = target.clone();
+            let side_for_reposition = *el_side;
+            let align_for_reposition = *el_align;
+            let offset_for_reposition = *el_offset;
             // Measure-based reposition: read the overlay's *rendered*
             // rect via `getBoundingClientRect`, pick the side with
             // enough room for it, compute the visual top-left
@@ -335,31 +391,27 @@ pub(crate) fn create(
             // re-evaluate using whatever the overlay measures *now*
             // (its size can change if the content reflows).
             let reposition: Rc<dyn Fn()> = Rc::new(move || {
-                let Some(trigger) = anchor_for_reposition.target.rect() else {
+                let Some(trigger) = target_for_reposition.rect() else {
                     return;
                 };
                 let viewport = viewport_size();
                 let overlay_size = measure_overlay_size(&content_html);
                 let side = pick_side(
-                    anchor_for_reposition.side,
+                    side_for_reposition,
                     trigger,
                     overlay_size,
                     viewport,
-                    anchor_for_reposition.offset,
+                    offset_for_reposition,
                 );
                 let (top, left) = measured_position(
                     trigger,
                     side,
-                    anchor_for_reposition.align,
-                    anchor_for_reposition.offset,
+                    align_for_reposition,
+                    offset_for_reposition,
                     overlay_size,
                 );
                 let (top, left) = clamp_measured(top, left, overlay_size, viewport);
                 let style = content_html.style();
-                // Now that we know the visual top-left exactly,
-                // clear any transform-based origin flip the initial
-                // mount installed. This also frees `transform` for
-                // presence enter/exit animations.
                 let _ = style.remove_property("transform");
                 let _ = style.set_property("top", &format!("{}px", top));
                 let _ = style.set_property("left", &format!("{}px", left));
@@ -563,8 +615,19 @@ pub(crate) fn make_handle(node: &Node) -> OverlayHandle {
     OverlayHandle::new(Rc::new(el), &WebOverlayOps)
 }
 
+pub(crate) fn make_anchored_handle(node: &Node) -> AnchoredOverlayHandle {
+    let el: web_sys::HtmlElement = node
+        .clone()
+        .dyn_into()
+        .expect("overlay node is not an HtmlElement");
+    AnchoredOverlayHandle::new(Rc::new(el), &WebAnchoredOverlayOps)
+}
+
 struct WebOverlayOps;
 impl OverlayOps for WebOverlayOps {}
+
+struct WebAnchoredOverlayOps;
+impl AnchoredOverlayOps for WebAnchoredOverlayOps {}
 
 // ---------------------------------------------------------------------------
 // Positioning
@@ -575,7 +638,7 @@ impl OverlayOps for WebOverlayOps {}
 /// the target's viewport rect — if the target hasn't been mounted
 /// yet (its `Ref` is still empty), we fall back to centering as a
 /// safe default.
-fn position_styles_for_anchor(anchor: &OverlayAnchor) -> String {
+fn position_styles_for_anchor(anchor: &OverlaySpec) -> String {
     // Important: positioning must NOT use the `transform` CSS
     // property. Presence animations write to `transform` for their
     // own translate/scale, and CSS doesn't compose two inline
@@ -585,13 +648,8 @@ fn position_styles_for_anchor(anchor: &OverlayAnchor) -> String {
     // `transform` free for presence.
     let base = "position: absolute; pointer-events: auto;";
     match anchor {
-        OverlayAnchor::Viewport(p) => {
+        OverlaySpec::Viewport(p) => {
             let placement = match p {
-                // Centering without transform: `inset: 0` pins the
-                // box to all four edges; `margin: auto` distributes
-                // remaining space equally on each axis; `width:
-                // max-content` lets the box size to its content
-                // rather than expanding to the viewport.
                 ViewportPlacement::Center => {
                     "inset: 0; margin: auto; width: max-content; height: max-content;"
                 }
@@ -603,20 +661,16 @@ fn position_styles_for_anchor(anchor: &OverlayAnchor) -> String {
             };
             format!("{} {}", base, placement)
         }
-        OverlayAnchor::Element(e) => {
-            // Initial mount only — places the overlay at the
-            // unmeasured anchor point using the requested side. A
-            // `requestAnimationFrame` scheduled after this returns
-            // re-measures the rendered overlay and re-applies a
-            // viewport-fit position (see the post-mount measure pass
-            // in `create`).
-            let Some(rect) = e.target.rect() else {
+        OverlaySpec::Element { target, side, align, offset } => {
+            // Initial mount only — `requestAnimationFrame` will
+            // remeasure and re-place after children have laid out.
+            let Some(rect) = target.rect() else {
                 return format!(
                     "{} inset: 0; margin: auto; width: max-content; height: max-content;",
                     base
                 );
             };
-            element_anchor_styles(base, rect, e.side, e.align, e.offset)
+            element_anchor_styles(base, rect, *side, *align, *offset)
         }
     }
 }
