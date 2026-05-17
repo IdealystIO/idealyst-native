@@ -1,0 +1,21 @@
+[package]
+name = "backend-roku-transpile"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Library form of the Rust → BrightScript transpiler. The
+# `backend-roku-macros` proc-macro and the `idealyst brs` CLI
+# subcommand both invoke `transpile_fn` from this crate, so the
+# subset semantics + error messages stay in one place.
+#
+# A proc-macro crate can't expose its internals to non-proc-macro
+# consumers (cargo refuses `use proc_macro_crate::foo` outside a
+# proc-macro context), so the transpiler lives here as a regular
+# `lib` and the proc-macro crate is a thin wrapper.
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+syn = { version = "2", features = ["full", "extra-traits"] }
+proc-macro2 = "1"

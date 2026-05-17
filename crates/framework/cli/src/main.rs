@@ -5,9 +5,10 @@
 //! deploy to each platform, sync generated assets, and check the
 //! local toolchain.
 //!
-//! Command surface lives in [`cmd`]. Project manifest parsing lives
-//! in [`config`]. Each subcommand is its own module under `cmd/` to
-//! keep the dispatch in this file readable as the CLI grows.
+//! Heavy lifting lives in sibling crates — [`dev-http`](dev_http) for
+//! the static-file server, [`dev-reload`](dev_reload) for the watch +
+//! wasm-pack rebuild loop, [`dev-server`] for the AAS wire protocol.
+//! This binary is just argument parsing and orchestration.
 
 use clap::Parser;
 
@@ -52,6 +53,9 @@ enum Command {
     /// Materialize a platform project from the ephemeral build cache
     /// into the repo, so it can be edited by hand.
     Scaffold(cmd::scaffold::Args),
+    /// Collect every `#[method]`-tagged Rust function in a project
+    /// and emit them as a single BrightScript `.brs` file.
+    Brs(cmd::brs::Args),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -67,5 +71,6 @@ fn main() -> anyhow::Result<()> {
         Command::Doctor(args) => cmd::doctor::run(args),
         Command::Sync(args) => cmd::sync::run(args),
         Command::Scaffold(args) => cmd::scaffold::run(args),
+        Command::Brs(args) => cmd::brs::run(args),
     }
 }

@@ -727,11 +727,37 @@ where
                 scope,
                 options,
             } => {
+                // URL-based replay dedup. After a server rebuild-exec,
+                // the append-only log is replayed with fresh scope
+                // ids; the iOS/web client still has the previous
+                // native stack alive. Compare against `mounted_urls`
+                // at the current `replay_pos`: if it matches, skip
+                // the actual attach and just advance the cursor.
+                // Scope-id-based dedup wouldn't work because scope
+                // ids are session-local (server reallocates on each
+                // process restart).
+                let state = self
+                    .navigators
+                    .get(&navigator)
+                    .cloned()
+                    .ok_or(ReplayError::UnknownNode(navigator))?;
+                let url = state.initial_path.clone();
+                {
+                    let urls = state.mounted_urls.borrow();
+                    let pos = *state.replay_pos.borrow();
+                    if pos < urls.len() && urls[pos] == url {
+                        drop(urls);
+                        *state.replay_pos.borrow_mut() = pos + 1;
+                        return Ok(());
+                    }
+                }
                 let nav = self.lookup_node(navigator)?;
                 let screen_node = self.lookup_node(screen)?;
                 let opts = convert::wire_screen_options(&options, |id| self.handler_unit(id));
                 self.backend
                     .navigator_attach_initial(&nav, screen_node, scope.0, opts);
+                state.mounted_urls.borrow_mut().push(url);
+                *state.replay_pos.borrow_mut() = state.mounted_urls.borrow().len();
             }
             Command::NavigatorPush {
                 navigator,
@@ -775,8 +801,29 @@ where
                     .get(&navigator)
                     .cloned()
                     .ok_or(ReplayError::UnknownNode(navigator))?;
+                // Pop idempotency. The server emits a
+                // `Command::NavigatorPop` for client-initiated pops
+                // (swipe-back → `handle_screen_released`), and the
+                // broadcast goes to every connected client —
+                // including the one that originated the pop. That
+                // client's native nav controller has already popped
+                // locally; re-dispatching here would over-pop. We
+                // gate on `mounted_urls.len() > 1` (initial screen
+                // can't be popped) and the cursor-already-at-end so
+                // we don't double-pop during replay either.
+                let mut state_pops = 0;
+                {
+                    let urls_len = state.mounted_urls.borrow().len();
+                    let pos = *state.replay_pos.borrow();
+                    // Only pop what we still have above the initial
+                    // screen, and never pop during replay (when
+                    // `pos < urls_len`).
+                    if pos == urls_len {
+                        state_pops = count.min((urls_len as u32).saturating_sub(1));
+                    }
+                }
                 *state.suppress_release.borrow_mut() = true;
-                for _ in 0..count {
+                for _ in 0..state_pops {
                     state
                         .control
                         .dispatch(framework_core::primitives::navigator::NavCommand::Pop);
@@ -994,14 +1041,23 @@ where
         // whichever control is in `self.navigators[id]`, so
         // overwriting it with a fresh-but-unmounted nav would make
         // the visible UI un-pop-able.
-        if self.navigators.contains_key(&id) {
+        //
+        // We also use this branch to reset `replay_pos`: a
+        // duplicate `CreateNavigator` only arrives when the
+        // append-only log is being replayed (server restart or new
+        // session). The subsequent `AttachInitial`/`Push` stream
+        // should be checked against `mounted_urls` from index 0.
+        if let Some(state) = self.navigators.get(&id) {
+            *state.replay_pos.borrow_mut() = 0;
             return;
         }
 
-        let route_static: &'static str = Box::leak(initial_route.into_boxed_str());
-        let path_static: &'static str = Box::leak(initial_path.into_boxed_str());
+        let route_static: &'static str = Box::leak(initial_route.clone().into_boxed_str());
+        let path_static: &'static str = Box::leak(initial_path.clone().into_boxed_str());
 
         let control = Rc::new(framework_core::primitives::navigator::NavigatorControl::new());
+        let mounted_urls = Rc::new(RefCell::new(Vec::new()));
+        let replay_pos = Rc::new(RefCell::new(0usize));
 
         // Pre-allocate state with a placeholder node; we'll set the
         // real node after `create_navigator` returns.
@@ -1015,6 +1071,9 @@ where
             suppress_release: Rc::new(RefCell::new(false)),
             outbound: self.outbound.clone(),
             navigator_id: id,
+            initial_path: initial_path.clone(),
+            mounted_urls: mounted_urls.clone(),
+            replay_pos: replay_pos.clone(),
         });
 
         // Build callbacks referencing the state Rc.
@@ -1032,6 +1091,9 @@ where
             suppress_release: state.suppress_release.clone(),
             outbound: self.outbound.clone(),
             navigator_id: id,
+            initial_path,
+            mounted_urls,
+            replay_pos,
         });
 
         self.nodes.insert(id, nav_node);
@@ -1048,12 +1110,13 @@ where
         mount_policy: WireMountPolicy,
     ) {
         // Idempotent — see comment in `apply_create_navigator`.
-        if self.navigators.contains_key(&id) {
+        if let Some(state) = self.navigators.get(&id) {
+            *state.replay_pos.borrow_mut() = 0;
             return;
         }
 
-        let route_static: &'static str = Box::leak(initial_route.into_boxed_str());
-        let path_static: &'static str = Box::leak(initial_path.into_boxed_str());
+        let route_static: &'static str = Box::leak(initial_route.clone().into_boxed_str());
+        let path_static: &'static str = Box::leak(initial_path.clone().into_boxed_str());
 
         let resolved_tabs = tabs
             .into_iter()
@@ -1073,6 +1136,8 @@ where
         let resolved_mount_policy = convert::wire_mount_policy(mount_policy);
 
         let control = Rc::new(framework_core::primitives::navigator::NavigatorControl::new());
+        let mounted_urls = Rc::new(RefCell::new(Vec::new()));
+        let replay_pos = Rc::new(RefCell::new(0usize));
         let state = Rc::new(navigators::NavigatorAppState {
             node: self.backend.create_view(),
             control: control.clone(),
@@ -1080,6 +1145,9 @@ where
             suppress_release: Rc::new(RefCell::new(false)),
             outbound: self.outbound.clone(),
             navigator_id: id,
+            initial_path: initial_path.clone(),
+            mounted_urls: mounted_urls.clone(),
+            replay_pos: replay_pos.clone(),
         });
 
         let callbacks = state.build_stub_tab_callbacks(
@@ -1098,6 +1166,9 @@ where
             suppress_release: state.suppress_release.clone(),
             outbound: self.outbound.clone(),
             navigator_id: id,
+            initial_path,
+            mounted_urls,
+            replay_pos,
         });
 
         self.nodes.insert(id, nav_node);
@@ -1118,12 +1189,13 @@ where
         mount_policy: WireMountPolicy,
     ) {
         // Idempotent — see comment in `apply_create_navigator`.
-        if self.navigators.contains_key(&id) {
+        if let Some(state) = self.navigators.get(&id) {
+            *state.replay_pos.borrow_mut() = 0;
             return;
         }
 
-        let route_static: &'static str = Box::leak(initial_route.into_boxed_str());
-        let path_static: &'static str = Box::leak(initial_path.into_boxed_str());
+        let route_static: &'static str = Box::leak(initial_route.clone().into_boxed_str());
+        let path_static: &'static str = Box::leak(initial_path.clone().into_boxed_str());
 
         let resolved_items = items
             .into_iter()
@@ -1149,6 +1221,8 @@ where
         let resolved_mount_policy = convert::wire_mount_policy(mount_policy);
 
         let control = Rc::new(framework_core::primitives::navigator::NavigatorControl::new());
+        let mounted_urls = Rc::new(RefCell::new(Vec::new()));
+        let replay_pos = Rc::new(RefCell::new(0usize));
         let state = Rc::new(navigators::NavigatorAppState {
             node: self.backend.create_view(),
             control: control.clone(),
@@ -1156,6 +1230,9 @@ where
             suppress_release: Rc::new(RefCell::new(false)),
             outbound: self.outbound.clone(),
             navigator_id: id,
+            initial_path: initial_path.clone(),
+            mounted_urls: mounted_urls.clone(),
+            replay_pos: replay_pos.clone(),
         });
 
         let callbacks = state.build_stub_drawer_callbacks(
@@ -1178,6 +1255,9 @@ where
             suppress_release: state.suppress_release.clone(),
             outbound: self.outbound.clone(),
             navigator_id: id,
+            initial_path,
+            mounted_urls,
+            replay_pos,
         });
 
         self.nodes.insert(id, nav_node);
@@ -1209,15 +1289,15 @@ where
         scope: ScopeId,
         options: wire::WireScreenOptions,
         op: NavOp,
-        _url: String,
+        url: String,
         _restore: bool,
     ) -> Result<(), ReplayError> {
-        // `_url` and `_restore` are passed through to whatever
-        // platform-specific glue handles history (e.g. web's
-        // `pushState`). The current generic dispatch path is
-        // platform-agnostic; backends that care about URL/history
-        // can subscribe to the wire command directly. For now,
-        // accepted and ignored at this layer.
+        // `_restore` is reserved for platform-specific history glue
+        // (e.g. web's `pushState` should be skipped when the server
+        // is replaying state we already have). The current generic
+        // dispatch path is platform-agnostic; backends that care
+        // about URL/history can subscribe to the wire command
+        // directly.
         use framework_core::primitives::navigator::NavCommand;
 
         let state = self
@@ -1225,6 +1305,28 @@ where
             .get(&navigator)
             .cloned()
             .ok_or(ReplayError::UnknownNode(navigator))?;
+        // URL-based replay dedup for Push (the only op
+        // `restore_nav_state` re-emits across a rebuild-exec).
+        // Replace/Reset always apply: a server-emitted Replace
+        // overwrites the top, and Reset rebuilds from scratch —
+        // neither comes out of replay. Select (tab activation)
+        // legitimately re-targets the same scope on each tap, so
+        // it also bypasses dedup.
+        if matches!(op, NavOp::Push) {
+            let urls = state.mounted_urls.borrow();
+            let pos = *state.replay_pos.borrow();
+            eprintln!(
+                "[aas-client] Push url={:?}: mounted_urls={:?} pos={}",
+                url, *urls, pos
+            );
+            if pos < urls.len() && urls[pos] == url {
+                drop(urls);
+                *state.replay_pos.borrow_mut() = pos + 1;
+                eprintln!("  -> dedup match, skipping");
+                return Ok(());
+            }
+            eprintln!("  -> applying push via control.dispatch");
+        }
         let screen_node = self.lookup_node(screen)?;
         let opts = convert::wire_screen_options(&options, |id| self.handler_unit(id));
 
@@ -1266,6 +1368,21 @@ where
         // should have taken it; if it didn't, we don't want to leak
         // a stale value into the next push).
         let _ = state.pending_mount.borrow_mut().take();
+
+        // Bookkeep `mounted_urls` for future replay dedup. The
+        // backend's release_screen closure (in navigators.rs)
+        // pops `mounted_urls` whenever a screen leaves the stack,
+        // so for Replace/Reset the previous top(s) are already
+        // off; we just push the new url. Push adds without
+        // releasing. Select doesn't change the stack at the
+        // navigator level, so leave the bookkeeping alone.
+        match op {
+            NavOp::Push | NavOp::Replace | NavOp::Reset => {
+                state.mounted_urls.borrow_mut().push(url);
+                *state.replay_pos.borrow_mut() = state.mounted_urls.borrow().len();
+            }
+            NavOp::Select => {}
+        }
         Ok(())
     }
 }

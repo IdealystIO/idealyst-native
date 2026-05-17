@@ -7,10 +7,17 @@ members = [
     "crates/framework/wire",
     "crates/framework/dev-client",
     "crates/framework/dev-server",
+    "crates/framework/dev-http",
+    "crates/framework/dev-reload",
+    "crates/framework/build-ios",
+    "crates/framework/run-ios",
     "crates/framework/cli",
     "crates/backend/ios",
     "crates/backend/ios-stack",
     "crates/backend/android",
+    "crates/backend/roku",
+    "crates/backend/roku-macros",
+    "crates/backend/roku-transpile",
     "crates/backend/web",
     "crates/reactive/arena",
     "crates/reactive/refs",
@@ -26,6 +33,7 @@ members = [
     "examples/idea-ui-docs-web",
     "examples/hot-reload-demo",
     "examples/hello-ios-aas",
+    "examples/docs",
     "arena/idealyst-native/wasm",
 ]
 
@@ -41,9 +49,16 @@ native-layout = { path = "crates/framework/native-layout" }
 wire = { path = "crates/framework/wire" }
 dev-client = { path = "crates/framework/dev-client" }
 dev-server = { path = "crates/framework/dev-server" }
+dev-http = { path = "crates/framework/dev-http" }
+dev-reload = { path = "crates/framework/dev-reload" }
+build-ios = { path = "crates/framework/build-ios" }
+run-ios = { path = "crates/framework/run-ios" }
 backend-ios = { path = "crates/backend/ios" }
 backend-ios-stack = { path = "crates/backend/ios-stack" }
 backend-android = { path = "crates/backend/android" }
+backend-roku = { path = "crates/backend/roku" }
+backend-roku-macros = { path = "crates/backend/roku-macros" }
+backend-roku-transpile = { path = "crates/backend/roku-transpile" }
 backend-web = { path = "crates/backend/web" }
 idea-ui = { path = "crates/ui/idea-ui" }
 idea-ui-docs-derive = { path = "crates/ui/idea-ui-docs-derive" }

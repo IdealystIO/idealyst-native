@@ -1420,35 +1420,8 @@ impl IosBackend {
                 x: (frame.x + frame.width / 2.0) as f64,
                 y: (frame.y + frame.height / 2.0) as f64,
             };
-            // BEFORE my setBounds/setCenter: capture bg state.
-            let bg_before: Option<Retained<NSObject>> =
-                unsafe { msg_send_id![view, backgroundColor] };
-            let layer: Retained<NSObject> = unsafe { msg_send_id![view, layer] };
-            let layer_bg_before: *const std::ffi::c_void =
-                unsafe { msg_send![&layer, backgroundColor] };
-
             let _: () = unsafe { msg_send![view, setBounds: bounds] };
             let _: () = unsafe { msg_send![view, setCenter: center] };
-
-            // AFTER: check if bounds/center somehow cleared the bg.
-            if frame.width > 100.0 && frame.height > 100.0 {
-                let bg_after: Option<Retained<NSObject>> =
-                    unsafe { msg_send_id![view, backgroundColor] };
-                let layer_bg_after: *const std::ffi::c_void =
-                    unsafe { msg_send![&layer, backgroundColor] };
-                let alpha: f64 = unsafe { msg_send![view, alpha] };
-                let hidden: bool = unsafe { msg_send![view, isHidden] };
-                ios_log(&format!(
-                    "[layout]   view {:p} ({:.0}×{:.0}) α={} hidden={} bg_before={} bg_after={} layer.bg_before={} layer.bg_after={}",
-                    &**view as *const UIView,
-                    frame.width, frame.height,
-                    alpha, hidden,
-                    if bg_before.is_some() { "set" } else { "nil" },
-                    if bg_after.is_some() { "set" } else { "nil" },
-                    if !layer_bg_before.is_null() { "set" } else { "nil" },
-                    if !layer_bg_after.is_null() { "set" } else { "nil" },
-                ));
-            }
             applied += 1;
         }
         ios_log(&format!("[layout] apply_frames done: applied={}", applied));

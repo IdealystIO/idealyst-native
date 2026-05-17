@@ -53,13 +53,28 @@ pub struct NavigatorAppState<N: Clone + 'static> {
     /// The navigator id, used for AppToDev events that need to
     /// identify the navigator.
     pub navigator_id: NodeId,
-    /// Scope ids of screens we've already mounted into this
-    /// navigator's native stack. Used for idempotency: the
-    /// append-only command log re-emits every `NavigatorAttachInitial`
-    /// and `NavigatorPush` on each reconnect, but the previous
-    /// session already mounted them — re-applying would create
-    /// duplicate native screens that the user can't pop past.
-    pub attached_scopes: Rc<RefCell<std::collections::HashSet<u64>>>,
+    /// The navigator's declared initial path (from `CreateNavigator`).
+    /// `NavigatorAttachInitial` doesn't carry a url in its wire form
+    /// since it's implicit; we cache it here so replay-mode dedup
+    /// can compare it like a regular push.
+    pub initial_path: String,
+    /// URLs of screens currently mounted in the native stack, in
+    /// stack order. The single source of truth for replay dedup:
+    /// scope ids are session-local (server-allocated, regenerated
+    /// on each `restore_nav_state` after a rebuild-exec), but
+    /// URLs are stable across sessions and across the
+    /// dev-server's append-only command log.
+    pub mounted_urls: Rc<RefCell<Vec<String>>>,
+    /// Cursor into `mounted_urls`. Advances when a replayed
+    /// `AttachInitial`/`Push` is skipped because it matches the
+    /// stack we already have. Reset to 0 on cross-session
+    /// reconnect (when the client sees a `CreateNavigator` for a
+    /// navigator it already owns — that's the signal that the
+    /// server has restarted and is about to re-emit the whole
+    /// stack). Once `replay_pos == mounted_urls.len()`, further
+    /// `AttachInitial`/`Push` always apply, treating them as
+    /// new navigation rather than replay.
+    pub replay_pos: Rc<RefCell<usize>>,
 }
 
 impl<N: Clone + 'static> NavigatorAppState<N> {
@@ -75,6 +90,8 @@ impl<N: Clone + 'static> NavigatorAppState<N> {
         let pending_mount = self.pending_mount.clone();
         let suppress_release = self.suppress_release.clone();
         let outbound = self.outbound.clone();
+        let mounted_urls = self.mounted_urls.clone();
+        let replay_pos = self.replay_pos.clone();
 
         NavigatorCallbacks {
             initial_route,
@@ -91,7 +108,25 @@ impl<N: Clone + 'static> NavigatorAppState<N> {
                     .expect("stub mount_screen called without pending_mount staged")
             }),
             release_screen: Rc::new(move |scope_id| {
-                if !*suppress_release.borrow() {
+                let suppressed = *suppress_release.borrow();
+                eprintln!(
+                    "[aas-client] stub release_screen(scope={}) suppressed={}",
+                    scope_id, suppressed
+                );
+                // The iOS/web stack navigators only release from the
+                // top, so every release corresponds to popping the
+                // tail of `mounted_urls`. Keep `replay_pos` from
+                // pointing past the end after a pop mid-replay.
+                {
+                    let mut urls = mounted_urls.borrow_mut();
+                    urls.pop();
+                    let len = urls.len();
+                    let mut pos = replay_pos.borrow_mut();
+                    if *pos > len {
+                        *pos = len;
+                    }
+                }
+                if !suppressed {
                     let _ = outbound.send(AppToDev::ScreenReleased {
                         scope: ScopeId(scope_id),
                     });

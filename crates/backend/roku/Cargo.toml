@@ -1,0 +1,19 @@
+[package]
+name = "backend-roku"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Pure Rust crate: emits a serializable command stream that a
+# BrightScript / SceneGraph thin client on the Roku device consumes.
+# There is no platform-cfg gating because Roku has no Rust target —
+# the backend always compiles, always runs on the host, and the wire
+# transport (TCP, WebSocket, file, ...) is supplied by the embedder.
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+framework-core = { workspace = true }
+backend-roku-macros = { workspace = true }
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"

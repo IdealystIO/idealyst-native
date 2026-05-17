@@ -1,0 +1,11 @@
+[package]
+name = "build-ios"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "iOS build orchestration: generates an ephemeral staticlib wrapper around a user's app crate and drives cargo to produce a .a"
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"

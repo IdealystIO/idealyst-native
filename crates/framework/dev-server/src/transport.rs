@@ -224,6 +224,7 @@ fn handle_app_msg(recorder: &WireRecordingBackend, msg: AppToDev) {
         }
         AppToDev::ColorSchemeChanged { scheme: _ } => {}
         AppToDev::ScreenReleased { scope } => {
+            eprintln!("[transport] AppToDev::ScreenReleased(scope={})", scope.0);
             recorder.handle_screen_released(scope.0);
         }
         AppToDev::NavigatorDepthChanged { .. } => {}

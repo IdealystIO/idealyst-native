@@ -3,9 +3,15 @@ use framework_core::primitives::navigator::{
 };
 use framework_core::StyleRules;
 use objc2::rc::Retained;
-use objc2::{msg_send, msg_send_id};
+use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
+use objc2::{
+    declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass,
+};
 use objc2_foundation::{CGFloat, MainThreadMarker};
-use objc2_ui_kit::{UIColor, UINavigationController, UIView, UIViewController};
+use objc2_ui_kit::{
+    UIColor, UINavigationController, UINavigationControllerDelegate, UIView,
+    UIViewController,
+};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -17,6 +23,12 @@ pub(crate) struct NavigatorEntry {
     pub(crate) controller: Retained<UINavigationController>,
     pub(crate) control: Rc<NavigatorControl>,
     pub(crate) stack: Rc<RefCell<Vec<ScreenEntry>>>,
+    /// Keep the delegate alive for the navigator's lifetime —
+    /// `setDelegate:` doesn't retain, so dropping this would leave a
+    /// dangling pointer in UIKit and the interactive-pop observer
+    /// would silently stop firing.
+    #[allow(dead_code)]
+    pub(crate) delegate: Retained<NavigatorDelegate>,
 }
 
 pub(crate) struct ScreenEntry {
@@ -26,6 +38,106 @@ pub(crate) struct ScreenEntry {
 
 pub(crate) struct IosNavigatorOps;
 impl NavigatorOps for IosNavigatorOps {}
+
+// ---------------------------------------------------------------------------
+// UINavigationControllerDelegate — observe interactive pops
+// ---------------------------------------------------------------------------
+//
+// UIKit pops view controllers in three ways that the dispatcher
+// doesn't see: swipe-back (`interactivePopGestureRecognizer`), the
+// system back-chevron in the navigation bar, and any external
+// `popViewController` call. None of those route through our
+// `NavCommand::Pop` branch, so the rust-side `stack` would diverge
+// from the UI and `release_screen` (which in AAS mode ships a
+// `ScreenReleased` event back over the wire) would never fire.
+//
+// Hooking the delegate's `didShow` callback is the simplest reliable
+// signal: it fires after any transition, including cancelled swipes,
+// so we can reconcile the rust stack against the controller's actual
+// `viewControllers` count.
+
+pub(crate) struct NavigatorDelegateIvars {
+    /// Shared with the dispatch closure so we observe (and trim) the
+    /// same stack the dispatcher pushes onto.
+    stack: Rc<RefCell<Vec<ScreenEntry>>>,
+    /// The navigator callbacks' `release_screen` — usually the AAS
+    /// stub that emits `AppToDev::ScreenReleased`.
+    release: Rc<dyn Fn(u64)>,
+    /// The navigator callbacks' `depth_changed`.
+    depth_changed: Rc<dyn Fn(usize)>,
+}
+
+declare_class!(
+    pub(crate) struct NavigatorDelegate;
+
+    unsafe impl ClassType for NavigatorDelegate {
+        type Super = NSObject;
+        type Mutability = mutability::MainThreadOnly;
+        const NAME: &'static str = "IdealystNavigatorDelegate";
+    }
+
+    impl DeclaredClass for NavigatorDelegate {
+        type Ivars = NavigatorDelegateIvars;
+    }
+
+    unsafe impl NSObjectProtocol for NavigatorDelegate {}
+
+    unsafe impl UINavigationControllerDelegate for NavigatorDelegate {
+        #[method(navigationController:didShowViewController:animated:)]
+        fn did_show(
+            &self,
+            nav: &UINavigationController,
+            _vc: &UIViewController,
+            _animated: bool,
+        ) {
+            // Trim the rust stack until it matches the controller's
+            // actual depth. Stack navigators only pop from the top
+            // and only one or two at a time in practice, so the
+            // simple loop is fine. Releases fire in pop-order.
+            let visible_depth =
+                unsafe { nav.viewControllers().count() };
+            let ivars = self.ivars();
+            let rust_depth = ivars.stack.borrow().len();
+            eprintln!(
+                "[ios-nav-delegate] didShow: rust_stack={}, visible={}",
+                rust_depth, visible_depth
+            );
+            let mut popped_scopes: Vec<u64> = Vec::new();
+            {
+                let mut stack = ivars.stack.borrow_mut();
+                while stack.len() > visible_depth {
+                    if let Some(entry) = stack.pop() {
+                        popped_scopes.push(entry.scope_id);
+                    } else {
+                        break;
+                    }
+                }
+            }
+            for scope_id in popped_scopes {
+                eprintln!("  -> releasing scope {}", scope_id);
+                (ivars.release)(scope_id);
+            }
+            (ivars.depth_changed)(visible_depth);
+        }
+    }
+);
+
+impl NavigatorDelegate {
+    pub(crate) fn new(
+        mtm: MainThreadMarker,
+        stack: Rc<RefCell<Vec<ScreenEntry>>>,
+        release: Rc<dyn Fn(u64)>,
+        depth_changed: Rc<dyn Fn(usize)>,
+    ) -> Retained<Self> {
+        let this = mtm.alloc::<Self>();
+        let this = this.set_ivars(NavigatorDelegateIvars {
+            stack,
+            release,
+            depth_changed,
+        });
+        unsafe { msg_send_id![super(this), init] }
+    }
+}
 
 pub(crate) fn create_navigator(
     mtm: MainThreadMarker,
@@ -49,13 +161,6 @@ pub(crate) fn create_navigator(
     }
 
     let stack_rc: Rc<RefCell<Vec<ScreenEntry>>> = Rc::new(RefCell::new(Vec::new()));
-    let entry = NavigatorEntry {
-        controller: nav.clone(),
-        control: control.clone(),
-        stack: stack_rc.clone(),
-    };
-    let key = &*nav_view as *const UIView as usize;
-    navigator_instances.insert(key, entry);
 
     let nav_for_dispatch = nav.clone();
     let mount_for_dispatch = callbacks.mount_screen.clone();
@@ -63,10 +168,38 @@ pub(crate) fn create_navigator(
     let depth_for_dispatch = callbacks.depth_changed.clone();
     let stack_ref = stack_rc.clone();
 
+    // Delegate observes interactive pops (swipe-back, system
+    // back-chevron). Reconciles `stack_rc` against the controller's
+    // actual depth and fires `release_for_dispatch` for any vc UIKit
+    // removed without our dispatcher knowing.
+    let delegate = NavigatorDelegate::new(
+        mtm,
+        stack_rc.clone(),
+        callbacks.release_screen.clone(),
+        callbacks.depth_changed.clone(),
+    );
+    unsafe {
+        let delegate_proto = ProtocolObject::from_ref(&*delegate);
+        nav.setDelegate(Some(delegate_proto));
+    }
+    eprintln!("[ios-nav] create_navigator: delegate set on UINavigationController");
+
+    let entry = NavigatorEntry {
+        controller: nav.clone(),
+        control: control.clone(),
+        stack: stack_rc.clone(),
+        delegate: delegate.clone(),
+    };
+    let key = &*nav_view as *const UIView as usize;
+    navigator_instances.insert(key, entry);
+
     control.install(Box::new(move |cmd| {
+        eprintln!("[ios-nav-dispatcher] cmd received");
         let mut stack = stack_ref.borrow_mut();
+        eprintln!("  -> stack_len before = {}", stack.len());
         match cmd {
             NavCommand::Push { name, params, url: _ } => {
+                eprintln!("  -> Push: calling mount_for_dispatch");
                 let result = mount_for_dispatch(name, params);
                 let vc = mount_screen_in_vc(mtm, result.node.as_view());
                 let scope_id = result.scope_id;
@@ -76,6 +209,7 @@ pub(crate) fn create_navigator(
                     std::mem::forget(target); // keep alive for VC lifetime
                 }
                 stack.push(ScreenEntry { vc, scope_id });
+                eprintln!("  -> Push: stack_len after = {}", stack.len());
                 depth_for_dispatch(stack.len());
                 super::schedule_layout_pass();
             }

@@ -25,8 +25,11 @@ use wire::{
 };
 
 mod convert_out;
+mod scene_model;
 pub mod transport;
 pub mod watch;
+
+use scene_model::SceneModel;
 
 pub use transport::serve;
 pub use watch::{spawn_rebuild_loop, RebuildCommand, RebuildConfig};
@@ -159,6 +162,15 @@ struct RecorderState {
     /// dispatcher can push updates from inside `borrow_mut` without
     /// going through the outer `WireRecordingBackend`.
     nav_state_mirror: Arc<Mutex<NavStateSnapshot>>,
+    /// Mirror of the live scene — the source of truth for catch-up
+    /// replay. Each recorder method that emits a `Command` also
+    /// updates this model so a freshly connecting client can be
+    /// brought up to the current state without replaying historical
+    /// transients (pushed-then-popped screens, typed-then-deleted
+    /// text, scroll positions that moved many times, etc.).
+    /// `out` is still used for incremental broadcast to clients
+    /// already past the snapshot point.
+    scene: SceneModel,
 }
 
 /// Per-navigator dev-side state used by the recording backend's
@@ -196,6 +208,7 @@ impl WireRecordingBackend {
                 navigators: HashMap::new(),
                 scope_to_navigator: HashMap::new(),
                 nav_state_mirror: nav_state_mirror.clone(),
+                scene: SceneModel::new(),
             })),
             nav_state_mirror,
         }
@@ -277,10 +290,16 @@ impl WireRecordingBackend {
     }
 
     /// Return a clone of every command emitted at or after `cursor`.
-    /// The recorder's log is append-only; cursors only ever move
-    /// forward. A new client connecting calls this with cursor=0 to
-    /// catch up to the current state; subsequent polls supply their
-    /// last-seen length to fetch only new commands.
+    /// Used for incremental broadcast to clients already past the
+    /// initial snapshot. The recorder's log is append-only; cursors
+    /// only ever move forward.
+    ///
+    /// Note: this does NOT filter out commands superseded by later
+    /// state (a Push followed by a Pop both stay in the log). Fresh
+    /// clients should instead start from [`Self::snapshot`], which
+    /// serializes the *current* scene state. Live clients are
+    /// presumed to have already received the historical commands,
+    /// so incremental replay from their cursor is correct.
     pub fn commands_since(&self, cursor: usize) -> Vec<Command> {
         let state = self.inner.borrow();
         if cursor >= state.out.len() {
@@ -288,6 +307,20 @@ impl WireRecordingBackend {
         } else {
             state.out[cursor..].to_vec()
         }
+    }
+
+    /// Build a fresh wire-command stream that, applied to an empty
+    /// client, reproduces the *current* scene. Catchup uses this
+    /// instead of `commands_since(0)` so transient history (mounts
+    /// later popped, signal mutations later overwritten) doesn't
+    /// re-play on every reconnect.
+    ///
+    /// The client should set its replay cursor to whatever
+    /// [`Self::command_count`] returned at the moment this snapshot
+    /// was taken — subsequent `commands_since(cursor)` calls then
+    /// pick up live mutations that happened after the snapshot.
+    pub fn snapshot(&self) -> Vec<Command> {
+        self.inner.borrow().scene.snapshot_commands()
     }
 
     /// Dispatch an event received from the app. Returns true if the
@@ -1364,9 +1397,16 @@ fn navigator_dispatcher_handle(
             let depth = nav_state.stack.len();
             let urls_snapshot = nav_state.stack_urls.clone();
             state.scope_to_navigator.insert(mount.scope_id, nav_id);
+            // Replace/Reset implicitly release the previous top(s);
+            // tombstone their push entries so fresh clients don't
+            // re-mount them.
             for r in &released {
                 state.scope_to_navigator.remove(r);
+                if let Some(push_idx) = state.screen_push_log_index.remove(r) {
+                    state.tombstones.insert(push_idx);
+                }
             }
+            let push_log_index = state.out.len();
             state.out.push(match kind {
                 PushLikeKind::Push => Command::NavigatorPush {
                     navigator: nav_id,
@@ -1401,6 +1441,12 @@ fn navigator_dispatcher_handle(
                     restore,
                 },
             });
+            // Remember where the push for this scope landed in the
+            // log — if the screen is popped later, we tombstone this
+            // entry so catch-up replay skips it.
+            state
+                .screen_push_log_index
+                .insert(mount.scope_id, push_log_index);
             let mirror = state.nav_state_mirror.clone();
             (released, depth, urls_snapshot, mirror)
         };
@@ -1438,6 +1484,13 @@ fn navigator_dispatcher_handle(
                 let depth = nav_state.stack.len();
                 let urls_snapshot = nav_state.stack_urls.clone();
                 let mirror = state.nav_state_mirror.clone();
+                // Tombstone the originating push so fresh clients
+                // catching up don't replay the mount.
+                if let Some(scope_id) = popped {
+                    if let Some(push_idx) = state.screen_push_log_index.remove(&scope_id) {
+                        state.tombstones.insert(push_idx);
+                    }
+                }
                 state.out.push(Command::NavigatorPop {
                     navigator: nav_id,
                     count: 1,
@@ -1520,22 +1573,51 @@ impl WireRecordingBackend {
     /// from the app side. Looks up which navigator owns the scope,
     /// pops it off the stack model, and invokes the framework's
     /// `release_screen` callback to drop the scope on dev.
+    ///
+    /// This is the path for *client-initiated* pops — iOS swipe-back
+    /// or any platform back gesture that pops a screen without going
+    /// through `NavCommand::Pop`. We mirror what the server-side Pop
+    /// dispatch does: trim `stack_urls`, sync the snapshot mirror so
+    /// the next rebuild-exec snapshot is accurate, and emit a
+    /// `Command::NavigatorPop` into the append-only log so other
+    /// connected clients (and any fresh client that reconnects)
+    /// learn about the pop.
     pub fn handle_screen_released(&self, scope: u64) -> bool {
-        let (cbs, new_depth) = {
+        eprintln!("[recorder] handle_screen_released(scope={})", scope);
+        let (cbs, new_depth, urls_snapshot, nav_id, mirror) = {
             let mut state = self.inner.borrow_mut();
             let Some(&nav_id) = state.scope_to_navigator.get(&scope) else {
+                eprintln!("  -> unknown scope, ignored");
                 return false;
             };
-            let nav = state.navigators.get_mut(&nav_id);
-            let Some(nav) = nav else {
+            let Some(nav) = state.navigators.get_mut(&nav_id) else {
                 return false;
             };
+            eprintln!("  -> stack_urls before: {:?}", nav.stack_urls);
             nav.stack.retain(|&s| s != scope);
+            // Stack navigators only release from the top, so the
+            // popped url is the tail of stack_urls. If swap-style
+            // releases ever land, this needs to be by-position.
+            let _ = nav.stack_urls.pop();
             let depth = nav.stack.len();
+            let urls = nav.stack_urls.clone();
             let cbs = nav.callbacks.clone();
             state.scope_to_navigator.remove(&scope);
-            (cbs, depth)
+            // Tombstone the originating push so fresh catch-up
+            // replays don't briefly remount this screen.
+            if let Some(push_idx) = state.screen_push_log_index.remove(&scope) {
+                state.tombstones.insert(push_idx);
+            }
+            state.out.push(Command::NavigatorPop {
+                navigator: nav_id,
+                count: 1,
+            });
+            let mirror = state.nav_state_mirror.clone();
+            (cbs, depth, urls, nav_id, mirror)
         };
+        if let Ok(mut m) = mirror.lock() {
+            m.insert(nav_id.0, urls_snapshot);
+        }
         (cbs.release_screen)(scope);
         (cbs.depth_changed)(new_depth);
         true

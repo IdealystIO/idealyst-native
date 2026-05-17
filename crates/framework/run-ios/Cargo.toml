@@ -1,0 +1,10 @@
+[package]
+name = "run-ios"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Build and launch an idealyst app on iOS Simulator without an Xcode project — compiles Swift sources directly via swiftc, links against the Rust staticlib, assembles a .app bundle, and drives simctl."
+
+[dependencies]
+anyhow = "1"
+build-ios = { workspace = true }

@@ -1,0 +1,12 @@
+[package]
+name = "dev-http"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Static-file HTTP server for `idealyst dev` — single-threaded, sync, with livereload coordination hooks"
+
+[dependencies]
+anyhow = "1"
+# Sync HTTP server. Tiny, no async runtime, no TLS — appropriate for
+# a dev-mode static-file server bound to loopback or LAN.
+tiny_http = "0.12"

@@ -16,3 +16,17 @@ clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+# Dev-mode infrastructure. Both crates are intentionally small and
+# usable independently — `dev-http` for plain static serving,
+# `dev-reload` for the watch+wasm-pack loop. The CLI is the wiring.
+dev-http = { workspace = true }
+dev-reload = { workspace = true }
+# Platform-specific build orchestration. Each platform's pipeline
+# is its own crate so the CLI's `build` and `run` commands stay thin.
+build-ios = { workspace = true }
+run-ios = { workspace = true }
+# Roku BrightScript transpiler — powers the `brs` subcommand, which
+# scans the project's source files for `#[method]`-tagged fns and
+# concatenates their BrightScript output into a single `.brs` file.
+backend-roku-transpile = { workspace = true }
+syn = { version = "2", features = ["full"] }

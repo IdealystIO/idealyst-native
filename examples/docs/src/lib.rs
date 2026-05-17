@@ -1,0 +1,53 @@
+//! Idealyst documentation site.
+//!
+//! Single, platform-agnostic crate: [`app`] returns a `Primitive` tree
+//! that runs unchanged on every backend the framework supports. The
+//! per-platform glue (wasm-bindgen entry for web, UIApplicationDelegate
+//! shim for iOS, etc.) is the responsibility of the `idealyst` CLI,
+//! which materializes those wrappers into `target/idealyst/<platform>/`
+//! at build time.
+//!
+//! The one exception is the wasm-bindgen `start()` entry in [`web`],
+//! kept here transitionally until `idealyst dev` / `idealyst build web`
+//! can generate that wrapper crate. When that work lands, the `web`
+//! module disappears and this file becomes pure cross-platform code.
+
+use framework_core::{component, ui, Primitive};
+use idea_ui::{
+    body, card, heading, install_idea_theme, light_theme, stack, BodyTone, HeadingKind, StackGap,
+};
+
+#[component]
+pub fn app() -> Primitive {
+    install_idea_theme(light_theme());
+
+    ui! {
+        Stack(gap = StackGap::Lg) {
+            Heading(
+                content = "Idealyst".to_string(),
+                kind    = HeadingKind::H1,
+            )
+            Body(
+                content = "Welcome — these docs are themselves an idealyst app, \
+                           served via the CLI's dev server and built with the \
+                           same primitives the framework exposes to authors.".to_string(),
+                tone    = BodyTone::Muted,
+            )
+            Card {
+                Heading(
+                    content = "Status".to_string(),
+                    kind    = HeadingKind::H2,
+                )
+                Body(
+                    content = "Scaffolding in progress. Real documentation \
+                               routes will land here as the CLI, build, and \
+                               splash work stabilize.".to_string(),
+                    tone    = BodyTone::Muted,
+                )
+            }
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+mod web;

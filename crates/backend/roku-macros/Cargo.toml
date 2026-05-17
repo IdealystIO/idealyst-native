@@ -1,0 +1,22 @@
+[package]
+name = "backend-roku-macros"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Experimental Rust → BrightScript transpiler, packaged as a
+# proc-macro crate. The `#[method]` attribute parses the annotated
+# `fn`, enforces a transpilable subset of Rust, and emits:
+#   1. The original function (so it remains callable from Rust on
+#      every platform), and
+#   2. A `const <NAME>_BRS: &str = "..."` containing the equivalent
+#      BrightScript source, for build-time collection into a .brs
+#      file shipped inside the Roku .pkg.
+[lib]
+proc-macro = true
+
+[dependencies]
+backend-roku-transpile = { workspace = true }
+syn = { version = "2", features = ["full", "visit", "extra-traits"] }
+quote = "1"
+proc-macro2 = "1"
