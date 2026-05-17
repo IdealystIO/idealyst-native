@@ -1,0 +1,110 @@
+[package]
+name = "framework-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+# When enabled, the framework records component/build/backend timing
+# events into an in-memory log. Author-facing API lives in
+# `framework_core::debug`. Off by default — when off, the `debug`
+# module + all instrumentation are entirely compiled out (no atomic
+# check, no symbol pollution, no binary growth).
+#
+# Forwards to the matching feature on `framework-macros` so the
+# `#[component]` macro emits the corresponding enter/exit calls.
+# The wasm32-only deps (`js-sys`, `wasm-bindgen`) used here are now
+# unconditional on wasm32 — see the `[target.'cfg(target_arch = "wasm32")']`
+# section below.
+debug-stats = ["framework-macros/debug-stats"]
+
+# Programmatic introspection and control of the running UI. When
+# enabled, the render walker registers every mounted primitive into a
+# thread-local registry that can be queried and controlled via the
+# `robot` module's API. Designed as the foundation for:
+# - Cross-platform E2E testing
+# - MCP server for AI-driven in-app control
+# - Live debugging / inspection tools
+#
+# Off by default — adds per-node overhead (one registry entry per
+# mounted element + retained action closures). Production builds
+# should leave this off.
+robot = ["dep:serde_json", "dep:libc"]
+
+# Platform-agnostic async + per-frame primitives:
+#
+# - `render_loop(|elapsed| ...)`  ticks a closure once per frame
+#   (rAF on web, dedicated render thread on Android, CADisplayLink on
+#   iOS).
+# - `spawn_async(future)`         drives a future to completion in a
+#   platform-appropriate way (spawn_local on web, pollster on a
+#   worker thread on Android, pollster on main on iOS).
+#
+# Off by default because the deps (`pollster`, `wasm-bindgen-futures`,
+# `objc2`/`block2` for iOS's display link) are dead weight for apps
+# that never need a frame ticker. Enabling this feature does NOT pull
+# in any GPU library — that's the author's call, kept in the author's
+# own Cargo.toml. The `Graphics` surface primitive is unconditional.
+#
+# `dep:foo` activates the optional `foo` dep wherever it's declared.
+# Cargo silently ignores activations on targets that don't declare
+# the dep (e.g. `dep:wasm-bindgen-futures` on Android).
+async-driver = [
+    "dep:wasm-bindgen-futures",
+    "dep:pollster",
+    "dep:log",
+    "dep:objc2",
+    "dep:objc2-foundation",
+    "dep:block2",
+]
+
+[dependencies]
+framework-macros = { workspace = true }
+serde_json = { version = "1", optional = true }
+# `libc` is only used by the robot feature's stdio-capture path
+# (dup/dup2/pipe/read on UNIX). Optional so non-robot builds don't pull it in.
+libc = { version = "0.2", optional = true }
+# The `Graphics` primitive exposes its surface as a standard
+# `raw_window_handle` handle so authors can plug any GPU library
+# (wgpu, glow, vello, softbuffer, …) on top. Tiny dep — a handful of
+# enums and traits, no platform code.
+raw-window-handle = "0.6"
+
+# Wasm-only deps:
+# - `js-sys` is used for `performance.now()` under `debug-stats` AND
+#   for `Promise.resolve().then(...)` in `schedule_microtask` (used
+#   to break synchronous reactivity chains that would otherwise
+#   re-enter wasm-bindgen `FnMut` closures — e.g. a click handler
+#   that triggers a screen swap which drops the click's own button
+#   tree).
+# - `wasm-bindgen` is required for the JsCast / Closure types both
+#   call sites need.
+# Both are unconditional on wasm32 (no longer `optional`) because
+# `schedule_microtask` is now part of the framework's public API
+# regardless of features.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+# `Window` for the rAF/setTimeout helpers in `scheduling`. Nothing
+# else from web-sys is unconditionally needed.
+web-sys = { version = "0.3", features = ["Window"] }
+# Drives the `spawn_async` primitive on web when `async-driver` is on.
+wasm-bindgen-futures = { version = "0.4", optional = true }
+
+# Native deps for the optional `async-driver` feature. `pollster`
+# drives the future returned from `spawn_async` on every non-wasm
+# target so authors can write the same `async fn build_renderer(...)`
+# everywhere. `log` is used by the desktop fallback for the
+# "no render-loop driver" warning, and by the Android/iOS drivers
+# for init errors.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+pollster = { version = "0.4", optional = true }
+log = { version = "0.4", optional = true }
+
+# iOS-only: CADisplayLink-substitute (NSTimer at 60Hz) for the
+# render loop. objc2/block2 are heavy enough that we don't want them
+# on Android or desktop builds.
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = { version = "0.5", optional = true }
+objc2-foundation = { version = "0.2", features = ["NSString"], optional = true }
+block2 = { version = "0.5", optional = true }

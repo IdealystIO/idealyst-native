@@ -1,0 +1,29 @@
+[package]
+name = "dev-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Dev-side runtime for the hot-reload wire protocol. Provides a
+# `WireRecordingBackend` that implements `framework_core::Backend`
+# with `Node = NodeId`, recording each walker call as a `Command`
+# for transport to the app.
+#
+# This crate runs on the developer's machine, never inside the
+# shipped app binary.
+
+[dependencies]
+framework-core = { workspace = true }
+wire = { workspace = true }
+serde_json = "1"
+# Sync WebSocket server. `default-features = false` drops the rustls
+# stack — dev mode is loopback or LAN, no TLS needed.
+tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
+# File-watch + debounce for the auto-rebuild loop. Used only on the
+# dev side; never ships into an app binary.
+notify-debouncer-mini = { version = "0.4", default-features = false }
+
+[dev-dependencies]
+# Used by the `dump_wire` example to pretty-print the captured
+# command stream as JSON.
+serde_json = "1"

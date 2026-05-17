@@ -1,22 +1,23 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/framework-core",
-    "crates/framework-macros",
-    "crates/idea-ui",
-    "crates/idea-ui-docs-derive",
-    "crates/reactive-arena",
-    "crates/reactive-refs",
-    "crates/backend-web",
-    "crates/backend-ios",
-    "crates/backend-ios-stack",
-    "crates/backend-android",
-    "crates/icons-lucide",
-    "crates/native-layout",
+    "crates/framework/core",
+    "crates/framework/macros",
+    "crates/framework/native-layout",
+    "crates/framework/wire",
+    "crates/framework/dev-client",
+    "crates/framework/dev-server",
+    "crates/framework/cli",
+    "crates/backend/ios",
+    "crates/backend/ios-stack",
+    "crates/backend/android",
+    "crates/backend/web",
+    "crates/reactive/arena",
+    "crates/reactive/refs",
+    "crates/ui/idea-ui",
+    "crates/ui/idea-ui-docs-derive",
+    "crates/ui/icons-lucide",
     "crates/robot-mcp-proxy",
-    "crates/idealyst-wire",
-    "crates/idealyst-dev-client",
-    "crates/idealyst-dev-server",
     "examples/hello",
     "examples/hello-web",
     "examples/hello-android",
@@ -34,18 +35,19 @@ version = "0.0.1"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-framework-core = { path = "crates/framework-core" }
-idea-ui = { path = "crates/idea-ui" }
-idea-ui-docs-derive = { path = "crates/idea-ui-docs-derive" }
-backend-web = { path = "crates/backend-web" }
-backend-ios = { path = "crates/backend-ios" }
-backend-ios-stack = { path = "crates/backend-ios-stack" }
-backend-android = { path = "crates/backend-android" }
-icons-lucide = { path = "crates/icons-lucide" }
-native-layout = { path = "crates/native-layout" }
-idealyst-wire = { path = "crates/idealyst-wire" }
-idealyst-dev-client = { path = "crates/idealyst-dev-client" }
-idealyst-dev-server = { path = "crates/idealyst-dev-server" }
+framework-core = { path = "crates/framework/core" }
+framework-macros = { path = "crates/framework/macros" }
+native-layout = { path = "crates/framework/native-layout" }
+wire = { path = "crates/framework/wire" }
+dev-client = { path = "crates/framework/dev-client" }
+dev-server = { path = "crates/framework/dev-server" }
+backend-ios = { path = "crates/backend/ios" }
+backend-ios-stack = { path = "crates/backend/ios-stack" }
+backend-android = { path = "crates/backend/android" }
+backend-web = { path = "crates/backend/web" }
+idea-ui = { path = "crates/ui/idea-ui" }
+idea-ui-docs-derive = { path = "crates/ui/idea-ui-docs-derive" }
+icons-lucide = { path = "crates/ui/icons-lucide" }
 
 # Size-tuned release profile. We optimize for size rather than speed —
 # UI workloads aren't CPU-bound, but bytes-over-the-wire matter for the

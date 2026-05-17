@@ -1,0 +1,66 @@
+[package]
+name = "dev-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+# App-side replay engine for the dev-mode hot-reload wire protocol.
+# Generic over a platform `Backend` so each backend (iOS, Android,
+# web, …) can host hot-reload without changes to its native code.
+#
+# Everything in this crate is gated by the `dev-hot-reload` feature.
+# When the feature is off, the crate compiles to nothing (no types,
+# no items reachable) so a host binary that mentions it transitively
+# pays exactly zero binary cost.
+
+[features]
+# Default: nothing. When a dependent host opts into hot-reload, they
+# select the appropriate transport feature (either `native` for
+# tungstenite over plain TCP, or `web` for browser WebSockets via
+# web-sys).
+default = []
+# Master switch. Without this, *every* item in this crate's public
+# API is gated out — see `lib.rs`. The two transport features below
+# both imply this.
+dev-hot-reload = []
+# Sync blocking transport using `tungstenite`. Right for desktop /
+# iOS / Android hosts where a dedicated dev-mode connection thread
+# is acceptable.
+native = ["dep:tungstenite", "dev-hot-reload"]
+# Browser transport using web-sys's WebSocket API. Right for wasm
+# hosts where blocking I/O isn't possible.
+web = [
+    "dep:wasm-bindgen",
+    "dep:web-sys",
+    "dep:js-sys",
+    "dev-hot-reload",
+]
+
+[dependencies]
+framework-core = { workspace = true }
+wire = { workspace = true }
+serde_json = { version = "1", optional = false }
+
+# Native transport deps. Optional + opt-in via `native`.
+tungstenite = { version = "0.24", default-features = false, features = ["handshake"], optional = true }
+
+# Web transport deps. Optional + opt-in via `web`.
+wasm-bindgen = { version = "0.2", optional = true }
+js-sys = { version = "0.3", optional = true }
+
+[dependencies.web-sys]
+version = "0.3"
+optional = true
+features = [
+    "BinaryType",
+    "CloseEvent",
+    "console",
+    "ErrorEvent",
+    "Location",
+    "MessageEvent",
+    "WebSocket",
+    "Window",
+]

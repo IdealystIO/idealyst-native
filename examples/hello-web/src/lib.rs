@@ -67,7 +67,7 @@ pub fn start() {
 // --- Hot-reload dev client integration -------------------------------------
 //
 // This whole module is gated behind `dev-hot-reload`. When the
-// feature is off, the module — and the `idealyst-dev-client`
+// feature is off, the module — and the `dev-client`
 // dependency it pulls in — disappears entirely from the build.
 
 #[cfg(feature = "dev-hot-reload")]
@@ -76,7 +76,7 @@ mod dev_hot_reload {
     use std::rc::Rc;
 
     use backend_web::WebBackend;
-    use idealyst_dev_client::{connect_web, OutboundSender, WebClientHandle, WireBackend};
+    use dev_client::{connect_web, OutboundSender, WebClientHandle, WireBackend};
     use wasm_bindgen::JsCast;
 
     const HOST_SELECTOR: &str = "#app";

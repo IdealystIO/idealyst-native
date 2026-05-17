@@ -16,8 +16,8 @@
 #![cfg(target_os = "ios")]
 
 use backend_ios::IosBackend;
-use idealyst_dev_client::{AasClient, OutboundSender};
-use idealyst_wire::{AppToDev, DevToApp};
+use dev_client::{AasClient, OutboundSender};
+use wire::{AppToDev, DevToApp};
 use objc2::rc::Retained;
 use objc2_foundation::MainThreadMarker;
 use objc2_ui_kit::UIView;
@@ -119,7 +119,7 @@ fn ws_thread(
         // Greet.
         let hello = AppToDev::Hello {
             app_name: "hello-ios-aas".into(),
-            color_scheme: idealyst_wire::WireColorScheme::Auto,
+            color_scheme: wire::WireColorScheme::Auto,
             initial_url: None,
         };
         let _ = ws_send(&mut ws, &hello);

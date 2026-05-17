@@ -15,7 +15,7 @@
 use std::sync::mpsc;
 
 use hot_reload_demo::print_backend::PrintBackend;
-use idealyst_dev_client::{connect_and_run, WireBackend};
+use dev_client::{connect_and_run, WireBackend};
 
 const DEFAULT_URL: &str = "ws://127.0.0.1:9001";
 

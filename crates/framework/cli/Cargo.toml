@@ -1,0 +1,18 @@
+[package]
+name = "idealyst-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Idealyst framework CLI — scaffold, dev-serve, build, and run idealyst apps"
+
+# The package is `idealyst-cli` so `cargo install idealyst-cli` is
+# discoverable, but the binary itself is `idealyst` — what users type.
+[[bin]]
+name = "idealyst"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"

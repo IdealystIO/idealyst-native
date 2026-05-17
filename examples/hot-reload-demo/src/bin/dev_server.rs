@@ -20,7 +20,7 @@ use std::rc::Rc;
 
 use framework_core::render;
 use hot_reload_demo::app_root;
-use idealyst_dev_server::{
+use dev_server::{
     serve, spawn_rebuild_loop, NavStateSnapshot, RebuildCommand, RebuildConfig,
     WireRecordingBackend,
 };
