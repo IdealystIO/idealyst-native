@@ -1,0 +1,8 @@
+title=__APP_TITLE__
+major_version=__APP_MAJOR__
+minor_version=__APP_MINOR__
+build_version=__APP_BUILD__
+mm_icon_focus_hd=pkg:/images/icon-hd.png
+mm_icon_focus_sd=pkg:/images/icon-sd.png
+ui_resolutions=fhd
+splash_color=#000000

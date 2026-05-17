@@ -5,6 +5,7 @@ mod builder;
 mod handles;
 mod primitive;
 mod reactive;
+mod safe_area;
 mod scheduling;
 mod sources;
 mod style;
@@ -60,6 +61,7 @@ pub use primitives::presence::{
     presence, PresenceAnim, PresenceHandle, PresenceOps, PresenceState,
 };
 pub use reactive::{arena_stats, untrack, ArenaStats, Effect, Ref, Signal};
+pub use safe_area::{safe_area_insets, set_safe_area_insets, EdgeInsets, SafeAreaSides};
 pub use scheduling::{
     after_animation_frame, after_ms, raf_loop, schedule_microtask, RafLoop, ScheduledTask,
 };

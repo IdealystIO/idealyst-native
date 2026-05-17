@@ -52,6 +52,25 @@ pub mod transport;
 #[cfg(feature = "native")]
 pub use transport::{connect_and_run, ClientError};
 
+// mDNS / DNS-SD browsing — shared across native targets so iOS,
+// Android, and desktop demos all locate the dev-server the same way.
+// Web hosts use a different mechanism (the page's http origin); this
+// module is `native`-only.
+#[cfg(feature = "native")]
+pub mod discover;
+#[cfg(feature = "native")]
+pub use discover::{discover, discover_blocking, SERVICE_TYPE};
+
+// Cross-platform AAS-client shell — the bits that used to live in
+// `examples/hello-ios-aas/src/lib.rs` minus the iOS-specific entry
+// point and main-thread scheduling. Backends opt in via their own
+// `aas-shell` feature and add the platform-specific glue (FFI entry,
+// drain timer, post-batch layout pass).
+#[cfg(feature = "native")]
+pub mod aas_shell;
+#[cfg(feature = "native")]
+pub use aas_shell::AasShell;
+
 // Web (web-sys WebSocket) transport. Only compiled when the `web`
 // feature is on — used for wasm32 hosts.
 #[cfg(feature = "web")]

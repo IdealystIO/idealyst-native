@@ -1205,6 +1205,31 @@ impl Backend for IosBackend {
         }
     }
 
+    fn apply_safe_area_padding(
+        &mut self,
+        node: &Self::Node,
+        sides: framework_core::SafeAreaSides,
+    ) {
+        // Read the platform's current safe-area insets from the host
+        // root. `LayoutObserverView` mirrors the host's insets, so
+        // this reflects the same value the framework signal carries
+        // — but reading the host directly avoids a stale read if
+        // this runs before the signal has propagated.
+        let insets = self.platform_safe_area_insets();
+        // Mask per-side: only contribute on sides the author opted
+        // into. `set_safe_area_extra` always takes all four sides;
+        // we pass zero for unopted ones so the math stays uniform.
+        let top = if sides.contains(framework_core::SafeAreaSides::TOP) { insets.top } else { 0.0 };
+        let right = if sides.contains(framework_core::SafeAreaSides::RIGHT) { insets.right } else { 0.0 };
+        let bottom = if sides.contains(framework_core::SafeAreaSides::BOTTOM) { insets.bottom } else { 0.0 };
+        let left = if sides.contains(framework_core::SafeAreaSides::LEFT) { insets.left } else { 0.0 };
+
+        let view = node.as_view();
+        let layout_node = self.layout_for_view(view);
+        self.layout.set_safe_area_extra(layout_node, top, right, bottom, left);
+        schedule_layout_pass();
+    }
+
     // =================================================================
     // Handle factories — override defaults so handles carry the
     // real iOS node, enabling `AnchorableHandle::rect()` to read
@@ -1481,4 +1506,21 @@ impl IosBackend {
         }
     }
 
+    /// Return the host root's current safe-area insets. Used by
+    /// `apply_safe_area_padding` to avoid trusting a stale framework
+    /// signal value during the build/layout flow — UIKit's value is
+    /// the source of truth.
+    fn platform_safe_area_insets(&self) -> framework_core::EdgeInsets {
+        let Some(host) = &self.host_root else {
+            return framework_core::EdgeInsets::ZERO;
+        };
+        let insets: callbacks::UIEdgeInsets =
+            unsafe { msg_send![&**host, safeAreaInsets] };
+        framework_core::EdgeInsets {
+            top: insets.top as f32,
+            right: insets.right as f32,
+            bottom: insets.bottom as f32,
+            left: insets.left as f32,
+        }
+    }
 }

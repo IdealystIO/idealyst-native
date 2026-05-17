@@ -252,6 +252,7 @@ fn home_screen(counter: Signal<i64>, last_result: Signal<String>) -> Primitive {
             source: TextSource::Static("Open detail →".into()),
             style: None,
             ref_fill: None,
+            test_id: None,
         }],
     )
     .with_style(style_app(link_pill_style()))
@@ -263,16 +264,19 @@ fn home_screen(counter: Signal<i64>, last_result: Signal<String>) -> Primitive {
                 source: TextSource::Static("Server-side state · live".into()),
                 style: Some(style(subtitle_style())),
                 ref_fill: None,
+                test_id: None,
             },
             Primitive::Text {
                 source: TextSource::Static("Home".into()),
                 style: Some(style(h1_style())),
                 ref_fill: None,
+                test_id: None,
             },
             Primitive::Text {
                 source: TextSource::Reactive(Box::new(move || format!("{}", counter.get()))),
                 style: Some(style(counter_display)),
                 ref_fill: None,
+                test_id: None,
             },
             Primitive::View {
                 children: vec![
@@ -284,6 +288,7 @@ fn home_screen(counter: Signal<i64>, last_result: Signal<String>) -> Primitive {
                         style: Some(style(primary_btn_style("#475569"))),
                         ref_fill: None,
                         disabled: None,
+                        test_id: None,
                     },
                     Primitive::Button {
                         label: TextSource::Static("+1".into()),
@@ -293,6 +298,7 @@ fn home_screen(counter: Signal<i64>, last_result: Signal<String>) -> Primitive {
                         style: Some(style(primary_btn_style("#2563eb"))),
                         ref_fill: None,
                         disabled: None,
+                        test_id: None,
                     },
                     Primitive::Button {
                         label: TextSource::Static("reset".into()),
@@ -302,10 +308,13 @@ fn home_screen(counter: Signal<i64>, last_result: Signal<String>) -> Primitive {
                         style: Some(style(primary_btn_style("#1e293b"))),
                         ref_fill: None,
                         disabled: None,
+                        test_id: None,
                     },
                 ],
                 style: Some(style(row_style())),
                 ref_fill: None,
+                safe_area_sides: framework_core::SafeAreaSides::NONE,
+                test_id: None,
             },
             Primitive::View {
                 children: vec![
@@ -317,6 +326,7 @@ fn home_screen(counter: Signal<i64>, last_result: Signal<String>) -> Primitive {
                         style: Some(style(primary_btn_style("#16a34a"))),
                         ref_fill: None,
                         disabled: None,
+                        test_id: None,
                     },
                     Primitive::Button {
                         label: TextSource::Static("Factorial".into()),
@@ -326,6 +336,7 @@ fn home_screen(counter: Signal<i64>, last_result: Signal<String>) -> Primitive {
                         style: Some(style(primary_btn_style("#d97706"))),
                         ref_fill: None,
                         disabled: None,
+                        test_id: None,
                     },
                     Primitive::Button {
                         label: TextSource::Static("Prime?".into()),
@@ -335,21 +346,27 @@ fn home_screen(counter: Signal<i64>, last_result: Signal<String>) -> Primitive {
                         style: Some(style(primary_btn_style("#7c3aed"))),
                         ref_fill: None,
                         disabled: None,
+                        test_id: None,
                     },
                 ],
                 style: Some(style(row_style())),
                 ref_fill: None,
+                safe_area_sides: framework_core::SafeAreaSides::NONE,
+                test_id: None,
             },
             Primitive::Text {
                 source: TextSource::Reactive(Box::new(move || last_result.get())),
                 style: Some(style(result_display)),
                 ref_fill: None,
+                test_id: None,
             },
             // Navigation: push the detail screen.
             to_detail,
         ],
         style: Some(style(page_style())),
         ref_fill: None,
+        safe_area_sides: framework_core::SafeAreaSides::NONE,
+        test_id: None,
     }
 }
 
@@ -370,6 +387,7 @@ fn detail_screen() -> Primitive {
                 source: TextSource::Static("Detail".into()),
                 style: Some(style(h1_style())),
                 ref_fill: None,
+                test_id: None,
             },
             Primitive::Text {
                 source: TextSource::Static(
@@ -381,6 +399,7 @@ fn detail_screen() -> Primitive {
                 ),
                 style: Some(style(subtitle_style())),
                 ref_fill: None,
+                test_id: None,
             },
             Primitive::Button {
                 label: TextSource::Static("← Back".into()),
@@ -390,10 +409,13 @@ fn detail_screen() -> Primitive {
                 style: Some(style(primary_btn_style("#475569"))),
                 ref_fill: None,
                 disabled: None,
+                test_id: None,
             },
         ],
         style: Some(style(page_style())),
         ref_fill: None,
+        safe_area_sides: framework_core::SafeAreaSides::NONE,
+        test_id: None,
     }
 }
 

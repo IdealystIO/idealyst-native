@@ -37,5 +37,24 @@
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
 	</array>
+	<!--
+	  Local-network discovery for the AAS dev-server.
+	  iOS 14+ blocks Bonjour browsing unless the bundle declares which
+	  service types it'll look for *and* a human-readable explanation
+	  to show in the consent dialog.
+	-->
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_idealyst-dev._tcp</string>
+	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Finds the Idealyst dev-server on your network so the app can hot-reload its UI from your Mac.</string>
+	<!--
+	  App-specific identifier that the dev-server's mDNS TXT record
+	  must match for us to connect. Two dev-servers on the same
+	  network with different `app_id`s don't shadow each other.
+	-->
+	<key>IdealystAppId</key>
+	<string>hot-reload-demo</string>
 </dict>
 </plist>

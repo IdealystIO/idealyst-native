@@ -31,7 +31,9 @@ pub mod watch;
 
 use scene_model::SceneModel;
 
-pub use transport::serve;
+pub use transport::{serve, serve_with_tick};
+#[cfg(feature = "robot")]
+pub use transport::serve_with_robot_bridge;
 pub use watch::{spawn_rebuild_loop, RebuildCommand, RebuildConfig};
 
 /// The AAS (Application-as-a-Server) **server-side backend** —
@@ -171,6 +173,19 @@ struct RecorderState {
     /// `out` is still used for incremental broadcast to clients
     /// already past the snapshot point.
     scene: SceneModel,
+}
+
+impl RecorderState {
+    /// Single emit point: the scene model interprets the command to
+    /// stay in sync, then the command lands in the broadcast log.
+    /// Every Backend method should funnel through here instead of
+    /// pushing to `out` directly — that's how the snapshot stays
+    /// current and clients connecting mid-session see the right
+    /// thing.
+    fn emit(&mut self, cmd: Command) {
+        self.scene.apply(&cmd);
+        self.out.push(cmd);
+    }
 }
 
 /// Per-navigator dev-side state used by the recording backend's
@@ -401,7 +416,7 @@ impl WireRecordingBackend {
         let id = StyleId(state.next_style);
         state.styles_by_ptr.insert(ptr, id);
         let wire = convert_out::style_rules_to_wire(rules);
-        state.out.push(Command::RegisterStyle { id, rules: wire });
+        state.emit(Command::RegisterStyle { id, rules: wire });
         id
     }
 }
@@ -444,14 +459,14 @@ impl Backend for WireRecordingBackend {
     fn create_view(&mut self) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
-        state.out.push(Command::CreateView { id });
+        state.emit(Command::CreateView { id });
         id
     }
 
     fn create_text(&mut self, content: &str) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
-        state.out.push(Command::CreateText {
+        state.emit(Command::CreateText {
             id,
             content: content.to_string(),
         });
@@ -470,7 +485,7 @@ impl Backend for WireRecordingBackend {
         let handler = state.handlers.register_unit(on_click);
         let leading = leading_icon.map(convert_out::icon_data_to_wire);
         let trailing = trailing_icon.map(convert_out::icon_data_to_wire);
-        state.out.push(Command::CreateButton {
+        state.emit(Command::CreateButton {
             id,
             label: label.to_string(),
             on_click: handler,
@@ -484,7 +499,7 @@ impl Backend for WireRecordingBackend {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
         let handler = state.handlers.register_unit(on_click);
-        state.out.push(Command::CreatePressable {
+        state.emit(Command::CreatePressable {
             id,
             on_click: handler,
         });
@@ -494,13 +509,13 @@ impl Backend for WireRecordingBackend {
     fn create_reactive_anchor(&mut self) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
-        state.out.push(Command::CreateReactiveAnchor { id });
+        state.emit(Command::CreateReactiveAnchor { id });
         id
     }
 
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
         let mut state = self.inner.borrow_mut();
-        state.out.push(Command::Insert {
+        state.emit(Command::Insert {
             parent: *parent,
             child,
         });
@@ -508,7 +523,7 @@ impl Backend for WireRecordingBackend {
 
     fn insert_many(&mut self, parent: &mut Self::Node, children: Vec<Self::Node>) {
         let mut state = self.inner.borrow_mut();
-        state.out.push(Command::InsertMany {
+        state.emit(Command::InsertMany {
             parent: *parent,
             children,
         });
@@ -516,12 +531,12 @@ impl Backend for WireRecordingBackend {
 
     fn clear_children(&mut self, node: &Self::Node) {
         let mut state = self.inner.borrow_mut();
-        state.out.push(Command::ClearChildren { node: *node });
+        state.emit(Command::ClearChildren { node: *node });
     }
 
     fn update_text(&mut self, node: &Self::Node, content: &str) {
         let mut state = self.inner.borrow_mut();
-        state.out.push(Command::UpdateText {
+        state.emit(Command::UpdateText {
             node: *node,
             content: content.to_string(),
         });
@@ -530,7 +545,7 @@ impl Backend for WireRecordingBackend {
     fn create_image(&mut self, src: &str, alt: Option<&str>) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
-        state.out.push(Command::CreateImage {
+        state.emit(Command::CreateImage {
             id,
             src: src.to_string(),
             alt: alt.map(str::to_string),
@@ -540,7 +555,7 @@ impl Backend for WireRecordingBackend {
 
     fn update_image_src(&mut self, node: &Self::Node, src: &str) {
         let mut state = self.inner.borrow_mut();
-        state.out.push(Command::UpdateImageSrc {
+        state.emit(Command::UpdateImageSrc {
             node: *node,
             src: src.to_string(),
         });
@@ -554,7 +569,7 @@ impl Backend for WireRecordingBackend {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
         let wire_data = convert_out::icon_data_to_wire(data);
-        state.out.push(Command::CreateIcon {
+        state.emit(Command::CreateIcon {
             id,
             data: wire_data,
             color: color.map(|c| WireColor(c.0.clone())),
@@ -564,7 +579,7 @@ impl Backend for WireRecordingBackend {
 
     fn update_icon_color(&mut self, node: &Self::Node, color: &Color) {
         let mut state = self.inner.borrow_mut();
-        state.out.push(Command::UpdateIconColor {
+        state.emit(Command::UpdateIconColor {
             node: *node,
             color: WireColor(color.0.clone()),
         });
@@ -572,7 +587,7 @@ impl Backend for WireRecordingBackend {
 
     fn update_icon_stroke(&mut self, node: &Self::Node, progress: f32) {
         let mut state = self.inner.borrow_mut();
-        state.out.push(Command::UpdateIconStroke {
+        state.emit(Command::UpdateIconStroke {
             node: *node,
             progress,
         });
@@ -589,7 +604,7 @@ impl Backend for WireRecordingBackend {
         autoreverses: bool,
     ) {
         let mut state = self.inner.borrow_mut();
-        state.out.push(Command::AnimateIconStroke {
+        state.emit(Command::AnimateIconStroke {
             node: *node,
             from,
             to,
@@ -602,7 +617,7 @@ impl Backend for WireRecordingBackend {
 
     fn update_button_label(&mut self, node: &Self::Node, label: &str) {
         let mut state = self.inner.borrow_mut();
-        state.out.push(Command::UpdateButtonLabel {
+        state.emit(Command::UpdateButtonLabel {
             node: *node,
             label: label.to_string(),
         });
@@ -617,7 +632,7 @@ impl Backend for WireRecordingBackend {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
         let handler = state.handlers.register_string(on_change);
-        state.out.push(Command::CreateTextInput {
+        state.emit(Command::CreateTextInput {
             id,
             initial_value: initial_value.to_string(),
             placeholder: placeholder.map(str::to_string),
@@ -628,7 +643,7 @@ impl Backend for WireRecordingBackend {
 
     fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {
         let mut state = self.inner.borrow_mut();
-        state.out.push(Command::UpdateTextInputValue {
+        state.emit(Command::UpdateTextInputValue {
             node: *node,
             value: value.to_string(),
         });
@@ -642,7 +657,7 @@ impl Backend for WireRecordingBackend {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
         let handler = state.handlers.register_bool(on_change);
-        state.out.push(Command::CreateToggle {
+        state.emit(Command::CreateToggle {
             id,
             initial_value,
             on_change: handler,
@@ -652,7 +667,7 @@ impl Backend for WireRecordingBackend {
 
     fn update_toggle_value(&mut self, node: &Self::Node, value: bool) {
         let mut state = self.inner.borrow_mut();
-        state.out.push(Command::UpdateToggleValue {
+        state.emit(Command::UpdateToggleValue {
             node: *node,
             value,
         });
@@ -661,7 +676,7 @@ impl Backend for WireRecordingBackend {
     fn create_scroll_view(&mut self, horizontal: bool) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
-        state.out.push(Command::CreateScrollView { id, horizontal });
+        state.emit(Command::CreateScrollView { id, horizontal });
         id
     }
 
@@ -676,7 +691,7 @@ impl Backend for WireRecordingBackend {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
         let handler = state.handlers.register_float(on_change);
-        state.out.push(Command::CreateSlider {
+        state.emit(Command::CreateSlider {
             id,
             initial_value,
             min,
@@ -689,7 +704,7 @@ impl Backend for WireRecordingBackend {
 
     fn update_slider_value(&mut self, node: &Self::Node, value: f32) {
         let mut state = self.inner.borrow_mut();
-        state.out.push(Command::UpdateSliderValue {
+        state.emit(Command::UpdateSliderValue {
             node: *node,
             value,
         });
@@ -698,7 +713,7 @@ impl Backend for WireRecordingBackend {
     fn create_web_view(&mut self, url: &str) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
-        state.out.push(Command::CreateWebView {
+        state.emit(Command::CreateWebView {
             id,
             url: url.to_string(),
         });
@@ -707,7 +722,7 @@ impl Backend for WireRecordingBackend {
 
     fn update_web_view_url(&mut self, node: &Self::Node, url: &str) {
         let mut state = self.inner.borrow_mut();
-        state.out.push(Command::UpdateWebViewUrl {
+        state.emit(Command::UpdateWebViewUrl {
             node: *node,
             url: url.to_string(),
         });
@@ -722,7 +737,7 @@ impl Backend for WireRecordingBackend {
     ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
-        state.out.push(Command::CreateVideo {
+        state.emit(Command::CreateVideo {
             id,
             src: src.to_string(),
             autoplay,
@@ -734,7 +749,7 @@ impl Backend for WireRecordingBackend {
 
     fn update_video_src(&mut self, node: &Self::Node, src: &str) {
         let mut state = self.inner.borrow_mut();
-        state.out.push(Command::UpdateVideoSrc {
+        state.emit(Command::UpdateVideoSrc {
             node: *node,
             src: src.to_string(),
         });
@@ -755,7 +770,7 @@ impl Backend for WireRecordingBackend {
                 wire::WireActivityIndicatorSize::Large
             }
         };
-        state.out.push(Command::CreateActivityIndicator {
+        state.emit(Command::CreateActivityIndicator {
             id,
             size: wire_size,
             color: color.map(|c| WireColor(c.0.clone())),
@@ -766,7 +781,7 @@ impl Backend for WireRecordingBackend {
     fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
         let mut state = self.inner.borrow_mut();
         let sid = Self::intern_style(&mut state, style);
-        state.out.push(Command::ApplyStyle {
+        state.emit(Command::ApplyStyle {
             node: *node,
             style: sid,
         });
@@ -787,7 +802,7 @@ impl Backend for WireRecordingBackend {
                 wire_overlays.push((bit, sid));
             }
         }
-        state.out.push(Command::ApplyStyledStates {
+        state.emit(Command::ApplyStyledStates {
             node: *node,
             base: base_id,
             overlays: wire_overlays,
@@ -806,7 +821,7 @@ impl Backend for WireRecordingBackend {
         for r in rules {
             let ptr = Rc::as_ptr(r) as usize;
             if let Some(sid) = state.styles_by_ptr.remove(&ptr) {
-                state.out.push(Command::UnregisterStyle { id: sid });
+                state.emit(Command::UnregisterStyle { id: sid });
             }
         }
     }
@@ -815,12 +830,12 @@ impl Backend for WireRecordingBackend {
         let mut state = self.inner.borrow_mut();
         let handler_id = state.handlers.register_states(setter);
         state.state_handlers.insert(*node, handler_id);
-        state.out.push(Command::AttachStates { node: *node });
+        state.emit(Command::AttachStates { node: *node });
     }
 
     fn set_disabled(&mut self, node: &Self::Node, disabled: bool) {
         let mut state = self.inner.borrow_mut();
-        state.out.push(Command::SetDisabled {
+        state.emit(Command::SetDisabled {
             node: *node,
             disabled,
         });
@@ -828,7 +843,7 @@ impl Backend for WireRecordingBackend {
 
     fn on_node_unstyled(&mut self, node: &Self::Node) {
         let mut state = self.inner.borrow_mut();
-        state.out.push(Command::OnNodeUnstyled { node: *node });
+        state.emit(Command::OnNodeUnstyled { node: *node });
     }
 
     fn apply_presence(
@@ -845,7 +860,7 @@ impl Backend for WireRecordingBackend {
             scale: s.scale,
         };
         let wire_transition = transition.map(|(d, e)| (d, convert_out::easing_to_wire(e)));
-        state.out.push(Command::ApplyPresence {
+        state.emit(Command::ApplyPresence {
             node: *node,
             state: wire_state,
             transition: wire_transition,
@@ -854,7 +869,7 @@ impl Backend for WireRecordingBackend {
 
     fn finish(&mut self, root: Self::Node) {
         let mut state = self.inner.borrow_mut();
-        state.out.push(Command::Finish { root });
+        state.emit(Command::Finish { root });
     }
 
     fn create_overlay(
@@ -900,7 +915,7 @@ impl Backend for WireRecordingBackend {
             primitives::overlay::BackdropMode::Dismiss => wire::WireBackdropMode::Dismiss,
             primitives::overlay::BackdropMode::Opaque => wire::WireBackdropMode::Capture,
         };
-        state.out.push(Command::CreateOverlay {
+        state.emit(Command::CreateOverlay {
             id,
             anchor: wire_anchor,
             backdrop: wire_backdrop,
@@ -924,7 +939,7 @@ impl Backend for WireRecordingBackend {
         // mounts (so layout is correct) but no GPU code runs.
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
-        state.out.push(Command::CreateGraphics {
+        state.emit(Command::CreateGraphics {
             id,
             renderer: "<unnamed>".to_string(),
         });
@@ -943,7 +958,7 @@ impl Backend for WireRecordingBackend {
         {
             let mut state = self.inner.borrow_mut();
             nav_id = Self::mint_node(&mut state);
-            state.out.push(Command::CreateNavigator {
+            state.emit(Command::CreateNavigator {
                 id: nav_id,
                 initial_route: initial_route.to_string(),
                 initial_path: initial_path.to_string(),
@@ -992,7 +1007,7 @@ impl Backend for WireRecordingBackend {
             }
             state.scope_to_navigator.insert(scope_id, *navigator);
             let wire_options = screen_options_to_wire(&mut state, &options);
-            state.out.push(Command::NavigatorAttachInitial {
+            state.emit(Command::NavigatorAttachInitial {
                 navigator: *navigator,
                 screen,
                 scope: wire::ScopeId(scope_id),
@@ -1048,7 +1063,7 @@ impl Backend for WireRecordingBackend {
         {
             let mut state = self.inner.borrow_mut();
             nav_id = Self::mint_node(&mut state);
-            state.out.push(Command::CreateTabNavigator {
+            state.emit(Command::CreateTabNavigator {
                 id: nav_id,
                 initial_route: initial_route.to_string(),
                 initial_path: initial_path.to_string(),
@@ -1139,7 +1154,7 @@ impl Backend for WireRecordingBackend {
         {
             let mut state = self.inner.borrow_mut();
             nav_id = Self::mint_node(&mut state);
-            state.out.push(Command::CreateDrawerNavigator {
+            state.emit(Command::CreateDrawerNavigator {
                 id: nav_id,
                 initial_route: initial_route.to_string(),
                 initial_path: initial_path.to_string(),
@@ -1185,7 +1200,7 @@ impl Backend for WireRecordingBackend {
         navigator: &Self::Node,
         sidebar: Self::Node,
     ) {
-        self.inner.borrow_mut().out.push(Command::DrawerAttachSidebar {
+        self.inner.borrow_mut().emit(Command::DrawerAttachSidebar {
             navigator: *navigator,
             sidebar,
         });
@@ -1209,7 +1224,7 @@ impl Backend for WireRecordingBackend {
 
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
-        state.out.push(Command::CreateVirtualizer {
+        state.emit(Command::CreateVirtualizer {
             id,
             overscan,
             horizontal,
@@ -1234,7 +1249,7 @@ impl Backend for WireRecordingBackend {
     fn virtualizer_data_changed(&mut self, node: &Self::Node) {
         // Re-snapshot count for now — keys/sizes refresh in a follow-up
         // alongside mount-on-demand wiring above.
-        self.inner.borrow_mut().out.push(Command::VirtualizerDataChanged {
+        self.inner.borrow_mut().emit(Command::VirtualizerDataChanged {
             node: *node,
             item_count: 0,
         });
@@ -1243,7 +1258,7 @@ impl Backend for WireRecordingBackend {
     fn apply_navigator_header_style(&mut self, navigator: &Self::Node, style: &Rc<StyleRules>) {
         let mut state = self.inner.borrow_mut();
         let sid = Self::intern_style(&mut state, style);
-        state.out.push(Command::ApplyNavigatorHeaderStyle {
+        state.emit(Command::ApplyNavigatorHeaderStyle {
             navigator: *navigator,
             style: sid,
         });
@@ -1252,7 +1267,7 @@ impl Backend for WireRecordingBackend {
     fn apply_navigator_title_style(&mut self, navigator: &Self::Node, style: &Rc<StyleRules>) {
         let mut state = self.inner.borrow_mut();
         let sid = Self::intern_style(&mut state, style);
-        state.out.push(Command::ApplyNavigatorTitleStyle {
+        state.emit(Command::ApplyNavigatorTitleStyle {
             navigator: *navigator,
             style: sid,
         });
@@ -1261,7 +1276,7 @@ impl Backend for WireRecordingBackend {
     fn apply_navigator_button_style(&mut self, navigator: &Self::Node, style: &Rc<StyleRules>) {
         let mut state = self.inner.borrow_mut();
         let sid = Self::intern_style(&mut state, style);
-        state.out.push(Command::ApplyNavigatorButtonStyle {
+        state.emit(Command::ApplyNavigatorButtonStyle {
             navigator: *navigator,
             style: sid,
         });
@@ -1270,7 +1285,7 @@ impl Backend for WireRecordingBackend {
     fn apply_drawer_sidebar_style(&mut self, navigator: &Self::Node, style: &Rc<StyleRules>) {
         let mut state = self.inner.borrow_mut();
         let sid = Self::intern_style(&mut state, style);
-        state.out.push(Command::ApplyDrawerSidebarStyle {
+        state.emit(Command::ApplyDrawerSidebarStyle {
             navigator: *navigator,
             style: sid,
         });
@@ -1279,7 +1294,7 @@ impl Backend for WireRecordingBackend {
     fn apply_drawer_scrim_style(&mut self, navigator: &Self::Node, style: &Rc<StyleRules>) {
         let mut state = self.inner.borrow_mut();
         let sid = Self::intern_style(&mut state, style);
-        state.out.push(Command::ApplyDrawerScrimStyle {
+        state.emit(Command::ApplyDrawerScrimStyle {
             navigator: *navigator,
             style: sid,
         });
@@ -1288,7 +1303,7 @@ impl Backend for WireRecordingBackend {
     fn apply_tab_bar_style(&mut self, navigator: &Self::Node, style: &Rc<StyleRules>) {
         let mut state = self.inner.borrow_mut();
         let sid = Self::intern_style(&mut state, style);
-        state.out.push(Command::ApplyTabBarStyle {
+        state.emit(Command::ApplyTabBarStyle {
             navigator: *navigator,
             style: sid,
         });
@@ -1297,7 +1312,7 @@ impl Backend for WireRecordingBackend {
     fn apply_tab_icon_style(&mut self, navigator: &Self::Node, style: &Rc<StyleRules>) {
         let mut state = self.inner.borrow_mut();
         let sid = Self::intern_style(&mut state, style);
-        state.out.push(Command::ApplyTabIconStyle {
+        state.emit(Command::ApplyTabIconStyle {
             navigator: *navigator,
             style: sid,
         });
@@ -1306,7 +1321,7 @@ impl Backend for WireRecordingBackend {
     fn apply_tab_label_style(&mut self, navigator: &Self::Node, style: &Rc<StyleRules>) {
         let mut state = self.inner.borrow_mut();
         let sid = Self::intern_style(&mut state, style);
-        state.out.push(Command::ApplyTabLabelStyle {
+        state.emit(Command::ApplyTabLabelStyle {
             navigator: *navigator,
             style: sid,
         });
@@ -1315,7 +1330,7 @@ impl Backend for WireRecordingBackend {
     fn apply_overlay_backdrop_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
         let mut state = self.inner.borrow_mut();
         let sid = Self::intern_style(&mut state, style);
-        state.out.push(Command::ApplyOverlayBackdropStyle {
+        state.emit(Command::ApplyOverlayBackdropStyle {
             node: *node,
             style: sid,
         });
@@ -1329,7 +1344,7 @@ impl Backend for WireRecordingBackend {
         // encodes which command to dispatch); the wire stores a
         // placeholder so a future renderer can target the right
         // accessibility role if it cares. Default Push is fine.
-        state.out.push(Command::CreateLink {
+        state.emit(Command::CreateLink {
             id,
             route: config.route.to_string(),
             url: config.url,
@@ -1397,17 +1412,10 @@ fn navigator_dispatcher_handle(
             let depth = nav_state.stack.len();
             let urls_snapshot = nav_state.stack_urls.clone();
             state.scope_to_navigator.insert(mount.scope_id, nav_id);
-            // Replace/Reset implicitly release the previous top(s);
-            // tombstone their push entries so fresh clients don't
-            // re-mount them.
             for r in &released {
                 state.scope_to_navigator.remove(r);
-                if let Some(push_idx) = state.screen_push_log_index.remove(r) {
-                    state.tombstones.insert(push_idx);
-                }
             }
-            let push_log_index = state.out.len();
-            state.out.push(match kind {
+            state.emit(match kind {
                 PushLikeKind::Push => Command::NavigatorPush {
                     navigator: nav_id,
                     screen: mount.node,
@@ -1441,12 +1449,6 @@ fn navigator_dispatcher_handle(
                     restore,
                 },
             });
-            // Remember where the push for this scope landed in the
-            // log — if the screen is popped later, we tombstone this
-            // entry so catch-up replay skips it.
-            state
-                .screen_push_log_index
-                .insert(mount.scope_id, push_log_index);
             let mirror = state.nav_state_mirror.clone();
             (released, depth, urls_snapshot, mirror)
         };
@@ -1484,14 +1486,7 @@ fn navigator_dispatcher_handle(
                 let depth = nav_state.stack.len();
                 let urls_snapshot = nav_state.stack_urls.clone();
                 let mirror = state.nav_state_mirror.clone();
-                // Tombstone the originating push so fresh clients
-                // catching up don't replay the mount.
-                if let Some(scope_id) = popped {
-                    if let Some(push_idx) = state.screen_push_log_index.remove(&scope_id) {
-                        state.tombstones.insert(push_idx);
-                    }
-                }
-                state.out.push(Command::NavigatorPop {
+                state.emit(Command::NavigatorPop {
                     navigator: nav_id,
                     count: 1,
                 });
@@ -1510,16 +1505,15 @@ fn navigator_dispatcher_handle(
         NavCommand::OpenDrawer => {
             inner
                 .borrow_mut()
-                .out
-                .push(Command::OpenDrawer { navigator: nav_id });
+                .emit(Command::OpenDrawer { navigator: nav_id });
         }
         NavCommand::CloseDrawer => {
-            inner.borrow_mut().out.push(Command::CloseDrawer {
+            inner.borrow_mut().emit(Command::CloseDrawer {
                 navigator: nav_id,
             });
         }
         NavCommand::ToggleDrawer => {
-            inner.borrow_mut().out.push(Command::ToggleDrawer {
+            inner.borrow_mut().emit(Command::ToggleDrawer {
                 navigator: nav_id,
             });
         }
@@ -1583,17 +1577,14 @@ impl WireRecordingBackend {
     /// connected clients (and any fresh client that reconnects)
     /// learn about the pop.
     pub fn handle_screen_released(&self, scope: u64) -> bool {
-        eprintln!("[recorder] handle_screen_released(scope={})", scope);
         let (cbs, new_depth, urls_snapshot, nav_id, mirror) = {
             let mut state = self.inner.borrow_mut();
             let Some(&nav_id) = state.scope_to_navigator.get(&scope) else {
-                eprintln!("  -> unknown scope, ignored");
                 return false;
             };
             let Some(nav) = state.navigators.get_mut(&nav_id) else {
                 return false;
             };
-            eprintln!("  -> stack_urls before: {:?}", nav.stack_urls);
             nav.stack.retain(|&s| s != scope);
             // Stack navigators only release from the top, so the
             // popped url is the tail of stack_urls. If swap-style
@@ -1603,12 +1594,7 @@ impl WireRecordingBackend {
             let urls = nav.stack_urls.clone();
             let cbs = nav.callbacks.clone();
             state.scope_to_navigator.remove(&scope);
-            // Tombstone the originating push so fresh catch-up
-            // replays don't briefly remount this screen.
-            if let Some(push_idx) = state.screen_push_log_index.remove(&scope) {
-                state.tombstones.insert(push_idx);
-            }
-            state.out.push(Command::NavigatorPop {
+            state.emit(Command::NavigatorPop {
                 navigator: nav_id,
                 count: 1,
             });

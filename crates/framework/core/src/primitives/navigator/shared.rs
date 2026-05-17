@@ -774,6 +774,19 @@ pub struct NavigatorCallbacks<N: Clone + 'static> {
     ///   4. Notify `depth_changed(new_depth)` so the handle's depth
     ///      probe stays in sync.
     pub depth_changed: Rc<dyn Fn(usize)>,
+    /// When `true`, backends that would normally auto-mount the
+    /// initial route at `create_navigator` time MUST NOT call
+    /// `mount_screen` themselves. Initial mounting comes
+    /// exclusively through [`Backend::navigator_attach_initial`]
+    /// with a pre-built screen node.
+    ///
+    /// Set by the AAS dev-client's stub callbacks (the wire's
+    /// `NavigatorAttachInitial` carries the canonical screen + scope,
+    /// and re-mounting locally via URL match would produce a
+    /// duplicate / wrong tree). Left `false` by the framework's
+    /// normal navigator builder so local-mode backends keep their
+    /// existing deep-link auto-mount behavior unchanged.
+    pub defer_initial_mount: bool,
 }
 
 // ---------------------------------------------------------------------------

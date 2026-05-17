@@ -121,10 +121,13 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
             }
             n
         }
-        Primitive::View { children, style, ref_fill, .. } => {
+        Primitive::View { children, style, ref_fill, safe_area_sides, .. } => {
             let n = build_view(backend, children);
             if let Some(s) = style {
                 attach_style(backend, &n, s);
+            }
+            if !safe_area_sides.is_empty() {
+                attach_safe_area(backend, &n, safe_area_sides);
             }
             if let Some(RefFill::View(fill)) = ref_fill {
                 let handle = backend.borrow().make_view_handle(&n);
@@ -325,11 +328,14 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
             }
             n
         }
-        Primitive::ScrollView { children, horizontal, style, ref_fill } => {
+        Primitive::ScrollView { children, horizontal, style, ref_fill, safe_area_sides } => {
             let mut n = time_backend_create(pkind!(ScrollView), || backend.borrow_mut().create_scroll_view(horizontal));
             insert_children(backend, &mut n, children);
             if let Some(s) = style {
                 attach_style(backend, &n, s);
+            }
+            if !safe_area_sides.is_empty() {
+                attach_safe_area(backend, &n, safe_area_sides);
             }
             if let Some(RefFill::ScrollView(fill)) = ref_fill {
                 let handle = backend.borrow().make_scroll_view_handle(&n);
@@ -1745,6 +1751,10 @@ fn build_navigator<B: Backend + 'static>(
         build_layout,
         nav_state: nav_state.clone(),
         depth_changed,
+        // Framework-driven build: the walker calls `mount_screen` +
+        // `navigator_attach_initial` directly below, and backends
+        // that auto-mount on URL match (web) keep doing so.
+        defer_initial_mount: false,
     };
 
     // Create the native navigator. The backend stores the callbacks,
@@ -1970,6 +1980,7 @@ fn build_tab_navigator<B: Backend + 'static>(
         build_layout,
         nav_state,
         depth_changed,
+        defer_initial_mount: false,
     };
     let callbacks = TabNavigatorCallbacks {
         navigator: nav_callbacks,
@@ -2277,6 +2288,7 @@ fn build_drawer_navigator<B: Backend + 'static>(
         build_layout,
         nav_state,
         depth_changed,
+        defer_initial_mount: false,
     };
     let callbacks = DrawerNavigatorCallbacks {
         navigator: nav_callbacks,
@@ -2414,6 +2426,31 @@ fn attach_style<B: Backend + 'static>(
         StyleSource::Static(app) => attach_style_static(backend, node, app),
         StyleSource::Reactive(f) => attach_style_reactive(backend, node, f),
     }
+}
+
+/// Wire `safe_area_sides` to the backend reactively. Subscribes to
+/// the framework's global insets signal so the backend re-applies
+/// padding on every change (orientation flip, sheet adaptation,
+/// dynamic island). The Effect lives until this primitive's scope
+/// drops — same RAII model as `attach_style`'s reactive path.
+fn attach_safe_area<B: Backend + 'static>(
+    backend: &Rc<RefCell<B>>,
+    node: &B::Node,
+    sides: crate::SafeAreaSides,
+) {
+    use crate::reactive::Effect;
+    let backend = backend.clone();
+    let node = node.clone();
+    let _effect = Effect::new(move || {
+        // Touch the insets signal so this effect re-runs whenever
+        // the platform reports new values. We don't need the value
+        // here — the backend reads its own platform source inside
+        // `apply_safe_area_padding`. The subscription is the point.
+        let _ = crate::safe_area::safe_area_insets().get();
+        backend
+            .borrow_mut()
+            .apply_safe_area_padding(&node, sides);
+    });
 }
 
 /// Static-style fast path: no per-node `Effect`, no signal

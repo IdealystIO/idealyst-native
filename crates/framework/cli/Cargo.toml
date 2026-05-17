@@ -16,15 +16,28 @@ clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+# Cross-platform Ctrl-C handler. Lets `idealyst dev --mode aas` kill
+# the spawned AAS host on SIGINT — otherwise it'd outlive the CLI
+# and squat on its WebSocket port.
+ctrlc = "3"
 # Dev-mode infrastructure. Both crates are intentionally small and
 # usable independently — `dev-http` for plain static serving,
 # `dev-reload` for the watch+wasm-pack loop. The CLI is the wiring.
 dev-http = { workspace = true }
 dev-reload = { workspace = true }
+# mDNS browsing for `idealyst dev --aas --web`: the CLI fills the
+# `AasContext.aas_url` in-process, no separate `web-dev-host`
+# subprocess. Same crate the dev-server uses for advertising.
+mdns-sd = { version = "0.10", default-features = false }
 # Platform-specific build orchestration. Each platform's pipeline
 # is its own crate so the CLI's `build` and `run` commands stay thin.
 build-ios = { workspace = true }
 run-ios = { workspace = true }
+build-aas = { workspace = true }
+build-android = { workspace = true }
+run-android = { workspace = true }
+build-roku = { workspace = true }
+run-roku = { workspace = true }
 # Roku BrightScript transpiler — powers the `brs` subcommand, which
 # scans the project's source files for `#[method]`-tagged fns and
 # concatenates their BrightScript output into a single `.brs` file.

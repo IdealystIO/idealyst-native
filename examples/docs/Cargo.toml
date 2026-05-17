@@ -49,3 +49,13 @@ wasm-opt = false
 app.name      = "Idealyst Docs"
 app.bundle_id = "ai.truday.idealyst.docs"
 app.version   = "0.0.1"
+
+# Splash-screen settings. The CLI fills in any missing field with
+# sensible defaults — this block is here as a working example.
+# Set `duration_ms = 0` to disable the splash; bump to feel out
+# longer transitions.
+[package.metadata.idealyst.app.splash]
+background  = "#1a1a2e"
+title       = "Idealyst"
+title_color = "#ffffff"
+duration_ms = 1500

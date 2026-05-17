@@ -1,9 +1,29 @@
+use objc2::encode::{Encode, Encoding};
 use objc2::rc::Retained;
 use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
-use objc2_foundation::{MainThreadMarker, NSObject, NSString};
+use objc2_foundation::{CGFloat, MainThreadMarker, NSObject, NSString};
 use objc2_ui_kit::UIView;
 use std::cell::RefCell;
 use std::rc::Rc;
+
+/// `UIEdgeInsets` — UIKit's per-side rect inset struct. objc2-foundation
+/// doesn't ship this type; we declare it here with a matching `Encode`
+/// so `msg_send![view, safeAreaInsets]` returns the correct layout.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default)]
+pub(crate) struct UIEdgeInsets {
+    pub top: CGFloat,
+    pub left: CGFloat,
+    pub bottom: CGFloat,
+    pub right: CGFloat,
+}
+
+unsafe impl Encode for UIEdgeInsets {
+    const ENCODING: Encoding = Encoding::Struct(
+        "UIEdgeInsets",
+        &[CGFloat::ENCODING, CGFloat::ENCODING, CGFloat::ENCODING, CGFloat::ENCODING],
+    );
+}
 
 // =========================================================================
 // CallbackTarget — ObjC action target that calls a Rust closure
@@ -263,6 +283,26 @@ declare_class!(
                     crate::imp::schedule_layout_pass();
                 }
             }
+        }
+
+        /// UIKit calls this on every view in a chain when the
+        /// effective safe-area insets change (rotation, dynamic
+        /// island, status-bar hide/show, sheet adaptation). Our
+        /// observer sits as a flexible-resize subview of the host
+        /// root, so its `safeAreaInsets` mirror the host's — read
+        /// them and push to the framework's global signal. Effects
+        /// subscribed via `safe_area_insets()` re-fire downstream,
+        /// including any container's `apply_safe_area_padding`.
+        #[method(safeAreaInsetsDidChange)]
+        fn safe_area_insets_did_change(&self) {
+            let _: () = unsafe { msg_send![super(self), safeAreaInsetsDidChange] };
+            let insets: UIEdgeInsets = unsafe { msg_send![self, safeAreaInsets] };
+            framework_core::set_safe_area_insets(framework_core::EdgeInsets {
+                top: insets.top as f32,
+                right: insets.right as f32,
+                bottom: insets.bottom as f32,
+                left: insets.left as f32,
+            });
         }
     }
 );

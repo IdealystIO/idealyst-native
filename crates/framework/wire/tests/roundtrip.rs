@@ -547,6 +547,7 @@ fn screen_released_reverse_channel() {
             can_go_back: Signal::new(false),
         },
         depth_changed: Rc::new(|_| {}),
+        defer_initial_mount: false,
     };
 
     let control = Rc::new(NavigatorControl::new());

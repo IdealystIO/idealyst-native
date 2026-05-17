@@ -1,0 +1,15 @@
+[package]
+name = "hello-roku"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Plain library — `idealyst build roku` generates the snapshot
+# binary that calls `app()` on its own. Authors don't have to write
+# a bin target themselves.
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+framework-core = { workspace = true }
+backend-roku = { workspace = true }

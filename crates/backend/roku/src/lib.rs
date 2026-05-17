@@ -90,6 +90,50 @@ use framework_core::{
 pub use command::{HandlerId, NodeId, RokuCommand, WireColor, WireIconData, WireLength, WireStyle};
 
 // ---------------------------------------------------------------------------
+// Build-time snapshot helper
+// ---------------------------------------------------------------------------
+
+/// Run a UI builder once against a fresh `RokuBackend` and return
+/// the resulting command stream. Intended for build-time snapshotting:
+/// a user-owned binary calls this, serializes the result to JSON,
+/// writes it to `dist/ui.json`, and `idealyst build roku` picks it
+/// up to bake into the .pkg.
+///
+/// The reactive owner is dropped before the return — anything that
+/// depended on signal observation after the initial render is gone.
+/// That's the design: a snapshot is a static, point-in-time picture.
+/// Live reactivity has to be expressed via `#[method]` BrightScript
+/// stubs that the runtime calls in response to events.
+pub fn snapshot<F>(builder: F) -> Vec<RokuCommand>
+where
+    F: FnOnce() -> framework_core::Primitive,
+{
+    let backend = Rc::new(RefCell::new(RokuBackend::new()));
+    let tree = builder();
+    let _owner = framework_core::render(backend.clone(), tree);
+    let cmds = backend.borrow_mut().drain();
+    cmds
+}
+
+/// Same as [`snapshot`] but serializes to a JSON string, ready to
+/// write to disk.
+pub fn snapshot_to_json<F>(builder: F) -> Result<String, serde_json::Error>
+where
+    F: FnOnce() -> framework_core::Primitive,
+{
+    serde_json::to_string(&snapshot(builder))
+}
+
+/// Same as [`snapshot_to_json`] but pretty-printed — easier to
+/// eyeball when debugging the build pipeline.
+pub fn snapshot_to_pretty_json<F>(builder: F) -> Result<String, serde_json::Error>
+where
+    F: FnOnce() -> framework_core::Primitive,
+{
+    serde_json::to_string_pretty(&snapshot(builder))
+}
+
+// ---------------------------------------------------------------------------
 // HandlerTable
 // ---------------------------------------------------------------------------
 

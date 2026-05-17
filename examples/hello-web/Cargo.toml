@@ -38,6 +38,10 @@ framework-core = { workspace = true }
 backend-web = { workspace = true }
 hello = { path = "../hello" }
 wasm-bindgen = "0.2"
+# `js_sys::Reflect::get` reads `window.IDEALYST_AAS_URL` for the
+# dev-hot-reload path. wasm-bindgen pulls js-sys transitively, but
+# we declare it explicitly because we use it directly.
+js-sys = "0.3"
 web-sys = { version = "0.3", features = ["console"] }
 console_error_panic_hook = "0.1"
 # Pulled in only when the host opts into `dev-hot-reload`. The

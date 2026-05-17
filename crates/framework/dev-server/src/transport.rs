@@ -24,10 +24,16 @@ use std::io::ErrorKind;
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
-use wire::{AppToDev, DevToApp, WireColorScheme, WireTheme, PROTOCOL_VERSION};
+use mdns_sd::{ServiceDaemon, ServiceInfo};
 use tungstenite::{Message, WebSocket};
+use wire::{AppToDev, DevToApp, WireColorScheme, WireTheme, PROTOCOL_VERSION};
 
 use crate::WireRecordingBackend;
+
+/// DNS-SD service type. Clients (iOS/web/etc.) browse for this and
+/// filter the matched services' TXT records by `app_id` to find the
+/// right server.
+pub const SERVICE_TYPE: &str = "_idealyst-dev._tcp.local.";
 
 /// Tick between polls. Bounds the worst-case forwarding latency.
 /// 20ms is well under human-perceptible delay for interaction
@@ -46,16 +52,66 @@ struct ClientConn {
 /// Listen on `addr` and serve dev-mode hot-reload connections from
 /// the supplied recorder. Blocks forever; returns only on a fatal
 /// socket error.
-pub fn serve(addr: impl ToSocketAddrs, recorder: WireRecordingBackend) -> std::io::Result<()> {
+///
+/// `app_id` is what clients filter on via the mDNS TXT record to
+/// find the right server. Multiple dev-servers can run on the same
+/// machine — each advertises with its own id and ephemeral port.
+///
+/// Pass `addr` of `"0.0.0.0:0"` to let the OS assign a port (and
+/// listen on every interface, so a phone on LAN can connect). The
+/// actual bound port goes into the mDNS advertisement, so clients
+/// don't need to know it ahead of time.
+pub fn serve(
+    addr: impl ToSocketAddrs,
+    recorder: WireRecordingBackend,
+    app_id: &str,
+) -> std::io::Result<()> {
+    serve_with_tick(addr, recorder, app_id, || {})
+}
+
+/// Like [`serve`] but runs `on_tick` once per loop iteration on the
+/// server thread (the same thread that owns the walker's reactive
+/// scope). Used by [`serve_with_robot_bridge`] to drive the Robot
+/// bridge poll; other consumers can use it for any per-tick work
+/// that needs to run on the reactive thread.
+///
+/// `TICK_INTERVAL` (currently 16ms) caps the per-tick rate — busy
+/// callbacks here directly delay accept / read / broadcast work, so
+/// keep them light.
+pub fn serve_with_tick<F>(
+    addr: impl ToSocketAddrs,
+    recorder: WireRecordingBackend,
+    app_id: &str,
+    mut on_tick: F,
+) -> std::io::Result<()>
+where
+    F: FnMut(),
+{
     let listener = TcpListener::bind(addr)?;
     listener.set_nonblocking(true)?;
-    if let Ok(addr) = listener.local_addr() {
-        eprintln!("[dev-server] listening on ws://{}", addr);
+    let bound = listener.local_addr().ok();
+    if let Some(a) = bound {
+        eprintln!("[dev-server] listening on ws://{}", a);
     }
     eprintln!(
         "[dev-server] recorder log starts with {} commands",
         recorder.command_count()
     );
+
+    // Hold the mDNS handle for the life of the server. Drop unregisters.
+    let _mdns = match bound {
+        Some(a) => match advertise_mdns(app_id, a.port()) {
+            Ok(h) => Some(h),
+            Err(e) => {
+                eprintln!(
+                    "[dev-server] mDNS advertise failed (clients won't auto-discover): {}",
+                    e
+                );
+                None
+            }
+        },
+        None => None,
+    };
 
     let mut clients: Vec<ClientConn> = Vec::new();
 
@@ -63,8 +119,82 @@ pub fn serve(addr: impl ToSocketAddrs, recorder: WireRecordingBackend) -> std::i
         accept_new(&listener, &mut clients, &recorder);
         poll_reads(&mut clients, &recorder);
         broadcast_new_commands(&mut clients, &recorder);
+        on_tick();
         std::thread::sleep(TICK_INTERVAL);
     }
+}
+
+/// Like [`serve`] but also drives a Robot bridge handle once per
+/// tick, on this thread (same thread that owns the registry the
+/// walker populated). Used in AAS mode where the framework runs on
+/// the dev-server, so robot commands from an external MCP proxy
+/// must hit the server's registry — the AAS client has none.
+///
+/// Native (non-AAS) app builds put the bridge in-process on the
+/// device; this function is the server-side analogue for AAS
+/// deployments, regardless of which platform is hosting the AAS
+/// client.
+#[cfg(feature = "robot")]
+pub fn serve_with_robot_bridge(
+    addr: impl ToSocketAddrs,
+    recorder: WireRecordingBackend,
+    app_id: &str,
+    bridge: framework_core::robot::bridge::BridgeHandle,
+) -> std::io::Result<()> {
+    serve_with_tick(addr, recorder, app_id, move || bridge.poll())
+}
+
+/// RAII wrapper around the mDNS service registration so the
+/// advertisement goes away when `serve` returns.
+struct MdnsHandle {
+    daemon: ServiceDaemon,
+    fullname: String,
+}
+
+impl Drop for MdnsHandle {
+    fn drop(&mut self) {
+        let _ = self.daemon.unregister(&self.fullname);
+        // shutdown() returns a receiver; we don't wait — drop is
+        // best-effort in dev tooling.
+        let _ = self.daemon.shutdown();
+    }
+}
+
+/// Spin up an mDNS daemon and publish the dev-server's service
+/// record. Returns a handle whose drop unregisters the service.
+///
+/// We use `enable_addr_auto()` so the daemon advertises every
+/// non-loopback interface the host has — that's what makes a
+/// phone on LAN able to find the server while still working when
+/// the simulator connects via loopback. Instance name is keyed
+/// off `app_id` + pid so multiple concurrent dev-servers don't
+/// shadow each other in the registry.
+fn advertise_mdns(app_id: &str, port: u16) -> Result<MdnsHandle, Box<dyn std::error::Error>> {
+    let daemon = ServiceDaemon::new()?;
+    let pid = std::process::id();
+    // DNS-SD hostnames live under `.local.` and conventionally use a
+    // single label (letters, digits, hyphens). Reverse-DNS app ids
+    // like `ai.truday.idealyst.docs` would produce a multi-label
+    // hostname (`idealyst-ai.truday.idealyst.docs-<pid>.local.`),
+    // which mDNS implementations silently refuse to publish — the
+    // registration "succeeds" but the service never appears in
+    // browses. Substitute dots → hyphens for the structural fields
+    // and keep the original app id in the TXT record so clients
+    // (which match on TXT, not the hostname) work unchanged.
+    let app_id_label = app_id.replace('.', "-");
+    let instance_name = format!("{}-{}", app_id_label, pid);
+    let hostname = format!("idealyst-{}-{}.local.", app_id_label, pid);
+    let proto = PROTOCOL_VERSION.to_string();
+    let txt: [(&str, &str); 2] = [("app_id", app_id), ("proto", proto.as_str())];
+    let info = ServiceInfo::new(SERVICE_TYPE, &instance_name, &hostname, "", port, &txt[..])?
+        .enable_addr_auto();
+    let fullname = info.get_fullname().to_string();
+    daemon.register(info)?;
+    eprintln!(
+        "[dev-server] advertised via mDNS as {} ({}:{} on this host)",
+        fullname, hostname, port
+    );
+    Ok(MdnsHandle { daemon, fullname })
 }
 
 /// Accept any pending connections without blocking. Each accepted
@@ -97,21 +227,29 @@ fn accept_new(
                 if send_hello(&mut ws).is_err() {
                     continue;
                 }
-                let catchup = recorder.commands_since(0);
-                if !catchup.is_empty() {
+                // Snapshot the live scene at the moment we accept,
+                // and capture the cursor at the same instant. The
+                // snapshot describes the *current* state (no
+                // historical Push/Pop pairs that already cancelled
+                // out), and the cursor anchors where this client's
+                // incremental updates should resume.
+                let cursor_at_snapshot = recorder.command_count();
+                let snapshot = recorder.snapshot();
+                if !snapshot.is_empty() {
                     eprintln!(
-                        "[dev-server] catching up {} with {} commands",
+                        "[dev-server] catching up {} with snapshot of {} commands (log size {})",
                         peer,
-                        catchup.len()
+                        snapshot.len(),
+                        cursor_at_snapshot
                     );
-                    if send(&mut ws, &DevToApp::Commands(catchup)).is_err() {
+                    if send(&mut ws, &DevToApp::Commands(snapshot)).is_err() {
                         continue;
                     }
                 }
                 let _ = ws.get_mut().set_nonblocking(true);
                 clients.push(ClientConn {
                     ws,
-                    cursor: recorder.command_count(),
+                    cursor: cursor_at_snapshot,
                     peer: peer.to_string(),
                 });
             }
@@ -224,7 +362,6 @@ fn handle_app_msg(recorder: &WireRecordingBackend, msg: AppToDev) {
         }
         AppToDev::ColorSchemeChanged { scheme: _ } => {}
         AppToDev::ScreenReleased { scope } => {
-            eprintln!("[transport] AppToDev::ScreenReleased(scope={})", scope.0);
             recorder.handle_screen_released(scope.0);
         }
         AppToDev::NavigatorDepthChanged { .. } => {}

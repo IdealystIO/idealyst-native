@@ -9,10 +9,21 @@ crate-type = ["staticlib", "rlib"]
 
 [features]
 debug-stats = ["framework-core/debug-stats"]
+# Optional: compile in the AAS-client entry point + main-thread
+# scheduler so the iOS app can run as a thin client of an AAS
+# dev-server (instead of mounting the user's tree locally). When
+# off, the crate is a pure native backend with no transport code.
+# When on, it pulls `dev-client` and exposes `ios_main` + supporting
+# C-ABI entry points the Swift host uses.
+aas-shell = ["dep:dev-client"]
 
 [dependencies]
 framework-core = { workspace = true }
 native-layout = { workspace = true }
+# Only used when `aas-shell` is on. The `native` sub-feature carries
+# tungstenite + mdns-sd; the shell wraps them with a Bonjour-aware
+# WebSocket worker thread and an inbound-channel drain helper.
+dev-client = { workspace = true, features = ["native"], optional = true }
 
 [target.'cfg(target_os = "ios")'.dependencies]
 block2 = "0.5"

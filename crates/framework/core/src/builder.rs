@@ -141,6 +141,33 @@ impl Bound<ViewHandle> {
         }
         self
     }
+
+    /// Opt this view into safe-area-aware padding on the given
+    /// sides. The platform's safe-area inset is added to the
+    /// matching side of the view's padding reactively — orientation
+    /// flips and similar updates re-apply without a rebuild.
+    ///
+    /// Examples:
+    /// ```ignore
+    /// View(...).safe_area(SafeAreaSides::TOP)
+    /// View(...).safe_area(SafeAreaSides::TOP | SafeAreaSides::BOTTOM)
+    /// View(...).safe_area(SafeAreaSides::ALL)
+    /// ```
+    ///
+    /// Calling twice OR-merges the flags rather than replacing —
+    /// `.safe_area(TOP).safe_area(BOTTOM)` is the same as
+    /// `.safe_area(TOP | BOTTOM)`.
+    ///
+    /// Nesting: if a parent and a child both opt into the same side
+    /// the inset stacks (each adds its own padding). Author code
+    /// should put `.safe_area(...)` on the outermost container that
+    /// needs it.
+    pub fn safe_area(mut self, sides: crate::SafeAreaSides) -> Self {
+        if let Primitive::View { safe_area_sides, .. } = &mut self.primitive {
+            *safe_area_sides |= sides;
+        }
+        self
+    }
 }
 
 impl Bound<PressableHandle> {
@@ -316,6 +343,7 @@ pub fn view(children: Vec<Primitive>) -> Bound<ViewHandle> {
         children,
         style: None,
         ref_fill: None,
+        safe_area_sides: crate::SafeAreaSides::NONE,
         #[cfg(feature = "robot")]
         test_id: None,
     })

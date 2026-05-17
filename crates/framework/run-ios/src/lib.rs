@@ -13,13 +13,19 @@
 //!   simctl launch      → start it
 //! ```
 //!
-//! Why no Xcode project: the user's app is platform-agnostic source
-//! plus a tiny `[package.metadata.idealyst]` block. The .app is just
-//! a build artifact, derivable from those inputs. Maintaining a
-//! pbxproj template (UUIDs, build phases, Xcode-version drift) buys
-//! us nothing the user asked for. Apps that need Xcode-the-IDE for
-//! debugging will eventually be served by a `scaffold ios` command
-//! that emits an .xcodeproj on demand.
+//! Two run modes:
+//!
+//! - **Local** — the default. The Rust staticlib mounts the user's
+//!   `app()` locally; the iOS process is self-contained.
+//! - **AAS**   — the iOS process is a thin client. The staticlib is
+//!   the framework's `hello-ios-aas` crate (a generic AAS-client
+//!   shell that imports `dev-client + backend-ios` but **not** the
+//!   user's project). It connects to a running AAS dev-host's
+//!   WebSocket and replays wire commands against IosBackend.
+//!
+//! AAS mode shares everything except the staticlib + Swift glue.
+//! Bundle ID, app name, splash, simulator orchestration are all
+//! identical to Local mode — same project metadata, same flow.
 //!
 //! Limited to simulator builds today. Device builds need code
 //! signing (provisioning profile + signing identity + entitlements)
@@ -35,12 +41,42 @@ use anyhow::{Context, Result};
 use build_ios::{BuildOptions, Manifest};
 
 /// Embedded Swift sources + plist template. Tiny and identical for
-/// every project, so we ship them as `include_str!` rather than
-/// generating from scratch.
+/// every project (modulo splash substitution), so we ship them as
+/// `include_str!` rather than generating from scratch.
 const APP_DELEGATE_SWIFT: &str = include_str!("../templates/AppDelegate.swift");
-const VIEW_CONTROLLER_SWIFT: &str = include_str!("../templates/ViewController.swift");
-const BRIDGING_HEADER_H: &str = include_str!("../templates/BridgingHeader.h");
+const VIEW_CONTROLLER_LOCAL_SWIFT: &str = include_str!("../templates/ViewController.swift");
+const VIEW_CONTROLLER_AAS_SWIFT: &str = include_str!("../templates/ViewControllerAas.swift");
+const BRIDGING_HEADER_LOCAL_H: &str = include_str!("../templates/BridgingHeader.h");
+const BRIDGING_HEADER_AAS_H: &str = include_str!("../templates/BridgingHeaderAas.h");
 const INFO_PLIST_TMPL: &str = include_str!("../templates/Info.plist.tmpl");
+
+/// Name of the framework crate that hosts the iOS AAS client shell.
+/// Currently lives in `examples/` while we settle the API; the build
+/// path here doesn't care where it sits in the workspace as long as
+/// cargo resolves it by package name.
+const IOS_AAS_SHELL_PACKAGE: &str = "hello-ios-aas";
+const IOS_AAS_SHELL_LIB: &str = "hello_ios_aas";
+
+/// Whether the iOS process runs the user's app locally or acts as a
+/// thin client connected to an AAS dev-host.
+///
+/// AAS no longer carries a URL — the iOS app discovers its
+/// dev-server via Bonjour (`_idealyst-dev._tcp.`), filtering on the
+/// project's bundle id (which we plumb through as `IdealystAppId`
+/// in Info.plist). That means the dev-server can pick an ephemeral
+/// port, restart, or move to a new machine on the same Wi-Fi
+/// without the client needing a new build.
+#[derive(Clone, Debug)]
+pub enum RunMode {
+    Local,
+    Aas,
+}
+
+impl RunMode {
+    fn is_aas(&self) -> bool {
+        matches!(self, RunMode::Aas)
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct RunOptions {
@@ -48,6 +84,10 @@ pub struct RunOptions {
     /// compiles with `-O` regardless — Swift's debug build is
     /// painfully slow on iOS and these sources are trivial.
     pub release: bool,
+    /// Selects between the local-mount path (default) and the AAS
+    /// client path. Both produce a working `.app` for the simulator;
+    /// AAS just swaps the staticlib + the Swift glue that mounts it.
+    pub mode: RunMode,
 }
 
 #[derive(Debug)]
@@ -56,6 +96,9 @@ pub struct RunArtifact {
     pub app_bundle: PathBuf,
     /// UDID of the simulator the app is running on.
     pub simulator_udid: String,
+    /// Mode the app was built in. AAS .app bundles only do something
+    /// useful if a dev-host is also running on the configured URL.
+    pub mode: RunMode,
 }
 
 pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
@@ -64,64 +107,121 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
     let manifest = build_ios::parse_manifest(&project_dir)?;
     let workspace_root = build_ios::find_workspace_root(&project_dir)?;
 
-    // ── 1. Build the Rust staticlib ──────────────────────────────
-    let artifact = build_ios::build(
-        &project_dir,
-        BuildOptions {
-            release: opts.release,
-            device: false,
-        },
-    )?;
+    // ── 1. Produce the staticlib for the chosen mode ─────────────
+    let target_triple = build_ios::pick_target(false);
+    let (lib_dir, lib_name) = match &opts.mode {
+        RunMode::Local => {
+            let artifact = build_ios::build(
+                &project_dir,
+                BuildOptions {
+                    release: opts.release,
+                    device: false,
+                },
+            )?;
+            let dir = artifact
+                .staticlib
+                .parent()
+                .expect("staticlib has parent")
+                .to_path_buf();
+            let name = format!("{}_ios_wrapper", manifest.lib_name);
+            (dir, name)
+        }
+        RunMode::Aas { .. } => {
+            build_aas_shell(&workspace_root, target_triple, opts.release)?;
+            let profile = if opts.release { "release" } else { "debug" };
+            let dir = workspace_root
+                .join("target")
+                .join(target_triple)
+                .join(profile);
+            (dir, IOS_AAS_SHELL_LIB.to_string())
+        }
+    };
 
     // ── 2. Lay out the bundle dir ────────────────────────────────
-    let ios_dir = workspace_root
+    let ios_subdir = if opts.mode.is_aas() { "ios-aas" } else { "ios" };
+    let bundle_root = workspace_root
         .join("target/idealyst")
         .join(&manifest.name)
-        .join("ios");
-    let swift_dir = ios_dir.join("swift");
+        .join(ios_subdir);
+    let swift_dir = bundle_root.join("swift");
     let executable_name = title_case_for_executable(&manifest.name);
-    let app_bundle = ios_dir.join(format!("{executable_name}.app"));
+    let app_bundle = bundle_root.join(format!("{executable_name}.app"));
 
     if app_bundle.exists() {
-        fs::remove_dir_all(&app_bundle).with_context(|| {
-            format!("clear stale {} before rebuild", app_bundle.display())
-        })?;
+        fs::remove_dir_all(&app_bundle)
+            .with_context(|| format!("clear stale {} before rebuild", app_bundle.display()))?;
     }
     fs::create_dir_all(&app_bundle).with_context(|| format!("create {}", app_bundle.display()))?;
     fs::create_dir_all(&swift_dir).with_context(|| format!("create {}", swift_dir.display()))?;
 
     // ── 3. Write Swift sources + bridging header ─────────────────
     fs::write(swift_dir.join("AppDelegate.swift"), APP_DELEGATE_SWIFT)?;
-    fs::write(swift_dir.join("ViewController.swift"), VIEW_CONTROLLER_SWIFT)?;
-    fs::write(swift_dir.join("BridgingHeader.h"), BRIDGING_HEADER_H)?;
+    fs::write(
+        swift_dir.join("ViewController.swift"),
+        render_view_controller(&manifest, &opts.mode),
+    )?;
+    fs::write(
+        swift_dir.join("BridgingHeader.h"),
+        match &opts.mode {
+            RunMode::Local => BRIDGING_HEADER_LOCAL_H,
+            RunMode::Aas { .. } => BRIDGING_HEADER_AAS_H,
+        },
+    )?;
 
     // ── 4. swiftc: compile Swift + link executable ───────────────
     let exe_path = app_bundle.join(&executable_name);
-    compile_and_link(
-        &swift_dir,
-        artifact.staticlib.parent().expect("staticlib has parent"),
-        &format!("{}_ios_wrapper", manifest.lib_name),
-        &exe_path,
-    )?;
+    compile_and_link(&swift_dir, &lib_dir, &lib_name, &exe_path)?;
 
     // ── 5. Info.plist + PkgInfo ──────────────────────────────────
     fs::write(
         app_bundle.join("Info.plist"),
-        render_info_plist(&manifest, &executable_name),
+        render_info_plist(&manifest, &executable_name, &opts.mode)?,
     )?;
-    // 8 bytes; "APPL????" is the canonical "type=APPL, creator=anonymous"
-    // for iOS apps. Optional in modern iOS but harmless and ~free.
     fs::write(app_bundle.join("PkgInfo"), b"APPL????")?;
 
     // ── 6. Simulator: boot, install, launch ──────────────────────
     let udid = ensure_simulator_booted()?;
     install_app(&udid, &app_bundle)?;
-    launch_app(&udid, &manifest.app.bundle_id)?;
+    launch_app(&udid, manifest.app.require_bundle_id()?)?;
 
     Ok(RunArtifact {
         app_bundle,
         simulator_udid: udid,
+        mode: opts.mode,
     })
+}
+
+// ---------------------------------------------------------------------------
+// AAS shell build
+// ---------------------------------------------------------------------------
+
+/// Cargo-build the workspace's iOS AAS shell crate for the chosen
+/// target. The shell is a fixed, framework-side crate — no wrapper
+/// generation here, because the AAS client doesn't depend on user
+/// code (the user's `app()` runs on the dev-host, not in the iOS
+/// process). One staticlib services every project; the per-project
+/// metadata flows in through the .app bundle (Info.plist, splash,
+/// AAS URL) and through the Swift glue.
+fn build_aas_shell(workspace_root: &Path, target: &str, release: bool) -> Result<()> {
+    let manifest = workspace_root.join("Cargo.toml");
+    let mut cmd = Command::new("cargo");
+    cmd.args(["build", "--manifest-path"])
+        .arg(&manifest)
+        .args(["-p", IOS_AAS_SHELL_PACKAGE, "--target", target]);
+    if release {
+        cmd.arg("--release");
+    }
+    eprintln!(
+        "[run-ios] cargo build -p {IOS_AAS_SHELL_PACKAGE} --target {target}{}",
+        if release { " --release" } else { "" },
+    );
+    let status = cmd
+        .status()
+        .with_context(|| "spawn cargo to build the AAS shell")?;
+    if !status.success() {
+        anyhow::bail!("cargo build of {IOS_AAS_SHELL_PACKAGE} exited with {status}");
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -201,12 +301,64 @@ fn xcrun_sdk_path(sdk: &str) -> Result<PathBuf> {
 // Info.plist render
 // ---------------------------------------------------------------------------
 
-fn render_info_plist(manifest: &Manifest, executable_name: &str) -> String {
-    INFO_PLIST_TMPL
+fn render_info_plist(manifest: &Manifest, executable_name: &str, mode: &RunMode) -> Result<String> {
+    // In AAS mode we inject the Bonjour service type and a usage
+    // string (both required by iOS 14+ before NWBrowser will return
+    // any results) plus an `IdealystAppId` key that matches the
+    // dev-server's mDNS TXT record. The bundle id is the natural
+    // shared key: stable across rebuilds, unique per project, and
+    // the user already configures it in `idealyst.toml`.
+    let extra_entries = match mode {
+        RunMode::Local => String::new(),
+        RunMode::Aas => format!(
+            "<key>NSBonjourServices</key>\n    \
+             <array>\n        \
+                 <string>_idealyst-dev._tcp</string>\n    \
+             </array>\n    \
+             <key>NSLocalNetworkUsageDescription</key>\n    \
+             <string>Finds the Idealyst dev-server on your network so the app can hot-reload its UI from your dev machine.</string>\n    \
+             <key>IdealystAppId</key>\n    <string>{}</string>",
+            xml_escape(manifest.app.require_bundle_id()?),
+        ),
+    };
+    Ok(INFO_PLIST_TMPL
         .replace("{{APP_NAME}}", &xml_escape(&manifest.app.name))
-        .replace("{{BUNDLE_ID}}", &xml_escape(&manifest.app.bundle_id))
+        .replace("{{BUNDLE_ID}}", &xml_escape(manifest.app.require_bundle_id()?))
         .replace("{{EXECUTABLE}}", &xml_escape(executable_name))
         .replace("{{VERSION}}", &xml_escape(&manifest.app.version))
+        .replace("{{EXTRA_PLIST_ENTRIES}}", &extra_entries))
+}
+
+/// Fill the ViewController template with the project's splash
+/// settings (and, in AAS mode, the dev-server URL). Title text is
+/// Swift-string-escaped (we need to survive embedding in a `"..."`
+/// literal, so backslashes and quotes get escaped). Colors are
+/// validated by Swift's own `Scanner` at runtime — passing a
+/// malformed hex shows magenta so it's obvious.
+fn render_view_controller(manifest: &Manifest, mode: &RunMode) -> String {
+    let template = match mode {
+        RunMode::Local => VIEW_CONTROLLER_LOCAL_SWIFT,
+        RunMode::Aas => VIEW_CONTROLLER_AAS_SWIFT,
+    };
+    // AAS no longer needs a baked-in URL — the Swift glue browses
+    // Bonjour for `_idealyst-dev._tcp.` and matches `app_id` from
+    // Info.plist (= the project's bundle id, written by
+    // `render_info_plist`).
+    template
+        .replace("{{SPLASH_BG}}", &swift_escape(&manifest.app.splash.background))
+        .replace("{{SPLASH_TITLE}}", &swift_escape(&manifest.app.splash.title))
+        .replace(
+            "{{SPLASH_TITLE_COLOR}}",
+            &swift_escape(&manifest.app.splash.title_color),
+        )
+        .replace(
+            "{{SPLASH_DURATION_MS}}",
+            &manifest.app.splash.duration_ms.to_string(),
+        )
+}
+
+fn swift_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 fn xml_escape(s: &str) -> String {

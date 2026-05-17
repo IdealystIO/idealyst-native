@@ -144,6 +144,13 @@ impl<N: Clone + 'static> NavigatorAppState<N> {
                 // Dev tracks depth from its own stack model; the
                 // backend's local depth report is redundant.
             }),
+            // AAS-driven initial mount: the wire's
+            // `NavigatorAttachInitial` carries the canonical screen
+            // + scope (built server-side); backends that would
+            // normally auto-mount on URL match (web) must defer to
+            // that path, otherwise the stub `mount_screen` fires
+            // with no `pending_mount` staged and panics.
+            defer_initial_mount: true,
         }
     }
 

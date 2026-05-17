@@ -38,7 +38,9 @@ enum Command {
     Init(cmd::init::Args),
     /// Start the hot-reload dev server.
     Dev(cmd::dev::Args),
-    /// Produce a release build for a platform.
+    /// Build shippable artifacts for one or more platforms. Defaults
+    /// to a debug profile; pass `--release` for the production
+    /// pipeline (wasm-opt, xcodebuild Release, etc.).
     Build(cmd::build::Args),
     /// Build and launch on a simulator or device.
     Run(cmd::run::Args),

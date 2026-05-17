@@ -119,6 +119,13 @@ pub(crate) struct NavigatorInstance {
     /// doesn't try to "reconcile" a URL change we just made
     /// ourselves.
     suppress_popstate: RefCell<bool>,
+    /// When `true`, the create-time microtask skips its URL-based
+    /// auto-mount — initial mounting comes through
+    /// [`attach_initial_with_node`] with a screen node the caller
+    /// already has. The AAS dev-client sets this so the wire's
+    /// `NavigatorAttachInitial` is what actually mounts the home
+    /// screen (it carries the canonical server-built subtree).
+    defer_initial_mount: bool,
 }
 
 impl NavigatorInstance {
@@ -164,6 +171,33 @@ impl NavigatorInstance {
         let _ = self.mount_point().remove_child(&top.node);
         (self.release_screen)(top.scope_id);
         Some(top)
+    }
+
+    /// Mount an externally-built screen node. Used by the AAS path
+    /// where `mount_screen` shouldn't be invoked (the screen node
+    /// and scope id are already known — server-built, shipped via
+    /// the wire).
+    ///
+    /// Mirrors the tail of [`Self::mount_internal`] from after the
+    /// `mount_screen` call: stamps the class, appends to the
+    /// mount point, records the stack entry, and fires
+    /// `depth_changed`. The reactive `nav_state` signals aren't
+    /// updated here — AAS mode renders layout chrome on the
+    /// server, so those signals only matter for local-mode
+    /// rendering.
+    fn attach_initial_with_node(&mut self, screen: Node, scope_id: u64) {
+        if !self.has_layout() {
+            Self::stamp_screen_class(&screen);
+        }
+        self.mount_point()
+            .append_child(&screen)
+            .expect("append_child screen failed (attach_initial)");
+        self.stack.push(ScreenEntry {
+            node: screen,
+            scope_id,
+            url: String::new(),
+        });
+        (self.depth_changed)(self.stack.len());
     }
 
     /// Mount + append a screen with a known URL. Internal helper —
@@ -438,6 +472,7 @@ where
         // (route-name Text, can-go-back Button, …) would free
         // immediately and stop firing on navigation.
         build_layout_retainer: callbacks.build_layout.clone(),
+        defer_initial_mount: callbacks.defer_initial_mount,
     }));
 
     // Mount the initial / deep-linked stack.
@@ -491,6 +526,15 @@ where
             }
 
             let mut inst = instance.borrow_mut();
+
+            // AAS / deferred-mount mode: skip URL-driven auto-mount.
+            // The caller mounts via `navigator_attach_initial` with
+            // an externally-built screen node — the framework's wire
+            // delivers it shortly after this microtask runs.
+            if inst.defer_initial_mount {
+                return;
+            }
+
             let current = current_pathname();
 
             if paths_equal(&current, initial_path) {
@@ -699,6 +743,24 @@ pub(crate) fn create_drawer(
             }
         }));
     })
+}
+
+/// AAS / deferred-mount entry point. Called by
+/// `WebBackend::navigator_attach_initial` when the navigator was
+/// created with `defer_initial_mount = true`. Mounts the externally-
+/// built `screen` node into the navigator's outlet without going
+/// through `mount_screen`.
+pub(crate) fn attach_initial(b: &mut WebBackend, navigator: &Node, screen: Node, scope_id: u64) {
+    let Some(nav_id) = navigator_id_of(navigator) else {
+        return;
+    };
+    let Some(entry) = b.navigator_instances.get(&nav_id) else {
+        return;
+    };
+    entry
+        .instance
+        .borrow_mut()
+        .attach_initial_with_node(screen, scope_id);
 }
 
 /// Tear down a navigator: release every still-mounted screen scope

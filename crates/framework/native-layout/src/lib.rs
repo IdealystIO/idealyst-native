@@ -117,6 +117,21 @@ pub struct LayoutTree {
     auto_width: HashSet<NodeId>,
     /// Same as `auto_width` for the height axis.
     auto_height: HashSet<NodeId>,
+    /// Author-set padding in px, per-node, per-side. Tracked
+    /// separately from the Taffy node's effective padding so we can
+    /// re-combine with `safe_area_extra` whenever either changes
+    /// (style updates, orientation flips, dynamic-island changes).
+    /// Only px is supported in the combine path; if the author
+    /// declares `padding: 5%`, the safe-area extra is silently
+    /// ignored for that side. Acceptable — percent paddings are
+    /// rare in practice and the alternative (a Taffy
+    /// `LengthPercentage` expression language) costs more than it
+    /// buys.
+    author_padding: HashMap<NodeId, [f32; 4]>, // top, right, bottom, left
+    /// Safe-area-driven extra padding in px, per-node, per-side.
+    /// Combined with `author_padding` to produce Taffy's effective
+    /// `style.padding`.
+    safe_area_extra: HashMap<NodeId, [f32; 4]>, // top, right, bottom, left
 }
 
 impl LayoutTree {
@@ -127,6 +142,8 @@ impl LayoutTree {
             measure_fns: HashMap::new(),
             auto_width: HashSet::new(),
             auto_height: HashSet::new(),
+            author_padding: HashMap::new(),
+            safe_area_extra: HashMap::new(),
         }
     }
 
@@ -179,6 +196,46 @@ impl LayoutTree {
         self.measure_fns.remove(&node.0);
         self.auto_width.remove(&node.0);
         self.auto_height.remove(&node.0);
+        self.author_padding.remove(&node.0);
+        self.safe_area_extra.remove(&node.0);
+    }
+
+    /// Set per-side safe-area extra padding for a node. The Taffy
+    /// node's effective padding becomes `author_padding +
+    /// safe_area_extra` on each side. Called by the backend
+    /// reactively whenever the platform reports a safe-area change
+    /// (orientation, dynamic island, sheet adaptation) on nodes the
+    /// author opted in via `.safe_area(...)`.
+    ///
+    /// Pass zeros for sides the node doesn't opt into — the backend
+    /// is the one that masks per-side based on `SafeAreaSides`.
+    pub fn set_safe_area_extra(
+        &mut self,
+        node: LayoutNode,
+        top: f32,
+        right: f32,
+        bottom: f32,
+        left: f32,
+    ) {
+        let extra = [top, right, bottom, left];
+        // Skip the Taffy write if nothing changed — common during a
+        // layout pass on every frame.
+        if self.safe_area_extra.get(&node.0).copied() == Some(extra) {
+            return;
+        }
+        self.safe_area_extra.insert(node.0, extra);
+
+        let author = self.author_padding.get(&node.0).copied().unwrap_or([0.0; 4]);
+        let mut style = self
+            .tree
+            .style(node.0)
+            .cloned()
+            .unwrap_or(Style::default());
+        style.padding.top = LengthPercentage::Length(author[0] + top);
+        style.padding.right = LengthPercentage::Length(author[1] + right);
+        style.padding.bottom = LengthPercentage::Length(author[2] + bottom);
+        style.padding.left = LengthPercentage::Length(author[3] + left);
+        self.tree.set_style(node.0, style).expect("taffy set_style");
     }
 
     /// Apply the framework's resolved style rules to a node by
@@ -314,18 +371,49 @@ impl LayoutTree {
         }
 
         // --- Padding (per-side, all optional) ---
-
+        //
+        // Author padding is tracked separately so safe-area extras
+        // can be re-combined on every change. For each side: snapshot
+        // the author value into `author_padding`, then write
+        // `author + safe_area_extra` to Taffy. Only px is combined
+        // (the common case); a percent author value falls back to a
+        // pure author write — safe-area on the same side is silently
+        // skipped in that mode.
         if let Some(v) = rules.padding_top.as_ref().map(|t| *t.value()) {
-            style.padding.top = length_to_lp(v);
+            if let FwLength::Px(px) = v {
+                self.author_padding.entry(node.0).or_insert([0.0; 4])[0] = px;
+                let extra = self.safe_area_extra.get(&node.0).map(|e| e[0]).unwrap_or(0.0);
+                style.padding.top = LengthPercentage::Length(px + extra);
+            } else {
+                style.padding.top = length_to_lp(v);
+            }
         }
         if let Some(v) = rules.padding_right.as_ref().map(|t| *t.value()) {
-            style.padding.right = length_to_lp(v);
+            if let FwLength::Px(px) = v {
+                self.author_padding.entry(node.0).or_insert([0.0; 4])[1] = px;
+                let extra = self.safe_area_extra.get(&node.0).map(|e| e[1]).unwrap_or(0.0);
+                style.padding.right = LengthPercentage::Length(px + extra);
+            } else {
+                style.padding.right = length_to_lp(v);
+            }
         }
         if let Some(v) = rules.padding_bottom.as_ref().map(|t| *t.value()) {
-            style.padding.bottom = length_to_lp(v);
+            if let FwLength::Px(px) = v {
+                self.author_padding.entry(node.0).or_insert([0.0; 4])[2] = px;
+                let extra = self.safe_area_extra.get(&node.0).map(|e| e[2]).unwrap_or(0.0);
+                style.padding.bottom = LengthPercentage::Length(px + extra);
+            } else {
+                style.padding.bottom = length_to_lp(v);
+            }
         }
         if let Some(v) = rules.padding_left.as_ref().map(|t| *t.value()) {
-            style.padding.left = length_to_lp(v);
+            if let FwLength::Px(px) = v {
+                self.author_padding.entry(node.0).or_insert([0.0; 4])[3] = px;
+                let extra = self.safe_area_extra.get(&node.0).map(|e| e[3]).unwrap_or(0.0);
+                style.padding.left = LengthPercentage::Length(px + extra);
+            } else {
+                style.padding.left = length_to_lp(v);
+            }
         }
 
         // --- Margin (per-side, all optional) ---

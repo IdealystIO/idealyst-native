@@ -47,6 +47,27 @@ pub struct ReloadContext {
 /// the current generation counter as a decimal integer.
 pub const RELOAD_GEN_URL: &str = "/__idealyst/gen";
 
+/// JSON endpoint published when an [`AasContext`] is supplied. Body
+/// is `{"url": "<ws://...>"}` for a discovered server, or `{"url":
+/// null}` while we're still browsing. Browsers can re-poll this on
+/// WebSocket disconnect to pick up a server that restarted on a
+/// different port.
+pub const AAS_URL_URL: &str = "/__idealyst/aas_url";
+
+/// Plumbed in by callers (typically `web-dev-host`) that have a
+/// live mDNS browser running. The HTTP server reads `aas_url` for
+/// each request, returns it via [`AAS_URL_URL`], and inlines a tiny
+/// `<script>window.IDEALYST_AAS_URL = "..."</script>` into served
+/// HTML so wasm bundles can pick the URL up synchronously on boot.
+///
+/// `Arc<Mutex<Option<String>>>` keeps the producer thread (mDNS
+/// browse) and the consumer thread (HTTP serve) cleanly decoupled
+/// — flipping the URL doesn't require touching the HTTP loop.
+#[derive(Clone)]
+pub struct AasContext {
+    pub aas_url: Arc<std::sync::Mutex<Option<String>>>,
+}
+
 /// Inlined into the `<body>` of every served HTML response when
 /// reload is active. Polls every 400ms; reloads when the generation
 /// counter advances. Tiny on purpose — the page reloads on every
@@ -73,6 +94,7 @@ pub fn serve_static(
     port: u16,
     root: &Path,
     reload: Option<ReloadContext>,
+    aas: Option<AasContext>,
 ) -> Result<()> {
     let addr = format!("{host}:{port}");
     let server = Server::http(&addr)
@@ -81,19 +103,26 @@ pub fn serve_static(
     let root = fs::canonicalize(root)
         .with_context(|| format!("cannot canonicalize serve root {}", root.display()))?;
 
+    let mut extras = Vec::new();
+    if reload.is_some() {
+        extras.push("livereload");
+    }
+    if aas.is_some() {
+        extras.push("aas-url");
+    }
     eprintln!(
         "[dev-http] serving {} on http://{}{}",
         root.display(),
         addr,
-        if reload.is_some() {
-            " (livereload on)"
+        if extras.is_empty() {
+            String::new()
         } else {
-            ""
+            format!(" ({})", extras.join(", "))
         },
     );
 
     for request in server.incoming_requests() {
-        if let Err(e) = handle(&root, reload.as_ref(), request) {
+        if let Err(e) = handle(&root, reload.as_ref(), aas.as_ref(), request) {
             eprintln!("[dev-http] request error: {e}");
         }
     }
@@ -101,7 +130,12 @@ pub fn serve_static(
     Ok(())
 }
 
-fn handle(root: &Path, reload: Option<&ReloadContext>, request: Request) -> Result<()> {
+fn handle(
+    root: &Path,
+    reload: Option<&ReloadContext>,
+    aas: Option<&AasContext>,
+    request: Request,
+) -> Result<()> {
     // GET / HEAD only. Anything else (POST, PUT, …) isn't meaningful
     // for a static-file dev server.
     if !matches!(request.method(), Method::Get | Method::Head) {
@@ -129,6 +163,28 @@ fn handle(root: &Path, reload: Option<&ReloadContext>, request: Request) -> Resu
             .map_err(Into::into);
     }
 
+    // AAS-URL endpoint. JSON body `{"url": "<ws://...>"}` or
+    // `{"url": null}` while discovery hasn't found a match. The
+    // wasm side reads this on disconnect to pick up a server that
+    // restarted on a different port. Even when no AasContext is
+    // wired up we answer (with `null`) so wasm clients that poll
+    // it don't have to special-case the dev-mode-off case.
+    if url_path == AAS_URL_URL {
+        let url = aas
+            .and_then(|c| c.aas_url.lock().ok().and_then(|g| g.clone()));
+        let body = match url {
+            Some(u) => format!("{{\"url\":\"{}\"}}", json_escape(&u)),
+            None => "{\"url\":null}".to_string(),
+        };
+        return request
+            .respond(
+                Response::from_string(body)
+                    .with_header(header("Content-Type", "application/json"))
+                    .with_header(header("Cache-Control", "no-store")),
+            )
+            .map_err(Into::into);
+    }
+
     let wants_html = request
         .headers()
         .iter()
@@ -140,12 +196,12 @@ fn handle(root: &Path, reload: Option<&ReloadContext>, request: Request) -> Resu
         Some(path) if path.is_dir() => {
             let index = path.join("index.html");
             if index.is_file() {
-                respond_with_file(request, &index, reload)
+                respond_with_file(request, &index, reload, aas)
             } else {
                 not_found(request)
             }
         }
-        Some(path) if path.is_file() => respond_with_file(request, &path, reload),
+        Some(path) if path.is_file() => respond_with_file(request, &path, reload, aas),
         _ if wants_html => {
             // SPA fallback. Unknown route, but the browser is asking
             // for HTML — serve the root index so a client-side router
@@ -153,7 +209,7 @@ fn handle(root: &Path, reload: Option<&ReloadContext>, request: Request) -> Resu
             // images) bypass this branch and get a real 404.
             let index = root.join("index.html");
             if index.is_file() {
-                respond_with_file(request, &index, reload)
+                respond_with_file(request, &index, reload, aas)
             } else {
                 not_found(request)
             }
@@ -180,21 +236,28 @@ fn respond_with_file(
     request: Request,
     path: &Path,
     reload: Option<&ReloadContext>,
+    aas: Option<&AasContext>,
 ) -> Result<()> {
     let ct = content_type(path);
     let is_html = matches!(ct, "text/html; charset=utf-8");
 
-    // HTML responses get the livereload script injected. Everything
-    // else streams straight from disk — wasm bundles can be large
-    // (hello-web's release wasm is ~13 MB), and `Response::from_file`
-    // sets up chunked transfer for us.
-    if is_html && reload.is_some() {
+    // HTML responses get script tags injected (livereload + AAS
+    // URL). Everything else streams straight from disk — wasm
+    // bundles can be large (hello-web's release wasm is ~13 MB),
+    // and `Response::from_file` sets up chunked transfer for us.
+    let needs_injection = is_html && (reload.is_some() || aas.is_some());
+    if needs_injection {
         let mut body = String::new();
         fs::File::open(path)
             .with_context(|| format!("open {}", path.display()))?
             .read_to_string(&mut body)
             .with_context(|| format!("read {}", path.display()))?;
-        let body = inject_reload_script(body);
+        if let Some(ctx) = aas {
+            body = inject_aas_url(body, ctx);
+        }
+        if reload.is_some() {
+            body = inject_reload_script(body);
+        }
         let response = Response::from_string(body)
             .with_header(header("Content-Type", ct))
             .with_header(header("Cache-Control", "no-store"));
@@ -210,6 +273,49 @@ fn respond_with_file(
         response.add_header(header("Cache-Control", "no-store"));
         request.respond(response).map_err(Into::into)
     }
+}
+
+/// Insert `<script>window.IDEALYST_AAS_URL = "..."</script>` right
+/// inside the `<head>` so it executes before any wasm init. wasm
+/// reads the global synchronously on boot — no async fetch round
+/// trip. When discovery hasn't found a server yet, the value is
+/// `null` and the wasm waits / polls `AAS_URL_URL`.
+fn inject_aas_url(html: String, ctx: &AasContext) -> String {
+    let url = ctx.aas_url.lock().ok().and_then(|g| g.clone());
+    let value = match url {
+        Some(u) => format!("\"{}\"", json_escape(&u)),
+        None => "null".to_string(),
+    };
+    let snippet = format!(
+        "<script>window.IDEALYST_AAS_URL = {};</script>\n",
+        value
+    );
+    if let Some(idx) = html.find("</head>") {
+        let (head, tail) = html.split_at(idx);
+        let mut out = String::with_capacity(html.len() + snippet.len());
+        out.push_str(head);
+        out.push_str(&snippet);
+        out.push_str(tail);
+        out
+    } else {
+        // No `</head>` — prepend so it's still first to execute.
+        format!("{snippet}{html}")
+    }
+}
+
+/// Minimal JSON string escape for the values we actually produce —
+/// ws URLs, which are ASCII + `:` + `/`. Escape backslashes and
+/// double-quotes; control chars don't appear in these URLs.
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 fn inject_reload_script(html: String) -> String {

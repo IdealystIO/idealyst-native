@@ -1,0 +1,24 @@
+[package]
+name = "build-roku"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Roku build orchestration: collects #[method]-transpiled BrightScript + a UI command stream into an installable Roku package"
+
+# Pure orchestration crate. No Rust runs on Roku — this crate's job
+# is to lay out a complete `.pkg` directory: app manifest, the
+# BrightScript runtime that materializes our SceneGraph from a
+# baked JSON command stream, and the per-project methods.brs +
+# ui.json. Sibling crates that need the same pipeline pieces (a
+# future `run-roku`, for instance) can call into `build()`.
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+backend-roku-transpile = { workspace = true }
+syn = { version = "2", features = ["full"] }

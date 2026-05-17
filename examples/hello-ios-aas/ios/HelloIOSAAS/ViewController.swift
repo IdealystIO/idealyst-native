@@ -1,26 +1,33 @@
 import UIKit
 
-/// AAS dev-server URL. Defaults to host loopback (works for the
-/// iOS simulator hitting a dev-server running on the Mac). Override
-/// via `Info.plist` key `IDEALYST_AAS_URL` for a device running on
-/// the same LAN as the dev machine.
-private func resolveDevServerURL() -> String {
-    if let s = Bundle.main.object(forInfoDictionaryKey: "IDEALYST_AAS_URL") as? String,
-       !s.isEmpty
-    {
-        return s
-    }
-    return "ws://127.0.0.1:9001"
-}
+/// Info.plist key carrying the expected `app_id`. The Rust side
+/// browses Bonjour for `_idealyst-dev._tcp.` and connects to the
+/// dev-server whose TXT record's `app_id` matches. Two dev-servers
+/// on the same network with different `app_id`s don't cross-wire.
+private let kAppIdInfoKey = "IdealystAppId"
 
 class ViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
 
+        guard let appId = Bundle.main
+                .object(forInfoDictionaryKey: kAppIdInfoKey) as? String,
+              !appId.isEmpty
+        else {
+            fatalError(
+                "Missing or empty `\(kAppIdInfoKey)` in Info.plist — the app "
+                + "doesn't know which dev-server to look for. Set it to the "
+                + "same string the dev-server's bin passes as APP_ID."
+            )
+        }
+
+        // Rust handles discovery + WebSocket. We just hand it the
+        // root view and the app id; everything else (mDNS browsing,
+        // reconnect-on-port-change, frame pump) lives in
+        // `hello-ios-aas`'s `ios_main`.
         let rootPtr = Unmanaged.passUnretained(view).toOpaque()
-        let urlString = resolveDevServerURL()
-        urlString.withCString { cstr in
+        appId.withCString { cstr in
             ios_main(rootPtr, cstr)
         }
     }

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!--
+    Top-level scene component. Owns the SceneGraph subtree that the
+    runtime materializes from pkg:/data/ui.json. The runtime
+    interpreter lives in IdealystScene.brs; per-project helper
+    functions transpiled from Rust #[method] live in
+    source/methods.brs and are visible here because the runtime
+    pulls them in via <script uri="..."/>.
+
+    `rootGroup` is a stable mount point — the runtime appends the
+    Rust-side root node into it after replaying every Insert.
+-->
+<component name="IdealystScene" extends="Scene">
+    <script type="text/brightscript" uri="pkg:/components/IdealystScene.brs" />
+    <script type="text/brightscript" uri="pkg:/components/Layout.brs" />
+    <script type="text/brightscript" uri="pkg:/source/methods.brs" />
+    <children>
+        <!--
+            Plain Group mount-point at the TV safe-zone offset. The
+            user's tree gets composed inside it; sizing + child
+            positioning is computed entirely by Layout.brs (Roku's
+            LayoutGroup behaviors would fight the framework's flex
+            semantics here, so we use a layout-neutral Group).
+        -->
+        <Group id="rootGroup" translation="[80, 80]" />
+    </children>
+</component>

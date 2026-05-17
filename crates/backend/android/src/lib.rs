@@ -48,3 +48,11 @@ pub use imp::AndroidBackend;
 
 #[cfg(not(target_os = "android"))]
 pub use stub::AndroidBackend;
+
+/// Optional AAS-client glue. Compiled in only when the `aas-shell`
+/// Cargo feature is on. The module exposes `attach` / `drain` /
+/// `detach` entry points; the consuming staticlib crate defines its
+/// own JNI exports (with package-qualified names like
+/// `Java_<pkg>_NativeBridge_attachAas`) that trampoline into these.
+#[cfg(all(target_os = "android", feature = "aas-shell"))]
+pub mod aas;

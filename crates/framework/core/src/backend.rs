@@ -1128,6 +1128,33 @@ pub trait Backend {
         self.create_view()
     }
 
+    /// Apply safe-area-aware padding to `node`. Called by the walker
+    /// for every container that opted in via `.safe_area(...)`, and
+    /// again reactively whenever
+    /// [`crate::safe_area_insets()`] fires (orientation flip,
+    /// dynamic-island change, sheet adaptation).
+    ///
+    /// Backends should:
+    /// 1. Read the platform's current safe-area insets (from
+    ///    `UIView.safeAreaInsets`, `WindowInsets.systemBars()`,
+    ///    `env(safe-area-inset-*)`, etc.).
+    /// 2. For each side flag in `sides`, add the corresponding inset
+    ///    to that side's *padding* on the node — combining with any
+    ///    author-set padding (don't clobber it).
+    /// 3. Schedule a layout pass if the padding changed.
+    ///
+    /// The default impl is a no-op so backends without safe-area
+    /// awareness (or that don't yet implement it) silently ignore
+    /// the opt-in instead of panicking.
+    #[allow(unused_variables)]
+    fn apply_safe_area_padding(
+        &mut self,
+        node: &Self::Node,
+        sides: crate::SafeAreaSides,
+    ) {
+        // default: no-op
+    }
+
     /// Default no-op handle for `Ref<LinkHandle>`. Backends that
     /// can synthesize activation events override this.
     #[allow(unused_variables)]

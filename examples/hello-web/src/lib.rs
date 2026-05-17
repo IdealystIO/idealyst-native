@@ -77,10 +77,15 @@ mod dev_hot_reload {
 
     use backend_web::WebBackend;
     use dev_client::{connect_web, OutboundSender, WebClientHandle, WireBackend};
-    use wasm_bindgen::JsCast;
+    use wasm_bindgen::{JsCast, JsValue};
 
     const HOST_SELECTOR: &str = "#app";
-    const DEV_URL: &str = "ws://127.0.0.1:9001";
+    /// Name of the JS global the `web-dev-host` binary injects
+    /// into served HTML before the wasm boots. Holds the AAS
+    /// dev-server's `ws://host:port` URL discovered via Bonjour.
+    /// `null` when the host hasn't yet found a matching server —
+    /// we retry until it appears.
+    const AAS_URL_GLOBAL: &str = "IDEALYST_AAS_URL";
 
     type AppWire = Rc<RefCell<WireBackend<WebBackend>>>;
 
@@ -116,15 +121,30 @@ mod dev_hot_reload {
         });
         let wire = WIRE.with(|slot| slot.borrow().as_ref().unwrap().clone());
 
+        // Read the URL from the `window.IDEALYST_AAS_URL` global
+        // injected by `web-dev-host`. Null when discovery hasn't
+        // found a matching dev-server yet — we just retry until
+        // it does.
+        let url = match aas_url_from_window() {
+            Some(u) => u,
+            None => {
+                web_sys::console::log_1(
+                    &"[hello-web] AAS URL not yet available; waiting…".into(),
+                );
+                schedule_retry();
+                return;
+            }
+        };
+
         let on_disconnect: Rc<dyn Fn()> = Rc::new(|| {
             connect_attempt();
         });
 
-        match connect_web(DEV_URL, wire, on_disconnect) {
+        match connect_web(&url, wire, on_disconnect) {
             Ok(handle) => {
                 CLIENT.with(|slot| *slot.borrow_mut() = Some(handle));
                 web_sys::console::log_1(
-                    &format!("[hello-web] hot-reload connected to {}", DEV_URL).into(),
+                    &format!("[hello-web] hot-reload connected to {}", url).into(),
                 );
             }
             Err(e) => {
@@ -135,6 +155,19 @@ mod dev_hot_reload {
                 schedule_retry();
             }
         }
+    }
+
+    /// Read `window.IDEALYST_AAS_URL` set by `web-dev-host`. Returns
+    /// `None` when missing or `null`, which the caller treats as
+    /// "retry shortly" — the dev-host might be browsing for the
+    /// AAS server still.
+    fn aas_url_from_window() -> Option<String> {
+        let window = web_sys::window()?;
+        let value = js_sys::Reflect::get(&window, &JsValue::from_str(AAS_URL_GLOBAL)).ok()?;
+        if value.is_null() || value.is_undefined() {
+            return None;
+        }
+        value.as_string()
     }
 
     fn schedule_retry() {

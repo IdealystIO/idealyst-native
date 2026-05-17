@@ -9,15 +9,21 @@ members = [
     "crates/framework/dev-server",
     "crates/framework/dev-http",
     "crates/framework/dev-reload",
+    "crates/framework/web-dev-host",
     "crates/framework/build-ios",
     "crates/framework/run-ios",
+    "crates/framework/build-aas",
+    "crates/framework/build-android",
+    "crates/framework/run-android",
+    "crates/framework/build-roku",
+    "crates/framework/run-roku",
     "crates/framework/cli",
     "crates/backend/ios",
     "crates/backend/ios-stack",
     "crates/backend/android",
     "crates/backend/roku",
-    "crates/backend/roku-macros",
-    "crates/backend/roku-transpile",
+    "crates/backend/roku/macros",
+    "crates/backend/roku/transpile",
     "crates/backend/web",
     "crates/reactive/arena",
     "crates/reactive/refs",
@@ -29,6 +35,7 @@ members = [
     "examples/hello-web",
     "examples/hello-android",
     "examples/hello-ios",
+    "examples/hello-roku",
     "examples/idea-ui-docs",
     "examples/idea-ui-docs-web",
     "examples/hot-reload-demo",
@@ -51,14 +58,20 @@ dev-client = { path = "crates/framework/dev-client" }
 dev-server = { path = "crates/framework/dev-server" }
 dev-http = { path = "crates/framework/dev-http" }
 dev-reload = { path = "crates/framework/dev-reload" }
+web-dev-host = { path = "crates/framework/web-dev-host" }
 build-ios = { path = "crates/framework/build-ios" }
 run-ios = { path = "crates/framework/run-ios" }
+build-aas = { path = "crates/framework/build-aas" }
+build-android = { path = "crates/framework/build-android" }
+run-android = { path = "crates/framework/run-android" }
+build-roku = { path = "crates/framework/build-roku" }
+run-roku = { path = "crates/framework/run-roku" }
 backend-ios = { path = "crates/backend/ios" }
 backend-ios-stack = { path = "crates/backend/ios-stack" }
 backend-android = { path = "crates/backend/android" }
 backend-roku = { path = "crates/backend/roku" }
-backend-roku-macros = { path = "crates/backend/roku-macros" }
-backend-roku-transpile = { path = "crates/backend/roku-transpile" }
+backend-roku-macros = { path = "crates/backend/roku/macros" }
+backend-roku-transpile = { path = "crates/backend/roku/transpile" }
 backend-web = { path = "crates/backend/web" }
 idea-ui = { path = "crates/ui/idea-ui" }
 idea-ui-docs-derive = { path = "crates/ui/idea-ui-docs-derive" }

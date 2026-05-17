@@ -21,11 +21,19 @@ use std::rc::Rc;
 use framework_core::render;
 use hot_reload_demo::app_root;
 use dev_server::{
-    serve, spawn_rebuild_loop, NavStateSnapshot, RebuildCommand, RebuildConfig,
+    serve_with_robot_bridge, spawn_rebuild_loop, NavStateSnapshot, RebuildCommand, RebuildConfig,
     WireRecordingBackend,
 };
 
-const DEFAULT_ADDR: &str = "127.0.0.1:9001";
+/// Bind on every interface so a phone on LAN can connect. Port 0
+/// lets the OS assign — the actual port is advertised via mDNS so
+/// clients don't need to know it ahead of time.
+const DEFAULT_ADDR: &str = "0.0.0.0:0";
+
+/// Service id clients filter on when browsing for our mDNS record.
+/// Bumping this is the way to make two dev-servers on the same
+/// machine target different apps.
+const APP_ID: &str = "hot-reload-demo";
 
 fn main() -> std::io::Result<()> {
     let addr = std::env::args().nth(1).unwrap_or_else(|| DEFAULT_ADDR.to_string());
@@ -99,5 +107,14 @@ fn main() -> std::io::Result<()> {
         })),
     });
 
-    serve(addr, recorder)
+    // Start the Robot bridge on the standard port. The walker
+    // (above, in `render(...)`) ran on this thread, so the
+    // thread-local Robot registry it populated lives here too —
+    // which is the thread `serve_with_robot_bridge` will drain the
+    // bridge handle on, exactly as required.
+    let bridge = framework_core::robot::bridge::start(
+        framework_core::robot::bridge::DEFAULT_PORT,
+    );
+
+    serve_with_robot_bridge(addr, recorder, APP_ID, bridge)
 }

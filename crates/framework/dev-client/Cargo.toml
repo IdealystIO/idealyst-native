@@ -28,8 +28,11 @@ default = []
 dev-hot-reload = []
 # Sync blocking transport using `tungstenite`. Right for desktop /
 # iOS / Android hosts where a dedicated dev-mode connection thread
-# is acceptable.
-native = ["dep:tungstenite", "dev-hot-reload"]
+# is acceptable. Includes the mDNS browser used to locate the
+# dev-server's WebSocket URL — iOS still needs `NSBonjourServices`
+# in Info.plist to allow the multicast traffic, but the discovery
+# code itself is shared across native targets.
+native = ["dep:tungstenite", "dep:mdns-sd", "dev-hot-reload"]
 # Browser transport using web-sys's WebSocket API. Right for wasm
 # hosts where blocking I/O isn't possible.
 web = [
@@ -46,6 +49,12 @@ serde_json = { version = "1", optional = false }
 
 # Native transport deps. Optional + opt-in via `native`.
 tungstenite = { version = "0.24", default-features = false, features = ["handshake"], optional = true }
+
+# Pure-Rust mDNS / DNS-SD ("Bonjour") used by `native` clients to
+# discover their dev-server on the LAN. Cross-platform — same crate
+# powers iOS, Android, and desktop demos. Wasm/web hosts can't do
+# raw multicast, so this is `native`-only.
+mdns-sd = { version = "0.10", default-features = false, optional = true }
 
 # Web transport deps. Optional + opt-in via `web`.
 wasm-bindgen = { version = "0.2", optional = true }

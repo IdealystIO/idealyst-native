@@ -45,6 +45,7 @@ pub fn scroll_view(children: Vec<Primitive>) -> Bound<ScrollViewHandle> {
         horizontal: false,
         style: None,
         ref_fill: None,
+        safe_area_sides: crate::SafeAreaSides::NONE,
     })
 }
 
@@ -61,6 +62,18 @@ impl Bound<ScrollViewHandle> {
     pub fn bind(mut self, r: Ref<ScrollViewHandle>) -> Self {
         if let Primitive::ScrollView { ref_fill, .. } = &mut self.primitive {
             *ref_fill = Some(RefFill::ScrollView(Box::new(move |h| r.fill(h))));
+        }
+        self
+    }
+
+    /// Opt this scroll view into safe-area-aware padding. See
+    /// [`Bound::<crate::ViewHandle>::safe_area`] for full semantics.
+    /// Common use: a vertical scroll view at the screen root with
+    /// `SafeAreaSides::VERTICAL` so its content respects status bar
+    /// + home indicator while the background bleeds under both.
+    pub fn safe_area(mut self, sides: crate::SafeAreaSides) -> Self {
+        if let Primitive::ScrollView { safe_area_sides, .. } = &mut self.primitive {
+            *safe_area_sides |= sides;
         }
         self
     }

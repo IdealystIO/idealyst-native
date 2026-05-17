@@ -26,6 +26,13 @@ pub enum Primitive {
         children: Vec<Primitive>,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
+        /// Per-side opt-in for safe-area padding. `NONE` means the
+        /// view ignores system insets (the default). When non-zero,
+        /// the backend adds the platform's safe-area inset to the
+        /// matching side of the view's padding, reactively — orientation
+        /// flips and dynamic-island changes propagate without a rebuild.
+        /// See [`crate::SafeAreaSides`].
+        safe_area_sides: crate::SafeAreaSides,
         #[cfg(feature = "robot")]
         test_id: Option<&'static str>,
     },
@@ -159,6 +166,12 @@ pub enum Primitive {
         horizontal: bool,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
+        /// Per-side opt-in for safe-area padding — same semantics as
+        /// `View::safe_area_sides`. Common use: a vertical scroll
+        /// view at the screen root opts into `TOP | BOTTOM` so
+        /// scrolling content can pass under the status bar / home
+        /// indicator while header/footer rows respect the inset.
+        safe_area_sides: crate::SafeAreaSides,
     },
     /// Controlled numeric slider. Like `TextInput`/`Toggle`, the parent
     /// owns the value signal. If `step` is set, the framework snaps

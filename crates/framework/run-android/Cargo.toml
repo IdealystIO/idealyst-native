@@ -1,0 +1,11 @@
+[package]
+name = "run-android"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Build and launch an idealyst Android app on emulator or device without Gradle — compiles Java with javac, DEXes with d8, packages via aapt2, signs via apksigner, installs via adb."
+
+[dependencies]
+anyhow = "1"
+build-android = { workspace = true }
+build-ios = { workspace = true }

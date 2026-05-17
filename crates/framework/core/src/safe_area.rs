@@ -1,0 +1,158 @@
+//! Safe-area insets — the per-edge "system chrome" reservations
+//! (status bar, home indicator, notch / dynamic island on iOS;
+//! status / nav bars + display cutout on Android; `env(safe-area-*)`
+//! on web).
+//!
+//! ## Two-piece API
+//!
+//! - [`safe_area_insets()`] — reactive `Signal<EdgeInsets>` users can
+//!   read directly. Re-fires when the platform reports a change
+//!   (orientation flip, sheet transition, accessory bar appearing).
+//!   Backends call [`set_safe_area_insets`] when they detect a
+//!   change.
+//! - `.safe_area(SafeAreaSides::TOP | …)` on container [`Bound`]s — a
+//!   per-component opt-in that adds the platform inset to the
+//!   matching side of the container's *padding* (not margin). The
+//!   container's background still bleeds under the system chrome;
+//!   only the content gets pushed inward.
+//!
+//! ## Nested opt-ins
+//!
+//! If a parent and a child both opt in on the same side, the inset
+//! is added to *both* paddings (naive stacking). This is a
+//! documented limitation — author code should put `.safe_area(...)`
+//! on the outermost container. The alternative (track "is this side
+//! already absorbed upstream") is meaningfully more complex; defer
+//! until use cases force it.
+//!
+//! ## Keyboard
+//!
+//! Out of scope for the safe area. The keyboard inset, if ever
+//! exposed, lives in a separate API — different reactivity rate,
+//! different accessibility semantics, different animation curve.
+//!
+//! [`Bound`]: crate::Bound
+
+use crate::reactive::Signal;
+use std::cell::OnceCell;
+
+/// Per-edge insets in CSS pixels (or the backend's equivalent point
+/// unit). Always non-negative; backends clamp before pushing.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct EdgeInsets {
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+    pub left: f32,
+}
+
+impl EdgeInsets {
+    pub const ZERO: Self = Self { top: 0.0, right: 0.0, bottom: 0.0, left: 0.0 };
+
+    /// Pick the inset for one side based on a bitflag — convenience
+    /// for backends combining author padding with safe-area padding.
+    pub fn for_side(&self, side: SafeAreaSides) -> f32 {
+        // Caller passes a single-side flag (TOP / RIGHT / BOTTOM /
+        // LEFT). For ALL / VERTICAL / HORIZONTAL combinations the
+        // backend should call this per side.
+        match side {
+            s if s == SafeAreaSides::TOP => self.top,
+            s if s == SafeAreaSides::RIGHT => self.right,
+            s if s == SafeAreaSides::BOTTOM => self.bottom,
+            s if s == SafeAreaSides::LEFT => self.left,
+            _ => 0.0,
+        }
+    }
+}
+
+/// Per-side opt-in flags for `.safe_area(...)`. Composable via bitwise
+/// `|`. The common combinations are exposed as constants
+/// ([`ALL`](SafeAreaSides::ALL), [`HORIZONTAL`](SafeAreaSides::HORIZONTAL),
+/// [`VERTICAL`](SafeAreaSides::VERTICAL)) so author code doesn't have
+/// to OR them by hand.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct SafeAreaSides(pub u8);
+
+impl SafeAreaSides {
+    pub const NONE: Self = Self(0);
+    pub const TOP: Self = Self(1 << 0);
+    pub const RIGHT: Self = Self(1 << 1);
+    pub const BOTTOM: Self = Self(1 << 2);
+    pub const LEFT: Self = Self(1 << 3);
+    pub const ALL: Self = Self(0b1111);
+    pub const HORIZONTAL: Self = Self(0b1010); // right | left
+    pub const VERTICAL: Self = Self(0b0101); // top | bottom
+
+    /// True iff every flag in `other` is also set in `self`.
+    pub const fn contains(self, other: Self) -> bool {
+        (self.0 & other.0) == other.0
+    }
+
+    /// True iff no flags are set.
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+}
+
+impl std::ops::BitOr for SafeAreaSides {
+    type Output = Self;
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
+    }
+}
+
+impl std::ops::BitOrAssign for SafeAreaSides {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
+impl std::ops::BitAnd for SafeAreaSides {
+    type Output = Self;
+    fn bitand(self, rhs: Self) -> Self {
+        Self(self.0 & rhs.0)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Reactive insets signal
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    /// The framework's authoritative safe-area-insets signal. Lazily
+    /// initialized to `EdgeInsets::ZERO` on first access; backends
+    /// overwrite it as the platform reports changes.
+    ///
+    /// Thread-local because `Signal` is reactive-arena-backed and the
+    /// reactive runtime is single-threaded (UI thread).
+    static INSETS: OnceCell<Signal<EdgeInsets>> = const { OnceCell::new() };
+}
+
+fn insets_signal() -> Signal<EdgeInsets> {
+    INSETS.with(|cell| {
+        *cell.get_or_init(|| Signal::new(EdgeInsets::ZERO))
+    })
+}
+
+/// The reactive safe-area insets signal. Read via `.get()` inside an
+/// effect / derived to subscribe. The value updates whenever the
+/// active backend reports a change (orientation, sheet adaptation,
+/// dynamic island, etc.).
+///
+/// On platforms without a backend-side observer hooked up the value
+/// stays at `EdgeInsets::ZERO` — degrades gracefully.
+pub fn safe_area_insets() -> Signal<EdgeInsets> {
+    insets_signal()
+}
+
+/// Backend entry point: push a new value into the global insets
+/// signal. Called on the UI thread by each platform's observer
+/// (UIView.safeAreaInsetsDidChange, WindowInsets listener,
+/// MutationObserver on the web). Idempotent — Signal compares by
+/// equality.
+pub fn set_safe_area_insets(insets: EdgeInsets) {
+    let sig = insets_signal();
+    if sig.get() != insets {
+        sig.set(insets);
+    }
+}

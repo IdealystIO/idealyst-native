@@ -505,6 +505,23 @@ impl Backend for WebBackend {
         primitives::navigator::create(self, callbacks, control)
     }
 
+    fn navigator_attach_initial(
+        &mut self,
+        navigator: &Self::Node,
+        screen: Self::Node,
+        scope_id: u64,
+        _options: framework_core::primitives::navigator::ScreenOptions,
+    ) {
+        // The framework's local-mode path runs the initial mount
+        // via the microtask in `create_navigator` and never calls
+        // this method directly (the trait default is a no-op).
+        // AAS mode is the opposite: the create-time microtask
+        // bails early on `defer_initial_mount = true`, and this
+        // method is the one that actually mounts the screen,
+        // using the wire-supplied DOM subtree + scope id.
+        primitives::navigator::attach_initial(self, navigator, screen, scope_id)
+    }
+
     fn release_navigator(&mut self, node: &Self::Node) {
         primitives::navigator::release(self, node)
     }

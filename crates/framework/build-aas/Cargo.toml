@@ -1,0 +1,12 @@
+[package]
+name = "build-aas"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Generates and builds the AAS dev-host wrapper for a user project — a Rust binary that runs the project's `app()` against `dev-server::WireRecordingBackend` and serves the wire stream over a WebSocket."
+
+[dependencies]
+anyhow = "1"
+# Reuses manifest parsing + workspace-root discovery so we don't
+# reimplement them. The Manifest schema is the shared contract.
+build-ios = { workspace = true }

@@ -15,6 +15,11 @@
 //! discrete concern. The CLI assembles it next to [`dev-http`]; tests
 //! and tools can drive it directly without pulling in HTTP.
 //!
+//! The same `build_wasm` invocation is reused by [`build_once`] for
+//! callers that want a single build with feature flags but no watch
+//! loop — `idealyst dev --mode aas` uses it to produce the wasm shim
+//! (with `dev-hot-reload` on) that connects to the AAS host.
+//!
 //! Future: when AAS mode is wired up, the cargo-build+exec loop in
 //! `dev-server::watch` and this wasm-pack loop should share a common
 //! "watch then run a command, bump a signal" core — likely a small
@@ -37,6 +42,24 @@ use notify_debouncer_mini::notify::RecursiveMode;
 const WASM_PACK: &str = "wasm-pack";
 const DEBOUNCE_MS: u64 = 150;
 
+/// Options passed to every wasm-pack invocation. Defaults are
+/// equivalent to plain `wasm-pack build --target web --dev`. AAS
+/// mode passes `features = vec!["dev-hot-reload".into()]` so the
+/// resulting wasm connects to the host's WebSocket instead of
+/// rendering the local `app()` tree.
+#[derive(Clone, Debug, Default)]
+pub struct BuildOptions {
+    /// Cargo features to enable. Passed through to cargo via
+    /// `wasm-pack build … -- --features <…>`.
+    pub features: Vec<String>,
+}
+
+/// Run a single wasm-pack build. Useful for callers that want one
+/// build with specific features but don't need the watch loop.
+pub fn build_once(dir: &Path, opts: &BuildOptions) -> Result<()> {
+    build_wasm(dir, opts)
+}
+
 /// Run an initial `wasm-pack` build, then spawn a background thread
 /// that watches the project's `src/` and `Cargo.toml`, rebuilds on
 /// change, and bumps `gen` on success.
@@ -47,14 +70,24 @@ const DEBOUNCE_MS: u64 = 150;
 /// never propagate — a failing build shouldn't tear the dev server
 /// down; the user fixes the code and the next change re-triggers.
 pub fn start(dir: &Path, gen: Arc<AtomicU64>) -> Result<JoinHandle<()>> {
+    start_with(dir, gen, BuildOptions::default())
+}
+
+/// Same as [`start`], with explicit build options. Used by callers
+/// that need to pin cargo features (e.g. `dev-hot-reload` for AAS).
+pub fn start_with(
+    dir: &Path,
+    gen: Arc<AtomicU64>,
+    opts: BuildOptions,
+) -> Result<JoinHandle<()>> {
     eprintln!("[dev-reload] initial build…");
-    build_wasm(dir).context("initial wasm-pack build failed")?;
+    build_wasm(dir, &opts).context("initial wasm-pack build failed")?;
     gen.store(1, Ordering::Relaxed);
 
     let dir_owned = dir.to_path_buf();
     thread::Builder::new()
         .name("idealyst-watch".into())
-        .spawn(move || watch_loop(dir_owned, gen))
+        .spawn(move || watch_loop(dir_owned, gen, opts))
         .context("spawn watch thread")
 }
 
@@ -63,7 +96,7 @@ pub fn start(dir: &Path, gen: Arc<AtomicU64>) -> Result<JoinHandle<()>> {
 /// this thread so events arriving while a build is in flight queue
 /// up naturally on the channel and we collapse them by draining
 /// before the next build.
-fn watch_loop(dir: PathBuf, gen: Arc<AtomicU64>) {
+fn watch_loop(dir: PathBuf, gen: Arc<AtomicU64>, opts: BuildOptions) {
     let (tx, rx) = mpsc::channel();
     let mut debouncer = match new_debouncer(Duration::from_millis(DEBOUNCE_MS), tx) {
         Ok(d) => d,
@@ -98,7 +131,7 @@ fn watch_loop(dir: PathBuf, gen: Arc<AtomicU64>) {
             continue;
         }
         eprintln!("[dev-reload] change detected, rebuilding…");
-        match build_wasm(&dir) {
+        match build_wasm(&dir, &opts) {
             Ok(()) => {
                 let new_gen = gen.fetch_add(1, Ordering::Relaxed) + 1;
                 eprintln!("[dev-reload] rebuilt — gen={new_gen}");
@@ -117,16 +150,21 @@ fn drain<T>(rx: &mpsc::Receiver<T>) {
     while rx.try_recv().is_ok() {}
 }
 
-fn build_wasm(dir: &Path) -> Result<()> {
-    let status = Command::new(WASM_PACK)
-        .args(["build", "--target", "web", "--dev", "--out-dir", "pkg"])
-        .current_dir(dir)
-        .status()
-        .with_context(|| {
-            format!(
-                "failed to spawn `{WASM_PACK}` — install with `cargo install wasm-pack`"
-            )
-        })?;
+fn build_wasm(dir: &Path, opts: &BuildOptions) -> Result<()> {
+    let mut cmd = Command::new(WASM_PACK);
+    cmd.args(["build", "--target", "web", "--dev", "--out-dir", "pkg"]);
+    // `--` separates wasm-pack flags from cargo flags it passes
+    // through. Features go on the cargo side.
+    if !opts.features.is_empty() {
+        cmd.arg("--").arg("--features").arg(opts.features.join(","));
+    }
+    cmd.current_dir(dir);
+
+    let status = cmd.status().with_context(|| {
+        format!(
+            "failed to spawn `{WASM_PACK}` — install with `cargo install wasm-pack`"
+        )
+    })?;
     if !status.success() {
         anyhow::bail!("`wasm-pack build` exited with {status}");
     }

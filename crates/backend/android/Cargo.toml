@@ -7,6 +7,14 @@ license.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Optional AAS-client glue. When enabled, this crate pulls in
+# `dev-client` (native transport) and exposes Rust-level
+# `aas::{attach, drain, detach}` helpers the consuming staticlib
+# crate wires into JNI exports. Without this feature the crate is a
+# plain native backend (zero extra binary cost).
+aas-shell = ["dep:dev-client"]
+
 [dependencies]
 framework-core = { workspace = true }
 # Used by the Graphics primitive to expose the SurfaceView's
@@ -22,3 +30,7 @@ android_logger = "0.13"
 # to convert the Java-side `android.view.Surface` into the native
 # window pointer wgpu expects in `AndroidNdkWindowHandle`.
 ndk-sys = "0.6"
+# AAS-client wire transport + cross-platform run loop. Only pulled
+# in when the `aas-shell` feature is on; native transport gives us
+# `tungstenite` + the `AasShell` worker pattern.
+dev-client = { workspace = true, features = ["native"], optional = true }

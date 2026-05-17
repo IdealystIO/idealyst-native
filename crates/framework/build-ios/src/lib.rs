@@ -79,11 +79,129 @@ pub struct AppMetadata {
     /// spaces. Falls back to title-cased `package.name`.
     pub name: String,
     /// Reverse-DNS bundle identifier (e.g.
-    /// `"ai.truday.idealyst.docs"`). Required; we error out if it's
-    /// missing because shipping anywhere needs one.
-    pub bundle_id: String,
+    /// `"ai.truday.idealyst.docs"`). Required by every platform
+    /// except Roku (which has no equivalent), so we keep it as
+    /// `Option<String>` and let each platform's build/run path
+    /// validate at point of use via [`AppMetadata::require_bundle_id`].
+    /// This way a Roku-only project with no `bundle_id` still
+    /// flows through `idealyst build --roku` without a misleading
+    /// "iOS error" surfacing at CLI parse time.
+    pub bundle_id: Option<String>,
     /// User-visible version string. Falls back to `"0.0.1"`.
     pub version: String,
+    /// Splash-screen settings. Always present — if the user didn't
+    /// declare `[package.metadata.idealyst.app.splash]`, defaults are
+    /// filled in so every project gets a working splash without
+    /// boilerplate. Set `duration_ms = 0` in TOML to skip the splash.
+    pub splash: SplashConfig,
+    /// Platforms this project ships on. Drives the default behavior
+    /// of `idealyst dev` and `idealyst build` when no platform flag
+    /// is passed: every target listed here is launched / built.
+    /// Empty when the user didn't declare any; the CLI errors out
+    /// in that case unless an explicit platform flag was given.
+    pub targets: Vec<Target>,
+}
+
+impl AppMetadata {
+    /// Borrow `bundle_id` or surface a helpful error pointing at
+    /// the missing field. Called by every platform that needs the
+    /// bundle id — iOS, Android, AAS, the dev-mode bonjour service
+    /// name — so the diagnostic lands at the right time (when that
+    /// platform was actually selected) instead of upfront in the
+    /// shared CLI parser.
+    pub fn require_bundle_id(&self) -> anyhow::Result<&str> {
+        self.bundle_id
+            .as_deref()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "missing `[package.metadata.idealyst.app].bundle_id` — \
+                     this platform needs a reverse-DNS bundle identifier \
+                     (e.g. \"com.example.myapp\"). Roku builds don't need it; \
+                     iOS / Android / AAS / dev do."
+                )
+            })
+    }
+}
+
+/// Supported platform targets. Used both as the parsed form of the
+/// `targets` field in `[package.metadata.idealyst.app]` and as the
+/// switch the CLI's `dev` / `build` commands use to pick a
+/// platform-specific code path. Variants are added here as backends
+/// land — `Roku` is on the list because the framework already has
+/// a `backend-roku` crate, even if the dev-loop story isn't wired.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Target {
+    Web,
+    Ios,
+    Android,
+    Roku,
+}
+
+impl Target {
+    /// Parse one of `web | ios | android | roku` (case-insensitive)
+    /// from the `targets = [...]` array. Anything else is an error
+    /// rather than a silent skip — typos in the manifest should be
+    /// noisy.
+    pub fn from_str(s: &str) -> Result<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "web" => Ok(Target::Web),
+            "ios" => Ok(Target::Ios),
+            "android" => Ok(Target::Android),
+            "roku" => Ok(Target::Roku),
+            other => anyhow::bail!(
+                "unknown target {:?}; expected one of: web, ios, android, roku",
+                other
+            ),
+        }
+    }
+
+    /// Stable string form, used by the CLI when echoing what it's
+    /// launching ("[dev] launching web…").
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Target::Web => "web",
+            Target::Ios => "ios",
+            Target::Android => "android",
+            Target::Roku => "roku",
+        }
+    }
+}
+
+impl std::fmt::Display for Target {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Splash-screen rendering config. Eventually this will be derived
+/// from a Rust-authored `#[idealyst::splash]` AST (richer layout,
+/// theme-token references, cross-platform). For now it's a tiny
+/// TOML schema with reasonable defaults — enough to see the splash
+/// pipeline working end-to-end.
+#[derive(Debug, Clone)]
+pub struct SplashConfig {
+    /// Background color hex like `"#1a1a2e"`. Used to fill the
+    /// initial screen before the framework mounts.
+    pub background: String,
+    /// Text shown centered on the splash. Defaults to `app.name`.
+    pub title: String,
+    /// Title text color hex. Defaults to `"#ffffff"`.
+    pub title_color: String,
+    /// How long the splash stays up after process launch, before the
+    /// framework root mounts. `0` disables the splash entirely (mount
+    /// happens immediately, no fade, no delay).
+    pub duration_ms: u32,
+}
+
+impl SplashConfig {
+    fn default_for(app_name: &str) -> Self {
+        Self {
+            background: "#1a1a2e".to_string(),
+            title: app_name.to_string(),
+            title_color: "#ffffff".to_string(),
+            duration_ms: 1500,
+        }
+    }
 }
 
 /// Build the user's project at `project_dir` for iOS. Returns the
@@ -177,6 +295,22 @@ struct RawAppMetadata {
     bundle_id: Option<String>,
     #[serde(default)]
     version: Option<String>,
+    #[serde(default)]
+    splash: Option<RawSplashConfig>,
+    #[serde(default)]
+    targets: Option<Vec<String>>,
+}
+
+#[derive(Default, Deserialize)]
+struct RawSplashConfig {
+    #[serde(default)]
+    background: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    title_color: Option<String>,
+    #[serde(default)]
+    duration_ms: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -206,18 +340,46 @@ pub fn parse_manifest(project_dir: &Path) -> Result<Manifest> {
         .idealyst
         .and_then(|i| i.app)
         .unwrap_or_default();
-    let bundle_id = app_raw
-        .bundle_id
-        .clone()
-        .ok_or_else(|| anyhow::anyhow!(
-            "{}: missing `[package.metadata.idealyst.app].bundle_id` — \
-             iOS builds need a reverse-DNS bundle identifier",
-            path.display(),
-        ))?;
+    // bundle_id is read but not validated here — platforms that
+    // need it (iOS, Android, AAS, dev) call
+    // `manifest.app.require_bundle_id()` so the error is platform-
+    // specific and only fires when that platform is selected. Roku
+    // builds don't need it at all.
+    let bundle_id = app_raw.bundle_id.clone();
+    let app_name = app_raw.name.unwrap_or_else(|| title_case(&name));
+    let splash = match app_raw.splash {
+        Some(s) => SplashConfig {
+            background: s.background.unwrap_or_else(|| "#1a1a2e".to_string()),
+            title: s.title.unwrap_or_else(|| app_name.clone()),
+            title_color: s.title_color.unwrap_or_else(|| "#ffffff".to_string()),
+            duration_ms: s.duration_ms.unwrap_or(1500),
+        },
+        None => SplashConfig::default_for(&app_name),
+    };
+    // Parse target strings into the typed enum. Empty when the
+    // user didn't declare any — the CLI flags the missing
+    // declaration when the user runs `idealyst dev` / `build`
+    // without an explicit platform.
+    let targets = match app_raw.targets {
+        Some(list) => list
+            .iter()
+            .map(|s| Target::from_str(s))
+            .collect::<Result<Vec<_>>>()
+            .with_context(|| {
+                format!(
+                    "{}: invalid value in `[package.metadata.idealyst.app].targets`",
+                    path.display(),
+                )
+            })?,
+        None => Vec::new(),
+    };
+
     let app = AppMetadata {
-        name: app_raw.name.unwrap_or_else(|| title_case(&name)),
+        name: app_name,
         bundle_id,
         version: app_raw.version.unwrap_or_else(|| "0.0.1".to_string()),
+        splash,
+        targets,
     };
 
     Ok(Manifest {
