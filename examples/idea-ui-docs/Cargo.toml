@@ -5,9 +5,41 @@ edition.workspace = true
 license.workspace = true
 description = "Self-referencing documentation app for idea-ui"
 
+# `cdylib` for the wasm target; `rlib` so CLI-generated native
+# wrappers under `target/idealyst/<platform>/` can depend on this
+# crate as a library.
 [lib]
-crate-type = ["rlib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 framework-core = { workspace = true }
 idea-ui = { workspace = true, features = ["docs"] }
+
+# Web-only deps. The cross-platform `app()` tree never references
+# these; the wasm-bindgen entry in `src/web.rs` is gated to wasm32.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = ["console"] }
+console_error_panic_hook = "0.1"
+lol_alloc = "0.4"
+
+# wasm-opt's bundled binaryen rejects bulk-memory ops emitted by
+# recent rustc; the wasm is still LTO'd at link time without the
+# post-pass. Re-enable if/when wasm-pack ships a binaryen with
+# `--enable-bulk-memory` on by default.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+# Idealyst project config — read by `idealyst build`, `idealyst run`,
+# `idealyst dev`. Per-platform projects (ios/, android/, web/) are
+# ephemeral; run `idealyst scaffold <platform>` for a hand-editable
+# copy.
+[package.metadata.idealyst.app]
+name      = "idea-ui Docs"
+bundle_id = "ai.truday.idealyst.idea-ui-docs"
+version   = "0.0.1"
+targets   = ["web"]
+
+[package.metadata.idealyst.app.splash]
+duration_ms = 0

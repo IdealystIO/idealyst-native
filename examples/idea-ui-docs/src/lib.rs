@@ -20,6 +20,8 @@ mod pages;
 mod routes;
 mod shell;
 mod styles;
+#[cfg(target_arch = "wasm32")]
+mod web;
 
 use routes::{
     ACTIONS_ROUTE, FEEDBACK_ROUTE, INPUTS_ROUTE, LAYOUT_ROUTE, OVERLAYS_ROUTE, OVERVIEW_ROUTE,

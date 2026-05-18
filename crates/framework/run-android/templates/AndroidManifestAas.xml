@@ -16,6 +16,11 @@
         android:label="{{APP_NAME}}"
         android:hasCode="true">
         <meta-data android:name="IdealystAppId" android:value="{{APP_ID}}" />
+        <!-- Optional URL override. Empty string means "discover via Bonjour"; -->
+        <!-- the CLI fills this with `ws://127.0.0.1:<port>` for emulator builds -->
+        <!-- after setting up `adb reverse tcp:<port> tcp:<port>` to forward the -->
+        <!-- host's dev-server port into the emulator's loopback. -->
+        <meta-data android:name="IdealystAasUrl" android:value="{{AAS_URL}}" />
         <activity android:name="{{PACKAGE}}.MainActivity"
                   android:exported="true">
             <intent-filter>

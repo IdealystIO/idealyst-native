@@ -59,6 +59,26 @@ impl<B: Backend + 'static> AasShell<B> {
     /// main thread. The worker thread runs the blocking transport
     /// and communicates only over channels.
     pub fn spawn(backend: B, app_id: String) -> Self {
+        Self::spawn_inner(backend, Target::Discover(app_id))
+    }
+
+    /// Same as [`spawn`] but skips Bonjour discovery and connects
+    /// directly to a fixed WebSocket URL. Used for platforms whose
+    /// network stack can't see the host's mDNS broadcasts — most
+    /// commonly the Android Studio emulator, where the CLI sets up
+    /// an `adb reverse` tunnel and passes the post-tunnel URL
+    /// (`ws://127.0.0.1:<port>`) here.
+    ///
+    /// On disconnect the worker reconnects to the same URL — there's
+    /// no rediscovery loop because we never browsed in the first
+    /// place. If the dev-server restarted on a new port, that's a
+    /// configuration mismatch the caller has to detect and re-spawn
+    /// the shell with the updated URL.
+    pub fn spawn_with_url(backend: B, url: String) -> Self {
+        Self::spawn_inner(backend, Target::Url(url))
+    }
+
+    fn spawn_inner(backend: B, target: Target) -> Self {
         let outbound = OutboundSender::new();
         let (inbound_tx, inbound_rx) = mpsc::channel::<DevToApp>();
         let (outbound_tx, outbound_rx) = mpsc::channel::<AppToDev>();
@@ -67,7 +87,7 @@ impl<B: Backend + 'static> AasShell<B> {
         let client = Rc::new(RefCell::new(AasClient::new(backend, outbound.clone())));
 
         std::thread::spawn(move || {
-            ws_worker_loop(app_id, inbound_tx, outbound_rx);
+            ws_worker_loop(target, inbound_tx, outbound_rx);
         });
 
         Self { client, inbound: inbound_rx }
@@ -112,20 +132,39 @@ fn apply_dev_msg<B: Backend>(client: &mut AasClient<B>, msg: DevToApp) {
     }
 }
 
-/// Background-thread worker. Browses Bonjour for the matching
-/// `app_id`, opens the WebSocket, sends a Hello, then pumps frames
-/// between socket and channels. On disconnect it loops back to
+/// How the worker thread should locate the dev-server. `Discover`
+/// is the LAN-friendly default; `Url` is the override the CLI uses
+/// when the platform's network can't see Bonjour (Android emulator).
+enum Target {
+    Discover(String),
+    Url(String),
+}
+
+/// Background-thread worker. Either browses Bonjour for the matching
+/// `app_id` or connects directly to a fixed URL, opens the
+/// WebSocket, sends a Hello, then pumps frames between socket and
+/// channels. On disconnect, the discover path loops back to
 /// `discover_blocking` so a dev-server that restarted on a fresh
-/// port (or moved to a different machine on the same Wi-Fi) is
-/// picked up transparently — no need to relaunch the app.
+/// port is picked up transparently; the url path reconnects to the
+/// same address.
 fn ws_worker_loop(
-    app_id: String,
+    target: Target,
     inbound_tx: mpsc::Sender<DevToApp>,
     outbound_rx: mpsc::Receiver<AppToDev>,
 ) {
-    eprintln!("[aas-shell] worker starting; app_id={:?}", app_id);
+    match &target {
+        Target::Discover(app_id) => {
+            eprintln!("[aas-shell] worker starting; browsing for app_id={:?}", app_id);
+        }
+        Target::Url(url) => {
+            eprintln!("[aas-shell] worker starting; direct url={:?}", url);
+        }
+    }
     loop {
-        let url = discover_blocking(&app_id, Duration::from_secs(3));
+        let url = match &target {
+            Target::Discover(app_id) => discover_blocking(app_id, Duration::from_secs(3)),
+            Target::Url(u) => u.clone(),
+        };
         eprintln!("[aas-shell] connecting to {}", url);
         let (mut ws, _) = match tungstenite::connect(&url) {
             Ok(p) => p,

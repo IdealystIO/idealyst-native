@@ -172,12 +172,13 @@ serde_json = "1"
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::{{Arc, Mutex}};
 
 use framework_core::render;
 use {lib}::app;
 use dev_server::{{
-    serve, spawn_rebuild_loop, NavStateSnapshot, RebuildCommand, RebuildConfig,
-    WireRecordingBackend,
+    serve_with_port_mirror, spawn_rebuild_loop, NavStateSnapshot, RebuildCommand,
+    RebuildConfig, WireRecordingBackend,
 }};
 
 const DEFAULT_ADDR: &str = "{default_addr}";
@@ -188,7 +189,20 @@ const DEFAULT_ADDR: &str = "{default_addr}";
 const APP_ID: &str = "{app_id}";
 
 fn main() -> std::io::Result<()> {{
-    let addr = std::env::args().nth(1).unwrap_or_else(|| DEFAULT_ADDR.to_string());
+    // Bind address resolution order:
+    //   1. The first CLI argument, if any (explicit override).
+    //   2. `IDEALYST_AAS_BIND_PORT` env var (set by `before_exec` on
+    //      self-exec so the new process binds the same port the old
+    //      one had — keeps `adb reverse` tunnels and any hard-coded
+    //      URLs valid across hot reloads).
+    //   3. The default ("0.0.0.0:0" — OS picks an ephemeral port).
+    let addr = if let Some(a) = std::env::args().nth(1) {{
+        a
+    }} else if let Ok(p) = std::env::var("IDEALYST_AAS_BIND_PORT") {{
+        format!("0.0.0.0:{{}}", p)
+    }} else {{
+        DEFAULT_ADDR.to_string()
+    }};
 
     let recorder = WireRecordingBackend::new();
     let backend_rc = Rc::new(RefCell::new(recorder.clone()));
@@ -231,6 +245,47 @@ fn main() -> std::io::Result<()> {{
     let watch_path = PathBuf::from("{user_src}");
     let wrapper_manifest = PathBuf::from("{wrapper_manifest}");
     let nav_mirror = recorder.nav_state_mirror();
+    // `serve_with_port_mirror` writes the actual bound port here
+    // after binding. The `before_exec` hook below reads it and
+    // passes it forward to the next process image as
+    // `IDEALYST_AAS_BIND_PORT`, so the OS reassigns the same port
+    // after the exec. That's what keeps the host's WebSocket URL
+    // stable across rebuilds — any `adb reverse tcp:<port>` tunnel
+    // a CLI set up before the rebuild still resolves correctly.
+    let port_mirror: Arc<Mutex<Option<u16>>> = Arc::new(Mutex::new(None));
+    let port_for_exec = port_mirror.clone();
+
+    // Sentinel-file writer. The CLI parent passes a path via
+    // `IDEALYST_AAS_PORT_FILE` and polls that file to learn our
+    // bound port — more reliable than mDNS browse for the
+    // CLI→host handshake because macOS's mDNSResponder caches
+    // stale entries from previously-killed hosts for several
+    // minutes. mDNS still drives discovery for the *clients* (web
+    // browser, physical Android device), which talk over the LAN.
+    if let Ok(path) = std::env::var("IDEALYST_AAS_PORT_FILE") {{
+        let port_for_file = port_mirror.clone();
+        std::thread::spawn(move || {{
+            // Wait for serve to bind. 50ms polling is plenty —
+            // typical bind latency is sub-ms.
+            for _ in 0..200 {{
+                if let Ok(g) = port_for_file.lock() {{
+                    if let Some(p) = *g {{
+                        if let Err(e) = std::fs::write(&path, p.to_string()) {{
+                            eprintln!(
+                                "[aas-host] could not write port sentinel {{}}: {{}}",
+                                path, e
+                            );
+                        }} else {{
+                            eprintln!("[aas-host] wrote bound port {{}} to {{}}", p, path);
+                        }}
+                        return;
+                    }}
+                }}
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }}
+            eprintln!("[aas-host] timed out waiting for serve to bind; no port sentinel written");
+        }});
+    }}
     spawn_rebuild_loop(RebuildConfig {{
         // The wrapper crate has its own `[workspace]`, so cargo can
         // build it directly via `--manifest-path` without any cwd
@@ -249,28 +304,35 @@ fn main() -> std::io::Result<()> {{
         // events for one save on macOS).
         debounce: std::time::Duration::from_millis(100),
         before_exec: Some(Box::new(move || {{
-            let snapshot = match nav_mirror.lock() {{
-                Ok(g) => g.clone(),
-                Err(_) => return Vec::new(),
-            }};
-            if snapshot.is_empty() {{
-                return Vec::new();
-            }}
-            match serde_json::to_string(&snapshot) {{
-                Ok(json) => {{
-                    eprintln!(
-                        "[aas-host] snapshotting nav state for {{}} navigator(s) before exec",
-                        snapshot.len()
-                    );
-                    vec![("IDEALYST_AAS_NAV_STATE".to_string(), json)]
+            let mut env: Vec<(String, String)> = Vec::new();
+
+            // Pin the bind port for the next process.
+            if let Ok(g) = port_for_exec.lock() {{
+                if let Some(p) = *g {{
+                    env.push(("IDEALYST_AAS_BIND_PORT".to_string(), p.to_string()));
                 }}
-                Err(_) => Vec::new(),
             }}
+
+            // Snapshot per-navigator URL stacks.
+            if let Ok(nav_guard) = nav_mirror.lock() {{
+                let snapshot = nav_guard.clone();
+                if !snapshot.is_empty() {{
+                    if let Ok(json) = serde_json::to_string(&snapshot) {{
+                        eprintln!(
+                            "[aas-host] snapshotting nav state for {{}} navigator(s) before exec",
+                            snapshot.len()
+                        );
+                        env.push(("IDEALYST_AAS_NAV_STATE".to_string(), json));
+                    }}
+                }}
+            }}
+
+            env
         }})),
     }});
 
     eprintln!("[aas-host] starting (advertising app_id={{}} via mDNS)", APP_ID);
-    serve(addr, recorder, APP_ID)
+    serve_with_port_mirror(addr, recorder, APP_ID, port_mirror)
 }}
 "#,
         lib = manifest.lib_name,

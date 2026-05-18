@@ -151,6 +151,32 @@ pub fn greeting_length(n: i32) -> i32 {
     n * 2 + 1
 }
 
+// ----------------------------------------------------------------
+// Phase 2 demo methods (signals + bindings).
+//
+// `count_value` is the identity function used as a text binding's
+// transformer — the BS runtime dispatches it with the current
+// signal value and sets the bound Label's text to the result.
+// (We avoid `format!()` here because the transpiler doesn't lower
+// Rust macros yet; BrightScript auto-converts the integer return
+// to a string when assigned to `Label.text`.)
+//
+// `increment` is the button handler — it reads the count signal,
+// adds 1, and the BindButton command pipes the result back into
+// the same signal, which fires the BindText subscription, which
+// updates the Label.
+// ----------------------------------------------------------------
+
+#[method]
+pub fn count_value(n: i32) -> i32 {
+    n
+}
+
+#[method]
+pub fn increment(n: i32) -> i32 {
+    n + 1
+}
+
 pub fn app() -> Primitive {
     install_theme(Theme);
 

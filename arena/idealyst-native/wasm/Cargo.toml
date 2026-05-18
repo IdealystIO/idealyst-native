@@ -24,7 +24,7 @@ lol_alloc = "0.4"
 version = "0.3"
 features = ["console"]
 
-# wasm-opt flags. Matches `examples/hello-web` so the per-instruction
+# wasm-opt flags. Matches `examples/hello-world` so the per-instruction
 # perf is comparable.
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = ["-Oz", "--strip-debug", "--strip-producers", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]

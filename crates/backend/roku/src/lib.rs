@@ -87,7 +87,9 @@ use framework_core::{
     Backend, Color, StyleRules,
 };
 
-pub use command::{HandlerId, NodeId, RokuCommand, WireColor, WireIconData, WireLength, WireStyle};
+pub use command::{
+    HandlerId, NodeId, RokuCommand, SignalId, WireColor, WireIconData, WireLength, WireStyle,
+};
 
 // ---------------------------------------------------------------------------
 // Build-time snapshot helper

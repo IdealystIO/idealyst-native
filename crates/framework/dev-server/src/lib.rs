@@ -31,7 +31,7 @@ pub mod watch;
 
 use scene_model::SceneModel;
 
-pub use transport::{serve, serve_with_tick};
+pub use transport::{serve, serve_with_port_mirror, serve_with_tick};
 #[cfg(feature = "robot")]
 pub use transport::serve_with_robot_bridge;
 pub use watch::{spawn_rebuild_loop, RebuildCommand, RebuildConfig};
@@ -931,17 +931,29 @@ impl Backend for WireRecordingBackend {
         _on_resize: primitives::graphics::OnResize,
         _on_lost: primitives::graphics::OnLost,
     ) -> Self::Node {
-        // Graphics emits an "unnamed" renderer reference. Apps that
-        // want GPU code to actually run under hot reload need to
-        // either (a) extend the Graphics primitive to carry a
-        // renderer name in user code, or (b) wire a default renderer
-        // registration on the app side. Without one, the surface
-        // mounts (so layout is correct) but no GPU code runs.
+        // Graphics primitives don't work in AAS mode: the wgpu /
+        // raw-window-handle surface lives on the *client*, but the
+        // user's `on_ready` / `on_resize` / `on_lost` closures run
+        // on the *server* — there's no way to ship a window handle
+        // across the wire, and no AAS-side serialization for GPU
+        // call streams. (See `primitives/graphics.rs`'s "renderer
+        // name" indirection — that's the half-built bridge.)
+        //
+        // Render a visible placeholder instead so the user sees the
+        // limitation in-app rather than getting a silent black box.
+        // Emitting plain View + Text means every existing client
+        // backend handles it without changes.
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
-        state.emit(Command::CreateGraphics {
-            id,
-            renderer: "<unnamed>".to_string(),
+        state.emit(Command::CreateView { id });
+        let text_id = Self::mint_node(&mut state);
+        state.emit(Command::CreateText {
+            id: text_id,
+            content: "[Graphics primitive not supported in AAS mode]".to_string(),
+        });
+        state.emit(Command::Insert {
+            parent: id,
+            child: text_id,
         });
         id
     }

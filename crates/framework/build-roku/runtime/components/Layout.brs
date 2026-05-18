@@ -425,6 +425,23 @@ sub layoutApplyFrames()
             bg.width = f.width
             bg.height = f.height
         end if
+        ' Buttons are composite Group + Rectangle + Label. Size both
+        ' inner pieces to the button's full frame so the bg fills
+        ' and the Label centers its text edge-to-edge.
+        if kind = "Button" and f <> invalid then
+            btnBg = m.buttonBgs[key]
+            if btnBg <> invalid then
+                btnBg.translation = [0, 0]
+                btnBg.width = f.width
+                btnBg.height = f.height
+            end if
+            btnLabel = m.buttonLabels[key]
+            if btnLabel <> invalid then
+                btnLabel.translation = [0, 0]
+                btnLabel.width = f.width
+                btnLabel.height = f.height
+            end if
+        end if
     end for
 end sub
 

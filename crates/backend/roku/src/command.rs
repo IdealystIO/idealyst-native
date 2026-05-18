@@ -221,9 +221,56 @@ pub enum RokuCommand {
     ApplyStyle { id: NodeId, style: Box<WireStyle> },
     SetDisabled { id: NodeId, disabled: bool },
 
+    // ---------------- Reactivity ----------------
+    //
+    // Phase 2 wire additions. Signals and bindings let the device
+    // express reactive UI without a host round-trip: a signal lives
+    // entirely in BrightScript, bindings register subscribers, and
+    // button presses execute `#[method]`-transpiled BrightScript on
+    // the device to mutate signals — which fires bound texts/styles.
+    /// Declare a signal in BS-side storage. `initial` is whatever
+    /// the framework's `signal!(...)` was constructed with at
+    /// snapshot time. The BS runtime opens a slot for it and any
+    /// subsequent `BindText` / `BindButton` can reference it by id.
+    CreateSignal {
+        id: SignalId,
+        initial: serde_json::Value,
+    },
+    /// Bind a Text node's `text` field to the result of a method
+    /// called with the listed signals' current values. Fires once
+    /// at bind time to populate the initial text, then on every
+    /// subsequent change to any of `signal_ids`.
+    BindText {
+        node_id: NodeId,
+        signal_ids: Vec<SignalId>,
+        method: String,
+    },
+    /// Bind a Button's press event to a method call. On every
+    /// press: read the input signals in order, dispatch to
+    /// `method`, and (if `output_signal_id` is set) write the
+    /// return value to that signal — which propagates to its
+    /// bound subscribers.
+    ///
+    /// The classic read-modify-write counter pattern uses the
+    /// same signal for input and output: `input_signal_ids:
+    /// [count]`, `method: "increment"`, `output_signal_id:
+    /// Some(count)`.
+    BindButton {
+        button_id: NodeId,
+        input_signal_ids: Vec<SignalId>,
+        method: String,
+        output_signal_id: Option<SignalId>,
+    },
+
     // ---------------- Lifecycle ----------------
     /// First command on a fresh session. The BrightScript client
     /// uses this to clear its node table and mount `root` as the
     /// scene's content.
     Finish { root: NodeId },
 }
+
+/// Identifier for a signal. Minted by the Rust side at snapshot
+/// time; opaque to BrightScript (just an integer key into
+/// `m.signals` and `m.signalSubscribers`).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SignalId(pub u64);

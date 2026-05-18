@@ -9,7 +9,7 @@
 
 use std::rc::Rc;
 
-use framework_core::primitives::overlay::{BackdropMode, OverlayAnchor, ViewportPlacement};
+use framework_core::primitives::overlay::{BackdropMode, ViewportPlacement};
 use framework_core::{signal, ui, Easing, Primitive, PresenceAnim, PresenceState, Signal};
 use idea_ui::{
     body, btn, card, heading, stack, BodyTone, ButtonKind, HeadingKind, IntentTag, StackGap,
@@ -64,7 +64,7 @@ fn modal_demo() -> Primitive {
                 ),
             ) {
                 Overlay(
-                    anchor = OverlayAnchor::Viewport(ViewportPlacement::Center),
+                    placement = ViewportPlacement::Center,
                     backdrop = BackdropMode::Dismiss,
                     on_dismiss = {
                         let oc = on_close.clone();
@@ -118,7 +118,7 @@ fn drawer_demo() -> Primitive {
                 ),
             ) {
                 Overlay(
-                    anchor = OverlayAnchor::Viewport(ViewportPlacement::Right),
+                    placement = ViewportPlacement::Right,
                     backdrop = BackdropMode::Dismiss,
                     on_dismiss = {
                         let oc = on_close.clone();

@@ -59,6 +59,16 @@ pub struct RunOptions {
     /// Whether the Android process runs the user's `app()` locally
     /// or acts as a thin client connected to an AAS dev-host.
     pub mode: RunMode,
+    /// AAS-mode only: the dev-server's WebSocket port on the host
+    /// Mac, learned via mDNS by the CLI before this call. When set,
+    /// we (a) run `adb reverse tcp:<port> tcp:<port>` so the
+    /// emulator's localhost reaches the host's port, and (b) bake
+    /// `ws://127.0.0.1:<port>` into the APK's manifest as
+    /// `IdealystAasUrl`. The Java side prefers the override when
+    /// present and falls back to Bonjour otherwise — that fallback
+    /// is the right shape for physical devices on the same Wi-Fi
+    /// as the dev Mac, which the emulator's QEMU NAT prevents.
+    pub aas_port: Option<u16>,
 }
 
 /// Mirrors `run-ios::RunMode` — same trade-offs (local self-contained
@@ -177,15 +187,24 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
         render(native_bridge_tmpl, &[("PACKAGE", manifest.app.require_bundle_id()?)]),
     )?;
     let manifest_xml = build_dir.join("AndroidManifest.xml");
-    // The AAS manifest carries an extra IdealystAppId meta-data
-    // entry that MainActivity reads at startup to know which Bonjour
-    // service to filter on. Local mode doesn't need it.
+    // The AAS manifest carries an `IdealystAppId` meta-data entry
+    // (Bonjour filter key) plus an optional `IdealystAasUrl` override.
+    // When `aas_port` is set, we bake `ws://127.0.0.1:<port>` so the
+    // emulator skips discovery and connects directly through the
+    // `adb reverse` tunnel set up just before install. Empty string
+    // means "fall through to Bonjour at runtime" — right shape for
+    // physical devices on the same Wi-Fi as the dev Mac.
+    let aas_url = match opts.aas_port {
+        Some(p) => format!("ws://127.0.0.1:{p}"),
+        None => String::new(),
+    };
     fs::write(
         &manifest_xml,
         render(manifest_tmpl, &[
             ("PACKAGE", manifest.app.require_bundle_id()?),
             ("APP_NAME", &xml_escape(&manifest.app.name)),
             ("APP_ID", &xml_escape(manifest.app.require_bundle_id()?)),
+            ("AAS_URL", &xml_escape(&aas_url)),
         ]),
     )?;
 
@@ -228,6 +247,15 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
     // ── 11. Ensure a device is online; boot an emulator if not ───
     let serial = ensure_device(&adb, &sdk, opts.avd.as_deref())?;
     eprintln!("[run-android] using device {serial}");
+
+    // ── 11.5. Optional `adb reverse` so the device's localhost
+    //          reaches the host's dev-server. Only meaningful in
+    //          AAS mode; the same port we bake into manifest
+    //          meta-data as `IdealystAasUrl`. Harmless on physical
+    //          devices because USB ADB supports reverse tunnels too. ─
+    if let Some(port) = opts.aas_port {
+        adb_reverse(&adb, &serial, port)?;
+    }
 
     // ── 12. adb install + launch ────────────────────────────────
     adb_install(&adb, &serial, &signed_apk)?;
@@ -654,6 +682,30 @@ fn adb_install(adb: &Path, serial: &str, apk: &Path) -> Result<()> {
         .with_context(|| format!("spawn {} install", adb.display()))?;
     if !status.success() {
         anyhow::bail!("adb install exited with {status}");
+    }
+    Ok(())
+}
+
+/// Set up a reverse port tunnel: `port` on the device's loopback
+/// forwards to the same port on the host's loopback. Lets an
+/// emulator (whose own network is a QEMU NAT that can't see the
+/// host's LAN) reach the host's dev-server via `ws://127.0.0.1:port`
+/// inside the app.
+///
+/// `adb reverse` also works over USB ADB on physical devices, so
+/// this is safe to run for any connected device — the corresponding
+/// `IdealystAasUrl` we bake into the manifest works in both cases.
+fn adb_reverse(adb: &Path, serial: &str, port: u16) -> Result<()> {
+    let spec = format!("tcp:{port}");
+    eprintln!("[run-android] adb reverse {spec} {spec} on {serial}");
+    let status = Command::new(adb)
+        .args(["-s", serial, "reverse"])
+        .arg(&spec)
+        .arg(&spec)
+        .status()
+        .with_context(|| format!("spawn {} reverse", adb.display()))?;
+    if !status.success() {
+        anyhow::bail!("adb reverse exited with {status}");
     }
     Ok(())
 }

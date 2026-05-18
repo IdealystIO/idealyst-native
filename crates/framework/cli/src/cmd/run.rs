@@ -134,6 +134,13 @@ pub fn run(args: Args) -> anyhow::Result<()> {
                     release: args.release,
                     avd: None,
                     mode,
+                    // `idealyst run android --aas` doesn't pre-browse
+                    // Bonjour the way `idealyst dev --aas --android`
+                    // does. Falls through to the in-app Bonjour path,
+                    // which works for physical devices but not the
+                    // QEMU-NAT emulator. Use `dev --aas --android`
+                    // for the emulator-friendly path.
+                    aas_port: None,
                 },
             )?;
             eprintln!();

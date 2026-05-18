@@ -82,6 +82,42 @@ pub fn attach<'l>(
     }));
 }
 
+/// Same as [`attach`] but skips Bonjour discovery and points the
+/// worker at a fixed WebSocket URL. The CLI uses this in concert
+/// with `adb reverse` to make an Android-Studio-emulator client
+/// reach the host: the emulator can't see the host's mDNS
+/// advertisements (it lives behind QEMU's user-mode NAT), but
+/// `adb reverse tcp:<port> tcp:<port>` makes the host's port
+/// available at `127.0.0.1:<port>` inside the emulator, and that's
+/// what the CLI bakes into Info.plist-style manifest meta-data
+/// (`IdealystAasUrl`) for the Java side to pass here.
+pub fn attach_with_url<'l>(
+    env: &mut JNIEnv<'l>,
+    context: JObject<'l>,
+    root: JObject<'l>,
+    url: &str,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let context_global = env
+            .new_global_ref(&context)
+            .expect("new_global_ref(context)");
+        let root_global = env
+            .new_global_ref(&root)
+            .expect("new_global_ref(root)");
+
+        SHELL.with(|slot| slot.borrow_mut().take());
+
+        let backend = AndroidBackend::new(context_global, root_global);
+        let shell = AasShell::spawn_with_url(backend, url.to_string());
+        SHELL.with(|slot| *slot.borrow_mut() = Some(shell));
+
+        log::info!(
+            "[aas-shell-android] attach_with_url complete, connecting to {:?}",
+            url
+        );
+    }));
+}
+
 /// Drain the worker thread's pending `DevToApp` messages and apply
 /// them through the [`AasClient`](dev_client::AasClient).
 ///

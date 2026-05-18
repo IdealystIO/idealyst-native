@@ -104,17 +104,31 @@ pub fn run(args: Args) -> Result<()> {
     // In AAS mode, start the dev-server once before launching any
     // platform — all clients connect to the same server. The host
     // self-execs on source change so we don't need to restart it.
+    //
+    // We point the host at a sentinel file via
+    // `IDEALYST_AAS_PORT_FILE`; it writes its bound port there so
+    // platform launchers (Android in particular) can pick the
+    // current port up reliably even when stale mDNS records linger.
     if args.aas {
         let host_binary = build_aas_host(&dir)?;
-        let child = Command::new(&host_binary).spawn().with_context(|| {
-            format!(
-                "spawn AAS host {} — build succeeded but the binary won't run",
-                host_binary.display(),
-            )
-        })?;
+        let port_file = aas_port_file(&dir);
+        // Clear any stale value from a previous session before
+        // letting the host overwrite it — keeps reads from picking
+        // up the previous run's number during the bind window.
+        let _ = std::fs::remove_file(&port_file);
+        let child = Command::new(&host_binary)
+            .env("IDEALYST_AAS_PORT_FILE", &port_file)
+            .spawn()
+            .with_context(|| {
+                format!(
+                    "spawn AAS host {} — build succeeded but the binary won't run",
+                    host_binary.display(),
+                )
+            })?;
         eprintln!(
-            "[dev] AAS host running ({}), mDNS-advertised",
-            host_binary.display()
+            "[dev] AAS host running ({}), mDNS-advertised; port file {}",
+            host_binary.display(),
+            port_file.display(),
         );
         children.lock().unwrap().push(child);
     }
@@ -321,9 +335,35 @@ fn launch_android(dir: &Path, args: &Args) -> Result<()> {
     } else {
         run_android::RunMode::Local
     };
+
+    // In AAS mode the Android emulator's QEMU NAT prevents Bonjour
+    // from seeing the host's mDNS broadcasts, so we discover the
+    // host's port *on the Mac side* and pass it through to
+    // `run-android`, which sets up `adb reverse tcp:<port>` and
+    // bakes the override URL into the APK manifest. Physical
+    // devices on the same Wi-Fi go through the same code path
+    // safely — adb reverse over USB works the same way, and the
+    // resulting `ws://127.0.0.1:<port>` URL hits the host's port
+    // either via the USB tunnel (device) or via QEMU's localhost
+    // forwarding (emulator).
+    //
+    // We read the port from the sentinel file the host writes
+    // (path supplied via `IDEALYST_AAS_PORT_FILE` in `run`).
+    // Sidesteps macOS's mDNS cache, which often holds onto stale
+    // entries from previously-killed hosts.
+    let aas_port = if args.aas {
+        read_host_port_file(&aas_port_file(dir), std::time::Duration::from_secs(10))
+    } else {
+        None
+    };
+
     eprintln!(
-        "[dev android] building + launching emulator (mode: {:?})…",
-        mode
+        "[dev android] building + launching emulator (mode: {:?}{}…",
+        mode,
+        match aas_port {
+            Some(p) => format!(", aas_port={p})"),
+            None => ")".to_string(),
+        }
     );
     let artifact = run_android::run(
         dir,
@@ -331,6 +371,7 @@ fn launch_android(dir: &Path, args: &Args) -> Result<()> {
             release: false,
             avd: None,
             mode,
+            aas_port,
         },
     )
     .context("Android dev launch failed")?;
@@ -340,6 +381,63 @@ fn launch_android(dir: &Path, args: &Args) -> Result<()> {
         artifact.apk.display(),
     );
     Ok(())
+}
+
+/// Path the AAS host writes its bound port to. Lives next to the
+/// wrapper crate's Cargo.toml so it's automatically scoped per
+/// project and gets wiped along with `target/idealyst/` when the
+/// user runs `cargo clean`.
+fn aas_port_file(project_dir: &Path) -> PathBuf {
+    // Mirror `build-aas`'s wrapper dir layout. The wrapper itself
+    // lives at `target/idealyst/<project>/aas/host/`; we drop the
+    // sentinel one level up so it's discoverable even if the wrapper
+    // gets regenerated mid-session.
+    // Resolve project name from the project dir's basename — same
+    // shape `build-aas::build` uses to compute the wrapper path.
+    let project_name = project_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("project");
+    // Try to find the workspace root via `build-ios::find_workspace_root`,
+    // which already handles the walk-up. Falls back to `target/` in
+    // the project dir if we somehow can't find a workspace.
+    let workspace_root = build_ios::find_workspace_root(project_dir)
+        .unwrap_or_else(|_| project_dir.to_path_buf());
+    workspace_root
+        .join("target/idealyst")
+        .join(project_name)
+        .join("aas")
+        .join("host-port")
+}
+
+/// Poll the AAS host's port sentinel file. The host writes its
+/// bound port there once `TcpListener::bind` succeeds; we read it
+/// here and feed it to `run-android` for the `adb reverse` tunnel
+/// and the manifest's `IdealystAasUrl` override.
+///
+/// Returns `None` on timeout. Caller falls back to the in-app
+/// Bonjour path, which works for physical devices on the same Wi-Fi
+/// as the dev Mac (just not for the QEMU-NAT emulator).
+fn read_host_port_file(path: &Path, timeout: std::time::Duration) -> Option<u16> {
+    use std::time::Instant;
+    eprintln!("[dev android] reading host port from {}", path.display());
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if let Ok(s) = std::fs::read_to_string(path) {
+            if let Ok(p) = s.trim().parse::<u16>() {
+                eprintln!("[dev android] host bound port = {p}");
+                return Some(p);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    eprintln!(
+        "[dev android] no port written to {} within {:?}; \
+         falling back to in-app Bonjour",
+        path.display(),
+        timeout
+    );
+    None
 }
 
 /// Long-lived mDNS browser thread shared by the web launcher's AAS

@@ -1,0 +1,82 @@
+[
+  {
+    "op": "CreateSignal",
+    "id": 0,
+    "initial": 0
+  },
+
+  {
+    "op": "CreateView",
+    "id": 1
+  },
+  {
+    "op": "ApplyStyle",
+    "id": 1,
+    "style": {
+      "flex_direction": "Column",
+      "gap": 60,
+      "padding_top": 120,
+      "align_items": "Center"
+    }
+  },
+
+  {
+    "op": "CreateText",
+    "id": 2,
+    "content": "0"
+  },
+  {
+    "op": "ApplyStyle",
+    "id": 2,
+    "style": {
+      "color": "#FFCC00",
+      "font_size": 160.0
+    }
+  },
+  {
+    "op": "Insert",
+    "parent": 1,
+    "child": 2
+  },
+
+  {
+    "op": "CreateButton",
+    "id": 3,
+    "label": "+1",
+    "on_click": 0,
+    "leading_icon": null,
+    "trailing_icon": null
+  },
+  {
+    "op": "ApplyStyle",
+    "id": 3,
+    "style": {
+      "min_width": { "kind": "Px", "value": 240 },
+      "min_height": { "kind": "Px", "value": 80 }
+    }
+  },
+  {
+    "op": "Insert",
+    "parent": 1,
+    "child": 3
+  },
+
+  {
+    "op": "BindText",
+    "node_id": 2,
+    "signal_ids": [0],
+    "method": "count_value"
+  },
+  {
+    "op": "BindButton",
+    "button_id": 3,
+    "input_signal_ids": [0],
+    "method": "increment",
+    "output_signal_id": 0
+  },
+
+  {
+    "op": "Finish",
+    "root": 1
+  }
+]

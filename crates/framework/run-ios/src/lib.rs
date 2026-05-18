@@ -18,10 +18,11 @@
 //! - **Local** — the default. The Rust staticlib mounts the user's
 //!   `app()` locally; the iOS process is self-contained.
 //! - **AAS**   — the iOS process is a thin client. The staticlib is
-//!   the framework's `hello-ios-aas` crate (a generic AAS-client
+//!   the framework's `aas-shell-ios` crate (a generic AAS-client
 //!   shell that imports `dev-client + backend-ios` but **not** the
-//!   user's project). It connects to a running AAS dev-host's
-//!   WebSocket and replays wire commands against IosBackend.
+//!   user's project — see `templates/aas-shell-ios/`). It connects
+//!   to a running AAS dev-host's WebSocket and replays wire commands
+//!   against IosBackend.
 //!
 //! AAS mode shares everything except the staticlib + Swift glue.
 //! Bundle ID, app name, splash, simulator orchestration are all
@@ -50,12 +51,18 @@ const BRIDGING_HEADER_LOCAL_H: &str = include_str!("../templates/BridgingHeader.
 const BRIDGING_HEADER_AAS_H: &str = include_str!("../templates/BridgingHeaderAas.h");
 const INFO_PLIST_TMPL: &str = include_str!("../templates/Info.plist.tmpl");
 
-/// Name of the framework crate that hosts the iOS AAS client shell.
-/// Currently lives in `examples/` while we settle the API; the build
-/// path here doesn't care where it sits in the workspace as long as
-/// cargo resolves it by package name.
-const IOS_AAS_SHELL_PACKAGE: &str = "hello-ios-aas";
-const IOS_AAS_SHELL_LIB: &str = "hello_ios_aas";
+/// The AAS-mode iOS staticlib is `backend-ios` itself, built with
+/// its `aas-shell` feature. That feature compiles in the
+/// `#[no_mangle] ios_main` / `ios_teardown` symbols defined in
+/// `backend-ios::aas`, which Xcode's linker pulls into the app
+/// binary to satisfy Swift's `_ios_main` reference.
+///
+/// There used to be a thin wrapper crate (`aas-shell-ios`) whose
+/// only job was to keep those symbols alive via a link anchor —
+/// removed once we confirmed that `backend-ios`'s own staticlib
+/// build already exports them (verified with `nm`).
+const IOS_AAS_SHELL_PACKAGE: &str = "backend-ios";
+const IOS_AAS_SHELL_LIB: &str = "backend_ios";
 
 /// Whether the iOS process runs the user's app locally or acts as a
 /// thin client connected to an AAS dev-host.
@@ -207,12 +214,19 @@ fn build_aas_shell(workspace_root: &Path, target: &str, release: bool) -> Result
     let mut cmd = Command::new("cargo");
     cmd.args(["build", "--manifest-path"])
         .arg(&manifest)
-        .args(["-p", IOS_AAS_SHELL_PACKAGE, "--target", target]);
+        .args([
+            "-p",
+            IOS_AAS_SHELL_PACKAGE,
+            "--features",
+            "aas-shell",
+            "--target",
+            target,
+        ]);
     if release {
         cmd.arg("--release");
     }
     eprintln!(
-        "[run-ios] cargo build -p {IOS_AAS_SHELL_PACKAGE} --target {target}{}",
+        "[run-ios] cargo build -p {IOS_AAS_SHELL_PACKAGE} --features aas-shell --target {target}{}",
         if release { " --release" } else { "" },
     );
     let status = cmd

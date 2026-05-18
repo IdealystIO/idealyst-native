@@ -911,46 +911,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
-name = "hello"
-version = "0.0.1"
-dependencies = [
- "bytemuck",
- "framework-core",
- "icons-lucide",
- "wgpu",
-]
-
-[[package]]
-name = "hello-android"
-version = "0.0.1"
-dependencies = [
- "backend-android",
- "framework-core",
- "hello",
- "jni",
- "log",
-]
-
-[[package]]
-name = "hello-ios"
-version = "0.0.1"
-dependencies = [
- "backend-ios",
- "framework-core",
- "hello",
- "objc2 0.5.2",
- "objc2-foundation 0.2.2",
- "objc2-ui-kit",
-]
-
-[[package]]
-name = "hello-ios-aas"
-version = "0.0.1"
-dependencies = [
- "backend-ios",
-]
-
-[[package]]
 name = "hello-roku"
 version = "0.0.1"
 dependencies = [
@@ -959,18 +919,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "hello-web"
+name = "hello-world"
 version = "0.0.1"
 dependencies = [
  "backend-web",
+ "bytemuck",
  "console_error_panic_hook",
  "dev-client",
  "framework-core",
- "hello",
+ "icons-lucide",
  "js-sys",
  "lol_alloc",
  "wasm-bindgen",
  "web-sys",
+ "wgpu",
 ]
 
 [[package]]
@@ -1031,8 +993,13 @@ dependencies = [
 name = "idea-ui-docs"
 version = "0.0.1"
 dependencies = [
+ "backend-web",
+ "console_error_panic_hook",
  "framework-core",
  "idea-ui",
+ "lol_alloc",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]
@@ -1042,19 +1009,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "idea-ui-docs-web"
-version = "0.0.1"
-dependencies = [
- "backend-web",
- "console_error_panic_hook",
- "framework-core",
- "idea-ui-docs",
- "lol_alloc",
- "wasm-bindgen",
- "web-sys",
 ]
 
 [[package]]

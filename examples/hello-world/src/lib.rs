@@ -1,4 +1,11 @@
-//! The shared sample tree, used by every backend.
+//! Hello-world example — single platform-agnostic crate. [`app`]
+//! returns a `Primitive` tree that runs unchanged on every backend
+//! the framework supports. Per-platform glue (Xcode wrapper, Android
+//! JNI shim, etc.) is materialized by the `idealyst` CLI into
+//! `target/idealyst/<platform>/` at build time.
+//!
+//! The web wrapper still lives inline as [`web`] until the CLI
+//! generates that one too.
 //!
 //! Two-screen demo app. A persistent `Header` at the top renders nav
 //! buttons (Summary / Performance) and a theme toggle; the body
@@ -11,6 +18,9 @@
 //!   surfaceAlt backgrounds. Toggling the theme re-runs every row's
 //!   style effect; useful for eyeballing how the framework handles
 //!   1000-fold style invalidation.
+
+#[cfg(target_arch = "wasm32")]
+mod web;
 
 use framework_core::{
     component, icon, install_theme, set_theme, signal, ui, AlignItems, AnchorTarget, BackdropMode,

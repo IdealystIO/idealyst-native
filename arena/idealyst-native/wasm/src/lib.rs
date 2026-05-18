@@ -13,7 +13,7 @@
 //! Nothing here is novel — it's a slimmed-down version of the
 //! framework's own perf-screen body that exists only to fit the
 //! arena's static-file contract. The screen body is identical in
-//! spirit to `examples/hello`'s PerfRow / PerfList stylesheets so
+//! spirit to `examples/hello-world`'s PerfRow / PerfList stylesheets so
 //! the comparison is apples-to-apples with the other arena
 //! variants (which mirror those same dimensions).
 
@@ -243,7 +243,7 @@ thread_local! {
     /// `match` in the screen body — flipping it from `set_rows()`
     /// causes the framework to drop the previous row scope and
     /// build a fresh tree at the new size, exactly the same path
-    /// the perf screen in `examples/hello` uses.
+    /// the perf screen in `examples/hello-world` uses.
     ///
     /// Initialized in `start()` once we know what value the JS side
     /// wants (from the URL's `?rows=` param). Default is 1000.

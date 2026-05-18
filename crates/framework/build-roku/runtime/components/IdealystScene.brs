@@ -49,8 +49,40 @@ sub init()
     ' size in the layout pass. Layout.brs reads this map to size
     ' each background to its host's computed frame.
     m.backgrounds = createObject("roAssociativeArray")
+    ' Custom-button inner-node lookups. Each `CreateButton` builds a
+    ' Group containing a Rectangle (bg) + Label, and stashes both
+    ' here so Layout.brs can size them and ApplyStyle can recolor.
+    m.buttonBgs = createObject("roAssociativeArray")
+    m.buttonLabels = createObject("roAssociativeArray")
+    ' Set up Reactivity.brs's side tables (signals, subscribers,
+    ' button actions). Lives in the same component-scoped `m` so
+    ' all three scripts share it.
+    reactivityInit()
     materializeFromJson()
 end sub
+
+' Scene-level key dispatcher. Roku invokes this for every remote
+' press while the Scene has focus (which it does by default). On
+' OK ("OK" / "select"), we fire the first registered button action.
+'
+' v0 limitation: with only one button on screen, this works fine.
+' Multi-button screens will need actual focus tracking — a future
+' job for the reactivity engine + a per-button focus signal.
+function onKeyEvent(key as string, press as boolean) as boolean
+    if not press then return false
+    if key = "OK" or key = "select" or key = "play" then
+        for each btnIdStr in m.buttonActions
+            action = m.buttonActions[btnIdStr]
+            args = collectArgs(action.input_signal_ids)
+            result = dispatch_method(action.method, args)
+            if action.output_signal_id <> invalid then
+                signalSet(action.output_signal_id, result)
+            end if
+            return true
+        end for
+    end if
+    return false
+end function
 
 sub materializeFromJson()
     json = ReadAsciiFile("pkg:/data/ui.json")
@@ -93,12 +125,29 @@ sub applyCommand(cmd as object)
         node.font = defaultFont
         registerNode(cmd.id, node, "Text")
     else if op = "CreateButton" then
-        node = createObject("roSGNode", "Button")
-        node.text = cmd.label
-        ' Stash the handler id so the (forthcoming) reactivity pass
-        ' can wire `buttonSelected` → handler dispatch.
-        node.addField("idealystHandler", "integer", false)
-        node.idealystHandler = cmd.on_click
+        ' We don't use Roku's `Button` SGNode — it's a small-menu
+        ' widget that renders as text plus a bullet by default, and
+        ' it needs focus-bitmap assets to look like an actual button
+        ' on a TV. Compose our own: a Group containing a Rectangle
+        ' (background) and a Label (centered text). Layout.brs sizes
+        ' both inner nodes to the Group's allocated frame.
+        node = createObject("roSGNode", "Group")
+        bg = createObject("roSGNode", "Rectangle")
+        bg.color = "0x2563EBFF"
+        node.appendChild(bg)
+        labelNode = createObject("roSGNode", "Label")
+        labelNode.text = cmd.label
+        labelNode.color = "0xFFFFFFFF"
+        labelNode.horizAlign = "center"
+        labelNode.vertAlign = "center"
+        defaultFont = createObject("roSGNode", "Font")
+        defaultFont.size = 40
+        labelNode.font = defaultFont
+        node.appendChild(labelNode)
+        ' Stash references so Layout.brs can size them and ApplyStyle
+        ' can recolor the bg / restyle the label.
+        m.buttonBgs[cmd.id.ToStr()] = bg
+        m.buttonLabels[cmd.id.ToStr()] = labelNode
         registerNode(cmd.id, node, "Button")
     else if op = "CreateScrollView" then
         ' Treat as a flex container for now. Real scrolling needs a
@@ -146,6 +195,20 @@ sub applyCommand(cmd as object)
             m.styles[cmd.id.ToStr()] = cmd.style
             applyNonLayoutStyle(cmd.id, node, cmd.style)
         end if
+    else if op = "CreateSignal" then
+        ' `initial` came through serde_json::Value, so it could be
+        ' a number, bool, string, etc. — pass straight through.
+        signalCreate(cmd.id, cmd.initial)
+    else if op = "BindText" then
+        ' signal_ids comes through as a JSON array; ParseJson
+        ' returns it as an roArray of integers.
+        bindText(cmd.node_id, cmd.signal_ids, cmd.method)
+    else if op = "BindButton" then
+        ' output_signal_id is Option<u64>; in JSON it's either a
+        ' number or null. ParseJson maps null → invalid, so we
+        ' pass it through; bindButton treats invalid as "no
+        ' output signal" (the action is fire-and-forget).
+        bindButton(cmd.button_id, cmd.input_signal_ids, cmd.method, cmd.output_signal_id)
     else if op = "Finish" then
         rootId = cmd.root
         root = getNode(rootId)
@@ -153,6 +216,10 @@ sub applyCommand(cmd as object)
             rootGroup = m.top.findNode("rootGroup")
             if rootGroup <> invalid then rootGroup.appendChild(root)
         end if
+        ' Stash the root id so the reactivity engine can re-run
+        ' layout after every signal mutation (text contents change
+        ' size → frames need recompute).
+        m.rootId = rootId
         runLayout(rootId)
     else
         ? "[idealyst] TODO unhandled op: "; op

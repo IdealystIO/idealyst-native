@@ -13,6 +13,7 @@
 <component name="IdealystScene" extends="Scene">
     <script type="text/brightscript" uri="pkg:/components/IdealystScene.brs" />
     <script type="text/brightscript" uri="pkg:/components/Layout.brs" />
+    <script type="text/brightscript" uri="pkg:/components/Reactivity.brs" />
     <script type="text/brightscript" uri="pkg:/source/methods.brs" />
     <children>
         <!--

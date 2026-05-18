@@ -66,7 +66,23 @@ pub fn serve(
     recorder: WireRecordingBackend,
     app_id: &str,
 ) -> std::io::Result<()> {
-    serve_with_tick(addr, recorder, app_id, || {})
+    serve_with_tick_and_port(addr, recorder, app_id, || {}, None)
+}
+
+/// Same as [`serve`] but writes the bound port into the supplied
+/// `Arc<Mutex<Option<u16>>>` right after `TcpListener::bind`. Used by
+/// the AAS host wrapper to thread the port through the rebuild
+/// loop's `before_exec` hook — that way the next process image
+/// rebinds the same port via `IDEALYST_AAS_BIND_PORT`, so any
+/// `adb reverse` tunnels (and any hard-coded URLs) stay valid
+/// across a hot reload.
+pub fn serve_with_port_mirror(
+    addr: impl ToSocketAddrs,
+    recorder: WireRecordingBackend,
+    app_id: &str,
+    port_mirror: std::sync::Arc<std::sync::Mutex<Option<u16>>>,
+) -> std::io::Result<()> {
+    serve_with_tick_and_port(addr, recorder, app_id, || {}, Some(port_mirror))
 }
 
 /// Like [`serve`] but runs `on_tick` once per loop iteration on the
@@ -82,7 +98,25 @@ pub fn serve_with_tick<F>(
     addr: impl ToSocketAddrs,
     recorder: WireRecordingBackend,
     app_id: &str,
+    on_tick: F,
+) -> std::io::Result<()>
+where
+    F: FnMut(),
+{
+    serve_with_tick_and_port(addr, recorder, app_id, on_tick, None)
+}
+
+/// Internal workhorse. Bundles the optional `port_mirror` (used by
+/// the AAS host to persist its bound port across self-exec) into the
+/// otherwise unchanged `serve_with_tick` body. Public callers go
+/// through [`serve`], [`serve_with_tick`], or
+/// [`serve_with_port_mirror`].
+fn serve_with_tick_and_port<F>(
+    addr: impl ToSocketAddrs,
+    recorder: WireRecordingBackend,
+    app_id: &str,
     mut on_tick: F,
+    port_mirror: Option<std::sync::Arc<std::sync::Mutex<Option<u16>>>>,
 ) -> std::io::Result<()>
 where
     F: FnMut(),
@@ -92,6 +126,11 @@ where
     let bound = listener.local_addr().ok();
     if let Some(a) = bound {
         eprintln!("[dev-server] listening on ws://{}", a);
+        if let Some(m) = &port_mirror {
+            if let Ok(mut g) = m.lock() {
+                *g = Some(a.port());
+            }
+        }
     }
     eprintln!(
         "[dev-server] recorder log starts with {} commands",

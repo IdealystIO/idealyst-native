@@ -39,7 +39,7 @@ pub fn app() -> Primitive {
                     kind    = HeadingKind::H2,
                 )
                 Body(
-                    content = "Scaffolding in progress. Real documentation \
+                    content = "456 PORT-SURVIVES-EXEC test. Scaffolding in progress. Real documentation \
                                routes will land here as the CLI, build, and \
                                splash work stabilize.".to_string(),
                     tone    = BodyTone::Muted,

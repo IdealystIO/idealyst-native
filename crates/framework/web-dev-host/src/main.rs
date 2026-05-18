@@ -27,7 +27,7 @@
 //! ```text
 //! web-dev-host \
 //!     --addr 0.0.0.0:8080 \
-//!     --root examples/hello-web \
+//!     --root examples/hello-world/pkg \
 //!     --app-id hot-reload-demo
 //! ```
 //!
