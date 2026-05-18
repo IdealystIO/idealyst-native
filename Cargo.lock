@@ -1098,10 +1098,12 @@ dependencies = [
  "dev-http",
  "dev-reload",
  "mdns-sd",
+ "object",
  "run-android",
  "run-ios",
  "run-roku",
  "serde",
+ "serde_json",
  "syn",
  "toml",
 ]

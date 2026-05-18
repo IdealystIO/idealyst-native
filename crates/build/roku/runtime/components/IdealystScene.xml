@@ -17,12 +17,17 @@
     <script type="text/brightscript" uri="pkg:/source/methods.brs" />
     <children>
         <!--
-            Plain Group mount-point at the TV safe-zone offset. The
-            user's tree gets composed inside it; sizing + child
-            positioning is computed entirely by Layout.brs (Roku's
-            LayoutGroup behaviors would fight the framework's flex
-            semantics here, so we use a layout-neutral Group).
+            Plain Group mount-point. The user's tree gets composed
+            inside it; sizing + child positioning is computed
+            entirely by Layout.brs (Roku's LayoutGroup behaviors
+            would fight the framework's flex semantics here, so we
+            use a layout-neutral Group). No translation offset —
+            content fills the design canvas edge-to-edge so any
+            Virtualizer overflow lands at the screen boundary
+            where Roku's compositor clips it natively. Authors
+            apply their own safe-zone padding via the root View's
+            style if they want a TV inset.
         -->
-        <Group id="rootGroup" translation="[80, 80]" />
+        <Group id="rootGroup" translation="[0, 0]" />
     </children>
 </component>

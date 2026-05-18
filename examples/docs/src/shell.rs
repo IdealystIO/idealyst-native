@@ -1,0 +1,326 @@
+//! Persistent shell: sidebar (web) / drawer (mobile) with route
+//! links, plus page-level helpers used by every page.
+//!
+//! The drawer navigator handles per-platform behavior automatically
+//! — on web the sidebar pins beside the body, on mobile the same
+//! content slides in as a drawer.
+
+use std::rc::Rc;
+
+use framework_core::{
+    component, ui, DrawerSidebarProps, Primitive, Signal, StyleApplication,
+};
+#[cfg(target_arch = "wasm32")]
+use framework_core::LayoutProps;
+use idea_ui::{
+    body, caption, card, dark_theme, divider, heading, light_theme, set_idea_theme, stack, switch,
+    BodyTone, HeadingKind, StackGap,
+};
+
+use crate::routes::SECTIONS;
+use crate::styles::{
+    CodeBlockSheet, Content, NavLink, PageRoot, Sidebar, SidebarHeader, SidebarSection,
+    SidebarSectionLabel,
+};
+
+// =============================================================================
+// Drawer sidebar — the side panel content. Used by both web (placed
+// into the layout) and mobile (rendered natively in the drawer).
+// =============================================================================
+
+pub fn sidebar_builder(is_dark: Signal<bool>) -> impl Fn(DrawerSidebarProps) -> Primitive + 'static {
+    move |props: DrawerSidebarProps| {
+        let active_route = props.active_route;
+        sidebar(active_route, is_dark)
+    }
+}
+
+fn sidebar(active_route: Signal<&'static str>, is_dark: Signal<bool>) -> Primitive {
+    let container_style = Sidebar();
+    let header_style = SidebarHeader();
+
+    let header_children: Vec<Primitive> = vec![
+        ui! { Heading(content = "Idealyst".to_string(), kind = HeadingKind::H2) },
+        ui! {
+            Body(
+                content = "Cross-platform Rust framework".to_string(),
+                tone = BodyTone::Muted,
+            )
+        },
+    ];
+
+    let mut children: Vec<Primitive> = Vec::new();
+    children.push(ui! { View(style = header_style) { header_children } });
+
+    for s in SECTIONS {
+        children.push(sidebar_section(s, active_route));
+    }
+
+    children.push(ui! { Divider() });
+    children.push(theme_toggle(is_dark));
+
+    ui! {
+        View(style = container_style) { children }
+    }
+}
+
+fn sidebar_section(
+    s: &'static crate::routes::IndexSection,
+    active_route: Signal<&'static str>,
+) -> Primitive {
+    let section_style = SidebarSection();
+    let label_style = SidebarSectionLabel();
+    let label_text = s.label.to_string();
+
+    let mut entries: Vec<Primitive> = Vec::with_capacity(s.items.len() + 1);
+    entries.push(ui! { Text(style = label_style) { label_text } });
+    for entry in s.items {
+        entries.push(nav_link(entry.name, entry.label, active_route));
+    }
+
+    ui! {
+        View(style = section_style) { entries }
+    }
+}
+
+fn theme_toggle(is_dark: Signal<bool>) -> Primitive {
+    let on_dark_change: Rc<dyn Fn(bool)> = Rc::new(move |dark| {
+        is_dark.set(dark);
+        if dark {
+            set_idea_theme(dark_theme());
+        } else {
+            set_idea_theme(light_theme());
+        }
+    });
+
+    let row_children: Vec<Primitive> = vec![
+        ui! { Caption(content = "Theme".to_string()) },
+        ui! {
+            Switch(
+                label = Some("Dark mode".to_string()),
+                value = is_dark,
+                on_change = on_dark_change,
+            )
+        },
+    ];
+
+    ui! {
+        Stack(gap = StackGap::Xs) { row_children }
+    }
+}
+
+// =============================================================================
+// Nav link — anchored to a Route; reactive active-highlight.
+// =============================================================================
+
+fn nav_link(
+    name: &'static str,
+    label: &'static str,
+    active_route: Signal<&'static str>,
+) -> Primitive {
+    let label_text = label.to_string();
+    let route_for_match: &str = name;
+    let style = move || {
+        let variant = if active_route.get() == route_for_match {
+            "on"
+        } else {
+            "off"
+        };
+        StyleApplication::new(NavLink::sheet()).with("active", variant.to_string())
+    };
+
+    use crate::routes::{
+        CLI_ROUTE, COMPONENTS_ROUTE, MACROS_ROUTE, NAVIGATION_ROUTE, OVERVIEW_ROUTE,
+        PLATFORMS_ROUTE, PRIMITIVES_ROUTE, QUICKSTART_ROUTE, REACTIVITY_ROUTE, STYLES_ROUTE,
+        UI_DSL_ROUTE,
+    };
+
+    match name {
+        "overview" => ui! {
+            Link(route = &OVERVIEW_ROUTE, params = ()) {
+                Text(style = style) { label_text }
+            }
+        },
+        "quickstart" => ui! {
+            Link(route = &QUICKSTART_ROUTE, params = ()) {
+                Text(style = style) { label_text }
+            }
+        },
+        "components" => ui! {
+            Link(route = &COMPONENTS_ROUTE, params = ()) {
+                Text(style = style) { label_text }
+            }
+        },
+        "reactivity" => ui! {
+            Link(route = &REACTIVITY_ROUTE, params = ()) {
+                Text(style = style) { label_text }
+            }
+        },
+        "ui-dsl" => ui! {
+            Link(route = &UI_DSL_ROUTE, params = ()) {
+                Text(style = style) { label_text }
+            }
+        },
+        "primitives" => ui! {
+            Link(route = &PRIMITIVES_ROUTE, params = ()) {
+                Text(style = style) { label_text }
+            }
+        },
+        "styles" => ui! {
+            Link(route = &STYLES_ROUTE, params = ()) {
+                Text(style = style) { label_text }
+            }
+        },
+        "navigation" => ui! {
+            Link(route = &NAVIGATION_ROUTE, params = ()) {
+                Text(style = style) { label_text }
+            }
+        },
+        "macros" => ui! {
+            Link(route = &MACROS_ROUTE, params = ()) {
+                Text(style = style) { label_text }
+            }
+        },
+        "cli" => ui! {
+            Link(route = &CLI_ROUTE, params = ()) {
+                Text(style = style) { label_text }
+            }
+        },
+        "platforms" => ui! {
+            Link(route = &PLATFORMS_ROUTE, params = ()) {
+                Text(style = style) { label_text }
+            }
+        },
+        _ => ui! { Text { label_text } },
+    }
+}
+
+// =============================================================================
+// Web layout — places the drawer's pre-built sidebar beside the
+// outlet. Native backends draw their own drawer chrome and ignore
+// this slot.
+// =============================================================================
+
+#[cfg(target_arch = "wasm32")]
+pub fn web_layout() -> impl Fn(LayoutProps) -> Primitive + 'static {
+    move |props: LayoutProps| {
+        let outlet = props.outlet;
+        let sidebar_node = props.sidebar;
+
+        let root_style = PageRoot();
+        let content_style = Content();
+
+        ui! {
+            View(style = root_style) {
+                sidebar_node
+                View(style = content_style) {
+                    outlet
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Per-page surface helpers — exposed as `#[component]`s so pages
+// invoke them through the `ui!` macro (`PageHeader(...)` etc.)
+// rather than as plain function calls.
+// =============================================================================
+
+#[derive(Default)]
+pub struct PageHeaderProps {
+    pub title: String,
+    pub description: String,
+}
+
+/// `PageHeader(title = "...", description = "...")` — the H1 + subtitle
+/// every page opens with.
+#[component]
+pub fn pageheader(props: PageHeaderProps) -> Primitive {
+    let title = props.title;
+    let description = props.description;
+    let children: Vec<Primitive> = vec![
+        ui! { Heading(content = title, kind = HeadingKind::H1) },
+        ui! { Body(content = description, tone = BodyTone::Muted) },
+    ];
+    ui! {
+        Stack(gap = StackGap::Sm) { children }
+    }
+}
+
+#[derive(Default)]
+pub struct SectionProps {
+    pub title: String,
+    pub body: String,
+}
+
+/// `Section(title = "...", body = "...")` — a card with an H2 and a
+/// muted body paragraph. Use [`SectionWithCode`] when the section
+/// also has a code sample, or compose a `Card { ... }` by hand for
+/// richer layouts.
+#[component]
+pub fn section(props: SectionProps) -> Primitive {
+    let title = props.title;
+    let body_text = props.body;
+    ui! {
+        Card {
+            Heading(content = title, kind = HeadingKind::H2)
+            Body(content = body_text, tone = BodyTone::Muted)
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct SectionWithCodeProps {
+    pub title: String,
+    pub body: String,
+    pub code: String,
+}
+
+/// `SectionWithCode(title = "...", body = "...", code = "...")` —
+/// section card with a code block under the prose.
+#[component]
+pub fn sectionwithcode(props: SectionWithCodeProps) -> Primitive {
+    let title = props.title;
+    let body_text = props.body;
+    let code_text = props.code;
+    let code_style = CodeBlockSheet();
+
+    ui! {
+        Card {
+            Heading(content = title, kind = HeadingKind::H2)
+            Body(content = body_text, tone = BodyTone::Muted)
+            View(style = code_style) {
+                Text { code_text }
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct CodeBlockProps {
+    pub code: String,
+}
+
+/// `CodeBlock(code = "...")` — standalone code surface, no card
+/// chrome. Use inside a hand-rolled `Card { ... }` when you need
+/// multiple code blocks or interleaved prose.
+#[component]
+pub fn codeblock(props: CodeBlockProps) -> Primitive {
+    let code_text = props.code;
+    let code_style = CodeBlockSheet();
+    ui! {
+        View(style = code_style) {
+            Text { code_text }
+        }
+    }
+}
+
+// On non-wasm targets the web layout isn't built; suppress the
+// dead-code warning for the PageRoot/Content sheets.
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
+fn _keep_alive_sheets() {
+    let _ = PageRoot::sheet();
+    let _ = Content::sheet();
+}

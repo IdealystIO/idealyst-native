@@ -133,10 +133,13 @@ fn is_hot_symbol(name: &str) -> bool {
 /// Build a [`JumpTable`] mapping the running binary's component
 /// impls to the patch dylib's, then call [`crate::apply_patch`].
 pub fn apply_from_dylib(dylib_path: &Path) -> Result<(), DiffError> {
+    let t_total = std::time::Instant::now();
     // Lazily snapshot bin symbols on first call.
     let bin_path = std::env::current_exe()?;
+    let t_bin = std::time::Instant::now();
     let bin_map = BIN_SYMBOLS
         .get_or_init(|| read_symbol_map(&bin_path).unwrap_or_default());
+    let bin_ms = t_bin.elapsed().as_millis();
     if bin_map.is_empty() {
         return Err(DiffError::Parse(format!(
             "bin {} has no hot symbols (was the host built with framework-core/hot-reload?)",
@@ -146,7 +149,9 @@ pub fn apply_from_dylib(dylib_path: &Path) -> Result<(), DiffError> {
 
     // Always re-read the patch dylib; its content changes per
     // rebuild.
+    let t_dylib = std::time::Instant::now();
     let dylib_map = read_symbol_map(dylib_path)?;
+    let dylib_ms = t_dylib.elapsed().as_millis();
 
     // ASLR reference: any symbol present in BOTH the bin and the
     // patch dylib. `main` is the canonical pick when the patch is
@@ -192,10 +197,20 @@ pub fn apply_from_dylib(dylib_path: &Path) -> Result<(), DiffError> {
         ifunc_count: 0,
     };
 
+    let t_apply = std::time::Instant::now();
+    let result = unsafe { crate::apply_patch(table) }.map_err(DiffError::Patch);
+    let apply_ms = t_apply.elapsed().as_millis();
+    eprintln!(
+        "[framework-hot] apply breakdown: bin_syms {}ms, dylib_syms {}ms, subsecond apply {}ms, total {}ms",
+        bin_ms,
+        dylib_ms,
+        apply_ms,
+        t_total.elapsed().as_millis(),
+    );
     // SAFETY: every entry's source/target is a function address
     // for a `__*_hot_impl` symbol, both compiled from the same
     // source by the same rustc; signatures match by construction.
-    unsafe { crate::apply_patch(table) }.map_err(DiffError::Patch)
+    result
 }
 
 fn pick_main(map: &HashMap<String, u64>) -> Option<u64> {

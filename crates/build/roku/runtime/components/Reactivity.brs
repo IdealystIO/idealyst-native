@@ -329,6 +329,30 @@ end sub
 ' (minus the synthetic row-index slot, which never fires globally
 ' — its values are substituted positionally per row).
 
+' Pre-layout: seed the anchor's style with default width/height
+' so Layout.brs gives the carousel a frame to live in. Author
+' wins — if their stylesheet already set width or height, we
+' don't touch it. Default width is `Percent(100)` so the
+' carousel spans whatever cross-axis space the parent flex
+' column gives it; default height matches the cell size on the
+' scroll axis (vertical lists default to four rows tall,
+' horizontal to one row tall).
+sub seedMarkupListAnchorStyle(cmd as object)
+    anchorStyle = m.styles[cmd.anchor_id.ToStr()]
+    if anchorStyle = invalid then anchorStyle = createObject("roAssociativeArray")
+    if anchorStyle.width = invalid then
+        anchorStyle.width = { kind: "Percent", value: 100 }
+    end if
+    if anchorStyle.height = invalid then
+        if cmd.horizontal = true then
+            anchorStyle.height = { kind: "Px", value: cmd.item_size }
+        else
+            anchorStyle.height = { kind: "Px", value: cmd.item_size * 4 }
+        end if
+    end if
+    m.styles[cmd.anchor_id.ToStr()] = anchorStyle
+end sub
+
 sub createMarkupList(cmd as object)
     anchor = m.nodes[cmd.anchor_id.ToStr()]
     if anchor = invalid then return
@@ -344,66 +368,107 @@ sub createMarkupList(cmd as object)
         listKind = "MarkupList"
     end if
 
-    ' Visible viewport. We patch BOTH width and height into the
-    ' anchor's style so Layout.brs treats it as a fixed-size leaf
-    ' node and reserves space in the parent's flex column. The
-    ' native list lives as a child of the anchor's SGNode but is
-    ' NOT registered in `m.children`, so the framework's flex
-    ' measure ignores it and uses these explicit dimensions
-    ' directly — that's how we keep the list from overlapping
-    ' surrounding siblings.
-    if cmd.horizontal = true then
-        ' Conservative defaults that leave page-side margin so the
-        ' carousel reads as a centered strip with breathing room
-        ' rather than a slab running to the screen edges. Authors
-        ' can later tune via `.with_style(width=...)` on the
-        ' virtualizer.
-        visibleItems = 3
-        cellWidth = 320.0
-        cellHeight = cmd.item_size
-        viewportW = cellWidth * visibleItems
-        viewportH = cellHeight + 20
-    else
-        visibleItems = 4
-        cellWidth = 960.0
-        cellHeight = cmd.item_size
-        viewportW = cellWidth
-        viewportH = cellHeight * visibleItems
+    ' Spacing between cells comes from the row container's `gap`
+    ' style — the same knob that drives the parent flex's gap.
+    cardGap = layoutNum(m.styles[cmd.anchor_id.ToStr()], "gap", 0.0)
+
+    ' Authoritative carousel size: the frame Layout.brs allocated
+    ' to the anchor (after resolving the anchor's style.width /
+    ' style.height against its parent's allocation). The native
+    ' list inherits these dims so it cannot overflow the
+    ' anchor — clipping is implicit.
+    frame = invalid
+    if m.layoutFrames <> invalid then
+        frame = m.layoutFrames[cmd.anchor_id.ToStr()]
     end if
-    anchorStyle = m.styles[cmd.anchor_id.ToStr()]
-    if anchorStyle = invalid then anchorStyle = createObject("roAssociativeArray")
-    anchorStyle.width = { kind: "Px", value: viewportW }
-    anchorStyle.height = { kind: "Px", value: viewportH }
-    anchorStyle.min_width = { kind: "Px", value: viewportW }
-    anchorStyle.min_height = { kind: "Px", value: viewportH }
-    m.styles[cmd.anchor_id.ToStr()] = anchorStyle
+    if frame = invalid then return
+
+    cellHeight = cmd.item_size
+
+    if cmd.horizontal = true then
+        ' 4 visible cells by default. Subtract the inter-cell
+        ' gaps from the anchor width, then divide evenly so the
+        ' row exactly fills the carousel.
+        visibleItems = 4
+        availMain = frame.width - cardGap * (visibleItems - 1)
+        if availMain < cellHeight then availMain = cellHeight
+        cellWidth = availMain / visibleItems
+    else
+        ' Vertical: cell takes the full anchor width. Visible row
+        ' count = how many cellHeight rows fit in the anchor's
+        ' resolved height (accounting for inter-row gaps).
+        cellWidth = frame.width
+        rowPitch = cellHeight + cardGap
+        if rowPitch > 0 then
+            visibleItems = Int((frame.height + cardGap) / rowPitch)
+            if visibleItems < 1 then visibleItems = 1
+        else
+            visibleItems = 1
+        end if
+    end if
+    viewportW = frame.width
+    viewportH = frame.height
 
     list = createObject("roSGNode", listKind)
     list.itemComponentName = cmd.item_component
     list.translation = [0, 0]
     list.drawFocusFeedback = true
+    list.width = viewportW
+    list.height = viewportH
     if cmd.horizontal = true then
-        ' RowList honors `itemSize` for each item's bounding box;
-        ' the corresponding `rowItemSize`/`rowHeights` are per-row
-        ' overrides we set in parallel so RowList's auto-sizer
-        ' doesn't squeeze items into a smaller cell width to fit
-        ' more on screen. Zero spacings + a `numColumns` matching
-        ' the visible item count locks the layout to our intent.
         list.itemSize = [cellWidth, cellHeight]
         list.rowItemSize = [[cellWidth, cellHeight]]
         list.rowHeights = [cellHeight]
-        list.rowItemSpacing = [[0, 0]]
-        list.itemSpacing = [0, 0]
+        list.rowItemSpacing = [[cardGap, 0]]
+        list.itemSpacing = [cardGap, 0]
         list.rowSpacings = [0]
         list.numRows = 1
-        list.numColumns = visibleItems
+        ' Fixed-focus animation: keep the focused cell at a stable
+        ' visual slot and slide the row underneath it. The
+        ' alternative ("floatingFocus") lets focus walk through
+        ' visible cells until it hits the edge, at which point
+        ' Roku scrolls one cell — but it ALSO renders the next
+        ' un-scrolled cell past the row's bounds, which is the
+        ' overflow we keep fighting. fixedFocus avoids that by
+        ' never leaving cells visible outside the viewport.
+        list.vertFocusAnimationStyle = "fixedFocus"
+        list.focusXOffset = [0]
     else
         list.itemSize = [cellWidth, cellHeight]
-        list.itemSpacing = [0, 0]
+        list.itemSpacing = [0, cardGap]
         list.numRows = visibleItems
+        list.vertFocusAnimationStyle = "fixedFocus"
     end if
 
-    anchor.appendChild(list)
+    ' Roku's `Group` SGNode doesn't natively clip children to its
+    ' bounds — `clippingRect` is a `Scene`-only field, so setting
+    ' it on the anchor or the list is a no-op. Try Mask /
+    ' MaskGroup in order of preference; both are documented as
+    ' clipping nodes but availability varies by firmware.
+    container = createObject("roSGNode", "MaskGroup")
+    containerKind = "MaskGroup"
+    if container = invalid then
+        container = createObject("roSGNode", "Mask")
+        containerKind = "Mask"
+    end if
+    if container <> invalid then
+        maskShape = container.createChild("Rectangle")
+        maskShape.color = "0xFFFFFFFF"
+        maskShape.width = viewportW
+        maskShape.height = viewportH
+        ' Mask exposes a `mask` field that names which child is
+        ' the clipping shape; MaskGroup uses the first child
+        ' implicitly. Setting `mask` on a MaskGroup is harmless.
+        if container.hasField("mask") then container.mask = maskShape
+        container.appendChild(list)
+        anchor.appendChild(container)
+        ? "[carousel] clipping via "; containerKind; " (viewport "; viewportW; "x"; viewportH; ")"
+    else
+        ' Neither node type available; fall back to un-clipped
+        ' attachment.
+        anchor.appendChild(list)
+        ? "[carousel] no clipping node available; overflow will be visible"
+    end if
     m.virtualizerLists = orInit(m.virtualizerLists, "roAssociativeArray")
     m.virtualizerLists[cmd.anchor_id.ToStr()] = list
 

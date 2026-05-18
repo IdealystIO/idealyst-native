@@ -5,8 +5,11 @@ pub mod clean;
 pub mod dev;
 pub mod doctor;
 pub mod init;
+pub mod link_patch;
 pub mod new;
+pub mod rebuild_patch;
 pub mod run;
+pub mod rustc_capture;
 pub mod scaffold;
 pub mod sync;
 

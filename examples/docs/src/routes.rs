@@ -1,0 +1,67 @@
+//! Route constants + the sidebar/drawer index.
+//!
+//! Routes are organized into hierarchical sections; the sidebar
+//! renders each section's label as a small header and the entries
+//! beneath it as nav links. On mobile, the same flat list flows
+//! through the DrawerNavigator's drawer entries.
+
+use framework_core::Route;
+
+// Getting Started
+pub const OVERVIEW_ROUTE: Route<()> = Route::<()>::new("overview", "/");
+pub const QUICKSTART_ROUTE: Route<()> = Route::<()>::new("quickstart", "/quickstart");
+
+// Core Concepts
+pub const COMPONENTS_ROUTE: Route<()> = Route::<()>::new("components", "/concepts/components");
+pub const REACTIVITY_ROUTE: Route<()> = Route::<()>::new("reactivity", "/concepts/reactivity");
+pub const UI_DSL_ROUTE: Route<()> = Route::<()>::new("ui-dsl", "/concepts/ui-dsl");
+pub const PRIMITIVES_ROUTE: Route<()> = Route::<()>::new("primitives", "/concepts/primitives");
+pub const STYLES_ROUTE: Route<()> = Route::<()>::new("styles", "/concepts/styles");
+pub const NAVIGATION_ROUTE: Route<()> = Route::<()>::new("navigation", "/concepts/navigation");
+
+// Reference
+pub const MACROS_ROUTE: Route<()> = Route::<()>::new("macros", "/reference/macros");
+pub const CLI_ROUTE: Route<()> = Route::<()>::new("cli", "/reference/cli");
+pub const PLATFORMS_ROUTE: Route<()> = Route::<()>::new("platforms", "/reference/platforms");
+
+pub struct IndexEntry {
+    pub name: &'static str,
+    pub label: &'static str,
+}
+
+pub struct IndexSection {
+    pub label: &'static str,
+    pub items: &'static [IndexEntry],
+}
+
+/// Hierarchical sidebar: each section gets a heading and its
+/// entries appear underneath. Order matters — sidebar renders in
+/// declaration order.
+pub const SECTIONS: &[IndexSection] = &[
+    IndexSection {
+        label: "Getting Started",
+        items: &[
+            IndexEntry { name: "overview", label: "Overview" },
+            IndexEntry { name: "quickstart", label: "Quickstart" },
+        ],
+    },
+    IndexSection {
+        label: "Core Concepts",
+        items: &[
+            IndexEntry { name: "components", label: "Components" },
+            IndexEntry { name: "reactivity", label: "Reactivity" },
+            IndexEntry { name: "ui-dsl", label: "UI DSL" },
+            IndexEntry { name: "primitives", label: "Primitives" },
+            IndexEntry { name: "styles", label: "Styles & Themes" },
+            IndexEntry { name: "navigation", label: "Navigation" },
+        ],
+    },
+    IndexSection {
+        label: "Reference",
+        items: &[
+            IndexEntry { name: "macros", label: "Macros" },
+            IndexEntry { name: "cli", label: "CLI" },
+            IndexEntry { name: "platforms", label: "Platforms" },
+        ],
+    },
+];

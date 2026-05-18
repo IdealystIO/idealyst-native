@@ -105,6 +105,7 @@ fn run(mut config: RebuildConfig) {
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_millis() as u64)
                     .unwrap_or(0);
+                let t_watcher = std::time::Instant::now();
                 eprintln!(
                     "[dev-server] source changed ({} event(s)), rebuilding…",
                     events.len()
@@ -114,7 +115,14 @@ fn run(mut config: RebuildConfig) {
                     // the supplied callback (which is expected to
                     // SIGKILL + respawn the sidecar). Host process
                     // itself does NOT exec.
+                    let t_build_start = std::time::Instant::now();
                     if rebuild_only(&config.command) {
+                        let build_ms = t_build_start.elapsed().as_millis();
+                        let total_ms = t_watcher.elapsed().as_millis();
+                        eprintln!(
+                            "[dev-server] timing: cargo build {}ms (watcher→build-done {}ms)",
+                            build_ms, total_ms
+                        );
                         on_success();
                     }
                 } else {

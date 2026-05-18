@@ -349,18 +349,33 @@ sub applyCommand(cmd as object)
         ' layout after every signal mutation (text contents change
         ' size → frames need recompute).
         m.rootId = rootId
-        ' Drain deferred virtualizer setup. Each queued
-        ' CreateMarkupList patches its anchor's style with the
-        ' viewport's width/height; doing it now (after every
-        ' ApplyStyleStates has run) means the patches survive
-        ' into the layout pass.
+        ' Two-phase virtualizer setup, sandwiching the layout pass:
+        '   1. Pre-layout: patch each pending anchor's style with
+        '      sensible default dims IF the author didn't supply
+        '      them. Width defaults to `Percent(100)` so the
+        '      carousel spans whatever space the parent flex
+        '      column gives it; height defaults to one cell tall
+        '      (horizontal) or four cells tall (vertical).
+        '   2. Layout: every anchor now has dims, so the column
+        '      flex can position them and resolve any percentage
+        '      widths against the parent.
+        '   3. Post-layout: read each anchor's computed frame and
+        '      build the MarkupList/RowList inside, sized to the
+        '      anchor's resolved width × height. That's why the
+        '      list never overflows the anchor's bounding box —
+        '      they share a frame by construction.
+        if m.pendingMarkupLists <> invalid then
+            for each pending in m.pendingMarkupLists
+                seedMarkupListAnchorStyle(pending)
+            end for
+        end if
+        runLayout(rootId)
         if m.pendingMarkupLists <> invalid then
             for each pending in m.pendingMarkupLists
                 createMarkupList(pending)
             end for
             m.pendingMarkupLists = invalid
         end if
-        runLayout(rootId)
     else
         ? "[idealyst] TODO unhandled op: "; op
     end if
@@ -400,15 +415,14 @@ end sub
 
 sub runLayout(rootId as object)
     if rootId = invalid then return
-    ' Match the rootGroup translation in IdealystScene.xml: 80px on
-    ' each side. (Stays in sync via convention; if you change one,
-    ' change the other.)
-    chrome = 80
+    ' Use the full FHD design canvas. rootGroup sits at translation
+    ' [0, 0] (see IdealystScene.xml) so content fills edge-to-edge;
+    ' any Virtualizer overflow lands at the screen boundary where
+    ' Roku's scene compositor clips natively. Authors that want a
+    ' TV safe inset put padding on their root View.
     designW = 1920
     designH = 1080
-    availW = designW - 2 * chrome
-    availH = designH - 2 * chrome
-    layoutComputeFrames(rootId, availW * 1.0, availH * 1.0)
+    layoutComputeFrames(rootId, designW * 1.0, designH * 1.0)
 end sub
 
 ' ----------------------------------------------------------------

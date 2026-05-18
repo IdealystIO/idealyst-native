@@ -77,12 +77,14 @@
 //! signal change involving a patched component re-walks with the new
 //! body, and the updated UI is broadcast to every connected client.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
 use build_ios::Manifest;
+use object::{Object, ObjectSymbol};
 
 use crate::{
     host_binary_name, write_shared_target_config, BuildArtifact, BuildOptions, DEFAULT_BIND_ADDR,
@@ -141,6 +143,12 @@ pub(crate) fn build(
             host_binary.display(),
         );
     }
+
+    // Capture the host's symbol table so subsequent patch links can
+    // resolve undefined references against the exact link-time
+    // addresses the running host bin will end up with. (See
+    // `cli::cmd::link_patch` for how the patch consumes this.)
+    capture_host_symbols(&host_binary, &mode_dir.join("host-symbols.json"))?;
 
     Ok(BuildArtifact {
         host_binary,
@@ -376,6 +384,12 @@ fn generate_host_main(
     // pointer-equality with `libframework_core.dylib` and break
     // every subsequent dlopen.
     let rustflags = rustflags_for_dylib_mode()?;
+    // Absolute path to the running idealyst CLI binary — the host's
+    // watcher invokes `<idealyst> rebuild-patch <mode_dir>` for the
+    // fast rustc-replay path. Baked at host-build time so the host
+    // doesn't depend on PATH resolution at runtime.
+    let idealyst_bin = std::env::current_exe()
+        .context("locate idealyst CLI path for the host's fast-rebuild command")?;
     Ok(format!(
         r#"//! GENERATED dylib-mode AAS host. Single process; statically
 //! links the user crate and `framework-core` (with `hot-reload`
@@ -469,43 +483,23 @@ fn main() -> std::io::Result<()> {{
     let pending_for_watch = pending_patch.clone();
     spawn_rebuild_loop(RebuildConfig {{
         command: RebuildCommand {{
-            program: "cargo".into(),
+            program: "{idealyst_bin}".into(),
             args: vec![
-                "build".into(),
-                // CRITICAL: include BOTH host and patch in the
-                // build target set, matching what the initial
-                // `cargo_build_both` invocation used. Cargo's unit
-                // dependency graph (and the feature union it
-                // resolves for transitive deps like `framework-hot`)
-                // depends on which top-level packages are being
-                // built. Running `cargo build -p patch` alone
-                // computes a different unit graph than the initial
-                // `-p host -p patch`, which causes cargo to consider
-                // framework-hot + framework-core "dirty" and
-                // recompile them with fresh `-C metadata=<hash>`
-                // values. That overwrites `libframework_core.dylib`
-                // with new mangled-symbol hashes the running host
-                // bin doesn't match — and the next patch's calls
-                // into framework_core fail to lazy-bind, taking the
-                // host down.
-                //
-                // Including `-p host` keeps the unit graph identical
-                // across rebuilds. The host's source doesn't change,
-                // so cargo's relink of it is fast (~hundreds of ms)
-                // and the resulting bin matches the running one.
-                "-p".into(),
-                "host".into(),
-                "-p".into(),
-                "patch".into(),
+                "rebuild-patch".into(),
+                "{mode_dir}".into(),
             ],
-            // Critical: rebuild from inside the sub-workspace so
-            // cargo's config discovery picks up the generated
-            // `.cargo/config.toml` and reuses the shared workspace
-            // `target/` dir. Without this the rebuild lands in a
-            // fresh per-mode target and recompiles every dep from
-            // scratch — instead of the ~hundreds-of-ms incremental
-            // rebuild we want.
-            cwd: Some(PathBuf::from("{mode_dir}")),
+            // Fast path: replay the rustc invocations captured by
+            // the initial build's `RUSTC_WRAPPER`, rebuilding just
+            // the user crate (`docs`) and the patch dylib directly
+            // — no cargo invocation, no fingerprint check, no host
+            // bin relink. Steady-state cost is the cost of one
+            // user-crate rustc + one patch-dylib link (~250–400 ms).
+            //
+            // The full `cargo build -p host -p patch` is run by
+            // `idealyst build --aas` initially and seeds the
+            // `.rustc-args/` capture dir; this fast path consumes
+            // that.
+            cwd: None,
         }},
         watch_paths: vec![PathBuf::from("{user_src}")],
         debounce: std::time::Duration::from_millis(100),
@@ -560,6 +554,7 @@ fn main() -> std::io::Result<()> {{
                 g.as_mut().and_then(|g| g.take())
             }};
             if let Some(p) = maybe_path {{
+                let t_tick = std::time::Instant::now();
                 // dyld caches dlopen by absolute path on macOS: a
                 // second dlopen of the SAME path returns the cached
                 // image even if the file on disk was rewritten in
@@ -575,6 +570,7 @@ fn main() -> std::io::Result<()> {{
                     "libpatch-apply-{{}}.dylib",
                     seq
                 ));
+                let t_copy_start = std::time::Instant::now();
                 if let Err(e) = std::fs::copy(&p, &unique) {{
                     eprintln!(
                         "[dylib-host] failed to stage patch as {{}}: {{}}",
@@ -583,14 +579,16 @@ fn main() -> std::io::Result<()> {{
                     );
                     return;
                 }}
-                eprintln!("[dylib-host] applying patch: {{}}", unique.display());
+                let copy_ms = t_copy_start.elapsed().as_millis();
+                let t_apply_start = std::time::Instant::now();
                 match unsafe {{ framework_hot::diff::apply_from_dylib(&unique) }} {{
-                    Ok(_) => eprintln!("[dylib-host] patch applied"),
+                    Ok(_) => {{}}
                     Err(e) => {{
                         eprintln!("[dylib-host] patch apply failed: {{:?}}", e);
                         return;
                     }}
                 }}
+                let apply_ms = t_apply_start.elapsed().as_millis();
 
                 // Apply succeeded — the jump table now points every
                 // `__*_hot_impl` call site at the patch dylib's
@@ -614,6 +612,7 @@ fn main() -> std::io::Result<()> {{
                 // The whole sequence runs on the serve thread (same
                 // thread that owns the reactive runtime) — no
                 // cross-thread footguns.
+                let t_render_start = std::time::Instant::now();
                 {{
                     let mut slot = owner_for_tick.borrow_mut();
                     *slot = None;
@@ -621,6 +620,12 @@ fn main() -> std::io::Result<()> {{
                 recorder_for_tick.reset_log_and_scene();
                 let new_owner = render(backend_for_tick.clone(), app());
                 *owner_for_tick.borrow_mut() = Some(new_owner);
+                let render_ms = t_render_start.elapsed().as_millis();
+                let tick_ms = t_tick.elapsed().as_millis();
+                eprintln!(
+                    "[dylib-host] timing: copy {{}}ms apply {{}}ms render {{}}ms (tick total {{}}ms)",
+                    copy_ms, apply_ms, render_ms, tick_ms
+                );
                 eprintln!(
                     "[dylib-host] re-rendered ({{}} commands)",
                     recorder_for_tick.command_count()
@@ -632,20 +637,35 @@ fn main() -> std::io::Result<()> {{
     )
 }}
 
-/// Locate the patch dylib in the workspace target dir. Cargo names
-/// dylibs `libpatch.dylib` (no hash) for the top-level dylib output
-/// of the patch crate, alongside `libpatch-HASH.dylib` in `deps/`.
-/// We try the un-hashed name first; if absent (some toolchain
-/// versions skip the hard-link), fall back to the hashed copy.
+/// Locate the patch dylib in the workspace target dir. The fast
+/// rebuild path runs rustc directly with `--out-dir target/debug/
+/// deps/`, so the freshly-built dylib lands at `deps/libpatch.
+/// dylib`. (Cargo's normal pipeline ALSO hardlinks it to `target/
+/// debug/libpatch.dylib`, but the direct-rustc replay skips that
+/// step.) Both paths are checked; the most recently-modified one
+/// wins so we don't dispatch a stale build.
 fn patch_path() -> Option<PathBuf> {{
     let target = PathBuf::from(PATCH_WORKSPACE_TARGET);
     let canonical = target.join(PATCH_PROFILE_DIR).join("libpatch.dylib");
-    if canonical.is_file() {{
-        return Some(canonical);
+    let deps_canonical = target
+        .join(PATCH_PROFILE_DIR)
+        .join("deps")
+        .join("libpatch.dylib");
+    let mut newest: Option<(PathBuf, std::time::SystemTime)> = None;
+    for p in [&canonical, &deps_canonical] {{
+        if let Ok(mt) = std::fs::metadata(p).and_then(|m| m.modified()) {{
+            match &newest {{
+                Some((_, t)) if *t >= mt => {{}}
+                _ => newest = Some((p.clone(), mt)),
+            }}
+        }}
     }}
+    if newest.is_some() {{
+        return newest.map(|(p, _)| p);
+    }}
+    // Fallback: scan deps/ for hashed dylibs (older toolchains).
     let deps = target.join(PATCH_PROFILE_DIR).join("deps");
     if let Ok(read) = std::fs::read_dir(&deps) {{
-        let mut newest: Option<(PathBuf, std::time::SystemTime)> = None;
         for entry in read.flatten() {{
             let p = entry.path();
             let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -670,6 +690,7 @@ fn patch_path() -> Option<PathBuf> {{
         mode_dir = mode_dir.display(),
         user_src = user_src.display(),
         rustflags = rustflags,
+        idealyst_bin = idealyst_bin.display(),
     ))
 }
 
@@ -691,6 +712,38 @@ fn cargo_build_both(mode_dir: &Path, release: bool) -> Result<()> {
         cmd.arg("--release");
     }
     cmd.env("RUSTFLAGS", rustflags_for_dylib_mode()?);
+
+    // Wire the rustc-capture wrapper so we save the exact argv cargo
+    // uses for each crate. The watcher's fast-rebuild path replays
+    // these directly (bypassing cargo entirely) for ~3x faster
+    // hot-reload cycles.
+    //
+    // We DON'T clear the capture dir between runs: cargo only
+    // invokes rustc for crates it considers stale, so a re-run
+    // against a warm target dir would leave gaps for the cached
+    // crates. The captures are upsert — each rustc invocation
+    // overwrites its own `.json` if it actually runs, otherwise
+    // the previous capture (from when that crate WAS compiled) is
+    // still valid.
+    let capture_dir = mode_dir.join(".rustc-args");
+    std::fs::create_dir_all(&capture_dir)
+        .with_context(|| format!("create rustc-capture dir {}", capture_dir.display()))?;
+    let cli_binary = std::env::current_exe()
+        .context("locate the idealyst CLI binary path for RUSTC_WRAPPER")?;
+    cmd.env("RUSTC_WRAPPER", &cli_binary);
+    cmd.env("IDEALYST_RUSTC_CAPTURE_DIR", &capture_dir);
+    // Cargo invokes the wrapper as `<wrapper> <real-rustc> <args>`.
+    // Our CLI's `rustc-capture` subcommand consumes that shape — but
+    // since we set RUSTC_WRAPPER to the bare CLI path, cargo's
+    // invocation looks like `<cli-path> <rustc> <args>`. We need
+    // the CLI to dispatch to the `rustc-capture` subcommand on
+    // entry. Easiest: set the env so the CLI knows to behave as a
+    // wrapper, and check that env early in `main`. See
+    // `crates/cli/src/main.rs` — the `IDEALYST_RUSTC_CAPTURE_DIR`
+    // env var IS the signal.
+    //
+    // (Alternative: write a tiny shell-script shim. Avoided to keep
+    // the build self-contained.)
 
     eprintln!(
         "[build-aas:dylib] cargo build -p host -p patch{} (in {})",
@@ -727,6 +780,59 @@ fn cargo_build_patch_only(mode_dir: &Path, release: bool) -> Result<()> {
     Ok(())
 }
 
+/// Parse the host bin's symbol table and write it to
+/// `host-symbols.json` so subsequent patch links can resolve
+/// undefined refs against absolute addresses. The structure
+/// mirrors `cli::cmd::link_patch::HostSymbolTable`; we duplicate
+/// the schema here rather than carve out a shared crate because
+/// both ends are leaf consumers and the shape is two fields.
+fn capture_host_symbols(host_bin: &Path, out: &Path) -> Result<()> {
+    use serde::Serialize;
+    #[derive(Serialize, Default)]
+    struct HostSymbolTable {
+        symbols: HashMap<String, u64>,
+        main_addr: u64,
+    }
+    let data = std::fs::read(host_bin)
+        .with_context(|| format!("read host bin {}", host_bin.display()))?;
+    let obj = object::File::parse(&*data)
+        .with_context(|| format!("parse host bin {}", host_bin.display()))?;
+    let mut table = HostSymbolTable::default();
+    for sym in obj.symbols() {
+        let Ok(name) = sym.name() else { continue };
+        if name.is_empty() {
+            continue;
+        }
+        let addr = sym.address();
+        if addr == 0 {
+            // Undefined / external — useless for resolving stubs.
+            continue;
+        }
+        // Last write wins for duplicate names. Rust rarely emits
+        // exact dupes; if it does they're aliases pointing at the
+        // same address anyway.
+        table.symbols.insert(name.to_string(), addr);
+        if name == "_main" || name == "main" {
+            table.main_addr = addr;
+        }
+    }
+    if table.main_addr == 0 {
+        anyhow::bail!(
+            "host bin {} has no `_main`/`main` symbol — was it linked as a bin crate?",
+            host_bin.display()
+        );
+    }
+    let json = serde_json::to_string_pretty(&table)?;
+    std::fs::write(out, json)
+        .with_context(|| format!("write host-symbols.json to {}", out.display()))?;
+    eprintln!(
+        "[build-aas:dylib] captured {} host symbols → {}",
+        table.symbols.len(),
+        out.display(),
+    );
+    Ok(())
+}
+
 /// RUSTFLAGS used for both the host and the patch builds. Three
 /// concerns are folded in:
 ///
@@ -749,6 +855,20 @@ fn cargo_build_patch_only(mode_dir: &Path, release: bool) -> Result<()> {
 ///    .dylib` (a separate dyld image), not against the host bin's
 ///    private symbols. We pay nothing for the simpler symbol surface.
 fn rustflags_for_dylib_mode() -> Result<String> {
+    let base = rustflags_base()?;
+    // `-Wl,-export_dynamic` exposes the host bin's internal symbols
+    // in its dynamic symbol table. Required for two distinct
+    // reasons:
+    // 1. `dlsym(RTLD_DEFAULT, "main")` inside `subsecond::aslr_reference`
+    //    needs to find the bin's `main`.
+    // 2. Future stub-based patch dylibs need every framework symbol
+    //    they reference to be discoverable via the bin's symbol
+    //    table (we read it from disk during the initial build and
+    //    bake absolute addresses into each patch's trampolines).
+    Ok(format!("{base} -C link-arg=-Wl,-export_dynamic"))
+}
+
+fn rustflags_base() -> Result<String> {
     // Resolve the host's libstd dylib directory.
     //
     // It lives at `<sysroot>/lib/rustlib/<target-triple>/lib/`, NOT
