@@ -226,9 +226,9 @@ impl Backend for AndroidBackend {
         primitives::text::create(self, content)
     }
 
-    fn create_button(&mut self, label: &str, on_click: Rc<dyn Fn()>, _leading_icon: Option<&framework_core::IconData>, _trailing_icon: Option<&framework_core::IconData>) -> Self::Node {
+    fn create_button(&mut self, label: &str, on_click: &framework_core::Action, _leading_icon: Option<&framework_core::IconData>, _trailing_icon: Option<&framework_core::IconData>) -> Self::Node {
         // TODO: render icons as compound drawables on the button
-        primitives::button::create(self, label, on_click)
+        primitives::button::create(self, label, on_click.fire.clone())
     }
 
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {

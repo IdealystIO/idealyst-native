@@ -117,14 +117,12 @@ pub fn emit(input: BindPressInput) -> TokenStream2 {
     };
 
     quote! {
-        ::framework_core::ButtonAction {
-            closure: ::std::rc::Rc::new(move || { #closure_body }),
-            binding: ::std::option::Option::Some(::framework_core::ActionBinding {
-                input_signal_ids: ::std::vec![ #(#id_calls),* ],
-                method: #method_lit,
-                output_signal_id: #output_id,
-                initial_values: ::std::vec![ #(#initial_calls),* ],
-            }),
+        ::framework_core::Action {
+            method: #method_lit,
+            inputs: ::std::vec![ #(#id_calls),* ],
+            initial: ::std::vec![ #(#initial_calls),* ],
+            output: #output_id,
+            fire: ::std::rc::Rc::new(move || { #closure_body }),
         }
     }
 }

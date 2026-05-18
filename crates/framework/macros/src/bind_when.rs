@@ -150,15 +150,15 @@ pub fn emit(input: BindWhenInput) -> TokenStream2 {
     // signals (which are `Copy`) so this composes naturally.
     quote! {
         ::framework_core::Primitive::When {
-            cond:      ::std::boxed::Box::new(move || #func_ident( #(#get_calls),* )),
+            cond: ::framework_core::Derived::<bool> {
+                method:  #method_lit,
+                inputs:  ::std::vec![ #(#id_calls),* ],
+                initial: ::std::vec![ #(#initial_calls),* ],
+                compute: ::std::rc::Rc::new(move || #func_ident( #(#get_calls),* )),
+            },
             then:      ::std::boxed::Box::new(move || #then_expr),
             otherwise: ::std::boxed::Box::new(move || #else_expr),
             style:     ::std::option::Option::None,
-            binding:   ::std::option::Option::Some(::framework_core::WhenBinding {
-                signal_ids:     ::std::vec![ #(#id_calls),* ],
-                cond_method:    #method_lit,
-                initial_values: ::std::vec![ #(#initial_calls),* ],
-            }),
         }
     }
 }

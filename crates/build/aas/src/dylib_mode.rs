@@ -1,37 +1,81 @@
-//! Experimental dlopen-driven AAS host. See [`crate::AasMode::Dylib`]
-//! for the full description and known caveats.
+//! Single-process AAS host with dlopen-driven hot reload.
 //!
 //! ## Architecture
 //!
-//! The dev host is **one** long-lived binary that statically links
-//! the framework and uses `libloading` to `dlopen` the user crate as
-//! a Rust dylib at runtime. On every source change the host rebuilds
-//! ONLY the user crate's dylib (~150 ms cargo invocation, no
-//! framework relink), `dlclose`s the old version, `dlopen`s the new,
-//! drops the previous framework runtime, and re-renders. No process
-//! restart, no IPC, no WebSocket churn.
+//! Two generated crates living in a shared sub-workspace under
+//! `<workspace>/target/idealyst/<project>/aas/dylib-mode/`:
 //!
-//! ## Known issue (as of writing)
+//! - `host/`  — long-lived process. Statically links the user crate
+//!              + `framework-core` (with the `hot-reload` feature on,
+//!              so the `#[component]` macro emits `__*_hot_impl`
+//!              inner fns and wraps every component in
+//!              `framework_hot::call`). Runs `framework_core::render`,
+//!              serves WebSocket clients, and watches the user's
+//!              source for changes.
 //!
-//! `framework-core`'s `thread_local!` statics produce hash-suffixed
-//! `_RUST_STD_INTERNAL_VAL` symbols. When the user-dylib build and
-//! the host build both compile framework-core (via separate cargo
-//! invocations sharing the same target dir), cargo's fingerprint
-//! lands on two compilations whose internal symbol hashes differ.
-//! The dlopen then fails with "symbol not found" because the
-//! user-dylib was linked against one generation's hash but the
-//! actual `libframework_core.dylib` on disk is from another. Fix
-//! ideas (untested):
+//! - `patch/` — built on every source change. A Rust `dylib` whose
+//!              source is just `pub use <user_crate>::*;`. That
+//!              re-export pulls every `__*_hot_impl` function from
+//!              the user crate's recompiled rlib into the dylib's
+//!              symbol table. `framework_hot::diff::apply_from_dylib`
+//!              then diffs the host's symbol table against the patch
+//!              and installs a `subsecond` jump table — subsequent
+//!              calls into any patched component dispatch into the
+//!              dylib's body.
 //!
-//! - Run a single `cargo build` for both bins instead of two
-//!   sequential invocations, so cargo produces one framework-core
-//!   dylib that both bins reference by the same hash.
-//! - Drop the `rlib` crate-type from framework-core entirely so
-//!   there's no ambiguity — every consumer must pick the dylib.
-//!   Breaks workspace consumers that today statically link
-//!   framework-core; would need workspace-wide audit.
-//! - Build std as a dylib via nightly `-Z build-std`; sidesteps the
-//!   issue by making the entire link graph dynamic.
+//! ## Why this works on macOS
+//!
+//! The hard problem with cross-image hot reload on Darwin is the
+//! `thread_local!` storage: TLV (thread-local variable) opcodes
+//! don't resolve uniformly across separately-linked images. Two
+//! options solve it:
+//!
+//! 1. Statically link `framework-core` into the host bin, expose its
+//!    symbols with `-Wl,-export_dynamic`, leave them as undefined
+//!    references in the patch (`-undefined dynamic_lookup`). At
+//!    dlopen, dyld walks the loaded images and resolves the patch's
+//!    framework refs back to the host bin's exports. TLV access
+//!    happens inside the host bin's code, which is consistent — both
+//!    host code paths and patch-originated calls land in the same
+//!    image's TLV opcodes.
+//!
+//! 2. Compile `framework-core` itself as its own `dylib`. The host
+//!    bin's `LC_LOAD_DYLIB` points to `libframework_core.dylib`; the
+//!    patch's `LC_LOAD_DYLIB` points to the same dylib. dyld notices
+//!    the shared dependency and unifies the load — TLV access
+//!    happens inside `libframework_core.dylib`, again consistent.
+//!
+//! We use approach 2. It's the simpler build pipeline: cargo emits
+//! the framework dylib automatically once `crate-type = ["rlib",
+//! "dylib"]` is set, and `-C prefer-dynamic` is enough to tell rustc
+//! to pick the dynamic variant when linking the host and patch.
+//! No bespoke `rustc --emit=obj` + manual `ld` invocation required.
+//!
+//! ## Patch rebuild pipeline
+//!
+//! On file change, the host runs `cargo build -p patch` inside the
+//! sub-workspace. Because `framework-core` (and every other
+//! dependency) is already compiled and cached in the shared target
+//! dir, only the user crate's incremental compilation + the patch's
+//! relink runs. Empirical numbers in the comments around the bottom
+//! of this file.
+//!
+//! After the build succeeds, the host calls
+//! `framework_hot::diff::apply_from_dylib(<patch_dylib_path>)`. That
+//! function:
+//!
+//! - Snapshots the host bin's symbol table on first call (lazy
+//!   `OnceLock`).
+//! - Parses the freshly-built patch dylib's symbol table.
+//! - For every `__*_hot_impl` symbol present in both, records a
+//!   `(host_offset, patch_offset)` pair.
+//! - Constructs a `subsecond::JumpTable` and applies it.
+//!
+//! From that point on, `framework_hot::call(__Counter_hot_impl,
+//! args)` dispatches into the patch dylib's `__Counter_hot_impl`
+//! body. The walker rebuilds reactive scopes lazily — the next
+//! signal change involving a patched component re-walks with the new
+//! body, and the updated UI is broadcast to every connected client.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -40,9 +84,9 @@ use std::process::Command;
 use anyhow::{Context, Result};
 use build_ios::Manifest;
 
-use crate::{BuildArtifact, BuildOptions};
-
-const DEFAULT_BIND_ADDR: &str = "0.0.0.0:0";
+use crate::{
+    host_binary_name, write_shared_target_config, BuildArtifact, BuildOptions, DEFAULT_BIND_ADDR,
+};
 
 pub(crate) fn build(
     project_dir: &Path,
@@ -50,45 +94,46 @@ pub(crate) fn build(
     manifest: &Manifest,
     opts: &BuildOptions,
 ) -> Result<BuildArtifact> {
-    // Generate a SINGLE cargo workspace containing both wrappers as
-    // members. `cargo build` from the parent dir resolves features /
-    // profile across both bins at once, producing exactly ONE
-    // compilation of `framework-core` that both binaries link
-    // against. Per-wrapper `[workspace]` sections (what the previous
-    // sidecar mode uses) cause TWO independent compilations whose
-    // crate disambiguators don't match — fatal here because the
-    // user-dylib's `thread_local!` references resolve at dlopen-time
-    // against the canonical `libframework_core.dylib`, which only
-    // exists once with one hash.
-    let aas_dir = workspace_root
+    let mode_dir = workspace_root
         .join("target/idealyst")
         .join(&manifest.name)
-        .join("aas");
-    let wrapper_dir = aas_dir.join("host");
-    let user_dylib_dir = aas_dir.join("user-dylib");
-    let workspace_target = workspace_root.join("target");
+        .join("aas/dylib-mode");
+    let host_dir = mode_dir.join("host");
+    let patch_dir = mode_dir.join("patch");
 
-    generate_dylib_workspace(&aas_dir, workspace_root)?;
-    generate_user_dylib_wrapper(&user_dylib_dir, project_dir, workspace_root, manifest)?;
-    generate_host_wrapper(
-        &wrapper_dir,
-        &user_dylib_dir,
+    generate_workspace_root(&mode_dir)?;
+    generate_patch_crate(&patch_dir, project_dir, workspace_root, manifest)?;
+    generate_host_crate(
+        &host_dir,
+        &patch_dir,
         project_dir,
         workspace_root,
         manifest,
     )?;
+    write_shared_target_config(&mode_dir, workspace_root)?;
 
-    cargo_build_workspace(&aas_dir, opts.release)?;
+    // Build host + patch in a single cargo invocation. This is
+    // critical: if we ran two separate `cargo build` calls, cargo
+    // could pick different `framework-core` fingerprints for each
+    // (the host's bin doesn't *need* the `dylib` output, while the
+    // patch does, and that crate-type difference would split the
+    // fingerprint). The two artifacts would then disagree on the
+    // monomorphization hashes embedded in their mangled symbol
+    // references, and `dyld` would refuse to load
+    // `libframework_core.dylib` for the host at startup.
+    //
+    // A single `cargo build -p host -p patch` plans one
+    // framework-core compilation that produces both rlib + dylib
+    // and is consumed by both binaries — same hashes, no
+    // mismatch.
+    cargo_build_both(&mode_dir, opts.release)?;
 
     let profile = if opts.release { "release" } else { "debug" };
-    let host_bin_name = format!("{}-aas-host", manifest.name);
-    let user_dylib_name = user_dylib_filename(&manifest.name);
-
-    let host_binary = workspace_target.join(profile).join(&host_bin_name);
-    let user_dylib = workspace_target
+    let workspace_target = workspace_root.join("target");
+    let host_binary = workspace_target
         .join(profile)
-        .join("deps")
-        .join(&user_dylib_name);
+        .join(host_binary_name(&manifest.name));
+    let patch_path = find_patch_dylib(&workspace_target, profile)?;
 
     if !host_binary.is_file() {
         anyhow::bail!(
@@ -96,92 +141,80 @@ pub(crate) fn build(
             host_binary.display(),
         );
     }
-    if !user_dylib.is_file() {
-        anyhow::bail!(
-            "cargo build reported success but user dylib not at {}",
-            user_dylib.display(),
-        );
-    }
 
     Ok(BuildArtifact {
         host_binary,
-        sidecar_binary: user_dylib,
-        wrapper_dir,
-        sidecar_dir: user_dylib_dir,
+        // Naming kept for backwards compat with the CLI's artifact
+        // display logic. The CLI prints both paths.
+        sidecar_binary: patch_path,
+        wrapper_dir: host_dir,
+        sidecar_dir: patch_dir,
     })
 }
 
-/// Generate the *outer* workspace Cargo.toml that ties both the host
-/// wrapper and the user-dylib wrapper into a single cargo build.
-/// Sits at `<workspace>/target/idealyst/<project>/aas/Cargo.toml`
-/// and declares its own `[workspace]` so cargo treats it as a
-/// separate workspace from the main project workspace (which holds
-/// the workspace deps we resolve via path).
-///
-/// Both members MUST omit their own `[workspace]` lines (cargo would
-/// reject nested workspaces). The shared `.cargo/config.toml` lives
-/// at this level too so `prefer-dynamic` + the rustlib `rpath`
-/// apply to both members uniformly.
-fn generate_dylib_workspace(aas_dir: &Path, workspace_root: &Path) -> Result<()> {
-    fs::create_dir_all(aas_dir)
-        .with_context(|| format!("create {}", aas_dir.display()))?;
-    let cargo_toml = r#"# GENERATED. Outer workspace that ties the AAS dylib host and the
-# user-dylib together so a single `cargo build` produces ONE
-# compilation of every shared dep (framework-core etc.) — eliminates
-# the symbol-hash divergence that breaks dlopen.
+// ---------------------------------------------------------------------------
+// Sub-workspace root
+// ---------------------------------------------------------------------------
+
+fn generate_workspace_root(mode_dir: &Path) -> Result<()> {
+    fs::create_dir_all(mode_dir)
+        .with_context(|| format!("create {}", mode_dir.display()))?;
+    let cargo_toml = r#"# GENERATED by `idealyst build aas` (dylib mode). Do not edit —
+# rewritten every build.
+#
+# Sub-workspace that owns the host bin + patch dylib. Both members
+# share dep resolution, so `framework-core`, `wire`, etc. compile
+# once and the patch's symbol references match the host's by
+# mangled hash.
 
 [workspace]
-members = ["host", "user-dylib"]
 resolver = "2"
+members = ["host", "patch"]
 
-# Match the speed-tuned settings the user-dylib needs. Applies to
-# both members through workspace inheritance.
+# Match the parent workspace's profile so the framework_core crate
+# hash is identical in both the host link and the patch link. Any
+# divergence here would cause `dyld` to refuse to resolve the patch's
+# framework symbols against the host's at dlopen time.
 [profile.dev]
 debug = 0
 strip = "debuginfo"
 "#;
-    fs::write(aas_dir.join("Cargo.toml"), cargo_toml)?;
-    write_dylib_cargo_config(aas_dir, workspace_root)?;
+    fs::write(mode_dir.join("Cargo.toml"), cargo_toml)?;
     Ok(())
 }
 
-fn user_dylib_crate_name(project_name: &str) -> String {
-    format!("{project_name}_aas_user")
-}
-
-fn user_dylib_filename(project_name: &str) -> String {
-    let crate_underscored = user_dylib_crate_name(project_name);
-    format!("lib{crate_underscored}.dylib")
-}
-
 // ---------------------------------------------------------------------------
-// User-dylib wrapper generation
+// Patch crate
 // ---------------------------------------------------------------------------
 
-fn generate_user_dylib_wrapper(
-    user_dylib_dir: &Path,
+fn generate_patch_crate(
+    patch_dir: &Path,
     project_dir: &Path,
     workspace_root: &Path,
     manifest: &Manifest,
 ) -> Result<()> {
-    fs::create_dir_all(user_dylib_dir.join("src"))
-        .with_context(|| format!("create {}", user_dylib_dir.display()))?;
+    fs::create_dir_all(patch_dir.join("src"))
+        .with_context(|| format!("create {}", patch_dir.display()))?;
 
-    let crate_name = user_dylib_crate_name(&manifest.name);
     let fcore = workspace_root.join("crates/framework/core");
+    let fhot = workspace_root.join("crates/framework/hot");
+    let user_path = project_dir;
+    let user_name = &manifest.name;
 
-    // Member of the outer aas workspace. Profile + .cargo/config
-    // come from the parent — DO NOT declare them here, otherwise
-    // cargo errors with "[workspace] section in member crate".
+    // `dylib` (not `cdylib`) — preserves Rust ABI and, crucially,
+    // honors `-C prefer-dynamic` for upstream rlib-or-dylib deps.
+    // A `cdylib` would silently statically embed `framework-core`,
+    // defeating the shared-image architecture.
     let cargo_toml = format!(
-        r#"# GENERATED by `idealyst build aas` (Dylib mode).
+        r#"# GENERATED by `idealyst build aas` (dylib mode). Do not edit.
 #
-# Tiny re-export crate that exposes the user's `app()` function as a
-# `#[no_mangle]` entry point in a Rust-ABI dylib. The host dlopens
-# this at startup and on every successful rebuild.
+# Patch dylib: re-exports the user crate so every `__*_hot_impl`
+# inner function the `#[component]` macro emitted ends up in this
+# dylib's symbol table. `framework_hot::diff` diffs the symbols
+# against the running host bin and installs a subsecond jump table.
 
 [package]
-name = "{crate_name}"
+name = "patch"
 version = "0.0.1"
 edition = "2021"
 
@@ -189,89 +222,157 @@ edition = "2021"
 crate-type = ["dylib"]
 
 [dependencies]
-framework-core = {{ path = "{fcore}" }}
+# Match the host's framework dep so the hash, feature set, and code
+# version are identical across the host link and the patch link.
+framework-core = {{ path = "{fcore}", features = ["hot-reload"] }}
+# Pulled in for the `__*_hot_impl` re-exports — that's why we depend
+# on the user crate directly instead of going through the host.
 {user_name} = {{ path = "{user_path}" }}
 "#,
-        crate_name = crate_name,
         fcore = fcore.display(),
-        user_name = manifest.name,
-        user_path = project_dir.display(),
+        user_name = user_name,
+        user_path = user_path.display(),
     );
+    let _ = fhot; // future use if we ever need a direct framework-hot dep here
 
+    // Rust quirk: `pub use foo::*` only re-exports items NAMED `foo::*`,
+    // not private items. `__*_hot_impl` functions are emitted with
+    // `#[doc(hidden)]` but pub-by-default — they re-export cleanly.
+    //
+    // The `#[export_name = "main"]` stub is required by
+    // `subsecond::apply_patch`: it hardcodes a lookup for a `main`
+    // symbol in the patch dylib to use as the ASLR baseline (the
+    // assumption upstream is that hot patches are bins rebuilt with
+    // `--crate-type=bin`; our AAS architecture builds them as
+    // `dylib`s, so we synthesize the symbol here). The function is
+    // never called — subsecond only reads its address.
     let lib_rs = format!(
-        r#"//! GENERATED by `idealyst build aas` (Dylib mode). Re-exports
-//! the user's `{user_name}::app()` as a stable `#[no_mangle]` symbol
-//! the host resolves via libloading.
+        r#"//! GENERATED patch dylib. Re-exports the user crate so its
+//! `__*_hot_impl` component bodies land in this dylib's symbol
+//! table. `framework_hot::diff::apply_from_dylib` reads those
+//! symbols on each rebuild and hot-swaps the host's component impls.
 
-use framework_core::Primitive;
+#[allow(unused_imports)]
+pub use {user_name}::*;
 
+/// Stable ASLR reference symbol — subsecond looks for `main` in the
+/// patch dylib to compute the dlopen'd image's runtime base. We
+/// don't have a real `main` here (this is a `dylib`, not a bin), so
+/// export an empty stub under that name. Never called.
 #[no_mangle]
-pub extern "Rust" fn idealyst_app() -> Primitive {{
-    {user_name}::app()
-}}
+pub extern "C" fn main() {{}}
 "#,
-        user_name = manifest.name,
+        user_name = user_name,
     );
 
-    // Don't write a per-member .cargo/config — the parent
-    // workspace's config applies.
-    fs::write(user_dylib_dir.join("Cargo.toml"), cargo_toml)?;
-    fs::write(user_dylib_dir.join("src/lib.rs"), lib_rs)?;
+    fs::write(patch_dir.join("Cargo.toml"), cargo_toml)?;
+    fs::write(patch_dir.join("src/lib.rs"), lib_rs)?;
     Ok(())
 }
 
 // ---------------------------------------------------------------------------
-// Host wrapper generation
+// Host crate
 // ---------------------------------------------------------------------------
 
-fn generate_host_wrapper(
-    wrapper_dir: &Path,
-    user_dylib_dir: &Path,
+fn generate_host_crate(
+    host_dir: &Path,
+    patch_dir: &Path,
     project_dir: &Path,
     workspace_root: &Path,
     manifest: &Manifest,
 ) -> Result<()> {
-    fs::create_dir_all(wrapper_dir.join("src"))
-        .with_context(|| format!("create {}", wrapper_dir.display()))?;
+    fs::create_dir_all(host_dir.join("src"))
+        .with_context(|| format!("create {}", host_dir.display()))?;
 
-    let wrapper_name = format!("{}-aas-host", manifest.name);
+    let host_name = host_binary_name(&manifest.name);
     let fcore = workspace_root.join("crates/framework/core");
+    let fhot = workspace_root.join("crates/framework/hot");
     let dev_server = workspace_root.join("crates/dev/server");
+    let wire = workspace_root.join("crates/framework/wire");
+    let user_name = &manifest.name;
+    let user_path = project_dir;
 
-    // Member of the outer aas workspace — no per-member [workspace]
-    // or [profile] sections (inherited from the parent).
     let cargo_toml = format!(
-        r#"# GENERATED by `idealyst build aas` (Dylib mode).
+        r#"# GENERATED by `idealyst build aas` (dylib mode). Do not edit.
 #
-# Long-lived AAS dev host that dlopens the user crate's dylib.
+# Host bin: long-lived process that owns the WebSocket server, the
+# framework reactive runtime, and the file watcher. Statically links
+# the user crate so the initial render path doesn't need the patch
+# dylib loaded at all — the patch only kicks in once a source change
+# triggers a rebuild + apply.
+#
+# Package name is just `host` so the build helper can address it
+# with `-p host`. The shipped binary name is the user-friendly
+# `<project>-aas-host` (set via `[[bin]] name = ...`) to match the
+# sidecar-mode naming convention.
 
 [package]
-name = "{wrapper_name}"
+name = "host"
 version = "0.0.1"
 edition = "2021"
 
+[[bin]]
+name = "{host_name}"
+path = "src/main.rs"
+
 [dependencies]
-framework-core = {{ path = "{fcore}" }}
+framework-core = {{ path = "{fcore}", features = ["hot-reload"] }}
+framework-hot = {{ path = "{fhot}", features = ["hot", "diff"] }}
 dev-server = {{ path = "{dev_server}" }}
-libloading = "0.8"
+wire = {{ path = "{wire}" }}
+{user_name} = {{ path = "{user_path}" }}
 serde_json = "1"
 "#,
-        wrapper_name = wrapper_name,
+        host_name = host_name,
         fcore = fcore.display(),
+        fhot = fhot.display(),
         dev_server = dev_server.display(),
+        wire = wire.display(),
+        user_name = user_name,
+        user_path = user_path.display(),
     );
 
-    let workspace_target = workspace_root.join("target");
-    let user_dylib_filename = user_dylib_filename(&manifest.name);
-    let aas_workspace_dir = user_dylib_dir
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("user_dylib_dir has no parent"))?
-        .to_path_buf();
-    let user_dylib_crate = user_dylib_crate_name(&manifest.name);
-    let user_src = project_dir.join("src");
+    let host_main = generate_host_main(
+        manifest,
+        host_dir,
+        patch_dir,
+        project_dir,
+        workspace_root,
+    )?;
 
-    let main_rs = format!(
-        r#"//! GENERATED by `idealyst build aas` (Dylib mode).
+    fs::write(host_dir.join("Cargo.toml"), cargo_toml)?;
+    fs::write(host_dir.join("src/main.rs"), host_main)?;
+    Ok(())
+}
+
+fn generate_host_main(
+    manifest: &Manifest,
+    _host_dir: &Path,
+    patch_dir: &Path,
+    project_dir: &Path,
+    workspace_root: &Path,
+) -> Result<String> {
+    let app_id = manifest.app.require_bundle_id()?;
+    let user_src = project_dir.join("src");
+    let workspace_target = workspace_root.join("target");
+    let mode_dir = patch_dir
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| workspace_target.clone());
+    let mode_workspace_manifest = mode_dir.join("Cargo.toml");
+    // Same RUSTFLAGS the initial build used. The host re-uses these
+    // for every patch rebuild so framework-core's fingerprint stays
+    // constant — divergence would invalidate the running host's
+    // pointer-equality with `libframework_core.dylib` and break
+    // every subsequent dlopen.
+    let rustflags = rustflags_for_dylib_mode()?;
+    Ok(format!(
+        r#"//! GENERATED dylib-mode AAS host. Single process; statically
+//! links the user crate and `framework-core` (with `hot-reload`
+//! on) so the `#[component]` macro emits `__*_hot_impl` bodies.
+//! On file change, builds the patch dylib and asks
+//! `framework_hot::diff::apply_from_dylib` to hot-swap the
+//! components.
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -279,45 +380,25 @@ use std::rc::Rc;
 use std::sync::{{Arc, Mutex}};
 
 use dev_server::{{
-    spawn_rebuild_loop, RebuildCommand, RebuildConfig, WireRecordingBackend,
+    serve_with_tick_and_port, spawn_rebuild_loop, RebuildCommand, RebuildConfig,
+    WireRecordingBackend,
 }};
-use framework_core::{{render, Owner, Primitive}};
+use framework_core::render;
+use {lib}::app;
 
 const DEFAULT_ADDR: &str = "{default_addr}";
+/// mDNS-published app identifier.
 const APP_ID: &str = "{app_id}";
-const USER_DYLIB_PATH: &str = "{user_dylib_path}";
 
-type IdealystAppFn = unsafe extern "Rust" fn() -> Primitive;
-
-struct Generation {{
-    _owner: Owner,
-    _library: libloading::Library,
-}}
-
-fn load_and_render(
-    recorder_rc: &Rc<RefCell<WireRecordingBackend>>,
-) -> std::io::Result<Generation> {{
-    let library = unsafe {{
-        libloading::Library::new(USER_DYLIB_PATH).map_err(|e| {{
-            std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("dlopen({{:?}}): {{}}", USER_DYLIB_PATH, e),
-            )
-        }})?
-    }};
-    let app: libloading::Symbol<IdealystAppFn> = unsafe {{
-        library.get(b"idealyst_app\0").map_err(|e| {{
-            std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("symbol `idealyst_app`: {{}}", e),
-            )
-        }})?
-    }};
-    let tree = unsafe {{ app() }};
-    drop(app);
-    let owner = render(recorder_rc.clone(), tree);
-    Ok(Generation {{ _owner: owner, _library: library }})
-}}
+/// Path to the freshly-built patch dylib. Recomputed lazily on
+/// every rebuild because cargo's fingerprint hash can change with
+/// any source edit that ripples through dep graph metadata.
+const PATCH_PROFILE_DIR: &str = "{profile_dir}";
+const PATCH_WORKSPACE_TARGET: &str = "{workspace_target}";
+/// RUSTFLAGS baked at build time. Every patch rebuild reuses this
+/// so framework-core's compilation fingerprint stays equal to the
+/// one statically linked into this host bin.
+const PATCH_RUSTFLAGS: &str = "{rustflags}";
 
 fn main() -> std::io::Result<()> {{
     let addr = if let Some(a) = std::env::args().nth(1) {{
@@ -328,53 +409,85 @@ fn main() -> std::io::Result<()> {{
         DEFAULT_ADDR.to_string()
     }};
 
-    let recorder = WireRecordingBackend::new();
-    let recorder_rc = Rc::new(RefCell::new(recorder.clone()));
+    // Propagate to child cargo invocations.
+    std::env::set_var("RUSTFLAGS", PATCH_RUSTFLAGS);
 
-    let generation: Rc<RefCell<Option<Generation>>> = Rc::new(RefCell::new(None));
-    match load_and_render(&recorder_rc) {{
-        Ok(g) => {{
-            *generation.borrow_mut() = Some(g);
-            eprintln!("[aas-host] initial dylib loaded + rendered");
-        }}
-        Err(e) => {{
-            eprintln!("[aas-host] initial dlopen failed: {{e}} — host running empty");
+    // Spin up the framework reactive runtime against the recording
+    // backend. The `Owner` returned must outlive the serve loop —
+    // dropping it tears down every scope and signal the walker
+    // created. We mem::forget it for the lifetime of the process.
+    let recorder = WireRecordingBackend::new();
+    let backend_rc = Rc::new(RefCell::new(recorder.clone()));
+    let owner = render(backend_rc, app());
+    std::mem::forget(owner);
+
+    // Pending-patch slot: file-watch thread drops a patch dylib path
+    // here on every successful rebuild; the serve loop's per-tick
+    // callback picks it up and calls `apply_from_dylib`.
+    //
+    // `apply_from_dylib` ultimately calls `subsecond::apply_patch`,
+    // which dlopens the patch dylib + rewrites the global jump
+    // table. We deliberately do it on the serve-loop thread (same
+    // one that owns the framework runtime) — that's the safest place
+    // to mutate runtime state, and the call is fast enough (~ms)
+    // not to stutter the broadcast loop.
+    let pending_patch: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
+
+    // Initial patch apply — the patch dylib was built alongside the
+    // host so its `__*_hot_impl` symbols match what the host bin
+    // statically linked. Pushing it through `apply_from_dylib`
+    // populates `subsecond`'s base address map (the `aslr_reference`
+    // baseline) so subsequent rebuild-applies have a valid diff to
+    // compute against.
+    let initial_patch = patch_path();
+    if let Some(p) = &initial_patch {{
+        eprintln!("[dylib-host] initial patch: {{}}", p.display());
+        match unsafe {{ framework_hot::diff::apply_from_dylib(p) }} {{
+            Ok(_) => eprintln!("[dylib-host] initial jump-table installed"),
+            Err(e) => eprintln!("[dylib-host] initial apply failed: {{:?}} (ok to ignore; hot-reload still active)", e),
         }}
     }}
 
-    let reload_signal: Arc<Mutex<Option<()>>> = Arc::new(Mutex::new(None));
-    let reload_for_watcher = reload_signal.clone();
-    let aas_workspace_dir = PathBuf::from("{aas_workspace_dir}");
-    let user_src = PathBuf::from("{user_src}");
+    // File watcher → cargo build patch → drop the new dylib path
+    // into `pending_patch`. The serve-loop tick picks it up on the
+    // next iteration.
+    let pending_for_watch = pending_patch.clone();
     spawn_rebuild_loop(RebuildConfig {{
-        // Drive the watcher's cargo from inside the OUTER aas
-        // workspace directory. Cargo's config-file discovery walks
-        // upward from cwd; without `cwd` set here, cargo would miss
-        // `aas/.cargo/config.toml` (prefer-dynamic + rpath) AND end
-        // up using a different target-dir than the initial build —
-        // either of which forces a full from-scratch recompile every
-        // edit. `-p {user_dylib_crate}` narrows the build to just
-        // the user-dylib member; the host bin stays up.
         command: RebuildCommand {{
             program: "cargo".into(),
             args: vec![
                 "build".into(),
                 "-p".into(),
-                "{user_dylib_crate}".into(),
+                "patch".into(),
             ],
-            cwd: Some(aas_workspace_dir),
+            // Critical: rebuild from inside the sub-workspace so
+            // cargo's config discovery picks up the generated
+            // `.cargo/config.toml` and reuses the shared workspace
+            // `target/` dir. Without this the rebuild lands in a
+            // fresh per-mode target and recompiles every dep from
+            // scratch — instead of the ~hundreds-of-ms incremental
+            // rebuild we want.
+            cwd: Some(PathBuf::from("{mode_dir}")),
         }},
-        watch_paths: vec![user_src],
+        watch_paths: vec![PathBuf::from("{user_src}")],
         debounce: std::time::Duration::from_millis(100),
         before_exec: None,
         on_success: Some(Box::new(move || {{
-            if let Ok(mut g) = reload_for_watcher.lock() {{
-                *g = Some(());
+            if let Some(p) = patch_path() {{
+                eprintln!("[dylib-host] new patch ready → {{}}", p.display());
+                if let Ok(mut g) = pending_for_watch.lock() {{
+                    *g = Some(p);
+                }}
+            }} else {{
+                eprintln!("[dylib-host] patch build succeeded but dylib not found");
             }}
         }})),
     }});
 
     let port_mirror: Arc<Mutex<Option<u16>>> = Arc::new(Mutex::new(None));
+
+    // Sentinel-file writer for the CLI parent (same protocol as the
+    // sidecar host).
     if let Ok(path) = std::env::var("IDEALYST_AAS_PORT_FILE") {{
         let port_for_file = port_mirror.clone();
         std::thread::spawn(move || {{
@@ -390,35 +503,26 @@ fn main() -> std::io::Result<()> {{
         }});
     }}
 
-    eprintln!("[aas-host] starting (advertising app_id={{}} via mDNS)", APP_ID);
-
-    let generation_for_tick = generation.clone();
-    let recorder_for_tick = recorder_rc.clone();
-    dev_server::transport::serve_with_tick_and_port(
+    eprintln!("[dylib-host] starting (advertising app_id={{}} via mDNS)", APP_ID);
+    let pending_for_tick = pending_patch.clone();
+    serve_with_tick_and_port(
         addr,
         recorder,
         APP_ID,
         move || {{
-            let pending = if let Ok(mut g) = reload_signal.lock() {{
-                g.take().is_some()
-            }} else {{
-                false
+            // Drain the pending-patch slot. Re-take under the lock so
+            // a watcher firing again mid-apply doesn't lose its
+            // update — the lock is held briefly and the actual
+            // dlopen/diff happens after release.
+            let maybe_path = {{
+                let mut g = pending_for_tick.lock().ok();
+                g.as_mut().and_then(|g| g.take())
             }};
-            if !pending {{
-                return;
-            }}
-            eprintln!("[aas-host] reload triggered — swapping dylib");
-            {{
-                let mut gen_slot = generation_for_tick.borrow_mut();
-                *gen_slot = None;
-            }}
-            match load_and_render(&recorder_for_tick) {{
-                Ok(g) => {{
-                    *generation_for_tick.borrow_mut() = Some(g);
-                    eprintln!("[aas-host] reload OK");
-                }}
-                Err(e) => {{
-                    eprintln!("[aas-host] reload dlopen failed: {{e}}");
+            if let Some(p) = maybe_path {{
+                eprintln!("[dylib-host] applying patch: {{}}", p.display());
+                match unsafe {{ framework_hot::diff::apply_from_dylib(&p) }} {{
+                    Ok(_) => eprintln!("[dylib-host] patch applied"),
+                    Err(e) => eprintln!("[dylib-host] patch apply failed: {{:?}}", e),
                 }}
             }}
         }},
@@ -426,88 +530,71 @@ fn main() -> std::io::Result<()> {{
         None,
     )
 }}
+
+/// Locate the patch dylib in the workspace target dir. Cargo names
+/// dylibs `libpatch.dylib` (no hash) for the top-level dylib output
+/// of the patch crate, alongside `libpatch-HASH.dylib` in `deps/`.
+/// We try the un-hashed name first; if absent (some toolchain
+/// versions skip the hard-link), fall back to the hashed copy.
+fn patch_path() -> Option<PathBuf> {{
+    let target = PathBuf::from(PATCH_WORKSPACE_TARGET);
+    let canonical = target.join(PATCH_PROFILE_DIR).join("libpatch.dylib");
+    if canonical.is_file() {{
+        return Some(canonical);
+    }}
+    let deps = target.join(PATCH_PROFILE_DIR).join("deps");
+    if let Ok(read) = std::fs::read_dir(&deps) {{
+        let mut newest: Option<(PathBuf, std::time::SystemTime)> = None;
+        for entry in read.flatten() {{
+            let p = entry.path();
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name.starts_with("libpatch-") && name.ends_with(".dylib") {{
+                let mt = entry.metadata().and_then(|m| m.modified()).ok()?;
+                match &newest {{
+                    Some((_, t)) if *t >= mt => {{}}
+                    _ => newest = Some((p, mt)),
+                }}
+            }}
+        }}
+        return newest.map(|(p, _)| p);
+    }}
+    None
+}}
 "#,
+        lib = manifest.lib_name,
         default_addr = DEFAULT_BIND_ADDR,
-        app_id = manifest.app.require_bundle_id()?,
-        user_dylib_path = workspace_target.join("debug/deps").join(&user_dylib_filename).display(),
-        aas_workspace_dir = aas_workspace_dir.display(),
-        user_dylib_crate = user_dylib_crate,
+        app_id = app_id,
+        profile_dir = "debug",
+        workspace_target = workspace_target.display(),
+        mode_dir = mode_dir.display(),
         user_src = user_src.display(),
-    );
-
-    // No per-member .cargo/config — parent workspace's applies.
-    fs::write(wrapper_dir.join("Cargo.toml"), cargo_toml)?;
-    fs::write(wrapper_dir.join("src/main.rs"), main_rs)?;
-    Ok(())
+        rustflags = rustflags,
+    ))
 }
 
-fn write_dylib_cargo_config(dir: &Path, workspace_root: &Path) -> Result<()> {
-    let target_dir = workspace_root.join("target");
-    let sysroot_lib = rustc_sysroot_lib()?;
-    let config = format!(
-        "# GENERATED (Dylib mode). Share workspace target dir + prefer\n\
-         # dynamic linking so host + user-dylib resolve to ONE\n\
-         # `libframework_core.dylib` at runtime. `-rpath` points at\n\
-         # the rustup toolchain's host-target `lib/` so libstd/libcore\n\
-         # resolve (they ride along when prefer-dynamic is on).\n\
-         \n\
-         [build]\n\
-         target-dir = \"{target}\"\n\
-         rustflags = [\"-C\", \"prefer-dynamic\", \"-C\", \"link-arg=-Wl,-rpath,{sysroot_lib}\"]\n",
-        target = target_dir.display(),
-        sysroot_lib = sysroot_lib.display(),
-    );
-    fs::create_dir_all(dir.join(".cargo"))?;
-    fs::write(dir.join(".cargo/config.toml"), config)?;
-    Ok(())
-}
+// ---------------------------------------------------------------------------
+// Build invocation
+// ---------------------------------------------------------------------------
 
-fn rustc_sysroot_lib() -> Result<PathBuf> {
-    let sysroot_out = Command::new("rustc")
-        .args(["--print", "sysroot"])
-        .output()
-        .context("ask rustc for sysroot")?;
-    if !sysroot_out.status.success() {
-        anyhow::bail!("rustc --print sysroot failed: {}", sysroot_out.status);
-    }
-    let sysroot = String::from_utf8(sysroot_out.stdout)
-        .context("rustc sysroot output not utf-8")?;
-
-    let triple_out = Command::new("rustc")
-        .args(["-vV"])
-        .output()
-        .context("ask rustc for host triple")?;
-    if !triple_out.status.success() {
-        anyhow::bail!("rustc -vV failed: {}", triple_out.status);
-    }
-    let triple_info = String::from_utf8(triple_out.stdout)
-        .context("rustc -vV output not utf-8")?;
-    let triple = triple_info
-        .lines()
-        .find_map(|l| l.strip_prefix("host: "))
-        .ok_or_else(|| anyhow::anyhow!("rustc -vV missing `host:` line"))?
-        .trim();
-
-    Ok(PathBuf::from(sysroot.trim())
-        .join("lib/rustlib")
-        .join(triple)
-        .join("lib"))
-}
-
-/// Single `cargo build` from the outer aas workspace. Builds both
-/// the host bin and the user-dylib lib in one invocation so cargo's
-/// resolver produces a unified compilation graph — only one
-/// `framework-core` compilation, only one symbol-hash generation.
-fn cargo_build_workspace(aas_dir: &Path, release: bool) -> Result<()> {
+/// Run `cargo build -p <pkg>` inside the sub-workspace. RUSTFLAGS is
+/// set so dependents that have both an rlib and a dylib variant
+/// (notably `framework-core`) resolve to the dylib — that's how the
+/// host bin and the patch end up sharing the same `libframework_core
+/// .dylib` image at runtime, which is what makes TLV opcodes
+/// (thread-local-variable access) consistent across both code paths.
+fn cargo_build_both(mode_dir: &Path, release: bool) -> Result<()> {
     let mut cmd = Command::new("cargo");
-    cmd.args(["build"]).current_dir(aas_dir);
+    cmd.args(["build", "-p", "host", "-p", "patch"])
+        .current_dir(mode_dir);
     if release {
         cmd.arg("--release");
     }
+    cmd.env("RUSTFLAGS", rustflags_for_dylib_mode()?);
+
     eprintln!(
-        "[build-aas:dylib] cargo build{} (in {})",
+        "[build-aas:dylib] cargo build -p host -p patch{} (in {})",
         if release { " --release" } else { "" },
-        aas_dir.display(),
+        mode_dir.display(),
     );
     let status = cmd
         .status()
@@ -516,4 +603,123 @@ fn cargo_build_workspace(aas_dir: &Path, release: bool) -> Result<()> {
         anyhow::bail!("[build-aas:dylib] cargo build exited with {status}");
     }
     Ok(())
+}
+
+/// Patch-only rebuild path. After the initial `cargo_build_both`
+/// produced consistent host + patch fingerprints, every subsequent
+/// rebuild is just the patch (the host is long-lived and doesn't
+/// re-link on edits). Same RUSTFLAGS so the framework-core
+/// fingerprint stays put.
+#[allow(dead_code)] // wired up by the host's generated rebuild loop;
+                    // kept here so the build code owns the flag set.
+fn cargo_build_patch_only(mode_dir: &Path, release: bool) -> Result<()> {
+    let mut cmd = Command::new("cargo");
+    cmd.args(["build", "-p", "patch"]).current_dir(mode_dir);
+    if release {
+        cmd.arg("--release");
+    }
+    cmd.env("RUSTFLAGS", rustflags_for_dylib_mode()?);
+    let status = cmd.status().context("spawn cargo")?;
+    if !status.success() {
+        anyhow::bail!("patch rebuild failed: {status}");
+    }
+    Ok(())
+}
+
+/// RUSTFLAGS used for both the host and the patch builds. Three
+/// concerns are folded in:
+///
+/// 1. `-C prefer-dynamic` — rustc picks the `.dylib` variant of any
+///    dep that ships both rlib and dylib (`framework-core` is the
+///    one we care about). The host bin and the patch dylib therefore
+///    both reference the same `libframework_core.dylib` at runtime,
+///    so thread-local storage, statics, and singletons stay
+///    consistent across both code paths.
+///
+/// 2. `-C link-arg=-Wl,-rpath,<rust-sysroot-lib>` — the dylib
+///    `libframework_core.dylib` links against `libstd-<hash>.dylib`
+///    in the rust toolchain's lib dir. By default the host bin has
+///    no `LC_RPATH`, so dyld fails to find `libstd`. Adding the rust
+///    sysroot to the rpath fixes the dependency resolution at
+///    runtime without forcing every dev to set `DYLD_LIBRARY_PATH`.
+///
+/// 3. `-Wl,-export_dynamic` is NOT needed here because the patch
+///    resolves its framework references against `libframework_core
+///    .dylib` (a separate dyld image), not against the host bin's
+///    private symbols. We pay nothing for the simpler symbol surface.
+fn rustflags_for_dylib_mode() -> Result<String> {
+    // Resolve the host's libstd dylib directory.
+    //
+    // It lives at `<sysroot>/lib/rustlib/<target-triple>/lib/`, NOT
+    // at `<sysroot>/lib/` — the latter is the rustlib metadata dir,
+    // empty of the actual `.dylib` shipped per target. Without this
+    // rpath the host bin aborts at startup with `dyld: Library not
+    // loaded: @rpath/libstd-<hash>.dylib`.
+    let sysroot = Command::new("rustc")
+        .arg("--print=sysroot")
+        .output()
+        .context("invoke `rustc --print=sysroot` to locate libstd dylib")?;
+    if !sysroot.status.success() {
+        anyhow::bail!("rustc --print=sysroot failed: {}", sysroot.status);
+    }
+    let sysroot = String::from_utf8(sysroot.stdout)
+        .context("rustc --print=sysroot output is not utf-8")?
+        .trim()
+        .to_string();
+    let host_triple = Command::new("rustc")
+        .args(["-vV"])
+        .output()
+        .context("invoke `rustc -vV` to discover host triple")?;
+    let host_triple = String::from_utf8(host_triple.stdout)
+        .context("rustc -vV output is not utf-8")?
+        .lines()
+        .find_map(|l| l.strip_prefix("host: ").map(str::to_string))
+        .context("rustc -vV did not print a `host:` line")?;
+    let libdir = format!("{}/lib/rustlib/{}/lib", sysroot, host_triple);
+    Ok(format!(
+        "-C prefer-dynamic -C link-arg=-Wl,-rpath,{libdir}"
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// Artifact lookup
+// ---------------------------------------------------------------------------
+
+/// Locate the freshly-built patch dylib. Same convention as the
+/// host's runtime `patch_path()` (un-hashed canonical name first,
+/// hashed `deps/` entry as fallback) — kept in sync.
+fn find_patch_dylib(workspace_target: &Path, profile: &str) -> Result<PathBuf> {
+    let canonical = workspace_target.join(profile).join("libpatch.dylib");
+    if canonical.is_file() {
+        return Ok(canonical);
+    }
+    let deps = workspace_target.join(profile).join("deps");
+    let mut newest: Option<(PathBuf, std::time::SystemTime)> = None;
+    let read = fs::read_dir(&deps).with_context(|| {
+        format!("read deps dir {} to locate patch dylib", deps.display())
+    })?;
+    for entry in read.flatten() {
+        let path = entry.path();
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        if name.starts_with("libpatch-") && name.ends_with(".dylib") {
+            let mt = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            match &newest {
+                Some((_, t)) if *t >= mt => {}
+                _ => newest = Some((path, mt)),
+            }
+        }
+    }
+    newest.map(|(p, _)| p).with_context(|| {
+        format!(
+            "patch dylib not produced; expected {} or {}/libpatch-*.dylib",
+            canonical.display(),
+            deps.display()
+        )
+    })
 }

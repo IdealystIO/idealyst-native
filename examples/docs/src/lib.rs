@@ -39,7 +39,7 @@ pub fn app() -> Primitive {
                     kind    = HeadingKind::H2,
                 )
                 Body(
-                    content = "DYLIB-TIMING-B measurement. Scaffolding in progress. Real documentation \
+                    content = "DYLIB-TIMING measurement. Scaffolding-iter5. Real documentation \
                                routes will land here as the CLI, build, and \
                                splash work stabilize.".to_string(),
                     tone    = BodyTone::Muted,

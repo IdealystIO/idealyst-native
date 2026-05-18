@@ -2,6 +2,7 @@
 
 mod backend;
 mod builder;
+mod derive;
 mod handles;
 mod primitive;
 mod reactive;
@@ -40,11 +41,9 @@ pub use builder::{
     button, pressable, switch, text, view, when, Bindable, Bound, ChildList, IntoDisabledSource,
     IntoPrimitive,
 };
+pub use derive::{Action, Derived, IntoAction, IntoDerived};
 pub use primitive::Primitive;
-pub use sources::{
-    ActionBinding, ButtonAction, IntoButtonAction, IntoStyleSource, IntoTextSource,
-    StyleSource, TextSource, WhenBinding,
-};
+pub use sources::{IntoStyleSource, IntoTextSource, StyleSource, TextSource};
 pub use walker::{render, Owner};
 pub use primitives::navigator::{
     match_pattern, DefaultLinkKind, DrawerHandle, DrawerItem, DrawerItemRegistration,

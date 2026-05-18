@@ -331,13 +331,23 @@ impl Backend for RokuBackend {
     fn create_button(
         &mut self,
         label: &str,
-        on_click: Rc<dyn Fn()>,
+        on_click: &framework_core::Action,
         leading_icon: Option<&IconData>,
         trailing_icon: Option<&IconData>,
     ) -> Self::Node {
         let id = self.mint_node();
         let handler = self.mint_handler();
-        self.handlers.borrow_mut().unit.push((handler, on_click));
+        // Roku has no host runtime to evaluate the closure; we ship
+        // the structured metadata (method + signal ids + optional
+        // output signal) as a `BindButton` wire op below. The
+        // closure itself is still registered in the handler table
+        // so a host-side AAS shell (dev mode) can fire it; in
+        // baked-binary builds the device's transpiled #[method]
+        // does the work and the closure is dead weight.
+        self.handlers
+            .borrow_mut()
+            .unit
+            .push((handler, on_click.fire.clone()));
         let leading = leading_icon.map(|d| self.lower_icon(d));
         let trailing = trailing_icon.map(|d| self.lower_icon(d));
         self.push(RokuCommand::CreateButton {
@@ -347,6 +357,23 @@ impl Backend for RokuBackend {
             leading_icon: leading,
             trailing_icon: trailing,
         });
+        // Carry the structured metadata onto the wire if the Action
+        // has any (i.e. came from a `#[method]`-backed handler). An
+        // opaque Action (closure with empty method) skips this —
+        // generator backends can't ship a nameless handler.
+        if !on_click.is_opaque() {
+            // Declare each input signal first so the device has a
+            // value to read at dispatch time.
+            for (sid, val) in on_click.inputs.iter().zip(on_click.initial.iter()) {
+                self.note_signal_initial(*sid, val);
+            }
+            self.push(RokuCommand::BindButton {
+                button_id: id,
+                input_signal_ids: on_click.inputs.iter().map(|i| SignalId(*i)).collect(),
+                method: on_click.method.to_string(),
+                output_signal_id: on_click.output.map(SignalId),
+            });
+        }
         id
     }
 
@@ -550,13 +577,6 @@ impl Backend for RokuBackend {
         });
     }
 
-    fn handles_when_natively(&self) -> bool {
-        // We ship each branch as a lazily-materialized `Slot` and
-        // let the device-side runtime play / tear them down based
-        // on the cond_method's result. No host round-trip.
-        true
-    }
-
     fn note_when_binding(
         &mut self,
         anchor: &Self::Node,
@@ -580,10 +600,6 @@ impl Backend for RokuBackend {
             then_slot,
             otherwise_slot,
         });
-    }
-
-    fn handles_switch_natively(&self) -> bool {
-        true
     }
 
     fn note_switch_binding(
@@ -615,10 +631,6 @@ impl Backend for RokuBackend {
             arms: arms_wire,
             default_slot,
         });
-    }
-
-    fn handles_repeat_natively(&self) -> bool {
-        true
     }
 
     fn note_repeat_binding(
@@ -659,28 +671,6 @@ impl Backend for RokuBackend {
             .pop()
             .expect("end_slot_capture without matching begin_slot_capture");
         self.captured_slots.insert(*slot_root, buf);
-    }
-
-    fn note_button_action(
-        &mut self,
-        node: &Self::Node,
-        action: &framework_core::ActionBinding,
-    ) {
-        // Walker has already shipped a CreateButton (with a stub
-        // HandlerId from the closure path) and called
-        // `note_signal_initial` for every input signal. We just add
-        // the BindButton command — the on-device runtime wires
-        // `onKeyEvent` (OK) → action dispatch via this id.
-        self.push(RokuCommand::BindButton {
-            button_id: *node,
-            input_signal_ids: action
-                .input_signal_ids
-                .iter()
-                .map(|id| SignalId(*id))
-                .collect(),
-            method: action.method.to_string(),
-            output_signal_id: action.output_signal_id.map(SignalId),
-        });
     }
 
     fn note_signal_initial(

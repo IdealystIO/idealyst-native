@@ -18,14 +18,17 @@
 //!
 //! - **Types**: `i8`..`u32`, `usize`, `isize` → `integer`; `i64`/`u64`
 //!   → `longinteger`; `f32` → `float`; `f64` → `double`; `bool` →
-//!   `boolean`; `&str` / `String` → `string`. Returning `()` makes
-//!   the function emit as a `sub`; everything else as a `function`.
+//!   `boolean`; `&str` / `String` → `string`; `Vec<T>` / `&Vec<T>` →
+//!   `object` (a BS `roArray` carrying JSON-serialized elements).
+//!   Returning `()` makes the function emit as a `sub`; everything
+//!   else as a `function`.
 //! - **Statements**: `let name = expr;` (mut allowed but ignored —
 //!   BrightScript has no const), expression statements, `return expr;`.
 //! - **Expressions**: integer / float / bool / string literals,
 //!   identifiers, parenthesized exprs, arithmetic (`+ - * / %`),
 //!   comparison (`== != < > <= >=`), logical (`&& ||`), unary `-` /
-//!   `!`, function calls (single-segment paths only).
+//!   `!`, function calls (single-segment paths only),
+//!   indexing (`arr[i]` — read-only), `.len()` method.
 //! - **Control flow**: `if`/`else if`/`else` (as statement OR in
 //!   tail position of a function body), `while cond { ... }`,
 //!   `for i in start..end` and `..=end`.
@@ -594,6 +597,67 @@ impl Emitter {
                 self.push(")");
                 Ok(())
             }
+            Expr::Index(idx) => {
+                // BS roArray supports `arr[i]` directly with the
+                // same semantics as Rust's read-only indexing.
+                // Writes (`arr[i] = ...`) aren't supported yet —
+                // Rust syntax allows them but we don't lower them.
+                self.expr(&idx.expr)?;
+                self.push("[");
+                self.expr(&idx.index)?;
+                self.push("]");
+                Ok(())
+            }
+            Expr::MethodCall(mc) => {
+                // Hand-pick a small set of method calls that have
+                // clean BS analogs. Anything outside this list is
+                // an error — adding more is a one-line extension
+                // here. Generic `.foo()` translation would require
+                // type info we don't carry.
+                let method = mc.method.to_string();
+                match method.as_str() {
+                    "len" => {
+                        if !mc.args.is_empty() {
+                            return Err(syn::Error::new_spanned(
+                                mc,
+                                "`.len()` takes no arguments",
+                            ));
+                        }
+                        self.expr(&mc.receiver)?;
+                        self.push(".Count()");
+                        Ok(())
+                    }
+                    "clone" | "to_owned" => {
+                        // BS has no ownership / borrow distinction;
+                        // values are passed by reference for objects
+                        // and by value for primitives. Either way
+                        // `.clone()` is a no-op semantically — just
+                        // emit the receiver.
+                        if !mc.args.is_empty() {
+                            return Err(syn::Error::new_spanned(
+                                mc,
+                                "`.clone()`/`.to_owned()` take no arguments",
+                            ));
+                        }
+                        self.expr(&mc.receiver)
+                    }
+                    other => Err(syn::Error::new_spanned(
+                        mc,
+                        format!(
+                            "method `.{}()` isn't supported in #[method] yet; \
+                             extract it into a free `#[method]` fn",
+                            other
+                        ),
+                    )),
+                }
+            }
+            Expr::Cast(c) => {
+                // `as`-casts are a no-op for our purposes: BS uses
+                // a single numeric tower with implicit promotion,
+                // so `i as usize` / `n as f32` need no translation.
+                // Casts to non-numeric types aren't supported.
+                self.expr(&c.expr)
+            }
             Expr::If(_) => Err(syn::Error::new_spanned(
                 e,
                 "`if` as a value expression is only supported in tail position; \
@@ -645,6 +709,20 @@ impl Emitter {
 
 fn map_type(ty: &Type) -> syn::Result<String> {
     if let Type::Path(p) = ty {
+        // Detect `Vec<T>` before falling back to `single_ident` —
+        // single_ident rejects type arguments, but `Vec<T>` is a
+        // first-class supported shape (a read-only roArray on the
+        // BS side). The element type isn't reflected in the BS
+        // function signature: BS has no typed-array param kind,
+        // so we declare such params as `object`.
+        if p.path.segments.len() == 1 {
+            let seg = &p.path.segments[0];
+            if seg.ident == "Vec" {
+                if let syn::PathArguments::AngleBracketed(_) = &seg.arguments {
+                    return Ok("object".to_string());
+                }
+            }
+        }
         let name = single_ident(&p.path)?;
         let result = match name.as_str() {
             "i8" | "i16" | "i32" | "u8" | "u16" | "u32" | "isize" | "usize" => "integer",
@@ -664,6 +742,15 @@ fn map_type(ty: &Type) -> syn::Result<String> {
     }
     if let Type::Reference(r) = ty {
         if let Type::Path(p) = &*r.elem {
+            // `&Vec<T>` → same as `Vec<T>` for BS purposes.
+            if p.path.segments.len() == 1 {
+                let seg = &p.path.segments[0];
+                if seg.ident == "Vec" {
+                    if let syn::PathArguments::AngleBracketed(_) = &seg.arguments {
+                        return Ok("object".to_string());
+                    }
+                }
+            }
             let name = single_ident(&p.path)?;
             if name == "str" {
                 return Ok("string".to_string());
@@ -671,7 +758,7 @@ fn map_type(ty: &Type) -> syn::Result<String> {
         }
         return Err(syn::Error::new_spanned(
             ty,
-            "only `&str` is supported among reference types",
+            "only `&str` / `&Vec<T>` are supported among reference types",
         ));
     }
     Err(syn::Error::new_spanned(ty, "unsupported type"))

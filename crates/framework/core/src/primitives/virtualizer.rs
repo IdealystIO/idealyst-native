@@ -123,11 +123,18 @@ pub fn virtualizer(
     item_size: ItemSize,
     render_item: Rc<dyn Fn(usize) -> Primitive>,
 ) -> Bound<VirtualizerHandle> {
+    // Closure-driven entry point: produce a `Derived<usize>` with
+    // empty metadata (`is_opaque() == true`) so runtime backends
+    // pick up the closure but generator backends report a clear
+    // build-time error.
+    let item_count = crate::derive::IntoDerived::<usize>::into_derived(item_count);
     Bound::new(Primitive::Virtualizer {
         item_count,
         item_key,
         item_size,
         render_item,
+        row_template: None,
+        row_index_signal_id: None,
         overscan: 1.0,
         horizontal: false,
         style: None,

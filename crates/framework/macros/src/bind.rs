@@ -115,14 +115,16 @@ pub fn emit(input: BindInput) -> TokenStream2 {
     // coerces, so the rendered output matches what the framework's
     // closure produces.
     quote! {
-        ::framework_core::TextSource::Bound {
-            closure: ::std::boxed::Box::new(move || {
-                ::std::format!("{}", #func_ident( #(#get_calls),* ))
-            }),
-            signal_ids: ::std::vec![ #(#id_calls),* ],
-            method: #method_lit,
-            initial_values: ::std::vec![ #(#initial_calls),* ],
-        }
+        ::framework_core::TextSource::Bound(
+            ::framework_core::Derived::<::std::string::String> {
+                method:  #method_lit,
+                inputs:  ::std::vec![ #(#id_calls),* ],
+                initial: ::std::vec![ #(#initial_calls),* ],
+                compute: ::std::rc::Rc::new(move || {
+                    ::std::format!("{}", #func_ident( #(#get_calls),* ))
+                }),
+            }
+        )
     }
 }
 

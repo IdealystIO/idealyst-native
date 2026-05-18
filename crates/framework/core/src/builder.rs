@@ -18,6 +18,7 @@ use crate::primitive::Primitive;
 use crate::reactive::Ref;
 use crate::sources::{IntoStyleSource, IntoTextSource};
 use std::any::Any;
+use std::cell::RefCell;
 use std::rc::Rc;
 
 // =============================================================================
@@ -362,13 +363,11 @@ pub fn text<T: IntoTextSource>(source: T) -> Bound<TextHandle> {
 pub fn button<L, A>(label: L, on_click: A) -> Bound<ButtonHandle>
 where
     L: IntoTextSource,
-    A: crate::sources::IntoButtonAction,
+    A: crate::derive::IntoAction,
 {
-    let action = on_click.into_button_action();
     Bound::new(Primitive::Button {
         label: label.into_text_source(),
-        on_click: action.closure,
-        on_click_binding: action.binding,
+        on_click: on_click.into_action(),
         leading_icon: None,
         trailing_icon: None,
         style: None,
@@ -407,16 +406,15 @@ pub fn pressable<F: Fn() + 'static>(
 /// on toggle — this is the "dispose on hide" model.
 pub fn when<C, T, O>(cond: C, then: T, otherwise: O) -> Primitive
 where
-    C: Fn() -> bool + 'static,
+    C: crate::derive::IntoDerived<bool>,
     T: Fn() -> Primitive + 'static,
     O: Fn() -> Primitive + 'static,
 {
     Primitive::When {
-        cond: Box::new(cond),
+        cond: cond.into_derived(),
         then: Box::new(then),
         otherwise: Box::new(otherwise),
         style: None,
-        binding: None,
     }
 }
 
@@ -448,22 +446,60 @@ where
     F: Fn() -> S + 'static,
     B: Fn(&S) -> Primitive + 'static,
 {
-    Primitive::Switch {
-        key: Box::new(move || Box::new(scrutinee()) as Box<dyn Any>),
-        eq: Box::new(|a, b| {
-            // Both keys are produced by the same scrutinee closure
-            // above, so both downcasts succeed. The `expect` paths
-            // mark the type-system contract — failure means someone
-            // constructed `Primitive::Switch` directly with mismatched
-            // types, which the constructor signature forbids.
-            let a = a.downcast_ref::<S>().expect("switch key type mismatch");
-            let b = b.downcast_ref::<S>().expect("switch key type mismatch");
-            a == b
+    use std::rc::Rc;
+
+    // Closure-driven path. We don't ship the scrutinee value over
+    // any wire — the discriminant `compute` is *opaque* (returns
+    // `Null` after re-running the scrutinee for signal-subscription
+    // purposes) and the `default` closure does the real arm
+    // dispatch using the typed scrutinee directly. This keeps the
+    // closure-driven API constraint-free (only `PartialEq` is
+    // required, same as before the refactor) while still routing
+    // through the structured `Primitive::Switch` shape that
+    // generator backends consume.
+    //
+    // Authors who need generator-backend-compatible reactivity
+    // (Roku) should construct the primitive through the structured
+    // entry point (a `#[method]`-backed discriminant + literal-key
+    // arms) — `Primitive::Switch` with a non-opaque `discriminant`
+    // and a non-empty `arms` vec. The macro layer (`ui!`'s `match`
+    // lowering, eventually) will emit that form.
+    let scrutinee = Rc::new(scrutinee);
+    let scrutinee_for_disc = scrutinee.clone();
+    let last_key: Rc<RefCell<Option<S>>> = Rc::new(RefCell::new(None));
+    let last_key_for_disc = last_key.clone();
+    let discriminant = crate::derive::Derived::<crate::__serde_json::Value> {
+        method: "",
+        inputs: Vec::new(),
+        initial: Vec::new(),
+        compute: Rc::new(move || {
+            // Subscribe to whatever signals the scrutinee reads, and
+            // stash the result so `default()` can use it without
+            // re-evaluating (which would double-subscribe in the
+            // same Effect run on some reactivity backends).
+            let v = scrutinee_for_disc();
+            *last_key_for_disc.borrow_mut() = Some(v);
+            crate::__serde_json::Value::Null
         }),
-        build: Box::new(move |k| {
-            let s = k.downcast_ref::<S>().expect("switch key type mismatch");
+    };
+    let dispatch: Box<dyn Fn() -> Primitive> = Box::new(move || {
+        // Use the cached scrutinee value from the most-recent
+        // discriminant evaluation. The walker's Effect always calls
+        // `discriminant.compute()` immediately before `default()`,
+        // so the cache is freshly populated.
+        if let Some(s) = last_key.borrow().as_ref() {
             branches(s)
-        }),
+        } else {
+            // Defensive fallback: re-read the scrutinee if the cache
+            // somehow wasn't populated. Shouldn't happen under the
+            // walker's contract.
+            branches(&scrutinee())
+        }
+    });
+    Primitive::Switch {
+        discriminant,
+        arms: Vec::new(),
+        default: dispatch,
         style: None,
     }
 }

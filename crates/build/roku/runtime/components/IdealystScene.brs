@@ -250,7 +250,12 @@ sub applyCommand(cmd as object)
         ' Reactive unbounded list. The wire carries one row `Slot`
         ' as a template; the runtime clones it per row with fresh
         ' node ids and tears down clones when `count` shrinks.
-        bindRepeat(cmd.anchor_id, cmd.signal_ids, cmd.count_method, cmd.row_template)
+        ' `row_index_signal_id` (Option<u64> from Rust → null/int
+        ' in JSON → invalid/integer in BS) names the synthetic
+        ' signal id the closure's `i` parameter bound to at
+        ' snapshot; if set, per-clone signal substitution makes
+        ' the row's `i` resolve to its actual row index.
+        bindRepeat(cmd.anchor_id, cmd.signal_ids, cmd.count_method, cmd.row_template, cmd.row_index_signal_id)
     else if op = "BindButton" then
         ' output_signal_id is Option<u64>; in JSON it's either a
         ' number or null. ParseJson maps null → invalid, so we

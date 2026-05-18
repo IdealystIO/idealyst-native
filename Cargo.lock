@@ -800,6 +800,7 @@ dependencies = [
  "log",
  "pollster",
  "raw-window-handle",
+ "serde",
  "serde_json",
 ]
 
@@ -810,6 +811,7 @@ dependencies = [
  "memmap2",
  "object",
  "subsecond",
+ "subsecond-types",
 ]
 
 [[package]]

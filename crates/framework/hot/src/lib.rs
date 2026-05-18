@@ -177,20 +177,18 @@ pub fn register_handler(f: fn()) {
 #[cfg(not(feature = "hot"))]
 pub fn register_handler(_f: fn()) {}
 
-// TODO(hot M2): symbol-diff jump-table generator. Subsecond's
-// `apply_patch` is designed for the single-binary patch model — its
-// ASLR arithmetic uses a `main` reference symbol in the running
-// process, and the patch is a delta dylib whose function addresses
-// are computed against the host's load offset. Our AAS dylib mode
-// loads the user crate as a SEPARATE dylib via libloading; that
-// dylib's load offset is independent of the host's `main`. Wiring
-// `apply_patch` into that flow needs either (a) a per-dylib
-// reference symbol injected into the user dylib + a custom
-// `apply_patch` that uses it instead of `main`, or (b) flipping
-// the host architecture so the user crate is STATICALLY linked
-// into the host binary and only deltas are dlopen'd. (b) is closer
-// to upstream usage; (a) keeps our existing dylib mode intact.
-// Either way, the diff generator (read both dylibs' symbol tables,
-// build the `(old_offset, new_offset)` map for `#[component]`
-// symbols) is the same code, just plugged into different runtime
-// wiring. Resume here once M1 is verified.
+/// Symbol-diff jump-table generator. After every successful
+/// rebuild of the patch dylib, the AAS host calls
+/// [`diff::apply_from_dylib`] which:
+///
+/// 1. Opens the running binary (via `std::env::current_exe`) and
+///    parses its symbol table.
+/// 2. Opens the freshly-built patch dylib and parses its symbol
+///    table.
+/// 3. For every `__*_hot_impl` symbol (and `main`, used as the
+///    ASLR reference), records the (bin link-time offset, dylib
+///    link-time offset) pair.
+/// 4. Constructs a [`JumpTable`] and hands it to
+///    [`apply_patch`].
+#[cfg(feature = "diff")]
+pub mod diff;

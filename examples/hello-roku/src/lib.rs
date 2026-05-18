@@ -293,6 +293,31 @@ pub fn row_count(n: i32) -> i32 {
     n
 }
 
+/// Per-row label transpiled to BS. Each cloned row's synthetic
+/// row-index signal seeds this method's argument, so the cloned
+/// Label ends up displaying its own index.
+#[method]
+pub fn row_label(i: i32) -> i32 {
+    i + 1
+}
+
+/// Row count derived from a `Signal<Vec<i32>>` — the list's
+/// length. Transpiles to BS as `v.Count()`.
+#[method]
+pub fn items_count(v: Vec<i32>) -> usize {
+    v.len()
+}
+
+/// Per-row content derived from the same `Signal<Vec<i32>>`:
+/// looks up `v[i]` and returns the integer. The bind! inside
+/// the row template subscribes to BOTH `items` and the row-index
+/// signal, so mutating `items` (replacing the whole Vec via
+/// `items.set(...)`) re-fires every row with the new data.
+#[method]
+pub fn item_at(v: Vec<i32>, i: i32) -> i32 {
+    v[i as usize].clone()
+}
+
 // ---------------------------------------------------------------------------
 // The app
 // ---------------------------------------------------------------------------
@@ -301,6 +326,14 @@ pub fn app() -> Primitive {
     install_theme(Theme);
 
     let count: Signal<i32> = signal!(0);
+    // A `Signal<Vec<i32>>` — fibonacci-ish seed list. The whole
+    // Vec round-trips through `serde_json::Value` to the device,
+    // where BS keeps it as an `roArray` and the `#[method]`s
+    // (`items_count` / `item_at`) read from it directly. Mutating
+    // this signal (replacing the entire Vec via `items.set(...)`)
+    // would reactively re-render every visible row + reconcile
+    // row count.
+    let items: Signal<Vec<i32>> = signal!(vec![1, 2, 3, 5, 8, 13, 21]);
 
     ui! {
         View(style = page_style()) {
@@ -353,12 +386,14 @@ pub fn app() -> Primitive {
                 _ => ui! { Text(style = status_badge_style()) { "● keep climbing"       } },
             )
 
-            // bind_repeat! — reactive unbounded list. The runtime
-            // clones the row template per row with fresh node ids;
-            // `style` is applied to the auto-generated anchor (the
-            // row container).
-            bind_repeat!(row_count(count),
-                row = |_| ui! { Text(style = repeat_row_style()) { "▣" } },
+            // bind_repeat! reading from a `Signal<Vec<i32>>`. Row
+            // count tracks the list length; each row binds to
+            // `item_at(items, i)` so per-row content is the
+            // corresponding list element. Mutating `items` would
+            // reactively re-render — same path that powers `count`
+            // updates above.
+            bind_repeat!(items_count(items),
+                row = |i| ui! { Text(style = repeat_row_style()) { bind!(item_at(items, i)) } },
                 style = repeat_row_container_style(),
             )
 

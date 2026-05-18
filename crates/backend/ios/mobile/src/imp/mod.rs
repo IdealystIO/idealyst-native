@@ -536,7 +536,7 @@ impl Backend for IosBackend {
     fn create_button(
         &mut self,
         label: &str,
-        on_click: Rc<dyn Fn()>,
+        on_click: &framework_core::Action,
         leading_icon: Option<&framework_core::IconData>,
         _trailing_icon: Option<&framework_core::IconData>,
     ) -> Self::Node {
@@ -554,7 +554,7 @@ impl Backend for IosBackend {
             let _: () = unsafe { msg_send![&button, setImage: &*image, forState: 0u64] };
         }
 
-        let target = CallbackTarget::new(self.mtm, on_click);
+        let target = CallbackTarget::new(self.mtm, on_click.fire.clone());
         let sel = objc2::sel!(invoke);
         let _: () = unsafe {
             msg_send![&button, addTarget: &*target, action: sel, forControlEvents: 64u64]

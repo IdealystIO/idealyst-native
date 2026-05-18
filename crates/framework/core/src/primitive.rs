@@ -50,14 +50,11 @@ pub enum Primitive {
         /// walker installs an Effect on the latter so the native
         /// widget's text updates when the underlying signals change.
         label: TextSource,
-        on_click: Rc<dyn Fn()>,
-        /// Optional binding metadata for backends that ship press
-        /// events declaratively (Roku). Produced by `bind_press!`;
-        /// `None` for buttons that pass a raw `Fn()` closure. The
-        /// walker uses `on_click` for every backend's Effect-driven
-        /// path and additionally calls `note_button_action` with
-        /// `on_click_binding` when present.
-        on_click_binding: Option<crate::sources::ActionBinding>,
+        /// Press handler. Carries both a runtime callable and the
+        /// structured metadata (method name + input signal ids +
+        /// optional output signal) generator backends need to ship
+        /// the handler to the device.
+        on_click: crate::derive::Action,
         /// Icon rendered before the label (left in LTR layouts).
         /// Backends render this natively: `UIButton.setImage` on iOS,
         /// compound drawable on Android, inline SVG on web.
@@ -221,16 +218,42 @@ pub enum Primitive {
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
     },
-    /// Virtualized list. The framework supplies the backend with
-    /// type-erased callbacks; the backend manages scroll position,
-    /// visible-window math, and (on native) cell recycling. The
-    /// `flat_list<T>(...)` wrapper in `primitives::flat_list` is the
-    /// author-facing typed entry point.
+    /// Virtualized list. Runtime backends consume the closures
+    /// (`render_item` / `item_count.compute` / `item_key`) and
+    /// drive their native virtualization widget; generator
+    /// backends (Roku) consume the structured metadata
+    /// (`item_count` as a `Derived<usize>` + the pre-built
+    /// `row_template` with `row_index_signal_id` for per-row
+    /// remapping) and emit a wire op the device-side runtime
+    /// realizes against `MarkupList` / `RowList` / similar.
+    ///
+    /// The `flat_list<T>(...)` wrapper in `primitives::flat_list`
+    /// is the author-facing typed entry point.
     Virtualizer {
-        item_count: Box<dyn Fn() -> usize>,
+        /// Reactive item count. Generator backends use the
+        /// structured form (`method` + `inputs`); runtime backends
+        /// call `compute` inside an Effect.
+        item_count: crate::derive::Derived<usize>,
         item_key: Box<dyn Fn(usize) -> primitives::virtualizer::ItemKey>,
         item_size: primitives::virtualizer::ItemSize,
+        /// Closure for runtime backends to materialize a row at a
+        /// given index. Generator backends ignore this; they use
+        /// `row_template` instead.
         render_item: Rc<dyn Fn(usize) -> Primitive>,
+        /// Pre-built row produced by calling `render_item` once at
+        /// snapshot time. Generator backends serialize this and
+        /// remap node ids per row instance on the device.
+        /// `None` when the constructor came in through the legacy
+        /// closure-only path — generator backends report a
+        /// build-time error if they encounter a Virtualizer
+        /// without one.
+        row_template: Option<Box<Primitive>>,
+        /// Snapshot-time signal id that `render_item`'s closure
+        /// captured as its row-index signal. Generator backends
+        /// use this to mint a fresh synthetic per-row signal and
+        /// substitute references inside `row_template`'s commands.
+        /// `None` for the closure-only path.
+        row_index_signal_id: Option<u64>,
         overscan: f32,
         horizontal: bool,
         style: Option<StyleSource>,
@@ -285,23 +308,18 @@ pub enum Primitive {
     /// a backend that hasn't implemented `create_drawer_navigator`
     /// panics with `unimplemented!()`.
     DrawerNavigator(Box<primitives::navigator::DrawerNavigator>),
-    /// Reactive conditional. Renders `then()` while `cond()` is true and
-    /// `otherwise()` when it's false. The renderer wraps the subtree
-    /// construction in an `Effect` so the choice re-evaluates when any
-    /// signal `cond()` reads changes; the prior subtree's effects are
-    /// dropped on each flip, so state in the hidden branch is gone.
+    /// Reactive conditional. Renders `then()` while `cond` evaluates
+    /// to true and `otherwise()` when it's false. `cond` is a
+    /// `Derived<bool>` carrying both the runtime callable and the
+    /// structured metadata (method name + input signal ids) generator
+    /// backends serialize. Runtime backends call `cond.compute()`
+    /// inside an Effect that re-fires on every signal change in
+    /// `cond.inputs`; the prior subtree's effects drop on each flip.
     When {
-        cond: Box<dyn Fn() -> bool>,
+        cond: crate::derive::Derived<bool>,
         then: Box<dyn Fn() -> Primitive>,
         otherwise: Box<dyn Fn() -> Primitive>,
         style: Option<StyleSource>,
-        /// Optional declarative metadata produced by the `bind_when!`
-        /// macro. `None` for the legacy closure-only path used by
-        /// the existing `when()` constructor (Effect-driven
-        /// rebuild on signal change). `Some` opts the walker into
-        /// the pre-build-both-branches path for backends that
-        /// return `handles_when_natively() = true`.
-        binding: Option<crate::sources::WhenBinding>,
     },
     /// Reactive multi-way conditional, the type-erased shape behind
     /// the `switch()` constructor. The walker re-runs `key()` inside
@@ -310,39 +328,29 @@ pub enum Primitive {
     /// when the key actually changes. State inside the old subtree
     /// is freed atomically, mirroring `When`.
     ///
-    /// `key` / `eq` / `build` operate on `Box<dyn Any>` so the
-    /// `Primitive` enum stays non-generic; the constructor monomorphizes
-    /// the type-aware logic into the closures.
+    /// N-way reactive conditional. `discriminant` is a
+    /// `Derived<serde_json::Value>` carrying both the runtime
+    /// callable (for runtime backends) and the structured metadata
+    /// (for generator backends). On each fire the framework
+    /// compares the discriminant against each arm's `pattern` via
+    /// JSON equality and renders the first match; if no arm
+    /// matches, `default` is rendered.
+    ///
+    /// Keys are constrained to JSON-serializable types because the
+    /// match must round-trip through both the host-side closure
+    /// path and the generator-side wire format with the same
+    /// equality semantics. For runtime backends this means
+    /// `Effect::new(re-evaluate-discriminant + diff-against-pattern)`;
+    /// for generator backends it means emitting a wire op that the
+    /// device-side runtime evaluates after each signal change.
     Switch {
-        key: Box<dyn Fn() -> Box<dyn Any>>,
-        eq: Box<dyn Fn(&dyn Any, &dyn Any) -> bool>,
-        build: Box<dyn Fn(&dyn Any) -> Primitive>,
-        style: Option<StyleSource>,
-    },
-    /// Declarative N-way reactive conditional produced by
-    /// `bind_switch!`. Mirrors the shape of `Primitive::When` with
-    /// declarative binding: every arm's subtree is pre-built at
-    /// snapshot time (closures called once); the backend that opts
-    /// into native handling receives the binding via
-    /// `note_switch_binding` and toggles which subtree renders on
-    /// the device. Closure-driven backends fall back to building
-    /// the default arm only (no reactivity).
-    SwitchDecl {
-        /// Signal arena IDs the cond method reads.
-        signal_ids: Vec<u64>,
-        /// Name of the `#[method]` whose return value gets matched
-        /// against each arm's pattern.
-        cond_method: &'static str,
-        /// Snapshot of each signal's current value, parallel to
-        /// `signal_ids`. Used by backends that ship signal state
-        /// across a wire boundary.
-        initial_values: Vec<crate::__serde_json::Value>,
-        /// Per-arm: `(pattern_value, subtree_builder)`. Match value
-        /// uses serde_json equality (numeric, string, bool, …).
-        /// Builder closure is called once at snapshot to produce
-        /// the arm's subtree.
+        discriminant: crate::derive::Derived<crate::__serde_json::Value>,
+        /// Per-arm: `(pattern, subtree_builder)`. Builder closure is
+        /// called once at snapshot for generator backends (so all
+        /// arms ship to the device pre-built); on runtime backends
+        /// it's called when the arm becomes active.
         arms: Vec<(crate::__serde_json::Value, Box<dyn Fn() -> Primitive>)>,
-        /// Subtree used when no arm matches. Always present.
+        /// Fallback subtree when no arm matches. Always present.
         default: Box<dyn Fn() -> Primitive>,
         style: Option<StyleSource>,
     },
@@ -362,39 +370,6 @@ pub enum Primitive {
     Repeat {
         count: usize,
         row_builder: Box<dyn Fn(usize) -> Primitive>,
-    },
-    /// Declarative reactive list: a fixed-max set of row subtrees,
-    /// rendered up to a count read from signals. Produced by
-    /// `bind_repeat!`. The macro materializes `max` rows eagerly
-    /// (each indexed) at snapshot; the backend that opts into
-    /// native handling receives the binding via
-    /// `note_repeat_binding` and the device-side runtime clones the
-    /// template per row, remapping node ids so each instance is
-    /// independent. Unbounded — the count method's return value
-    /// directly drives how many row clones live at any time.
-    RepeatDecl {
-        /// Signal arena IDs the count method reads.
-        signal_ids: Vec<u64>,
-        /// Name of the `#[method]` returning the visible row count.
-        count_method: &'static str,
-        /// Snapshot of each signal's current value, parallel to
-        /// `signal_ids`.
-        initial_values: Vec<crate::__serde_json::Value>,
-        /// The row template — the Primitive produced by calling the
-        /// row builder closure once at snapshot time. The backend
-        /// captures its construction commands and the runtime
-        /// re-emits them per row instance with fresh node ids.
-        row_template: Box<Primitive>,
-        /// Optional id of the "row index signal" — a `Signal<i32>`
-        /// the macro creates at snapshot and passes to the closure
-        /// as the `i` parameter. At clone time, the runtime
-        /// allocates one synthetic signal per row, sets it to that
-        /// row's index, and substitutes the template's references
-        /// to this id so bind!s dispatch with the right per-row
-        /// value. `None` for backends that don't support per-row
-        /// dynamic content (closure-driven fallback).
-        row_index_signal_id: Option<u64>,
-        style: Option<StyleSource>,
     },
     /// Declarative navigation. Wraps content; activation dispatches
     /// a `NavCommand` against an ambient navigator captured at
@@ -575,8 +550,6 @@ impl Primitive {
             | Primitive::Graphics { style, .. }
             | Primitive::When { style, .. }
             | Primitive::Switch { style, .. }
-            | Primitive::SwitchDecl { style, .. }
-            | Primitive::RepeatDecl { style, .. }
             | Primitive::Link { style, .. }
             | Primitive::Overlay { style, .. }
             | Primitive::AnchoredOverlay { style, .. } => {

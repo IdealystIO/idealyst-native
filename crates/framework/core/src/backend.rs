@@ -99,7 +99,7 @@ pub trait Backend {
     fn create_button(
         &mut self,
         label: &str,
-        on_click: Rc<dyn Fn()>,
+        on_click: &crate::derive::Action,
         leading_icon: Option<&primitives::icon::IconData>,
         trailing_icon: Option<&primitives::icon::IconData>,
     ) -> Self::Node;
@@ -189,36 +189,6 @@ pub trait Backend {
         // default: no-op
     }
 
-    /// Optional hook the walker calls after `create_button` when the
-    /// button carries a `bind_press!`-produced action binding.
-    /// Backends with declarative wire formats record the binding so
-    /// the remote runtime can dispatch the press without round-
-    /// tripping through the host's closure. Closure-driven backends
-    /// leave the default no-op and rely on `create_button`'s
-    /// `on_click` parameter (which is the same closure the binding
-    /// expanded to).
-    #[allow(unused_variables)]
-    fn note_button_action(
-        &mut self,
-        node: &Self::Node,
-        action: &crate::sources::ActionBinding,
-    ) {
-        // default: no-op
-    }
-
-    /// Backend capability flag for declarative `when` handling.
-    /// `true` means the walker pre-builds both branches of a
-    /// `Primitive::When` with a binding, attaches both to a shared
-    /// anchor, and calls [`Backend::note_when_binding`] so the
-    /// backend can ship the which-branch-is-active decision over
-    /// its wire format. `false` (the default) means the walker
-    /// uses the legacy closure-driven `Effect`-based path:
-    /// re-evaluates the condition on every signal change and
-    /// rebuilds the active branch in place.
-    fn handles_when_natively(&self) -> bool {
-        false
-    }
-
     /// Optional hook the walker calls after building both branches
     /// of a `Primitive::When` declaratively. Backends record the
     /// signal IDs the condition reads, the name of the boolean
@@ -239,19 +209,11 @@ pub trait Backend {
         // default: no-op
     }
 
-    /// Backend capability flag for declarative N-way switches
-    /// produced by `bind_switch!`. Same shape as
-    /// `handles_when_natively`. Default `false` — closure-driven
-    /// backends fall back to mounting only the default arm.
-    fn handles_switch_natively(&self) -> bool {
-        false
-    }
-
     /// Optional hook the walker calls after building every arm +
-    /// default of a `Primitive::SwitchDecl`. `arms` carries each
-    /// arm's `(pattern_value, node)` pair so the remote runtime
-    /// can compare the cond_method's return value against the
-    /// pattern and toggle the matching arm's visibility.
+    /// default of a `Primitive::Switch` on the lazy-slot-capture
+    /// path. `arms` carries each arm's `(pattern_value, node)` pair
+    /// so the remote runtime can compare the discriminant's value
+    /// against the pattern and play / tear down the matching arm.
     #[allow(unused_variables)]
     fn note_switch_binding(
         &mut self,
@@ -264,17 +226,11 @@ pub trait Backend {
         // default: no-op
     }
 
-    /// Backend capability flag for declarative reactive lists
-    /// produced by `bind_repeat!`. Default `false` — closure-driven
-    /// backends mount every pre-built row without reactivity.
-    fn handles_repeat_natively(&self) -> bool {
-        false
-    }
-
     /// Optional hook the walker calls after building the row
-    /// template of a `Primitive::RepeatDecl`. Backends record the
-    /// count method + the template node so the remote runtime can
-    /// clone the template per row (with id remapping) on every
+    /// template of a `Primitive::Virtualizer` on the structured /
+    /// generator-backend path. Backends record the count method +
+    /// the template node so the remote runtime can clone the
+    /// template per row (with id remapping) on every
     /// count change.
     #[allow(unused_variables)]
     fn note_repeat_binding(

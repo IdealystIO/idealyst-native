@@ -33,7 +33,10 @@ pub mod watch;
 use scene_model::SceneModel;
 
 pub use sidecar::{Sidecar, SidecarIn, SidecarOut, SidecarSlot};
-pub use transport::{serve, serve_with_port_mirror, serve_with_sidecar, serve_with_tick};
+pub use transport::{
+    serve, serve_with_port_mirror, serve_with_sidecar, serve_with_tick,
+    serve_with_tick_and_port,
+};
 #[cfg(feature = "robot")]
 pub use transport::serve_with_robot_bridge;
 pub use watch::{spawn_rebuild_loop, RebuildCommand, RebuildConfig};
@@ -512,13 +515,13 @@ impl Backend for WireRecordingBackend {
     fn create_button(
         &mut self,
         label: &str,
-        on_click: Rc<dyn Fn()>,
+        on_click: &framework_core::Action,
         leading_icon: Option<&primitives::icon::IconData>,
         trailing_icon: Option<&primitives::icon::IconData>,
     ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
-        let handler = state.handlers.register_unit(on_click);
+        let handler = state.handlers.register_unit(on_click.fire.clone());
         let leading = leading_icon.map(convert_out::icon_data_to_wire);
         let trailing = trailing_icon.map(convert_out::icon_data_to_wire);
         state.emit(Command::CreateButton {

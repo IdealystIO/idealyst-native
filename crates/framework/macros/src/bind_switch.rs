@@ -97,6 +97,8 @@ pub fn emit(input: BindSwitchInput) -> TokenStream2 {
     let method_lit = syn::LitStr::new(&func_ident.to_string(), func_ident.span());
 
     let arg_exprs: Vec<&Expr> = call.args.iter().collect();
+    let get_calls: Vec<TokenStream2> =
+        arg_exprs.iter().map(|a| quote! { (#a).get() }).collect();
     let id_calls: Vec<TokenStream2> =
         arg_exprs.iter().map(|a| quote! { (#a).id() }).collect();
     let initial_calls: Vec<TokenStream2> = arg_exprs
@@ -109,11 +111,6 @@ pub fn emit(input: BindSwitchInput) -> TokenStream2 {
         })
         .collect();
 
-    // Per-arm `(serde_json::Value, Box<dyn Fn() -> Primitive>)`
-    // pairs. Each pattern literal turns into a `serde_json::Value`
-    // for declarative-side equality; each subtree is wrapped in a
-    // closure so the walker can build it once at snapshot and so
-    // future Effect-driven backends can call it on every change.
     let arm_tokens: Vec<TokenStream2> = arms
         .iter()
         .map(|(pat, body)| {
@@ -128,13 +125,19 @@ pub fn emit(input: BindSwitchInput) -> TokenStream2 {
         .collect();
 
     quote! {
-        ::framework_core::Primitive::SwitchDecl {
-            signal_ids:     ::std::vec![ #(#id_calls),* ],
-            cond_method:    #method_lit,
-            initial_values: ::std::vec![ #(#initial_calls),* ],
-            arms:           ::std::vec![ #(#arm_tokens),* ],
-            default:        ::std::boxed::Box::new(move || #default),
-            style:          ::std::option::Option::None,
+        ::framework_core::Primitive::Switch {
+            discriminant: ::framework_core::Derived::<::framework_core::__serde_json::Value> {
+                method:  #method_lit,
+                inputs:  ::std::vec![ #(#id_calls),* ],
+                initial: ::std::vec![ #(#initial_calls),* ],
+                compute: ::std::rc::Rc::new(move || {
+                    ::framework_core::__serde_json::to_value(&#func_ident( #(#get_calls),* ))
+                        .unwrap_or(::framework_core::__serde_json::Value::Null)
+                }),
+            },
+            arms:    ::std::vec![ #(#arm_tokens),* ],
+            default: ::std::boxed::Box::new(move || #default),
+            style:   ::std::option::Option::None,
         }
     }
 }

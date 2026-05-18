@@ -299,9 +299,13 @@ where
                 let cb = self.handler_unit(on_click);
                 let leading = leading_icon.map(convert::wire_icon_to_static);
                 let trailing = trailing_icon.map(convert::wire_icon_to_static);
+                // Wire side has no structured action metadata; wrap
+                // the closure as an opaque Action and let the
+                // backend's runtime path use `.fire`.
+                let action = framework_core::IntoAction::into_action(move || cb());
                 let node = self.backend.create_button(
                     &label,
-                    cb,
+                    &action,
                     leading.as_ref(),
                     trailing.as_ref(),
                 );

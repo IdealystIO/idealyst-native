@@ -347,11 +347,11 @@ impl Backend for WebBackend {
     fn create_button(
         &mut self,
         label: &str,
-        on_click: Rc<dyn Fn()>,
+        on_click: &framework_core::Action,
         leading_icon: Option<&framework_core::IconData>,
         trailing_icon: Option<&framework_core::IconData>,
     ) -> Self::Node {
-        primitives::button::create(self, label, on_click, leading_icon, trailing_icon)
+        primitives::button::create(self, label, on_click.fire.clone(), leading_icon, trailing_icon)
     }
 
     fn create_pressable(&mut self, on_click: Rc<dyn Fn()>) -> Self::Node {

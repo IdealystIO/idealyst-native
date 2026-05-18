@@ -297,7 +297,20 @@ function playRowInstance(anchorId as integer, template as object, rowIndexSignal
     end if
 
     for each cmd in template.commands
-        applyCommand(translateRepeatCmd(cmd, idMap, signalMap))
+        ' Skip Update* ops: at snapshot time the framework's
+        ' bind!-Effect fired with the row-index signal at value 0
+        ' and emitted an UpdateText / UpdateButtonLabel / etc. with
+        ' the result. That value is stale once we substitute the
+        ' clone's per-row signal — the BindText we just registered
+        ' fires on subscribe and computes the right text for this
+        ' row. Replaying the stale UpdateText would clobber it.
+        ' (Static initial content lives in the matching Create*
+        ' command's `content` field, which we *do* replay.)
+        if isReactiveUpdateOp(cmd.op) then
+            ' drop
+        else
+            applyCommand(translateRepeatCmd(cmd, idMap, signalMap))
+        end if
     end for
 
     rootIdRaw = template.root_node_id
@@ -378,6 +391,12 @@ function isNodeCreatorOp(op as string) as boolean
     ' signals are global — don't remap.
     if op = "CreateSignal" then return false
     return Left(op, 6) = "Create"
+end function
+
+function isReactiveUpdateOp(op as string) as boolean
+    ' Update* ops snapshot-time-replay a reactive write — see
+    ' `playRowInstance` for why we drop them when cloning a row.
+    return Left(op, 6) = "Update"
 end function
 
 function idLookupOrSelf(idMap as object, id as dynamic) as dynamic

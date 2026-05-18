@@ -4,15 +4,20 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+# `dylib` crate-type is the linchpin of the AAS dylib hot-reload mode.
+# When the dev host is built with `-C prefer-dynamic`, dependents
+# resolve `framework-core` against `libframework_core.dylib` rather
+# than statically embedding the rlib. The same dylib is then a single
+# image dyld can re-resolve patch-dylib symbol references against —
+# which is what lets a patched user crate share the host's
+# `thread_local!` storage, statics, and runtime state without
+# falling foul of macOS's cross-image TLV restrictions.
+#
+# Native backends (iOS, Android, web) still get the `rlib` via
+# regular static linking (the default in cargo's selection algorithm
+# when `-C prefer-dynamic` is not in effect), so production binaries
+# pay nothing for this.
 [lib]
-# `rlib` is the default and what every existing static-linker
-# consumer picks up. Adding `dylib` makes a Rust-ABI shared library
-# available for the AAS-mode hot-reload sidecar, which dlopens the
-# user crate as a Rust dylib and needs `framework_core` itself to
-# resolve to ONE shared copy at runtime (otherwise the `Primitive`
-# type / signal arena / scope graph would have two non-equal
-# identities between the host and the user dylib). Consumers that
-# don't pass `-C prefer-dynamic` keep getting `rlib` — additive.
 crate-type = ["rlib", "dylib"]
 
 [features]
@@ -84,6 +89,7 @@ framework-macros = { workspace = true }
 # feature is on (typically by the AAS dylib-mode host wrapper). Off
 # by default — production builds don't compile it.
 framework-hot = { workspace = true, optional = true }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # The `Graphics` primitive exposes its surface as a standard
 # `raw_window_handle` handle so authors can plug any GPU library

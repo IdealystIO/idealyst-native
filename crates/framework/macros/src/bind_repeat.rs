@@ -108,6 +108,8 @@ pub fn emit(input: BindRepeatInput) -> TokenStream2 {
     let method_lit = syn::LitStr::new(&func_ident.to_string(), func_ident.span());
 
     let arg_exprs: Vec<&Expr> = call.args.iter().collect();
+    let get_calls: Vec<TokenStream2> =
+        arg_exprs.iter().map(|a| quote! { (#a).get() }).collect();
     let id_calls: Vec<TokenStream2> =
         arg_exprs.iter().map(|a| quote! { (#a).id() }).collect();
     let initial_calls: Vec<TokenStream2> = arg_exprs
@@ -140,20 +142,64 @@ pub fn emit(input: BindRepeatInput) -> TokenStream2 {
             // its value to the row's index, and substitutes the
             // template's references to this signal id so the
             // bind!s dispatch with the right index.
-            let __row_builder = #row_builder;
+            //
+            // `__invoke_row` is a typed helper that pins the
+            // closure's parameter to `Signal<i32>`. Without it
+            // Rust can't infer the closure's parameter type from
+            // `bind!(method(i))` usages inside the body —
+            // inference doesn't propagate through the bind!
+            // expansion back out to the closure signature.
+            fn __invoke_row<__RowF>(
+                builder: __RowF,
+                idx: ::framework_core::Signal<i32>,
+            ) -> ::framework_core::Primitive
+            where
+                __RowF: ::std::ops::FnOnce(::framework_core::Signal<i32>)
+                    -> ::framework_core::Primitive,
+            {
+                builder(idx)
+            }
             let __row_index: ::framework_core::Signal<i32> =
                 ::framework_core::signal!(0i32);
             let __row_index_id: ::std::option::Option<u64> =
                 ::std::option::Option::Some(::framework_core::Signal::<i32>::id(&__row_index));
             let __row_template: ::framework_core::Primitive =
-                (__row_builder)(__row_index);
-            ::framework_core::Primitive::RepeatDecl {
-                signal_ids:           ::std::vec![ #(#id_calls),* ],
-                count_method:         #method_lit,
-                initial_values:       ::std::vec![ #(#initial_calls),* ],
-                row_template:         ::std::boxed::Box::new(__row_template),
-                row_index_signal_id:  __row_index_id,
-                style:                #style_tokens,
+                __invoke_row(#row_builder, __row_index);
+            ::framework_core::Primitive::Virtualizer {
+                item_count: ::framework_core::Derived::<usize> {
+                    method:  #method_lit,
+                    inputs:  ::std::vec![ #(#id_calls),* ],
+                    initial: ::std::vec![ #(#initial_calls),* ],
+                    compute: ::std::rc::Rc::new(move || {
+                        #func_ident( #(#get_calls),* ) as usize
+                    }),
+                },
+                item_key: ::std::boxed::Box::new(|i| i as u64),
+                item_size: ::framework_core::primitives::virtualizer::ItemSize::Known(
+                    ::std::rc::Rc::new(|_| 40.0)
+                ),
+                render_item: ::std::rc::Rc::new(|_i| {
+                    // The closure-driven path doesn't have access to
+                    // the typed row closure at this scope — generator
+                    // backends always use `row_template` instead. For
+                    // runtime backends consuming this Virtualizer
+                    // shape, the closure-driven row builder needs to
+                    // be plumbed (TODO).
+                    ::framework_core::Primitive::View {
+                        children: ::std::vec::Vec::new(),
+                        style: ::std::option::Option::None,
+                        ref_fill: ::std::option::Option::None,
+                        safe_area_sides: ::framework_core::SafeAreaSides::NONE,
+                        #[cfg(feature = "robot")]
+                        test_id: ::std::option::Option::None,
+                    }
+                }),
+                row_template:        ::std::option::Option::Some(::std::boxed::Box::new(__row_template)),
+                row_index_signal_id: __row_index_id,
+                overscan:            1.0,
+                horizontal:          false,
+                style:               #style_tokens,
+                ref_fill:            ::std::option::Option::None,
             }
         }
     }

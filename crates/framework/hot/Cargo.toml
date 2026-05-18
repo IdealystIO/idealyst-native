@@ -30,13 +30,17 @@ hot = ["dep:subsecond"]
 # user-dylib AAS architecture needs more design work. Feature is
 # declared so consumers can stub in the dep when ready, but the
 # module isn't implemented yet.
-diff = ["hot", "dep:object", "dep:memmap2"]
+diff = ["hot", "dep:object", "dep:memmap2", "dep:subsecond-types"]
 
 [dependencies]
 # Upstream hot-patch runtime. Optional so the feature off-state has
 # zero deps. We re-export a subset under `hot::*` so consumers don't
 # need to depend on `subsecond` directly.
 subsecond = { version = "0.7", optional = true }
+# JumpTable + AddressMap struct definitions. Pulled in unconditionally
+# with `subsecond` (it re-exports JumpTable from this crate), but we
+# also need direct access to construct one in the diff generator.
+subsecond-types = { version = "0.7", optional = true }
 # Symbol-table parsing for the jump-table diff. Mach-O on macOS,
 # ELF on Linux. Pulled in only by the host wrapper, never by user
 # code.

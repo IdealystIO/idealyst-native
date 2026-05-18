@@ -522,6 +522,7 @@ fn main() -> std::io::Result<()> {{
                 "--target-dir".into(),
                 "{workspace_target}".into(),
             ],
+            cwd: None,
         }},
         watch_paths: vec![user_src],
         debounce: std::time::Duration::from_millis(100),
