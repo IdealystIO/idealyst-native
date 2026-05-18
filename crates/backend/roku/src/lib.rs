@@ -774,7 +774,14 @@ impl Backend for RokuBackend {
                 row_index_signal_id: row_index_signal_id.map(SignalId),
                 dynamic_fields,
                 row_template,
-                item_size: 60.0,
+                // V1: hard-coded scroll-axis cell size. For
+                // vertical lists this is row height; for
+                // horizontal carousels we interpret it as the
+                // row's height (cell width is then derived from
+                // viewport / visibleItems). A future iteration
+                // should read this from the row template's style
+                // (height for vertical, width for horizontal).
+                item_size: 200.0,
                 horizontal,
             });
         } else {

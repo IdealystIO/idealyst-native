@@ -240,36 +240,62 @@ fn load_capture(capture_dir: &Path, crate_name: &str) -> Result<CapturedInvocati
 /// `--json=artifacts` is in the captured args (cargo always passes
 /// it).
 fn run_rustc_emit_obj(captured: &CapturedInvocation) -> Result<Vec<PathBuf>> {
-    // Build a modified arg vector: replace `--emit=...` with
-    // `--emit=obj` and force a single output directory.
+    // Build a modified arg vector: replace `--emit=link,…` with
+    // `--emit=obj` so rustc skips linking and writes raw object
+    // files. We deliberately preserve `--crate-type` — rustc
+    // needs at least one (otherwise it defaults to `bin` and
+    // complains the crate has no `main`). Keep only the FIRST
+    // crate-type (typically `rlib`) so rustc emits a single
+    // codegen layout; cdylib's extra outputs aren't useful for
+    // our stub-linker path.
     let mut args: Vec<String> = Vec::with_capacity(captured.args.len() + 2);
+    let mut emit_set = false;
+    let mut crate_type_set = false;
     let mut i = 0;
     while i < captured.args.len() {
         let a = &captured.args[i];
         if a == "--emit" {
-            // Skip the value too.
             args.push("--emit=obj".to_string());
+            emit_set = true;
             i += 2;
             continue;
         }
         if a.starts_with("--emit=") {
             args.push("--emit=obj".to_string());
+            emit_set = true;
             i += 1;
             continue;
         }
-        // Drop crate-type — `--emit=obj` doesn't link anyway, but
-        // keeping cdylib/rlib confuses rustc into producing the
-        // wrong layout. We want plain object files.
         if a == "--crate-type" {
+            if !crate_type_set {
+                args.push("--crate-type".to_string());
+                if let Some(v) = captured.args.get(i + 1) {
+                    // Force `rlib` regardless of cargo's preference
+                    // — rlib produces a clean .o emission shape.
+                    let _ = v;
+                    args.push("rlib".to_string());
+                }
+                crate_type_set = true;
+            }
             i += 2;
             continue;
         }
         if a.starts_with("--crate-type=") {
+            if !crate_type_set {
+                args.push("--crate-type=rlib".to_string());
+                crate_type_set = true;
+            }
             i += 1;
             continue;
         }
         args.push(a.clone());
         i += 1;
+    }
+    if !emit_set {
+        args.push("--emit=obj".to_string());
+    }
+    if !crate_type_set {
+        args.push("--crate-type=rlib".to_string());
     }
 
     let mut cmd = Command::new(&captured.rustc);
@@ -278,35 +304,46 @@ fn run_rustc_emit_obj(captured: &CapturedInvocation) -> Result<Vec<PathBuf>> {
     for (k, v) in &captured.env {
         cmd.env(k, v);
     }
-    // Capture stdout to find emitted artifact paths via JSON
-    // messages. Stderr goes to our stderr for visibility on errors.
+    // rustc with `--error-format=json` writes ALL its JSON messages
+    // (diagnostics AND artifact notifications) to stderr; stdout
+    // stays empty. So we capture stderr, pipe a copy of any
+    // *rendered* diagnostic lines back to the user's terminal, and
+    // parse the JSON to find emitted `.o` paths.
     let output = cmd
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::piped())
         .output()
         .context("spawn rustc for patch object emission")?;
     if !output.status.success() {
+        // Echo stderr to the user before failing — they'll want to
+        // see the compile error.
+        let _ = std::io::Write::write_all(&mut std::io::stderr(), &output.stderr);
         anyhow::bail!("rustc --emit=obj exited with {}", output.status);
     }
 
-    // Parse each line of stdout as JSON; collect `artifact` entries
-    // whose path ends in `.o`.
     let mut out = Vec::new();
-    for line in output.stdout.split(|b| *b == b'\n') {
+    for line in output.stderr.split(|b| *b == b'\n') {
         if line.is_empty() {
             continue;
         }
         let Ok(val) = serde_json::from_slice::<serde_json::Value>(line) else {
             continue;
         };
-        if val.get("$message_type").and_then(|v| v.as_str()) != Some("artifact") {
-            continue;
-        }
-        let Some(path) = val.get("artifact").and_then(|v| v.as_str()) else {
-            continue;
-        };
-        if path.ends_with(".o") {
-            out.push(PathBuf::from(path));
+        match val.get("$message_type").and_then(|v| v.as_str()) {
+            Some("artifact") => {
+                let Some(path) = val.get("artifact").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                if path.ends_with(".o") {
+                    out.push(PathBuf::from(path));
+                }
+            }
+            Some("diagnostic") => {
+                if let Some(rendered) = val.get("rendered").and_then(|v| v.as_str()) {
+                    eprint!("{}", rendered);
+                }
+            }
+            _ => {}
         }
     }
     Ok(out)
@@ -332,12 +369,21 @@ fn parse_out_dir(captured: &CapturedInvocation) -> Option<PathBuf> {
 fn is_system_symbol(name: &str) -> bool {
     // Anything in `_dyld_*`, `_pthread_*`, `_dispatch_*`, plus a
     // handful of obvious libc primitives. The patch can keep these
-    // as lazy binds — dyld resolves them in <ms.
+    // as lazy binds — dyld resolves them against libSystem in <ms
+    // because `-lSystem` is on the final `ld` command line.
+    //
+    // `__Unwind_*` are the Itanium C++ ABI unwinder primitives —
+    // libunwind / libSystem provides them. `__tlv_*` are macOS
+    // thread-local-variable trampolines, also in libSystem. Both
+    // appear as undefined refs in nearly every Rust object file
+    // and never need to be host-resolved.
     name.starts_with("_dyld_")
         || name.starts_with("_pthread_")
         || name.starts_with("_dispatch_")
         || name.starts_with("__os_log")
         || name.starts_with("_objc_")
+        || name.starts_with("__Unwind_")
+        || name.starts_with("__tlv_")
         || matches!(
             name,
             "_malloc"

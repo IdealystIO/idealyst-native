@@ -364,6 +364,9 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "build-ios",
+ "object",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -30,6 +30,13 @@ thread_local! {
 pub fn start() {
     console_error_panic_hook::set_once();
 
+    // Register the web scheduler so framework_core::scheduling
+    // (microtasks, after_animation_frame, etc.) has a backend.
+    // Navigator/Drawer/Tab primitives invoke schedule_microtask
+    // during mount; without this the framework panics on first
+    // dispatch.
+    backend_web::install_scheduler();
+
     #[cfg(feature = "dev-hot-reload")]
     {
         dev_hot_reload::start_dev_client();

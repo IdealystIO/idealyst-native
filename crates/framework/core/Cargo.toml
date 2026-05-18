@@ -4,21 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# `dylib` crate-type is the linchpin of the AAS dylib hot-reload mode.
-# When the dev host is built with `-C prefer-dynamic`, dependents
-# resolve `framework-core` against `libframework_core.dylib` rather
-# than statically embedding the rlib. The same dylib is then a single
-# image dyld can re-resolve patch-dylib symbol references against —
-# which is what lets a patched user crate share the host's
-# `thread_local!` storage, statics, and runtime state without
-# falling foul of macOS's cross-image TLV restrictions.
-#
-# Native backends (iOS, Android, web) still get the `rlib` via
-# regular static linking (the default in cargo's selection algorithm
-# when `-C prefer-dynamic` is not in effect), so production binaries
-# pay nothing for this.
-[lib]
-crate-type = ["rlib", "dylib"]
+# Crate-type stays the cargo default (rlib only). The AAS dylib
+# hot-reload mode now uses a "fat bin + thin patch" architecture
+# (dx-style): the host bin statically links every framework crate
+# and is linked with `-Wl,-export_dynamic` so every internal
+# symbol is visible to the patch linker. Patches are dylibs whose
+# external references are resolved as ABSOLUTE jumps to the host
+# bin's symbol addresses — no dynamic linking against framework
+# crates at all. So no separate dylib output is needed here.
 
 [features]
 # When enabled, the framework records component/build/backend timing

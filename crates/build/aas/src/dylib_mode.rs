@@ -340,6 +340,10 @@ dev-server = {{ path = "{dev_server}" }}
 wire = {{ path = "{wire}" }}
 {user_name} = {{ path = "{user_path}" }}
 serde_json = "1"
+# Needed for `dlsym(RTLD_DEFAULT, "main")` at host startup — see
+# the host's `main.rs` for why we need the C-ABI `_main` runtime
+# address rather than Rust's `fn main`.
+libc = "0.2"
 "#,
         host_name = host_name,
         fcore = fcore.display(),
@@ -423,6 +427,11 @@ const PATCH_WORKSPACE_TARGET: &str = "{workspace_target}";
 /// so framework-core's compilation fingerprint stays equal to the
 /// one statically linked into this host bin.
 const PATCH_RUSTFLAGS: &str = "{rustflags}";
+/// AAS dylib-mode sub-workspace dir. The thin-link patch builder
+/// reads `host-symbols.json` from here and writes `host-base.txt`
+/// (our runtime `_main` address) into it on startup so subsequent
+/// patches can compute the ASLR slide.
+const MODE_DIR: &str = "{mode_dir}";
 
 fn main() -> std::io::Result<()> {{
     let addr = if let Some(a) = std::env::args().nth(1) {{
@@ -435,6 +444,33 @@ fn main() -> std::io::Result<()> {{
 
     // Propagate to child cargo invocations.
     std::env::set_var("RUSTFLAGS", PATCH_RUSTFLAGS);
+
+    // Publish our runtime C-ABI `_main` address so external linker
+    // processes (the watcher's `idealyst link-patch` step) can
+    // compute the ASLR slide. Critical subtlety: Rust's `main as
+    // usize` returns the address of *the Rust `fn main` you
+    // declared*, NOT the C-ABI `_main` entry that dyld jumps to.
+    // The host-symbols.json file captures `_main`'s link-time
+    // address (the C-ABI one), so we have to query the same one
+    // at runtime — via `dlsym(RTLD_DEFAULT, "main")`.
+    let main_addr: usize = unsafe {{
+        let p = libc::dlsym(libc::RTLD_DEFAULT, b"main\0".as_ptr() as *const _);
+        if p.is_null() {{ 0 }} else {{ p as usize }}
+    }};
+    let path = std::path::Path::new(MODE_DIR).join("host-base.txt");
+    if let Err(e) = std::fs::write(&path, format!("0x{{:x}}\n", main_addr)) {{
+        eprintln!(
+            "[dylib-host] could not write host base to {{}}: {{}} — hot-reload patches will fail",
+            path.display(),
+            e
+        );
+    }} else {{
+        eprintln!(
+            "[dylib-host] runtime _main (C-ABI) = 0x{{:x}} → {{}}",
+            main_addr,
+            path.display()
+        );
+    }}
 
     // Spin up the framework reactive runtime against the recording
     // backend. The owner is kept in a `RefCell` so the per-tick
@@ -485,20 +521,15 @@ fn main() -> std::io::Result<()> {{
         command: RebuildCommand {{
             program: "{idealyst_bin}".into(),
             args: vec![
-                "rebuild-patch".into(),
+                "link-patch".into(),
                 "{mode_dir}".into(),
             ],
-            // Fast path: replay the rustc invocations captured by
-            // the initial build's `RUSTC_WRAPPER`, rebuilding just
-            // the user crate (`docs`) and the patch dylib directly
-            // — no cargo invocation, no fingerprint check, no host
-            // bin relink. Steady-state cost is the cost of one
-            // user-crate rustc + one patch-dylib link (~250–400 ms).
-            //
-            // The full `cargo build -p host -p patch` is run by
-            // `idealyst build --aas` initially and seeds the
-            // `.rustc-args/` capture dir; this fast path consumes
-            // that.
+            // Thin-link path: emit the user crate's `.rcgu.o`
+            // files, synthesize a stub object whose entries jump
+            // to the running host bin's addresses, and link a
+            // minimal patch dylib with no rlib inputs and no
+            // dynamic dep on framework crates. The resulting
+            // patch is tens of kilobytes and dlopens in <30 ms.
             cwd: None,
         }},
         watch_paths: vec![PathBuf::from("{user_src}")],
@@ -855,20 +886,27 @@ fn capture_host_symbols(host_bin: &Path, out: &Path) -> Result<()> {
 ///    .dylib` (a separate dyld image), not against the host bin's
 ///    private symbols. We pay nothing for the simpler symbol surface.
 fn rustflags_for_dylib_mode() -> Result<String> {
-    let base = rustflags_base()?;
-    // `-Wl,-export_dynamic` exposes the host bin's internal symbols
-    // in its dynamic symbol table. Required for two distinct
-    // reasons:
-    // 1. `dlsym(RTLD_DEFAULT, "main")` inside `subsecond::aslr_reference`
-    //    needs to find the bin's `main`.
-    // 2. Future stub-based patch dylibs need every framework symbol
-    //    they reference to be discoverable via the bin's symbol
-    //    table (we read it from disk during the initial build and
-    //    bake absolute addresses into each patch's trampolines).
-    Ok(format!("{base} -C link-arg=-Wl,-export_dynamic"))
+    // ARCHITECTURE: dx-style "fat bin + thin patch" hot reload.
+    //
+    // We deliberately statically link every framework crate into
+    // the host bin (no `-C prefer-dynamic`) — that's what makes
+    // every framework symbol live inside the bin's text section,
+    // visible to the bin's dynamic-symbol export table. The patch
+    // dylib resolves its references against those addresses via
+    // synthesized stubs (see `cli::cmd::link_patch`).
+    //
+    // `-Wl,-export_dynamic` is the key link flag: it expands the
+    // bin's export table to include every internal symbol so a
+    // separate process (the patch linker) can read them out of
+    // the bin file. Without this, only `main` and the
+    // user-declared `pub extern "C"` symbols would be exported.
+    let libdir = rust_lib_dir()?;
+    Ok(format!(
+        "-C link-arg=-Wl,-rpath,{libdir} -C link-arg=-Wl,-export_dynamic"
+    ))
 }
 
-fn rustflags_base() -> Result<String> {
+fn rust_lib_dir() -> Result<String> {
     // Resolve the host's libstd dylib directory.
     //
     // It lives at `<sysroot>/lib/rustlib/<target-triple>/lib/`, NOT
@@ -896,10 +934,7 @@ fn rustflags_base() -> Result<String> {
         .lines()
         .find_map(|l| l.strip_prefix("host: ").map(str::to_string))
         .context("rustc -vV did not print a `host:` line")?;
-    let libdir = format!("{}/lib/rustlib/{}/lib", sysroot, host_triple);
-    Ok(format!(
-        "-C prefer-dynamic -C link-arg=-Wl,-rpath,{libdir}"
-    ))
+    Ok(format!("{}/lib/rustlib/{}/lib", sysroot, host_triple))
 }
 
 // ---------------------------------------------------------------------------

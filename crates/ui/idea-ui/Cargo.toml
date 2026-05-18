@@ -6,13 +6,7 @@ license.workspace = true
 description = "Cross-platform UI component library for the idealyst framework"
 
 [lib]
-# `dylib` is emitted in addition to `rlib` so the AAS dylib hot-reload
-# mode's patch dylib can link to idea-ui DYNAMICALLY instead of
-# statically embedding it. The patch ends up an order of magnitude
-# smaller (and dlopens an order of magnitude faster) — see the
-# notes in `framework-core/Cargo.toml` for the wider architecture.
-# Native backends still pick the `rlib` for static linking.
-crate-type = ["rlib", "dylib"]
+crate-type = ["rlib"]
 
 [features]
 # Off by default. When on, every component's `*Props` gets a

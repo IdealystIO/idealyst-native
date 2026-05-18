@@ -19,8 +19,7 @@
 //! can invoke them via the `ui!` DSL.
 
 use framework_core::{
-    component, signal, ui, DrawerHandle, DrawerItem, DrawerNavigator, HeaderButton, Primitive, Ref,
-    ScreenOptions, Signal,
+    component, signal, ui, DrawerHandle, DrawerItem, DrawerNavigator, Primitive, Ref, Signal,
 };
 use idea_ui::{install_idea_theme, light_theme};
 
@@ -45,29 +44,6 @@ use shell::sidebar_builder;
 #[cfg(target_arch = "wasm32")]
 use shell::web_layout;
 
-/// Returns an `.options(...)` closure for `route` that titles the
-/// screen and installs a hamburger button on the leading side that
-/// toggles the drawer. Used for every screen so native backends
-/// (iOS UINavigationBar, Android ActionBar) get a real platform
-/// header with a hamburger trigger — no hand-rolled chrome needed.
-fn drawer_header(
-    title: &'static str,
-    drawer: Ref<DrawerHandle>,
-) -> impl Fn(&()) -> ScreenOptions + 'static {
-    move |_| {
-        // Build a fresh hamburger button per call: HeaderButton's
-        // `on_press` is an `Rc<dyn Fn()>`, so cloning would share
-        // the same callback — fine in practice, but a fresh
-        // closure is simpler and equally cheap.
-        let hamburger = HeaderButton::new("line.3.horizontal", move || {
-            if let Some(d) = drawer.get() {
-                d.toggle();
-            }
-        });
-        ScreenOptions::new().title(title).header_left(hamburger)
-    }
-}
-
 #[component]
 pub fn app() -> Primitive {
     install_idea_theme(light_theme());
@@ -78,11 +54,10 @@ pub fn app() -> Primitive {
     let drawer: Ref<DrawerHandle> = Ref::new();
 
     // Each `.item(...)` registers a drawer/sidebar entry; each
-    // `.screen(...)` wires the matching page renderer; each
-    // `.options(...)` sets the native nav-bar title + hamburger.
-    // The two lists must agree (every item also gets a screen) but
-    // they are declared separately so a screen can be deep-linkable
-    // without appearing in the drawer.
+    // `.screen(...)` wires the matching page renderer. Both lists
+    // share the same routes (every item has a screen) but they are
+    // declared separately so screens can be deep-linkable without
+    // appearing in the drawer.
     let builder = DrawerNavigator::new(&OVERVIEW_ROUTE)
         .item(OVERVIEW_ROUTE, DrawerItem::new("Overview"))
         .item(QUICKSTART_ROUTE, DrawerItem::new("Quickstart"))
@@ -106,28 +81,14 @@ pub fn app() -> Primitive {
         .screen(MACROS_ROUTE, move |_| pages::macros_page::page())
         .screen(CLI_ROUTE, move |_| pages::cli::page())
         .screen(PLATFORMS_ROUTE, move |_| pages::platforms::page())
-        .options(OVERVIEW_ROUTE, drawer_header("Overview", drawer))
-        .options(QUICKSTART_ROUTE, drawer_header("Quickstart", drawer))
-        .options(COMPONENTS_ROUTE, drawer_header("Components", drawer))
-        .options(REACTIVITY_ROUTE, drawer_header("Reactivity", drawer))
-        .options(UI_DSL_ROUTE, drawer_header("UI DSL", drawer))
-        .options(PRIMITIVES_ROUTE, drawer_header("Primitives", drawer))
-        .options(STYLES_ROUTE, drawer_header("Styles & Themes", drawer))
-        .options(NAVIGATION_ROUTE, drawer_header("Navigation", drawer))
-        .options(MACROS_ROUTE, drawer_header("Macros", drawer))
-        .options(CLI_ROUTE, drawer_header("CLI", drawer))
-        .options(PLATFORMS_ROUTE, drawer_header("Platforms", drawer))
         // Pin the drawer above 900px (sidebar mode on desktop web);
         // below that it slides in as an overlay.
         .pinned_above(900)
         .sidebar(sidebar_builder(is_dark))
         .bind(drawer);
 
-    // Web is the exception: it has no native drawer chrome, so we
-    // place the pre-built sidebar beside the outlet ourselves. iOS,
-    // Android, and other native backends draw their own drawer
-    // chrome (UINavigationBar / ActionBar + drawer panel) from the
-    // screen options above and ignore this layout closure entirely.
+    // Web layout places the pre-built sidebar beside the outlet;
+    // native backends draw their own drawer chrome and ignore this.
     #[cfg(target_arch = "wasm32")]
     let builder = builder.layout(web_layout());
 

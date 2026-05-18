@@ -102,7 +102,16 @@ stylesheet! {
         base(t) {
             flex_direction: FlexDirection::Column,
             gap: Length::Px(24.0),
+            // TV safe zone — Roku design guidelines recommend 5%
+            // inset on each axis so content avoids the bezel /
+            // overscan area. With Percent(100) on a Virtualizer
+            // anchor inside this page, the carousel sizes to the
+            // inset content area automatically (no per-component
+            // padding needed).
             padding_top: Length::Px(60.0),
+            padding_bottom: Length::Px(60.0),
+            padding_left: Length::Px(80.0),
+            padding_right: Length::Px(80.0),
             align_items: AlignItems::Center,
             justify_content: JustifyContent::FlexStart,
             background: t.bg.clone(),
@@ -205,13 +214,27 @@ stylesheet! {
 // `background` + `color` + `font_size` off this stylesheet and
 // bakes them into the generated item component's init() — so
 // each Roku MarkupList/RowList cell renders as a colored card
-// with centered text.
+// with centered text. Theme-aware: cards use the active theme's
+// accent color (fallback baked into the BS at snapshot time).
 stylesheet! {
     pub RepeatRow<Theme> {
-        base(_t) {
+        base(t) {
+            font_size: Length::Px(96.0),
+            font_weight: FontWeight::Bold,
+            color: t.bg.clone(),
+            background: t.accent.clone(),
+        }
+    }
+}
+
+// Section header above each carousel row — "Trending",
+// "Recently Added", etc.
+stylesheet! {
+    pub RowLabel<Theme> {
+        base(t) {
             font_size: Length::Px(40.0),
-            color: "#0F1115",
-            background: "#34D399",
+            color: t.fg.clone(),
+            font_weight: FontWeight::Bold,
         }
     }
 }
@@ -410,96 +433,49 @@ pub fn app() -> Primitive {
         ],
     );
 
-    let count: Signal<i32> = signal!(0);
-    // A `Signal<Vec<i32>>` — fibonacci-ish seed list. The whole
-    // Vec round-trips through `serde_json::Value` to the device,
-    // where BS keeps it as an `roArray` and the `#[method]`s
-    // (`items_count` / `item_at`) read from it directly. Mutating
-    // this signal (replacing the entire Vec via `items.set(...)`)
-    // would reactively re-render every visible row + reconcile
-    // row count.
-    let items: Signal<Vec<i32>> = signal!(vec![1, 2, 3, 5, 8, 13, 21]);
+    // Four independent data rails. Each one is its own
+    // `Signal<Vec<i32>>`; the `items_count` + `item_at` methods
+    // are generic over the signal they're called against, so the
+    // same #[method] pair drives every row. Mutating any one
+    // signal reactively repopulates only that carousel.
+    let trending: Signal<Vec<i32>> = signal!(vec![1, 2, 3, 5, 8, 13, 21, 34, 55]);
+    let recent: Signal<Vec<i32>> = signal!(vec![10, 20, 30, 40, 50, 60, 70, 80]);
+    let top_picks: Signal<Vec<i32>> = signal!(vec![100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]);
+    let popular: Signal<Vec<i32>> = signal!(vec![7, 14, 21, 28, 35, 42, 49, 56, 63, 70]);
 
     ui! {
         View(style = page_style()) {
             Text(style = title_style()) { "Reactivity Demo" }
 
-            // for-loop in `ui!{}` — the macro expands this into
-            // three sibling `Text` nodes at snapshot time. Pip
-            // glyphs render statically; they're here to prove the
-            // ui-level for syntax round-trips through the
-            // snapshot pipeline.
-            View(style = step_pip_row_style()) {
-                for _ in 0..5 {
-                    Text(style = step_pip_style()) { "•" }
-                }
-            }
+            // ----- Row 1: Trending -----
+            Text(style = row_label_style()) { "Trending" }
+            for i in items_count(trending) {
+                Text(style = repeat_row_style()) { item_at(trending, i) }
+            }.with_style(repeat_row_container_style()).horizontal(true)
 
-            Text(style = counter_style()) { count_value(count) }
+            // ----- Row 2: Recently Added -----
+            Text(style = row_label_style()) { "Recently Added" }
+            for i in items_count(recent) {
+                Text(style = repeat_row_style()) { item_at(recent, i) }
+            }.with_style(repeat_row_container_style()).horizontal(true)
 
-            View(style = meta_row_style()) {
-                Text(style = meta_key_style()) { "Parity:" }
-                Text(style = meta_value_style()) { parity_label(count) }
-            }
+            // ----- Row 3: Top Picks -----
+            Text(style = row_label_style()) { "Top Picks for You" }
+            for i in items_count(top_picks) {
+                Text(style = repeat_row_style()) { item_at(top_picks, i) }
+            }.with_style(repeat_row_container_style()).horizontal(true)
 
-            View(style = meta_row_style()) {
-                Text(style = meta_key_style()) { "Status:" }
-                Text(style = meta_value_style()) { status_label(count) }
-            }
-
-            View(style = meta_row_style()) {
-                Text(style = meta_key_style()) { "Sum 1..N:" }
-                Text(style = meta_value_style()) { sum_to(count) }
-            }
-
-            // Structural reactivity via plain `if` / `else`. The
-            // `ui!` macro detects the call shape `is_even(count)`,
-            // builds a `Derived<bool>` with structured metadata,
-            // and emits a `Primitive::When` — same Roku wire op
-            // (`BindWhen`) that `bind_when!` used to produce.
-            if is_even(count) {
-                Text(style = badge_even_style()) { "★ EVEN ★" }
-            } else {
-                Text(style = badge_odd_style()) { "✦ ODD ✦" }
-            }
-
-            // Plain `match` over a `#[method]` call. `ui!` detects
-            // the structured call shape and emits a
-            // `Primitive::Switch` with literal-keyed arms — same
-            // Roku wire op (`BindSwitch`) that `bind_switch!`
-            // produced.
-            match count_bucket(count) {
-                0 => { Text(style = status_badge_style()) { "○ press +1 to begin"     } },
-                1 => { Text(style = status_badge_style()) { "◔ one tick on the clock" } },
-                2 => { Text(style = status_badge_style()) { "◐ warming up"            } },
-                3 => { Text(style = status_badge_style()) { "◕ in the groove"         } },
-                _ => { Text(style = status_badge_style()) { "● keep climbing"         } },
-            }
-
-            // Typed-data Virtualizer over a `Signal<Vec<i32>>`,
-            // lowered to a horizontal carousel. `.horizontal(true)`
-            // flips the wire op so the Roku backend picks RowList
-            // over MarkupList — D-pad left/right scrolls the
-            // strip, up/down exits to the next focusable.
-            // `items_count(items)` drives item count; each item
-            // reads `item_at(items, i)` so the data signal and
-            // synthetic row-index signal are inputs. Mutating
-            // `items` reactively re-fires every visible cell.
-            for i in items_count(items) {
-                Text(style = repeat_row_style()) { item_at(items, i) }
+            // ----- Row 4: Popular -----
+            // Fourth row pushes the page taller than the visible
+            // viewport, so the BS-side `maybeScrollToFocused`
+            // shifts the page vertically when D-pad focus lands
+            // on this carousel or the Theme button below.
+            Text(style = row_label_style()) { "Popular Right Now" }
+            for i in items_count(popular) {
+                Text(style = repeat_row_style()) { item_at(popular, i) }
             }.with_style(repeat_row_container_style()).horizontal(true)
 
             View(style = button_row_style()) {
-                Button(
-                    label = "-1",
-                    on_click = decrement(count) => count,
-                    style = counter_button_style(),
-                )
-                Button(
-                    label = "+1",
-                    on_click = increment(count) => count,
-                    style = counter_button_style(),
-                )
                 Button(
                     label = "Theme",
                     on_click = next_theme(theme) => theme,

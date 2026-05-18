@@ -71,6 +71,12 @@ sub reactivityInit()
     ' top-to-bottom traversal for free.
     m.focusables = createObject("roArray", 4, true)
     m.focusedIndex = -1
+    ' Vertical scroll offset (in pixels) applied to the page root
+    ' so focused rows off the bottom of the viewport can be
+    ' brought into view. Driven by `maybeScrollToFocused` after
+    ' every focus change. 0 means no scroll (page sits at scene
+    ' origin).
+    m.pageScrollY = 0
 
     ' Fresh-id allocator for cloned `bind_repeat!` row instances.
     ' The snapshot pipeline mints ids starting at 1 and tops out
@@ -1253,6 +1259,7 @@ sub applyFocusVisuals()
             end if
         end if
     end for
+    maybeScrollToFocused()
 end sub
 
 ' Back-compat shim. Old code referenced `applyButtonFocusVisuals`;
@@ -1260,4 +1267,61 @@ end sub
 ' working without changes.
 sub applyButtonFocusVisuals()
     applyFocusVisuals()
+end sub
+
+' Scroll the page so the currently-focused focusable is fully
+' inside the visible viewport. We translate the page node
+' (`m.rootId`) on the y-axis — Layout.brs computes everyone's
+' frames assuming the page sits at scene (0, 0), so a negative
+' translation shifts the whole grid up while keeping the rows'
+' relative layout intact. Symmetric for moving focus up: if the
+' focused row is partially above the viewport, we scroll down.
+'
+' This is the "scroll-to-focused" pattern every TV UI uses; it
+' becomes the right thing because the framework guarantees layout
+' positions are stable across re-renders.
+sub maybeScrollToFocused()
+    if m.focusedIndex < 0 then return
+    if m.rootId = invalid then return
+    if m.layoutFrames = invalid then return
+
+    f = m.focusables[m.focusedIndex]
+    targetId = invalid
+    if f.kind = "list" then
+        targetId = f.anchor_id
+    else if f.kind = "action" then
+        targetId = f.btn_id
+    end if
+    if targetId = invalid then return
+
+    frame = m.layoutFrames[targetId.ToStr()]
+    if frame = invalid then return
+
+    pageScrollY = m.pageScrollY
+    if pageScrollY = invalid then pageScrollY = 0
+
+    ' Viewport bounds in scene coords. We leave a small margin so
+    ' the focused row isn't kissing the screen edges.
+    visibleTop = 40
+    visibleBottom = 1040
+    margin = 16
+
+    ' Where the focused row currently lives on screen, accounting
+    ' for the page's current scroll offset.
+    rowTopScene = frame.y - pageScrollY
+    rowBottomScene = rowTopScene + frame.height
+
+    if rowBottomScene > visibleBottom then
+        pageScrollY = pageScrollY + (rowBottomScene - visibleBottom + margin)
+    else if rowTopScene < visibleTop then
+        pageScrollY = pageScrollY - (visibleTop - rowTopScene + margin)
+        if pageScrollY < 0 then pageScrollY = 0
+    end if
+
+    if pageScrollY = m.pageScrollY then return
+    m.pageScrollY = pageScrollY
+    pageNode = m.nodes[m.rootId.ToStr()]
+    if pageNode <> invalid then
+        pageNode.translation = [0, 0 - pageScrollY]
+    end if
 end sub

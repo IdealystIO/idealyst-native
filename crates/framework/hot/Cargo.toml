@@ -16,17 +16,12 @@ license.workspace = true
 # workspace removes every reference; deleting this crate then is
 # clean.
 
-# `dylib` is critical for the AAS dylib hot-reload mode: subsecond's
-# global `APP_JUMP_TABLE` static is what `apply_patch` writes and
-# what `HotFn::call` reads. If subsecond gets compiled twice (once
-# statically into the bin, once statically into `framework_core
-# .dylib`) the two copies own *separate* APP_JUMP_TABLEs — the bin
-# writes one, the dispatcher reads the other, and patches do nothing.
-# Compiling `framework-hot` itself as a dylib pins subsecond inside
-# one image, so the bin + framework-core dynamically link against
-# it and share a single jump table.
-[lib]
-crate-type = ["rlib", "dylib"]
+# Crate-type stays rlib only. With the dx-style "fat bin + thin
+# patch" architecture, framework-hot is statically linked once
+# into the host bin — there's only one copy of subsecond's
+# global `APP_JUMP_TABLE`. Patch dylibs reference subsecond's
+# symbols (and `framework_hot::call` itself) via absolute-address
+# stubs that jump back into the host bin.
 
 [features]
 # Enables the actual hot-reload substrate. Off by default — when off,

@@ -485,7 +485,10 @@ objc2-ui-kit = {{ version = "0.2", features = ["UIResponder", "UIView"] }}
 
 #![cfg(target_os = "ios")]
 
-use backend_ios_mobile::IosBackend;
+// Cargo package `backend-ios-mobile` ships under `[lib].name =
+// "backend_ios"` to preserve the historical `libbackend_ios.a`
+// filename Xcode's link step expects.
+use backend_ios::IosBackend;
 use objc2::rc::Retained;
 use objc2_foundation::MainThreadMarker;
 use objc2_ui_kit::UIView;
@@ -521,7 +524,7 @@ pub unsafe extern "C" fn ios_main(root_view: *mut std::ffi::c_void) {{
     backend.set_host_root(view);
     let backend = Rc::new(RefCell::new(backend));
     // Lets navigator dispatch closures re-run layout after pushes/replaces.
-    backend_ios_mobile::install_global_self(Rc::downgrade(&backend));
+    backend_ios::install_global_self(Rc::downgrade(&backend));
 
     let owner = framework_core::render(backend, {lib}::app());
     OWNER.with(|slot| *slot.borrow_mut() = Some(owner));
