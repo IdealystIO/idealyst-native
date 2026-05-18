@@ -330,16 +330,21 @@ fn main() -> std::io::Result<()> {{
         }};
 
         match msg {{
-            SidecarIn::Event(app_to_dev) => dispatch_app_to_dev(&recorder, app_to_dev),
+            SidecarIn::Event(app_to_dev) => {{
+                eprintln!("[aas-app] inbound event: {{:?}}", std::mem::discriminant(&app_to_dev));
+                dispatch_app_to_dev(&recorder, app_to_dev);
+            }}
         }}
 
         // Drain any commands the event produced. `commands_since` is
         // append-only relative to the recorder's log, so the cursor
         // advances by exactly the number of new commands.
         let count_now = recorder.command_count();
+        eprintln!("[aas-app] after dispatch: cursor={{}} count={{}}", outbound_cursor, count_now);
         if count_now > outbound_cursor {{
             let new_cmds = recorder.commands_since(outbound_cursor);
             outbound_cursor = count_now;
+            eprintln!("[aas-app] writing {{}} new commands", new_cmds.len());
             write_frame(&mut out, &SidecarOut::Commands(new_cmds))?;
             let _ = out.flush();
         }}
@@ -355,7 +360,8 @@ fn dispatch_app_to_dev(recorder: &WireRecordingBackend, msg: wire::AppToDev) {{
     match msg {{
         Hello {{ .. }} => {{}}
         Event {{ handler, args }} => {{
-            let _ = recorder.dispatch_event(handler, args);
+            let dispatched = recorder.dispatch_event(handler, args);
+            eprintln!("[aas-app] dispatch_event handler={{:?}} dispatched={{}}", handler, dispatched);
         }}
         StateChanged {{ node, bit, on }} => {{
             let _ = recorder.dispatch_state(node, bit, on);

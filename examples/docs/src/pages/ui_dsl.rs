@@ -9,7 +9,8 @@ use crate::shell::{
 
 pub fn page() -> Primitive {
     ui! {
-        Stack(gap = StackGap::Xl) {
+        ScrollView {
+            Stack(gap = StackGap::Xl) {
             PageHeader(
                 title = "UI DSL".to_string(),
                 description = "The `ui!` macro: declarative UI trees that lower to plain Rust calls.".to_string(),
@@ -116,6 +117,7 @@ pub fn page() -> Primitive {
                         `Vec<Primitive>` (inlined) — so you can mix precomputed nodes, \
                         conditional `Some` blocks, and helper-built lists in one place.".to_string(),
             )
+        }
         }
     }
 }

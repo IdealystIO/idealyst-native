@@ -44,18 +44,21 @@ pub(crate) fn create(b: &mut AndroidBackend, horizontal: bool) -> GlobalRef {
             .unwrap();
         let orient = if horizontal { 0 } else { 1 };
         let _ = env.call_method(&inner, "setOrientation", "(I)V", &[JValue::Int(orient)]);
+        // Apply defaults BEFORE addView so the parent's
+        // `generateLayoutParams` can convert the MarginLayoutParams
+        // shape into its expected subtype (FrameLayout.LayoutParams
+        // for ScrollView, etc.). Applying after addView would
+        // overwrite the freshly-converted subclass LP with a bare
+        // MarginLayoutParams and crash FrameLayout.onMeasure on the
+        // downcast.
+        apply_default_layout_params(env, &outer);
+        apply_default_layout_params(env, &inner);
         let _ = env.call_method(
             &outer,
             "addView",
             "(Landroid/view/View;)V",
             &[JValue::Object(&inner)],
         );
-        // Defaults on both so width/height behave before any style
-        // applies. Style application targets the outer (the
-        // framework node) — that's what users size with `width:
-        // 100%` etc. The inner is just a content holder.
-        apply_default_layout_params(env, &outer);
-        apply_default_layout_params(env, &inner);
         (
             env.new_global_ref(outer).unwrap(),
             env.new_global_ref(inner).unwrap(),

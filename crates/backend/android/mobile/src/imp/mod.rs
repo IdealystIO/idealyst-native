@@ -408,9 +408,9 @@ impl Backend for AndroidBackend {
         navigator: &Self::Node,
         screen: Self::Node,
         scope_id: u64,
-        _options: framework_core::ScreenOptions,
+        options: framework_core::ScreenOptions,
     ) {
-        primitives::tab_drawer::attach_initial(self, navigator, screen, scope_id)
+        primitives::tab_drawer::attach_initial(self, navigator, screen, scope_id, options)
     }
 
     fn release_tab_navigator(&mut self, node: &Self::Node) {
@@ -437,9 +437,9 @@ impl Backend for AndroidBackend {
         navigator: &Self::Node,
         screen: Self::Node,
         scope_id: u64,
-        _options: framework_core::ScreenOptions,
+        options: framework_core::ScreenOptions,
     ) {
-        primitives::tab_drawer::attach_initial(self, navigator, screen, scope_id)
+        primitives::tab_drawer::attach_initial(self, navigator, screen, scope_id, options)
     }
 
     fn drawer_navigator_attach_sidebar(

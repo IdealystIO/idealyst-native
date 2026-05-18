@@ -10,7 +10,8 @@ use crate::shell::{pageheader, PageHeaderProps};
 
 pub fn page() -> Primitive {
     ui! {
-        Stack(gap = StackGap::Xl) {
+        ScrollView {
+            Stack(gap = StackGap::Xl) {
             PageHeader(
                 title = "Idealyst".to_string(),
                 description = "A Rust framework for building cross-platform native applications \
@@ -64,6 +65,7 @@ pub fn page() -> Primitive {
                     tone = BodyTone::Muted,
                 )
             }
+        }
         }
     }
 }

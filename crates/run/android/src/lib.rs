@@ -33,6 +33,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use build_ios::Manifest;
 
+mod kotlin_runtime;
+
 const MAIN_ACTIVITY_LOCAL_JAVA: &str = include_str!("../templates/MainActivity.java");
 const NATIVE_BRIDGE_LOCAL_JAVA: &str = include_str!("../templates/NativeBridge.java");
 const ANDROID_MANIFEST_LOCAL_XML: &str = include_str!("../templates/AndroidManifest.xml");
@@ -208,19 +210,52 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
         ]),
     )?;
 
-    // ── 5. javac → .class ───────────────────────────────────────
+    // ── 5. Prepare AAR resources + Kotlin runtime ────────────────
+    // The backend ships a small Kotlin runtime (RustDrawerLayout,
+    // RustNavigator, listener shims, …) that the JNI code reaches via
+    // `env.find_class(...)`. kotlinc compiles those alongside the
+    // user's Java sources, with the needed androidx classes.jars on
+    // the classpath. We also extract each AAR's `res/` and compile it
+    // to a `.flata` so the aapt2 link step can produce a real resource
+    // table + R.java files (DrawerLayout's `obtainStyledAttributes`
+    // refuses zero IDs, so stub R classes don't work).
+    let runtime = kotlin_runtime::build_runtime(&build_dir, &android_jar, &build_tools)?;
+
+    // ── 6. aapt2 link → APK + generated R.java ───────────────────
+    let unsigned_apk = build_dir.join("unsigned.apk");
+    run_aapt2_link(
+        &build_tools,
+        &manifest_xml,
+        &android_jar,
+        &runtime.aar_resource_flats,
+        &runtime.aar_extra_packages,
+        &runtime.r_java_dir,
+        &unsigned_apk,
+    )?;
+
+    // ── 7. javac (user .java + generated R.java) ─────────────────
     let class_dir = build_dir.join("classes");
     fs::create_dir_all(&class_dir)?;
-    compile_java(&java_dir, &class_dir, &android_jar)?;
+    let mut java_classpath = vec![android_jar.clone()];
+    java_classpath.push(runtime.kotlin_class_dir.clone());
+    java_classpath.extend(runtime.androidx_jars.iter().cloned());
+    java_classpath.push(runtime.kotlin_stdlib_jar.clone());
+    compile_java_dirs(&[java_dir.clone(), runtime.r_java_dir.clone()], &class_dir, &java_classpath)?;
 
-    // ── 6. d8 → classes.dex ─────────────────────────────────────
+    // ── 8. d8 → classes.dex ─────────────────────────────────────
+    // Hand d8 everything that needs to land in the APK as dex:
+    //   - user-Java + R.java .class files
+    //   - kotlin-runtime .class files
+    //   - androidx classes.jars (one per artifact)
+    //   - kotlin-stdlib.jar
     let dex_dir = build_dir.join("dex");
     fs::create_dir_all(&dex_dir)?;
-    run_d8(&build_tools, &class_dir, &dex_dir, &android_jar)?;
-
-    // ── 7. aapt2 link → manifest-only APK ───────────────────────
-    let unsigned_apk = build_dir.join("unsigned.apk");
-    run_aapt2_link(&build_tools, &manifest_xml, &android_jar, &unsigned_apk)?;
+    let mut dex_inputs: Vec<PathBuf> = Vec::new();
+    dex_inputs.push(class_dir.clone());
+    dex_inputs.push(runtime.kotlin_class_dir.clone());
+    dex_inputs.extend(runtime.androidx_jars.iter().cloned());
+    dex_inputs.push(runtime.kotlin_stdlib_jar.clone());
+    run_d8(&build_tools, &dex_inputs, &dex_dir, &android_jar)?;
 
     // ── 8. zip in classes.dex + lib/<abi>/<so> ──────────────────
     splice_into_apk(&unsigned_apk, &dex_dir, &so, &build_dir)?;
@@ -351,17 +386,28 @@ fn pick_latest_dir(parent: &Path) -> Result<PathBuf> {
 // Build pipeline
 // ---------------------------------------------------------------------------
 
-fn compile_java(java_dir: &Path, class_dir: &Path, android_jar: &Path) -> Result<()> {
-    // Collect all .java files under java_dir.
+fn compile_java_dirs(java_dirs: &[PathBuf], class_dir: &Path, classpath: &[PathBuf]) -> Result<()> {
     let mut sources: Vec<PathBuf> = Vec::new();
-    visit_files(java_dir, "java", &mut sources)?;
+    for d in java_dirs {
+        if d.is_dir() {
+            visit_files(d, "java", &mut sources)?;
+        }
+    }
     if sources.is_empty() {
-        anyhow::bail!("no .java files found under {}", java_dir.display());
+        anyhow::bail!(
+            "no .java files found under {:?}",
+            java_dirs.iter().map(|p| p.display().to_string()).collect::<Vec<_>>()
+        );
     }
     eprintln!("[run-android] javac → {}", class_dir.display());
+    let cp = classpath
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join(":");
     let mut cmd = Command::new("javac");
     cmd.arg("-classpath")
-        .arg(android_jar)
+        .arg(&cp)
         .arg("-d")
         .arg(class_dir)
         // Targeting JDK 8 bytecode matches d8's expectations across
@@ -394,18 +440,35 @@ fn visit_files(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) -> Result<()> {
     Ok(())
 }
 
+/// Dex everything that needs to land in the APK. `inputs` is a mix of
+/// directories (each walked for .class files) and .jar files (passed
+/// to d8 directly).
 fn run_d8(
     build_tools: &Path,
-    class_dir: &Path,
+    inputs: &[PathBuf],
     dex_dir: &Path,
     android_jar: &Path,
 ) -> Result<()> {
-    let mut sources: Vec<PathBuf> = Vec::new();
-    visit_files(class_dir, "class", &mut sources)?;
-    if sources.is_empty() {
-        anyhow::bail!("no .class files under {}", class_dir.display());
+    let mut class_files: Vec<PathBuf> = Vec::new();
+    let mut jar_files: Vec<PathBuf> = Vec::new();
+    for p in inputs {
+        if p.is_dir() {
+            visit_files(p, "class", &mut class_files)?;
+        } else if p.is_file() {
+            jar_files.push(p.clone());
+        } else {
+            anyhow::bail!("d8 input {} doesn't exist", p.display());
+        }
     }
-    eprintln!("[run-android] d8 → {}", dex_dir.display());
+    if class_files.is_empty() && jar_files.is_empty() {
+        anyhow::bail!("no .class or .jar inputs for d8");
+    }
+    eprintln!(
+        "[run-android] d8 → {} ({} class files, {} jars)",
+        dex_dir.display(),
+        class_files.len(),
+        jar_files.len(),
+    );
     let mut cmd = Command::new(build_tools.join("d8"));
     cmd.arg("--lib")
         .arg(android_jar)
@@ -413,8 +476,11 @@ fn run_d8(
         .arg(MIN_SDK_VERSION.to_string())
         .arg("--output")
         .arg(dex_dir);
-    for s in &sources {
+    for s in &class_files {
         cmd.arg(s);
+    }
+    for j in &jar_files {
+        cmd.arg(j);
     }
     let status = cmd
         .status()
@@ -429,11 +495,20 @@ fn run_aapt2_link(
     build_tools: &Path,
     manifest_xml: &Path,
     android_jar: &Path,
+    aar_flats: &[PathBuf],
+    extra_packages: &[String],
+    r_java_out_dir: &Path,
     out_apk: &Path,
 ) -> Result<()> {
-    eprintln!("[run-android] aapt2 link → {}", out_apk.display());
-    let status = Command::new(build_tools.join("aapt2"))
-        .arg("link")
+    eprintln!(
+        "[run-android] aapt2 link ({} AAR flats, {} extra pkgs) → {}",
+        aar_flats.len(),
+        extra_packages.len(),
+        out_apk.display()
+    );
+    fs::create_dir_all(r_java_out_dir)?;
+    let mut cmd = Command::new(build_tools.join("aapt2"));
+    cmd.arg("link")
         .arg("--manifest")
         .arg(manifest_xml)
         .arg("-I")
@@ -442,8 +517,19 @@ fn run_aapt2_link(
         .arg(MIN_SDK_VERSION.to_string())
         .arg("--target-sdk-version")
         .arg(TARGET_SDK_VERSION.to_string())
-        .arg("-o")
-        .arg(out_apk)
+        .arg("--java")
+        .arg(r_java_out_dir)
+        .arg("--auto-add-overlay");
+    for flat in aar_flats {
+        cmd.arg("-R").arg(flat);
+    }
+    if !extra_packages.is_empty() {
+        // aapt2 accepts a colon-separated list of extra packages —
+        // each gets its own emitted R.java alongside the main package's.
+        cmd.arg("--extra-packages").arg(extra_packages.join(":"));
+    }
+    cmd.arg("-o").arg(out_apk);
+    let status = cmd
         .status()
         .with_context(|| format!("spawn {}", build_tools.join("aapt2").display()))?;
     if !status.success() {

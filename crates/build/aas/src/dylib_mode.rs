@@ -1,6 +1,80 @@
 //! Single-process AAS host with dlopen-driven hot reload.
 //!
-//! ## Architecture
+//! ## ⚠️ STATUS: NON-FUNCTIONAL — needs more research
+//!
+//! This mode was prototyped to chase sub-300ms hot-reload cycles via
+//! dx-style stub-linked patches (small `.dylib` whose external refs
+//! jump directly to absolute addresses in the running host bin).
+//! Both approaches reachable from this file are currently broken:
+//!
+//! 1. **rlib-bloated patch via cargo-driven rebuild.** Architecture
+//!    works end-to-end on macOS — host stays alive, patch dispatches,
+//!    new content reaches Android. ~900 ms/edit. The fundamental
+//!    blockers we hit were minor (dyld dlopen path caching, fingerprint
+//!    drift across cargo invocations, ZST fn-item dispatch through
+//!    subsecond, the `framework-hot` dylib indirection). All solved.
+//!    BUT the apply path is ~440 ms because every patch is a 2.7 MB
+//!    re-dlopen of statically-embedded framework code.
+//!
+//! 2. **dx-style thin link with stub objects.** Cuts the patch to
+//!    ~100 KB and the apply to <50 ms in principle. Blocked on a
+//!    subtler problem we discovered in implementation: `rustc
+//!    --emit=obj` for the user crate emits *all* generic
+//!    monomorphizations the user crate needs into one `.o`, including
+//!    monomorphizations that already exist in the host bin
+//!    (e.g. `framework_core::style::install_theme::<IdeaThemeRef>`).
+//!    The patch's local copy contains TLV (thread-local-variable)
+//!    opcodes that reference symbols which our stub generator emits
+//!    as *code* in `__TEXT`, but the TLV opcode expects them as
+//!    *thread-var descriptors* in `__DATA,__thread_vars`. First
+//!    thread-local access from the patched body crashes with a
+//!    jump to garbage.
+//!
+//! ### What dx does that we don't (yet)
+//!
+//! - In dx, the patch *is* the bin crate recompiled. Same generic
+//!   monomorphizations, same TLV descriptors. No host-vs-patch
+//!   duplication — the local copy `==` the host's copy.
+//! - We have a separate generated `patch/` wrapper crate with
+//!   `pub use <user_crate>::*;`. That keeps the user crate
+//!   unchanged, but it means rustc emits an additional set of
+//!   monomorphizations into the patch that *also* live in the host
+//!   bin — and those duplicates take the TLV path described above.
+//!
+//! ### Paths to make this work
+//!
+//! - **`-Zshare-generics`** (nightly): tells rustc to share generic
+//!   instantiations across crates via rlibs. If the host bin has
+//!   `install_theme::<IdeaThemeRef>`, the user crate references
+//!   that one instead of getting its own copy. This is what dx
+//!   relies on via the bin/patch identity. Stable workaround
+//!   unknown.
+//!
+//! - **TLV-aware stub generation.** Detect every TLV symbol the
+//!   user crate's `.o` references, synthesize matching descriptors
+//!   in `__DATA,__thread_vars` that point at the host's TLV
+//!   slots. Possibly viable on stable but the Mach-O TLV ABI is
+//!   tricky and we'd need both the `__thread_vars` entries and
+//!   the `__tlv_bootstrap` indirection wired by hand. Significant
+//!   research + 500–1000 LOC.
+//!
+//! - **Compile the user crate AS the patch dylib** (dx-style):
+//!   add `crate-type = ["dylib"]` to the user crate, drop the
+//!   wrapper, treat the user crate's dylib output as the patch.
+//!   Requires changing user-facing `Cargo.toml` shape and is at
+//!   odds with the cdylib/rlib outputs other platforms need.
+//!
+//! ### Recommended fallback
+//!
+//! Use the sidecar mode (`AasMode::Sidecar` — the default). It's
+//! a different architecture entirely: host + sidecar split-process,
+//! the sidecar (user crate's reactive runtime) is rebuilt as a
+//! cargo bin and SIGKILL+respawned on every edit. The host's
+//! WebSocket listener stays up across rebuilds so connected clients
+//! never see a disconnect. ~0.4-0.5 s per edit, no symbol-table
+//! gymnastics, production-stable on macOS today.
+//!
+//! ## Architecture (intended, partly implemented)
 //!
 //! Two generated crates living in a shared sub-workspace under
 //! `<workspace>/target/idealyst/<project>/aas/dylib-mode/`:

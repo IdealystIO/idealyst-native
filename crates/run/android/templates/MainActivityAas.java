@@ -16,6 +16,8 @@ import android.net.wifi.WifiManager;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
+import android.view.MenuItem;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 
@@ -76,6 +78,27 @@ public class MainActivity extends Activity {
             }
         };
         drainHandler.post(drainTick);
+    }
+
+    /**
+     * Dispatch ActionBar home-button presses ("hamburger" / "back")
+     * to the Rust side. {@link io.idealyst.runtime.RustActionBarHelper}
+     * keeps a pointer to the currently-installed callback; if one is
+     * present, this consumes the event so the Activity doesn't also
+     * pop the back stack.
+     */
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        Log.i("idealyst", "onOptionsItemSelected itemId=" + item.getItemId()
+            + " homeId=" + android.R.id.home);
+        if (item.getItemId() == android.R.id.home) {
+            boolean dispatched = io.idealyst.runtime.RustActionBarHelper.dispatchHomePress();
+            Log.i("idealyst", "dispatchHomePress returned " + dispatched);
+            if (dispatched) {
+                return true;
+            }
+        }
+        return super.onOptionsItemSelected(item);
     }
 
     @Override

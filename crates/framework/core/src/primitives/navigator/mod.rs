@@ -33,14 +33,14 @@ pub mod stack;
 pub mod tabs;
 
 pub use drawer::{
-    DrawerHandle, DrawerItem, DrawerItemRegistration, DrawerNavigator, DrawerNavigatorCallbacks,
-    DrawerSide, DrawerSidebarProps, DrawerType, SidebarBuilder,
+    ContentBuilder, DrawerContentProps, DrawerHandle, DrawerNavigator, DrawerNavigatorCallbacks,
+    DrawerSide, DrawerType,
 };
 pub use shared::{
     ambient_navigator, match_pattern, AmbientNavGuard, DefaultLinkKind, HeaderButton,
     LayoutBuilder, LayoutPlan, LayoutProps, MountResult, NavCommand, NavState, NavigatorCallbacks,
     NavigatorControl, NavigatorHandle, NavigatorOps, ParamsFromSegments, Route, RouteEntry,
-    RouteParams, ScreenBuilder, ScreenOptions, ScreenOptionsProvider,
+    RouteParams, Screen, ScreenBuilder, ScreenOptions,
 };
 pub use stack::Navigator;
 pub use tabs::{

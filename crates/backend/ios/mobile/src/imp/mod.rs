@@ -311,28 +311,29 @@ pub(crate) fn mount_screen_in_vc(mtm: MainThreadMarker, screen: &UIView) -> Reta
     };
     unsafe { vc_view.addSubview(screen) };
 
-    // Pin to safe area (below nav bar, above home indicator)
-    let guide: Retained<NSObject> = unsafe { msg_send_id![&vc_view, safeAreaLayoutGuide] };
-    let g_top: Retained<NSObject> = unsafe { msg_send_id![&guide, topAnchor] };
-    let g_bot: Retained<NSObject> = unsafe { msg_send_id![&guide, bottomAnchor] };
-    let g_lead: Retained<NSObject> = unsafe { msg_send_id![&guide, leadingAnchor] };
-    let g_trail: Retained<NSObject> = unsafe { msg_send_id![&guide, trailingAnchor] };
+    // Pin to the VC view's *edges* (not safeAreaLayoutGuide) so the
+    // screen fills the nav controller's content area edge-to-edge.
+    // Per-screen safe-area handling is the screen's job — a `View`
+    // opts in via `.safe_area(...)` (outer padding); a `ScrollView`
+    // opts in via the same method (UIKit-native contentInset, so
+    // content slides under the nav bar when scrolled). Double-inset
+    // is no longer possible because the framework only applies the
+    // safe area at one place: wherever the author opted in.
+    //
+    // Pin all four edges (not just top/leading) so screens with a
+    // zero-intrinsic child — UIScrollView, Graphics surface — get a
+    // concrete height instead of collapsing to fit intrinsic
+    // siblings.
+    let v_top: Retained<NSObject> = unsafe { msg_send_id![&vc_view, topAnchor] };
+    let v_bot: Retained<NSObject> = unsafe { msg_send_id![&vc_view, bottomAnchor] };
+    let v_lead: Retained<NSObject> = unsafe { msg_send_id![&vc_view, leadingAnchor] };
+    let v_trail: Retained<NSObject> = unsafe { msg_send_id![&vc_view, trailingAnchor] };
     let s_top: Retained<NSObject> = unsafe { msg_send_id![screen, topAnchor] };
     let s_bot: Retained<NSObject> = unsafe { msg_send_id![screen, bottomAnchor] };
     let s_lead: Retained<NSObject> = unsafe { msg_send_id![screen, leadingAnchor] };
     let s_trail: Retained<NSObject> = unsafe { msg_send_id![screen, trailingAnchor] };
 
-    // Pin all four edges so the screen ALWAYS fills the safe area.
-    // Without this on the bottom edge, a screen would size to its
-    // intrinsic content height — fine for short screens but breaks
-    // any child with zero intrinsic (UIScrollView, Graphics surface):
-    // the parent stack collapses around the intrinsic-sized siblings
-    // and the zero-intrinsic child gets nothing.
-    //
-    // Children that want to pack-to-top inside a tall screen can use
-    // a Stack with their own layout (the framework's per-stylesheet
-    // alignment rules handle this).
-    for (a, b) in [(&s_top, &g_top), (&s_bot, &g_bot), (&s_lead, &g_lead), (&s_trail, &g_trail)] {
+    for (a, b) in [(&s_top, &v_top), (&s_bot, &v_bot), (&s_lead, &v_lead), (&s_trail, &v_trail)] {
         let c: Retained<NSObject> = unsafe { msg_send_id![a, constraintEqualToAnchor: &**b] };
         let _: () = unsafe { msg_send![&c, setActive: true] };
     }
@@ -1218,6 +1219,60 @@ impl Backend for IosBackend {
         schedule_layout_pass();
     }
 
+    fn apply_scroll_view_safe_area_inset(
+        &mut self,
+        node: &Self::Node,
+        sides: framework_core::SafeAreaSides,
+    ) {
+        // Delegate inset math to UIKit by toggling
+        // `contentInsetAdjustmentBehavior` and leaving
+        // `contentInset` untouched. With `.always`, UIScrollView
+        // reads its own `safeAreaInsets` — which already propagate
+        // through any wrapping `UINavigationController` (top inset
+        // = status bar + nav bar) and through the host window
+        // (bottom inset = home indicator) — and folds them into
+        // `adjustedContentInset` automatically. UIKit re-runs that
+        // every time the safe area changes (rotation, dynamic
+        // island, sheet adaptation), so no Effect subscription is
+        // needed and there's no stale-host-inset bug to hit.
+        //
+        // The earlier code read `host_root.safeAreaInsets` and wrote
+        // `contentInset` manually. Two problems with that:
+        //
+        // 1. Host insets don't include the nav bar. Screens inside
+        //    the drawer's `UINavigationController` ended up under
+        //    the nav bar on every route change after the first.
+        // 2. Calling `setContentInset:` shifts `contentOffset` to
+        //    keep visible content visible. Combined with a layout
+        //    pass that also reset the scroll view's `contentSize`,
+        //    the sidebar's `contentOffset` flipped to `(0, 0)` on
+        //    every route change — content jumped up under the
+        //    status bar until the user touched the scroll view and
+        //    UIKit snapped it back to a valid offset.
+        //
+        // We don't touch `contentInset` at all here. Author-set
+        // padding inside the scroll view's content tree still works
+        // normally; UIKit's `adjustedContentInset` is layered on top
+        // of whatever the framework wrote.
+        //
+        // `sides` is treated as on/off rather than per-edge.
+        // `contentInsetAdjustmentBehavior` is whole-area;
+        // partial-side opt-in would need `additionalSafeAreaInsets`
+        // overrides on a wrapping VC and isn't needed by current
+        // examples. Revisit if a partial-side use case shows up.
+        let view = node.as_view();
+        let behavior: i64 = if sides.is_empty() {
+            // 2 = .never — author opted out, scroll bleeds
+            // edge-to-edge with no inset.
+            2
+        } else {
+            // 3 = .always — UIKit insets for the effective safe
+            // area (status bar + nav bar + tab bar + home indicator).
+            3
+        };
+        let _: () = unsafe { msg_send![view, setContentInsetAdjustmentBehavior: behavior] };
+    }
+
     // =================================================================
     // Handle factories — override defaults so handles carry the
     // real iOS node, enabling `AnchorableHandle::rect()` to read
@@ -1420,10 +1475,31 @@ impl IosBackend {
         // observed failure mode here was width collapsing to 0.
         // Bounds + center are stable regardless of transform.
         let mut applied = 0usize;
-        for (_, (view, layout_node)) in self.view_to_layout.iter() {
+        for (key, (view, layout_node)) in self.view_to_layout.iter() {
             let frame = self.layout.frame_of(*layout_node);
+            // Preserve bounds.origin. For a regular UIView the
+            // origin is always (0, 0), but for a UIScrollView
+            // `bounds.origin` IS `contentOffset` — overwriting it
+            // with (0, 0) on every layout pass scrolls the view
+            // back to the top, undoing both the user's scroll
+            // position and the `adjustedContentInset` offset. That
+            // bug surfaced as the sidebar "jumping" out of the
+            // safe area on every route change: the active-route
+            // signal change triggered a relayout, which reset
+            // `contentOffset` to `(0, 0)`, which moved the top of
+            // content from `y = adjustedContentInset.top` to
+            // `y = 0` (under the status bar) until the next gesture
+            // made UIKit re-clamp.
+            let is_scroll_view = self.scroll_views.contains(key);
+            let origin = if is_scroll_view {
+                let current: objc2_foundation::CGRect =
+                    unsafe { msg_send![view, bounds] };
+                current.origin
+            } else {
+                objc2_foundation::CGPoint { x: 0.0, y: 0.0 }
+            };
             let bounds = objc2_foundation::CGRect {
-                origin: objc2_foundation::CGPoint { x: 0.0, y: 0.0 },
+                origin,
                 size: objc2_foundation::CGSize {
                     width: frame.width as f64,
                     height: frame.height as f64,
@@ -1471,7 +1547,25 @@ impl IosBackend {
                 width: max_x as f64,
                 height: max_y as f64,
             };
-            let _: () = unsafe { msg_send![&scroll_view, setContentSize: size] };
+            // Skip the assignment if the value is unchanged. UIKit
+            // documents that `setContentSize:` resets `contentOffset`
+            // to `(0, 0)` when the new content size fits inside the
+            // scroll view's bounds — which fires on every layout
+            // pass for short content (sidebars, headers), even when
+            // the size hasn't actually changed. The offset reset
+            // then bypasses `adjustedContentInset`, so safe-area
+            // insets stop being respected until the next gesture
+            // makes UIKit re-clamp. Reading first + comparing
+            // sidesteps the reset entirely; UIKit's own `setBounds:`
+            // already no-ops on equal values, but `setContentSize:`
+            // does not.
+            let current: objc2_foundation::CGSize =
+                unsafe { msg_send![&scroll_view, contentSize] };
+            if (current.width - size.width).abs() > 0.5
+                || (current.height - size.height).abs() > 0.5
+            {
+                let _: () = unsafe { msg_send![&scroll_view, setContentSize: size] };
+            }
         }
     }
 

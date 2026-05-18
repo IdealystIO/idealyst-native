@@ -21,8 +21,8 @@ use std::sync::mpsc::Sender;
 use framework_core::{Backend, ColorScheme, StateBits, StyleRules};
 use wire::{
     AppToDev, Command, EventArgs, HandlerId, NodeId, ScopeId, StyleId, WireColorScheme,
-    WireDrawerItemRegistration, WireDrawerSide, WireDrawerType, WireItemSize, WireMountPolicy,
-    WireTabPlacement, WireTabRegistration,
+    WireDrawerSide, WireDrawerType, WireItemSize, WireMountPolicy, WireTabPlacement,
+    WireTabRegistration,
 };
 
 pub mod convert;
@@ -512,17 +512,15 @@ where
                 id,
                 initial_route,
                 initial_path,
-                items,
                 side,
                 drawer_type,
                 drawer_width,
-                pinned_above,
                 swipe_to_open,
                 mount_policy,
             } => {
                 self.apply_create_drawer_navigator(
-                    id, initial_route, initial_path, items, side, drawer_type,
-                    drawer_width, pinned_above, swipe_to_open, mount_policy,
+                    id, initial_route, initial_path, side, drawer_type,
+                    drawer_width, swipe_to_open, mount_policy,
                 );
             }
 
@@ -752,8 +750,20 @@ where
                 let nav = self.lookup_node(navigator)?;
                 let screen_node = self.lookup_node(screen)?;
                 let opts = convert::wire_screen_options(&options, |id| self.handler_unit(id));
-                self.backend
-                    .navigator_attach_initial(&nav, screen_node, scope.0, opts);
+                match state.kind {
+                    navigators::NavigatorKind::Stack => {
+                        self.backend
+                            .navigator_attach_initial(&nav, screen_node, scope.0, opts);
+                    }
+                    navigators::NavigatorKind::Tab => {
+                        self.backend
+                            .tab_navigator_attach_initial(&nav, screen_node, scope.0, opts);
+                    }
+                    navigators::NavigatorKind::Drawer => {
+                        self.backend
+                            .drawer_navigator_attach_initial(&nav, screen_node, scope.0, opts);
+                    }
+                }
                 state.mounted_urls.borrow_mut().push(url);
                 *state.replay_pos.borrow_mut() = state.mounted_urls.borrow().len();
             }
@@ -1060,6 +1070,7 @@ where
         // Pre-allocate state with a placeholder node; we'll set the
         // real node after `create_navigator` returns.
         let state = Rc::new(navigators::NavigatorAppState {
+            kind: navigators::NavigatorKind::Stack,
             // We can't yet fill `node`; placeholder via uninit is
             // unsafe. Instead we defer state construction until we
             // have the node.
@@ -1083,6 +1094,7 @@ where
 
         // Reconstruct the state with the real node in place.
         let final_state = Rc::new(navigators::NavigatorAppState {
+            kind: navigators::NavigatorKind::Stack,
             node: nav_node.clone(),
             control,
             pending_mount: state.pending_mount.clone(),
@@ -1137,6 +1149,7 @@ where
         let mounted_urls = Rc::new(RefCell::new(Vec::new()));
         let replay_pos = Rc::new(RefCell::new(0usize));
         let state = Rc::new(navigators::NavigatorAppState {
+            kind: navigators::NavigatorKind::Tab,
             node: self.backend.create_view(),
             control: control.clone(),
             pending_mount: Rc::new(RefCell::new(None)),
@@ -1158,6 +1171,7 @@ where
         let nav_node = self.backend.create_tab_navigator(callbacks, control.clone());
 
         let final_state = Rc::new(navigators::NavigatorAppState {
+            kind: navigators::NavigatorKind::Tab,
             node: nav_node.clone(),
             control,
             pending_mount: state.pending_mount.clone(),
@@ -1178,11 +1192,9 @@ where
         id: NodeId,
         initial_route: String,
         initial_path: String,
-        items: Vec<WireDrawerItemRegistration>,
         side: WireDrawerSide,
         drawer_type: WireDrawerType,
         drawer_width: f32,
-        pinned_above: Option<u32>,
         swipe_to_open: bool,
         mount_policy: WireMountPolicy,
     ) {
@@ -1195,14 +1207,6 @@ where
         let route_static: &'static str = Box::leak(initial_route.clone().into_boxed_str());
         let path_static: &'static str = Box::leak(initial_path.clone().into_boxed_str());
 
-        let resolved_items = items
-            .into_iter()
-            .map(|i| framework_core::primitives::navigator::DrawerItemRegistration {
-                route: Box::leak(i.route.into_boxed_str()),
-                label: i.label,
-                icon: i.icon,
-            })
-            .collect();
         let resolved_side = match side {
             WireDrawerSide::Left => framework_core::primitives::navigator::DrawerSide::Start,
             WireDrawerSide::Right => framework_core::primitives::navigator::DrawerSide::End,
@@ -1222,6 +1226,7 @@ where
         let mounted_urls = Rc::new(RefCell::new(Vec::new()));
         let replay_pos = Rc::new(RefCell::new(0usize));
         let state = Rc::new(navigators::NavigatorAppState {
+            kind: navigators::NavigatorKind::Drawer,
             node: self.backend.create_view(),
             control: control.clone(),
             pending_mount: Rc::new(RefCell::new(None)),
@@ -1236,17 +1241,16 @@ where
         let callbacks = state.build_stub_drawer_callbacks(
             route_static,
             path_static,
-            resolved_items,
             resolved_side,
             resolved_drawer_type,
             drawer_width,
-            pinned_above,
             swipe_to_open,
             resolved_mount_policy,
         );
         let nav_node = self.backend.create_drawer_navigator(callbacks, control.clone());
 
         let final_state = Rc::new(navigators::NavigatorAppState {
+            kind: navigators::NavigatorKind::Drawer,
             node: nav_node.clone(),
             control,
             pending_mount: state.pending_mount.clone(),

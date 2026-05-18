@@ -43,7 +43,8 @@
 //! param) panics in the renderer with a clear message.
 
 use super::shared::{
-    LayoutBuilder, LayoutProps, Route, RouteEntry, RouteParams, ScreenBuilder, ScreenOptions,
+    LayoutBuilder, LayoutProps, Route, RouteEntry, RouteParams, Screen, ScreenBuilder,
+    ScreenOptions,
 };
 use crate::{Bound, Primitive, Ref, RefFill};
 use std::any::Any;
@@ -100,15 +101,19 @@ impl Navigator {
 impl Bound<NavigatorHandle> {
     /// Register a screen. `route` is the typed key; `render` is the
     /// per-route subtree builder, which receives the route's typed
-    /// params. The `'static` bound on `P` is required to box the
-    /// params across the framework's type-erased boundary; the
-    /// `RouteParams` bound is what lets web/SSR backends map URLs to
-    /// typed payloads.
-    pub fn screen<P: RouteParams>(
-        mut self,
-        route: Route<P>,
-        render: impl Fn(P) -> Primitive + 'static,
-    ) -> Self {
+    /// params and returns anything convertible into a [`Screen`] —
+    /// either a bare `Primitive` (no header options) or a
+    /// `Screen::new(...).title(...).header_left(...)` value.
+    ///
+    /// The `'static` bound on `P` is required to box the params across
+    /// the framework's type-erased boundary; the `RouteParams` bound
+    /// lets web/SSR backends map URLs to typed payloads.
+    pub fn screen<P, R, F>(mut self, route: Route<P>, render: F) -> Self
+    where
+        P: RouteParams,
+        R: Into<Screen>,
+        F: Fn(P) -> R + 'static,
+    {
         if let Primitive::Navigator(nav) = &mut self.primitive {
             let render = Rc::new(render);
             let build: ScreenBuilder = Rc::new(move |boxed: Box<dyn Any>| {
@@ -118,36 +123,15 @@ impl Bound<NavigatorHandle> {
                          declared params don't match dispatched params"
                     )
                 });
-                render(*params)
+                render(*params).into()
             });
             let from_segments = Rc::new(|segs: &HashMap<String, String>| {
                 P::from_segments(segs).map(|p| Box::new(p) as Box<dyn Any>)
             });
             nav.screens.insert(
                 route.name(),
-                RouteEntry { path: route.path(), build, from_segments, options: None },
+                RouteEntry { path: route.path(), build, from_segments },
             );
-        }
-        self
-    }
-
-    /// Set per-screen header options for `route`. The closure
-    /// receives the route's typed params and returns `ScreenOptions`.
-    /// Called at mount time — not reactive.
-    pub fn options<P: RouteParams>(
-        mut self,
-        route: Route<P>,
-        f: impl Fn(&P) -> ScreenOptions + 'static,
-    ) -> Self {
-        if let Primitive::Navigator(nav) = &mut self.primitive {
-            if let Some(entry) = nav.screens.get_mut(route.name()) {
-                entry.options = Some(Rc::new(move |any: &dyn Any| {
-                    let params = any.downcast_ref::<P>().expect(
-                        "Navigator::options: param type mismatch",
-                    );
-                    f(params)
-                }));
-            }
         }
         self
     }

@@ -22,7 +22,8 @@
         <!-- host's dev-server port into the emulator's loopback. -->
         <meta-data android:name="IdealystAasUrl" android:value="{{AAS_URL}}" />
         <activity android:name="{{PACKAGE}}.MainActivity"
-                  android:exported="true">
+                  android:exported="true"
+                  android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

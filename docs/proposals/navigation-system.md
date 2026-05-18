@@ -127,13 +127,6 @@ how `.tab(...)` rolls metadata + screen into one call — for the
 drawer, splitting them is more useful, because authors often want the
 same route reachable from a drawer *and* deep-linkable from elsewhere.
 
-Width breakpoint for the "fixed sidebar on tablets" behavior:
-
-```rust
-DrawerNavigator::new(&home)
-    .pinned_above(900)  // px; default disables the pinned mode (always overlay)
-```
-
 Above the breakpoint the drawer is always-visible (a sidebar); below,
 it's an off-canvas overlay with a hamburger trigger the navigator
 exposes via its layout slot.

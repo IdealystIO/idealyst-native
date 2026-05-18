@@ -339,8 +339,16 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
             if let Some(s) = style {
                 attach_style(backend, &n, s);
             }
+            // ScrollViews route safe-area opt-in through the
+            // *contentInset* path rather than padding the scroll view
+            // itself. The scroll surface keeps its background
+            // edge-to-edge; the content origin insets by the
+            // safe-area amount and the user can scroll *under* the
+            // bar (the iOS-native scroll pattern). Views use
+            // `attach_safe_area` (outer padding); this is the only
+            // place the two paths diverge.
             if !safe_area_sides.is_empty() {
-                attach_safe_area(backend, &n, safe_area_sides);
+                attach_scroll_view_safe_area_inset(backend, &n, safe_area_sides);
             }
             if let Some(RefFill::ScrollView(fill)) = ref_fill {
                 let handle = backend.borrow().make_scroll_view_handle(&n);
@@ -660,14 +668,12 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
             let primitives::navigator::DrawerNavigator {
                 initial,
                 initial_path,
-                item_order,
                 screens,
                 layout,
-                sidebar,
+                content,
                 side,
                 drawer_type,
                 drawer_width,
-                pinned_above,
                 swipe_to_open,
                 mount_policy,
                 default_options,
@@ -683,14 +689,12 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
                 backend,
                 initial,
                 initial_path,
-                item_order,
                 screens,
                 layout,
-                sidebar,
+                content,
                 side,
                 drawer_type,
                 drawer_width,
-                pinned_above,
                 swipe_to_open,
                 mount_policy,
                 default_options,
@@ -1587,7 +1591,7 @@ fn build_navigator<B: Backend + 'static>(
 ) -> B::Node {
     use primitives::navigator::{
         match_pattern, LayoutPlan, LayoutProps, MountResult, NavState, NavigatorCallbacks,
-        NavigatorControl, ScreenOptions,
+        NavigatorControl,
     };
 
     // Per-screen scope registry. The framework owns the scopes — the
@@ -1622,10 +1626,6 @@ fn build_navigator<B: Backend + 'static>(
                 .get(name)
                 .unwrap_or_else(|| panic!("Navigator: route '{}' is not registered", name));
             let builder = entry.build.clone();
-            let options = match entry.options.as_ref() {
-                Some(provider) => provider(&*params),
-                None => ScreenOptions::default(),
-            };
             let mut scope = Box::new(reactive::Scope::new());
             // Wrap BOTH `builder(...)` and the subsequent `build(...)`
             // inside `with_scope`. Any Effects that the build walker
@@ -1644,9 +1644,14 @@ fn build_navigator<B: Backend + 'static>(
             // turn) stack correctly.
             let _ambient_guard =
                 primitives::navigator::AmbientNavGuard::push(control_for_mount.clone());
-            let node = reactive::with_scope(&mut scope, || {
-                let primitive = builder(params);
-                build(&backend, primitive)
+            // `builder` now returns a `Screen` (the render closure's
+            // return value, type-erased through `ScreenBuilder`). Split
+            // it into the primitive (built into a node) and the
+            // options (handed to the backend via `MountResult`).
+            let (node, options) = reactive::with_scope(&mut scope, || {
+                let screen = builder(params);
+                let n = build(&backend, screen.primitive);
+                (n, screen.options)
             });
             let scope_id = {
                 let mut n = next_id.borrow_mut();
@@ -1884,8 +1889,7 @@ fn build_tab_navigator<B: Backend + 'static>(
 ) -> B::Node {
     use primitives::navigator::{
         match_pattern, DefaultLinkKind, LayoutPlan, LayoutProps, MountResult, NavState,
-        NavigatorCallbacks, NavigatorControl, ScreenOptions, TabNavigatorCallbacks,
-        TabRegistration,
+        NavigatorCallbacks, NavigatorControl, TabNavigatorCallbacks, TabRegistration,
     };
 
     // Per-screen scope registry — same discipline as stack.
@@ -1907,16 +1911,13 @@ fn build_tab_navigator<B: Backend + 'static>(
                 .get(name)
                 .unwrap_or_else(|| panic!("TabNavigator: route '{}' is not registered", name));
             let builder = entry.build.clone();
-            let options = match entry.options.as_ref() {
-                Some(provider) => provider(&*params),
-                None => ScreenOptions::default(),
-            };
             let mut scope = Box::new(reactive::Scope::new());
             let _ambient_guard =
                 primitives::navigator::AmbientNavGuard::push(control_for_mount.clone());
-            let node = reactive::with_scope(&mut scope, || {
-                let primitive = builder(params);
-                build(&backend, primitive)
+            let (node, options) = reactive::with_scope(&mut scope, || {
+                let screen = builder(params);
+                let n = build(&backend, screen.primitive);
+                (n, screen.options)
             });
             let scope_id = {
                 let mut n = next_id.borrow_mut();
@@ -2093,23 +2094,20 @@ fn build_drawer_navigator<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
     initial: &'static str,
     initial_path: &'static str,
-    item_order: Vec<(&'static str, primitives::navigator::DrawerItem)>,
     screens: HashMap<&'static str, primitives::navigator::RouteEntry>,
     layout: Option<primitives::navigator::LayoutBuilder>,
-    sidebar: Option<primitives::navigator::SidebarBuilder>,
+    content: Option<primitives::navigator::ContentBuilder>,
     side: primitives::navigator::DrawerSide,
     drawer_type: primitives::navigator::DrawerType,
     drawer_width: f32,
-    pinned_above: Option<u32>,
     swipe_to_open: bool,
     mount_policy: primitives::navigator::MountPolicy,
     _default_options: Option<primitives::navigator::ScreenOptions>,
     ref_fill: Option<RefFill>,
 ) -> B::Node {
     use primitives::navigator::{
-        match_pattern, DefaultLinkKind, DrawerItemRegistration, DrawerNavigatorCallbacks,
-        DrawerSidebarProps, LayoutPlan, LayoutProps, MountResult, NavState, NavigatorCallbacks,
-        NavigatorControl, ScreenOptions,
+        match_pattern, DefaultLinkKind, DrawerContentProps, DrawerNavigatorCallbacks, LayoutPlan,
+        LayoutProps, MountResult, NavState, NavigatorCallbacks, NavigatorControl,
     };
 
     let scopes: Rc<RefCell<HashMap<u64, Box<reactive::Scope>>>> =
@@ -2130,17 +2128,31 @@ fn build_drawer_navigator<B: Backend + 'static>(
                 .get(name)
                 .unwrap_or_else(|| panic!("DrawerNavigator: route '{}' is not registered", name));
             let builder = entry.build.clone();
-            let options = match entry.options.as_ref() {
-                Some(provider) => provider(&*params),
-                None => ScreenOptions::default(),
-            };
             let mut scope = Box::new(reactive::Scope::new());
             let _ambient_guard =
                 primitives::navigator::AmbientNavGuard::push(control_for_mount.clone());
-            let node = reactive::with_scope(&mut scope, || {
-                let primitive = builder(params);
-                build(&backend, primitive)
+            let (node, mut options) = reactive::with_scope(&mut scope, || {
+                let screen = builder(params);
+                let n = build(&backend, screen.primitive);
+                (n, screen.options)
             });
+            // Default drawer-toggle hamburger when the author didn't
+            // specify a left header button. Drawer-rooted screens
+            // almost always want this, so making it the default
+            // means the per-screen wiring stays focused on the
+            // screen's body — the framework knows the screen sits
+            // under a drawer and knows what icon + action belongs
+            // there. Override is still trivial: pass any
+            // `header_left(...)` from the author closure.
+            if options.header_left.is_none() {
+                let control = control_for_mount.clone();
+                options.header_left = Some(primitives::navigator::HeaderButton::new(
+                    "line.3.horizontal",
+                    move || {
+                        control.dispatch(primitives::navigator::NavCommand::ToggleDrawer);
+                    },
+                ));
+            }
             let scope_id = {
                 let mut n = next_id.borrow_mut();
                 let v = *n;
@@ -2201,25 +2213,13 @@ fn build_drawer_navigator<B: Backend + 'static>(
     let active_changed: Rc<dyn Fn(&'static str)> = Rc::new(|_name| {});
     let open_changed: Rc<dyn Fn(bool)> = Rc::new(move |open| is_open.set(open));
 
-    // Build the items list early so both `build_sidebar` and the
-    // outgoing callbacks can clone it.
-    let items: Vec<DrawerItemRegistration> = item_order
-        .into_iter()
-        .map(|(route, item)| DrawerItemRegistration {
-            route,
-            label: item.label,
-            icon: item.icon,
-        })
-        .collect();
-
-    // Wrap the user's `.sidebar(...)` closure in a factory that
-    // constructs a fresh `DrawerSidebarProps` each call and returns
+    // Wrap the user's `.content(...)` closure in a factory that
+    // constructs a fresh `DrawerContentProps` each call and returns
     // the rendered Primitive. We need the factory shape because
-    // both `build_layout` (web) and `build_sidebar` (Android) call
+    // both `build_layout` (web) and `build_content` (native) call
     // the closure, and they may be invoked at different times in
     // different scopes.
-    let make_sidebar_primitive: Option<Rc<dyn Fn() -> Primitive>> = sidebar.map(|sidebar_fn| {
-        let items = items.clone();
+    let make_content_primitive: Option<Rc<dyn Fn() -> Primitive>> = content.map(|content_fn| {
         let active_route = nav_state.active_route;
         let is_open = is_open;
         let control_for_select = control.clone();
@@ -2228,7 +2228,7 @@ fn build_drawer_navigator<B: Backend + 'static>(
             let on_select: Rc<dyn Fn(&'static str)> = {
                 let control = control_for_select.clone();
                 Rc::new(move |name: &'static str| {
-                    // The `Select` URL doesn't matter to Android
+                    // The `Select` URL doesn't matter to native
                     // (native ignores URLs); on web the dispatch
                     // path resolves it from the route's `path()`,
                     // but we don't have a Route<()> here — pass
@@ -2248,14 +2248,13 @@ fn build_drawer_navigator<B: Backend + 'static>(
                     control.dispatch(primitives::navigator::NavCommand::CloseDrawer)
                 })
             };
-            let props = DrawerSidebarProps {
-                items: items.clone(),
+            let props = DrawerContentProps {
                 active_route,
                 is_open,
                 on_select,
                 on_close,
             };
-            sidebar_fn(props)
+            content_fn(props)
         });
         f
     });
@@ -2268,7 +2267,7 @@ fn build_drawer_navigator<B: Backend + 'static>(
         let layout_fn = layout_fn.clone();
         let backend = backend.clone();
         let layout_scope_slot = layout_scope.clone();
-        let make_sidebar = make_sidebar_primitive.clone();
+        let make_content = make_content_primitive.clone();
         let f: Rc<dyn Fn() -> LayoutPlan<B::Node>> = Rc::new(move || {
             let outlet_ref: Ref<crate::ViewHandle> = Ref::new();
             let outlet_primitive: Primitive = crate::view(Vec::new()).bind(outlet_ref).into();
@@ -2279,17 +2278,17 @@ fn build_drawer_navigator<B: Backend + 'static>(
                 let control = control.clone();
                 Rc::new(move || control.dispatch(primitives::navigator::NavCommand::ToggleDrawer))
             };
-            // Push the ambient nav BEFORE building the sidebar so
-            // any `Link`s in it capture this drawer. The guard
-            // covers both the sidebar build and the layout
-            // closure's run; dropped at end of this scope.
+            // Push the ambient nav BEFORE building the drawer
+            // content so any `Link`s in it capture this drawer.
+            // The guard covers both the content build and the
+            // layout closure's run; dropped at end of this scope.
             let _ambient_guard =
                 primitives::navigator::AmbientNavGuard::push(control.clone());
-            // Build the sidebar Primitive (or empty View if no
-            // sidebar was registered). Either way, LayoutProps
-            // carries a Primitive — the layout author embeds it
-            // unconditionally.
-            let sidebar_primitive: Primitive = match make_sidebar.as_ref() {
+            // Build the drawer-content Primitive (or empty View if
+            // no `.content(...)` was registered). Either way,
+            // LayoutProps carries a Primitive — the layout author
+            // embeds it unconditionally.
+            let sidebar_primitive: Primitive = match make_content.as_ref() {
                 Some(f) => f(),
                 None => crate::view(Vec::new()).into(),
             };
@@ -2313,31 +2312,31 @@ fn build_drawer_navigator<B: Backend + 'static>(
         f
     });
 
-    // `build_sidebar` — used by native backends that render the
-    // sidebar themselves (Android's DrawerLayout-style shell).
-    // The closure builds the user's sidebar Primitive into a
-    // backend Node inside a dedicated scope so reactive effects
-    // in the sidebar survive across drawer state changes.
-    let sidebar_scope: Rc<RefCell<Option<Box<reactive::Scope>>>> =
+    // `build_content` — used by native backends that render the
+    // drawer panel themselves (iOS/Android drawer shells). The
+    // closure builds the user's content Primitive into a backend
+    // Node inside a dedicated scope so reactive effects in the
+    // panel survive across drawer state changes.
+    let content_scope: Rc<RefCell<Option<Box<reactive::Scope>>>> =
         Rc::new(RefCell::new(None));
-    let build_sidebar: Option<Rc<dyn Fn() -> B::Node>> = make_sidebar_primitive
+    let build_content: Option<Rc<dyn Fn() -> B::Node>> = make_content_primitive
         .as_ref()
-        .map(|make_sidebar| {
-            let make_sidebar = make_sidebar.clone();
+        .map(|make_content| {
+            let make_content = make_content.clone();
             let backend = backend.clone();
             let control = control.clone();
-            let sidebar_scope_slot = sidebar_scope.clone();
+            let content_scope_slot = content_scope.clone();
             let f: Rc<dyn Fn() -> B::Node> = Rc::new(move || {
                 // Same ambient-nav posture as build_layout: Links
-                // in the sidebar capture this drawer's control.
+                // in the panel capture this drawer's control.
                 let _ambient_guard =
                     primitives::navigator::AmbientNavGuard::push(control.clone());
-                let primitive = make_sidebar();
+                let primitive = make_content();
                 let mut scope = Box::new(reactive::Scope::new());
                 let node = reactive::with_scope(&mut scope, || {
                     build(&backend, primitive)
                 });
-                *sidebar_scope_slot.borrow_mut() = Some(scope);
+                *content_scope_slot.borrow_mut() = Some(scope);
                 node
             });
             f
@@ -2356,40 +2355,38 @@ fn build_drawer_navigator<B: Backend + 'static>(
     };
     let callbacks = DrawerNavigatorCallbacks {
         navigator: nav_callbacks,
-        items,
         side,
         drawer_type,
         drawer_width,
-        pinned_above,
         swipe_to_open,
         mount_policy,
         is_open,
-        build_sidebar,
+        build_content,
         active_changed,
         open_changed,
     };
 
     let mount_screen_for_initial = callbacks.navigator.mount_screen.clone();
-    // Capture the sidebar builder before moving `callbacks` into the
-    // backend's `create_drawer_navigator` — we need it after the
-    // create call returns (when the backend's borrow_mut is
-    // released) to build the sidebar Node and hand it back via
+    // Capture the content builder before moving `callbacks` into
+    // the backend's `create_drawer_navigator` — we need it after
+    // the create call returns (when the backend's borrow_mut is
+    // released) to build the content Node and hand it back via
     // `drawer_navigator_attach_sidebar`. Web backends ignore this
-    // path (they build the sidebar via `build_layout`).
-    let build_sidebar_after_create = callbacks.build_sidebar.clone();
+    // path (they build the content via `build_layout`).
+    let build_content_after_create = callbacks.build_content.clone();
     let node = time_backend_create(pkind!(DrawerNavigator), || {
         backend.borrow_mut().create_drawer_navigator(callbacks, control.clone())
     });
 
-    // Build the sidebar (if registered) and hand the resulting Node
-    // to the backend. Runs outside any active borrow_mut window
-    // because build_sidebar re-enters the build walker, which also
-    // borrow_muts.
-    if let Some(build_sidebar) = build_sidebar_after_create {
-        let sidebar_node = build_sidebar();
+    // Build the drawer panel content (if registered) and hand the
+    // resulting Node to the backend. Runs outside any active
+    // borrow_mut window because the build re-enters the walker,
+    // which also borrow_muts.
+    if let Some(build_content) = build_content_after_create {
+        let content_node = build_content();
         backend
             .borrow_mut()
-            .drawer_navigator_attach_sidebar(&node, sidebar_node);
+            .drawer_navigator_attach_sidebar(&node, content_node);
     }
 
     // Mount the initial drawer screen — same pattern as the tab
@@ -2411,16 +2408,16 @@ fn build_drawer_navigator<B: Backend + 'static>(
     // a `Box<Scope>` into these Rcs; without this keepalive Effect
     // the only Rc references are the local vars (dropped on return)
     // and the closures' captures (dropped when `callbacks` and
-    // `build_sidebar_after_create` go out of scope), freeing the
+    // `build_content_after_create` go out of scope), freeing the
     // scope and unsubscribing every reactive style closure in the
-    // sidebar/layout (e.g. sidebar item highlights stop updating on
+    // content/layout (e.g. content item highlights stop updating on
     // Select). Capturing the Rcs in an Effect that registers with
     // the surrounding render scope ties their lifetime to the
     // navigator's enclosing scope.
-    let _sidebar_scope_keepalive = sidebar_scope.clone();
+    let _content_scope_keepalive = content_scope.clone();
     let _layout_scope_keepalive = layout_scope.clone();
     let _keepalive_effect = Effect::new(move || {
-        let _ = &_sidebar_scope_keepalive;
+        let _ = &_content_scope_keepalive;
         let _ = &_layout_scope_keepalive;
     });
 
@@ -2514,6 +2511,27 @@ fn attach_safe_area<B: Backend + 'static>(
         backend
             .borrow_mut()
             .apply_safe_area_padding(&node, sides);
+    });
+}
+
+/// Sibling of `attach_safe_area` for `Primitive::ScrollView`. Routes
+/// the safe-area opt-in through `apply_scroll_view_safe_area_inset`
+/// so backends apply *contentInset* semantics (background bleeds
+/// edge-to-edge, content origin insets) rather than the outer
+/// padding mode that fits a `View`.
+fn attach_scroll_view_safe_area_inset<B: Backend + 'static>(
+    backend: &Rc<RefCell<B>>,
+    node: &B::Node,
+    sides: crate::SafeAreaSides,
+) {
+    use crate::reactive::Effect;
+    let backend = backend.clone();
+    let node = node.clone();
+    let _effect = Effect::new(move || {
+        let _ = crate::safe_area::safe_area_insets().get();
+        backend
+            .borrow_mut()
+            .apply_scroll_view_safe_area_inset(&node, sides);
     });
 }
 

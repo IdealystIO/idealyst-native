@@ -217,7 +217,7 @@ impl<P: RouteParams> Route<P> {
 /// fabricates a `Route<X>` at runtime with the wrong `P`), the
 /// downcast panics with a clear message — same posture as any other
 /// type-erased registry in the framework.
-pub type ScreenBuilder = Rc<dyn Fn(Box<dyn Any>) -> Primitive>;
+pub type ScreenBuilder = Rc<dyn Fn(Box<dyn Any>) -> Screen>;
 
 /// Closure that parses a `:placeholder` segment map into the
 /// route's typed param payload, then boxes it as `dyn Any`. Used by
@@ -228,20 +228,16 @@ pub type ParamsFromSegments = Rc<dyn Fn(&HashMap<String, String>) -> Option<Box<
 /// Per-route bookkeeping. Carries everything path-matching backends
 /// need: the pattern, the typed builder, and the segment-parser. The
 /// framework's screen table maps route names to these entries.
+///
+/// Per-screen header config (title, bar buttons, etc.) is *not* a
+/// separate field — the route's render closure returns a [`Screen`]
+/// which bundles both the UI tree and its options into one value.
+/// This keeps screens self-contained: one route, one declaration.
 pub struct RouteEntry {
     pub path: &'static str,
     pub build: ScreenBuilder,
     pub from_segments: ParamsFromSegments,
-    /// Per-screen header configuration provider. Called at mount time
-    /// with the typed params (as `&dyn Any`). `None` = use navigator
-    /// defaults.
-    pub options: Option<ScreenOptionsProvider>,
 }
-
-/// Produces `ScreenOptions` from the route's typed params at mount
-/// time. The `&dyn Any` is the boxed params the screen was pushed
-/// with — the closure downcasts if it needs param-dependent titles.
-pub type ScreenOptionsProvider = Rc<dyn Fn(&dyn Any) -> ScreenOptions>;
 
 // ---------------------------------------------------------------------------
 // ScreenOptions — per-screen header configuration
@@ -297,6 +293,60 @@ impl ScreenOptions {
         if other.header_left.is_some() { self.header_left = other.header_left.clone(); }
         if other.header_right.is_some() { self.header_right = other.header_right.clone(); }
         self
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Screen — what a route's render closure returns: content + options
+// ---------------------------------------------------------------------------
+
+/// A renderable screen: the UI tree plus its per-screen
+/// configuration (title, header buttons, etc.). The render closure
+/// passed to `Navigator::screen(...)` (and every other navigator
+/// kind) returns one of these — replacing the old pattern of a
+/// separate `.options(route, fn)` call sidecared onto the builder.
+///
+/// `impl From<Primitive> for Screen` keeps the no-options ergonomic
+/// form working: `.screen(R, |_| pages::home().into())` (or
+/// `.screen(R, |_| pages::home())` when the closure signature accepts
+/// `impl Into<Screen>`).
+pub struct Screen {
+    pub primitive: Primitive,
+    pub options: ScreenOptions,
+}
+
+impl Screen {
+    pub fn new(primitive: impl Into<Primitive>) -> Self {
+        Self {
+            primitive: primitive.into(),
+            options: ScreenOptions::default(),
+        }
+    }
+
+    pub fn title(mut self, t: impl Into<String>) -> Self {
+        self.options.title = Some(t.into());
+        self
+    }
+
+    pub fn header_shown(mut self, shown: bool) -> Self {
+        self.options.header_shown = Some(shown);
+        self
+    }
+
+    pub fn header_left(mut self, btn: HeaderButton) -> Self {
+        self.options.header_left = Some(btn);
+        self
+    }
+
+    pub fn header_right(mut self, btn: HeaderButton) -> Self {
+        self.options.header_right = Some(btn);
+        self
+    }
+}
+
+impl From<Primitive> for Screen {
+    fn from(p: Primitive) -> Self {
+        Self::new(p)
     }
 }
 

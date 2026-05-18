@@ -15,7 +15,15 @@ use jni::JNIEnv;
 /// these defaults via the LayoutParams field mutation in the
 /// leaf crate's `imp::style::apply_rules`.
 pub fn apply_default_layout_params(env: &mut JNIEnv, view: &JObject) {
-    let lp_class = env.find_class("android/view/ViewGroup$LayoutParams").unwrap();
+    // `MarginLayoutParams`, not the bare `ViewGroup.LayoutParams`,
+    // because `ScrollView.measureChildWithMargins` (and every other
+    // margin-aware parent) casts its child's LP to MarginLayoutParams
+    // and throws `ClassCastException` otherwise. Margin-aware is a
+    // strict superset of the bare LP shape, so this is safe to use
+    // as the default for every view.
+    let lp_class = env
+        .find_class("android/view/ViewGroup$MarginLayoutParams")
+        .unwrap();
     // -1 = MATCH_PARENT, -2 = WRAP_CONTENT.
     let Ok(lp) = env.new_object(
         &lp_class,

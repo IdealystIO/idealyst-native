@@ -1337,6 +1337,35 @@ pub trait Backend {
         // default: no-op
     }
 
+    /// Apply safe-area treatment to a *ScrollView*. Same shape as
+    /// `apply_safe_area_padding` but with native-correct semantics
+    /// for a scroll container: the scroll surface bleeds edge-to-edge
+    /// while the *content origin* is inset by the safe-area amount.
+    /// On iOS this is `UIScrollView.contentInset` (with
+    /// `contentInsetAdjustmentBehavior = .never`). On Android,
+    /// `setPadding(...)` + `setClipToPadding(false)`. On web, padding
+    /// on the inner content wrapper while the scroll view itself
+    /// keeps `padding: 0`.
+    ///
+    /// Distinguished from `apply_safe_area_padding` by the dispatch
+    /// site in the walker: `Primitive::View` with `.safe_area(...)`
+    /// uses padding; `Primitive::ScrollView` with `.safe_area(...)`
+    /// uses content insets. The user-facing builder is the same
+    /// (`.safe_area(...)`); the framework picks the right path
+    /// based on which primitive it's on.
+    ///
+    /// Default impl falls back to `apply_safe_area_padding` so
+    /// backends without a separate inset path keep working (just
+    /// with the old "padding on the scroll view itself" visual).
+    #[allow(unused_variables)]
+    fn apply_scroll_view_safe_area_inset(
+        &mut self,
+        node: &Self::Node,
+        sides: crate::SafeAreaSides,
+    ) {
+        self.apply_safe_area_padding(node, sides);
+    }
+
     /// Default no-op handle for `Ref<LinkHandle>`. Backends that
     /// can synthesize activation events override this.
     #[allow(unused_variables)]

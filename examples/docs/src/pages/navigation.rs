@@ -9,7 +9,8 @@ use crate::shell::{
 
 pub fn page() -> Primitive {
     ui! {
-        Stack(gap = StackGap::Xl) {
+        ScrollView {
+            Stack(gap = StackGap::Xl) {
             PageHeader(
                 title = "Navigation".to_string(),
                 description = "Stack, drawer, and tab navigators backed by native platform chrome.".to_string(),
@@ -49,22 +50,20 @@ pub fn page() -> Primitive {
             Card {
                 Heading(content = "Drawer navigator".to_string(), kind = HeadingKind::H2)
                 Body(
-                    content = "A slide-in side panel (mobile) or pinned sidebar (desktop) plus \
-                               a body region that swaps to the selected entry's screen. \
-                               Declare entries with `.item(route, DrawerItem::new(...))`; \
-                               register screens with `.screen(...)`. Use `.pinned_above(px)` \
-                               to make the drawer behave as a fixed sidebar above a viewport \
-                               breakpoint — exactly the pattern these docs use.".to_string(),
+                    content = "A slide-in side panel (mobile) or pinned sidebar (tablet / \
+                               desktop) plus a body region that swaps to the selected entry's \
+                               screen. Each route is registered via `.screen(...)` and returns \
+                               a `Screen::new(...).title(...).header_left(...)` value. The \
+                               drawer panel's contents come from `.content(closure)`. Phone vs. \
+                               tablet adaptation is the backend's responsibility — no \
+                               app-side knob.".to_string(),
                     tone = BodyTone::Muted,
                 )
                 CodeBlock(
                     code = "let drawer = DrawerNavigator::new(&HOME)\n    \
-                                .item(HOME, DrawerItem::new(\"Home\"))\n    \
-                                .item(SETTINGS, DrawerItem::new(\"Settings\"))\n    \
-                                .screen(HOME, |_| pages::home())\n    \
-                                .screen(SETTINGS, |_| pages::settings())\n    \
-                                .pinned_above(900)\n    \
-                                .sidebar(|props| build_sidebar(props))\n    \
+                                .screen(HOME, |_| Screen::new(home_page()).title(\"Home\"))\n    \
+                                .screen(SETTINGS, |_| Screen::new(settings_page()).title(\"Settings\"))\n    \
+                                .content(|props| build_drawer_panel(props))\n    \
                                 .layout(|layout| build_web_layout(layout));".to_string(),
                 )
             }
@@ -107,6 +106,7 @@ pub fn page() -> Primitive {
                         `handle.pop()`, `handle.replace(...)`, `handle.toggle()` and friends — \
                         the navigator forwards the command to the native dispatcher.".to_string(),
             )
+        }
         }
     }
 }

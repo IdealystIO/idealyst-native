@@ -10,7 +10,8 @@ use crate::shell::{
 
 pub fn page() -> Primitive {
     ui! {
-        Stack(gap = StackGap::Xl) {
+        ScrollView {
+            Stack(gap = StackGap::Xl) {
             PageHeader(
                 title = "Quickstart".to_string(),
                 description = "Get an Idealyst app running on your machine in a few minutes.".to_string(),
@@ -87,6 +88,7 @@ pub fn page() -> Primitive {
                         to target a specific host (e.g. `--platform ios`).".to_string(),
                 code = "idealyst build --release".to_string(),
             )
+        }
         }
     }
 }

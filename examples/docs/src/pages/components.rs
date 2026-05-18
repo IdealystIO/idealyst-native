@@ -10,7 +10,8 @@ use crate::shell::{
 
 pub fn page() -> Primitive {
     ui! {
-        Stack(gap = StackGap::Xl) {
+        ScrollView {
+            Stack(gap = StackGap::Xl) {
             PageHeader(
                 title = "Components".to_string(),
                 description = "Reusable UI building blocks declared as Rust functions.".to_string(),
@@ -87,6 +88,7 @@ pub fn page() -> Primitive {
                         the call site, and the framework fills the ref once the component mounts. \
                         From then on the parent can drive the child imperatively.".to_string(),
             )
+        }
         }
     }
 }

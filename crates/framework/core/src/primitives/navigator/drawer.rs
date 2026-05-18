@@ -1,9 +1,10 @@
 //! Drawer navigator — a slide-in side panel plus a switched body
 //! region.
 //!
-//! Authors declare drawer entries (each a route + presentation
-//! metadata) and an initial selection. The user opens the drawer
-//! (hamburger button or platform gesture), taps an entry, and the
+//! Authors declare an initial route + screens via `.screen(...)`,
+//! and render the drawer panel's contents via `.content(closure)`.
+//! The user opens the drawer (hamburger button or platform
+//! gesture), taps an entry rendered by the content closure, and the
 //! body region swaps to that entry's screen. An imperative
 //! `DrawerHandle` exposes `.select(...)`, `.open()`, `.close()`,
 //! `.toggle()`, `.is_open()`.
@@ -11,72 +12,47 @@
 //! # Per-platform semantics
 //!
 //! - **iOS**: hand-rolled — UIKit has no native drawer. The backend
-//!   slides a `UIView` overlay in from the requested side, with a
-//!   tap-outside recognizer for dismissal. Above the `pinned_above`
-//!   width breakpoint the drawer is pinned beside the body (a
-//!   sidebar) — matches `UISplitViewController`'s posture without
-//!   adopting that API's opinions.
-//! - **Android**: `DrawerLayout` + `NavigationView`. Standard.
-//! - **Web**: an `<aside>` plus a body region. Above
-//!   `pinned_above`, the aside is always visible; below, it slides
-//!   on/off via CSS transform with a focus trap while open.
+//!   embeds a `UINavigationController` for the body + slides a
+//!   `UIView` overlay in from the requested side, with a tap-outside
+//!   recognizer for dismissal. On regular-size class devices the
+//!   drawer pins beside the body (a sidebar) — matches
+//!   `UISplitViewController`'s posture without adopting that API's
+//!   opinions.
+//! - **Android**: `DrawerLayout` + `NavigationView`. Pinned-vs-modal
+//!   chosen from `Configuration.screenWidthDp`.
+//! - **Web**: an `<aside>` plus a body region. Pinned-vs-modal chosen
+//!   from a CSS media query on the viewport width.
 //!
-//! Phase-4 status: this module defines the public surface (primitive
-//! variant, builder, handle, callbacks bundle) but backend
-//! implementations have not landed yet. Calling `create_drawer_navigator`
-//! on a backend that hasn't implemented it panics (trait default).
+//! Phone-vs-tablet adaptation is the backend's job, not the
+//! framework's — there's no app-side knob.
 //!
-//! # Item vs screen registration
+//! # Screens and the content panel
 //!
-//! Unlike tabs (where each tab *always* has a screen), drawers
-//! support an asymmetry: routes can be deep-linkable without being
-//! drawer entries, and a drawer entry can dispatch to a route that's
-//! also reachable elsewhere. The builder splits `.item(...)` from
-//! `.screen(...)`:
+//! Screens are declared once via `.screen(route, render)`. The
+//! drawer's *panel* is rendered by the author's `.content(closure)`
+//! — the closure receives a [`DrawerContentProps`] bundle with
+//! navigation callbacks and reactive state so it can build whatever
+//! UI the design calls for (a list of `Link`s, a brand header, a
+//! settings toggle at the bottom). Per-screen header configuration
+//! (title, bar buttons) goes inside the `.screen(...)` render
+//! closure by returning a [`Screen`] via `Screen::new(...).title(...)`
+//! instead of a bare `Primitive`.
 //!
 //! ```ignore
 //! DrawerNavigator::new(&home)
-//!     .item(home,     DrawerItem::new("Home", "home"))
-//!     .item(settings, DrawerItem::new("Settings", "settings"))
-//!     .screen(home,     |_| ui! { HomeBody() })
-//!     .screen(library,  |_| ui! { LibraryBody() })  // reachable via Link, not drawer
-//!     .screen(settings, |_| ui! { SettingsBody() })
+//!     .screen(home, |_| Screen::new(home_page()).title("Home"))
+//!     .screen(settings, |_| Screen::new(settings_page()).title("Settings"))
+//!     .content(|props| drawer_panel(props))
 //! ```
 
 use super::shared::{
-    LayoutBuilder, NavigatorCallbacks, NavigatorHandle, Route, RouteEntry, RouteParams,
+    LayoutBuilder, NavigatorCallbacks, NavigatorHandle, Route, RouteEntry, RouteParams, Screen,
     ScreenBuilder, ScreenOptions,
 };
 use crate::{Bound, Primitive, Ref, RefFill};
 use std::any::Any;
 use std::collections::HashMap;
 use std::rc::Rc;
-
-// ---------------------------------------------------------------------------
-// Presentation metadata — DrawerItem
-// ---------------------------------------------------------------------------
-
-/// Per-drawer-entry presentation metadata. Label + optional icon.
-/// Screens are registered separately via `.screen(...)` — see the
-/// module docs for the rationale.
-pub struct DrawerItem {
-    pub label: String,
-    pub icon: Option<String>,
-}
-
-impl DrawerItem {
-    pub fn new(label: impl Into<String>) -> Self {
-        Self {
-            label: label.into(),
-            icon: None,
-        }
-    }
-
-    pub fn icon(mut self, name: impl Into<String>) -> Self {
-        self.icon = Some(name.into());
-        self
-    }
-}
 
 // ---------------------------------------------------------------------------
 // DrawerSide + MountPolicy
@@ -190,39 +166,34 @@ impl DrawerHandle {
 }
 
 // ---------------------------------------------------------------------------
-// Sidebar slot — author renders the drawer's side panel
+// Content slot — author renders the drawer's side panel content
 // ---------------------------------------------------------------------------
 
-/// Props handed to the user's `.sidebar(...)` closure. The closure
-/// renders the side panel content (entry buttons, brand, footer)
-/// using these reactive signals + dispatch callbacks.
+/// Props handed to the user's `.content(...)` closure. The closure
+/// renders the drawer panel's content (entry buttons, brand,
+/// footer) using these reactive signals + dispatch callbacks.
 ///
 /// # Per-target rendering
 ///
-/// - **Android**: the framework renders the sidebar as a native
+/// - **Android**: the framework renders the content as a native
 ///   side panel inside its drawer-shell (open/close animations,
 ///   scrim, swipe-to-dismiss).
-/// - **Web**: the sidebar is built into a `Primitive` and surfaced
-///   on `LayoutProps::sidebar` for the author's `.layout(...)` to
-///   place wherever it wants (typically in a flex row beside the
-///   outlet). Without a `.layout(...)`, the sidebar is silently
-///   dropped on web — see `DrawerNavigator::sidebar` docs.
+/// - **Web**: the content subtree is surfaced on
+///   `LayoutProps::sidebar` for the author's `.layout(...)` closure
+///   to place (typically in a flex row beside the outlet). Without
+///   a `.layout(...)`, the content is silently dropped on web.
 ///
 /// # State + dispatch
 ///
-/// Sidebars are reactive: read `active_route` inside the closure
-/// to flip the highlighted item without rebuilding the panel.
-/// Call `on_select(name)` from a button click to swap the body —
-/// or use `Link(route, params)` which auto-dispatches `Select`
-/// against the ambient drawer navigator. Both work; `Link` is
-/// preferred because it inherits web's hyperlink semantics
-/// (middle-click new tab, right-click menu, etc.).
-pub struct DrawerSidebarProps {
-    /// The drawer's registered items, in declaration order. The
-    /// sidebar typically iterates this to render one entry button
-    /// per item, but is free to ignore it (e.g. for a sidebar
-    /// whose contents don't track the drawer's items 1:1).
-    pub items: Vec<DrawerItemRegistration>,
+/// The closure runs inside its own reactive scope, so signal reads
+/// inside it (e.g. `active_route`) re-fire dependent effects on
+/// navigation without rebuilding the panel. Call `on_select(name)`
+/// from a button click to swap the body — or use `Link(route,
+/// params)` which auto-dispatches `Select` against the ambient
+/// drawer navigator. Both work; `Link` is preferred because it
+/// inherits web's hyperlink semantics (middle-click new tab,
+/// right-click menu, etc.).
+pub struct DrawerContentProps {
     /// Name of the currently-active route. Read this inside a
     /// reactive closure (`Text { ... active_route.get() ... }`,
     /// or a `style` closure) to drive the active highlight.
@@ -230,7 +201,7 @@ pub struct DrawerSidebarProps {
     /// Whether the drawer is currently open. On Android this is
     /// kept in sync with the native drawer's visibility; on web
     /// the author's `.layout(...)` is responsible for reading it
-    /// and showing/hiding the sidebar (or using it for animations).
+    /// and showing/hiding the content (or using it for animations).
     pub is_open: crate::Signal<bool>,
     /// Programmatic body swap. Dispatches a `Select` command —
     /// equivalent to `Link(route, ())` but for cases where the
@@ -238,39 +209,32 @@ pub struct DrawerSidebarProps {
     /// gesture).
     pub on_select: Rc<dyn Fn(&'static str)>,
     /// Close the drawer. Useful for a "Done" footer button on
-    /// mobile; on desktop where the sidebar is pinned, this still
+    /// mobile; on desktop where the content is pinned, this still
     /// flips the signal but the layout may ignore it.
     pub on_close: Rc<dyn Fn()>,
 }
 
-pub type SidebarBuilder = Rc<dyn Fn(DrawerSidebarProps) -> Primitive>;
+pub type ContentBuilder = Rc<dyn Fn(DrawerContentProps) -> Primitive>;
 
 // ---------------------------------------------------------------------------
 // Author-facing builder
 // ---------------------------------------------------------------------------
 
-/// Author-facing drawer navigator builder. Drawer entries get
-/// declared via `.item(...)`; screens via `.screen(...)`. See
-/// module-level docs for usage.
+/// Author-facing drawer navigator builder. Screens get declared
+/// via `.screen(...)`; the drawer panel's contents via
+/// `.content(...)`. See module-level docs for usage.
 pub struct DrawerNavigator {
     pub initial: &'static str,
     pub initial_path: &'static str,
-    /// Ordered list of (route name, item) — preserves declaration
-    /// order, which the backend uses to render the drawer list.
-    pub item_order: Vec<(&'static str, DrawerItem)>,
     pub screens: HashMap<&'static str, RouteEntry>,
     pub layout: Option<LayoutBuilder>,
-    pub sidebar: Option<SidebarBuilder>,
+    pub content: Option<ContentBuilder>,
     pub side: DrawerSide,
     /// Animation style — `Front` (overlay) or `Slide` (push content).
     /// Default is platform-aware: `Slide` on iOS, `Front` elsewhere.
     pub drawer_type: DrawerType,
     /// Width of the drawer panel in logical points. Default 280.
     pub drawer_width: f32,
-    /// Width breakpoint in CSS pixels above which the drawer is
-    /// pinned beside the body region (becomes a sidebar). `None`
-    /// (default) keeps the drawer as an overlay at all widths.
-    pub pinned_above: Option<u32>,
     /// Whether the drawer opens on edge-swipe (in addition to
     /// programmatic open from the handle / hamburger). On Android,
     /// this maps to `DrawerLayout.setDrawerLockMode` — `true` =
@@ -301,17 +265,15 @@ impl DrawerNavigator {
         Bound::new(Primitive::DrawerNavigator(Box::new(DrawerNavigator {
             initial: initial.name(),
             initial_path: initial.path(),
-            item_order: Vec::new(),
             screens: HashMap::new(),
             layout: None,
-            sidebar: None,
+            content: None,
             side: DrawerSide::Start,
             // Matches React Navigation's default on every platform
             // except iOS. iOS-targeted authors should set
             // `.drawer_type(DrawerType::Slide)` explicitly.
             drawer_type: DrawerType::Front,
             drawer_width: 280.0,
-            pinned_above: None,
             swipe_to_open: true,
             mount_policy: MountPolicy::LazyPersistent,
             default_options: None,
@@ -327,27 +289,21 @@ impl DrawerNavigator {
 }
 
 impl Bound<DrawerHandle> {
-    /// Register a drawer entry. Adds an item to the drawer list
-    /// for the given route. The route's *screen* is registered
-    /// separately via `.screen(...)` — see module docs for the
-    /// rationale.
-    pub fn item<P: RouteParams>(mut self, route: Route<P>, item: DrawerItem) -> Self {
-        if let Primitive::DrawerNavigator(nav) = &mut self.primitive {
-            nav.item_order.push((route.name(), item));
-        }
-        self
-    }
-
-    /// Register a screen. Same shape as the stack navigator's
-    /// `.screen(...)`. Routes that appear in `.screen(...)` but
-    /// not in `.item(...)` are reachable via `Link` or
-    /// programmatic `select(...)` but won't appear in the drawer
-    /// list.
-    pub fn screen<P: RouteParams>(
-        mut self,
-        route: Route<P>,
-        render: impl Fn(P) -> Primitive + 'static,
-    ) -> Self {
+    /// Register a screen. The `render` closure returns anything
+    /// convertible into a [`Screen`] — either a bare `Primitive`
+    /// or a `Screen::new(...).title(...).header_left(...)` value
+    /// when the route also needs per-screen header configuration.
+    ///
+    /// To put a route in the drawer's side panel, render the entry
+    /// yourself inside the `.content(...)` closure (use `Link` for
+    /// hyperlink-shaped behavior, or `on_select(...)` for a
+    /// programmatic switch).
+    pub fn screen<P, R, F>(mut self, route: Route<P>, render: F) -> Self
+    where
+        P: RouteParams,
+        R: Into<Screen>,
+        F: Fn(P) -> R + 'static,
+    {
         if let Primitive::DrawerNavigator(nav) = &mut self.primitive {
             let render = Rc::new(render);
             let build: ScreenBuilder = Rc::new(move |boxed: Box<dyn Any>| {
@@ -357,34 +313,15 @@ impl Bound<DrawerHandle> {
                          declared params don't match dispatched params"
                     )
                 });
-                render(*params)
+                render(*params).into()
             });
             let from_segments = Rc::new(|segs: &HashMap<String, String>| {
                 P::from_segments(segs).map(|p| Box::new(p) as Box<dyn Any>)
             });
             nav.screens.insert(
                 route.name(),
-                RouteEntry { path: route.path(), build, from_segments, options: None },
+                RouteEntry { path: route.path(), build, from_segments },
             );
-        }
-        self
-    }
-
-    /// Set per-screen header options for `route`.
-    pub fn options<P: RouteParams>(
-        mut self,
-        route: Route<P>,
-        f: impl Fn(&P) -> ScreenOptions + 'static,
-    ) -> Self {
-        if let Primitive::DrawerNavigator(nav) = &mut self.primitive {
-            if let Some(entry) = nav.screens.get_mut(route.name()) {
-                entry.options = Some(Rc::new(move |any: &dyn Any| {
-                    let params = any.downcast_ref::<P>().expect(
-                        "DrawerNavigator::options: param type mismatch",
-                    );
-                    f(params)
-                }));
-            }
         }
         self
     }
@@ -463,16 +400,6 @@ impl Bound<DrawerHandle> {
         self
     }
 
-    /// Pin the drawer beside the body region above the given
-    /// viewport width in CSS pixels. Below the breakpoint, the
-    /// drawer behaves as an overlay.
-    pub fn pinned_above(mut self, px: u32) -> Self {
-        if let Primitive::DrawerNavigator(nav) = &mut self.primitive {
-            nav.pinned_above = Some(px);
-        }
-        self
-    }
-
     /// Toggle the swipe-from-edge gesture. Default is on.
     ///
     /// On Android, this controls
@@ -502,16 +429,17 @@ impl Bound<DrawerHandle> {
 
     /// Install a layout wrapper. Drawer layouts typically render a
     /// top app bar containing the hamburger trigger; the
-    /// `LayoutProps` bundle exposes the open-state signal (via
-    /// `can_go_back` — no, see `DrawerSidebarProps` for direct
-    /// access) and the toggle callback for that purpose.
+    /// `LayoutProps` bundle exposes the active route, the back
+    /// callback (which toggles the drawer), and the pre-built
+    /// drawer-content `Primitive` (see [`DrawerContentProps`] for the
+    /// reactive state passed to the content closure).
     ///
     /// **Web only.** Native backends (Android, iOS) draw their own
-    /// drawer shell and ignore this slot. To define the *sidebar*
-    /// content portably across web and Android, use
-    /// [`Bound::sidebar`] instead — the sidebar Primitive flows to
-    /// the layout closure on web via `LayoutProps::sidebar`, and is
-    /// rendered natively on Android.
+    /// drawer shell and ignore this slot. To define the drawer
+    /// panel's contents portably across web and native, use
+    /// [`Bound::content`] — the content Primitive flows to the
+    /// layout closure on web via `LayoutProps::sidebar` and is
+    /// rendered natively on Android/iOS.
     pub fn layout<F>(mut self, f: F) -> Self
     where
         F: Fn(super::shared::LayoutProps) -> Primitive + 'static,
@@ -522,28 +450,27 @@ impl Bound<DrawerHandle> {
         self
     }
 
-    /// Install a sidebar closure. The closure renders the drawer's
-    /// side panel content (typically an entry list + brand/footer)
+    /// Install a content closure. The closure renders the drawer
+    /// panel's contents (typically an entry list + brand + footer)
     /// and runs in its own reactive scope so signal reads inside
     /// it update without rebuilding the panel.
     ///
     /// # Per-target behavior
     ///
-    /// - **Android**: the framework renders the sidebar as a real
-    ///   native drawer side panel — open/close animations, scrim,
+    /// - **Android / iOS**: the framework renders the content as
+    ///   a native drawer side panel — open/close animations, scrim,
     ///   edge-swipe to dismiss.
-    /// - **Web**: the framework builds the sidebar Primitive and
+    /// - **Web**: the framework builds the content Primitive and
     ///   surfaces it on `LayoutProps::sidebar` for the author's
     ///   `.layout(...)` closure to place. Without a `.layout(...)`,
-    ///   the sidebar is silently dropped (web has no automatic
+    ///   the content is silently dropped (web has no automatic
     ///   drawer shell to receive it).
-    /// - **iOS** (when implemented): same as Android.
-    pub fn sidebar<F>(mut self, f: F) -> Self
+    pub fn content<F>(mut self, f: F) -> Self
     where
-        F: Fn(DrawerSidebarProps) -> Primitive + 'static,
+        F: Fn(DrawerContentProps) -> Primitive + 'static,
     {
         if let Primitive::DrawerNavigator(nav) = &mut self.primitive {
-            nav.sidebar = Some(Rc::new(f));
+            nav.content = Some(Rc::new(f));
         }
         self
     }
@@ -561,26 +488,14 @@ impl Bound<DrawerHandle> {
 // Callbacks bundle — what backends receive
 // ---------------------------------------------------------------------------
 
-/// Per-drawer-item registration data handed to the backend so it can
-/// render the drawer list. Same shape as `DrawerItem` plus the route
-/// name.
-#[derive(Clone)]
-pub struct DrawerItemRegistration {
-    pub route: &'static str,
-    pub label: String,
-    pub icon: Option<String>,
-}
-
 /// Bundle the framework hands to `Backend::create_drawer_navigator`.
 /// Reuses the shared `NavigatorCallbacks<N>` for the screen/scope
 /// machinery and adds drawer-specific data.
 pub struct DrawerNavigatorCallbacks<N: Clone + 'static> {
     pub navigator: NavigatorCallbacks<N>,
-    pub items: Vec<DrawerItemRegistration>,
     pub side: DrawerSide,
     pub drawer_type: DrawerType,
     pub drawer_width: f32,
-    pub pinned_above: Option<u32>,
     pub swipe_to_open: bool,
     pub mount_policy: MountPolicy,
     /// Reactive open-state signal. The backend's dispatcher flips
@@ -588,15 +503,15 @@ pub struct DrawerNavigatorCallbacks<N: Clone + 'static> {
     /// commands fire; layouts subscribed to it re-render
     /// (hamburger icon state, focus trap, etc.).
     pub is_open: crate::Signal<bool>,
-    /// Build the sidebar subtree, if one was registered via
-    /// `.sidebar(...)`. Mirrors `NavigatorCallbacks::build_layout`:
+    /// Build the drawer-panel content subtree, if one was registered
+    /// via `.content(...)`. Mirrors `NavigatorCallbacks::build_layout`:
     /// the framework runs the author's closure inside a dedicated
-    /// reactive scope (so signal-reads in the sidebar keep firing
+    /// reactive scope (so signal-reads inside the panel keep firing
     /// across drawer state changes) and returns the freshly-built
-    /// native node. `None` ⇒ the author didn't register a sidebar;
-    /// backends that need *something* for the slot use an empty
-    /// View.
-    pub build_sidebar: Option<Rc<dyn Fn() -> N>>,
+    /// native node. `None` ⇒ the author didn't register a content
+    /// closure; backends that need *something* for the slot use an
+    /// empty View.
+    pub build_content: Option<Rc<dyn Fn() -> N>>,
     /// Called by the backend after `select`/`open`/`close`
     /// commands commit (e.g. for analytics).
     pub active_changed: Rc<dyn Fn(&'static str)>,

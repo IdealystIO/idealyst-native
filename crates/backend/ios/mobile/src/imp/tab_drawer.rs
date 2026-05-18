@@ -6,8 +6,8 @@ use framework_core::primitives::navigator::{
 use objc2::encode::{Encode, Encoding};
 use objc2::rc::Retained;
 use objc2::{msg_send, msg_send_id};
-use objc2_foundation::{CGFloat, CGRect, MainThreadMarker, NSObject, NSString};
-use objc2_ui_kit::{UIColor, UIView, UIViewController};
+use objc2_foundation::{CGFloat, CGRect, MainThreadMarker, NSArray, NSObject, NSString};
+use objc2_ui_kit::{UIColor, UINavigationController, UIView, UIViewController};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -35,10 +35,13 @@ fn dump_debug_stats(label: &str) {
 
 /// A screen retained across switches under a persistent
 /// `MountPolicy`. The view stays in the body's subview list and is
-/// toggled visible via `setHidden:` rather than torn down.
+/// toggled visible via `setHidden:` rather than torn down. The
+/// cached `ScreenOptions` lets re-Selects re-apply the header
+/// configuration (title, bar buttons) without re-mounting.
 pub(crate) struct MountedScreen {
     pub(crate) view: Retained<UIView>,
     pub(crate) scope_id: u64,
+    pub(crate) options: framework_core::ScreenOptions,
 }
 
 /// Per-instance state for tab and drawer navigators.
@@ -63,6 +66,13 @@ pub(crate) struct TabDrawerEntry {
     /// `*_attach_initial` (which receives no route name) can ask the
     /// framework what the initial route is.
     pub(crate) active_route_sig: framework_core::Signal<&'static str>,
+    /// Embedded `UINavigationController`'s root `UIViewController`.
+    /// Populated for drawer navigators (so they own a native header
+    /// bar without depending on a parent stack) and left `None` for
+    /// tab navigators (which have no header). `apply_header_options`
+    /// targets this VC when present — its `navigationItem` populates
+    /// the drawer's own `UINavigationBar`.
+    pub(crate) header_root_vc: Option<Retained<UIViewController>>,
 }
 
 // =========================================================================
@@ -95,6 +105,9 @@ pub(crate) fn create_tab_navigator(
         mounted: mounted.clone(),
         current_route: current_route.clone(),
         active_route_sig,
+        // Tabs have no header bar; the drawer constructor populates
+        // this with its embedded UINavigationController's rootVC.
+        header_root_vc: None,
     };
     tab_drawer_instances.insert(key, entry);
 
@@ -152,7 +165,7 @@ fn select_screen(
     release_fn: &Rc<dyn Fn(u64)>,
     name: &'static str,
     params: Box<dyn std::any::Any>,
-) {
+) -> framework_core::ScreenOptions {
     match policy {
         MountPolicy::LazyDisposing => {
             if let Some(old_scope) = current_scope.borrow_mut().take() {
@@ -165,6 +178,7 @@ fn select_screen(
             pin_to_edges(body, result.node.as_view());
             *current_scope.borrow_mut() = Some(result.scope_id);
             *current_route.borrow_mut() = Some(name);
+            result.options
         }
         MountPolicy::LazyPersistent | MountPolicy::EagerPersistent => {
             // Hide the previous screen, if any. We deliberately do
@@ -178,9 +192,10 @@ fn select_screen(
             }
             // Reveal the cached view, or build it on first visit.
             let mut map = mounted.borrow_mut();
-            if let Some(m) = map.get(name) {
+            let options = if let Some(m) = map.get(name) {
                 let _: () = unsafe { msg_send![m.view.as_ref(), setHidden: false] };
                 *current_scope.borrow_mut() = Some(m.scope_id);
+                m.options.clone()
             } else {
                 let result = mount_fn(name, params);
                 let view: Retained<UIView> = unsafe {
@@ -188,9 +203,15 @@ fn select_screen(
                 };
                 pin_to_edges(body, &view);
                 *current_scope.borrow_mut() = Some(result.scope_id);
-                map.insert(name, MountedScreen { view, scope_id: result.scope_id });
-            }
+                let options = result.options.clone();
+                map.insert(
+                    name,
+                    MountedScreen { view, scope_id: result.scope_id, options },
+                );
+                result.options
+            };
             *current_route.borrow_mut() = Some(name);
+            options
         }
     }
 }
@@ -224,7 +245,13 @@ pub(crate) fn tab_navigator_attach_initial(
         *entry.current_route.borrow_mut() = Some(initial_name);
         entry.mounted.borrow_mut().insert(
             initial_name,
-            MountedScreen { view, scope_id },
+            MountedScreen {
+                view,
+                scope_id,
+                // Tabs don't render a header; defaulted ScreenOptions
+                // is fine here. (`_options` is ignored above.)
+                options: framework_core::ScreenOptions::default(),
+            },
         );
     }
 }
@@ -283,7 +310,41 @@ pub(crate) fn create_drawer_navigator(
     unsafe { outer.setClipsToBounds(true) };
 
     let body = unsafe { UIView::new(mtm) };
-    pin_to_edges(&outer, &body);
+
+    // Embed the drawer's body inside a self-owned UINavigationController.
+    // That way the drawer has a real native header bar regardless of
+    // whether it's the root of the app or nested inside a parent
+    // stack — the old code assumed a parent stack provided the nav
+    // controller and the header silently disappeared when it didn't.
+    //
+    // `mount_screen_in_vc` wraps body in a UIVC whose root view pins
+    // body to `safeAreaLayoutGuide`, so screen content sits below
+    // the nav bar without taffy having to know about safe areas.
+    let nav_ctrl = unsafe { UINavigationController::new(mtm) };
+    let nav_view = nav_ctrl.view().expect("UINavigationController.view");
+    let white = unsafe { UIColor::colorWithRed_green_blue_alpha(1.0, 1.0, 1.0, 1.0) };
+    nav_view.setBackgroundColor(Some(&white));
+    // Opaque appearance so content reliably sits below the bar — the
+    // same configuration the stack navigator applies in navigator.rs.
+    unsafe {
+        let nav_bar: Retained<NSObject> = msg_send_id![&nav_ctrl, navigationBar];
+        let appearance: Retained<NSObject> =
+            msg_send_id![objc2::class!(UINavigationBarAppearance), new];
+        let _: () = msg_send![&appearance, configureWithOpaqueBackground];
+        let _: () = msg_send![&nav_bar, setStandardAppearance: &*appearance];
+        let _: () = msg_send![&nav_bar, setScrollEdgeAppearance: &*appearance];
+    }
+    let root_vc = super::mount_screen_in_vc(mtm, &body);
+    unsafe {
+        nav_ctrl.setViewControllers_animated(
+            &NSArray::from_vec(vec![root_vc.clone()]),
+            false,
+        );
+    }
+    // Outer holds the nav controller's view (header bar + body), then
+    // the scrim and sidebar are added on top later. Order matters:
+    // later subviews paint on top, so scrim/sidebar overlay the bar.
+    pin_to_edges(&outer, &nav_view);
 
     // Scrim
     let scrim = unsafe { UIView::new(mtm) };
@@ -312,6 +373,7 @@ pub(crate) fn create_drawer_navigator(
         mounted: mounted.clone(),
         current_route: current_route.clone(),
         active_route_sig,
+        header_root_vc: Some(root_vc.clone()),
     };
     tab_drawer_instances.insert(key, entry);
 
@@ -329,7 +391,11 @@ pub(crate) fn create_drawer_navigator(
     let current_route_for_dispatch = current_route.clone();
     let scrim_ref = scrim.clone();
     let sidebar_for_anim = sidebar_cell.clone();
-    let body_for_anim = body.clone();
+    // Translate the nav controller's view (header bar + body
+    // together) rather than just `body` — sliding the body alone
+    // would leave the nav bar pinned and look wrong.
+    let body_for_anim = nav_view.clone();
+    let root_vc_for_dispatch = root_vc.clone();
 
     let drawer_style = callbacks.drawer_type;
     let configured_width = callbacks.drawer_width as CGFloat;
@@ -473,7 +539,7 @@ pub(crate) fn create_drawer_navigator(
         match cmd {
             NavCommand::Select { name, params, url: _ } => {
                 backend_ios_core::ios_log(&format!("[drawer] Select: {}", name));
-                select_screen(
+                let options = select_screen(
                     mount_policy,
                     &body_for_dispatch,
                     &mounted_for_dispatch,
@@ -484,9 +550,33 @@ pub(crate) fn create_drawer_navigator(
                     name,
                     params,
                 );
+                // Re-apply the new screen's header options to the
+                // drawer's embedded root VC so the title and bar
+                // buttons update when the user switches drawer entries.
+                // `forget` is the standard pattern for these
+                // callback target retains — the targets need to
+                // outlive the VC for taps to keep firing.
+                for target in super::apply_header_options(
+                    &root_vc_for_dispatch,
+                    &options,
+                    mtm,
+                ) {
+                    std::mem::forget(target);
+                }
                 depth_changed(1);
                 active_changed(name);
                 super::schedule_layout_pass();
+                // Auto-close on navigation when the drawer is open
+                // (standard mobile drawer behavior — the user has
+                // navigated to a new screen, they don't want the
+                // drawer covering it). Cheap when already closed:
+                // the `is_open` check skips the animation entirely.
+                if is_open_for_dispatch.get() {
+                    is_open_for_dispatch.set(false);
+                    is_open_signal.set(false);
+                    close_fn(false);
+                    open_changed(false);
+                }
                 backend_ios_core::ios_log(&format!("[drawer] Select done: {}", name));
             }
             NavCommand::OpenDrawer => {
@@ -551,7 +641,9 @@ pub(crate) fn drawer_navigator_attach_initial(
     *entry.current_scope.borrow_mut() = Some(scope_id);
 
     // Seed the persistent-mount cache so subsequent `Select`s hide
-    // this view instead of orphaning it.
+    // this view instead of orphaning it. The cached options let
+    // re-Select switches re-apply the header without remounting.
+    let initial_options = options.clone();
     if matches!(
         entry.mount_policy,
         MountPolicy::LazyPersistent | MountPolicy::EagerPersistent
@@ -560,42 +652,29 @@ pub(crate) fn drawer_navigator_attach_initial(
         *entry.current_route.borrow_mut() = Some(initial_name);
         entry.mounted.borrow_mut().insert(
             initial_name,
-            MountedScreen { view, scope_id },
+            MountedScreen {
+                view,
+                scope_id,
+                options: initial_options.clone(),
+            },
         );
     }
 
-    // Defer header setup until the next run loop pass — by then
-    // the stack navigator will have wrapped the drawer's view in a
-    // VC with a navigationItem we can configure via the options.
-    let outer_ref = entry.outer.clone();
+    // The drawer owns its own UINavigationController + rootVC (set
+    // up in `create_drawer_navigator`), so we apply the header
+    // options directly to that rootVC — no responder-chain walk,
+    // no dependence on a parent stack. Defer to the next run loop
+    // pass so the rootVC has a chance to finish viewDidLoad.
+    let header_root_vc = entry.header_root_vc.clone();
     let setup: Rc<dyn Fn()> = Rc::new(move || {
-        // Walk up the responder chain to find the parent VC
-        let mut resp: *const NSObject = &*outer_ref as *const UIView as *const NSObject;
-        loop {
-            let next: *const NSObject = unsafe { msg_send![resp, nextResponder] };
-            if next.is_null() { break; }
-            let is_vc: bool = unsafe {
-                msg_send![next, isKindOfClass: objc2::class!(UIViewController)]
-            };
-            if is_vc {
-                let vc: &UIViewController = unsafe { &*(next as *const UIViewController) };
-                // Ensure the nav bar is visible — the stack navigator
-                // may have hidden it if the Home screen set
-                // header_shown(false). The drawer's options override.
-                let nav_ctrl: *const NSObject = unsafe { msg_send![vc, navigationController] };
-                if !nav_ctrl.is_null() {
-                    let _: () = unsafe { msg_send![nav_ctrl, setNavigationBarHidden: false, animated: false] };
-                }
-                for target in super::apply_header_options(
-                    vc,
-                    &options,
-                    unsafe { MainThreadMarker::new_unchecked() },
-                ) {
-                    std::mem::forget(target);
-                }
-                break;
+        if let Some(ref vc) = header_root_vc {
+            for target in super::apply_header_options(
+                vc,
+                &initial_options,
+                unsafe { MainThreadMarker::new_unchecked() },
+            ) {
+                std::mem::forget(target);
             }
-            resp = next;
         }
     });
     let setup_target = CallbackTarget::new(mtm, setup);

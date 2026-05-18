@@ -10,7 +10,8 @@ use crate::shell::{
 
 pub fn page() -> Primitive {
     ui! {
-        Stack(gap = StackGap::Xl) {
+        ScrollView {
+            Stack(gap = StackGap::Xl) {
             PageHeader(
                 title = "CLI".to_string(),
                 description = "The `idealyst` binary orchestrates scaffolding, dev, build, and deploy.".to_string(),
@@ -87,6 +88,7 @@ pub fn page() -> Primitive {
                         hot-reload pipeline. You won't run them directly — the dev server \
                         invokes them on your behalf.".to_string(),
             )
+        }
         }
     }
 }

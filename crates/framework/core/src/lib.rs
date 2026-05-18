@@ -46,12 +46,11 @@ pub use primitive::Primitive;
 pub use sources::{IntoStyleSource, IntoTextSource, StyleSource, TextSource};
 pub use walker::{render, Owner};
 pub use primitives::navigator::{
-    match_pattern, DefaultLinkKind, DrawerHandle, DrawerItem, DrawerItemRegistration,
-    DrawerNavigator, DrawerNavigatorCallbacks, DrawerSide, DrawerSidebarProps, DrawerType,
-    HeaderButton, LayoutPlan, LayoutProps, MountPolicy, MountResult, NavCommand,
-    NavState, Navigator, NavigatorCallbacks, NavigatorControl, NavigatorHandle, NavigatorOps,
-    Route, RouteParams, ScreenOptions, ScreenOptionsProvider, TabNavigator,
-    TabNavigatorCallbacks, TabPlacement, TabRegistration, TabSpec, TabsHandle,
+    match_pattern, ContentBuilder, DefaultLinkKind, DrawerContentProps, DrawerHandle,
+    DrawerNavigator, DrawerNavigatorCallbacks, DrawerSide, DrawerType, HeaderButton, LayoutPlan,
+    LayoutProps, MountPolicy, MountResult, NavCommand, NavState, Navigator, NavigatorCallbacks,
+    NavigatorControl, NavigatorHandle, NavigatorOps, Route, RouteParams, Screen, ScreenOptions,
+    TabNavigator, TabNavigatorCallbacks, TabPlacement, TabRegistration, TabSpec, TabsHandle,
 };
 pub use primitives::icon::{icon, FillRule, IconData, IconHandle, IconOps, StrokeAnimation};
 pub use primitives::overlay::{

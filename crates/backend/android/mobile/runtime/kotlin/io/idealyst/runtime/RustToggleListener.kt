@@ -10,7 +10,7 @@ import android.widget.CompoundButton
 class RustToggleListener(private val nativePtr: Long) :
     CompoundButton.OnCheckedChangeListener {
 
-    override fun onCheckedChanged(buttonView: CompoundButton?, isChecked: Boolean) {
+    override fun onCheckedChanged(buttonView: CompoundButton, isChecked: Boolean) {
         nativeChanged(nativePtr, if (isChecked) 1 else 0)
     }
 

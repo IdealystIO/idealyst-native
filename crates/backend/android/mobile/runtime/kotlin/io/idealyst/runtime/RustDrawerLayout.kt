@@ -154,6 +154,8 @@ class RustDrawerLayout(
      * which edge it slides from.
      */
     fun attachDrawer(drawer: View) {
+        Log.i("idealyst", "attachDrawer: before addView childCount=" + childCount
+            + " drawer=" + drawer + " drawerParent=" + drawer.parent)
         val lp = LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT,
             ViewGroup.LayoutParams.MATCH_PARENT,
@@ -161,6 +163,8 @@ class RustDrawerLayout(
         lp.gravity = drawerGravity
         addView(drawer, lp)
         drawerChild = drawer
+        Log.i("idealyst", "attachDrawer: after addView childCount=" + childCount
+            + " drawerInTree=" + (drawer.parent === this))
     }
 
     /**

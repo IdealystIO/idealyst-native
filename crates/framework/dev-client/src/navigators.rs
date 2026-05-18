@@ -32,7 +32,22 @@ use crate::OutboundSender;
 
 /// One navigator's app-side state. Cloned across stub closures via
 /// `Rc<RefCell<…>>` for shared interior mutability.
+/// Discriminator for the three navigator flavors the framework
+/// supports. Stored on each `NavigatorAppState` so the wire-replay
+/// engine can dispatch `NavigatorAttachInitial` to the right
+/// `Backend::*_attach_initial` hook — the wire protocol uses a single
+/// command variant for every kind to keep the wire schema small.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NavigatorKind {
+    Stack,
+    Tab,
+    Drawer,
+}
+
 pub struct NavigatorAppState<N: Clone + 'static> {
+    /// Which navigator flavor this state belongs to. Drives which
+    /// `Backend::*_attach_initial` the wire-replay engine calls.
+    pub kind: NavigatorKind,
     /// The native navigator container node (UINavigationController on
     /// iOS, etc.).
     pub node: N,
@@ -181,11 +196,9 @@ impl<N: Clone + 'static> NavigatorAppState<N> {
         &self,
         initial_route: &'static str,
         initial_path: &'static str,
-        items: Vec<framework_core::primitives::navigator::DrawerItemRegistration>,
         side: framework_core::primitives::navigator::DrawerSide,
         drawer_type: framework_core::primitives::navigator::DrawerType,
         drawer_width: f32,
-        pinned_above: Option<u32>,
         swipe_to_open: bool,
         mount_policy: framework_core::primitives::navigator::MountPolicy,
     ) -> DrawerNavigatorCallbacks<N> {
@@ -193,15 +206,13 @@ impl<N: Clone + 'static> NavigatorAppState<N> {
         let outbound = self.outbound.clone();
         DrawerNavigatorCallbacks {
             navigator: self.build_stub_callbacks(initial_route, initial_path),
-            items,
             side,
             drawer_type,
             drawer_width,
-            pinned_above,
             swipe_to_open,
             mount_policy,
             is_open: Signal::new(false),
-            build_sidebar: None,
+            build_content: None,
             active_changed: Rc::new(|_| {}),
             open_changed: Rc::new(move |is_open| {
                 let _ = outbound.send(AppToDev::DrawerStateChanged {

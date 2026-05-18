@@ -19,8 +19,7 @@
 //! can invoke them via the `ui!` DSL.
 
 use framework_core::{
-    component, signal, ui, DrawerHandle, DrawerItem, DrawerNavigator, HeaderButton, Primitive, Ref,
-    ScreenOptions, Signal,
+    component, signal, ui, DrawerHandle, DrawerNavigator, Primitive, Ref, Screen, Signal,
 };
 use idea_ui::{install_idea_theme, light_theme};
 
@@ -41,32 +40,9 @@ use routes::{
     CLI_ROUTE, COMPONENTS_ROUTE, MACROS_ROUTE, NAVIGATION_ROUTE, OVERVIEW_ROUTE, PLATFORMS_ROUTE,
     PRIMITIVES_ROUTE, QUICKSTART_ROUTE, REACTIVITY_ROUTE, STYLES_ROUTE, UI_DSL_ROUTE,
 };
-use shell::sidebar_builder;
+use shell::content_builder;
 #[cfg(target_arch = "wasm32")]
 use shell::web_layout;
-
-/// Returns an `.options(...)` closure for `route` that titles the
-/// screen and installs a hamburger button on the leading side that
-/// toggles the drawer. Used for every screen so native backends
-/// (iOS UINavigationBar, Android ActionBar) get a real platform
-/// header with a hamburger trigger — no hand-rolled chrome needed.
-fn drawer_header(
-    title: &'static str,
-    drawer: Ref<DrawerHandle>,
-) -> impl Fn(&()) -> ScreenOptions + 'static {
-    move |_| {
-        // Build a fresh hamburger button per call: HeaderButton's
-        // `on_press` is an `Rc<dyn Fn()>`, so cloning would share
-        // the same callback — fine in practice, but a fresh
-        // closure is simpler and equally cheap.
-        let hamburger = HeaderButton::new("line.3.horizontal", move || {
-            if let Some(d) = drawer.get() {
-                d.toggle();
-            }
-        });
-        ScreenOptions::new().title(title).header_left(hamburger)
-    }
-}
 
 #[component]
 pub fn app() -> Primitive {
@@ -77,57 +53,52 @@ pub fn app() -> Primitive {
     let is_dark: Signal<bool> = signal!(false);
     let drawer: Ref<DrawerHandle> = Ref::new();
 
-    // Each `.item(...)` registers a drawer/sidebar entry; each
-    // `.screen(...)` wires the matching page renderer; each
-    // `.options(...)` sets the native nav-bar title + hamburger.
-    // The two lists must agree (every item also gets a screen) but
-    // they are declared separately so a screen can be deep-linkable
-    // without appearing in the drawer.
+    // Each `.screen(...)` registers the route's renderer + per-screen
+    // header config. The drawer navigator injects a default hamburger
+    // `header_left` that toggles the drawer — pass an explicit
+    // `.header_left(...)` to override it (or to suppress: pass a
+    // no-op button).
     let builder = DrawerNavigator::new(&OVERVIEW_ROUTE)
-        .item(OVERVIEW_ROUTE, DrawerItem::new("Overview"))
-        .item(QUICKSTART_ROUTE, DrawerItem::new("Quickstart"))
-        .item(COMPONENTS_ROUTE, DrawerItem::new("Components"))
-        .item(REACTIVITY_ROUTE, DrawerItem::new("Reactivity"))
-        .item(UI_DSL_ROUTE, DrawerItem::new("UI DSL"))
-        .item(PRIMITIVES_ROUTE, DrawerItem::new("Primitives"))
-        .item(STYLES_ROUTE, DrawerItem::new("Styles & Themes"))
-        .item(NAVIGATION_ROUTE, DrawerItem::new("Navigation"))
-        .item(MACROS_ROUTE, DrawerItem::new("Macros"))
-        .item(CLI_ROUTE, DrawerItem::new("CLI"))
-        .item(PLATFORMS_ROUTE, DrawerItem::new("Platforms"))
-        .screen(OVERVIEW_ROUTE, move |_| pages::overview::page())
-        .screen(QUICKSTART_ROUTE, move |_| pages::quickstart::page())
-        .screen(COMPONENTS_ROUTE, move |_| pages::components::page())
-        .screen(REACTIVITY_ROUTE, move |_| pages::reactivity::page())
-        .screen(UI_DSL_ROUTE, move |_| pages::ui_dsl::page())
-        .screen(PRIMITIVES_ROUTE, move |_| pages::primitives::page())
-        .screen(STYLES_ROUTE, move |_| pages::styles::page())
-        .screen(NAVIGATION_ROUTE, move |_| pages::navigation::page())
-        .screen(MACROS_ROUTE, move |_| pages::macros_page::page())
-        .screen(CLI_ROUTE, move |_| pages::cli::page())
-        .screen(PLATFORMS_ROUTE, move |_| pages::platforms::page())
-        .options(OVERVIEW_ROUTE, drawer_header("Overview", drawer))
-        .options(QUICKSTART_ROUTE, drawer_header("Quickstart", drawer))
-        .options(COMPONENTS_ROUTE, drawer_header("Components", drawer))
-        .options(REACTIVITY_ROUTE, drawer_header("Reactivity", drawer))
-        .options(UI_DSL_ROUTE, drawer_header("UI DSL", drawer))
-        .options(PRIMITIVES_ROUTE, drawer_header("Primitives", drawer))
-        .options(STYLES_ROUTE, drawer_header("Styles & Themes", drawer))
-        .options(NAVIGATION_ROUTE, drawer_header("Navigation", drawer))
-        .options(MACROS_ROUTE, drawer_header("Macros", drawer))
-        .options(CLI_ROUTE, drawer_header("CLI", drawer))
-        .options(PLATFORMS_ROUTE, drawer_header("Platforms", drawer))
-        // Pin the drawer above 900px (sidebar mode on desktop web);
-        // below that it slides in as an overlay.
-        .pinned_above(900)
-        .sidebar(sidebar_builder(is_dark))
+        .screen(OVERVIEW_ROUTE, |_| {
+            Screen::new(pages::overview::page()).title("Overview")
+        })
+        .screen(QUICKSTART_ROUTE, |_| {
+            Screen::new(pages::quickstart::page()).title("Quickstart")
+        })
+        .screen(COMPONENTS_ROUTE, |_| {
+            Screen::new(pages::components::page()).title("Components")
+        })
+        .screen(REACTIVITY_ROUTE, |_| {
+            Screen::new(pages::reactivity::page()).title("Reactivity")
+        })
+        .screen(UI_DSL_ROUTE, |_| {
+            Screen::new(pages::ui_dsl::page()).title("UI DSL")
+        })
+        .screen(PRIMITIVES_ROUTE, |_| {
+            Screen::new(pages::primitives::page()).title("Primitives")
+        })
+        .screen(STYLES_ROUTE, |_| {
+            Screen::new(pages::styles::page()).title("Styles & Themes")
+        })
+        .screen(NAVIGATION_ROUTE, |_| {
+            Screen::new(pages::navigation::page()).title("Navigation")
+        })
+        .screen(MACROS_ROUTE, |_| {
+            Screen::new(pages::macros_page::page()).title("Macros")
+        })
+        .screen(CLI_ROUTE, |_| {
+            Screen::new(pages::cli::page()).title("CLI")
+        })
+        .screen(PLATFORMS_ROUTE, |_| {
+            Screen::new(pages::platforms::page()).title("Platforms")
+        })
+        .content(content_builder(is_dark))
         .bind(drawer);
 
-    // Web is the exception: it has no native drawer chrome, so we
-    // place the pre-built sidebar beside the outlet ourselves. iOS,
-    // Android, and other native backends draw their own drawer
+    // Web is the exception: native backends render their own drawer
     // chrome (UINavigationBar / ActionBar + drawer panel) from the
-    // screen options above and ignore this layout closure entirely.
+    // screen-level header config above. On web, we place the
+    // pre-built drawer-content beside the outlet ourselves.
     #[cfg(target_arch = "wasm32")]
     let builder = builder.layout(web_layout());
 

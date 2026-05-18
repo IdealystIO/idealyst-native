@@ -7,7 +7,8 @@ use crate::shell::{pageheader, section, PageHeaderProps, SectionProps};
 
 pub fn page() -> Primitive {
     ui! {
-        Stack(gap = StackGap::Xl) {
+        ScrollView {
+            Stack(gap = StackGap::Xl) {
             PageHeader(
                 title = "Platforms".to_string(),
                 description = "Idealyst targets web, iOS, Android, Roku, and AAS — same Rust \
@@ -97,6 +98,7 @@ pub fn page() -> Primitive {
                         `app()` function compiles into all of them; only the wrapper crates \
                         differ.".to_string(),
             )
+        }
         }
     }
 }

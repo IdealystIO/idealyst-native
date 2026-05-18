@@ -8,7 +8,7 @@
 use std::rc::Rc;
 
 use framework_core::{
-    component, ui, DrawerSidebarProps, Primitive, Signal, StyleApplication,
+    component, ui, DrawerContentProps, Primitive, SafeAreaSides, Signal, StyleApplication,
 };
 #[cfg(target_arch = "wasm32")]
 use framework_core::LayoutProps;
@@ -24,18 +24,21 @@ use crate::styles::{
 };
 
 // =============================================================================
-// Drawer sidebar — the side panel content. Used by both web (placed
-// into the layout) and mobile (rendered natively in the drawer).
+// Drawer content — the side panel itself. The framework hands this
+// to the web layout (via `LayoutProps::sidebar`) on web; native
+// backends render it as the drawer panel directly.
 // =============================================================================
 
-pub fn sidebar_builder(is_dark: Signal<bool>) -> impl Fn(DrawerSidebarProps) -> Primitive + 'static {
-    move |props: DrawerSidebarProps| {
+pub fn content_builder(
+    is_dark: Signal<bool>,
+) -> impl Fn(DrawerContentProps) -> Primitive + 'static {
+    move |props: DrawerContentProps| {
         let active_route = props.active_route;
-        sidebar(active_route, is_dark)
+        drawer_content(active_route, is_dark)
     }
 }
 
-fn sidebar(active_route: Signal<&'static str>, is_dark: Signal<bool>) -> Primitive {
+fn drawer_content(active_route: Signal<&'static str>, is_dark: Signal<bool>) -> Primitive {
     let container_style = Sidebar();
     let header_style = SidebarHeader();
 
@@ -59,8 +62,14 @@ fn sidebar(active_route: Signal<&'static str>, is_dark: Signal<bool>) -> Primiti
     children.push(ui! { Divider() });
     children.push(theme_toggle(is_dark));
 
+    // ScrollView so the panel scrolls when content exceeds height
+    // (long nav, small screen). `.safe_area(ALL)` keeps the brand
+    // out of the status bar and the theme toggle out of the home
+    // indicator — backends call `set_safe_area_insets(...)`; the
+    // padding reactively tracks orientation changes and pin/unpin.
     ui! {
-        View(style = container_style) { children }
+        ScrollView(style = container_style) { children }
+            .safe_area(SafeAreaSides::ALL)
     }
 }
 

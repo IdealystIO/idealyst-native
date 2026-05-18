@@ -4,8 +4,8 @@
 //! `catch_unwind` because Rust panics across the FFI boundary are UB.
 
 use super::callbacks::{
-    ClickCallback, OverlayDismissCallback, SliderChangeCallback, StateCallback,
-    TextChangeCallback, ToggleChangeCallback,
+    ClickCallback, HeaderButtonCallback, OverlayDismissCallback, SliderChangeCallback,
+    StateCallback, TextChangeCallback, ToggleChangeCallback,
 };
 use jni::objects::{JObject, JValue};
 use jni::sys::{jint, jlong};
@@ -37,6 +37,34 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustClickListener_nativeI
     }
     let cb = &*(ptr as *const ClickCallback);
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (cb.0)()));
+}
+
+/// `RustActionBarHelper.nativeInvoke` dispatches the home-button
+/// (`header_left`) press into Rust. Same shape as the click listener
+/// trampoline, distinct type so signatures don't blur at the Rust
+/// callsite. The JVM signature is a *static* method (no `this`).
+///
+/// # Safety
+///
+/// `ptr` must have been produced by `Box::into_raw` on a
+/// `Box<HeaderButtonCallback>` in `tab_drawer::apply_screen_options`
+/// and must still be live.
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustActionBarHelper_nativeInvoke(
+    _env: JNIEnv,
+    // Static method on `RustActionBarHelper`'s companion object — the
+    // second JNI arg is the `Class` ref, not an instance.
+    _class: JObject,
+    ptr: jlong,
+) {
+    log::info!("[header-btn] nativeInvoke ptr={}", ptr);
+    if ptr == 0 {
+        return;
+    }
+    let cb = &*(ptr as *const HeaderButtonCallback);
+    log::info!("[header-btn] invoking callback");
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (cb.0)()));
+    log::info!("[header-btn] callback returned");
 }
 
 /// Free a leaked `ClickCallback`. Currently unused (see lifetime

@@ -1187,15 +1187,6 @@ impl Backend for WireRecordingBackend {
         let nav_id;
         let initial_route = callbacks.navigator.initial_route;
         let initial_path = callbacks.navigator.initial_path;
-        let items_wire: Vec<wire::WireDrawerItemRegistration> = callbacks
-            .items
-            .iter()
-            .map(|i| wire::WireDrawerItemRegistration {
-                route: i.route.to_string(),
-                label: i.label.clone(),
-                icon: i.icon.clone(),
-            })
-            .collect();
         let side = match callbacks.side {
             framework_core::primitives::navigator::DrawerSide::Start => {
                 wire::WireDrawerSide::Left
@@ -1224,7 +1215,6 @@ impl Backend for WireRecordingBackend {
             }
         };
         let drawer_width = callbacks.drawer_width;
-        let pinned_above = callbacks.pinned_above;
         let swipe_to_open = callbacks.swipe_to_open;
         let inner_callbacks_rc = Rc::new(callbacks.navigator);
         {
@@ -1234,11 +1224,9 @@ impl Backend for WireRecordingBackend {
                 id: nav_id,
                 initial_route: initial_route.to_string(),
                 initial_path: initial_path.to_string(),
-                items: items_wire,
                 side,
                 drawer_type,
                 drawer_width,
-                pinned_above,
                 swipe_to_open,
                 mount_policy,
             });

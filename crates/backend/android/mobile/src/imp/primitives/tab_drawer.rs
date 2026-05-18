@@ -42,7 +42,7 @@ use framework_core::primitives::navigator::{
     DrawerHandle, DrawerNavigatorCallbacks, MountResult, NavCommand, NavigatorCallbacks,
     NavigatorControl, NavigatorHandle, NavigatorOps, TabNavigatorCallbacks, TabsHandle,
 };
-use jni::objects::{GlobalRef, JValue};
+use jni::objects::{GlobalRef, JObject, JValue};
 use jni::sys::jlong;
 use std::any::Any;
 use std::cell::RefCell;
@@ -177,14 +177,14 @@ pub(crate) fn create_drawer(
         navigator,
         is_open,
         open_changed,
-        build_sidebar,
+        build_content,
         side,
         swipe_to_open,
         ..
     } = callbacks;
-    // build_sidebar runs from the walker after create_drawer
+    // build_content runs from the walker after create_drawer
     // returns (outside the borrow_mut window). Forget it here.
-    let _ = build_sidebar;
+    let _ = build_content;
 
     // Leak a listener box so the RustDrawerLayout's JNI callbacks
     // can find the `is_open` signal + `open_changed` callback.
@@ -275,10 +275,12 @@ pub(crate) fn create_drawer(
         env.new_global_ref(local).expect("global_ref RustDrawerLayout")
     });
 
-    // Body FrameLayout (the active-screen container, attached as
+    // Body LinearLayout (the active-screen container, attached as
     // DrawerLayout's "content" child — the one that fills the
-    // frame and gets covered by the drawer on open).
-    let body = make_frame_layout(b);
+    // frame and gets covered by the drawer on open). Vertical so a
+    // per-screen Toolbar (built from `ScreenOptions` in
+    // `attach_initial`) stacks above the screen.
+    let body = make_body_linear(b);
     with_env(|env| {
         let _ = env.call_method(
             drawer_layout_ref.as_obj(),
@@ -346,6 +348,31 @@ fn make_frame_layout(b: &AndroidBackend) -> GlobalRef {
             .expect("new FrameLayout failed");
         apply_default_layout_params(env, &local);
         env.new_global_ref(local).expect("global_ref FrameLayout")
+    })
+}
+
+/// Build a vertical `LinearLayout` for the drawer body. Children are
+/// [Toolbar, screen] stacked top-to-bottom. The Toolbar is added by
+/// [`attach_initial`] from `ScreenOptions`; the screen view is the
+/// framework-built navigator content. Using a vertical LinearLayout
+/// (not a FrameLayout) lets the Toolbar reserve its measured height
+/// at the top without overlapping the screen.
+fn make_body_linear(b: &AndroidBackend) -> GlobalRef {
+    with_env(|env| {
+        let class = env
+            .find_class("android/widget/LinearLayout")
+            .expect("LinearLayout class not found");
+        let local = env
+            .new_object(
+                &class,
+                "(Landroid/content/Context;)V",
+                &[JValue::Object(&b.context.as_obj())],
+            )
+            .expect("new LinearLayout failed");
+        // Vertical orientation: setOrientation(LinearLayout.VERTICAL=1).
+        let _ = env.call_method(&local, "setOrientation", "(I)V", &[JValue::Int(1)]);
+        apply_default_layout_params(env, &local);
+        env.new_global_ref(local).expect("global_ref LinearLayout")
     })
 }
 
@@ -509,6 +536,7 @@ pub(crate) fn attach_sidebar(
     navigator: &GlobalRef,
     sidebar: GlobalRef,
 ) {
+    log::info!("[drawer] attach_sidebar called");
     let Some(entry) = b.tab_drawer_instances.get(&AndroidBackend::node_key_of(navigator)) else {
         log::error!("tab_drawer attach_sidebar: no instance for node");
         return;
@@ -520,6 +548,7 @@ pub(crate) fn attach_sidebar(
             return;
         }
     };
+    log::info!("[drawer] attach_sidebar: calling attachDrawer JNI");
     with_env(|env| {
         if let Err(e) = env.call_method(
             drawer_view.as_obj(),
@@ -532,6 +561,8 @@ pub(crate) fn attach_sidebar(
                 let _ = env.exception_clear();
             }
             log::error!("RustDrawerLayout.attachDrawer JNI call failed: {:?}", e);
+        } else {
+            log::info!("[drawer] attachDrawer JNI returned OK");
         }
     });
 }
@@ -544,6 +575,7 @@ pub(crate) fn attach_initial(
     navigator: &GlobalRef,
     screen: GlobalRef,
     scope_id: u64,
+    options: framework_core::ScreenOptions,
 ) {
     let Some(entry) = b.tab_drawer_instances.get(&AndroidBackend::node_key_of(navigator)) else {
         log::error!("tab_drawer attach_initial: no instance for node");
@@ -559,6 +591,72 @@ pub(crate) fn attach_initial(
         );
     });
     entry.instance.borrow_mut().current = Some((screen, scope_id));
+
+    // Push title + header_left through the Activity's system
+    // ActionBar — mirrors what iOS does with the screen's
+    // navigationItem (`title`, `setLeftBarButtonItem`).
+    apply_screen_options(b, &options);
+}
+
+/// Mirror `ScreenOptions` onto the host Activity's ActionBar.
+/// `RustActionBarHelper.apply` is a static Kotlin shim that takes the
+/// title + a raw pointer to a leaked `HeaderButtonCallback` (0 ⇒ no
+/// left button). The Activity's `onOptionsItemSelected` override
+/// calls back through `RustActionBarHelper.dispatchHomePress` to
+/// invoke the callback when the user taps the indicator.
+fn apply_screen_options(
+    b: &crate::imp::AndroidBackend,
+    options: &framework_core::ScreenOptions,
+) {
+    use crate::imp::callbacks::HeaderButtonCallback;
+    use jni::sys::jlong;
+
+    let left_ptr: jlong = match options.header_left.as_ref() {
+        Some(btn) => {
+            // Leak the callback so the JVM-side helper can call back
+            // any number of times. See `HeaderButtonCallback`'s
+            // lifetime note for why we don't free the previous one.
+            let leaked = Box::into_raw(Box::new(HeaderButtonCallback(btn.on_press.clone())));
+            leaked as jlong
+        }
+        None => 0,
+    };
+    let title = options.title.clone();
+
+    with_env(|env| {
+        let title_jstring = match title {
+            Some(ref t) => env.new_string(t).ok(),
+            None => None,
+        };
+        let helper_class = match env.find_class("io/idealyst/runtime/RustActionBarHelper") {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("RustActionBarHelper class not found: {:?}", e);
+                return;
+            }
+        };
+        let null_obj = JObject::null();
+        let title_arg: &JObject = match title_jstring.as_ref() {
+            Some(s) => s.as_ref(),
+            None => &null_obj,
+        };
+        if let Err(e) = env.call_static_method(
+            helper_class,
+            "apply",
+            "(Landroid/app/Activity;Ljava/lang/String;J)V",
+            &[
+                JValue::Object(&b.context.as_obj()),
+                JValue::Object(title_arg),
+                JValue::Long(left_ptr),
+            ],
+        ) {
+            if env.exception_check().unwrap_or(false) {
+                let _ = env.exception_describe();
+                let _ = env.exception_clear();
+            }
+            log::error!("RustActionBarHelper.apply failed: {:?}", e);
+        }
+    });
 }
 
 pub(crate) fn release(b: &mut AndroidBackend, node: &GlobalRef) {

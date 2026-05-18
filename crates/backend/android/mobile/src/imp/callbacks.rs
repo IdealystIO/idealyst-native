@@ -23,6 +23,18 @@ use std::rc::Rc;
 /// to drop these.
 pub(crate) struct ClickCallback(pub(crate) Rc<dyn Fn()>);
 
+/// `ScreenOptions.header_left.on_press` for drawer navigators.
+/// `RustActionBarHelper` stores the pointer; the host Activity's
+/// `onOptionsItemSelected` dispatches into Rust via `nativeInvoke`.
+///
+/// Lifetime: leaked for the lifetime of the screen. Each new screen
+/// attach overwrites the slot — the previous box leaks. Bounded by
+/// the number of screens the user navigates through, which for a
+/// drawer-driven app is the size of the drawer item list. Could be
+/// freed on the next attach if it grows, but the cost (~16 bytes per
+/// screen) doesn't warrant the complexity today.
+pub(crate) struct HeaderButtonCallback(pub(crate) Rc<dyn Fn()>);
+
 /// Owned holder for the per-node state setter the framework hands
 /// us in `attach_states`. JVM side keeps the raw pointer in
 /// `RustStateListener` and passes it back via `nativeStateEvent` on

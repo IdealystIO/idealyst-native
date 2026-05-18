@@ -9,7 +9,8 @@ use crate::shell::{
 
 pub fn page() -> Primitive {
     ui! {
-        Stack(gap = StackGap::Xl) {
+        ScrollView {
+            Stack(gap = StackGap::Xl) {
             PageHeader(
                 title = "Reactivity".to_string(),
                 description = "Fine-grained state. Updates surgically rerun only what depends on them.".to_string(),
@@ -91,6 +92,7 @@ pub fn page() -> Primitive {
                         invalidates only when its dependencies change; downstream reads stay \
                         fine-grained.".to_string(),
             )
+        }
         }
     }
 }

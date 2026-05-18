@@ -9,7 +9,8 @@ use crate::shell::{
 
 pub fn page() -> Primitive {
     ui! {
-        Stack(gap = StackGap::Xl) {
+        ScrollView {
+            Stack(gap = StackGap::Xl) {
             PageHeader(
                 title = "Primitives".to_string(),
                 description = "The framework's stable, backend-agnostic vocabulary.".to_string(),
@@ -95,6 +96,7 @@ pub fn page() -> Primitive {
                         implement it fall back to a sensible no-op (typically an empty View) \
                         so cross-platform crates keep compiling.".to_string(),
             )
+        }
         }
     }
 }

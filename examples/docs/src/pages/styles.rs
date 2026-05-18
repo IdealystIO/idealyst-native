@@ -9,7 +9,8 @@ use crate::shell::{
 
 pub fn page() -> Primitive {
     ui! {
-        Stack(gap = StackGap::Xl) {
+        ScrollView {
+            Stack(gap = StackGap::Xl) {
             PageHeader(
                 title = "Styles & Themes".to_string(),
                 description = "Typed, themed styles that compile down to per-platform style bundles.".to_string(),
@@ -92,6 +93,7 @@ pub fn page() -> Primitive {
                         signal it reads changes. This is how the nav link in the sidebar of \
                         these docs flips its active highlight as the route changes.".to_string(),
             )
+        }
         }
     }
 }

@@ -10,7 +10,8 @@ use crate::shell::{
 
 pub fn page() -> Primitive {
     ui! {
-        Stack(gap = StackGap::Xl) {
+        ScrollView {
+            Stack(gap = StackGap::Xl) {
             PageHeader(
                 title = "Macros".to_string(),
                 description = "Reference for the proc-macros that make up Idealyst's authoring surface.".to_string(),
@@ -89,6 +90,7 @@ pub fn page() -> Primitive {
                         one place. Useful outside `ui!` blocks where you need to assemble a \
                         children list imperatively.".to_string(),
             )
+        }
         }
     }
 }

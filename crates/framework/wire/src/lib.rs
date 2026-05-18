@@ -306,11 +306,9 @@ pub enum Command {
         id: NodeId,
         initial_route: String,
         initial_path: String,
-        items: Vec<WireDrawerItemRegistration>,
         side: WireDrawerSide,
         drawer_type: WireDrawerType,
         drawer_width: f32,
-        pinned_above: Option<u32>,
         swipe_to_open: bool,
         mount_policy: WireMountPolicy,
     },
@@ -799,13 +797,6 @@ pub enum WireTabPlacement {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WireTabRegistration {
-    pub route: String,
-    pub label: String,
-    pub icon: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WireDrawerItemRegistration {
     pub route: String,
     pub label: String,
     pub icon: Option<String>,

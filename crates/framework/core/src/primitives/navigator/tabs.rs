@@ -35,7 +35,7 @@
 //!   Cheap memory; state-losing.
 
 use super::shared::{
-    LayoutBuilder, NavigatorCallbacks, NavigatorHandle, Route, RouteEntry, RouteParams,
+    LayoutBuilder, NavigatorCallbacks, NavigatorHandle, Route, RouteEntry, RouteParams, Screen,
     ScreenBuilder, ScreenOptions,
 };
 use crate::{Bound, Primitive, Ref, RefFill};
@@ -243,16 +243,17 @@ impl TabNavigator {
 
 impl Bound<TabsHandle> {
     /// Register a tab. Rolls `.screen(...)` and presentation metadata
-    /// into one call — the typical case for a tab navigator. For
-    /// edge cases where the same route should be reachable from
-    /// multiple tabs or also deep-linkable independently, split into
-    /// `.tab_spec(...)` + `.screen(...)` (todo: not yet exposed).
-    pub fn tab<P: RouteParams>(
-        mut self,
-        route: Route<P>,
-        spec: TabSpec,
-        render: impl Fn(P) -> Primitive + 'static,
-    ) -> Self {
+    /// into one call — the typical case for a tab navigator. The
+    /// `render` closure returns anything convertible into a
+    /// [`Screen`] — either a bare `Primitive` or a
+    /// `Screen::new(...).title(...).header_left(...)` value when the
+    /// tab also needs per-screen header configuration.
+    pub fn tab<P, R, F>(mut self, route: Route<P>, spec: TabSpec, render: F) -> Self
+    where
+        P: RouteParams,
+        R: Into<Screen>,
+        F: Fn(P) -> R + 'static,
+    {
         if let Primitive::TabNavigator(nav) = &mut self.primitive {
             let render = Rc::new(render);
             let build: ScreenBuilder = Rc::new(move |boxed: Box<dyn Any>| {
@@ -262,7 +263,7 @@ impl Bound<TabsHandle> {
                          declared params don't match dispatched params"
                     )
                 });
-                render(*params)
+                render(*params).into()
             });
             let from_segments = Rc::new(|segs: &HashMap<String, String>| {
                 P::from_segments(segs).map(|p| Box::new(p) as Box<dyn Any>)
@@ -270,29 +271,8 @@ impl Bound<TabsHandle> {
             nav.tab_order.push((route.name(), spec));
             nav.screens.insert(
                 route.name(),
-                RouteEntry { path: route.path(), build, from_segments, options: None },
+                RouteEntry { path: route.path(), build, from_segments },
             );
-        }
-        self
-    }
-
-    /// Set per-screen options for `route`. The closure receives the
-    /// route's typed params and returns `ScreenOptions`. Called at
-    /// mount time — not reactive.
-    pub fn options<P: RouteParams>(
-        mut self,
-        route: Route<P>,
-        f: impl Fn(&P) -> ScreenOptions + 'static,
-    ) -> Self {
-        if let Primitive::TabNavigator(nav) = &mut self.primitive {
-            if let Some(entry) = nav.screens.get_mut(route.name()) {
-                entry.options = Some(Rc::new(move |any: &dyn Any| {
-                    let params = any.downcast_ref::<P>().expect(
-                        "TabNavigator::options: param type mismatch",
-                    );
-                    f(params)
-                }));
-            }
         }
         self
     }
