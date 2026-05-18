@@ -3,7 +3,7 @@
 //! default is ~36dp which is closer to RN's "Large". Custom sizing
 //! requires LayoutParams which is beyond v1 scope.
 
-use crate::imp::helpers::apply_default_layout_params;
+use backend_android_core::helpers::apply_default_layout_params;
 use crate::imp::{with_env, AndroidBackend};
 use framework_core::primitives::activity_indicator::ActivityIndicatorSize;
 use jni::objects::{GlobalRef, JValue};

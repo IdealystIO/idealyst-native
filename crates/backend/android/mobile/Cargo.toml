@@ -18,14 +18,19 @@ crate-type = ["cdylib", "rlib"]
 # `aas::{attach, drain, detach}` helpers the consuming staticlib
 # crate wires into JNI exports. Without this feature the crate is a
 # plain native backend (zero extra binary cost).
-aas-shell = ["dep:dev-client"]
-# Compile in this backend's render-thread `RenderLoopDriver`. Forwards
-# to `framework-core/async-driver` so `render_loop` / `spawn_async`
+aas-shell = ["dep:aas-shell-native", "aas-shell-native/aas-shell"]
+# Compile in this backend's render-thread `RenderLoopDriver`. The
+# driver itself lives in `backend-android-core` (shared with TV);
+# this feature just turns it on and forwards
+# `framework-core/async-driver` so `render_loop` / `spawn_async`
 # resolve. Host calls `install_render_loop()` once at init.
-async-driver = ["framework-core/async-driver"]
+async-driver = ["framework-core/async-driver", "backend-android-core/async-driver"]
 
 [dependencies]
 framework-core = { workspace = true }
+# Shared Android helpers (JNI utilities + render loop driver). Same
+# crate is consumed by `backend-android-tv`.
+backend-android-core = { workspace = true }
 # Used by the Graphics primitive to expose the SurfaceView's
 # `Surface` as a standard raw-window-handle so any GPU library
 # (wgpu, etc.) can plug in. Tiny dep; trait + enum definitions only.
@@ -39,7 +44,8 @@ android_logger = "0.13"
 # to convert the Java-side `android.view.Surface` into the native
 # window pointer wgpu expects in `AndroidNdkWindowHandle`.
 ndk-sys = "0.6"
-# AAS-client wire transport + cross-platform run loop. Only pulled
-# in when the `aas-shell` feature is on; native transport gives us
-# `tungstenite` + the `AasShell` worker pattern.
-dev-client = { workspace = true, features = ["native"], optional = true }
+# AAS-client wire transport + worker thread. Pulled in only when
+# the `aas-shell` feature is on. The shared crate carries
+# tungstenite + mdns-sd + the AasShell worker for every native
+# target.
+aas-shell-native = { workspace = true, optional = true }

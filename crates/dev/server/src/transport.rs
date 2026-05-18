@@ -135,7 +135,7 @@ where
 /// otherwise unchanged `serve_with_tick` body. Public callers go
 /// through [`serve`], [`serve_with_tick`], or
 /// [`serve_with_port_mirror`].
-fn serve_with_tick_and_port<F>(
+pub fn serve_with_tick_and_port<F>(
     addr: impl ToSocketAddrs,
     recorder: WireRecordingBackend,
     app_id: &str,

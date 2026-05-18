@@ -25,6 +25,11 @@ use notify_debouncer_mini::{new_debouncer, notify::RecursiveMode, DebounceEventR
 pub struct RebuildCommand {
     pub program: String,
     pub args: Vec<String>,
+    /// Working directory for the spawned process. `None` inherits the
+    /// host's cwd (rarely what you want — cargo's `.cargo/config.toml`
+    /// discovery starts from cwd, so without this the watcher's cargo
+    /// can miss workspace config and rebuild from scratch every time).
+    pub cwd: Option<PathBuf>,
 }
 
 impl RebuildCommand {
@@ -32,6 +37,7 @@ impl RebuildCommand {
         Self {
             program: "cargo".into(),
             args: vec!["build".into(), "-p".into(), package.into(), "--bin".into(), bin.into()],
+            cwd: None,
         }
     }
 }
@@ -136,6 +142,9 @@ fn run(mut config: RebuildConfig) {
 fn rebuild_only(cmd: &RebuildCommand) -> bool {
     let mut child = std::process::Command::new(&cmd.program);
     child.args(&cmd.args);
+    if let Some(dir) = &cmd.cwd {
+        child.current_dir(dir);
+    }
     match child.status() {
         Ok(status) if status.success() => {
             eprintln!("[dev-server] rebuild OK");

@@ -6,12 +6,15 @@
 
 mod animation;
 mod callbacks;
-mod helpers;
 mod jni_exports;
 mod primitives;
-#[cfg(feature = "async-driver")]
-pub mod render_loop;
 mod style;
+// `view_screen_rect` lives here because it depends on this crate's
+// `with_env` / `JAVA_VM` state (owned by `JNI_OnLoad`, which is a
+// per-cdylib singleton). The rest of the JNI helpers — and the
+// render loop driver — live in `backend-android-core` and are
+// imported directly by their callers.
+pub(crate) mod view_rect;
 
 use framework_core::{Backend, ButtonHandle, StyleRules};
 use jni::objects::{GlobalRef, JValue};

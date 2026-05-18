@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use super::{apply_header_options, mount_screen_in_vc, IosNode};
-use super::style::{color_to_uicolor, font_weight_to_uikit};
+use backend_ios_core::style::{color_to_uicolor, font_weight_to_uikit};
 
 pub(crate) struct NavigatorEntry {
     pub(crate) controller: Retained<UINavigationController>,

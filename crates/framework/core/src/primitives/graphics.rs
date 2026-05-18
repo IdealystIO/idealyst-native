@@ -59,6 +59,7 @@ use crate::{Bound, Primitive, Ref, RefFill};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::any::Any;
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// The drawable surface handed to the author in `on_ready`. Wraps
 /// a backend-provided handle that implements both `HasWindowHandle`
@@ -68,33 +69,24 @@ use std::rc::Rc;
 /// `Clone` — cheap (a refcount bump). Author code typically
 /// captures it once into render state.
 ///
-/// # Send/Sync — why the cfg split
+/// # Send + Sync
 ///
-/// On native (iOS/Android/desktop) wgpu's surface APIs require
-/// `Send + Sync` window handles. On wasm32 wgpu's `WasmNotSendSync`
-/// alias collapses to nothing, but `web_sys::HtmlCanvasElement` is
-/// `!Send + !Sync`, so we can't satisfy `Send + Sync` there.
-/// Resolution: switch the inner refcount type per target.
-///   - native: `Arc<dyn SurfaceProvider + Send + Sync>` — wgpu
-///     happy, multi-thread render loops happy.
-///   - wasm:   `Rc<dyn SurfaceProvider>` — single-threaded, the
-///     web platform's natural shape.
+/// Wgpu's native surface APIs require `Send + Sync` window
+/// handles, so this type carries those bounds unconditionally.
+/// Native backends (iOS / Android / desktop) satisfy them
+/// naturally. The web backend's `CanvasSurfaceProvider` wraps an
+/// `HtmlCanvasElement`, which is structurally `!Send + !Sync`, but
+/// adds `unsafe impl Send + Sync` to the wrapper — sound because
+/// wasm32 is single-threaded, so the bounds are vacuously safe
+/// (no second thread can observe a torn read). One unified type
+/// across targets; no cfg gates on the framework side.
 #[derive(Clone)]
 pub struct GraphicsSurface {
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) inner: std::sync::Arc<dyn SurfaceProvider + Send + Sync>,
-    #[cfg(target_arch = "wasm32")]
-    pub(crate) inner: Rc<dyn SurfaceProvider>,
+    pub(crate) inner: Arc<dyn SurfaceProvider + Send + Sync>,
 }
 
 impl GraphicsSurface {
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn new(inner: std::sync::Arc<dyn SurfaceProvider + Send + Sync>) -> Self {
-        Self { inner }
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    pub fn new(inner: Rc<dyn SurfaceProvider>) -> Self {
+    pub fn new(inner: Arc<dyn SurfaceProvider + Send + Sync>) -> Self {
         Self { inner }
     }
 }

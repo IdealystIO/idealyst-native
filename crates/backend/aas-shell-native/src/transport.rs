@@ -18,7 +18,7 @@ use framework_core::Backend;
 use wire::{AppToDev, DevToApp};
 use tungstenite::{Message, WebSocket};
 
-use crate::WireBackend;
+use dev_client::WireBackend;
 
 /// Connect to the dev server at `url` (e.g. `ws://127.0.0.1:9001`),
 /// hand the supplied `WireBackend` everything we receive, and ship
@@ -44,7 +44,7 @@ where
     // Greet.
     let hello = AppToDev::Hello {
         app_name: env!("CARGO_PKG_NAME").to_string(),
-        color_scheme: crate::color_scheme_to_wire(wire.color_scheme()),
+        color_scheme: dev_client::color_scheme_to_wire(wire.color_scheme()),
         // Native transport — no URL bar to read from.
         initial_url: None,
     };

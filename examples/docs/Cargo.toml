@@ -15,7 +15,7 @@ crate-type = ["cdylib", "rlib"]
 # Connect to a running `idealyst dev` server on startup instead of
 # rendering the local `app()` tree. Pulls in the `dev-client` crate
 # only when the feature is on, so a release build stays lean.
-dev-hot-reload = ["dep:dev-client"]
+dev-hot-reload = ["dep:dev-client", "backend-web/aas-shell"]
 
 [dependencies]
 framework-core = { workspace = true }
@@ -34,7 +34,7 @@ console_error_panic_hook = "0.1"
 lol_alloc = "0.4"
 # Only pulled in under `dev-hot-reload`. Cargo silently drops the
 # activation on non-wasm targets because the dep isn't declared there.
-dev-client = { workspace = true, features = ["web"], optional = true }
+dev-client = { workspace = true, optional = true }
 
 # wasm-opt's bundled binaryen rejects bulk-memory ops emitted by recent
 # rustc. The bundle is still LTO'd at link time without the post-pass.

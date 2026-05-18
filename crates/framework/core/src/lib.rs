@@ -43,7 +43,7 @@ pub use builder::{
 pub use primitive::Primitive;
 pub use sources::{
     ActionBinding, ButtonAction, IntoButtonAction, IntoStyleSource, IntoTextSource,
-    StyleSource, TextSource,
+    StyleSource, TextSource, WhenBinding,
 };
 pub use walker::{render, Owner};
 pub use primitives::navigator::{
@@ -78,7 +78,19 @@ pub use style::{
     VariantAxis, VariantEnum, VariantSet, VariantValue,
 };
 
-pub use framework_macros::{bind, bind_press, component, jsx, stylesheet, ui};
+pub use framework_macros::{
+    bind, bind_press, bind_repeat, bind_switch, bind_when, component, jsx, stylesheet, ui,
+};
+
+// Re-export of `framework_hot` so the `#[component]` macro's
+// generated code can reach it via a path that's available to every
+// user crate that depends on framework-core. The macro emits
+// `::framework_core::__hot::call(...)`; users don't have to add
+// `framework-hot` to their own `Cargo.toml`. Hidden from rustdoc —
+// not part of the author-facing surface.
+#[cfg(feature = "hot-reload")]
+#[doc(hidden)]
+pub use framework_hot as __hot;
 
 // This crate root used to be ~3200 lines containing everything below.
 // Each major concern now lives in its own private submodule and the

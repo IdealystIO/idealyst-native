@@ -8,7 +8,7 @@
 //! a single drawable instead of rebuilding it every frame.
 
 use super::animation::*;
-use super::helpers::*;
+use backend_android_core::helpers::*;
 use super::NodeAnim;
 use framework_core::StyleRules;
 use jni::objects::{GlobalRef, JObject, JValue};

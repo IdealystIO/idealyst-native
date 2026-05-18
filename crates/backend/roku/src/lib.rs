@@ -212,6 +212,19 @@ pub struct RokuBackend {
     /// pair; deduping here means each signal lands on the wire
     /// exactly once with its snapshot-time initial value.
     created_signals: std::collections::HashSet<u64>,
+    /// Stack of in-progress slot-capture buffers. While the stack is
+    /// non-empty, every command produced by the walker is pushed
+    /// onto the top buffer instead of the main `commands` vec.
+    /// Slot bindings (`bind_when!`, `bind_switch!`, `bind_repeat!`)
+    /// open one frame per slot, walk the slot's subtree, then call
+    /// `end_slot_capture(slot_root)` which pops the frame and stores
+    /// it in `captured_slots` keyed by the slot's root node id.
+    capture_stack: Vec<Vec<RokuCommand>>,
+    /// Slot subtrees captured during the snapshot walk, indexed by
+    /// their root node id. Drained when the matching `note_*_binding`
+    /// fires and the slot is packaged into its `BindWhen`/
+    /// `BindSwitch`/`BindRepeat` command.
+    captured_slots: std::collections::HashMap<NodeId, Vec<RokuCommand>>,
 }
 
 impl Default for RokuBackend {
@@ -229,6 +242,8 @@ impl RokuBackend {
             next_node: 1,
             next_handler: 1,
             created_signals: std::collections::HashSet::new(),
+            capture_stack: Vec::new(),
+            captured_slots: std::collections::HashMap::new(),
         }
     }
 
@@ -264,7 +279,19 @@ impl RokuBackend {
     }
 
     fn push(&mut self, cmd: RokuCommand) {
-        self.commands.push(cmd);
+        if let Some(top) = self.capture_stack.last_mut() {
+            top.push(cmd);
+        } else {
+            self.commands.push(cmd);
+        }
+    }
+
+    /// Drain the captured commands for a slot, identified by the
+    /// slot's root node id. Returns an empty Vec if no slot was
+    /// captured for that id — should not happen in well-formed
+    /// snapshots but we tolerate it rather than panic.
+    fn take_captured_slot(&mut self, root: NodeId) -> Vec<RokuCommand> {
+        self.captured_slots.remove(&root).unwrap_or_default()
     }
 
     fn lower_icon(&self, data: &IconData) -> WireIconData {
@@ -523,6 +550,117 @@ impl Backend for RokuBackend {
         });
     }
 
+    fn handles_when_natively(&self) -> bool {
+        // We ship each branch as a lazily-materialized `Slot` and
+        // let the device-side runtime play / tear them down based
+        // on the cond_method's result. No host round-trip.
+        true
+    }
+
+    fn note_when_binding(
+        &mut self,
+        anchor: &Self::Node,
+        signal_ids: &[u64],
+        cond_method: &'static str,
+        then_node: &Self::Node,
+        otherwise_node: &Self::Node,
+    ) {
+        let then_slot = command::Slot {
+            root_node_id: *then_node,
+            commands: self.take_captured_slot(*then_node),
+        };
+        let otherwise_slot = command::Slot {
+            root_node_id: *otherwise_node,
+            commands: self.take_captured_slot(*otherwise_node),
+        };
+        self.push(RokuCommand::BindWhen {
+            anchor_id: *anchor,
+            signal_ids: signal_ids.iter().map(|id| SignalId(*id)).collect(),
+            cond_method: cond_method.to_string(),
+            then_slot,
+            otherwise_slot,
+        });
+    }
+
+    fn handles_switch_natively(&self) -> bool {
+        true
+    }
+
+    fn note_switch_binding(
+        &mut self,
+        anchor: &Self::Node,
+        signal_ids: &[u64],
+        cond_method: &'static str,
+        arms: &[(framework_core::__serde_json::Value, Self::Node)],
+        default_node: &Self::Node,
+    ) {
+        let arms_wire: Vec<command::SwitchArm> = arms
+            .iter()
+            .map(|(pat, node)| command::SwitchArm {
+                pattern: pat.clone(),
+                slot: command::Slot {
+                    root_node_id: *node,
+                    commands: self.take_captured_slot(*node),
+                },
+            })
+            .collect();
+        let default_slot = command::Slot {
+            root_node_id: *default_node,
+            commands: self.take_captured_slot(*default_node),
+        };
+        self.push(RokuCommand::BindSwitch {
+            anchor_id: *anchor,
+            signal_ids: signal_ids.iter().map(|id| SignalId(*id)).collect(),
+            cond_method: cond_method.to_string(),
+            arms: arms_wire,
+            default_slot,
+        });
+    }
+
+    fn handles_repeat_natively(&self) -> bool {
+        true
+    }
+
+    fn note_repeat_binding(
+        &mut self,
+        anchor: &Self::Node,
+        signal_ids: &[u64],
+        count_method: &'static str,
+        row_template: &Self::Node,
+        row_index_signal_id: Option<u64>,
+    ) {
+        let row_template = command::Slot {
+            root_node_id: *row_template,
+            commands: self.take_captured_slot(*row_template),
+        };
+        self.push(RokuCommand::BindRepeat {
+            anchor_id: *anchor,
+            signal_ids: signal_ids.iter().map(|id| SignalId(*id)).collect(),
+            count_method: count_method.to_string(),
+            row_template,
+            row_index_signal_id: row_index_signal_id.map(SignalId),
+        });
+    }
+
+    fn supports_lazy_slot_capture(&self) -> bool {
+        true
+    }
+
+    fn begin_slot_capture(&mut self) {
+        self.capture_stack.push(Vec::new());
+    }
+
+    fn end_slot_capture(&mut self, slot_root: &Self::Node) {
+        // Walker is expected to balance begin/end calls. Popping
+        // without a matching begin would mean the walker has a bug
+        // — error loudly rather than silently swallow the slot.
+        let buf = self
+            .capture_stack
+            .pop()
+            .expect("end_slot_capture without matching begin_slot_capture");
+        self.captured_slots.insert(*slot_root, buf);
+    }
+
     fn note_button_action(
         &mut self,
         node: &Self::Node,
@@ -559,7 +697,13 @@ impl Backend for RokuBackend {
         // same signal would emit a redundant CreateSignal and reset
         // it back to its initial each time.
         if self.created_signals.insert(signal_id) {
-            self.push(RokuCommand::CreateSignal {
+            // Bypass `push` — signals are global. If we routed this
+            // through `push` and a nested bind happened to be capturing
+            // when its inner signal was first declared, the
+            // CreateSignal would land in a slot buffer and get
+            // re-emitted on every slot replay, clobbering the signal's
+            // current value.
+            self.commands.push(RokuCommand::CreateSignal {
                 id: SignalId(signal_id),
                 initial: value.clone(),
             });

@@ -208,8 +208,22 @@ fn dedup_preserve_order(xs: Vec<Target>) -> Vec<Target> {
 /// is what serves the wire WebSocket; runs as a child process for the
 /// rest of this session.
 fn build_aas_host(dir: &Path) -> Result<PathBuf> {
-    eprintln!("[dev] building AAS host…");
-    let artifact = build_aas::build(dir, build_aas::BuildOptions { release: false })?;
+    // `IDEALYST_AAS_MODE=dylib` opts into the experimental dlopen
+    // architecture (single host process, dylib-swapped user code,
+    // targeting ~150-200ms per edit). Default = sidecar (stable,
+    // ~0.40s per edit, currently working end-to-end).
+    let mode = match std::env::var("IDEALYST_AAS_MODE").as_deref() {
+        Ok("dylib") => build_aas::AasMode::Dylib,
+        _ => build_aas::AasMode::Sidecar,
+    };
+    eprintln!("[dev] building AAS host (mode = {:?})…", mode);
+    let artifact = build_aas::build(
+        dir,
+        build_aas::BuildOptions {
+            release: false,
+            mode,
+        },
+    )?;
     Ok(artifact.host_binary)
 }
 

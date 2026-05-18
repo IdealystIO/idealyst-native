@@ -42,7 +42,7 @@
 //! they differ only in dismissal behavior.
 
 use crate::imp::callbacks::{leak, OverlayDismissCallback};
-use crate::imp::helpers::view_screen_rect;
+use crate::imp::view_rect::view_screen_rect;
 use crate::imp::{with_env, AndroidBackend};
 use framework_core::primitives::overlay::{
     AnchorTarget, BackdropMode, ElementAlign, ElementSide, ViewportPlacement, ViewportRect,

@@ -53,8 +53,8 @@ mod dev_hot_reload {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    use backend_web::WebBackend;
-    use dev_client::{connect_web, OutboundSender, WebClientHandle, WireBackend};
+    use backend_web::{connect_web, WebBackend, WebClientHandle};
+    use dev_client::{OutboundSender, WireBackend};
     use wasm_bindgen::JsCast;
 
     const HOST_SELECTOR: &str = "#app";

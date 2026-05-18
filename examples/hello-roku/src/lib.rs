@@ -23,9 +23,9 @@
 
 use backend_roku::method;
 use framework_core::{
-    bind, bind_press, install_theme, signal, stylesheet, ui, AlignItems,
-    FlexDirection, FontWeight, JustifyContent, Length, Primitive, Signal,
-    ThemeTokens, TokenEntry,
+    bind, bind_press, bind_repeat, bind_switch, bind_when, install_theme, signal,
+    stylesheet, ui, AlignItems, FlexDirection, FontWeight, JustifyContent, Length,
+    Primitive, Signal, ThemeTokens, TokenEntry,
 };
 
 #[derive(Clone)]
@@ -131,6 +131,65 @@ stylesheet! {
     }
 }
 
+// Per-bucket stylesheet for the `bind_switch!` demo — five
+// pre-built badges, each shown when the count_bucket method
+// returns its matching value.
+stylesheet! {
+    pub StatusBadge<Theme> {
+        base(_t) {
+            font_size: Length::Px(32.0),
+            font_weight: FontWeight::SemiBold,
+            color: "#A5B4FC",
+        }
+    }
+}
+
+// Per-row dot for the `bind_repeat!` demo. The runtime clones
+// this row template per row, allocating fresh node ids per
+// instance — no upper bound on `count`.
+stylesheet! {
+    pub RepeatRow<Theme> {
+        base(_t) {
+            font_size: Length::Px(40.0),
+            color: "#34D399",
+        }
+    }
+}
+
+stylesheet! {
+    pub RepeatRowContainer<Theme> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            gap: Length::Px(8.0),
+            align_items: AlignItems::Center,
+        }
+    }
+}
+
+// Two stylistically distinct badges; `bind_when!` picks one or the
+// other based on the parity of `count`. Same author syntax both
+// branches would use on any backend — Roku's runtime toggles
+// `.visible` between them.
+stylesheet! {
+    pub BadgeEven<Theme> {
+        base(_t) {
+            font_size: Length::Px(36.0),
+            font_weight: FontWeight::Bold,
+            color: "#10B981",
+        }
+    }
+}
+
+stylesheet! {
+    pub BadgeOdd<Theme> {
+        base(_t) {
+            font_size: Length::Px(36.0),
+            font_weight: FontWeight::Bold,
+            color: "#F472B6",
+        }
+    }
+}
+
 // Button stylesheet with a `state hovered` overlay. Web's CSS
 // :hover and Roku's D-pad focus both activate this — same author
 // API, two compatible code paths.
@@ -201,6 +260,39 @@ pub fn sum_to(n: i32) -> i32 {
     total
 }
 
+/// Condition for `bind_when!` — structural reactivity. The two
+/// `then` / `else_` subtrees ship over the wire pre-built; the
+/// device-side runtime toggles which one is visible on every
+/// signal change.
+#[method]
+pub fn is_even(n: i32) -> bool {
+    n % 2 == 0
+}
+
+/// Discriminant for `bind_switch!`. Clamps the count into a
+/// small bucket so the switch arms cover every reachable value.
+#[method]
+pub fn count_bucket(n: i32) -> i32 {
+    if n <= 0 {
+        0
+    } else if n == 1 {
+        1
+    } else if n <= 3 {
+        2
+    } else if n <= 6 {
+        3
+    } else {
+        4
+    }
+}
+
+/// Count source for `bind_repeat!`. Identity in this demo; in a
+/// real app you might `min(count, max)` here.
+#[method]
+pub fn row_count(n: i32) -> i32 {
+    n
+}
+
 // ---------------------------------------------------------------------------
 // The app
 // ---------------------------------------------------------------------------
@@ -241,6 +333,34 @@ pub fn app() -> Primitive {
                 Text(style = meta_key_style()) { "Sum 1..N:" }
                 Text(style = meta_value_style()) { bind!(sum_to(count)) }
             }
+
+            // bind_when! — *structural* reactivity. Both branches
+            // ship pre-built; the device toggles which subtree is
+            // visible based on `is_even(count)`.
+            bind_when!(is_even(count),
+                then  = ui! { Text(style = badge_even_style()) { "★ EVEN ★" } },
+                else_ = ui! { Text(style = badge_odd_style())  { "✦ ODD ✦"  } },
+            )
+
+            // bind_switch! — N-way conditional. Five pre-built
+            // arms, the matching one shows based on the
+            // count_bucket method's return value.
+            bind_switch!(count_bucket(count),
+                0 => ui! { Text(style = status_badge_style()) { "○ press +1 to begin"  } },
+                1 => ui! { Text(style = status_badge_style()) { "◔ one tick on the clock" } },
+                2 => ui! { Text(style = status_badge_style()) { "◐ warming up"          } },
+                3 => ui! { Text(style = status_badge_style()) { "◕ in the groove"       } },
+                _ => ui! { Text(style = status_badge_style()) { "● keep climbing"       } },
+            )
+
+            // bind_repeat! — reactive unbounded list. The runtime
+            // clones the row template per row with fresh node ids;
+            // `style` is applied to the auto-generated anchor (the
+            // row container).
+            bind_repeat!(row_count(count),
+                row = |_| ui! { Text(style = repeat_row_style()) { "▣" } },
+                style = repeat_row_container_style(),
+            )
 
             View(style = button_row_style()) {
                 Button(

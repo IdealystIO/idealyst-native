@@ -39,6 +39,8 @@
 #[cfg(feature = "async-driver")]
 pub mod async_executor;
 mod defaults;
+#[cfg(feature = "aas-shell")]
+pub mod dev_transport;
 mod phase_timer;
 mod primitives;
 #[cfg(feature = "async-driver")]
@@ -49,6 +51,8 @@ pub mod time_source;
 
 #[cfg(feature = "async-driver")]
 pub use async_executor::install_async_executor;
+#[cfg(feature = "aas-shell")]
+pub use dev_transport::{connect_web, WebClientHandle};
 #[cfg(feature = "async-driver")]
 pub use render_loop::install_render_loop;
 pub use scheduler::install_scheduler;

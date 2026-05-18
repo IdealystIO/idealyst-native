@@ -2,7 +2,7 @@
 //! `RustToggleListener` bridge.
 
 use crate::imp::callbacks::{leak, ToggleChangeCallback};
-use crate::imp::helpers::apply_default_layout_params;
+use backend_android_core::helpers::apply_default_layout_params;
 use crate::imp::{with_env, AndroidBackend};
 use jni::objects::{GlobalRef, JValue};
 use jni::sys::jlong;

@@ -20,14 +20,14 @@ crate-type = ["staticlib", "rlib"]
 
 [features]
 debug-stats = ["framework-core/debug-stats"]
-aas-shell = ["dep:dev-client"]
+aas-shell = ["dep:aas-shell-native", "aas-shell-native/aas-shell"]
 async-driver = ["framework-core/async-driver"]
 
 [dependencies]
 framework-core = { workspace = true }
 native-layout = { workspace = true }
 backend-ios-core = { workspace = true }
-dev-client = { workspace = true, features = ["native"], optional = true }
+aas-shell-native = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "tvos")'.dependencies]
 block2 = "0.5"

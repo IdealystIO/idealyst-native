@@ -33,7 +33,9 @@ use std::time::Duration;
 use framework_core::Backend;
 use wire::{AppToDev, DevToApp};
 
-use crate::{discover_blocking, AasClient, OutboundSender};
+use dev_client::{AasClient, OutboundSender};
+
+use crate::discover_blocking;
 
 /// Bundle of state the platform shell holds across drain ticks. Wrap
 /// in `Rc<...>` (or a thread-local) so the periodic callback can

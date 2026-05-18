@@ -21,7 +21,6 @@
 //! The bridge dispatches `get_logs` to [`recent`] / [`since`].
 
 use std::collections::VecDeque;
-use std::io::Read;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -97,94 +96,44 @@ macro_rules! robot_log {
 }
 
 // =============================================================================
-// Stdio capture (Unix-only — iOS, macOS, Android, Linux)
+// Stdio capture — backend-provided
 // =============================================================================
 
-/// Splice stdout and stderr through pipes so that everything written
-/// to them is also captured into the buffer. Safe to call from any
-/// thread; idempotent (subsequent calls are no-ops).
+/// Backend-supplied stdio capturer. The active backend implements
+/// this against its platform's stdio facility (POSIX pipe + dup2 on
+/// unix-derived backends; equivalent mechanisms elsewhere) and
+/// registers an instance via [`install_log_capture`] at init.
 ///
-/// Call this once at app startup, BEFORE any logging happens, so the
-/// redirection is in place before the first write.
-#[cfg(unix)]
-pub fn start_stdio_capture() {
-    use std::sync::Once;
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        capture_fd(libc::STDOUT_FILENO, "stdout");
-        capture_fd(libc::STDERR_FILENO, "stderr");
-    });
+/// Implementations should call [`push`] with `"stdout"` / `"stderr"`
+/// as the source for each captured line. They are also responsible
+/// for mirroring bytes back to the original fd so the platform's
+/// console (Xcode, adb logcat, terminal) still shows them.
+pub trait LogCapture: Send + Sync {
+    /// Begin capturing stdout and stderr. Idempotent — backends
+    /// should make repeated calls no-ops.
+    fn start_stdio_capture(&self);
 }
 
-#[cfg(not(unix))]
-pub fn start_stdio_capture() {}
+static LOG_CAPTURE: std::sync::OnceLock<Box<dyn LogCapture>> =
+    std::sync::OnceLock::new();
 
-#[cfg(unix)]
-fn capture_fd(fd: libc::c_int, source: &'static str) {
-    // Save the original target so we can mirror bytes back to it
-    // (otherwise the Xcode console / terminal would see nothing).
-    let original = unsafe { libc::dup(fd) };
-    if original < 0 {
-        return;
-    }
+/// Register the active backend's log capturer. First call wins;
+/// subsequent calls are silently ignored.
+pub fn install_log_capture(capture: Box<dyn LogCapture>) {
+    let _ = LOG_CAPTURE.set(capture);
+}
 
-    // Create a pipe and redirect the original fd to its write end.
-    let mut pipefd: [libc::c_int; 2] = [0; 2];
-    let r = unsafe { libc::pipe(pipefd.as_mut_ptr()) };
-    if r != 0 {
-        return;
+/// Begin capturing stdout and stderr through the installed
+/// [`LogCapture`] backend. Without one, this is a no-op — direct
+/// [`push`] calls still work, but `eprintln!` / `println!` output
+/// won't reach the robot buffer.
+///
+/// Call this once at app startup, BEFORE any logging happens, so
+/// the redirection is in place before the first write.
+pub fn start_stdio_capture() {
+    if let Some(c) = LOG_CAPTURE.get() {
+        c.start_stdio_capture();
     }
-    let (read_fd, write_fd) = (pipefd[0], pipefd[1]);
-    let dup_r = unsafe { libc::dup2(write_fd, fd) };
-    if dup_r < 0 {
-        // Couldn't take over the fd — clean up.
-        unsafe {
-            libc::close(read_fd);
-            libc::close(write_fd);
-            libc::close(original);
-        }
-        return;
-    }
-    unsafe { libc::close(write_fd) };
-
-    // Reader thread: read bytes from the pipe, split into lines,
-    // push each line into the buffer, and re-emit the bytes to the
-    // original fd so the console still works.
-    std::thread::spawn(move || {
-        // Build a File from the raw fd; on drop it'll close it.
-        use std::os::unix::io::FromRawFd;
-        let mut reader = unsafe { std::fs::File::from_raw_fd(read_fd) };
-        let mut buf = [0u8; 4096];
-        let mut leftover: Vec<u8> = Vec::with_capacity(4096);
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    let slice = &buf[..n];
-                    // Mirror to the original fd so visibility is
-                    // preserved. Ignore errors — if the original is
-                    // gone (closed app), we just stop mirroring.
-                    let _ = unsafe {
-                        libc::write(original, slice.as_ptr() as *const _, n)
-                    };
-                    leftover.extend_from_slice(slice);
-                    // Drain complete lines.
-                    while let Some(nl) = leftover.iter().position(|&b| b == b'\n') {
-                        let line: Vec<u8> = leftover.drain(..=nl).collect();
-                        let mut text = String::from_utf8_lossy(&line).into_owned();
-                        if text.ends_with('\n') {
-                            text.pop();
-                        }
-                        if text.ends_with('\r') {
-                            text.pop();
-                        }
-                        push(source, text);
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-    });
 }
 
 fn now_ms() -> u64 {

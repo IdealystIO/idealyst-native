@@ -16,7 +16,7 @@ use std::ffi::{c_char, CStr};
 use std::rc::Rc;
 use std::time::Duration;
 
-use dev_client::AasShell;
+use aas_shell_native::AasShell;
 use objc2::rc::Retained;
 use objc2_foundation::MainThreadMarker;
 use objc2_ui_kit::UIView;

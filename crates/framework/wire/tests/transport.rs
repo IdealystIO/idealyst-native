@@ -18,7 +18,8 @@ use std::thread;
 use std::time::Duration;
 
 use framework_core::{render, Backend, Primitive, StyleRules, TextSource};
-use dev_client::{connect_and_run, WireBackend};
+use aas_shell_native::connect_and_run;
+use dev_client::WireBackend;
 use dev_server::{serve, WireRecordingBackend};
 
 #[derive(Debug, Clone, PartialEq)]

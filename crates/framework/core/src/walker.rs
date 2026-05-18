@@ -726,8 +726,17 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
             }
             n
         }
-        Primitive::When { cond, then, otherwise, style } => {
-            let n = build_when(backend, cond, then, otherwise);
+        Primitive::When { cond, then, otherwise, style, binding } => {
+            // Two paths: declarative (the backend wants the binding
+            // metadata + both pre-built branches) or closure-based
+            // (the existing Effect path that rebuilds the active
+            // branch on signal change).
+            let handles_natively = backend.borrow().handles_when_natively();
+            let n = if handles_natively && binding.is_some() {
+                build_when_declarative(backend, cond, then, otherwise, binding.unwrap())
+            } else {
+                build_when(backend, cond, then, otherwise)
+            };
             if let Some(s) = style {
                 attach_style(backend, &n, s);
             }
@@ -735,6 +744,34 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
         }
         Primitive::Switch { key, eq, build: build_fn, style } => {
             let n = build_switch(backend, key, eq, build_fn);
+            if let Some(s) = style {
+                attach_style(backend, &n, s);
+            }
+            n
+        }
+        Primitive::SwitchDecl { signal_ids, cond_method, initial_values, arms, default, style } => {
+            let n = build_switch_decl(
+                backend,
+                signal_ids,
+                cond_method,
+                initial_values,
+                arms,
+                default,
+            );
+            if let Some(s) = style {
+                attach_style(backend, &n, s);
+            }
+            n
+        }
+        Primitive::RepeatDecl { signal_ids, count_method, initial_values, row_template, row_index_signal_id, style } => {
+            let n = build_repeat_decl(
+                backend,
+                signal_ids,
+                count_method,
+                initial_values,
+                *row_template,
+                row_index_signal_id,
+            );
             if let Some(s) = style {
                 attach_style(backend, &n, s);
             }
@@ -1013,6 +1050,8 @@ fn debug_kind_of(node: &Primitive) -> debug::PrimitiveKind {
         Primitive::DrawerNavigator(_) => PrimitiveKind::DrawerNavigator,
         Primitive::When { .. } => PrimitiveKind::When,
         Primitive::Switch { .. } => PrimitiveKind::Switch,
+        Primitive::SwitchDecl { .. } => PrimitiveKind::Switch,
+        Primitive::RepeatDecl { .. } => PrimitiveKind::Repeat,
         Primitive::Link { .. } => PrimitiveKind::Link,
         Primitive::Overlay { .. } => PrimitiveKind::Overlay,
         Primitive::AnchoredOverlay { .. } => PrimitiveKind::AnchoredOverlay,
@@ -3162,6 +3201,236 @@ fn build_when<B: Backend + 'static>(
     });
 
     placeholder
+}
+
+/// Build a `Primitive::When` for backends that opt into
+/// declarative conditional rendering via
+/// `handles_when_natively()`. Both branches are constructed
+/// eagerly, both attached to the same anchor, and the binding
+/// metadata is handed to the backend so it can ship the
+/// "which-branch-is-active" decision over its wire format.
+///
+/// No `Effect` is set up here. The remote runtime is responsible
+/// for evaluating the condition + toggling subtree visibility on
+/// signal change. Closures + signal IDs both flow through the
+/// binding so closure-driven backends still have everything they
+/// need if they ever want to dual-path.
+fn build_when_declarative<B: Backend + 'static>(
+    backend: &Rc<RefCell<B>>,
+    _cond: Box<dyn Fn() -> bool>,
+    then: Box<dyn Fn() -> Primitive>,
+    otherwise: Box<dyn Fn() -> Primitive>,
+    binding: crate::sources::WhenBinding,
+) -> B::Node {
+    let anchor = time_backend_create(pkind!(View), || {
+        backend.borrow_mut().create_reactive_anchor()
+    });
+
+    let lazy = backend.borrow().supports_lazy_slot_capture();
+
+    // Build each branch's subtree. In lazy mode the backend captures
+    // the commands into a side buffer (keyed by the slot's root
+    // node) so the remote runtime can play / tear them down on
+    // demand; in eager mode the commands flow straight into the
+    // main stream and we attach the slot root to the anchor here.
+    if lazy {
+        backend.borrow_mut().begin_slot_capture();
+    }
+    let then_node = build(backend, then());
+    if lazy {
+        backend.borrow_mut().end_slot_capture(&then_node);
+    } else {
+        let mut anchor_for_insert = anchor.clone();
+        backend
+            .borrow_mut()
+            .insert(&mut anchor_for_insert, then_node.clone());
+    }
+
+    if lazy {
+        backend.borrow_mut().begin_slot_capture();
+    }
+    let otherwise_node = build(backend, otherwise());
+    if lazy {
+        backend.borrow_mut().end_slot_capture(&otherwise_node);
+    } else {
+        let mut anchor_for_insert = anchor.clone();
+        backend
+            .borrow_mut()
+            .insert(&mut anchor_for_insert, otherwise_node.clone());
+    }
+
+    // Declare signals + the when binding to the backend.
+    {
+        let mut b = backend.borrow_mut();
+        for (sid, val) in binding
+            .signal_ids
+            .iter()
+            .zip(binding.initial_values.iter())
+        {
+            b.note_signal_initial(*sid, val);
+        }
+        b.note_when_binding(
+            &anchor,
+            &binding.signal_ids,
+            binding.cond_method,
+            &then_node,
+            &otherwise_node,
+        );
+    }
+
+    anchor
+}
+
+/// Build a `Primitive::SwitchDecl`. Materializes every arm's
+/// subtree eagerly + the default, attaches them under a shared
+/// anchor, and hands the binding metadata to backends that
+/// expose `note_switch_binding`. Closure-driven backends that
+/// don't opt into declarative switch fall back to mounting just
+/// the default subtree — they're a TODO until we wire the
+/// Effect-driven path.
+fn build_switch_decl<B: Backend + 'static>(
+    backend: &Rc<RefCell<B>>,
+    signal_ids: Vec<u64>,
+    cond_method: &'static str,
+    initial_values: Vec<crate::__serde_json::Value>,
+    arms: Vec<(crate::__serde_json::Value, Box<dyn Fn() -> Primitive>)>,
+    default: Box<dyn Fn() -> Primitive>,
+) -> B::Node {
+    let anchor = time_backend_create(pkind!(View), || {
+        backend.borrow_mut().create_reactive_anchor()
+    });
+    let handles_natively = backend.borrow().handles_switch_natively();
+    let lazy = handles_natively && backend.borrow().supports_lazy_slot_capture();
+
+    if !handles_natively {
+        // Closure-driven fallback (no reactivity yet) — just mount
+        // the default arm. Authors targeting Effect-driven backends
+        // can opt into Effect-based switch by using the legacy
+        // `switch()` constructor for now.
+        let default_node = build(backend, default());
+        let mut anchor_for_insert = anchor.clone();
+        backend
+            .borrow_mut()
+            .insert(&mut anchor_for_insert, default_node);
+        return anchor;
+    }
+
+    // Declarative path: build every arm subtree + default. In lazy
+    // mode the backend captures each slot's commands; in eager mode
+    // they flow into the main stream and we attach each slot's
+    // root to the anchor here.
+    let mut arm_node_pairs: Vec<(crate::__serde_json::Value, B::Node)> =
+        Vec::with_capacity(arms.len());
+    for (value, builder) in arms.iter() {
+        if lazy {
+            backend.borrow_mut().begin_slot_capture();
+        }
+        let arm_node = build(backend, builder());
+        if lazy {
+            backend.borrow_mut().end_slot_capture(&arm_node);
+        } else {
+            let mut anchor_for_insert = anchor.clone();
+            backend
+                .borrow_mut()
+                .insert(&mut anchor_for_insert, arm_node.clone());
+        }
+        arm_node_pairs.push((value.clone(), arm_node));
+    }
+    if lazy {
+        backend.borrow_mut().begin_slot_capture();
+    }
+    let default_node = build(backend, default());
+    if lazy {
+        backend.borrow_mut().end_slot_capture(&default_node);
+    } else {
+        let mut anchor_for_insert = anchor.clone();
+        backend
+            .borrow_mut()
+            .insert(&mut anchor_for_insert, default_node.clone());
+    }
+
+    {
+        let mut b = backend.borrow_mut();
+        for (sid, val) in signal_ids.iter().zip(initial_values.iter()) {
+            b.note_signal_initial(*sid, val);
+        }
+        b.note_switch_binding(
+            &anchor,
+            &signal_ids,
+            cond_method,
+            &arm_node_pairs,
+            &default_node,
+        );
+    }
+
+    anchor
+}
+
+/// Build a `Primitive::RepeatDecl`. Materializes every row in the
+/// fixed-max set eagerly, attaches all of them to the anchor, and
+/// hands the binding to backends that expose `note_repeat_binding`.
+/// Closure-driven backends mount every row (no reactive
+/// visibility) — a TODO until we wire the Effect-driven path.
+fn build_repeat_decl<B: Backend + 'static>(
+    backend: &Rc<RefCell<B>>,
+    signal_ids: Vec<u64>,
+    count_method: &'static str,
+    initial_values: Vec<crate::__serde_json::Value>,
+    row_template: Primitive,
+    row_index_signal_id: Option<u64>,
+) -> B::Node {
+    let anchor = time_backend_create(pkind!(View), || {
+        backend.borrow_mut().create_reactive_anchor()
+    });
+    let handles_natively = backend.borrow().handles_repeat_natively();
+    let lazy = handles_natively && backend.borrow().supports_lazy_slot_capture();
+
+    if !handles_natively {
+        // Closure-driven fallback: build the template once and
+        // mount it as the only "row" — no reactive count yet for
+        // Effect-driven backends.
+        let row_node = build(backend, row_template);
+        let mut anchor_for_insert = anchor.clone();
+        backend
+            .borrow_mut()
+            .insert(&mut anchor_for_insert, row_node);
+        return anchor;
+    }
+
+    // Lazy path: capture the row's construction commands as a
+    // single template slot. The runtime clones it per row on
+    // demand. Eager path: build the template once and mount it
+    // (the runtime will still drive count, but every visible row
+    // collapses to this one instance — eager is no longer useful
+    // for repeat semantics, but kept correct for completeness).
+    if lazy {
+        backend.borrow_mut().begin_slot_capture();
+    }
+    let template_node = build(backend, row_template);
+    if lazy {
+        backend.borrow_mut().end_slot_capture(&template_node);
+    } else {
+        let mut anchor_for_insert = anchor.clone();
+        backend
+            .borrow_mut()
+            .insert(&mut anchor_for_insert, template_node.clone());
+    }
+
+    {
+        let mut b = backend.borrow_mut();
+        for (sid, val) in signal_ids.iter().zip(initial_values.iter()) {
+            b.note_signal_initial(*sid, val);
+        }
+        b.note_repeat_binding(
+            &anchor,
+            &signal_ids,
+            count_method,
+            &template_node,
+            row_index_signal_id,
+        );
+    }
+
+    anchor
 }
 
 /// Build a `Primitive::Presence`. Manages mount/unmount timing so

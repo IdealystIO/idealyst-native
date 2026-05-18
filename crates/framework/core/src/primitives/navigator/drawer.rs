@@ -119,16 +119,6 @@ pub enum DrawerType {
     Slide,
 }
 
-impl Default for DrawerType {
-    fn default() -> Self {
-        // Platform-aware default matching React Navigation:
-        // iOS → Slide, everything else → Front.
-        #[cfg(target_os = "ios")]
-        { DrawerType::Slide }
-        #[cfg(not(target_os = "ios"))]
-        { DrawerType::Front }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Handle — the imperative API exposed via .bind(...)
@@ -316,7 +306,10 @@ impl DrawerNavigator {
             layout: None,
             sidebar: None,
             side: DrawerSide::Start,
-            drawer_type: DrawerType::default(),
+            // Matches React Navigation's default on every platform
+            // except iOS. iOS-targeted authors should set
+            // `.drawer_type(DrawerType::Slide)` explicitly.
+            drawer_type: DrawerType::Front,
             drawer_width: 280.0,
             pinned_above: None,
             swipe_to_open: true,

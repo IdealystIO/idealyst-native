@@ -38,6 +38,7 @@ use std::any::Any;
 use std::cell::RefCell;
 use std::ptr::NonNull;
 use std::rc::Rc;
+use std::sync::Arc;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
@@ -48,7 +49,7 @@ use web_sys::Node;
 // ---------------------------------------------------------------------------
 
 /// Surface provider for a `<canvas>` element. Holds the canvas alive
-/// for as long as the user keeps the `GraphicsSurface` (via `Rc`)
+/// for as long as the user keeps the `GraphicsSurface` (via `Arc`)
 /// and produces fresh `WebCanvasWindowHandle` / `WebDisplayHandle`
 /// values on demand. wgpu and friends call `window_handle()` /
 /// `display_handle()` once during surface creation; we don't need
@@ -56,6 +57,17 @@ use web_sys::Node;
 pub(crate) struct CanvasSurfaceProvider {
     canvas: web_sys::HtmlCanvasElement,
 }
+
+// SAFETY: wasm32 is single-threaded. The web's `HtmlCanvasElement`
+// is structurally `!Send + !Sync` (JS handles can't cross threads),
+// but with no concurrent threads in this target there's no observer
+// who could see a torn read. The bounds exist only to satisfy
+// `framework_core::GraphicsSurface`'s `Arc<dyn SurfaceProvider +
+// Send + Sync>`, which unifies the type across native + web; iOS
+// and Android use the same `unsafe impl Send + Sync` pattern for
+// their own provider types.
+unsafe impl Send for CanvasSurfaceProvider {}
+unsafe impl Sync for CanvasSurfaceProvider {}
 
 impl HasWindowHandle for CanvasSurfaceProvider {
     fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
@@ -87,9 +99,13 @@ impl HasDisplayHandle for CanvasSurfaceProvider {
 /// init-rAF, the ResizeObserver callback, and the context-lost
 /// listener can all reach it.
 pub(crate) struct GraphicsInstance {
-    /// The provider is held in an Rc so the user's `GraphicsSurface`
-    /// keeps the canvas alive past unmount if they want to.
-    provider: Rc<CanvasSurfaceProvider>,
+    /// The provider is held in an Arc so the user's `GraphicsSurface`
+    /// keeps the canvas alive past unmount if they want to. Arc
+    /// (not Rc) so the type matches `framework_core::GraphicsSurface`'s
+    /// `Arc<dyn SurfaceProvider + Send + Sync>` — see the `unsafe
+    /// impl Send + Sync` on `CanvasSurfaceProvider` above for why
+    /// that's sound on wasm32.
+    provider: Arc<CanvasSurfaceProvider>,
     /// User callbacks. `on_ready` is `FnMut` because Android can fire
     /// it more than once (we use the same trait shape on web for
     /// API uniformity even though context-lost / context-restored on
@@ -145,7 +161,7 @@ pub(crate) fn create(
     b.next_graphics_id += 1;
     let _ = canvas.set_attribute("data-graphics-id", &id.to_string());
 
-    let provider = Rc::new(CanvasSurfaceProvider { canvas: canvas.clone() });
+    let provider = Arc::new(CanvasSurfaceProvider { canvas: canvas.clone() });
 
     let instance = Rc::new(RefCell::new(GraphicsInstance {
         provider,
@@ -218,7 +234,7 @@ fn fire_ready(instance: &Rc<RefCell<GraphicsInstance>>) {
         let mut inst = instance.borrow_mut();
         inst.size = size;
         inst.ready_fired = true;
-        GraphicsSurface::new(inst.provider.clone() as Rc<dyn SurfaceProvider>)
+        GraphicsSurface::new(inst.provider.clone() as Arc<dyn SurfaceProvider + Send + Sync>)
     };
 
     invoke_on_ready(instance, OnReadyEvent { surface, size });
@@ -391,7 +407,7 @@ pub(crate) fn make_handle(b: &WebBackend, node: &Node) -> GraphicsHandle {
                 .dyn_into()
                 .expect("not a canvas");
             Rc::new(RefCell::new(GraphicsInstance {
-                provider: Rc::new(CanvasSurfaceProvider { canvas }),
+                provider: Arc::new(CanvasSurfaceProvider { canvas }),
                 on_ready: Box::new(|_| {}),
                 on_resize: Box::new(|_| {}),
                 on_lost: Box::new(|| {}),

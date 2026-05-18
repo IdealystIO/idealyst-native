@@ -6,7 +6,7 @@
 //! callbacks, we hand them to Kotlin, Kotlin calls back through JNI
 //! on every `onBindViewHolder` / `onViewRecycled`.
 
-use crate::imp::helpers::apply_default_layout_params;
+use backend_android_core::helpers::apply_default_layout_params;
 use crate::imp::{with_env, AndroidBackend};
 use framework_core::VirtualizerCallbacks;
 use jni::objects::{GlobalRef, JValue};

@@ -46,8 +46,9 @@ debug-stats = ["framework-core/debug-stats"]
 
 # Connect to a running `idealyst dev` server on startup instead of
 # rendering the local `app()` tree. Pulls in the `dev-client` crate
-# only when the feature is on, so a release build stays lean.
-dev-hot-reload = ["dep:dev-client"]
+# (replay engine) and `backend-web/aas-shell` (browser transport)
+# only when the feature is on.
+dev-hot-reload = ["dep:dev-client", "backend-web/aas-shell"]
 
 [dependencies]
 framework-core = { workspace = true }
@@ -67,7 +68,9 @@ console_error_panic_hook = "0.1"
 lol_alloc = "0.4"
 # Only pulled in under `dev-hot-reload`. Cargo silently drops the
 # activation on non-wasm targets because the dep isn't declared there.
-dev-client = { workspace = true, features = ["web"], optional = true }
+# `dev-hot-reload` activates `backend-web/aas-shell` which forwards
+# to `dev-client/dev-hot-reload` — no explicit feature here needed.
+dev-client = { workspace = true, optional = true }
 
 # Android build of wgpu: Vulkan + GLES fallback.
 [target.'cfg(target_os = "android")'.dependencies]

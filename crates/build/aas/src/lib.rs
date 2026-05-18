@@ -53,23 +53,66 @@ use std::process::Command;
 use anyhow::{Context, Result};
 use build_ios::{find_workspace_root, parse_manifest, Manifest};
 
+mod dylib_mode;
+
+/// Which AAS architecture to generate.
+///
+/// `Sidecar` is the production-ready default — two cooperating
+/// processes joined by a stdin/stdout pipe. Per-edit rebuild is
+/// dominated by the sidecar's cargo link step (~0.40s on macOS).
+///
+/// `Dylib` is an **experimental** alternative that compiles the user
+/// crate as a Rust dylib and `dlopen`s it from a single long-lived
+/// host. Targets ~150–200 ms per edit by skipping the host's
+/// re-link entirely. On stable Rust this hits hard ABI issues
+/// (mixed rlib/dylib generations of `framework-core` produce
+/// `_RUST_STD_INTERNAL_VAL` hash mismatches at dlopen time); kept
+/// here as an opt-in path for iterating on the fix without rolling
+/// back the working sidecar mode.
+///
+/// Toggle via `IDEALYST_AAS_MODE=dylib` (env-var sniff in CLI).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AasMode {
+    Sidecar,
+    Dylib,
+}
+
+impl Default for AasMode {
+    fn default() -> Self {
+        AasMode::Sidecar
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct BuildOptions {
     /// Compile with `--release`. Default: debug. The host and sidecar
     /// both run locally — release is almost never worth the slower
     /// rebuild cycle here.
     pub release: bool,
+    /// Sidecar (default) or experimental dlopen-driven dylib mode.
+    pub mode: AasMode,
+}
+
+impl Default for BuildOptions {
+    fn default() -> Self {
+        Self {
+            release: false,
+            mode: AasMode::default(),
+        }
+    }
 }
 
 #[derive(Debug)]
 pub struct BuildArtifact {
     /// Path to the produced infra-host executable.
     pub host_binary: PathBuf,
-    /// Path to the produced sidecar executable.
+    /// Path to the produced sidecar executable, or to the user dylib
+    /// in `AasMode::Dylib`. Naming kept for backwards compat with the
+    /// CLI's existing artifact-display logic.
     pub sidecar_binary: PathBuf,
     /// Host wrapper crate directory.
     pub wrapper_dir: PathBuf,
-    /// Sidecar wrapper crate directory.
+    /// Sidecar / user-dylib wrapper crate directory.
     pub sidecar_dir: PathBuf,
 }
 
@@ -86,6 +129,18 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     let manifest = parse_manifest(&project_dir)?;
     let workspace_root = find_workspace_root(&project_dir)?;
 
+    match opts.mode {
+        AasMode::Sidecar => build_sidecar_mode(&project_dir, &workspace_root, &manifest, &opts),
+        AasMode::Dylib => build_dylib_mode(&project_dir, &workspace_root, &manifest, &opts),
+    }
+}
+
+fn build_sidecar_mode(
+    project_dir: &Path,
+    workspace_root: &Path,
+    manifest: &Manifest,
+    opts: &BuildOptions,
+) -> Result<BuildArtifact> {
     let wrapper_dir = workspace_root
         .join("target/idealyst")
         .join(&manifest.name)
@@ -96,13 +151,13 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         .join("aas/app");
     let workspace_target = workspace_root.join("target");
 
-    generate_sidecar_wrapper(&sidecar_dir, &project_dir, &workspace_root, &manifest)?;
+    generate_sidecar_wrapper(&sidecar_dir, project_dir, workspace_root, manifest)?;
     generate_host_wrapper(
         &wrapper_dir,
         &sidecar_dir,
-        &project_dir,
-        &workspace_root,
-        &manifest,
+        project_dir,
+        workspace_root,
+        manifest,
     )?;
 
     // Build the sidecar first so the host (which spawns it on
@@ -136,6 +191,15 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         wrapper_dir,
         sidecar_dir,
     })
+}
+
+fn build_dylib_mode(
+    project_dir: &Path,
+    workspace_root: &Path,
+    manifest: &Manifest,
+    opts: &BuildOptions,
+) -> Result<BuildArtifact> {
+    dylib_mode::build(project_dir, workspace_root, manifest, opts)
 }
 
 fn host_binary_name(project_name: &str) -> String {
@@ -187,9 +251,14 @@ wire = {{ path = "{wire}" }}
 {user_name} = {{ path = "{user_path}" }}
 serde_json = "1"
 
-# Keep panic info on stdout/stderr so the host can surface failures.
+# Sidecar is short-lived dev infra — strip everything that costs
+# link time. We can't use `panic = "abort"` here because the host's
+# dlopen-mode shares this same template path; dylibs are constrained
+# to `unwind`. debug = 0 + strip is the next-best squeeze and gets
+# the rebuild down to ~0.40s on macOS.
 [profile.dev]
-debug = 1
+debug = 0
+strip = "debuginfo"
 "#,
         sidecar_name = sidecar_name,
         fcore = fcore.display(),

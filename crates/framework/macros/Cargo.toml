@@ -14,6 +14,14 @@ proc-macro = true
 # no instrumentation at all.
 debug-stats = []
 
+# Forwarded from framework-core's `hot-reload`. When on, `#[component]`
+# rewrites the function body to dispatch through
+# `framework_hot::call(impl_fn, args_tuple)` so a hot-reloaded
+# replacement can be jump-table-swapped at runtime. When off, the
+# macro emits the function exactly as the author wrote it — no
+# wrapper, no indirection, zero production overhead.
+hot-reload = []
+
 [dependencies]
 syn = { version = "2", features = ["full", "visit", "visit-mut", "extra-traits"] }
 quote = "1"

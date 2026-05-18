@@ -90,8 +90,12 @@ pub enum SidecarIn {
 pub struct Sidecar {
     child: Child,
     /// Outbound channel: host pushes `SidecarIn`, writer thread
-    /// drains it onto the child's stdin.
-    outbound_tx: mpsc::Sender<SidecarIn>,
+    /// drains it onto the child's stdin. Held as `Option` so
+    /// [`Self::kill`] can `take()` and drop it — the writer thread
+    /// blocks on `recv()` and only exits once every `Sender` to the
+    /// channel is gone, so dropping this before `join()` is what
+    /// lets `kill()` actually return.
+    outbound_tx: Option<mpsc::Sender<SidecarIn>>,
     /// Inbound channel: reader thread pushes `SidecarOut` frames,
     /// owning thread drains via [`Self::drain_inbound`].
     inbound_rx: Mutex<mpsc::Receiver<SidecarOut>>,
@@ -121,7 +125,7 @@ impl Sidecar {
 
         Ok(Self {
             child,
-            outbound_tx,
+            outbound_tx: Some(outbound_tx),
             inbound_rx: Mutex::new(inbound_rx),
             reader_thread: Some(reader_thread),
             writer_thread: Some(writer_thread),
@@ -134,7 +138,9 @@ impl Sidecar {
     /// spawn a fresh sidecar and the event would have been stale
     /// anyway.
     pub fn send(&self, msg: SidecarIn) {
-        let _ = self.outbound_tx.send(msg);
+        if let Some(tx) = self.outbound_tx.as_ref() {
+            let _ = tx.send(msg);
+        }
     }
 
     /// Pull every `SidecarOut` frame that's arrived since the last
@@ -150,13 +156,24 @@ impl Sidecar {
         out
     }
 
-    /// Kill the child process. Joins the I/O threads (they exit when
-    /// the pipes close after the kill). Safe to call once.
+    /// Kill the child process. Joins the I/O threads (they exit
+    /// once their respective pipe ends close + the outbound channel
+    /// senders drop). Safe to call once.
     pub fn kill(&mut self) {
         // `kill` is idempotent on the child handle but errors if the
         // process already exited — ignore that case.
         let _ = self.child.kill();
         let _ = self.child.wait();
+        // Drop the outbound `Sender` *before* joining the writer
+        // thread: the writer thread is parked in `recv()`, and the
+        // mpsc receiver only returns `Err` (i.e. the recv loop
+        // exits) once every `Sender` to the channel is dropped.
+        // Without this drop, `kill()` blocks the watcher thread
+        // forever on `writer_thread.join()`. The reader thread is
+        // not symmetrically affected — it parks in `read_frame` and
+        // unblocks as soon as the child's stdout closes from the
+        // SIGKILL above.
+        self.outbound_tx.take();
         if let Some(t) = self.reader_thread.take() {
             let _ = t.join();
         }

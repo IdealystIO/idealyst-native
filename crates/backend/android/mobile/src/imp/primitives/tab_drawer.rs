@@ -36,7 +36,7 @@
 //! semantics. View-swap avoids the conflict entirely: drawer/tab
 //! selections never touch the back stack.
 
-use crate::imp::helpers::apply_default_layout_params;
+use backend_android_core::helpers::apply_default_layout_params;
 use crate::imp::{with_env, AndroidBackend};
 use framework_core::primitives::navigator::{
     DrawerHandle, DrawerNavigatorCallbacks, MountResult, NavCommand, NavigatorCallbacks,

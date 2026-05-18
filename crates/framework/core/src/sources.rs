@@ -158,6 +158,32 @@ impl IntoButtonAction for ButtonAction {
 }
 
 // =============================================================================
+// WhenBinding — declarative metadata for `Primitive::When`
+// =============================================================================
+
+/// Optional metadata attached to a `Primitive::When` by the
+/// `bind_when!` macro, surfacing the dependency information that
+/// backends with declarative wire formats need to ship a reactive
+/// conditional to a remote renderer.
+///
+/// Mirrors the shape of [`ActionBinding`] / `TextSource::Bound`'s
+/// metadata: signal IDs, the name of the boolean transformer
+/// (`#[method]`) the renderer dispatches to evaluate the condition,
+/// and a snapshot of each input's initial value so the renderer can
+/// declare the signals it doesn't yet know about.
+///
+/// Effect-driven backends ignore this — they read `cond` and
+/// reactivate via the closure. Backends that opt in via
+/// `Backend::handles_when_natively` read this and call
+/// `Backend::note_when_binding` instead of running the closure
+/// inside an `Effect`.
+pub struct WhenBinding {
+    pub signal_ids: Vec<u64>,
+    pub cond_method: &'static str,
+    pub initial_values: Vec<crate::__serde_json::Value>,
+}
+
+// =============================================================================
 // StyleSource + IntoStyleSource
 // =============================================================================
 

@@ -10,7 +10,7 @@
 //! Stroke animation uses `ObjectAnimator` targeting a custom property
 //! that maps to `DashPathEffect` manipulation.
 
-use crate::imp::helpers::apply_default_layout_params;
+use backend_android_core::helpers::apply_default_layout_params;
 use crate::imp::{with_env, AndroidBackend};
 use framework_core::primitives::icon::IconData;
 use framework_core::Color;

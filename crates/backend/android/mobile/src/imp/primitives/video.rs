@@ -4,7 +4,7 @@
 //! `OnCompletionListener` — both straightforward to add but skipped
 //! for v1.
 
-use crate::imp::helpers::apply_default_layout_params;
+use backend_android_core::helpers::apply_default_layout_params;
 use crate::imp::{with_env, AndroidBackend};
 use framework_core::primitives::video::{VideoHandle, VideoOps};
 use jni::objects::{GlobalRef, JObject, JValue};

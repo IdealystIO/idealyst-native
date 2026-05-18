@@ -122,13 +122,13 @@ pub fn select(props: SelectProps) -> Primitive {
                 .unwrap_or_default()
         },
     );
-    let label_child = framework_core::Primitive::Text {
-        source: label_source,
-        style: None,
-        ref_fill: None,
-        #[cfg(feature = "robot")]
-        test_id: None,
-    };
+    // Use framework-core's `text` builder rather than constructing
+    // `Primitive::Text` directly: feature-gated fields like
+    // `test_id` (added when `framework-core/robot` is on) get
+    // initialized inside framework-core, so this crate never has
+    // to know about them.
+    use framework_core::IntoPrimitive;
+    let label_child = framework_core::text(label_source).into_primitive();
     let trigger_style = move || {
         let _ = framework_core::active_theme()
             .downcast_ref::<IdeaThemeRef>()
@@ -212,13 +212,9 @@ fn menu_build(
                 .with("active", variant.to_string())
         };
 
-        let label_child = framework_core::Primitive::Text {
-            source: framework_core::TextSource::Static(opt_label),
-            style: None,
-            ref_fill: None,
-            #[cfg(feature = "robot")]
-            test_id: None,
-        };
+        let label_child =
+            framework_core::text(framework_core::TextSource::Static(opt_label))
+                .into_primitive();
         let row = framework_core::pressable(vec![label_child], move || (on_click)())
             .with_style(row_style)
             .into_primitive();

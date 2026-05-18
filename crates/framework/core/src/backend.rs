@@ -206,6 +206,121 @@ pub trait Backend {
         // default: no-op
     }
 
+    /// Backend capability flag for declarative `when` handling.
+    /// `true` means the walker pre-builds both branches of a
+    /// `Primitive::When` with a binding, attaches both to a shared
+    /// anchor, and calls [`Backend::note_when_binding`] so the
+    /// backend can ship the which-branch-is-active decision over
+    /// its wire format. `false` (the default) means the walker
+    /// uses the legacy closure-driven `Effect`-based path:
+    /// re-evaluates the condition on every signal change and
+    /// rebuilds the active branch in place.
+    fn handles_when_natively(&self) -> bool {
+        false
+    }
+
+    /// Optional hook the walker calls after building both branches
+    /// of a `Primitive::When` declaratively. Backends record the
+    /// signal IDs the condition reads, the name of the boolean
+    /// transformer (`#[method]`) that decides which branch is
+    /// active, and the node ids of the then/otherwise subtrees so
+    /// the remote runtime can toggle their visibility on signal
+    /// change. Only called when `handles_when_natively()` returns
+    /// true and the `When` carries a `bind_when!`-produced binding.
+    #[allow(unused_variables)]
+    fn note_when_binding(
+        &mut self,
+        anchor: &Self::Node,
+        signal_ids: &[u64],
+        cond_method: &'static str,
+        then_node: &Self::Node,
+        otherwise_node: &Self::Node,
+    ) {
+        // default: no-op
+    }
+
+    /// Backend capability flag for declarative N-way switches
+    /// produced by `bind_switch!`. Same shape as
+    /// `handles_when_natively`. Default `false` — closure-driven
+    /// backends fall back to mounting only the default arm.
+    fn handles_switch_natively(&self) -> bool {
+        false
+    }
+
+    /// Optional hook the walker calls after building every arm +
+    /// default of a `Primitive::SwitchDecl`. `arms` carries each
+    /// arm's `(pattern_value, node)` pair so the remote runtime
+    /// can compare the cond_method's return value against the
+    /// pattern and toggle the matching arm's visibility.
+    #[allow(unused_variables)]
+    fn note_switch_binding(
+        &mut self,
+        anchor: &Self::Node,
+        signal_ids: &[u64],
+        cond_method: &'static str,
+        arms: &[(crate::__serde_json::Value, Self::Node)],
+        default_node: &Self::Node,
+    ) {
+        // default: no-op
+    }
+
+    /// Backend capability flag for declarative reactive lists
+    /// produced by `bind_repeat!`. Default `false` — closure-driven
+    /// backends mount every pre-built row without reactivity.
+    fn handles_repeat_natively(&self) -> bool {
+        false
+    }
+
+    /// Optional hook the walker calls after building the row
+    /// template of a `Primitive::RepeatDecl`. Backends record the
+    /// count method + the template node so the remote runtime can
+    /// clone the template per row (with id remapping) on every
+    /// count change.
+    #[allow(unused_variables)]
+    fn note_repeat_binding(
+        &mut self,
+        anchor: &Self::Node,
+        signal_ids: &[u64],
+        count_method: &'static str,
+        row_template: &Self::Node,
+        row_index_signal_id: Option<u64>,
+    ) {
+        // default: no-op
+    }
+
+    /// Backend capability flag for lazy slot materialization. When
+    /// `true`, the walker wraps each `bind_when!`/`bind_switch!`/
+    /// `bind_repeat!` slot's subtree build in `begin_slot_capture`/
+    /// `end_slot_capture` calls and skips attaching the slot's root
+    /// to the anchor at build time — the backend captures the slot's
+    /// commands so the remote runtime can play / tear them down on
+    /// demand. Default `false` (eager mode): every slot is built
+    /// and attached up-front, the way the framework has always
+    /// worked. Backends like Roku with no host-side runtime opt in
+    /// so inactive subtrees never materialize on the device.
+    fn supports_lazy_slot_capture(&self) -> bool {
+        false
+    }
+
+    /// Begin a slot-capture region. Subsequent backend mutations
+    /// (create_*, insert, apply_style, etc.) should be redirected
+    /// from the main command stream into a capture buffer kept by
+    /// the backend. Called only when `supports_lazy_slot_capture()`
+    /// is true.
+    fn begin_slot_capture(&mut self) {
+        // default: no-op
+    }
+
+    /// End the most-recent slot-capture region. The backend should
+    /// associate the captured commands with `slot_root` so a later
+    /// `note_when_binding` / `note_switch_binding` /
+    /// `note_repeat_binding` call can package them into the
+    /// appropriate binding's wire form.
+    #[allow(unused_variables)]
+    fn end_slot_capture(&mut self, slot_root: &Self::Node) {
+        // default: no-op
+    }
+
     /// Create an image node with the initial URL. The framework
     /// wraps the user's `src` source in an effect that calls
     /// `update_image_src` whenever the source changes.

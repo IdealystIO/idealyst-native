@@ -1,6 +1,11 @@
-//! Browser WebSocket transport. Used on wasm32 hosts where blocking
-//! I/O isn't an option — every read/write has to fit inside a JS
-//! event-loop callback.
+//! Browser WebSocket transport for the AAS dev-client.
+//!
+//! Lives here, not in `dev-client`, because every wire-level piece
+//! it touches is a web platform implementation: `web_sys::WebSocket`,
+//! `ArrayBuffer`, `MessageEvent`, `requestAnimationFrame`-driven
+//! outbound pump, etc. `dev-client` exposes the platform-agnostic
+//! [`WireBackend`] replay engine; this file connects it to a
+//! browser.
 //!
 //! Lifecycle:
 //!   1. [`connect_web`] opens a `web_sys::WebSocket` with
@@ -28,14 +33,13 @@ thread_local! {
     static REBUILT_AT_MS: Cell<Option<u64>> = const { Cell::new(None) };
 }
 
+use dev_client::WireBackend;
 use framework_core::{Backend, RafLoop};
-use wire::{AppToDev, DevToApp};
 use js_sys::{ArrayBuffer, Uint8Array};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{BinaryType, CloseEvent, ErrorEvent, MessageEvent, WebSocket};
-
-use crate::WireBackend;
+use wire::{AppToDev, DevToApp};
 
 /// Handle returned by [`connect_web`]. Owns the socket + event
 /// closures + raf loop. Drop to disconnect.

@@ -19,14 +19,14 @@ name = "backend_android_tv"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-aas-shell = ["dep:dev-client"]
+aas-shell = ["dep:aas-shell-native", "aas-shell-native/aas-shell"]
 async-driver = ["framework-core/async-driver"]
 
 [dependencies]
 framework-core = { workspace = true }
 backend-android-core = { workspace = true }
 raw-window-handle = "0.6"
-dev-client = { workspace = true, features = ["native"], optional = true }
+aas-shell-native = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"

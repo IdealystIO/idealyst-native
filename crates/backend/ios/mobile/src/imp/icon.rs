@@ -22,7 +22,7 @@ use objc2::rc::Retained;
 use objc2_foundation::{CGFloat, CGPoint, CGRect, CGSize, MainThreadMarker, NSObject, NSString};
 use objc2_ui_kit::{UIColor, UIView};
 
-use super::style::color_to_uicolor;
+use backend_ios_core::style::color_to_uicolor;
 use super::IosNode;
 
 // ==========================================================================

@@ -13,7 +13,7 @@ mod stub;
 pub use imp::{install_global_self, IosBackend};
 
 #[cfg(all(target_os = "ios", feature = "async-driver"))]
-pub use imp::render_loop::install_render_loop;
+pub use backend_ios_core::render_loop::install_render_loop;
 
 #[cfg(not(target_os = "ios"))]
 pub use stub::IosBackend;

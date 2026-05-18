@@ -2,7 +2,8 @@
 //! `OnClickListener` that trampolines back to Rust via JNI.
 
 use crate::imp::callbacks::{leak, ClickCallback};
-use crate::imp::helpers::{apply_default_layout_params, set_text, view_screen_rect};
+use backend_android_core::helpers::{apply_default_layout_params, set_text};
+use crate::imp::view_rect::view_screen_rect;
 use crate::imp::{with_env, AndroidBackend};
 use framework_core::primitives::overlay::ViewportRect;
 use framework_core::{ButtonHandle, ButtonOps};

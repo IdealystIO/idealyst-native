@@ -295,6 +295,13 @@ pub enum Primitive {
         then: Box<dyn Fn() -> Primitive>,
         otherwise: Box<dyn Fn() -> Primitive>,
         style: Option<StyleSource>,
+        /// Optional declarative metadata produced by the `bind_when!`
+        /// macro. `None` for the legacy closure-only path used by
+        /// the existing `when()` constructor (Effect-driven
+        /// rebuild on signal change). `Some` opts the walker into
+        /// the pre-build-both-branches path for backends that
+        /// return `handles_when_natively() = true`.
+        binding: Option<crate::sources::WhenBinding>,
     },
     /// Reactive multi-way conditional, the type-erased shape behind
     /// the `switch()` constructor. The walker re-runs `key()` inside
@@ -310,6 +317,33 @@ pub enum Primitive {
         key: Box<dyn Fn() -> Box<dyn Any>>,
         eq: Box<dyn Fn(&dyn Any, &dyn Any) -> bool>,
         build: Box<dyn Fn(&dyn Any) -> Primitive>,
+        style: Option<StyleSource>,
+    },
+    /// Declarative N-way reactive conditional produced by
+    /// `bind_switch!`. Mirrors the shape of `Primitive::When` with
+    /// declarative binding: every arm's subtree is pre-built at
+    /// snapshot time (closures called once); the backend that opts
+    /// into native handling receives the binding via
+    /// `note_switch_binding` and toggles which subtree renders on
+    /// the device. Closure-driven backends fall back to building
+    /// the default arm only (no reactivity).
+    SwitchDecl {
+        /// Signal arena IDs the cond method reads.
+        signal_ids: Vec<u64>,
+        /// Name of the `#[method]` whose return value gets matched
+        /// against each arm's pattern.
+        cond_method: &'static str,
+        /// Snapshot of each signal's current value, parallel to
+        /// `signal_ids`. Used by backends that ship signal state
+        /// across a wire boundary.
+        initial_values: Vec<crate::__serde_json::Value>,
+        /// Per-arm: `(pattern_value, subtree_builder)`. Match value
+        /// uses serde_json equality (numeric, string, bool, …).
+        /// Builder closure is called once at snapshot to produce
+        /// the arm's subtree.
+        arms: Vec<(crate::__serde_json::Value, Box<dyn Fn() -> Primitive>)>,
+        /// Subtree used when no arm matches. Always present.
+        default: Box<dyn Fn() -> Primitive>,
         style: Option<StyleSource>,
     },
     /// Bulk children: build `count` rows from `row_builder(i)` and
@@ -328,6 +362,39 @@ pub enum Primitive {
     Repeat {
         count: usize,
         row_builder: Box<dyn Fn(usize) -> Primitive>,
+    },
+    /// Declarative reactive list: a fixed-max set of row subtrees,
+    /// rendered up to a count read from signals. Produced by
+    /// `bind_repeat!`. The macro materializes `max` rows eagerly
+    /// (each indexed) at snapshot; the backend that opts into
+    /// native handling receives the binding via
+    /// `note_repeat_binding` and the device-side runtime clones the
+    /// template per row, remapping node ids so each instance is
+    /// independent. Unbounded — the count method's return value
+    /// directly drives how many row clones live at any time.
+    RepeatDecl {
+        /// Signal arena IDs the count method reads.
+        signal_ids: Vec<u64>,
+        /// Name of the `#[method]` returning the visible row count.
+        count_method: &'static str,
+        /// Snapshot of each signal's current value, parallel to
+        /// `signal_ids`.
+        initial_values: Vec<crate::__serde_json::Value>,
+        /// The row template — the Primitive produced by calling the
+        /// row builder closure once at snapshot time. The backend
+        /// captures its construction commands and the runtime
+        /// re-emits them per row instance with fresh node ids.
+        row_template: Box<Primitive>,
+        /// Optional id of the "row index signal" — a `Signal<i32>`
+        /// the macro creates at snapshot and passes to the closure
+        /// as the `i` parameter. At clone time, the runtime
+        /// allocates one synthetic signal per row, sets it to that
+        /// row's index, and substitutes the template's references
+        /// to this id so bind!s dispatch with the right per-row
+        /// value. `None` for backends that don't support per-row
+        /// dynamic content (closure-driven fallback).
+        row_index_signal_id: Option<u64>,
+        style: Option<StyleSource>,
     },
     /// Declarative navigation. Wraps content; activation dispatches
     /// a `NavCommand` against an ambient navigator captured at
@@ -508,6 +575,8 @@ impl Primitive {
             | Primitive::Graphics { style, .. }
             | Primitive::When { style, .. }
             | Primitive::Switch { style, .. }
+            | Primitive::SwitchDecl { style, .. }
+            | Primitive::RepeatDecl { style, .. }
             | Primitive::Link { style, .. }
             | Primitive::Overlay { style, .. }
             | Primitive::AnchoredOverlay { style, .. } => {

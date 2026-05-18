@@ -279,12 +279,77 @@ pub enum RokuCommand {
         method: String,
         output_signal_id: Option<SignalId>,
     },
+    /// Bind an anchor node to a boolean transformer over signals.
+    /// Each branch ships as a `Slot` carrying *construction commands*
+    /// — not pre-built node ids. The device-side runtime plays the
+    /// active slot's commands to materialize the subtree on demand,
+    /// and tears it down (releasing every node it created) when the
+    /// binding flips to the other branch. Inactive subtrees do not
+    /// exist as `roSGNode` objects.
+    BindWhen {
+        anchor_id: NodeId,
+        signal_ids: Vec<SignalId>,
+        cond_method: String,
+        then_slot: Slot,
+        otherwise_slot: Slot,
+    },
+    /// N-way structural reactivity. Same lazy materialization model
+    /// as `BindWhen` — each arm and the default ship as `Slot`s; the
+    /// device plays the matching one's commands on signal change
+    /// and tears down the previous slot.
+    BindSwitch {
+        anchor_id: NodeId,
+        signal_ids: Vec<SignalId>,
+        cond_method: String,
+        arms: Vec<SwitchArm>,
+        default_slot: Slot,
+    },
+    /// Reactive unbounded list. The wire carries one row `Slot` as
+    /// a template; the device clones it per row, allocating fresh
+    /// node ids each time, and tears down clones when `count`
+    /// shrinks. No upper bound — `count` directly drives how many
+    /// live row instances exist.
+    ///
+    /// `row_index_signal_id`, if set, names the snapshot-time signal
+    /// the row closure's `i` parameter was bound to. Per clone, the
+    /// runtime mints a fresh synthetic signal, sets it to the row's
+    /// index, and remaps the template's `signal_ids` references so
+    /// any `bind!(method(i))` inside the row dispatches with the
+    /// right per-row value.
+    BindRepeat {
+        anchor_id: NodeId,
+        signal_ids: Vec<SignalId>,
+        count_method: String,
+        row_template: Slot,
+        row_index_signal_id: Option<SignalId>,
+    },
 
     // ---------------- Lifecycle ----------------
     /// First command on a fresh session. The BrightScript client
     /// uses this to clear its node table and mount `root` as the
     /// scene's content.
     Finish { root: NodeId },
+}
+
+/// A `bind_switch!` arm — pattern value (compared by JSON equality
+/// on device) + the slot whose commands the device replays when the
+/// arm matches.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SwitchArm {
+    pub pattern: serde_json::Value,
+    pub slot: Slot,
+}
+
+/// A lazily-materialized subtree. The device replays `commands`
+/// when the slot becomes active and tears down every node it
+/// created when the slot deactivates. `root_node_id` identifies
+/// the subtree root inside `commands` so the runtime knows which
+/// node to attach to the anchor after replay (and which subtree to
+/// walk during teardown).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Slot {
+    pub root_node_id: NodeId,
+    pub commands: Vec<RokuCommand>,
 }
 
 /// Identifier for a signal. Minted by the Rust side at snapshot

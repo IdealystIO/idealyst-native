@@ -400,18 +400,14 @@ sub layoutApplyFrames()
         kind = m.nodeKinds[key]
         if node <> invalid and f <> invalid then
             node.translation = [f.x, f.y]
-            ' Text nodes don't get width/height set. Roku's Label
-            ' truncates with "..." when assigned width <= rendered
-            ' width, and `boundingRect()` is occasionally a hair
-            ' tighter than the actual painted glyphs (especially on
-            ' emulators). Leaving Labels unconstrained lets them
-            ' self-size to their content; the layout pass still
-            ' positions them correctly via translation.
-            '
-            ' If we ever want explicit text wrapping or truncation
-            ' we'll need to detect that intent (style.max_width set,
-            ' or style.text_overflow) and apply width selectively.
             if kind <> "Text" then
+                ' Non-Text nodes: take the computed frame.
+                ' Text nodes: don't set width/height — Roku's Label
+                ' would truncate with "..." if the assigned width
+                ' undershoots the rendered glyph run, and
+                ' `boundingRect()` is sometimes a hair tighter than
+                ' the actual paint. Leaving Labels unconstrained
+                ' keeps them legible.
                 node.width = f.width
                 node.height = f.height
             end if

@@ -416,6 +416,7 @@ where
         then: Box::new(then),
         otherwise: Box::new(otherwise),
         style: None,
+        binding: None,
     }
 }
 

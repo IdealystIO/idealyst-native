@@ -1,7 +1,7 @@
 //! `Primitive::View` — `android.widget.LinearLayout` in vertical
 //! orientation (matches the framework's default flex-column).
 
-use crate::imp::helpers::apply_default_layout_params;
+use backend_android_core::helpers::apply_default_layout_params;
 use crate::imp::{with_env, AndroidBackend};
 use jni::objects::{GlobalRef, JValue};
 

@@ -6,28 +6,14 @@ pub(crate) mod icon;
 pub(crate) mod navigator;
 pub(crate) mod overlay;
 pub(crate) mod overlay_shared;
-#[cfg(feature = "async-driver")]
-pub mod render_loop;
-pub(crate) mod style;
 pub(crate) mod tab_drawer;
 
-/// Platform log via NSLog. Always visible in Xcode console.
-#[allow(dead_code)]
-pub(crate) fn ios_log(msg: &str) {
-    let ns = objc2_foundation::NSString::from_str(msg);
-    // NSLog(@"%@", msg) — the %@ format avoids treating msg as a format string.
-    extern "C" {
-        fn NSLog(fmt: *const objc2_foundation::NSString, ...);
-    }
-    let fmt = objc2_foundation::NSString::from_str("%@");
-    unsafe { NSLog(&*fmt, &*ns) };
-}
-
-/// Platform log with format, for timing etc.
+/// Platform log with format. Forwards to `backend_ios_core::ios_log`
+/// which wraps NSLog.
 #[allow(dead_code)]
 macro_rules! ios_log {
     ($($arg:tt)*) => {
-        $crate::imp::ios_log(&format!($($arg)*))
+        backend_ios_core::ios_log(&format!($($arg)*))
     };
 }
 
@@ -54,7 +40,7 @@ use callbacks::{
     BoolCallbackTarget, CallbackTarget, FloatCallbackTarget, StringCallbackTarget,
 };
 use navigator::NavigatorEntry;
-use style::{
+use backend_ios_core::style::{
     animate, apply_style_to_view, apply_text_style, color_to_uicolor, font_weight_to_uikit,
     length_to_px,
 };
@@ -1334,7 +1320,7 @@ impl Backend for IosBackend {
         if let Some(entry) = self.tab_drawer_instances.get(&key) {
             if let Some(ref sidebar) = *entry.sidebar.borrow() {
                 if let Some(ref bg) = style.background {
-                    let c = style::color_to_uicolor(bg.value());
+                    let c = backend_ios_core::style::color_to_uicolor(bg.value());
                     sidebar.setBackgroundColor(Some(&c));
                 }
             }
@@ -1378,12 +1364,12 @@ impl IosBackend {
     /// new views land after that (navigation pushes, drawer mounts).
     pub(crate) fn run_layout_pass_global(&mut self) {
         let (vw, vh) = self.viewport_size();
-        ios_log(&format!(
+        backend_ios_core::ios_log(&format!(
             "[layout] run_layout_pass viewport=({:.1}, {:.1}) registered_views={}",
             vw, vh, self.view_to_layout.len()
         ));
         if vw <= 0.0 || vh <= 0.0 {
-            ios_log("[layout] ABORT: viewport is zero");
+            backend_ios_core::ios_log("[layout] ABORT: viewport is zero");
             return;
         }
 
@@ -1397,11 +1383,11 @@ impl IosBackend {
             .filter(|n| self.layout.is_root(*n))
             .collect();
 
-        ios_log(&format!("[layout] {} taffy roots to compute", roots.len()));
+        backend_ios_core::ios_log(&format!("[layout] {} taffy roots to compute", roots.len()));
         for root_node in &roots {
             self.layout.compute(*root_node, vw, vh);
             let f = self.layout.frame_of(*root_node);
-            ios_log(&format!(
+            backend_ios_core::ios_log(&format!(
                 "[layout] root {:?} → frame ({:.1},{:.1}) {:.1}×{:.1}  style: {}",
                 root_node, f.x, f.y, f.width, f.height,
                 self.layout.debug_style(*root_node),
@@ -1410,7 +1396,7 @@ impl IosBackend {
                 let children = self.layout.children_of(*root_node);
                 for (i, c) in children.iter().enumerate() {
                     let cf = self.layout.frame_of(*c);
-                    ios_log(&format!(
+                    backend_ios_core::ios_log(&format!(
                         "[layout]    child[{}] → ({:.1},{:.1}) {:.1}×{:.1}  style: {}",
                         i, cf.x, cf.y, cf.width, cf.height,
                         self.layout.debug_style(*c),
@@ -1451,7 +1437,7 @@ impl IosBackend {
             let _: () = unsafe { msg_send![view, setCenter: center] };
             applied += 1;
         }
-        ios_log(&format!("[layout] apply_frames done: applied={}", applied));
+        backend_ios_core::ios_log(&format!("[layout] apply_frames done: applied={}", applied));
 
         // Sync UIScrollView contentSize: walk each scroll view's
         // Taffy children, compute the bounding box, set

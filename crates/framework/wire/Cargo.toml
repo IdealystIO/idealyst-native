@@ -17,7 +17,10 @@ serde_json = "1"
 # exercises the dev-side recorder + app-side replay engine against a
 # stand-in TraceBackend.
 framework-core = { workspace = true }
-dev-client = { workspace = true, features = ["native"] }
+dev-client = { workspace = true, features = ["dev-hot-reload"] }
+# `connect_and_run` lives here (moved from dev-client). tests/transport.rs
+# exercises it against a TraceBackend.
+aas-shell-native = { workspace = true, features = ["aas-shell"] }
 dev-server = { workspace = true }
 # Used by tests/transport.rs to open the WebSocket directly so it can
 # run the read loop on this thread (the WireBackend isn't Send).

@@ -12,7 +12,7 @@
 //! [`super::view::insert`] / [`super::view::clear_children`] redirect
 //! to the inner when the parent is a registered ScrollView outer.
 
-use crate::imp::helpers::apply_default_layout_params;
+use backend_android_core::helpers::apply_default_layout_params;
 use crate::imp::{with_env, AndroidBackend};
 use jni::objects::{GlobalRef, JValue};
 

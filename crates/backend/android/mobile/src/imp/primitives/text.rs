@@ -1,6 +1,6 @@
 //! `Primitive::Text` — `android.widget.TextView`.
 
-use crate::imp::helpers::{apply_default_layout_params, set_text};
+use backend_android_core::helpers::{apply_default_layout_params, set_text};
 use crate::imp::{with_env, AndroidBackend};
 use jni::objects::{GlobalRef, JValue};
 

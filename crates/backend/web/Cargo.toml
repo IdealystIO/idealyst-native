@@ -19,14 +19,25 @@ debug-stats = ["framework-core/debug-stats"]
 # `spawn_async` resolve. Host calls `install_render_loop()` and
 # `install_async_executor()` once at init.
 async-driver = ["framework-core/async-driver", "dep:wasm-bindgen-futures"]
+# Compile in the AAS-client browser transport (`connect_web` +
+# `WebClientHandle`). Forwards to `dev-client/dev-hot-reload` so the
+# `WireBackend` replay engine is available. Off by default — the
+# native-rendering build path pays no cost.
+aas-shell = ["dep:dev-client", "dep:wire", "dev-client/dev-hot-reload"]
 
 [dependencies]
 framework-core = { workspace = true }
 wasm-bindgen = "0.2"
 js-sys = "0.3"
+serde_json = "1"
 # Drives `framework_core::driver::spawn_async` on web. Only required
 # when this backend's `async-driver` feature is on (the host opts in).
 wasm-bindgen-futures = { version = "0.4", optional = true }
+# AAS dev-client replay engine + wire protocol. Only pulled in when
+# the `aas-shell` feature is on; the WebSocket transport itself
+# lives in this crate's `dev_transport` module.
+dev-client = { workspace = true, optional = true }
+wire = { workspace = true, optional = true }
 # Used by the Graphics primitive to expose the `<canvas>` as a
 # standard `WebCanvasWindowHandle` + `WebDisplayHandle` for any GPU
 # library the author chooses (wgpu, glow, vello, ...). Tiny dep
@@ -36,6 +47,8 @@ raw-window-handle = "0.6"
 [dependencies.web-sys]
 version = "0.3"
 features = [
+    "BinaryType",
+    "CloseEvent",
     "console",
     "CssRule",
     "CssRuleList",
@@ -46,6 +59,7 @@ features = [
     "DocumentFragment",
     "DomRect",
     "Element",
+    "ErrorEvent",
     "Event",
     "History",
     "HtmlAnchorElement",
@@ -58,9 +72,11 @@ features = [
     "KeyboardEvent",
     "Location",
     "MediaQueryList",
+    "MessageEvent",
     "MouseEvent",
     "Node",
     "PopStateEvent",
     "ResizeObserver",
+    "WebSocket",
     "Window",
 ]

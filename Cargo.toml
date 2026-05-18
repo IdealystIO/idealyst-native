@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/framework/core",
+    "crates/framework/hot",
     "crates/framework/macros",
     "crates/framework/native-layout",
     "crates/framework/wire",
@@ -19,6 +20,8 @@ members = [
     "crates/backend/roku/macros",
     "crates/backend/roku/transpile",
     "crates/backend/web",
+    "crates/backend/aas-shell-native",
+    "crates/backend/posix-log-capture",
     "crates/ui/idea-ui",
     "crates/ui/idea-ui-docs-derive",
     "crates/ui/icons-lucide",
@@ -38,7 +41,6 @@ members = [
     "examples/hello-world",
     "examples/hello-roku",
     "examples/idea-ui-docs",
-    "examples/hot-reload-demo",
     "examples/docs",
     "arena/idealyst-native/wasm",
 ]
@@ -50,6 +52,7 @@ license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 framework-core = { path = "crates/framework/core" }
+framework-hot = { path = "crates/framework/hot" }
 framework-macros = { path = "crates/framework/macros" }
 native-layout = { path = "crates/framework/native-layout" }
 wire = { path = "crates/framework/wire" }
@@ -76,6 +79,8 @@ backend-roku = { path = "crates/backend/roku" }
 backend-roku-macros = { path = "crates/backend/roku/macros" }
 backend-roku-transpile = { path = "crates/backend/roku/transpile" }
 backend-web = { path = "crates/backend/web" }
+aas-shell-native = { path = "crates/backend/aas-shell-native" }
+posix-log-capture = { path = "crates/backend/posix-log-capture" }
 idea-ui = { path = "crates/ui/idea-ui" }
 idea-ui-docs-derive = { path = "crates/ui/idea-ui-docs-derive" }
 icons-lucide = { path = "crates/ui/icons-lucide" }

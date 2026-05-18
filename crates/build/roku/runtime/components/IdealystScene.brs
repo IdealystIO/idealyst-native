@@ -235,6 +235,22 @@ sub applyCommand(cmd as object)
         ' signal_ids comes through as a JSON array; ParseJson
         ' returns it as an roArray of integers.
         bindText(cmd.node_id, cmd.signal_ids, cmd.method)
+    else if op = "BindWhen" then
+        ' Reactive if/else. Each branch carries its own subtree as
+        ' a `Slot` (root_node_id + list of construction commands).
+        ' Subscribers play the active branch and tear down the
+        ' previous one on every signal change — inactive subtrees
+        ' never materialize on the device.
+        bindWhen(cmd.anchor_id, cmd.signal_ids, cmd.cond_method, cmd.then_slot, cmd.otherwise_slot)
+    else if op = "BindSwitch" then
+        ' N-way structural reactivity. Each arm + the default ships
+        ' as a `Slot`; only the matching one is materialized.
+        bindSwitch(cmd.anchor_id, cmd.signal_ids, cmd.cond_method, cmd.arms, cmd.default_slot)
+    else if op = "BindRepeat" then
+        ' Reactive unbounded list. The wire carries one row `Slot`
+        ' as a template; the runtime clones it per row with fresh
+        ' node ids and tears down clones when `count` shrinks.
+        bindRepeat(cmd.anchor_id, cmd.signal_ids, cmd.count_method, cmd.row_template)
     else if op = "BindButton" then
         ' output_signal_id is Option<u64>; in JSON it's either a
         ' number or null. ParseJson maps null → invalid, so we

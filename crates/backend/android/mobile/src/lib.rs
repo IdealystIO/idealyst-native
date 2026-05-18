@@ -47,7 +47,7 @@ mod stub;
 pub use imp::AndroidBackend;
 
 #[cfg(all(target_os = "android", feature = "async-driver"))]
-pub use imp::render_loop::install_render_loop;
+pub use backend_android_core::render_loop::install_render_loop;
 
 #[cfg(not(target_os = "android"))]
 pub use stub::AndroidBackend;

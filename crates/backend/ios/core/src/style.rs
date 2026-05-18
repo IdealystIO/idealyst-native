@@ -11,14 +11,14 @@ use block2::ConcreteBlock;
 /// debug-mode encoding check sees `^{CGColor=}` instead of `^v`.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
-pub(crate) struct CGColorRef(pub(crate) *const std::ffi::c_void);
+pub struct CGColorRef(pub *const std::ffi::c_void);
 
 unsafe impl Encode for CGColorRef {
     const ENCODING: Encoding = Encoding::Pointer(&Encoding::Struct("CGColor", &[]));
 }
 
 /// Parse a CSS-style color string into (r, g, b, a) in 0.0..1.0.
-pub(crate) fn parse_color(s: &str) -> (CGFloat, CGFloat, CGFloat, CGFloat) {
+pub fn parse_color(s: &str) -> (CGFloat, CGFloat, CGFloat, CGFloat) {
     let s = s.trim();
     if let Some(hex) = s.strip_prefix('#') {
         let hex = hex.trim();
@@ -77,12 +77,12 @@ pub(crate) fn parse_color(s: &str) -> (CGFloat, CGFloat, CGFloat, CGFloat) {
     }
 }
 
-pub(crate) fn color_to_uicolor(color: &Color) -> Retained<UIColor> {
+pub fn color_to_uicolor(color: &Color) -> Retained<UIColor> {
     let (r, g, b, a) = parse_color(&color.0);
     unsafe { UIColor::colorWithRed_green_blue_alpha(r, g, b, a) }
 }
 
-pub(crate) fn length_to_px(len: &Length) -> CGFloat {
+pub fn length_to_px(len: &Length) -> CGFloat {
     match len {
         Length::Px(v) => *v as CGFloat,
         Length::Percent(_) => 0.0,
@@ -90,7 +90,7 @@ pub(crate) fn length_to_px(len: &Length) -> CGFloat {
     }
 }
 
-pub(crate) fn font_weight_to_uikit(weight: framework_core::FontWeight) -> CGFloat {
+pub fn font_weight_to_uikit(weight: framework_core::FontWeight) -> CGFloat {
     match weight {
         framework_core::FontWeight::Thin => -0.6,
         framework_core::FontWeight::ExtraLight => -0.5,
@@ -105,7 +105,7 @@ pub(crate) fn font_weight_to_uikit(weight: framework_core::FontWeight) -> CGFloa
 }
 
 /// Map framework Easing to UIView animation options bitmask.
-pub(crate) fn easing_to_options(easing: &framework_core::Easing) -> u64 {
+pub fn easing_to_options(easing: &framework_core::Easing) -> u64 {
     match easing {
         framework_core::Easing::Linear => 3 << 16,
         framework_core::Easing::Ease | framework_core::Easing::EaseInOut => 0 << 16,
@@ -116,7 +116,7 @@ pub(crate) fn easing_to_options(easing: &framework_core::Easing) -> u64 {
 }
 
 /// Run property changes inside a UIView animation block.
-pub(crate) fn animate(transition: &framework_core::Transition, changes: Rc<dyn Fn()>) {
+pub fn animate(transition: &framework_core::Transition, changes: Rc<dyn Fn()>) {
     let duration = transition.duration_ms as CGFloat / 1000.0;
     let options = easing_to_options(&transition.easing);
     let block = ConcreteBlock::new(move || {
@@ -136,7 +136,7 @@ pub(crate) fn animate(transition: &framework_core::Transition, changes: Rc<dyn F
     }
 }
 
-pub(crate) fn apply_style_to_view(view: &UIView, style: &StyleRules) {
+pub fn apply_style_to_view(view: &UIView, style: &StyleRules) {
     // Background color -- skip for Metal-backed views
     let layer: Retained<NSObject> = unsafe { msg_send_id![view, layer] };
     let is_metal_view: bool = unsafe {
@@ -152,7 +152,7 @@ pub(crate) fn apply_style_to_view(view: &UIView, style: &StyleRules) {
             // silently dropped.
             let read_back: Option<Retained<NSObject>> =
                 unsafe { msg_send_id![view, backgroundColor] };
-            crate::imp::ios_log(&format!(
+            crate::ios_log(&format!(
                 "[bg-paint] view {:p} src=\"{}\" set?={} ",
                 view as *const UIView,
                 raw,
@@ -278,7 +278,7 @@ pub(crate) fn apply_style_to_view(view: &UIView, style: &StyleRules) {
     // redundant for framework-managed views.
 }
 
-pub(crate) fn apply_text_style(view: &UIView, style: &StyleRules, is_label: bool) {
+pub fn apply_text_style(view: &UIView, style: &StyleRules, is_label: bool) {
     // Text color
     if let Some(color) = &style.color {
         let c = color_to_uicolor(color.value());

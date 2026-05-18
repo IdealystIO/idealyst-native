@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 use super::callbacks::CallbackTarget;
 use super::navigator::IosNavigatorOps;
-use super::style::animate;
+use backend_ios_core::style::animate;
 use super::{pin_to_edges, IosNode};
 
 #[cfg(feature = "debug-stats")]
@@ -22,13 +22,13 @@ fn dump_debug_stats(label: &str) {
     let events = framework_core::debug::take_events();
     let summary = framework_core::debug::component_summary(&events);
     let counters = framework_core::debug::take_phase_counters();
-    super::ios_log(&format!("[profiler] {} — {} events", label, events.len()));
+    backend_ios_core::ios_log(&format!("[profiler] {} — {} events", label, events.len()));
     for (name, s) in &summary {
-        super::ios_log(&format!("[profiler]   {} — calls: {}, total: {}µs, max: {}µs",
+        backend_ios_core::ios_log(&format!("[profiler]   {} — calls: {}, total: {}µs, max: {}µs",
             name, s.call_count, s.total_inclusive_us, s.max_inclusive_us));
     }
     for (phase, c) in &counters {
-        super::ios_log(&format!("[profiler]   phase {} — calls: {}, total: {}µs, max: {}µs",
+        backend_ios_core::ios_log(&format!("[profiler]   phase {} — calls: {}, total: {}µs, max: {}µs",
             phase, c.call_count, c.total_us, c.max_us));
     }
 }
@@ -472,7 +472,7 @@ pub(crate) fn create_drawer_navigator(
     control.install(Box::new(move |cmd| {
         match cmd {
             NavCommand::Select { name, params, url: _ } => {
-                super::ios_log(&format!("[drawer] Select: {}", name));
+                backend_ios_core::ios_log(&format!("[drawer] Select: {}", name));
                 select_screen(
                     mount_policy,
                     &body_for_dispatch,
@@ -487,7 +487,7 @@ pub(crate) fn create_drawer_navigator(
                 depth_changed(1);
                 active_changed(name);
                 super::schedule_layout_pass();
-                super::ios_log(&format!("[drawer] Select done: {}", name));
+                backend_ios_core::ios_log(&format!("[drawer] Select done: {}", name));
             }
             NavCommand::OpenDrawer => {
                 #[cfg(feature = "debug-stats")]

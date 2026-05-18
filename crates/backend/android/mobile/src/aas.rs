@@ -22,7 +22,7 @@
 
 use std::cell::RefCell;
 
-use dev_client::AasShell;
+use aas_shell_native::AasShell;
 use jni::objects::JObject;
 use jni::JNIEnv;
 

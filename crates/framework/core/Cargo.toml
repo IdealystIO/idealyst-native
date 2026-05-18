@@ -4,6 +4,17 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+# `rlib` is the default and what every existing static-linker
+# consumer picks up. Adding `dylib` makes a Rust-ABI shared library
+# available for the AAS-mode hot-reload sidecar, which dlopens the
+# user crate as a Rust dylib and needs `framework_core` itself to
+# resolve to ONE shared copy at runtime (otherwise the `Primitive`
+# type / signal arena / scope graph would have two non-equal
+# identities between the host and the user dylib). Consumers that
+# don't pass `-C prefer-dynamic` keep getting `rlib` — additive.
+crate-type = ["rlib", "dylib"]
+
 [features]
 # When enabled, the framework records component/build/backend timing
 # events into an in-memory log. Author-facing API lives in
@@ -18,6 +29,19 @@ license.workspace = true
 # section below.
 debug-stats = ["framework-macros/debug-stats"]
 
+# Dev-time hot-reload substrate. Pulls in `framework-hot` (the
+# subsecond-backed jump-table runtime) and tells the `#[component]`
+# macro to emit a thin `hot::call(...)` wrapper around every
+# user-authored component body. Production builds (where this is
+# off — the default) emit components with no wrapper, no
+# indirection, zero overhead — `framework-hot` itself doesn't even
+# get compiled.
+#
+# Turn on for: AAS dylib-mode host builds, and any dev-time native
+# platform build (Android, iOS) where the dev-server will ship
+# patch dylibs over the wire.
+hot-reload = ["framework-macros/hot-reload", "dep:framework-hot", "framework-hot/hot"]
+
 # Programmatic introspection and control of the running UI. When
 # enabled, the render walker registers every mounted primitive into a
 # thread-local registry that can be queried and controlled via the
@@ -29,7 +53,7 @@ debug-stats = ["framework-macros/debug-stats"]
 # Off by default — adds per-node overhead (one registry entry per
 # mounted element + retained action closures). Production builds
 # should leave this off.
-robot = ["dep:libc"]
+robot = []
 
 # Platform-agnostic async + per-frame primitives:
 #
@@ -56,10 +80,11 @@ async-driver = [
 
 [dependencies]
 framework-macros = { workspace = true }
+# `framework-hot` is only linked in when the `hot-reload` cargo
+# feature is on (typically by the AAS dylib-mode host wrapper). Off
+# by default — production builds don't compile it.
+framework-hot = { workspace = true, optional = true }
 serde_json = "1"
-# `libc` is only used by the robot feature's stdio-capture path
-# (dup/dup2/pipe/read on UNIX). Optional so non-robot builds don't pull it in.
-libc = { version = "0.2", optional = true }
 # The `Graphics` primitive exposes its surface as a standard
 # `raw_window_handle` handle so authors can plug any GPU library
 # (wgpu, glow, vello, softbuffer, …) on top. Tiny dep — a handful of

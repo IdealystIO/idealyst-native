@@ -21,6 +21,9 @@
 
 mod bind;
 mod bind_press;
+mod bind_repeat;
+mod bind_switch;
+mod bind_when;
 mod component_attr;
 mod invocation_macro;
 mod jsx;
@@ -83,6 +86,33 @@ pub fn bind_press(input: TokenStream) -> TokenStream {
     bind_press::emit(parsed).into()
 }
 
+/// `bind_when!(fn(signals), then = ..., else_ = ...)` — produce a
+/// `Primitive::When` with attached binding metadata so backends
+/// that ship structural reactivity declaratively (Roku) can swap
+/// pre-built subtrees on signal change. See [`bind_when`] for the
+/// full grammar.
+#[proc_macro]
+pub fn bind_when(input: TokenStream) -> TokenStream {
+    let parsed = parse_macro_input!(input as bind_when::BindWhenInput);
+    bind_when::emit(parsed).into()
+}
+
+/// `bind_switch!(fn(signals), pat => ..., _ => default)` — N-way
+/// structural reactivity. See [`bind_switch`] for the grammar.
+#[proc_macro]
+pub fn bind_switch(input: TokenStream) -> TokenStream {
+    let parsed = parse_macro_input!(input as bind_switch::BindSwitchInput);
+    bind_switch::emit(parsed).into()
+}
+
+/// `bind_repeat!(fn(signals), max = N, row = |i| ...)` — fixed-max
+/// reactive list. See [`bind_repeat`] for the grammar.
+#[proc_macro]
+pub fn bind_repeat(input: TokenStream) -> TokenStream {
+    let parsed = parse_macro_input!(input as bind_repeat::BindRepeatInput);
+    bind_repeat::emit(parsed).into()
+}
+
 /// `#[component]` — annotates a component function. Rewrites its body for
 /// reactivity (cloning parameter-rooted paths into reactive closures) and
 /// emits a sibling `name!` invocation macro.
@@ -117,11 +147,128 @@ pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
     wrap_component_body_for_debug(&mut item_fn);
 
     let invocation = invocation_macro::generate_invocation_macro(&item_fn, &attr);
+
+    // When the `hot-reload` feature is on, split the function into
+    // an inner `__<Name>_hot_impl` containing the rewritten body and
+    // an outer `<Name>` that dispatches through
+    // `framework_hot::call`. This puts every component on the
+    // jump-table fast path — replacing a component's body at
+    // runtime swaps the function pointer the outer fn calls. When
+    // the feature is off, `item_fn` is emitted unchanged. The
+    // wrapper is the LAST transform so it sees the fully-rewritten
+    // body (reactivity, methods!, debug-stats).
+    #[cfg(feature = "hot-reload")]
+    let item_fn = split_for_hot_reload(item_fn);
+    #[cfg(not(feature = "hot-reload"))]
+    let item_fn = quote! { #item_fn };
+
     TokenStream::from(quote! {
         #methods_extra
         #item_fn
         #invocation
     })
+}
+
+/// Split a fully-rewritten component fn into an inner impl + outer
+/// hot-reload dispatcher. The outer keeps the original name and
+/// signature; the inner gets `__<Name>_hot_impl` and the actual
+/// body. The outer's body is
+///
+/// ```ignore
+/// ::framework_hot::call(__<Name>_hot_impl, (arg1, arg2, ...))
+/// ```
+///
+/// which dispatches through subsecond's jump table. Generics and
+/// where clauses propagate to both; `pub`/`pub(crate)` etc. stays
+/// on the outer; the inner is `#[doc(hidden)]` `fn` (not pub) so
+/// authors can't accidentally call it.
+#[cfg(feature = "hot-reload")]
+fn split_for_hot_reload(item_fn: ItemFn) -> proc_macro2::TokenStream {
+    use proc_macro2::Span;
+    use syn::{parse_quote, FnArg, Ident, ItemFn, Pat, PatIdent};
+
+    let outer_name = item_fn.sig.ident.clone();
+    let inner_name = Ident::new(&format!("__{}_hot_impl", outer_name), outer_name.span());
+
+    // Build the inner fn: same signature minus the visibility, body
+    // unchanged. Renaming preserves debug names — the inner is what
+    // panics / shows in backtraces.
+    let mut inner = item_fn.clone();
+    inner.vis = syn::Visibility::Inherited;
+    inner.sig.ident = inner_name.clone();
+    let inner_attrs_doc_hidden: syn::Attribute = parse_quote!(#[doc(hidden)]);
+    let inner_attrs_allow_nonsnake: syn::Attribute =
+        parse_quote!(#[allow(non_snake_case)]);
+    inner.attrs.push(inner_attrs_doc_hidden);
+    inner.attrs.push(inner_attrs_allow_nonsnake);
+
+    // Build the outer fn: same signature, body replaced with a
+    // tail-call through framework_hot::call. We need to pass the
+    // args as a tuple. Walk the fn args, generate fresh idents that
+    // match each arg's binding, and pack them.
+    //
+    // For a `props: &CounterProps` parameter, the outer fn keeps
+    // that signature so callers see no change; the body just does
+    // `framework_hot::call(__Counter_hot_impl, (props,))`.
+    let mut outer = item_fn;
+    outer.attrs.retain(|a| !a.path().is_ident("inline")); // don't double-inline
+    let args = collect_arg_idents(&outer.sig.inputs);
+    let arg_tuple = if args.is_empty() {
+        quote::quote! { () }
+    } else if args.len() == 1 {
+        let a = &args[0];
+        quote::quote! { (#a,) }
+    } else {
+        quote::quote! { (#(#args),*) }
+    };
+    // Body: forward to the inner impl via framework_hot's wrapper.
+    // Reach `framework_hot` through `framework_core::__hot` so the
+    // generated code resolves in every consumer crate without
+    // forcing them to take a direct dep on framework-hot.
+    outer.block = parse_quote! {
+        {
+            ::framework_core::__hot::call(#inner_name, #arg_tuple)
+        }
+    };
+    // Avoid spurious lints on the outer's generated body.
+    outer
+        .attrs
+        .push(parse_quote!(#[allow(clippy::needless_pass_by_value)]));
+
+    let _ = Span::call_site();
+    let _ = std::marker::PhantomData::<PatIdent>;
+    let _ = std::marker::PhantomData::<Pat>;
+    let _ = std::marker::PhantomData::<FnArg>;
+    let _ = std::marker::PhantomData::<ItemFn>;
+
+    quote::quote! {
+        #inner
+        #outer
+    }
+}
+
+/// Extract the binding idents from a fn's parameter list. Patterns
+/// other than a plain `name: Type` (e.g. tuple destructuring,
+/// `mut name`) are normalized to their binding ident. Components in
+/// this framework use simple `props: &SomeProps` shapes so this is
+/// always a clean unwrap; we conservatively bail to an empty list if
+/// the shape is unexpected, which yields a `()` arg tuple — fine,
+/// the inner fn's signature will reject it at compile time and the
+/// author gets a normal Rust error pointing at their component.
+#[cfg(feature = "hot-reload")]
+fn collect_arg_idents(
+    inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::Token![,]>,
+) -> Vec<syn::Ident> {
+    let mut out = Vec::new();
+    for arg in inputs.iter() {
+        let syn::FnArg::Typed(pat_type) = arg else {
+            continue;
+        };
+        if let syn::Pat::Ident(pi) = pat_type.pat.as_ref() {
+            out.push(pi.ident.clone());
+        }
+    }
+    out
 }
 
 /// Wrap the component's body with `record_component_enter` /

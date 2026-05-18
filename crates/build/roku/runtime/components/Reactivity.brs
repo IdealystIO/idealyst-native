@@ -62,6 +62,18 @@ sub reactivityInit()
     ' -1 means "no buttons yet"; set to 0 by `focusInitial` once
     ' the materialization pass has populated `m.buttonOrder`.
     m.focusedButtonIndex = -1
+
+    ' Fresh-id allocator for cloned `bind_repeat!` row instances.
+    ' The snapshot pipeline mints ids starting at 1 and tops out
+    ' under a few hundred for any realistic UI; starting the
+    ' instance allocator at 1_000_000 keeps the two ranges disjoint
+    ' so a remapped id can never collide with a snapshot-time id.
+    m.nextInstanceId = 1000000
+    ' Separate allocator for synthetic per-row signals (one per
+    ' bind_repeat! instance that exposes a row index). Lives in its
+    ' own range above the node id range so debug prints can tell at
+    ' a glance which kind of id is which.
+    m.nextInstanceSignalId = 2000000
 end sub
 
 ' --- Signal lifecycle ---
@@ -113,6 +125,16 @@ end sub
 ' --- Subscriber firing ---
 
 sub fireSubscriber(sub_ as object)
+    ' Dead-subscriber guard. After a slot teardown, subscribers
+    ' registered inside that slot may still sit in
+    ' m.signalSubscribers (we don't prune them mid-iteration —
+    ' that breaks the for-each loop in signalSet). Instead each
+    ' fire checks whether its target node still exists: if the
+    ' anchor / Label has been deleted, the binding is stale and
+    ' the fire is a no-op.
+    target = subscriberTargetId(sub_)
+    if target <> invalid and m.nodes[target.ToStr()] = invalid then return
+
     if sub_.kind = "text" then
         node = m.nodes[sub_.node_id.ToStr()]
         if node = invalid then return
@@ -124,16 +146,419 @@ sub fireSubscriber(sub_ as object)
         ' fail on some Roku firmware/emulators. Coerce via `Str()`
         ' and trim the leading space `Str` inserts for the sign slot.
         node.text = toDisplayString(result)
+    else if sub_.kind = "when" then
+        args = collectArgs(sub_.signal_ids)
+        active = dispatch_method(sub_.cond_method, args)
+        ' Coerce — methods may return BS Boolean, Integer 0/1, or
+        ' even invalid; anything truthy makes us pick the `then`
+        ' branch.
+        truthy = false
+        if type(active) = "roBoolean" or type(active) = "Boolean" then
+            truthy = active
+        else if type(active) = "Integer" or type(active) = "roInteger" then
+            truthy = active <> 0
+        else
+            truthy = active <> invalid
+        end if
+        if truthy then
+            syncBoundSlot(sub_, sub_.then_slot)
+        else
+            syncBoundSlot(sub_, sub_.otherwise_slot)
+        end if
+    else if sub_.kind = "switch" then
+        args = collectArgs(sub_.signal_ids)
+        result = dispatch_method(sub_.cond_method, args)
+        desired = invalid
+        for each arm in sub_.arms
+            if switchPatternEquals(arm.pattern, result) then
+                desired = arm.slot
+                exit for
+            end if
+        end for
+        if desired = invalid then desired = sub_.default_slot
+        syncBoundSlot(sub_, desired)
+    else if sub_.kind = "repeat" then
+        args = collectArgs(sub_.signal_ids)
+        countResult = dispatch_method(sub_.count_method, args)
+        count = 0
+        if type(countResult) = "Integer" or type(countResult) = "roInteger" then
+            count = countResult
+        else if type(countResult) = "LongInteger" or type(countResult) = "roLongInteger" then
+            count = countResult
+        else if type(countResult) = "Float" or type(countResult) = "roFloat" then
+            count = Int(countResult)
+        end if
+        if count < 0 then count = 0
+        ' No upper bound — `count` directly drives how many cloned
+        ' row instances live concurrently. Each play allocates fresh
+        ' node ids out of `m.nextInstanceId`'s pool.
+        syncRepeatSlots(sub_, count)
     end if
     ' Future binding kinds: "style_color", "style_opacity",
-    ' "image_src", "visibility" — same shape, different application.
+    ' "image_src" — same shape, different application.
 end sub
+
+' Single-slot reconciliation for `bind_when!` / `bind_switch!`.
+' If the desired slot's root differs from whatever's currently
+' attached, tear the old subtree down (releasing every node it
+' created) and play the new slot's construction commands. The
+' binding's `active_slot_root_id` records which slot is live so
+' subsequent fires can detect no-op transitions cheaply.
+sub syncBoundSlot(sub_ as object, desiredSlot as object)
+    desiredRootId = desiredSlot.root_node_id
+    activeRootId = sub_.active_slot_root_id
+    if activeRootId <> invalid and activeRootId = desiredRootId then return
+
+    if activeRootId <> invalid then
+        tearDownSubtree(activeRootId)
+    end if
+    playSlot(sub_.anchor_id, desiredSlot)
+    sub_.active_slot_root_id = desiredRootId
+end sub
+
+' Unbounded reconciliation for `bind_repeat!`. Diffs the active
+' row instance list against the desired count. Growth clones the
+' template per new row, allocating fresh node ids (and a fresh
+' synthetic signal id if the binding exposes a row index) each
+' time. Shrinkage pops instances from the end and tears down the
+' corresponding subtrees + synthetic signals.
+sub syncRepeatSlots(sub_ as object, count as integer)
+    active = sub_.active_row_instances
+    if active = invalid then
+        active = createObject("roArray", 4, true)
+        sub_.active_row_instances = active
+    end if
+
+    if count > active.Count() then
+        while active.Count() < count
+            rowIndex = active.Count()
+            inst = playRowInstance(sub_.anchor_id, sub_.row_template, sub_.row_index_signal_id, rowIndex)
+            if inst <> invalid then
+                active.Push(inst)
+            else
+                ' Template was empty or malformed; bail to avoid
+                ' looping forever pushing invalid instances.
+                return
+            end if
+        end while
+    else if count < active.Count() then
+        while active.Count() > count
+            inst = active.Pop()
+            tearDownSubtree(inst.root_id)
+            if inst.signal_id <> invalid then
+                m.signals.Delete(inst.signal_id.ToStr())
+                m.signalSubscribers.Delete(inst.signal_id.ToStr())
+            end if
+        end while
+    end if
+end sub
+
+' --- Slot lifecycle: play (materialize) and teardown (release) ---
+'
+' A slot is a self-contained list of construction commands that
+' materializes one branch / arm / row of a structural binding. The
+' commands create SGNodes, apply styles, link parent/child, and
+' (for nested bindings) register more subscribers. The slot's
+' `root_node_id` identifies which created node is the subtree root
+' so we know what to attach to the anchor (on play) and what to
+' walk during teardown.
+
+' Clone a row template into a fresh row instance. Walks the
+' template's commands building two per-instance translation maps:
+'   - `idMap`: template-local node ids → fresh device-side ids
+'     (from `m.nextInstanceId`). Create* ops allocate; references
+'     substitute.
+'   - `signalMap`: the template-local row-index signal id → a
+'     fresh synthetic signal id (from `m.nextInstanceSignalId`)
+'     pre-seeded with this row's `rowIndex`. Substitutes through
+'     `signal_ids` / `input_signal_ids` / `output_signal_id`
+'     fields so bind!s inside the row dispatch with the right
+'     per-row index.
+'
+' Returns `{root_id, signal_id}` — root_id is the cloned subtree's
+' root (for attachment / teardown); signal_id is the synthetic
+' per-row signal (so teardown can release it), or `invalid` if the
+' binding has no row index.
+function playRowInstance(anchorId as integer, template as object, rowIndexSignalId as dynamic, rowIndex as integer) as dynamic
+    if template = invalid or template.commands = invalid then return invalid
+
+    idMap = createObject("roAssociativeArray")
+    signalMap = createObject("roAssociativeArray")
+
+    syntheticSignalId = invalid
+    if rowIndexSignalId <> invalid then
+        syntheticSignalId = m.nextInstanceSignalId
+        m.nextInstanceSignalId = m.nextInstanceSignalId + 1
+        signalMap[rowIndexSignalId.ToStr()] = syntheticSignalId
+        ' Seed the signal *before* replaying the template's BindText
+        ' commands so signalSubscribe's initial fire reads the right
+        ' value on the first dispatch.
+        signalCreate(syntheticSignalId, rowIndex)
+    end if
+
+    for each cmd in template.commands
+        applyCommand(translateRepeatCmd(cmd, idMap, signalMap))
+    end for
+
+    rootIdRaw = template.root_node_id
+    rootIdStr = rootIdRaw.ToStr()
+    rootId = idMap[rootIdStr]
+    if rootId = invalid then return invalid
+
+    anchor = m.nodes[anchorId.ToStr()]
+    rootNode = m.nodes[rootId.ToStr()]
+    if anchor <> invalid and rootNode <> invalid then
+        anchor.appendChild(rootNode)
+    end if
+
+    siblings = m.children[anchorId.ToStr()]
+    if siblings = invalid then
+        siblings = createObject("roArray", 4, true)
+        m.children[anchorId.ToStr()] = siblings
+    end if
+    siblings.Push(rootId)
+    m.parents[rootId.ToStr()] = anchorId
+
+    if m.rootId <> invalid then
+        runLayout(m.rootId)
+    end if
+    return { root_id: rootId, signal_id: syntheticSignalId }
+end function
+
+' Produce a copy of `cmd` with every id field rewritten through
+' the appropriate map. Node-creator ops (Create* except
+' CreateSignal) allocate a fresh node id on first sight; node-
+' reference fields (`parent`, `child`, `node_id`, `button_id`,
+' `anchor_id`, `root`) substitute through `idMap`. Signal-id
+' fields (`signal_ids`, `input_signal_ids`, `output_signal_id`)
+' substitute through `signalMap` — typically only the row-index
+' signal gets remapped, since global signals (like the count
+' driving the parent bind_repeat) aren't in the map and fall
+' through unchanged.
+'
+' v0 limitation: nested `BindWhen` / `BindSwitch` / `BindRepeat`
+' inside a row template aren't recursively rewritten — their
+' nested slot commands carry the original template-local ids and
+' would collide across instances. Static structure / nested
+' bind! only for now; lift nested structural bindings out of
+' bind_repeat! rows until the recursive rewrite ships.
+function translateRepeatCmd(cmd as object, idMap as object, signalMap as object) as object
+    op = cmd.op
+    out = createObject("roAssociativeArray")
+    for each k in cmd
+        v = cmd[k]
+        if k = "id" then
+            if isNodeCreatorOp(op) then
+                fresh = m.nextInstanceId
+                m.nextInstanceId = m.nextInstanceId + 1
+                idMap[v.ToStr()] = fresh
+                out[k] = fresh
+            else
+                out[k] = idLookupOrSelf(idMap, v)
+            end if
+        else if k = "parent" or k = "child" or k = "node_id" or k = "button_id" or k = "anchor_id" or k = "root" then
+            out[k] = idLookupOrSelf(idMap, v)
+        else if k = "signal_ids" or k = "input_signal_ids" then
+            substituted = createObject("roArray", v.Count(), true)
+            for each sid in v
+                substituted.Push(idLookupOrSelf(signalMap, sid))
+            end for
+            out[k] = substituted
+        else if k = "output_signal_id" then
+            out[k] = idLookupOrSelf(signalMap, v)
+        else
+            out[k] = v
+        end if
+    end for
+    return out
+end function
+
+function isNodeCreatorOp(op as string) as boolean
+    ' CreateSignal's `id` is a *signal* id (not a node id) and
+    ' signals are global — don't remap.
+    if op = "CreateSignal" then return false
+    return Left(op, 6) = "Create"
+end function
+
+function idLookupOrSelf(idMap as object, id as dynamic) as dynamic
+    mapped = idMap[id.ToStr()]
+    if mapped = invalid then return id
+    return mapped
+end function
+
+sub playSlot(anchorId as integer, slot as object)
+    ' Replay every command in the slot. applyCommand registers
+    ' nodes, applies styles, inserts children — and if the slot
+    ' contains nested `BindWhen` / `BindSwitch` / `BindRepeat`
+    ' commands, those re-enter this play path for their own
+    ' initially-active slot.
+    for each cmd in slot.commands
+        applyCommand(cmd)
+    end for
+
+    anchor = m.nodes[anchorId.ToStr()]
+    rootId = slot.root_node_id
+    root = m.nodes[rootId.ToStr()]
+    if anchor <> invalid and root <> invalid then
+        anchor.appendChild(root)
+    end if
+
+    ' Update side-tables. Layout.brs reads `m.children` to walk the
+    ' rendered tree; parent linkage is recorded so teardown of a
+    ' parent can find children and vice-versa.
+    siblings = m.children[anchorId.ToStr()]
+    if siblings = invalid then
+        siblings = createObject("roArray", 4, true)
+        m.children[anchorId.ToStr()] = siblings
+    end if
+    siblings.Push(rootId)
+    m.parents[rootId.ToStr()] = anchorId
+
+    ' Layout once now so the freshly-played subtree picks up sizes.
+    ' Without this, anchor-relative geometry stays at 0×0 until the
+    ' next signalSet fires.
+    if m.rootId <> invalid then
+        runLayout(m.rootId)
+    end if
+end sub
+
+sub tearDownSubtree(rootId as integer)
+    if rootId = invalid then return
+
+    ' Collect every node id reachable from the root via m.children.
+    ' Doing this in a single DFS pass before any deletions makes the
+    ' rest of teardown O(subtree).
+    subtreeIds = createObject("roArray", 16, true)
+    collectSubtreeIds(rootId, subtreeIds)
+
+    subtreeLookup = createObject("roAssociativeArray")
+    for each id in subtreeIds
+        subtreeLookup[id.ToStr()] = true
+    end for
+
+    ' Unlink from the SGNode tree and from the parent's side-table
+    ' children list. Held m.nodes references will be released a few
+    ' lines down when we drop the side-table entries.
+    parentId = m.parents[rootId.ToStr()]
+    if parentId <> invalid then
+        parentNode = m.nodes[parentId.ToStr()]
+        rootNode = m.nodes[rootId.ToStr()]
+        if parentNode <> invalid and rootNode <> invalid then
+            parentNode.removeChild(rootNode)
+        end if
+        siblings = m.children[parentId.ToStr()]
+        if siblings <> invalid then
+            kept = createObject("roArray", siblings.Count(), true)
+            for each cid in siblings
+                if cid <> rootId then kept.Push(cid)
+            end for
+            m.children[parentId.ToStr()] = kept
+        end if
+    end if
+
+    ' Subscribers inside the dying subtree (text bindings on torn-
+    ' down Labels, nested when/switch/repeat bindings whose anchor
+    ' is in the subtree) are NOT pruned here. They stay in
+    ' m.signalSubscribers as ghosts; fireSubscriber's dead-target
+    ' guard makes their next fire a no-op. Pruning would mean
+    ' mutating an array that signalSet is currently iterating —
+    ' BS's for-each chokes on that and silently drops subsequent
+    ' iterations, which is what was breaking bind_switch /
+    ' bind_repeat on signal change.
+
+    ' Prune button actions + focus order. Buttons inside the dying
+    ' subtree shouldn't receive presses anymore, and the focus
+    ' cursor must not point past the end of the order array.
+    btnKeysToDelete = createObject("roArray", 4, true)
+    for each btnKey in m.buttonActions
+        if subtreeLookup[btnKey] = true then
+            btnKeysToDelete.Push(btnKey)
+        end if
+    end for
+    for each btnKey in btnKeysToDelete
+        m.buttonActions.Delete(btnKey)
+    end for
+
+    keptOrder = createObject("roArray", m.buttonOrder.Count(), true)
+    for each btnId in m.buttonOrder
+        if subtreeLookup[btnId.ToStr()] <> true then
+            keptOrder.Push(btnId)
+        end if
+    end for
+    m.buttonOrder = keptOrder
+    if m.focusedButtonIndex >= m.buttonOrder.Count() then
+        m.focusedButtonIndex = m.buttonOrder.Count() - 1
+    end if
+
+    ' Finally, drop every side-table entry for nodes in the
+    ' subtree. After this the SGNodes have no remaining references
+    ' from the runtime and BS will reclaim them.
+    for each id in subtreeIds
+        idStr = id.ToStr()
+        m.nodes.Delete(idStr)
+        m.styles.Delete(idStr)
+        m.children.Delete(idStr)
+        m.parents.Delete(idStr)
+        m.nodeKinds.Delete(idStr)
+        m.styleOverlays.Delete(idStr)
+        m.backgrounds.Delete(idStr)
+        m.buttonBgs.Delete(idStr)
+        m.buttonLabels.Delete(idStr)
+    end for
+
+    if m.rootId <> invalid then
+        runLayout(m.rootId)
+    end if
+end sub
+
+sub collectSubtreeIds(rootId as integer, accumulator as object)
+    accumulator.Push(rootId)
+    children = m.children[rootId.ToStr()]
+    if children = invalid then return
+    for each cid in children
+        collectSubtreeIds(cid, accumulator)
+    end for
+end sub
+
+' Identify the node id a subscriber operates against, so teardown
+' can drop subscriptions targeted at the dying subtree. Bindings
+' that introduce structural children (when/switch/repeat) point
+' at their anchor; the anchor is in the subtree iff the binding
+' itself is in the dying region. Text bindings point at the Label
+' they mutate.
+function subscriberTargetId(sub_ as object) as dynamic
+    if sub_.kind = "text" then return sub_.node_id
+    if sub_.kind = "when" then return sub_.anchor_id
+    if sub_.kind = "switch" then return sub_.anchor_id
+    if sub_.kind = "repeat" then return sub_.anchor_id
+    return invalid
+end function
 
 function toDisplayString(v as dynamic) as string
     if v = invalid then return ""
     t = type(v)
     if t = "roString" or t = "String" then return v
     return Str(v).Trim()
+end function
+
+' Compare a bind_switch! arm's `pattern` (a serde_json value from
+' the wire) against a `result` (whatever dispatch_method returned).
+' BS auto-coerces numeric/bool/string comparisons in most cases; we
+' just need to be conservative about type mismatch.
+function switchPatternEquals(pattern as dynamic, result as dynamic) as boolean
+    if pattern = invalid or result = invalid then
+        return pattern = invalid and result = invalid
+    end if
+    pt = type(pattern)
+    rt = type(result)
+    if (pt = "roString" or pt = "String") and (rt = "roString" or rt = "String") then
+        return pattern = result
+    end if
+    if (pt = "roBoolean" or pt = "Boolean") and (rt = "roBoolean" or rt = "Boolean") then
+        return pattern = result
+    end if
+    ' Numeric: let BS do the implicit promotion.
+    return pattern = result
 end function
 
 ' Build the arg array for a dispatch_method call by reading every
@@ -162,6 +587,79 @@ sub bindText(nodeId as integer, signalIds as object, methodName as string)
     end for
     ' Fire immediately to populate the initial text. Without this
     ' the Label sits empty until the first signal mutation.
+    fireSubscriber(sub_)
+end sub
+
+' Reactive if/else. Each branch ships as a lazy `Slot` — a list of
+' construction commands plus a root-node id. Inactive branches are
+' never materialized; the active branch's commands are replayed
+' through `playSlot` on the first fire, and on each subsequent
+' signal change we tear the current branch down (releasing every
+' node it created) and play the new one.
+sub bindWhen(anchorId as integer, signalIds as object, condMethod as string, thenSlot as object, otherwiseSlot as object)
+    sub_ = {
+        kind: "when",
+        anchor_id: anchorId,
+        signal_ids: signalIds,
+        cond_method: condMethod,
+        then_slot: thenSlot,
+        otherwise_slot: otherwiseSlot,
+        active_slot_root_id: invalid
+    }
+    for each sigId in signalIds
+        signalSubscribe(sigId, sub_)
+    end for
+    ' Fire once now so the initial branch's slot gets played.
+    fireSubscriber(sub_)
+end sub
+
+' N-way structural reactivity. Same lazy model as `bindWhen` —
+' every arm + the default ship as `Slot`s; the active one is
+' played, others stay un-materialized. `arms` is the BindSwitch
+' command's `arms` array: `[{pattern, slot}, ...]`.
+sub bindSwitch(anchorId as integer, signalIds as object, condMethod as string, arms as object, defaultSlot as object)
+    sub_ = {
+        kind: "switch",
+        anchor_id: anchorId,
+        signal_ids: signalIds,
+        cond_method: condMethod,
+        arms: arms,
+        default_slot: defaultSlot,
+        active_slot_root_id: invalid
+    }
+    for each sigId in signalIds
+        signalSubscribe(sigId, sub_)
+    end for
+    fireSubscriber(sub_)
+end sub
+
+' Reactive unbounded list. The wire ships one row `Slot` as a
+' template; the runtime clones it per row with id remapping so
+' each instance is independent. `active_row_instances` tracks
+' {root_id, signal_id} pairs for each played instance, in order,
+' so growth appends and shrinkage pops from the end (and we know
+' which synthetic per-row signal to clean up on teardown).
+'
+' `rowIndexSignalId` is the snapshot-time signal id the closure's
+' `i` parameter bound to. Per clone the runtime mints a fresh
+' synthetic signal, sets it to that row's index, and substitutes
+' the template's references via translateRepeatCmd's signalMap.
+' May be `invalid` if the closure never bound an `i` parameter
+' (the closure was `|_|`); in that case no per-row signal is
+' allocated.
+sub bindRepeat(anchorId as integer, signalIds as object, countMethod as string, rowTemplate as object, rowIndexSignalId as dynamic)
+    sub_ = {
+        kind: "repeat",
+        anchor_id: anchorId,
+        signal_ids: signalIds,
+        count_method: countMethod,
+        row_template: rowTemplate,
+        row_index_signal_id: rowIndexSignalId,
+        active_row_instances: createObject("roArray", 4, true)
+    }
+    for each sigId in signalIds
+        signalSubscribe(sigId, sub_)
+    end for
     fireSubscriber(sub_)
 end sub
 

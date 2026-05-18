@@ -1,0 +1,44 @@
+[package]
+name = "framework-hot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Hot-reload runtime: thin facade over [`subsecond`] under our own
+# `hot::*` naming so the rest of the framework doesn't grow a hard
+# dependency on the upstream surface, plus the (genuinely ours)
+# symbol-diff jump-table generator the host wrapper uses after every
+# rebuild.
+#
+# Designed to be deletable: every consumer pulls this in via the
+# `hot-reload` cargo feature and gates integration on
+# `#[cfg(feature = "hot-reload")]`. Disabling the feature across the
+# workspace removes every reference; deleting this crate then is
+# clean.
+
+[features]
+# Enables the actual hot-reload substrate. Off by default — when off,
+# `hot::call` is a pass-through with literally zero runtime cost
+# (the dispatch monomorphizes to a direct call and the jump-table
+# machinery is compiled out). Turn on for dev-time AAS host builds
+# and dev-time native-platform builds.
+hot = ["dep:subsecond"]
+
+# Symbol-diff jump-table generator (M2, not wired yet). See the
+# TODO comment in src/lib.rs — subsecond's `apply_patch` assumes a
+# single-binary patch model; making it work with our separate
+# user-dylib AAS architecture needs more design work. Feature is
+# declared so consumers can stub in the dep when ready, but the
+# module isn't implemented yet.
+diff = ["hot", "dep:object", "dep:memmap2"]
+
+[dependencies]
+# Upstream hot-patch runtime. Optional so the feature off-state has
+# zero deps. We re-export a subset under `hot::*` so consumers don't
+# need to depend on `subsecond` directly.
+subsecond = { version = "0.7", optional = true }
+# Symbol-table parsing for the jump-table diff. Mach-O on macOS,
+# ELF on Linux. Pulled in only by the host wrapper, never by user
+# code.
+object = { version = "0.39", optional = true, default-features = false, features = ["read", "std"] }
+memmap2 = { version = "0.9", optional = true }
