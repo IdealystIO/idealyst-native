@@ -391,6 +391,25 @@ impl<T> Clone for Signal<T> {
     fn clone(&self) -> Self { *self }
 }
 
+impl<T> Signal<T> {
+    /// Stable identifier for this signal's arena slot. Used by the
+    /// `bind!` macro and the Roku backend to wire reactive bindings:
+    /// the macro captures `signal.id()` at expansion-call time so the
+    /// `RokuBackend` can emit `BindText { signal_ids: [..], .. }`
+    /// commands referencing this exact signal.
+    ///
+    /// The id is stable for the signal's lifetime. It's an arena slot
+    /// index under the hood; we widen to `u64` so the wire format
+    /// (which serializes signals as `u64`) doesn't depend on the
+    /// internal `u32` width.
+    ///
+    /// Intended for macro and backend consumption — author code
+    /// normally just uses `signal.get()` / `signal.set(..)`.
+    pub fn id(&self) -> u64 {
+        self.id.0 as u64
+    }
+}
+
 impl<T: Clone + 'static> Signal<T> {
     /// Creates a signal in the global arena. The slot is freed when the
     /// surrounding render `Owner` drops. (For tests and ad-hoc usage outside
@@ -937,14 +956,12 @@ fn schedule_pending_drain() {
 /// re-kick the loop.
 #[cfg(target_arch = "wasm32")]
 fn request_drain_frame() {
-    use wasm_bindgen::closure::Closure;
-    use wasm_bindgen::JsCast;
     // Tunable. Larger = fewer rAFs needed to drain a big queue,
     // but more work per frame. 2000 fits comfortably inside a
     // 16 ms frame budget at our measured ~10 µs per box drop —
     // worst case ~20 ms which is one stutter but won't compound.
     const PER_FRAME_BUDGET: usize = 2000;
-    let cb: Closure<dyn FnMut(f64)> = Closure::new(move |_ts: f64| {
+    let task = crate::scheduling::after_animation_frame(|| {
         // Take up to `PER_FRAME_BUDGET` boxes off the queue and
         // drop them. We `split_off` rather than `drain` so the
         // remaining boxes stay in their original allocation and
@@ -968,10 +985,13 @@ fn request_drain_frame() {
             PENDING_DRAIN_SCHEDULED.with(|c| c.set(false));
         }
     });
-    if let Some(w) = web_sys::window() {
-        let _ = w.request_animation_frame(cb.as_ref().unchecked_ref());
-    }
-    cb.forget();
+    // Fire-and-forget: leak the task handle so its Closure stays
+    // alive past the rAF dispatch. Dropping the task would cancel
+    // the pending frame; we want the opposite. The browser fires
+    // the callback once, then the task is unreachable garbage —
+    // bounded by the number of slices needed to drain (~18 per
+    // 250 ms transition window).
+    std::mem::forget(task);
 }
 
 // =============================================================================

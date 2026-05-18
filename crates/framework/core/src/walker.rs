@@ -159,15 +159,23 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
             }
             n
         }
-        Primitive::Button { label, on_click, leading_icon, trailing_icon, style, ref_fill, disabled, .. } => {
+        Primitive::Button { label, on_click, on_click_binding, leading_icon, trailing_icon, style, ref_fill, disabled, .. } => {
             // Pull the initial label from the source and create the
             // native widget with it. For reactive labels we install
             // an Effect below that calls `update_button_label` on
             // every signal change the closure subscribes to —
             // mirroring how Image's `src` works.
+            // For buttons, `Bound` collapses to the same shape as
+            // `Reactive` from the walker's perspective — the Effect
+            // re-runs the closure on signal change and calls
+            // `update_button_label`. Binding metadata isn't surfaced
+            // to backends here yet (no `note_button_label_binding`
+            // hook); add one alongside `note_text_binding` if a
+            // backend ever needs declarative button-label bindings.
             let (initial_label, reactive_label) = match label {
                 TextSource::Static(s) => (s, None),
                 TextSource::Reactive(f) => (f(), Some(f)),
+                TextSource::Bound { closure, .. } => (closure(), Some(closure)),
             };
             let n = time_backend_create(pkind!(Button), || {
                 backend.borrow_mut().create_button(
@@ -177,6 +185,21 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
                     trailing_icon.as_ref(),
                 )
             });
+            // For Bound press handlers (`bind_press!`), declare each
+            // referenced signal to the backend and then hand it the
+            // binding. Closure-only buttons leave `on_click_binding`
+            // as `None` and skip this entirely.
+            if let Some(binding) = on_click_binding {
+                let mut b = backend.borrow_mut();
+                for (sid, val) in binding
+                    .input_signal_ids
+                    .iter()
+                    .zip(binding.initial_values.iter())
+                {
+                    b.note_signal_initial(*sid, val);
+                }
+                b.note_button_action(&n, &binding);
+            }
             // attach_style returns the state setter so we can drive
             // the DISABLED bit reactively from `disabled` below. If
             // there's no style, we still need to react to disabled to
@@ -1034,6 +1057,7 @@ fn robot_extract_meta(node: &Primitive) -> Option<RobotMeta> {
             let label = match source {
                 TextSource::Static(s) => Some(s.clone()),
                 TextSource::Reactive(f) => Some(f()),
+                TextSource::Bound { closure, .. } => Some(closure()),
             };
             Some(RobotMeta {
                 kind: ElementKind::Text,
@@ -1046,6 +1070,7 @@ fn robot_extract_meta(node: &Primitive) -> Option<RobotMeta> {
             let label_text = match label {
                 TextSource::Static(s) => Some(s.clone()),
                 TextSource::Reactive(f) => Some(f()),
+                TextSource::Bound { closure, .. } => Some(closure()),
             };
             let click = on_click.clone();
             Some(RobotMeta {
@@ -1168,6 +1193,39 @@ fn build_text<B: Backend + 'static>(
             time_backend_create(pkind!(Text), || backend.borrow_mut().create_text(&content))
         }
         TextSource::Reactive(compute) => build_reactive_text(backend, compute),
+        TextSource::Bound { closure, signal_ids, method, initial_values } => {
+            // Create the text node (empty initially — the Effect's
+            // first run populates it). Inform the backend that this
+            // node is a bound binding *before* the Effect kicks in
+            // so backends that ship the binding declaratively don't
+            // see a useless leading UpdateText. Then set up the same
+            // Effect path Reactive uses so closure-driven backends
+            // stay reactive identically to today.
+            let node = time_backend_create(pkind!(Text), || {
+                backend.borrow_mut().create_text("")
+            });
+            // Surface initial signal values to the backend before
+            // the binding command itself — declarative backends
+            // need the signal to exist on the remote side before
+            // the bind subscribes to it. Length is enforced to
+            // match signal_ids by the producing macro (`bind!`).
+            {
+                let mut b = backend.borrow_mut();
+                for (sid, val) in signal_ids.iter().zip(initial_values.iter()) {
+                    b.note_signal_initial(*sid, val);
+                }
+                b.note_text_binding(&node, &signal_ids, method);
+            }
+            let node_for_effect = node.clone();
+            let backend_for_effect = backend.clone();
+            let _e = Effect::new(move || {
+                let value = closure();
+                backend_for_effect
+                    .borrow_mut()
+                    .update_text(&node_for_effect, &value);
+            });
+            node
+        }
     }
 }
 

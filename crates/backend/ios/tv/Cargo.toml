@@ -1,0 +1,47 @@
+[package]
+name = "backend-ios-tv"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# tvOS backend. Adds the focus-engine + TVUIKit layer on top of the
+# shared `backend-ios-core` substrate. Mirrors `backend-ios-mobile`
+# in shape: a staticlib + rlib pair, with optional `aas-shell` for
+# running as a thin client of an AAS dev-server.
+#
+# Skeleton — TV-specific component variants, focus glue, and remote
+# input land here as they're built out.
+
+[lib]
+# Distinct lib name keeps the tvOS staticlib (`libbackend_ios_tv.a`)
+# from colliding with the iOS one in build artifacts.
+name = "backend_ios_tv"
+crate-type = ["staticlib", "rlib"]
+
+[features]
+debug-stats = ["framework-core/debug-stats"]
+aas-shell = ["dep:dev-client"]
+async-driver = ["framework-core/async-driver"]
+
+[dependencies]
+framework-core = { workspace = true }
+native-layout = { workspace = true }
+backend-ios-core = { workspace = true }
+dev-client = { workspace = true, features = ["native"], optional = true }
+
+[target.'cfg(target_os = "tvos")'.dependencies]
+block2 = "0.5"
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = [
+    "NSString",
+    "NSArray",
+    "NSEnumerator",
+    "NSObject",
+] }
+objc2-ui-kit = { version = "0.2", features = [
+    "UIResponder",
+    "UIView",
+    "UIViewController",
+    "UIColor",
+] }
+raw-window-handle = "0.6"

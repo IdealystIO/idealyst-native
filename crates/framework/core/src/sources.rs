@@ -17,9 +17,48 @@ use std::rc::Rc;
 /// Source for a text node. Static is rendered once; Reactive is wrapped in
 /// an `Effect` during rendering so the node updates whenever its dependencies
 /// change. Author code never names this enum directly.
+///
+/// `Bound` is a structured reactive form: it carries the same
+/// closure as `Reactive` (so Effect-driven backends behave
+/// identically) plus *symbolic* metadata — which signals are read
+/// and the name of the transformer function — that backends with
+/// declarative wire formats can use to ship a binding to a remote
+/// renderer instead of round-tripping every change through the
+/// host. Each backend reads only what it needs: closure-driven
+/// backends use `closure`; backends that ship bindings read
+/// `signal_ids` + `method`. The two views of intent live in one
+/// value so authors write the binding once.
 pub enum TextSource {
     Static(String),
     Reactive(Box<dyn Fn() -> String>),
+    Bound {
+        /// Reactive closure for Effect-driven backends. Same shape
+        /// as `Reactive` — registered with `Effect::new(..)` by the
+        /// walker so the text re-flows on signal change.
+        closure: Box<dyn Fn() -> String>,
+        /// Signal arena IDs the binding reads. Captured at macro
+        /// expansion via `Signal::id()`. Opaque to the framework;
+        /// only backends that consume bindings interpret them.
+        signal_ids: Vec<u64>,
+        /// Symbolic name of the transformer. Resolution is the
+        /// consuming backend's concern — typically the name of a
+        /// platform-specific helper the build pipeline emits
+        /// alongside the binding.
+        method: &'static str,
+        /// Snapshot of each signal's value at binding construction
+        /// time, parallel to `signal_ids`. Used by backends that
+        /// ship signals across a wire boundary (and therefore need
+        /// the initial value declaratively, since they can't reach
+        /// back into the framework's arena at runtime). Closure-
+        /// driven backends ignore this field — the framework's
+        /// `Effect` reads live signal values directly.
+        ///
+        /// The macro that produced this binding (`bind!`) captured
+        /// each value via `serde_json::to_value(&signal.get())`, so
+        /// the type appears as `serde_json::Value` regardless of
+        /// the originating `Signal<T>` type parameter.
+        initial_values: Vec<crate::__serde_json::Value>,
+    },
 }
 
 /// Allows `text(...)` to accept strings, owned strings, or closures.
@@ -47,6 +86,74 @@ where
 {
     fn into_text_source(self) -> TextSource {
         TextSource::Reactive(Box::new(self))
+    }
+}
+
+/// Identity passthrough so macro-generated `TextSource` values (e.g.
+/// from `bind!`) can be used at the same call sites that accept
+/// `&str` / `String` / closures. Without this, `Text { bind!(..) }`
+/// would fail to type-check because the `IntoTextSource` blanket
+/// `Fn()` impl above doesn't cover a fully-constructed `TextSource`.
+impl IntoTextSource for TextSource {
+    fn into_text_source(self) -> TextSource {
+        self
+    }
+}
+
+// =============================================================================
+// ButtonAction + IntoButtonAction
+// =============================================================================
+
+/// What a button does when activated. Always carries a `closure`
+/// (the Effect-driven path every backend can run), and optionally
+/// an [`ActionBinding`] that backends with declarative wire formats
+/// can ship to a remote renderer instead of round-tripping every
+/// press through the host.
+///
+/// Closure-driven backends (iOS, Android, Web) use only `closure`.
+/// Backends like Roku read `binding` to emit a wire command that
+/// wires the press event on-device.
+pub struct ButtonAction {
+    pub closure: Rc<dyn Fn()>,
+    pub binding: Option<ActionBinding>,
+}
+
+/// Metadata for a press handler that should ship across a wire
+/// boundary. Mirrors the shape of [`TextSource::Bound`] —
+/// `input_signal_ids` plus `method` is enough for a declarative
+/// backend to fire the right transformer on the remote side.
+/// `output_signal_id`, when present, instructs the remote runtime
+/// to write the method's return value back into that signal,
+/// which propagates through any text bindings subscribed to it.
+pub struct ActionBinding {
+    pub input_signal_ids: Vec<u64>,
+    pub method: &'static str,
+    pub output_signal_id: Option<u64>,
+    pub initial_values: Vec<crate::__serde_json::Value>,
+}
+
+/// Allows `button(..., on_click: ...)` to accept either a bare
+/// `Fn()` closure (legacy / non-bound) or a fully-built
+/// `ButtonAction` (produced by `bind_press!`).
+pub trait IntoButtonAction {
+    fn into_button_action(self) -> ButtonAction;
+}
+
+impl<F> IntoButtonAction for F
+where
+    F: Fn() + 'static,
+{
+    fn into_button_action(self) -> ButtonAction {
+        ButtonAction {
+            closure: Rc::new(self),
+            binding: None,
+        }
+    }
+}
+
+impl IntoButtonAction for ButtonAction {
+    fn into_button_action(self) -> ButtonAction {
+        self
     }
 }
 

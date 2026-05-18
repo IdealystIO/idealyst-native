@@ -36,10 +36,23 @@
 //! contention for per-instance values and keeps dynamic-class lifecycle
 //! simple (one class per node, replaced atomically).
 
+#[cfg(feature = "async-driver")]
+pub mod async_executor;
 mod defaults;
 mod phase_timer;
 mod primitives;
+#[cfg(feature = "async-driver")]
+pub mod render_loop;
+pub mod scheduler;
 mod style;
+pub mod time_source;
+
+#[cfg(feature = "async-driver")]
+pub use async_executor::install_async_executor;
+#[cfg(feature = "async-driver")]
+pub use render_loop::install_render_loop;
+pub use scheduler::install_scheduler;
+pub use time_source::install_time_source;
 
 use framework_core::{Backend, ButtonHandle, StyleRules};
 use std::collections::HashMap;

@@ -6,7 +6,8 @@ mod handles;
 mod primitive;
 mod reactive;
 mod safe_area;
-mod scheduling;
+pub mod scheduling;
+pub mod time;
 mod sources;
 mod style;
 mod walker;
@@ -27,7 +28,6 @@ pub mod robot;
 /// `methods!` auto-registration codegen — proc macros emit absolute
 /// paths and we don't want every consuming crate to take a direct
 /// dep on `serde_json`.
-#[cfg(feature = "robot")]
 #[doc(hidden)]
 pub use serde_json as __serde_json;
 
@@ -41,7 +41,10 @@ pub use builder::{
     IntoPrimitive,
 };
 pub use primitive::Primitive;
-pub use sources::{IntoStyleSource, IntoTextSource, StyleSource, TextSource};
+pub use sources::{
+    ActionBinding, ButtonAction, IntoButtonAction, IntoStyleSource, IntoTextSource,
+    StyleSource, TextSource,
+};
 pub use walker::{render, Owner};
 pub use primitives::navigator::{
     match_pattern, DefaultLinkKind, DrawerHandle, DrawerItem, DrawerItemRegistration,
@@ -75,7 +78,7 @@ pub use style::{
     VariantAxis, VariantEnum, VariantSet, VariantValue,
 };
 
-pub use framework_macros::{component, jsx, stylesheet, ui};
+pub use framework_macros::{bind, bind_press, component, jsx, stylesheet, ui};
 
 // This crate root used to be ~3200 lines containing everything below.
 // Each major concern now lives in its own private submodule and the

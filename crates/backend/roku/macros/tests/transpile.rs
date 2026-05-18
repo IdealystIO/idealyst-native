@@ -115,6 +115,33 @@ end function
 // chained else-if + exclusive for + while
 // ---------------------------------------------------------------------------
 
+// match in tail position with integer literal arms + wildcard.
+// Lowers to chained if/else if/else over the scrutinee.
+#[method]
+pub fn match_int(n: i32) -> i32 {
+    match n {
+        0 => 10,
+        1 => 20,
+        _ => 99,
+    }
+}
+
+#[test]
+fn match_int_brs_matches_golden() {
+    let expected = "\
+function match_int(n as integer) as integer
+    if n = 0 then
+        return 10
+    else if n = 1 then
+        return 20
+    else
+        return 99
+    end if
+end function
+";
+    assert_eq!(MATCH_INT_BRS, expected);
+}
+
 #[method]
 pub fn classify(n: i32) -> i32 {
     if n < 0 {

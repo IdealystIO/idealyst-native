@@ -1,0 +1,36 @@
+[package]
+name = "backend-ios-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Shared iOS/tvOS substrate. Holds the FFI plumbing, view-tree
+# bookkeeping, rendering, and Foundation/UIKit base bits that both
+# `backend-ios-mobile` (touch / phone+tablet) and `backend-ios-tv`
+# (focus engine / TVUIKit) depend on. Currently a skeleton — code is
+# carved out of `backend-ios-mobile` incrementally as the TV target
+# forces the abstraction.
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+framework-core = { workspace = true }
+native-layout = { workspace = true }
+
+[target.'cfg(any(target_os = "ios", target_os = "tvos"))'.dependencies]
+block2 = "0.5"
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = [
+    "NSString",
+    "NSArray",
+    "NSEnumerator",
+    "NSObject",
+] }
+objc2-ui-kit = { version = "0.2", features = [
+    "UIResponder",
+    "UIView",
+    "UIViewController",
+    "UIColor",
+] }
+raw-window-handle = "0.6"

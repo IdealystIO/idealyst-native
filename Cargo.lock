@@ -155,7 +155,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
-name = "backend-android"
+name = "backend-android-core"
+version = "0.0.1"
+dependencies = [
+ "android_logger",
+ "framework-core",
+ "jni",
+ "log",
+ "ndk-sys",
+ "raw-window-handle",
+]
+
+[[package]]
+name = "backend-android-mobile"
 version = "0.0.1"
 dependencies = [
  "android_logger",
@@ -168,7 +180,34 @@ dependencies = [
 ]
 
 [[package]]
-name = "backend-ios"
+name = "backend-android-tv"
+version = "0.0.1"
+dependencies = [
+ "android_logger",
+ "backend-android-core",
+ "dev-client",
+ "framework-core",
+ "jni",
+ "log",
+ "ndk-sys",
+ "raw-window-handle",
+]
+
+[[package]]
+name = "backend-ios-core"
+version = "0.0.1"
+dependencies = [
+ "block2 0.5.1",
+ "framework-core",
+ "native-layout",
+ "objc2 0.5.2",
+ "objc2-foundation 0.2.2",
+ "objc2-ui-kit",
+ "raw-window-handle",
+]
+
+[[package]]
+name = "backend-ios-mobile"
 version = "0.0.1"
 dependencies = [
  "block2 0.5.1",
@@ -187,6 +226,21 @@ version = "0.0.1"
 dependencies = [
  "block2 0.5.1",
  "framework-core",
+ "objc2 0.5.2",
+ "objc2-foundation 0.2.2",
+ "objc2-ui-kit",
+ "raw-window-handle",
+]
+
+[[package]]
+name = "backend-ios-tv"
+version = "0.0.1"
+dependencies = [
+ "backend-ios-core",
+ "block2 0.5.1",
+ "dev-client",
+ "framework-core",
+ "native-layout",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "objc2-ui-kit",
@@ -229,6 +283,7 @@ dependencies = [
  "js-sys",
  "raw-window-handle",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "web-sys",
 ]
 
@@ -586,6 +641,7 @@ dependencies = [
  "framework-core",
  "mdns-sd",
  "notify-debouncer-mini",
+ "serde",
  "serde_json",
  "tungstenite",
  "wire",
@@ -717,19 +773,12 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 name = "framework-core"
 version = "0.0.1"
 dependencies = [
- "block2 0.5.1",
  "framework-macros",
- "js-sys",
  "libc",
  "log",
- "objc2 0.5.2",
- "objc2-foundation 0.2.2",
  "pollster",
  "raw-window-handle",
  "serde_json",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
 ]
 
 [[package]]

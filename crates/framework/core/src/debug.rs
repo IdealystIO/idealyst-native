@@ -144,7 +144,7 @@ pub struct PhaseCounter {
 thread_local! {
     static EVENT_LOG: RefCell<Vec<DebugEvent>> = const { RefCell::new(Vec::new()) };
     static EVENT_LIMIT: RefCell<Option<usize>> = const { RefCell::new(None) };
-    static START_INSTANT: RefCell<Option<TimeOrigin>> = const { RefCell::new(None) };
+    static START_MICROS: RefCell<Option<u64>> = const { RefCell::new(None) };
     /// Aggregated phase counters. Keyed by `&'static str` phase name so
     /// backends can report into it cheaply with no allocation.
     static PHASE_COUNTERS: RefCell<HashMap<&'static str, PhaseCounter>> =
@@ -210,15 +210,17 @@ pub fn component_summary(events: &[DebugEvent]) -> HashMap<&'static str, Compone
 /// Current monotonic microseconds. Used by every record_* function
 /// AND by the walker's two-sided instrumentation (caller reads
 /// `now_micros()` before/after the wrapped call).
+///
+/// Anchored to the first call so deltas are "since debug-stats was
+/// first observed." Reads route through `framework_core::time` —
+/// the active backend's `TimeSource` if installed, else the native
+/// `Instant` fallback (or `0` on wasm32 if no backend installed).
 pub fn now_micros() -> u64 {
-    let origin = START_INSTANT.with(|o| {
-        let mut s = o.borrow_mut();
-        if s.is_none() {
-            *s = Some(TimeOrigin::capture());
-        }
-        s.as_ref().unwrap().clone()
+    let start = START_MICROS.with(|s| {
+        let mut s = s.borrow_mut();
+        *s.get_or_insert_with(crate::time::now_micros)
     });
-    origin.elapsed_micros()
+    crate::time::now_micros().saturating_sub(start)
 }
 
 /// Push an event into the log, honoring the configured limit.
@@ -316,68 +318,3 @@ pub fn clear_phase_counters() {
     PHASE_COUNTERS.with(|c| c.borrow_mut().clear());
 }
 
-// ---------------------------------------------------------------------------
-// Time source — platform-dependent
-// ---------------------------------------------------------------------------
-
-/// Platform-agnostic time origin. On web, uses `performance.now()`.
-/// On native, uses `Instant::now()`. Captured once on first use and
-/// reused; `elapsed_micros()` returns micros since capture.
-#[derive(Clone)]
-enum TimeOrigin {
-    #[cfg(target_arch = "wasm32")]
-    WebPerf {
-        epoch: f64, // performance.now() at capture
-    },
-    #[cfg(not(target_arch = "wasm32"))]
-    Native {
-        epoch: std::time::Instant,
-    },
-}
-
-impl TimeOrigin {
-    fn capture() -> Self {
-        #[cfg(target_arch = "wasm32")]
-        {
-            // Use js_sys to access performance.now(). If unavailable
-            // (running outside a browser), fall back to 0 — timing
-            // will all read 0, but the framework won't crash.
-            let epoch = web_performance_now().unwrap_or(0.0);
-            return TimeOrigin::WebPerf { epoch };
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            return TimeOrigin::Native { epoch: std::time::Instant::now() };
-        }
-    }
-
-    fn elapsed_micros(&self) -> u64 {
-        match self {
-            #[cfg(target_arch = "wasm32")]
-            TimeOrigin::WebPerf { epoch } => {
-                let now = web_performance_now().unwrap_or(*epoch);
-                ((now - epoch) * 1000.0).max(0.0) as u64
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            TimeOrigin::Native { epoch } => epoch.elapsed().as_micros() as u64,
-        }
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-fn web_performance_now() -> Option<f64> {
-    // Access window.performance.now() via raw js_sys reflection so
-    // we don't take a hard dep on web-sys. We already depend on
-    // js_sys transitively for the virtualizer, but framework-core
-    // doesn't currently — so keep this self-contained via a JS eval.
-    use wasm_bindgen::prelude::*;
-    let window = js_sys::global();
-    let perf = js_sys::Reflect::get(&window, &JsValue::from_str("performance")).ok()?;
-    if perf.is_undefined() || perf.is_null() {
-        return None;
-    }
-    let now_fn = js_sys::Reflect::get(&perf, &JsValue::from_str("now")).ok()?;
-    let now_fn: js_sys::Function = now_fn.dyn_into().ok()?;
-    let ret = now_fn.call0(&perf).ok()?;
-    ret.as_f64()
-}

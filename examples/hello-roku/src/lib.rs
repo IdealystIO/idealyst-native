@@ -1,41 +1,33 @@
-//! hello-roku — styled demo that exercises the Phase 1 flex engine.
+//! End-to-end Rust-authored reactive Roku app.
 //!
-//! The screen lays out as:
+//! Single `app()` function covering the Phase 2 reactivity surface:
 //!
-//! ```text
-//!   ┌─────────────────────────────────────────┐
-//!   │  Hello, Roku!                           │  ← Title (font 72, accent color)
-//!   │  Authored in Rust ...                   │  ← Subtitle (font 32, muted)
-//!   │                                         │
-//!   │  ┌──────────┐ ┌──────────┐ ┌──────────┐ │  ← Cards row (flex_dir Row,
-//!   │  │  Layout  │ │  Method  │ │ Reactive │ │     justify SpaceBetween,
-//!   │  │   Flex   │ │  → BRS   │ │   Soon   │ │     each card flex_grow 1)
-//!   │  └──────────┘ └──────────┘ └──────────┘ │
-//!   │                                         │
-//!   │                                  v0 ... │  ← Footer (justify FlexEnd)
-//!   └─────────────────────────────────────────┘
-//! ```
-//!
-//! Features exercised:
-//!   - `background` / `color`                       (color)
-//!   - `font_size` / `font_weight`                  (typography)
-//!   - `flex_direction: Row`                        (cards stack horizontally)
-//!   - `justify_content: SpaceBetween, FlexEnd`     (main-axis alignment)
-//!   - `align_items: Center, Stretch`               (cross-axis alignment)
-//!   - `gap`                                        (spacing between siblings)
-//!   - `padding`                                    (per-side fan-out)
-//!   - `flex_grow`                                  (cards share width equally)
+//! - **Reactiveness**: a `count` signal threads through four
+//!   reactive `Text` labels via `bind!`. Each label has its own
+//!   `#[method]` transformer.
+//! - **if/else inside `#[method]`**: `parity_label`.
+//! - **`match` inside `#[method]`**: `status_label` — literal arms
+//!   + a `_` fallback. Transpiler lowers to chained
+//!   `if/else if/else`.
+//! - **`for` loop inside `#[method]`**: `sum_to`.
+//! - **`for` loop inside `ui! {}`**: the "step pip" row at the
+//!   top — the macro statically expands the loop into three
+//!   sibling `Text` nodes at snapshot time.
+//! - **Button press**: `bind_press!(increment(count) => count)`
+//!   and `bind_press!(decrement(count) => count)`.
+//! - **Focus navigation across multiple buttons**: D-pad
+//!   left/right cycles; OK fires the focused button. The visual
+//!   highlight comes from the framework's `state hovered { ... }`
+//!   stylesheet overlay — same author API web uses for CSS
+//!   `:hover`, shipped to Roku as a per-state wire command.
 
 use backend_roku::method;
 use framework_core::{
-    install_theme, stylesheet, ui, AlignItems, FlexDirection, FontWeight,
-    JustifyContent, Length, Primitive, ThemeTokens, TokenEntry,
+    bind, bind_press, install_theme, signal, stylesheet, ui, AlignItems,
+    FlexDirection, FontWeight, JustifyContent, Length, Primitive, Signal,
+    ThemeTokens, TokenEntry,
 };
 
-/// Trivial theme — no tokens. The framework requires `install_theme`
-/// before resolving stylesheets, but our stylesheets use literal
-/// values rather than referencing `t.*` so the theme is just a
-/// placeholder.
 #[derive(Clone)]
 pub struct Theme;
 
@@ -45,80 +37,24 @@ impl ThemeTokens for Theme {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Stylesheets
+// ---------------------------------------------------------------------------
+
 stylesheet! {
     pub Page<Theme> {
         base(_t) {
             flex_direction: FlexDirection::Column,
-            gap: Length::Px(40.0),
+            gap: Length::Px(24.0),
+            padding_top: Length::Px(60.0),
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::FlexStart,
         }
     }
 }
 
 stylesheet! {
     pub Title<Theme> {
-        base(_t) {
-            font_size: Length::Px(72.0),
-            font_weight: FontWeight::Bold,
-            color: "#FFCC00",
-        }
-    }
-}
-
-stylesheet! {
-    pub Subtitle<Theme> {
-        base(_t) {
-            font_size: Length::Px(28.0),
-            color: "#9CA3AF",
-        }
-    }
-}
-
-stylesheet! {
-    pub Header<Theme> {
-        base(_t) {
-            flex_direction: FlexDirection::Column,
-            gap: Length::Px(8.0),
-        }
-    }
-}
-
-stylesheet! {
-    pub CardsRow<Theme> {
-        base(_t) {
-            flex_direction: FlexDirection::Row,
-            gap: Length::Px(24.0),
-            justify_content: JustifyContent::SpaceBetween,
-            align_items: AlignItems::Stretch,
-        }
-    }
-}
-
-stylesheet! {
-    pub Card<Theme> {
-        base(_t) {
-            flex_direction: FlexDirection::Column,
-            background: "#1F2937",
-            padding: 32,
-            gap: 12,
-            flex_grow: 1.0,
-            align_items: AlignItems::Center,
-            justify_content: JustifyContent::Center,
-            min_height: Length::Px(160.0),
-        }
-    }
-}
-
-stylesheet! {
-    pub CardLabel<Theme> {
-        base(_t) {
-            font_size: Length::Px(24.0),
-            color: "#9CA3AF",
-        }
-    }
-}
-
-stylesheet! {
-    pub CardValue<Theme> {
         base(_t) {
             font_size: Length::Px(40.0),
             font_weight: FontWeight::Bold,
@@ -128,44 +64,94 @@ stylesheet! {
 }
 
 stylesheet! {
-    pub Footer<Theme> {
+    pub Counter<Theme> {
         base(_t) {
-            flex_direction: FlexDirection::Row,
-            justify_content: JustifyContent::FlexEnd,
+            font_size: Length::Px(140.0),
+            font_weight: FontWeight::Bold,
+            color: "#FFCC00",
         }
     }
 }
 
 stylesheet! {
-    pub FooterText<Theme> {
+    pub MetaRow<Theme> {
         base(_t) {
-            font_size: Length::Px(20.0),
-            color: "#6B7280",
+            flex_direction: FlexDirection::Row,
+            gap: Length::Px(16.0),
+            align_items: AlignItems::Center,
         }
     }
 }
 
-/// Tiny `#[method]` to keep the BRS transpilation pipeline exercised.
-#[method]
-pub fn greeting_length(n: i32) -> i32 {
-    n * 2 + 1
+stylesheet! {
+    pub MetaKey<Theme> {
+        base(_t) {
+            font_size: Length::Px(28.0),
+            color: "#9CA3AF",
+        }
+    }
 }
 
-// ----------------------------------------------------------------
-// Phase 2 demo methods (signals + bindings).
-//
-// `count_value` is the identity function used as a text binding's
-// transformer — the BS runtime dispatches it with the current
-// signal value and sets the bound Label's text to the result.
-// (We avoid `format!()` here because the transpiler doesn't lower
-// Rust macros yet; BrightScript auto-converts the integer return
-// to a string when assigned to `Label.text`.)
-//
-// `increment` is the button handler — it reads the count signal,
-// adds 1, and the BindButton command pipes the result back into
-// the same signal, which fires the BindText subscription, which
-// updates the Label.
-// ----------------------------------------------------------------
+stylesheet! {
+    pub MetaValue<Theme> {
+        base(_t) {
+            font_size: Length::Px(32.0),
+            font_weight: FontWeight::SemiBold,
+            color: "#FFFFFF",
+        }
+    }
+}
+
+stylesheet! {
+    pub StepPipRow<Theme> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            gap: Length::Px(12.0),
+            align_items: AlignItems::Center,
+        }
+    }
+}
+
+stylesheet! {
+    pub StepPip<Theme> {
+        base(_t) {
+            font_size: Length::Px(48.0),
+            color: "#4B5563",
+        }
+    }
+}
+
+stylesheet! {
+    pub ButtonRow<Theme> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            gap: Length::Px(24.0),
+            align_items: AlignItems::Center,
+        }
+    }
+}
+
+// Button stylesheet with a `state hovered` overlay. Web's CSS
+// :hover and Roku's D-pad focus both activate this — same author
+// API, two compatible code paths.
+stylesheet! {
+    pub CounterButton<Theme> {
+        base(_t) {
+            min_width: Length::Px(220.0),
+            min_height: Length::Px(80.0),
+            background: "#2563EB",
+        }
+        state hovered(_t) {
+            background: "#FFCC00",
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// #[method] transformers — all bodies use only constructs the v0
+// transpiler supports. Each one ends up in the device's
+// `methods.brs` plus the generated `dispatch_method` switch.
+// ---------------------------------------------------------------------------
 
 #[method]
 pub fn count_value(n: i32) -> i32 {
@@ -177,33 +163,96 @@ pub fn increment(n: i32) -> i32 {
     n + 1
 }
 
+#[method]
+pub fn decrement(n: i32) -> i32 {
+    n - 1
+}
+
+/// if/else demo.
+#[method]
+pub fn parity_label(n: i32) -> &'static str {
+    if n % 2 == 0 {
+        "Even"
+    } else {
+        "Odd"
+    }
+}
+
+/// match demo — literal arms + `_` fallback. Transpiles to a
+/// chained if/else if/else.
+#[method]
+pub fn status_label(n: i32) -> &'static str {
+    match n {
+        0 => "fresh",
+        1 => "warming up",
+        2 => "rolling",
+        3 => "rolling",
+        _ => "keep going",
+    }
+}
+
+/// for-loop demo inside a `#[method]`. Sums 1 + 2 + ... + n.
+#[method]
+pub fn sum_to(n: i32) -> i32 {
+    let mut total = 0;
+    for i in 1..=n {
+        total = total + i;
+    }
+    total
+}
+
+// ---------------------------------------------------------------------------
+// The app
+// ---------------------------------------------------------------------------
+
 pub fn app() -> Primitive {
     install_theme(Theme);
 
+    let count: Signal<i32> = signal!(0);
+
     ui! {
         View(style = page_style()) {
-            View(style = header_style()) {
-                Text(style = title_style()) { "Hello, Roku!" }
-                Text(style = subtitle_style()) { "Authored in Rust, rendered on-device" }
-            }
+            Text(style = title_style()) { "Reactivity Demo" }
 
-            View(style = cards_row_style()) {
-                View(style = card_style()) {
-                    Text(style = card_label_style()) { "Layout" }
-                    Text(style = card_value_style()) { "Flex" }
-                }
-                View(style = card_style()) {
-                    Text(style = card_label_style()) { "Method" }
-                    Text(style = card_value_style()) { "→ BRS" }
-                }
-                View(style = card_style()) {
-                    Text(style = card_label_style()) { "Reactive" }
-                    Text(style = card_value_style()) { "Soon" }
+            // for-loop in `ui!{}` — the macro expands this into
+            // three sibling `Text` nodes at snapshot time. Pip
+            // glyphs render statically; they're here to prove the
+            // ui-level for syntax round-trips through the
+            // snapshot pipeline.
+            View(style = step_pip_row_style()) {
+                for _ in 0..5 {
+                    Text(style = step_pip_style()) { "•" }
                 }
             }
 
-            View(style = footer_style()) {
-                Text(style = footer_text_style()) { "v0 — flex layout active" }
+            Text(style = counter_style()) { bind!(count_value(count)) }
+
+            View(style = meta_row_style()) {
+                Text(style = meta_key_style()) { "Parity:" }
+                Text(style = meta_value_style()) { bind!(parity_label(count)) }
+            }
+
+            View(style = meta_row_style()) {
+                Text(style = meta_key_style()) { "Status:" }
+                Text(style = meta_value_style()) { bind!(status_label(count)) }
+            }
+
+            View(style = meta_row_style()) {
+                Text(style = meta_key_style()) { "Sum 1..N:" }
+                Text(style = meta_value_style()) { bind!(sum_to(count)) }
+            }
+
+            View(style = button_row_style()) {
+                Button(
+                    label = "-1",
+                    on_click = bind_press!(decrement(count) => count),
+                    style = counter_button_style(),
+                )
+                Button(
+                    label = "+1",
+                    on_click = bind_press!(increment(count) => count),
+                    style = counter_button_style(),
+                )
             }
         }
     }

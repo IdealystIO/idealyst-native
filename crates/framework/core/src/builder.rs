@@ -359,13 +359,16 @@ pub fn text<T: IntoTextSource>(source: T) -> Bound<TextHandle> {
     })
 }
 
-pub fn button<L: IntoTextSource, F: Fn() + 'static>(
-    label: L,
-    on_click: F,
-) -> Bound<ButtonHandle> {
+pub fn button<L, A>(label: L, on_click: A) -> Bound<ButtonHandle>
+where
+    L: IntoTextSource,
+    A: crate::sources::IntoButtonAction,
+{
+    let action = on_click.into_button_action();
     Bound::new(Primitive::Button {
         label: label.into_text_source(),
-        on_click: Rc::new(on_click),
+        on_click: action.closure,
+        on_click_binding: action.binding,
         leading_icon: None,
         trailing_icon: None,
         style: None,

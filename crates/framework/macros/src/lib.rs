@@ -19,6 +19,8 @@
 //! - `vec![...]` and `children![...]` are special-cased; other list-shaped
 //!   macros are opaque to the reactivity rewriter.
 
+mod bind;
+mod bind_press;
 mod component_attr;
 mod invocation_macro;
 mod jsx;
@@ -58,6 +60,27 @@ pub fn jsx(input: TokenStream) -> TokenStream {
 pub fn stylesheet(input: TokenStream) -> TokenStream {
     let parsed = parse_macro_input!(input as stylesheet::StyleSheetDecl);
     stylesheet::emit(parsed).into()
+}
+
+/// `bind!(fn(signals...))` — produce a reactive `TextSource::Bound`
+/// from a call-shaped expression. The expansion carries both a
+/// closure (for Effect-driven backends) and the symbolic
+/// `signal_ids` + `method` name (for backends that ship bindings
+/// declaratively). See [`bind`] for the grammar and constraints.
+#[proc_macro]
+pub fn bind(input: TokenStream) -> TokenStream {
+    let parsed = parse_macro_input!(input as bind::BindInput);
+    bind::emit(parsed).into()
+}
+
+/// `bind_press!(fn(signals) => output_signal)` — produce a
+/// `ButtonAction` for the `on_click` slot of a `Button`. Closure +
+/// binding both populated, mirroring `bind!`. See [`bind_press`]
+/// for the grammar.
+#[proc_macro]
+pub fn bind_press(input: TokenStream) -> TokenStream {
+    let parsed = parse_macro_input!(input as bind_press::BindPressInput);
+    bind_press::emit(parsed).into()
 }
 
 /// `#[component]` — annotates a component function. Rewrites its body for

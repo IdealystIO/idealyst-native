@@ -43,8 +43,8 @@
 use proc_macro2::Span;
 use syn::spanned::Spanned;
 use syn::{
-    BinOp, Block, Expr, ExprForLoop, ExprIf, ExprWhile, FnArg, ItemFn, Lit, Local, Pat,
-    Path, ReturnType, Stmt, Type, UnOp,
+    BinOp, Block, Expr, ExprForLoop, ExprIf, ExprMatch, ExprWhile, FnArg, ItemFn, Lit,
+    Local, Pat, Path, ReturnType, Stmt, Type, UnOp,
 };
 
 pub fn transpile_fn(item: &ItemFn) -> syn::Result<String> {
@@ -291,6 +291,7 @@ impl Emitter {
     fn tail_expr(&mut self, e: &Expr) -> syn::Result<()> {
         match e {
             Expr::If(i) => self.emit_if(i, true),
+            Expr::Match(m) => self.emit_match(m, true),
             Expr::Block(b) => self.block(&b.block, true),
             Expr::Return(r) => {
                 self.write_indent();
@@ -310,6 +311,88 @@ impl Emitter {
                 Ok(())
             }
         }
+    }
+
+    /// Lower a `match` expression in tail position into a chain of
+    /// `if`/`else if`/`else` over the scrutinee. v0 grammar:
+    ///
+    /// - Arms must use literal patterns (`Lit::Int` / `Lit::Str` /
+    ///   `Lit::Bool`) or the wildcard `_`. No guards. No bindings,
+    ///   no struct/enum patterns.
+    /// - `_` must be the final arm — it becomes the bare `else`.
+    /// - The match's value must reach a `return` in every arm; we
+    ///   require tail position because matching mid-block needs
+    ///   value-lifting (let-temp-via-statements) which the
+    ///   transpiler doesn't do yet.
+    fn emit_match(&mut self, m: &ExprMatch, tail: bool) -> syn::Result<()> {
+        if !tail {
+            return Err(syn::Error::new_spanned(
+                m,
+                "`match` is only supported in tail position; assign \
+                 via separate `if` statements, or extract into a
+                 helper #[method].",
+            ));
+        }
+        if m.arms.is_empty() {
+            return Err(syn::Error::new_spanned(
+                m,
+                "match with zero arms isn't supported",
+            ));
+        }
+
+        for (i, arm) in m.arms.iter().enumerate() {
+            if arm.guard.is_some() {
+                return Err(syn::Error::new_spanned(
+                    arm,
+                    "match guards (`if cond`) aren't supported in #[method]",
+                ));
+            }
+            let is_first = i == 0;
+            let is_last = i + 1 == m.arms.len();
+
+            match &arm.pat {
+                Pat::Wild(_) => {
+                    if !is_last {
+                        return Err(syn::Error::new_spanned(
+                            &arm.pat,
+                            "`_` arm must come last",
+                        ));
+                    }
+                    if is_first {
+                        return Err(syn::Error::new_spanned(
+                            &arm.pat,
+                            "match with only a `_` arm — drop the match \
+                             and use the body directly",
+                        ));
+                    }
+                    self.line("else");
+                    self.indent += 1;
+                    self.tail_expr(&arm.body)?;
+                    self.indent -= 1;
+                }
+                Pat::Lit(lit_expr) => {
+                    self.write_indent();
+                    self.push(if is_first { "if " } else { "else if " });
+                    self.expr(&m.expr)?;
+                    self.push(" = ");
+                    self.lit(&lit_expr.lit)?;
+                    self.push(" then\n");
+                    self.indent += 1;
+                    self.tail_expr(&arm.body)?;
+                    self.indent -= 1;
+                }
+                other => {
+                    return Err(syn::Error::new_spanned(
+                        other,
+                        "match patterns must be a literal (int/str/bool) \
+                         or `_`. v0 doesn't support bindings, ranges, or \
+                         struct/enum patterns.",
+                    ));
+                }
+            }
+        }
+        self.line("end if");
+        Ok(())
     }
 
     fn emit_if(&mut self, i: &ExprIf, tail: bool) -> syn::Result<()> {

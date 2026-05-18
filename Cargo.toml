@@ -6,30 +6,34 @@ members = [
     "crates/framework/native-layout",
     "crates/framework/wire",
     "crates/framework/dev-client",
-    "crates/framework/dev-server",
-    "crates/framework/dev-http",
-    "crates/framework/dev-reload",
-    "crates/framework/web-dev-host",
-    "crates/framework/build-ios",
-    "crates/framework/run-ios",
-    "crates/framework/build-aas",
-    "crates/framework/build-android",
-    "crates/framework/run-android",
-    "crates/framework/build-roku",
-    "crates/framework/run-roku",
-    "crates/framework/cli",
-    "crates/backend/ios",
+    "crates/framework/reactive/arena",
+    "crates/framework/reactive/refs",
+    "crates/backend/ios/core",
+    "crates/backend/ios/mobile",
+    "crates/backend/ios/tv",
     "crates/backend/ios-stack",
-    "crates/backend/android",
+    "crates/backend/android/core",
+    "crates/backend/android/mobile",
+    "crates/backend/android/tv",
     "crates/backend/roku",
     "crates/backend/roku/macros",
     "crates/backend/roku/transpile",
     "crates/backend/web",
-    "crates/reactive/arena",
-    "crates/reactive/refs",
     "crates/ui/idea-ui",
     "crates/ui/idea-ui-docs-derive",
     "crates/ui/icons-lucide",
+    "crates/cli",
+    "crates/build/aas",
+    "crates/build/android",
+    "crates/build/ios",
+    "crates/build/roku",
+    "crates/run/android",
+    "crates/run/ios",
+    "crates/run/roku",
+    "crates/dev/server",
+    "crates/dev/http",
+    "crates/dev/reload",
+    "crates/dev/web-host",
     "crates/robot-mcp-proxy",
     "examples/hello-world",
     "examples/hello-roku",
@@ -50,20 +54,24 @@ framework-macros = { path = "crates/framework/macros" }
 native-layout = { path = "crates/framework/native-layout" }
 wire = { path = "crates/framework/wire" }
 dev-client = { path = "crates/framework/dev-client" }
-dev-server = { path = "crates/framework/dev-server" }
-dev-http = { path = "crates/framework/dev-http" }
-dev-reload = { path = "crates/framework/dev-reload" }
-web-dev-host = { path = "crates/framework/web-dev-host" }
-build-ios = { path = "crates/framework/build-ios" }
-run-ios = { path = "crates/framework/run-ios" }
-build-aas = { path = "crates/framework/build-aas" }
-build-android = { path = "crates/framework/build-android" }
-run-android = { path = "crates/framework/run-android" }
-build-roku = { path = "crates/framework/build-roku" }
-run-roku = { path = "crates/framework/run-roku" }
-backend-ios = { path = "crates/backend/ios" }
+dev-server = { path = "crates/dev/server" }
+dev-http = { path = "crates/dev/http" }
+dev-reload = { path = "crates/dev/reload" }
+web-dev-host = { path = "crates/dev/web-host" }
+build-ios = { path = "crates/build/ios" }
+run-ios = { path = "crates/run/ios" }
+build-aas = { path = "crates/build/aas" }
+build-android = { path = "crates/build/android" }
+run-android = { path = "crates/run/android" }
+build-roku = { path = "crates/build/roku" }
+run-roku = { path = "crates/run/roku" }
+backend-ios-core = { path = "crates/backend/ios/core" }
+backend-ios-mobile = { path = "crates/backend/ios/mobile" }
+backend-ios-tv = { path = "crates/backend/ios/tv" }
 backend-ios-stack = { path = "crates/backend/ios-stack" }
-backend-android = { path = "crates/backend/android" }
+backend-android-core = { path = "crates/backend/android/core" }
+backend-android-mobile = { path = "crates/backend/android/mobile" }
+backend-android-tv = { path = "crates/backend/android/tv" }
 backend-roku = { path = "crates/backend/roku" }
 backend-roku-macros = { path = "crates/backend/roku/macros" }
 backend-roku-transpile = { path = "crates/backend/roku/transpile" }

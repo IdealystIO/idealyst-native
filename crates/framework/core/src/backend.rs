@@ -148,6 +148,64 @@ pub trait Backend {
 
     fn update_text(&mut self, node: &Self::Node, content: &str);
 
+    /// Optional hook the walker calls when a `Primitive::Text`'s
+    /// source is `TextSource::Bound`. Backends with declarative wire
+    /// formats override this to record `signal_ids` + the
+    /// transformer `method` name so they can ship the binding to a
+    /// remote renderer instead of running the closure locally on
+    /// every change.
+    ///
+    /// Effect-driven backends leave the default no-op in place — the
+    /// walker still sets up an `Effect` around the binding's closure
+    /// on every backend, which is what those backends rely on. The
+    /// metadata is only consumed by backends that need it.
+    #[allow(unused_variables)]
+    fn note_text_binding(
+        &mut self,
+        node: &Self::Node,
+        signal_ids: &[u64],
+        method: &'static str,
+    ) {
+        // default: no-op
+    }
+
+    /// Optional hook the walker calls (once per signal per binding)
+    /// when it encounters a `TextSource::Bound`. Backends that need
+    /// to ship signal state across a wire boundary use this to
+    /// declare each signal's existence + initial value to the remote
+    /// renderer. Backends that read live signal values directly from
+    /// the framework's arena leave the default no-op in place.
+    ///
+    /// Backends are expected to dedupe internally — the walker will
+    /// call this for the *same* signal_id across multiple bindings
+    /// if more than one binding reads that signal. Only the first
+    /// observation needs to ship a value declaration to the wire.
+    #[allow(unused_variables)]
+    fn note_signal_initial(
+        &mut self,
+        signal_id: u64,
+        value: &crate::__serde_json::Value,
+    ) {
+        // default: no-op
+    }
+
+    /// Optional hook the walker calls after `create_button` when the
+    /// button carries a `bind_press!`-produced action binding.
+    /// Backends with declarative wire formats record the binding so
+    /// the remote runtime can dispatch the press without round-
+    /// tripping through the host's closure. Closure-driven backends
+    /// leave the default no-op and rely on `create_button`'s
+    /// `on_click` parameter (which is the same closure the binding
+    /// expanded to).
+    #[allow(unused_variables)]
+    fn note_button_action(
+        &mut self,
+        node: &Self::Node,
+        action: &crate::sources::ActionBinding,
+    ) {
+        // default: no-op
+    }
+
     /// Create an image node with the initial URL. The framework
     /// wraps the user's `src` source in an effect that calls
     /// `update_image_src` whenever the source changes.

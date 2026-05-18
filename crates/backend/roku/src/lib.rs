@@ -207,6 +207,11 @@ pub struct RokuBackend {
     handlers: RefCell<HandlerTable>,
     next_node: u64,
     next_handler: u64,
+    /// Signal IDs already shipped via a `CreateSignal` command. The
+    /// walker calls `note_signal_initial` once per binding-per-signal
+    /// pair; deduping here means each signal lands on the wire
+    /// exactly once with its snapshot-time initial value.
+    created_signals: std::collections::HashSet<u64>,
 }
 
 impl Default for RokuBackend {
@@ -223,6 +228,7 @@ impl RokuBackend {
             // 0 is reserved as a sentinel ("no node"); start at 1.
             next_node: 1,
             next_handler: 1,
+            created_signals: std::collections::HashSet::new(),
         }
     }
 
@@ -495,6 +501,71 @@ impl Backend for RokuBackend {
         });
     }
 
+    fn note_text_binding(
+        &mut self,
+        node: &Self::Node,
+        signal_ids: &[u64],
+        method: &'static str,
+    ) {
+        // The walker hands us a `TextSource::Bound` after the
+        // `create_text` step; we round-trip the binding into the
+        // wire stream so the device-side runtime can subscribe the
+        // Label to the signals and apply the transformer on every
+        // change. The subsequent Effect will still fire once at
+        // snapshot time and emit a redundant `UpdateText` — that's
+        // a one-line wire dup with the same string the BindText's
+        // initial subscriber-fire would produce anyway, so it's a
+        // visual no-op. Worth optimizing later if wire size matters.
+        self.push(RokuCommand::BindText {
+            node_id: *node,
+            signal_ids: signal_ids.iter().map(|id| SignalId(*id)).collect(),
+            method: method.to_string(),
+        });
+    }
+
+    fn note_button_action(
+        &mut self,
+        node: &Self::Node,
+        action: &framework_core::ActionBinding,
+    ) {
+        // Walker has already shipped a CreateButton (with a stub
+        // HandlerId from the closure path) and called
+        // `note_signal_initial` for every input signal. We just add
+        // the BindButton command — the on-device runtime wires
+        // `onKeyEvent` (OK) → action dispatch via this id.
+        self.push(RokuCommand::BindButton {
+            button_id: *node,
+            input_signal_ids: action
+                .input_signal_ids
+                .iter()
+                .map(|id| SignalId(*id))
+                .collect(),
+            method: action.method.to_string(),
+            output_signal_id: action.output_signal_id.map(SignalId),
+        });
+    }
+
+    fn note_signal_initial(
+        &mut self,
+        signal_id: u64,
+        value: &framework_core::__serde_json::Value,
+    ) {
+        // First-time signal observation: declare the signal to the
+        // device with its current value. Subsequent observations of
+        // the same id are dropped — the value lives in the BS-side
+        // arena once it's been seeded; later mutations come from
+        // button actions on the device, not from the framework's
+        // snapshot. Without dedup, every `bind!` that names the
+        // same signal would emit a redundant CreateSignal and reset
+        // it back to its initial each time.
+        if self.created_signals.insert(signal_id) {
+            self.push(RokuCommand::CreateSignal {
+                id: SignalId(signal_id),
+                initial: value.clone(),
+            });
+        }
+    }
+
     fn update_button_label(&mut self, node: &Self::Node, label: &str) {
         self.push(RokuCommand::UpdateButtonLabel {
             id: *node,
@@ -511,6 +582,42 @@ impl Backend for RokuBackend {
         self.push(RokuCommand::ApplyStyle {
             id: *node,
             style: Box::new(wire),
+        });
+    }
+
+    fn handles_states_natively(&self) -> bool {
+        // Same posture as the web backend: the framework hands us
+        // the base rules plus per-state overlays declaratively, and
+        // we ship them through a single wire command. The Roku-side
+        // runtime maintains its own focus/press state (driven by
+        // D-pad input) and applies the right merged style locally —
+        // no Rust round-trip per state change.
+        true
+    }
+
+    fn apply_styled_states(
+        &mut self,
+        node: &Self::Node,
+        base: &Rc<StyleRules>,
+        overlays: &[(framework_core::StateBits, Rc<StyleRules>)],
+    ) {
+        // Find the overlay (if any) for each well-known state.
+        // The framework hands us a list, not a map, so we scan
+        // once per state.
+        let find = |target: framework_core::StateBits| -> Option<Box<WireStyle>> {
+            overlays
+                .iter()
+                .find(|(bits, _)| *bits == target)
+                .map(|(_, rules)| Box::new(style::lower_style(rules)))
+        };
+
+        self.push(RokuCommand::ApplyStyleStates {
+            id: *node,
+            base: Box::new(style::lower_style(base)),
+            hovered: find(framework_core::StateBits::HOVERED),
+            focused: find(framework_core::StateBits::FOCUSED),
+            pressed: find(framework_core::StateBits::PRESSED),
+            disabled: find(framework_core::StateBits::DISABLED),
         });
     }
 

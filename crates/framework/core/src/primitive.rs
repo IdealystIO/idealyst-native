@@ -51,6 +51,13 @@ pub enum Primitive {
         /// widget's text updates when the underlying signals change.
         label: TextSource,
         on_click: Rc<dyn Fn()>,
+        /// Optional binding metadata for backends that ship press
+        /// events declaratively (Roku). Produced by `bind_press!`;
+        /// `None` for buttons that pass a raw `Fn()` closure. The
+        /// walker uses `on_click` for every backend's Effect-driven
+        /// path and additionally calls `note_button_action` with
+        /// `on_click_binding` when present.
+        on_click_binding: Option<crate::sources::ActionBinding>,
         /// Icon rendered before the label (left in LTR layouts).
         /// Backends render this natively: `UIButton.setImage` on iOS,
         /// compound drawable on Android, inline SVG on web.

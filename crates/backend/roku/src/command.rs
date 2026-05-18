@@ -219,6 +219,24 @@ pub enum RokuCommand {
     UpdateToggleValue { id: NodeId, value: bool },
     UpdateSliderValue { id: NodeId, value: f32 },
     ApplyStyle { id: NodeId, style: Box<WireStyle> },
+    /// State-aware style application. Carries the base rules plus
+    /// per-state overlays (hovered, focused, pressed, disabled). The
+    /// device-side runtime stores all of them and applies the right
+    /// merged style based on the node's current state — e.g. when
+    /// D-pad navigation moves "focus" to a button, the runtime
+    /// re-applies (base ∪ hovered) for that node and base-only for
+    /// the previously-focused one. This is the Roku analog of
+    /// CSS's :hover / :focus / :active pseudo-classes — same
+    /// `state hovered { ... }` stylesheet syntax works on both
+    /// targets.
+    ApplyStyleStates {
+        id: NodeId,
+        base: Box<WireStyle>,
+        hovered: Option<Box<WireStyle>>,
+        focused: Option<Box<WireStyle>>,
+        pressed: Option<Box<WireStyle>>,
+        disabled: Option<Box<WireStyle>>,
+    },
     SetDisabled { id: NodeId, disabled: bool },
 
     // ---------------- Reactivity ----------------
