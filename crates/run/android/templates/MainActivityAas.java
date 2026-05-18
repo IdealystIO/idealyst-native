@@ -15,9 +15,11 @@ import android.content.pm.PackageManager;
 import android.net.wifi.WifiManager;
 import android.os.Bundle;
 import android.os.Handler;
+import android.graphics.Color;
 import android.os.Looper;
 import android.util.Log;
 import android.view.MenuItem;
+import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 
@@ -35,6 +37,16 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
+        // Match the status bar to the in-tree Toolbar's white
+        // background so the two read as a single header. The
+        // `SYSTEM_UI_FLAG_LIGHT_STATUS_BAR` flag switches the
+        // status-bar icons (battery / signal / clock) to dark so
+        // they remain legible on the now-light background.
+        getWindow().setStatusBarColor(Color.WHITE);
+        getWindow().getDecorView().setSystemUiVisibility(
+            getWindow().getDecorView().getSystemUiVisibility()
+                | View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
 
         // Android's power-saving kernel filters drop multicast
         // packets by default — without this lock the mDNS browse
@@ -89,14 +101,14 @@ public class MainActivity extends Activity {
      */
     @Override
     public boolean onOptionsItemSelected(MenuItem item) {
-        Log.i("idealyst", "onOptionsItemSelected itemId=" + item.getItemId()
-            + " homeId=" + android.R.id.home);
-        if (item.getItemId() == android.R.id.home) {
-            boolean dispatched = io.idealyst.runtime.RustActionBarHelper.dispatchHomePress();
-            Log.i("idealyst", "dispatchHomePress returned " + dispatched);
-            if (dispatched) {
-                return true;
-            }
+        // Vestigial: the activity now uses a NoActionBar theme, so the
+        // system ActionBar never dispatches here. Kept so the
+        // RustActionBarHelper hook continues to compile against the
+        // legacy path; new screen-level toolbars are built inline by
+        // `tab_drawer::attach_initial`.
+        if (item.getItemId() == android.R.id.home
+            && io.idealyst.runtime.RustActionBarHelper.dispatchHomePress()) {
+            return true;
         }
         return super.onOptionsItemSelected(item);
     }

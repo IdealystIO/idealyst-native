@@ -4,6 +4,7 @@ mod backend;
 mod builder;
 mod derive;
 mod handles;
+mod identity;
 mod primitive;
 mod reactive;
 mod safe_area;
@@ -42,15 +43,19 @@ pub use builder::{
     IntoPrimitive,
 };
 pub use derive::{Action, Derived, IntoAction, IntoDerived};
+pub use identity::{
+    current_identity, hash_key, style_path_hash, with_current_identity, Identity,
+};
 pub use primitive::Primitive;
 pub use sources::{IntoStyleSource, IntoTextSource, StyleSource, TextSource};
 pub use walker::{render, Owner};
 pub use primitives::navigator::{
     match_pattern, ContentBuilder, DefaultLinkKind, DrawerContentProps, DrawerHandle,
-    DrawerNavigator, DrawerNavigatorCallbacks, DrawerSide, DrawerType, HeaderButton, LayoutPlan,
-    LayoutProps, MountPolicy, MountResult, NavCommand, NavState, Navigator, NavigatorCallbacks,
-    NavigatorControl, NavigatorHandle, NavigatorOps, Route, RouteParams, Screen, ScreenOptions,
-    TabNavigator, TabNavigatorCallbacks, TabPlacement, TabRegistration, TabSpec, TabsHandle,
+    DrawerNavigator, DrawerNavigatorCallbacks, DrawerSide, DrawerType, HeaderButton, HeaderStyle,
+    LayoutPlan, LayoutProps, MountPolicy, MountResult, NavCommand, NavState, Navigator,
+    NavigatorCallbacks, NavigatorControl, NavigatorHandle, NavigatorOps, Route, RouteParams,
+    Screen, ScreenOptions, TabNavigator, TabNavigatorCallbacks, TabPlacement, TabRegistration,
+    TabSpec, TabsHandle,
 };
 pub use primitives::icon::{icon, FillRule, IconData, IconHandle, IconOps, StrokeAnimation};
 pub use primitives::overlay::{

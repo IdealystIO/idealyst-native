@@ -254,6 +254,14 @@ pub struct DrawerNavigator {
     pub sidebar_style: Option<crate::StyleSource>,
     pub scrim_style: Option<crate::StyleSource>,
     pub ref_fill: Option<RefFill>,
+    /// Background color for the navigator's body area — the surface
+    /// behind each screen's content. Backends apply this to whatever
+    /// view shows through any transparent regions of the mounted
+    /// screen (iOS: the nav controller's root view; Android: the
+    /// DrawerLayout body). Closure shape matches the per-screen
+    /// `header_background`: pass `idea_color(|c| c.background.clone())`
+    /// for reactive theme tracking.
+    pub background_color: Option<Rc<dyn Fn() -> crate::Color>>,
 }
 
 impl DrawerNavigator {
@@ -284,6 +292,7 @@ impl DrawerNavigator {
             sidebar_style: None,
             scrim_style: None,
             ref_fill: None,
+            background_color: None,
         })))
     }
 }
@@ -332,6 +341,120 @@ impl Bound<DrawerHandle> {
             nav.default_options = Some(opts);
         }
         self
+    }
+
+    /// Navigator-level default for the header bar's background fill.
+    /// Applies to every screen unless that screen's own
+    /// `.header_background(...)` overrides it. The closure shape
+    /// matches `Screen::header_background` — pass `idea_color(|c|
+    /// c.surface.clone())` for reactive theme tracking, or
+    /// `|| my_color.clone()` for a static fill.
+    pub fn header_background<F>(mut self, f: F) -> Self
+    where
+        F: Fn() -> crate::Color + 'static,
+    {
+        if let Primitive::DrawerNavigator(nav) = &mut self.primitive {
+            nav.default_options
+                .get_or_insert_with(ScreenOptions::default)
+                .header_background = Some(Rc::new(f));
+        }
+        self
+    }
+
+    /// Navigator-level default for header tint (back chevron + bar
+    /// button icons). See [`Self::header_background`] for the
+    /// closure shape.
+    pub fn header_tint<F>(mut self, f: F) -> Self
+    where
+        F: Fn() -> crate::Color + 'static,
+    {
+        if let Primitive::DrawerNavigator(nav) = &mut self.primitive {
+            nav.default_options
+                .get_or_insert_with(ScreenOptions::default)
+                .header_tint = Some(Rc::new(f));
+        }
+        self
+    }
+
+    /// Navigator-level default for title text color. See
+    /// [`Self::header_background`] for the closure shape.
+    pub fn title_color<F>(mut self, f: F) -> Self
+    where
+        F: Fn() -> crate::Color + 'static,
+    {
+        if let Primitive::DrawerNavigator(nav) = &mut self.primitive {
+            nav.default_options
+                .get_or_insert_with(ScreenOptions::default)
+                .title_color = Some(Rc::new(f));
+        }
+        self
+    }
+
+    /// Background fill for the navigator's body area — shows
+    /// through any transparent regions of the mounted screen. See
+    /// [`Self::header_background`] for the closure shape.
+    pub fn background_color<F>(mut self, f: F) -> Self
+    where
+        F: Fn() -> crate::Color + 'static,
+    {
+        if let Primitive::DrawerNavigator(nav) = &mut self.primitive {
+            nav.background_color = Some(Rc::new(f));
+        }
+        self
+    }
+
+    /// Bundled header style. The closure returns a
+    /// [`crate::HeaderStyle`] populated with whichever fields the
+    /// author wants to drive — each `None` field falls through to
+    /// the platform default. The closure is re-invoked on every
+    /// theme swap (when its body reads `active_theme()` directly or
+    /// via a helper like idea-ui's `idea_color`), so the bar and
+    /// body retint reactively without per-screen wiring.
+    ///
+    /// Equivalent to calling [`Self::header_background`],
+    /// [`Self::title_color`], [`Self::header_tint`], and
+    /// [`Self::background_color`] with closures that each project a
+    /// field off the same `HeaderStyle`. Use the granular setters
+    /// when you only need one slot or want them driven by different
+    /// closures.
+    ///
+    /// The closure is probed once at build time to decide which
+    /// slots to wire — fields that are `None` on the initial probe
+    /// stay platform-default and aren't re-evaluated. Toggling a
+    /// field between `Some` and `None` at runtime isn't supported;
+    /// always return the same set of `Some` fields.
+    pub fn header<F>(self, f: F) -> Self
+    where
+        F: Fn() -> crate::HeaderStyle + 'static,
+    {
+        let f = Rc::new(f);
+        let probe = f();
+        let mut s = self;
+        if probe.background.is_some() {
+            let f = f.clone();
+            s = s.header_background(move || {
+                f().background.expect("HeaderStyle.background must stay Some after the initial probe")
+            });
+        }
+        if probe.title.is_some() {
+            let f = f.clone();
+            s = s.title_color(move || {
+                f().title.expect("HeaderStyle.title must stay Some after the initial probe")
+            });
+        }
+        if probe.tint.is_some() {
+            let f = f.clone();
+            s = s.header_tint(move || {
+                f().tint.expect("HeaderStyle.tint must stay Some after the initial probe")
+            });
+        }
+        if probe.body_background.is_some() {
+            let f = f.clone();
+            s = s.background_color(move || {
+                f().body_background.expect("HeaderStyle.body_background must stay Some after the initial probe")
+            });
+        }
+        s
     }
 
     /// Style the drawer navigator's header bar.
@@ -516,4 +639,10 @@ pub struct DrawerNavigatorCallbacks<N: Clone + 'static> {
     /// commands commit (e.g. for analytics).
     pub active_changed: Rc<dyn Fn(&'static str)>,
     pub open_changed: Rc<dyn Fn(bool)>,
+    /// Reactive background-color closure for the navigator's body
+    /// area. Backends that apply it (iOS sets `nav_view.backgroundColor`,
+    /// Android sets the DrawerLayout body's background) wrap a call
+    /// to this in a per-drawer Effect, so the body re-tints on
+    /// theme swap. `None` ⇒ keep the platform default.
+    pub background_color: Option<Rc<dyn Fn() -> crate::Color>>,
 }

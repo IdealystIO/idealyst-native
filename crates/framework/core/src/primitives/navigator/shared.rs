@@ -247,6 +247,13 @@ pub struct RouteEntry {
 /// to configure platform-native chrome (UINavigationBar on iOS,
 /// MaterialToolbar on Android). All fields `Option` — `None` means
 /// "inherit from navigator defaults."
+///
+/// Color fields are `Rc<dyn Fn() -> Color>` closures, not plain
+/// `Color`. The closure is invoked at apply time, and backends
+/// re-invoke it whenever the active theme changes — so if the closure
+/// reads `crate::active_theme()` (directly or through a helper like
+/// idea-ui's `idea_color`), the header re-tints reactively on theme
+/// swap. For a static color, wrap the literal: `|| my_color.clone()`.
 #[derive(Clone, Default)]
 pub struct ScreenOptions {
     /// Screen title shown in the header bar.
@@ -257,6 +264,15 @@ pub struct ScreenOptions {
     pub header_left: Option<HeaderButton>,
     /// Right header slot (action button area).
     pub header_right: Option<HeaderButton>,
+    /// Header bar background fill. `None` keeps the platform default
+    /// (iOS opaque white, Android opaque white).
+    pub header_background: Option<Rc<dyn Fn() -> crate::Color>>,
+    /// Header bar tint — applied to back chevron and any
+    /// `header_left`/`header_right` icons that don't carry their own
+    /// `HeaderButton::tint`. `None` keeps the platform default.
+    pub header_tint: Option<Rc<dyn Fn() -> crate::Color>>,
+    /// Title text color. `None` keeps the platform default.
+    pub title_color: Option<Rc<dyn Fn() -> crate::Color>>,
 }
 
 impl ScreenOptions {
@@ -284,6 +300,30 @@ impl ScreenOptions {
         self
     }
 
+    pub fn header_background<F>(mut self, f: F) -> Self
+    where
+        F: Fn() -> crate::Color + 'static,
+    {
+        self.header_background = Some(Rc::new(f));
+        self
+    }
+
+    pub fn header_tint<F>(mut self, f: F) -> Self
+    where
+        F: Fn() -> crate::Color + 'static,
+    {
+        self.header_tint = Some(Rc::new(f));
+        self
+    }
+
+    pub fn title_color<F>(mut self, f: F) -> Self
+    where
+        F: Fn() -> crate::Color + 'static,
+    {
+        self.title_color = Some(Rc::new(f));
+        self
+    }
+
     /// Merge `other` on top of `self`: fields set in `other` override
     /// the corresponding fields in `self`. Used to layer per-screen
     /// options on top of navigator defaults.
@@ -292,6 +332,9 @@ impl ScreenOptions {
         if other.header_shown.is_some() { self.header_shown = other.header_shown; }
         if other.header_left.is_some() { self.header_left = other.header_left.clone(); }
         if other.header_right.is_some() { self.header_right = other.header_right.clone(); }
+        if other.header_background.is_some() { self.header_background = other.header_background.clone(); }
+        if other.header_tint.is_some() { self.header_tint = other.header_tint.clone(); }
+        if other.title_color.is_some() { self.title_color = other.title_color.clone(); }
         self
     }
 }
@@ -342,12 +385,52 @@ impl Screen {
         self.options.header_right = Some(btn);
         self
     }
+
+    pub fn header_background<F>(mut self, f: F) -> Self
+    where
+        F: Fn() -> crate::Color + 'static,
+    {
+        self.options.header_background = Some(Rc::new(f));
+        self
+    }
+
+    pub fn header_tint<F>(mut self, f: F) -> Self
+    where
+        F: Fn() -> crate::Color + 'static,
+    {
+        self.options.header_tint = Some(Rc::new(f));
+        self
+    }
+
+    pub fn title_color<F>(mut self, f: F) -> Self
+    where
+        F: Fn() -> crate::Color + 'static,
+    {
+        self.options.title_color = Some(Rc::new(f));
+        self
+    }
 }
 
 impl From<Primitive> for Screen {
     fn from(p: Primitive) -> Self {
         Self::new(p)
     }
+}
+
+/// Bundle of header colors for a navigator-level
+/// `.header(...)` call. Each field is optional — `None` keeps the
+/// platform default for that slot.
+///
+/// Use with [`Bound::<DrawerHandle>::header`] (and the analogous
+/// helper on other navigator kinds) so a single closure configures
+/// the whole bar at once. For per-slot overrides at the screen
+/// level, set the corresponding fields on [`Screen`] directly.
+#[derive(Default, Clone)]
+pub struct HeaderStyle {
+    pub background: Option<crate::Color>,
+    pub title: Option<crate::Color>,
+    pub tint: Option<crate::Color>,
+    pub body_background: Option<crate::Color>,
 }
 
 /// An icon button for a header slot (left or right).

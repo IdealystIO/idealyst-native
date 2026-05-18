@@ -19,9 +19,10 @@
 //! can invoke them via the `ui!` DSL.
 
 use framework_core::{
-    component, signal, ui, DrawerHandle, DrawerNavigator, Primitive, Ref, Screen, Signal,
+    component, signal, ui, DrawerHandle, DrawerNavigator, HeaderStyle, Primitive, Ref, Screen,
+    Signal,
 };
-use idea_ui::{install_idea_theme, light_theme};
+use idea_ui::{idea_header, install_idea_theme, light_theme, IdeaTheme};
 
 mod routes;
 mod styles;
@@ -53,45 +54,32 @@ pub fn app() -> Primitive {
     let is_dark: Signal<bool> = signal!(false);
     let drawer: Ref<DrawerHandle> = Ref::new();
 
-    // Each `.screen(...)` registers the route's renderer + per-screen
-    // header config. The drawer navigator injects a default hamburger
-    // `header_left` that toggles the drawer — pass an explicit
-    // `.header_left(...)` to override it (or to suppress: pass a
-    // no-op button).
+    // Header + body background configured navigator-wide via a
+    // single `.header(idea_header(...))` call. The closure receives
+    // the current `IdeaTheme` and returns a `HeaderStyle` bundle;
+    // the drawer's per-drawer Effect re-runs it on every theme
+    // swap, so flipping the sidebar's dark-mode toggle re-tints the
+    // bar and the body surface without per-screen wiring.
+    // Per-screen `Screen::new(...).header_background(...)` still
+    // overrides any of these defaults when set.
     let builder = DrawerNavigator::new(&OVERVIEW_ROUTE)
-        .screen(OVERVIEW_ROUTE, |_| {
-            Screen::new(pages::overview::page()).title("Overview")
-        })
-        .screen(QUICKSTART_ROUTE, |_| {
-            Screen::new(pages::quickstart::page()).title("Quickstart")
-        })
-        .screen(COMPONENTS_ROUTE, |_| {
-            Screen::new(pages::components::page()).title("Components")
-        })
-        .screen(REACTIVITY_ROUTE, |_| {
-            Screen::new(pages::reactivity::page()).title("Reactivity")
-        })
-        .screen(UI_DSL_ROUTE, |_| {
-            Screen::new(pages::ui_dsl::page()).title("UI DSL")
-        })
-        .screen(PRIMITIVES_ROUTE, |_| {
-            Screen::new(pages::primitives::page()).title("Primitives")
-        })
-        .screen(STYLES_ROUTE, |_| {
-            Screen::new(pages::styles::page()).title("Styles & Themes")
-        })
-        .screen(NAVIGATION_ROUTE, |_| {
-            Screen::new(pages::navigation::page()).title("Navigation")
-        })
-        .screen(MACROS_ROUTE, |_| {
-            Screen::new(pages::macros_page::page()).title("Macros")
-        })
-        .screen(CLI_ROUTE, |_| {
-            Screen::new(pages::cli::page()).title("CLI")
-        })
-        .screen(PLATFORMS_ROUTE, |_| {
-            Screen::new(pages::platforms::page()).title("Platforms")
-        })
+        .header(idea_header(|t| HeaderStyle {
+            background: Some(t.colors().surface.value().clone()),
+            title: Some(t.colors().text.value().clone()),
+            tint: Some(t.colors().text.value().clone()),
+            body_background: Some(t.colors().background.value().clone()),
+        }))
+        .screen(OVERVIEW_ROUTE, |_| Screen::new(pages::overview::page()).title("Overview"))
+        .screen(QUICKSTART_ROUTE, |_| Screen::new(pages::quickstart::page()).title("Quickstart"))
+        .screen(COMPONENTS_ROUTE, |_| Screen::new(pages::components::page()).title("Components"))
+        .screen(REACTIVITY_ROUTE, |_| Screen::new(pages::reactivity::page()).title("Reactivity"))
+        .screen(UI_DSL_ROUTE, |_| Screen::new(pages::ui_dsl::page()).title("UI DSL"))
+        .screen(PRIMITIVES_ROUTE, |_| Screen::new(pages::primitives::page()).title("Primitives"))
+        .screen(STYLES_ROUTE, |_| Screen::new(pages::styles::page()).title("Styles & Themes"))
+        .screen(NAVIGATION_ROUTE, |_| Screen::new(pages::navigation::page()).title("Navigation"))
+        .screen(MACROS_ROUTE, |_| Screen::new(pages::macros_page::page()).title("Macros"))
+        .screen(CLI_ROUTE, |_| Screen::new(pages::cli::page()).title("CLI"))
+        .screen(PLATFORMS_ROUTE, |_| Screen::new(pages::platforms::page()).title("Platforms"))
         .content(content_builder(is_dark))
         .bind(drawer);
 

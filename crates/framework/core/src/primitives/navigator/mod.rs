@@ -37,7 +37,7 @@ pub use drawer::{
     DrawerSide, DrawerType,
 };
 pub use shared::{
-    ambient_navigator, match_pattern, AmbientNavGuard, DefaultLinkKind, HeaderButton,
+    ambient_navigator, match_pattern, AmbientNavGuard, DefaultLinkKind, HeaderButton, HeaderStyle,
     LayoutBuilder, LayoutPlan, LayoutProps, MountResult, NavCommand, NavState, NavigatorCallbacks,
     NavigatorControl, NavigatorHandle, NavigatorOps, ParamsFromSegments, Route, RouteEntry,
     RouteParams, Screen, ScreenBuilder, ScreenOptions,

@@ -26,6 +26,11 @@ class HamburgerDrawable : Drawable() {
         strokeCap = Paint.Cap.ROUND
     }
 
+    fun setStrokeColor(c: Int) {
+        paint.color = c
+        invalidateSelf()
+    }
+
     override fun draw(canvas: Canvas) {
         val w = bounds.width().toFloat()
         val h = bounds.height().toFloat()
@@ -84,17 +89,33 @@ object RustActionBarHelper {
      * - `title`: shown on the bar; null leaves it blank.
      * - `leftCallbackPtr`: pointer to a leaked `HeaderButtonCallback`.
      *   `0` ⇒ no left button (no hamburger).
+     * - `bgColorCss` / `titleColorCss` / `tintColorCss`: CSS color
+     *   strings (`"#RRGGBB"`, `"#AARRGGBB"`, `"rgb(...)"`, etc.) or
+     *   null to keep the default. `tintColorCss` colors both the
+     *   navigation icon (hamburger) and any future action items.
      */
     @JvmStatic
-    fun buildToolbar(context: Context, title: String?, leftCallbackPtr: Long): Toolbar {
+    fun buildToolbar(
+        context: Context,
+        title: String?,
+        leftCallbackPtr: Long,
+        bgColorCss: String?,
+        titleColorCss: String?,
+        tintColorCss: String?,
+    ): Toolbar {
         val bar = Toolbar(context)
         if (title != null) {
             bar.title = title
         }
-        bar.setTitleTextColor(Color.BLACK)
-        bar.setBackgroundColor(Color.WHITE)
+        bar.setTitleTextColor(parseColorOr(titleColorCss, Color.BLACK))
+        bar.setBackgroundColor(parseColorOr(bgColorCss, Color.WHITE))
         if (leftCallbackPtr != 0L) {
-            bar.navigationIcon = HamburgerDrawable()
+            val drawable = HamburgerDrawable()
+            val tint = parseColorOrNull(tintColorCss)
+            if (tint != null) {
+                drawable.setStrokeColor(tint)
+            }
+            bar.navigationIcon = drawable
             bar.setNavigationOnClickListener(object : View.OnClickListener {
                 override fun onClick(v: View) {
                     nativeInvoke(leftCallbackPtr)
@@ -102,6 +123,43 @@ object RustActionBarHelper {
             })
         }
         return bar
+    }
+
+    /// Parse a CSS-ish color string. Returns `fallback` for null or
+    /// unparseable input. `Color.parseColor` recognizes `#RGB`,
+    /// `#RRGGBB`, `#AARRGGBB`, and the named colors — but throws
+    /// IllegalArgumentException on anything else (notably `rgb(...)`
+    /// and `rgba(...)`), so wrap with a manual `rgb(...)` decoder
+    /// before delegating.
+    private fun parseColorOr(css: String?, fallback: Int): Int =
+        parseColorOrNull(css) ?: fallback
+
+    private fun parseColorOrNull(css: String?): Int? {
+        val s = css?.trim() ?: return null
+        if (s.isEmpty()) return null
+        // Fast paths for the two `rgb(...)` shapes the framework
+        // emits. Color.parseColor doesn't support them, so we
+        // hand-roll a tiny parser rather than depend on a regex.
+        if (s.startsWith("rgba(") || s.startsWith("rgb(")) {
+            val open = s.indexOf('(')
+            val close = s.indexOf(')')
+            if (open < 0 || close <= open) return null
+            val parts = s.substring(open + 1, close).split(',')
+            if (parts.size != 3 && parts.size != 4) return null
+            val r = parts[0].trim().toIntOrNull() ?: return null
+            val g = parts[1].trim().toIntOrNull() ?: return null
+            val b = parts[2].trim().toIntOrNull() ?: return null
+            val a = if (parts.size == 4) {
+                val raw = parts[3].trim().toFloatOrNull() ?: return null
+                (raw.coerceIn(0f, 1f) * 255f).toInt()
+            } else 255
+            return Color.argb(a, r.coerceIn(0, 255), g.coerceIn(0, 255), b.coerceIn(0, 255))
+        }
+        return try {
+            Color.parseColor(s)
+        } catch (e: IllegalArgumentException) {
+            null
+        }
     }
 
     /**

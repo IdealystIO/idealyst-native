@@ -104,6 +104,11 @@ pub(crate) struct TabDrawerInstance {
     /// `outer` for tabs; the DrawerLayout's content child for
     /// drawer.
     body: GlobalRef,
+    /// Activity context for building per-screen Toolbars on swap.
+    /// Captured at create time so `swap_body` (which runs from a
+    /// dispatcher callback, outside any active backend borrow)
+    /// doesn't need to re-borrow the backend.
+    context: GlobalRef,
     /// Currently-mounted screen's view + scope id. `None` only
     /// between creation and the first `attach_initial` call.
     current: Option<(GlobalRef, u64)>,
@@ -390,6 +395,7 @@ fn install_instance(
     let instance = Rc::new(RefCell::new(TabDrawerInstance {
         outer: outer.clone(),
         body,
+        context: b.context.clone(),
         current: None,
         release_screen: callbacks.release_screen.clone(),
         mount_screen: callbacks.mount_screen.clone(),
@@ -465,13 +471,23 @@ fn swap_body(
     };
     let new_view = result.node;
     let new_scope = result.scope_id;
-    let (body, old_scope) = {
+    let new_options = result.options;
+    let (body, context, is_drawer, old_scope) = {
         let mut inst = instance.borrow_mut();
         let old = inst.current.take().map(|(_, s)| s);
-        (inst.body.clone(), old)
+        let is_drawer = matches!(inst.kind, DrawerKind::Drawer { .. });
+        (inst.body.clone(), inst.context.clone(), is_drawer, old)
     };
     with_env(|env| {
+        // Wipe the old screen + its toolbar; rebuild both from the
+        // new screen's options. Drawer navigators get an in-tree
+        // Toolbar above the screen (see `attach_toolbar_to_body`);
+        // tab navigators skip it (their body is a FrameLayout that
+        // only holds the active tab's screen).
         let _ = env.call_method(body.as_obj(), "removeAllViews", "()V", &[]);
+        if is_drawer {
+            attach_toolbar_to_body(env, &context, &body, &new_options);
+        }
         let _ = env.call_method(
             body.as_obj(),
             "addView",
@@ -536,7 +552,6 @@ pub(crate) fn attach_sidebar(
     navigator: &GlobalRef,
     sidebar: GlobalRef,
 ) {
-    log::info!("[drawer] attach_sidebar called");
     let Some(entry) = b.tab_drawer_instances.get(&AndroidBackend::node_key_of(navigator)) else {
         log::error!("tab_drawer attach_sidebar: no instance for node");
         return;
@@ -548,7 +563,6 @@ pub(crate) fn attach_sidebar(
             return;
         }
     };
-    log::info!("[drawer] attach_sidebar: calling attachDrawer JNI");
     with_env(|env| {
         if let Err(e) = env.call_method(
             drawer_view.as_obj(),
@@ -561,8 +575,6 @@ pub(crate) fn attach_sidebar(
                 let _ = env.exception_clear();
             }
             log::error!("RustDrawerLayout.attachDrawer JNI call failed: {:?}", e);
-        } else {
-            log::info!("[drawer] attachDrawer JNI returned OK");
         }
     });
 }
@@ -570,6 +582,20 @@ pub(crate) fn attach_sidebar(
 /// Attach the framework-built initial screen to the body. Called
 /// by the framework after `create_*` returns, outside any active
 /// backend borrow.
+///
+/// For drawer navigators, builds an in-tree `android.widget.Toolbar`
+/// from `options` (title + `header_left` hamburger) and inserts it
+/// as the body's first child — the body is a vertical LinearLayout
+/// so the Toolbar reserves height at the top and the screen fills
+/// below. Tab navigators skip the toolbar; their body is a plain
+/// FrameLayout.
+///
+/// The Toolbar sits *inside* the DrawerLayout, which means the drawer
+/// panel z-overlays it when slid open. This is the desired behavior
+/// (drawer covers everything, including the toolbar) and is the
+/// reason we don't use the host Activity's system ActionBar — the
+/// system bar lives in the window decor above the activity's content
+/// view and a DrawerLayout can't reach above it.
 pub(crate) fn attach_initial(
     b: &mut AndroidBackend,
     navigator: &GlobalRef,
@@ -582,7 +608,12 @@ pub(crate) fn attach_initial(
         return;
     };
     let body = entry.instance.borrow().body.clone();
+    let is_drawer = matches!(entry.instance.borrow().kind, DrawerKind::Drawer { .. });
+    let context = b.context.clone();
     with_env(|env| {
+        if is_drawer {
+            attach_toolbar_to_body(env, &context, &body, &options);
+        }
         let _ = env.call_method(
             body.as_obj(),
             "addView",
@@ -591,72 +622,115 @@ pub(crate) fn attach_initial(
         );
     });
     entry.instance.borrow_mut().current = Some((screen, scope_id));
-
-    // Push title + header_left through the Activity's system
-    // ActionBar — mirrors what iOS does with the screen's
-    // navigationItem (`title`, `setLeftBarButtonItem`).
-    apply_screen_options(b, &options);
 }
 
-/// Mirror `ScreenOptions` onto the host Activity's ActionBar.
-/// `RustActionBarHelper.apply` is a static Kotlin shim that takes the
-/// title + a raw pointer to a leaked `HeaderButtonCallback` (0 ⇒ no
-/// left button). The Activity's `onOptionsItemSelected` override
-/// calls back through `RustActionBarHelper.dispatchHomePress` to
-/// invoke the callback when the user taps the indicator.
-fn apply_screen_options(
-    b: &crate::imp::AndroidBackend,
+/// Build a Toolbar from screen options (via the Kotlin shim) and add
+/// it to `body` as its first child. No-op if neither a title nor a
+/// header_left button is set.
+fn attach_toolbar_to_body(
+    env: &mut jni::JNIEnv,
+    context: &GlobalRef,
+    body: &GlobalRef,
     options: &framework_core::ScreenOptions,
 ) {
     use crate::imp::callbacks::HeaderButtonCallback;
     use jni::sys::jlong;
 
+    if options.title.is_none()
+        && options.header_left.is_none()
+        && options.header_background.is_none()
+        && options.title_color.is_none()
+        && options.header_tint.is_none()
+    {
+        return;
+    }
+
     let left_ptr: jlong = match options.header_left.as_ref() {
         Some(btn) => {
-            // Leak the callback so the JVM-side helper can call back
-            // any number of times. See `HeaderButtonCallback`'s
-            // lifetime note for why we don't free the previous one.
-            let leaked = Box::into_raw(Box::new(HeaderButtonCallback(btn.on_press.clone())));
-            leaked as jlong
+            // Leak the callback so the Toolbar's OnClickListener can
+            // call back any number of times. See
+            // `HeaderButtonCallback`'s lifetime note for why we don't
+            // free the previous one.
+            Box::into_raw(Box::new(HeaderButtonCallback(btn.on_press.clone()))) as jlong
         }
         None => 0,
     };
-    let title = options.title.clone();
+    let title_jstring = options.title.as_ref().and_then(|t| env.new_string(t).ok());
+    // Color fields are closures (`Fn() -> Color`) so the framework's
+    // reactive plumbing can re-resolve them on theme change. Invoke
+    // each one here and stringify the CSS for the Kotlin-side
+    // parser. Note: the Android side of header reactivity (re-build
+    // the Toolbar on theme change) isn't wired yet — the colors
+    // resolved here freeze at attach time.
+    let bg_jstring = options
+        .header_background
+        .as_ref()
+        .and_then(|f| env.new_string(&f().0).ok());
+    let title_color_jstring = options
+        .title_color
+        .as_ref()
+        .and_then(|f| env.new_string(&f().0).ok());
+    let tint_jstring = options
+        .header_tint
+        .as_ref()
+        .and_then(|f| env.new_string(&f().0).ok());
 
-    with_env(|env| {
-        let title_jstring = match title {
-            Some(ref t) => env.new_string(t).ok(),
-            None => None,
-        };
-        let helper_class = match env.find_class("io/idealyst/runtime/RustActionBarHelper") {
-            Ok(c) => c,
-            Err(e) => {
-                log::error!("RustActionBarHelper class not found: {:?}", e);
-                return;
-            }
-        };
-        let null_obj = JObject::null();
-        let title_arg: &JObject = match title_jstring.as_ref() {
-            Some(s) => s.as_ref(),
-            None => &null_obj,
-        };
-        if let Err(e) = env.call_static_method(
-            helper_class,
-            "apply",
-            "(Landroid/app/Activity;Ljava/lang/String;J)V",
-            &[
-                JValue::Object(&b.context.as_obj()),
-                JValue::Object(title_arg),
-                JValue::Long(left_ptr),
-            ],
-        ) {
+    let helper_class = match env.find_class("io/idealyst/runtime/RustActionBarHelper") {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!("RustActionBarHelper class not found: {:?}", e);
+            return;
+        }
+    };
+    let null_obj = JObject::null();
+    let title_arg: &JObject = match title_jstring.as_ref() {
+        Some(s) => s.as_ref(),
+        None => &null_obj,
+    };
+    let bg_arg: &JObject = match bg_jstring.as_ref() {
+        Some(s) => s.as_ref(),
+        None => &null_obj,
+    };
+    let title_color_arg: &JObject = match title_color_jstring.as_ref() {
+        Some(s) => s.as_ref(),
+        None => &null_obj,
+    };
+    let tint_arg: &JObject = match tint_jstring.as_ref() {
+        Some(s) => s.as_ref(),
+        None => &null_obj,
+    };
+    let toolbar_obj = match env.call_static_method(
+        helper_class,
+        "buildToolbar",
+        "(Landroid/content/Context;Ljava/lang/String;JLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)Landroid/widget/Toolbar;",
+        &[
+            JValue::Object(&context.as_obj()),
+            JValue::Object(title_arg),
+            JValue::Long(left_ptr),
+            JValue::Object(bg_arg),
+            JValue::Object(title_color_arg),
+            JValue::Object(tint_arg),
+        ],
+    ) {
+        Ok(jni::objects::JValueGen::Object(o)) => o,
+        Ok(_) => return,
+        Err(e) => {
             if env.exception_check().unwrap_or(false) {
                 let _ = env.exception_describe();
                 let _ = env.exception_clear();
             }
-            log::error!("RustActionBarHelper.apply failed: {:?}", e);
+            log::error!("RustActionBarHelper.buildToolbar failed: {:?}", e);
+            return;
         }
-    });
+    };
+    if let Err(e) = env.call_method(
+        body.as_obj(),
+        "addView",
+        "(Landroid/view/View;)V",
+        &[JValue::Object(&toolbar_obj)],
+    ) {
+        log::error!("Toolbar addView failed: {:?}", e);
+    }
 }
 
 pub(crate) fn release(b: &mut AndroidBackend, node: &GlobalRef) {

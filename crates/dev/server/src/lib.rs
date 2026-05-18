@@ -146,6 +146,21 @@ pub type NavStateSnapshot = HashMap<u64, Vec<String>>;
 struct RecorderState {
     next_node: u64,
     next_style: u64,
+    /// Identity → NodeId memo. Keyed by [`framework_core::Identity`]
+    /// (the structural identity the walker sets via
+    /// `with_current_identity` before every `backend.create_*` call).
+    /// Survives [`WireRecordingBackend::reset_log_and_scene`] so that
+    /// across sidecar respawns the same structural emission lands on
+    /// the same wire `NodeId` — that's what makes incremental hot
+    /// reload incremental (`CreateView` for the same node is a no-op
+    /// on the client; new `ApplyStyle` for the same node lands on
+    /// the right native view).
+    ///
+    /// Emissions that arrive under [`framework_core::Identity::UNIDENTIFIED`]
+    /// bypass dedup (mint a fresh id every time). Used as a
+    /// pressure-release for any emission site that hasn't been
+    /// migrated to set an identity yet.
+    identity_to_node: HashMap<framework_core::Identity, NodeId>,
     /// Monotonic generation counter. Bumped by
     /// [`WireRecordingBackend::reset_log_and_scene`] each time the
     /// scene is wiped + re-rendered (typically after a hot-reload
@@ -228,6 +243,7 @@ impl WireRecordingBackend {
             inner: Rc::new(RefCell::new(RecorderState {
                 next_node: 0,
                 next_style: 0,
+                identity_to_node: HashMap::new(),
                 epoch: 0,
                 handlers: HandlerTable::default(),
                 styles_by_ptr: HashMap::new(),
@@ -336,6 +352,17 @@ impl WireRecordingBackend {
         state.scene = SceneModel::new();
         state.next_node = 0;
         state.next_style = 0;
+        // Deliberately NOT cleared: `identity_to_node` persists across
+        // sidecar respawns. The fresh walk re-emits the same
+        // structural identities (`Identity::node(parent, slot, ...)`
+        // is a pure function of position), and we want them to land
+        // on the same wire `NodeId`s as before — that's how the
+        // client's idempotent apply correctly skips `CreateView` for
+        // unchanged nodes while still receiving new
+        // `ApplyStyle`/`UpdateText` deltas for the *same* native view.
+        // Removed-from-the-new-walk identities stay in the map; they
+        // just won't be referenced. A future pass can prune them by
+        // diffing visit sets between walks.
         state.styles_by_ptr.clear();
         state.state_handlers.clear();
         state.navigators.clear();
@@ -466,9 +493,26 @@ impl WireRecordingBackend {
         }
     }
 
+    /// Allocate a `NodeId` for the current emission site. Uses the
+    /// ambient [`framework_core::current_identity`] to dedup across
+    /// sidecar respawns: the same structural emission always gets the
+    /// same `NodeId`, which is what makes hot reload incremental
+    /// rather than a full-scene reset. Emissions under
+    /// [`framework_core::Identity::UNIDENTIFIED`] (legacy path that
+    /// hasn't been migrated yet) always mint fresh — no dedup.
     fn mint_node(state: &mut RecorderState) -> NodeId {
+        let id = framework_core::current_identity();
+        if id != framework_core::Identity::UNIDENTIFIED {
+            if let Some(&existing) = state.identity_to_node.get(&id) {
+                return existing;
+            }
+        }
         state.next_node += 1;
-        NodeId(state.next_node)
+        let assigned = NodeId(state.next_node);
+        if id != framework_core::Identity::UNIDENTIFIED {
+            state.identity_to_node.insert(id, assigned);
+        }
+        assigned
     }
 
     fn intern_style(state: &mut RecorderState, rules: &Rc<StyleRules>) -> StyleId {
@@ -1504,7 +1548,17 @@ fn navigator_dispatcher_handle(
                     url: url.clone(),
                     restore,
                 },
-                PushLikeKind::Select => Command::NavigatorPush {
+                // Select on a tab/drawer navigator is conceptually a
+                // single-screen "swap to this route." There's no
+                // `NavigatorSelect` wire variant; `NavigatorReset`
+                // carries identical payload and the dev-client
+                // dispatches it as `NavCommand::Reset`, which the
+                // tab/drawer dispatcher already handles (swap body
+                // + auto-close drawer). Emitting `NavigatorPush`
+                // here was wrong — the client's dispatch translated
+                // it into `NavCommand::Push`, which tab/drawer
+                // dispatchers reject by panic.
+                PushLikeKind::Select => Command::NavigatorReset {
                     navigator: nav_id,
                     screen: mount.node,
                     scope,

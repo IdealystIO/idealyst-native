@@ -68,12 +68,38 @@ pub struct Owner {
 #[must_use = "drop the Owner to dispose the UI; keep it alive to keep the UI reactive"]
 pub fn render<B: Backend + 'static>(backend: Rc<RefCell<B>>, tree: Primitive) -> Owner {
     let mut scope = Box::new(reactive::Scope::new());
-    let root = reactive::with_scope(&mut scope, || build(&backend, tree));
+    let root = reactive::with_scope(&mut scope, || build(&backend, 0, tree));
     backend.borrow_mut().finish(root);
     Owner { scope }
 }
 
-fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::Node {
+/// Build a `Primitive` subtree. `slot` is the emission's position in
+/// its parent's children (or its branch index inside a conditional /
+/// switch arm). Combined with the ambient
+/// [`current_identity()`][crate::current_identity] this determines
+/// the stable [`Identity`][crate::Identity] for every `backend.create_*`
+/// call inside the subtree — the AAS recorder uses that identity to
+/// keep wire `NodeId`s consistent across sidecar respawns.
+///
+/// Callers in iteration loops pass the loop index; standalone /
+/// sole-occupant call sites pass `0`. Branch sites
+/// (`when` / `switch` / `if-else`) pass the branch index so the two
+/// arms get distinct identities.
+fn build<B: Backend + 'static>(
+    backend: &Rc<RefCell<B>>,
+    slot: u32,
+    node: Primitive,
+) -> B::Node {
+    // Compute this emission's Identity from the ambient parent + our
+    // slot. `with_current_identity` makes it the new parent for any
+    // recursive `build(...)` calls inside this body — see the doc
+    // comment on `crate::identity` for the model.
+    let parent = crate::current_identity();
+    let my_identity = crate::Identity::node(parent, slot, None, None);
+    crate::with_current_identity(my_identity, move || build_inner(backend, node))
+}
+
+fn build_inner<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::Node {
 
     // Walker-level timing. Record the kind once on entry; the matching
     // exit fires after the match returns. Tag covers the full subtree
@@ -684,6 +710,7 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
                 sidebar_style,
                 scrim_style,
                 ref_fill,
+                background_color,
             } = *nav;
             let n = build_drawer_navigator(
                 backend,
@@ -699,6 +726,7 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
                 mount_policy,
                 default_options,
                 ref_fill,
+                background_color,
             );
             if let Some(s) = style {
                 attach_style(backend, &n, s);
@@ -1282,7 +1310,8 @@ fn insert_children<B: Backend + 'static>(
     parent: &mut B::Node,
     children: Vec<Primitive>,
 ) {
-    for child in children {
+    for (slot_idx, child) in children.into_iter().enumerate() {
+        let slot = slot_idx as u32;
         match child {
             Primitive::Repeat { count, row_builder } => {
                 // Build every row first, then hand the lot to the
@@ -1294,12 +1323,29 @@ fn insert_children<B: Backend + 'static>(
                 let mut rows: Vec<B::Node> = Vec::with_capacity(count);
                 for i in 0..count {
                     let row_prim = row_builder(i);
-                    rows.push(build(backend, row_prim));
+                    // Each row gets a distinct identity within the
+                    // Repeat's slot. Without keys, the row's slot is
+                    // its iteration index — documented to lose
+                    // identity on reorder, same as React index-keyed
+                    // lists. A keyed `for` macro will eventually
+                    // synthesize `Primitive::Keyed` siblings, at
+                    // which point the row index becomes the fallback
+                    // for missing keys.
+                    let row_id = crate::Identity::node(
+                        crate::Identity::node(crate::current_identity(), slot, None, None),
+                        i as u32,
+                        None,
+                        None,
+                    );
+                    let row_node = crate::with_current_identity(row_id, || {
+                        build_inner(backend, row_prim)
+                    });
+                    rows.push(row_node);
                 }
                 backend.borrow_mut().insert_many(parent, rows);
             }
             other => {
-                let child_node = build(backend, other);
+                let child_node = build(backend, slot, other);
                 backend.borrow_mut().insert(parent, child_node);
             }
         }
@@ -1594,6 +1640,13 @@ fn build_navigator<B: Backend + 'static>(
         NavigatorControl,
     };
 
+    // Capture this navigator's Identity now — see
+    // `build_drawer_navigator` for the full rationale. Closures that
+    // fire later (mount_screen, build_layout) re-establish this as
+    // their parent so per-route content gets stable, distinct wire
+    // ids across rebuilds.
+    let nav_identity = crate::current_identity();
+
     // Per-screen scope registry. The framework owns the scopes — the
     // backend stores opaque scope ids alongside its native cells and
     // calls `release_screen(id)` to drop the matching scope. Same
@@ -1627,31 +1680,22 @@ fn build_navigator<B: Backend + 'static>(
                 .unwrap_or_else(|| panic!("Navigator: route '{}' is not registered", name));
             let builder = entry.build.clone();
             let mut scope = Box::new(reactive::Scope::new());
-            // Wrap BOTH `builder(...)` and the subsequent `build(...)`
-            // inside `with_scope`. Any Effects that the build walker
-            // creates (e.g. switch/when/style/data_changed effects)
-            // must register with this screen's scope so they stay
-            // alive until the screen is released. Without this,
-            // those Effects get `owns: true` and free immediately
-            // when their handle drops at end of `build` —
-            // unintentionally dropping shared `Rc<RefCell<...>>`
-            // state the framework's microtasks depend on.
-            //
-            // Also push this navigator's control plane onto the
-            // ambient stack so any `Link` primitives built inside
-            // the screen capture it as their target. RAII guard
-            // pops on drop, so nested navigators (each pushing in
-            // turn) stack correctly.
             let _ambient_guard =
                 primitives::navigator::AmbientNavGuard::push(control_for_mount.clone());
-            // `builder` now returns a `Screen` (the render closure's
-            // return value, type-erased through `ScreenBuilder`). Split
-            // it into the primitive (built into a node) and the
-            // options (handed to the backend via `MountResult`).
+            // Screen channel = slot 0 of the navigator; route name as
+            // the key so per-route subtrees don't alias.
+            let screen_id = crate::Identity::node(
+                nav_identity,
+                0,
+                None,
+                Some(crate::hash_key(name)),
+            );
             let (node, options) = reactive::with_scope(&mut scope, || {
-                let screen = builder(params);
-                let n = build(&backend, screen.primitive);
-                (n, screen.options)
+                crate::with_current_identity(screen_id, || {
+                    let screen = builder(params);
+                    let n = build(&backend, 0, screen.primitive);
+                    (n, screen.options)
+                })
             });
             let scope_id = {
                 let mut n = next_id.borrow_mut();
@@ -1749,7 +1793,7 @@ fn build_navigator<B: Backend + 'static>(
     // build walker — wrapped in `with_scope(layout_scope)` so
     // layout effects survive past the build call.
     //
-    // **Borrow safety**: this closure calls `build(&backend, ...)`
+    // **Borrow safety**: this closure calls `build(&backend, 0, ...)`
     // which does `backend.borrow_mut()`. Backends must only invoke
     // build_layout *outside* the `create_navigator` borrow window —
     // typically from a microtask scheduled during create, the same
@@ -1798,8 +1842,13 @@ fn build_navigator<B: Backend + 'static>(
             // those effects would drop immediately because the
             // layout build runs detached from any active scope.
             let mut scope = Box::new(reactive::Scope::new());
+            // Layout channel = slot 2 of the navigator's identity.
+            let layout_id =
+                crate::Identity::node(nav_identity, 2, None, None);
             let root = reactive::with_scope(&mut scope, || {
-                build(&backend, root_primitive)
+                crate::with_current_identity(layout_id, || {
+                    build(&backend, 0, root_primitive)
+                })
             });
             // Stash the scope on the slot so it stays alive for the
             // navigator's lifetime. The slot itself is dropped in
@@ -1892,6 +1941,10 @@ fn build_tab_navigator<B: Backend + 'static>(
         NavigatorCallbacks, NavigatorControl, TabNavigatorCallbacks, TabRegistration,
     };
 
+    // Capture this navigator's Identity for the screen-mount closure
+    // — see `build_drawer_navigator` for the rationale.
+    let nav_identity = crate::current_identity();
+
     // Per-screen scope registry — same discipline as stack.
     let scopes: Rc<RefCell<HashMap<u64, Box<reactive::Scope>>>> =
         Rc::new(RefCell::new(HashMap::new()));
@@ -1914,10 +1967,20 @@ fn build_tab_navigator<B: Backend + 'static>(
             let mut scope = Box::new(reactive::Scope::new());
             let _ambient_guard =
                 primitives::navigator::AmbientNavGuard::push(control_for_mount.clone());
+            // Screen channel = slot 0 of the tab navigator; route
+            // name as the key so per-tab subtrees stay distinct.
+            let screen_id = crate::Identity::node(
+                nav_identity,
+                0,
+                None,
+                Some(crate::hash_key(name)),
+            );
             let (node, options) = reactive::with_scope(&mut scope, || {
-                let screen = builder(params);
-                let n = build(&backend, screen.primitive);
-                (n, screen.options)
+                crate::with_current_identity(screen_id, || {
+                    let screen = builder(params);
+                    let n = build(&backend, 0, screen.primitive);
+                    (n, screen.options)
+                })
             });
             let scope_id = {
                 let mut n = next_id.borrow_mut();
@@ -2014,8 +2077,13 @@ fn build_tab_navigator<B: Backend + 'static>(
                 primitives::navigator::AmbientNavGuard::push(control.clone());
             let root_primitive = layout_fn(props);
             let mut scope = Box::new(reactive::Scope::new());
+            // Layout channel = slot 2 of the tab navigator's identity.
+            let layout_id =
+                crate::Identity::node(nav_identity, 2, None, None);
             let root = reactive::with_scope(&mut scope, || {
-                build(&backend, root_primitive)
+                crate::with_current_identity(layout_id, || {
+                    build(&backend, 0, root_primitive)
+                })
             });
             *layout_scope_slot.borrow_mut() = Some(scope);
             LayoutPlan { root, outlet_ref }
@@ -2102,13 +2170,27 @@ fn build_drawer_navigator<B: Backend + 'static>(
     drawer_width: f32,
     swipe_to_open: bool,
     mount_policy: primitives::navigator::MountPolicy,
-    _default_options: Option<primitives::navigator::ScreenOptions>,
+    default_options: Option<primitives::navigator::ScreenOptions>,
     ref_fill: Option<RefFill>,
+    background_color: Option<Rc<dyn Fn() -> crate::Color>>,
 ) -> B::Node {
     use primitives::navigator::{
         match_pattern, DefaultLinkKind, DrawerContentProps, DrawerNavigatorCallbacks, LayoutPlan,
         LayoutProps, MountResult, NavState, NavigatorCallbacks, NavigatorControl,
     };
+
+    // Capture this navigator's Identity now so the screen-mount and
+    // sidebar-content closures (which fire later, outside the
+    // walker's main pass and therefore with `current_identity()`
+    // reset to UNIDENTIFIED) can re-establish the navigator's scope
+    // as the parent for everything they build. Each channel inside
+    // the navigator (screen / sidebar / layout) uses a different
+    // slot so they don't alias. Per-route content uses the route
+    // name as a key so different screens at "slot 0 of the screen
+    // channel" get distinct identities — otherwise route A's
+    // top-level Text and route B's top-level Button would land on
+    // the same wire NodeId after the first swap.
+    let nav_identity = crate::current_identity();
 
     let scopes: Rc<RefCell<HashMap<u64, Box<reactive::Scope>>>> =
         Rc::new(RefCell::new(HashMap::new()));
@@ -2116,6 +2198,7 @@ fn build_drawer_navigator<B: Backend + 'static>(
     let screens = Rc::new(screens);
     let control = Rc::new(NavigatorControl::new());
     control.set_default_link_kind(DefaultLinkKind::Select);
+    let default_options = Rc::new(default_options);
 
     let mount_screen: Rc<dyn Fn(&'static str, Box<dyn Any>) -> MountResult<B::Node>> = {
         let scopes = scopes.clone();
@@ -2123,6 +2206,7 @@ fn build_drawer_navigator<B: Backend + 'static>(
         let screens = screens.clone();
         let backend = backend.clone();
         let control_for_mount = control.clone();
+        let defaults_for_mount = default_options.clone();
         Rc::new(move |name, params| {
             let entry = screens
                 .get(name)
@@ -2131,11 +2215,33 @@ fn build_drawer_navigator<B: Backend + 'static>(
             let mut scope = Box::new(reactive::Scope::new());
             let _ambient_guard =
                 primitives::navigator::AmbientNavGuard::push(control_for_mount.clone());
-            let (node, mut options) = reactive::with_scope(&mut scope, || {
-                let screen = builder(params);
-                let n = build(&backend, screen.primitive);
-                (n, screen.options)
+            // Screen channel = slot 0 of the navigator's identity;
+            // route name as the key so per-route content gets its
+            // own subtree of identities.
+            let screen_id = crate::Identity::node(
+                nav_identity,
+                0,
+                None,
+                Some(crate::hash_key(name)),
+            );
+            let (node, screen_options) = reactive::with_scope(&mut scope, || {
+                crate::with_current_identity(screen_id, || {
+                    let screen = builder(params);
+                    let n = build(&backend, 0, screen.primitive);
+                    (n, screen.options)
+                })
             });
+            // Layer the screen's per-screen options on top of the
+            // drawer's navigator-level defaults — `merge` keeps any
+            // field the per-screen options explicitly set and falls
+            // back to the navigator default otherwise. This is how
+            // `.header_background(...)` on the navigator becomes the
+            // implicit bar color for every screen without each
+            // `Screen::new(...)` having to repeat it.
+            let mut options = match defaults_for_mount.as_ref() {
+                Some(d) => d.clone().merge(&screen_options),
+                None => screen_options,
+            };
             // Default drawer-toggle hamburger when the author didn't
             // specify a left header button. Drawer-rooted screens
             // almost always want this, so making it the default
@@ -2303,8 +2409,15 @@ fn build_drawer_navigator<B: Backend + 'static>(
             };
             let root_primitive = layout_fn(props);
             let mut scope = Box::new(reactive::Scope::new());
+            // Layout channel = slot 2 of the navigator's identity.
+            // Distinct from screen (slot 0) and sidebar (slot 1) so
+            // top-level nodes in each channel get distinct wire ids.
+            let layout_id =
+                crate::Identity::node(nav_identity, 2, None, None);
             let root = reactive::with_scope(&mut scope, || {
-                build(&backend, root_primitive)
+                crate::with_current_identity(layout_id, || {
+                    build(&backend, 0, root_primitive)
+                })
             });
             *layout_scope_slot.borrow_mut() = Some(scope);
             LayoutPlan { root, outlet_ref }
@@ -2333,8 +2446,15 @@ fn build_drawer_navigator<B: Backend + 'static>(
                     primitives::navigator::AmbientNavGuard::push(control.clone());
                 let primitive = make_content();
                 let mut scope = Box::new(reactive::Scope::new());
+                // Sidebar channel = slot 1 of the navigator's
+                // identity. Keeps sidebar nodes from aliasing with
+                // screen nodes (slot 0) on the wire.
+                let sidebar_id =
+                    crate::Identity::node(nav_identity, 1, None, None);
                 let node = reactive::with_scope(&mut scope, || {
-                    build(&backend, primitive)
+                    crate::with_current_identity(sidebar_id, || {
+                        build(&backend, 0, primitive)
+                    })
                 });
                 *content_scope_slot.borrow_mut() = Some(scope);
                 node
@@ -2364,6 +2484,7 @@ fn build_drawer_navigator<B: Backend + 'static>(
         build_content,
         active_changed,
         open_changed,
+        background_color,
     };
 
     let mount_screen_for_initial = callbacks.navigator.mount_screen.clone();
@@ -3064,7 +3185,7 @@ fn build_virtualizer<B: Backend + 'static>(
             // `Rc<RefCell<...>>` state with them.
             let node = reactive::with_scope(&mut scope, || {
                 let primitive = render(idx);
-                build(&backend, primitive)
+                build(&backend, 0, primitive)
             });
             let id = {
                 let mut n = next_id.borrow_mut();
@@ -3196,7 +3317,7 @@ fn build_virtualizer_declarative<B: Backend + 'static>(
 
     // Capture the row template's construction commands as a slot.
     backend.borrow_mut().begin_slot_capture();
-    let template_node = build(backend, row_template);
+    let template_node = build(backend, 0, row_template);
     backend.borrow_mut().end_slot_capture(&template_node);
 
     {
@@ -3252,7 +3373,7 @@ fn build_when<B: Backend + 'static>(
         untrack(|| {
             reactive::with_scope(&mut new_scope, || {
                 let branch = if active { then() } else { otherwise() };
-                let child_node = build(&backend_for_effect, branch);
+                let child_node = build(&backend_for_effect, 0, branch);
                 let mut placeholder_mut = placeholder_for_effect.clone();
                 backend_for_effect
                     .borrow_mut()
@@ -3292,11 +3413,11 @@ fn build_when_declarative<B: Backend + 'static>(
     // branch's subtree build so the backend stashes the commands
     // separately for play/teardown on the device.
     backend.borrow_mut().begin_slot_capture();
-    let then_node = build(backend, then());
+    let then_node = build(backend, 0, then());
     backend.borrow_mut().end_slot_capture(&then_node);
 
     backend.borrow_mut().begin_slot_capture();
-    let otherwise_node = build(backend, otherwise());
+    let otherwise_node = build(backend, 0, otherwise());
     backend.borrow_mut().end_slot_capture(&otherwise_node);
 
     // Declare signals + the when binding to the backend.
@@ -3337,12 +3458,12 @@ fn build_switch_declarative<B: Backend + 'static>(
         Vec::with_capacity(arms.len());
     for (value, builder) in arms.iter() {
         backend.borrow_mut().begin_slot_capture();
-        let arm_node = build(backend, builder());
+        let arm_node = build(backend, 0, builder());
         backend.borrow_mut().end_slot_capture(&arm_node);
         arm_node_pairs.push((value.clone(), arm_node));
     }
     backend.borrow_mut().begin_slot_capture();
-    let default_node = build(backend, default());
+    let default_node = build(backend, 0, default());
     backend.borrow_mut().end_slot_capture(&default_node);
 
     {
@@ -3445,7 +3566,7 @@ fn build_presence<B: Backend + 'static>(
             untrack(|| {
                 reactive::with_scope(&mut new_scope, || {
                     let prim = child_fn_call();
-                    let node = build(&backend_inner, prim);
+                    let node = build(&backend_inner, 0, prim);
                     *built_node_inner.borrow_mut() = Some(node);
                 });
             });
@@ -3644,7 +3765,7 @@ fn build_switch<B: Backend + 'static>(
                         .find(|(pat, _)| pat == &new_key)
                         .map(|(_, builder)| builder())
                         .unwrap_or_else(|| default_for_microtask());
-                    let child_node = build(&backend_for_microtask, branch);
+                    let child_node = build(&backend_for_microtask, 0, branch);
                     let mut placeholder_mut = placeholder_for_microtask.clone();
                     backend_for_microtask
                         .borrow_mut()

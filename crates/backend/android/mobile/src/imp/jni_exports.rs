@@ -57,14 +57,11 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustActionBarHelper_nativ
     _class: JObject,
     ptr: jlong,
 ) {
-    log::info!("[header-btn] nativeInvoke ptr={}", ptr);
     if ptr == 0 {
         return;
     }
     let cb = &*(ptr as *const HeaderButtonCallback);
-    log::info!("[header-btn] invoking callback");
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (cb.0)()));
-    log::info!("[header-btn] callback returned");
 }
 
 /// Free a leaked `ClickCallback`. Currently unused (see lifetime

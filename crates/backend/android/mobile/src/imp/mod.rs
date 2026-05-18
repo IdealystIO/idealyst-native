@@ -222,6 +222,13 @@ impl Backend for AndroidBackend {
         primitives::view::create(self)
     }
 
+    fn create_link(
+        &mut self,
+        config: framework_core::primitives::link::LinkConfig,
+    ) -> Self::Node {
+        primitives::link::create(self, config.on_activate)
+    }
+
     fn create_text(&mut self, content: &str) -> Self::Node {
         primitives::text::create(self, content)
     }

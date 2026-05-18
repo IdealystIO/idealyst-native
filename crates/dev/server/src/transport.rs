@@ -522,7 +522,6 @@ fn handle_app_msg(
         eprintln!("[dev-server] app hello: {}", app_name);
         return;
     }
-    eprintln!("[dev-server] received app msg: {:?}", std::mem::discriminant(&msg));
     if let Some(slot) = sidecar_slot {
         if let Ok(guard) = slot.lock() {
             if let Some(sidecar) = guard.as_ref() {

@@ -65,8 +65,8 @@ pub mod stylesheets;
 pub mod theme;
 
 pub use theme::{
-    dark_theme, install_idea_theme, light_theme, set_idea_theme, Colors, IdeaTheme,
-    IdeaThemeDefaults, IdeaThemeRef, IntentColors, Intents, Radius, Spacing, Typography,
+    dark_theme, idea_color, idea_header, install_idea_theme, light_theme, set_idea_theme, Colors,
+    IdeaTheme, IdeaThemeDefaults, IdeaThemeRef, IntentColors, Intents, Radius, Spacing, Typography,
 };
 
 // The `Intent` trait + 7 built-in marker types still exist for apps

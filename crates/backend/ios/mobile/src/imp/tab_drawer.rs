@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 use super::callbacks::CallbackTarget;
 use super::navigator::IosNavigatorOps;
-use backend_ios_core::style::animate;
+use backend_ios_core::style::{animate, color_to_uicolor};
 use super::{pin_to_edges, IosNode};
 
 #[cfg(feature = "debug-stats")]
@@ -73,6 +73,25 @@ pub(crate) struct TabDrawerEntry {
     /// targets this VC when present — its `navigationItem` populates
     /// the drawer's own `UINavigationBar`.
     pub(crate) header_root_vc: Option<Retained<UIViewController>>,
+    /// The embedded `UINavigationController` itself, kept alongside
+    /// `header_root_vc`. We pass this into `apply_header_options`
+    /// directly because `rootVc.navigationController` returns nil
+    /// for our setup even after `setViewControllers:` (UIKit only
+    /// wires the responder-chain link once the nav controller is
+    /// added as a child of an outer VC, which we don't have — the
+    /// drawer's outer view is parented straight onto the host view).
+    pub(crate) header_nav_ctrl: Option<Retained<NSObject>>,
+    /// Effect that re-fires `apply_header_options` on the active
+    /// screen whenever the global `active_theme()` signal changes.
+    /// Kept alive on the entry so the subscription survives for as
+    /// long as the drawer exists. `None` until installed in
+    /// `create_drawer_navigator`; never set for tab navigators
+    /// (they have no header bar to re-tint).
+    pub(crate) theme_effect: Option<framework_core::Effect>,
+    /// Effect that re-applies the drawer's body background color
+    /// when the theme swaps. Same lifetime as `theme_effect`. `None`
+    /// when the author didn't pass `.background_color(...)`.
+    pub(crate) background_effect: Option<framework_core::Effect>,
 }
 
 // =========================================================================
@@ -108,6 +127,9 @@ pub(crate) fn create_tab_navigator(
         // Tabs have no header bar; the drawer constructor populates
         // this with its embedded UINavigationController's rootVC.
         header_root_vc: None,
+        header_nav_ctrl: None,
+        theme_effect: None,
+        background_effect: None,
     };
     tab_drawer_instances.insert(key, entry);
 
@@ -374,8 +396,78 @@ pub(crate) fn create_drawer_navigator(
         current_route: current_route.clone(),
         active_route_sig,
         header_root_vc: Some(root_vc.clone()),
+        header_nav_ctrl: Some(unsafe {
+            Retained::retain(Retained::as_ptr(&nav_ctrl) as *mut NSObject).unwrap()
+        }),
+        theme_effect: None,
+        background_effect: None,
     };
     tab_drawer_instances.insert(key, entry);
+
+    // Install the per-drawer theme-reactivity Effect. Subscribes to
+    // the global `active_theme()` signal and re-runs
+    // `apply_header_options` for whichever screen is currently
+    // visible. Color fields in `ScreenOptions` are closures, so each
+    // re-run resolves them against the new theme — the header bar's
+    // background / title / tint re-tint in place without remounting
+    // the screen or its primitive subtree. Stored on the entry so
+    // the subscription's lifetime matches the drawer's.
+    {
+        let mounted_for_theme = mounted.clone();
+        let current_route_for_theme = current_route.clone();
+        let root_vc_for_theme = root_vc.clone();
+        let nav_ctrl_for_theme: Retained<NSObject> = unsafe {
+            Retained::retain(Retained::as_ptr(&nav_ctrl) as *mut NSObject).unwrap()
+        };
+        let theme_effect = framework_core::Effect::new(move || {
+            // Touch the active-theme signal. The framework registers
+            // the dependency on this effect and re-fires us on theme
+            // swap. The closure body re-resolves header colors via
+            // the same `active_theme()` reads inside each color
+            // closure.
+            let _ = framework_core::active_theme();
+            let route = current_route_for_theme.borrow().clone();
+            let Some(route) = route else { return };
+            let map = mounted_for_theme.borrow();
+            let Some(m) = map.get(route) else { return };
+            for target in super::apply_header_options_with_nav(
+                &root_vc_for_theme,
+                Some(&nav_ctrl_for_theme),
+                &m.options,
+                mtm,
+            ) {
+                std::mem::forget(target);
+            }
+        });
+        if let Some(entry) = tab_drawer_instances.get_mut(&key) {
+            entry.theme_effect = Some(theme_effect);
+        }
+    }
+
+    // Background-color reactivity. Mirrors the header `theme_effect`
+    // shape — re-fires on `active_theme()` change and re-tints the
+    // nav controller's root view (which shows through any
+    // transparent regions of the mounted screen, i.e. the area
+    // between cards in the docs site). `None` ⇒ keep the hardcoded
+    // white set above.
+    if let Some(bg_closure) = callbacks.background_color.clone() {
+        let nav_view_for_bg = nav_view.clone();
+        let body_for_bg = body.clone();
+        let bg_effect = framework_core::Effect::new(move || {
+            let _ = framework_core::active_theme();
+            let color = (bg_closure)();
+            let ui_color = color_to_uicolor(&color);
+            nav_view_for_bg.setBackgroundColor(Some(&ui_color));
+            // Also paint the rootVC's view (body) so the surface
+            // behind any transparent gaps inside the screen also
+            // re-tints — without this the body shows through as
+            // the hardcoded white from `mount_screen_in_vc`.
+            body_for_bg.setBackgroundColor(Some(&ui_color));
+        });
+        if let Some(entry) = tab_drawer_instances.get_mut(&key) {
+            entry.background_effect = Some(bg_effect);
+        }
+    }
 
     let mount = callbacks.navigator.mount_screen.clone();
     let release = callbacks.navigator.release_screen.clone();
@@ -396,6 +488,9 @@ pub(crate) fn create_drawer_navigator(
     // would leave the nav bar pinned and look wrong.
     let body_for_anim = nav_view.clone();
     let root_vc_for_dispatch = root_vc.clone();
+    let nav_ctrl_for_dispatch: Retained<NSObject> = unsafe {
+        Retained::retain(Retained::as_ptr(&nav_ctrl) as *mut NSObject).unwrap()
+    };
 
     let drawer_style = callbacks.drawer_type;
     let configured_width = callbacks.drawer_width as CGFloat;
@@ -553,11 +648,15 @@ pub(crate) fn create_drawer_navigator(
                 // Re-apply the new screen's header options to the
                 // drawer's embedded root VC so the title and bar
                 // buttons update when the user switches drawer entries.
+                // Pass the nav controller explicitly — see the
+                // `header_nav_ctrl` field comment on `TabDrawerEntry`
+                // for why `rootVc.navigationController` is nil here.
                 // `forget` is the standard pattern for these
                 // callback target retains — the targets need to
                 // outlive the VC for taps to keep firing.
-                for target in super::apply_header_options(
+                for target in super::apply_header_options_with_nav(
                     &root_vc_for_dispatch,
+                    Some(&nav_ctrl_for_dispatch),
                     &options,
                     mtm,
                 ) {
@@ -662,14 +761,16 @@ pub(crate) fn drawer_navigator_attach_initial(
 
     // The drawer owns its own UINavigationController + rootVC (set
     // up in `create_drawer_navigator`), so we apply the header
-    // options directly to that rootVC — no responder-chain walk,
-    // no dependence on a parent stack. Defer to the next run loop
-    // pass so the rootVC has a chance to finish viewDidLoad.
+    // options directly to that nav controller — no responder-chain
+    // walk, no dependence on a parent stack. Defer to the next run
+    // loop pass so the rootVC has a chance to finish viewDidLoad.
     let header_root_vc = entry.header_root_vc.clone();
+    let header_nav_ctrl = entry.header_nav_ctrl.clone();
     let setup: Rc<dyn Fn()> = Rc::new(move || {
         if let Some(ref vc) = header_root_vc {
-            for target in super::apply_header_options(
+            for target in super::apply_header_options_with_nav(
                 vc,
+                header_nav_ctrl.as_ref(),
                 &initial_options,
                 unsafe { MainThreadMarker::new_unchecked() },
             ) {

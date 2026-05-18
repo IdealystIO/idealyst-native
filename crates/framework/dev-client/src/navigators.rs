@@ -213,6 +213,11 @@ impl<N: Clone + 'static> NavigatorAppState<N> {
             mount_policy,
             is_open: Signal::new(false),
             build_content: None,
+            // Stub callbacks don't carry a reactive background-color
+            // closure; the wire serializes the resolved color value
+            // separately when one is set, and the client backend
+            // applies it during the create/update path.
+            background_color: None,
             active_changed: Rc::new(|_| {}),
             open_changed: Rc::new(move |is_open| {
                 let _ = outbound.send(AppToDev::DrawerStateChanged {

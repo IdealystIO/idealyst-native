@@ -352,13 +352,42 @@ pub(crate) fn apply_header_options(
     options: &framework_core::ScreenOptions,
     mtm: MainThreadMarker,
 ) -> Vec<Retained<NSObject>> {
+    apply_header_options_with_nav(vc, None, options, mtm)
+}
+
+/// Variant of [`apply_header_options`] that takes the parent
+/// `UINavigationController` explicitly. The drawer navigator owns
+/// its embedded nav controller and the rootVC's
+/// `navigationController` property unexpectedly returns nil (even
+/// after `setViewControllers:`) — so the drawer passes the nav
+/// controller through directly. Stack navigators use the no-arg form
+/// and fall back to `vc.navigationController` lookup.
+pub(crate) fn apply_header_options_with_nav(
+    vc: &UIViewController,
+    explicit_nav_ctrl: Option<&Retained<NSObject>>,
+    options: &framework_core::ScreenOptions,
+    mtm: MainThreadMarker,
+) -> Vec<Retained<NSObject>> {
     let mut retained = Vec::new();
+
+    // Resolve the nav controller pointer once. Prefer the
+    // caller-supplied one; fall back to the responder-chain lookup.
+    let nav_ctrl_obj: Option<Retained<NSObject>> = match explicit_nav_ctrl {
+        Some(n) => Some(n.clone()),
+        None => unsafe {
+            let p: *const NSObject = msg_send![vc, navigationController];
+            if p.is_null() {
+                None
+            } else {
+                Retained::retain(p as *mut NSObject)
+            }
+        },
+    };
 
     // Hide/show header
     if let Some(false) = options.header_shown {
-        let nav_ctrl: *const NSObject = unsafe { msg_send![vc, navigationController] };
-        if !nav_ctrl.is_null() {
-            let _: () = unsafe { msg_send![nav_ctrl, setNavigationBarHidden: true, animated: false] };
+        if let Some(ref nav_ctrl) = nav_ctrl_obj {
+            let _: () = unsafe { msg_send![&**nav_ctrl, setNavigationBarHidden: true, animated: false] };
         }
         return vec![];
     }
@@ -367,6 +396,68 @@ pub(crate) fn apply_header_options(
     if let Some(ref title) = options.title {
         let ns = NSString::from_str(title);
         let _: () = unsafe { msg_send![vc, setTitle: &*ns] };
+    }
+
+    // Header bar style — background, title color, and tint for back
+    // chevron / bar buttons. Resolve a `UINavigationBarAppearance`
+    // and assign it both as `standardAppearance` and
+    // `scrollEdgeAppearance` so it stays correct whether or not the
+    // top of the screen scrolls under the bar. Set it on the *nav
+    // controller's* bar (not just the navItem) so the same bar is
+    // re-styled per active screen.
+    // Resolve color closures once. The closures are `Fn`, so calling
+    // them is cheap; they typically read `active_theme()` which both
+    // returns the current theme and subscribes the surrounding Effect
+    // to future theme changes (when this is being called from inside
+    // an Effect — see the per-VC reapply Effect set up in
+    // `tab_drawer::create_drawer_navigator`).
+    let header_bg = options.header_background.as_ref().map(|f| f());
+    let title_color = options.title_color.as_ref().map(|f| f());
+    let header_tint = options.header_tint.as_ref().map(|f| f());
+    let has_bar_style = header_bg.is_some() || title_color.is_some() || header_tint.is_some();
+    if has_bar_style {
+        if let Some(ref nav_ctrl) = nav_ctrl_obj {
+            let nav_bar: Retained<NSObject> = unsafe { msg_send_id![&**nav_ctrl, navigationBar] };
+            let appearance: Retained<NSObject> = unsafe {
+                msg_send_id![objc2::class!(UINavigationBarAppearance), new]
+            };
+            let _: () = unsafe { msg_send![&appearance, configureWithOpaqueBackground] };
+            if let Some(ref bg) = header_bg {
+                let c = color_to_uicolor(bg);
+                let _: () = unsafe { msg_send![&appearance, setBackgroundColor: &*c] };
+            }
+            if let Some(ref tc) = title_color {
+                // titleTextAttributes is an NSDictionary keyed by
+                // NSForegroundColorAttributeName ("NSColor").
+                let c = color_to_uicolor(tc);
+                let key = NSString::from_str("NSColor");
+                let dict: Retained<NSObject> = unsafe {
+                    msg_send_id![
+                        objc2::class!(NSDictionary),
+                        dictionaryWithObject: &*c,
+                        forKey: &*key
+                    ]
+                };
+                let _: () = unsafe { msg_send![&appearance, setTitleTextAttributes: &*dict] };
+            }
+            // Cover all three appearance slots — UIKit picks among
+            // them based on scroll state and compact size class, and
+            // leaving any slot on a stale value lets the wrong
+            // appearance flash through on rotation / scroll.
+            let _: () = unsafe { msg_send![&nav_bar, setStandardAppearance: &*appearance] };
+            let _: () = unsafe { msg_send![&nav_bar, setScrollEdgeAppearance: &*appearance] };
+            let _: () = unsafe { msg_send![&nav_bar, setCompactAppearance: &*appearance] };
+            // Per-VC appearance via `navigationItem`. UIKit 15+
+            // prefers VC-level over bar-level when both are set.
+            let nav_item: Retained<NSObject> = unsafe { msg_send_id![vc, navigationItem] };
+            let _: () = unsafe { msg_send![&nav_item, setStandardAppearance: &*appearance] };
+            let _: () = unsafe { msg_send![&nav_item, setScrollEdgeAppearance: &*appearance] };
+            let _: () = unsafe { msg_send![&nav_item, setCompactAppearance: &*appearance] };
+            if let Some(ref tint) = header_tint {
+                let c = color_to_uicolor(tint);
+                let _: () = unsafe { msg_send![&nav_bar, setTintColor: &*c] };
+            }
+        }
     }
 
     // Left bar button
@@ -384,8 +475,15 @@ pub(crate) fn apply_header_options(
         let _: () = unsafe { msg_send![&bar_item, setImage: &*image] };
         let _: () = unsafe { msg_send![&bar_item, setTarget: &*target] };
         let _: () = unsafe { msg_send![&bar_item, setAction: sel] };
-        if let Some(ref tint) = btn.tint {
-            let c = color_to_uicolor(tint);
+        // Per-button tint overrides screen-level header_tint, which
+        // in turn overrides UIKit's default (systemBlue). Apply
+        // directly on the bar item rather than relying on the bar's
+        // tintColor inheritance — UIKit 15+ broke inheritance from
+        // `navigationBar.tintColor` for items added after the
+        // appearance is configured.
+        let tint = btn.tint.clone().or_else(|| header_tint.clone());
+        if let Some(t) = tint {
+            let c = color_to_uicolor(&t);
             let _: () = unsafe { msg_send![&bar_item, setTintColor: &*c] };
         }
         let nav_item: Retained<NSObject> = unsafe { msg_send_id![vc, navigationItem] };
@@ -411,8 +509,9 @@ pub(crate) fn apply_header_options(
         let _: () = unsafe { msg_send![&bar_item, setImage: &*image] };
         let _: () = unsafe { msg_send![&bar_item, setTarget: &*target] };
         let _: () = unsafe { msg_send![&bar_item, setAction: sel] };
-        if let Some(ref tint) = btn.tint {
-            let c = color_to_uicolor(tint);
+        let tint = btn.tint.clone().or_else(|| header_tint.clone());
+        if let Some(t) = tint {
+            let c = color_to_uicolor(&t);
             let _: () = unsafe { msg_send![&bar_item, setTintColor: &*c] };
         }
         let nav_item: Retained<NSObject> = unsafe { msg_send_id![vc, navigationItem] };
@@ -672,6 +771,26 @@ impl Backend for IosBackend {
         };
         self.retain_target(&target);
 
+        // Install an intrinsic-size measurer so Taffy gives the
+        // UISwitch a real frame (≈51×31). Without it, Taffy assigns
+        // 0×0 — UISwitch still *draws* at its intrinsic size (UIKit
+        // doesn't clip rendering to bounds), but its hit-test region
+        // is the empty bounds rect, so every tap slides off and the
+        // switch never fires its `valueChanged` event.
+        let layout = self.layout_for_view(&switch);
+        let switch_for_measure = switch.clone();
+        self.layout.set_measure_fn(
+            layout,
+            std::rc::Rc::new(move |known_dimensions, _available_space| {
+                let intrinsic: objc2_foundation::CGSize =
+                    unsafe { msg_send![&switch_for_measure, intrinsicContentSize] };
+                native_layout::Size {
+                    width: known_dimensions.width.unwrap_or(intrinsic.width as f32),
+                    height: known_dimensions.height.unwrap_or(intrinsic.height as f32),
+                }
+            }),
+        );
+
         IosNode::Switch(switch)
     }
 
@@ -730,6 +849,24 @@ impl Backend for IosBackend {
             msg_send![&slider, addTarget: &*target, action: sel, forControlEvents: 4096u64]
         };
         self.retain_target(&target);
+
+        // Same intrinsic-size measurer rationale as `create_toggle`
+        // — UISlider has a real `intrinsicContentSize` but Taffy
+        // doesn't know about it. Without this, a sliderup with no
+        // explicit width style hit-tests against an empty rect.
+        let layout = self.layout_for_view(&slider);
+        let slider_for_measure = slider.clone();
+        self.layout.set_measure_fn(
+            layout,
+            std::rc::Rc::new(move |known_dimensions, _available_space| {
+                let intrinsic: objc2_foundation::CGSize =
+                    unsafe { msg_send![&slider_for_measure, intrinsicContentSize] };
+                native_layout::Size {
+                    width: known_dimensions.width.unwrap_or(intrinsic.width as f32),
+                    height: known_dimensions.height.unwrap_or(intrinsic.height as f32),
+                }
+            }),
+        );
 
         IosNode::Slider(slider)
     }

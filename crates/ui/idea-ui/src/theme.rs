@@ -476,3 +476,55 @@ pub fn install_idea_theme<T: IdeaTheme>(theme: T) {
 pub fn set_idea_theme<T: IdeaTheme>(theme: T) {
     set_theme(IdeaThemeRef::new(theme));
 }
+
+/// Build a reactive color closure for a navigator's `header_*` /
+/// `title_color` slot. The closure reads `active_theme()` on each
+/// call, so it returns the *current* theme's color and the
+/// surrounding Effect (set up by the navigator backend) re-fires on
+/// theme swap — header bar and title re-tint without remounting.
+///
+/// ```ignore
+/// Screen::new(page)
+///     .header_background(idea_color(|c| c.surface.clone()))
+///     .title_color(idea_color(|c| c.text.clone()))
+///     .header_tint(idea_color(|c| c.text.clone()))
+/// ```
+pub fn idea_color<F>(getter: F) -> impl Fn() -> Color + 'static
+where
+    F: Fn(&Colors) -> Tokenized<Color> + 'static,
+{
+    move || {
+        let theme = framework_core::active_theme();
+        let idea = theme
+            .downcast_ref::<IdeaThemeRef>()
+            .expect("idea_color: active theme is not an IdeaThemeRef — call install_idea_theme(...) first");
+        getter(idea.colors()).value().clone()
+    }
+}
+
+/// Build a reactive [`framework_core::HeaderStyle`] closure for a
+/// navigator's bundled `.header(...)` call. The closure is handed
+/// the current `IdeaTheme` reference and returns the populated
+/// `HeaderStyle`. Re-invoked on every theme swap.
+///
+/// ```ignore
+/// DrawerNavigator::new(&ROUTE)
+///     .header(idea_header(|t| HeaderStyle {
+///         background: Some(t.colors().surface.value().clone()),
+///         title: Some(t.colors().text.value().clone()),
+///         tint: Some(t.colors().text.value().clone()),
+///         body_background: Some(t.colors().background.value().clone()),
+///     }))
+/// ```
+pub fn idea_header<F>(builder: F) -> impl Fn() -> framework_core::HeaderStyle + 'static
+where
+    F: Fn(&IdeaThemeRef) -> framework_core::HeaderStyle + 'static,
+{
+    move || {
+        let theme = framework_core::active_theme();
+        let idea = theme
+            .downcast_ref::<IdeaThemeRef>()
+            .expect("idea_header: active theme is not an IdeaThemeRef — call install_idea_theme(...) first");
+        builder(idea)
+    }
+}
