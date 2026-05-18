@@ -183,6 +183,31 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         .unwrap_or_else(|| project_dir.join("dist/roku"));
     write_package(&package_dir, &title, &methods_brs, &ui_bytes)?;
 
+    // --- 4b. Generate per-virtualizer item components ---
+    // Walk the wire stream for `CreateMarkupList` ops; for each,
+    // emit a sibling Roku SceneGraph component (`.xml` + `.brs`)
+    // under `components/`. The wire op carries the row template's
+    // slot so we can bake initial styling into the component's
+    // `init()` without needing to re-emit ApplyStyle commands at
+    // device boot.
+    let virtualizer_components = generate_virtualizer_components(&ui_bytes)?;
+    for vc in &virtualizer_components {
+        fs::write(
+            package_dir.join("components").join(format!("{}.xml", vc.name)),
+            &vc.xml,
+        )?;
+        fs::write(
+            package_dir.join("components").join(format!("{}.brs", vc.name)),
+            &vc.brs,
+        )?;
+    }
+    if !virtualizer_components.is_empty() {
+        eprintln!(
+            "[build-roku] generated {} virtualizer item component(s)",
+            virtualizer_components.len()
+        );
+    }
+
     // --- 5. Zip it ---
     let zip_path = package_dir.with_extension("zip");
     create_channel_zip(&package_dir, &zip_path)
@@ -239,6 +264,269 @@ fn count_commands(bytes: &[u8], path: &Path) -> Result<usize> {
     let parsed: serde_json::Value = serde_json::from_slice(bytes)
         .with_context(|| format!("parsing {} as JSON", path.display()))?;
     Ok(parsed.as_array().map(|a| a.len()).unwrap_or(0))
+}
+
+#[derive(Debug)]
+struct VirtualizerComponent {
+    /// Component name without extension (matches the wire op's
+    /// `item_component`).
+    name: String,
+    xml: String,
+    brs: String,
+}
+
+/// Scan the wire stream for `CreateMarkupList` ops and synthesize
+/// a Roku SceneGraph component (`.xml` + `.brs`) for each. The
+/// component owns the per-row subtree; the parent scene populates
+/// each row's `itemContent` ContentNode and the component watches
+/// its fields, mapping them onto the bundled SGNode tree.
+///
+/// V1 only emits components for the single-text-row shape (one
+/// `CreateText` + one `BindText`). Any other shape never lowers
+/// to `CreateMarkupList` (the backend's `inspect_simple_text_row`
+/// returns `None`) so we don't have to handle it here yet.
+fn generate_virtualizer_components(ui_bytes: &[u8]) -> Result<Vec<VirtualizerComponent>> {
+    let parsed: serde_json::Value =
+        serde_json::from_slice(ui_bytes).context("parsing ui.json for virtualizer codegen")?;
+    let mut out = Vec::new();
+    let Some(cmds) = parsed.as_array() else {
+        return Ok(out);
+    };
+    for cmd in cmds {
+        let Some(obj) = cmd.as_object() else { continue };
+        if obj.get("op").and_then(|o| o.as_str()) != Some("CreateMarkupList") {
+            continue;
+        }
+        let name = obj
+            .get("item_component")
+            .and_then(|v| v.as_str())
+            .context("CreateMarkupList missing item_component")?
+            .to_string();
+        let slot = obj
+            .get("row_template")
+            .context("CreateMarkupList missing row_template")?;
+        let style_hints = extract_style_hints(slot);
+        out.push(VirtualizerComponent {
+            name: name.clone(),
+            xml: render_item_xml(&name, style_hints.background.is_some()),
+            brs: render_item_brs(&style_hints),
+        });
+    }
+    Ok(out)
+}
+
+#[derive(Default, Debug)]
+struct StyleHints {
+    /// Hex string with leading `#`, e.g. `#34D399`.
+    color: Option<String>,
+    /// Pixel size for the row's font.
+    font_size: Option<f32>,
+    /// Pixel font weight; on Roku we don't differentiate beyond
+    /// bold/normal but record for future use.
+    font_weight: Option<String>,
+    /// Hex string for the row's background fill, e.g. `#1F2937`.
+    /// When set, the generated item component inserts a sized
+    /// `Rectangle` behind the label so each cell looks like a card
+    /// rather than floating text.
+    background: Option<String>,
+}
+
+/// Pull a coarse `StyleHints` snapshot out of the slot's
+/// `ApplyStyleStates.base` field. The item component bakes those
+/// values into its `init()` so the row visuals match the
+/// stylesheet without round-tripping through ApplyStyle commands.
+fn extract_style_hints(slot: &serde_json::Value) -> StyleHints {
+    let mut hints = StyleHints::default();
+    let Some(cmds) = slot.get("commands").and_then(|c| c.as_array()) else {
+        return hints;
+    };
+    for cmd in cmds {
+        let obj = match cmd.as_object() {
+            Some(o) => o,
+            None => continue,
+        };
+        let op = obj.get("op").and_then(|s| s.as_str()).unwrap_or("");
+        if op != "ApplyStyleStates" && op != "ApplyStyle" {
+            continue;
+        }
+        let base = match op {
+            "ApplyStyleStates" => obj.get("base"),
+            "ApplyStyle" => obj.get("style"),
+            _ => None,
+        };
+        let Some(base) = base else { continue };
+        if let Some(bg) = base.get("background") {
+            if let Some(literal) = bg
+                .get("kind")
+                .and_then(|k| k.as_str())
+                .filter(|k| *k == "Literal")
+                .and_then(|_| bg.get("value"))
+                .and_then(|v| v.as_str())
+            {
+                hints.background = Some(literal.to_string());
+            } else if let Some(tok_fallback) = bg
+                .get("kind")
+                .and_then(|k| k.as_str())
+                .filter(|k| *k == "Token")
+                .and_then(|_| bg.get("fallback"))
+                .and_then(|v| v.as_str())
+            {
+                hints.background = Some(tok_fallback.to_string());
+            }
+        }
+        if let Some(color) = base.get("color") {
+            // WireColor enum: { kind: "Literal" | "Token", value/name }.
+            if let Some(literal) = color
+                .get("kind")
+                .and_then(|k| k.as_str())
+                .filter(|k| *k == "Literal")
+                .and_then(|_| color.get("value"))
+                .and_then(|v| v.as_str())
+            {
+                hints.color = Some(literal.to_string());
+            } else if let Some(token_fallback) = color
+                .get("kind")
+                .and_then(|k| k.as_str())
+                .filter(|k| *k == "Token")
+                .and_then(|_| color.get("fallback"))
+                .and_then(|v| v.as_str())
+            {
+                // Tokenized color — bake the fallback. Theme
+                // re-application across MarkupList rows is a
+                // follow-up.
+                hints.color = Some(token_fallback.to_string());
+            }
+        }
+        if let Some(fs) = base.get("font_size").and_then(|v| v.as_f64()) {
+            hints.font_size = Some(fs as f32);
+        }
+        if let Some(fw) = base.get("font_weight").and_then(|v| v.as_str()) {
+            hints.font_weight = Some(fw.to_string());
+        }
+    }
+    hints
+}
+
+/// Translate a CSS-ish `#RRGGBB[AA]` to Roku's `0xRRGGBBAA`. Roku
+/// requires alpha; default to fully opaque if missing.
+fn css_color_to_roku(css: &str) -> String {
+    let stripped = css.trim_start_matches('#');
+    match stripped.len() {
+        6 => format!("0x{}FF", stripped.to_uppercase()),
+        8 => format!("0x{}", stripped.to_uppercase()),
+        _ => "0xFFFFFFFF".to_string(),
+    }
+}
+
+fn render_item_xml(name: &str, has_background: bool) -> String {
+    let bg_child = if has_background {
+        // Rectangle slot for the row's card background. The BS
+        // init() sizes it to (cell_w, cell_h) and colors it from
+        // the baked `background` hint. Drawn before the Label
+        // node so the text renders on top.
+        "    <Rectangle id=\"rowBg\" />\n"
+    } else {
+        ""
+    };
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8" ?>
+<component name="{name}" extends="Group">
+  <interface>
+    <field id="itemContent" type="node" onChange="onContentChange" />
+    <field id="width" type="float" onChange="onSizeChange" />
+    <field id="height" type="float" onChange="onSizeChange" />
+  </interface>
+  <script type="text/brightscript" uri="pkg:/components/{name}.brs" />
+  <children>
+{bg_child}    <Label id="rowLabel" horizAlign="center" vertAlign="center" />
+  </children>
+</component>
+"#
+    )
+}
+
+fn render_item_brs(hints: &StyleHints) -> String {
+    let color_line = hints
+        .color
+        .as_deref()
+        .map(|c| format!("    m.label.color = \"{}\"\n", css_color_to_roku(c)))
+        .unwrap_or_default();
+    let font_size_line = hints
+        .font_size
+        .map(|fs| {
+            // Roku Font is a node with `size` field. Build one in init().
+            format!(
+                "    font = createObject(\"roSGNode\", \"Font\")\n    font.size = {:.1}\n    m.label.font = font\n",
+                fs
+            )
+        })
+        .unwrap_or_default();
+    let bg_init = hints
+        .background
+        .as_deref()
+        .map(|bg| {
+            format!(
+                "    m.bg = m.top.findNode(\"rowBg\")\n    if m.bg <> invalid then m.bg.color = \"{}\"\n",
+                css_color_to_roku(bg)
+            )
+        })
+        .unwrap_or_default();
+    let bg_size = if hints.background.is_some() {
+        "    if m.bg <> invalid then\n        if w > 0 then m.bg.width = w\n        if h > 0 then m.bg.height = h\n    end if\n"
+    } else {
+        ""
+    };
+    format!(
+        r#"' Auto-generated per-virtualizer item component. The parent
+' scene populates this row's `itemContent` ContentNode; we map
+' its fields onto the SGNode subtree.
+
+sub init()
+    m.label = m.top.findNode("rowLabel")
+{bg_init}{color_line}{font_size_line}    ' Each row's ContentNode carries `_cell_w` / `_cell_h` set by
+    ' the parent scene's `populateRowFields`. Roku's MarkupList /
+    ' RowList don't automatically pass cell dimensions to the
+    ' item component's interface — without these the Label
+    ' defaults to width = 0 and the text collapses to its natural
+    ' bounding rect.
+    applyRowSize()
+end sub
+
+sub onContentChange()
+    content = m.top.itemContent
+    if content = invalid then return
+    if m.label <> invalid then
+        if content.hasField("title") then
+            m.label.text = content.title
+        end if
+    end if
+    applyRowSize()
+end sub
+
+sub onSizeChange()
+    applyRowSize()
+end sub
+
+sub applyRowSize()
+    if m.label = invalid then return
+    w = m.top.width
+    h = m.top.height
+    content = m.top.itemContent
+    if content <> invalid then
+        if content.hasField("_cell_w") then
+            cw = content._cell_w
+            if cw > w then w = cw
+        end if
+        if content.hasField("_cell_h") then
+            ch = content._cell_h
+            if ch > h then h = ch
+        end if
+    end if
+    if w > 0 then m.label.width = w
+    if h > 0 then m.label.height = h
+{bg_size}end sub
+"#
+    )
 }
 
 // ---------------------------------------------------------------------------

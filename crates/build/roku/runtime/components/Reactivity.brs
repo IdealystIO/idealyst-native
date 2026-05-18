@@ -62,6 +62,15 @@ sub reactivityInit()
     ' -1 means "no buttons yet"; set to 0 by `focusInitial` once
     ' the materialization pass has populated `m.buttonOrder`.
     m.focusedButtonIndex = -1
+    ' Unified D-pad focus order. Each entry is an AA tagged with
+    ' `kind: "action" | "list"`. Actionables (Button, Pressable,
+    ' Link — anything with an on_click handler) use our custom
+    ' hovered overlay; lists hand focus off to their MarkupList
+    ' SGNode so Roku's native row navigation kicks in.
+    ' Materialization order equals DOM order, so authors get
+    ' top-to-bottom traversal for free.
+    m.focusables = createObject("roArray", 4, true)
+    m.focusedIndex = -1
 
     ' Fresh-id allocator for cloned `bind_repeat!` row instances.
     ' The snapshot pipeline mints ids starting at 1 and tops out
@@ -240,6 +249,7 @@ sub fireSubscriber(sub_ as object)
         ' fail on some Roku firmware/emulators. Coerce via `Str()`
         ' and trim the leading space `Str` inserts for the sign slot.
         node.text = toDisplayString(result)
+        markDirtyForLayout(sub_.node_id)
     else if sub_.kind = "when" then
         args = collectArgs(sub_.signal_ids)
         active = dispatch_method(sub_.cond_method, args)
@@ -259,6 +269,7 @@ sub fireSubscriber(sub_ as object)
         else
             syncBoundSlot(sub_, sub_.otherwise_slot)
         end if
+        markDirtyForLayout(sub_.anchor_id)
     else if sub_.kind = "switch" then
         args = collectArgs(sub_.signal_ids)
         result = dispatch_method(sub_.cond_method, args)
@@ -271,6 +282,7 @@ sub fireSubscriber(sub_ as object)
         end for
         if desired = invalid then desired = sub_.default_slot
         syncBoundSlot(sub_, desired)
+        markDirtyForLayout(sub_.anchor_id)
     else if sub_.kind = "repeat" then
         args = collectArgs(sub_.signal_ids)
         countResult = dispatch_method(sub_.count_method, args)
@@ -287,6 +299,7 @@ sub fireSubscriber(sub_ as object)
         ' row instances live concurrently. Each play allocates fresh
         ' node ids out of `m.nextInstanceId`'s pool.
         syncRepeatSlots(sub_, count)
+        markDirtyForLayout(sub_.anchor_id)
     else if sub_.kind = "theme" then
         ' Active-theme-name signal fired. Read the new name from
         ' the signal store and re-apply every styled node so token
@@ -296,10 +309,236 @@ sub fireSubscriber(sub_ as object)
             m.activeTheme = newName
             reapplyAllStyles()
         end if
+    else if sub_.kind = "virtualizer" then
+        ' Native windowed list. The subscriber doesn't touch the SG
+        ' tree itself — instead it rebuilds the MarkupList's
+        ' ContentNode children, letting Roku's native MarkupList
+        ' diff its own UI. No layout dirty mark either: the parent
+        ' allocated a fixed-size container at create-time and the
+        ' MarkupList owns its internal cell layout.
+        rebuildMarkupListContent(sub_)
     end if
     ' Future binding kinds: "style_color", "style_opacity",
     ' "image_src" — same shape, different application.
 end sub
+
+' --- Native virtualizer (MarkupList) ---
+'
+' One subscriber per virtualizer, registered against the union of
+' the count's signal ids and every dynamic_field's signal ids
+' (minus the synthetic row-index slot, which never fires globally
+' — its values are substituted positionally per row).
+
+sub createMarkupList(cmd as object)
+    anchor = m.nodes[cmd.anchor_id.ToStr()]
+    if anchor = invalid then return
+
+    ' Pick the native list type based on the author's `horizontal`
+    ' setting. RowList scrolls horizontally (Netflix-style cards);
+    ' MarkupList scrolls vertically (settings rows). Same wire op
+    ' so authors swap layouts by chaining `.horizontal(true)` on
+    ' the Bound<VirtualizerHandle>.
+    if cmd.horizontal = true then
+        listKind = "RowList"
+    else
+        listKind = "MarkupList"
+    end if
+
+    ' Visible viewport. We patch BOTH width and height into the
+    ' anchor's style so Layout.brs treats it as a fixed-size leaf
+    ' node and reserves space in the parent's flex column. The
+    ' native list lives as a child of the anchor's SGNode but is
+    ' NOT registered in `m.children`, so the framework's flex
+    ' measure ignores it and uses these explicit dimensions
+    ' directly — that's how we keep the list from overlapping
+    ' surrounding siblings.
+    if cmd.horizontal = true then
+        ' Conservative defaults that leave page-side margin so the
+        ' carousel reads as a centered strip with breathing room
+        ' rather than a slab running to the screen edges. Authors
+        ' can later tune via `.with_style(width=...)` on the
+        ' virtualizer.
+        visibleItems = 3
+        cellWidth = 320.0
+        cellHeight = cmd.item_size
+        viewportW = cellWidth * visibleItems
+        viewportH = cellHeight + 20
+    else
+        visibleItems = 4
+        cellWidth = 960.0
+        cellHeight = cmd.item_size
+        viewportW = cellWidth
+        viewportH = cellHeight * visibleItems
+    end if
+    anchorStyle = m.styles[cmd.anchor_id.ToStr()]
+    if anchorStyle = invalid then anchorStyle = createObject("roAssociativeArray")
+    anchorStyle.width = { kind: "Px", value: viewportW }
+    anchorStyle.height = { kind: "Px", value: viewportH }
+    anchorStyle.min_width = { kind: "Px", value: viewportW }
+    anchorStyle.min_height = { kind: "Px", value: viewportH }
+    m.styles[cmd.anchor_id.ToStr()] = anchorStyle
+
+    list = createObject("roSGNode", listKind)
+    list.itemComponentName = cmd.item_component
+    list.translation = [0, 0]
+    list.drawFocusFeedback = true
+    if cmd.horizontal = true then
+        ' RowList honors `itemSize` for each item's bounding box;
+        ' the corresponding `rowItemSize`/`rowHeights` are per-row
+        ' overrides we set in parallel so RowList's auto-sizer
+        ' doesn't squeeze items into a smaller cell width to fit
+        ' more on screen. Zero spacings + a `numColumns` matching
+        ' the visible item count locks the layout to our intent.
+        list.itemSize = [cellWidth, cellHeight]
+        list.rowItemSize = [[cellWidth, cellHeight]]
+        list.rowHeights = [cellHeight]
+        list.rowItemSpacing = [[0, 0]]
+        list.itemSpacing = [0, 0]
+        list.rowSpacings = [0]
+        list.numRows = 1
+        list.numColumns = visibleItems
+    else
+        list.itemSize = [cellWidth, cellHeight]
+        list.itemSpacing = [0, 0]
+        list.numRows = visibleItems
+    end if
+
+    anchor.appendChild(list)
+    m.virtualizerLists = orInit(m.virtualizerLists, "roAssociativeArray")
+    m.virtualizerLists[cmd.anchor_id.ToStr()] = list
+
+    ' Register the list as a D-pad focusable. `applyFocusVisuals`
+    ' calls `list.setFocus(true)` on the entry that matches
+    ' `m.focusedIndex`, handing native list navigation the
+    ' up/down/OK (MarkupList) or left/right/OK (RowList) keys for
+    ' that step in the traversal order.
+    m.focusables.Push({ kind: "list", node: list, anchor_id: cmd.anchor_id, horizontal: cmd.horizontal = true })
+
+    sub_ = {
+        kind: "virtualizer",
+        anchor_id: cmd.anchor_id,
+        list: list,
+        horizontal: cmd.horizontal = true,
+        cell_w: cellWidth,
+        cell_h: cellHeight,
+        count_method: cmd.count_method,
+        count_signal_ids: cmd.signal_ids,
+        row_index_signal_id: cmd.row_index_signal_id,
+        dynamic_fields: cmd.dynamic_fields,
+        signal_ids: virtualizerSignalUnion(cmd)
+    }
+
+    for each sigId in sub_.signal_ids
+        signalSubscribe(sigId, sub_)
+    end for
+    rebuildMarkupListContent(sub_)
+end sub
+
+' Union of count + every field's signal ids, minus the synthetic
+' row-index id. Used to wire up subscribers — every global signal
+' the virtualizer depends on fires the rebuild.
+function virtualizerSignalUnion(cmd as object) as object
+    seen = createObject("roAssociativeArray")
+    out = createObject("roArray", 4, true)
+    rowIndexId = cmd.row_index_signal_id
+    for each sid in cmd.signal_ids
+        seen[sid.ToStr()] = true
+        out.Push(sid)
+    end for
+    for each field in cmd.dynamic_fields
+        for each sid in field.signal_ids
+            key = sid.ToStr()
+            if seen[key] <> true and (rowIndexId = invalid or sid <> rowIndexId) then
+                seen[key] = true
+                out.Push(sid)
+            end if
+        end for
+    end for
+    return out
+end function
+
+' Repopulate the MarkupList's ContentNode tree. Dispatches the
+' count method to learn how many rows are needed, then dispatches
+' each dynamic_field's method N times with the row index slotted
+' into the synthetic row-index position. Roku diffs the resulting
+' ContentNode children against the previous tree and updates only
+' the visible cells.
+sub rebuildMarkupListContent(sub_ as object)
+    countArgs = collectArgs(sub_.count_signal_ids)
+    countResult = dispatch_method(sub_.count_method, countArgs)
+    count = 0
+    if type(countResult) = "Integer" or type(countResult) = "roInteger" then
+        count = countResult
+    else if type(countResult) = "LongInteger" or type(countResult) = "roLongInteger" then
+        count = countResult
+    else if type(countResult) = "Float" or type(countResult) = "roFloat" then
+        count = Int(countResult)
+    end if
+    if count < 0 then count = 0
+
+    content = createObject("roSGNode", "ContentNode")
+    if sub_.horizontal then
+        ' RowList: content's children are ROWS, each row's
+        ' children are the items. We model the carousel as one
+        ' row hosting every item, so D-pad left/right walks
+        ' through them.
+        rowNode = content.createChild("ContentNode")
+        for i = 0 to count - 1
+            row = rowNode.createChild("ContentNode")
+            populateRowFields(row, sub_, i)
+        end for
+    else
+        ' MarkupList: content's children are the items directly.
+        for i = 0 to count - 1
+            row = content.createChild("ContentNode")
+            populateRowFields(row, sub_, i)
+        end for
+    end if
+    sub_.list.content = content
+end sub
+
+' Fill one ContentNode's dynamic_fields by dispatching each
+' field's method against the current signal values, with the
+' row-index slot substituted by `rowIndex`. Same per-row work
+' for either list kind. Also stamps `_cell_w` / `_cell_h` so the
+' generated item component can size its inner label without
+' depending on MarkupList passing those down (it doesn't).
+sub populateRowFields(row as object, sub_ as object, rowIndex as integer)
+    for each field in sub_.dynamic_fields
+        args = collectVirtualizerFieldArgs(field, sub_.row_index_signal_id, rowIndex)
+        value = dispatch_method(field.method, args)
+        row.addField(field.name, "string", false)
+        row.setField(field.name, toDisplayString(value))
+    end for
+    row.addField("_cell_w", "float", false)
+    row.setField("_cell_w", sub_.cell_w)
+    row.addField("_cell_h", "float", false)
+    row.setField("_cell_h", sub_.cell_h)
+end sub
+
+' Build the args array for one row's dispatch. Walks the field's
+' declared signal_ids; if a slot matches the synthetic row-index
+' signal id, substitute the row index directly. Other ids look
+' through `m.signals`.
+function collectVirtualizerFieldArgs(field as object, rowIndexId as dynamic, rowIndex as integer) as object
+    args = createObject("roArray", field.signal_ids.Count(), true)
+    for each sid in field.signal_ids
+        if rowIndexId <> invalid and sid = rowIndexId then
+            args.Push(rowIndex)
+        else
+            args.Push(m.signals[sid.ToStr()])
+        end if
+    end for
+    return args
+end function
+
+' Helper: lazily initialize an `m.*` slot to a fresh AA/Array.
+' Used so virtualizer state doesn't need to live in
+' `reactivityInit` for environments where no virtualizer ships.
+function orInit(slot as dynamic, kind as string) as object
+    if slot <> invalid then return slot
+    return createObject(kind)
+end function
 
 ' Walk every entry in `m.styles` and re-invoke
 ' `applyNonLayoutStyle`. Used by the theme subscriber when the
@@ -638,6 +877,24 @@ sub tearDownSubtree(rootId as integer)
         m.focusedButtonIndex = m.buttonOrder.Count() - 1
     end if
 
+    ' Prune the unified focusables array too — same rule, but
+    ' tagged. Lists nested inside dying slots will be handled
+    ' here once nested virtualizers are supported.
+    keptFocus = createObject("roArray", m.focusables.Count(), true)
+    for each f in m.focusables
+        keep = true
+        if f.kind = "action" and subtreeLookup[f.btn_id.ToStr()] = true then
+            keep = false
+        else if f.kind = "list" and subtreeLookup[f.anchor_id.ToStr()] = true then
+            keep = false
+        end if
+        if keep then keptFocus.Push(f)
+    end for
+    m.focusables = keptFocus
+    if m.focusedIndex >= m.focusables.Count() then
+        m.focusedIndex = m.focusables.Count() - 1
+    end if
+
     ' Finally, drop every side-table entry for nodes in the
     ' subtree. After this the SGNodes have no remaining references
     ' from the runtime and BS will reclaim them.
@@ -816,48 +1073,67 @@ sub bindButton(buttonId as integer, inputSignalIds as object, methodName as stri
         method: methodName,
         output_signal_id: outputSignalId
     }
-    ' Record the button in the focus-traversal order. D-pad
-    ' navigation walks `m.buttonOrder`; OK fires whichever button is
-    ' currently focused.
+    ' Record the button in both the legacy `m.buttonOrder` index
+    ' (used by `applyButtonFocusVisuals`) and the unified
+    ' `m.focusables` array that the focus traversal walks.
+    ' Future bindings for Pressable/Link push the same `action`
+    ' shape with their own node id + action descriptor.
     m.buttonOrder.Push(buttonId)
+    m.focusables.Push({ kind: "action", btn_id: buttonId })
 end sub
 
 ' --- Focus navigation ---
 '
-' Roku's native focus model requires real Button / focusable SGNodes
-' with `focusBitmapUri` bitmaps. Our composite pseudo-buttons aren't
-' that, so we run our own focus state: an integer index into
-' `m.buttonOrder`. D-pad left/right/up/down cycles through, OK
-' fires the focused entry. Visuals come from the framework's
-' `state hovered { ... }` overlay shipped through the same
-' `apply_styled_states` path the web backend uses — so authors get
-' one stylesheet API across both targets.
+' Unified D-pad model. `m.focusables` interleaves buttons and
+' virtualizer lists in DOM order. Buttons render their focus
+' using the framework's stylesheet `state hovered { ... }`
+' overlay; lists hand focus off to their MarkupList SGNode so
+' Roku's native row navigation (up/down inside the list) takes
+' over. Left/right always advances/retreats through the
+' focusables array, providing the "exit list" gesture.
 
 sub focusInitial()
-    if m.buttonOrder.Count() = 0 then return
-    m.focusedButtonIndex = 0
-    applyButtonFocusVisuals()
+    if m.focusables.Count() = 0 then return
+    m.focusedIndex = 0
+    applyFocusVisuals()
 end sub
 
 sub moveFocus(delta as integer)
-    n = m.buttonOrder.Count()
+    n = m.focusables.Count()
     if n = 0 then return
-    idx = m.focusedButtonIndex + delta
+    idx = m.focusedIndex + delta
     while idx < 0
         idx = idx + n
     end while
     while idx >= n
         idx = idx - n
     end while
-    m.focusedButtonIndex = idx
-    applyButtonFocusVisuals()
+    m.focusedIndex = idx
+    applyFocusVisuals()
 end sub
 
+' Describes how the currently-focused entry routes D-pad keys.
+' "action"            — every D-pad key is ours; OK fires the
+'                       action; left/right/up/down move focus.
+' "list-vertical"     — MarkupList: up/down/OK go native, left/
+'                       right move focus.
+' "list-horizontal"   — RowList: left/right/OK go native, up/down
+'                       move focus.
+function focusedItemRouting() as string
+    if m.focusedIndex < 0 then return "action"
+    f = m.focusables[m.focusedIndex]
+    if f.kind = "list" then
+        if f.horizontal = true then return "list-horizontal"
+        return "list-vertical"
+    end if
+    return "action"
+end function
+
 sub fireFocusedButton()
-    n = m.buttonOrder.Count()
-    if n = 0 or m.focusedButtonIndex < 0 then return
-    btnId = m.buttonOrder[m.focusedButtonIndex]
-    action = m.buttonActions[btnId.ToStr()]
+    if m.focusedIndex < 0 then return
+    f = m.focusables[m.focusedIndex]
+    if f.kind <> "action" then return
+    action = m.buttonActions[f.btn_id.ToStr()]
     if action = invalid then return
     args = collectArgs(action.input_signal_ids)
     result = dispatch_method(action.method, args)
@@ -866,29 +1142,57 @@ sub fireFocusedButton()
     end if
 end sub
 
-' Re-apply each button's style with the right overlay merged in.
-' Strategy: apply the base style first, then layer the relevant
-' state overlay on top. This re-runs both branches of
-' `applyNonLayoutStyle`, so any field the overlay leaves `invalid`
-' falls through to the base — which is exactly the CSS state
-' overlay semantics the framework's stylesheet macro models.
-sub applyButtonFocusVisuals()
-    n = m.buttonOrder.Count()
-    for i = 0 to n - 1
-        btnId = m.buttonOrder[i]
-        node = m.nodes[btnId.ToStr()]
-        if node = invalid then continue for
-        ' Restart from the base style on every refresh so removing
-        ' focus actually returns to the unstyled-by-state look.
-        baseStyle = m.styles[btnId.ToStr()]
-        if baseStyle <> invalid then
-            applyNonLayoutStyle(btnId, node, baseStyle)
+' Re-apply each focusable's visuals to match the current
+' `m.focusedIndex`. Buttons get their stylesheet `hovered` overlay
+' merged on top of the base style (or removed when unfocused).
+' Lists call setFocus on the MarkupList SGNode — `true` for the
+' focused entry and `false` for the others so Roku knows which
+' list owns the device's input.
+sub applyFocusVisuals()
+    ' Sync the legacy button index so existing button-only code
+    ' paths (theme re-apply, etc.) keep working.
+    m.focusedButtonIndex = -1
+    if m.focusedIndex >= 0 then
+        cur = m.focusables[m.focusedIndex]
+        if cur.kind = "action" then
+            for j = 0 to m.buttonOrder.Count() - 1
+                if m.buttonOrder[j] = cur.btn_id then
+                    m.focusedButtonIndex = j
+                    exit for
+                end if
+            end for
         end if
-        if i = m.focusedButtonIndex then
-            overlays = m.styleOverlays[btnId.ToStr()]
-            if overlays <> invalid and overlays.hovered <> invalid then
-                applyNonLayoutStyle(btnId, node, overlays.hovered)
+    end if
+
+    n = m.focusables.Count()
+    for i = 0 to n - 1
+        f = m.focusables[i]
+        isFocused = (i = m.focusedIndex)
+        if f.kind = "action" then
+            node = m.nodes[f.btn_id.ToStr()]
+            if node <> invalid then
+                baseStyle = m.styles[f.btn_id.ToStr()]
+                if baseStyle <> invalid then
+                    applyNonLayoutStyle(f.btn_id, node, baseStyle)
+                end if
+                if isFocused then
+                    overlays = m.styleOverlays[f.btn_id.ToStr()]
+                    if overlays <> invalid and overlays.hovered <> invalid then
+                        applyNonLayoutStyle(f.btn_id, node, overlays.hovered)
+                    end if
+                end if
+            end if
+        else if f.kind = "list" then
+            if f.node <> invalid then
+                f.node.setFocus(isFocused)
             end if
         end if
     end for
+end sub
+
+' Back-compat shim. Old code referenced `applyButtonFocusVisuals`;
+' route to the unified path so `reapplyAllStyles` etc. keep
+' working without changes.
+sub applyButtonFocusVisuals()
+    applyFocusVisuals()
 end sub

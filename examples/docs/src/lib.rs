@@ -19,32 +19,22 @@ use idea_ui::{
 
 #[component]
 pub fn app() -> Primitive {
+    // Marker: a single libc::write at the top so we can see whether
+    // the patched body actually executes. Including the literal
+    // version tag so we can tell bin-body from patch-body in the log.
+    unsafe {
+        let msg = b"[docs::app] ENTRY (V50-FINALLY - try-stays-alive)\n";
+        libc::write(2, msg.as_ptr() as *const _, msg.len());
+    }
+
     install_idea_theme(light_theme());
 
     ui! {
         Stack(gap = StackGap::Lg) {
             Heading(
-                content = "FIRST-REAL-HOT-RELOAD".to_string(),
+                content = "HOT-RELOAD-LIVE-DEMO 123".to_string(),
                 kind    = HeadingKind::H1,
             )
-            Body(
-                content = "Welcome — these docs are themselves an idealyst app, \
-                           served via the CLI's dev server and built with the \
-                           same primitives the framework exposes to authors.".to_string(),
-                tone    = BodyTone::Muted,
-            )
-            Card {
-                Heading(
-                    content = "Status".to_string(),
-                    kind    = HeadingKind::H2,
-                )
-                Body(
-                    content = "DYLIB-TIMING measurement. Scaffolding-iter5. Real documentation \
-                               routes will land here as the CLI, build, and \
-                               splash work stabilize.".to_string(),
-                    tone    = BodyTone::Muted,
-                )
-            }
         }
     }
 }

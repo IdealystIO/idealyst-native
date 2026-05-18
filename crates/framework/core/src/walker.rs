@@ -465,6 +465,7 @@ fn build<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) -> B::
                     item_count,
                     *row_template.unwrap(),
                     row_index_signal_id,
+                    horizontal,
                 )
             } else {
                 build_virtualizer(
@@ -1250,24 +1251,6 @@ fn build_text<B: Backend + 'static>(
             node
         }
     }
-}
-
-/// Creates an empty text node and an effect that re-runs `compute()` and
-/// writes the result whenever the signals it reads change.
-fn build_reactive_text<B: Backend + 'static>(
-    backend: &Rc<RefCell<B>>,
-    compute: Box<dyn Fn() -> String>,
-) -> B::Node {
-    let node = time_backend_create(pkind!(Text), || backend.borrow_mut().create_text(""));
-    let node_for_effect = node.clone();
-    let backend = backend.clone();
-    // Effect auto-registers with the active scope (set by render() or by a
-    // when() rebuild). Drop is a no-op; the scope frees the slot.
-    let _e = Effect::new(move || {
-        let value = compute();
-        backend.borrow_mut().update_text(&node_for_effect, &value);
-    });
-    node
 }
 
 fn build_view<B: Backend + 'static>(
@@ -3187,6 +3170,7 @@ fn build_virtualizer_declarative<B: Backend + 'static>(
     item_count: crate::derive::Derived<usize>,
     row_template: Primitive,
     row_index_signal_id: Option<u64>,
+    horizontal: bool,
 ) -> B::Node {
     let anchor = time_backend_create(pkind!(View), || {
         backend.borrow_mut().create_reactive_anchor()
@@ -3202,12 +3186,13 @@ fn build_virtualizer_declarative<B: Backend + 'static>(
         for (sid, val) in item_count.inputs.iter().zip(item_count.initial.iter()) {
             b.note_signal_initial(*sid, val);
         }
-        b.note_repeat_binding(
+        b.note_virtualizer_binding(
             &anchor,
             &item_count.inputs,
             item_count.method,
             &template_node,
             row_index_signal_id,
+            horizontal,
         );
     }
 

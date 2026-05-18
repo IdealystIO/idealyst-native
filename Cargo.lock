@@ -710,6 +710,7 @@ dependencies = [
  "dev-client",
  "framework-core",
  "idea-ui",
+ "libc",
  "lol_alloc",
  "wasm-bindgen",
  "web-sys",

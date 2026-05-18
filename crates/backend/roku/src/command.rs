@@ -346,6 +346,49 @@ pub enum RokuCommand {
         row_index_signal_id: Option<SignalId>,
     },
 
+    /// Native windowed list. Lowers to a Roku `MarkupList` (or
+    /// `RowList` when `horizontal`), backed by a per-virtualizer
+    /// generated item component named `item_component`. The list's
+    /// content tree is a ContentNode whose children carry pre-
+    /// computed per-row values keyed by `dynamic_fields[*].name`.
+    ///
+    /// Reactivity: on any change to `signal_ids`, the device
+    /// rebuilds the ContentNode tree by dispatching each entry in
+    /// `dynamic_fields` with the row's index substituted for
+    /// `row_index_signal_id`. MarkupList handles scroll, focus,
+    /// and cell recycling natively.
+    CreateMarkupList {
+        anchor_id: NodeId,
+        /// Component name registered by build-roku
+        /// (e.g. "IdealystListItem_30"). The component owns the
+        /// per-row subtree layout; this wire op only ships the
+        /// data spec.
+        item_component: String,
+        /// Method name that returns the current row count.
+        count_method: String,
+        /// Signals the count_method reads.
+        signal_ids: Vec<SignalId>,
+        /// Synthetic per-row index signal id used to thread the
+        /// row's index into `dynamic_fields[*].signal_ids`. None
+        /// if the row template doesn't reference the index.
+        row_index_signal_id: Option<SignalId>,
+        /// Per-row dynamic values. Each becomes a field on the
+        /// row's ContentNode; the device dispatches `method` with
+        /// `signal_ids` (substituting the row index) per row.
+        dynamic_fields: Vec<DynamicField>,
+        /// Captured row template slot. Used by build-roku at
+        /// package time to generate the per-virtualizer item
+        /// component (XML + BS). NOT replayed by the device
+        /// runtime — the item component owns the row subtree.
+        row_template: Slot,
+        /// Pixel row height. Roku's MarkupList requires
+        /// itemSize up front for layout.
+        item_size: f32,
+        /// True for RowList (horizontal scroll), false for
+        /// MarkupList (vertical scroll).
+        horizontal: bool,
+    },
+
     // ---------------- Theme ----------------
     /// Register a named theme variant. The device-side runtime
     /// stores `tokens` keyed by `name` so token references in
@@ -386,6 +429,36 @@ pub enum ThemeTokenValue {
 pub struct ThemeToken {
     pub name: String,
     pub value: ThemeTokenValue,
+}
+
+/// One dynamic value per row in a `CreateMarkupList` op. The
+/// device dispatches `method` with the current values of
+/// `signal_ids` (with the synthetic per-row index substituted in
+/// for the binding's row-index slot) and writes the result into
+/// the row's ContentNode under field `name`. The generated item
+/// component watches that field and updates the corresponding
+/// SGNode.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DynamicField {
+    /// ContentNode field name (matches the field declared in the
+    /// generated item component's XML interface).
+    pub name: String,
+    /// `#[method]` to dispatch for each row.
+    pub method: String,
+    /// Input signal ids in the method's parameter order. The
+    /// device substitutes the row-index synthetic id wherever the
+    /// `CreateMarkupList::row_index_signal_id` value appears.
+    pub signal_ids: Vec<SignalId>,
+    /// Kind of value the field carries — guides which ContentNode
+    /// field type the device should expose.
+    pub kind: DynamicFieldKind,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum DynamicFieldKind {
+    /// Stringified result of `method` — destination is a
+    /// `Label.text`-style string field.
+    Text,
 }
 
 /// A `bind_switch!` arm — pattern value (compared by JSON equality

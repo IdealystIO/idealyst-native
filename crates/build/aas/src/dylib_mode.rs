@@ -224,15 +224,26 @@ crate-type = ["dylib"]
 # Match the host's framework dep so the hash, feature set, and code
 # version are identical across the host link and the patch link.
 framework-core = {{ path = "{fcore}", features = ["hot-reload"] }}
+# CRITICAL: depend on `framework-hot` with the exact features the
+# host enables (`hot` + `diff`). Without this, the watcher's
+# `cargo build -p patch` resolves a feature union of `["hot"]`
+# only (because the host isn't in the build target set), which
+# is a different fingerprint from the initial `-p host -p patch`
+# build's union of `["hot", "diff"]`. The drift forces cargo to
+# recompile framework-hot AND framework-core (cascade), overwriting
+# `libframework_core.dylib` with new mangled symbol hashes the
+# running host bin doesn't match — and the next patch's calls
+# into framework_core fail to lazy-bind, taking the host down.
+framework-hot = {{ path = "{fhot}", features = ["hot", "diff"] }}
 # Pulled in for the `__*_hot_impl` re-exports — that's why we depend
 # on the user crate directly instead of going through the host.
 {user_name} = {{ path = "{user_path}" }}
 "#,
         fcore = fcore.display(),
+        fhot = fhot.display(),
         user_name = user_name,
         user_path = user_path.display(),
     );
-    let _ = fhot; // future use if we ever need a direct framework-hot dep here
 
     // Rust quirk: `pub use foo::*` only re-exports items NAMED `foo::*`,
     // not private items. `__*_hot_impl` functions are emitted with
@@ -461,6 +472,29 @@ fn main() -> std::io::Result<()> {{
             program: "cargo".into(),
             args: vec![
                 "build".into(),
+                // CRITICAL: include BOTH host and patch in the
+                // build target set, matching what the initial
+                // `cargo_build_both` invocation used. Cargo's unit
+                // dependency graph (and the feature union it
+                // resolves for transitive deps like `framework-hot`)
+                // depends on which top-level packages are being
+                // built. Running `cargo build -p patch` alone
+                // computes a different unit graph than the initial
+                // `-p host -p patch`, which causes cargo to consider
+                // framework-hot + framework-core "dirty" and
+                // recompile them with fresh `-C metadata=<hash>`
+                // values. That overwrites `libframework_core.dylib`
+                // with new mangled-symbol hashes the running host
+                // bin doesn't match — and the next patch's calls
+                // into framework_core fail to lazy-bind, taking the
+                // host down.
+                //
+                // Including `-p host` keeps the unit graph identical
+                // across rebuilds. The host's source doesn't change,
+                // so cargo's relink of it is fast (~hundreds of ms)
+                // and the resulting bin matches the running one.
+                "-p".into(),
+                "host".into(),
                 "-p".into(),
                 "patch".into(),
             ],
@@ -526,8 +560,31 @@ fn main() -> std::io::Result<()> {{
                 g.as_mut().and_then(|g| g.take())
             }};
             if let Some(p) = maybe_path {{
-                eprintln!("[dylib-host] applying patch: {{}}", p.display());
-                match unsafe {{ framework_hot::diff::apply_from_dylib(&p) }} {{
+                // dyld caches dlopen by absolute path on macOS: a
+                // second dlopen of the SAME path returns the cached
+                // image even if the file on disk was rewritten in
+                // between. Copy the freshly-built patch to a unique
+                // filename so subsecond's dlopen forces a fresh load
+                // every time. Without this, every patch after the
+                // first one would silently no-op (the jump table
+                // entry stays mapped to the first patch's body).
+                static APPLY_SEQ: std::sync::atomic::AtomicU64 =
+                    std::sync::atomic::AtomicU64::new(0);
+                let seq = APPLY_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let unique = p.with_file_name(format!(
+                    "libpatch-apply-{{}}.dylib",
+                    seq
+                ));
+                if let Err(e) = std::fs::copy(&p, &unique) {{
+                    eprintln!(
+                        "[dylib-host] failed to stage patch as {{}}: {{}}",
+                        unique.display(),
+                        e
+                    );
+                    return;
+                }}
+                eprintln!("[dylib-host] applying patch: {{}}", unique.display());
+                match unsafe {{ framework_hot::diff::apply_from_dylib(&unique) }} {{
                     Ok(_) => eprintln!("[dylib-host] patch applied"),
                     Err(e) => {{
                         eprintln!("[dylib-host] patch apply failed: {{:?}}", e);

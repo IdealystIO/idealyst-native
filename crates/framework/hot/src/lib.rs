@@ -83,9 +83,9 @@ fn debug_log_call<F>(f: &F) {
     static CALLS: AtomicU64 = AtomicU64::new(0);
     let n = CALLS.fetch_add(1, Ordering::Relaxed);
     // Log only the first call of each session so we don't spam the
-    // tick loop. Prints the runtime fn-ptr value and `cfg!
-    // (debug_assertions)` so we can correlate against subsecond's
-    // gating.
+    // tick loop. Prints the runtime fn-ptr value, `cfg!
+    // (debug_assertions)`, and whether the current jump-table maps
+    // that pointer.
     if n < 3 {
         let size = std::mem::size_of::<F>();
         let ptr: usize = if size == std::mem::size_of::<fn()>() {
@@ -93,9 +93,18 @@ fn debug_log_call<F>(f: &F) {
         } else {
             0
         };
+        let (table_entries, hit) = unsafe {
+            match subsecond::get_jump_table() {
+                Some(t) => {
+                    let h = t.map.get(&(ptr as u64)).copied();
+                    (t.map.len(), h)
+                }
+                None => (0, None),
+            }
+        };
         eprintln!(
-            "[framework-hot] call #{} F_size={} ptr=0x{:x} debug_assertions={}",
-            n, size, ptr, cfg!(debug_assertions),
+            "[framework-hot] call #{} F_size={} ptr=0x{:x} debug_assertions={} jt_entries={} jt_hit={:?}",
+            n, size, ptr, cfg!(debug_assertions), table_entries, hit,
         );
     }
 }

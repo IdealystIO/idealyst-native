@@ -91,6 +91,36 @@ end sub
 ' focus change by `applyButtonFocusVisuals`.
 function onKeyEvent(key as string, press as boolean) as boolean
     if not press then return false
+    routing = focusedItemRouting()
+    if routing = "list-vertical" then
+        ' MarkupList: native handles up/down/OK; we own left/right
+        ' as the "exit the list" gesture.
+        if key = "up" or key = "down" or key = "OK" or key = "select" or key = "play" then
+            return false
+        end if
+        if key = "right" then
+            moveFocus(1)
+            return true
+        else if key = "left" then
+            moveFocus(-1)
+            return true
+        end if
+        return false
+    else if routing = "list-horizontal" then
+        ' RowList carousel: native handles left/right/OK; we own
+        ' up/down as the exit gesture.
+        if key = "left" or key = "right" or key = "OK" or key = "select" or key = "play" then
+            return false
+        end if
+        if key = "down" then
+            moveFocus(1)
+            return true
+        else if key = "up" then
+            moveFocus(-1)
+            return true
+        end if
+        return false
+    end if
     if key = "OK" or key = "select" or key = "play" then
         fireFocusedButton()
         return true
@@ -273,6 +303,18 @@ sub applyCommand(cmd as object)
         ' pass it through; bindButton treats invalid as "no
         ' output signal" (the action is fire-and-forget).
         bindButton(cmd.button_id, cmd.input_signal_ids, cmd.method, cmd.output_signal_id)
+    else if op = "CreateMarkupList" then
+        ' Native windowed list. Queue the op rather than running
+        ' it now — `ApplyStyleStates` on the anchor lands AFTER
+        ' `CreateMarkupList` in the wire stream (the walker
+        ' calls `attach_style` after `build_virtualizer_declarative`
+        ' returns), so any style patches we make here would be
+        ' clobbered by the subsequent assignment. The Finish op
+        ' drains this queue before running layout.
+        if m.pendingMarkupLists = invalid then
+            m.pendingMarkupLists = createObject("roArray", 4, true)
+        end if
+        m.pendingMarkupLists.Push(cmd)
     else if op = "RegisterThemeVariant" then
         ' Register a named theme variant. Each variant's tokens are
         ' an array of `{ name, value: { kind, value } }` AAs; flatten
@@ -307,6 +349,17 @@ sub applyCommand(cmd as object)
         ' layout after every signal mutation (text contents change
         ' size → frames need recompute).
         m.rootId = rootId
+        ' Drain deferred virtualizer setup. Each queued
+        ' CreateMarkupList patches its anchor's style with the
+        ' viewport's width/height; doing it now (after every
+        ' ApplyStyleStates has run) means the patches survive
+        ' into the layout pass.
+        if m.pendingMarkupLists <> invalid then
+            for each pending in m.pendingMarkupLists
+                createMarkupList(pending)
+            end for
+            m.pendingMarkupLists = invalid
+        end if
         runLayout(rootId)
     else
         ? "[idealyst] TODO unhandled op: "; op

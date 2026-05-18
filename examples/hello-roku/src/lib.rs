@@ -201,14 +201,17 @@ stylesheet! {
     }
 }
 
-// Per-row dot for the `bind_repeat!` demo. The runtime clones
-// this row template per row, allocating fresh node ids per
-// instance — no upper bound on `count`.
+// Per-row card for the carousel demo. The build pipeline reads
+// `background` + `color` + `font_size` off this stylesheet and
+// bakes them into the generated item component's init() — so
+// each Roku MarkupList/RowList cell renders as a colored card
+// with centered text.
 stylesheet! {
     pub RepeatRow<Theme> {
         base(_t) {
             font_size: Length::Px(40.0),
-            color: "#34D399",
+            color: "#0F1115",
+            background: "#34D399",
         }
     }
 }
@@ -473,16 +476,18 @@ pub fn app() -> Primitive {
                 _ => { Text(style = status_badge_style()) { "● keep climbing"         } },
             }
 
-            // Plain `for` loop over a `#[method]` call. `ui!`
-            // detects the structured call shape and lowers to a
-            // `Primitive::Virtualizer` with a captured row
-            // template; the loop binder (`i`) is a `Signal<i32>`
-            // the runtime mints per row. The trailing
-            // `.with_style(...)` pins the row container's flex
-            // direction so rows lay out horizontally.
-            for i in row_count(count) {
-                Text(style = repeat_row_style()) { row_label(i) }
-            }.with_style(repeat_row_container_style())
+            // Typed-data Virtualizer over a `Signal<Vec<i32>>`,
+            // lowered to a horizontal carousel. `.horizontal(true)`
+            // flips the wire op so the Roku backend picks RowList
+            // over MarkupList — D-pad left/right scrolls the
+            // strip, up/down exits to the next focusable.
+            // `items_count(items)` drives item count; each item
+            // reads `item_at(items, i)` so the data signal and
+            // synthetic row-index signal are inputs. Mutating
+            // `items` reactively re-fires every visible cell.
+            for i in items_count(items) {
+                Text(style = repeat_row_style()) { item_at(items, i) }
+            }.with_style(repeat_row_container_style()).horizontal(true)
 
             View(style = button_row_style()) {
                 Button(

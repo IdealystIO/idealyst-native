@@ -244,6 +244,31 @@ pub trait Backend {
         // default: no-op
     }
 
+    /// Hook for `Primitive::Virtualizer` on the structured /
+    /// generator-backend path. Backends opt in to native windowed
+    /// list rendering here (Roku → MarkupList). Default delegates
+    /// to `note_repeat_binding` so backends that don't yet
+    /// implement native virtualization still get correct (if
+    /// unwindowed) row rendering.
+    #[allow(unused_variables)]
+    fn note_virtualizer_binding(
+        &mut self,
+        anchor: &Self::Node,
+        signal_ids: &[u64],
+        count_method: &'static str,
+        row_template: &Self::Node,
+        row_index_signal_id: Option<u64>,
+        horizontal: bool,
+    ) {
+        self.note_repeat_binding(
+            anchor,
+            signal_ids,
+            count_method,
+            row_template,
+            row_index_signal_id,
+        );
+    }
+
     /// Backend capability flag for lazy slot materialization. When
     /// `true`, the walker wraps each `bind_when!`/`bind_switch!`/
     /// `bind_repeat!` slot's subtree build in `begin_slot_capture`/

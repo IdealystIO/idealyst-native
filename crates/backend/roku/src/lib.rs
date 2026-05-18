@@ -307,6 +307,90 @@ impl RokuBackend {
 }
 
 // ---------------------------------------------------------------------------
+// Virtualizer slot inspection
+// ---------------------------------------------------------------------------
+
+/// Decide whether a captured row template can lower to a native
+/// `MarkupList` (Some) or has to fall back to `BindRepeat` (None).
+///
+/// V1 accepts the shape `Text { method(signals, [i]) }` — one
+/// `CreateText` node, optional decoration (`ApplyStyle*`,
+/// `UpdateText`), and exactly one `BindText` driving its text. The
+/// returned `DynamicField` becomes the row's lone ContentNode
+/// field (`title`), watched by the generated item component.
+///
+/// Returning `None` is a signal to keep BindRepeat semantics —
+/// every other row shape (multi-node, mixed kinds, nested
+/// bindings) routes through that path until codegen learns more
+/// row patterns.
+fn inspect_simple_text_row(
+    slot: &command::Slot,
+    row_index_signal_id: Option<u64>,
+) -> Option<Vec<command::DynamicField>> {
+    use command::RokuCommand as C;
+
+    let mut create_text_id: Option<NodeId> = None;
+    let mut bind_text: Option<(NodeId, Vec<SignalId>, String)> = None;
+    let mut saw_other_node = false;
+
+    for cmd in &slot.commands {
+        match cmd {
+            C::CreateText { id, .. } => {
+                if create_text_id.is_some() {
+                    return None;
+                }
+                create_text_id = Some(*id);
+            }
+            C::BindText { node_id, signal_ids, method } => {
+                if bind_text.is_some() {
+                    return None;
+                }
+                bind_text =
+                    Some((*node_id, signal_ids.clone(), method.clone()));
+            }
+            // Tolerated decoration on the lone Text node.
+            C::ApplyStyle { .. } | C::ApplyStyleStates { .. } | C::UpdateText { .. } => {}
+            // Any structural / reactive sibling kicks us back to
+            // BindRepeat. We can grow this matcher to cover more
+            // shapes incrementally.
+            C::CreateView { .. }
+            | C::CreateButton { .. }
+            | C::CreateImage { .. }
+            | C::CreateIcon { .. }
+            | C::CreatePressable { .. }
+            | C::CreateScrollView { .. }
+            | C::CreateReactiveAnchor { .. }
+            | C::CreateTextInput { .. }
+            | C::CreateToggle { .. }
+            | C::CreateSlider { .. }
+            | C::CreateActivityIndicator { .. } => saw_other_node = true,
+            C::BindWhen { .. }
+            | C::BindSwitch { .. }
+            | C::BindRepeat { .. }
+            | C::CreateMarkupList { .. }
+            | C::Insert { .. } => return None,
+            _ => {}
+        }
+        if saw_other_node {
+            return None;
+        }
+    }
+
+    let (bound_node, signal_ids, method) = bind_text?;
+    let root = create_text_id?;
+    if bound_node != root {
+        return None;
+    }
+    let _ = row_index_signal_id; // signal_ids already encodes the row-index slot
+    Some(vec![command::DynamicField {
+        name: "title".to_string(),
+        method,
+        signal_ids,
+        kind: command::DynamicFieldKind::Text,
+    }])
+}
+
+// ---------------------------------------------------------------------------
 // Backend trait
 // ---------------------------------------------------------------------------
 
@@ -652,6 +736,59 @@ impl Backend for RokuBackend {
             row_template,
             row_index_signal_id: row_index_signal_id.map(SignalId),
         });
+    }
+
+    fn note_virtualizer_binding(
+        &mut self,
+        anchor: &Self::Node,
+        signal_ids: &[u64],
+        count_method: &'static str,
+        row_template: &Self::Node,
+        row_index_signal_id: Option<u64>,
+        horizontal: bool,
+    ) {
+        let row_template = command::Slot {
+            root_node_id: *row_template,
+            commands: self.take_captured_slot(*row_template),
+        };
+        // Inspect the slot. Today we only lower row templates that
+        // are structurally one Text node with one BindText (and any
+        // ApplyStyle/UpdateText decoration). Anything else falls
+        // back to the existing BindRepeat path so the framework
+        // stays correct on Roku while we grow MarkupList coverage
+        // primitive-by-primitive.
+        if let Some(dynamic_fields) = inspect_simple_text_row(
+            &row_template,
+            row_index_signal_id,
+        ) {
+            // Component name is keyed on the anchor's id — anchors
+            // are unique per virtualizer in the snapshot, so this
+            // produces a stable, unique name build-roku can use to
+            // emit the .xml/.brs pair.
+            let item_component = format!("IdealystListItem_{}", anchor.0);
+            self.push(RokuCommand::CreateMarkupList {
+                anchor_id: *anchor,
+                item_component,
+                count_method: count_method.to_string(),
+                signal_ids: signal_ids.iter().map(|id| SignalId(*id)).collect(),
+                row_index_signal_id: row_index_signal_id.map(SignalId),
+                dynamic_fields,
+                row_template,
+                item_size: 60.0,
+                horizontal,
+            });
+        } else {
+            // Generic row template — fall back to the BindRepeat
+            // path (the device-side replay machinery handles
+            // arbitrary row shapes).
+            self.push(RokuCommand::BindRepeat {
+                anchor_id: *anchor,
+                signal_ids: signal_ids.iter().map(|id| SignalId(*id)).collect(),
+                count_method: count_method.to_string(),
+                row_template,
+                row_index_signal_id: row_index_signal_id.map(SignalId),
+            });
+        }
     }
 
     fn supports_lazy_slot_capture(&self) -> bool {

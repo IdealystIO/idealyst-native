@@ -20,6 +20,7 @@ dev-hot-reload = ["dep:dev-client", "backend-web/aas-shell"]
 [dependencies]
 framework-core = { workspace = true }
 idea-ui = { workspace = true }
+libc = "0.2"
 
 # Everything web-specific is gated on the wasm32 target. The
 # cross-platform `app()` function never touches these — native
