@@ -73,7 +73,31 @@ pub fn call<Args, F, M>(f: F, args: Args) -> F::Return
 where
     F: subsecond::HotFunction<Args, M>,
 {
+    debug_log_call::<F>(&f);
     subsecond::HotFn::current(f).call(args)
+}
+
+#[cfg(feature = "hot")]
+fn debug_log_call<F>(f: &F) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static CALLS: AtomicU64 = AtomicU64::new(0);
+    let n = CALLS.fetch_add(1, Ordering::Relaxed);
+    // Log only the first call of each session so we don't spam the
+    // tick loop. Prints the runtime fn-ptr value and `cfg!
+    // (debug_assertions)` so we can correlate against subsecond's
+    // gating.
+    if n < 3 {
+        let size = std::mem::size_of::<F>();
+        let ptr: usize = if size == std::mem::size_of::<fn()>() {
+            unsafe { std::mem::transmute_copy::<F, usize>(f) }
+        } else {
+            0
+        };
+        eprintln!(
+            "[framework-hot] call #{} F_size={} ptr=0x{:x} debug_assertions={}",
+            n, size, ptr, cfg!(debug_assertions),
+        );
+    }
 }
 
 /// Pass-through stub for the feature-off mode. Monomorphizes to a

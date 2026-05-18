@@ -19,11 +19,6 @@
 //! - `vec![...]` and `children![...]` are special-cased; other list-shaped
 //!   macros are opaque to the reactivity rewriter.
 
-mod bind;
-mod bind_press;
-mod bind_repeat;
-mod bind_switch;
-mod bind_when;
 mod component_attr;
 mod invocation_macro;
 mod jsx;
@@ -63,54 +58,6 @@ pub fn jsx(input: TokenStream) -> TokenStream {
 pub fn stylesheet(input: TokenStream) -> TokenStream {
     let parsed = parse_macro_input!(input as stylesheet::StyleSheetDecl);
     stylesheet::emit(parsed).into()
-}
-
-/// `bind!(fn(signals...))` — produce a reactive `TextSource::Bound`
-/// from a call-shaped expression. The expansion carries both a
-/// closure (for Effect-driven backends) and the symbolic
-/// `signal_ids` + `method` name (for backends that ship bindings
-/// declaratively). See [`bind`] for the grammar and constraints.
-#[proc_macro]
-pub fn bind(input: TokenStream) -> TokenStream {
-    let parsed = parse_macro_input!(input as bind::BindInput);
-    bind::emit(parsed).into()
-}
-
-/// `bind_press!(fn(signals) => output_signal)` — produce a
-/// `ButtonAction` for the `on_click` slot of a `Button`. Closure +
-/// binding both populated, mirroring `bind!`. See [`bind_press`]
-/// for the grammar.
-#[proc_macro]
-pub fn bind_press(input: TokenStream) -> TokenStream {
-    let parsed = parse_macro_input!(input as bind_press::BindPressInput);
-    bind_press::emit(parsed).into()
-}
-
-/// `bind_when!(fn(signals), then = ..., else_ = ...)` — produce a
-/// `Primitive::When` with attached binding metadata so backends
-/// that ship structural reactivity declaratively (Roku) can swap
-/// pre-built subtrees on signal change. See [`bind_when`] for the
-/// full grammar.
-#[proc_macro]
-pub fn bind_when(input: TokenStream) -> TokenStream {
-    let parsed = parse_macro_input!(input as bind_when::BindWhenInput);
-    bind_when::emit(parsed).into()
-}
-
-/// `bind_switch!(fn(signals), pat => ..., _ => default)` — N-way
-/// structural reactivity. See [`bind_switch`] for the grammar.
-#[proc_macro]
-pub fn bind_switch(input: TokenStream) -> TokenStream {
-    let parsed = parse_macro_input!(input as bind_switch::BindSwitchInput);
-    bind_switch::emit(parsed).into()
-}
-
-/// `bind_repeat!(fn(signals), max = N, row = |i| ...)` — fixed-max
-/// reactive list. See [`bind_repeat`] for the grammar.
-#[proc_macro]
-pub fn bind_repeat(input: TokenStream) -> TokenStream {
-    let parsed = parse_macro_input!(input as bind_repeat::BindRepeatInput);
-    bind_repeat::emit(parsed).into()
 }
 
 /// `#[component]` — annotates a component function. Rewrites its body for
@@ -225,9 +172,38 @@ fn split_for_hot_reload(item_fn: ItemFn) -> proc_macro2::TokenStream {
     // Reach `framework_hot` through `framework_core::__hot` so the
     // generated code resolves in every consumer crate without
     // forcing them to take a direct dep on framework-hot.
+    //
+    // Critical: assign the inner fn item to a `fn(...)` typed local
+    // first. A bare named function in Rust is a *zero-sized fn item
+    // type* — passing it directly into `framework_hot::call` makes
+    // `F` a ZST, which routes through subsecond's trait-object code
+    // path (it keys the jump table on `<F as HotFunction>::call_it`,
+    // not on the user's function). Our diff generator emits entries
+    // for `__*_hot_impl` symbols by name, so we need the dispatch to
+    // go through the fn-pointer path. Coercing the fn item to an
+    // explicit `fn(...)` pointer here forces `size_of::<F>() ==
+    // size_of::<fn()>()` inside `HotFn::try_call`, taking
+    // `call_as_ptr` — which uses the function pointer's runtime
+    // address as the lookup key. That's the address our diff
+    // generator wrote into the table.
+    let inner_fn_pointer_types: Vec<&syn::Type> = outer
+        .sig
+        .inputs
+        .iter()
+        .filter_map(|arg| match arg {
+            syn::FnArg::Typed(pt) => Some(&*pt.ty),
+            _ => None,
+        })
+        .collect();
+    let inner_fn_pointer_ret = match &outer.sig.output {
+        syn::ReturnType::Default => quote::quote! { () },
+        syn::ReturnType::Type(_, t) => quote::quote! { #t },
+    };
     outer.block = parse_quote! {
         {
-            ::framework_core::__hot::call(#inner_name, #arg_tuple)
+            let __idealyst_hot_inner: fn(#(#inner_fn_pointer_types),*) -> #inner_fn_pointer_ret
+                = #inner_name;
+            ::framework_core::__hot::call(__idealyst_hot_inner, #arg_tuple)
         }
     };
     // Avoid spurious lints on the outer's generated body.

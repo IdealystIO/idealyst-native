@@ -23,17 +23,73 @@
 
 use backend_roku::method;
 use framework_core::{
-    bind, bind_press, bind_repeat, bind_switch, bind_when, install_theme, signal,
-    stylesheet, ui, AlignItems, FlexDirection, FontWeight, JustifyContent, Length,
-    Primitive, Signal, ThemeTokens, TokenEntry,
+    install_themes, signal, stylesheet, ui, AlignItems, Color, FlexDirection, FontWeight,
+    JustifyContent, Length, Primitive, Signal, ThemeTokens, TokenEntry, TokenValue, Tokenized,
 };
 
+// ---------------------------------------------------------------------------
+// Theme
+// ---------------------------------------------------------------------------
+
+/// Two-variant theme. Each named token resolves to a different
+/// concrete color depending on which variant is active. Stylesheets
+/// reference these tokens by closing over the theme handle the
+/// `stylesheet! { pub Name<Theme> { ... } }` block receives — the
+/// resulting `Tokenized<Color>` carries the token name + fallback,
+/// and the Roku backend ships both to the device so the BS runtime
+/// can re-resolve when the active theme name changes.
 #[derive(Clone)]
-pub struct Theme;
+pub struct Theme {
+    pub bg: Tokenized<Color>,
+    pub fg: Tokenized<Color>,
+    pub accent: Tokenized<Color>,
+    pub muted: Tokenized<Color>,
+    pub badge_even: Tokenized<Color>,
+    pub badge_odd: Tokenized<Color>,
+}
+
+fn tok(name: &'static str, fallback: &str) -> Tokenized<Color> {
+    Tokenized::token(name, Color(fallback.into()))
+}
+
+pub fn light_theme() -> Theme {
+    Theme {
+        bg: tok("page-bg", "#FFFFFF"),
+        fg: tok("page-fg", "#1A1A1F"),
+        accent: tok("accent", "#FFCC00"),
+        muted: tok("muted", "#6B7280"),
+        badge_even: tok("badge-even", "#10B981"),
+        badge_odd: tok("badge-odd", "#F472B6"),
+    }
+}
+
+pub fn dark_theme() -> Theme {
+    Theme {
+        bg: tok("page-bg", "#0F1115"),
+        fg: tok("page-fg", "#E8EAF0"),
+        accent: tok("accent", "#FFCC00"),
+        muted: tok("muted", "#9099A8"),
+        badge_even: tok("badge-even", "#34D399"),
+        badge_odd: tok("badge-odd", "#F9A8D4"),
+    }
+}
 
 impl ThemeTokens for Theme {
     fn tokens(&self) -> Vec<TokenEntry> {
-        Vec::new()
+        fn entry(t: &Tokenized<Color>) -> TokenEntry {
+            TokenEntry {
+                name: t.name().expect("theme color fields must be Tokenized::Token"),
+                value: TokenValue::Color(t.value().clone()),
+            }
+        }
+        vec![
+            entry(&self.bg),
+            entry(&self.fg),
+            entry(&self.accent),
+            entry(&self.muted),
+            entry(&self.badge_even),
+            entry(&self.badge_odd),
+        ]
     }
 }
 
@@ -43,32 +99,33 @@ impl ThemeTokens for Theme {
 
 stylesheet! {
     pub Page<Theme> {
-        base(_t) {
+        base(t) {
             flex_direction: FlexDirection::Column,
             gap: Length::Px(24.0),
             padding_top: Length::Px(60.0),
             align_items: AlignItems::Center,
             justify_content: JustifyContent::FlexStart,
+            background: t.bg.clone(),
         }
     }
 }
 
 stylesheet! {
     pub Title<Theme> {
-        base(_t) {
+        base(t) {
             font_size: Length::Px(40.0),
             font_weight: FontWeight::Bold,
-            color: "#FFFFFF",
+            color: t.fg.clone(),
         }
     }
 }
 
 stylesheet! {
     pub Counter<Theme> {
-        base(_t) {
+        base(t) {
             font_size: Length::Px(140.0),
             font_weight: FontWeight::Bold,
-            color: "#FFCC00",
+            color: t.accent.clone(),
         }
     }
 }
@@ -85,19 +142,19 @@ stylesheet! {
 
 stylesheet! {
     pub MetaKey<Theme> {
-        base(_t) {
+        base(t) {
             font_size: Length::Px(28.0),
-            color: "#9CA3AF",
+            color: t.muted.clone(),
         }
     }
 }
 
 stylesheet! {
     pub MetaValue<Theme> {
-        base(_t) {
+        base(t) {
             font_size: Length::Px(32.0),
             font_weight: FontWeight::SemiBold,
-            color: "#FFFFFF",
+            color: t.fg.clone(),
         }
     }
 }
@@ -172,20 +229,20 @@ stylesheet! {
 // `.visible` between them.
 stylesheet! {
     pub BadgeEven<Theme> {
-        base(_t) {
+        base(t) {
             font_size: Length::Px(36.0),
             font_weight: FontWeight::Bold,
-            color: "#10B981",
+            color: t.badge_even.clone(),
         }
     }
 }
 
 stylesheet! {
     pub BadgeOdd<Theme> {
-        base(_t) {
+        base(t) {
             font_size: Length::Px(36.0),
             font_weight: FontWeight::Bold,
-            color: "#F472B6",
+            color: t.badge_odd.clone(),
         }
     }
 }
@@ -301,6 +358,18 @@ pub fn row_label(i: i32) -> i32 {
     i + 1
 }
 
+/// Flip the active theme name. Output goes back into the theme
+/// signal; the BS runtime's theme subscriber sees the change and
+/// re-applies every styled node against the new variant's tokens.
+#[method]
+pub fn next_theme(current: String) -> String {
+    if current == "dark" {
+        "light".to_string()
+    } else {
+        "dark".to_string()
+    }
+}
+
 /// Row count derived from a `Signal<Vec<i32>>` — the list's
 /// length. Transpiles to BS as `v.Count()`.
 #[method]
@@ -323,7 +392,20 @@ pub fn item_at(v: Vec<i32>, i: i32) -> i32 {
 // ---------------------------------------------------------------------------
 
 pub fn app() -> Primitive {
-    install_theme(Theme);
+    // Active-theme signal. Its String value names the current
+    // theme variant; `install_themes` registers both variants
+    // with the backend and binds this signal as the active-theme
+    // driver. The toggle button writes back through this signal
+    // and the BS runtime re-applies every styled node when it
+    // changes.
+    let theme: Signal<String> = signal!("dark".to_string());
+    install_themes(
+        theme,
+        &[
+            ("light", light_theme()),
+            ("dark", dark_theme()),
+        ],
+    );
 
     let count: Signal<i32> = signal!(0);
     // A `Signal<Vec<i32>>` — fibonacci-ish seed list. The whole
@@ -350,62 +432,72 @@ pub fn app() -> Primitive {
                 }
             }
 
-            Text(style = counter_style()) { bind!(count_value(count)) }
+            Text(style = counter_style()) { count_value(count) }
 
             View(style = meta_row_style()) {
                 Text(style = meta_key_style()) { "Parity:" }
-                Text(style = meta_value_style()) { bind!(parity_label(count)) }
+                Text(style = meta_value_style()) { parity_label(count) }
             }
 
             View(style = meta_row_style()) {
                 Text(style = meta_key_style()) { "Status:" }
-                Text(style = meta_value_style()) { bind!(status_label(count)) }
+                Text(style = meta_value_style()) { status_label(count) }
             }
 
             View(style = meta_row_style()) {
                 Text(style = meta_key_style()) { "Sum 1..N:" }
-                Text(style = meta_value_style()) { bind!(sum_to(count)) }
+                Text(style = meta_value_style()) { sum_to(count) }
             }
 
-            // bind_when! — *structural* reactivity. Both branches
-            // ship pre-built; the device toggles which subtree is
-            // visible based on `is_even(count)`.
-            bind_when!(is_even(count),
-                then  = ui! { Text(style = badge_even_style()) { "★ EVEN ★" } },
-                else_ = ui! { Text(style = badge_odd_style())  { "✦ ODD ✦"  } },
-            )
+            // Structural reactivity via plain `if` / `else`. The
+            // `ui!` macro detects the call shape `is_even(count)`,
+            // builds a `Derived<bool>` with structured metadata,
+            // and emits a `Primitive::When` — same Roku wire op
+            // (`BindWhen`) that `bind_when!` used to produce.
+            if is_even(count) {
+                Text(style = badge_even_style()) { "★ EVEN ★" }
+            } else {
+                Text(style = badge_odd_style()) { "✦ ODD ✦" }
+            }
 
-            // bind_switch! — N-way conditional. Five pre-built
-            // arms, the matching one shows based on the
-            // count_bucket method's return value.
-            bind_switch!(count_bucket(count),
-                0 => ui! { Text(style = status_badge_style()) { "○ press +1 to begin"  } },
-                1 => ui! { Text(style = status_badge_style()) { "◔ one tick on the clock" } },
-                2 => ui! { Text(style = status_badge_style()) { "◐ warming up"          } },
-                3 => ui! { Text(style = status_badge_style()) { "◕ in the groove"       } },
-                _ => ui! { Text(style = status_badge_style()) { "● keep climbing"       } },
-            )
+            // Plain `match` over a `#[method]` call. `ui!` detects
+            // the structured call shape and emits a
+            // `Primitive::Switch` with literal-keyed arms — same
+            // Roku wire op (`BindSwitch`) that `bind_switch!`
+            // produced.
+            match count_bucket(count) {
+                0 => { Text(style = status_badge_style()) { "○ press +1 to begin"     } },
+                1 => { Text(style = status_badge_style()) { "◔ one tick on the clock" } },
+                2 => { Text(style = status_badge_style()) { "◐ warming up"            } },
+                3 => { Text(style = status_badge_style()) { "◕ in the groove"         } },
+                _ => { Text(style = status_badge_style()) { "● keep climbing"         } },
+            }
 
-            // bind_repeat! reading from a `Signal<Vec<i32>>`. Row
-            // count tracks the list length; each row binds to
-            // `item_at(items, i)` so per-row content is the
-            // corresponding list element. Mutating `items` would
-            // reactively re-render — same path that powers `count`
-            // updates above.
-            bind_repeat!(items_count(items),
-                row = |i| ui! { Text(style = repeat_row_style()) { bind!(item_at(items, i)) } },
-                style = repeat_row_container_style(),
-            )
+            // Plain `for` loop over a `#[method]` call. `ui!`
+            // detects the structured call shape and lowers to a
+            // `Primitive::Virtualizer` with a captured row
+            // template; the loop binder (`i`) is a `Signal<i32>`
+            // the runtime mints per row. The trailing
+            // `.with_style(...)` pins the row container's flex
+            // direction so rows lay out horizontally.
+            for i in row_count(count) {
+                Text(style = repeat_row_style()) { row_label(i) }
+            }.with_style(repeat_row_container_style())
 
             View(style = button_row_style()) {
                 Button(
                     label = "-1",
-                    on_click = bind_press!(decrement(count) => count),
+                    on_click = decrement(count) => count,
                     style = counter_button_style(),
                 )
                 Button(
                     label = "+1",
-                    on_click = bind_press!(increment(count) => count),
+                    on_click = increment(count) => count,
+                    style = counter_button_style(),
+                )
+                Button(
+                    label = "Theme",
+                    on_click = next_theme(theme) => theme,
                     style = counter_button_style(),
                 )
             }

@@ -417,7 +417,7 @@ impl Backend for RokuBackend {
         self.push(RokuCommand::CreateIcon {
             id,
             data: wire,
-            color: color.map(|c| WireColor(c.0.clone())),
+            color: color.map(|c| WireColor::literal(c.0.clone())),
         });
         id
     }
@@ -425,7 +425,7 @@ impl Backend for RokuBackend {
     fn update_icon_color(&mut self, node: &Self::Node, color: &Color) {
         self.push(RokuCommand::UpdateIconColor {
             id: *node,
-            color: WireColor(color.0.clone()),
+            color: WireColor::literal(color.0.clone()),
         });
     }
 
@@ -519,7 +519,7 @@ impl Backend for RokuBackend {
         self.push(RokuCommand::CreateActivityIndicator {
             id,
             size: wire_size,
-            color: color.map(|c| WireColor(c.0.clone())),
+            color: color.map(|c| WireColor::literal(c.0.clone())),
         });
         id
     }
@@ -759,6 +759,49 @@ impl Backend for RokuBackend {
         self.push(RokuCommand::SetDisabled {
             id: *node,
             disabled,
+        });
+    }
+
+    fn register_theme_variant(
+        &mut self,
+        name: &str,
+        tokens: &[framework_core::TokenEntry],
+    ) {
+        // Translate each TokenEntry into a wire-friendly
+        // ThemeToken. Color tokens flatten to CSS strings; Length
+        // tokens reuse the WireLength enum (px/percent/auto).
+        // Numeric tokens pass through as f32.
+        let wire_tokens: Vec<command::ThemeToken> = tokens
+            .iter()
+            .map(|t| command::ThemeToken {
+                name: t.name.to_string(),
+                value: match &t.value {
+                    framework_core::TokenValue::Color(c) => command::ThemeTokenValue::Color {
+                        value: c.0.clone(),
+                    },
+                    framework_core::TokenValue::Length(l) => command::ThemeTokenValue::Length {
+                        value: style::length(l),
+                    },
+                    framework_core::TokenValue::Number(n) => command::ThemeTokenValue::Number {
+                        value: *n,
+                    },
+                },
+            })
+            .collect();
+        // Bypass capture stack — themes are global, declared once
+        // at snapshot. They never belong inside a slot's commands.
+        self.commands.push(RokuCommand::RegisterThemeVariant {
+            name: name.to_string(),
+            tokens: wire_tokens,
+        });
+    }
+
+    fn bind_active_theme_signal(&mut self, signal_id: u64, initial_name: &str) {
+        // Also global state — emit straight to the main command
+        // stream. Skip the capture stack same as `note_signal_initial`.
+        self.commands.push(RokuCommand::BindActiveThemeSignal {
+            signal_id: SignalId(signal_id),
+            initial_name: initial_name.to_string(),
         });
     }
 

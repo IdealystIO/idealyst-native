@@ -63,6 +63,14 @@ impl From<std::io::Error> for DiffError {
 
 /// Open `path`, parse symbols, return a map of name → link-time
 /// offset for `main` and every `__*_hot_impl` entry.
+///
+/// Keys are *hash-stripped*: Rust's legacy mangling appends a
+/// `17h<16hex>E` disambiguator that varies per incremental
+/// compilation, so identical functions in two artifacts compiled
+/// at different moments end up with different mangled names. We
+/// strip the trailing hash before keying so the bin's and the
+/// patch dylib's tables match by underlying function identity
+/// regardless of how cargo's CGU numbering shuffled across runs.
 fn read_symbol_map(path: &Path) -> Result<HashMap<String, u64>, DiffError> {
     let data =
         std::fs::read(path).map_err(|e| DiffError::Io(e))?;
@@ -77,9 +85,34 @@ fn read_symbol_map(path: &Path) -> Result<HashMap<String, u64>, DiffError> {
         if !is_hot_symbol(name) {
             continue;
         }
-        out.insert(name.to_string(), sym.address());
+        out.insert(strip_mangle_hash(name).to_string(), sym.address());
     }
     Ok(out)
+}
+
+/// Strip Rust's legacy-mangling trailing disambiguator
+/// (`17h<16-hex>E`, 20 chars total) so the same function compiled
+/// in two artifacts at different incremental moments keys to the
+/// same string. Returns the input unchanged if it doesn't end in
+/// that shape (e.g. `main` / `_main`, or v0-mangled symbols).
+fn strip_mangle_hash(name: &str) -> &str {
+    // Legacy form: `<...>17h<16-hex>E`. Total trailing length 20.
+    const SUFFIX_LEN: usize = 20;
+    let bytes = name.as_bytes();
+    if bytes.len() < SUFFIX_LEN + 1 || bytes[bytes.len() - 1] != b'E' {
+        return name;
+    }
+    let suffix_start = bytes.len() - SUFFIX_LEN;
+    if &bytes[suffix_start..suffix_start + 3] != b"17h" {
+        return name;
+    }
+    if !bytes[suffix_start + 3..bytes.len() - 1]
+        .iter()
+        .all(|b| b.is_ascii_hexdigit())
+    {
+        return name;
+    }
+    &name[..suffix_start]
 }
 
 /// Match the names that participate in hot reload:
@@ -138,6 +171,17 @@ pub fn apply_from_dylib(dylib_path: &Path) -> Result<(), DiffError> {
         }
         let Some(&dylib_addr) = dylib_map.get(name) else { continue };
         map.insert(bin_addr, dylib_addr);
+    }
+    eprintln!(
+        "[framework-hot] jump-table: {} entries (bin syms: {}, dylib syms: {}) — aslr_ref(bin)=0x{:x} new_base(dylib)=0x{:x}",
+        map.len(),
+        bin_map.len(),
+        dylib_map.len(),
+        aslr_reference,
+        new_base_address,
+    );
+    for (k, v) in map.iter().take(5) {
+        eprintln!("[framework-hot]   entry: 0x{:x} -> 0x{:x}", k, v);
     }
 
     let table = JumpTable {

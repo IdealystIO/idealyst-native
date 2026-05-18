@@ -51,6 +51,17 @@ impl<H> Bound<H> {
         Self { primitive, _handle: std::marker::PhantomData }
     }
 
+    /// Mutable access to the wrapped `Primitive`. Public so the
+    /// `ui!` macro's structured-emission paths can fill in
+    /// per-primitive fields that the closure-shape builders don't
+    /// expose — e.g. patching `Virtualizer.row_template` and
+    /// `row_index_signal_id` after going through
+    /// `primitives::virtualizer::virtualizer(...)`.
+    #[doc(hidden)]
+    pub fn primitive_mut(&mut self) -> &mut Primitive {
+        &mut self.primitive
+    }
+
     /// Attaches a style. Same semantics as `Primitive::with_style`.
     pub fn with_style<S: IntoStyleSource>(mut self, style: S) -> Self {
         self.primitive = self.primitive.with_style(style);

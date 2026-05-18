@@ -2635,6 +2635,23 @@ fn apply_one<B: Backend + 'static>(
                     .install_theme_variables(tokens);
             },
         );
+        // Drain any pending multi-variant theme registrations + the
+        // active-theme-signal binding. Idempotent — the drain
+        // helpers take from their queues and leave them empty, so
+        // subsequent stylesheet registrations during the same
+        // walker pass are no-ops.
+        let backend_for_variants = backend.clone();
+        style::drain_pending_theme_variants(|name, tokens| {
+            backend_for_variants
+                .borrow_mut()
+                .register_theme_variant(name, tokens);
+        });
+        let backend_for_active = backend.clone();
+        style::drain_pending_active_theme_signal(|sig, name| {
+            backend_for_active
+                .borrow_mut()
+                .bind_active_theme_signal(sig, name);
+        });
     }
     if handles_states_natively {
         let base = resolve_style(app);
@@ -2751,6 +2768,18 @@ fn attach_style_reactive<B: Backend + 'static>(
                     .install_theme_variables(tokens);
             },
         );
+        let backend_for_variants = backend_for_effect.clone();
+        style::drain_pending_theme_variants(|name, tokens| {
+            backend_for_variants
+                .borrow_mut()
+                .register_theme_variant(name, tokens);
+        });
+        let backend_for_active = backend_for_effect.clone();
+        style::drain_pending_active_theme_signal(|sig, name| {
+            backend_for_active
+                .borrow_mut()
+                .bind_active_theme_signal(sig, name);
+        });
 
         if handles_states_natively {
             // Resolve the base (no state axes) and each declared state

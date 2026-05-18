@@ -99,17 +99,111 @@ sub signalSet(id as integer, value as dynamic)
     m.signals[id.ToStr()] = value
     subs = m.signalSubscribers[id.ToStr()]
     if subs = invalid then return
+    ' Per-press dirty-layout accumulator. Each subscriber that
+    ' might've changed measured sizes pushes its affected node id
+    ' here via `markDirtyForLayout`. After every sub fires, we
+    ' relayout each dirty subtree (propagating up if its measured
+    ' size actually changed). Theme subscribers don't touch this
+    ' because color/background changes don't affect layout.
+    m.dirtyLayoutRoots = createObject("roAssociativeArray")
     for each sub_ in subs
         fireSubscriber(sub_)
     end for
-    ' Sized-content might have changed — relayout from the root.
-    ' For a counter that swaps a 1-digit string for a 2-digit one
-    ' this is the difference between text overlapping its sibling
-    ' and a clean re-stack.
     if m.rootId <> invalid then
-        runLayout(m.rootId)
+        relayoutDirty()
     end if
 end sub
+
+' Mark `nodeId` as having had its measured size potentially
+' invalidated by a signal-driven change. Deduplicates — adding
+' the same id twice is a no-op. Drained by `relayoutDirty`
+' after every sub fires.
+sub markDirtyForLayout(nodeId as integer)
+    if m.dirtyLayoutRoots = invalid then return
+    m.dirtyLayoutRoots[nodeId.ToStr()] = true
+end sub
+
+' Incremental layout pass. For every node marked dirty this press,
+' re-measure its subtree against its previously-allocated frame.
+' If the new measure differs from the cached one, propagate to the
+' parent (re-measure parent, see if IT changed, walk up). Only
+' touches subtrees on the change path — sibling subtrees are
+' untouched, which is the whole point.
+'
+' Fallback: if there's no cached frame for a dirty node (first
+' fire on an as-yet-unlaid-out subtree) we relayout from the
+' nearest ancestor that does have a cached frame.
+sub relayoutDirty()
+    if m.dirtyLayoutRoots = invalid or m.dirtyLayoutRoots.Count() = 0 then return
+    if m.layoutFrames = invalid then
+        ' No previous layout — fall back to full pass.
+        runLayout(m.rootId)
+        return
+    end if
+    ' Find the highest common ancestor of every dirty node that has
+    ' a cached frame. Re-layout from there once. Cheaper than
+    ' iterating per dirty root since a single press often dirties
+    ' siblings (text bindings + a structural change all under the
+    ' same page View).
+    relayoutRoot = invalid
+    for each idStr in m.dirtyLayoutRoots
+        ascendId = idStr.ToInt()
+        ' Walk up until we find a node with a cached frame.
+        while ascendId <> invalid and m.layoutFrames[ascendId.ToStr()] = invalid
+            ascendId = m.parents[ascendId.ToStr()]
+        end while
+        if ascendId = invalid then
+            ' Hit the top without finding a cached frame. Bail to
+            ' full-root layout — shouldn't happen if Finish ran.
+            runLayout(m.rootId)
+            return
+        end if
+        if relayoutRoot = invalid then
+            relayoutRoot = ascendId
+        else
+            relayoutRoot = lowestCommonAncestorFramed(relayoutRoot, ascendId)
+        end if
+    end for
+    if relayoutRoot = invalid then return
+
+    frame = m.layoutFrames[relayoutRoot.ToStr()]
+    if frame = invalid then
+        runLayout(m.rootId)
+        return
+    end if
+
+    ' Re-measure the subtree with its previous availW/availH (the
+    ' allocation its parent gave it last pass).
+    layoutMeasure(relayoutRoot, frame.width, frame.height)
+    ' Re-position using its previous origin.
+    layoutPositionAndSize(relayoutRoot, frame.x, frame.y, frame.width, frame.height)
+    ' Apply frames for the subtree. layoutApplyFrames walks all
+    ' cached frames, but most are unchanged — we only mutated the
+    ' subtree's measures + frames so writes outside the subtree
+    ' set the same translation/size they already had (no-op on the
+    ' SGNode side).
+    layoutApplyFrames()
+end sub
+
+' Find the lowest common ancestor of two node ids that both have
+' cached frames. Walks both pointers up via `m.parents`, marking
+' visited ancestors on the first walk, then returns the first
+' visited node the second walk encounters.
+function lowestCommonAncestorFramed(a as integer, b as integer) as dynamic
+    if a = b then return a
+    visited = createObject("roAssociativeArray")
+    ascend = a
+    while ascend <> invalid
+        visited[ascend.ToStr()] = true
+        ascend = m.parents[ascend.ToStr()]
+    end while
+    ascend = b
+    while ascend <> invalid
+        if visited[ascend.ToStr()] = true then return ascend
+        ascend = m.parents[ascend.ToStr()]
+    end while
+    return m.rootId
+end function
 
 ' Register a subscriber. Called multiple times — once per input
 ' signal — for any binding that depends on >1 signal.
@@ -193,9 +287,45 @@ sub fireSubscriber(sub_ as object)
         ' row instances live concurrently. Each play allocates fresh
         ' node ids out of `m.nextInstanceId`'s pool.
         syncRepeatSlots(sub_, count)
+    else if sub_.kind = "theme" then
+        ' Active-theme-name signal fired. Read the new name from
+        ' the signal store and re-apply every styled node so token
+        ' references resolve against the new variant.
+        newName = m.signals[sub_.signal_id.ToStr()]
+        if newName <> invalid then
+            m.activeTheme = newName
+            reapplyAllStyles()
+        end if
     end if
     ' Future binding kinds: "style_color", "style_opacity",
     ' "image_src" — same shape, different application.
+end sub
+
+' Walk every entry in `m.styles` and re-invoke
+' `applyNonLayoutStyle`. Used by the theme subscriber when the
+' active theme name changes — every node whose style carries a
+' token reference (color / length) needs its resolved value
+' refreshed. `m.styles` only holds the *raw* style AA so the
+' re-resolve picks up the new theme without needing the wire to
+' re-emit anything.
+sub reapplyAllStyles()
+    for each idStr in m.styles
+        style = m.styles[idStr]
+        node = m.nodes[idStr]
+        if style <> invalid and node <> invalid then
+            ' applyNonLayoutStyle re-resolves color/background
+            ' through resolveWireColor, which reads the now-current
+            ' m.activeTheme. State overlays (hover / focused / etc.)
+            ' on buttons get re-merged via applyButtonFocusVisuals
+            ' below since their merged style depends on the same
+            ' base.
+            applyNonLayoutStyle(idStr.ToInt(), node, style)
+        end if
+    end for
+    ' Re-merge any active button-focus overlay so the focused
+    ' button's `state hovered` overlay re-resolves through the new
+    ' theme too.
+    applyButtonFocusVisuals()
 end sub
 
 ' Single-slot reconciliation for `bind_when!` / `bind_switch!`.
@@ -332,9 +462,10 @@ function playRowInstance(anchorId as integer, template as object, rowIndexSignal
     siblings.Push(rootId)
     m.parents[rootId.ToStr()] = anchorId
 
-    if m.rootId <> invalid then
-        runLayout(m.rootId)
-    end if
+    ' No layout here — the outer `signalSet` (or initial
+    ' materialization's `Finish` handler) does ONE layout pass at
+    ' the end of the fire chain. Running it per row would compound
+    ' to O(presses × tree_size) layouts on the browser emulator.
     return { root_id: rootId, signal_id: syntheticSignalId }
 end function
 
@@ -433,12 +564,10 @@ sub playSlot(anchorId as integer, slot as object)
     siblings.Push(rootId)
     m.parents[rootId.ToStr()] = anchorId
 
-    ' Layout once now so the freshly-played subtree picks up sizes.
-    ' Without this, anchor-relative geometry stays at 0×0 until the
-    ' next signalSet fires.
-    if m.rootId <> invalid then
-        runLayout(m.rootId)
-    end if
+    ' No layout here — the outer `signalSet` does ONE layout pass
+    ' at the end of the fire chain. Running it per slot play
+    ' would compound to many layouts per press (when/switch/repeat
+    ' each fire on the same signalSet).
 end sub
 
 sub tearDownSubtree(rootId as integer)
@@ -525,9 +654,8 @@ sub tearDownSubtree(rootId as integer)
         m.buttonLabels.Delete(idStr)
     end for
 
-    if m.rootId <> invalid then
-        runLayout(m.rootId)
-    end if
+    ' No layout here — the outer `signalSet` does ONE layout pass
+    ' at the end of the fire chain.
 end sub
 
 sub collectSubtreeIds(rootId as integer, accumulator as object)

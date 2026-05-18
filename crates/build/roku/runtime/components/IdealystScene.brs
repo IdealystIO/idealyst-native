@@ -60,6 +60,17 @@ sub init()
     ' overlay through `apply_styled_states`. We store them here so
     ' focus navigation (in Reactivity.brs) can re-merge on the fly.
     m.styleOverlays = createObject("roAssociativeArray")
+    ' Theme registry: keyed by theme name, each value is an AA
+    ' from token name to `{ kind, value }`. Populated by
+    ' RegisterThemeVariant wire ops; consulted by resolveWireColor
+    ' / resolveWireLength when applying styles. The active theme
+    ' name lives in `m.activeTheme`; when it changes (driven by
+    ' the bound active-theme signal), `reapplyAllStyles` walks
+    ' every entry in `m.styles` and re-applies through
+    ' `applyNonLayoutStyle`.
+    m.themes = createObject("roAssociativeArray")
+    m.activeTheme = ""
+    m.activeThemeSignalId = invalid
     ' Set up Reactivity.brs's side tables (signals, subscribers,
     ' button actions). Lives in the same component-scoped `m` so
     ' all three scripts share it.
@@ -262,6 +273,29 @@ sub applyCommand(cmd as object)
         ' pass it through; bindButton treats invalid as "no
         ' output signal" (the action is fire-and-forget).
         bindButton(cmd.button_id, cmd.input_signal_ids, cmd.method, cmd.output_signal_id)
+    else if op = "RegisterThemeVariant" then
+        ' Register a named theme variant. Each variant's tokens are
+        ' an array of `{ name, value: { kind, value } }` AAs; flatten
+        ' to a name → value-AA map for O(1) lookup at style-apply
+        ' time.
+        tokenMap = createObject("roAssociativeArray")
+        for each tok in cmd.tokens
+            tokenMap[tok.name] = tok.value
+        end for
+        m.themes[cmd.name] = tokenMap
+    else if op = "BindActiveThemeSignal" then
+        ' Bind the active-theme-name signal. Seeds the initial
+        ' theme and registers a subscriber that re-applies every
+        ' styled node on signal change so the device can react to
+        ' theme-toggle presses without rebuilding the tree.
+        m.activeTheme = cmd.initial_name
+        m.activeThemeSignalId = cmd.signal_id
+        sub_ = {
+            kind: "theme",
+            signal_ids: [cmd.signal_id],
+            signal_id: cmd.signal_id
+        }
+        signalSubscribe(cmd.signal_id, sub_)
     else if op = "Finish" then
         rootId = cmd.root
         root = getNode(rootId)
@@ -336,7 +370,7 @@ sub applyNonLayoutStyle(id as object, node as object, style as object)
     ' ("#FFCC00"), not `{"value": "#FFCC00"}`. Same for the rest of
     ' this function.
     if style.color <> invalid then
-        c = colorFromString(style.color)
+        c = colorFromString(resolveWireColor(style.color))
         if hasField(node, "color") then node.color = c
     end if
 
@@ -365,7 +399,7 @@ sub applyNonLayoutStyle(id as object, node as object, style as object)
     ' Rectangle as the View's first child (rendered behind real
     ' content). Layout.brs syncs its size to the host's frame.
     if style.background <> invalid then
-        bgColor = colorFromString(style.background)
+        bgColor = colorFromString(resolveWireColor(style.background))
         idStr = id.ToStr()
         bg = m.backgrounds[idStr]
         if bg = invalid then
@@ -404,4 +438,29 @@ function colorFromString(s as string) as string
         if Len(hex) = 8 then return "0x" + UCase(hex)
     end if
     return "0xFFFFFFFF"
+end function
+
+' Resolve a wire color AA (`{ kind: "Literal", value: "#..." }` or
+' `{ kind: "Token", name: "...", fallback: "#..." }`) to a CSS-style
+' string. Tokens look up the named entry in the active theme's
+' color tokens; missing tokens fall back to the literal that
+' shipped with the wire op. Returns "" only if the wire payload
+' is malformed (kind missing).
+function resolveWireColor(wc as object) as string
+    if wc = invalid then return ""
+    if wc.kind = "Literal" then return wc.value
+    if wc.kind = "Token" then
+        themes = m.themes
+        if themes <> invalid then
+            tokens = themes[m.activeTheme]
+            if tokens <> invalid then
+                t = tokens[wc.name]
+                if t <> invalid and t.kind = "Color" then
+                    return t.value
+                end if
+            end if
+        end if
+        return wc.fallback
+    end if
+    return ""
 end function

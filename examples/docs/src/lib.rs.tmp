@@ -24,7 +24,7 @@ pub fn app() -> Primitive {
     ui! {
         Stack(gap = StackGap::Lg) {
             Heading(
-                content = "FIRST-REAL-HOT-RELOAD".to_string(),
+                content = "DIAG-V3".to_string(),
                 kind    = HeadingKind::H1,
             )
             Body(

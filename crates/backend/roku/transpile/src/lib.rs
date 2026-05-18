@@ -627,6 +627,19 @@ impl Emitter {
                         self.push(".Count()");
                         Ok(())
                     }
+                    "to_string" => {
+                        // BS strings need no construction —
+                        // `"dark".to_string()` is just `"dark"`.
+                        // String literals and `String` values are
+                        // interchangeable in BS.
+                        if !mc.args.is_empty() {
+                            return Err(syn::Error::new_spanned(
+                                mc,
+                                "`.to_string()` takes no arguments",
+                            ));
+                        }
+                        self.expr(&mc.receiver)
+                    }
                     "clone" | "to_owned" => {
                         // BS has no ownership / borrow distinction;
                         // values are passed by reference for objects

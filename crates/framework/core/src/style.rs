@@ -1502,6 +1502,24 @@ thread_local! {
     /// yet at app boot.
     static PENDING_THEME_TOKENS: RefCell<Option<Vec<TokenEntry>>> =
         const { RefCell::new(None) };
+
+    /// Multi-variant theme registrations queued for the next backend
+    /// flush. Populated by `register_theme_variant` and `install_themes`;
+    /// drained by `ensure_registered_with` via
+    /// `Backend::register_theme_variant`. Backends without runtime
+    /// theme-switching (iOS/Android/Web) leave the default no-op;
+    /// generator backends (Roku) capture each variant so the device
+    /// can resolve token references against the active theme.
+    static PENDING_THEME_VARIANTS: RefCell<Vec<(String, Vec<TokenEntry>)>> =
+        RefCell::new(Vec::new());
+
+    /// Active-theme signal binding queued for the next backend flush.
+    /// Set by `install_themes`; drained by `ensure_registered_with` via
+    /// `Backend::bind_active_theme_signal`. Carries the signal id whose
+    /// String value names the active theme on the device side, plus
+    /// the initial theme name.
+    static PENDING_ACTIVE_THEME_SIGNAL: RefCell<Option<(u64, String)>> =
+        const { RefCell::new(None) };
 }
 
 #[derive(PartialEq, Eq, Hash, Clone)]
@@ -1525,6 +1543,118 @@ struct ResolutionKey {
     /// must be cached separately. Serialized to a content key so we
     /// have a comparable form.
     overrides: String,
+}
+
+/// Register a named theme variant for backends that support
+/// runtime theme switching (Roku). The variant's tokens are
+/// queued and flushed to the backend via
+/// `register_theme_variant` on the next `ensure_registered_with`
+/// call. Backends without runtime theme switching (iOS / Android /
+/// Web) ignore the registration — they use the active theme set
+/// via `install_theme` / `set_theme` and re-resolve through
+/// Effects on swap.
+///
+/// Authors typically don't call this directly. `install_themes`
+/// is the higher-level wrapper that registers every variant +
+/// binds the active-theme signal in one call.
+pub fn register_theme_variant<T: ThemeTokens + 'static>(name: &str, theme: T) {
+    let tokens = theme.tokens();
+    PENDING_THEME_VARIANTS.with(|p| p.borrow_mut().push((name.to_string(), tokens)));
+}
+
+/// Install a multi-variant theme system with the active variant
+/// driven by a `Signal<String>`. The signal's current value
+/// names the initial active theme. Backends with a runtime
+/// (iOS / Android / Web) set up an Effect that watches the signal
+/// and calls `set_theme` whenever the name changes. Generator
+/// backends (Roku) capture every variant's tokens at snapshot,
+/// bind the signal id over the wire, and re-resolve token
+/// references on the device when the signal value changes.
+///
+/// Variants must include an entry whose name matches the signal's
+/// initial value; that variant becomes the initially-active theme.
+/// Missing the match panics at install time so misconfiguration
+/// surfaces before any rendering.
+pub fn install_themes<T: ThemeTokens + Clone + 'static>(
+    active: crate::Signal<String>,
+    variants: &[(&'static str, T)],
+) {
+    let initial_name = active.get();
+    let initial_theme = variants
+        .iter()
+        .find(|(name, _)| *name == initial_name.as_str())
+        .map(|(_, theme)| theme.clone())
+        .unwrap_or_else(|| {
+            panic!(
+                "install_themes: active signal initial value '{}' has no matching variant; \
+                 variants registered: {:?}",
+                initial_name,
+                variants.iter().map(|(n, _)| *n).collect::<Vec<_>>()
+            )
+        });
+    install_theme(initial_theme);
+    for (name, theme) in variants {
+        register_theme_variant(name, theme.clone());
+    }
+    // Queue the active-theme signal binding for the backend to
+    // wire up. Generator backends use this to know which signal
+    // value drives runtime theme switching.
+    PENDING_ACTIVE_THEME_SIGNAL.with(|p| {
+        *p.borrow_mut() = Some((active.id(), initial_name.clone()));
+    });
+    // Effect-driven backends watch the signal here so framework's
+    // standard `set_theme` machinery fires on every change.
+    // Generator backends ignore the closure path (the wire op
+    // handles their side). Materialize the variants list as an
+    // HashMap for runtime lookup inside the Effect.
+    let variants_owned: std::collections::HashMap<String, T> = variants
+        .iter()
+        .map(|(name, theme)| (name.to_string(), theme.clone()))
+        .collect();
+    let last_seen: std::rc::Rc<std::cell::RefCell<String>> =
+        std::rc::Rc::new(std::cell::RefCell::new(initial_name));
+    crate::Effect::new(move || {
+        let name = active.get();
+        if last_seen.borrow().as_str() == name.as_str() {
+            return;
+        }
+        if let Some(theme) = variants_owned.get(&name) {
+            set_theme(theme.clone());
+            *last_seen.borrow_mut() = name;
+        }
+    });
+}
+
+/// Drain every pending theme-variant registration into `f`, which
+/// the walker wraps around the backend's
+/// `register_theme_variant(name, tokens)` call. Called once per
+/// walker pass — variants registered after the drain wait for the
+/// next pass.
+pub fn drain_pending_theme_variants<F>(mut f: F)
+where
+    F: FnMut(&str, &[TokenEntry]),
+{
+    let variants: Vec<(String, Vec<TokenEntry>)> = PENDING_THEME_VARIANTS
+        .with(|p| std::mem::take(&mut *p.borrow_mut()));
+    for (name, tokens) in variants {
+        f(&name, &tokens);
+    }
+}
+
+/// Drain the pending active-theme signal binding into `f`, which
+/// the walker wraps around the backend's
+/// `bind_active_theme_signal(signal_id, initial_name)` call.
+/// Returns `Some((signal_id, initial_name))` exactly once per
+/// `install_themes` call.
+pub fn drain_pending_active_theme_signal<F>(mut f: F)
+where
+    F: FnMut(u64, &str),
+{
+    let pending: Option<(u64, String)> = PENDING_ACTIVE_THEME_SIGNAL
+        .with(|p| p.borrow_mut().take());
+    if let Some((sig, name)) = pending {
+        f(sig, &name);
+    }
 }
 
 /// Install the initial active theme. Call once at app startup before

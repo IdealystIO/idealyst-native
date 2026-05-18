@@ -75,6 +75,14 @@ enum UiNode {
         pat: syn::Pat,
         iter: Expr,
         body: Vec<UiNode>,
+        /// Trailing `.method(args)` chain after the for-block's
+        /// closing brace. Author syntax:
+        /// `for i in iter { body }.style(expr)`. Each chain entry
+        /// is applied to the Virtualizer's emission — the
+        /// `.style(expr)` slot pins the row container's flex
+        /// style; future chains can set `.horizontal()` /
+        /// `.overscan(...)` / etc.
+        chain: Vec<TokenStream2>,
     },
     /// An `if` / `if let` / `match`: parsed as a raw Rust expression with
     /// `ui!` recursively applied to each branch's contents.
@@ -110,6 +118,13 @@ struct MatchArm {
 struct Prop {
     name: Ident,
     value: Expr,
+    /// Optional `=> output_signal` clause for structured actions.
+    /// Set when a prop is written as `on_click = method(sig) =>
+    /// out_signal` — the `=>` token follows the prop's value
+    /// expression and an output signal expression follows the `=>`.
+    /// `emit_button` reads this to construct a fully-populated
+    /// `Action` directly (no `action!`/`bind_press!` macro needed).
+    arrow_target: Option<Expr>,
 }
 
 impl Parse for Ui {
@@ -158,9 +173,28 @@ fn parse_ui_node(input: ParseStream) -> syn::Result<UiNode> {
 /// Peeks past an identifier to see whether the *next* token is `(` or `{` —
 /// the two shapes that mark a component invocation. We have to fork the
 /// stream to do the lookahead.
+///
+/// Also requires the identifier to start with an uppercase ASCII letter
+/// (Rust type/component convention) — that's how we disambiguate
+/// `Foo(args)` (a component invocation with props) from `foo(args)`
+/// (a Rust function call that should be parsed as an expression). The
+/// `ui!` body uses this convention so a `#[method]`-backed reactive
+/// call like `count_label(count)` inside `Text { ... }` falls through
+/// to the expression parser instead of trying to parse `count` as a
+/// prop name.
 fn next_is_component_invocation(input: ParseStream) -> bool {
     let fork = input.fork();
-    if fork.parse::<Ident>().is_err() {
+    let ident = match fork.parse::<Ident>() {
+        Ok(i) => i,
+        Err(_) => return false,
+    };
+    if !ident
+        .to_string()
+        .chars()
+        .next()
+        .map(|c| c.is_ascii_uppercase())
+        .unwrap_or(false)
+    {
         return false;
     }
     fork.peek(syn::token::Paren) || fork.peek(syn::token::Brace)
@@ -248,7 +282,13 @@ fn parse_for(input: ParseStream) -> syn::Result<UiNode> {
     let body_content;
     braced!(body_content in input);
     let body = parse_ui_nodes(&body_content)?;
-    Ok(UiNode::For { pat, iter, body })
+    // Optional trailing `.method(args)` chain after the closing
+    // brace — same shape components support. Each entry is replayed
+    // verbatim by the Virtualizer-emitting path so authors can pin
+    // the row container's style / flex direction / overscan / etc.
+    // Example: `for i in count(sig) { ... }.style(row_style())`.
+    let chain = parse_method_chain(input)?;
+    Ok(UiNode::For { pat, iter, body, chain })
 }
 
 /// Parse `match scrutinee { pat => { ui_nodes }, pat if guard => { ui_nodes }, ... }`.
@@ -289,7 +329,19 @@ impl Parse for Prop {
         let name: Ident = input.parse()?;
         let _: Token![=] = input.parse()?;
         let value: Expr = input.parse()?;
-        Ok(Prop { name, value })
+        // Optional `=> rhs` clause for structured action props
+        // (e.g. `on_click = method(sig) => out_signal`). The Rust
+        // expression parser stops at the `=>` because it isn't a
+        // valid binary operator — we eat it here and parse the
+        // right-hand side as a separate expression so callers can
+        // pick it up.
+        let arrow_target = if input.peek(Token![=>]) {
+            input.parse::<Token![=>]>()?;
+            Some(input.parse::<Expr>()?)
+        } else {
+            None
+        };
+        Ok(Prop { name, value, arrow_target })
     }
 }
 
@@ -330,7 +382,7 @@ fn emit_node(node: &UiNode) -> TokenStream2 {
             emit_component(name, props, children.as_deref(), chain)
         }
         UiNode::If { cond, then_body, else_body } => emit_if(cond, then_body, else_body.as_deref()),
-        UiNode::For { pat, iter, body } => emit_for(pat, iter, body),
+        UiNode::For { pat, iter, body, chain } => emit_for(pat, iter, body, chain),
         UiNode::Match { scrutinee, arms } => emit_match(scrutinee, arms),
         UiNode::Expr(e) => e.to_token_stream(),
     }
@@ -401,7 +453,11 @@ fn emit_component(
 
     let other_props: Vec<Prop> = other_props
         .into_iter()
-        .map(|p| Prop { name: p.name.clone(), value: p.value.clone() })
+        .map(|p| Prop {
+            name: p.name.clone(),
+            value: p.value.clone(),
+            arrow_target: p.arrow_target.clone(),
+        })
         .collect();
 
     let inner = match lower.as_str() {
@@ -452,17 +508,45 @@ fn emit_component(
 }
 
 fn emit_text(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
-    // Text takes its content from either a `content` prop or a children
-    // block. The children block is preferred when present.
+    // Text takes its content from either a `content` prop or a
+    // children block. Children win when both are present.
     //
-    // Reactivity: if the resolved content expression reads any
-    // signal (detected by the same `.get()` heuristic as elsewhere),
-    // we wrap it in a `move ||` closure so `IntoTextSource` routes
-    // it through `Reactive(...)` — the runtime then subscribes the
-    // text node to whichever signals the closure reads, and
-    // re-renders on change. Without this, `Text { format!("{}",
-    // count.get()) }` would render the initial value and never
-    // update.
+    // Three emission modes, in priority order:
+    //
+    //   1. **Structured `Derived<String>`** when the body is a
+    //      function-call expression whose args look like bare
+    //      signal references (e.g. `Text { count_label(count) }`).
+    //      Emits a `TextSource::Bound(Derived<String> { method,
+    //      inputs, initial, compute })` — generator backends
+    //      (Roku) read the structure; runtime backends use
+    //      `compute`. This is the path that used to require
+    //      `bind!(...)` around the call.
+    //
+    //   2. **Reactive closure** when the body doesn't match (1)
+    //      but contains `.get()` somewhere — the body is wrapped
+    //      in a `move ||` closure so `IntoTextSource` routes it
+    //      through an opaque `Derived<String>` and the framework
+    //      sets up an Effect-driven update. Roku won't ship this
+    //      shape to the device (no method name to dispatch).
+    //
+    //   3. **Static** for everything else — literal strings,
+    //      build-time `format!()` calls, bare variables.
+    //
+    // Try (1) first; fall through to (2) / (3) on miss.
+    if let Some(kids) = children {
+        if kids.len() == 1 {
+            if let UiNode::Expr(expr) = &kids[0] {
+                if let Some(structured) = try_emit_derived_call::<String>(expr) {
+                    return quote! {
+                        ::framework_core::text(
+                            ::framework_core::TextSource::Bound(#structured)
+                        )
+                    };
+                }
+            }
+        }
+    }
+
     let content: TokenStream2 = if let Some(kids) = children {
         match kids.len() {
             0 => quote! { "" },
@@ -485,11 +569,119 @@ fn emit_text(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
     };
 
     if expression_reads_signal(&content) {
-        // Wrap in a move closure so the text node treats this as
-        // reactive content (closure → re-fires on signal change).
+        // Path (2): closure wrap so IntoTextSource routes through
+        // an opaque Derived<String>.
         quote! { ::framework_core::text(move || ::std::string::ToString::to_string(&{ #content })) }
     } else {
+        // Path (3): static.
         quote! { ::framework_core::text(#content) }
+    }
+}
+
+/// Try to lower a call expression like `method(sig_a, sig_b)` into
+/// a fully-populated `Derived<T>` constructor. Returns `Some(tokens)`
+/// on match, `None` if the expression isn't a structured call.
+///
+/// Match criteria:
+/// - Top-level expression is `syn::Expr::Call`.
+/// - Function position is a single-segment path (`my_method`, not
+///   `module::my_method` or `Foo::method`).
+/// - At least one arg, and *every* arg is itself a single-segment
+///   path expression (bare identifier — the signal). Mixing literal
+///   args or method calls falls through, leaving the author to
+///   explicitly wrap.
+///
+/// `T` is the value type the emitted `Derived` produces. The
+/// expression's `compute` body re-evaluates the call against
+/// `.get()` on each signal arg; for `T = String` we wrap the
+/// return in `format!("{}", _)` so any `Display` return type
+/// fits. Other `T`s pass through as-is.
+fn try_emit_derived_call<T>(expr: &Expr) -> Option<TokenStream2>
+where
+    T: DerivedKind,
+{
+    let call = match expr {
+        Expr::Call(c) => c,
+        _ => return None,
+    };
+    // Function position must be a single-segment path.
+    let func_ident = match &*call.func {
+        Expr::Path(syn::ExprPath { qself: None, path, .. }) => {
+            if path.segments.len() != 1 || !path.segments[0].arguments.is_empty() {
+                return None;
+            }
+            path.segments[0].ident.clone()
+        }
+        _ => return None,
+    };
+    // Each arg must be a bare path (signal reference).
+    let args: Vec<&Expr> = call.args.iter().collect();
+    if args.is_empty() {
+        return None;
+    }
+    for a in &args {
+        match a {
+            Expr::Path(syn::ExprPath { qself: None, path, .. }) => {
+                if path.segments.len() != 1 || !path.segments[0].arguments.is_empty() {
+                    return None;
+                }
+            }
+            _ => return None,
+        }
+    }
+
+    let method_lit = syn::LitStr::new(&func_ident.to_string(), func_ident.span());
+    let get_calls: Vec<TokenStream2> = args.iter().map(|a| quote! { (#a).get() }).collect();
+    let id_calls: Vec<TokenStream2> = args.iter().map(|a| quote! { (#a).id() }).collect();
+    let initial_calls: Vec<TokenStream2> = args
+        .iter()
+        .map(|a| {
+            quote! {
+                ::framework_core::__serde_json::to_value(&(#a).get())
+                    .unwrap_or(::framework_core::__serde_json::Value::Null)
+            }
+        })
+        .collect();
+
+    let compute_body = T::compute_body(&func_ident, &get_calls);
+    let ty_tokens = T::type_tokens();
+
+    Some(quote! {
+        ::framework_core::Derived::<#ty_tokens> {
+            method:  #method_lit,
+            inputs:  ::std::vec![ #(#id_calls),* ],
+            initial: ::std::vec![ #(#initial_calls),* ],
+            compute: ::std::rc::Rc::new(move || { #compute_body }),
+        }
+    })
+}
+
+/// Per-type hooks for `try_emit_derived_call`. `String` wraps the
+/// call in `format!("{}", _)` so authors don't have to make their
+/// `#[method]` return `String` directly; `bool` passes through
+/// (the method must return a bool); etc.
+trait DerivedKind {
+    fn type_tokens() -> TokenStream2;
+    fn compute_body(func: &Ident, get_calls: &[TokenStream2]) -> TokenStream2;
+}
+
+impl DerivedKind for String {
+    fn type_tokens() -> TokenStream2 {
+        quote! { ::std::string::String }
+    }
+    fn compute_body(func: &Ident, get_calls: &[TokenStream2]) -> TokenStream2 {
+        quote! {
+            ::std::format!("{}", #func( #(#get_calls),* ))
+        }
+    }
+}
+
+impl DerivedKind for bool {
+    fn type_tokens() -> TokenStream2 {
+        quote! { bool }
+    }
+    fn compute_body(func: &Ident, get_calls: &[TokenStream2]) -> TokenStream2 {
+        quote! { #func( #(#get_calls),* ) }
     }
 }
 
@@ -503,17 +695,98 @@ fn expression_reads_signal(tokens: &TokenStream2) -> bool {
     s.contains(".get()") || s.contains(". get ()")
 }
 
+/// Lower `on_click = method(sig)` or `on_click = method(sig) =>
+/// out_signal` into a fully-populated `Action` constructor.
+/// Returns `None` when `value` isn't a structured-call shape (the
+/// caller falls back to the existing closure / IntoAction path).
+///
+/// Same shape match as `try_emit_derived_call`: function-position
+/// single ident, every arg a bare path (signal reference). The
+/// optional `arrow_target` (parsed by `Prop::parse` when the
+/// author writes `=> out_signal`) becomes the Action's `output`
+/// field; the closure inside `fire` writes the method's return
+/// value to `out_signal` after invocation.
+fn try_emit_structured_action(value: &Expr, arrow_target: Option<&Expr>) -> Option<TokenStream2> {
+    let call = match value {
+        Expr::Call(c) => c,
+        _ => return None,
+    };
+    let func_ident = match &*call.func {
+        Expr::Path(syn::ExprPath { qself: None, path, .. }) => {
+            if path.segments.len() != 1 || !path.segments[0].arguments.is_empty() {
+                return None;
+            }
+            path.segments[0].ident.clone()
+        }
+        _ => return None,
+    };
+    let args: Vec<&Expr> = call.args.iter().collect();
+    for a in &args {
+        match a {
+            Expr::Path(syn::ExprPath { qself: None, path, .. }) => {
+                if path.segments.len() != 1 || !path.segments[0].arguments.is_empty() {
+                    return None;
+                }
+            }
+            _ => return None,
+        }
+    }
+
+    let method_lit = syn::LitStr::new(&func_ident.to_string(), func_ident.span());
+    let get_calls: Vec<TokenStream2> = args.iter().map(|a| quote! { (#a).get() }).collect();
+    let id_calls: Vec<TokenStream2> = args.iter().map(|a| quote! { (#a).id() }).collect();
+    let initial_calls: Vec<TokenStream2> = args
+        .iter()
+        .map(|a| {
+            quote! {
+                ::framework_core::__serde_json::to_value(&(#a).get())
+                    .unwrap_or(::framework_core::__serde_json::Value::Null)
+            }
+        })
+        .collect();
+
+    let (fire_body, output_tokens) = match arrow_target {
+        Some(out) => (
+            quote! { (#out).set(#func_ident( #(#get_calls),* )); },
+            quote! { ::std::option::Option::Some((#out).id()) },
+        ),
+        None => (
+            quote! { #func_ident( #(#get_calls),* ); },
+            quote! { ::std::option::Option::None },
+        ),
+    };
+
+    Some(quote! {
+        ::framework_core::Action {
+            method:  #method_lit,
+            inputs:  ::std::vec![ #(#id_calls),* ],
+            initial: ::std::vec![ #(#initial_calls),* ],
+            output:  #output_tokens,
+            fire:    ::std::rc::Rc::new(move || { #fire_body }),
+        }
+    })
+}
+
 fn emit_button(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
     let label = props
         .iter()
         .find(|p| p.name == "label")
         .map(|p| p.value.to_token_stream())
         .unwrap_or_else(|| quote! { "" });
-    let on_click = props
-        .iter()
-        .find(|p| p.name == "on_click")
-        .map(|p| p.value.to_token_stream())
-        .unwrap_or_else(|| quote! { || {} });
+    // on_click: three shapes, in priority order:
+    //   1. `on_click = method(sig) => out_signal` — structured Action
+    //   2. `on_click = method(sig)` — structured Action, fire-and-forget
+    //   3. `on_click = closure_expression` — opaque coercion via IntoAction
+    let on_click = match props.iter().find(|p| p.name == "on_click") {
+        Some(p) => {
+            if let Some(action) = try_emit_structured_action(&p.value, p.arrow_target.as_ref()) {
+                action
+            } else {
+                p.value.to_token_stream()
+            }
+        }
+        None => quote! { || {} },
+    };
     let leading = if let Some(p) = props.iter().find(|p| p.name == "leading_icon") {
         let v = &p.value;
         quote! { .leading_icon(#v) }
@@ -1141,9 +1414,32 @@ fn emit_if(cond: &Expr, then_body: &[UiNode], else_body: Option<&[UiNode]>) -> T
         },
     };
 
-    // Reactivity heuristic: if the condition contains `.get()`, dispatch
-    // to `when()` so the subtree re-runs on signal changes. Otherwise
-    // emit a plain `if`. The `.get()` is the author's signal of intent.
+    // Three lowerings, in priority order:
+    //
+    // 1. Structured call shape (e.g. `if is_even(count) { ... }`):
+    //    build a fully-populated `Derived<bool>` so generator
+    //    backends (Roku) can ship the binding declaratively. `else
+    //    if` chains nest naturally because the parser folded the
+    //    rest into the else_body as a nested If, which recurses
+    //    through this same emitter.
+    //
+    // 2. Closure-reactive (`.get()` appears in the condition):
+    //    dispatch to `when()` with the closure form; the builder
+    //    coerces it through `IntoDerived` into an opaque
+    //    `Derived<bool>` and the framework's Effect path handles
+    //    rebuilds on signal change.
+    //
+    // 3. Otherwise (`if cfg!(...) { ... }`, plain Rust booleans):
+    //    plain Rust `if` — no reactivity, no Primitive wrapping.
+    if let Some(structured_cond) = try_emit_derived_call::<bool>(cond) {
+        return quote! {
+            ::framework_core::when(
+                #structured_cond,
+                move || #then_expr,
+                move || #else_expr,
+            )
+        };
+    }
     if condition_is_reactive(cond) {
         quote! {
             ::framework_core::when(
@@ -1187,6 +1483,19 @@ fn condition_is_reactive(cond: &Expr) -> bool {
 /// handle the implicit `&` coercion on patterns. The user writes
 /// `Screen::Summary => ui!{...}` and it matches the borrowed value.
 fn emit_match(scrutinee: &Expr, arms: &[MatchArm]) -> TokenStream2 {
+    // Priority order, same as emit_if:
+    //   1. Structured match — scrutinee is a `method(sig, ...)` call
+    //      and every arm is `LITERAL => body` (or `_ => body` for
+    //      the default). Lower to a structured `Primitive::Switch`
+    //      so generator backends (Roku) can ship the binding
+    //      declaratively.
+    //   2. Reactive closure — scrutinee reads a signal via `.get()`.
+    //      Lower to `framework_core::switch(..)` (opaque path).
+    //   3. Plain Rust `match` — no reactivity.
+    if let Some(structured) = try_emit_structured_match(scrutinee, arms) {
+        return structured;
+    }
+
     let reactive = condition_is_reactive(scrutinee);
 
     // Each arm becomes `pat [if guard] => <ui_body_as_primitive>`.
@@ -1227,7 +1536,158 @@ fn emit_match(scrutinee: &Expr, arms: &[MatchArm]) -> TokenStream2 {
     }
 }
 
-fn emit_for(pat: &syn::Pat, iter: &Expr, body: &[UiNode]) -> TokenStream2 {
+/// Lower `match method(sig) { 0 => body0, 1 => body1, _ => default }`
+/// directly into a `Primitive::Switch` carrying a structured
+/// `Derived<serde_json::Value>` discriminant + literal-keyed arms.
+/// Returns `None` if any arm has a non-literal pattern, a guard,
+/// or the scrutinee isn't a structured call shape — the caller
+/// falls back to the closure-driven `switch()` builder.
+///
+/// Patterns supported as arm keys: integer / bool / string / float
+/// literals. Range patterns, struct destructuring, `|` alternation,
+/// and guards aren't supported in the structured path — Roku's
+/// runtime equality is JSON-value comparison and arm matching is
+/// linear, so anything richer than a literal is a closure-path
+/// affair.
+fn try_emit_structured_match(scrutinee: &Expr, arms: &[MatchArm]) -> Option<TokenStream2> {
+    let call = match scrutinee {
+        Expr::Call(c) => c,
+        _ => return None,
+    };
+    let func_ident = match &*call.func {
+        Expr::Path(syn::ExprPath { qself: None, path, .. }) => {
+            if path.segments.len() != 1 || !path.segments[0].arguments.is_empty() {
+                return None;
+            }
+            path.segments[0].ident.clone()
+        }
+        _ => return None,
+    };
+    let args: Vec<&Expr> = call.args.iter().collect();
+    if args.is_empty() {
+        return None;
+    }
+    for a in &args {
+        match a {
+            Expr::Path(syn::ExprPath { qself: None, path, .. }) => {
+                if path.segments.len() != 1 || !path.segments[0].arguments.is_empty() {
+                    return None;
+                }
+            }
+            _ => return None,
+        }
+    }
+
+    // Walk arms. Every arm must be (lit-pat | wildcard) with no guard.
+    let mut literal_arms: Vec<(TokenStream2, &Vec<UiNode>)> = Vec::new();
+    let mut default: Option<&Vec<UiNode>> = None;
+    for arm in arms {
+        if arm.guard.is_some() {
+            return None;
+        }
+        match &arm.pat {
+            syn::Pat::Lit(syn::PatLit { lit, .. }) => {
+                let v = lit_to_value_tokens(lit)?;
+                literal_arms.push((v, &arm.body));
+            }
+            syn::Pat::Wild(_) => {
+                if default.is_some() {
+                    return None;
+                }
+                default = Some(&arm.body);
+            }
+            _ => return None,
+        }
+    }
+    let default = default?;
+
+    let method_lit = syn::LitStr::new(&func_ident.to_string(), func_ident.span());
+    let get_calls: Vec<TokenStream2> = args.iter().map(|a| quote! { (#a).get() }).collect();
+    let id_calls: Vec<TokenStream2> = args.iter().map(|a| quote! { (#a).id() }).collect();
+    let initial_calls: Vec<TokenStream2> = args
+        .iter()
+        .map(|a| {
+            quote! {
+                ::framework_core::__serde_json::to_value(&(#a).get())
+                    .unwrap_or(::framework_core::__serde_json::Value::Null)
+            }
+        })
+        .collect();
+
+    let arm_tokens: Vec<TokenStream2> = literal_arms
+        .into_iter()
+        .map(|(pat_value, body)| {
+            let body_expr = emit_block_as_primitive(body);
+            quote! {
+                (
+                    #pat_value,
+                    ::std::boxed::Box::new(move || #body_expr)
+                        as ::std::boxed::Box<dyn ::std::ops::Fn() -> ::framework_core::Primitive>,
+                )
+            }
+        })
+        .collect();
+    let default_expr = emit_block_as_primitive(default);
+
+    Some(quote! {
+        ::framework_core::Primitive::Switch {
+            discriminant: ::framework_core::Derived::<::framework_core::__serde_json::Value> {
+                method:  #method_lit,
+                inputs:  ::std::vec![ #(#id_calls),* ],
+                initial: ::std::vec![ #(#initial_calls),* ],
+                compute: ::std::rc::Rc::new(move || {
+                    ::framework_core::__serde_json::to_value(&#func_ident( #(#get_calls),* ))
+                        .unwrap_or(::framework_core::__serde_json::Value::Null)
+                }),
+            },
+            arms:    ::std::vec![ #(#arm_tokens),* ],
+            default: ::std::boxed::Box::new(move || #default_expr),
+            style:   ::std::option::Option::None,
+        }
+    })
+}
+
+/// Emit a `serde_json::Value` constructor for a literal pattern.
+/// Returns `None` for unsupported literal kinds (chars, byte
+/// strings — we don't ship those over the Roku wire today).
+fn lit_to_value_tokens(lit: &syn::Lit) -> Option<TokenStream2> {
+    match lit {
+        syn::Lit::Int(i) => {
+            let i = i.clone();
+            Some(quote! { ::framework_core::__serde_json::Value::from(#i) })
+        }
+        syn::Lit::Bool(b) => {
+            let b = b.value;
+            Some(quote! { ::framework_core::__serde_json::Value::from(#b) })
+        }
+        syn::Lit::Str(s) => {
+            let s = s.value();
+            Some(quote! { ::framework_core::__serde_json::Value::from(#s) })
+        }
+        syn::Lit::Float(f) => {
+            let f = f.clone();
+            Some(quote! { ::framework_core::__serde_json::Value::from(#f as f64) })
+        }
+        _ => None,
+    }
+}
+
+fn emit_for(
+    pat: &syn::Pat,
+    iter: &Expr,
+    body: &[UiNode],
+    chain: &[TokenStream2],
+) -> TokenStream2 {
+    // Reactive-list path: `for IDENT in count_method(sig) { body }` —
+    // lower to a `Primitive::Virtualizer` carrying a structured
+    // `Derived<usize>` for the count plus a row template. This is
+    // what `bind_repeat!` used to do explicitly. Try this BEFORE
+    // the static range path so a method-call iterator wins over
+    // any static-range matching.
+    if let Some(virt) = try_emit_for_virtualizer(pat, iter, body, chain) {
+        return virt;
+    }
+
     let body_expr = emit_block_as_primitive(body);
 
     // Fast path: `for IDENT in RANGE_EXPR { body }` where the iterator
@@ -1256,6 +1716,135 @@ fn emit_for(pat: &syn::Pat, iter: &Expr, body: &[UiNode]) -> TokenStream2 {
             __c
         }
     }
+}
+
+/// Try to lower `for IDENT in count_method(sig, ...) { body }` to a
+/// `Primitive::Virtualizer` carrying a structured `Derived<usize>`
+/// (the count) + a captured row template. The IDENT inside the
+/// body becomes a `Signal<i32>` carrying the row's index — same
+/// trick `bind_repeat!` used. Returns `None` if the iterator
+/// isn't a structured call shape.
+fn try_emit_for_virtualizer(
+    pat: &syn::Pat,
+    iter: &Expr,
+    body: &[UiNode],
+    chain: &[TokenStream2],
+) -> Option<TokenStream2> {
+    // Pattern must be a bare ident.
+    let row_ident = match pat {
+        syn::Pat::Ident(p) if p.subpat.is_none() && p.by_ref.is_none() => &p.ident,
+        _ => return None,
+    };
+    // Iterator must be a structured call shape — same recognition
+    // criteria as `try_emit_derived_call` and friends.
+    let call = match iter {
+        Expr::Call(c) => c,
+        _ => return None,
+    };
+    let func_ident = match &*call.func {
+        Expr::Path(syn::ExprPath { qself: None, path, .. }) => {
+            if path.segments.len() != 1 || !path.segments[0].arguments.is_empty() {
+                return None;
+            }
+            path.segments[0].ident.clone()
+        }
+        _ => return None,
+    };
+    let args: Vec<&Expr> = call.args.iter().collect();
+    if args.is_empty() {
+        return None;
+    }
+    for a in &args {
+        match a {
+            Expr::Path(syn::ExprPath { qself: None, path, .. }) => {
+                if path.segments.len() != 1 || !path.segments[0].arguments.is_empty() {
+                    return None;
+                }
+            }
+            _ => return None,
+        }
+    }
+
+    let method_lit = syn::LitStr::new(&func_ident.to_string(), func_ident.span());
+    let get_calls: Vec<TokenStream2> = args.iter().map(|a| quote! { (#a).get() }).collect();
+    let id_calls: Vec<TokenStream2> = args.iter().map(|a| quote! { (#a).id() }).collect();
+    let initial_calls: Vec<TokenStream2> = args
+        .iter()
+        .map(|a| {
+            quote! {
+                ::framework_core::__serde_json::to_value(&(#a).get())
+                    .unwrap_or(::framework_core::__serde_json::Value::Null)
+            }
+        })
+        .collect();
+
+    let body_expr = emit_block_as_primitive(body);
+
+    Some(quote! {
+        {
+            // Allocate the per-row index signal at snapshot time
+            // (initial value 0). The device-side runtime mints a
+            // fresh synthetic signal per cloned row and remaps
+            // references to this id so `bind!(method(i))` inside
+            // the body dispatches with each row's actual index.
+            let #row_ident: ::framework_core::Signal<i32> =
+                ::framework_core::signal!(0i32);
+            let __row_index_id: ::std::option::Option<u64> =
+                ::std::option::Option::Some(::framework_core::Signal::<i32>::id(&#row_ident));
+            // Build the row template against the index-0 placeholder.
+            let __row_template: ::framework_core::Primitive =
+                ::framework_core::IntoPrimitive::into_primitive(#body_expr);
+            // Wrap in a `Bound<VirtualizerHandle>` so the trailing
+            // chain (e.g. `.with_style(...)`, `.horizontal(true)`)
+            // applies to the Bound's methods. The structured
+            // emission populates every field of the underlying
+            // `Primitive::Virtualizer`; chain methods can mutate
+            // them after construction.
+            #[allow(unused_mut)]
+            let mut __vh = ::framework_core::primitives::virtualizer::virtualizer(
+                ::std::boxed::Box::new(|| 0usize),
+                ::std::boxed::Box::new(|i| i as u64),
+                ::framework_core::primitives::virtualizer::ItemSize::Known(
+                    ::std::rc::Rc::new(|_| 40.0)
+                ),
+                ::std::rc::Rc::new(|_i| {
+                    // Closure-driven path placeholder. Runtime
+                    // backends that consume Virtualizer for real
+                    // cell recycling would need the closure to be
+                    // the actual row builder — TODO when those
+                    // backends grow Virtualizer support for the
+                    // for-loop lowering.
+                    ::framework_core::Primitive::View {
+                        children: ::std::vec::Vec::new(),
+                        style: ::std::option::Option::None,
+                        ref_fill: ::std::option::Option::None,
+                        safe_area_sides: ::framework_core::SafeAreaSides::NONE,
+                        #[cfg(feature = "robot")]
+                        test_id: ::std::option::Option::None,
+                    }
+                }),
+            );
+            // Patch the structured-only fields on the underlying
+            // Primitive::Virtualizer. The `virtualizer()` builder
+            // doesn't know about them (it only handles the closure
+            // shape) so we mutate them directly here.
+            if let ::framework_core::Primitive::Virtualizer {
+                item_count, row_template, row_index_signal_id, ..
+            } = &mut __vh.primitive_mut() {
+                *item_count = ::framework_core::Derived::<usize> {
+                    method:  #method_lit,
+                    inputs:  ::std::vec![ #(#id_calls),* ],
+                    initial: ::std::vec![ #(#initial_calls),* ],
+                    compute: ::std::rc::Rc::new(move || {
+                        #func_ident( #(#get_calls),* ) as usize
+                    }),
+                };
+                *row_template = ::std::option::Option::Some(::std::boxed::Box::new(__row_template));
+                *row_index_signal_id = __row_index_id;
+            }
+            __vh #(#chain)*
+        }
+    })
 }
 
 /// Try to lower `for PAT in RANGE { body }` to a single

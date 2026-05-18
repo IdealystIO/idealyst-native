@@ -44,23 +44,45 @@ pub enum ActivityIndicatorSize {
     Large,
 }
 
-/// Color the BrightScript client renders. Stored as the framework's
-/// portable string form (CSS-style `"#rrggbb"` / `"rgba(...)"`) so the
-/// client can parse straight to `roColor` without an intermediate
-/// representation.
+/// Color the BrightScript client renders. Either a concrete CSS-style
+/// string (`"#rrggbb"` / `"rgba(...)"`) or a theme-token reference
+/// the device resolves against the active theme variant.
+///
+/// Generator-side: when the framework's `Tokenized<Color>` is a
+/// `Token { name, fallback }`, the Roku backend emits
+/// `WireColor::Token { name, fallback }` so the BS runtime can
+/// look up the color in `m.themes[m.activeTheme][name]` and fall
+/// back to the literal if the token is missing.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct WireColor(pub String);
+#[serde(tag = "kind")]
+pub enum WireColor {
+    Literal { value: String },
+    Token { name: String, fallback: String },
+}
+
+impl WireColor {
+    /// Construct a literal color from a CSS string.
+    pub fn literal(s: impl Into<String>) -> Self {
+        WireColor::Literal { value: s.into() }
+    }
+}
 
 /// A length value in pixels-on-Roku (Roku has its own 1280×720 /
 /// 1920×1080 design coordinate system; the transport may scale).
 /// `Auto` means defer to layout; `Percent` is a ratio of the parent's
-/// relevant axis (0..=100).
-#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+/// relevant axis (0..=100). The fourth variant `Token` carries a
+/// theme-token name + fallback so the BS runtime can re-resolve
+/// at runtime — same role as `WireColor::Token`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value")]
 pub enum WireLength {
     Px(f32),
     Percent(f32),
     Auto,
+    /// Tokenized length. `fallback` is the concrete length used if
+    /// the active theme doesn't define `name`. The device-side
+    /// runtime can re-resolve when the active theme changes.
+    Token { name: String, fallback: Box<WireLength> },
 }
 
 /// Subset of `StyleRules` the BrightScript client consumes. Each
@@ -324,11 +346,46 @@ pub enum RokuCommand {
         row_index_signal_id: Option<SignalId>,
     },
 
+    // ---------------- Theme ----------------
+    /// Register a named theme variant. The device-side runtime
+    /// stores `tokens` keyed by `name` so token references in
+    /// later `ApplyStyle` / `ApplyStyleStates` commands can be
+    /// resolved against the active variant.
+    RegisterThemeVariant {
+        name: String,
+        tokens: Vec<ThemeToken>,
+    },
+    /// Bind a `Signal<String>`'s id as the active-theme name. When
+    /// the device observes a new value, it walks every styled node
+    /// and re-resolves token references against the matching
+    /// variant. `initial_name` is the active variant at boot.
+    BindActiveThemeSignal {
+        signal_id: SignalId,
+        initial_name: String,
+    },
+
     // ---------------- Lifecycle ----------------
     /// First command on a fresh session. The BrightScript client
     /// uses this to clear its node table and mount `root` as the
     /// scene's content.
     Finish { root: NodeId },
+}
+
+/// A single token entry in a theme variant. Carries the token's
+/// concrete value typed so the device can apply the appropriate
+/// formatting (color strings vs lengths in px vs raw numbers).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind")]
+pub enum ThemeTokenValue {
+    Color { value: String },
+    Length { value: WireLength },
+    Number { value: f32 },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ThemeToken {
+    pub name: String,
+    pub value: ThemeTokenValue,
 }
 
 /// A `bind_switch!` arm — pattern value (compared by JSON equality

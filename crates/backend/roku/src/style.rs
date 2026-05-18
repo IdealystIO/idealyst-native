@@ -5,7 +5,7 @@
 //! direct analogue for shadows, transforms, transitions, or per-side
 //! borders. We send what the client can express and drop the rest.
 
-use framework_core::{Color, FontWeight, Length, StyleRules};
+use framework_core::{Color, FontWeight, Length, StyleRules, Tokenized};
 
 use crate::command::{
     AlignItems as WireAlignItems, FlexDirection as WireFlexDirection,
@@ -15,17 +15,17 @@ use crate::command::{
 
 pub fn lower_style(rules: &StyleRules) -> WireStyle {
     WireStyle {
-        background: rules.background.as_ref().map(|t| color(t.value())),
-        color: rules.color.as_ref().map(|t| color(t.value())),
+        background: rules.background.as_ref().map(tokenized_color),
+        color: rules.color.as_ref().map(tokenized_color),
         font_size: rules.font_size.as_ref().map(|t| length_px(t.value())),
         font_weight: rules.font_weight.map(font_weight_to_numeric),
 
-        width: rules.width.as_ref().map(|t| length(t.value())),
-        height: rules.height.as_ref().map(|t| length(t.value())),
-        min_width: rules.min_width.as_ref().map(|t| length(t.value())),
-        min_height: rules.min_height.as_ref().map(|t| length(t.value())),
-        max_width: rules.max_width.as_ref().map(|t| length(t.value())),
-        max_height: rules.max_height.as_ref().map(|t| length(t.value())),
+        width: rules.width.as_ref().map(tokenized_length),
+        height: rules.height.as_ref().map(tokenized_length),
+        min_width: rules.min_width.as_ref().map(tokenized_length),
+        min_height: rules.min_height.as_ref().map(tokenized_length),
+        max_width: rules.max_width.as_ref().map(tokenized_length),
+        max_height: rules.max_height.as_ref().map(tokenized_length),
 
         padding_top: rules.padding_top.as_ref().map(|t| length_px(t.value())),
         padding_right: rules.padding_right.as_ref().map(|t| length_px(t.value())),
@@ -52,11 +52,32 @@ pub fn lower_style(rules: &StyleRules) -> WireStyle {
     }
 }
 
-fn color(c: &Color) -> WireColor {
-    WireColor(c.0.clone())
+/// Lower a `Tokenized<Color>` to a `WireColor`. Token references
+/// preserve their name + fallback so the BS runtime can re-resolve
+/// against the active theme variant; literals pass through.
+pub(crate) fn tokenized_color(t: &Tokenized<Color>) -> WireColor {
+    match t {
+        Tokenized::Literal(c) => WireColor::Literal { value: c.0.clone() },
+        Tokenized::Token { name, fallback } => WireColor::Token {
+            name: name.to_string(),
+            fallback: fallback.0.clone(),
+        },
+    }
 }
 
-fn length(l: &Length) -> WireLength {
+/// Lower a `Tokenized<Length>` to a `WireLength`. Same shape as
+/// `tokenized_color` — token references carry the name + fallback.
+pub(crate) fn tokenized_length(t: &Tokenized<Length>) -> WireLength {
+    match t {
+        Tokenized::Literal(l) => length(l),
+        Tokenized::Token { name, fallback } => WireLength::Token {
+            name: name.to_string(),
+            fallback: Box::new(length(fallback)),
+        },
+    }
+}
+
+pub(crate) fn length(l: &Length) -> WireLength {
     match l {
         Length::Px(v) => WireLength::Px(*v),
         Length::Percent(v) => WireLength::Percent(*v),

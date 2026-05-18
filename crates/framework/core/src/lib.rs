@@ -69,8 +69,9 @@ pub use scheduling::{
 };
 
 pub use style::{
-    active_theme, derived, install_theme, pregenerate_for_theme, resolve as resolve_style,
-    set_theme, AlignContent, AlignItems, AlignSelf, Color, Derive, Easing, FlexDirection,
+    active_theme, derived, install_theme, install_themes, pregenerate_for_theme,
+    register_theme_variant, resolve as resolve_style, set_theme, AlignContent, AlignItems,
+    AlignSelf, Color, Derive, Easing, FlexDirection,
     FlexWrap, FontStyle, FontWeight, IntoOverrideSource, IntoVariantSource, JustifyContent,
     Length, Overflow, Position, Shadow, StyleApplication, StyleRules, StyleSheet, TextAlign,
     TextTransform, ThemeTokens, TokenEntry, TokenValue, Tokenized, Transform, Transition,
@@ -78,7 +79,7 @@ pub use style::{
 };
 
 pub use framework_macros::{
-    bind, bind_press, bind_repeat, bind_switch, bind_when, component, jsx, stylesheet, ui,
+    component, jsx, stylesheet, ui,
 };
 
 // Re-export of `framework_hot` so the `#[component]` macro's

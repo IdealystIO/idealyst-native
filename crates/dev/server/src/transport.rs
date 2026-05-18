@@ -45,6 +45,15 @@ const TICK_INTERVAL: Duration = Duration::from_millis(20);
 struct ClientConn {
     ws: WebSocket<TcpStream>,
     cursor: usize,
+    /// Recorder scene epoch this client is in sync with. When
+    /// [`WireRecordingBackend::reset_log_and_scene`] runs (after a
+    /// hot-reload patch apply, for instance), the recorder's epoch
+    /// moves forward; the next broadcast tick detects the
+    /// inequality and sends the client a fresh
+    /// `recorder.snapshot()` instead of the delta-from-cursor —
+    /// the cursor-based path is meaningless across a log
+    /// truncation.
+    epoch: u64,
     /// Best-effort label for log lines.
     peer: String,
 }
@@ -338,6 +347,7 @@ fn accept_new(
                 clients.push(ClientConn {
                     ws,
                     cursor: cursor_at_snapshot,
+                    epoch: recorder.epoch(),
                     peer: peer.to_string(),
                 });
             }
@@ -400,6 +410,28 @@ fn poll_reads(
     *clients = keep;
 }
 
+/// Return a static-str name for a wire command variant. Used only
+/// by the broadcast-time diagnostic for hot-reload debugging.
+fn wire_command_kind(cmd: &wire::Command) -> &'static str {
+    use wire::Command::*;
+    match cmd {
+        CreateView { .. } => "CreateView",
+        CreateText { .. } => "CreateText",
+        UpdateText { .. } => "UpdateText",
+        CreateButton { .. } => "CreateButton",
+        UpdateButtonLabel { .. } => "UpdateButtonLabel",
+        Insert { .. } => "Insert",
+        InsertMany { .. } => "InsertMany",
+        ClearChildren { .. } => "ClearChildren",
+        ApplyStyle { .. } => "ApplyStyle",
+        ApplyStyledStates { .. } => "ApplyStyledStates",
+        RegisterStyle { .. } => "RegisterStyle",
+        UnregisterStyle { .. } => "UnregisterStyle",
+        Finish { .. } => "Finish",
+        _ => "Other",
+    }
+}
+
 /// Ship every command appended to the log since each client's
 /// cursor. Disconnected clients are pruned.
 fn broadcast_new_commands(
@@ -407,9 +439,44 @@ fn broadcast_new_commands(
     recorder: &WireRecordingBackend,
 ) {
     let new_count = recorder.command_count();
+    let recorder_epoch = recorder.epoch();
     let mut keep = Vec::with_capacity(clients.len());
     for mut client in clients.drain(..) {
-        if new_count > client.cursor {
+        if client.epoch != recorder_epoch {
+            // Scene was reset (typically a hot-reload patch apply
+            // re-rendered the tree). Cursor-based delta replay is
+            // meaningless across the truncation, so ship a full
+            // snapshot of the new scene and resync the client's
+            // bookkeeping.
+            let snapshot = recorder.snapshot();
+            let mut text_samples: Vec<String> = Vec::new();
+            let mut kind_hist: std::collections::HashMap<&'static str, u32> =
+                std::collections::HashMap::new();
+            for cmd in snapshot.iter() {
+                let k = wire_command_kind(cmd);
+                *kind_hist.entry(k).or_insert(0) += 1;
+                if let wire::Command::CreateText { content, .. } = cmd {
+                    if text_samples.len() < 5 {
+                        text_samples.push(format!("{:?}", content));
+                    }
+                }
+            }
+            eprintln!(
+                "[dev-server] {} epoch advanced ({} → {}); resnap {} cmds; kinds={:?}; texts={:?}",
+                client.peer,
+                client.epoch,
+                recorder_epoch,
+                snapshot.len(),
+                kind_hist,
+                text_samples,
+            );
+            if send(&mut client.ws, &DevToApp::Commands(snapshot)).is_err() {
+                eprintln!("[dev-server] {} send failed; dropping", client.peer);
+                continue;
+            }
+            client.cursor = new_count;
+            client.epoch = recorder_epoch;
+        } else if new_count > client.cursor {
             let cmds = recorder.commands_since(client.cursor);
             if send(&mut client.ws, &DevToApp::Commands(cmds)).is_err() {
                 eprintln!("[dev-server] {} send failed; dropping", client.peer);

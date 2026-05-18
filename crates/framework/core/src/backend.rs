@@ -628,6 +628,34 @@ pub trait Backend {
         // default: no-op
     }
 
+    /// Register a *named* theme variant. Called once per variant
+    /// the author declares via `register_theme_variant(name, theme)`
+    /// or `install_themes(...)` — the framework drains the queue
+    /// just before painting so the backend sees every variant.
+    ///
+    /// Generator backends (Roku) capture each variant's token map
+    /// so the device-side runtime can resolve token references
+    /// against the currently-active theme name. Runtime backends
+    /// (iOS / Android / Web) ignore named variants — they drive
+    /// theme switching through `install_theme_variables` + an
+    /// author-provided Effect on the active-theme signal.
+    #[allow(unused_variables)]
+    fn register_theme_variant(&mut self, name: &str, tokens: &[crate::TokenEntry]) {
+        // default: no-op
+    }
+
+    /// Bind a `Signal<String>`'s arena id as the active-theme name
+    /// signal. Generator backends (Roku) emit a wire op that wires
+    /// device-side theme-switching to writes against this signal:
+    /// when the device observes a new value, it walks every styled
+    /// node and re-resolves token references against the matching
+    /// variant. Runtime backends ignore this — `install_themes`'s
+    /// internal Effect handles their side via `set_theme`.
+    #[allow(unused_variables)]
+    fn bind_active_theme_signal(&mut self, signal_id: u64, initial_name: &str) {
+        // default: no-op
+    }
+
     /// Called when a styled node is being torn down (its surrounding
     /// `Effect` scope is dropping). Lets backends free per-node state —
     /// e.g. the web backend drops the node's dynamic CSS class slot

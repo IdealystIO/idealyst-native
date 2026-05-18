@@ -171,13 +171,12 @@ fn generate_workspace_root(mode_dir: &Path) -> Result<()> {
 resolver = "2"
 members = ["host", "patch"]
 
-# Match the parent workspace's profile so the framework_core crate
-# hash is identical in both the host link and the patch link. Any
-# divergence here would cause `dyld` to refuse to resolve the patch's
-# framework symbols against the host's at dlopen time.
-[profile.dev]
-debug = 0
-strip = "debuginfo"
+# Keep cargo's default `[profile.dev]` (especially `debug-assertions
+# = true`). Subsecond's hot-reload dispatcher is gated on
+# `cfg!(debug_assertions)`: when it's off, `HotFn::call` short-
+# circuits to a direct call and never consults the jump table, so
+# any custom profile here must NOT disable assertions or the
+# patches go nowhere.
 "#;
     fs::write(mode_dir.join("Cargo.toml"), cargo_toml)?;
     Ok(())
@@ -383,7 +382,7 @@ use dev_server::{{
     serve_with_tick_and_port, spawn_rebuild_loop, RebuildCommand, RebuildConfig,
     WireRecordingBackend,
 }};
-use framework_core::render;
+use framework_core::{{render, Owner}};
 use {lib}::app;
 
 const DEFAULT_ADDR: &str = "{default_addr}";
@@ -413,13 +412,18 @@ fn main() -> std::io::Result<()> {{
     std::env::set_var("RUSTFLAGS", PATCH_RUSTFLAGS);
 
     // Spin up the framework reactive runtime against the recording
-    // backend. The `Owner` returned must outlive the serve loop —
-    // dropping it tears down every scope and signal the walker
-    // created. We mem::forget it for the lifetime of the process.
+    // backend. The owner is kept in a `RefCell` so the per-tick
+    // hot-reload handler can drop the old reactive tree and
+    // re-render with the patched `app()` body, propagating
+    // structural edits (added/removed nodes, changed initial
+    // values, etc.) to every connected client. Without the
+    // re-render, swapping the jump table only takes effect on the
+    // next signal change — which is fine for reactive edits but
+    // misses static structural changes.
     let recorder = WireRecordingBackend::new();
     let backend_rc = Rc::new(RefCell::new(recorder.clone()));
-    let owner = render(backend_rc, app());
-    std::mem::forget(owner);
+    let owner: Rc<RefCell<Option<Owner>>> =
+        Rc::new(RefCell::new(Some(render(backend_rc.clone(), app()))));
 
     // Pending-patch slot: file-watch thread drops a patch dylib path
     // here on every successful rebuild; the serve loop's per-tick
@@ -505,6 +509,9 @@ fn main() -> std::io::Result<()> {{
 
     eprintln!("[dylib-host] starting (advertising app_id={{}} via mDNS)", APP_ID);
     let pending_for_tick = pending_patch.clone();
+    let owner_for_tick = owner.clone();
+    let recorder_for_tick = recorder.clone();
+    let backend_for_tick = backend_rc.clone();
     serve_with_tick_and_port(
         addr,
         recorder,
@@ -522,8 +529,45 @@ fn main() -> std::io::Result<()> {{
                 eprintln!("[dylib-host] applying patch: {{}}", p.display());
                 match unsafe {{ framework_hot::diff::apply_from_dylib(&p) }} {{
                     Ok(_) => eprintln!("[dylib-host] patch applied"),
-                    Err(e) => eprintln!("[dylib-host] patch apply failed: {{:?}}", e),
+                    Err(e) => {{
+                        eprintln!("[dylib-host] patch apply failed: {{:?}}", e);
+                        return;
+                    }}
                 }}
+
+                // Apply succeeded — the jump table now points every
+                // `__*_hot_impl` call site at the patch dylib's
+                // freshly-compiled bodies. Re-render so structural
+                // changes (added/removed nodes, changed initial
+                // values, anything outside an Effect's dep set)
+                // propagate to connected clients. Sequence:
+                //   1. drop the old `Owner` → tears down every scope
+                //      + signal the previous walk created, releasing
+                //      backend resources via the regular destructor
+                //      path.
+                //   2. reset the recorder's log + scene model →
+                //      fresh `NodeId` counter and an empty scene
+                //      snapshot so reconnecting clients start clean.
+                //   3. `render(backend, app())` → walks the patched
+                //      `app()` tree, emitting a fresh `Commands`
+                //      stream.
+                //   4. broadcast a wholesale snapshot to every
+                //      already-connected client so their local
+                //      backends rebuild the new tree.
+                // The whole sequence runs on the serve thread (same
+                // thread that owns the reactive runtime) — no
+                // cross-thread footguns.
+                {{
+                    let mut slot = owner_for_tick.borrow_mut();
+                    *slot = None;
+                }}
+                recorder_for_tick.reset_log_and_scene();
+                let new_owner = render(backend_for_tick.clone(), app());
+                *owner_for_tick.borrow_mut() = Some(new_owner);
+                eprintln!(
+                    "[dylib-host] re-rendered ({{}} commands)",
+                    recorder_for_tick.command_count()
+                );
             }}
         }},
         Some(port_mirror),

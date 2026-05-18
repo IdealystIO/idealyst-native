@@ -146,6 +146,14 @@ pub type NavStateSnapshot = HashMap<u64, Vec<String>>;
 struct RecorderState {
     next_node: u64,
     next_style: u64,
+    /// Monotonic generation counter. Bumped by
+    /// [`WireRecordingBackend::reset_log_and_scene`] each time the
+    /// scene is wiped + re-rendered (typically after a hot-reload
+    /// patch apply). The serve loop snapshots this onto each
+    /// connected client and compares per-tick — when the recorder's
+    /// epoch moves ahead of a client's, that client gets a fresh
+    /// scene snapshot instead of the usual delta broadcast.
+    epoch: u64,
     handlers: HandlerTable,
     /// Pre-registered styles. Each `Rc<StyleRules>` pointer identity
     /// gets mapped to a `StyleId` on first encounter so the wire
@@ -220,6 +228,7 @@ impl WireRecordingBackend {
             inner: Rc::new(RefCell::new(RecorderState {
                 next_node: 0,
                 next_style: 0,
+                epoch: 0,
                 handlers: HandlerTable::default(),
                 styles_by_ptr: HashMap::new(),
                 out: Vec::new(),
@@ -311,20 +320,36 @@ impl WireRecordingBackend {
 
     /// Drop every command from the log and reset the scene to empty.
     /// Used by the infra host when it swaps to a freshly-spawned
-    /// sidecar — the new sidecar will emit its own fresh command
-    /// stream from NodeId 0, and re-using the old log would produce
-    /// stale catch-up snapshots for clients that connect after the
-    /// swap.
+    /// sidecar (or hot-reloads a dylib patch) — the next render
+    /// will emit a fresh command stream and re-using the old log
+    /// would produce stale catch-up snapshots for clients that
+    /// connect after the swap.
     ///
-    /// Clients already connected at the moment of reset still have
-    /// the old commands in their local backend; they need a fresh
-    /// `Commands` broadcast (or, when the protocol supports it, a
-    /// `ClearAll`) to reconcile. The host does that broadcast as a
-    /// follow-up step.
+    /// Increments the scene epoch so the serve loop's broadcast
+    /// can detect the reset and force every already-connected
+    /// client to re-snapshot from scratch (cursor-based delta
+    /// broadcast doesn't work across a log truncation — the
+    /// client's stored cursor is ahead of the new log's length).
     pub fn reset_log_and_scene(&self) {
         let mut state = self.inner.borrow_mut();
         state.out.clear();
         state.scene = SceneModel::new();
+        state.next_node = 0;
+        state.next_style = 0;
+        state.styles_by_ptr.clear();
+        state.state_handlers.clear();
+        state.navigators.clear();
+        state.scope_to_navigator.clear();
+        state.handlers = HandlerTable::default();
+        state.epoch = state.epoch.wrapping_add(1);
+    }
+
+    /// Monotonically-increasing scene generation. Bumped every time
+    /// [`Self::reset_log_and_scene`] runs. The serve loop uses this
+    /// to decide whether a connected client needs a fresh snapshot
+    /// (its remembered epoch falls behind the recorder's).
+    pub fn epoch(&self) -> u64 {
+        self.inner.borrow().epoch
     }
 
     /// Drain any pending commands, removing them from the recorder's
