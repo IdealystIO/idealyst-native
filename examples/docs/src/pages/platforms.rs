@@ -1,14 +1,13 @@
 //! Platforms — what each backend looks like and where it runs.
 
 use framework_core::{ui, Primitive};
-use idea_ui::{body, card, heading, stack, BodyTone, HeadingKind, StackGap};
+use idea_ui::{body, card, heading, BodyTone, HeadingKind};
 
-use crate::shell::{pageheader, section, PageHeaderProps, SectionProps};
+use crate::shell::{pagebody, pageheader, section, PageBodyProps, PageHeaderProps, SectionProps};
 
 pub fn page() -> Primitive {
     ui! {
-        ScrollView {
-            Stack(gap = StackGap::Xl) {
+        PageBody {
             PageHeader(
                 title = "Platforms".to_string(),
                 description = "Idealyst targets web, iOS, Android, Roku, and AAS — same Rust \
@@ -98,7 +97,6 @@ pub fn page() -> Primitive {
                         `app()` function compiles into all of them; only the wrapper crates \
                         differ.".to_string(),
             )
-        }
         }
     }
 }

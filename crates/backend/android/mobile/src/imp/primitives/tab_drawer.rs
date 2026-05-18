@@ -109,6 +109,14 @@ pub(crate) struct TabDrawerInstance {
     /// dispatcher callback, outside any active backend borrow)
     /// doesn't need to re-borrow the backend.
     context: GlobalRef,
+    /// The Toolbar widget currently displayed at the top of `body`,
+    /// if the active screen has one. Persisted on the instance so
+    /// the `apply_navigator_header_style` / `..._title_style` /
+    /// `..._button_style` hooks can update its background / text
+    /// color / nav-icon tint via JNI without rebuilding the bar.
+    /// `None` when the active screen has neither a title nor a
+    /// `header_left` button (see `attach_toolbar_to_body`).
+    toolbar: Option<GlobalRef>,
     /// Currently-mounted screen's view + scope id. `None` only
     /// between creation and the first `attach_initial` call.
     current: Option<(GlobalRef, u64)>,
@@ -396,6 +404,7 @@ fn install_instance(
         outer: outer.clone(),
         body,
         context: b.context.clone(),
+        toolbar: None,
         current: None,
         release_screen: callbacks.release_screen.clone(),
         mount_screen: callbacks.mount_screen.clone(),
@@ -476,24 +485,56 @@ fn swap_body(
         let mut inst = instance.borrow_mut();
         let old = inst.current.take().map(|(_, s)| s);
         let is_drawer = matches!(inst.kind, DrawerKind::Drawer { .. });
+        // Old toolbar is about to be removed from the view tree by
+        // `body.removeAllViews()`. Drop the global ref so the apply_*
+        // style hooks don't write to a detached widget.
+        inst.toolbar = None;
         (inst.body.clone(), inst.context.clone(), is_drawer, old)
     };
-    with_env(|env| {
+    let new_toolbar = with_env(|env| {
         // Wipe the old screen + its toolbar; rebuild both from the
         // new screen's options. Drawer navigators get an in-tree
         // Toolbar above the screen (see `attach_toolbar_to_body`);
         // tab navigators skip it (their body is a FrameLayout that
         // only holds the active tab's screen).
         let _ = env.call_method(body.as_obj(), "removeAllViews", "()V", &[]);
-        if is_drawer {
-            attach_toolbar_to_body(env, &context, &body, &new_options);
+        let tb = if is_drawer {
+            attach_toolbar_to_body(env, &context, &body, &new_options)
+        } else {
+            None
+        };
+        // Idempotent Create* on the dev-client keeps the same
+        // `GlobalRef` across screen re-mounts. After a navigate-away
+        // + navigate-back, the view is detached from `body` but
+        // could in pathological cases still have a parent (e.g.,
+        // some other navigator picked it up). Defensive detach
+        // keeps `addView` from throwing.
+        let parent_check = env
+            .call_method(new_view.as_obj(), "getParent", "()Landroid/view/ViewParent;", &[])
+            .ok();
+        if let Some(jni::objects::JValueGen::Object(ref p)) = parent_check {
+            if !p.is_null() {
+                let _ = env.call_method(
+                    p,
+                    "removeView",
+                    "(Landroid/view/View;)V",
+                    &[JValue::Object(&new_view.as_obj())],
+                );
+            }
         }
-        let _ = env.call_method(
+        if let Err(e) = env.call_method(
             body.as_obj(),
             "addView",
             "(Landroid/view/View;)V",
             &[JValue::Object(&new_view.as_obj())],
-        );
+        ) {
+            if env.exception_check().unwrap_or(false) {
+                let _ = env.exception_describe();
+                let _ = env.exception_clear();
+            }
+            log::error!("swap_body addView failed: {:?}", e);
+        }
+        tb
     });
     if let Some(scope) = old_scope {
         // Release the previous scope AFTER the new view is in
@@ -503,7 +544,9 @@ fn swap_body(
         let release = instance.borrow().release_screen.clone();
         release(scope);
     }
-    instance.borrow_mut().current = Some((new_view, new_scope));
+    let mut inst = instance.borrow_mut();
+    inst.toolbar = new_toolbar;
+    inst.current = Some((new_view, new_scope));
 }
 
 /// Invoke a no-arg method on the `RustDrawerLayout` (open/close/
@@ -610,29 +653,40 @@ pub(crate) fn attach_initial(
     let body = entry.instance.borrow().body.clone();
     let is_drawer = matches!(entry.instance.borrow().kind, DrawerKind::Drawer { .. });
     let context = b.context.clone();
-    with_env(|env| {
-        if is_drawer {
-            attach_toolbar_to_body(env, &context, &body, &options);
-        }
+    let new_toolbar = with_env(|env| {
+        let tb = if is_drawer {
+            attach_toolbar_to_body(env, &context, &body, &options)
+        } else {
+            None
+        };
         let _ = env.call_method(
             body.as_obj(),
             "addView",
             "(Landroid/view/View;)V",
             &[JValue::Object(&screen.as_obj())],
         );
+        tb
     });
-    entry.instance.borrow_mut().current = Some((screen, scope_id));
+    let mut inst = entry.instance.borrow_mut();
+    inst.toolbar = new_toolbar;
+    inst.current = Some((screen, scope_id));
 }
 
 /// Build a Toolbar from screen options (via the Kotlin shim) and add
 /// it to `body` as its first child. No-op if neither a title nor a
 /// header_left button is set.
+/// Build the screen's Toolbar from `options` and add it as `body`'s
+/// first child. Returns the toolbar's `GlobalRef` so the caller can
+/// persist it on the navigator instance — the
+/// `apply_navigator_header_style` / `..._title_style` /
+/// `..._button_style` Backend hooks need a stable handle to update
+/// the bar's colors when the theme changes, without rebuilding it.
 fn attach_toolbar_to_body(
     env: &mut jni::JNIEnv,
     context: &GlobalRef,
     body: &GlobalRef,
     options: &framework_core::ScreenOptions,
-) {
+) -> Option<GlobalRef> {
     use crate::imp::callbacks::HeaderButtonCallback;
     use jni::sys::jlong;
 
@@ -642,7 +696,7 @@ fn attach_toolbar_to_body(
         && options.title_color.is_none()
         && options.header_tint.is_none()
     {
-        return;
+        return None;
     }
 
     let left_ptr: jlong = match options.header_left.as_ref() {
@@ -679,7 +733,7 @@ fn attach_toolbar_to_body(
         Ok(c) => c,
         Err(e) => {
             log::error!("RustActionBarHelper class not found: {:?}", e);
-            return;
+            return None;
         }
     };
     let null_obj = JObject::null();
@@ -713,14 +767,14 @@ fn attach_toolbar_to_body(
         ],
     ) {
         Ok(jni::objects::JValueGen::Object(o)) => o,
-        Ok(_) => return,
+        Ok(_) => return None,
         Err(e) => {
             if env.exception_check().unwrap_or(false) {
                 let _ = env.exception_describe();
                 let _ = env.exception_clear();
             }
             log::error!("RustActionBarHelper.buildToolbar failed: {:?}", e);
-            return;
+            return None;
         }
     };
     if let Err(e) = env.call_method(
@@ -730,7 +784,158 @@ fn attach_toolbar_to_body(
         &[JValue::Object(&toolbar_obj)],
     ) {
         log::error!("Toolbar addView failed: {:?}", e);
+        return None;
     }
+    // Persist a global ref so the apply_* style hooks can mutate the
+    // bar later. JNI's local frame would invalidate the local ref
+    // after this method returns.
+    env.new_global_ref(&toolbar_obj).ok()
+}
+
+/// Apply a navigator's `header_style` to the active screen's
+/// Toolbar. Called reactively by the walker on theme change; the
+/// rules' `background` (the bar's fill) is the only field the
+/// current Toolbar wiring honors today. `title_color` is handled by
+/// [`apply_navigator_title_style`], and the nav icon tint by
+/// [`apply_navigator_button_style`].
+pub(crate) fn apply_header_style(
+    b: &AndroidBackend,
+    navigator: &GlobalRef,
+    rules: &std::rc::Rc<framework_core::StyleRules>,
+) {
+    let Some(entry) = b.tab_drawer_instances.get(&AndroidBackend::node_key_of(navigator)) else {
+        return;
+    };
+    let Some(toolbar) = entry.instance.borrow().toolbar.clone() else {
+        return;
+    };
+    let Some(color) = rules.background.as_ref() else {
+        return;
+    };
+    let css = color.value().0.clone();
+    with_env(|env| {
+        let Ok(jstr) = env.new_string(&css) else { return };
+        let helper = match env.find_class("io/idealyst/runtime/RustActionBarHelper") {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let _ = env.call_static_method(
+            helper,
+            "setToolbarBackground",
+            "(Landroid/widget/Toolbar;Ljava/lang/String;)V",
+            &[
+                JValue::Object(&toolbar.as_obj()),
+                JValue::Object(&jstr.as_ref()),
+            ],
+        );
+    });
+}
+
+/// Apply a navigator's `title_style` to the active screen's Toolbar
+/// title TextView. Today this only honors the rules' `color` field.
+pub(crate) fn apply_title_style(
+    b: &AndroidBackend,
+    navigator: &GlobalRef,
+    rules: &std::rc::Rc<framework_core::StyleRules>,
+) {
+    let Some(entry) = b.tab_drawer_instances.get(&AndroidBackend::node_key_of(navigator)) else {
+        return;
+    };
+    let Some(toolbar) = entry.instance.borrow().toolbar.clone() else {
+        return;
+    };
+    let Some(color) = rules.color.as_ref() else {
+        return;
+    };
+    let css = color.value().0.clone();
+    with_env(|env| {
+        let Ok(jstr) = env.new_string(&css) else { return };
+        let helper = match env.find_class("io/idealyst/runtime/RustActionBarHelper") {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let _ = env.call_static_method(
+            helper,
+            "setToolbarTitleColor",
+            "(Landroid/widget/Toolbar;Ljava/lang/String;)V",
+            &[
+                JValue::Object(&toolbar.as_obj()),
+                JValue::Object(&jstr.as_ref()),
+            ],
+        );
+    });
+}
+
+/// Apply a navigator's body-container fill — the view that hosts the
+/// active screen. The `background_color(...)` builder method on a
+/// drawer / `HeaderStyle.body_background` via `.header(...)` both
+/// feed this hook. Painted on the `body` GlobalRef (the FrameLayout
+/// under the DrawerLayout for drawer nav, or the bare FrameLayout
+/// for tab nav).
+pub(crate) fn apply_body_style(
+    b: &AndroidBackend,
+    navigator: &GlobalRef,
+    rules: &std::rc::Rc<framework_core::StyleRules>,
+) {
+    let Some(entry) = b.tab_drawer_instances.get(&AndroidBackend::node_key_of(navigator)) else {
+        return;
+    };
+    let body = entry.instance.borrow().body.clone();
+    let Some(color) = rules.background.as_ref() else {
+        return;
+    };
+    let css = color.value().0.clone();
+    with_env(|env| {
+        let Ok(jstr) = env.new_string(&css) else { return };
+        let helper = match env.find_class("io/idealyst/runtime/RustActionBarHelper") {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let _ = env.call_static_method(
+            helper,
+            "setViewBackground",
+            "(Landroid/view/View;Ljava/lang/String;)V",
+            &[
+                JValue::Object(&body.as_obj()),
+                JValue::Object(&jstr.as_ref()),
+            ],
+        );
+    });
+}
+
+/// Apply a navigator's `button_style` to the Toolbar's navigation
+/// icon (the hamburger / back chevron). Tints from `rules.color`.
+pub(crate) fn apply_button_style(
+    b: &AndroidBackend,
+    navigator: &GlobalRef,
+    rules: &std::rc::Rc<framework_core::StyleRules>,
+) {
+    let Some(entry) = b.tab_drawer_instances.get(&AndroidBackend::node_key_of(navigator)) else {
+        return;
+    };
+    let Some(toolbar) = entry.instance.borrow().toolbar.clone() else {
+        return;
+    };
+    let Some(color) = rules.color.as_ref() else {
+        return;
+    };
+    let css = color.value().0.clone();
+    with_env(|env| {
+        let Ok(jstr) = env.new_string(&css) else { return };
+        let helper = match env.find_class("io/idealyst/runtime/RustActionBarHelper") {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let _ = env.call_static_method(
+            helper,
+            "setToolbarNavIconTint",
+            "(Landroid/widget/Toolbar;Ljava/lang/String;)V",
+            &[
+                JValue::Object(&toolbar.as_obj()),
+                JValue::Object(&jstr.as_ref()),
+            ],
+        );
+    });
 }
 
 pub(crate) fn release(b: &mut AndroidBackend, node: &GlobalRef) {

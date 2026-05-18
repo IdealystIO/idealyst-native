@@ -96,10 +96,12 @@ pub use components::skeleton::{skeleton, SkeletonProps, SkeletonWidth};
 pub use components::spacer::{spacer, SpacerProps};
 pub use components::spinner::{spinner, SpinnerProps, SpinnerSize};
 pub use components::stack::{
-    stack, StackAlign, StackAxis, StackGap, StackJustify, StackProps,
+    stack, StackAlign, StackAxis, StackGap, StackJustify, StackPadding, StackProps,
 };
 pub use components::switch::{switch, SwitchProps};
 pub use components::tabs::{tabs, Tab, TabsProps};
 pub use components::tag::{tag, TagProps};
 
-pub use stylesheets::{BodyAlign, BodyTone, CaptionAlign, CaptionTone, HeadingAlign, HeadingKind};
+pub use stylesheets::{
+    BodyAlign, BodyTone, CaptionAlign, CaptionTone, HeadingAlign, HeadingKind, TabPanel,
+};

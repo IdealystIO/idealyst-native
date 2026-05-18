@@ -37,6 +37,15 @@ stylesheet! {
             lg(t)    { gap: Length::Px(t.spacing().lg) }
             xl(t)    { gap: Length::Px(t.spacing().xl) }
         }
+        variant padding {
+            #[default]
+            none(_t) { padding: Length::Px(0.0) }
+            xs(t)    { padding: Length::Px(t.spacing().xs) }
+            sm(t)    { padding: Length::Px(t.spacing().sm) }
+            md(t)    { padding: Length::Px(t.spacing().md) }
+            lg(t)    { padding: Length::Px(t.spacing().lg) }
+            xl(t)    { padding: Length::Px(t.spacing().xl) }
+        }
         variant axis {
             #[default]
             column(_t) { flex_direction: FlexDirection::Column }

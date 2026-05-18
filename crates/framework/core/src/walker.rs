@@ -581,6 +581,15 @@ fn build_inner<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) 
                 button_style,
                 ref_fill,
             } = *nav;
+            let header_bg_cb = default_options
+                .as_ref()
+                .and_then(|o| o.header_background.clone());
+            let title_color_cb = default_options
+                .as_ref()
+                .and_then(|o| o.title_color.clone());
+            let header_tint_cb = default_options
+                .as_ref()
+                .and_then(|o| o.header_tint.clone());
             let n = build_navigator(backend, initial, initial_path, screens, layout, default_options, ref_fill);
             if let Some(s) = style {
                 attach_style(backend, &n, s);
@@ -598,6 +607,21 @@ fn build_inner<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) 
             if let Some(s) = button_style {
                 attach_navigator_slot_style(backend, &n, s, |b, node, rules| {
                     b.borrow_mut().apply_navigator_button_style(node, rules);
+                });
+            }
+            if let Some(cb) = header_bg_cb {
+                attach_navigator_color_callback(backend, &n, cb, |r, c| r.background = Some(c.into()), |b, node, rules| {
+                    b.apply_navigator_header_style(node, rules);
+                });
+            }
+            if let Some(cb) = title_color_cb {
+                attach_navigator_color_callback(backend, &n, cb, |r, c| r.color = Some(c.into()), |b, node, rules| {
+                    b.apply_navigator_title_style(node, rules);
+                });
+            }
+            if let Some(cb) = header_tint_cb {
+                attach_navigator_color_callback(backend, &n, cb, |r, c| r.color = Some(c.into()), |b, node, rules| {
+                    b.apply_navigator_button_style(node, rules);
                 });
             }
             // Cleanup: when the surrounding scope drops, this empty
@@ -634,6 +658,15 @@ fn build_inner<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) 
                 tab_label_style,
                 ref_fill,
             } = *nav;
+            let header_bg_cb = default_options
+                .as_ref()
+                .and_then(|o| o.header_background.clone());
+            let title_color_cb = default_options
+                .as_ref()
+                .and_then(|o| o.title_color.clone());
+            let header_tint_cb = default_options
+                .as_ref()
+                .and_then(|o| o.header_tint.clone());
             let n = build_tab_navigator(
                 backend,
                 initial,
@@ -679,6 +712,21 @@ fn build_inner<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) 
                     b.borrow_mut().apply_tab_label_style(node, rules);
                 });
             }
+            if let Some(cb) = header_bg_cb {
+                attach_navigator_color_callback(backend, &n, cb, |r, c| r.background = Some(c.into()), |b, node, rules| {
+                    b.apply_navigator_header_style(node, rules);
+                });
+            }
+            if let Some(cb) = title_color_cb {
+                attach_navigator_color_callback(backend, &n, cb, |r, c| r.color = Some(c.into()), |b, node, rules| {
+                    b.apply_navigator_title_style(node, rules);
+                });
+            }
+            if let Some(cb) = header_tint_cb {
+                attach_navigator_color_callback(backend, &n, cb, |r, c| r.color = Some(c.into()), |b, node, rules| {
+                    b.apply_navigator_button_style(node, rules);
+                });
+            }
             {
                 let cleanup = TabNavigatorHandleCleanup {
                     backend: backend.clone(),
@@ -712,6 +760,22 @@ fn build_inner<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) 
                 ref_fill,
                 background_color,
             } = *nav;
+            // Pluck out the ergonomic `.header(idea_header(...))` color
+            // callbacks before `default_options` moves into the build
+            // call. These are `Fn() -> Color` closures that read
+            // `active_theme()` internally — they need a reactive Effect
+            // to re-fire on theme swap. See
+            // `attach_navigator_color_callback` for the bridge.
+            let header_bg_cb = default_options
+                .as_ref()
+                .and_then(|o| o.header_background.clone());
+            let title_color_cb = default_options
+                .as_ref()
+                .and_then(|o| o.title_color.clone());
+            let header_tint_cb = default_options
+                .as_ref()
+                .and_then(|o| o.header_tint.clone());
+            let body_bg_cb = background_color.clone();
             let n = build_drawer_navigator(
                 backend,
                 initial,
@@ -744,6 +808,26 @@ fn build_inner<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) 
             if let Some(s) = button_style {
                 attach_navigator_slot_style(backend, &n, s, |b, node, rules| {
                     b.borrow_mut().apply_navigator_button_style(node, rules);
+                });
+            }
+            if let Some(cb) = header_bg_cb {
+                attach_navigator_color_callback(backend, &n, cb, |r, c| r.background = Some(c.into()), |b, node, rules| {
+                    b.apply_navigator_header_style(node, rules);
+                });
+            }
+            if let Some(cb) = title_color_cb {
+                attach_navigator_color_callback(backend, &n, cb, |r, c| r.color = Some(c.into()), |b, node, rules| {
+                    b.apply_navigator_title_style(node, rules);
+                });
+            }
+            if let Some(cb) = header_tint_cb {
+                attach_navigator_color_callback(backend, &n, cb, |r, c| r.color = Some(c.into()), |b, node, rules| {
+                    b.apply_navigator_button_style(node, rules);
+                });
+            }
+            if let Some(cb) = body_bg_cb {
+                attach_navigator_color_callback(backend, &n, cb, |r, c| r.background = Some(c.into()), |b, node, rules| {
+                    b.apply_navigator_body_style(node, rules);
                 });
             }
             if let Some(s) = sidebar_style {
@@ -1128,7 +1212,12 @@ fn robot_extract_meta(node: &Primitive) -> Option<RobotMeta> {
                 TextSource::Static(s) => Some(s.clone()),
                 TextSource::Bound(d) => Some((d.compute)()),
             };
-            let click = on_click.clone();
+            // `on_click` is an `Action` (not a bare `Rc<dyn Fn()>`)
+            // since the generator migration. The robot's
+            // `ElementActions.click` still wants the underlying
+            // callable, so pull `Action::fire` (which is the
+            // `Rc<dyn Fn()>` runtime backends invoke on tap).
+            let click = on_click.fire.clone();
             Some(RobotMeta {
                 kind: ElementKind::Button,
                 test_id: *test_id,
@@ -2543,6 +2632,44 @@ fn build_drawer_navigator<B: Backend + 'static>(
     });
 
     node
+}
+
+/// Bridge a `header_background` / `title_color` / `header_tint`
+/// callback (set via the ergonomic `.header(idea_header(...))` path on
+/// `ScreenOptions.default_options`) into one of the navigator's
+/// `apply_navigator_*_style` Backend hooks.
+///
+/// Without this bridge, the closure is only invoked once per screen
+/// mount (when `attach_toolbar_to_body` reads the resolved color),
+/// so the toolbar's colors freeze at mount time. Wrapping it in an
+/// `Effect` here makes the closure re-run whenever the signals it
+/// reads change — `active_theme()` in the common idea-ui case — and
+/// dispatches a synthetic single-field `StyleRules` through the
+/// same Backend hook the explicit `header_style(...)` setter uses,
+/// so platform impls only have to wire one input.
+///
+/// The Effect's lifetime is the active scope at the navigator's
+/// build site, so it auto-drops on navigator unmount.
+fn attach_navigator_color_callback<B, FApply, FSet>(
+    backend: &Rc<RefCell<B>>,
+    node: &B::Node,
+    callback: Rc<dyn Fn() -> crate::Color>,
+    set_field: FSet,
+    apply_fn: FApply,
+) where
+    B: Backend + 'static,
+    FApply: Fn(&mut B, &B::Node, &Rc<StyleRules>) + 'static,
+    FSet: Fn(&mut StyleRules, crate::Color) + 'static,
+{
+    let backend_c = backend.clone();
+    let node_c = node.clone();
+    let _e = Effect::new(move || {
+        let color = callback();
+        let mut rules = StyleRules::default();
+        set_field(&mut rules, color);
+        let rc_rules: Rc<StyleRules> = Rc::new(rules);
+        apply_fn(&mut backend_c.borrow_mut(), &node_c, &rc_rules);
+    });
 }
 
 /// Attach a style to a navigator sub-component (header, title, etc.).

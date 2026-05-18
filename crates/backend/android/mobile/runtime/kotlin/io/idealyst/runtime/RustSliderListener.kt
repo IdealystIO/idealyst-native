@@ -15,9 +15,16 @@ class RustSliderListener(private val nativePtr: Long) :
     SeekBar.OnSeekBarChangeListener {
 
     override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-        // We forward every change — drag from user *and* programmatic
-        // setProgress calls. Rust's controlled-update path
-        // short-circuits identical values, so re-entry is fine.
+        // Forward only user-driven drags. Programmatic `setProgress`
+        // calls (wire-replay landing a fresh value from the AAS
+        // server, or a sibling effect writing the same signal) fire
+        // this listener with `fromUser = false`; routing those back
+        // through `nativeChanged` would push the value at the server,
+        // which would re-emit it, causing a feedback loop when
+        // user-driven and server-driven writes interleave faster than
+        // the wire round-trips. Android tells us exactly which is
+        // which via `fromUser` — honor it.
+        if (!fromUser) return
         nativeChanged(nativePtr, progress)
     }
 

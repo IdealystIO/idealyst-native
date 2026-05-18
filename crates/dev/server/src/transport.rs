@@ -212,6 +212,12 @@ fn drain_sidecar_inbound(
     let Some(sidecar) = guard.as_ref() else { return };
     for msg in sidecar.drain_inbound() {
         match msg {
+            crate::SidecarOut::Hello { aslr_reference } => {
+                // The sidecar handle is exactly the one we hold
+                // through `guard`; call directly on it instead of
+                // re-locking the Mutex (which would deadlock).
+                sidecar.set_aslr_reference(aslr_reference);
+            }
             crate::SidecarOut::Commands(cmds) => {
                 for cmd in cmds {
                     recorder.push_external_command(cmd);

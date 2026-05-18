@@ -1,0 +1,15 @@
+[package]
+name = "backend-wgpu-phone"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Phone-sized preview window for the wgpu backend.
+#
+# Renders the user's app inside an iPhone-shaped 390 x 844 logical
+# window. All real work happens in `backend-wgpu-core`; this crate
+# just supplies a `DeviceProfile` and a thin `run` wrapper.
+
+[dependencies]
+backend-wgpu-core = { workspace = true }
+framework-core = { workspace = true }

@@ -239,14 +239,19 @@ pub fn with_current_identity<F, R>(id: Identity, f: F) -> R
 where
     F: FnOnce() -> R,
 {
-    let prev = CURRENT_IDENTITY.with(|c| c.replace(id));
-    // Use a guard so a panic in `f` still restores. Otherwise a
-    // panic in build code would leak the new identity into whichever
-    // emission site catches the unwind.
+    // `try_with` (not `with`) on both sides: the thread-local may
+    // already be torn down during process shutdown (e.g., when a
+    // sidecar exits cleanly and Rust runs each thread's destructor
+    // pass). `Cell::with` panics in that window, and a panic
+    // inside `Drop` aborts the process. Falling back to
+    // `UNIDENTIFIED` is the safe no-op.
+    let prev = CURRENT_IDENTITY
+        .try_with(|c| c.replace(id))
+        .unwrap_or(Identity::UNIDENTIFIED);
     struct Guard(Identity);
     impl Drop for Guard {
         fn drop(&mut self) {
-            CURRENT_IDENTITY.with(|c| c.set(self.0));
+            let _ = CURRENT_IDENTITY.try_with(|c| c.set(self.0));
         }
     }
     let _g = Guard(prev);
@@ -255,9 +260,11 @@ where
 
 /// Read the identity the walker is currently emitting under. Returns
 /// [`Identity::UNIDENTIFIED`] outside a `with_current_identity`
-/// scope.
+/// scope or after thread-local destruction.
 pub fn current_identity() -> Identity {
-    CURRENT_IDENTITY.with(|c| c.get())
+    CURRENT_IDENTITY
+        .try_with(|c| c.get())
+        .unwrap_or(Identity::UNIDENTIFIED)
 }
 
 /// Hash an arbitrary `Hash`-able user key into the `u64` form

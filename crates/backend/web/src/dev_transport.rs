@@ -320,6 +320,7 @@ fn command_kind(c: &wire::Command) -> &'static str {
         ApplyNavigatorHeaderStyle { .. } => "ApplyNavigatorHeaderStyle",
         ApplyNavigatorTitleStyle { .. } => "ApplyNavigatorTitleStyle",
         ApplyNavigatorButtonStyle { .. } => "ApplyNavigatorButtonStyle",
+        ApplyNavigatorBodyStyle { .. } => "ApplyNavigatorBodyStyle",
         ApplyDrawerSidebarStyle { .. } => "ApplyDrawerSidebarStyle",
         ApplyDrawerScrimStyle { .. } => "ApplyDrawerScrimStyle",
         ApplyTabBarStyle { .. } => "ApplyTabBarStyle",

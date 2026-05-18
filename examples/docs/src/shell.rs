@@ -14,13 +14,13 @@ use framework_core::{
 use framework_core::LayoutProps;
 use idea_ui::{
     body, caption, card, dark_theme, divider, heading, light_theme, set_idea_theme, stack, switch,
-    BodyTone, HeadingKind, StackGap,
+    BodyTone, HeadingKind, StackGap, StackPadding,
 };
 
 use crate::routes::SECTIONS;
 use crate::styles::{
-    CodeBlockSheet, Content, NavLink, PageRoot, Sidebar, SidebarHeader, SidebarSection,
-    SidebarSectionLabel,
+    CodeBlockSheet, CodeBlockText, Content, NavLink, PageRoot, Sidebar, SidebarHeader,
+    SidebarSection, SidebarSectionLabel,
 };
 
 // =============================================================================
@@ -71,6 +71,21 @@ fn drawer_content(active_route: Signal<&'static str>, is_dark: Signal<bool>) -> 
         ScrollView(style = container_style) { children }
             .safe_area(SafeAreaSides::ALL)
     }
+}
+
+pub(crate) fn sidebar_section_pub(
+    s: &'static crate::routes::IndexSection,
+    active_route: Signal<&'static str>,
+) -> Primitive {
+    sidebar_section(s, active_route)
+}
+
+pub(crate) fn nav_link_pub(
+    name: &'static str,
+    label: &'static str,
+    active_route: Signal<&'static str>,
+) -> Primitive {
+    nav_link(name, label, active_route)
 }
 
 fn sidebar_section(
@@ -237,6 +252,32 @@ pub fn web_layout() -> impl Fn(LayoutProps) -> Primitive + 'static {
 // =============================================================================
 
 #[derive(Default)]
+pub struct PageBodyProps {
+    pub children: Vec<Primitive>,
+}
+
+/// `PageBody { ... }` — the per-page surface every doc screen wraps
+/// its content in. Bakes in the recurring `ScrollView { Stack(gap,
+/// padding) { ... } }` shape so every page lays out identically
+/// (gap = `Xl`, padding = `Lg`). Pages just drop their `PageHeader`
+/// / `Card` / `Section` children inside.
+///
+/// Hardcoded by design — the docs site wants a single consistent
+/// page layout. If you need a one-off override, hand-roll the
+/// `ScrollView { Stack(...) { ... } }` instead.
+#[component]
+pub fn pagebody(props: PageBodyProps) -> Primitive {
+    let children = props.children;
+    ui! {
+        ScrollView {
+            Stack(gap = StackGap::Xl, padding = StackPadding::Lg) {
+                children
+            }
+        }
+    }
+}
+
+#[derive(Default)]
 pub struct PageHeaderProps {
     pub title: String,
     pub description: String,
@@ -294,13 +335,14 @@ pub fn sectionwithcode(props: SectionWithCodeProps) -> Primitive {
     let body_text = props.body;
     let code_text = props.code;
     let code_style = CodeBlockSheet();
+    let code_text_style = CodeBlockText();
 
     ui! {
         Card {
             Heading(content = title, kind = HeadingKind::H2)
             Body(content = body_text, tone = BodyTone::Muted)
             View(style = code_style) {
-                Text { code_text }
+                Text(style = code_text_style) { code_text }
             }
         }
     }
@@ -318,9 +360,10 @@ pub struct CodeBlockProps {
 pub fn codeblock(props: CodeBlockProps) -> Primitive {
     let code_text = props.code;
     let code_style = CodeBlockSheet();
+    let code_text_style = CodeBlockText();
     ui! {
         View(style = code_style) {
-            Text { code_text }
+            Text(style = code_text_style) { code_text }
         }
     }
 }

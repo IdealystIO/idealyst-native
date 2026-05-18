@@ -163,6 +163,58 @@ object RustActionBarHelper {
     }
 
     /**
+     * Re-tint the Toolbar's background. Called by the navigator's
+     * reactive `header_style` Effect on theme change — the bar itself
+     * isn't rebuilt; just the background color gets swapped.
+     */
+    @JvmStatic
+    fun setToolbarBackground(bar: Toolbar, css: String?) {
+        val c = parseColorOrNull(css) ?: return
+        bar.setBackgroundColor(c)
+    }
+
+    /**
+     * Re-tint the Toolbar's title text. Same lifecycle as
+     * [setToolbarBackground] — driven by the navigator's
+     * `title_style` Effect.
+     */
+    @JvmStatic
+    fun setToolbarTitleColor(bar: Toolbar, css: String?) {
+        val c = parseColorOrNull(css) ?: return
+        bar.setTitleTextColor(c)
+    }
+
+    /**
+     * Paint an arbitrary View's background from a CSS color string.
+     * Used by the navigator's `apply_navigator_body_style` hook to
+     * fill the body container reactively on theme change. Distinct
+     * from `setToolbarBackground` only in argument type — kept
+     * separate so the JNI signatures match Toolbar / View precisely
+     * and we don't have to upcast at call sites.
+     */
+    @JvmStatic
+    fun setViewBackground(view: View, css: String?) {
+        val c = parseColorOrNull(css) ?: return
+        view.setBackgroundColor(c)
+    }
+
+    /**
+     * Re-tint the Toolbar's navigation icon (the hamburger / back
+     * chevron). Same lifecycle as the others.
+     */
+    @JvmStatic
+    fun setToolbarNavIconTint(bar: Toolbar, css: String?) {
+        val c = parseColorOrNull(css) ?: return
+        val drawable = bar.navigationIcon ?: return
+        if (drawable is HamburgerDrawable) {
+            drawable.setStrokeColor(c)
+        } else {
+            // Generic fallback for future non-hamburger icons.
+            drawable.setTint(c)
+        }
+    }
+
+    /**
      * Legacy dispatch path retained for any caller that still routes
      * the home button through the Activity's `onOptionsItemSelected`.
      * In the new in-tree-Toolbar architecture this is never called —

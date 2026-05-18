@@ -1,17 +1,16 @@
 //! CLI — the `idealyst` command-line tool.
 
 use framework_core::{ui, Primitive};
-use idea_ui::{body, card, heading, stack, BodyTone, HeadingKind, StackGap};
+use idea_ui::{body, card, heading, BodyTone, HeadingKind};
 
 use crate::shell::{
-    codeblock, pageheader, section, sectionwithcode, CodeBlockProps, PageHeaderProps,
-    SectionProps, SectionWithCodeProps,
+    codeblock, pagebody, pageheader, section, sectionwithcode, CodeBlockProps, PageBodyProps,
+    PageHeaderProps, SectionProps, SectionWithCodeProps,
 };
 
 pub fn page() -> Primitive {
     ui! {
-        ScrollView {
-            Stack(gap = StackGap::Xl) {
+        PageBody {
             PageHeader(
                 title = "CLI".to_string(),
                 description = "The `idealyst` binary orchestrates scaffolding, dev, build, and deploy.".to_string(),
@@ -81,14 +80,6 @@ pub fn page() -> Primitive {
                             idealyst brs".to_string(),
                 )
             }
-
-            Section(
-                title = "Internal commands".to_string(),
-                body = "`rustc-capture` and `rebuild-patch` exist for the AAS dylib-mode \
-                        hot-reload pipeline. You won't run them directly — the dev server \
-                        invokes them on your behalf.".to_string(),
-            )
-        }
         }
     }
 }

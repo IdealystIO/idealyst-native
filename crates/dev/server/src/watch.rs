@@ -81,6 +81,46 @@ pub fn spawn_rebuild_loop(config: RebuildConfig) -> std::thread::JoinHandle<()> 
     std::thread::spawn(move || run(config))
 }
 
+/// Lightweight variant: just call `on_change` on every debounced
+/// burst. No command execution, no exec, no `on_success` ladder.
+/// Used by the AAS host's hot-patch driver, which owns the entire
+/// build pipeline itself.
+pub fn spawn_change_loop(
+    watch_paths: Vec<PathBuf>,
+    debounce: Duration,
+    mut on_change: Box<dyn FnMut() + Send>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let (tx, rx) = std_mpsc::channel::<DebounceEventResult>();
+        let mut debouncer = match new_debouncer(debounce, tx) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("[dev-server] failed to start change watcher: {}", e);
+                return;
+            }
+        };
+        for path in &watch_paths {
+            if let Err(e) = debouncer.watcher().watch(path, RecursiveMode::Recursive) {
+                eprintln!("[dev-server] watch {:?} failed: {}", path, e);
+            } else {
+                eprintln!("[dev-server] watching {:?}", path);
+            }
+        }
+        for evt in rx {
+            match evt {
+                Ok(ref ev) if !ev.is_empty() => {
+                    eprintln!("[dev-server] change detected ({} event(s))", ev.len());
+                    on_change();
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("[dev-server] watch error: {:?}", e);
+                }
+            }
+        }
+    })
+}
+
 fn run(mut config: RebuildConfig) {
     let (tx, rx) = std_mpsc::channel::<DebounceEventResult>();
     let mut debouncer = match new_debouncer(config.debounce, tx) {

@@ -20,6 +20,10 @@ members = [
     "crates/backend/roku/macros",
     "crates/backend/roku/transpile",
     "crates/backend/web",
+    "crates/backend/wgpu/core",
+    "crates/backend/wgpu/phone",
+    "crates/backend/wgpu/tablet",
+    "crates/backend/wgpu/tv",
     "crates/backend/aas-shell-native",
     "crates/backend/posix-log-capture",
     "crates/ui/idea-ui",
@@ -42,7 +46,9 @@ members = [
     "examples/hello-roku",
     "examples/idea-ui-docs",
     "examples/docs",
-    "arena/idealyst-native/wasm",
+    "examples/docs-macro",
+    "examples/hot-reload-test",
+    "examples/wgpu-test",
 ]
 
 [workspace.package]
@@ -54,6 +60,7 @@ license = "MIT OR Apache-2.0"
 framework-core = { path = "crates/framework/core" }
 framework-hot = { path = "crates/framework/hot" }
 framework-macros = { path = "crates/framework/macros" }
+docs-macro = { path = "examples/docs-macro" }
 native-layout = { path = "crates/framework/native-layout" }
 wire = { path = "crates/framework/wire" }
 dev-client = { path = "crates/framework/dev-client" }
@@ -79,6 +86,10 @@ backend-roku = { path = "crates/backend/roku" }
 backend-roku-macros = { path = "crates/backend/roku/macros" }
 backend-roku-transpile = { path = "crates/backend/roku/transpile" }
 backend-web = { path = "crates/backend/web" }
+backend-wgpu-core = { path = "crates/backend/wgpu/core" }
+backend-wgpu-phone = { path = "crates/backend/wgpu/phone" }
+backend-wgpu-tablet = { path = "crates/backend/wgpu/tablet" }
+backend-wgpu-tv = { path = "crates/backend/wgpu/tv" }
 aas-shell-native = { path = "crates/backend/aas-shell-native" }
 posix-log-capture = { path = "crates/backend/posix-log-capture" }
 idea-ui = { path = "crates/ui/idea-ui" }

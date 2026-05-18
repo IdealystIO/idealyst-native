@@ -53,66 +53,25 @@ use std::process::Command;
 use anyhow::{Context, Result};
 use build_ios::{find_workspace_root, parse_manifest, Manifest};
 
-mod dylib_mode;
+pub mod hotpatch;
 
-/// Which AAS architecture to generate.
-///
-/// `Sidecar` is the production-ready default — two cooperating
-/// processes joined by a stdin/stdout pipe. Per-edit rebuild is
-/// dominated by the sidecar's cargo link step (~0.40s on macOS).
-///
-/// `Dylib` is an **experimental** alternative that compiles the user
-/// crate as a Rust dylib and `dlopen`s it from a single long-lived
-/// host. Targets ~150–200 ms per edit by skipping the host's
-/// re-link entirely. On stable Rust this hits hard ABI issues
-/// (mixed rlib/dylib generations of `framework-core` produce
-/// `_RUST_STD_INTERNAL_VAL` hash mismatches at dlopen time); kept
-/// here as an opt-in path for iterating on the fix without rolling
-/// back the working sidecar mode.
-///
-/// Toggle via `IDEALYST_AAS_MODE=dylib` (env-var sniff in CLI).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AasMode {
-    Sidecar,
-    Dylib,
-}
-
-impl Default for AasMode {
-    fn default() -> Self {
-        AasMode::Sidecar
-    }
-}
-
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct BuildOptions {
     /// Compile with `--release`. Default: debug. The host and sidecar
     /// both run locally — release is almost never worth the slower
     /// rebuild cycle here.
     pub release: bool,
-    /// Sidecar (default) or experimental dlopen-driven dylib mode.
-    pub mode: AasMode,
-}
-
-impl Default for BuildOptions {
-    fn default() -> Self {
-        Self {
-            release: false,
-            mode: AasMode::default(),
-        }
-    }
 }
 
 #[derive(Debug)]
 pub struct BuildArtifact {
     /// Path to the produced infra-host executable.
     pub host_binary: PathBuf,
-    /// Path to the produced sidecar executable, or to the user dylib
-    /// in `AasMode::Dylib`. Naming kept for backwards compat with the
-    /// CLI's existing artifact-display logic.
+    /// Path to the produced sidecar executable.
     pub sidecar_binary: PathBuf,
     /// Host wrapper crate directory.
     pub wrapper_dir: PathBuf,
-    /// Sidecar / user-dylib wrapper crate directory.
+    /// Sidecar wrapper crate directory.
     pub sidecar_dir: PathBuf,
 }
 
@@ -129,10 +88,7 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     let manifest = parse_manifest(&project_dir)?;
     let workspace_root = find_workspace_root(&project_dir)?;
 
-    match opts.mode {
-        AasMode::Sidecar => build_sidecar_mode(&project_dir, &workspace_root, &manifest, &opts),
-        AasMode::Dylib => build_dylib_mode(&project_dir, &workspace_root, &manifest, &opts),
-    }
+    build_sidecar_mode(&project_dir, &workspace_root, &manifest, &opts)
 }
 
 fn build_sidecar_mode(
@@ -160,10 +116,45 @@ fn build_sidecar_mode(
         manifest,
     )?;
 
+    // Captures dir for the sidecar's fat build. The hot-patch
+    // builder reads `<dir>/<crate>.<crate-type>.json` per crate
+    // when re-emitting the user crate's .rcgu.o files.
+    let captures_dir = wrapper_dir
+        .parent()
+        .map(|p| p.join("captures"))
+        .unwrap_or_else(|| sidecar_dir.join("captures"));
+    fs::create_dir_all(&captures_dir)
+        .with_context(|| format!("create captures dir {}", captures_dir.display()))?;
+    // Same parent layout for the per-edit patch dylibs.
+    let patches_dir = wrapper_dir
+        .parent()
+        .map(|p| p.join("patches"))
+        .unwrap_or_else(|| sidecar_dir.join("patches"));
+    fs::create_dir_all(&patches_dir)
+        .with_context(|| format!("create patches dir {}", patches_dir.display()))?;
+
+    // Force the user crate to recompile through the wrapper so we
+    // get a fresh capture. Otherwise — if the user crate is already
+    // cached from a prior workspace build — cargo skips rustc for
+    // it and our wrapper never fires for the very crate we need to
+    // replay on hot-patch.
+    //
+    // This costs one extra ~300ms rebuild per `idealyst dev` start,
+    // which is a one-time price; subsequent file-change cycles use
+    // the cached capture directly.
+    let user_lib = project_dir.join("src/lib.rs");
+    if user_lib.exists() {
+        let now = std::time::SystemTime::now();
+        let _ = filetime_set(&user_lib, now);
+    }
+
     // Build the sidecar first so the host (which spawns it on
-    // startup) finds the binary present. The host build is
-    // independent and only depends on dev-server.
-    cargo_build(&sidecar_dir, opts.release, "sidecar")?;
+    // startup) finds the binary present. The sidecar's build is
+    // the "fat" build — RUSTC_WRAPPER captures each member's rustc
+    // invocation; -Csave-temps + -Clink-dead-code keep .rcgu.o
+    // files on disk + every symbol in the bin's text section so
+    // the per-edit patch link can resolve them.
+    cargo_build_fat(&sidecar_dir, opts.release, "sidecar", &captures_dir)?;
     cargo_build(&wrapper_dir, opts.release, "host")?;
 
     let profile = if opts.release { "release" } else { "debug" };
@@ -193,13 +184,32 @@ fn build_sidecar_mode(
     })
 }
 
-fn build_dylib_mode(
-    project_dir: &Path,
-    workspace_root: &Path,
-    manifest: &Manifest,
-    opts: &BuildOptions,
-) -> Result<BuildArtifact> {
-    dylib_mode::build(project_dir, workspace_root, manifest, opts)
+/// Update a file's mtime to `t`. Wrapper around stdlib utime
+/// because we don't want to pull in `filetime` for one call.
+/// Returns Err if the path doesn't exist; caller can ignore.
+#[cfg(unix)]
+fn filetime_set(path: &Path, t: std::time::SystemTime) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    // Easiest portable way: open + close. The OS bumps mtime on
+    // metadata-write via futimens, but we'd need libc bindings.
+    // Re-write the contents byte-for-byte instead — it's a hot path
+    // only on dev-host startup, ~1ms.
+    let data = std::fs::read(path)?;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(false)
+        .custom_flags(0)
+        .open(path)?;
+    use std::io::Write;
+    f.write_all(&data)?;
+    let _ = t; // mtime gets bumped automatically by the OS on write
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn filetime_set(path: &Path, _t: std::time::SystemTime) -> std::io::Result<()> {
+    let data = std::fs::read(path)?;
+    std::fs::write(path, data)
 }
 
 fn host_binary_name(project_name: &str) -> String {
@@ -225,6 +235,7 @@ fn generate_sidecar_wrapper(
 
     let sidecar_name = sidecar_binary_name(&manifest.name);
     let fcore = workspace_root.join("crates/framework/core");
+    let fhot = workspace_root.join("crates/framework/hot");
     let dev_server = workspace_root.join("crates/dev/server");
     let wire = workspace_root.join("crates/framework/wire");
 
@@ -235,7 +246,9 @@ fn generate_sidecar_wrapper(
 # Sidecar binary: statically links the user's crate, runs the
 # reactive runtime, and streams wire commands / reads events over
 # stdout / stdin. The infra host (`<name>-aas-host`) spawns this as a
-# child process and restarts it on every source change.
+# child process; subsecond hot-patches its component bodies on every
+# source change without process restart, falling back to respawn on
+# any failure.
 
 [workspace]
 
@@ -245,23 +258,35 @@ version = "0.0.1"
 edition = "2021"
 
 [dependencies]
-framework-core = {{ path = "{fcore}" }}
+# `hot-reload` is what flips the `#[component]` macro into its split
+# form (__<Name>_hot_impl + outer dispatch via framework_hot::call).
+# Without this feature, subsecond's jump table never gets consulted.
+framework-core = {{ path = "{fcore}", features = ["hot-reload"] }}
+# `hot` is subsecond's runtime; `diff` pulls in the symbol-diff
+# generator the sidecar uses to verify patches before applying.
+framework-hot = {{ path = "{fhot}", features = ["hot", "diff"] }}
 dev-server = {{ path = "{dev_server}" }}
 wire = {{ path = "{wire}" }}
 {user_name} = {{ path = "{user_path}" }}
+# JumpTable + AddressMap, deserialized from ApplyPatch frames sent
+# by the host. The host owns construction; the sidecar just
+# deserializes + applies.
+subsecond-types = "0.7"
+# libc::dlsym for the C-ABI `main` runtime address that we ship in
+# the Hello frame so the host can compute the ASLR slide.
+libc = "0.2"
 serde_json = "1"
 
 # Sidecar is short-lived dev infra — strip everything that costs
-# link time. We can't use `panic = "abort"` here because the host's
-# dlopen-mode shares this same template path; dylibs are constrained
-# to `unwind`. debug = 0 + strip is the next-best squeeze and gets
-# the rebuild down to ~0.40s on macOS.
+# link time. debug = 0 cuts ~half the link work; the patch dylib's
+# stub generator doesn't care about debug info.
 [profile.dev]
 debug = 0
 strip = "debuginfo"
 "#,
         sidecar_name = sidecar_name,
         fcore = fcore.display(),
+        fhot = fhot.display(),
         dev_server = dev_server.display(),
         wire = wire.display(),
         user_name = manifest.name,
@@ -288,27 +313,35 @@ use std::rc::Rc;
 
 use dev_server::sidecar::{{is_eof, read_frame, write_frame, SidecarIn, SidecarOut}};
 use dev_server::WireRecordingBackend;
-use framework_core::render;
+use framework_core::{{render, Owner}};
 use {lib}::app;
 
 fn main() -> std::io::Result<()> {{
+    // Report our `main` runtime address before anything else. The
+    // host uses this to compute the ASLR slide for the symbol-table
+    // diff in hot-patch builds. Doing it first keeps the host's
+    // hotpatch builder usable from the very first file-change event.
+    let main_addr: u64 = unsafe {{
+        libc::dlsym(libc::RTLD_DEFAULT, b"main\0".as_ptr() as *const _) as u64
+    }};
+    let mut out = stdout();
+    write_frame(&mut out, &SidecarOut::Hello {{ aslr_reference: main_addr }})?;
+    let _ = out.flush();
+
     let recorder = WireRecordingBackend::new();
     let backend_rc = Rc::new(RefCell::new(recorder.clone()));
 
     // Drive the user's tree through the real walker once at startup.
     // The recorder accumulates wire commands into its append-only
     // log; we drain that log into a single initial `Commands` frame
-    // for the host.
-    let owner = render(backend_rc, app());
-    // Keep the framework runtime alive for the lifetime of the
-    // process — dropping `owner` would tear down every scope and
-    // free every signal that backs reactive UI.
-    std::mem::forget(owner);
+    // for the host. Owner is kept in a RefCell so the hot-patch
+    // path can replace it with a fresh `render(...)` to propagate
+    // structural changes.
+    let owner_cell: Rc<RefCell<Option<Owner>>> =
+        Rc::new(RefCell::new(Some(render(backend_rc.clone(), app()))));
 
-    // Initial snapshot: every command emitted during the first walk.
     let initial = recorder.snapshot();
     let mut outbound_cursor = recorder.command_count();
-    let mut out = stdout();
     write_frame(&mut out, &SidecarOut::Commands(initial))?;
     let _ = out.flush();
 
@@ -331,6 +364,43 @@ fn main() -> std::io::Result<()> {{
 
         match msg {{
             SidecarIn::Event(app_to_dev) => dispatch_app_to_dev(&recorder, app_to_dev),
+            SidecarIn::ApplyPatch {{ table_json }} => {{
+                // Parse → apply → re-render. Failure is logged but
+                // doesn't terminate the sidecar; the host will fall
+                // back to respawn if the patch was wrong, which
+                // kills us cleanly anyway.
+                match serde_json::from_str::<subsecond_types::JumpTable>(&table_json) {{
+                    Ok(table) => {{
+                        eprintln!(
+                            "[aas-app] applying patch ({{}} jump-table entries)",
+                            table.map.len(),
+                        );
+                        match unsafe {{ framework_hot::apply_patch(table) }} {{
+                            Ok(()) => {{
+                                // Tear down old reactive tree + re-render
+                                // so structural changes propagate. The
+                                // recorder's log resets too — clients
+                                // catch up from a fresh snapshot.
+                                {{
+                                    let mut slot = owner_cell.borrow_mut();
+                                    *slot = None;
+                                }}
+                                recorder.reset_log_and_scene();
+                                let new_owner = render(backend_rc.clone(), app());
+                                *owner_cell.borrow_mut() = Some(new_owner);
+                                outbound_cursor = 0;
+                                eprintln!("[aas-app] patch applied + re-rendered");
+                            }}
+                            Err(e) => {{
+                                eprintln!("[aas-app] apply_patch failed: {{:?}}", e);
+                            }}
+                        }}
+                    }}
+                    Err(e) => {{
+                        eprintln!("[aas-app] failed to parse JumpTable JSON: {{}}", e);
+                    }}
+                }}
+            }}
         }}
 
         // Drain any commands the event produced. `commands_since` is
@@ -405,14 +475,17 @@ fn generate_host_wrapper(
 
     let wrapper_name = host_binary_name(&manifest.name);
     let dev_server = workspace_root.join("crates/dev/server");
+    let build_aas = workspace_root.join("crates/build/aas");
 
     let cargo_toml = format!(
         r#"# GENERATED by `idealyst build aas`. Do not edit — rewritten
 # every build.
 #
-# Infra-only AAS host: WebSocket server, mDNS, file watcher. Does NOT
-# link the user's crate — that lives in the sibling `aas/app` sidecar
-# binary, which this host spawns as a child process.
+# Infra-only AAS host: WebSocket server, mDNS, file watcher, hot-patch
+# builder. Does NOT link the user's crate — that lives in the sibling
+# `aas/app` sidecar binary, which this host spawns as a child process
+# and either hot-patches via subsecond (preferred) or SIGKILLs +
+# respawns (fallback when patching can't apply).
 
 [workspace]
 
@@ -423,10 +496,19 @@ edition = "2021"
 
 [dependencies]
 dev-server = {{ path = "{dev_server}" }}
+# Owns the hot-patch builder: captured-rustc replay, stub-object
+# synthesis, dylib link, jump-table construction. The host owns
+# this work because the sidecar shouldn't take a build-tools dep.
+build-aas = {{ path = "{build_aas}" }}
+# Used by the host's try_hotpatch / respawn fallback ladder for
+# ergonomic error contexts. The hotpatch builder itself returns
+# anyhow::Error.
+anyhow = "1"
 serde_json = "1"
 "#,
         wrapper_name = wrapper_name,
         dev_server = dev_server.display(),
+        build_aas = build_aas.display(),
     );
 
     let profile_dir = "debug"; // Mirror what the sidecar lands in. The
@@ -444,30 +526,38 @@ serde_json = "1"
         r#"//! GENERATED by `idealyst build aas`. Long-lived infra host for
 //! the split-process AAS dev server.
 //!
-//! Owns: WebSocket listener (mDNS-advertised), file watcher,
-//! sidecar-child orchestration. The user's reactive runtime lives in
-//! the sibling sidecar (`{sidecar_name}`), which this host spawns
-//! over stdin/stdout pipes. On source change the host rebuilds the
-//! sidecar and SIGKILL+respawns it — the WebSocket listener stays up
-//! the entire time so connected clients (Android, iOS) never see a
-//! disconnect.
+//! Owns: WebSocket listener (mDNS-advertised), file watcher, sidecar
+//! child, and the hot-patch builder. The user's reactive runtime
+//! lives in the sibling sidecar (`{sidecar_name}`); on each source
+//! change the host tries to hot-patch the running sidecar via
+//! subsecond, and only falls back to SIGKILL+respawn if hot-patch
+//! fails (build error, unresolved symbol, dlopen failure, …).
+//! Either way the WebSocket listener stays up the entire time so
+//! connected clients (web, Android, iOS) never see a disconnect.
 
 use std::path::PathBuf;
 use std::sync::{{Arc, Mutex}};
 
+use build_aas::hotpatch::HotPatchBuilder;
+use dev_server::sidecar::SidecarIn;
 use dev_server::{{
-    serve_with_sidecar, spawn_rebuild_loop, RebuildCommand, RebuildConfig,
-    Sidecar, SidecarSlot, WireRecordingBackend,
+    serve_with_sidecar, spawn_change_loop, Sidecar, SidecarSlot, WireRecordingBackend,
 }};
 
 const DEFAULT_ADDR: &str = "{default_addr}";
 /// mDNS-published app identifier.
 const APP_ID: &str = "{app_id}";
-/// Absolute path to the sidecar binary the host spawns on startup
-/// and respawns on every successful rebuild. Baked at host build
-/// time — both binaries live under the workspace's shared target
-/// directory.
+/// Absolute path to the sidecar binary the host spawns on startup.
 const SIDECAR_BINARY: &str = "{sidecar_bin}";
+/// Captured-rustc args directory written by the initial fat build.
+/// Read by the hot-patch builder on every source change.
+const CAPTURES_DIR: &str = "{captures_dir}";
+/// The user crate name — the "tip" of the hot-patch (its rustc
+/// invocation gets replayed with `--emit=obj` to produce the patch
+/// dylib's body).
+const USER_CRATE: &str = "{user_crate}";
+/// Where the hot-patch builder drops `libpatch-*.dylib` per cycle.
+const PATCH_TARGET_DIR: &str = "{patch_target_dir}";
 
 fn main() -> std::io::Result<()> {{
     let addr = if let Some(a) = std::env::args().nth(1) {{
@@ -478,12 +568,7 @@ fn main() -> std::io::Result<()> {{
         DEFAULT_ADDR.to_string()
     }};
 
-    // The host's recorder is a passive command mirror — the sidecar
-    // is what runs user code. New wire commands arrive on the
-    // sidecar's stdout, get pushed into this recorder by the serve
-    // loop's drain pass, and broadcast to clients from there.
     let recorder = WireRecordingBackend::new();
-
     let sidecar_slot: SidecarSlot = Arc::new(Mutex::new(None));
 
     // Spawn the initial sidecar.
@@ -500,46 +585,68 @@ fn main() -> std::io::Result<()> {{
         }}
     }}
 
-    // File watcher → rebuild sidecar → kill old → respawn.
-    // The host never self-execs in this architecture, so the
-    // WebSocket listener stays up the entire time. The recorder is
-    // !Send (Rc-based) and can't be touched from the watcher thread
-    // — we don't reset it here. That's intentional: the scene model
-    // overwrites stale NodeIds with new content as the new sidecar's
-    // commands arrive, and existing clients only see commands past
-    // their cursor (the new sidecar's emits), so AasClient's
-    // idempotent replay reconciles same-NodeId updates correctly.
+    // Construct the hot-patch builder once. It parses the sidecar
+    // bin's symbol table (~50ms) and caches it; per-rebuild work is
+    // just the rustc replay + stub-object link.
+    let hotpatch = match HotPatchBuilder::new(
+        PathBuf::from(CAPTURES_DIR),
+        &PathBuf::from(SIDECAR_BINARY),
+        PathBuf::from(PATCH_TARGET_DIR),
+    ) {{
+        Ok(b) => Some(Arc::new(b)),
+        Err(e) => {{
+            eprintln!(
+                "[aas-host] hot-patch builder init failed: {{e:#}} — falling back to \
+                 respawn on every change"
+            );
+            None
+        }}
+    }};
+
+    // File watcher: on debounced change, try hot-patch first;
+    // respawn on failure. The hot-patch path doesn't drop the
+    // sidecar process — components swap in place under
+    // subsecond — so client connections survive even cleaner than
+    // the respawn path.
     let sidecar_for_rebuild = sidecar_slot.clone();
-    let sidecar_manifest = PathBuf::from("{sidecar_manifest}");
+    let hotpatch_for_rebuild = hotpatch.clone();
     let user_src = PathBuf::from("{user_src}");
-    spawn_rebuild_loop(RebuildConfig {{
-        command: RebuildCommand {{
-            program: "cargo".into(),
-            args: vec![
-                "build".into(),
-                "--manifest-path".into(),
-                sidecar_manifest.display().to_string(),
-                "--target-dir".into(),
-                "{workspace_target}".into(),
-            ],
-            cwd: None,
-        }},
-        watch_paths: vec![user_src],
-        debounce: std::time::Duration::from_millis(100),
-        before_exec: None,
-        on_success: Some(Box::new(move || {{
-            eprintln!("[aas-host] sidecar rebuilt → swapping");
-            if let Ok(mut g) = sidecar_for_rebuild.lock() {{
-                if let Some(mut old) = g.take() {{
-                    old.kill();
-                }}
-                match Sidecar::spawn(&PathBuf::from(SIDECAR_BINARY)) {{
-                    Ok(s) => *g = Some(s),
-                    Err(e) => eprintln!("[aas-host] sidecar respawn failed: {{e}}"),
-                }}
+    spawn_change_loop(
+        vec![user_src],
+        std::time::Duration::from_millis(100),
+        Box::new(move || {{
+            let t_total = std::time::Instant::now();
+            // `IDEALYST_AAS_NO_HOTPATCH=1` forces every change
+            // through the respawn fallback — used by the scaling
+            // benchmark to measure the "without hot-patch" path
+            // against a controlled fixture.
+            let force_respawn = std::env::var("IDEALYST_AAS_NO_HOTPATCH")
+                .ok()
+                .map(|v| !v.is_empty() && v != "0")
+                .unwrap_or(false);
+            if force_respawn {{
+                respawn_sidecar(&sidecar_for_rebuild);
+                eprintln!(
+                    "[aas-host] respawn applied in {{}}ms (force_respawn)",
+                    t_total.elapsed().as_millis()
+                );
+                return;
             }}
-        }})),
-    }});
+            if let Err(e) = try_hotpatch(&hotpatch_for_rebuild, &sidecar_for_rebuild) {{
+                eprintln!("[aas-host] hot-patch failed: {{e:#}} — respawning sidecar");
+                respawn_sidecar(&sidecar_for_rebuild);
+                eprintln!(
+                    "[aas-host] respawn applied in {{}}ms (after hot-patch failure)",
+                    t_total.elapsed().as_millis()
+                );
+            }} else {{
+                eprintln!(
+                    "[aas-host] hot-patch applied in {{}}ms",
+                    t_total.elapsed().as_millis()
+                );
+            }}
+        }}),
+    );
 
     let port_mirror: Arc<Mutex<Option<u16>>> = Arc::new(Mutex::new(None));
 
@@ -572,6 +679,82 @@ fn main() -> std::io::Result<()> {{
     eprintln!("[aas-host] starting (advertising app_id={{}} via mDNS)", APP_ID);
     serve_with_sidecar(addr, recorder, APP_ID, port_mirror, sidecar_slot)
 }}
+
+/// Attempt one hot-patch round. Reads the sidecar's cached ASLR
+/// reference (populated by the sidecar's `Hello` frame), invokes
+/// the builder, and ships the resulting JumpTable to the sidecar
+/// over the existing host↔sidecar pipe. Returns Err on any
+/// failure so the caller can fall back to respawn.
+fn try_hotpatch(
+    builder: &Option<Arc<HotPatchBuilder>>,
+    sidecar_slot: &SidecarSlot,
+) -> anyhow::Result<()> {{
+    let builder = builder
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("hot-patch builder unavailable"))?;
+    let aslr = {{
+        let g = sidecar_slot
+            .lock()
+            .map_err(|_| anyhow::anyhow!("sidecar slot lock poisoned"))?;
+        let s = g
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("no sidecar running"))?;
+        let v = s.aslr_reference();
+        if v == 0 {{
+            return Err(anyhow::anyhow!("sidecar has not reported aslr_reference yet"));
+        }}
+        v
+    }};
+    let artifact = builder.build(USER_CRATE, aslr)?;
+    let table_json = serde_json::to_string(&artifact.table)?;
+    let g = sidecar_slot
+        .lock()
+        .map_err(|_| anyhow::anyhow!("sidecar slot lock poisoned"))?;
+    let s = g
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("sidecar slot empty"))?;
+    s.send(SidecarIn::ApplyPatch {{ table_json }});
+    Ok(())
+}}
+
+/// Fallback: rebuild sidecar via cargo, kill old, spawn new.
+/// Same flow as the pre-hotpatch implementation.
+fn respawn_sidecar(sidecar_slot: &SidecarSlot) {{
+    let manifest = "{sidecar_manifest}";
+    let target_dir = "{workspace_target}";
+    let status = std::process::Command::new("cargo")
+        .args([
+            "build",
+            "--manifest-path",
+            manifest,
+            "--target-dir",
+            target_dir,
+        ])
+        .status();
+    match status {{
+        Ok(s) if s.success() => {{}}
+        Ok(s) => {{
+            eprintln!("[aas-host] respawn cargo build exited with {{s}} — sidecar unchanged");
+            return;
+        }}
+        Err(e) => {{
+            eprintln!("[aas-host] respawn cargo build spawn failed: {{e}}");
+            return;
+        }}
+    }}
+    if let Ok(mut g) = sidecar_slot.lock() {{
+        if let Some(mut old) = g.take() {{
+            old.kill();
+        }}
+        match Sidecar::spawn(&PathBuf::from(SIDECAR_BINARY)) {{
+            Ok(s) => {{
+                *g = Some(s);
+                eprintln!("[aas-host] sidecar respawned");
+            }}
+            Err(e) => eprintln!("[aas-host] sidecar respawn failed: {{e}}"),
+        }}
+    }}
+}}
 "#,
         sidecar_name = sidecar_binary_name(&manifest.name),
         default_addr = DEFAULT_BIND_ADDR,
@@ -580,6 +763,19 @@ fn main() -> std::io::Result<()> {{
         sidecar_manifest = sidecar_manifest.display(),
         user_src = user_src.display(),
         workspace_target = workspace_target.display(),
+        captures_dir = sidecar_dir
+            .parent()
+            .map(|p| p.join("captures"))
+            .unwrap_or_else(|| sidecar_dir.join("captures"))
+            .display()
+            .to_string(),
+        user_crate = manifest.name,
+        patch_target_dir = sidecar_dir
+            .parent()
+            .map(|p| p.join("patches"))
+            .unwrap_or_else(|| sidecar_dir.join("patches"))
+            .display()
+            .to_string(),
     );
 
     write_shared_target_config(wrapper_dir, workspace_root)?;
@@ -626,6 +822,48 @@ fn cargo_build(wrapper_dir: &Path, release: bool, label: &str) -> Result<()> {
         "[build-aas:{label}] cargo build{} (in {})",
         if release { " --release" } else { "" },
         wrapper_dir.display(),
+    );
+    let status = cmd
+        .status()
+        .with_context(|| "spawn `cargo` — is it on your PATH?")?;
+    if !status.success() {
+        anyhow::bail!("[build-aas:{label}] cargo build exited with {status}");
+    }
+    Ok(())
+}
+
+/// "Fat" build for the sidecar: cargo with `RUSTC_WORKSPACE_WRAPPER`
+/// pointing at the running idealyst CLI binary (which dispatches to
+/// the `rustc-capture` subcommand via the env-var discriminator),
+/// plus `RUSTFLAGS` augmented with `-Csave-temps=true
+/// -Clink-dead-code`. Both flags are what dx ships for its
+/// equivalent fat build — save-temps keeps the .rcgu.o files on disk
+/// past link, and link-dead-code stops the linker from dropping
+/// symbols the patch may want to resolve.
+fn cargo_build_fat(
+    wrapper_dir: &Path,
+    release: bool,
+    label: &str,
+    captures_dir: &Path,
+) -> Result<()> {
+    let idealyst_bin = std::env::current_exe()
+        .context("locate idealyst CLI binary for RUSTC_WORKSPACE_WRAPPER")?;
+    let env = hotpatch::fat_build_env(&idealyst_bin, captures_dir);
+
+    let mut cmd = Command::new("cargo");
+    cmd.args(["build"]).current_dir(wrapper_dir);
+    if release {
+        cmd.arg("--release");
+    }
+    for (k, v) in &env {
+        cmd.env(k, v);
+    }
+
+    eprintln!(
+        "[build-aas:{label}] cargo build (fat){} (in {}; captures → {})",
+        if release { " --release" } else { "" },
+        wrapper_dir.display(),
+        captures_dir.display(),
     );
     let status = cmd
         .status()

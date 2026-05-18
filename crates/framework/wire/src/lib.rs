@@ -500,6 +500,10 @@ pub enum Command {
         navigator: NodeId,
         style: StyleId,
     },
+    ApplyNavigatorBodyStyle {
+        navigator: NodeId,
+        style: StyleId,
+    },
     ApplyDrawerSidebarStyle {
         navigator: NodeId,
         style: StyleId,

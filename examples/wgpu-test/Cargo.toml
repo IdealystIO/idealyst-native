@@ -1,0 +1,16 @@
+[package]
+name = "wgpu-test"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Smoke test for the wgpu desktop-preview backend. Opens a phone-sized window and renders a small UI."
+
+[[bin]]
+name = "wgpu-test"
+path = "src/main.rs"
+
+[dependencies]
+framework-core = { workspace = true }
+backend-wgpu-phone = { workspace = true }
+backend-wgpu-tablet = { workspace = true }
+backend-wgpu-tv = { workspace = true }

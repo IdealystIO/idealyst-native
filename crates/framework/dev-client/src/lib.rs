@@ -161,6 +161,16 @@ where
     /// reconnect) doesn't reorder or duplicate existing children.
     /// Set of `(parent, child)` pairs.
     inserted_edges: std::collections::HashSet<(NodeId, NodeId)>,
+    /// `(navigator, sidebar)` pairs that have already been attached
+    /// via [`Command::DrawerAttachSidebar`]. Re-attaching is fatal —
+    /// `androidx.drawerlayout.widget.DrawerLayout.onMeasure` throws
+    /// `IllegalStateException("Child drawer has absolute gravity LEFT
+    /// but this DrawerLayout already has a drawer view along that
+    /// edge")` if a second child with the same edge gravity is added.
+    /// Sidecar respawns re-emit the initial command stream (Identity
+    /// dedup makes the NodeIds match the previously-attached ones),
+    /// so we dedup at the command layer.
+    drawer_sidebars_attached: std::collections::HashSet<(NodeId, NodeId)>,
     /// Text content currently rendered for each text node — lets
     /// idempotent `CreateText` skip `update_text` calls when the
     /// content hasn't changed.
@@ -187,6 +197,7 @@ where
             graphics_registry: GraphicsRegistry::new(),
             navigators: HashMap::new(),
             inserted_edges: std::collections::HashSet::new(),
+            drawer_sidebars_attached: std::collections::HashSet::new(),
             text_content: HashMap::new(),
             button_labels: HashMap::new(),
         }
@@ -312,19 +323,23 @@ where
                 self.nodes.insert(id, node);
             }
             Command::CreatePressable { id, on_click } => {
+                if self.nodes.contains_key(&id) { return Ok(()); }
                 let cb = self.handler_unit(on_click);
                 let node = self.backend.create_pressable(cb);
                 self.nodes.insert(id, node);
             }
             Command::CreateReactiveAnchor { id } => {
+                if self.nodes.contains_key(&id) { return Ok(()); }
                 let node = self.backend.create_reactive_anchor();
                 self.nodes.insert(id, node);
             }
             Command::CreateImage { id, src, alt } => {
+                if self.nodes.contains_key(&id) { return Ok(()); }
                 let node = self.backend.create_image(&src, alt.as_deref());
                 self.nodes.insert(id, node);
             }
             Command::CreateIcon { id, data, color } => {
+                if self.nodes.contains_key(&id) { return Ok(()); }
                 let icon = convert::wire_icon_to_static(data);
                 let color = color.map(convert::wire_color_to_color);
                 let node = self.backend.create_icon(&icon, color.as_ref());
@@ -336,6 +351,7 @@ where
                 placeholder,
                 on_change,
             } => {
+                if self.nodes.contains_key(&id) { return Ok(()); }
                 let cb = self.handler_string(on_change);
                 let node = self
                     .backend
@@ -347,6 +363,7 @@ where
                 initial_value,
                 on_change,
             } => {
+                if self.nodes.contains_key(&id) { return Ok(()); }
                 let cb = self.handler_bool(on_change);
                 let node = self.backend.create_toggle(initial_value, cb);
                 self.nodes.insert(id, node);
@@ -359,6 +376,7 @@ where
                 step,
                 on_change,
             } => {
+                if self.nodes.contains_key(&id) { return Ok(()); }
                 let cb = self.handler_float(on_change);
                 let node = self
                     .backend
@@ -366,10 +384,12 @@ where
                 self.nodes.insert(id, node);
             }
             Command::CreateScrollView { id, horizontal } => {
+                if self.nodes.contains_key(&id) { return Ok(()); }
                 let node = self.backend.create_scroll_view(horizontal);
                 self.nodes.insert(id, node);
             }
             Command::CreateWebView { id, url } => {
+                if self.nodes.contains_key(&id) { return Ok(()); }
                 let node = self.backend.create_web_view(&url);
                 self.nodes.insert(id, node);
             }
@@ -380,12 +400,14 @@ where
                 controls,
                 loop_playback,
             } => {
+                if self.nodes.contains_key(&id) { return Ok(()); }
                 let node = self
                     .backend
                     .create_video(&src, autoplay, controls, loop_playback);
                 self.nodes.insert(id, node);
             }
             Command::CreateActivityIndicator { id, size, color } => {
+                if self.nodes.contains_key(&id) { return Ok(()); }
                 let size = convert::wire_activity_size(size);
                 let color = color.map(convert::wire_color_to_color);
                 let node = self.backend.create_activity_indicator(size, color.as_ref());
@@ -398,6 +420,7 @@ where
                 kind: _,
                 on_activate,
             } => {
+                if self.nodes.contains_key(&id) { return Ok(()); }
                 let cb = self.handler_unit(on_activate);
                 let route_static: &'static str = Box::leak(route.into_boxed_str());
                 let config = framework_core::primitives::link::LinkConfig {
@@ -464,6 +487,7 @@ where
                 };
                 let dismiss_cb: Option<Rc<dyn Fn()>> =
                     on_dismiss.map(|h| self.handler_unit(h));
+                if self.nodes.contains_key(&id) { return Ok(()); }
                 let node = self.backend.create_overlay(
                     placement,
                     resolved_backdrop,
@@ -473,6 +497,7 @@ where
                 self.nodes.insert(id, node);
             }
             Command::CreateGraphics { id, renderer } => {
+                if self.nodes.contains_key(&id) { return Ok(()); }
                 // Look up the renderer in the app-local registry. If
                 // absent, the Graphics surface is still created (so the
                 // tree layout stays correct) but no GPU code runs.
@@ -860,9 +885,19 @@ where
 
             // --- Drawer control plane ---
             Command::DrawerAttachSidebar { navigator, sidebar } => {
-                let nav = self.lookup_node(navigator)?;
-                let sb = self.lookup_node(sidebar)?;
-                self.backend.drawer_navigator_attach_sidebar(&nav, sb);
+                // Dedup: sidecar respawns re-emit this command, and
+                // Identity dedup gives the same wire ids — calling
+                // backend.drawer_navigator_attach_sidebar twice
+                // crashes DrawerLayout (two children with the same
+                // edge gravity).
+                if self
+                    .drawer_sidebars_attached
+                    .insert((navigator, sidebar))
+                {
+                    let nav = self.lookup_node(navigator)?;
+                    let sb = self.lookup_node(sidebar)?;
+                    self.backend.drawer_navigator_attach_sidebar(&nav, sb);
+                }
             }
             Command::OpenDrawer { navigator } => {
                 let state = self
@@ -910,6 +945,11 @@ where
                 let n = self.lookup_node(navigator)?;
                 let s = self.lookup_style(style)?;
                 self.backend.apply_navigator_button_style(&n, &s);
+            }
+            Command::ApplyNavigatorBodyStyle { navigator, style } => {
+                let n = self.lookup_node(navigator)?;
+                let s = self.lookup_style(style)?;
+                self.backend.apply_navigator_body_style(&n, &s);
             }
             Command::ApplyDrawerSidebarStyle { navigator, style } => {
                 let n = self.lookup_node(navigator)?;

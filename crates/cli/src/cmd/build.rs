@@ -199,15 +199,10 @@ fn build_roku_target(dir: &std::path::Path, _args: &Args) -> Result<()> {
 }
 
 fn build_aas_host(dir: &std::path::Path, args: &Args) -> Result<()> {
-    let mode = match std::env::var("IDEALYST_AAS_MODE").as_deref() {
-        Ok("dylib") => build_aas::AasMode::Dylib,
-        _ => build_aas::AasMode::Sidecar,
-    };
     let artifact = build_aas::build(
         dir,
         build_aas::BuildOptions {
             release: args.release,
-            mode,
         },
     )?;
     eprintln!(

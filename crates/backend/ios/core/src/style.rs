@@ -115,6 +115,52 @@ pub fn easing_to_options(easing: &framework_core::Easing) -> u64 {
     }
 }
 
+thread_local! {
+    /// True for the duration of a theme-change re-apply pass.
+    /// Set by the per-backend Effect installed in
+    /// `IosBackend::set_host_root` (mobile) whenever the global
+    /// `active_theme()` signal fires; reset on the next run-loop
+    /// tick. While true, color setters in `apply_style_to_view` /
+    /// `apply_text_style` wrap their UIKit call in a
+    /// `UIView.animate(withDuration:)` block so colors interpolate
+    /// smoothly. Outside theme transitions, setters snap so initial
+    /// mount and non-theme reactive updates carry no animation cost.
+    pub static THEME_TRANSITION_ACTIVE: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// Duration of the default theme-color transition. Tuned to feel
+/// "snappy" — short enough to read as instant, long enough to soften
+/// the color flip rather than snap. Match this in [`Self::theme_transition_default`]
+/// rather than inlining the literal at call sites.
+pub const THEME_TRANSITION_DURATION_MS: u32 = 200;
+
+/// Easing curve for the default theme-color transition. EaseOut so
+/// the color starts moving immediately on toggle and settles softly
+/// at the new value.
+pub const THEME_TRANSITION_EASING: framework_core::Easing = framework_core::Easing::EaseOut;
+
+/// Snappy default for iOS theme color transitions, built from
+/// [`THEME_TRANSITION_DURATION_MS`] + [`THEME_TRANSITION_EASING`].
+pub fn theme_transition_default() -> framework_core::Transition {
+    framework_core::Transition::new(THEME_TRANSITION_DURATION_MS, THEME_TRANSITION_EASING)
+}
+
+/// Pick the transition to use for a property change: an explicit
+/// per-component transition wins, then a theme-transition default if
+/// a theme swap is in progress, otherwise `None` (snap).
+fn effective_transition(
+    explicit: Option<&framework_core::Transition>,
+) -> Option<framework_core::Transition> {
+    if let Some(t) = explicit {
+        return Some(*t);
+    }
+    if THEME_TRANSITION_ACTIVE.with(|c| c.get()) {
+        return Some(theme_transition_default());
+    }
+    None
+}
+
 /// Run property changes inside a UIView animation block.
 pub fn animate(transition: &framework_core::Transition, changes: Rc<dyn Fn()>) {
     let duration = transition.duration_ms as CGFloat / 1000.0;
@@ -144,29 +190,24 @@ pub fn apply_style_to_view(view: &UIView, style: &StyleRules) {
     };
     if let Some(bg) = &style.background {
         if !is_metal_view {
-            let raw = bg.value().0.clone();
             let c = color_to_uicolor(bg.value());
-            view.setBackgroundColor(Some(&c));
-            // Debug: read back the property to verify the assignment
-            // stuck. Spot the views where `setBackgroundColor:` is
-            // silently dropped.
-            let read_back: Option<Retained<NSObject>> =
-                unsafe { msg_send_id![view, backgroundColor] };
-            crate::ios_log(&format!(
-                "[bg-paint] view {:p} src=\"{}\" set?={} ",
-                view as *const UIView,
-                raw,
-                read_back.is_some()
-            ));
-            if let Some(trans) = &style.background_transition {
-                let view_ref: Retained<UIView> = unsafe {
-                    Retained::retain(view as *const UIView as *mut UIView).unwrap()
-                };
-                let trans = *trans;
-                let c2 = c.clone();
-                animate(&trans, Rc::new(move || {
-                    view_ref.setBackgroundColor(Some(&c2));
-                }));
+            // Choose between snap, per-component CSS transition, or
+            // the global theme-transition default. The
+            // `effective_transition` helper handles the precedence:
+            // explicit > theme > snap.
+            match effective_transition(style.background_transition.as_ref()) {
+                Some(trans) => {
+                    let view_ref: Retained<UIView> = unsafe {
+                        Retained::retain(view as *const UIView as *mut UIView).unwrap()
+                    };
+                    let c2 = c.clone();
+                    animate(&trans, Rc::new(move || {
+                        view_ref.setBackgroundColor(Some(&c2));
+                    }));
+                }
+                None => {
+                    view.setBackgroundColor(Some(&c));
+                }
             }
         }
     }
@@ -279,17 +320,22 @@ pub fn apply_style_to_view(view: &UIView, style: &StyleRules) {
 }
 
 pub fn apply_text_style(view: &UIView, style: &StyleRules, is_label: bool) {
-    // Text color
+    // Text color: same precedence as background (explicit > theme
+    // transition default > snap).
     if let Some(color) = &style.color {
         let c = color_to_uicolor(color.value());
-        if let Some(trans) = &style.color_transition {
-            let view_ref: Retained<UIView> = unsafe { Retained::retain(view as *const UIView as *mut UIView).unwrap() };
-            let trans = *trans;
-            animate(&trans, Rc::new(move || {
-                let _: () = unsafe { msg_send![&view_ref, setTextColor: &*c] };
-            }));
-        } else {
-            let _: () = unsafe { msg_send![view, setTextColor: &*c] };
+        match effective_transition(style.color_transition.as_ref()) {
+            Some(trans) => {
+                let view_ref: Retained<UIView> = unsafe {
+                    Retained::retain(view as *const UIView as *mut UIView).unwrap()
+                };
+                animate(&trans, Rc::new(move || {
+                    let _: () = unsafe { msg_send![&view_ref, setTextColor: &*c] };
+                }));
+            }
+            None => {
+                let _: () = unsafe { msg_send![view, setTextColor: &*c] };
+            }
         }
     }
 

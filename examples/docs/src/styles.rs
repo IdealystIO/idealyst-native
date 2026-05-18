@@ -130,10 +130,13 @@ stylesheet! {
     }
 }
 
-// Monospace block for inline code samples on pages. Wraps a
-// `Text` whose content is the (already-formatted) source string.
-// Named with a `Sheet` suffix so it doesn't collide with the
-// `CodeBlock` component declared in shell.
+// Monospace block for inline code samples on pages. Two stylesheets
+// — surface (the wrapping View) and text (the inner Text) — because
+// the iOS backend's `apply_style_to_view` only honors View-relevant
+// fields, and text properties (color, font_size, font_family) only
+// take effect when applied directly to the Text node. Without
+// splitting, `color` on the View was silently dropped and the code
+// stayed UIKit-default black regardless of theme.
 stylesheet! {
     pub CodeBlockSheet<IdeaThemeRef> {
         base(t) {
@@ -142,14 +145,24 @@ stylesheet! {
             border_color: t.colors().border.clone(),
             border_radius: t.radius().md,
             padding: t.spacing().md,
-            font_family: "ui-monospace, SFMono-Regular, Menlo, monospace".to_string(),
-            font_size: t.typography().size_sm,
-            color: t.colors().text.clone(),
             overflow: framework_core::Overflow::Hidden,
         }
         transitions {
             background: 250ms EaseInOut,
             border_color: 250ms EaseInOut,
+        }
+    }
+}
+
+stylesheet! {
+    pub CodeBlockText<IdeaThemeRef> {
+        base(t) {
+            font_family: "ui-monospace, SFMono-Regular, Menlo, monospace".to_string(),
+            font_size: t.typography().size_sm,
+            color: t.colors().text.clone(),
+        }
+        transitions {
+            color: 250ms EaseInOut,
         }
     }
 }

@@ -277,7 +277,7 @@ pub(crate) fn create_drawer_navigator(
         let body_anim = body_for_anim.clone();
         let style = drawer_style;
 
-        let trans = framework_core::Transition::new(300, framework_core::Easing::EaseOut);
+        let trans = framework_core::Transition::new(200, framework_core::Easing::EaseOut);
         animate(&trans, Rc::new(move || {
             let _: () = unsafe {
                 msg_send![&scrim_anim, setAlpha: if open { 1.0 } else { 0.0 } as CGFloat]

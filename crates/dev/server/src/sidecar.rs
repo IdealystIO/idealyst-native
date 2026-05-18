@@ -47,6 +47,7 @@
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command as ProcCommand, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -59,6 +60,16 @@ use wire::{AppToDev, Command};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "payload")]
 pub enum SidecarOut {
+    /// First frame the sidecar sends after spawn. Reports the
+    /// sidecar's `dlsym("main")` runtime address so the host's
+    /// hot-patch builder knows the ASLR slide. Sent before
+    /// `Commands` so the host always has a valid value cached
+    /// before any file-change-triggered patch build kicks off.
+    Hello {
+        /// Result of `dlsym(RTLD_DEFAULT, "main")` inside the
+        /// freshly-spawned sidecar process.
+        aslr_reference: u64,
+    },
     /// A batch of newly-produced wire commands. The host appends each
     /// to its `WireRecordingBackend` via `push_external_command` and
     /// broadcasts to connected clients.
@@ -76,6 +87,19 @@ pub enum SidecarIn {
     /// its local `WireRecordingBackend::dispatch_event` (or the
     /// equivalent for `ScreenReleased`, etc.).
     Event(AppToDev),
+    /// Install a hot-patch jump table. The host built this from a
+    /// freshly-linked patch dylib; the sidecar dlopens it via
+    /// `framework_hot::apply_patch` and any subsequent component
+    /// dispatch lands in the patched body. JumpTable's PathBuf
+    /// must be readable from the sidecar's filesystem (typically
+    /// somewhere under `target/idealyst/.../patches/`).
+    ApplyPatch {
+        /// Serialized as JSON so the IPC frame stays a single
+        /// `serde_json::to_vec` round-trip. The sidecar parses
+        /// this back into `subsecond_types::JumpTable` and feeds
+        /// it to `framework_hot::apply_patch`.
+        table_json: String,
+    },
 }
 
 /// Handle to a running sidecar. Owns the child process, the writer
@@ -99,6 +123,11 @@ pub struct Sidecar {
     /// Inbound channel: reader thread pushes `SidecarOut` frames,
     /// owning thread drains via [`Self::drain_inbound`].
     inbound_rx: Mutex<mpsc::Receiver<SidecarOut>>,
+    /// Sidecar's runtime `dlsym("main")` address. Populated when
+    /// the host drains a [`SidecarOut::Hello`] frame; the
+    /// hot-patch builder reads it to compute the ASLR slide for
+    /// each patch. Zero until the first Hello arrives.
+    aslr_reference: AtomicU64,
     reader_thread: Option<JoinHandle<()>>,
     writer_thread: Option<JoinHandle<()>>,
 }
@@ -127,9 +156,23 @@ impl Sidecar {
             child,
             outbound_tx: Some(outbound_tx),
             inbound_rx: Mutex::new(inbound_rx),
+            aslr_reference: AtomicU64::new(0),
             reader_thread: Some(reader_thread),
             writer_thread: Some(writer_thread),
         })
+    }
+
+    /// Cached ASLR reference reported by the sidecar's `Hello`
+    /// frame. Returns 0 until the sidecar has sent its first
+    /// frame; callers should treat 0 as "not yet ready".
+    pub fn aslr_reference(&self) -> u64 {
+        self.aslr_reference.load(Ordering::Relaxed)
+    }
+
+    /// Update the cached ASLR reference. Called from the host's
+    /// inbound drain loop when a `Hello` frame arrives.
+    pub fn set_aslr_reference(&self, addr: u64) {
+        self.aslr_reference.store(addr, Ordering::Relaxed);
     }
 
     /// Queue an outbound frame. Returns immediately; delivery is best

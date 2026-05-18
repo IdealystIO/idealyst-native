@@ -1,16 +1,16 @@
 //! UI DSL — the `ui!` macro: syntax, control flow, reactive forms.
 
 use framework_core::{ui, Primitive};
-use idea_ui::{body, card, heading, stack, BodyTone, HeadingKind, StackGap};
+use idea_ui::{body, card, heading, BodyTone, HeadingKind};
 
 use crate::shell::{
-    codeblock, pageheader, section, CodeBlockProps, PageHeaderProps, SectionProps,
+    codeblock, pagebody, pageheader, section, CodeBlockProps, PageBodyProps, PageHeaderProps,
+    SectionProps,
 };
 
 pub fn page() -> Primitive {
     ui! {
-        ScrollView {
-            Stack(gap = StackGap::Xl) {
+        PageBody {
             PageHeader(
                 title = "UI DSL".to_string(),
                 description = "The `ui!` macro: declarative UI trees that lower to plain Rust calls.".to_string(),
@@ -117,7 +117,6 @@ pub fn page() -> Primitive {
                         `Vec<Primitive>` (inlined) — so you can mix precomputed nodes, \
                         conditional `Some` blocks, and helper-built lists in one place.".to_string(),
             )
-        }
         }
     }
 }

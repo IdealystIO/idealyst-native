@@ -94,6 +94,7 @@ struct NavStyleSlots {
     header: Option<Command>,
     title: Option<Command>,
     button: Option<Command>,
+    body: Option<Command>,
     drawer_sidebar: Option<Command>,
     drawer_scrim: Option<Command>,
     tab_bar: Option<Command>,
@@ -373,6 +374,9 @@ impl SceneModel {
             Command::ApplyNavigatorButtonStyle { navigator, .. } => {
                 self.nav_style_slots.entry(*navigator).or_default().button = Some(cmd.clone());
             }
+            Command::ApplyNavigatorBodyStyle { navigator, .. } => {
+                self.nav_style_slots.entry(*navigator).or_default().body = Some(cmd.clone());
+            }
             Command::ApplyDrawerSidebarStyle { navigator, .. } => {
                 self.nav_style_slots.entry(*navigator).or_default().drawer_sidebar =
                     Some(cmd.clone());
@@ -590,6 +594,7 @@ impl SceneModel {
                     &slots.header,
                     &slots.title,
                     &slots.button,
+                    &slots.body,
                     &slots.drawer_sidebar,
                     &slots.drawer_scrim,
                     &slots.tab_bar,

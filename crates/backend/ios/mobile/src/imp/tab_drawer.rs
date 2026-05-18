@@ -457,12 +457,28 @@ pub(crate) fn create_drawer_navigator(
             let _ = framework_core::active_theme();
             let color = (bg_closure)();
             let ui_color = color_to_uicolor(&color);
-            nav_view_for_bg.setBackgroundColor(Some(&ui_color));
-            // Also paint the rootVC's view (body) so the surface
-            // behind any transparent gaps inside the screen also
-            // re-tints — without this the body shows through as
-            // the hardcoded white from `mount_screen_in_vc`.
-            body_for_bg.setBackgroundColor(Some(&ui_color));
+            // Interpolate the body+nav background when a theme
+            // transition is in flight; snap on initial mount. Same
+            // 200ms ease-out as the rest of the iOS theme-fade
+            // path (driven by `THEME_TRANSITION_ACTIVE` set by the
+            // backend's per-host Effect).
+            if backend_ios_core::style::THEME_TRANSITION_ACTIVE.with(|c| c.get()) {
+                let trans = backend_ios_core::style::theme_transition_default();
+                let nv = nav_view_for_bg.clone();
+                let bd = body_for_bg.clone();
+                let c = ui_color.clone();
+                backend_ios_core::style::animate(&trans, Rc::new(move || {
+                    nv.setBackgroundColor(Some(&c));
+                    bd.setBackgroundColor(Some(&c));
+                }));
+            } else {
+                nav_view_for_bg.setBackgroundColor(Some(&ui_color));
+                // Also paint the rootVC's view (body) so the surface
+                // behind any transparent gaps inside the screen also
+                // re-tints — without this the body shows through as
+                // the hardcoded white from `mount_screen_in_vc`.
+                body_for_bg.setBackgroundColor(Some(&ui_color));
+            }
         });
         if let Some(entry) = tab_drawer_instances.get_mut(&key) {
             entry.background_effect = Some(bg_effect);

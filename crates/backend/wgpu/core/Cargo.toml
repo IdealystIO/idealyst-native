@@ -1,0 +1,51 @@
+[package]
+name = "backend-wgpu-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Shared core for the wgpu desktop-preview backends (phone, tablet, tv).
+#
+# The user's app is linked in normally; this crate stands up a winit
+# window the size of a target device, runs Taffy layout against the
+# framework's StyleRules, and paints the result to a wgpu surface.
+#
+# Rendering primitives:
+# - Rounded rectangles (View, Pressable, Button backgrounds + borders)
+# - Glyph runs via glyphon (Text, Button labels)
+#
+# Variants (`backend-wgpu-{phone,tablet,tv}`) are thin shims that
+# configure window size, scale factor, and safe-area insets. The
+# rendering pipeline + Backend impl live entirely here.
+
+[features]
+default = []
+# When on, the backend installs a `RenderLoopDriver` that schedules
+# redraws via winit's `EventLoopProxy`. Forwards to
+# `framework-core/async-driver` so `render_loop` / `spawn_async`
+# resolve. Hosts opt in with this feature on the chosen variant crate.
+async-driver = ["framework-core/async-driver"]
+
+[dependencies]
+framework-core = { workspace = true }
+native-layout = { workspace = true }
+
+# GPU + windowing.
+wgpu = "22"
+winit = { version = "0.30", features = ["rwh_06"] }
+raw-window-handle = "0.6"
+
+# Text rendering on wgpu. glyphon wraps cosmic-text (shaping +
+# layout) and rasterizes glyph atlases into a texture the wgpu
+# pipeline samples.
+glyphon = "0.6"
+
+# Vertex / uniform buffer POD encoding.
+bytemuck = { version = "1.18", features = ["derive"] }
+
+# Logging — lightweight; the host wires up an env_logger or similar.
+log = "0.4"
+
+# pollster lets us block on wgpu's async device-init from a
+# synchronous entry point. The render loop itself stays sync.
+pollster = "0.4"

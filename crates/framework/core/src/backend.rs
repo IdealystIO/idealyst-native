@@ -921,6 +921,14 @@ pub trait Backend {
     #[allow(unused_variables)]
     fn apply_navigator_button_style(&mut self, navigator: &Self::Node, style: &Rc<StyleRules>) {}
 
+    /// Apply style to the navigator's body container — the view that
+    /// hosts the active screen. Used by `.background_color(...)` on
+    /// the navigator (and by `HeaderStyle.body_background` via the
+    /// `.header(...)` helper) to set a fill that shows through any
+    /// transparent regions of the mounted screen.
+    #[allow(unused_variables)]
+    fn apply_navigator_body_style(&mut self, navigator: &Self::Node, style: &Rc<StyleRules>) {}
+
     /// Apply style to a drawer navigator's sidebar panel.
     #[allow(unused_variables)]
     fn apply_drawer_sidebar_style(&mut self, navigator: &Self::Node, style: &Rc<StyleRules>) {}

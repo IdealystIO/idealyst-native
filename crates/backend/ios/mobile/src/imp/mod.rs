@@ -47,6 +47,23 @@ use backend_ios_core::style::{
 use tab_drawer::TabDrawerEntry;
 
 // =========================================================================
+// UIKit enum values we use via `msg_send`. UIKit's Swift/ObjC enums
+// aren't exposed by `objc2_ui_kit` as numeric constants, so we mirror
+// the raw integer values here with the named UIKit constant in scope.
+// =========================================================================
+
+/// `UIScrollViewContentInsetAdjustmentBehavior.never` — `contentInset`
+/// is the only thing setting the inset; no auto-adjustment for
+/// safeAreaInsets or scrollIndicators.
+const SCROLL_VIEW_INSET_ADJUSTMENT_NEVER: i64 = 2;
+
+/// `UIScrollViewContentInsetAdjustmentBehavior.always` — UIKit always
+/// adds `safeAreaInsets` (status bar + nav bar + home indicator) to
+/// the scroll view's effective content inset, regardless of position
+/// or scroll-axis orientation.
+const SCROLL_VIEW_INSET_ADJUSTMENT_ALWAYS: i64 = 3;
+
+// =========================================================================
 // IosBackend
 // =========================================================================
 
@@ -56,6 +73,11 @@ pub struct IosBackend {
     navigator_instances: HashMap<usize, NavigatorEntry>,
     tab_drawer_instances: HashMap<usize, TabDrawerEntry>,
     callback_targets: Vec<Retained<NSObject>>,
+    /// Holds the per-backend theme-transition Effect installed in
+    /// `set_host_root`. Kept on the struct so the subscription's
+    /// lifetime matches the backend's. None until the host root is
+    /// attached.
+    theme_transition_effect: Option<framework_core::Effect>,
     /// Set of view pointers that are UIScrollViews. Used in the
     /// post-layout pass to sync `contentSize` from Taffy children.
     scroll_views: std::collections::HashSet<usize>,
@@ -209,6 +231,7 @@ impl IosBackend {
             anchored_overlay_instances: HashMap::new(),
             layout: native_layout::LayoutTree::new(),
             view_to_layout: HashMap::new(),
+            theme_transition_effect: None,
         }
     }
 
@@ -261,6 +284,71 @@ impl IosBackend {
         };
         self.callback_targets.push(obj);
         self.host_root = Some(view);
+        // Theme-transition Effect is installed lazily in `finish()`,
+        // not here. `set_host_root` runs BEFORE the app's
+        // `install_theme(...)` (which lives inside the user's
+        // `app()` and is invoked by `render`), so subscribing now
+        // would panic in `active_theme()` with "no theme installed".
+    }
+
+    /// Install the per-host theme-transition Effect. Subscribes to
+    /// `active_theme()`; on every fire after the initial one, flips
+    /// `backend_ios_core::style::THEME_TRANSITION_ACTIVE` so any
+    /// color setter run during the cohort re-apply wraps itself in
+    /// a 200ms `UIView.animate`. A `performSelector:afterDelay:0.0`
+    /// resets the flag on the next run-loop tick.
+    ///
+    /// Called from `finish()` (which runs after the user's `app()`
+    /// has invoked `install_theme`). Once-only — re-renders re-use
+    /// the existing subscription.
+    fn install_theme_transition_effect(&mut self) {
+        if self.theme_transition_effect.is_some() {
+            return;
+        }
+        let mtm = self.mtm;
+        let initial = Rc::new(std::cell::Cell::new(true));
+        let initial_for_effect = initial.clone();
+        let theme_effect = framework_core::Effect::new(move || {
+            // Subscribe to the active theme signal. Safe to call
+            // unconditionally now — `finish()` runs after the user's
+            // `install_theme(...)`.
+            let _ = framework_core::active_theme();
+            // Skip the initial run — Effect::new() always fires
+            // once at install; we only want to animate genuine
+            // subsequent theme swaps.
+            if initial_for_effect.get() {
+                initial_for_effect.set(false);
+                return;
+            }
+            backend_ios_core::style::THEME_TRANSITION_ACTIVE.with(|c| c.set(true));
+            // Schedule the flag reset for the next run loop pass.
+            // By then the cohort driver's synchronous reapply loop
+            // has finished and the UIView.animate blocks have all
+            // been opened — clearing the flag afterward keeps
+            // subsequent (non-theme) setters snappy.
+            let reset_target = callbacks::CallbackTarget::new(
+                mtm,
+                Rc::new(|| {
+                    backend_ios_core::style::THEME_TRANSITION_ACTIVE.with(|c| c.set(false));
+                }),
+            );
+            let reset_sel = objc2::sel!(invoke);
+            let _: () = unsafe {
+                msg_send![
+                    &reset_target,
+                    performSelector: reset_sel,
+                    withObject: std::ptr::null::<NSObject>(),
+                    afterDelay: 0.0 as objc2_foundation::CGFloat
+                ]
+            };
+            // `forget` so the target outlives the perform delay.
+            let target_obj: Retained<NSObject> = unsafe {
+                let ptr = Retained::as_ptr(&reset_target) as *mut NSObject;
+                Retained::retain(ptr).unwrap()
+            };
+            std::mem::forget(target_obj);
+        });
+        self.theme_transition_effect = Some(theme_effect);
     }
 
     fn retain_target<T: objc2::Message>(&mut self, target: &Retained<T>) {
@@ -619,14 +707,15 @@ impl Backend for IosBackend {
                 // last character/line by a fractional point. Always
                 // round up so the frame is at least the size the
                 // text needs.
-                native_layout::Size {
+                let result = native_layout::Size {
                     width: known_dimensions
                         .width
                         .unwrap_or((fitted.width as f32).ceil()),
                     height: known_dimensions
                         .height
                         .unwrap_or((fitted.height as f32).ceil()),
-                }
+                };
+                result
             }),
         );
 
@@ -973,6 +1062,34 @@ impl Backend for IosBackend {
         IosNode::View(view)
     }
 
+    fn create_pressable(&mut self, on_click: Rc<dyn Fn()>) -> Self::Node {
+        // Mirror `create_link`'s tap-gesture wiring so `Pressable`
+        // children actually fire their click handlers. The default
+        // `Backend::create_pressable` (see
+        // `crates/framework/core/src/backend.rs:117`) explicitly
+        // ignores `on_click` and falls through to `create_view()` —
+        // the doc comment acknowledges "clicks won't fire". This
+        // override is what makes `idea_ui::Tabs`, `CardTabs`, and
+        // any other Pressable-backed control respond to taps on iOS.
+        let view = unsafe { UIView::new(self.mtm) };
+        let _: () = unsafe { msg_send![&view, setUserInteractionEnabled: true] };
+
+        let target = CallbackTarget::new(self.mtm, on_click);
+        let tap_sel = objc2::sel!(invoke);
+        let tap_gr = unsafe {
+            objc2_ui_kit::UITapGestureRecognizer::initWithTarget_action(
+                self.mtm.alloc(),
+                Some(&target),
+                Some(tap_sel),
+            )
+        };
+        let _: () = unsafe { msg_send![&view, addGestureRecognizer: &*tap_gr] };
+        self.retain_target(&target);
+
+        let _ = self.layout_for_view(&view);
+        IosNode::View(view)
+    }
+
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
         let parent_view = parent.as_view();
         let parent_key = parent_view as *const UIView as usize;
@@ -1045,6 +1162,40 @@ impl Backend for IosBackend {
         let p_layout = self.layout_for_view(parent_view);
         let c_layout = self.layout_for_view(child_view);
         self.layout.add_child(p_layout, c_layout);
+        // Mirror `clear_children`'s explicit `mark_dirty` here:
+        // Taffy caches per-node measured size keyed by inputs, and
+        // child-set changes don't always invalidate the parent's
+        // cache. Without this, a `switch` swap can land the new
+        // child in Taffy's tree but the parent reuses a stale
+        // larger size from when the prior branch was active —
+        // surfaced as a too-tall panel after switching from a
+        // long-content tab to a short-content one.
+        self.layout.mark_dirty(p_layout);
+        // Layout strategy: sync only when the parent is already
+        // attached to a window (i.e. live in the host view
+        // hierarchy). That cleanly discriminates the two cases:
+        //
+        // - Mid-build insert (parent is a freshly-created floating
+        //   UIView, not yet added to any superview): `parent.window`
+        //   is nil. Defer — the build pass will keep inserting
+        //   ancestors and eventually `finish()` runs the closing
+        //   layout pass. A sync layout here would re-compute against
+        //   a partial tree and cache wrong sizes for the new node's
+        //   subtree (this was the user-visible "oversized CodeBlock"
+        //   bug from an earlier sync-on-mount shortcut).
+        //
+        // - Post-mount insert into a live parent — `switch` branch
+        //   swaps, `when` toggles, dynamic list inserts: `parent.window`
+        //   is the app window. Sync — the new child needs a frame
+        //   in the same frame as its UIKit insert, otherwise the
+        //   one-tick deferred layout shows a visible flicker (blank
+        //   between `clear_children` and the next-tick paint).
+        let parent_window: *const NSObject = unsafe { msg_send![parent_view, window] };
+        if !parent_window.is_null() {
+            self.run_layout_pass_global();
+        } else {
+            schedule_layout_pass();
+        }
     }
 
     fn update_text(&mut self, node: &Self::Node, content: &str) {
@@ -1077,7 +1228,46 @@ impl Backend for IosBackend {
     }
 
     fn clear_children(&mut self, node: &Self::Node) {
+        // Mirror the UIKit teardown in Taffy. The earlier shape only
+        // called `removeFromSuperview()` — UIKit dropped the child
+        // views but Taffy still tracked them as children of the
+        // parent's layout node, with their last-computed frames
+        // intact. The next `insert()` would append the new child
+        // *after* those stale entries, so the surviving Taffy
+        // children would take the parent's flex budget and the
+        // freshly-inserted view ended up off-screen or stacked
+        // behind nothing.
+        //
+        // The user-visible symptom was a `switch()` branch swap:
+        // press a tab → `clear_children` + `insert` runs → parent's
+        // size changed (Taffy was recomputing) but the new branch's
+        // content rendered invisibly.
         let parent = node.as_view();
+        let parent_layout = self.layout_for_view(parent);
+        // Snapshot child layout nodes before mutating UIKit, since
+        // we'll be looking them up by view pointer.
+        let child_layouts: Vec<native_layout::LayoutNode> = parent
+            .subviews()
+            .iter()
+            .filter_map(|sub| self.layout_of(sub))
+            .collect();
+        for layout in child_layouts {
+            self.layout.remove_child(parent_layout, layout);
+        }
+        // Invalidate the parent's cached layout. Taffy caches each
+        // node's computed size keyed by the constraints; child-set
+        // changes don't auto-invalidate, so without `mark_dirty`
+        // the next layout pass reuses the parent's last-seen size
+        // (from when its previous children were taller). The user-
+        // visible symptom on `switch` swaps was the panel retaining
+        // the largest historically-active branch's height — the
+        // gray `CodeBlock` background extending far past the actual
+        // text in the new (shorter) branch.
+        self.layout.mark_dirty(parent_layout);
+        // Now drop the UIKit subviews. Order matters: walk
+        // `parent.subviews()` again because Taffy mutations don't
+        // affect UIKit, and grabbing the list before the loop
+        // freezes it against in-loop removals.
         let subviews = parent.subviews();
         for sub in subviews.iter() {
             unsafe { sub.removeFromSuperview() };
@@ -1399,13 +1589,13 @@ impl Backend for IosBackend {
         // examples. Revisit if a partial-side use case shows up.
         let view = node.as_view();
         let behavior: i64 = if sides.is_empty() {
-            // 2 = .never — author opted out, scroll bleeds
-            // edge-to-edge with no inset.
-            2
+            // Author opted out — scroll bleeds edge-to-edge with no
+            // inset; the author is responsible for content offset.
+            SCROLL_VIEW_INSET_ADJUSTMENT_NEVER
         } else {
-            // 3 = .always — UIKit insets for the effective safe
-            // area (status bar + nav bar + tab bar + home indicator).
-            3
+            // UIKit insets for the effective safe area (status bar +
+            // nav bar + tab bar + home indicator).
+            SCROLL_VIEW_INSET_ADJUSTMENT_ALWAYS
         };
         let _: () = unsafe { msg_send![view, setContentInsetAdjustmentBehavior: behavior] };
     }
@@ -1524,6 +1714,11 @@ impl Backend for IosBackend {
             pin_to_edges(host, root.as_view());
         }
         self.run_layout_pass(&root);
+        // Theme is guaranteed installed by now — `app()` ran during
+        // the walker pass that produced `root`, and any theme-using
+        // app calls `install_theme` at the top of `app()`. Subscribe
+        // for theme-change animations.
+        self.install_theme_transition_effect();
     }
 }
 

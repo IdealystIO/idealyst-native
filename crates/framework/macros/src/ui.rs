@@ -480,6 +480,8 @@ fn emit_component(
         "overlay" => emit_overlay(&other_props, children),
         "anchoredoverlay" => emit_anchored_overlay(&other_props, children),
         "presence" => emit_presence(&other_props, children),
+        "drawernavigator" => emit_drawer_navigator(&other_props, children),
+        "cardtabs" => emit_card_tabs(&other_props, children),
         _ => emit_user(name, props, children),
     };
 
@@ -1933,6 +1935,187 @@ fn emit_block_as_primitive(nodes: &[UiNode]) -> TokenStream2 {
         }
     };
     quote! { ::framework_core::IntoPrimitive::into_primitive(#body) }
+}
+
+/// Emit a `DrawerNavigator(...) { Screen(...) { ... } ... }`
+/// invocation as a builder chain. Props on the navigator other than
+/// `initial` map to same-named builder methods (`.header(...)`,
+/// `.content(...)`, `.drawer_type(...)`, etc.). Every child must be
+/// a `Screen(...)` element — anything else is a compile error.
+///
+/// Each `Screen(...)` child de-sugars into `.screen(route, |_| {
+/// Screen::new(<body>).title(...)... })`. The body is wrapped in a
+/// closure so it stays lazy — the page tree isn't built until the
+/// route is mounted.
+fn emit_drawer_navigator(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
+    // `initial` is required and feeds DrawerNavigator::new.
+    let initial = match props.iter().find(|p| p.name == "initial") {
+        Some(p) => p.value.clone(),
+        None => {
+            return quote! {
+                ::std::compile_error!(
+                    "DrawerNavigator: the `initial` prop is required (the route to mount first)"
+                )
+            };
+        }
+    };
+
+    // Builder-method calls for every other prop. We don't validate
+    // the names — if the author passes a prop that doesn't exist
+    // as a builder method, rustc will surface that at the call site
+    // with a clearer error message than anything the macro could
+    // emit.
+    let nav_builder_calls = props.iter().filter(|p| p.name != "initial").map(|p| {
+        let n = &p.name;
+        let v = &p.value;
+        quote! { .#n(#v) }
+    });
+
+    // Emit one `.screen(route, |_| Screen::new(body)...)` per
+    // child. Non-Screen children fail compilation with a pointed
+    // message so the constraint is obvious.
+    let kids = children.unwrap_or(&[]);
+    let mut screen_calls: Vec<TokenStream2> = Vec::new();
+    for kid in kids {
+        match kid {
+            UiNode::Component {
+                name,
+                props: screen_props,
+                children: screen_children,
+                chain: _,
+            } if name.to_string().to_ascii_lowercase() == "screen" => {
+                // `route` is required on Screen.
+                let route = match screen_props.iter().find(|p| p.name == "route") {
+                    Some(p) => p.value.clone(),
+                    None => {
+                        return quote! {
+                            ::std::compile_error!(
+                                "Screen: the `route` prop is required (a `Route<P>` const)"
+                            )
+                        };
+                    }
+                };
+                // Build the body Primitive from the Screen's children
+                // and wrap it in a render closure so the framework
+                // can rebuild lazily on each Select.
+                let body_nodes: &[UiNode] = screen_children.as_deref().unwrap_or(&[]);
+                let body_expr = emit_block_as_primitive(body_nodes);
+                // Builder-method calls for every other Screen prop
+                // (`title`, `header_background`, etc.).
+                let screen_builder_calls = screen_props.iter().filter(|p| p.name != "route").map(|p| {
+                    let n = &p.name;
+                    let v = &p.value;
+                    quote! { .#n(#v) }
+                });
+                screen_calls.push(quote! {
+                    .screen(#route, |_| {
+                        ::framework_core::Screen::new(#body_expr)
+                            #(#screen_builder_calls)*
+                    })
+                });
+            }
+            UiNode::Component { name, .. } => {
+                let got = name.to_string();
+                let msg = format!(
+                    "DrawerNavigator children must be Screen(...) elements; got `{}`",
+                    got
+                );
+                return quote! { ::std::compile_error!(#msg) };
+            }
+            _ => {
+                return quote! {
+                    ::std::compile_error!(
+                        "DrawerNavigator children must be Screen(...) elements"
+                    )
+                };
+            }
+        }
+    }
+
+    quote! {
+        ::framework_core::DrawerNavigator::new(#initial)
+            #(#nav_builder_calls)*
+            #(#screen_calls)*
+    }
+}
+
+/// Emit a `CardTabs { Tab(label = "...") { ... } ... }` invocation
+/// as a user-component call carrying `tabs = vec![(label,
+/// render_closure), ...]`. Each Tab's body is wrapped in a render
+/// closure so the panel can be invoked lazily — the active panel
+/// builds at switch time, not eagerly at mount.
+///
+/// Non-`Tab` children fail compilation with a pointed message so
+/// the constraint reads at the call site.
+fn emit_card_tabs(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
+    let kids = children.unwrap_or(&[]);
+    let mut tab_pairs: Vec<TokenStream2> = Vec::new();
+    for kid in kids {
+        match kid {
+            UiNode::Component {
+                name,
+                props: tab_props,
+                children: tab_children,
+                chain: _,
+            } if name.to_string().to_ascii_lowercase() == "tab" => {
+                // `label` is required.
+                let label = match tab_props.iter().find(|p| p.name == "label") {
+                    Some(p) => p.value.clone(),
+                    None => {
+                        return quote! {
+                            ::std::compile_error!(
+                                "CardTabs: each Tab requires a `label` prop"
+                            )
+                        };
+                    }
+                };
+                // Build the body Primitive from the Tab's children
+                // and wrap it in a render closure. The closure is
+                // `Rc<dyn Fn() -> Primitive>` so it can be cheaply
+                // cloned into a `switch` branches closure that
+                // dispatches by index.
+                let body_nodes: &[UiNode] = tab_children.as_deref().unwrap_or(&[]);
+                let body_expr = emit_block_as_primitive(body_nodes);
+                tab_pairs.push(quote! {
+                    (
+                        ::std::string::String::from(#label),
+                        ::std::rc::Rc::new(move || #body_expr)
+                            as ::std::rc::Rc<dyn Fn() -> ::framework_core::Primitive>,
+                    )
+                });
+            }
+            UiNode::Component { name, .. } => {
+                let got = name.to_string();
+                let msg = format!(
+                    "CardTabs children must be Tab(...) elements; got `{}`",
+                    got
+                );
+                return quote! { ::std::compile_error!(#msg) };
+            }
+            _ => {
+                return quote! {
+                    ::std::compile_error!(
+                        "CardTabs children must be Tab(...) elements"
+                    )
+                };
+            }
+        }
+    }
+
+    // Pass any other props through to the `cardtabs!` invocation
+    // unchanged — same shape as `emit_user`.
+    let other_prop_assignments = props.iter().map(|p| {
+        let n = &p.name;
+        let v = emit_attr_value(&p.value);
+        quote! { #n = #v }
+    });
+
+    quote! {
+        cardtabs!(
+            #(#other_prop_assignments,)*
+            tabs = vec![#(#tab_pairs),*]
+        )
+    }
 }
 
 // Silence "unused" complaints on items we may need later.

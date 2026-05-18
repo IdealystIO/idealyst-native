@@ -52,11 +52,28 @@ pub(crate) fn create(
             "(Landroid/text/TextWatcher;)V",
             &[JValue::Object(&watcher)],
         );
+        // Stash the watcher on the EditText's tag so update_value
+        // can retrieve it and flip `suppress` for programmatic
+        // setText calls. See `update_value` below.
+        let _ = env.call_method(
+            &local,
+            "setTag",
+            "(Ljava/lang/Object;)V",
+            &[JValue::Object(&watcher)],
+        );
         apply_default_layout_params(env, &local);
         env.new_global_ref(local).unwrap()
     })
 }
 
+/// Apply a programmatic text value to the EditText. Suppresses
+/// `RustTextWatcher` during the `setText` call so AAS-driven wire
+/// replays don't echo back to the server as an `EventOccurred` and
+/// create a feedback loop (see `RustTextWatcher.suppress` for the
+/// loop shape).
+///
+/// Same-string short-circuit is retained to avoid cursor jumps when
+/// the framework re-fires an effect that wrote the same value back.
 pub(crate) fn update_value(node: &GlobalRef, value: &str) {
     with_env(|env| {
         // Only update if the text differs, to avoid cursor jumps when
@@ -81,8 +98,23 @@ pub(crate) fn update_value(node: &GlobalRef, value: &str) {
                     .unwrap_or(false)
             })
             .unwrap_or(false);
-        if !same {
-            set_text(env, &node.as_obj(), value);
+        if same {
+            return;
+        }
+        let tag = env
+            .call_method(node.as_obj(), "getTag", "()Ljava/lang/Object;", &[])
+            .ok()
+            .and_then(|v| v.l().ok());
+        if let Some(ref watcher) = tag {
+            if !watcher.is_null() {
+                let _ = env.set_field(watcher, "suppress", "Z", JValue::Bool(1));
+            }
+        }
+        set_text(env, &node.as_obj(), value);
+        if let Some(ref watcher) = tag {
+            if !watcher.is_null() {
+                let _ = env.set_field(watcher, "suppress", "Z", JValue::Bool(0));
+            }
         }
     });
 }

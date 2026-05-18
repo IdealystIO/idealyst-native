@@ -457,6 +457,38 @@ impl Backend for AndroidBackend {
         primitives::tab_drawer::attach_sidebar(self, navigator, sidebar)
     }
 
+    fn apply_navigator_header_style(
+        &mut self,
+        navigator: &Self::Node,
+        style: &std::rc::Rc<framework_core::StyleRules>,
+    ) {
+        primitives::tab_drawer::apply_header_style(self, navigator, style)
+    }
+
+    fn apply_navigator_title_style(
+        &mut self,
+        navigator: &Self::Node,
+        style: &std::rc::Rc<framework_core::StyleRules>,
+    ) {
+        primitives::tab_drawer::apply_title_style(self, navigator, style)
+    }
+
+    fn apply_navigator_button_style(
+        &mut self,
+        navigator: &Self::Node,
+        style: &std::rc::Rc<framework_core::StyleRules>,
+    ) {
+        primitives::tab_drawer::apply_button_style(self, navigator, style)
+    }
+
+    fn apply_navigator_body_style(
+        &mut self,
+        navigator: &Self::Node,
+        style: &std::rc::Rc<framework_core::StyleRules>,
+    ) {
+        primitives::tab_drawer::apply_body_style(self, navigator, style)
+    }
+
     fn release_drawer_navigator(&mut self, node: &Self::Node) {
         primitives::tab_drawer::release(self, node)
     }

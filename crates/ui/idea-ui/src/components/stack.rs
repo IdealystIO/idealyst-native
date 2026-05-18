@@ -11,12 +11,18 @@ use framework_core::{ui, ChildList, Primitive};
 use crate::stylesheets::Stack;
 
 // Re-export the stylesheet-generated variant enums.
-pub use crate::stylesheets::{StackAlign, StackAxis, StackGap, StackJustify};
+pub use crate::stylesheets::{StackAlign, StackAxis, StackGap, StackJustify, StackPadding};
 
 #[derive(Default)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct StackProps {
     pub gap: StackGap,
+    /// Token-driven inner padding. Defaults to `None` so a Stack
+    /// without an explicit `padding` prop matches its pre-padding
+    /// behaviour. Sizes track the theme's spacing scale, same as
+    /// `gap` — pick `Xs`/`Sm`/`Md`/`Lg`/`Xl` and the value comes
+    /// from `t.spacing()` so it reflects the active theme.
+    pub padding: StackPadding,
     pub axis: StackAxis,
     pub align: StackAlign,
     pub justify: StackJustify,
@@ -26,6 +32,7 @@ pub struct StackProps {
 pub fn stack(props: StackProps) -> Primitive {
     let style = Stack()
         .gap(props.gap)
+        .padding(props.padding)
         .axis(props.axis)
         .align(props.align)
         .justify(props.justify);

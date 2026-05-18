@@ -2,16 +2,16 @@
 //! `signal!`, `stylesheet!`, `jsx!`.
 
 use framework_core::{ui, Primitive};
-use idea_ui::{body, card, heading, stack, BodyTone, HeadingKind, StackGap};
+use idea_ui::{body, card, heading, BodyTone, HeadingKind};
 
 use crate::shell::{
-    codeblock, pageheader, section, CodeBlockProps, PageHeaderProps, SectionProps,
+    codeblock, pagebody, pageheader, section, CodeBlockProps, PageBodyProps, PageHeaderProps,
+    SectionProps,
 };
 
 pub fn page() -> Primitive {
     ui! {
-        ScrollView {
-            Stack(gap = StackGap::Xl) {
+        PageBody {
             PageHeader(
                 title = "Macros".to_string(),
                 description = "Reference for the proc-macros that make up Idealyst's authoring surface.".to_string(),
@@ -90,7 +90,6 @@ pub fn page() -> Primitive {
                         one place. Useful outside `ui!` blocks where you need to assemble a \
                         children list imperatively.".to_string(),
             )
-        }
         }
     }
 }

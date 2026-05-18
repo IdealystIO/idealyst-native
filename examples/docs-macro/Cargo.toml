@@ -1,0 +1,14 @@
+[package]
+name = "docs-macro"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The `docs!` proc macro for the Idealyst documentation site. Emits a structured PageMeta + a page() UI function from a single declaration. Hardcoded to the `docs` example crate's `meta` module."
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full", "extra-traits"] }
+quote = "1"
+proc-macro2 = "1"

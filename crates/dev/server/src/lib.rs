@@ -39,7 +39,7 @@ pub use transport::{
 };
 #[cfg(feature = "robot")]
 pub use transport::serve_with_robot_bridge;
-pub use watch::{spawn_rebuild_loop, RebuildCommand, RebuildConfig};
+pub use watch::{spawn_change_loop, spawn_rebuild_loop, RebuildCommand, RebuildConfig};
 
 /// The AAS (Application-as-a-Server) **server-side backend** —
 /// implements `framework_core::Backend` with `Node = NodeId`. Plug
@@ -64,10 +64,31 @@ pub use crate::WireRecordingBackend as AasBackend;
 /// Stores the live dev-side closures the walker has handed us. Each
 /// gets a `HandlerId` minted by the recorder; events arriving back
 /// from the app look up the entry and invoke the captured closure.
+///
+/// **Identity-keyed dedup.** Closures registered with an
+/// [`framework_core::Identity`] reuse the same `HandlerId` across
+/// hot-reload rebuilds: the table keeps `identity_to_id` populated
+/// across [`Self::clear_closures`] (called from
+/// `reset_log_and_scene`), so a re-register from the freshly-walked
+/// tree drops back into the existing slot. This is what keeps
+/// **client-side leaked callbacks valid** across server respawns —
+/// without it, every hot-patch would invalidate every Toolbar
+/// hamburger, Button click handler, and other primitive event ids
+/// the client cached at install time.
 #[derive(Default)]
 pub struct HandlerTable {
     next: u64,
     closures: HashMap<HandlerId, Handler>,
+    /// Identity → `HandlerId` memo. Persists across
+    /// [`Self::clear_closures`] so the *fresh* render that follows a
+    /// reset reuses the same id for the same logical emission site
+    /// — and the leaked closure on the client (which captured the
+    /// original id at first install) keeps routing to the right
+    /// handler. Closure replacement happens in
+    /// [`Self::register_unit_for_identity`] / friends, where the
+    /// existing slot is overwritten with the freshly-walked closure
+    /// (capturing the post-reset `Rc<NavigatorControl>` etc.).
+    identity_to_id: HashMap<framework_core::Identity, HandlerId>,
 }
 
 enum Handler {
@@ -112,6 +133,99 @@ impl HandlerTable {
         let id = self.mint();
         self.closures.insert(id, Handler::States(f));
         id
+    }
+
+    /// Identity-keyed register. Same logical emission site (same
+    /// [`framework_core::Identity`]) across rebuilds reuses the same
+    /// `HandlerId` — the closure under the id is replaced with the
+    /// freshly-walked one. Cross-rebuild stability is what keeps the
+    /// client's leaked `HeaderButtonCallback`, button click pointer,
+    /// etc. valid after a hot-patch.
+    ///
+    /// `UNIDENTIFIED` identities fall back to the unkeyed
+    /// [`Self::register_unit`] path (fresh id every call). Callers
+    /// without ambient identity get this gracefully.
+    pub fn register_unit_for_identity(
+        &mut self,
+        identity: framework_core::Identity,
+        f: Rc<dyn Fn()>,
+    ) -> HandlerId {
+        if identity == framework_core::Identity::UNIDENTIFIED {
+            return self.register_unit(f);
+        }
+        let id = *self.identity_to_id.entry(identity).or_insert_with(|| {
+            self.next += 1;
+            HandlerId(self.next)
+        });
+        self.closures.insert(id, Handler::Unit(f));
+        id
+    }
+
+    /// See [`Self::register_unit_for_identity`]. Bool variant for
+    /// `Toggle.on_change`.
+    pub fn register_bool_for_identity(
+        &mut self,
+        identity: framework_core::Identity,
+        f: Rc<dyn Fn(bool)>,
+    ) -> HandlerId {
+        if identity == framework_core::Identity::UNIDENTIFIED {
+            return self.register_bool(f);
+        }
+        let id = *self.identity_to_id.entry(identity).or_insert_with(|| {
+            self.next += 1;
+            HandlerId(self.next)
+        });
+        self.closures.insert(id, Handler::Bool(f));
+        id
+    }
+
+    /// See [`Self::register_unit_for_identity`]. Float variant for
+    /// `Slider.on_change`.
+    pub fn register_float_for_identity(
+        &mut self,
+        identity: framework_core::Identity,
+        f: Rc<dyn Fn(f32)>,
+    ) -> HandlerId {
+        if identity == framework_core::Identity::UNIDENTIFIED {
+            return self.register_float(f);
+        }
+        let id = *self.identity_to_id.entry(identity).or_insert_with(|| {
+            self.next += 1;
+            HandlerId(self.next)
+        });
+        self.closures.insert(id, Handler::Float(f));
+        id
+    }
+
+    /// See [`Self::register_unit_for_identity`]. String variant for
+    /// `TextInput.on_change`.
+    pub fn register_string_for_identity(
+        &mut self,
+        identity: framework_core::Identity,
+        f: Rc<dyn Fn(String)>,
+    ) -> HandlerId {
+        if identity == framework_core::Identity::UNIDENTIFIED {
+            return self.register_string(f);
+        }
+        let id = *self.identity_to_id.entry(identity).or_insert_with(|| {
+            self.next += 1;
+            HandlerId(self.next)
+        });
+        self.closures.insert(id, Handler::StringFn(f));
+        id
+    }
+
+    /// Drop all live closures but keep `next` and `identity_to_id`.
+    /// Used by [`WireRecordingBackend::reset_log_and_scene`] so a
+    /// hot-patch rebuild re-registers the same emission sites under
+    /// their original ids — the closures themselves are replaced
+    /// because they capture the *new* render's
+    /// `Rc<NavigatorControl>` / signals. Anything that touched the
+    /// old captures (and would have panicked on the next signal
+    /// read) is freed here before the next render starts.
+    pub fn clear_closures(&mut self) {
+        self.closures.clear();
+        // `next` and `identity_to_id` deliberately preserved.
     }
 
     pub fn release(&mut self, id: HandlerId) {
@@ -172,8 +286,34 @@ struct RecorderState {
     handlers: HandlerTable,
     /// Pre-registered styles. Each `Rc<StyleRules>` pointer identity
     /// gets mapped to a `StyleId` on first encounter so the wire
-    /// never re-serializes the same rules.
-    styles_by_ptr: HashMap<usize, StyleId>,
+    /// never re-serializes the same rules. **Per-process** — Rc
+    /// pointers don't survive sidecar respawns, so this map is
+    /// rebuilt on every walk.
+    ///
+    /// Holds a `Weak` alongside the id so a stale ptr key (an Rc
+    /// dropped and its allocation recycled by the allocator) is
+    /// detected and treated as a miss. Without the `Weak`, an
+    /// ephemeral `Rc::new(rules)` created+dropped inside an
+    /// `Effect` body would leave its address in this map, and the
+    /// next `Rc::new(other_rules)` that lands at the same recycled
+    /// address would falsely hit and reuse the prior `StyleId` —
+    /// silently aliasing distinct styles together over the wire.
+    /// (Concrete bug profile: navigator chrome
+    /// `apply_navigator_*_style` emissions all collided onto the
+    /// first slot's `StyleId`.)
+    styles_by_ptr: HashMap<usize, (std::rc::Weak<StyleRules>, StyleId)>,
+    /// Content-addressed style-id memo. Keyed by the JSON-serialized
+    /// hash of the wire-form `WireStyleRules`. Survives
+    /// [`WireRecordingBackend::reset_log_and_scene`] so that across
+    /// sidecar respawns the same stylesheet (same resolved values)
+    /// lands on the same wire `StyleId` — that's what keeps theme
+    /// toggles incremental rather than scrambling everything by
+    /// overwriting `styles[0]` with a new sidecar's `RegisterStyle
+    /// { id: 0, … }`. Unchanged styles get skipped entirely; changed
+    /// styles re-emit `RegisterStyle` with the previously-assigned
+    /// id so the client's `styles.insert(id, …)` lands at the right
+    /// slot.
+    styles_by_content: HashMap<u64, StyleId>,
     out: Vec<Command>,
     color_scheme: ColorScheme,
     /// Maps from a `NodeId` to the most recent state-attach handler.
@@ -244,6 +384,7 @@ impl WireRecordingBackend {
                 next_node: 0,
                 next_style: 0,
                 identity_to_node: HashMap::new(),
+                styles_by_content: HashMap::new(),
                 epoch: 0,
                 handlers: HandlerTable::default(),
                 styles_by_ptr: HashMap::new(),
@@ -351,7 +492,12 @@ impl WireRecordingBackend {
         state.out.clear();
         state.scene = SceneModel::new();
         state.next_node = 0;
-        state.next_style = 0;
+        // `next_style` is *not* reset: the new walk's content-addressed
+        // dedup (see [`Self::intern_style`]) reuses the previously-
+        // assigned `StyleId` for any unchanged stylesheet. New
+        // styles that didn't exist before mint a fresh id past the
+        // high-water mark — keeps everything unique without ever
+        // overwriting a still-referenced id on the client.
         // Deliberately NOT cleared: `identity_to_node` persists across
         // sidecar respawns. The fresh walk re-emits the same
         // structural identities (`Identity::node(parent, slot, ...)`
@@ -363,11 +509,28 @@ impl WireRecordingBackend {
         // Removed-from-the-new-walk identities stay in the map; they
         // just won't be referenced. A future pass can prune them by
         // diffing visit sets between walks.
+        // `styles_by_ptr` is per-process (Rc identities won't match
+        // across sidecar respawns), so it's safe to clear. The
+        // cross-process `styles_by_content` map below is *not*
+        // cleared — that's what reuses ids for unchanged styles.
         state.styles_by_ptr.clear();
+        // `styles_by_content` deliberately survives: the next walk
+        // will rebuild `styles_by_ptr` lazily on each style
+        // encounter, but the content hash → `StyleId` mapping must
+        // persist so unchanged stylesheets reuse the same wire id
+        // and don't trigger a `RegisterStyle` overwrite of a still-
+        // referenced slot.
         state.state_handlers.clear();
         state.navigators.clear();
         state.scope_to_navigator.clear();
-        state.handlers = HandlerTable::default();
+        // Drop old closures (frees their captured Rcs — old
+        // NavigatorControl, signal handles, etc. — before the
+        // next render starts) but keep `next` + `identity_to_id`
+        // so identity-keyed re-registers land on the same
+        // `HandlerId`s the previous walk minted. That's what makes
+        // leaked client-side callbacks (Android Toolbar hamburger,
+        // primitive event ptrs) survive a hot-patch.
+        state.handlers.clear_closures();
         state.epoch = state.epoch.wrapping_add(1);
     }
 
@@ -516,14 +679,65 @@ impl WireRecordingBackend {
     }
 
     fn intern_style(state: &mut RecorderState, rules: &Rc<StyleRules>) -> StyleId {
+        // Fast path: same `Rc` pointer we've seen this process →
+        // already registered. Skips the wire conversion + hash.
+        //
+        // The `Weak::upgrade` check is load-bearing: `Rc::as_ptr`
+        // returns a `*const StyleRules` that's only meaningful while
+        // the allocation is alive. An `Rc` dropped here can have its
+        // address recycled by the allocator on the next
+        // `Rc::new(...)`, and without a liveness check the map
+        // would return the prior `StyleId` for what is actually a
+        // brand-new, different-content `Rc` at the same address.
         let ptr = Rc::as_ptr(rules) as usize;
-        if let Some(&id) = state.styles_by_ptr.get(&ptr) {
+        let stale = match state.styles_by_ptr.get(&ptr) {
+            Some((weak, sid)) => {
+                if weak.upgrade().is_some() {
+                    return *sid;
+                }
+                // Cached Weak is dead → the prior allocation was
+                // dropped. The current `rules` happens to land on
+                // the same recycled address. Fall through to
+                // content hashing; the stale entry gets overwritten
+                // by the insert at the bottom of the miss path.
+                true
+            }
+            None => false,
+        };
+        if stale {
+            // Defensive remove so a content-hash miss below doesn't
+            // skip the insert (the insert overwrites anyway, but
+            // dropping the dead Weak immediately frees its slot).
+            state.styles_by_ptr.remove(&ptr);
+        }
+        // Convert to wire form and hash the serialized bytes for a
+        // content-addressed lookup. This is the cross-process map
+        // that makes hot reload incremental: after a sidecar
+        // respawn, the new walker re-encounters the same logical
+        // stylesheets — different `Rc` pointers but identical
+        // wire content — so they should land on the same `StyleId`s
+        // the client already has registered.
+        let wire = convert_out::style_rules_to_wire(rules);
+        let content_hash = {
+            use std::hash::{Hash, Hasher};
+            let bytes = serde_json::to_vec(&wire).unwrap_or_default();
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            bytes.hash(&mut h);
+            h.finish()
+        };
+        if let Some(&id) = state.styles_by_content.get(&content_hash) {
+            // Known content → reuse the existing wire id. Cache by
+            // `Rc` pointer too so we don't re-hash on the next
+            // encounter within this process.
+            state.styles_by_ptr.insert(ptr, (Rc::downgrade(rules), id));
             return id;
         }
+        // New content → mint a fresh id, register on the wire, cache
+        // in both maps.
         state.next_style += 1;
         let id = StyleId(state.next_style);
-        state.styles_by_ptr.insert(ptr, id);
-        let wire = convert_out::style_rules_to_wire(rules);
+        state.styles_by_ptr.insert(ptr, (Rc::downgrade(rules), id));
+        state.styles_by_content.insert(content_hash, id);
         state.emit(Command::RegisterStyle { id, rules: wire });
         id
     }
@@ -589,8 +803,11 @@ impl Backend for WireRecordingBackend {
         trailing_icon: Option<&primitives::icon::IconData>,
     ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
+        let identity = framework_core::current_identity();
         let id = Self::mint_node(&mut state);
-        let handler = state.handlers.register_unit(on_click.fire.clone());
+        let handler = state
+            .handlers
+            .register_unit_for_identity(identity, on_click.fire.clone());
         let leading = leading_icon.map(convert_out::icon_data_to_wire);
         let trailing = trailing_icon.map(convert_out::icon_data_to_wire);
         state.emit(Command::CreateButton {
@@ -605,8 +822,11 @@ impl Backend for WireRecordingBackend {
 
     fn create_pressable(&mut self, on_click: Rc<dyn Fn()>) -> Self::Node {
         let mut state = self.inner.borrow_mut();
+        let identity = framework_core::current_identity();
         let id = Self::mint_node(&mut state);
-        let handler = state.handlers.register_unit(on_click);
+        let handler = state
+            .handlers
+            .register_unit_for_identity(identity, on_click);
         state.emit(Command::CreatePressable {
             id,
             on_click: handler,
@@ -738,8 +958,11 @@ impl Backend for WireRecordingBackend {
         on_change: Rc<dyn Fn(String)>,
     ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
+        let identity = framework_core::current_identity();
         let id = Self::mint_node(&mut state);
-        let handler = state.handlers.register_string(on_change);
+        let handler = state
+            .handlers
+            .register_string_for_identity(identity, on_change);
         state.emit(Command::CreateTextInput {
             id,
             initial_value: initial_value.to_string(),
@@ -763,8 +986,11 @@ impl Backend for WireRecordingBackend {
         on_change: Rc<dyn Fn(bool)>,
     ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
+        let identity = framework_core::current_identity();
         let id = Self::mint_node(&mut state);
-        let handler = state.handlers.register_bool(on_change);
+        let handler = state
+            .handlers
+            .register_bool_for_identity(identity, on_change);
         state.emit(Command::CreateToggle {
             id,
             initial_value,
@@ -797,8 +1023,11 @@ impl Backend for WireRecordingBackend {
         on_change: Rc<dyn Fn(f32)>,
     ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
+        let identity = framework_core::current_identity();
         let id = Self::mint_node(&mut state);
-        let handler = state.handlers.register_float(on_change);
+        let handler = state
+            .handlers
+            .register_float_for_identity(identity, on_change);
         state.emit(Command::CreateSlider {
             id,
             initial_value,
@@ -928,7 +1157,7 @@ impl Backend for WireRecordingBackend {
         let mut state = self.inner.borrow_mut();
         for r in rules {
             let ptr = Rc::as_ptr(r) as usize;
-            if let Some(sid) = state.styles_by_ptr.remove(&ptr) {
+            if let Some((_, sid)) = state.styles_by_ptr.remove(&ptr) {
                 state.emit(Command::UnregisterStyle { id: sid });
             }
         }
@@ -988,8 +1217,10 @@ impl Backend for WireRecordingBackend {
         trap_focus: bool,
     ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
+        let identity = framework_core::current_identity();
         let id = Self::mint_node(&mut state);
-        let handler = on_dismiss.map(|cb| state.handlers.register_unit(cb));
+        let handler = on_dismiss
+            .map(|cb| state.handlers.register_unit_for_identity(identity, cb));
         // The framework recently split overlays into viewport
         // (`Primitive::Overlay`) and element-anchored
         // (`Primitive::AnchoredOverlay`). This Backend method now
@@ -1390,6 +1621,15 @@ impl Backend for WireRecordingBackend {
         });
     }
 
+    fn apply_navigator_body_style(&mut self, navigator: &Self::Node, style: &Rc<StyleRules>) {
+        let mut state = self.inner.borrow_mut();
+        let sid = Self::intern_style(&mut state, style);
+        state.emit(Command::ApplyNavigatorBodyStyle {
+            navigator: *navigator,
+            style: sid,
+        });
+    }
+
     fn apply_drawer_sidebar_style(&mut self, navigator: &Self::Node, style: &Rc<StyleRules>) {
         let mut state = self.inner.borrow_mut();
         let sid = Self::intern_style(&mut state, style);
@@ -1446,8 +1686,11 @@ impl Backend for WireRecordingBackend {
 
     fn create_link(&mut self, config: primitives::link::LinkConfig) -> Self::Node {
         let mut state = self.inner.borrow_mut();
+        let identity = framework_core::current_identity();
         let id = Self::mint_node(&mut state);
-        let handler = state.handlers.register_unit(config.on_activate);
+        let handler = state
+            .handlers
+            .register_unit_for_identity(identity, config.on_activate);
         // NavKind isn't carried in LinkConfig (the closure already
         // encodes which command to dispatch); the wire stores a
         // placeholder so a future renderer can target the right
@@ -1656,19 +1899,45 @@ fn screen_options_to_wire(
         header_left: options
             .header_left
             .as_ref()
-            .map(|btn| header_button_to_wire(state, btn)),
+            .map(|btn| header_button_to_wire(state, btn, 0)),
         header_right: options
             .header_right
             .as_ref()
-            .map(|btn| header_button_to_wire(state, btn)),
+            .map(|btn| header_button_to_wire(state, btn, 1)),
     }
 }
 
 fn header_button_to_wire(
     state: &mut RecorderState,
     btn: &framework_core::primitives::navigator::HeaderButton,
+    slot: u32,
 ) -> wire::WireHeaderButton {
-    let handler = state.handlers.register_unit(btn.on_press.clone());
+    // Derive a stable identity for this header button from the
+    // ambient walker identity (set by the caller — typically the
+    // navigator's identity, since `screen_options_to_wire` runs
+    // inside the `drawer_navigator_attach_initial` impl which is
+    // called by the walker after restoring identity post-mount).
+    // `slot` distinguishes left vs. right; the (parent, slot) pair
+    // is what the rest of the identity tree uses, so the resulting
+    // identity stays stable across hot-patches and the matching
+    // `HandlerId` survives `clear_closures`.
+    //
+    // Hot-patch hamburger fix: the Android Toolbar's leaked
+    // `HeaderButtonCallback` captured the original `HandlerId` at
+    // install time and never updates. After a hot-patch the
+    // server's freshly-walked button re-registers under the *same*
+    // id (identity match) with the *new* `Rc<NavigatorControl>` in
+    // its captured closure — so a tap still fires `ToggleDrawer`
+    // on the live navigator instead of getting silently dropped.
+    let identity = framework_core::Identity::node(
+        framework_core::current_identity(),
+        slot,
+        None,
+        None,
+    );
+    let handler = state
+        .handlers
+        .register_unit_for_identity(identity, btn.on_press.clone());
     wire::WireHeaderButton {
         icon: btn.icon.clone(),
         on_press: handler,

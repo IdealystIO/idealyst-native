@@ -19,7 +19,21 @@ pub const PRIMITIVES_ROUTE: Route<()> = Route::<()>::new("primitives", "/concept
 pub const STYLES_ROUTE: Route<()> = Route::<()>::new("styles", "/concepts/styles");
 pub const NAVIGATION_ROUTE: Route<()> = Route::<()>::new("navigation", "/concepts/navigation");
 
-// Reference
+// Building Blocks (reference-y pages that deepen the conceptual ones)
+pub const LISTS_ROUTE: Route<()> = Route::<()>::new("lists", "/reference/lists");
+pub const ICONS_ROUTE: Route<()> = Route::<()>::new("icons", "/reference/icons");
+pub const REFS_ROUTE: Route<()> = Route::<()>::new("refs", "/reference/refs");
+
+// Tooling
+pub const ROBOT_ROUTE: Route<()> = Route::<()>::new("robot", "/tools/robot");
+pub const DEV_TOOLS_ROUTE: Route<()> = Route::<()>::new("dev-tools", "/tools/dev-tools");
+
+// Backends
+pub const BACKENDS_ROUTE: Route<()> = Route::<()>::new("backends", "/backends");
+pub const WRITING_A_BACKEND_ROUTE: Route<()> =
+    Route::<()>::new("writing-a-backend", "/backends/writing");
+
+// Reference (legacy hand-built pages — to be migrated to `docs!`)
 pub const MACROS_ROUTE: Route<()> = Route::<()>::new("macros", "/reference/macros");
 pub const CLI_ROUTE: Route<()> = Route::<()>::new("cli", "/reference/cli");
 pub const PLATFORMS_ROUTE: Route<()> = Route::<()>::new("platforms", "/reference/platforms");
@@ -37,31 +51,14 @@ pub struct IndexSection {
 /// Hierarchical sidebar: each section gets a heading and its
 /// entries appear underneath. Order matters — sidebar renders in
 /// declaration order.
+///
+/// TEMP DEBUG: cut down to a single entry to isolate whether the
+/// wasm OOB depends on volume / specific entries / specific names.
 pub const SECTIONS: &[IndexSection] = &[
     IndexSection {
         label: "Getting Started",
         items: &[
             IndexEntry { name: "overview", label: "Overview" },
-            IndexEntry { name: "quickstart", label: "Quickstart" },
-        ],
-    },
-    IndexSection {
-        label: "Core Concepts",
-        items: &[
-            IndexEntry { name: "components", label: "Components" },
-            IndexEntry { name: "reactivity", label: "Reactivity" },
-            IndexEntry { name: "ui-dsl", label: "UI DSL" },
-            IndexEntry { name: "primitives", label: "Primitives" },
-            IndexEntry { name: "styles", label: "Styles & Themes" },
-            IndexEntry { name: "navigation", label: "Navigation" },
-        ],
-    },
-    IndexSection {
-        label: "Reference",
-        items: &[
-            IndexEntry { name: "macros", label: "Macros" },
-            IndexEntry { name: "cli", label: "CLI" },
-            IndexEntry { name: "platforms", label: "Platforms" },
         ],
     },
 ];

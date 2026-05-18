@@ -36,6 +36,14 @@ pub struct Args {
     #[arg(long)]
     pub password: Option<String>,
 
+    /// Android `--aas` only: bake `ws://127.0.0.1:<port>` into the
+    /// APK's `IdealystAasUrl` meta-data and set up `adb reverse
+    /// tcp:<port> tcp:<port>`. Use when a dev-server / sidecar is
+    /// already running outside of `idealyst dev` (otherwise the
+    /// emulator falls back to Bonjour, which QEMU NAT blocks).
+    #[arg(long)]
+    pub aas_port: Option<u16>,
+
     /// Roku only: after a successful install, stream the device's
     /// BrightScript debug console (port 8085) to stdout.
     #[arg(long)]
@@ -136,11 +144,13 @@ pub fn run(args: Args) -> anyhow::Result<()> {
                     mode,
                     // `idealyst run android --aas` doesn't pre-browse
                     // Bonjour the way `idealyst dev --aas --android`
-                    // does. Falls through to the in-app Bonjour path,
-                    // which works for physical devices but not the
-                    // QEMU-NAT emulator. Use `dev --aas --android`
-                    // for the emulator-friendly path.
-                    aas_port: None,
+                    // does. Without `--aas-port`, falls through to
+                    // the in-app Bonjour path (works for physical
+                    // devices but not the QEMU-NAT emulator). Pass
+                    // `--aas-port` to point the APK at an explicit
+                    // host (the same port the dev-server prints on
+                    // startup).
+                    aas_port: args.aas_port,
                 },
             )?;
             eprintln!();
