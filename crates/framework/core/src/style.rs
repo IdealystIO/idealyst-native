@@ -32,8 +32,10 @@
 
 use std::any::Any;
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
+
+use crate::assets::TypefaceId;
 
 // ----------------------------------------------------------------------------
 // Values
@@ -286,6 +288,94 @@ pub enum FontStyle {
     Italic,
 }
 
+/// `font-family` value. Either a free-form CSS-style family name
+/// (`"Helvetica, sans-serif"`, `"monospace"`) or a declarative
+/// [`Typeface`](crate::assets::Typeface) handle, which the framework
+/// registers with the backend on first use before any rule that
+/// references it is applied.
+///
+/// Authors usually don't construct this directly. The `stylesheet!`
+/// macro wraps every property value in `Into::into(...)`, so:
+///
+/// ```ignore
+/// stylesheet! {
+///     pub Body<MyTheme> {
+///         base(_) {
+///             font_family: "system-ui, sans-serif",       // → System
+///             // or
+///             font_family: &INTER,                        // → Typeface
+///         }
+///     }
+/// }
+/// ```
+///
+/// goes through `From<&str>` / `From<&'static Typeface>` respectively.
+#[derive(Clone, Debug)]
+pub enum FontFamily {
+    /// A CSS-style family name. Passed verbatim to the platform's
+    /// font lookup (web's `font-family`, iOS's `UIFont(name:)`,
+    /// Android's `Typeface.create(name)`). Use for system fonts and
+    /// for typefaces the OS already knows about.
+    System(String),
+    /// A declarative typeface registered with the backend on first
+    /// observation. The framework calls
+    /// [`Backend::register_asset`](crate::Backend::register_asset)
+    /// for each face plus
+    /// [`Backend::register_typeface`](crate::Backend::register_typeface)
+    /// before any `apply_style` that references it; backends then
+    /// resolve fonts via the typeface's `family_name`.
+    Typeface(crate::assets::Typeface),
+}
+
+impl From<String> for FontFamily {
+    fn from(s: String) -> Self {
+        FontFamily::System(s)
+    }
+}
+impl From<&str> for FontFamily {
+    fn from(s: &str) -> Self {
+        FontFamily::System(s.to_string())
+    }
+}
+impl From<crate::assets::Typeface> for FontFamily {
+    fn from(t: crate::assets::Typeface) -> Self {
+        FontFamily::Typeface(t)
+    }
+}
+impl From<&'static crate::assets::Typeface> for FontFamily {
+    fn from(t: &'static crate::assets::Typeface) -> Self {
+        FontFamily::Typeface(*t)
+    }
+}
+
+impl PartialEq for FontFamily {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (FontFamily::System(a), FontFamily::System(b)) => a == b,
+            // Typefaces are equal iff their ids match. Cheaper than
+            // comparing `&'static` slices structurally and matches the
+            // backend's dedup key.
+            (FontFamily::Typeface(a), FontFamily::Typeface(b)) => a.id == b.id,
+            _ => false,
+        }
+    }
+}
+impl Eq for FontFamily {}
+impl std::hash::Hash for FontFamily {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            FontFamily::System(s) => {
+                state.write_u8(0);
+                s.hash(state);
+            }
+            FontFamily::Typeface(t) => {
+                state.write_u8(1);
+                t.id.hash(state);
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum TextAlign {
     #[default]
@@ -492,7 +582,7 @@ pub struct StyleRules {
     pub left: Option<Tokenized<Length>>,
 
     // --- Typography (text-only on native; cascade on web) ---
-    pub font_family: Option<String>,
+    pub font_family: Option<FontFamily>,
     pub font_weight: Option<FontWeight>,
     pub font_style: Option<FontStyle>,
     pub line_height: Option<Tokenized<f32>>,
@@ -660,7 +750,14 @@ impl StyleRules {
         write_tokenized_length(&mut s, "left", &self.left);
 
         // Typography
-        write_str(&mut s, "ff", self.font_family.as_deref());
+        let ff_buf: Option<String> = self.font_family.as_ref().map(|ff| match ff {
+            FontFamily::System(name) => name.clone(),
+            // Typeface key is the id — two stylesheets that reference
+            // the same `Typeface` produce identical content keys
+            // regardless of the family-name string.
+            FontFamily::Typeface(t) => format!("tf:{}", t.id.0),
+        });
+        write_str(&mut s, "ff", ff_buf.as_deref());
         write_enum(&mut s, "fw", self.font_weight.map(|x| x as u8));
         write_enum(&mut s, "fst", self.font_style.map(|x| x as u8));
         write_tokenized_f32(&mut s, "lh", &self.line_height);
@@ -1520,6 +1617,14 @@ thread_local! {
     /// the initial theme name.
     static PENDING_ACTIVE_THEME_SIGNAL: RefCell<Option<(u64, String)>> =
         const { RefCell::new(None) };
+
+    /// Typefaces already registered with the backend this session.
+    /// Drives the dedup in [`ensure_typefaces_registered_with`]: the
+    /// framework calls `register_asset` + `register_typeface` once
+    /// per unique `TypefaceId` no matter how many stylesheets — or
+    /// rules within a stylesheet — reference the same typeface.
+    static REGISTERED_TYPEFACES: RefCell<HashSet<TypefaceId>> =
+        RefCell::new(HashSet::new());
 }
 
 #[derive(PartialEq, Eq, Hash, Clone)]
@@ -1717,17 +1822,76 @@ pub fn set_theme<Theme: ThemeTokens + 'static>(theme: Theme) {
 /// - Flushes the pending-tokens queue, calling `install_tokens` with
 ///   the most recent theme's token list (if any was queued by
 ///   `install_theme` / `set_theme`).
+/// Walk `rules` for `FontFamily::Typeface` references and, for any
+/// typeface not yet observed this session, emit `register_asset` for
+/// each face's asset followed by `register_typeface` for the family.
+///
+/// Called by the framework before [`ensure_registered_with`] hands the
+/// rules to the backend — every `apply_style` that references a
+/// typeface is guaranteed to find the family already registered.
+///
+/// Dedup is session-wide (thread-local) and keyed by [`TypefaceId`].
+/// Backends do their own dedup as a safety net (see
+/// `WebBackend::impl_register_typeface` and the `@font-face` rule
+/// table), but the framework-side short-circuit keeps the hot path
+/// off the backend round-trip.
+pub fn ensure_typefaces_registered_with<RA, RT>(
+    rules: &[Rc<StyleRules>],
+    mut register_asset: RA,
+    mut register_typeface: RT,
+) where
+    RA: FnMut(crate::assets::AssetId, crate::assets::AssetTag, &crate::assets::AssetSource),
+    RT: FnMut(
+        TypefaceId,
+        &'static str,
+        &'static [crate::assets::TypefaceFace],
+        crate::assets::SystemFallback,
+    ),
+{
+    // Walk rules in order; collect unseen typefaces. We don't
+    // deduplicate the per-rules walk itself — typically `rules` has a
+    // handful of entries and any typeface is the same `Typeface` value
+    // across all variants of a stylesheet — so the hot path is the
+    // thread-local set's O(1) miss check.
+    REGISTERED_TYPEFACES.with(|set| {
+        let mut set = set.borrow_mut();
+        for r in rules {
+            if let Some(FontFamily::Typeface(tf)) = &r.font_family {
+                if set.insert(tf.id) {
+                    for face in tf.faces {
+                        register_asset(
+                            face.asset,
+                            crate::assets::AssetTag::Font,
+                            &face.source,
+                        );
+                    }
+                    register_typeface(tf.id, tf.family_name, tf.faces, tf.fallback);
+                }
+            }
+        }
+    });
+}
+
 /// - Sweeps registrations whose `Weak<StyleSheet>` no longer upgrades
 ///   into the pending-unregister queue.
-pub fn ensure_registered_with<R, U, I>(
+pub fn ensure_registered_with<R, U, I, RA, RT>(
     sheet: &Rc<StyleSheet>,
     register: R,
     unregister: U,
     install_tokens: I,
+    register_asset: RA,
+    register_typeface: RT,
 ) where
     R: FnOnce(&[Rc<StyleRules>]),
     U: Fn(&[Rc<StyleRules>]),
     I: FnOnce(&[TokenEntry]),
+    RA: FnMut(crate::assets::AssetId, crate::assets::AssetTag, &crate::assets::AssetSource),
+    RT: FnMut(
+        TypefaceId,
+        &'static str,
+        &'static [crate::assets::TypefaceFace],
+        crate::assets::SystemFallback,
+    ),
 {
     // Flush pending tokens first — backends that emit `var(--…)` need
     // the variables installed before any rule that references them
@@ -1825,6 +1989,12 @@ pub fn ensure_registered_with<R, U, I>(
         sheet.insert_variant(theme_ptr, variants.clone(), rc.clone());
     }
     let rules: Vec<Rc<StyleRules>> = keyed.into_iter().map(|(_, rc)| rc).collect();
+    // Register any typefaces (and their per-face assets) the sheet
+    // references before shipping the stylesheet itself — backends
+    // emit `font-family` against a registered family, and the wire
+    // layer needs the asset bytes resident before any
+    // `RegisterStyle`/`ApplyStyle` can flow through.
+    ensure_typefaces_registered_with(&rules, register_asset, register_typeface);
     register(&rules);
     REGISTRATIONS.with(|r| {
         r.borrow_mut().insert(
@@ -1864,6 +2034,13 @@ pub fn pregenerate_for_theme(sheet: &StyleSheet, theme: &dyn Any) -> Vec<Rc<Styl
         .into_iter()
         .map(|(_, rc)| rc)
         .collect()
+}
+
+/// Convenience wrapper around [`pregenerate_for_theme`] that
+/// reads the thread-local active theme via [`active_theme`].
+pub fn pregenerate_for_active_theme(sheet: &StyleSheet) -> Vec<Rc<StyleRules>> {
+    let theme = active_theme();
+    pregenerate_for_theme(sheet, &*theme)
 }
 
 /// Same as `pregenerate_for_theme` but also returns the
@@ -2365,5 +2542,194 @@ mod tests {
             ..Default::default()
         };
         assert_ne!(lit_rules.content_key(), tok_rules.content_key());
+    }
+
+    // -----------------------------------------------------------------
+    // FontFamily + typeface registration
+    // -----------------------------------------------------------------
+
+    fn sample_typeface() -> crate::assets::Typeface {
+        crate::typeface! {
+            name: "TestSans",
+            faces: [
+                crate::face!(weight: FontWeight::Normal, style: FontStyle::Normal,
+                             src: "fonts/test-regular.ttf"),
+                crate::face!(weight: FontWeight::Bold, style: FontStyle::Normal,
+                             src: "fonts/test-bold.ttf"),
+            ],
+            fallback: crate::assets::SystemFallback::SansSerif,
+        }
+    }
+
+    fn other_typeface() -> crate::assets::Typeface {
+        crate::typeface! {
+            name: "TestMono",
+            faces: [
+                crate::face!(weight: FontWeight::Normal, style: FontStyle::Normal,
+                             src: "fonts/mono-regular.ttf"),
+            ],
+            fallback: crate::assets::SystemFallback::Monospace,
+        }
+    }
+
+    #[test]
+    fn font_family_from_string_and_str_produce_system() {
+        let from_str: FontFamily = "Helvetica".into();
+        let from_string: FontFamily = String::from("Helvetica").into();
+        assert_eq!(from_str, FontFamily::System("Helvetica".to_string()));
+        assert_eq!(from_string, from_str);
+    }
+
+    #[test]
+    fn font_family_from_typeface_wraps_value() {
+        let tf = sample_typeface();
+        let ff: FontFamily = tf.into();
+        match ff {
+            FontFamily::Typeface(t) => assert_eq!(t.id, tf.id),
+            _ => panic!("expected Typeface variant"),
+        }
+    }
+
+    #[test]
+    fn font_family_eq_by_typeface_id_not_struct() {
+        let tf = sample_typeface();
+        // Same id but synthetic struct missing the static metadata —
+        // exercises the manual `PartialEq` that compares on id only.
+        let synthetic = crate::assets::Typeface {
+            id: tf.id,
+            family_name: "",
+            faces: &[],
+            fallback: crate::assets::SystemFallback::None,
+        };
+        let a = FontFamily::Typeface(tf);
+        let b = FontFamily::Typeface(synthetic);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn font_family_system_and_typeface_never_equal() {
+        let tf = sample_typeface();
+        let a = FontFamily::System("X".to_string());
+        let b = FontFamily::Typeface(tf);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn font_family_hash_matches_eq() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        fn hash<T: Hash>(t: &T) -> u64 {
+            let mut h = DefaultHasher::new();
+            t.hash(&mut h);
+            h.finish()
+        }
+
+        let tf = sample_typeface();
+        let a = FontFamily::Typeface(tf);
+        let synthetic = crate::assets::Typeface {
+            id: tf.id,
+            family_name: "different-but-same-id",
+            faces: &[],
+            fallback: crate::assets::SystemFallback::None,
+        };
+        let b = FontFamily::Typeface(synthetic);
+        assert_eq!(a, b);
+        assert_eq!(hash(&a), hash(&b), "equal values must hash equal");
+
+        let s1 = FontFamily::System("X".to_string());
+        let s2 = FontFamily::System("X".to_string());
+        assert_eq!(hash(&s1), hash(&s2));
+        let s3 = FontFamily::System("Y".to_string());
+        assert_ne!(hash(&s1), hash(&s3));
+    }
+
+    #[test]
+    fn content_key_typeface_distinct_from_same_named_system() {
+        let tf = sample_typeface();
+        let from_typeface = StyleRules {
+            font_family: Some(FontFamily::Typeface(tf)),
+            ..Default::default()
+        };
+        let from_system = StyleRules {
+            font_family: Some(FontFamily::System(tf.family_name.to_string())),
+            ..Default::default()
+        };
+        // A typeface and a same-name system reference describe
+        // semantically different things (the typeface registration is
+        // a separate backend artifact). Content keys must differ so
+        // the backend doesn't conflate them.
+        assert_ne!(from_typeface.content_key(), from_system.content_key());
+    }
+
+    #[test]
+    fn content_key_same_typeface_collapses_to_same_key() {
+        let tf = sample_typeface();
+        let a = StyleRules {
+            font_family: Some(FontFamily::Typeface(tf)),
+            ..Default::default()
+        };
+        let b = StyleRules {
+            font_family: Some(FontFamily::Typeface(tf)),
+            ..Default::default()
+        };
+        assert_eq!(a.content_key(), b.content_key());
+    }
+
+    #[test]
+    fn ensure_typefaces_registered_dedups_by_id() {
+        // Two rules referencing the same typeface — register
+        // callbacks fire exactly once. Different typefaces in the
+        // same call register separately.
+        let tf_a = sample_typeface();
+        let tf_b = other_typeface();
+        let rules: Vec<Rc<StyleRules>> = vec![
+            Rc::new(StyleRules {
+                font_family: Some(FontFamily::Typeface(tf_a)),
+                ..Default::default()
+            }),
+            Rc::new(StyleRules {
+                font_family: Some(FontFamily::Typeface(tf_a)),
+                ..Default::default()
+            }),
+            Rc::new(StyleRules {
+                font_family: Some(FontFamily::Typeface(tf_b)),
+                ..Default::default()
+            }),
+            // System reference — must NOT trigger registration.
+            Rc::new(StyleRules {
+                font_family: Some(FontFamily::System("system-ui".to_string())),
+                ..Default::default()
+            }),
+        ];
+        let mut asset_calls: Vec<crate::assets::AssetId> = Vec::new();
+        let mut typeface_calls: Vec<TypefaceId> = Vec::new();
+        ensure_typefaces_registered_with(
+            &rules,
+            |id, kind, _src| {
+                assert_eq!(kind, crate::assets::AssetTag::Font);
+                asset_calls.push(id);
+            },
+            |id, _name, _faces, _fallback| {
+                typeface_calls.push(id);
+            },
+        );
+        // 2 faces for tf_a + 1 face for tf_b = 3 asset registrations.
+        assert_eq!(asset_calls.len(), 3);
+        assert_eq!(typeface_calls, vec![tf_a.id, tf_b.id]);
+
+        // A *second* call for an overlapping set is a no-op for the
+        // already-seen typeface. tf_b would also dedup, so a re-call
+        // with [tf_a, tf_b] only fires for items already registered:
+        // both are known → zero new calls.
+        let mut asset_calls2: Vec<crate::assets::AssetId> = Vec::new();
+        let mut typeface_calls2: Vec<TypefaceId> = Vec::new();
+        ensure_typefaces_registered_with(
+            &rules,
+            |id, _, _| asset_calls2.push(id),
+            |id, _, _, _| typeface_calls2.push(id),
+        );
+        assert!(asset_calls2.is_empty(), "no new asset registrations on dedup");
+        assert!(typeface_calls2.is_empty(), "no new typeface registrations on dedup");
     }
 }

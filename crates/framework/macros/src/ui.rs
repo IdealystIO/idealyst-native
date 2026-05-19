@@ -861,20 +861,39 @@ fn emit_icon(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
     quote! { ::framework_core::icon(#data) #color_call #stroke_call #anim_call }
 }
 
-/// `Image(src = ..., alt = ...)`. Takes a `src` prop (required) and
-/// optional `alt`. Both are reactive via `IntoImageSource`.
+/// `Image(src = ..., alt = ...)` or `Image(asset = &LOGO, alt = ...)`.
+///
+/// Exactly one source prop should be set:
+/// - `src = ...` routes through [`image`](framework_core::primitives::image::image)
+///   for free-form URLs / closures.
+/// - `asset = ...` routes through
+///   [`image_asset`](framework_core::primitives::image::image_asset)
+///   for declarative `Asset<kinds::Image>` references. The expression
+///   should evaluate to a `Copy` `Asset<kinds::Image>` (typically by
+///   dereferencing a `static`: `asset = *LOGO`, or shorthand
+///   `asset = &LOGO` which the macro auto-derefs).
 fn emit_image(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
-    let src = props
-        .iter()
-        .find(|p| p.name == "src")
-        .map(|p| p.value.to_token_stream())
-        .unwrap_or_else(|| quote! { "" });
     let alt_call = if let Some(a) = props.iter().find(|p| p.name == "alt") {
         let v = emit_attr_value(&a.value);
         quote! { .alt(#v) }
     } else {
         quote! {}
     };
+    if let Some(a) = props.iter().find(|p| p.name == "asset") {
+        let v = a.value.to_token_stream();
+        // Idiomatic call site is `asset = &LOGO` (a borrow of a
+        // `static`), so we emit one `*` to read the `Copy` value out.
+        // For direct expressions that already produce an
+        // `Asset<kinds::Image>` by value, write `asset = &owned`.
+        return quote! {
+            ::framework_core::primitives::image::image_asset(*#v) #alt_call
+        };
+    }
+    let src = props
+        .iter()
+        .find(|p| p.name == "src")
+        .map(|p| p.value.to_token_stream())
+        .unwrap_or_else(|| quote! { "" });
     quote! { ::framework_core::primitives::image::image(#src) #alt_call }
 }
 

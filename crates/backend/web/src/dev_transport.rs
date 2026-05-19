@@ -319,6 +319,7 @@ fn command_kind(c: &wire::Command) -> &'static str {
         NavigatorReset { .. } => "NavigatorReset",
         NavigatorMountTab { .. } => "NavigatorMountTab",
         DrawerAttachSidebar { .. } => "DrawerAttachSidebar",
+        AttachNavigatorLayout { .. } => "AttachNavigatorLayout",
         OpenDrawer { .. } => "OpenDrawer",
         CloseDrawer { .. } => "CloseDrawer",
         ToggleDrawer { .. } => "ToggleDrawer",
@@ -337,6 +338,10 @@ fn command_kind(c: &wire::Command) -> &'static str {
         Finish { .. } => "Finish",
         ReleaseNode { .. } => "ReleaseNode",
         InstallThemeVariables { .. } => "InstallThemeVariables",
+        RegisterAsset { .. } => "RegisterAsset",
+        UnregisterAsset { .. } => "UnregisterAsset",
+        RegisterTypeface { .. } => "RegisterTypeface",
+        UnregisterTypeface { .. } => "UnregisterTypeface",
     }
 }
 

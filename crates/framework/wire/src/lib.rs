@@ -62,6 +62,8 @@ define_id!(HandlerId, "Closure identity. Used for events and ops dispatching.");
 define_id!(StyleId, "Pre-registered style identity.");
 define_id!(StylesheetId, "Stylesheet identity for grouped registration.");
 define_id!(ScopeId, "Per-screen / per-item framework scope. Minted by dev; used by app to request release.");
+define_id!(AssetId, "Static asset identity (font / image / audio / video / blob).");
+define_id!(TypefaceId, "Static typeface identity (a font family + a weight/style table).");
 
 // ---------------------------------------------------------------------------
 // Top-level message envelopes
@@ -578,6 +580,38 @@ pub enum Command {
     InstallThemeVariables {
         tokens: Vec<WireTokenEntry>,
     },
+
+    // --- Assets ---
+    /// Register a static asset (font / image / etc.) under `id`. Sent
+    /// before any command (typeface, style, image primitive) that
+    /// references the asset. The app side caches by id; subsequent
+    /// references resolve through the cache. Bytes ride inline for
+    /// `WireAssetSource::Embedded`; `Bundled` paths and `Remote` URLs
+    /// are resolved by the app-side backend.
+    RegisterAsset {
+        id: AssetId,
+        kind: WireAssetTag,
+        source: WireAssetSource,
+    },
+    /// Drop a previously-registered asset. Mirror of
+    /// [`Command::UnregisterStyle`]; cache-bounded backends evict.
+    UnregisterAsset {
+        id: AssetId,
+        kind: WireAssetTag,
+    },
+    /// Register a typeface (font family with a weight/style table).
+    /// Sent after the per-face assets have been registered. Subsequent
+    /// `ApplyStyle` commands reference the family by [`TypefaceId`]
+    /// once the wire's `WireStyleRules` grows a `font_family` slot.
+    RegisterTypeface {
+        id: TypefaceId,
+        family_name: String,
+        faces: Vec<WireTypefaceFace>,
+        fallback: WireSystemFallback,
+    },
+    UnregisterTypeface {
+        id: TypefaceId,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -628,7 +662,28 @@ pub struct WireStyleRules {
 
     pub opacity: Option<f32>,
     pub font_weight: Option<WireFontWeight>,
+    pub font_family: Option<WireFontFamily>,
     pub text_align: Option<WireTextAlign>,
+}
+
+/// Wire mirror of `framework_core::FontFamily`. The `Typeface`
+/// variant carries both the [`TypefaceId`] (for identity / dedup
+/// purposes against earlier `Command::RegisterTypeface`) and the
+/// family name (so replay backends can emit `font-family: "name"`
+/// without keeping a side table). The redundancy is small and keeps
+/// the wire side stateless.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum WireFontFamily {
+    /// CSS-style family-name string. Passed through verbatim — may
+    /// contain a comma-separated fallback stack.
+    System(String),
+    /// Registered typeface, identified by id and named for direct
+    /// `font-family` emission. The matching `Command::RegisterTypeface`
+    /// has already been shipped earlier in the command stream.
+    Typeface {
+        id: TypefaceId,
+        family_name: String,
+    },
 }
 
 /// CSS color string ("#ff8800", "rgba(...)", "red"). Wire keeps it
@@ -885,6 +940,67 @@ pub struct WirePresenceState {
 }
 
 // ---------------------------------------------------------------------------
+// Wire asset types
+// ---------------------------------------------------------------------------
+
+/// Wire mirror of `framework_core::assets::AssetTag`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum WireAssetTag {
+    Font,
+    Image,
+    Audio,
+    Video,
+    Blob,
+}
+
+/// Wire mirror of `framework_core::assets::AssetSource`. `Embedded`
+/// carries bytes inline (base64-friendly via serde's default `Vec<u8>`
+/// encoding — switch to the binary codec for production). `Bundled`
+/// and `Remote` are pointer-only — the app-side backend resolves them
+/// against whatever bundle / network it has.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum WireAssetSource {
+    Embedded {
+        bytes: Vec<u8>,
+        extension: String,
+    },
+    Bundled {
+        path: String,
+    },
+    Remote {
+        url: String,
+    },
+}
+
+/// Wire mirror of `framework_core::assets::TypefaceFace`. The face's
+/// asset has been registered separately via `Command::RegisterAsset`;
+/// this struct only carries the cross-reference plus weight/style.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireTypefaceFace {
+    pub weight: WireFontWeight,
+    pub style: WireFontStyle,
+    pub asset: AssetId,
+}
+
+/// Wire mirror of `framework_core::style::FontStyle`. (Mirrors the
+/// existing `WireFontWeight` shape — split out because the framework's
+/// `FontStyle` enum is distinct from `FontWeight`.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WireFontStyle {
+    Normal,
+    Italic,
+}
+
+/// Wire mirror of `framework_core::assets::SystemFallback`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WireSystemFallback {
+    Serif,
+    SansSerif,
+    Monospace,
+    None,
+}
+
+// ---------------------------------------------------------------------------
 // Frame format
 // ---------------------------------------------------------------------------
 
@@ -902,6 +1018,172 @@ pub mod codec {
 
     pub fn decode<'a, T: Deserialize<'a>>(bytes: &'a [u8]) -> serde_json::Result<T> {
         serde_json::from_slice(bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn roundtrip<T: Serialize + for<'de> Deserialize<'de>>(value: &T) -> serde_json::Value {
+        let bytes = codec::encode(value).expect("encode");
+        let decoded: serde_json::Value = serde_json::from_slice(&bytes).expect("decode");
+        // Re-encode and parse the actual T to ensure decode succeeds
+        // against the strongly-typed schema as well.
+        let _: T = codec::decode(&bytes).expect("decode strong-typed");
+        decoded
+    }
+
+    #[test]
+    fn register_asset_bundled_roundtrip() {
+        let cmd = Command::RegisterAsset {
+            id: AssetId(42),
+            kind: WireAssetTag::Font,
+            source: WireAssetSource::Bundled {
+                path: "fonts/Inter-Regular.ttf".to_string(),
+            },
+        };
+        let bytes = codec::encode(&cmd).expect("encode");
+        let decoded: Command = codec::decode(&bytes).expect("decode");
+        match decoded {
+            Command::RegisterAsset { id, kind, source } => {
+                assert_eq!(id, AssetId(42));
+                assert_eq!(kind, WireAssetTag::Font);
+                match source {
+                    WireAssetSource::Bundled { path } => {
+                        assert_eq!(path, "fonts/Inter-Regular.ttf");
+                    }
+                    _ => panic!("expected Bundled"),
+                }
+            }
+            _ => panic!("expected RegisterAsset variant"),
+        }
+    }
+
+    #[test]
+    fn register_asset_embedded_preserves_bytes() {
+        let cmd = Command::RegisterAsset {
+            id: AssetId(7),
+            kind: WireAssetTag::Image,
+            source: WireAssetSource::Embedded {
+                bytes: vec![0xDE, 0xAD, 0xBE, 0xEF],
+                extension: "png".to_string(),
+            },
+        };
+        let bytes = codec::encode(&cmd).expect("encode");
+        let decoded: Command = codec::decode(&bytes).expect("decode");
+        match decoded {
+            Command::RegisterAsset {
+                source:
+                    WireAssetSource::Embedded { bytes, extension },
+                ..
+            } => {
+                assert_eq!(bytes, vec![0xDE, 0xAD, 0xBE, 0xEF]);
+                assert_eq!(extension, "png");
+            }
+            _ => panic!("expected Embedded RegisterAsset"),
+        }
+    }
+
+    #[test]
+    fn register_typeface_carries_faces() {
+        let cmd = Command::RegisterTypeface {
+            id: TypefaceId(99),
+            family_name: "Inter".to_string(),
+            faces: vec![
+                WireTypefaceFace {
+                    weight: WireFontWeight::Regular,
+                    style: WireFontStyle::Normal,
+                    asset: AssetId(1),
+                },
+                WireTypefaceFace {
+                    weight: WireFontWeight::Bold,
+                    style: WireFontStyle::Italic,
+                    asset: AssetId(2),
+                },
+            ],
+            fallback: WireSystemFallback::SansSerif,
+        };
+        let bytes = codec::encode(&cmd).expect("encode");
+        let decoded: Command = codec::decode(&bytes).expect("decode");
+        match decoded {
+            Command::RegisterTypeface {
+                id,
+                family_name,
+                faces,
+                fallback,
+            } => {
+                assert_eq!(id, TypefaceId(99));
+                assert_eq!(family_name, "Inter");
+                assert_eq!(faces.len(), 2);
+                assert_eq!(faces[1].asset, AssetId(2));
+                assert!(matches!(faces[1].style, WireFontStyle::Italic));
+                assert!(matches!(fallback, WireSystemFallback::SansSerif));
+            }
+            _ => panic!("expected RegisterTypeface"),
+        }
+    }
+
+    #[test]
+    fn wire_font_family_typeface_carries_id_and_name() {
+        let ff = WireFontFamily::Typeface {
+            id: TypefaceId(123),
+            family_name: "Inter".to_string(),
+        };
+        let v = roundtrip(&ff);
+        // JSON shape sanity-check — the enum is tagged with the
+        // variant name and carries the two fields. `TypefaceId` is a
+        // tuple struct with one field, which serde-json flattens to
+        // a bare number.
+        let obj = v.get("Typeface").expect("Typeface variant");
+        assert_eq!(obj.get("id").and_then(|n| n.as_u64()), Some(123));
+        assert_eq!(obj.get("family_name").and_then(|s| s.as_str()), Some("Inter"));
+    }
+
+    #[test]
+    fn wire_font_family_system_passes_through() {
+        let ff = WireFontFamily::System("ui-monospace, Menlo, monospace".to_string());
+        let bytes = codec::encode(&ff).expect("encode");
+        let decoded: WireFontFamily = codec::decode(&bytes).expect("decode");
+        match decoded {
+            WireFontFamily::System(s) => {
+                assert_eq!(s, "ui-monospace, Menlo, monospace");
+            }
+            _ => panic!("expected System"),
+        }
+    }
+
+    #[test]
+    fn wire_style_rules_carries_font_family() {
+        let rules = WireStyleRules {
+            font_family: Some(WireFontFamily::Typeface {
+                id: TypefaceId(5),
+                family_name: "Inter".to_string(),
+            }),
+            font_weight: Some(WireFontWeight::Bold),
+            ..Default::default()
+        };
+        let bytes = codec::encode(&rules).expect("encode");
+        let decoded: WireStyleRules = codec::decode(&bytes).expect("decode");
+        match decoded.font_family {
+            Some(WireFontFamily::Typeface { id, family_name }) => {
+                assert_eq!(id, TypefaceId(5));
+                assert_eq!(family_name, "Inter");
+            }
+            _ => panic!("expected Typeface variant"),
+        }
+        assert!(matches!(decoded.font_weight, Some(WireFontWeight::Bold)));
+    }
+
+    #[test]
+    fn unregister_commands_roundtrip() {
+        let a = Command::UnregisterAsset {
+            id: AssetId(1),
+            kind: WireAssetTag::Audio,
+        };
+        let t = Command::UnregisterTypeface { id: TypefaceId(2) };
+        let _: Command = codec::decode(&codec::encode(&a).unwrap()).unwrap();
+        let _: Command = codec::decode(&codec::encode(&t).unwrap()).unwrap();
     }
 }
 

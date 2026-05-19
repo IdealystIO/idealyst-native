@@ -23,7 +23,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use wire::{Command, NodeId, ScopeId, StyleId, WireScreenOptions, WireStyleRules};
+use wire::{AssetId, Command, NodeId, ScopeId, StyleId, TypefaceId, WireScreenOptions, WireStyleRules};
 
 /// All scene state needed to regenerate the wire command stream for
 /// a fresh client.
@@ -72,10 +72,22 @@ pub struct SceneModel {
     nav_style_slots: HashMap<NodeId, NavStyleSlots>,
     /// Per-drawer-navigator sidebar attachment.
     drawer_sidebars: HashMap<NodeId, NodeId>,
+    /// Per-navigator layout attachment (root + outlet). Carries the
+    /// pair the wire client needs to wire up a serialized
+    /// `.layout(...)` subtree — root is inserted into the navigator
+    /// container, outlet records where subsequent screens mount.
+    nav_layouts: HashMap<NodeId, (NodeId, NodeId)>,
     /// Root node from `Backend::finish(root)`. Anchors reachability
     /// — anything not in this subtree (and not a navigator screen)
     /// gets pruned during snapshot.
     root: Option<NodeId>,
+    /// Registered assets (font / image / etc.) by id. Stored verbatim
+    /// so a snapshot can replay the full `RegisterAsset` command;
+    /// typefaces and (eventually) styles reference these by id.
+    assets: HashMap<AssetId, Command>,
+    /// Registered typefaces by id. Emitted after assets in the
+    /// snapshot so per-face asset lookups resolve.
+    typefaces: HashMap<TypefaceId, Command>,
 }
 
 /// One entry in a navigator's mounted-screen stack.
@@ -358,6 +370,13 @@ impl SceneModel {
             Command::DrawerAttachSidebar { navigator, sidebar } => {
                 self.drawer_sidebars.insert(*navigator, *sidebar);
             }
+            Command::AttachNavigatorLayout {
+                navigator,
+                root,
+                outlet,
+            } => {
+                self.nav_layouts.insert(*navigator, (*root, *outlet));
+            }
             Command::OpenDrawer { .. }
             | Command::CloseDrawer { .. }
             | Command::ToggleDrawer { .. } => {
@@ -426,6 +445,22 @@ impl SceneModel {
                 // here. Acceptable for dev — themes rarely change
                 // mid-session.
             }
+
+            // -- Assets / typefaces. Stored verbatim so the snapshot
+            //    can replay them on reconnect in the right order
+            //    (assets first, typefaces second, styles third).
+            Command::RegisterAsset { id, .. } => {
+                self.assets.insert(*id, cmd.clone());
+            }
+            Command::UnregisterAsset { id, .. } => {
+                self.assets.remove(id);
+            }
+            Command::RegisterTypeface { id, .. } => {
+                self.typefaces.insert(*id, cmd.clone());
+            }
+            Command::UnregisterTypeface { id } => {
+                self.typefaces.remove(id);
+            }
         }
     }
 
@@ -452,6 +487,9 @@ impl SceneModel {
     /// screen.
     ///
     /// Emit order:
+    ///   0. `RegisterAsset` for every live asset, then
+    ///      `RegisterTypeface` for every live typeface (faces
+    ///      reference assets by id, so the order matters).
     ///   1. `RegisterStyle` for every live style.
     ///   2. `Create*` for every reachable node.
     ///   3. `Insert` for every parent→child edge.
@@ -465,6 +503,23 @@ impl SceneModel {
     pub fn snapshot_commands(&self) -> Vec<Command> {
         let reachable = self.compute_reachable();
         let mut out = Vec::new();
+
+        // 0. Assets, then typefaces. Snapshot order matters: each
+        //    typeface face references an asset by id.
+        let mut asset_ids: Vec<AssetId> = self.assets.keys().copied().collect();
+        asset_ids.sort_by_key(|a| a.0);
+        for id in asset_ids {
+            if let Some(c) = self.assets.get(&id) {
+                out.push(c.clone());
+            }
+        }
+        let mut typeface_ids: Vec<TypefaceId> = self.typefaces.keys().copied().collect();
+        typeface_ids.sort_by_key(|t| t.0);
+        for id in typeface_ids {
+            if let Some(c) = self.typefaces.get(&id) {
+                out.push(c.clone());
+            }
+        }
 
         // 1. Styles.
         let mut style_ids: Vec<StyleId> = self.styles.keys().copied().collect();
@@ -560,6 +615,20 @@ impl SceneModel {
             let Some(stack) = self.navigators.get(nav_id) else {
                 continue;
             };
+            // AttachNavigatorLayout has to land before
+            // NavigatorAttachInitial — the wire client sets the
+            // navigator's outlet inside attach_layout, and
+            // attach_initial mounts the screen into that outlet.
+            // Reversed, the screen would end up in the bare
+            // container alongside (or on top of) the layout's
+            // sidebar.
+            if let Some(&(root, outlet)) = self.nav_layouts.get(nav_id) {
+                out.push(Command::AttachNavigatorLayout {
+                    navigator: *nav_id,
+                    root,
+                    outlet,
+                });
+            }
             for (i, entry) in stack.iter().enumerate() {
                 if i == 0 {
                     out.push(Command::NavigatorAttachInitial {
@@ -640,6 +709,14 @@ impl SceneModel {
         for sidebar in self.drawer_sidebars.values() {
             stack.push(*sidebar);
         }
+        // Navigator layouts: the layout's root + its subtree (which
+        // typically embeds the drawer's sidebar Primitive) only
+        // reach the snapshot via this stash. Without it the layout
+        // is pruned and `AttachNavigatorLayout` ships with NodeIds
+        // the client has never seen → `UnknownNode` on replay.
+        for (root, _outlet) in self.nav_layouts.values() {
+            stack.push(*root);
+        }
 
         while let Some(id) = stack.pop() {
             if !reachable.insert(id) {
@@ -655,5 +732,149 @@ impl SceneModel {
         }
         reachable
     }
+}
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wire::{
+        WireAssetSource, WireAssetTag, WireFontWeight, WireFontStyle, WireSystemFallback,
+        WireTypefaceFace,
+    };
+
+    fn register_asset(id: u64, kind: WireAssetTag) -> Command {
+        Command::RegisterAsset {
+            id: wire::AssetId(id),
+            kind,
+            source: WireAssetSource::Bundled {
+                path: format!("path/{id}.bin"),
+            },
+        }
+    }
+
+    fn register_typeface(id: u64, family: &str, face_asset_id: u64) -> Command {
+        Command::RegisterTypeface {
+            id: wire::TypefaceId(id),
+            family_name: family.to_string(),
+            faces: vec![WireTypefaceFace {
+                weight: WireFontWeight::Regular,
+                style: WireFontStyle::Normal,
+                asset: wire::AssetId(face_asset_id),
+            }],
+            fallback: WireSystemFallback::SansSerif,
+        }
+    }
+
+    fn register_style(id: u64) -> Command {
+        Command::RegisterStyle {
+            id: wire::StyleId(id),
+            rules: WireStyleRules::default(),
+        }
+    }
+
+    fn variant_name(cmd: &Command) -> &'static str {
+        match cmd {
+            Command::RegisterAsset { .. } => "RegisterAsset",
+            Command::RegisterTypeface { .. } => "RegisterTypeface",
+            Command::RegisterStyle { .. } => "RegisterStyle",
+            _ => "Other",
+        }
+    }
+
+    #[test]
+    fn snapshot_emits_assets_before_typefaces_before_styles() {
+        let mut model = SceneModel::new();
+        // Apply in arbitrary order — snapshot ordering is what we
+        // care about, not insert order.
+        model.apply(&register_style(10));
+        model.apply(&register_typeface(20, "Inter", 1));
+        model.apply(&register_asset(1, WireAssetTag::Font));
+
+        let snap = model.snapshot_commands();
+        let kinds: Vec<&'static str> = snap.iter().map(variant_name).collect();
+
+        let asset_idx = kinds.iter().position(|k| *k == "RegisterAsset").unwrap();
+        let typeface_idx = kinds.iter().position(|k| *k == "RegisterTypeface").unwrap();
+        let style_idx = kinds.iter().position(|k| *k == "RegisterStyle").unwrap();
+        assert!(asset_idx < typeface_idx, "assets must come before typefaces");
+        assert!(typeface_idx < style_idx, "typefaces must come before styles");
+    }
+
+    #[test]
+    fn snapshot_preserves_full_asset_command() {
+        let mut model = SceneModel::new();
+        model.apply(&register_asset(7, WireAssetTag::Font));
+        let snap = model.snapshot_commands();
+        let asset = snap
+            .iter()
+            .find(|c| matches!(c, Command::RegisterAsset { .. }))
+            .expect("RegisterAsset should appear in snapshot");
+        match asset {
+            Command::RegisterAsset { id, kind, source } => {
+                assert_eq!(*id, wire::AssetId(7));
+                assert_eq!(*kind, WireAssetTag::Font);
+                match source {
+                    WireAssetSource::Bundled { path } => assert_eq!(path, "path/7.bin"),
+                    _ => panic!("expected Bundled source"),
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn unregister_removes_from_snapshot() {
+        let mut model = SceneModel::new();
+        model.apply(&register_asset(1, WireAssetTag::Font));
+        model.apply(&register_typeface(2, "Inter", 1));
+
+        // Sanity: both present.
+        let snap = model.snapshot_commands();
+        assert!(snap.iter().any(|c| matches!(c, Command::RegisterAsset { .. })));
+        assert!(snap.iter().any(|c| matches!(c, Command::RegisterTypeface { .. })));
+
+        model.apply(&Command::UnregisterAsset {
+            id: wire::AssetId(1),
+            kind: WireAssetTag::Font,
+        });
+        model.apply(&Command::UnregisterTypeface {
+            id: wire::TypefaceId(2),
+        });
+
+        let snap = model.snapshot_commands();
+        assert!(!snap.iter().any(|c| matches!(c, Command::RegisterAsset { .. })));
+        assert!(!snap.iter().any(|c| matches!(c, Command::RegisterTypeface { .. })));
+    }
+
+    #[test]
+    fn re_registering_overwrites_in_place() {
+        // Hot-reload re-registers the same id with potentially-new
+        // source data. Snapshot should reflect the latest, not both.
+        let mut model = SceneModel::new();
+        model.apply(&register_asset(1, WireAssetTag::Font));
+        let updated = Command::RegisterAsset {
+            id: wire::AssetId(1),
+            kind: WireAssetTag::Font,
+            source: WireAssetSource::Remote {
+                url: "https://cdn.example.com/new.ttf".to_string(),
+            },
+        };
+        model.apply(&updated);
+
+        let snap = model.snapshot_commands();
+        let assets: Vec<_> = snap
+            .iter()
+            .filter(|c| matches!(c, Command::RegisterAsset { .. }))
+            .collect();
+        assert_eq!(assets.len(), 1, "exactly one entry per asset id");
+        match assets[0] {
+            Command::RegisterAsset { source, .. } => match source {
+                WireAssetSource::Remote { url } => {
+                    assert_eq!(url, "https://cdn.example.com/new.ttf");
+                }
+                _ => panic!("expected Remote (the latest registration)"),
+            },
+            _ => unreachable!(),
+        }
+    }
 }

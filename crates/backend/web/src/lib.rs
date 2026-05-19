@@ -38,6 +38,7 @@
 
 #[cfg(feature = "async-driver")]
 pub mod async_executor;
+mod assets;
 mod defaults;
 #[cfg(feature = "aas-shell")]
 pub mod dev_transport;
@@ -58,7 +59,10 @@ pub use render_loop::install_render_loop;
 pub use scheduler::install_scheduler;
 pub use time_source::install_time_source;
 
-use framework_core::{Backend, ButtonHandle, StyleRules};
+use framework_core::{
+    AssetId, AssetSource, AssetTag, Backend, ButtonHandle, StyleRules, SystemFallback,
+    TypefaceFace, TypefaceId,
+};
 use std::collections::HashMap;
 use std::rc::Rc;
 use wasm_bindgen::closure::Closure;
@@ -193,6 +197,21 @@ pub struct WebBackend {
     /// Reserved for future focus-trap rules; the flag exists now so
     /// the injection step is idempotent.
     pub(crate) overlay_css_injected: bool,
+    /// Asset id → resolved URL. Filled by `register_asset`; queried
+    /// by `register_typeface` (for the `@font-face` `src: url(...)`)
+    /// and, in a follow-up, by the `Image` primitive's `<img src>`.
+    pub(crate) asset_urls: HashMap<AssetId, String>,
+    /// Ids whose `asset_urls` entry is a `blob:` URL backed by
+    /// `URL.createObjectURL` (i.e. `AssetSource::Embedded`). Used by
+    /// `unregister_asset` to call `URL.revokeObjectURL` and free the
+    /// Blob's backing storage. Bundled / Remote URLs are owned by
+    /// the page / CDN — not in this set, never revoked.
+    pub(crate) blob_asset_urls: std::collections::HashSet<AssetId>,
+    /// Typeface id → indices into the shared `<style>` sheet for the
+    /// `@font-face` rules emitted at registration. Lets
+    /// `unregister_typeface` reclaim the slots through the regular
+    /// `delete_rule` recycle path.
+    pub(crate) font_face_rule_indices: HashMap<TypefaceId, Vec<u32>>,
 }
 
 /// Diagnostic snapshot returned by [`WebBackend::debug_counts`].
@@ -263,6 +282,9 @@ impl WebBackend {
             overlay_instances: HashMap::new(),
             next_overlay_id: 0,
             overlay_css_injected: false,
+            asset_urls: HashMap::new(),
+            blob_asset_urls: std::collections::HashSet::new(),
+            font_face_rule_indices: HashMap::new(),
         }
     }
 
@@ -375,7 +397,7 @@ impl Backend for WebBackend {
     }
 
     fn update_image_src(&mut self, node: &Self::Node, src: &str) {
-        primitives::image::update_src(node, src)
+        primitives::image::update_src(self, node, src)
     }
 
     fn create_icon(
@@ -735,6 +757,28 @@ impl Backend for WebBackend {
 
     fn install_theme_variables(&mut self, tokens: &[framework_core::TokenEntry]) {
         self.impl_install_theme_variables(tokens)
+    }
+
+    fn register_asset(&mut self, id: AssetId, kind: AssetTag, source: &AssetSource) {
+        self.impl_register_asset(id, kind, source)
+    }
+
+    fn unregister_asset(&mut self, id: AssetId, kind: AssetTag) {
+        self.impl_unregister_asset(id, kind)
+    }
+
+    fn register_typeface(
+        &mut self,
+        id: TypefaceId,
+        family_name: &str,
+        faces: &[TypefaceFace],
+        fallback: SystemFallback,
+    ) {
+        self.impl_register_typeface(id, family_name, faces, fallback)
+    }
+
+    fn unregister_typeface(&mut self, id: TypefaceId) {
+        self.impl_unregister_typeface(id)
     }
 
     fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {

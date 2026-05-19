@@ -90,6 +90,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc7eb209b1518d6bb87b283c20095f5228ecda460da70b44f0802523dea6da04"
 
 [[package]]
+name = "android-sim"
+version = "0.0.1"
+dependencies = [
+ "glyphon",
+ "render-wgpu",
+]
+
+[[package]]
 name = "android_log-sys"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -362,64 +370,6 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "wire",
-]
-
-[[package]]
-name = "backend-wgpu-api"
-version = "0.0.1"
-dependencies = [
- "framework-core",
-]
-
-[[package]]
-name = "backend-wgpu-core"
-version = "0.0.1"
-dependencies = [
- "backend-wgpu-api",
- "bytemuck",
- "framework-core",
- "glyphon",
- "log",
- "native-layout",
- "wgpu 22.1.0",
-]
-
-[[package]]
-name = "backend-wgpu-native"
-version = "0.0.1"
-dependencies = [
- "backend-wgpu-api",
- "backend-wgpu-core",
- "framework-core",
- "log",
- "pollster",
- "raw-window-handle",
- "wgpu 22.1.0",
- "winit",
-]
-
-[[package]]
-name = "backend-wgpu-phone"
-version = "0.0.1"
-dependencies = [
- "backend-wgpu-native",
- "framework-core",
-]
-
-[[package]]
-name = "backend-wgpu-tablet"
-version = "0.0.1"
-dependencies = [
- "backend-wgpu-native",
- "framework-core",
-]
-
-[[package]]
-name = "backend-wgpu-tv"
-version = "0.0.1"
-dependencies = [
- "backend-wgpu-native",
- "framework-core",
 ]
 
 [[package]]
@@ -1574,6 +1524,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
 
 [[package]]
+name = "host-winit"
+version = "0.0.1"
+dependencies = [
+ "framework-core",
+ "log",
+ "objc2 0.5.2",
+ "objc2-app-kit",
+ "objc2-foundation 0.2.2",
+ "pollster",
+ "raw-window-handle",
+ "render-api",
+ "render-wgpu",
+ "wgpu 22.1.0",
+ "winit",
+]
+
+[[package]]
 name = "hot-reload-test"
 version = "0.0.1"
 dependencies = [
@@ -1708,6 +1675,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e05c02b5e89bff3b946cedeca278abc628fe811e604f027c45a8aa3cf793d0eb"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "ios-sim"
+version = "0.0.1"
+dependencies = [
+ "glyphon",
+ "render-wgpu",
 ]
 
 [[package]]
@@ -2072,6 +2047,46 @@ version = "0.0.1"
 dependencies = [
  "framework-core",
  "taffy",
+]
+
+[[package]]
+name = "native-phone"
+version = "0.0.1"
+dependencies = [
+ "framework-core",
+ "host-winit",
+ "render-wgpu",
+]
+
+[[package]]
+name = "native-tablet"
+version = "0.0.1"
+dependencies = [
+ "framework-core",
+ "host-winit",
+ "render-wgpu",
+]
+
+[[package]]
+name = "native-test"
+version = "0.0.1"
+dependencies = [
+ "android-sim",
+ "framework-core",
+ "ios-sim",
+ "native-phone",
+ "native-tablet",
+ "native-tv",
+ "render-wgpu",
+]
+
+[[package]]
+name = "native-tv"
+version = "0.0.1"
+dependencies = [
+ "framework-core",
+ "host-winit",
+ "render-wgpu",
 ]
 
 [[package]]
@@ -2854,6 +2869,26 @@ name = "regex-syntax"
 version = "0.8.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
+
+[[package]]
+name = "render-api"
+version = "0.0.1"
+dependencies = [
+ "framework-core",
+]
+
+[[package]]
+name = "render-wgpu"
+version = "0.0.1"
+dependencies = [
+ "bytemuck",
+ "framework-core",
+ "glyphon",
+ "log",
+ "native-layout",
+ "render-api",
+ "wgpu 22.1.0",
+]
 
 [[package]]
 name = "renderdoc-sys"
@@ -4098,16 +4133,6 @@ checksum = "59c654c483f058800972c3645e95388a7eca31bf9fe1933bc20e036588a0be02"
 dependencies = [
  "naga 29.0.3",
  "wgpu-types 29.0.3",
-]
-
-[[package]]
-name = "wgpu-test"
-version = "0.0.1"
-dependencies = [
- "backend-wgpu-phone",
- "backend-wgpu-tablet",
- "backend-wgpu-tv",
- "framework-core",
 ]
 
 [[package]]

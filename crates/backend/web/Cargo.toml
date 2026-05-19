@@ -48,6 +48,8 @@ raw-window-handle = "0.6"
 version = "0.3"
 features = [
     "BinaryType",
+    "Blob",
+    "BlobPropertyBag",
     "CloseEvent",
     "console",
     "CssRule",
@@ -76,6 +78,7 @@ features = [
     "MouseEvent",
     "Node",
     "PopStateEvent",
+    "Url",
     "ResizeObserver",
     "WebSocket",
     "Window",

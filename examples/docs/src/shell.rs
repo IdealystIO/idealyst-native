@@ -8,10 +8,9 @@
 use std::rc::Rc;
 
 use framework_core::{
-    component, ui, DrawerContentProps, Primitive, SafeAreaSides, Signal, StyleApplication,
+    component, ui, DrawerContentProps, LayoutProps, Primitive, SafeAreaSides, Signal,
+    StyleApplication,
 };
-#[cfg(target_arch = "wasm32")]
-use framework_core::LayoutProps;
 use idea_ui::{
     body, caption, card, dark_theme, divider, heading, light_theme, set_idea_theme, stack, switch,
     BodyTone, HeadingKind, StackGap, StackPadding,
@@ -208,9 +207,14 @@ fn nav_link(
 // Web layout — places the drawer's pre-built sidebar beside the
 // outlet. Native backends draw their own drawer chrome and ignore
 // this slot.
+//
+// Compiled unconditionally so the AAS recording backend (which runs
+// natively on the dev host) can invoke it too: its `create_drawer_
+// navigator` executes the closure, captures every node it builds as
+// wire commands, and ships the layout to the browser via
+// `Command::AttachNavigatorLayout`.
 // =============================================================================
 
-#[cfg(target_arch = "wasm32")]
 pub fn web_layout() -> impl Fn(LayoutProps) -> Primitive + 'static {
     move |props: LayoutProps| {
         let outlet = props.outlet;
@@ -358,11 +362,3 @@ pub fn codeblock(props: CodeBlockProps) -> Primitive {
     }
 }
 
-// On non-wasm targets the web layout isn't built; suppress the
-// dead-code warning for the PageRoot/Content sheets.
-#[cfg(not(target_arch = "wasm32"))]
-#[allow(dead_code)]
-fn _keep_alive_sheets() {
-    let _ = PageRoot::sheet();
-    let _ = Content::sheet();
-}

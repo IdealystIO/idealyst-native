@@ -22,13 +22,16 @@
 #[cfg(target_arch = "wasm32")]
 mod web;
 
+use framework_core::embed_asset;
+use framework_core::assets::{kinds, Asset};
 use framework_core::{
     component, icon, install_theme, set_theme, signal, ui, AlignItems, AnchorTarget, BackdropMode,
-    ButtonHandle, Color, DrawerHandle, DrawerItem, DrawerNavigator, Easing, ElementAlign,
-    ElementSide, FillRule, FlexDirection, FontWeight, HeaderButton, IconData,
+    ButtonHandle, Color, DrawerContentProps, DrawerHandle, DrawerNavigator, Easing,
+    ElementAlign, ElementSide, FillRule, FlexDirection, FontWeight, HeaderButton, IconData,
     IntoStyleSource, JustifyContent, LayoutProps, Length, Navigator, NavigatorHandle, Overflow,
-    PresenceAnim, PresenceState, Primitive, Ref, Route, RouteParams, ScreenOptions, Shadow,
-    Signal, StrokeAnimation, StyleSource, TabNavigator, TabSpec, TabsHandle, TextAlign, ViewportPlacement,
+    PresenceAnim, PresenceState, Primitive, Ref, Route, RouteParams, Screen, ScreenOptions,
+    Shadow, Signal, StrokeAnimation, StyleSource, TabNavigator, TabSpec, TabsHandle, TextAlign,
+    ViewportPlacement,
 };
 use std::collections::HashMap;
 
@@ -38,6 +41,13 @@ const CUSTOM_TRIANGLE: IconData = IconData {
     paths: &["M12 2L2 22h20L12 2z"],
     fill_rule: FillRule::NonZero,
 };
+
+/// A declarative image asset, bytes baked into the binary at compile
+/// time via `include_bytes!`. The framework registers the asset with
+/// the backend on first use — the web backend wraps the bytes in a
+/// `Blob` and emits a `blob:` URL the `<img>` can fetch with no
+/// network round trip.
+static LOGO: Asset<kinds::Image> = embed_asset!("../assets/logo.png");
 
 /// Read the current theme's text color for icons. Reactive — re-fires
 /// when the theme changes.
@@ -1168,6 +1178,7 @@ pub fn dashboard(props: &DashboardProps) -> Primitive {
                     },
                     style = primary_button_style()
                 )
+                Image(asset = &LOGO, alt = "Idealyst")
                 Button(
                     label = "Overlays",
                     on_click = move || {
@@ -1363,58 +1374,47 @@ pub fn home(props: &HomeProps) -> Primitive {
     let is_dark = props.is_dark;
     let drawer_ref: Ref<DrawerHandle> = Ref::new();
 
+    // Hamburger HeaderButton — every drawer screen needs one to
+    // surface the drawer toggle in the nav-bar's left slot.
+    let hamburger = move || {
+        let drawer_ref = drawer_ref;
+        HeaderButton::new("line.3.horizontal", move || {
+            if let Some(h) = drawer_ref.get() {
+                h.toggle();
+            }
+        })
+    };
+
     ui! {
         { DrawerNavigator::new(&DRAWER_DASHBOARD_ROUTE)
-            .item(DRAWER_DASHBOARD_ROUTE, DrawerItem::new("Dashboard"))
-            .item(DRAWER_TABS_ROUTE,      DrawerItem::new("Tab demo"))
-            .item(DRAWER_SETTINGS_ROUTE,  DrawerItem::new("Settings"))
             .screen(DRAWER_DASHBOARD_ROUTE, move |_| {
                 let nav = nav;
                 let drawer = drawer_ref;
-                ui! { Dashboard(nav = nav, drawer = drawer) }
+                Screen::new(ui! { Dashboard(nav = nav, drawer = drawer) })
+                    .title("Dashboard")
+                    .header_left(hamburger())
             })
             .screen(DRAWER_TABS_ROUTE, move |_| {
-                ui! { TabDemo() }
+                Screen::new(ui! { TabDemo() })
+                    .title("Tab Demo")
+                    .header_left(hamburger())
             })
             .screen(DRAWER_SETTINGS_ROUTE, move |_| {
                 let is_dark = is_dark;
-                ui! { SettingsBody(is_dark = is_dark) }
-            })
-            // Per-screen header options
-            .options(DRAWER_DASHBOARD_ROUTE, {
-                let drawer_ref = drawer_ref;
-                move |_: &()| ScreenOptions::new()
-                    .title("Dashboard")
-                    .header_left(HeaderButton::new("line.3.horizontal", move || {
-                        if let Some(h) = drawer_ref.get() { h.toggle(); }
-                    }))
-            })
-            .options(DRAWER_TABS_ROUTE, {
-                let drawer_ref = drawer_ref;
-                move |_: &()| ScreenOptions::new()
-                    .title("Tab Demo")
-                    .header_left(HeaderButton::new("line.3.horizontal", move || {
-                        if let Some(h) = drawer_ref.get() { h.toggle(); }
-                    }))
-            })
-            .options(DRAWER_SETTINGS_ROUTE, {
-                let drawer_ref = drawer_ref;
-                move |_: &()| ScreenOptions::new()
+                Screen::new(ui! { SettingsBody(is_dark = is_dark) })
                     .title("Settings")
-                    .header_left(HeaderButton::new("line.3.horizontal", move || {
-                        if let Some(h) = drawer_ref.get() { h.toggle(); }
-                    }))
+                    .header_left(hamburger())
             })
             // Navigator-level reactive header style slots
             .header_style(nav_bar_header_style())
             .title_style(nav_bar_title_style())
             .button_style(nav_bar_button_style())
             .sidebar_style(drawer_sidebar_style())
-            // The `.sidebar(...)` slot defines the drawer's side
+            // The `.content(...)` slot defines the drawer's side
             // panel. On Android the framework renders it natively
             // beside the body; on web the layout below embeds it
             // via `props.sidebar`. Same closure, both targets.
-            .sidebar(home_drawer_sidebar())
+            .content(home_drawer_sidebar())
             // Web-only chrome. Wraps the drawer in a flex row with
             // the sidebar on the left and the outlet on the right.
             // Native backends ignore this slot — Android renders
@@ -1435,8 +1435,8 @@ pub fn home(props: &HomeProps) -> Primitive {
 /// build time is the drawer, so the default `NavKind` is `Select`.
 /// Clicking dispatches `NavCommand::Select`, which the drawer's
 /// dispatcher translates to a body swap.
-fn home_drawer_sidebar() -> impl Fn(framework_core::DrawerSidebarProps) -> Primitive + 'static {
-    move |props: framework_core::DrawerSidebarProps| {
+fn home_drawer_sidebar() -> impl Fn(DrawerContentProps) -> Primitive + 'static {
+    move |props: DrawerContentProps| {
         let active = props.active_route;
         ui! {
             View(style = drawer_sidebar_style()) {
@@ -2399,49 +2399,32 @@ pub fn app() -> Primitive {
             .screen(HOME_ROUTE, move |_| {
                 let nav = nav;
                 let is_dark = is_dark;
-                ui! { Home(nav = nav, is_dark = is_dark) }
+                // Home screen owns the drawer; suppress this stack's
+                // own nav bar so we don't double up.
+                Screen::new(ui! { Home(nav = nav, is_dark = is_dark) })
+                    .header_shown(false)
             })
             .screen(SHOWCASE_ROUTE, move |_| {
                 let nav = nav;
-                ui! { Showcase(nav = nav) }
+                Screen::new(ui! { Showcase(nav = nav) }).title("Primitives")
             })
             .screen(PERF_ROUTE, move |_| {
                 let nav = nav;
-                ui! { Performance(nav = nav) }
+                Screen::new(ui! { Performance(nav = nav) }).title("Performance")
             })
             .screen(LISTS_ROUTE, move |_| {
                 let nav = nav;
-                ui! { Lists(nav = nav) }
+                Screen::new(ui! { Lists(nav = nav) }).title("Lists")
             })
             .screen(OVERLAY_ROUTE, move |_| {
                 let nav = nav;
-                ui! { Overlays(nav = nav) }
+                Screen::new(ui! { Overlays(nav = nav) }).title("Overlays")
             })
             .screen(DETAIL_ROUTE, move |params: DetailParams| {
                 let nav = nav;
                 let id = params.id;
-                ui! { Detail(id = id, nav = nav) }
-            })
-            // Per-screen header options for pushed screens
-            .options(HOME_ROUTE, |_: &()| {
-                // Home screen is the drawer — it sets its own header via
-                // drawer's .options(). Hide the stack nav bar for it.
-                ScreenOptions::new().header_shown(false)
-            })
-            .options(SHOWCASE_ROUTE, |_: &()| {
-                ScreenOptions::new().title("Primitives")
-            })
-            .options(PERF_ROUTE, |_: &()| {
-                ScreenOptions::new().title("Performance")
-            })
-            .options(LISTS_ROUTE, |_: &()| {
-                ScreenOptions::new().title("Lists")
-            })
-            .options(OVERLAY_ROUTE, |_: &()| {
-                ScreenOptions::new().title("Overlays")
-            })
-            .options(DETAIL_ROUTE, |p: &DetailParams| {
-                ScreenOptions::new().title(format!("Detail #{}", p.id))
+                Screen::new(ui! { Detail(id = id, nav = nav) })
+                    .title(format!("Detail #{}", params.id))
             })
             .header_style(nav_bar_header_style())
             .title_style(nav_bar_title_style())

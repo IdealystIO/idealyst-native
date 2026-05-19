@@ -1,0 +1,17 @@
+[package]
+name = "android-sim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Android (Material 3) simulator skin for the wgpu native runtime.
+#
+# Implements `render_wgpu::Skin` with the M3 baseline-light
+# palette + paint policy: Switch, Slider, Outlined Text Field,
+# Gboard-style keyboard. Stateless; the renderer holds an
+# `Rc<AndroidSim>` and dispatches every paint call through the
+# trait.
+
+[dependencies]
+render-wgpu = { workspace = true }
+glyphon = "0.6"

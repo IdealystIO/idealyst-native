@@ -9,12 +9,15 @@
 
 use framework_core::primitives;
 use framework_core::{
-    AlignItems, Color, Easing, FlexDirection, FontWeight, JustifyContent, Length, StateBits,
-    StyleRules, TextAlign, Tokenized,
+    AlignItems, AssetId, AssetSource, AssetTag, Color, Easing, FlexDirection, FontFamily,
+    FontStyle, FontWeight, JustifyContent, Length, StateBits, StyleRules, SystemFallback,
+    TextAlign, Tokenized, TypefaceFace, TypefaceId,
 };
 use wire::{
-    WireAlignItems, WireColor, WireEasing, WireFillRule, WireFlexDirection, WireFontWeight,
-    WireIconData, WireJustifyContent, WireLength, WireStateBit, WireStyleRules, WireTextAlign,
+    AssetId as WireAssetId, TypefaceId as WireTypefaceId, WireAlignItems, WireAssetSource,
+    WireAssetTag, WireColor, WireEasing, WireFillRule, WireFlexDirection, WireFontFamily,
+    WireFontStyle, WireFontWeight, WireIconData, WireJustifyContent, WireLength, WireStateBit,
+    WireStyleRules, WireSystemFallback, WireTextAlign, WireTypefaceFace,
 };
 
 pub fn icon_data_to_wire(d: &primitives::icon::IconData) -> WireIconData {
@@ -186,6 +189,74 @@ pub fn style_rules_to_wire(r: &StyleRules) -> WireStyleRules {
 
         opacity: r.opacity.as_ref().map(tokenized_f32),
         font_weight: r.font_weight.map(font_weight_to_wire),
+        font_family: r.font_family.as_ref().map(font_family_to_wire),
         text_align: r.text_align.map(text_align_to_wire),
+    }
+}
+
+pub fn font_family_to_wire(ff: &FontFamily) -> WireFontFamily {
+    match ff {
+        FontFamily::System(name) => WireFontFamily::System(name.clone()),
+        FontFamily::Typeface(t) => WireFontFamily::Typeface {
+            id: typeface_id_to_wire(t.id),
+            family_name: t.family_name.to_string(),
+        },
+    }
+}
+
+pub fn font_style_to_wire(s: FontStyle) -> WireFontStyle {
+    match s {
+        FontStyle::Normal => WireFontStyle::Normal,
+        FontStyle::Italic => WireFontStyle::Italic,
+    }
+}
+
+pub fn system_fallback_to_wire(f: SystemFallback) -> WireSystemFallback {
+    match f {
+        SystemFallback::Serif => WireSystemFallback::Serif,
+        SystemFallback::SansSerif => WireSystemFallback::SansSerif,
+        SystemFallback::Monospace => WireSystemFallback::Monospace,
+        SystemFallback::None => WireSystemFallback::None,
+    }
+}
+
+pub fn asset_id_to_wire(id: AssetId) -> WireAssetId {
+    WireAssetId(id.0)
+}
+
+pub fn typeface_id_to_wire(id: TypefaceId) -> WireTypefaceId {
+    WireTypefaceId(id.0)
+}
+
+pub fn asset_tag_to_wire(t: AssetTag) -> WireAssetTag {
+    match t {
+        AssetTag::Font => WireAssetTag::Font,
+        AssetTag::Image => WireAssetTag::Image,
+        AssetTag::Audio => WireAssetTag::Audio,
+        AssetTag::Video => WireAssetTag::Video,
+        AssetTag::Blob => WireAssetTag::Blob,
+    }
+}
+
+pub fn asset_source_to_wire(s: &AssetSource) -> WireAssetSource {
+    match s {
+        AssetSource::Embedded { bytes, extension } => WireAssetSource::Embedded {
+            bytes: bytes.to_vec(),
+            extension: (*extension).to_string(),
+        },
+        AssetSource::Bundled { path } => WireAssetSource::Bundled {
+            path: (*path).to_string(),
+        },
+        AssetSource::Remote { url } => WireAssetSource::Remote {
+            url: (*url).to_string(),
+        },
+    }
+}
+
+pub fn typeface_face_to_wire(f: &TypefaceFace) -> WireTypefaceFace {
+    WireTypefaceFace {
+        weight: font_weight_to_wire(f.weight),
+        style: font_style_to_wire(f.style),
+        asset: asset_id_to_wire(f.asset),
     }
 }

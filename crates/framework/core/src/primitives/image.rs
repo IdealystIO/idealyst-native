@@ -1,14 +1,22 @@
 //! Image primitive.
 //!
 //! Backed by `<img>` on web, `UIImageView` on iOS, `ImageView` on
-//! Android. Source is a reactive closure so authors can pass a static
-//! URL (`image("https://...")`) or a closure reading a signal.
+//! Android. Two construction paths:
 //!
-//! Source resolution is URL-only for v1 — backends fetch the bytes
-//! themselves via their native primitive's URL-loading machinery.
-//! Bundled / file:// / data:// sources are valid URLs and supported
-//! by the platforms' native loaders; the framework doesn't translate.
+//! - **URL-based**: [`image`] takes a free-form `&str`/`String` or a
+//!   closure returning `String`. The framework hands the URL to the
+//!   backend as-is. Bundled / `file://` / `data:` URLs are supported
+//!   by the native loaders; the framework doesn't translate.
+//! - **Asset-based**: [`image_asset`] takes a declarative
+//!   [`Asset<kinds::Image>`](crate::assets::Asset). The walker calls
+//!   `Backend::register_asset` once before `create_image`, and the
+//!   backend resolves the asset to its locally-correct URL (web's
+//!   `dist/assets/` path, iOS bundle resource, Android `AssetManager`,
+//!   etc.). Internally the framework still hands the backend a URL —
+//!   the sentinel `"asset://{id}"` — which backends rewrite to the
+//!   resolved location.
 
+use crate::assets::{kinds, Asset};
 use crate::{Bound, Primitive, Ref, RefFill};
 use std::any::Any;
 use std::rc::Rc;
@@ -72,6 +80,37 @@ pub fn image<S: IntoImageSource>(src: S) -> Bound<ImageHandle> {
         alt: None,
         style: None,
         ref_fill: None,
+        asset: None,
+        #[cfg(feature = "robot")]
+        test_id: None,
+    })
+}
+
+/// Construct an `Image` primitive backed by a declarative asset.
+///
+/// ```ignore
+/// use framework_core::{image_asset, asset};
+/// use framework_core::assets::{kinds::Image, Asset};
+///
+/// static LOGO: Asset<Image> = asset!("images/logo.png");
+///
+/// ui! { ImageAsset(asset = &LOGO) }   // or programmatically:
+/// image_asset(LOGO).alt("Logo".into())
+/// ```
+///
+/// The framework registers the asset with the backend on first use
+/// (deduped per [`AssetId`](crate::assets::AssetId)) and emits the
+/// matching `RegisterAsset` over the wire ahead of `CreateImage`.
+/// The image's `src` resolves to `"asset://{id}"`; each backend
+/// rewrites that to its real loader path on `create_image`.
+pub fn image_asset(asset: Asset<kinds::Image>) -> Bound<ImageHandle> {
+    let id = asset.id;
+    Bound::new(Primitive::Image {
+        src: Box::new(move || format!("asset://{}", id.0)),
+        alt: None,
+        style: None,
+        ref_fill: None,
+        asset: Some(asset),
         #[cfg(feature = "robot")]
         test_id: None,
     })
@@ -94,6 +133,55 @@ impl Bound<ImageHandle> {
             *ref_fill = Some(RefFill::Image(Box::new(move |h| r.fill(h))));
         }
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::asset;
+    use crate::assets::{kinds::Image as ImageKind, AssetTag};
+
+    #[test]
+    fn image_url_constructor_leaves_asset_unset() {
+        let b = image("https://example.com/x.png");
+        match &b.primitive {
+            Primitive::Image { src, asset, .. } => {
+                assert!(asset.is_none(), "url path should not carry an asset");
+                assert_eq!(src(), "https://example.com/x.png");
+            }
+            _ => panic!("expected Image"),
+        }
+    }
+
+    #[test]
+    fn image_asset_constructor_emits_sentinel_url_and_carries_asset() {
+        static LOGO: Asset<ImageKind> = asset!("logo.png");
+        let b = image_asset(LOGO);
+        match &b.primitive {
+            Primitive::Image { src, asset, .. } => {
+                let a = asset.expect("asset path should carry an Asset");
+                assert_eq!(a.id, LOGO.id);
+                assert_eq!(a.tag, AssetTag::Image);
+                // Sentinel format matches what the backend's
+                // `create_image` decodes — keep these in sync.
+                assert_eq!(src(), format!("asset://{}", LOGO.id.0));
+            }
+            _ => panic!("expected Image"),
+        }
+    }
+
+    #[test]
+    fn image_asset_alt_builder_threads_through() {
+        static AVATAR: Asset<ImageKind> = asset!("avatar.png");
+        let b = image_asset(AVATAR).alt("User avatar".to_string());
+        match &b.primitive {
+            Primitive::Image { alt, asset, .. } => {
+                assert_eq!(alt.as_deref(), Some("User avatar"));
+                assert!(asset.is_some());
+            }
+            _ => panic!("expected Image"),
+        }
     }
 }
 

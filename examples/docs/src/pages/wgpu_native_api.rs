@@ -3,7 +3,7 @@
 //! Documents the public surface a native shell uses to drive the
 //! wgpu render backend: the four-crate layout, the `EventSink`
 //! trait, the event vocabulary, `DeviceProfile` /
-//! `SimulatedPlatform`, the redraw hook, and the minimal skeleton
+//! `DeviceProfile`, the redraw hook, and the minimal skeleton
 //! for writing a new native shell or a new render backend on top
 //! of the same contract.
 
@@ -22,21 +22,24 @@ docs! {
     concepts = [],
 
     section(heading = "Intro") {
-        p("The wgpu backend isn't one crate — it's four, deliberately. \
-           The split exists so a new native shell (a web canvas shim, a \
-           UIKit shim, an Android NDK shim) can be written without \
-           touching the renderer, and a new render backend (Skia, vello, \
-           a CPU rasterizer) can be slotted in under the same shell. \
-           The two layers communicate through a small, frozen contract \
-           crate."),
-        p("The layout, under ", code("crates/backend/wgpu/"), ":"),
+        p("The wgpu preview stack isn't one crate — it's four layers, \
+           deliberately. The split exists so a new host shell (a web \
+           canvas shim, a UIKit shim, an Android NDK shim) can be \
+           written without touching the renderer; a new render \
+           backend (Skia, vello, a CPU rasterizer) can be slotted in \
+           under the same shell; and a new platform skin can be added \
+           without recompiling either. The layers communicate through \
+           a small, frozen contract crate and a `Skin` trait."),
+        p("The layout, under ", code("crates/"), ":"),
         code(text, r##"
-            api/      backend-wgpu-api      No wgpu, no winit. Pure contract types.
-            core/     backend-wgpu-core     Render backend. Depends on api + wgpu (no winit).
-            native/   backend-wgpu-native   Winit shell. Depends on api + core + winit + wgpu.
-            phone/, tablet/, tv/            Variants — pick a (native, render, profile) trio.
+            render/api              render-api     No wgpu, no winit. Pure contract types.
+            render/wgpu             render-wgpu    Renderer + Skin trait + interaction host. Depends on api + wgpu.
+            ios-sim                 ios-sim        iOS skin (UISwitch/Slider/TextField/spinner/keyboard).
+            android-sim             android-sim    Android Material 3 skin.
+            host/winit              host-winit     Winit shell. Depends on api + render-wgpu + winit + wgpu.
+            native/{phone,tablet,tv}               Device-profile facades — pick a (host, renderer, skin, profile) tuple.
         "##),
-        p("The contract crate is the seam. ", code("backend-wgpu-api"),
+        p("The contract crate is the seam. ", code("render-api"),
           " has no platform dependencies and no rendering dependencies — \
            it's just types (events, profile, simulated-platform enum) \
            plus the ", code("EventSink"), " trait. Any native shell \
@@ -49,43 +52,51 @@ docs! {
           ". This is the layer underneath that."),
     },
 
-    section(heading = "The four crates") {
+    section(heading = "The crates") {
         list(
-            [code("backend-wgpu-api"), " — the contract. ",
+            [code("render-api"), " — the contract. ",
              code("PointerEvent"), ", ", code("KeyEvent"), ", ",
-             code("ScrollEvent"), ", ", code("DeviceProfile"), ", ",
-             code("SimulatedPlatform"), ", and the ", code("EventSink"),
+             code("ScrollEvent"), ", ", code("DeviceProfile"),
+             ", and the ", code("EventSink"),
              " trait. No wgpu, no winit, no platform-specific anything. \
-              Both layers depend on this; neither depends on the other."],
-            [code("backend-wgpu-core"), " — the render backend. \
+              Every other layer depends on this; it depends on no one."],
+            [code("render-wgpu"), " — the renderer + interaction host. \
               Implements ", code("framework_core::Backend"), " (so the \
               framework can hand it a primitive tree) and ",
              code("EventSink"), " (so a shell can hand it events). Owns \
               the wgpu pipeline, the Taffy layout tree, the animator, \
-              the iOS-style widget look. Has no opinion on what event \
-              source drives it."],
-            [code("backend-wgpu-native"), " — the winit shell. Owns the \
+              and the ", code("Skin"), " trait. Holds an ",
+             code("Rc<dyn Skin>"), " for the lifetime of the host; \
+              every widget and keyboard paint call routes through it."],
+            [code("ios-sim"), " / ", code("android-sim"),
+             " — concrete skins. Each implements ", code("Skin"),
+             " with its palette + paint policy. Stateless unit \
+              structs; instantiate once, wrap in ", code("Rc"),
+             ". Adding a third skin is one new crate."],
+            [code("host-winit"), " — the winit shell. Owns the \
               winit event loop and the wgpu surface. Translates ",
              code("winit::WindowEvent"), " values into the api crate's \
               event types and forwards them through ", code("EventSink"),
-             ". The thinnest viable shell — about 300 lines."],
-            [code("backend-wgpu-phone"), " / ", code("-tablet"), " / ",
-             code("-tv"), " — variant crates. Each one picks a ",
-             code("DeviceProfile"), " (window size, color scheme, \
-              simulated platform) and calls the chosen shell's ",
-             code("run(profile, app)"), ". No render logic, no event \
+             ". Takes the skin as a constructor argument."],
+            [code("native-phone"), " / ", code("-tablet"), " / ",
+             code("-tv"), " — variant facades. Each fixes a ",
+             code("DeviceProfile"), " (window size, color scheme) and \
+              calls ", code("host-winit::run(profile, skin, app)"),
+             ". The caller passes the skin. No render logic, no event \
               translation — just configuration."],
         ),
-        p("The big idea: any future native backend (web, iOS-native, \
-           Android-native) is one new crate that does the same job as ",
-          code("backend-wgpu-native"), ". Any future render backend is \
-           one new crate that implements the same two traits as ",
-          code("backend-wgpu-core"), ". The other side doesn't change."),
+        p("Any future host shell (web, iOS-native, Android-native) is \
+           one new crate that does the same job as ", code("host-winit"),
+          ". Any future render backend is one new crate that implements \
+           the same two traits as ", code("render-wgpu"),
+          ". Any future skin (Fluent, Roku, design-system-X) is one \
+           new crate implementing ", code("Skin"),
+          ". No central registry to update."),
     },
 
     section(heading = "The EventSink trait") {
         p("The full surface a native shell calls. Defined in ",
-          code("backend_wgpu_api"), ":"),
+          code("render_api"), ":"),
 
         code(rust, r##"
             use std::time::Instant;
@@ -148,12 +159,12 @@ docs! {
         ),
         p("There's no platform-flavor escape hatch. If you can't \
            express your event as one of these, the vocabulary needs \
-           widening in ", code("backend-wgpu-api"),
+           widening in ", code("render-api"),
           " so every shell benefits — not a private side-channel."),
     },
 
     section(heading = "Event types") {
-        p("The vocabulary lives in ", code("backend_wgpu_api::input"),
+        p("The vocabulary lives in ", code("render_api::input"),
           ". The same types flow through every shell."),
     },
 
@@ -249,41 +260,32 @@ docs! {
            should normalize the same way."),
     },
 
-    section(heading = "SimulatedPlatform and DeviceProfile") {
-        p("Two configuration types the variant crates fill in and pass \
-           to the chosen shell."),
+    section(heading = "DeviceProfile and Skin") {
+        p("Two values the variant crates compose and pass to the shell."),
 
         code(rust, r##"
-            pub enum SimulatedPlatform {
-                Ios,
-                Android,
-            }
-
             pub struct DeviceProfile {
                 pub logical_size: (u32, u32),
                 pub title: String,
                 pub color_scheme: ColorScheme,
-                pub platform: SimulatedPlatform,
             }
+
+            // From render-wgpu:
+            pub trait Skin { /* paint methods + keyboard rows */ }
         "##),
 
-        p(code("SimulatedPlatform"),
-          " is which OS look the render side mimics — iOS-style \
-           switches and sliders versus Material 3. Currently only ",
-          code("Ios"), " is fully implemented; ", code("Android"),
-          " falls through to iOS styling pending a Material pass. New \
-           variants get added here when the render backend grows \
-           support for them; both layers agree on the enum so the \
-           shell can ship a profile without knowing which render \
-           backend is wired in."),
         p(code("DeviceProfile"),
-          " is what a variant crate passes into a shell to describe \
-           the window: how big it should be in logical pixels, what to \
-           title it, what color scheme to report on init, and which \
-           simulated platform to wear. The ", code("phone"), " / ",
-          code("tablet"), " / ", code("tv"), " crates each return a \
-           different profile from a ", code("default()"),
-          " — that's the entirety of what a variant crate does."),
+          " is the shape of the window — how big in logical pixels, \
+           what title, what color scheme to report on init. The ",
+          code("phone"), " / ", code("tablet"), " / ", code("tv"),
+          " crates each carry a different profile; that's the entirety \
+           of what a variant crate does on this front."),
+        p("The platform look (UIKit vs Material 3 vs anything else) \
+           is a separate axis: a ", code("Rc<dyn Skin>"), " passed \
+           alongside the profile. The variant crates don't pick a \
+           default — the caller does. That keeps the variant crate \
+           ignorant of which skins exist and makes adding a new skin \
+           a no-recompile change for the variants."),
     },
 
     section(heading = "The redraw hook") {
@@ -294,11 +296,11 @@ docs! {
            and the render side doesn't know which event loop it's \
            living inside."),
         p("The solution is a closure the shell installs at startup. ",
-          code("backend_wgpu_core"), " exposes it through ",
+          code("render_wgpu"), " exposes it through ",
           code("install_redraw_hook"), ":"),
 
         code(rust, r##"
-            use backend_wgpu_core::install_redraw_hook;
+            use render_wgpu::install_redraw_hook;
 
             // Inside the shell's startup:
             let proxy = event_loop.create_proxy();
@@ -308,7 +310,7 @@ docs! {
         "##),
 
         p("The render side calls ",
-          code("backend_wgpu_core::request_redraw()"),
+          code("render_wgpu::request_redraw()"),
           " whenever it needs another frame; that invokes the \
            installed closure, which posts whatever wake event the \
            shell's event loop understands. The two layers never have \
@@ -338,17 +340,17 @@ docs! {
         p("If you want to drive the wgpu render backend from a \
            platform that isn't winit — a browser canvas, UIKit, \
            Android NDK, a custom embedded windowing layer — you write \
-           a new shell crate. Depend on ", code("backend-wgpu-api"),
-          " for the contract and ", code("backend-wgpu-core"),
+           a new shell crate. Depend on ", code("render-api"),
+          " for the contract and ", code("render-wgpu"),
           " for ", code("Host"), " + ", code("Renderer"),
-          ". Don't depend on ", code("backend-wgpu-native"),
+          ". Don't depend on ", code("host-winit"),
           " — that one's winit-specific."),
         p("Minimal skeleton:"),
 
         code(rust, r##"
             use std::time::Instant;
-            use backend_wgpu_api::DeviceProfile;
-            use backend_wgpu_core::{install_redraw_hook, Host, Renderer};
+            use render_api::DeviceProfile;
+            use render_wgpu::{install_redraw_hook, Host, Renderer};
             use framework_core::Primitive;
 
             pub fn run<F: FnOnce() -> Primitive + 'static>(
@@ -399,8 +401,8 @@ docs! {
         p("If you want to keep the same native shell but swap the \
            renderer — Skia, vello, a CPU rasterizer, a remote-display \
            protocol — you write a render-backend crate. Depend on ",
-          code("backend-wgpu-api"), " only. Don't depend on ",
-          code("backend-wgpu-core"),
+          code("render-api"), " only. Don't depend on ",
+          code("render-wgpu"),
           "; you are the replacement for it."),
         p("Two traits to implement:"),
         list(
@@ -411,11 +413,11 @@ docs! {
              " calls. See ",
              link("Writing your own backend", to = "writing-a-backend"),
              " for the full surface."],
-            [code("backend_wgpu_api::EventSink"),
+            [code("render_api::EventSink"),
              " — so any shell on the api side can forward events to \
               you. The eight methods above."],
         ),
-        p(code("backend-wgpu-core"), "'s ", code("Host"),
+        p(code("render-wgpu"), "'s ", code("Host"),
           " is the worked example: it owns the per-interaction state \
            (focus, press capture, momentum-scroll velocity, keyboard \
            slide phase) and routes events through its hit-test logic \
@@ -433,27 +435,27 @@ docs! {
           code("Cargo.toml"), ":"),
         list(
             ["Shipping an app on a variant the framework provides — \
-              depend on the variant crate (", code("backend-wgpu-phone"),
+              depend on the variant crate (", code("native-phone"),
              ", etc.). It pulls in everything it needs."],
             ["Writing a new native shell — depend on ",
-             code("backend-wgpu-api"), " (for the contract) and ",
-             code("backend-wgpu-core"),
+             code("render-api"), " (for the contract) and ",
+             code("render-wgpu"),
              " (for ", code("Host"), " + ", code("Renderer"),
-             "). Skip ", code("backend-wgpu-native"),
+             "). Skip ", code("host-winit"),
              " — that one's the winit shell, you're writing its \
               replacement."],
             ["Writing a new render backend — depend on ",
-             code("backend-wgpu-api"), " only. You're the replacement \
-              for ", code("backend-wgpu-core"), "."],
+             code("render-api"), " only. You're the replacement \
+              for ", code("render-wgpu"), "."],
             ["Writing a new variant — depend on the native + render \
               combo the variant ships, plus optionally ",
-             code("backend-wgpu-api"),
+             code("render-api"),
              " directly if you want to construct a ", code("DeviceProfile"),
              " without going through a re-export."],
         ),
-        p(code("backend-wgpu-core"), " and ", code("backend-wgpu-native"),
+        p(code("render-wgpu"), " and ", code("host-winit"),
           " each re-export the api types they expose, so most consumers \
-           don't need a direct ", code("backend-wgpu-api"),
+           don't need a direct ", code("render-api"),
           " dependency."),
     },
 

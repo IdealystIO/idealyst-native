@@ -3,6 +3,7 @@ pub(crate) mod callbacks;
 pub(crate) mod graphics;
 pub(crate) mod handles;
 pub(crate) mod icon;
+pub(crate) mod image;
 pub(crate) mod navigator;
 pub(crate) mod overlay;
 pub(crate) mod overlay_shared;
@@ -87,6 +88,12 @@ pub struct IosBackend {
     /// Only used by `render_to_uiimage` — the standalone `create_icon`
     /// uses CAShapeLayer (vector, no raster needed).
     icon_image_cache: HashMap<(usize, u16), Retained<NSObject>>,
+    /// Cache of decoded `UIImage`s for asset-backed `Image` primitives.
+    /// Filled by [`Backend::register_asset`] when an
+    /// `Asset<kinds::Image>` is observed; queried by
+    /// [`Backend::create_image`] when the `src` is the
+    /// `asset://{id}` sentinel.
+    pub(crate) image_cache: image::ImageCache,
     /// Active viewport-anchored overlays keyed by container view
     /// pointer. Element-anchored ones live in
     /// `anchored_overlay_instances` (separate map so the two
@@ -227,6 +234,7 @@ impl IosBackend {
             callback_targets: Vec::new(),
             scroll_views: std::collections::HashSet::new(),
             icon_image_cache: HashMap::new(),
+            image_cache: HashMap::new(),
             overlay_instances: HashMap::new(),
             anchored_overlay_instances: HashMap::new(),
             layout: native_layout::LayoutTree::new(),
@@ -289,6 +297,35 @@ impl IosBackend {
         // `install_theme(...)` (which lives inside the user's
         // `app()` and is invoked by `render`), so subscribing now
         // would panic in `active_theme()` with "no theme installed".
+    }
+
+    /// Install a Taffy `measure_fn` for an image view so flex layout
+    /// reads its `intrinsicContentSize` (driven by the assigned
+    /// `UIImage.size`) instead of collapsing it to 0×0. Re-installable
+    /// — `update_image_src` calls this again after swapping the
+    /// image so a new bitmap's size is picked up immediately.
+    pub(crate) fn install_image_measure(&mut self, view: &objc2::rc::Retained<UIView>) {
+        let layout = self.layout_for_view(view);
+        let view_for_measure = view.clone();
+        self.layout.set_measure_fn(
+            layout,
+            std::rc::Rc::new(move |known_dimensions, _available_space| {
+                let intrinsic: objc2_foundation::CGSize =
+                    unsafe { msg_send![&view_for_measure, intrinsicContentSize] };
+                let w = intrinsic.width as f32;
+                let h = intrinsic.height as f32;
+                // `intrinsicContentSize` is `{-1, -1}` (UIViewNoIntrinsicMetric)
+                // before an image is assigned. Fall back to a zero
+                // measurement in that case so Taffy doesn't try to
+                // size the slot against a negative dimension.
+                let w = if w < 0.0 { 0.0 } else { w };
+                let h = if h < 0.0 { 0.0 } else { h };
+                native_layout::Size {
+                    width: known_dimensions.width.unwrap_or(w),
+                    height: known_dimensions.height.unwrap_or(h),
+                }
+            }),
+        );
     }
 
     /// Install the per-host theme-transition Effect. Subscribes to
@@ -996,6 +1033,45 @@ impl Backend for IosBackend {
         color: Option<&Color>,
     ) -> Self::Node {
         icon::create_icon(self.mtm, data, color)
+    }
+
+    fn register_asset(
+        &mut self,
+        id: framework_core::AssetId,
+        kind: framework_core::AssetTag,
+        source: &framework_core::AssetSource,
+    ) {
+        image::register_asset(&mut self.image_cache, id, kind, source);
+    }
+
+    fn unregister_asset(
+        &mut self,
+        id: framework_core::AssetId,
+        _kind: framework_core::AssetTag,
+    ) {
+        self.image_cache.remove(&id);
+    }
+
+    fn create_image(&mut self, src: &str, alt: Option<&str>) -> Self::Node {
+        let node = image::create_image(self.mtm, &self.image_cache, src, alt);
+        // Register with the layout tree so Taffy gives it a frame.
+        // Image views need an intrinsic-size measurer so they don't
+        // collapse to 0×0 — see project_ios_intrinsic_size_measurer
+        // memory for why.
+        if let IosNode::View(view) = &node {
+            let view_clone = view.clone();
+            self.install_image_measure(&view_clone);
+        }
+        node
+    }
+
+    fn update_image_src(&mut self, node: &Self::Node, src: &str) {
+        image::update_image_src(node, &self.image_cache, src);
+        if let IosNode::View(view) = node {
+            // Image swap can change intrinsicContentSize → re-measure.
+            let view_clone = view.clone();
+            self.install_image_measure(&view_clone);
+        }
     }
 
     fn update_icon_color(&mut self, node: &Self::Node, color: &Color) {

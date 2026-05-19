@@ -1,0 +1,32 @@
+[package]
+name = "render-wgpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Wgpu renderer + interaction host. The platform-agnostic half of
+# the desktop-preview stack.
+#
+# Implements `framework_core::Backend` for `WgpuBackend`, owns the
+# tween engine, the interaction `Host`, and a wgpu-bound
+# `Renderer`. **No winit, no event-loop, no browser deps** — those
+# live in the host shells (`host-winit`, future `host-web`).
+
+[features]
+default = []
+async-driver = ["framework-core/async-driver"]
+
+[dependencies]
+render-api = { workspace = true }
+framework-core = { workspace = true }
+native-layout = { workspace = true }
+
+# Wgpu pipelines + glyph atlas. No platform deps come along.
+wgpu = "22"
+glyphon = "0.6"
+
+# Vertex / uniform buffer POD encoding.
+bytemuck = { version = "1.18", features = ["derive"] }
+
+# Logging — lightweight; the shell wires up an env_logger or similar.
+log = "0.4"

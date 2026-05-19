@@ -8,13 +8,16 @@ use std::rc::Rc;
 
 use framework_core::primitives;
 use framework_core::{
-    AlignItems, Color, Easing, FlexDirection, FontWeight, JustifyContent, Length, StateBits,
-    StyleRules, TextAlign, Tokenized,
+    AlignItems, AssetId as CoreAssetId, AssetSource, AssetTag, Color, Easing, FlexDirection,
+    FontFamily, FontStyle, FontWeight, JustifyContent, Length, StateBits, StyleRules,
+    SystemFallback, TextAlign, Tokenized, TypefaceFace, TypefaceId as CoreTypefaceId,
 };
 use wire::{
-    HandlerId, WireAlignItems, WireColor, WireEasing, WireFillRule, WireFlexDirection,
-    WireFontWeight, WireIconData, WireJustifyContent, WireLength, WireMountPolicy,
-    WirePresenceState, WireScreenOptions, WireStateBit, WireStyleRules, WireTextAlign,
+    AssetId as WireAssetId, HandlerId, TypefaceId as WireTypefaceId, WireAlignItems,
+    WireAssetSource, WireAssetTag, WireColor, WireEasing, WireFillRule, WireFlexDirection,
+    WireFontFamily, WireFontStyle, WireFontWeight, WireIconData, WireJustifyContent,
+    WireLength, WireMountPolicy, WirePresenceState, WireScreenOptions, WireStateBit,
+    WireStyleRules, WireSystemFallback, WireTextAlign, WireTypefaceFace,
 };
 
 pub fn wire_color_to_color(c: WireColor) -> Color {
@@ -268,7 +271,122 @@ pub fn wire_style_to_rules(w: WireStyleRules) -> StyleRules {
 
     s.opacity = w.opacity.map(Tokenized::Literal);
     s.font_weight = w.font_weight.map(wire_font_weight);
+    s.font_family = w.font_family.map(wire_font_family);
     s.text_align = w.text_align.map(wire_text_align);
 
     s
+}
+
+/// `WireFontFamily::Typeface` only carries an id — the dev side
+/// shipped the corresponding `RegisterTypeface` already, and the
+/// app-side backend keeps the registration in its own table. The
+/// replay path here reconstructs a [`FontFamily::Typeface`] from
+/// a synthetic placeholder so the [`StyleRules`] is well-formed;
+/// the web backend reads `tf.family_name` to emit
+/// `font-family: "{name}"`, which works as long as the matching
+/// `@font-face` rule has been injected.
+///
+/// We don't keep the registered name on the wire side at replay
+/// time because the recording side already serialized the family
+/// name into the registered typeface; the web backend looks it up
+/// via its own [`Backend::register_typeface`] handler.
+/// Reconstruct a `FontFamily` from its wire form. The `Typeface`
+/// variant rehydrates an in-memory [`Typeface`](framework_core::Typeface)
+/// from the wire's `(id, family_name)` pair, leaking the name into a
+/// `&'static str` so the struct matches the type of an
+/// authoring-side `typeface!{}` literal. The face list is left empty
+/// — the corresponding `Command::RegisterTypeface` arrived earlier
+/// and the backend already holds the full registration.
+pub fn wire_font_family(w: WireFontFamily) -> FontFamily {
+    match w {
+        WireFontFamily::System(name) => FontFamily::System(name),
+        WireFontFamily::Typeface { id, family_name } => {
+            let family_name_static: &'static str = Box::leak(family_name.into_boxed_str());
+            FontFamily::Typeface(framework_core::Typeface {
+                id: wire_typeface_id(id),
+                family_name: family_name_static,
+                faces: &[],
+                fallback: SystemFallback::None,
+            })
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Asset conversions
+// ---------------------------------------------------------------------------
+
+pub fn wire_asset_id(id: WireAssetId) -> CoreAssetId {
+    CoreAssetId(id.0)
+}
+
+pub fn wire_typeface_id(id: WireTypefaceId) -> CoreTypefaceId {
+    CoreTypefaceId(id.0)
+}
+
+pub fn wire_asset_tag(t: WireAssetTag) -> AssetTag {
+    match t {
+        WireAssetTag::Font => AssetTag::Font,
+        WireAssetTag::Image => AssetTag::Image,
+        WireAssetTag::Audio => AssetTag::Audio,
+        WireAssetTag::Video => AssetTag::Video,
+        WireAssetTag::Blob => AssetTag::Blob,
+    }
+}
+
+pub fn wire_font_style(s: WireFontStyle) -> FontStyle {
+    match s {
+        WireFontStyle::Normal => FontStyle::Normal,
+        WireFontStyle::Italic => FontStyle::Italic,
+    }
+}
+
+pub fn wire_system_fallback(f: WireSystemFallback) -> SystemFallback {
+    match f {
+        WireSystemFallback::Serif => SystemFallback::Serif,
+        WireSystemFallback::SansSerif => SystemFallback::SansSerif,
+        WireSystemFallback::Monospace => SystemFallback::Monospace,
+        WireSystemFallback::None => SystemFallback::None,
+    }
+}
+
+/// `AssetSource` cannot reference the wire's owned `String` / `Vec<u8>`
+/// once the command is consumed — `framework_core::AssetSource` keeps
+/// `&'static` slices. To bridge them at runtime we leak the bytes /
+/// path / URL into a static box. This is acceptable because (a) on the
+/// authoring side `asset!` always produces literally-static data, so a
+/// matching runtime lifetime is the natural reconstruction, and (b)
+/// each unique asset is leaked at most once per session — the
+/// `WireBackend` dedupes by [`AssetId`] before calling this. Callers
+/// that re-register with new sources will leak proportionally; that
+/// matches the dev-mode-only lifetime of the wire path.
+pub fn wire_asset_source(s: WireAssetSource) -> AssetSource {
+    match s {
+        WireAssetSource::Bundled { path } => AssetSource::Bundled {
+            path: Box::leak(path.into_boxed_str()),
+        },
+        WireAssetSource::Remote { url } => AssetSource::Remote {
+            url: Box::leak(url.into_boxed_str()),
+        },
+        WireAssetSource::Embedded { bytes, extension } => AssetSource::Embedded {
+            bytes: Box::leak(bytes.into_boxed_slice()),
+            extension: Box::leak(extension.into_boxed_str()),
+        },
+    }
+}
+
+pub fn wire_typeface_face(f: WireTypefaceFace) -> TypefaceFace {
+    TypefaceFace {
+        weight: wire_font_weight(f.weight),
+        style: wire_font_style(f.style),
+        asset: wire_asset_id(f.asset),
+        // The face's source rides on the corresponding RegisterAsset
+        // command — the wire form keeps them separate. At replay
+        // time the backend uses `face.asset` (the id) for lookup
+        // and ignores `source` on the face itself; we synthesize a
+        // placeholder so the struct is well-formed. Web's
+        // `register_typeface` queries `asset_urls` by id and never
+        // touches this field.
+        source: AssetSource::Bundled { path: "" },
+    }
 }

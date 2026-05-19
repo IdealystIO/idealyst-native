@@ -236,10 +236,21 @@ fn build_inner<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) 
             }
             n
         }
-        Primitive::Image { src, alt, style, ref_fill, .. } => {
+        Primitive::Image { src, alt, style, ref_fill, asset, .. } => {
             // Initial mount: call the source closure once for the
             // initial URL, then wrap it in an effect that updates the
             // image whenever signals it reads change.
+            //
+            // Asset-backed images register the asset with the backend
+            // *before* `create_image` so the sentinel `"asset://{id}"`
+            // the closure returns can be resolved to a real URL. The
+            // dedup happens backend-side (web caches `asset_urls` by
+            // id), so repeated mounts of the same asset are cheap.
+            if let Some(a) = asset {
+                backend
+                    .borrow_mut()
+                    .register_asset(a.id, a.tag, &a.source);
+            }
             let initial = src();
             let n = time_backend_create(pkind!(Image), || backend.borrow_mut().create_image(&initial, alt.as_deref()));
             if let Some(s) = style {
@@ -1710,6 +1721,51 @@ impl<B: Backend + 'static> Drop for AnchoredOverlayHandleCleanup<B> {
     }
 }
 
+/// Run a navigator's optional `build_layout` closure and hand the
+/// resulting subtree to the backend via `attach_navigator_layout`.
+///
+/// Runs OUTSIDE the `borrow_mut` from the just-finished
+/// `create_*_navigator` call — the closure re-enters the walker
+/// (it builds an entire layout subtree using the same backend Rc),
+/// and a nested re-borrow on the outer `RefCell` panics with
+/// "already borrowed". Same pattern the walker already uses for
+/// `drawer_navigator_attach_sidebar`.
+///
+/// Backends that don't honor a layout (iOS/Android/Roku) inherit the
+/// no-op default and silently drop the call. The web backend's
+/// override wires the root into the navigator container and records
+/// the outlet so subsequent screen attaches mount inside it. The
+/// recording backend (`dev-server`) emits
+/// `Command::AttachNavigatorLayout` so the AAS wire client can
+/// reproduce the same wiring on its side.
+fn invoke_layout_and_attach<B: Backend + 'static>(
+    backend: &Rc<RefCell<B>>,
+    navigator: &B::Node,
+    build_layout: Option<Rc<dyn Fn() -> primitives::navigator::LayoutPlan<B::Node>>>,
+) {
+    let Some(build_layout) = build_layout else {
+        return;
+    };
+    let plan = build_layout();
+    // Resolve the outlet's backend `Node` via the `Ref<ViewHandle>`
+    // the layout binds during build. If the layout author embedded
+    // `LayoutProps::outlet` correctly the handle is present; if not,
+    // there's no outlet and the backend gets no `attach` call (so
+    // screens would fall back to mounting in the navigator's bare
+    // container). Same downcast the web backend's local-render
+    // microtask used to do inline.
+    let Some(handle) = plan.outlet_ref.get() else {
+        return;
+    };
+    let any_node = handle.as_any();
+    let Some(outlet) = any_node.downcast_ref::<B::Node>() else {
+        return;
+    };
+    backend
+        .borrow_mut()
+        .attach_navigator_layout(navigator, plan.root, outlet.clone());
+}
+
 /// Build a Navigator. Stands up the per-screen scope registry, builds
 /// the `NavigatorCallbacks` bundle, wires the user-facing handle's
 /// control plane, mounts the initial screen, and returns the native
@@ -1969,9 +2025,12 @@ fn build_navigator<B: Backend + 'static>(
     // `mount_screen` synchronously (would re-enter the backend's
     // borrow_mut → panic). The framework handles initial mount below.
     let mount_screen_for_initial = callbacks.mount_screen.clone();
+    let build_layout_after_create = callbacks.build_layout.clone();
     let node = time_backend_create(pkind!(Navigator), || {
         backend.borrow_mut().create_navigator(callbacks, control.clone())
     });
+
+    invoke_layout_and_attach(backend, &node, build_layout_after_create);
 
     // Mount the initial screen *after* `create_navigator` returns —
     // i.e. outside the borrow_mut window. The screen build
@@ -2213,9 +2272,12 @@ fn build_tab_navigator<B: Backend + 'static>(
     };
 
     let mount_screen_for_initial = callbacks.navigator.mount_screen.clone();
+    let build_layout_after_create = callbacks.navigator.build_layout.clone();
     let node = time_backend_create(pkind!(TabNavigator), || {
         backend.borrow_mut().create_tab_navigator(callbacks, control.clone())
     });
+
+    invoke_layout_and_attach(backend, &node, build_layout_after_create);
 
     // Mount the initial tab's screen after create_tab_navigator
     // returns (outside the borrow_mut window). Same pattern as the
@@ -2584,9 +2646,25 @@ fn build_drawer_navigator<B: Backend + 'static>(
     // `drawer_navigator_attach_sidebar`. Web backends ignore this
     // path (they build the content via `build_layout`).
     let build_content_after_create = callbacks.build_content.clone();
+    let build_layout_after_create = callbacks.navigator.build_layout.clone();
     let node = time_backend_create(pkind!(DrawerNavigator), || {
         backend.borrow_mut().create_drawer_navigator(callbacks, control.clone())
     });
+
+    // Build the layout subtree (if registered) and hand the resulting
+    // root + outlet to the backend. Runs OUTSIDE any active
+    // `borrow_mut` window — the closure re-enters the walker, which
+    // also `borrow_mut`s, and a nested re-borrow on the same `RefCell`
+    // panics with "already borrowed". Backends that don't render
+    // through a layout (iOS/Android/Roku) inherit the default no-op
+    // `attach_navigator_layout`. The web backend's local-render
+    // microtask used to invoke `build_layout` itself; that path has
+    // moved here so the AAS recording backend (which produces wire
+    // commands) sees the same call shape — its
+    // `attach_navigator_layout` override emits
+    // `Command::AttachNavigatorLayout` so the wire client can wire
+    // the same outlet up on its side.
+    invoke_layout_and_attach(backend, &node, build_layout_after_create);
 
     // Build the drawer panel content (if registered) and hand the
     // resulting Node to the backend. Runs outside any active
@@ -2868,6 +2946,8 @@ fn apply_one<B: Backend + 'static>(
         let backend_for_register = backend.clone();
         let backend_for_unregister = backend.clone();
         let backend_for_tokens = backend.clone();
+        let backend_for_asset = backend.clone();
+        let backend_for_typeface = backend.clone();
         style::ensure_registered_with(
             &app.sheet,
             |rules| {
@@ -2882,6 +2962,14 @@ fn apply_one<B: Backend + 'static>(
                 backend_for_tokens
                     .borrow_mut()
                     .install_theme_variables(tokens);
+            },
+            |id, kind, source| {
+                backend_for_asset.borrow_mut().register_asset(id, kind, source);
+            },
+            |id, family_name, faces, fallback| {
+                backend_for_typeface
+                    .borrow_mut()
+                    .register_typeface(id, family_name, faces, fallback);
             },
         );
         // Drain any pending multi-variant theme registrations + the
@@ -3001,6 +3089,8 @@ fn attach_style_reactive<B: Backend + 'static>(
         let backend_for_register = backend_for_effect.clone();
         let backend_for_unregister = backend_for_effect.clone();
         let backend_for_tokens = backend_for_effect.clone();
+        let backend_for_asset = backend_for_effect.clone();
+        let backend_for_typeface = backend_for_effect.clone();
         style::ensure_registered_with(
             &app.sheet,
             |rules| {
@@ -3015,6 +3105,14 @@ fn attach_style_reactive<B: Backend + 'static>(
                 backend_for_tokens
                     .borrow_mut()
                     .install_theme_variables(tokens);
+            },
+            |id, kind, source| {
+                backend_for_asset.borrow_mut().register_asset(id, kind, source);
+            },
+            |id, family_name, faces, fallback| {
+                backend_for_typeface
+                    .borrow_mut()
+                    .register_typeface(id, family_name, faces, fallback);
             },
         );
         let backend_for_variants = backend_for_effect.clone();

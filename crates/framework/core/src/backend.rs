@@ -12,6 +12,7 @@
 use std::any::Any;
 use std::rc::Rc;
 
+use crate::assets::{AssetId, AssetSource, AssetTag, SystemFallback, TypefaceFace, TypefaceId};
 use crate::primitives;
 use crate::style::{Color, StyleRules};
 use crate::{
@@ -630,6 +631,74 @@ pub trait Backend {
     /// (before re-registering, so old state is cleaned up).
     #[allow(unused_variables)]
     fn unregister_stylesheet(&mut self, rules: &[Rc<StyleRules>]) {
+        // default: no-op
+    }
+
+    /// Make a static asset available for use by the renderer.
+    ///
+    /// Called the first time an `AssetId` is observed for this backend
+    /// (the framework dedupes by id). The backend decides what
+    /// registration means:
+    /// - **Web**: fonts inject a `@font-face` rule into the document
+    ///   stylesheet; images stash the URL in a node↔URL map.
+    /// - **iOS**: fonts call `CTFontManagerRegisterFontsForURL`;
+    ///   images become a `UIImage(named:)` cache entry.
+    /// - **Android**: fonts go through `Typeface.createFromAsset`;
+    ///   images preload into a `Bitmap` cache.
+    /// - **wgpu**: bytes are uploaded into the text engine / texture
+    ///   atlas.
+    ///
+    /// `kind` exists so a single entry point can fan out without each
+    /// backend writing a giant `match` on the source's extension. The
+    /// type-safe [`Asset<K>`](crate::assets::Asset) handle on the
+    /// author side already enforces this at compile time; `kind`
+    /// repeats it for runtime dispatch.
+    ///
+    /// Default no-op so backends without a renderer-side asset
+    /// concept (early stubs, or fully wire-driven backends that
+    /// forward registration upstream) compile without scaffolding.
+    #[allow(unused_variables)]
+    fn register_asset(&mut self, id: AssetId, kind: AssetTag, source: &AssetSource) {
+        // default: no-op
+    }
+
+    /// Release a previously-registered asset. Currently called only
+    /// from explicit unload paths (assets are otherwise `'static` and
+    /// live for the duration of the program); backends with bounded
+    /// caches override to evict, others can leave the default no-op.
+    #[allow(unused_variables)]
+    fn unregister_asset(&mut self, id: AssetId, kind: AssetTag) {
+        // default: no-op
+    }
+
+    /// Register a font family (a [`Typeface`](crate::assets::Typeface))
+    /// so subsequent style applications can resolve its faces.
+    ///
+    /// The framework guarantees that every `face.asset` referenced
+    /// here has already been registered via [`register_asset`] in the
+    /// same render flush. Backends that key fonts by family name + a
+    /// weight/style table (web's `font-family` / `font-weight` /
+    /// `font-style`, iOS post-registration `UIFont(name:)`) use this
+    /// call to record the mapping; backends that just take raw bytes
+    /// per face (wgpu / cosmic-text) can leave the default no-op and
+    /// drive registration entirely off `register_asset`.
+    ///
+    /// [`register_asset`]: Self::register_asset
+    #[allow(unused_variables)]
+    fn register_typeface(
+        &mut self,
+        id: TypefaceId,
+        family_name: &str,
+        faces: &[TypefaceFace],
+        fallback: SystemFallback,
+    ) {
+        // default: no-op
+    }
+
+    /// Release a previously-registered typeface. Mirrors
+    /// [`unregister_asset`](Self::unregister_asset).
+    #[allow(unused_variables)]
+    fn unregister_typeface(&mut self, id: TypefaceId) {
         // default: no-op
     }
 

@@ -883,6 +883,19 @@ where
                 )?;
             }
 
+            // --- Layout attach (web-only effectively) ---
+            Command::AttachNavigatorLayout {
+                navigator,
+                root,
+                outlet,
+            } => {
+                let nav = self.lookup_node(navigator)?;
+                let root_node = self.lookup_node(root)?;
+                let outlet_node = self.lookup_node(outlet)?;
+                self.backend
+                    .attach_navigator_layout(&nav, root_node, outlet_node);
+            }
+
             // --- Drawer control plane ---
             Command::DrawerAttachSidebar { navigator, sidebar } => {
                 // Dedup: sidecar respawns re-emit this command, and
@@ -1017,6 +1030,38 @@ where
                 // install_theme_variables; for the prototype the
                 // mapping requires a TokenEntry conversion we haven't
                 // implemented yet. Skip cleanly.
+            }
+            Command::RegisterAsset { id, kind, source } => {
+                let core_id = convert::wire_asset_id(id);
+                let core_kind = convert::wire_asset_tag(kind);
+                let core_source = convert::wire_asset_source(source);
+                self.backend.register_asset(core_id, core_kind, &core_source);
+            }
+            Command::UnregisterAsset { id, kind } => {
+                self.backend.unregister_asset(
+                    convert::wire_asset_id(id),
+                    convert::wire_asset_tag(kind),
+                );
+            }
+            Command::RegisterTypeface {
+                id,
+                family_name,
+                faces,
+                fallback,
+            } => {
+                let core_id = convert::wire_typeface_id(id);
+                let core_faces: Vec<_> =
+                    faces.into_iter().map(convert::wire_typeface_face).collect();
+                let core_fallback = convert::wire_system_fallback(fallback);
+                self.backend.register_typeface(
+                    core_id,
+                    &family_name,
+                    &core_faces,
+                    core_fallback,
+                );
+            }
+            Command::UnregisterTypeface { id } => {
+                self.backend.unregister_typeface(convert::wire_typeface_id(id));
             }
         }
         Ok(())

@@ -1,0 +1,16 @@
+[package]
+name = "native-phone"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Phone-sized native runtime variant. The window size +
+# simulator skin are configured here; all rendering + event
+# handling comes from `host-winit` (winit shell) + `render-wgpu`
+# (the wgpu renderer) + `ios-sim` / `android-sim` (the platform
+# skins).
+
+[dependencies]
+host-winit = { workspace = true }
+render-wgpu = { workspace = true }
+framework-core = { workspace = true }

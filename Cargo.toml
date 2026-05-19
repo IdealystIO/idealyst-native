@@ -20,12 +20,14 @@ members = [
     "crates/backend/roku/macros",
     "crates/backend/roku/transpile",
     "crates/backend/web",
-    "crates/backend/wgpu/api",
-    "crates/backend/wgpu/core",
-    "crates/backend/wgpu/native",
-    "crates/backend/wgpu/phone",
-    "crates/backend/wgpu/tablet",
-    "crates/backend/wgpu/tv",
+    "crates/render/api",
+    "crates/render/wgpu",
+    "crates/skin/ios-sim",
+    "crates/skin/android-sim",
+    "crates/host/winit",
+    "crates/native/phone",
+    "crates/native/tablet",
+    "crates/native/tv",
     "crates/backend/aas-shell-native",
     "crates/backend/posix-log-capture",
     "crates/ui/idea-ui",
@@ -50,7 +52,7 @@ members = [
     "examples/docs",
     "examples/docs-macro",
     "examples/hot-reload-test",
-    "examples/wgpu-test",
+    "examples/native-test",
 ]
 
 [workspace.package]
@@ -88,12 +90,14 @@ backend-roku = { path = "crates/backend/roku" }
 backend-roku-macros = { path = "crates/backend/roku/macros" }
 backend-roku-transpile = { path = "crates/backend/roku/transpile" }
 backend-web = { path = "crates/backend/web" }
-backend-wgpu-api = { path = "crates/backend/wgpu/api" }
-backend-wgpu-core = { path = "crates/backend/wgpu/core" }
-backend-wgpu-native = { path = "crates/backend/wgpu/native" }
-backend-wgpu-phone = { path = "crates/backend/wgpu/phone" }
-backend-wgpu-tablet = { path = "crates/backend/wgpu/tablet" }
-backend-wgpu-tv = { path = "crates/backend/wgpu/tv" }
+render-api = { path = "crates/render/api" }
+render-wgpu = { path = "crates/render/wgpu" }
+ios-sim = { path = "crates/skin/ios-sim" }
+android-sim = { path = "crates/skin/android-sim" }
+host-winit = { path = "crates/host/winit" }
+native-phone = { path = "crates/native/phone" }
+native-tablet = { path = "crates/native/tablet" }
+native-tv = { path = "crates/native/tv" }
 aas-shell-native = { path = "crates/backend/aas-shell-native" }
 posix-log-capture = { path = "crates/backend/posix-log-capture" }
 idea-ui = { path = "crates/ui/idea-ui" }

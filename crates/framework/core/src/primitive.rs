@@ -102,6 +102,13 @@ pub enum Primitive {
     },
     /// Image primitive. Source is reactive (`Box<dyn Fn() -> String>`)
     /// so authors can pass a static URL or a closure reading a signal.
+    ///
+    /// When constructed via [`image_asset`](primitives::image::image_asset),
+    /// `asset` carries the declared [`Asset<kinds::Image>`](crate::assets::Asset)
+    /// so the walker can register it with the backend (and over the
+    /// wire) before `create_image` runs. In that case `src()` returns
+    /// the sentinel `"asset://{id}"`; the backend's `create_image`
+    /// recognizes the prefix and substitutes its locally-resolved URL.
     Image {
         src: Box<dyn Fn() -> String>,
         /// Optional accessibility label. Maps to `alt` on web,
@@ -109,6 +116,10 @@ pub enum Primitive {
         alt: Option<String>,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
+        /// `Some` when the source is an [`Asset`](crate::assets::Asset)
+        /// rather than a free-form URL. Drives `Backend::register_asset`
+        /// just before `Backend::create_image`.
+        asset: Option<crate::assets::Asset<crate::assets::kinds::Image>>,
         #[cfg(feature = "robot")]
         test_id: Option<&'static str>,
     },

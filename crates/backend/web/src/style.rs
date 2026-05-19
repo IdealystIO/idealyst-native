@@ -927,8 +927,21 @@ pub(crate) fn rules_to_css(rules: &StyleRules) -> String {
     if let Some(t) = &rules.bottom { parts.push(format!("bottom: {}", tokenized_length_css(t))); }
     if let Some(t) = &rules.left { parts.push(format!("left: {}", tokenized_length_css(t))); }
 
-    // Typography.
-    if let Some(ff) = &rules.font_family { parts.push(format!("font-family: {}", ff)); }
+    // Typography. `Typeface` family-names are wrapped in quotes so
+    // the CSS engine never confuses them with generic keywords
+    // (`monospace`, `serif`); `System` strings are passed through
+    // verbatim because they often contain the comma-separated stack
+    // a CSS-savvy author wants.
+    if let Some(ff) = &rules.font_family {
+        match ff {
+            framework_core::FontFamily::System(name) => {
+                parts.push(format!("font-family: {}", name));
+            }
+            framework_core::FontFamily::Typeface(tf) => {
+                parts.push(format!("font-family: \"{}\"", tf.family_name));
+            }
+        }
+    }
     if let Some(v) = rules.font_weight { parts.push(format!("font-weight: {}", font_weight_css(v))); }
     if let Some(v) = rules.font_style { parts.push(format!("font-style: {}", font_style_css(v))); }
     if let Some(t) = &rules.line_height { parts.push(format!("line-height: {}", tokenized_px_f32_css(t))); }

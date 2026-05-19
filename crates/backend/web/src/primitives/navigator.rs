@@ -185,7 +185,17 @@ impl NavigatorInstance {
     /// updated here — AAS mode renders layout chrome on the
     /// server, so those signals only matter for local-mode
     /// rendering.
+    ///
+    /// Skipped in local-render mode (`defer_initial_mount = false`)
+    /// — the create-time microtask handles the initial mount via
+    /// `mount_internal`. The walker calls
+    /// `Backend::*_navigator_attach_initial` unconditionally, so
+    /// without this guard the screen would land in the DOM twice
+    /// (once from here, once from the microtask).
     fn attach_initial_with_node(&mut self, screen: Node, scope_id: u64) {
+        if !self.defer_initial_mount {
+            return;
+        }
         if !self.has_layout() {
             Self::stamp_screen_class(&screen);
         }
@@ -484,46 +494,21 @@ where
     // a "RefCell already borrowed" panic. Same defer-trick used by
     // the Virtualizer's initial refresh on the JS side.
     //
-    // The same microtask also builds the user-supplied layout (if
-    // any) and stashes the outlet DOM node on the instance, so
-    // screens append into the outlet rather than the container.
+    // Layout (if any) is already attached by the walker before the
+    // microtask runs — `Backend::attach_navigator_layout` populates
+    // `instance.outlet`. The microtask just covers initial-screen
+    // auto-mount.
     let initial_path = callbacks.initial_path;
     let initial_route = callbacks.initial_route;
     let match_path = callbacks.match_path.clone();
-    let build_layout = callbacks.build_layout.clone();
     {
         let instance = instance.clone();
-        let container_for_layout = container_node.clone();
         framework_core::schedule_microtask(move || {
-            // If the author registered a layout, build its subtree
-            // and stash the outlet node before mounting any screens.
-            // `build_layout` invokes the framework's build walker
-            // internally, so this microtask is also the only safe
-            // time to call it (outside the `create_navigator`
-            // borrow window).
-            if let Some(build_layout) = build_layout.as_ref() {
-                let plan = build_layout();
-                // Insert the layout root into the navigator
-                // container. The container is the framework-
-                // visible navigator node; the layout root goes
-                // inside it, and the outlet (somewhere inside the
-                // layout root) is where screens append.
-                container_for_layout
-                    .append_child(&plan.root)
-                    .expect("append_child layout root failed");
-                // Resolve the outlet ref to its native DOM node.
-                // The framework's `bind(outlet_ref)` on the
-                // freshly-created outlet `View` populated this
-                // handle during build. The handle wraps an
-                // `Rc<dyn Any>` over the backend's `Node`, which
-                // for web is `web_sys::Node`.
-                if let Some(handle) = plan.outlet_ref.get() {
-                    let any_node = handle.as_any();
-                    if let Some(node) = any_node.downcast_ref::<Node>() {
-                        instance.borrow_mut().outlet = Some(node.clone());
-                    }
-                }
-            }
+            // Layout (if any) was already wired by the walker via
+            // `attach_navigator_layout` — see
+            // `walker::invoke_layout_and_attach`. The microtask
+            // exists for everything *after* layout: URL-driven
+            // auto-mount of the initial screen.
 
             let mut inst = instance.borrow_mut();
 

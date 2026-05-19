@@ -53,9 +53,7 @@ use routes::{
     QUICKSTART_ROUTE, REACTIVITY_ROUTE, REFS_ROUTE, ROBOT_ROUTE, STYLES_ROUTE, UI_DSL_ROUTE,
     WGPU_NATIVE_API_ROUTE, WRITING_A_BACKEND_ROUTE,
 };
-use shell::content_builder;
-#[cfg(target_arch = "wasm32")]
-use shell::web_layout;
+use shell::{content_builder, web_layout};
 
 #[component]
 pub fn app() -> Primitive {
@@ -67,8 +65,11 @@ pub fn app() -> Primitive {
     let drawer: Ref<DrawerHandle> = Ref::new();
 
     // Builder-pattern form so the typed `Bound<DrawerHandle>` flows
-    // through and we can call `.layout(web_layout())` on wasm without
-    // losing the type after `IntoPrimitive` coercion.
+    // through and we can call `.layout(web_layout())` without losing
+    // the type after `IntoPrimitive` coercion. The layout closure
+    // applies on both the local-render path (wasm in-browser) and
+    // the AAS-replay path (recording backend serializes the layout
+    // subtree + ships `AttachNavigatorLayout` over the wire).
     let builder = DrawerNavigator::new(&OVERVIEW_ROUTE)
         .header(idea_header(|t| HeaderStyle {
             background: Some(t.colors().surface.value().clone()),
@@ -116,7 +117,6 @@ pub fn app() -> Primitive {
         .content(content_builder(is_dark))
         .bind(drawer);
 
-    #[cfg(target_arch = "wasm32")]
     let builder = builder.layout(web_layout());
 
     ui! { builder }

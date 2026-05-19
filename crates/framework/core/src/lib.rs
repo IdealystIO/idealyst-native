@@ -1,5 +1,6 @@
 //! Framework core: primitives, Backend trait, render walker, reactivity.
 
+pub mod assets;
 mod backend;
 mod builder;
 mod derive;
@@ -33,6 +34,10 @@ pub mod robot;
 #[doc(hidden)]
 pub use serde_json as __serde_json;
 
+pub use assets::{
+    Asset, AssetId, AssetKind, AssetSource, AssetTag, SystemFallback, Typeface, TypefaceFace,
+    TypefaceId,
+};
 pub use backend::{Backend, ColorScheme, VirtualizerCallbacks};
 pub use handles::{
     ButtonHandle, ButtonOps, PressableHandle, PressableOps, RefFill, RefOps, StateBits, TextHandle,
@@ -58,6 +63,7 @@ pub use primitives::navigator::{
     TabSpec, TabsHandle,
 };
 pub use primitives::icon::{icon, FillRule, IconData, IconHandle, IconOps, StrokeAnimation};
+pub use primitives::image::{image, image_asset, ImageHandle, ImageOps};
 pub use primitives::overlay::{
     anchored_overlay, overlay, AnchoredOverlayHandle, AnchoredOverlayOps, AnchorTarget,
     AnchorableHandle, BackdropMode, ElementAlign, ElementSide, OverlayHandle, OverlayOps,
@@ -76,10 +82,10 @@ pub use style::{
     active_theme, derived, install_theme, install_themes, pregenerate_for_theme,
     register_theme_variant, resolve as resolve_style, set_theme, AlignContent, AlignItems,
     AlignSelf, Color, Derive, Easing, FlexDirection,
-    FlexWrap, FontStyle, FontWeight, IntoOverrideSource, IntoVariantSource, JustifyContent,
-    Length, Overflow, Position, Shadow, StyleApplication, StyleRules, StyleSheet, TextAlign,
-    TextTransform, ThemeTokens, TokenEntry, TokenValue, Tokenized, Transform, Transition,
-    VariantAxis, VariantEnum, VariantSet, VariantValue,
+    FlexWrap, FontFamily, FontStyle, FontWeight, IntoOverrideSource, IntoVariantSource,
+    JustifyContent, Length, Overflow, Position, Shadow, StyleApplication, StyleRules,
+    StyleSheet, TextAlign, TextTransform, ThemeTokens, TokenEntry, TokenValue, Tokenized,
+    Transform, Transition, VariantAxis, VariantEnum, VariantSet, VariantValue,
 };
 
 pub use framework_macros::{
