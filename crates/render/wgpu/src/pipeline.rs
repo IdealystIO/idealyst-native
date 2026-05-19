@@ -27,7 +27,14 @@ pub struct Instance {
     /// fragment math stays in the rect's axis-aligned local
     /// frame so corner radii / borders still work.
     pub rotation: f32,
-    pub _pad: [f32; 2],
+    /// `> 0` marks this instance as a *shadow*: the quad covers
+    /// the inflated shadow bounds (original rect + offset, then
+    /// expanded by `shadow_blur` on every side), and the
+    /// fragment shader produces a soft falloff around the
+    /// rounded-rect SDF instead of the hard rect fill. `== 0`
+    /// renders as a normal rect (legacy path, no perf hit).
+    pub shadow_blur: f32,
+    pub _pad: f32,
 }
 
 #[repr(C)]
@@ -153,7 +160,7 @@ impl RectPipeline {
                 wgpu::VertexAttribute { offset: 48, shader_location: 3, format: wgpu::VertexFormat::Float32x4 },
                 wgpu::VertexAttribute { offset: 64, shader_location: 4, format: wgpu::VertexFormat::Float32 },
                 wgpu::VertexAttribute { offset: 68, shader_location: 5, format: wgpu::VertexFormat::Float32 },
-                wgpu::VertexAttribute { offset: 72, shader_location: 6, format: wgpu::VertexFormat::Float32x2 },
+                wgpu::VertexAttribute { offset: 72, shader_location: 6, format: wgpu::VertexFormat::Float32 },
             ],
         }
     }

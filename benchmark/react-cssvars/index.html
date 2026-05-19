@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Benchmark · React (idiomatic: CSS variables)</title>
+<style>
+  /*
+   * Idiomatic React: theme expressed as CSS custom properties on
+   * the root, rows reference them via static classNames. Every
+   * rebuild still mounts N fresh row components, but each row's
+   * style comes from the cascade — no per-row inline style objects
+   * to compute, no prop threading.
+   *
+   * Compare against ../react-naive/ to see what useState(theme) +
+   * inline styles costs (mostly: per-row JS-side object
+   * construction). The rendered result is identical; the cost
+   * profile is not.
+   */
+  :root {
+    --bg:          #f7f7fb;
+    --surface:     #ffffff;
+    --surface-alt: #eef0f7;
+    --text:        #1a1a1f;
+    --border:      #e4e6ef;
+  }
+  :root.dark {
+    --bg:          #0f1115;
+    --surface:     #1a1d24;
+    --surface-alt: #262a35;
+    --text:        #e8eaf0;
+    --border:      #2a2e3a;
+  }
+  html, body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  #root { display: flex; flex-direction: column; min-height: 100vh; }
+
+  .page {
+    display: flex; flex-direction: column;
+    padding: 32px; gap: 24px; min-height: 100%;
+    background: var(--bg); color: var(--text);
+    transition: background 250ms ease-in-out, color 250ms ease-in-out;
+  }
+  .perf-list {
+    display: flex; flex-direction: column;
+    border-radius: 10px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    height: 500px; overflow: hidden; overflow-y: auto;
+    transition: background 250ms ease-in-out, border-color 250ms ease-in-out;
+  }
+  .row {
+    display: flex; flex-direction: column;
+    color: var(--text);
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px; height: 36px; justify-content: center;
+    transition:
+      background 250ms ease-in-out,
+      color 250ms ease-in-out,
+      border-bottom-color 250ms ease-in-out;
+  }
+  .row.even { background: var(--surface); }
+  .row.odd  { background: var(--surface-alt); }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@18.3.1",
+    "react/jsx-runtime": "https://esm.sh/react@18.3.1/jsx-runtime",
+    "react-dom/client": "https://esm.sh/react-dom@18.3.1/client?deps=react@18.3.1"
+  }
+}
+</script>
+</head>
+<body>
+<div id="root"></div>
+<script type="module">
+import React, { useState, useMemo, memo } from 'react';
+import { createRoot } from 'react-dom/client';
+import { flushSync } from 'https://esm.sh/react-dom@18.3.1?deps=react@18.3.1';
+import { autoRunIfRequested } from '../instrument.js';
+
+const e = React.createElement;
+
+// Row is memoized — but with index as the key and the props never
+// changing once mounted, the memo cache is effectively trivia.
+// What's actually doing the work: the row's `className` is static,
+// and the cascade carries the styling.
+//
+// Text wrapped in a <span> to match the idealyst-native DOM shape;
+// see react-naive/index.html for the rationale.
+const Row = memo(function Row({ index }) {
+  return e('div',
+    { className: 'row ' + (index % 2 === 0 ? 'even' : 'odd') },
+    e('span', null, `Row #${index}`),
+  );
+});
+
+let externalSetRows = null;
+
+function App() {
+  const [rowCount, setRowCountState] = useState(1000);
+
+  if (!externalSetRows) {
+    externalSetRows = async (n) => {
+      flushSync(() => setRowCountState(n));
+    };
+  }
+
+  const rows = useMemo(
+    () => Array.from({ length: rowCount }, (_, i) => e(Row, { key: i, index: i })),
+    [rowCount]
+  );
+
+  return e('div', { className: 'page' },
+    e('div', { className: 'perf-list' }, rows),
+  );
+}
+
+createRoot(document.getElementById('root')).render(e(App));
+
+async function waitForReady() {
+  for (let i = 0; i < 50 && !externalSetRows; i++) {
+    await new Promise(r => requestAnimationFrame(r));
+  }
+  if (!externalSetRows) throw new Error('React mount never filled externalSetRows');
+}
+// Theme swap: a className flip on <html>. React never re-renders
+// — the rows are inert because their styling all flows through
+// `:root` CSS variables. This is the whole point of the
+// css-variable approach: theme toggles are O(1).
+const setTheme = async (name) => {
+  document.documentElement.classList.toggle('dark', name === 'dark');
+};
+
+waitForReady().then(() =>
+  autoRunIfRequested({ setRows: (n) => externalSetRows(n), setTheme })
+);
+</script>
+</body>
+</html>

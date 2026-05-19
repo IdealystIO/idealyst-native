@@ -594,6 +594,13 @@ impl Host {
         // Any visible spinner needs the next frame to advance its
         // rotation phase.
         let spinner_alive = self.backend.borrow().active_spinner_count > 0;
+        // A Video node whose decoder is still playing needs
+        // continual redraws so the renderer's pre-pass can
+        // upload the next decoded frame as it arrives. We can't
+        // call `request_redraw` from the decoder thread (the
+        // hook is thread-local to the main thread); instead the
+        // host polls here each tick.
+        let any_video = crate::backend_impl::any_video_playing(&self.backend);
         any_anim
             || any_momentum
             || kb_alive
@@ -602,6 +609,7 @@ impl Host {
             || press_alive
             || any_nav
             || any_drawer
+            || any_video
     }
 
     /// Re-shape the status-bar clock glyph against the current

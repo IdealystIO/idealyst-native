@@ -366,15 +366,35 @@ impl Skin for IosSim {
         let thumb_x = track_x + fill_w - thumb_size * 0.5;
         let thumb_y = y + (h - thumb_size) * 0.5;
 
-        rects.push(rect_inst(
-            thumb_x - 0.5,
-            thumb_y + 1.5,
-            thumb_size + 1.0,
+        // Real shader-driven drop shadow (soft falloff) under the
+        // thumb. Two stacked instances per UIKit's UISlider:
+        //   - A wider, softer ambient shadow that lifts the thumb
+        //     off light backgrounds.
+        //   - A tighter, slightly-darker key shadow that gives a
+        //     "weight" cue at the contact edge.
+        // Both share the thumb's corner radius so the halo hugs
+        // the circle.
+        rects.push(render_wgpu::widgets::shadow_inst(
+            thumb_x,
+            thumb_y,
             thumb_size,
-            IOS_THUMB_SHADOW,
+            thumb_size,
+            0.0,    // offset x
+            2.0,    // offset y
+            8.0,    // blur
+            [0.0, 0.0, 0.0, 0.18],
             [thumb_size * 0.5; 4],
-            [0.0; 4],
+        ));
+        rects.push(render_wgpu::widgets::shadow_inst(
+            thumb_x,
+            thumb_y,
+            thumb_size,
+            thumb_size,
             0.0,
+            1.0,
+            3.0,
+            [0.0, 0.0, 0.0, 0.22],
+            [thumb_size * 0.5; 4],
         ));
         rects.push(rect_inst(
             thumb_x,

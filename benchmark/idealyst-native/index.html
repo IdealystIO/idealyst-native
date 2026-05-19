@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Benchmark · idealyst-native</title>
+<style>
+  /*
+   * Page-level static chrome. The wasm renders its own root tree
+   * under `#app`; this CSS just sets sane defaults for the controls
+   * bar that lives outside the framework's mount point (so the
+   * button click latency isn't tangled up with framework re-render
+   * paths). The framework itself paints the rows and the surrounding
+   * page chrome through its own stylesheets — those don't leak into
+   * this <style> block.
+   */
+  html, body {
+    margin: 0; padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  body { background: #0f1115; color: #e8eaf0; }
+
+  /* Controls bar — static HTML, not framework-rendered. Mirrors the
+     other variants' header so the page looks like the others, but
+     none of this participates in the perf measurement. */
+  .controls {
+    display: flex; gap: 16px; align-items: center;
+    padding: 12px 16px; background: #1a1d24; border-bottom: 1px solid #2a2e3a;
+  }
+  button {
+    padding: 6px 14px; border-radius: 6px;
+    font-weight: 600; font-size: 13px; letter-spacing: 0.3px;
+    border: 0; cursor: pointer;
+    background: #5b6cff; color: #ffffff;
+  }
+  .rows-input {
+    width: 90px; padding: 4px 8px; border-radius: 6px;
+    border: 1px solid #2a2e3a; background: #262a35; color: #e8eaf0;
+    font-size: 13px; font-variant-numeric: tabular-nums;
+  }
+  .rows-label { font-size: 13px; color: #9099a8; }
+  #stats-readout {
+    font-size: 13px; color: #9099a8;
+    font-variant-numeric: tabular-nums;
+  }
+  /* Framework mount point. The wasm appends its rendered tree as a
+     child of `#app`. */
+  #app { min-height: 100vh; }
+</style>
+</head>
+<body>
+  <!-- Standalone controls — only render if NOT inside the runner iframe
+       (the runner injects its own chrome). Lets you profile a single
+       toggle from devtools without the instrumentation harness
+       wrapping each measurement. -->
+  <div class="controls" id="standalone-controls" style="display:none">
+    <span class="rows-label">rows</span>
+    <input id="rows-input" class="rows-input" type="number" min="1" max="100000" value="1000" />
+    <button id="apply-rows-btn">Apply</button>
+    <button id="toggle-btn">Toggle theme</button>
+    <span id="stats-readout"></span>
+  </div>
+  <div id="app"></div>
+
+  <script type="module">
+    // Path is relative to this file. wasm-pack with --target=web
+    // emits a JS shim alongside the .wasm; importing the shim
+    // bootstraps the module.
+    import init, { start, set_rows, set_theme_by_name, toggle, row_count, bench_stats_json }
+      from './wasm/pkg/benchmark_idealyst_native.js';
+    import { autoRunIfRequested } from '../instrument.js';
+
+    // Read ?rows=N out of the URL so a power user can deep-link to
+    // a specific test size without retyping it on every reload.
+    const params = new URLSearchParams(window.location.search);
+    const initialRows = Math.max(1, Math.min(100_000, parseInt(params.get('rows') || '1000', 10)));
+
+    await init();
+    start(initialRows);
+
+    // setRows / setTheme for the runner-iframe path. Both
+    // resolve synchronously — the framework's signal fan-out is
+    // synchronous and the web backend's DOM ops are too, so
+    // by the time set_rows/set_theme_by_name return, the DOM
+    // reflects the new state.
+    const setRows = async (n) => {
+      set_rows(n);
+    };
+    const setTheme = async (name) => {
+      set_theme_by_name(name);
+    };
+
+    // Expose framework controls as window globals for manual profiling
+    // from the devtools console. Examples:
+    //
+    //   window.setRows(10000)
+    //   window.toggle()
+    //   window.benchStats()
+    //
+    window.toggle = toggle;
+    window.setRows = (n) => set_rows(n);
+    window.rowCount = () => row_count();
+    window.benchStats = () => JSON.parse(bench_stats_json());
+    // Convenience: also expose the batch.js JS-side counters so you can
+    // see {calls, totalOps, lastOps, lastNodes} from the same console.
+    window.batchStats = () => window.__idealystBatchStats;
+
+    // Standalone-only controls. Hidden when:
+    //   - Loaded inside the runner iframe (the runner sets ?suite=...).
+    //   - Loaded inside any iframe at all (belt-and-suspenders — keeps
+    //     the controls from leaking into measurement runs even if the
+    //     runner ever changes how it invokes the variant).
+    const inIframe = window.self !== window.top;
+    if (!inIframe && !params.get('suite')) {
+      const controls = document.getElementById('standalone-controls');
+      const rowsInput = document.getElementById('rows-input');
+      const applyBtn = document.getElementById('apply-rows-btn');
+      const toggleBtn = document.getElementById('toggle-btn');
+      const stats = document.getElementById('stats-readout');
+
+      controls.style.display = 'flex';
+      rowsInput.value = String(initialRows);
+
+      applyBtn.addEventListener('click', () => {
+        const n = Math.max(1, Math.min(100_000, parseInt(rowsInput.value, 10) || 1));
+        set_rows(n);
+        stats.textContent = `rows: ${n}`;
+      });
+
+      toggleBtn.addEventListener('click', () => {
+        const t0 = performance.now();
+        const name = toggle();
+        const t1 = performance.now();
+        stats.textContent = `${name} · sync ${(t1 - t0).toFixed(1)}ms`;
+      });
+
+      stats.textContent = `rows: ${initialRows}`;
+    }
+
+    // When the page is loaded inside the runner's iframe with a
+    // `?suite=NAME` query param, this auto-runs the suite and posts
+    // results back via `postMessage`. Standalone tab usage sees no
+    // `?suite=` and this is a no-op.
+    autoRunIfRequested({ setRows, setTheme });
+  </script>
+</body>
+</html>

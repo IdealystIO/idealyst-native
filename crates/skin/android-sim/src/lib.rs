@@ -153,20 +153,27 @@ const M3_SWITCH_THUMB_INSET_OFF: f32 = 8.0;
 const M3_SWITCH_THUMB_INSET_ON: f32 = 4.0;
 
 // Slider sizing.
-/// M3 expressive slider track heights. The inactive (unfilled)
-/// region stays a thin 4 dp line; the active (filled) region
-/// renders as a chunky 16 dp bar — the spec's distinctive
-/// "weight-shift" between the two sides of the thumb.
-const M3_SLIDER_TRACK_HEIGHT_INACTIVE: f32 = SLIDER_TRACK_HEIGHT;
-const M3_SLIDER_TRACK_HEIGHT_ACTIVE: f32 = 16.0;
-/// Gap between the end of the active fill and the thumb's
-/// leading edge (and the same gap from the thumb's trailing
-/// edge to the start of the inactive fill). 6 dp per M3 spec.
-const M3_SLIDER_THUMB_GAP: f32 = 6.0;
-/// Vertical pill thumb: thin and tall, full container height.
+/// M3 expressive slider — matches the stock Android sliders
+/// (Pixel / Moto Edge volume controls).
+/// - Both active *and* inactive tracks are 16 dp chunky pills;
+///   the inactive uses a muted surface-variant color rather
+///   than the primary fill. Earlier rev painted the inactive
+///   as a thin 4 dp line which made the thumb visually float
+///   between two unrelated shapes.
+/// - 4×22 dp vertical pill thumb at the value point, with a
+///   small 2 dp gap on each side from the surrounding fills.
+/// - A 4 dp white stop-indicator dot pinned to the far-right
+///   of the inactive region per the M3 spec.
+const M3_SLIDER_TRACK_HEIGHT: f32 = 16.0;
 const M3_SLIDER_THUMB_WIDTH: f32 = 4.0;
-const M3_SLIDER_THUMB_HEIGHT: f32 = SLIDER_THUMB_SIZE;
+const M3_SLIDER_THUMB_HEIGHT: f32 = 22.0;
 const M3_SLIDER_THUMB_RADIUS: f32 = 2.0;
+const M3_SLIDER_THUMB_GAP: f32 = 2.0;
+/// Diameter of the stop-indicator dot painted on the trailing
+/// end of the inactive track. Matches what shows on stock
+/// Android (4 dp white circle).
+const M3_SLIDER_STOP_DOT_DIAM: f32 = 4.0;
+const M3_SLIDER_STOP_DOT_INSET: f32 = 6.0;
 
 // Text field sizing.
 const M3_TEXT_BORDER_W_UNFOCUSED: f32 = 1.0;
@@ -399,44 +406,68 @@ impl Skin for AndroidSim {
         };
         let fill_w = track_w * t;
 
-        // Thumb position centered on the fill point. The active
-        // fill stops `THUMB_GAP` short of the thumb's leading
-        // edge; the inactive fill starts `THUMB_GAP` past the
-        // thumb's trailing edge. Painted as two distinct
-        // segments (no single underlay) so each region renders
-        // at its own height — 16 dp active vs. 4 dp inactive
-        // — without one bleeding through the other.
+        // Both track segments are the same chunky 16 dp pill,
+        // separated by a 2 dp gap on each side of the thumb.
+        // Inactive uses surface-variant, active uses primary
+        // (or the author's tint).
         let thumb_x = track_x + fill_w - thumb_w * 0.5;
         let thumb_left = thumb_x;
         let thumb_right = thumb_x + thumb_w;
+        let track_y = center_y - M3_SLIDER_TRACK_HEIGHT * 0.5;
 
+        // Per-corner radii: only the *outer* edges of each
+        // segment are rounded. The edges facing the thumb are
+        // squared off so the thumb reads as a clean separator
+        // between two block fills, not as the meeting point
+        // of two half-pills. corner_radius is [tl, tr, br, bl].
+        let r = M3_SLIDER_TRACK_HEIGHT * 0.5;
         let active_end = (thumb_left - M3_SLIDER_THUMB_GAP).max(track_x);
         let active_w = (active_end - track_x).max(0.0);
         if active_w > 0.0 {
-            let active_y = center_y - M3_SLIDER_TRACK_HEIGHT_ACTIVE * 0.5;
             rects.push(rect_inst(
                 track_x,
-                active_y,
+                track_y,
                 active_w,
-                M3_SLIDER_TRACK_HEIGHT_ACTIVE,
+                M3_SLIDER_TRACK_HEIGHT,
                 active_color,
-                [M3_SLIDER_TRACK_HEIGHT_ACTIVE * 0.5; 4],
+                [r, 0.0, 0.0, r],
                 [0.0; 4],
                 0.0,
             ));
         }
 
-        let inactive_start = (thumb_right + M3_SLIDER_THUMB_GAP).min(track_x + track_w);
+        let inactive_start =
+            (thumb_right + M3_SLIDER_THUMB_GAP).min(track_x + track_w);
         let inactive_w = (track_x + track_w - inactive_start).max(0.0);
         if inactive_w > 0.0 {
-            let inactive_y = center_y - M3_SLIDER_TRACK_HEIGHT_INACTIVE * 0.5;
             rects.push(rect_inst(
                 inactive_start,
-                inactive_y,
+                track_y,
                 inactive_w,
-                M3_SLIDER_TRACK_HEIGHT_INACTIVE,
+                M3_SLIDER_TRACK_HEIGHT,
                 M3_SURFACE_VARIANT,
-                [M3_SLIDER_TRACK_HEIGHT_INACTIVE * 0.5; 4],
+                [0.0, r, r, 0.0],
+                [0.0; 4],
+                0.0,
+            ));
+        }
+
+        // Stop indicator: small white dot pinned to the
+        // trailing end of the inactive track. Only paint
+        // when there's enough inactive room left to fit
+        // the dot (avoids painting on top of the thumb at
+        // value≈max).
+        if inactive_w > M3_SLIDER_STOP_DOT_INSET + M3_SLIDER_STOP_DOT_DIAM {
+            let dot_cx =
+                track_x + track_w - M3_SLIDER_STOP_DOT_INSET - M3_SLIDER_STOP_DOT_DIAM * 0.5;
+            let dot_cy = center_y;
+            rects.push(rect_inst(
+                dot_cx - M3_SLIDER_STOP_DOT_DIAM * 0.5,
+                dot_cy - M3_SLIDER_STOP_DOT_DIAM * 0.5,
+                M3_SLIDER_STOP_DOT_DIAM,
+                M3_SLIDER_STOP_DOT_DIAM,
+                M3_ON_PRIMARY,
+                [M3_SLIDER_STOP_DOT_DIAM * 0.5; 4],
                 [0.0; 4],
                 0.0,
             ));

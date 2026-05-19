@@ -66,7 +66,43 @@ pub fn rect_inst_rotated(
         border_color: srgb_rgba_to_linear(border_color_srgb),
         border_width,
         rotation,
-        _pad: [0.0; 2],
+        shadow_blur: 0.0,
+        _pad: 0.0,
+    }
+}
+
+/// Build a *shadow* `RectInstance` — a rounded-rect drop shadow
+/// rendered by the rect pipeline's shadow branch
+/// (`shadow_blur > 0`). The quad covers the visual rect at
+/// `(x, y, w, h)` shifted by `(offset_x, offset_y)` and expanded
+/// by `blur` on every side; the shader fades the SDF's interior
+/// at `bg.a * 1.0` to 0 across a `2*blur`-wide window. Pass the
+/// *same* `corner_radius` as the rect you're shadowing so the
+/// halo hugs its shape.
+///
+/// Push this *before* the main rect_inst so it paints behind.
+#[allow(clippy::too_many_arguments)]
+pub fn shadow_inst(
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    offset_x: f32,
+    offset_y: f32,
+    blur: f32,
+    color_srgb: [f32; 4],
+    corner_radius: [f32; 4],
+) -> RectInstance {
+    let b = blur.max(0.0);
+    RectInstance {
+        rect: [x + offset_x - b, y + offset_y - b, w + b * 2.0, h + b * 2.0],
+        bg: srgb_rgba_to_linear(color_srgb),
+        corner_radius,
+        border_color: [0.0; 4],
+        border_width: 0.0,
+        rotation: 0.0,
+        shadow_blur: b,
+        _pad: 0.0,
     }
 }
 

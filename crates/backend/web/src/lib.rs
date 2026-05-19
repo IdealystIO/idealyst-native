@@ -512,6 +512,37 @@ impl Backend for WebBackend {
         primitives::web_view::update_url(node, url)
     }
 
+    fn web_view_set_on_message(
+        &mut self,
+        node: &Self::Node,
+        callback: Box<dyn Fn(String)>,
+    ) {
+        primitives::web_view::set_on_message(node, callback)
+    }
+
+    fn web_view_set_on_load(
+        &mut self,
+        node: &Self::Node,
+        callback: Box<dyn Fn()>,
+    ) {
+        primitives::web_view::set_on_load(node, callback)
+    }
+
+    fn web_view_set_on_error(
+        &mut self,
+        node: &Self::Node,
+        callback: Box<dyn Fn()>,
+    ) {
+        primitives::web_view::set_on_error(node, callback)
+    }
+
+    fn make_web_view_handle(
+        &self,
+        node: &Self::Node,
+    ) -> framework_core::primitives::web_view::WebViewHandle {
+        primitives::web_view::make_handle(node)
+    }
+
     fn create_video(
         &mut self,
         src: &str,

@@ -5,8 +5,14 @@
 // does a signed-distance test against the rounded rectangle to
 // produce the antialiased fill (and a future border ring).
 //
-// The pipeline is set up with a viewport-sized projection so the
-// CPU writes pixel coordinates directly into Instance.rect.
+// When `shadow_blur > 0` the instance is interpreted as a *shadow*
+// quad: the rect covers the inflated bounds (original rect +
+// offset, expanded by `shadow_blur` on every side); the rounded
+// rect SDF is evaluated against the *inner* rect (whose half-extent
+// equals the quad's half-extent minus `shadow_blur`); the fragment
+// fades from `bg.a * full` at the inner-rect edge to 0 at the
+// quad's outer edge, using a smoothstep window of size
+// `2 * shadow_blur`.
 
 struct Globals {
     viewport: vec2<f32>,
@@ -22,7 +28,7 @@ struct Instance {
     @location(3) border_color: vec4<f32>,   // uniform border color for the MVP
     @location(4) border_width: f32,         // uniform border width for the MVP
     @location(5) rotation: f32,             // rotation around rect center, in radians
-    @location(6) _pad: vec2<f32>,
+    @location(6) shadow_blur: f32,          // 0 = normal rect; > 0 = shadow falloff
 };
 
 struct VertexOut {
@@ -33,6 +39,7 @@ struct VertexOut {
     @location(3) corner_radius: vec4<f32>,
     @location(4) border_color: vec4<f32>,
     @location(5) border_width: f32,
+    @location(6) shadow_blur: f32,
 };
 
 @vertex
@@ -78,6 +85,7 @@ fn vs_main(
     out.corner_radius = inst.corner_radius;
     out.border_color = inst.border_color;
     out.border_width = inst.border_width;
+    out.shadow_blur = inst.shadow_blur;
     return out;
 }
 
@@ -96,6 +104,30 @@ fn sd_rounded_box(p: vec2<f32>, b: vec2<f32>, r: vec4<f32>) -> f32 {
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let half_size = in.rect_size * 0.5;
     let p = in.local - half_size;
+
+    if in.shadow_blur > 0.0 {
+        // Shadow path. The quad's half-extent already includes
+        // `shadow_blur` of padding on every side; the actual
+        // visual rect we're shadowing has half-extent
+        // `half_size - shadow_blur`. SDF against that inner
+        // rect → soft falloff over a `2 * shadow_blur` window.
+        let inner_half = max(half_size - vec2(in.shadow_blur), vec2(0.0));
+        // Per-corner radii layout: (tl, tr, br, bl) →
+        // sd helper wants (tr, br, tl, bl).
+        let r = vec4(
+            in.corner_radius.y,
+            in.corner_radius.z,
+            in.corner_radius.x,
+            in.corner_radius.w,
+        );
+        let d = sd_rounded_box(p, inner_half, r);
+        // smoothstep returns 0 inside (d ≤ -blur) → full
+        // shadow alpha, 1 outside (d ≥ +blur) → no alpha.
+        let t = smoothstep(-in.shadow_blur, in.shadow_blur, d);
+        let alpha = (1.0 - t) * in.bg.a;
+        return vec4(in.bg.rgb, alpha);
+    }
+
     // Per-corner radii packed as (tl, tr, br, bl); the sd helper
     // expects (right-top, right-bottom, left-top, left-bottom) →
     // (tr, br, tl, bl).

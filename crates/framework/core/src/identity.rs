@@ -281,6 +281,83 @@ pub fn hash_key<K: Hash + ?Sized>(k: &K) -> u64 {
     h.finish()
 }
 
+/// Stable, unique string ID for the current tree position. The same
+/// component instance returns the same ID on every render; different
+/// instances of the same component (or different positions in the
+/// tree) return different IDs.
+///
+/// Primary intent: **stable string handles for accessibility and
+/// cross-system integration**. Anywhere you'd otherwise reach for a
+/// `Math.random()`-style throwaway identifier or hand-roll a counter
+/// signal, use this instead — it survives re-renders by construction
+/// (driven by `Identity`, which encodes tree position).
+///
+/// Typical use sites:
+/// - Form-label / input association: `<label for="...">` ↔
+///   `<input id="...">`.
+/// - ARIA references: `aria-labelledby`, `aria-describedby`,
+///   `aria-controls`.
+/// - Debug / logging keys, scroll-restoration keys, anywhere an
+///   external system needs a stable string per component instance.
+///
+/// Deterministic-per-position also makes this a building block for
+/// future framework features that need cross-process ID agreement
+/// (e.g. server-rendered HTML matching client hydration). That
+/// property falls out naturally — it isn't the reason `use_id`
+/// exists.
+///
+/// # Multiple IDs per component
+///
+/// Each `use_id()` call within the same scope returns the **same**
+/// string. To produce multiple unique IDs in one component, append a
+/// stable suffix to a single base call — that's the React-recommended
+/// pattern:
+///
+/// ```ignore
+/// let base = use_id();
+/// let name_id = format!("{base}-name");
+/// let age_id = format!("{base}-age");
+/// ```
+///
+/// # Format
+///
+/// `"ui-<16 lowercase hex chars>"` — a 19-character string with a
+/// constant prefix so framework-generated IDs are distinguishable
+/// from user-authored ones in DOM inspectors. The hex is the
+/// current `Identity`'s raw 64-bit hash.
+///
+/// # Outside a tracked scope
+///
+/// If called outside any `with_current_identity` block (e.g. in a
+/// raw test, before a component has been entered), returns the
+/// "unidentified" sentinel ID. Don't rely on its value — it's not
+/// stable across builds.
+pub fn use_id() -> String {
+    format!("ui-{:016x}", current_identity().raw())
+}
+
+/// Variant of [`use_id`] that mixes a user-supplied key into the
+/// produced ID. Useful when you need multiple unique IDs in one
+/// component without manually appending suffixes:
+///
+/// ```ignore
+/// let name_id = use_id_keyed(&"name");
+/// let age_id  = use_id_keyed(&"age");
+/// ```
+///
+/// The key is hashed (same hasher as [`hash_key`]) and mixed into
+/// the identity, so call-site discrimination is built into the
+/// returned string without polluting it with the literal key text.
+pub fn use_id_keyed<K: Hash + ?Sized>(key: &K) -> String {
+    let id = current_identity().raw();
+    let k = hash_key(key);
+    // Mix via simple xor + multiplicative scramble; same FNV prime
+    // we use for stylesheet path hashing, keeps the output stable
+    // across builds for a given (identity, key) pair.
+    let mixed = (id ^ k).wrapping_mul(FNV_PRIME);
+    format!("ui-{:016x}", mixed)
+}
+
 // ---------------------------------------------------------------------------
 // `const`-compatible FNV-1a — for `style_path_hash` so stylesheet
 // macros can land their id in a `pub const`. `std::collections::
@@ -408,5 +485,75 @@ mod tests {
         let c = style_path_hash("crate::ui::styles", "SidebarHeader");
         assert_eq!(a, b);
         assert_ne!(a, c);
+    }
+
+    // ---------------------------------------------------------------
+    // use_id / use_id_keyed
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn use_id_format_is_prefixed_hex() {
+        let id = use_id();
+        assert!(
+            id.starts_with("ui-"),
+            "use_id() output should start with the framework prefix: {id}"
+        );
+        assert_eq!(
+            id.len(),
+            19,
+            "ui- + 16 hex chars = 19 chars total: got `{id}` ({} chars)",
+            id.len()
+        );
+        // Every char after the prefix is a lowercase hex digit.
+        assert!(
+            id[3..].chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            "tail of use_id() must be lowercase hex: {id}"
+        );
+    }
+
+    #[test]
+    fn use_id_stable_within_same_scope() {
+        let scope = Identity::node(Identity::ROOT_SCOPE, 7, None, None);
+        let a = with_current_identity(scope, use_id);
+        let b = with_current_identity(scope, use_id);
+        assert_eq!(a, b, "same scope → same id");
+    }
+
+    #[test]
+    fn use_id_distinct_across_scopes() {
+        let scope_a = Identity::node(Identity::ROOT_SCOPE, 0, None, None);
+        let scope_b = Identity::node(Identity::ROOT_SCOPE, 1, None, None);
+        let a = with_current_identity(scope_a, use_id);
+        let b = with_current_identity(scope_b, use_id);
+        assert_ne!(a, b, "different scopes → different ids");
+    }
+
+    #[test]
+    fn use_id_keyed_discriminates_by_key() {
+        // Same scope, different keys must produce different ids —
+        // the multi-id-per-component use case.
+        let scope = Identity::node(Identity::ROOT_SCOPE, 0, None, None);
+        let name = with_current_identity(scope, || use_id_keyed(&"name"));
+        let age = with_current_identity(scope, || use_id_keyed(&"age"));
+        assert_ne!(name, age);
+    }
+
+    #[test]
+    fn use_id_keyed_stable_for_same_key() {
+        let scope = Identity::node(Identity::ROOT_SCOPE, 0, None, None);
+        let a = with_current_identity(scope, || use_id_keyed(&"name"));
+        let b = with_current_identity(scope, || use_id_keyed(&"name"));
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn use_id_keyed_distinct_across_scopes_for_same_key() {
+        // Same key, different scopes → different ids. Catches the bug
+        // where the hash mix collapses to a constant.
+        let scope_a = Identity::node(Identity::ROOT_SCOPE, 0, None, None);
+        let scope_b = Identity::node(Identity::ROOT_SCOPE, 1, None, None);
+        let a = with_current_identity(scope_a, || use_id_keyed(&"name"));
+        let b = with_current_identity(scope_b, || use_id_keyed(&"name"));
+        assert_ne!(a, b);
     }
 }

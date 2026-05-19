@@ -434,10 +434,17 @@ impl App {
         );
         surface_tex.present();
 
-        // If any tween is still in flight, request another frame.
-        // The host samples its own clock — see `EventSink::tick`.
+        // If any tween / video / drawer needs another frame,
+        // route the wake-up through the event-loop proxy
+        // (`render_wgpu::request_redraw()` → `AppEvent::Redraw`
+        // → `user_event` → `window.request_redraw`). Calling
+        // `gpu.window.request_redraw()` directly from inside
+        // the `RedrawRequested` handler is silently coalesced
+        // on macOS — pure video-playback (no other animator
+        // signal) would break the chain and stall at ~2 fps
+        // even though decoding kept up at 30 fps.
         if self.host.tick() {
-            gpu.window.request_redraw();
+            render_wgpu::request_redraw();
         }
         Ok(())
     }

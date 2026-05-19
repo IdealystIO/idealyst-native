@@ -434,7 +434,7 @@ fn build_inner<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) 
             }
             n
         }
-        Primitive::WebView { url, style, ref_fill } => {
+        Primitive::WebView { url, on_message, on_load, on_error, style, ref_fill } => {
             let initial = url();
             let n = time_backend_create(pkind!(WebView), || backend.borrow_mut().create_web_view(&initial));
             if let Some(s) = style {
@@ -447,6 +447,19 @@ fn build_inner<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) 
                     let u = url();
                     backend.borrow_mut().update_web_view_url(&node, &u);
                 });
+            }
+            // Register lifecycle / message callbacks BEFORE the
+            // RefFill runs — handle consumers may immediately
+            // post a message or trigger a reload and expect the
+            // message channel to already be wired.
+            if let Some(cb) = on_message {
+                backend.borrow_mut().web_view_set_on_message(&n, cb);
+            }
+            if let Some(cb) = on_load {
+                backend.borrow_mut().web_view_set_on_load(&n, cb);
+            }
+            if let Some(cb) = on_error {
+                backend.borrow_mut().web_view_set_on_error(&n, cb);
             }
             if let Some(RefFill::WebView(fill)) = ref_fill {
                 let handle = backend.borrow().make_web_view_handle(&n);
@@ -1067,6 +1080,50 @@ fn build_inner<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) 
 
             n
         }
+        Primitive::Portal {
+            children,
+            target,
+            on_dismiss,
+            trap_focus,
+            style,
+            ref_fill,
+        } => {
+            // Same lifecycle pattern as Overlay/AnchoredOverlay:
+            // backend stands up the platform-native render-elsewhere
+            // mount, framework inserts children, attaches style,
+            // wires the optional ref, and installs an RAII cleanup
+            // that hits release_portal when the surrounding scope
+            // drops (host's open-state signal flipped).
+            let dismiss_for_backend = on_dismiss.clone();
+            let mut n = time_backend_create(pkind!(Portal), || {
+                backend.borrow_mut().create_portal(
+                    target,
+                    dismiss_for_backend,
+                    trap_focus,
+                )
+            });
+
+            insert_children(backend, &mut n, children);
+
+            if let Some(s) = style {
+                attach_style(backend, &n, s);
+            }
+
+            if let Some(RefFill::Portal(fill)) = ref_fill {
+                let handle = backend.borrow().make_portal_handle(&n);
+                fill(handle);
+            }
+
+            let cleanup = PortalHandleCleanup {
+                backend: backend.clone(),
+                node: n.clone(),
+            };
+            let _cleanup_effect = Effect::new(move || {
+                let _ = &cleanup;
+            });
+
+            n
+        }
         Primitive::Presence { child, present, enter, exit, ref_fill } => {
             let n = build_presence(backend, child, present, enter, exit);
             if let Some(RefFill::Presence(fill)) = ref_fill {
@@ -1173,6 +1230,7 @@ fn debug_kind_of(node: &Primitive) -> debug::PrimitiveKind {
         Primitive::Link { .. } => PrimitiveKind::Link,
         Primitive::Overlay { .. } => PrimitiveKind::Overlay,
         Primitive::AnchoredOverlay { .. } => PrimitiveKind::AnchoredOverlay,
+        Primitive::Portal { .. } => PrimitiveKind::Portal,
         Primitive::Presence { .. } => PrimitiveKind::Presence,
         // Repeat is expanded into siblings by `insert_children`
         // and never reaches the build walker as a standalone
@@ -2177,6 +2235,17 @@ struct AnchoredOverlayHandleCleanup<B: Backend + 'static> {
 impl<B: Backend + 'static> Drop for AnchoredOverlayHandleCleanup<B> {
     fn drop(&mut self) {
         self.backend.borrow_mut().release_anchored_overlay(&self.node);
+    }
+}
+
+struct PortalHandleCleanup<B: Backend + 'static> {
+    backend: Rc<RefCell<B>>,
+    node: B::Node,
+}
+
+impl<B: Backend + 'static> Drop for PortalHandleCleanup<B> {
+    fn drop(&mut self) {
+        self.backend.borrow_mut().release_portal(&self.node);
     }
 }
 

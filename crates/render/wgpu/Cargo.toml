@@ -44,3 +44,13 @@ image = { version = "0.25", default-features = false, features = [
     "png",
     "jpeg",
 ] }
+
+# Video primitive backing. `openh264` bundles Cisco's C++ source
+# via build.rs (no system FFmpeg dep at runtime); `re_mp4` is a
+# pure-Rust MP4 container demuxer. Together they let us play
+# H.264 mp4 files in the wgpu preview — the native targets (iOS,
+# Android, Web) keep using their OS-level players for parity.
+# Phase 1 covers H.264 only; HEVC / AV1 mp4 files surface a
+# "codec not supported" placeholder until we ship more decoders.
+openh264 = "0.9"
+re_mp4 = "0.5"

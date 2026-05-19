@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Benchmark · React (naive: inline style props)</title>
+<style>
+  /*
+   * Naive React take: theme threaded through props, every row reads
+   * it via inline `style={...}`. Mounting at a new row count
+   * re-creates the entire list — no memoization wins to be had
+   * because every Row is freshly keyed by index.
+   *
+   * "Naive" in the sense that it's the code a competent dev writes
+   * first, before reaching for any perf tricks.
+   */
+  html, body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  #root { display: flex; flex-direction: column; min-height: 100vh; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@18.3.1",
+    "react/jsx-runtime": "https://esm.sh/react@18.3.1/jsx-runtime",
+    "react-dom/client": "https://esm.sh/react-dom@18.3.1/client?deps=react@18.3.1"
+  }
+}
+</script>
+</head>
+<body>
+<div id="root"></div>
+<script type="module">
+import React, { useState, useMemo } from 'react';
+import { createRoot } from 'react-dom/client';
+import { flushSync } from 'https://esm.sh/react-dom@18.3.1?deps=react@18.3.1';
+import { autoRunIfRequested, LIGHT, DARK } from '../instrument.js';
+
+const e = React.createElement;
+
+const pageStyle = (t) => ({
+  display: 'flex', flexDirection: 'column',
+  padding: 32, gap: 24, minHeight: '100%',
+  background: t.background, color: t.text,
+  transition: 'background 250ms ease-in-out, color 250ms ease-in-out',
+});
+const listStyle = (t) => ({
+  display: 'flex', flexDirection: 'column',
+  borderRadius: 10,
+  background: t.surface, border: `1px solid ${t.border}`,
+  height: 500, overflow: 'hidden', overflowY: 'auto',
+  transition: 'background 250ms ease-in-out, border-color 250ms ease-in-out',
+});
+const rowStyle = (t, parity) => ({
+  display: 'flex', flexDirection: 'column',
+  background: parity === 'odd' ? t.surface_alt : t.surface,
+  color: t.text,
+  padding: '8px 16px',
+  borderBottom: `1px solid ${t.border}`,
+  fontSize: 13, height: 36, justifyContent: 'center',
+  transition: 'background 250ms ease-in-out, color 250ms ease-in-out, border-bottom-color 250ms ease-in-out',
+});
+
+// Row is not memoized: its `theme` prop changes on every mount and
+// `index` is unique per row, so a memo cache would never hit.
+// Leaving it unmemoized lets the cost of rendering N leaf
+// components be honestly visible.
+//
+// Text wrapped in a <span> so the DOM shape matches the
+// idealyst-native variant's `View { Text { ... } }` output exactly
+// — its `Text` primitive emits a <span> as a stable styling
+// target. Without this, idealyst would mount 2× DOM nodes per row
+// vs. React's 1× for the same logical structure.
+function Row({ index, theme }) {
+  return e('div',
+    { style: rowStyle(theme, index % 2 === 0 ? 'even' : 'odd') },
+    e('span', null, `Row #${index}`),
+  );
+}
+
+// External setRows + setTheme hooks for the runner-iframe path.
+// Filled in by App once mounted so `autoRunIfRequested` can
+// drive the React state from outside the component.
+let externalSetRows = null;
+let externalSetTheme = null;
+
+function App() {
+  const [rowCount, setRowCountState] = useState(1000);
+  const [theme, setThemeState] = useState(LIGHT);
+
+  // `flushSync` makes the React commit happen *inside* the
+  // suite's `apply` measurement window. Without it, React 18
+  // would batch and commit after `apply` closed — making `apply`
+  // look ~0ms but with rows that haven't actually appeared yet.
+  if (!externalSetRows) {
+    externalSetRows = async (n) => {
+      flushSync(() => setRowCountState(n));
+    };
+  }
+  if (!externalSetTheme) {
+    externalSetTheme = async (name) => {
+      // Theme is threaded through every row's `style={...}`;
+      // setting state forces every Row to re-render with new
+      // inline styles. flushSync keeps the commit in-window so
+      // `apply` actually measures it.
+      flushSync(() => setThemeState(name === 'dark' ? DARK : LIGHT));
+    };
+  }
+
+  const rows = useMemo(
+    () => Array.from({ length: rowCount }, (_, i) => e(Row, { key: i, index: i, theme })),
+    [theme, rowCount]
+  );
+
+  return e('div', { style: pageStyle(theme) },
+    e('div', { style: listStyle(theme) }, rows),
+  );
+}
+
+createRoot(document.getElementById('root')).render(e(App));
+
+// Initial mount may land on a microtask. Wait until
+// `externalSetRows` is filled before handing off to the runner —
+// otherwise the runner's first `setRows(n)` call would crash
+// before the component is ready.
+async function waitForReady() {
+  for (let i = 0; i < 50 && (!externalSetRows || !externalSetTheme); i++) {
+    await new Promise(r => requestAnimationFrame(r));
+  }
+  if (!externalSetRows) throw new Error('React mount never filled externalSetRows');
+}
+waitForReady().then(() =>
+  autoRunIfRequested({
+    setRows: (n) => externalSetRows(n),
+    setTheme: (t) => externalSetTheme(t),
+  })
+);
+</script>
+</body>
+</html>

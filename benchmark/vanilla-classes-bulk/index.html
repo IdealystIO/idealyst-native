@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Benchmark · vanilla classes (bulk innerHTML)</title>
+<style>
+  /*
+   * "What's physically possible for DOM-based UI" — bulk-construct
+   * the entire row list as one HTML string with classNames already
+   * baked in, hand it to the browser via `innerHTML`. One
+   * Rust→JS crossing for N rows. The browser parses + builds the
+   * whole subtree in C++.
+   *
+   * This is NOT what any component framework can do without
+   * abandoning its node abstraction. It sits in the arena as the
+   * "no JS-side overhead can be less than this" ceiling — useful
+   * for understanding how much of `vanilla-classes`'s cost is
+   * fundamental DOM construction vs. per-element JS work.
+   *
+   * Compare against:
+   *   - `../vanilla-classes/` for the honest per-element mount
+   *     (what any component framework can chase).
+   *   - `../vanilla-css-vars/` for the CSS-cascade ceiling, which
+   *     skips class minting entirely.
+   */
+  html, body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  .page {
+    display: flex; flex-direction: column;
+    padding: 32px; gap: 24px; min-height: 100%;
+    transition: background 250ms ease-in-out, color 250ms ease-in-out;
+  }
+  .perf-list {
+    display: flex; flex-direction: column;
+    border-radius: 10px; border: 1px solid;
+    height: 500px; overflow: hidden; overflow-y: auto;
+    transition: background 250ms ease-in-out, border-color 250ms ease-in-out;
+  }
+</style>
+</head>
+<body>
+  <div class="page" id="page">
+    <div class="perf-list" id="list"></div>
+  </div>
+
+  <script type="module">
+    import { autoRunIfRequested, LIGHT, DARK } from '../instrument.js';
+
+    // Stylesheet machinery: same as `../vanilla-classes/` — see
+    // that variant for the rationale. We share zero code because
+    // the arena's hard rule is "every variant is one
+    // self-contained file" so a future reader can see the entire
+    // measurement in one place.
+    const styleEl = document.createElement('style');
+    document.head.appendChild(styleEl);
+    const sheet = styleEl.sheet;
+
+    function insertRule(className, body) {
+      const idx = sheet.cssRules.length;
+      sheet.insertRule(`.${className} { ${body} }`, idx);
+      return idx;
+    }
+    function findRuleIdx(className) {
+      const target = `.${className}`;
+      for (let i = 0; i < sheet.cssRules.length; i++) {
+        if (sheet.cssRules[i].selectorText === target) return i;
+      }
+      return -1;
+    }
+    function hashName(key) {
+      let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+      for (let i = 0; i < key.length; i++) {
+        const ch = key.charCodeAt(i);
+        h1 = Math.imul(h1 ^ ch, 2654435761);
+        h2 = Math.imul(h2 ^ ch, 1597334677);
+      }
+      h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507);
+      h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+      h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507);
+      h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+      return 'ui-' +
+        (h1 >>> 0).toString(16).padStart(8, '0') +
+        (h2 >>> 0).toString(16).padStart(8, '0');
+    }
+
+    function rowCss(theme, parity) {
+      const bg = parity === 'odd' ? theme.surface_alt : theme.surface;
+      return [
+        'display: flex',
+        'flex-direction: column',
+        `background: ${bg}`,
+        `color: ${theme.text}`,
+        'padding-top: 8px',
+        'padding-right: 16px',
+        'padding-bottom: 8px',
+        'padding-left: 16px',
+        'border-bottom-width: 1px',
+        'border-bottom-style: solid',
+        `border-bottom-color: ${theme.border}`,
+        'font-size: 13px',
+        'height: 36px',
+        'justify-content: center',
+        'transition: background 250ms ease-in-out, color 250ms ease-in-out, border-bottom-color 250ms ease-in-out',
+      ].join('; ');
+    }
+
+    const list = document.getElementById('list');
+    let activeRules = null;
+    let toggleN = 0;
+
+    function mintRules(theme, tag) {
+      const rowEven = hashName(`PerfRow|even|${tag}`);
+      const rowOdd  = hashName(`PerfRow|odd|${tag}`);
+      const textCls = hashName(`Text|${tag}`);
+      const pageCls = hashName(`Page|${tag}`);
+      const listCls = hashName(`PerfList|${tag}`);
+
+      const newRules = {
+        rowEven: insertRule(rowEven, rowCss(theme, 'even')),
+        rowOdd:  insertRule(rowOdd,  rowCss(theme, 'odd')),
+        text:    insertRule(textCls, `color: ${theme.text}; transition: color 250ms ease-in-out`),
+        page:    insertRule(pageCls, `background: ${theme.background}; color: ${theme.text}`),
+        list:    insertRule(listCls, `background: ${theme.surface}; border-color: ${theme.border}`),
+      };
+
+      document.getElementById('page').setAttribute('class', `page ${pageCls}`);
+      document.getElementById('list').setAttribute('class', `perf-list ${listCls}`);
+
+      if (activeRules) {
+        const prev = Object.values(activeRules).sort((a, b) => b - a);
+        for (const idx of prev) sheet.deleteRule(idx);
+        newRules.rowEven = findRuleIdx(rowEven);
+        newRules.rowOdd  = findRuleIdx(rowOdd);
+        newRules.text    = findRuleIdx(textCls);
+        newRules.page    = findRuleIdx(pageCls);
+        newRules.list    = findRuleIdx(listCls);
+      }
+      activeRules = newRules;
+      return { rowEven, rowOdd, textCls };
+    }
+
+    let isDark = false;
+
+    // setRows for the runner-iframe path. Builds the entire row
+    // subtree as a single HTML string with classNames baked in,
+    // then writes it via `innerHTML` — one FFI hop, browser parses
+    // in C++. Resolves synchronously.
+    //
+    // For digit-only row content the lack of escaping is safe;
+    // for arbitrary user text this would be the wrong path.
+    const setRows = async (n) => {
+      toggleN++;
+      const theme = isDark ? DARK : LIGHT;
+      const tag = `r-${toggleN}`;
+      const { rowEven, rowOdd, textCls } = mintRules(theme, tag);
+
+      let html = '';
+      for (let i = 0; i < n; i++) {
+        const rowCls = (i % 2 === 0) ? rowEven : rowOdd;
+        html += `<div class="${rowCls}"><span class="${textCls}">Row #${i}</span></div>`;
+      }
+      list.innerHTML = html;
+    };
+
+    setRows(1000);
+
+    // Theme swap via bulk innerHTML rewrite: mint new theme
+    // classes, then re-emit the entire row subtree as one HTML
+    // string with the new classNames baked in. Reuses the row
+    // count from the most-recent setRows call so we don't lose
+    // it across the toggle.
+    //
+    // This is the "what's physically possible" ceiling for a
+    // theme-swap: one FFI hop replacing the entire DOM tree,
+    // no per-element setAttribute walks. Real component
+    // frameworks can't do this without abandoning their node
+    // abstractions.
+    let lastRowCount = 1000;
+    const trackedSetRows = setRows;
+    const setRowsTracked = async (n) => {
+      lastRowCount = n;
+      return trackedSetRows(n);
+    };
+    const setTheme = async (name) => {
+      isDark = name === 'dark';
+      toggleN++;
+      const theme = isDark ? DARK : LIGHT;
+      const tag = `t-${toggleN}`;
+      const { rowEven, rowOdd, textCls } = mintRules(theme, tag);
+
+      let html = '';
+      for (let i = 0; i < lastRowCount; i++) {
+        const rowCls = (i % 2 === 0) ? rowEven : rowOdd;
+        html += `<div class="${rowCls}"><span class="${textCls}">Row #${i}</span></div>`;
+      }
+      list.innerHTML = html;
+    };
+
+    autoRunIfRequested({ setRows: setRowsTracked, setTheme });
+  </script>
+</body>
+</html>

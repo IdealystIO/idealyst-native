@@ -213,8 +213,17 @@ pub enum Primitive {
     },
     /// Embedded web content view. Web: a (sandboxed-by-default-no)
     /// `<iframe>`. iOS: `WKWebView`. Android: `android.webkit.WebView`.
+    ///
+    /// The three callback slots are message channel + lifecycle:
+    /// `on_message` fires for each `postMessage` from the embedded
+    /// content; `on_load` / `on_error` fire on the iframe's
+    /// `load` / `error` events. All three are optional; backends
+    /// that can't service them ignore the callback.
     WebView {
         url: Box<dyn Fn() -> String>,
+        on_message: Option<Box<dyn Fn(String)>>,
+        on_load: Option<Box<dyn Fn()>>,
+        on_error: Option<Box<dyn Fn()>>,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
     },
@@ -492,6 +501,29 @@ pub enum Primitive {
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
     },
+    /// Portal — render `children` at `target` (viewport root, an
+    /// anchored element, or a named container) escaping the parent's
+    /// layout and clipping context. The lowest-level render-elsewhere
+    /// primitive; modals/popovers/tooltips compose on top.
+    ///
+    /// See [`primitives::portal`] for the target model, dismissal
+    /// contract, and platform mapping.
+    Portal {
+        children: Vec<Primitive>,
+        target: primitives::portal::PortalTarget,
+        /// Fired when the platform requests dismissal (Escape on
+        /// web, back gesture on Android, swipe-down on iOS modal
+        /// presentations). The host flips its open-state signal in
+        /// response; the framework doesn't auto-unmount.
+        on_dismiss: Option<Rc<dyn Fn()>>,
+        /// When `true`, the backend confines keyboard /
+        /// accessibility focus inside the portal subtree until it
+        /// closes. Default `false` — compositions like `modal()`
+        /// flip it to `true` at their level.
+        trap_focus: bool,
+        style: Option<StyleSource>,
+        ref_fill: Option<RefFill>,
+    },
     /// Presence — mount/unmount with enter and exit animations. See
     /// [`primitives::presence`] for the model. The host's
     /// open/close `Signal<bool>` is exposed via `present`; the
@@ -570,7 +602,8 @@ impl Primitive {
             | Primitive::Switch { style, .. }
             | Primitive::Link { style, .. }
             | Primitive::Overlay { style, .. }
-            | Primitive::AnchoredOverlay { style, .. } => {
+            | Primitive::AnchoredOverlay { style, .. }
+            | Primitive::Portal { style, .. } => {
                 *style = Some(src);
             }
             Primitive::Navigator(nav) => {

@@ -38,6 +38,7 @@ pub mod nav_anim;
 mod node;
 pub mod pipeline;
 mod renderer;
+mod video;
 mod scheduler;
 mod skin;
 mod style_convert;
@@ -54,7 +55,7 @@ pub use render_api::{
 };
 
 pub use animation::{AnimProperty, Animator, TweenKey, lerp_color};
-pub use backend_impl::WgpuBackend;
+pub use backend_impl::{graphics_with_drawer, register_graphics_drawer, WgpuBackend};
 pub use host::Host;
 pub use nav_anim::{
     clear_transition_override, default_transition, with_transition, InstantTransition,
@@ -62,9 +63,10 @@ pub use nav_anim::{
     TransitionFrame,
 };
 pub use node::{
-    WgpuNode, KEYBOARD_KEY_FONT_SIZE, KEYBOARD_KEY_GAP, KEYBOARD_KEY_RADIUS,
-    KEYBOARD_ROW_GAP, KEYBOARD_SIDE_MARGIN, KEYBOARD_VERT_MARGIN, NAV_HEADER_HEIGHT,
-    SLIDER_THUMB_SIZE, SLIDER_TRACK_HEIGHT, TEXT_INPUT_CARET_WIDTH, TOGGLE_THUMB_INSET,
+    GraphicsDrawer, GraphicsFrame, WgpuNode, KEYBOARD_KEY_FONT_SIZE, KEYBOARD_KEY_GAP,
+    KEYBOARD_KEY_RADIUS, KEYBOARD_ROW_GAP, KEYBOARD_SIDE_MARGIN, KEYBOARD_VERT_MARGIN,
+    NAV_HEADER_HEIGHT, SLIDER_THUMB_SIZE, SLIDER_TRACK_HEIGHT, TEXT_INPUT_CARET_WIDTH,
+    TOGGLE_THUMB_INSET,
 };
 pub use renderer::{paint_icon, Renderer};
 pub use scheduler::{install_redraw_hook, request_redraw};

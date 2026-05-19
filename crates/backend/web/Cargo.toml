@@ -68,6 +68,7 @@ features = [
     "HtmlElement",
     "HtmlHeadElement",
     "HtmlCanvasElement",
+    "HtmlIFrameElement",
     "HtmlInputElement",
     "HtmlMediaElement",
     "HtmlStyleElement",

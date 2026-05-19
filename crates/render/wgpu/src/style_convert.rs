@@ -23,6 +23,23 @@ pub struct RenderStyle {
 
     pub font_size: f32,
     pub opacity: f32,
+
+    /// Resolved drop shadow, if the author set `shadow: ...` on the
+    /// node. The renderer emits a shadow rect instance underneath
+    /// the node's main rect via the `shadow_blur > 0` path on the
+    /// rounded-rect pipeline. `offset` is `(x, y)`; `blur` controls
+    /// the falloff width; `color` is the shadow's RGBA in sRGB.
+    pub shadow: Option<ResolvedShadow>,
+}
+
+/// Backend-resolved counterpart of `framework_core::Shadow` —
+/// hex strings parsed to RGBA, no `Tokenized` indirection so the
+/// renderer can read it on the hot path.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct ResolvedShadow {
+    pub offset: [f32; 2],
+    pub blur: f32,
+    pub color: [f32; 4],
 }
 
 impl Default for RenderStyle {
@@ -35,6 +52,7 @@ impl Default for RenderStyle {
             border_color: [[0.0, 0.0, 0.0, 0.0]; 4],
             font_size: 14.0,
             opacity: 1.0,
+            shadow: None,
         }
     }
 }
@@ -90,6 +108,22 @@ impl RenderStyle {
         }
         if let Some(c) = rules.border_left_color.as_ref() {
             self.border_color[3] = parse_color(&c.resolve());
+        }
+
+        // Drop shadow — author sets `Shadow { x, y, blur, color }`
+        // on the rules; we project to RGBA + concrete f32s so the
+        // renderer can stage a shadow rect instance without
+        // touching the framework's `Tokenized` types on the hot
+        // path. Absence collapses to `None`; once set, fields
+        // without an explicit per-frame update keep their resolved
+        // values (same merge-into-self pattern the rest of this
+        // function uses).
+        if let Some(sh) = rules.shadow.as_ref() {
+            self.shadow = Some(ResolvedShadow {
+                offset: [sh.x, sh.y],
+                blur: sh.blur,
+                color: parse_color(&sh.color),
+            });
         }
     }
 }

@@ -23,6 +23,11 @@ pub mod primitives;
 #[cfg(feature = "async-driver")]
 pub mod driver;
 
+// `resource()` — async data as a reactive primitive. Depends on the
+// async-driver feature for `spawn_async`; gated together.
+#[cfg(feature = "async-driver")]
+mod resource;
+
 #[cfg(feature = "debug-stats")]
 pub mod debug;
 
@@ -52,7 +57,8 @@ pub use builder::{
 };
 pub use derive::{Action, Derived, IntoAction, IntoDerived};
 pub use identity::{
-    current_identity, hash_key, style_path_hash, with_current_identity, Identity,
+    current_identity, hash_key, style_path_hash, use_id, use_id_keyed, with_current_identity,
+    Identity,
 };
 pub use primitive::Primitive;
 pub use sources::{IntoStyleSource, IntoTextSource, StyleSource, TextSource};
@@ -71,18 +77,24 @@ pub use primitives::navigator::{
 };
 pub use primitives::icon::{icon, FillRule, IconData, IconHandle, IconOps, StrokeAnimation};
 pub use primitives::image::{image, image_asset, ImageHandle, ImageOps};
+pub use primitives::text_input::{text_input, TextInputHandle, TextInputOps};
+pub use primitives::toggle::{toggle, ToggleHandle, ToggleOps};
+pub use primitives::web_view::{web_view, WebViewHandle, WebViewOps};
 pub use primitives::overlay::{
     anchored_overlay, overlay, AnchoredOverlayHandle, AnchoredOverlayOps, AnchorTarget,
     AnchorableHandle, BackdropMode, ElementAlign, ElementSide, OverlayHandle, OverlayOps,
     ViewportPlacement, ViewportRect,
 };
+pub use primitives::portal::{portal, PortalHandle, PortalOps, PortalTarget};
 pub use primitives::presence::{
     presence, PresenceAnim, PresenceHandle, PresenceOps, PresenceState,
 };
 pub use reactive::{
     arena_stats, batch, inject, inject_or, memo, memo_with, on, on_cleanup, on_defer, provide,
-    untrack, with_inject, ArenaStats, Effect, Ref, Signal, Trackable,
+    reducer, untrack, with_inject, ArenaStats, Effect, Ref, Signal, Trackable,
 };
+#[cfg(feature = "async-driver")]
+pub use resource::{resource, Resource, ResourceCancel, ResourceState};
 pub use safe_area::{safe_area_insets, set_safe_area_insets, EdgeInsets, SafeAreaSides};
 pub use scheduling::{
     after_animation_frame, after_ms, raf_loop, schedule_microtask, RafLoop, ScheduledTask,

@@ -65,7 +65,8 @@ members = [
     "examples/native-test",
     "examples/touch-test",
     "examples/fiddle",
-    "arena/web/idealyst-native/wasm",
+    "benchmark",
+    "benchmark/idealyst-native/wasm",
 ]
 
 # Sub-crates under `examples/fiddle/` that have their own `[workspace]`
@@ -136,6 +137,28 @@ icons-lucide = { path = "crates/ui/icons-lucide" }
 # produce working bundles.
 [profile.dev]
 opt-level = "z"
+
+# Per-package opt-level overrides for the H.264 video decoder.
+# The C++ source bundled with `openh264-sys2` is wildly slow
+# without optimizer flags — at the workspace's default `opt-level
+# = "z"` the decoder ran at ~2 fps on a 360p clip. `opt-level = 3`
+# brings it back to real-time without affecting the rest of the
+# build's size targets. `re_mp4` is hot in the per-sample path
+# too; same treatment. Release builds inherit the workspace
+# `opt-level = "z"` because they care about bytes; if perf there
+# matters, override release similarly.
+[profile.dev.package.openh264]
+opt-level = 3
+[profile.dev.package.openh264-sys2]
+opt-level = 3
+[profile.dev.package.re_mp4]
+opt-level = 3
+[profile.release.package.openh264]
+opt-level = 3
+[profile.release.package.openh264-sys2]
+opt-level = 3
+[profile.release.package.re_mp4]
+opt-level = 3
 
 # Size-tuned release profile. We optimize for size rather than speed —
 # UI workloads aren't CPU-bound, but bytes-over-the-wire matter for the

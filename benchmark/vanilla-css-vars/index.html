@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Benchmark · vanilla CSS variables</title>
+<style>
+  /*
+   * Theoretical ceiling: theme toggle = one className flip on <html>.
+   * No per-row work, no class minting. Browser interpolates everything
+   * itself via CSS custom property inheritance + transitions.
+   *
+   * This is what any framework's best-case theme switch would look like
+   * if it could express "swap a few CSS variables at the root and let
+   * the cascade do the rest."
+   */
+  :root {
+    --bg:          #f7f7fb;
+    --surface:     #ffffff;
+    --surface-alt: #eef0f7;
+    --text:        #1a1a1f;
+    --border:      #e4e6ef;
+  }
+  :root.dark {
+    --bg:          #0f1115;
+    --surface:     #1a1d24;
+    --surface-alt: #262a35;
+    --text:        #e8eaf0;
+    --border:      #2a2e3a;
+  }
+
+  html, body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+
+  .page {
+    display: flex; flex-direction: column;
+    padding: 32px; gap: 24px;
+    min-height: 100%;
+    background: var(--bg); color: var(--text);
+    transition: background 250ms ease-in-out, color 250ms ease-in-out;
+  }
+  .perf-list {
+    display: flex; flex-direction: column;
+    border-radius: 10px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    height: 500px; overflow: hidden; overflow-y: auto;
+    transition: background 250ms ease-in-out, border-color 250ms ease-in-out;
+  }
+  .row {
+    display: flex; flex-direction: column;
+    color: var(--text);
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px; height: 36px; justify-content: center;
+    transition:
+      background 250ms ease-in-out,
+      color 250ms ease-in-out,
+      border-bottom-color 250ms ease-in-out;
+  }
+  .row.even { background: var(--surface); }
+  .row.odd  { background: var(--surface-alt); }
+</style>
+</head>
+<body>
+  <div class="page">
+    <div class="perf-list" id="list"></div>
+  </div>
+
+  <script type="module">
+    import { autoRunIfRequested } from '../instrument.js';
+
+    const list = document.getElementById('list');
+
+    // (Re)build the list with the given row count. DocumentFragment
+    // so a single attach hits layout instead of N.
+    //
+    // Text wrapped in a <span> so the DOM shape matches every
+    // other variant (idealyst-native's Text primitive emits a
+    // <span>; for a fair benchmark all variants mount the same
+    // node count per row).
+    function buildRows(rowCount) {
+      list.replaceChildren();
+      const frag = document.createDocumentFragment();
+      for (let i = 0; i < rowCount; i++) {
+        const row = document.createElement('div');
+        row.className = 'row ' + (i % 2 === 0 ? 'even' : 'odd');
+        const span = document.createElement('span');
+        span.textContent = `Row #${i}`;
+        row.appendChild(span);
+        frag.appendChild(row);
+      }
+      list.appendChild(frag);
+    }
+    buildRows(1000);
+
+    const setRows = async (n) => { buildRows(n); };
+
+    // Theme swap: a single className flip on <html>. The cascade
+    // carries the rest — :root.dark overrides every CSS variable
+    // the rows reference.
+    const setTheme = async (name) => {
+      document.documentElement.classList.toggle('dark', name === 'dark');
+    };
+
+    autoRunIfRequested({ setRows, setTheme });
+  </script>
+</body>
+</html>

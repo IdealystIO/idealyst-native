@@ -18,6 +18,7 @@ pub mod image;
 pub mod link;
 pub mod navigator;
 pub mod overlay;
+pub mod portal;
 pub mod presence;
 pub mod scroll_view;
 pub mod slider;

@@ -1021,12 +1021,64 @@ impl Backend for WgpuBackend {
 
     fn create_video(
         &mut self,
-        _src: &str,
-        _autoplay: bool,
+        src: &str,
+        autoplay: bool,
         _controls: bool,
-        _loop_playback: bool,
+        loop_playback: bool,
     ) -> Self::Node {
-        make_unsupported(&mut self.layout, &mut self.roots, "Video")
+        // `controls` is the on-video play/pause/scrubber overlay
+        // — Phase 1 skips it; the author can render their own
+        // controls externally. We pass `autoplay` + `loop_playback`
+        // straight through to the decoder thread.
+        let decoder = std::rc::Rc::new(crate::video::VideoDecoder::spawn(
+            src.to_string(),
+            autoplay,
+            loop_playback,
+        ));
+        let layout = self.layout.new_node();
+        // Default intrinsic size — the author almost always sets
+        // width/height via stylesheet, but a non-zero default
+        // keeps unsized Video visible until they do.
+        self.layout.set_intrinsic_size(layout, 320.0, 180.0);
+        let node = new_node(
+            NodeKind::Video {
+                decoder,
+                last_uploaded_frame: std::cell::Cell::new(0),
+            },
+            layout,
+        );
+        self.roots.push(node.clone());
+        node
+    }
+
+    fn make_video_handle(
+        &self,
+        node: &Self::Node,
+    ) -> framework_core::primitives::video::VideoHandle {
+        // Wrap the `WgpuNode` itself as the handle's userdata so
+        // `WgpuVideoOps` can downcast back to reach the decoder.
+        // Same shape as `make_graphics_handle`.
+        framework_core::primitives::video::VideoHandle::new(
+            Rc::new(node.clone()) as Rc<dyn std::any::Any>,
+            &WgpuVideoOps,
+        )
+    }
+
+    fn make_graphics_handle(
+        &self,
+        node: &Self::Node,
+    ) -> framework_core::primitives::graphics::GraphicsHandle {
+        // Wrap the `WgpuNode` itself as the handle's userdata so
+        // `register_graphics_drawer` can downcast back to recover
+        // it. `WgpuNode = Rc<RefCell<NodeData>>`; the `Rc<dyn Any>`
+        // GraphicsHandle holds therefore points at a fresh Rc whose
+        // inner concrete type is `WgpuNode` (i.e.
+        // `Rc<RefCell<NodeData>>`). Downcast target on retrieval
+        // is the same `WgpuNode` type alias.
+        framework_core::primitives::graphics::GraphicsHandle::new(
+            Rc::new(node.clone()) as Rc<dyn std::any::Any>,
+            &WgpuGraphicsOps,
+        )
     }
 
     fn create_graphics(
@@ -1035,7 +1087,27 @@ impl Backend for WgpuBackend {
         _on_resize: framework_core::primitives::graphics::OnResize,
         _on_lost: framework_core::primitives::graphics::OnLost,
     ) -> Self::Node {
-        make_unsupported(&mut self.layout, &mut self.roots, "Graphics")
+        // We can't satisfy the framework's `OnReady(GraphicsSurface)`
+        // contract — `GraphicsSurface` is a real-window handle, and
+        // we're rendering into a sub-region of our own surface, not
+        // into a child window. Authors register a draw closure via
+        // [`crate::register_graphics_drawer`] instead; the
+        // framework callbacks are dropped on the floor here.
+        //
+        // Layout: a leaf node with a non-zero intrinsic size so an
+        // unsized Graphics still occupies space until the author
+        // gives it a width/height via stylesheet.
+        let layout = self.layout.new_node();
+        self.layout.set_intrinsic_size(layout, 200.0, 200.0);
+        let node = new_node(
+            NodeKind::Graphics {
+                drawer: std::cell::RefCell::new(None),
+                created_at: web_time::Instant::now(),
+            },
+            layout,
+        );
+        self.roots.push(node.clone());
+        node
     }
 
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
@@ -1499,6 +1571,107 @@ impl Backend for WgpuBackend {
 /// `&'static dyn NavigatorOps` to reference.
 struct WgpuNavigatorOps;
 impl framework_core::primitives::navigator::NavigatorOps for WgpuNavigatorOps {}
+
+/// `GraphicsOps` impl for wgpu. Same shape as `WgpuNavigatorOps`
+/// — a unit struct that lets `make_graphics_handle` hand a
+/// `&'static dyn GraphicsOps` reference back through the
+/// framework's `GraphicsHandle`. No imperative ops today; future
+/// host→author commands (resize hints, capture-frame) would
+/// land here.
+struct WgpuGraphicsOps;
+impl framework_core::primitives::graphics::GraphicsOps for WgpuGraphicsOps {}
+
+/// `VideoOps` impl for the wgpu preview. Routes `play` / `pause`
+/// / `seek` to the per-node `VideoDecoder` by downcasting the
+/// `VideoHandle.node` Rc back to our `WgpuNode` (which carries
+/// the decoder's `Arc` to its shared playback state).
+struct WgpuVideoOps;
+impl framework_core::primitives::video::VideoOps for WgpuVideoOps {
+    fn play(&self, node: &dyn std::any::Any) {
+        if let Some(n) = node.downcast_ref::<WgpuNode>() {
+            if let NodeKind::Video { decoder, .. } = &n.borrow().kind {
+                decoder.set_playing(true);
+                request_redraw();
+            }
+        }
+    }
+    fn pause(&self, node: &dyn std::any::Any) {
+        if let Some(n) = node.downcast_ref::<WgpuNode>() {
+            if let NodeKind::Video { decoder, .. } = &n.borrow().kind {
+                decoder.set_playing(false);
+            }
+        }
+    }
+    fn seek(&self, _node: &dyn std::any::Any, _seconds: f32) {
+        // Phase 1: no seek. Decoder threads walk samples in
+        // file order; a seek would need a frame-accurate
+        // restart (snap to nearest keyframe before `seconds`).
+        // Follow-up.
+    }
+}
+
+/// Install a per-frame draw closure on a `GraphicsHandle`'s
+/// node. The handle must be obtained from
+/// `framework_core::primitives::graphics::graphics(...).bind(ref)`
+/// + the framework's `Ref<GraphicsHandle>::get()` after mount.
+///
+/// The closure is invoked from the renderer's pre-pass each
+/// frame with a [`GraphicsFrame`] holding the shared
+/// `wgpu::Device` / `Queue`, the node's offscreen texture
+/// view, and the elapsed time since the node was created. The
+/// closure encodes draw calls against `frame.encoder` and
+/// returns — the host owns the queue submit and composites the
+/// resulting texture into the main UI walk.
+///
+/// Calling this on a non-`Graphics` handle (or a `GraphicsHandle`
+/// produced by a different backend's `make_graphics_handle`) is a
+/// no-op — the downcast silently fails. Calling it twice
+/// replaces the previously-installed drawer (the old closure
+/// drops at end-of-statement).
+pub fn register_graphics_drawer(
+    handle: &framework_core::primitives::graphics::GraphicsHandle,
+    drawer: crate::node::GraphicsDrawer,
+) {
+    let Some(wgpu_node) = handle.node().downcast_ref::<WgpuNode>() else {
+        return;
+    };
+    if let NodeKind::Graphics { drawer: slot, .. } = &wgpu_node.borrow().kind {
+        *slot.borrow_mut() = Some(drawer);
+        request_redraw();
+    }
+}
+
+/// Convenience builder: construct a `Graphics` primitive whose
+/// drawer is wired up automatically when the node mounts. Hides
+/// the boilerplate of creating a `Ref<GraphicsHandle>`,
+/// `.bind(...)`-ing it, and threading a second closure through
+/// to `register_graphics_drawer` from an Effect. Authors who
+/// need the live `GraphicsHandle` for other imperative ops can
+/// still go through the framework's `graphics(...).bind(r)`
+/// path and call [`register_graphics_drawer`] manually.
+pub fn graphics_with_drawer<D>(
+    drawer: D,
+) -> framework_core::Bound<framework_core::primitives::graphics::GraphicsHandle>
+where
+    D: FnMut(&mut crate::node::GraphicsFrame) + 'static,
+{
+    let mut prim = framework_core::primitives::graphics::graphics(|_| {});
+    // Re-encode the drawer as a `RefFill::Graphics` closure: the
+    // framework fires that closure during mount with the
+    // backend-built `GraphicsHandle`. We hand it straight to
+    // `register_graphics_drawer` so the per-frame pre-pass picks
+    // it up starting from the next render. Bypasses `.bind(r)` —
+    // the author doesn't need a `Ref` for this case.
+    let drawer_box: crate::node::GraphicsDrawer = Box::new(drawer);
+    if let framework_core::Primitive::Graphics { ref_fill, .. } = prim.primitive_mut() {
+        *ref_fill = Some(framework_core::RefFill::Graphics(Box::new(
+            move |h: framework_core::primitives::graphics::GraphicsHandle| {
+                register_graphics_drawer(&h, drawer_box);
+            },
+        )));
+    }
+    prim
+}
 
 /// Start a color tween for `property` on `node` if the supplied
 /// transition spec exists and the value actually changed. No-op
@@ -2361,6 +2534,34 @@ fn collect_navigators(node: &WgpuNode, out: &mut Vec<WgpuNode>) {
     for child in children {
         collect_navigators(&child, out);
     }
+}
+
+/// Return `true` while any `Video` node has a running, playing
+/// decoder. The host's tick loops `request_redraw` while this
+/// holds so the renderer's pre-pass keeps uploading fresh
+/// decoded frames as they arrive. Cheap walk — Video nodes are
+/// rare; the alternative (cross-thread `request_redraw` from
+/// the decoder thread) would need a wgpu-side event-loop proxy
+/// we don't currently expose.
+pub(crate) fn any_video_playing(backend: &Rc<RefCell<WgpuBackend>>) -> bool {
+    let b = backend.borrow();
+    let Some(root) = b.root() else { return false };
+    walk_for_playing_video(&root)
+}
+
+fn walk_for_playing_video(node: &WgpuNode) -> bool {
+    if let NodeKind::Video { decoder, .. } = &node.borrow().kind {
+        if decoder.shared.playing.load(std::sync::atomic::Ordering::Acquire) {
+            return true;
+        }
+    }
+    let children: Vec<WgpuNode> = node.borrow().children.clone();
+    for child in children {
+        if walk_for_playing_video(&child) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Return `true` while any `DrawerNavigator` in the tree has

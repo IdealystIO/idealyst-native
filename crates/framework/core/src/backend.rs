@@ -529,6 +529,39 @@ pub trait Backend {
     #[allow(unused_variables)]
     fn update_web_view_url(&mut self, node: &Self::Node, url: &str) {}
 
+    /// Register a callback fired for each `postMessage` from the
+    /// embedded content. The walker calls this after
+    /// `create_web_view` when the primitive carries an
+    /// `on_message` slot. Default: drop the callback (backend
+    /// doesn't service the message channel).
+    #[allow(unused_variables)]
+    fn web_view_set_on_message(
+        &mut self,
+        node: &Self::Node,
+        callback: Box<dyn Fn(String)>,
+    ) {
+    }
+
+    /// Register a callback fired when the embedded content
+    /// finishes loading.
+    #[allow(unused_variables)]
+    fn web_view_set_on_load(
+        &mut self,
+        node: &Self::Node,
+        callback: Box<dyn Fn()>,
+    ) {
+    }
+
+    /// Register a callback fired when the embedded content fails
+    /// to load.
+    #[allow(unused_variables)]
+    fn web_view_set_on_error(
+        &mut self,
+        node: &Self::Node,
+        callback: Box<dyn Fn()>,
+    ) {
+    }
+
     /// Create a Video element. Static autoplay/controls/loop are
     /// passed at construction time; reactive `src` updates flow
     /// through `update_video_src`.
@@ -1418,6 +1451,61 @@ pub trait Backend {
         )
     }
 
+    /// Create a portal — render `children` (mounted via subsequent
+    /// `insert(node, child)` calls on the returned node) at `target`,
+    /// escaping the parent's layout and clipping context.
+    ///
+    /// Backends stand up their platform-native render-elsewhere
+    /// mechanism:
+    /// - **Web**: a `<div>` appended to `document.body` (escapes
+    ///   `overflow:hidden` and stacking contexts).
+    /// - **iOS**: a `UIView` added to the key window
+    ///   (`UIWindow.addSubview:`).
+    /// - **Android**: a `WindowManager.addView` window-level view, or
+    ///   a `Dialog`-hosted container.
+    /// - **Roku**: a `Group` parented to the root scene.
+    ///
+    /// For [`PortalTarget::Anchor`], backends should subscribe to
+    /// scroll / layout / orientation events from the anchor's host
+    /// hierarchy and re-query `target.rect()` to reposition the
+    /// portal as the anchor moves.
+    ///
+    /// `on_dismiss` fires when the platform requests dismissal
+    /// (Escape on web, back gesture on Android, swipe-down on iOS).
+    /// The framework doesn't auto-tear-down — the host's open-state
+    /// signal is the source of truth; flipping it drops the
+    /// surrounding scope and triggers [`Backend::release_portal`].
+    ///
+    /// Default: panic. Backends that don't yet implement portals
+    /// shouldn't have authors mounting them.
+    #[allow(unused_variables)]
+    fn create_portal(
+        &mut self,
+        target: primitives::portal::PortalTarget,
+        on_dismiss: Option<Rc<dyn Fn()>>,
+        trap_focus: bool,
+    ) -> Self::Node {
+        unimplemented!("create_portal not implemented for this backend")
+    }
+
+    /// Tear down a portal's backend-side state. Same contract as
+    /// [`Backend::release_overlay`] — detach the platform mount,
+    /// drop event-listener handles, free observer subscriptions.
+    #[allow(unused_variables)]
+    fn release_portal(&mut self, node: &Self::Node) {
+        // default no-op
+    }
+
+    /// Default no-op handle for portals. Backends with imperative
+    /// portal APIs (future: reposition, update target, …) override.
+    #[allow(unused_variables)]
+    fn make_portal_handle(
+        &self,
+        node: &Self::Node,
+    ) -> primitives::portal::PortalHandle {
+        primitives::portal::PortalHandle::new(Rc::new(()), &NoopPortalOps)
+    }
+
     /// Apply a presence-style transform (opacity + 2D translate +
     /// uniform scale) to a node. Called by the walker's presence
     /// arm at three points:
@@ -1627,6 +1715,9 @@ impl primitives::overlay::AnchoredOverlayOps for NoopAnchoredOverlayOps {}
 
 struct NoopPresenceOps;
 impl primitives::presence::PresenceOps for NoopPresenceOps {}
+
+struct NoopPortalOps;
+impl primitives::portal::PortalOps for NoopPortalOps {}
 
 struct NoopButtonOps;
 impl ButtonOps for NoopButtonOps {

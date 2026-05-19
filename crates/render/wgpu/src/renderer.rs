@@ -55,6 +55,51 @@ pub struct Renderer {
     /// `src` string. Populated lazily on first encounter — load
     /// failures cache as `Failed` so we don't retry every frame.
     image_cache: std::collections::HashMap<String, ImageCacheState>,
+    /// Per-`Graphics`-node offscreen render targets. Keyed by the
+    /// node's Taffy id (stable across remounts of the same Rc).
+    /// Allocated lazily on first encounter at the node's current
+    /// pixel size; re-allocated when that size changes by more
+    /// than one pixel on either axis. Entries are not currently
+    /// evicted — Graphics nodes are rare and long-lived; a future
+    /// eviction pass keyed on `Backend::drop_subtree` would close
+    /// the leak when the framework supports release_graphics.
+    graphics_cache: std::collections::HashMap<
+        native_layout::LayoutNode,
+        GraphicsTextureEntry,
+    >,
+    /// Per-`Video`-node GPU texture state. Keyed by Taffy id.
+    /// Allocated lazily once the decoder has produced its first
+    /// frame (we don't know the source frame size before then);
+    /// re-allocated if a later frame's size differs (e.g.
+    /// resolution change on a stream — unusual but defensive).
+    video_cache: std::collections::HashMap<
+        native_layout::LayoutNode,
+        VideoTextureEntry,
+    >,
+}
+
+/// GPU resources backing one `NodeKind::Graphics` node:
+/// the offscreen texture, a default 2D view over it, and the
+/// pre-built bind group the image pipeline samples it with.
+struct GraphicsTextureEntry {
+    #[allow(dead_code)]
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    bind_group: wgpu::BindGroup,
+    size: (u32, u32),
+}
+
+/// GPU resources backing one `NodeKind::Video` node. The shape
+/// mirrors `GraphicsTextureEntry`; difference is how the texture
+/// gets populated — `queue.write_texture` from a decoder-produced
+/// RGBA buffer instead of a `RenderPass` from a user drawer.
+struct VideoTextureEntry {
+    #[allow(dead_code)]
+    texture: wgpu::Texture,
+    #[allow(dead_code)]
+    view: wgpu::TextureView,
+    bind_group: wgpu::BindGroup,
+    size: (u32, u32),
 }
 
 /// One cache entry per `Image` `src`. Holds the GPU texture +
@@ -91,6 +136,39 @@ pub struct ImageRequest {
     pub opacity: f32,
 }
 
+/// One Graphics node recorded during the tree walk. Resolved
+/// in the renderer's pre-pass: ensure the node's offscreen
+/// texture exists at the right size, then invoke the user's
+/// drawer to encode draw calls into it. The main UI pass then
+/// composites the resulting texture as a textured quad through
+/// the image pipeline.
+pub struct GraphicsRequest {
+    /// User's node Rc — needed both as the cache key for the
+    /// offscreen texture (via `node.borrow().layout`) and to
+    /// reach the registered drawer closure inside the
+    /// `NodeKind::Graphics` variant.
+    pub node: crate::node::WgpuNode,
+    /// Screen-space rect in logical px: `(x, y, w, h)`. The
+    /// composite stage paints into this rect; the offscreen
+    /// texture is sized to `(w, h)` in physical px (rounded
+    /// up to at least 1).
+    pub rect: (f32, f32, f32, f32),
+    /// Composited alpha multiplier (from the node's style).
+    pub opacity: f32,
+}
+
+/// One Video node recorded during the tree walk. Resolved in
+/// the renderer's pre-pass: if the decoder thread has a new
+/// frame, allocate / re-allocate the per-node texture to the
+/// decoder's frame size and upload via `queue.write_texture`.
+/// The main UI pass composites the texture as a textured quad
+/// through the image pipeline — same path Graphics uses.
+pub struct VideoRequest {
+    pub node: crate::node::WgpuNode,
+    pub rect: (f32, f32, f32, f32),
+    pub opacity: f32,
+}
+
 impl Renderer {
     /// Create the renderer's GPU resources. `format` must match
     /// the surface's color format; the rect + image pipelines
@@ -108,7 +186,129 @@ impl Renderer {
                 device, format,
             ),
             image_cache: std::collections::HashMap::new(),
+            graphics_cache: std::collections::HashMap::new(),
+            video_cache: std::collections::HashMap::new(),
         }
+    }
+
+    /// Ensure a `VideoTextureEntry` exists for `layout` sized to
+    /// `(w, h)`. Allocates on first call; re-allocates when the
+    /// stored size differs from the requested one (decoder
+    /// resolution change). Returns `None` for zero-size inputs.
+    fn ensure_video_texture(
+        &mut self,
+        device: &wgpu::Device,
+        layout: native_layout::LayoutNode,
+        w: u32,
+        h: u32,
+    ) -> Option<&VideoTextureEntry> {
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let needs_alloc = self
+            .video_cache
+            .get(&layout)
+            .map(|e| e.size != (w, h))
+            .unwrap_or(true);
+        if needs_alloc {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("video-frame"),
+                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                // The decoder writes straight sRGB-encoded RGBA
+                // (BT.601 YUV→RGB conversion lands in display-
+                // referred sRGB). Tagging the texture as sRGB
+                // makes the image-pipeline sampler decode back
+                // to linear at sample time, matching the rest
+                // of the renderer's color math.
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("video-frame-bg"),
+                layout: &self.image.texture_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.image.sampler),
+                    },
+                ],
+            });
+            self.video_cache.insert(
+                layout,
+                VideoTextureEntry { texture, view, bind_group, size: (w, h) },
+            );
+        }
+        self.video_cache.get(&layout)
+    }
+
+    /// Ensure the cache holds a `GraphicsTextureEntry` for `layout`
+    /// sized to `(w, h)` physical px. Reallocates if the cached
+    /// size doesn't match (resize via parent layout). Returns
+    /// `None` when `w == 0 || h == 0` — the caller should skip
+    /// running the drawer in that case (no drawable surface).
+    fn ensure_graphics_texture(
+        &mut self,
+        device: &wgpu::Device,
+        layout: native_layout::LayoutNode,
+        w: u32,
+        h: u32,
+    ) -> Option<&GraphicsTextureEntry> {
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let needs_alloc = self
+            .graphics_cache
+            .get(&layout)
+            .map(|e| e.size != (w, h))
+            .unwrap_or(true);
+        if needs_alloc {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("graphics-target"),
+                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                // sRGB so the image pipeline's sampler decodes
+                // back to linear (matches the image-loading path
+                // at `decode_and_upload`). Authors write straight
+                // linear color from their fragment shader; the
+                // GPU encodes to sRGB at attachment-write time.
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("graphics-target-bg"),
+                layout: &self.image.texture_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.image.sampler),
+                    },
+                ],
+            });
+            self.graphics_cache.insert(
+                layout,
+                GraphicsTextureEntry { texture, view, bind_group, size: (w, h) },
+            );
+        }
+        self.graphics_cache.get(&layout)
     }
 
     /// Look up an image src in the cache, loading + uploading
@@ -157,6 +357,22 @@ impl Renderer {
         logical_viewport: (f32, f32),
         surface_viewport: (f32, f32, f32, f32),
     ) {
+        // Diagnostic: log render rate + video-upload rate once
+        // per second. Lets us tell apart "renderer not firing"
+        // from "renderer firing but uploads being skipped".
+        // Remove once cadence is verified.
+        thread_local! {
+            static RENDER_DIAG: std::cell::Cell<(u64, u64, std::time::Instant)> =
+                std::cell::Cell::new((0, 0, std::time::Instant::now()));
+        }
+        RENDER_DIAG.with(|c| {
+            let (renders, uploads, last) = c.get();
+            c.set((renders + 1, uploads, last));
+            if last.elapsed() >= std::time::Duration::from_secs(1) {
+                eprintln!("[render] renders/s={} video_uploads/s={}", renders, uploads);
+                c.set((0, 0, std::time::Instant::now()));
+            }
+        });
         let viewport = [logical_viewport.0, logical_viewport.1];
 
         // Run Taffy layout against the logical viewport, then
@@ -241,6 +457,14 @@ impl Renderer {
         // below — that pass takes `&mut self` for the cache,
         // which the read-only walk can't.
         let mut image_requests: Vec<ImageRequest> = Vec::new();
+        // Graphics nodes encountered during the walk; resolved in
+        // a pre-pass below (allocate offscreen texture, run user's
+        // drawer) before the main render encoder runs.
+        let mut graphics_requests: Vec<GraphicsRequest> = Vec::new();
+        // Video nodes — same resolution pattern: pre-pass uploads
+        // the latest decoded frame from each node's decoder
+        // thread; main pass composites via the image pipeline.
+        let mut video_requests: Vec<VideoRequest> = Vec::new();
         // Clear the prior frame's header-hit registry before the
         // walk fills it. Pointer dispatch reads from this Vec on
         // the next press; rebuilding it every frame keeps it in
@@ -266,6 +490,8 @@ impl Renderer {
                 &mut deferred_nav_tops,
                 &mut deferred_drawers,
                 &mut image_requests,
+                &mut graphics_requests,
+                &mut video_requests,
                 &mut header_hits,
             );
         }
@@ -295,6 +521,8 @@ impl Renderer {
         let mut nav_top_rects: Vec<RectInstance> = Vec::new();
         let mut nav_top_texts: Vec<StagedText<'_>> = Vec::new();
         let mut nav_top_image_requests: Vec<ImageRequest> = Vec::new();
+        let mut nav_top_graphics_requests: Vec<GraphicsRequest> = Vec::new();
+        let mut nav_top_video_requests: Vec<VideoRequest> = Vec::new();
         // Sub-deferred overlays / nav-tops discovered while
         // walking a deferred top screen. Top screens can in
         // principle host overlays of their own; route those into
@@ -322,6 +550,8 @@ impl Renderer {
                 &mut sub_deferred_nav_tops,
                 &mut sub_deferred_drawers,
                 &mut nav_top_image_requests,
+                &mut nav_top_graphics_requests,
+                &mut nav_top_video_requests,
                 &mut header_hits,
             );
         }
@@ -346,6 +576,8 @@ impl Renderer {
         let mut overlay_rects: Vec<RectInstance> = Vec::new();
         let mut overlay_texts: Vec<StagedText<'_>> = Vec::new();
         let mut overlay_image_requests: Vec<ImageRequest> = Vec::new();
+        let mut overlay_graphics_requests: Vec<GraphicsRequest> = Vec::new();
+        let mut overlay_video_requests: Vec<VideoRequest> = Vec::new();
 
         // Drawer pass — paints first so true `Overlay` /
         // `AnchoredOverlay` modals composite *over* the drawer
@@ -367,6 +599,8 @@ impl Renderer {
                 &mut overlay_rects,
                 &mut overlay_texts,
                 &mut overlay_image_requests,
+                &mut overlay_graphics_requests,
+                &mut overlay_video_requests,
                 &mut drawer_scrim_hits,
             );
         }
@@ -389,6 +623,8 @@ impl Renderer {
                 now,
                 (viewport[0], viewport[1]),
                 &mut overlay_image_requests,
+                &mut overlay_graphics_requests,
+                &mut overlay_video_requests,
                 overlay_node,
                 &mut overlay_rects,
                 &mut overlay_texts,
@@ -485,6 +721,271 @@ impl Renderer {
             &self.image_cache,
         );
 
+        // ----- Submit 0: Graphics offscreen renders -----
+        //
+        // For every `NodeKind::Graphics` node in the tree (across
+        // main + nav-top + overlay layers), ensure an offscreen
+        // texture exists at the node's current pixel size and
+        // invoke the user-registered drawer to encode into it.
+        // Submitted *before* the main pass so the main batch's
+        // image-pipeline sample of the same texture reads a
+        // fresh frame. One encoder + one submit total — each
+        // drawer encodes its own `begin_render_pass`/`end_pass`
+        // bracket on this shared encoder.
+        if !graphics_requests.is_empty()
+            || !nav_top_graphics_requests.is_empty()
+            || !overlay_graphics_requests.is_empty()
+        {
+            let mut encoder0 = device.create_command_encoder(
+                &wgpu::CommandEncoderDescriptor { label: Some("idealyst-graphics-pre") },
+            );
+            let all = graphics_requests
+                .iter()
+                .chain(nav_top_graphics_requests.iter())
+                .chain(overlay_graphics_requests.iter());
+            // Convert the node's logical-px rect to *physical* px
+            // so the offscreen texture matches the surface's
+            // device pixel ratio. Allocating at logical px and
+            // composing into a 2x-or-greater logical rect makes
+            // the drawer's output read as pixelated on Retina /
+            // hi-DPI displays — bilinear upsampling at sample
+            // time can't recover detail that wasn't rendered.
+            let scale_x = if logical_viewport.0 > 0.0 {
+                surface_viewport.2 / logical_viewport.0
+            } else {
+                1.0
+            };
+            let scale_y = if logical_viewport.1 > 0.0 {
+                surface_viewport.3 / logical_viewport.1
+            } else {
+                1.0
+            };
+            // Cap the dynamic-borrow split: gather a snapshot of
+            // (node, layout_id, size, created_at) up front so the
+            // `node.borrow()` lifetime doesn't collide with the
+            // later `borrow_mut()` on the drawer slot, which lives
+            // *inside* the same `NodeData`.
+            #[derive(Clone)]
+            struct PendingGraphics {
+                node: crate::node::WgpuNode,
+                layout_id: native_layout::LayoutNode,
+                size: (u32, u32),
+                created_at: web_time::Instant,
+            }
+            let mut pending: Vec<PendingGraphics> = Vec::new();
+            for req in all {
+                let (px_w, px_h) = (
+                    (req.rect.2 * scale_x).round().max(1.0) as u32,
+                    (req.rect.3 * scale_y).round().max(1.0) as u32,
+                );
+                let data = req.node.borrow();
+                let layout_id = data.layout;
+                let created_at = match &data.kind {
+                    NodeKind::Graphics { created_at, .. } => *created_at,
+                    _ => continue,
+                };
+                pending.push(PendingGraphics {
+                    node: req.node.clone(),
+                    layout_id,
+                    size: (px_w, px_h),
+                    created_at,
+                });
+            }
+            for p in pending {
+                // Allocate / resize the offscreen target. Holds an
+                // immutable borrow on `self.graphics_cache` for the
+                // duration of the drawer call so we can pass
+                // `&entry.view` without cloning the un-cloneable
+                // `wgpu::TextureView`.
+                let entry = match self.ensure_graphics_texture(
+                    device,
+                    p.layout_id,
+                    p.size.0,
+                    p.size.1,
+                ) {
+                    Some(e) => e,
+                    None => continue,
+                };
+                let mut frame = crate::node::GraphicsFrame {
+                    device,
+                    queue,
+                    view: &entry.view,
+                    encoder: &mut encoder0,
+                    size: p.size,
+                    elapsed: web_time::Instant::now().saturating_duration_since(p.created_at),
+                };
+                if let NodeKind::Graphics { drawer, .. } = &p.node.borrow().kind {
+                    if let Some(d) = drawer.borrow_mut().as_mut() {
+                        d(&mut frame);
+                    }
+                }
+            }
+            queue.submit(std::iter::once(encoder0.finish()));
+        }
+
+        // Build textured-quad specs for each Graphics node so the
+        // main / nav-top / overlay batches composite them via
+        // the image pipeline alongside regular images.
+        let mut main_graphics_specs: Vec<(ImageInstance, native_layout::LayoutNode)> = Vec::new();
+        let mut nav_top_graphics_specs: Vec<(ImageInstance, native_layout::LayoutNode)> = Vec::new();
+        let mut overlay_graphics_specs: Vec<(ImageInstance, native_layout::LayoutNode)> = Vec::new();
+        let resolve_graphics_draws =
+            |reqs: &[GraphicsRequest],
+             out: &mut Vec<(ImageInstance, native_layout::LayoutNode)>,
+             cache: &std::collections::HashMap<native_layout::LayoutNode, GraphicsTextureEntry>| {
+                for req in reqs {
+                    let layout_id = req.node.borrow().layout;
+                    if !cache.contains_key(&layout_id) {
+                        continue;
+                    }
+                    out.push((
+                        ImageInstance {
+                            rect: [req.rect.0, req.rect.1, req.rect.2, req.rect.3],
+                            uv_rect: [0.0, 0.0, 1.0, 1.0],
+                            tint: [1.0, 1.0, 1.0, 1.0],
+                            rotation: 0.0,
+                            opacity: req.opacity,
+                            _pad: [0.0; 2],
+                        },
+                        layout_id,
+                    ));
+                }
+            };
+        resolve_graphics_draws(&graphics_requests, &mut main_graphics_specs, &self.graphics_cache);
+        resolve_graphics_draws(
+            &nav_top_graphics_requests,
+            &mut nav_top_graphics_specs,
+            &self.graphics_cache,
+        );
+        resolve_graphics_draws(
+            &overlay_graphics_requests,
+            &mut overlay_graphics_specs,
+            &self.graphics_cache,
+        );
+
+        // ----- Video frame uploads -----
+        //
+        // For every `NodeKind::Video` in the tree, check whether
+        // the decoder thread has published a fresher frame than
+        // we've uploaded; if so, ensure the per-node texture and
+        // `queue.write_texture` the RGBA bytes. Upload uses the
+        // shared queue, so the bytes land before the upcoming
+        // main-pass submit reads from the texture. Lifecycle
+        // mirrors the Graphics pre-pass — same data shapes,
+        // different population mechanism.
+        let mut video_pending: Vec<(crate::node::WgpuNode, u64)> = Vec::new();
+        for req in video_requests
+            .iter()
+            .chain(nav_top_video_requests.iter())
+            .chain(overlay_video_requests.iter())
+        {
+            let (counter, last) = {
+                let data = req.node.borrow();
+                let (counter, last) = match &data.kind {
+                    NodeKind::Video { decoder, last_uploaded_frame } => (
+                        decoder.shared.frame_counter.load(std::sync::atomic::Ordering::Acquire),
+                        last_uploaded_frame.get(),
+                    ),
+                    _ => continue,
+                };
+                (counter, last)
+            };
+            if counter == last {
+                // No new frame since last upload. The existing
+                // texture is still current — fall through to
+                // composite without touching the queue.
+                continue;
+            }
+            video_pending.push((req.node.clone(), counter));
+        }
+        for (node, counter) in video_pending {
+            let (layout_id, frame_w, frame_h, rgba) = {
+                let data = node.borrow();
+                let decoder = match &data.kind {
+                    NodeKind::Video { decoder, .. } => decoder.clone(),
+                    _ => continue,
+                };
+                let layout_id = data.layout;
+                drop(data);
+                let frame = match decoder.shared.latest_frame.lock() {
+                    Ok(mut slot) => slot.take(),
+                    Err(_) => None,
+                };
+                let frame = match frame {
+                    Some(f) => f,
+                    None => continue,
+                };
+                (layout_id, frame.width, frame.height, frame.rgba)
+            };
+            let entry = match self.ensure_video_texture(device, layout_id, frame_w, frame_h)
+            {
+                Some(e) => e,
+                None => continue,
+            };
+            queue.write_texture(
+                wgpu::ImageCopyTexture {
+                    texture: &entry.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &rgba,
+                wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(4 * frame_w),
+                    rows_per_image: Some(frame_h),
+                },
+                wgpu::Extent3d { width: frame_w, height: frame_h, depth_or_array_layers: 1 },
+            );
+            // Record that we picked up this frame so the next
+            // tick skips the upload if no newer frame arrived.
+            if let NodeKind::Video { last_uploaded_frame, .. } = &node.borrow().kind {
+                last_uploaded_frame.set(counter);
+            }
+            RENDER_DIAG.with(|c| {
+                let (r, u, t) = c.get();
+                c.set((r, u + 1, t));
+            });
+        }
+
+        // Composite specs for Video — same shape as Graphics.
+        let mut main_video_specs: Vec<(ImageInstance, native_layout::LayoutNode)> = Vec::new();
+        let mut nav_top_video_specs: Vec<(ImageInstance, native_layout::LayoutNode)> = Vec::new();
+        let mut overlay_video_specs: Vec<(ImageInstance, native_layout::LayoutNode)> = Vec::new();
+        let resolve_video_draws =
+            |reqs: &[VideoRequest],
+             out: &mut Vec<(ImageInstance, native_layout::LayoutNode)>,
+             cache: &std::collections::HashMap<native_layout::LayoutNode, VideoTextureEntry>| {
+                for req in reqs {
+                    let layout_id = req.node.borrow().layout;
+                    if !cache.contains_key(&layout_id) {
+                        continue;
+                    }
+                    out.push((
+                        ImageInstance {
+                            rect: [req.rect.0, req.rect.1, req.rect.2, req.rect.3],
+                            uv_rect: [0.0, 0.0, 1.0, 1.0],
+                            tint: [1.0, 1.0, 1.0, 1.0],
+                            rotation: 0.0,
+                            opacity: req.opacity,
+                            _pad: [0.0; 2],
+                        },
+                        layout_id,
+                    ));
+                }
+            };
+        resolve_video_draws(&video_requests, &mut main_video_specs, &self.video_cache);
+        resolve_video_draws(
+            &nav_top_video_requests,
+            &mut nav_top_video_specs,
+            &self.video_cache,
+        );
+        resolve_video_draws(
+            &overlay_video_requests,
+            &mut overlay_video_specs,
+            &self.video_cache,
+        );
+
         // ----- Submit 1: main content + keyboard -----
         //
         // Encoded + submitted alone so the overlay batch's
@@ -498,7 +999,7 @@ impl Renderer {
             // Build the image-draw list *outside* the pass scope
             // so its borrowed bind-group references outlive the
             // pass borrow that consumes them.
-            let main_image_draws: Vec<ImageDraw<'_>> = main_image_specs
+            let mut main_image_draws: Vec<ImageDraw<'_>> = main_image_specs
                 .iter()
                 .map(|(inst, src)| ImageDraw {
                     instance: *inst,
@@ -510,6 +1011,21 @@ impl Renderer {
                     },
                 })
                 .collect();
+            // Append Graphics composites — same image pipeline,
+            // bind groups come from `graphics_cache` instead of
+            // `image_cache`.
+            main_image_draws.extend(main_graphics_specs.iter().map(|(inst, layout_id)| {
+                ImageDraw {
+                    instance: *inst,
+                    bind_group: &self.graphics_cache[layout_id].bind_group,
+                }
+            }));
+            main_image_draws.extend(main_video_specs.iter().map(|(inst, layout_id)| {
+                ImageDraw {
+                    instance: *inst,
+                    bind_group: &self.video_cache[layout_id].bind_group,
+                }
+            }));
             let mut encoder1 =
                 device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("idealyst-main"),
@@ -588,7 +1104,7 @@ impl Renderer {
             || !nav_top_texts.is_empty()
             || !nav_top_image_specs.is_empty();
         if has_nav_top_content {
-            let nav_top_image_draws: Vec<ImageDraw<'_>> = nav_top_image_specs
+            let mut nav_top_image_draws: Vec<ImageDraw<'_>> = nav_top_image_specs
                 .iter()
                 .map(|(inst, src)| ImageDraw {
                     instance: *inst,
@@ -598,6 +1114,18 @@ impl Renderer {
                     },
                 })
                 .collect();
+            nav_top_image_draws.extend(nav_top_graphics_specs.iter().map(
+                |(inst, layout_id)| ImageDraw {
+                    instance: *inst,
+                    bind_group: &self.graphics_cache[layout_id].bind_group,
+                },
+            ));
+            nav_top_image_draws.extend(nav_top_video_specs.iter().map(
+                |(inst, layout_id)| ImageDraw {
+                    instance: *inst,
+                    bind_group: &self.video_cache[layout_id].bind_group,
+                },
+            ));
             let mut encoder_mid =
                 device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("idealyst-nav-slide"),
@@ -654,7 +1182,7 @@ impl Renderer {
             || !overlay_image_specs.is_empty()
             || device_corner_radius > 0.0;
         if has_overlay_content {
-            let overlay_image_draws: Vec<ImageDraw<'_>> = overlay_image_specs
+            let mut overlay_image_draws: Vec<ImageDraw<'_>> = overlay_image_specs
                 .iter()
                 .map(|(inst, src)| ImageDraw {
                     instance: *inst,
@@ -666,6 +1194,18 @@ impl Renderer {
                     },
                 })
                 .collect();
+            overlay_image_draws.extend(overlay_graphics_specs.iter().map(
+                |(inst, layout_id)| ImageDraw {
+                    instance: *inst,
+                    bind_group: &self.graphics_cache[layout_id].bind_group,
+                },
+            ));
+            overlay_image_draws.extend(overlay_video_specs.iter().map(
+                |(inst, layout_id)| ImageDraw {
+                    instance: *inst,
+                    bind_group: &self.video_cache[layout_id].bind_group,
+                },
+            ));
             let mut encoder2 =
                 device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("idealyst-overlays"),
@@ -771,6 +1311,8 @@ fn walk<'a>(
     deferred_nav_tops: &mut Vec<DeferredNavTop>,
     deferred_drawers: &mut Vec<DeferredDrawer>,
     image_requests: &mut Vec<ImageRequest>,
+    graphics_requests: &mut Vec<GraphicsRequest>,
+    video_requests: &mut Vec<VideoRequest>,
     header_hits: &mut Vec<crate::host::HeaderHit>,
 ) {
     let data = node.borrow();
@@ -838,6 +1380,36 @@ fn walk<'a>(
             None
         };
         if has_bg || any_border || press_overlay.is_some() {
+            // Drop shadow gets staged *first* so it paints
+            // underneath the main rect. The shadow quad covers
+            // the visual rect shifted by `(offset.x, offset.y)`
+            // and expanded by `blur` on every side; the fragment
+            // shader takes care of the soft falloff via the
+            // `shadow_blur > 0` path.
+            if let Some(sh) = r.shadow.as_ref() {
+                let bw = sh.blur.max(0.0);
+                let shadow_color =
+                    srgb_rgba_to_linear([sh.color[0], sh.color[1], sh.color[2], sh.color[3] * r.opacity]);
+                rects.push(RectInstance {
+                    rect: [
+                        x + sh.offset[0] - bw,
+                        y + sh.offset[1] - bw,
+                        w + bw * 2.0,
+                        h + bw * 2.0,
+                    ],
+                    bg: shadow_color,
+                    // Same corner radii as the visual rect — the
+                    // shader compares against the *inner* SDF
+                    // (half-extent inset by `bw`), so the shadow
+                    // hugs whatever shape the rect itself has.
+                    corner_radius: r.corner_radius,
+                    border_color: [0.0; 4],
+                    border_width: 0.0,
+                    rotation: 0.0,
+                    shadow_blur: bw,
+                    _pad: 0.0,
+                });
+            }
             let bg_rest = r.background.unwrap_or([0.0; 4]);
             let bg = backend.animator.sample_color(
                 TweenKey::new(data.layout, AnimProperty::BackgroundColor),
@@ -868,7 +1440,8 @@ fn walk<'a>(
                 border_color: bc_lin,
                 border_width: bw,
                 rotation: 0.0,
-                _pad: [0.0; 2],
+                shadow_blur: 0.0,
+                _pad: 0.0,
             });
         }
     }
@@ -1020,6 +1593,31 @@ fn walk<'a>(
                 image_requests.push(ImageRequest {
                     src: src.clone(),
                     alt: alt.clone(),
+                    rect: (x, y, w, h),
+                    opacity: r.opacity,
+                });
+            }
+            NodeKind::Graphics { .. } => {
+                // Same shape as Image: just record. The
+                // renderer's pre-pass ensures the offscreen
+                // texture, invokes the user's drawer to encode
+                // their commands into it, and the main pass
+                // composites the resulting texture via the
+                // image pipeline.
+                graphics_requests.push(GraphicsRequest {
+                    node: node.clone(),
+                    rect: (x, y, w, h),
+                    opacity: r.opacity,
+                });
+            }
+            NodeKind::Video { .. } => {
+                // Same record-and-resolve-later pattern as
+                // Graphics; the pre-pass uploads the latest
+                // decoded RGBA frame from the node's decoder
+                // thread, the main pass composites via the
+                // image pipeline.
+                video_requests.push(VideoRequest {
+                    node: node.clone(),
                     rect: (x, y, w, h),
                     opacity: r.opacity,
                 });
@@ -1286,6 +1884,8 @@ fn walk<'a>(
             deferred_nav_tops,
             deferred_drawers,
             image_requests,
+            graphics_requests,
+            video_requests,
             header_hits,
         );
     }
@@ -1357,7 +1957,7 @@ fn paint_scrollbar(
             border_color: [0.0; 4],
             border_width: 0.0,
             rotation: 0.0,
-            _pad: [0.0; 2],
+            shadow_blur: 0.0, _pad: 0.0,
         });
     } else {
         let viewport = h;
@@ -1382,7 +1982,7 @@ fn paint_scrollbar(
             border_color: [0.0; 4],
             border_width: 0.0,
             rotation: 0.0,
-            _pad: [0.0; 2],
+            shadow_blur: 0.0, _pad: 0.0,
         });
     }
 }
@@ -1623,6 +2223,8 @@ fn paint_drawer_overlay<'a>(
     rects: &mut Vec<RectInstance>,
     texts: &mut Vec<StagedText<'a>>,
     image_requests: &mut Vec<ImageRequest>,
+    graphics_requests: &mut Vec<GraphicsRequest>,
+    video_requests: &mut Vec<VideoRequest>,
     scrim_hits: &mut Vec<crate::host::HeaderHit>,
 ) {
     let (nx, ny, nw, nh) = drawer.nav_rect;
@@ -1696,6 +2298,8 @@ fn paint_drawer_overlay<'a>(
         &mut sub_nav_tops,
         &mut sub_drawers,
         image_requests,
+        graphics_requests,
+        video_requests,
         &mut sub_header_hits,
     );
     // Sidebar header buttons (if any) join the outer hits.
@@ -1859,6 +2463,8 @@ fn walk_overlay<'a>(
     now: Instant,
     viewport: (f32, f32),
     image_requests: &mut Vec<ImageRequest>,
+    graphics_requests: &mut Vec<GraphicsRequest>,
+    video_requests: &mut Vec<VideoRequest>,
     node: &WgpuNode,
     rects: &mut Vec<RectInstance>,
     texts: &mut Vec<StagedText<'a>>,
@@ -1935,6 +2541,8 @@ fn walk_overlay<'a>(
             &mut nested_nav_tops,
             &mut nested_drawers,
             image_requests,
+            graphics_requests,
+            video_requests,
             &mut nested_header_hits,
         );
     }
@@ -1952,6 +2560,8 @@ fn walk_overlay<'a>(
             now,
             viewport,
             image_requests,
+            graphics_requests,
+            video_requests,
             &child_overlay,
             rects,
             texts,
@@ -2061,7 +2671,7 @@ fn paint_image_placeholder(
         border_color: srgb_rgba_to_linear(PLACEHOLDER_BORDER),
         border_width: 1.0,
         rotation: 0.0,
-        _pad: [0.0; 2],
+        shadow_blur: 0.0, _pad: 0.0,
     });
     // Diagonal "missing-image" stripe across the box.
     let stripe_w = w.hypot(h);
@@ -2075,7 +2685,7 @@ fn paint_image_placeholder(
         border_color: [0.0; 4],
         border_width: 0.0,
         rotation: (h / w).atan(),
-        _pad: [0.0; 2],
+        shadow_blur: 0.0, _pad: 0.0,
     });
 }
 
@@ -2215,7 +2825,7 @@ fn stroke_segment(
             border_color: [0.0; 4],
             border_width: 0.0,
             rotation: 0.0,
-            _pad: [0.0; 2],
+            shadow_blur: 0.0, _pad: 0.0,
         });
         return;
     }
@@ -2234,7 +2844,7 @@ fn stroke_segment(
         border_color: [0.0; 4],
         border_width: 0.0,
         rotation: angle,
-        _pad: [0.0; 2],
+        shadow_blur: 0.0, _pad: 0.0,
     });
 }
 
@@ -2679,7 +3289,7 @@ fn paint_overlay_backdrop(
         border_color: [0.0; 4],
         border_width: 0.0,
         rotation: 0.0,
-        _pad: [0.0; 2],
+        shadow_blur: 0.0, _pad: 0.0,
     });
 }
 
@@ -2710,7 +3320,7 @@ fn paint_tab_bar(
         border_color: srgb_rgba_to_linear([0.86, 0.86, 0.88, 1.0]),
         border_width: 1.0,
         rotation: 0.0,
-        _pad: [0.0; 2],
+        shadow_blur: 0.0, _pad: 0.0,
     });
     if tab_count == 0 {
         return;
@@ -2727,7 +3337,7 @@ fn paint_tab_bar(
         border_color: [0.0; 4],
         border_width: 0.0,
         rotation: 0.0,
-        _pad: [0.0; 2],
+        shadow_blur: 0.0, _pad: 0.0,
     });
 }
 
@@ -2750,7 +3360,7 @@ fn paint_unsupported(
         border_color: srgb_rgba_to_linear([0.88, 0.78, 0.45, 1.0]),
         border_width: 1.0,
         rotation: 0.0,
-        _pad: [0.0; 2],
+        shadow_blur: 0.0, _pad: 0.0,
     });
     // Horizontal accent stripe.
     let stripe_h = 3.0_f32;
@@ -2761,7 +3371,7 @@ fn paint_unsupported(
         border_color: [0.0; 4],
         border_width: 0.0,
         rotation: 0.0,
-        _pad: [0.0; 2],
+        shadow_blur: 0.0, _pad: 0.0,
     });
 }
 

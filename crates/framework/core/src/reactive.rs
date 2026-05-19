@@ -527,6 +527,61 @@ where
 /// // Anywhere a Signal<String> works:
 /// text(move || full.get());
 /// ```
+/// Bundles a `Signal<S>` state cell with a typed action dispatcher,
+/// in the shape of React's `useReducer`. Returns `(state, dispatch)`:
+///
+/// - `state` is a plain [`Signal<S>`] — every existing consumer
+///   (`text(|| state.get())`, `.bind(...)`, `effect!`, `memo`,
+///   stylesheet closures, etc.) works unchanged.
+/// - `dispatch` is a typed `Fn(A)` that applies the user-supplied
+///   reducer function `(&S, A) -> S` to the current state and writes
+///   the result back.
+///
+/// This is intentionally **a pattern, not a primitive**: it composes
+/// from `Signal` + a closure. No new arena slot type, no new
+/// scope-cleanup path, no backend hooks. Generator backends (Roku)
+/// that need structured transpilation of reducer dispatch should
+/// reach for `Action`/`Derived` shapes instead — those carry the
+/// metadata required to ship the function across the wire.
+///
+/// The reducer call is wrapped in `untrack` so calling `dispatch`
+/// from inside an effect doesn't accidentally subscribe that effect
+/// to the state signal. (`Signal::set` itself is non-subscribing;
+/// the wrap is just for the `state.get()` read of the previous
+/// value.)
+///
+/// ```ignore
+/// enum Counter { Inc, Dec, Reset }
+///
+/// let (count, dispatch) = reducer(0i32, |&n, action| match action {
+///     Counter::Inc   =>  n + 1,
+///     Counter::Dec   =>  n - 1,
+///     Counter::Reset =>  0,
+/// });
+///
+/// button("+", move || dispatch(Counter::Inc));
+/// text(move || format!("count: {}", count.get()));
+/// ```
+pub fn reducer<S, A>(
+    initial: S,
+    f: impl Fn(&S, A) -> S + 'static,
+) -> (Signal<S>, impl Fn(A))
+where
+    S: Clone + 'static,
+{
+    let state = Signal::new(initial);
+    let dispatch = move |action: A| {
+        // Untracked read so a `dispatch` call from inside an effect
+        // doesn't subscribe that effect to `state` (it's the
+        // dispatcher's job to *cause* state changes, not to react
+        // to them).
+        let current = untrack(|| state.get());
+        let next = f(&current, action);
+        state.set(next);
+    };
+    (state, dispatch)
+}
+
 pub fn memo<T>(f: impl Fn() -> T + 'static) -> Signal<T>
 where
     T: Clone + PartialEq + 'static,
@@ -869,8 +924,6 @@ impl<T: Clone + 'static> Signal<T> {
         with_signal_mut::<T, _>(self.id, |inner| {
             inner.value = value;
         });
-        #[cfg(debug_assertions)]
-        record_write_in_running_effect(self.id);
         // Subscriber lists are kept tight on the cleanup side (effect
         // drop / effect re-run), so no pruning pass needed here.
         let to_run = collect_subscribers(self.id);
@@ -882,8 +935,6 @@ impl<T: Clone + 'static> Signal<T> {
         with_signal_mut::<T, _>(self.id, |inner| {
             f(&mut inner.value);
         });
-        #[cfg(debug_assertions)]
-        record_write_in_running_effect(self.id);
         let to_run = collect_subscribers(self.id);
         notify_or_queue(&to_run);
     }
@@ -922,47 +973,6 @@ fn assert_not_in_memo_compute() {
              for derived values use additional memos."
         );
     }
-}
-
-#[cfg(debug_assertions)]
-mod read_write_audit {
-    //! Debug-only detection of effects that both read AND write the
-    //! same signal. The reentry guard in `run_effect` makes the pattern
-    //! safe (no infinite loop), but it's almost always a sign the
-    //! author wanted `memo` or a guarded write — useful to flag at
-    //! development time.
-    //!
-    //! Implementation: a per-running-effect write list (keyed in a
-    //! thread-local map so nested runs don't collide), checked against
-    //! the effect's recorded read deps at the end of each run. First
-    //! occurrence per `(EffectId, SignalId)` pair on this thread emits
-    //! to stderr; subsequent hits are deduped via `WARNED_PAIRS` so a
-    //! steady-state bridge pattern only logs once.
-
-    use super::*;
-    use std::cell::RefCell;
-    use std::collections::{HashMap, HashSet};
-
-    thread_local! {
-        pub(super) static EFFECT_WRITES: RefCell<HashMap<EffectId, Vec<SignalId>>> =
-            RefCell::new(HashMap::new());
-        pub(super) static WARNED_PAIRS: RefCell<HashSet<(EffectId, SignalId)>> =
-            RefCell::new(HashSet::new());
-    }
-}
-
-/// Records a write to `sid` as having happened during the currently-
-/// running effect (if any). Used by [`run_effect`] to detect the
-/// "effect reads and writes the same signal" smell after the run
-/// completes. Debug builds only — release builds carry zero overhead.
-#[cfg(debug_assertions)]
-fn record_write_in_running_effect(sid: SignalId) {
-    let Some(eid) = CURRENT.with(|c| *c.borrow()) else {
-        return;
-    };
-    read_write_audit::EFFECT_WRITES.with(|w| {
-        w.borrow_mut().entry(eid).or_default().push(sid);
-    });
 }
 
 /// Either runs the listed effects immediately (no batch active) or
@@ -1314,62 +1324,6 @@ fn run_effect(id: EffectId) {
             }
         });
 
-        #[cfg(debug_assertions)]
-        audit_effect_read_write_overlap(id);
-    }
-}
-
-/// Compares the set of signals this effect just *wrote* against the set
-/// of signals it just *read* (its dep set). Any signal appearing in
-/// both is logged once per `(EffectId, SignalId)` pair to stderr — it's
-/// almost always a sign the author wanted `memo` for a derived value
-/// or a guarded write. The reentry guard makes the pattern safe at
-/// runtime, so this is advisory, not fatal.
-///
-/// Debug builds only — release builds compile out the write tracking
-/// and this function. No allocation on the happy path (effect didn't
-/// write anything).
-#[cfg(debug_assertions)]
-fn audit_effect_read_write_overlap(id: EffectId) {
-    use read_write_audit::{EFFECT_WRITES, WARNED_PAIRS};
-
-    // Pop the write list for this effect's just-completed run. If the
-    // effect didn't write anything, there's nothing to check.
-    let writes: Vec<SignalId> = EFFECT_WRITES
-        .with(|w| w.borrow_mut().remove(&id))
-        .unwrap_or_default();
-    if writes.is_empty() {
-        return;
-    }
-
-    // Snapshot the post-run dep set. The arena borrow is held briefly;
-    // we collect into a Vec before releasing it because the eprintln
-    // calls below shouldn't run under an arena borrow.
-    let deps: Vec<SignalId> = ARENA.with(|a| {
-        let a = a.borrow();
-        a.effect_dependencies
-            .get(id.0 as usize)
-            .map(|d| d.iter().copied().collect())
-            .unwrap_or_default()
-    });
-    if deps.is_empty() {
-        return;
-    }
-
-    for sid in writes {
-        if !deps.contains(&sid) {
-            continue;
-        }
-        let is_new = WARNED_PAIRS.with(|w| w.borrow_mut().insert((id, sid)));
-        if is_new {
-            eprintln!(
-                "[framework-core] effect {:?} both reads AND writes signal {:?}. \
-                 This terminates safely (reentry guard) but is usually a bug — \
-                 consider `memo` for derived values, or guard the write with an \
-                 inequality check if it's an intentional bridge.",
-                id, sid
-            );
-        }
     }
 }
 
@@ -2131,74 +2085,6 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // Read+write-same-signal audit (debug-only)
-    // -----------------------------------------------------------------
-
-    #[cfg(debug_assertions)]
-    fn warned_pairs_count() -> usize {
-        super::read_write_audit::WARNED_PAIRS.with(|w| w.borrow().len())
-    }
-
-    #[cfg(debug_assertions)]
-    fn clear_warned_pairs() {
-        super::read_write_audit::WARNED_PAIRS.with(|w| w.borrow_mut().clear());
-    }
-
-    #[cfg(debug_assertions)]
-    #[test]
-    fn effect_reading_and_writing_same_signal_warns_once() {
-        clear_warned_pairs();
-        let before = warned_pairs_count();
-        let s = Signal::new(0i32);
-        let _e = Effect::new(move || {
-            // Read then unconditionally write — the canonical smell.
-            let v = s.get();
-            s.set(v + 1);
-        });
-        // First run logged exactly one new pair.
-        assert_eq!(
-            warned_pairs_count(),
-            before + 1,
-            "read-then-write produces one new warning on the first run"
-        );
-        // External writes re-fire the effect; the same pair must not
-        // produce additional warnings (dedup).
-        s.set(50);
-        s.set(60);
-        assert_eq!(
-            warned_pairs_count(),
-            before + 1,
-            "subsequent runs of the same effect on the same signal must dedup"
-        );
-    }
-
-    #[cfg(debug_assertions)]
-    #[test]
-    fn effect_only_reading_does_not_warn() {
-        clear_warned_pairs();
-        let before = warned_pairs_count();
-        let s = Signal::new(0i32);
-        let _e = Effect::new(move || {
-            let _ = s.get();
-        });
-        s.set(5);
-        assert_eq!(warned_pairs_count(), before, "read-only effect must not warn");
-    }
-
-    #[cfg(debug_assertions)]
-    #[test]
-    fn effect_only_writing_does_not_warn() {
-        clear_warned_pairs();
-        let before = warned_pairs_count();
-        let s = Signal::new(0i32);
-        let _e = Effect::new(move || {
-            // No read of `s` → no dep → no overlap.
-            s.set(99);
-        });
-        assert_eq!(warned_pairs_count(), before, "write-only effect must not warn");
-    }
-
-    // -----------------------------------------------------------------
     // batch()
     // -----------------------------------------------------------------
 
@@ -2465,6 +2351,111 @@ mod tests {
         );
         trigger.set(1);
         assert_eq!(fires.get(), 2, "writes to a dep do fire");
+    }
+
+    // -----------------------------------------------------------------
+    // reducer()
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn reducer_applies_user_function_to_state() {
+        enum Counter {
+            Inc,
+            Dec,
+            Set(i32),
+        }
+        let (state, dispatch) = reducer(0i32, |&n, action| match action {
+            Counter::Inc => n + 1,
+            Counter::Dec => n - 1,
+            Counter::Set(v) => v,
+        });
+        assert_eq!(state.get(), 0);
+        dispatch(Counter::Inc);
+        assert_eq!(state.get(), 1);
+        dispatch(Counter::Inc);
+        dispatch(Counter::Inc);
+        assert_eq!(state.get(), 3);
+        dispatch(Counter::Dec);
+        assert_eq!(state.get(), 2);
+        dispatch(Counter::Set(100));
+        assert_eq!(state.get(), 100);
+    }
+
+    #[test]
+    fn reducer_state_signal_notifies_subscribers() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let (state, dispatch) = reducer(0i32, |&n, delta: i32| n + delta);
+        let observed = Rc::new(Cell::new(0i32));
+        let o = observed.clone();
+        let _e = Effect::new(move || {
+            o.set(state.get());
+        });
+        assert_eq!(observed.get(), 0);
+        dispatch(5);
+        assert_eq!(observed.get(), 5, "subscriber sees the new state after dispatch");
+        dispatch(7);
+        assert_eq!(observed.get(), 12);
+    }
+
+    #[test]
+    fn reducer_dispatch_does_not_subscribe_caller_effect() {
+        // The dispatcher reads the current state to compute the next
+        // one. That read is `untrack`ed so it doesn't accidentally
+        // subscribe the surrounding effect to the reducer's state.
+        // (Without that, calling `dispatch` from inside an effect
+        // would make the effect re-fire on every state change it
+        // caused — easy infinite-loop trap.)
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let trigger = Signal::new(0i32);
+        let (state, dispatch) = reducer(0i32, |&n, _: ()| n + 1);
+        let fires = Rc::new(Cell::new(0));
+        let f = fires.clone();
+        let _e = Effect::new(move || {
+            // Effect's only declared dep is `trigger`. If `dispatch`
+            // ends up subscribing us to `state`, the assertion below
+            // catches it.
+            let _ = trigger.get();
+            f.set(f.get() + 1);
+            dispatch(());
+        });
+        assert_eq!(fires.get(), 1, "initial run");
+        let after_initial = state.get();
+        assert_eq!(after_initial, 1, "state advanced once on the initial run");
+        // External write to a signal we DO depend on triggers a re-run
+        // and another dispatch.
+        trigger.set(1);
+        assert_eq!(fires.get(), 2, "re-fires on trigger");
+        assert_eq!(state.get(), 2, "state advanced again");
+        // Critically: no additional re-fires beyond the trigger-driven
+        // one. If dispatch had subscribed us to `state`, fires would
+        // be 3+ here (reentry guard would short-circuit re-entries,
+        // but the count would still differ).
+        assert_eq!(
+            fires.get(),
+            2,
+            "dispatch must not subscribe caller effect to state"
+        );
+    }
+
+    #[test]
+    fn reducer_state_is_a_plain_signal() {
+        // Sanity: the returned `state` is the same `Signal<S>` type
+        // every other consumer accepts. This verifies that the
+        // pattern composes without inventing a new type.
+        let (state, dispatch) = reducer(0i32, |&n, a: i32| n + a);
+        // Same Copy semantics as any other Signal.
+        let alias: Signal<i32> = state;
+        dispatch(10);
+        assert_eq!(alias.get(), 10);
+        // `.update` works on the same signal directly, bypassing the
+        // reducer — useful escape hatch for migrations from
+        // signal-based state.
+        alias.update(|n| *n = -5);
+        assert_eq!(state.get(), -5);
+        dispatch(3);
+        assert_eq!(state.get(), -2);
     }
 
     #[test]

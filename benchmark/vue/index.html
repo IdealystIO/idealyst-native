@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Benchmark · Vue (naive: reactive ref, runtime template)</title>
+<style>
+  /*
+   * Naive Vue take: row count lives in a `ref`, the template
+   * iterates it with `v-for`. Each row's `:style` binding re-runs
+   * when the theme would change — under the rebuild suite, that
+   * doesn't fire; the cost we're measuring is Vue's per-row mount
+   * + reactive-graph setup.
+   *
+   * "Naive" in the same sense as the React variant: idiomatic
+   * code a competent dev would write, no `v-memo`, no
+   * CSS-variable theming.
+   *
+   * Build step: none. Uses the runtime+compiler bundle from
+   * esm.sh so the template string compiles in the browser. The
+   * one-time cold-start cost doesn't enter the `apply` window.
+   */
+  html, body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  #root { display: flex; flex-direction: column; min-height: 100vh; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="module">
+// `vue.esm-browser.prod.js` is the production runtime + compiler
+// bundle — minified, no warnings, no devtools hooks. Ships the
+// template compiler so we can pass a template string at runtime.
+// The non-prod `.js` variant adds substantial overhead per
+// reactive read and would skew the numbers.
+import { createApp, ref, nextTick } from 'https://esm.sh/vue@3.4.21/dist/vue.esm-browser.prod.js';
+import { autoRunIfRequested, LIGHT, DARK } from '../instrument.js';
+
+const pageStyle = (t) => ({
+  display: 'flex', flexDirection: 'column',
+  padding: '32px', gap: '24px', minHeight: '100%',
+  background: t.background, color: t.text,
+  transition: 'background 250ms ease-in-out, color 250ms ease-in-out',
+});
+const listStyle = (t) => ({
+  display: 'flex', flexDirection: 'column',
+  borderRadius: '10px',
+  background: t.surface, border: `1px solid ${t.border}`,
+  height: '500px', overflow: 'hidden', overflowY: 'auto',
+  transition: 'background 250ms ease-in-out, border-color 250ms ease-in-out',
+});
+const rowStyle = (t, parity) => ({
+  display: 'flex', flexDirection: 'column',
+  background: parity === 'odd' ? t.surface_alt : t.surface,
+  color: t.text,
+  padding: '8px 16px',
+  borderBottom: `1px solid ${t.border}`,
+  fontSize: '13px', height: '36px', justifyContent: 'center',
+  transition: 'background 250ms ease-in-out, color 250ms ease-in-out, border-bottom-color 250ms ease-in-out',
+});
+
+let externalSetRows = null;
+let externalSetTheme = null;
+
+const app = createApp({
+  setup() {
+    const rowCount = ref(1000);
+    const theme = ref(LIGHT);
+
+    externalSetRows = async (n) => {
+      rowCount.value = n;
+      // `nextTick()` resolves after Vue's microtask-scheduled
+      // DOM patch flushes — the contract `setRows` advertises
+      // to the suite.
+      await nextTick();
+    };
+    externalSetTheme = async (name) => {
+      // Writing `theme.value` re-fires every `:style` binding
+      // that reads it. The patch lands on a microtask;
+      // `nextTick` resolves after it flushes.
+      theme.value = name === 'dark' ? DARK : LIGHT;
+      await nextTick();
+    };
+
+    return {
+      rowCount,
+      theme,
+      pageStyle, listStyle, rowStyle,
+    };
+  },
+  template: `
+    <div :style="pageStyle(theme)">
+      <div :style="listStyle(theme)">
+        <div v-for="i in rowCount" :key="i - 1"
+             :style="rowStyle(theme, (i - 1) % 2 === 0 ? 'even' : 'odd')">
+          <span>Row #{{ i - 1 }}</span>
+        </div>
+      </div>
+    </div>
+  `,
+});
+
+app.mount('#root');
+
+// `app.mount` runs synchronously, so both hooks are filled by
+// the time we get here. Hand off to the runner if we're in
+// iframe mode.
+autoRunIfRequested({
+  setRows: (n) => externalSetRows(n),
+  setTheme: (t) => externalSetTheme(t),
+});
+</script>
+</body>
+</html>

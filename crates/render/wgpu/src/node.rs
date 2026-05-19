@@ -470,6 +470,52 @@ pub enum NodeKind {
         scrim_style: std::cell::RefCell<Option<Rc<framework_core::StyleRules>>>,
         sidebar_style: std::cell::RefCell<Option<Rc<framework_core::StyleRules>>>,
     },
+    /// An author-driven render-to-texture region. The wgpu
+    /// backend allocates a per-node offscreen texture (created
+    /// lazily in the renderer once we know the node's size) and
+    /// hands the texture view to a user-supplied closure each
+    /// frame; the main UI walk samples the texture and composites
+    /// it as a textured quad through the existing image pipeline.
+    ///
+    /// The framework's cross-platform `Graphics` primitive ships
+    /// a `GraphicsSurface` to authors via `OnReady`; that contract
+    /// assumes a real OS-window handle which we can't satisfy for
+    /// a sub-region. Authors targeting this backend register the
+    /// drawer via [`crate::register_graphics_drawer`] after
+    /// constructing the primitive instead.
+    Graphics {
+        /// User's per-frame draw closure. None until the author
+        /// calls `register_graphics_drawer` on the node's handle.
+        /// `RefCell` because the closure is invoked from the
+        /// renderer (which only holds an immutable backend borrow)
+        /// — the cell promotes that to a mutable closure call
+        /// without cloning the closure each frame.
+        drawer: std::cell::RefCell<Option<GraphicsDrawer>>,
+        /// Wall-clock at which the node was created. The renderer
+        /// hands `elapsed = now - created_at` to the drawer so
+        /// animations keep a stable origin even if the user
+        /// remounts the node (each remount gets its own zero).
+        created_at: web_time::Instant,
+    },
+    /// Video playback node. The wgpu preview decodes H.264 mp4
+    /// files in-process via `openh264` + `re_mp4` (no system
+    /// FFmpeg dep). The decoder runs on its own thread and posts
+    /// the latest decoded RGBA frame into a shared cell; the
+    /// renderer's pre-pass uploads that frame to a wgpu texture
+    /// and the main UI walk composites it through the image
+    /// pipeline. Play / pause / seek route from the framework's
+    /// `VideoHandle` to the decoder thread.
+    Video {
+        /// The owning decoder (`Drop` joins its thread). Wrapped
+        /// in `Rc` so the `VideoHandle` ops can read the shared
+        /// state without going through `NodeData`.
+        decoder: std::rc::Rc<crate::video::VideoDecoder>,
+        /// Last `frame_counter` value the renderer uploaded.
+        /// Bumped when the renderer writes a new frame into the
+        /// node's GPU texture so we skip redundant uploads on
+        /// frames where the decoder hasn't produced anything new.
+        last_uploaded_frame: std::cell::Cell<u64>,
+    },
     /// Renders a "not supported in this simulator" panel for
     /// primitives we don't implement (WebView, Video, Graphics).
     /// Keeps an app that uses them visibly intact instead of
@@ -477,6 +523,46 @@ pub enum NodeKind {
     Unsupported {
         label: &'static str,
     },
+}
+
+/// A user-supplied draw closure for a Graphics node. Invoked
+/// once per frame with the shared wgpu device + queue and the
+/// node's offscreen render target view; the closure encodes
+/// its own render pass(es) against `view`. See
+/// [`crate::register_graphics_drawer`] for how authors wire
+/// this onto a `GraphicsHandle`.
+pub type GraphicsDrawer = Box<dyn FnMut(&mut GraphicsFrame)>;
+
+/// Per-frame state handed to a [`GraphicsDrawer`]. Borrowed
+/// fields point at GPU resources the host owns; the closure
+/// reads them, encodes draw commands, and returns — no
+/// `present()` call needed (the host composites the resulting
+/// texture into the UI walk itself).
+pub struct GraphicsFrame<'a> {
+    /// Shared wgpu device (same one the host uses for UI
+    /// rendering). Authors reuse it for their own pipelines,
+    /// buffers, and shaders — no second adapter / device
+    /// initialization required.
+    pub device: &'a wgpu::Device,
+    /// Shared command queue. Use `queue.write_buffer(...)` for
+    /// uniform / per-frame data; don't `submit` directly — the
+    /// host owns the submit and orders Graphics passes ahead of
+    /// the main UI pass.
+    pub queue: &'a wgpu::Queue,
+    /// The Graphics node's offscreen render target view. Always
+    /// a `Rgba8UnormSrgb` 2D texture sized to the node's current
+    /// pixel-space frame.
+    pub view: &'a wgpu::TextureView,
+    /// Same encoder the host uses for the rest of the frame.
+    /// Authors call `encoder.begin_render_pass(...)` to draw.
+    pub encoder: &'a mut wgpu::CommandEncoder,
+    /// Drawable size in physical pixels. Matches `view`'s extent
+    /// for the current frame; resizes happen at frame boundaries
+    /// so this is always coherent with `view`.
+    pub size: (u32, u32),
+    /// Wall-clock duration since the Graphics node was created.
+    /// Convenient driver for procedural animations.
+    pub elapsed: std::time::Duration,
 }
 
 impl std::fmt::Debug for NodeKind {
@@ -521,6 +607,12 @@ impl std::fmt::Debug for NodeKind {
             NodeKind::DrawerNavigator { is_open, .. } => {
                 write!(f, "DrawerNavigator(open={})", is_open.get())
             }
+            NodeKind::Graphics { drawer, .. } => write!(
+                f,
+                "Graphics(drawer={})",
+                if drawer.borrow().is_some() { "set" } else { "unset" },
+            ),
+            NodeKind::Video { .. } => f.write_str("Video"),
             NodeKind::Unsupported { label } => write!(f, "Unsupported({label})"),
         }
     }

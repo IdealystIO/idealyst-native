@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Benchmark · vanilla per-element classes</title>
+<style>
+  /*
+   * Mirrors the framework's web backend honestly: on each rebuild,
+   * mint fresh stylesheet rules (one class per parity + chrome
+   * element) for the active theme, then walk a `createElement` +
+   * `appendChild` loop to mount one node per row, setting each
+   * row's `className` directly. No CSS variables, no cascade tricks
+   * — every node is restyled by name.
+   *
+   * This is the path the framework actually walks: a JS-side loop
+   * crossing the Rust→JS boundary for every node creation +
+   * setAttribute. Compare against `../vanilla-classes-bulk/` to see
+   * the "build the whole subtree as an HTML string, hand to the
+   * browser parser" ceiling — that's faster but isn't the path any
+   * component framework takes.
+   */
+  html, body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  .page {
+    display: flex; flex-direction: column;
+    padding: 32px; gap: 24px; min-height: 100%;
+    transition: background 250ms ease-in-out, color 250ms ease-in-out;
+  }
+  .perf-list {
+    /* `flex` parent so rows behave as flex children with the
+       default `flex-shrink: 1`, which collapses each row to its
+       content height + padding (~34px). Matches the other arena
+       variants (react / vue / svelte / vanilla-css-vars all use
+       flex-column lists). Without this the list would be a
+       `display: block` and rows would honor their declared
+       `height: 36` literally, ending up visually taller than
+       everywhere else. */
+    display: flex; flex-direction: column;
+    border-radius: 10px; border: 1px solid;
+    height: 500px; overflow: hidden; overflow-y: auto;
+    transition: background 250ms ease-in-out, border-color 250ms ease-in-out;
+  }
+</style>
+</head>
+<body>
+  <div class="page" id="page">
+    <div class="perf-list" id="list"></div>
+  </div>
+
+  <script type="module">
+    import { autoRunIfRequested, LIGHT, DARK } from '../instrument.js';
+
+    // Shared <style> element + insert/delete rule machinery, exactly
+    // like the framework's StyleStore. Per-rebuild we mint new rules
+    // and delete the previous ones.
+    const styleEl = document.createElement('style');
+    document.head.appendChild(styleEl);
+    const sheet = styleEl.sheet;
+
+    function insertRule(className, body) {
+      const idx = sheet.cssRules.length;
+      sheet.insertRule(`.${className} { ${body} }`, idx);
+      return idx;
+    }
+    function findRuleIdx(className) {
+      const target = `.${className}`;
+      for (let i = 0; i < sheet.cssRules.length; i++) {
+        if (sheet.cssRules[i].selectorText === target) return i;
+      }
+      return -1;
+    }
+    // FNV-ish hash matching backend-web::hash_class_name shape: 'ui-' + 16 hex.
+    function hashName(key) {
+      let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+      for (let i = 0; i < key.length; i++) {
+        const ch = key.charCodeAt(i);
+        h1 = Math.imul(h1 ^ ch, 2654435761);
+        h2 = Math.imul(h2 ^ ch, 1597334677);
+      }
+      h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507);
+      h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+      h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507);
+      h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+      return 'ui-' +
+        (h1 >>> 0).toString(16).padStart(8, '0') +
+        (h2 >>> 0).toString(16).padStart(8, '0');
+    }
+
+    function rowCss(theme, parity) {
+      const bg = parity === 'odd' ? theme.surface_alt : theme.surface;
+      return [
+        'display: flex',
+        'flex-direction: column',
+        `background: ${bg}`,
+        `color: ${theme.text}`,
+        'padding-top: 8px',
+        'padding-right: 16px',
+        'padding-bottom: 8px',
+        'padding-left: 16px',
+        'border-bottom-width: 1px',
+        'border-bottom-style: solid',
+        `border-bottom-color: ${theme.border}`,
+        'font-size: 13px',
+        'height: 36px',
+        'justify-content: center',
+        'transition: background 250ms ease-in-out, color 250ms ease-in-out, border-bottom-color 250ms ease-in-out',
+      ].join('; ');
+    }
+
+    const list = document.getElementById('list');
+    let activeRules = null;
+    let toggleN = 0;
+
+    // Mint fresh per-theme CSS rules; return the class names so the
+    // mount loop can stamp them onto each row + text node. Each
+    // rebuild invents a new hash so the framework's "worst case" —
+    // fresh class minting + old-class teardown — is faithfully
+    // reproduced.
+    function mintRules(theme, tag) {
+      const rowEven = hashName(`PerfRow|even|${tag}`);
+      const rowOdd  = hashName(`PerfRow|odd|${tag}`);
+      const textCls = hashName(`Text|${tag}`);
+      const pageCls = hashName(`Page|${tag}`);
+      const listCls = hashName(`PerfList|${tag}`);
+
+      const newRules = {
+        rowEven: insertRule(rowEven, rowCss(theme, 'even')),
+        rowOdd:  insertRule(rowOdd,  rowCss(theme, 'odd')),
+        text:    insertRule(textCls, `color: ${theme.text}; transition: color 250ms ease-in-out`),
+        page:    insertRule(pageCls, `background: ${theme.background}; color: ${theme.text}`),
+        list:    insertRule(listCls, `background: ${theme.surface}; border-color: ${theme.border}`),
+      };
+
+      // Apply page/list classes to the static chrome (two
+      // setAttribute calls — fixed cost per rebuild).
+      document.getElementById('page').setAttribute('class', `page ${pageCls}`);
+      document.getElementById('list').setAttribute('class', `perf-list ${listCls}`);
+
+      // Drop previous theme's rules. The framework does this on
+      // every rebuild too — it's part of the honest apply cost.
+      if (activeRules) {
+        const prev = Object.values(activeRules).sort((a, b) => b - a);
+        for (const idx of prev) sheet.deleteRule(idx);
+        newRules.rowEven = findRuleIdx(rowEven);
+        newRules.rowOdd  = findRuleIdx(rowOdd);
+        newRules.text    = findRuleIdx(textCls);
+        newRules.page    = findRuleIdx(pageCls);
+        newRules.list    = findRuleIdx(listCls);
+      }
+      activeRules = newRules;
+      return { rowEven, rowOdd, textCls };
+    }
+
+    let isDark = false;
+
+    // setRows for the runner-iframe path. Walks a `createElement`
+    // + `appendChild` loop and sets each row's `className`
+    // individually — mirroring what a component framework's mount
+    // path actually does, one node per row. This is the cost
+    // ceiling a per-element-styled framework can chase.
+    //
+    // Resolves synchronously (no microtask wait); the DOM is in
+    // the new state by the time the function returns.
+    const setRows = async (n) => {
+      toggleN++;
+      const theme = isDark ? DARK : LIGHT;
+      const tag = `r-${toggleN}`;
+      const { rowEven, rowOdd, textCls } = mintRules(theme, tag);
+
+      // Clear existing rows. `replaceChildren()` is one FFI call
+      // and lets the browser detach the old subtree in C++.
+      list.replaceChildren();
+
+      // DocumentFragment so the N node-attach calls land in one
+      // layout flush instead of N. This is the fairest "honest
+      // mount" — every node still touches JS, but the browser
+      // only has to commit once at the end.
+      const frag = document.createDocumentFragment();
+      for (let i = 0; i < n; i++) {
+        const row = document.createElement('div');
+        row.className = (i % 2 === 0) ? rowEven : rowOdd;
+        const span = document.createElement('span');
+        span.className = textCls;
+        span.textContent = `Row #${i}`;
+        row.appendChild(span);
+        frag.appendChild(row);
+      }
+      list.appendChild(frag);
+    };
+
+    // Prime with light so the initial unmeasured render has a
+    // theme.
+    setRows(1000);
+
+    // Theme swap: mint new per-element rules at the new theme,
+    // then restamp every row + text node's className. No CSS
+    // variables, no cascade tricks — this is the honest cost of
+    // a per-element-styled mount switching themes.
+    //
+    // The framework's web backend doesn't actually walk this
+    // path for theme swap — it uses CSS variables instead. We
+    // include this variant on the toggle suite as the "what if
+    // the framework HAD to restamp every node?" reference line.
+    const setTheme = async (name) => {
+      isDark = name === 'dark';
+      toggleN++;
+      const theme = isDark ? DARK : LIGHT;
+      const tag = `t-${toggleN}`;
+      const { rowEven, rowOdd, textCls } = mintRules(theme, tag);
+
+      // Walk every existing row + text node and restamp
+      // className. Two setAttribute calls per row × N rows = 2N
+      // FFI hops, the honest per-element cost.
+      const rows = list.children;
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        row.className = (i % 2 === 0) ? rowEven : rowOdd;
+        const span = row.firstChild;
+        if (span) span.className = textCls;
+      }
+    };
+
+    autoRunIfRequested({ setRows, setTheme });
+  </script>
+</body>
+</html>

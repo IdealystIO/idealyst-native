@@ -307,5 +307,6 @@ pub enum RefFill {
     Link(Box<dyn FnOnce(primitives::link::LinkHandle)>),
     Overlay(Box<dyn FnOnce(primitives::overlay::OverlayHandle)>),
     AnchoredOverlay(Box<dyn FnOnce(primitives::overlay::AnchoredOverlayHandle)>),
+    Portal(Box<dyn FnOnce(primitives::portal::PortalHandle)>),
     Presence(Box<dyn FnOnce(primitives::presence::PresenceHandle)>),
 }

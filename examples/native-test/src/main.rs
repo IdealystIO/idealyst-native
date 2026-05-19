@@ -21,6 +21,8 @@
 //! cargo run -p native-test -- --tv --android     # TV, Android
 //! ```
 
+mod mandelbrot;
+
 use std::rc::Rc;
 
 use framework_core::primitives::activity_indicator::{
@@ -40,7 +42,7 @@ use framework_core::primitives::video::video;
 use framework_core::primitives::web_view::web_view;
 use framework_core::{
     button, pressable, signal, text, view, when, AlignItems, Color,
-    Easing, FlexDirection, JustifyContent, Length, Primitive, Ref, SafeAreaSides, Signal,
+    Easing, FlexDirection, JustifyContent, Length, Primitive, Ref, SafeAreaSides, Shadow, Signal,
     StyleRules, StyleSheet, TokenEntry, TokenValue, Tokenized, Transition,
 };
 use framework_theme::{install_theme, set_theme, ThemeTokens};
@@ -555,6 +557,112 @@ fn home_screen(nav: Ref<NavigatorHandle>) -> Primitive {
         })
         .into(),
 
+        // Embedded video demo. Renders an H.264 mp4 decoded
+        // in-process via `openh264` + `re_mp4`. Path is taken
+        // from the `IDEALYST_DEMO_VIDEO` env var, falling back
+        // to `assets/demo.mp4` next to the example. Missing /
+        // unsupported files surface as an empty card (the
+        // decoder thread logs the error to stderr).
+        video({
+            // Default path is absolute (baked at compile time)
+            // so the demo finds the bundled clip regardless of
+            // the runner's CWD. Override with `IDEALYST_DEMO_VIDEO`.
+            std::env::var("IDEALYST_DEMO_VIDEO")
+                .ok()
+                .unwrap_or_else(|| concat!(env!("CARGO_MANIFEST_DIR"), "/assets/demo.mp4").into())
+        })
+        .autoplay(true)
+        .loop_playback(true)
+        .with_style(themed(|| StyleRules {
+            width: Some(Tokenized::Literal(Length::Px(280.0))),
+            height: Some(Tokenized::Literal(Length::Px(158.0))),
+            background: Some(Tokenized::Literal(Color("#0a0a0a".into()))),
+            border_top_left_radius: Some(px(12.0)),
+            border_top_right_radius: Some(px(12.0)),
+            border_bottom_right_radius: Some(px(12.0)),
+            border_bottom_left_radius: Some(px(12.0)),
+            overflow: Some(framework_core::Overflow::Hidden),
+            ..Default::default()
+        }))
+        .into(),
+
+        // Embedded wgpu surface demo. `mandelbrot_demo()` returns
+        // a `Bound<GraphicsHandle>` whose drawer renders the
+        // mandelbrot animation into the node's offscreen texture
+        // each frame; the renderer composites it through the
+        // image pipeline alongside the rest of the UI.
+        view(vec![
+            text("Embedded wgpu")
+                .with_style(themed(|| StyleRules {
+                    color: Some(color_token(TOK_TEXT, default_palette().text)),
+                    font_size: Some(px(16.0)),
+                    ..Default::default()
+                }))
+                .into(),
+            mandelbrot::mandelbrot_demo()
+                .with_style(themed(|| StyleRules {
+                    width: Some(Tokenized::Literal(Length::Px(280.0))),
+                    height: Some(Tokenized::Literal(Length::Px(200.0))),
+                    border_top_left_radius: Some(px(12.0)),
+                    border_top_right_radius: Some(px(12.0)),
+                    border_bottom_right_radius: Some(px(12.0)),
+                    border_bottom_left_radius: Some(px(12.0)),
+                    overflow: Some(framework_core::Overflow::Hidden),
+                    ..Default::default()
+                }))
+                .into(),
+        ])
+        .with_style(themed(|| StyleRules {
+            background: Some(color_token(TOK_SURFACE, default_palette().surface)),
+            padding_top: Some(px(14.0)),
+            padding_right: Some(px(14.0)),
+            padding_bottom: Some(px(14.0)),
+            padding_left: Some(px(14.0)),
+            border_top_left_radius: Some(px(16.0)),
+            border_top_right_radius: Some(px(16.0)),
+            border_bottom_right_radius: Some(px(16.0)),
+            border_bottom_left_radius: Some(px(16.0)),
+            gap: Some(Tokenized::Literal(Length::Px(10.0))),
+            align_items: Some(AlignItems::Center),
+            ..Default::default()
+        }))
+        .into(),
+
+        // Shadow demo: a plain view with an author-defined
+        // `shadow: Some(Shadow { ... })`. The wgpu backend's
+        // rect pipeline picks it up via `RenderStyle.shadow`
+        // and stages a soft-falloff shadow instance under the
+        // view's rect. Nothing platform-specific — same code
+        // works on any skin.
+        view(vec![
+            text("Custom shadow")
+                .with_style(themed(|| StyleRules {
+                    color: Some(color_token(TOK_TEXT, default_palette().text)),
+                    font_size: Some(px(16.0)),
+                    ..Default::default()
+                }))
+                .into(),
+        ])
+        .with_style(themed(|| StyleRules {
+            background: Some(color_token(TOK_SURFACE, default_palette().surface)),
+            padding_top: Some(px(18.0)),
+            padding_right: Some(px(18.0)),
+            padding_bottom: Some(px(18.0)),
+            padding_left: Some(px(18.0)),
+            border_top_left_radius: Some(px(16.0)),
+            border_top_right_radius: Some(px(16.0)),
+            border_bottom_right_radius: Some(px(16.0)),
+            border_bottom_left_radius: Some(px(16.0)),
+            shadow: Some(Shadow {
+                x: 0.0,
+                y: 6.0,
+                blur: 16.0,
+                color: Color("#1f2a4422".into()),
+            }),
+            ..Default::default()
+        }))
+        .into(),
+
         // Toggle row — flips the dark_mode signal AND swaps the
         // theme inline. (See note in app() about why an Effect
         // here doesn't work.)
@@ -693,10 +801,10 @@ fn home_screen(nav: Ref<NavigatorHandle>) -> Primitive {
         // Unsupported primitives — each renders the
         // "not supported in this simulator" panel so authors
         // know the slot exists, even though the wgpu backend
-        // doesn't implement them.
+        // doesn't implement them. (Video used to be in this
+        // list; now it's wired up earlier on the page.)
         text("Unsupported").with_style(subtitle_sheet()).into(),
         web_view("https://example.com").into(),
-        video("/assets/sample.mp4").into(),
 
         // Section header for the list — anchors the eye so the
         // scrolling boundary is obvious.

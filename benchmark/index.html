@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Benchmark · runner</title>
+<style>
+  /*
+   * Thin shell. The framework-built runner mounts under `#app` and
+   * paints everything you see — sidebar, iframe host, results
+   * table. This page only sets the body background so the load
+   * flash is the right color, and reserves a 100vh viewport so
+   * the runner's flex layout has something to fill.
+   *
+   * The runner crate lives at the root of this directory; rebuild
+   * with `wasm-pack build --target web --release` from `benchmark/`
+   * after any change to the runner Rust source.
+   */
+  :root { color-scheme: dark; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0f1115; color: #e8eaf0;
+    overflow: hidden;
+  }
+  #app { height: 100%; }
+  #app:empty::before {
+    content: "loading runner…";
+    display: block;
+    padding: 20px;
+    font-size: 13px;
+    color: #9099a8;
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script type="module">
+  import init, { start } from './pkg/benchmark.js';
+  await init();
+  start();
+</script>
+</body>
+</html>
