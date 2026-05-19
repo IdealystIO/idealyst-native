@@ -29,6 +29,7 @@ async-driver = ["framework-core/async-driver", "backend-ios-core/async-driver"]
 
 [dependencies]
 framework-core = { workspace = true }
+framework-theme = { workspace = true }
 native-layout = { workspace = true }
 # Shared iOS/tvOS helpers (style + render loop driver). Same crate
 # is consumed by `backend-ios-tv`.
@@ -46,6 +47,7 @@ objc2-foundation = { version = "0.2", features = [
     "NSArray",
     "NSEnumerator",
     "NSObject",
+    "NSSet",
 ] }
 objc2-ui-kit = { version = "0.2", features = [
     "UIResponder",
@@ -65,5 +67,7 @@ objc2-ui-kit = { version = "0.2", features = [
     "UIGestureRecognizer",
     "UITapGestureRecognizer",
     "UITextInputTraits",
+    "UITouch",
+    "UIEvent",
 ] }
 raw-window-handle = "0.6"

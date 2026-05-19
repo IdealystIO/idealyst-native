@@ -17,6 +17,9 @@ pub mod style;
 #[cfg(all(any(target_os = "ios", target_os = "tvos"), feature = "async-driver"))]
 pub mod render_loop;
 
+#[cfg(any(target_os = "ios", target_os = "tvos"))]
+pub mod scheduler;
+
 /// Platform log via NSLog. Always visible in Xcode console.
 ///
 /// Lives here (not in the leaf crates) so `style.rs` and any future

@@ -44,6 +44,21 @@ impl WebBackend {
         self.virtualizer_shim_injected = true;
     }
 
+    /// Inject the local-render batch executor (`__idealystExecuteBatch`)
+    /// into the document on first use. Same evaluation strategy as
+    /// [`ensure_virtualizer_shim`] — bundle the JS via
+    /// `include_str!` and run it inside a `Function::new_no_args`
+    /// call so we don't depend on `<script>` injection semantics.
+    pub(crate) fn ensure_batch_shim(&mut self) {
+        if self.batch_shim_injected {
+            return;
+        }
+        let src = include_str!("../runtime/js/batch.js");
+        let f = js_sys::Function::new_no_args(src);
+        let _ = f.call0(&JsValue::NULL);
+        self.batch_shim_injected = true;
+    }
+
     /// Inject `@keyframes ui-spin` into the stylesheet on first use.
     /// Subsequent ActivityIndicator constructions reuse the same
     /// keyframes — the rule is identity-stable, no need to re-create.

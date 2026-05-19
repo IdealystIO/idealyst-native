@@ -46,19 +46,22 @@ impl RenderStyle {
     /// `default()`, so a state overlay setting only `background`
     /// preserves the base's borders and font size.
     pub fn apply(&mut self, rules: &StyleRules) {
+        // `.resolve()` subscribes the enclosing apply-style Effect to
+        // the per-token signal for each referenced token. Token swaps
+        // re-fire only nodes that touched the changed token.
         if let Some(bg) = rules.background.as_ref() {
-            self.background = Some(parse_color(bg.value()));
+            self.background = Some(parse_color(&bg.resolve()));
         }
         if let Some(c) = rules.color.as_ref() {
-            self.color = parse_color(c.value());
+            self.color = parse_color(&c.resolve());
         }
         if let Some(fs) = rules.font_size.as_ref() {
-            if let Length::Px(px) = *fs.value() {
+            if let Length::Px(px) = fs.resolve() {
                 self.font_size = px;
             }
         }
         if let Some(o) = rules.opacity.as_ref() {
-            self.opacity = *o.value();
+            self.opacity = o.resolve();
         }
 
         // Border radius: per-corner. Percent is interpreted at draw
@@ -71,28 +74,28 @@ impl RenderStyle {
         self.corner_radius[3] = px(rules.border_bottom_left_radius.as_ref());
 
         // Border widths.
-        self.border_width[0] = rules.border_top_width.as_ref().map(|t| *t.value()).unwrap_or(self.border_width[0]);
-        self.border_width[1] = rules.border_right_width.as_ref().map(|t| *t.value()).unwrap_or(self.border_width[1]);
-        self.border_width[2] = rules.border_bottom_width.as_ref().map(|t| *t.value()).unwrap_or(self.border_width[2]);
-        self.border_width[3] = rules.border_left_width.as_ref().map(|t| *t.value()).unwrap_or(self.border_width[3]);
+        self.border_width[0] = rules.border_top_width.as_ref().map(|t| t.resolve()).unwrap_or(self.border_width[0]);
+        self.border_width[1] = rules.border_right_width.as_ref().map(|t| t.resolve()).unwrap_or(self.border_width[1]);
+        self.border_width[2] = rules.border_bottom_width.as_ref().map(|t| t.resolve()).unwrap_or(self.border_width[2]);
+        self.border_width[3] = rules.border_left_width.as_ref().map(|t| t.resolve()).unwrap_or(self.border_width[3]);
 
         if let Some(c) = rules.border_top_color.as_ref() {
-            self.border_color[0] = parse_color(c.value());
+            self.border_color[0] = parse_color(&c.resolve());
         }
         if let Some(c) = rules.border_right_color.as_ref() {
-            self.border_color[1] = parse_color(c.value());
+            self.border_color[1] = parse_color(&c.resolve());
         }
         if let Some(c) = rules.border_bottom_color.as_ref() {
-            self.border_color[2] = parse_color(c.value());
+            self.border_color[2] = parse_color(&c.resolve());
         }
         if let Some(c) = rules.border_left_color.as_ref() {
-            self.border_color[3] = parse_color(c.value());
+            self.border_color[3] = parse_color(&c.resolve());
         }
     }
 }
 
 fn px(t: Option<&Tokenized<Length>>) -> f32 {
-    match t.map(|x| *x.value()) {
+    match t.map(|x| x.resolve()) {
         Some(Length::Px(v)) => v,
         _ => 0.0,
     }

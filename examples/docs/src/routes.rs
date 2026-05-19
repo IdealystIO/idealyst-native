@@ -36,6 +36,8 @@ pub const WRITING_A_BACKEND_ROUTE: Route<()> =
 // Advanced
 pub const WGPU_NATIVE_API_ROUTE: Route<()> =
     Route::<()>::new("wgpu-native-api", "/advanced/wgpu-native-api");
+pub const SIMULATOR_ROUTE: Route<()> =
+    Route::<()>::new("simulator", "/advanced/simulator");
 
 // Reference (legacy hand-built pages — to be migrated to `docs!`)
 pub const MACROS_ROUTE: Route<()> = Route::<()>::new("macros", "/reference/macros");
@@ -100,6 +102,7 @@ pub const SECTIONS: &[IndexSection] = &[
         label: "Advanced",
         items: &[
             IndexEntry { name: "wgpu-native-api", label: "wgpu Native API" },
+            IndexEntry { name: "simulator", label: "Simulator (live preview)" },
         ],
     },
     IndexSection {

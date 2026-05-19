@@ -92,3 +92,19 @@ pub(crate) struct OverlayDismissCallback {
 pub(crate) fn leak<T>(value: T) -> jlong {
     Box::into_raw(Box::new(value)) as jlong
 }
+
+/// Owned holder for a framework-installed [`TouchHandler`].
+/// `RustTouchListener` keeps a `jlong` pointing here; each
+/// `MotionEvent` dispatch trampolines into Rust via
+/// `nativeInvokeTouch`, which derefs this pointer and invokes the
+/// inner handler.
+///
+/// `inner` is a `RefCell<Option<...>>` so a future
+/// `release_touch_handler` path could swap or drop the handler
+/// without freeing the box itself. Same posture as
+/// [`StateCallback`] — late touch events from Android's input
+/// dispatcher can fire after the View detaches, and a freed box
+/// would SIGSEGV.
+pub(crate) struct TouchCallback {
+    pub(crate) inner: RefCell<Option<framework_core::TouchHandler>>,
+}

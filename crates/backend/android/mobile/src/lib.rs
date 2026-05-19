@@ -49,12 +49,24 @@ pub use imp::AndroidBackend;
 #[cfg(all(target_os = "android", feature = "async-driver"))]
 pub use backend_android_core::render_loop::install_render_loop;
 
+/// Install the Android scheduler (Handler.postDelayed on the main
+/// Looper). Must be called once before `framework_core::render(...)`
+/// so timer-driven features (long-press recognizer, presence
+/// animations, anything calling `after_ms` / `schedule_microtask`)
+/// delay correctly instead of firing synchronously.
+#[cfg(target_os = "android")]
+pub use imp::scheduler::install_scheduler;
+
 #[cfg(not(target_os = "android"))]
 pub use stub::AndroidBackend;
 
 /// Non-Android no-op so cross-compile of host code still type-checks.
 #[cfg(all(not(target_os = "android"), feature = "async-driver"))]
 pub fn install_render_loop() {}
+
+/// Non-Android no-op so cross-compile of host code still type-checks.
+#[cfg(not(target_os = "android"))]
+pub fn install_scheduler() {}
 
 /// Optional AAS-client glue. Compiled in only when the `aas-shell`
 /// Cargo feature is on. The module exposes `attach` / `drain` /

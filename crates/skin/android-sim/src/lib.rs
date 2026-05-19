@@ -9,6 +9,11 @@
 //! `#E7E0EC`, outline `#79747E`. Ripple, elevation tones, and
 //! emphasized motion curves are out of scope.
 
+mod chrome_icons;
+mod device;
+
+pub use device::{BezelStyle, DeviceConfig, DeviceModel, NotchStyle, StatusBarStyle};
+
 use std::collections::HashMap;
 
 use glyphon::{Buffer, TextBounds};
@@ -18,9 +23,66 @@ use render_wgpu::pipeline::Instance as RectInstance;
 use render_wgpu::text::StagedText;
 use render_wgpu::widgets::{rect_inst, rect_inst_rotated, TEXT_INPUT_HPAD, TEXT_INPUT_VPAD};
 use render_wgpu::{
-    Skin, KEYBOARD_KEY_FONT_SIZE, SLIDER_THUMB_SIZE, SLIDER_TRACK_HEIGHT,
-    TEXT_INPUT_CARET_WIDTH, TOGGLE_THUMB_INSET,
+    paint_icon, NavigatorHeaderAction, NavigatorHeaderChrome, NavigatorHeaderHit, Skin,
+    KEYBOARD_KEY_FONT_SIZE, SLIDER_THUMB_SIZE, SLIDER_TRACK_HEIGHT, TEXT_INPUT_CARET_WIDTH,
+    TOGGLE_THUMB_INSET,
 };
+
+// ---------------------------------------------------------------------------
+// Material 3 device chrome (status bar + gesture nav line)
+// ---------------------------------------------------------------------------
+
+/// Logical-px height of the M3 status bar. Android stock is
+/// 24dp; some OEMs go up to 28dp for cutout phones — the
+/// simulator picks 28 so a deep-notch tester catches issues.
+pub const M3_STATUS_BAR_HEIGHT: f32 = 28.0;
+/// Logical-px height of the gesture-nav bar at the bottom of
+/// every Android 10+ device using gesture navigation. Stock is
+/// 24dp; this matches.
+pub const M3_GESTURE_NAV_HEIGHT: f32 = 24.0;
+/// Status-bar foreground (clock + status glyphs). On-surface
+/// — near-black in M3 baseline-light.
+const M3_STATUS_FG: [f32; 4] = [
+    0x1C as f32 / 255.0,
+    0x1B as f32 / 255.0,
+    0x1F as f32 / 255.0,
+    1.0,
+];
+/// Status-bar font size — M3 spec is ~14sp.
+const M3_STATUS_FONT_SIZE: f32 = 14.0;
+/// Edge inset from the bar's outer borders to the clock /
+/// status-icon group. M3 typically uses 16dp.
+const M3_STATUS_INSET: f32 = 16.0;
+
+// ---------------------------------------------------------------------------
+// Material 3 top app bar (center-aligned variant)
+// ---------------------------------------------------------------------------
+
+/// Top app bar surface — M3 baseline-light uses surface
+/// container at elevation 0. Keeping this distinct from the
+/// generic `M3_SURFACE` so the skin can later tint it on scroll
+/// (M3's "elevation overlay" trick).
+const M3_HEADER_BG: [f32; 4] = M3_SURFACE;
+/// Headline color on the bar — `on-surface`.
+const M3_HEADER_TITLE: [f32; 4] = [
+    0x1C as f32 / 255.0,
+    0x1B as f32 / 255.0,
+    0x1F as f32 / 255.0,
+    1.0,
+];
+/// Icon tint — same `on-surface` as the title.
+const M3_HEADER_TINT: [f32; 4] = [
+    0x1C as f32 / 255.0,
+    0x1B as f32 / 255.0,
+    0x1F as f32 / 255.0,
+    1.0,
+];
+/// Icon slot edge (M3 "icon button" is 40dp circle around a
+/// 24dp icon; the renderer paints the icon glyph only — the
+/// ripple background isn't a M3-faithful fixture in V1).
+const M3_HEADER_SLOT_SIZE: f32 = 24.0;
+/// Outer inset from the bar's edges to the slot square.
+const M3_HEADER_SLOT_INSET: f32 = 12.0;
 
 // ---------------------------------------------------------------------------
 // M3 baseline light palette (sRGB; `rect_inst` converts to linear)
@@ -74,14 +136,36 @@ const M3_KEY_LABEL: [f32; 4] = [
 // Switch sizing.
 const M3_SWITCH_THUMB_DIAM_OFF: f32 = 16.0;
 const M3_SWITCH_THUMB_DIAM_ON: f32 = 24.0;
-const M3_SWITCH_TRACK_BORDER: f32 = 2.0;
+/// OFF-state track outline width. M3's spec is 1 dp; 2 dp
+/// read as a heavy ring around the (small) thumb instead of a
+/// subtle container edge.
+const M3_SWITCH_TRACK_BORDER: f32 = 1.0;
+/// M3 OFF-state thumb inset — half the gap between the (small)
+/// thumb and the track's interior. Computed so the thumb sits
+/// visually centered in the track instead of pinned to the left
+/// edge. `(track_h - thumb_diam_off) / 2` for the 31×51 toggle:
+/// (31 − 16) / 2 ≈ 7.5 → rounded to a whole pixel.
+const M3_SWITCH_THUMB_INSET_OFF: f32 = 8.0;
+/// ON-state thumb inset. The thumb is larger so we get closer
+/// to the track edge by design — `(31 − 24) / 2 ≈ 3.5` →
+/// half a pixel under the track's 2dp border feels too snug,
+/// so we land on 4 for a 2dp visual gap.
+const M3_SWITCH_THUMB_INSET_ON: f32 = 4.0;
 
 // Slider sizing.
+/// M3 expressive slider track heights. The inactive (unfilled)
+/// region stays a thin 4 dp line; the active (filled) region
+/// renders as a chunky 16 dp bar — the spec's distinctive
+/// "weight-shift" between the two sides of the thumb.
 const M3_SLIDER_TRACK_HEIGHT_INACTIVE: f32 = SLIDER_TRACK_HEIGHT;
-const M3_SLIDER_TRACK_HEIGHT_ACTIVE: f32 = SLIDER_TRACK_HEIGHT + 2.0;
+const M3_SLIDER_TRACK_HEIGHT_ACTIVE: f32 = 16.0;
+/// Gap between the end of the active fill and the thumb's
+/// leading edge (and the same gap from the thumb's trailing
+/// edge to the start of the inactive fill). 6 dp per M3 spec.
 const M3_SLIDER_THUMB_GAP: f32 = 6.0;
+/// Vertical pill thumb: thin and tall, full container height.
 const M3_SLIDER_THUMB_WIDTH: f32 = 4.0;
-const M3_SLIDER_THUMB_HEIGHT: f32 = SLIDER_THUMB_SIZE - 4.0;
+const M3_SLIDER_THUMB_HEIGHT: f32 = SLIDER_THUMB_SIZE;
 const M3_SLIDER_THUMB_RADIUS: f32 = 2.0;
 
 // Text field sizing.
@@ -96,22 +180,64 @@ const M3_SIDE_MARGIN: f32 = 4.0;
 const M3_VERT_MARGIN: f32 = 6.0;
 const M3_KEY_CORNER_RADIUS: f32 = 8.0;
 
-// Spinner geometry — matches the iOS spinner so M3 has a
-// visible loading state until the proper M3 circular
-// indeterminate (single growing/shrinking arc) is written.
-const SPINNER_BARS: usize = 8;
-const SPINNER_BAR_WIDTH_RATIO: f32 = 0.10;
-const SPINNER_BAR_LENGTH_RATIO: f32 = 0.28;
-const SPINNER_ORBIT_RATIO: f32 = 0.35;
-const SPINNER_MIN_BAR_ALPHA: f32 = 0.15;
+// Material 3 indeterminate progress geometry. M3 uses a single
+// arc segment that rotates and (in the full spec) breathes in
+// and out. We approximate the visual with a tight cluster of
+// capsules forming a constant ~120° arc that rotates around the
+// center — distinct from iOS's even ring of fading dots.
+const M3_ARC_BARS: usize = 8;
+/// Total angular span covered by the arc, in radians (~120°).
+const M3_ARC_SPAN: f32 = std::f32::consts::FRAC_PI_2 * 1.33;
+const M3_ARC_BAR_WIDTH_RATIO: f32 = 0.10;
+const M3_ARC_BAR_LENGTH_RATIO: f32 = 0.22;
+const M3_ARC_ORBIT_RATIO: f32 = 0.38;
+/// Alpha falloff at the trailing tail of the arc. The leading
+/// bar paints at full opacity.
+const M3_ARC_TAIL_MIN_ALPHA: f32 = 0.45;
 
-/// The Material 3 / Android skin. Stateless — instantiate once,
-/// wrap in `Rc<dyn Skin>`, hand to the host.
-pub struct AndroidSim;
+/// The Material 3 / Android skin. Holds a [`DeviceConfig`] that
+/// controls the simulator's device-level chrome — hole-punch /
+/// teardrop notch, corner radius, bezel frame, status-bar
+/// foreground style. Defaults to [`DeviceModel::Pixel8`]; pick a
+/// different preset with [`Self::with_device`] or tune
+/// individual knobs with the `with_*` builders.
+pub struct AndroidSim {
+    config: DeviceConfig,
+}
 
 impl AndroidSim {
+    /// New Android skin with default chrome (Pixel 8).
     pub fn new() -> Self {
-        Self
+        Self { config: DeviceConfig::default_config() }
+    }
+
+    pub fn with_device(mut self, model: DeviceModel) -> Self {
+        self.config = DeviceConfig::for_model(model);
+        self
+    }
+
+    pub fn with_notch(mut self, notch: NotchStyle) -> Self {
+        self.config.notch = notch;
+        self
+    }
+
+    pub fn with_corner_radius(mut self, radius: f32) -> Self {
+        self.config.corner_radius = radius;
+        self
+    }
+
+    pub fn with_bezel(mut self, bezel: BezelStyle) -> Self {
+        self.config.bezel = bezel;
+        self
+    }
+
+    pub fn with_status_bar_style(mut self, style: StatusBarStyle) -> Self {
+        self.config.status_bar_style = style;
+        self
+    }
+
+    pub fn device_config(&self) -> DeviceConfig {
+        self.config
     }
 }
 
@@ -121,7 +247,56 @@ impl Default for AndroidSim {
     }
 }
 
+/// Default `StyleRules` for an unstyled `button(...)` on Material 3.
+/// Matches the filled-button variant (M3's default emphasis):
+/// primary-color background, on-primary text, 14 sp medium-weight
+/// label, 10×24 padding for a 40 dp pill, full-pill 20 dp corners.
+/// Authors override individual fields via `.with_style(...)`; the
+/// merge in `Backend::apply_style` keeps any field they set.
+fn m3_button_defaults() -> framework_core::StyleRules {
+    use framework_core::{Color, FontWeight, Length, StyleRules, Tokenized};
+    StyleRules {
+        // M3 Primary (#6750A4). Hard-coded here rather than
+        // reading the active theme palette — skins are
+        // stateless and the theme system's tokens layer on
+        // top via author overrides.
+        background: Some(Tokenized::Literal(Color("#6750A4".into()))),
+        color: Some(Tokenized::Literal(Color("#FFFFFF".into()))),
+        font_size: Some(Tokenized::Literal(Length::Px(14.0))),
+        font_weight: Some(FontWeight::Medium),
+        padding_top: Some(Tokenized::Literal(Length::Px(10.0))),
+        padding_right: Some(Tokenized::Literal(Length::Px(24.0))),
+        padding_bottom: Some(Tokenized::Literal(Length::Px(10.0))),
+        padding_left: Some(Tokenized::Literal(Length::Px(24.0))),
+        border_top_left_radius: Some(Tokenized::Literal(Length::Px(20.0))),
+        border_top_right_radius: Some(Tokenized::Literal(Length::Px(20.0))),
+        border_bottom_left_radius: Some(Tokenized::Literal(Length::Px(20.0))),
+        border_bottom_right_radius: Some(Tokenized::Literal(Length::Px(20.0))),
+        ..Default::default()
+    }
+}
+
 impl Skin for AndroidSim {
+    fn button_defaults(&self) -> framework_core::StyleRules {
+        m3_button_defaults()
+    }
+
+    /// M3 press feedback: paint an 8% on-primary state-layer
+    /// over the resting background. Text stays at full alpha —
+    /// Material's filled-button spec keeps the label
+    /// opaque under the state layer.
+    fn button_press_visual(&self, t: f32) -> render_wgpu::ButtonPressVisual {
+        let t = t.clamp(0.0, 1.0);
+        render_wgpu::ButtonPressVisual {
+            text_alpha_factor: 1.0,
+            // White state layer at 8% per the M3 state-layer
+            // spec for hovered/pressed on a primary container.
+            // Scaled by `t` so the overlay fades in/out with
+            // the press progress tween.
+            bg_overlay: Some([1.0, 1.0, 1.0, 0.08 * t]),
+        }
+    }
+
     // -----------------------------------------------------------
     // Toggle — M3 Switch
     // -----------------------------------------------------------
@@ -141,11 +316,16 @@ impl Skin for AndroidSim {
         let is_on = t > 0.5;
         let on_color = tint.unwrap_or(M3_PRIMARY);
 
-        let (track_bg, track_border, track_border_w) = if is_on {
-            (on_color, [0.0; 4], 0.0)
-        } else {
-            (M3_SURFACE_VARIANT, M3_OUTLINE, M3_SWITCH_TRACK_BORDER)
-        };
+        // Track is a plain filled pill in both states — no
+        // outline. The earlier M3 spec drew a 1–2 dp outline
+        // around the OFF-state container; current Material
+        // implementations drop it in favor of a contained
+        // surface-container-highest fill, which reads cleaner
+        // against the surface and avoids a stripe artifact
+        // around the small OFF thumb.
+        let track_bg = if is_on { on_color } else { M3_SURFACE_VARIANT };
+        let track_border: [f32; 4] = [0.0; 4];
+        let track_border_w: f32 = 0.0;
 
         rects.push(rect_inst(
             x,
@@ -161,9 +341,15 @@ impl Skin for AndroidSim {
         let diameter =
             M3_SWITCH_THUMB_DIAM_OFF + (M3_SWITCH_THUMB_DIAM_ON - M3_SWITCH_THUMB_DIAM_OFF) * t;
 
-        let inset = TOGGLE_THUMB_INSET;
-        let thumb_cx_off = x + inset + M3_SWITCH_THUMB_DIAM_OFF * 0.5;
-        let thumb_cx_on = x + w - inset - M3_SWITCH_THUMB_DIAM_ON * 0.5;
+        // Inset differs by state — the small OFF thumb needs
+        // more breathing room from the track edge than the
+        // large ON thumb, otherwise the OFF state looks pinned
+        // to the left edge instead of resting in the track.
+        // `TOGGLE_THUMB_INSET` is the iOS value (sized for the
+        // 27pt iOS thumb) and is wrong for M3; we ignore it.
+        let _ = TOGGLE_THUMB_INSET;
+        let thumb_cx_off = x + M3_SWITCH_THUMB_INSET_OFF + M3_SWITCH_THUMB_DIAM_OFF * 0.5;
+        let thumb_cx_on = x + w - M3_SWITCH_THUMB_INSET_ON - M3_SWITCH_THUMB_DIAM_ON * 0.5;
         let thumb_cx = thumb_cx_off + (thumb_cx_on - thumb_cx_off) * t;
         let thumb_cy = y + h * 0.5;
         let thumb_x = thumb_cx - diameter * 0.5;
@@ -213,19 +399,19 @@ impl Skin for AndroidSim {
         };
         let fill_w = track_w * t;
 
-        let inactive_y = center_y - M3_SLIDER_TRACK_HEIGHT_INACTIVE * 0.5;
-        rects.push(rect_inst(
-            track_x,
-            inactive_y,
-            track_w,
-            M3_SLIDER_TRACK_HEIGHT_INACTIVE,
-            M3_SURFACE_VARIANT,
-            [M3_SLIDER_TRACK_HEIGHT_INACTIVE * 0.5; 4],
-            [0.0; 4],
-            0.0,
-        ));
+        // Thumb position centered on the fill point. The active
+        // fill stops `THUMB_GAP` short of the thumb's leading
+        // edge; the inactive fill starts `THUMB_GAP` past the
+        // thumb's trailing edge. Painted as two distinct
+        // segments (no single underlay) so each region renders
+        // at its own height — 16 dp active vs. 4 dp inactive
+        // — without one bleeding through the other.
+        let thumb_x = track_x + fill_w - thumb_w * 0.5;
+        let thumb_left = thumb_x;
+        let thumb_right = thumb_x + thumb_w;
 
-        let active_w = (fill_w - M3_SLIDER_THUMB_GAP).max(0.0);
+        let active_end = (thumb_left - M3_SLIDER_THUMB_GAP).max(track_x);
+        let active_w = (active_end - track_x).max(0.0);
         if active_w > 0.0 {
             let active_y = center_y - M3_SLIDER_TRACK_HEIGHT_ACTIVE * 0.5;
             rects.push(rect_inst(
@@ -240,7 +426,22 @@ impl Skin for AndroidSim {
             ));
         }
 
-        let thumb_x = track_x + fill_w - thumb_w * 0.5;
+        let inactive_start = (thumb_right + M3_SLIDER_THUMB_GAP).min(track_x + track_w);
+        let inactive_w = (track_x + track_w - inactive_start).max(0.0);
+        if inactive_w > 0.0 {
+            let inactive_y = center_y - M3_SLIDER_TRACK_HEIGHT_INACTIVE * 0.5;
+            rects.push(rect_inst(
+                inactive_start,
+                inactive_y,
+                inactive_w,
+                M3_SLIDER_TRACK_HEIGHT_INACTIVE,
+                M3_SURFACE_VARIANT,
+                [M3_SLIDER_TRACK_HEIGHT_INACTIVE * 0.5; 4],
+                [0.0; 4],
+                0.0,
+            ));
+        }
+
         let thumb_y = center_y - M3_SLIDER_THUMB_HEIGHT * 0.5;
         rects.push(rect_inst(
             thumb_x,
@@ -326,10 +527,12 @@ impl Skin for AndroidSim {
     }
 
     // -----------------------------------------------------------
-    // ActivityIndicator — temporary iOS-style dot ring tinted M3.
-    // TODO: real M3 circular indeterminate progress (single arc
-    // segment that grows + shrinks with the emphasized motion
-    // curve).
+    // ActivityIndicator — M3 circular indeterminate progress.
+    // A compact ~120° arc of capsules rotates around the center
+    // once per spin period. Real M3 also breathes the arc length
+    // in and out; that's a future polish — the constant-length
+    // arc already reads distinctly different from the iOS even
+    // ring of fading dots.
     // -----------------------------------------------------------
 
     fn paint_activity_indicator(
@@ -349,19 +552,25 @@ impl Skin for AndroidSim {
         let base_color = tint.unwrap_or(M3_PRIMARY);
         let cx = x + w * 0.5;
         let cy = y + h * 0.5;
-        let bar_w = diameter * SPINNER_BAR_WIDTH_RATIO;
-        let bar_h = diameter * SPINNER_BAR_LENGTH_RATIO;
-        let orbit_r = diameter * SPINNER_ORBIT_RATIO;
-        let n = SPINNER_BARS as f32;
+        let bar_w = diameter * M3_ARC_BAR_WIDTH_RATIO;
+        let bar_h = diameter * M3_ARC_BAR_LENGTH_RATIO;
+        let orbit_r = diameter * M3_ARC_ORBIT_RATIO;
+        let n = M3_ARC_BARS as f32;
 
-        for i in 0..SPINNER_BARS {
+        // Leading edge of the arc walks around the circle as
+        // `phase` advances. Each subsequent bar trails behind by
+        // a fraction of the total arc span.
+        let leading_angle = phase * std::f32::consts::TAU;
+        for i in 0..M3_ARC_BARS {
             let slot = i as f32;
-            let slot_angle = (phase - slot / n) * std::f32::consts::TAU;
-            let dx = slot_angle.sin() * orbit_r;
-            let dy = -slot_angle.cos() * orbit_r;
-            let fade = 1.0 - slot / n;
+            // 0 at the head, 1 at the tail.
+            let tail_t = slot / (n - 1.0).max(1.0);
+            let bar_angle = leading_angle - tail_t * M3_ARC_SPAN;
+            let dx = bar_angle.sin() * orbit_r;
+            let dy = -bar_angle.cos() * orbit_r;
+            // Linear alpha fade along the arc tail.
             let alpha_factor =
-                SPINNER_MIN_BAR_ALPHA + (1.0 - SPINNER_MIN_BAR_ALPHA) * fade;
+                M3_ARC_TAIL_MIN_ALPHA + (1.0 - M3_ARC_TAIL_MIN_ALPHA) * (1.0 - tail_t);
             let bar_color = [
                 base_color[0],
                 base_color[1],
@@ -377,7 +586,7 @@ impl Skin for AndroidSim {
                 [bar_w * 0.5; 4],
                 [0.0; 4],
                 0.0,
-                slot_angle,
+                bar_angle,
             ));
         }
     }
@@ -423,6 +632,7 @@ impl Skin for AndroidSim {
         &self,
         keyboard_rect: (f32, f32, f32, f32),
         laid_keys: &[LaidKey],
+        pressed_label: Option<&'static str>,
         glyphs: &'a HashMap<&'static str, Buffer>,
         rects: &mut Vec<RectInstance>,
         texts: &mut Vec<StagedText<'a>>,
@@ -440,16 +650,22 @@ impl Skin for AndroidSim {
             0.0,
         ));
 
+        // M3 press feedback: every key (letter or modifier)
+        // gets a translucent surface-variant chip behind it
+        // when pressed — same rounded rect, slightly darker
+        // than the panel background. Letter keys are otherwise
+        // flat; modifier chips stay surface-variant.
         for k in laid_keys {
-            // Letter keys render flat — just glyph on the panel.
             let is_modifier = !matches!(k.action, KeyAction::Character(_));
-            if is_modifier {
+            let is_pressed = pressed_label == Some(k.label);
+            if is_modifier || is_pressed {
+                let bg = if is_pressed { M3_OUTLINE } else { M3_KEY_BG_MODIFIER };
                 rects.push(rect_inst(
                     k.x,
                     k.y,
                     k.w,
                     k.h,
-                    M3_KEY_BG_MODIFIER,
+                    bg,
                     [M3_KEY_CORNER_RADIUS; 4],
                     [0.0; 4],
                     0.0,
@@ -476,4 +692,312 @@ impl Skin for AndroidSim {
             }
         }
     }
+
+    fn paint_navigator_header<'a, 'b>(
+        &self,
+        rect: (f32, f32, f32, f32),
+        chrome: NavigatorHeaderChrome<'a, 'b>,
+        rects: &mut Vec<RectInstance>,
+        texts: &mut Vec<StagedText<'a>>,
+        hit_regions: &mut Vec<NavigatorHeaderHit>,
+    ) {
+        let (x, y, w, h) = rect;
+
+        // Top-app-bar surface fill.
+        let bg = chrome.background.unwrap_or(M3_HEADER_BG);
+        // Extend the bg upward by `safe_area_top` so the
+        // status-bar strip shares the header color — see the
+        // iOS skin for the rationale.
+        let bg_y = y - chrome.safe_area_top;
+        let bg_h = h + chrome.safe_area_top;
+        rects.push(rect_inst(x, bg_y, w, bg_h, bg, [0.0; 4], [0.0; 4], 0.0));
+
+        let tint = chrome.tint.unwrap_or(M3_HEADER_TINT);
+        let slot_y = y + (h - M3_HEADER_SLOT_SIZE) * 0.5;
+
+        // Track how far in from the left the title text needs to
+        // start. M3's small top app bar puts the title left-aligned
+        // after the leading icon slot — not centered like iOS.
+        let mut title_left = x + M3_HEADER_SLOT_INSET;
+
+        if let Some(name) = chrome.header_left_icon {
+            if let Some(icon) = chrome_icons::lookup(name) {
+                let slot_x = x + M3_HEADER_SLOT_INSET;
+                paint_icon(
+                    slot_x,
+                    slot_y,
+                    M3_HEADER_SLOT_SIZE,
+                    M3_HEADER_SLOT_SIZE,
+                    icon.paths,
+                    icon.view_box,
+                    tint,
+                    1.0,
+                    rects,
+                );
+                hit_regions.push(NavigatorHeaderHit {
+                    rect: (
+                        slot_x - M3_HEADER_SLOT_INSET,
+                        y,
+                        M3_HEADER_SLOT_SIZE + M3_HEADER_SLOT_INSET * 2.0,
+                        h,
+                    ),
+                    action: NavigatorHeaderAction::HeaderLeft,
+                });
+                title_left = slot_x + M3_HEADER_SLOT_SIZE + M3_HEADER_SLOT_INSET;
+            }
+        } else if chrome.show_back {
+            let icon = chrome_icons::BACK_ARROW;
+            let slot_x = x + M3_HEADER_SLOT_INSET;
+            paint_icon(
+                slot_x,
+                slot_y,
+                M3_HEADER_SLOT_SIZE,
+                M3_HEADER_SLOT_SIZE,
+                icon.paths,
+                icon.view_box,
+                tint,
+                1.0,
+                rects,
+            );
+            hit_regions.push(NavigatorHeaderHit {
+                rect: (
+                    x,
+                    y,
+                    M3_HEADER_SLOT_SIZE + M3_HEADER_SLOT_INSET * 2.0,
+                    h,
+                ),
+                action: NavigatorHeaderAction::Back,
+            });
+            title_left = slot_x + M3_HEADER_SLOT_SIZE + M3_HEADER_SLOT_INSET;
+        }
+
+        // Right slot — same shape as iOS.
+        let mut title_right = x + w - M3_HEADER_SLOT_INSET;
+        if let Some(name) = chrome.header_right_icon {
+            if let Some(icon) = chrome_icons::lookup(name) {
+                let slot_x = x + w - M3_HEADER_SLOT_SIZE - M3_HEADER_SLOT_INSET;
+                paint_icon(
+                    slot_x,
+                    slot_y,
+                    M3_HEADER_SLOT_SIZE,
+                    M3_HEADER_SLOT_SIZE,
+                    icon.paths,
+                    icon.view_box,
+                    tint,
+                    1.0,
+                    rects,
+                );
+                hit_regions.push(NavigatorHeaderHit {
+                    rect: (
+                        slot_x,
+                        y,
+                        M3_HEADER_SLOT_SIZE + M3_HEADER_SLOT_INSET,
+                        h,
+                    ),
+                    action: NavigatorHeaderAction::HeaderRight,
+                });
+                title_right = slot_x - M3_HEADER_SLOT_INSET;
+            }
+        }
+
+        // Title — left-aligned (M3 small top app bar) within the
+        // remaining space between the leading slot and the
+        // trailing slot.
+        if let Some(buffer) = chrome.title {
+            let (text_w, text_h) = measure_buffer(buffer);
+            let available = (title_right - title_left).max(0.0);
+            let tx = title_left;
+            let ty = y + (h - text_h) * 0.5;
+            texts.push(StagedText {
+                buffer,
+                x: tx,
+                y: ty,
+                color: chrome.title_color.unwrap_or(M3_HEADER_TITLE),
+                // Clip to the title slot so a long title clips
+                // before colliding with the trailing icon.
+                clip: TextBounds {
+                    left: tx as i32,
+                    top: y as i32,
+                    right: (tx + available.min(text_w)) as i32,
+                    bottom: (y + h) as i32,
+                },
+            });
+        }
+    }
+
+    fn safe_area_insets(&self) -> framework_core::EdgeInsets {
+        framework_core::EdgeInsets {
+            top: M3_STATUS_BAR_HEIGHT,
+            right: 0.0,
+            bottom: M3_GESTURE_NAV_HEIGHT,
+            left: 0.0,
+        }
+    }
+
+    fn device_corner_radius(&self) -> f32 {
+        self.config.corner_radius
+    }
+
+    fn chrome_glyph_labels(&self) -> Vec<(&'static str, String, f32)> {
+        vec![("clock", String::new(), M3_STATUS_FONT_SIZE)]
+    }
+
+    fn paint_device_chrome<'a>(
+        &self,
+        viewport: (f32, f32),
+        insets: framework_core::EdgeInsets,
+        _now: web_time::Instant,
+        glyphs: &'a HashMap<&'static str, Buffer>,
+        rects: &mut Vec<RectInstance>,
+        texts: &mut Vec<StagedText<'a>>,
+    ) {
+        let (vw, vh) = viewport;
+        let cfg = self.config;
+        // Status-bar foreground follows the configured style.
+        let fg = match cfg.status_bar_style {
+            StatusBarStyle::Dark => M3_STATUS_FG,
+            StatusBarStyle::Light => [1.0, 1.0, 1.0, 1.0],
+        };
+        let bar_h = insets.top.max(M3_STATUS_BAR_HEIGHT);
+
+        if let Some(clock) = glyphs.get("clock") {
+            let (_tw, th) = measure_buffer(clock);
+            // M3 puts the clock in the *top-left*, opposite iOS.
+            let tx = M3_STATUS_INSET;
+            let ty = (bar_h - th) * 0.5;
+            texts.push(StagedText {
+                buffer: clock,
+                x: tx,
+                y: ty,
+                color: fg,
+                clip: TextBounds {
+                    left: 0,
+                    top: 0,
+                    right: (vw * 0.4) as i32,
+                    bottom: bar_h as i32,
+                },
+            });
+        }
+
+        // Right-side: vertical-bar signal, wifi-square, battery.
+        let icon_y = (bar_h - 10.0) * 0.5;
+        let right_anchor = vw - M3_STATUS_INSET;
+        let battery_w = 22.0;
+        let battery_h = 10.0;
+        let battery_x = right_anchor - battery_w;
+        rects.push(rect_inst(
+            battery_x, icon_y, battery_w, battery_h,
+            [0.0; 4], [2.0; 4], fg, 1.0,
+        ));
+        rects.push(rect_inst(
+            battery_x + battery_w, icon_y + 3.0, 2.0, battery_h - 6.0,
+            fg, [1.0; 4], [0.0; 4], 0.0,
+        ));
+        let fill_inset = 1.5;
+        let fill_w = (battery_w - fill_inset * 2.0) * 0.95;
+        rects.push(rect_inst(
+            battery_x + fill_inset, icon_y + fill_inset,
+            fill_w, battery_h - fill_inset * 2.0,
+            fg, [1.5; 4], [0.0; 4], 0.0,
+        ));
+        let wifi_size = 12.0;
+        let wifi_x = battery_x - 6.0 - wifi_size;
+        let wifi_y = (bar_h - wifi_size) * 0.5;
+        rects.push(rect_inst(
+            wifi_x, wifi_y, wifi_size, wifi_size,
+            fg, [2.0; 4], [0.0; 4], 0.0,
+        ));
+        let bar_gap = 2.0;
+        let bar_unit_w = 3.0;
+        let sig_total_w = bar_unit_w * 4.0 + bar_gap * 3.0;
+        let sig_anchor_x = wifi_x - 6.0 - sig_total_w;
+        for i in 0..4 {
+            let bx = sig_anchor_x + (bar_unit_w + bar_gap) * i as f32;
+            let bh = 3.0 + i as f32 * 2.0;
+            let by = icon_y + (10.0 - bh);
+            rects.push(rect_inst(
+                bx, by, bar_unit_w, bh,
+                fg, [1.0; 4], [0.0; 4], 0.0,
+            ));
+        }
+
+        // --- Camera cutout ---
+        match cfg.notch {
+            NotchStyle::None => {}
+            NotchStyle::HolePunchCentered { diameter, top_offset } => {
+                let cx = (vw - diameter) * 0.5;
+                let cy = top_offset;
+                rects.push(rect_inst(
+                    cx, cy, diameter, diameter,
+                    [0.0, 0.0, 0.0, 1.0],
+                    [diameter * 0.5; 4],
+                    [0.0; 4],
+                    0.0,
+                ));
+            }
+            NotchStyle::HolePunchLeft { diameter, top_offset, left_inset } => {
+                rects.push(rect_inst(
+                    left_inset, top_offset, diameter, diameter,
+                    [0.0, 0.0, 0.0, 1.0],
+                    [diameter * 0.5; 4],
+                    [0.0; 4],
+                    0.0,
+                ));
+            }
+            NotchStyle::Teardrop { width, height } => {
+                // Approximation: a wide pill hanging from the
+                // top edge. Real teardrops taper to a point;
+                // the rect shader doesn't do non-uniform
+                // rounded shapes, so the pill is a fair
+                // stand-in at simulator zoom.
+                let tx = (vw - width) * 0.5;
+                rects.push(rect_inst(
+                    tx, 0.0, width, height,
+                    [0.0, 0.0, 0.0, 1.0],
+                    [0.0, 0.0, height * 0.5, height * 0.5],
+                    [0.0; 4],
+                    0.0,
+                ));
+            }
+        }
+
+        // Corner masking + the rounded device silhouette are
+        // handled by the renderer's `device_frame` pipeline.
+        // See `ios-sim` for the rationale.
+        let _ = cfg.bezel;
+
+        // --- Gesture nav line ---
+        // Android Q+ shows a thin pill (10dp tall, ~108dp wide)
+        // in the gesture bar.
+        if insets.bottom > 0.0 {
+            let line_w = 108.0;
+            let line_h = 4.0;
+            let line_x = (vw - line_w) * 0.5;
+            let line_y = vh - insets.bottom * 0.5 - line_h * 0.5;
+            let line_color = match cfg.status_bar_style {
+                StatusBarStyle::Dark => M3_STATUS_FG,
+                StatusBarStyle::Light => [1.0, 1.0, 1.0, 1.0],
+            };
+            rects.push(rect_inst(
+                line_x, line_y, line_w, line_h,
+                line_color,
+                [line_h * 0.5; 4],
+                [0.0; 4],
+                0.0,
+            ));
+        }
+    }
+}
+
+/// Measure a pre-laid glyphon buffer's natural bounding box.
+/// Used by `paint_navigator_header` for left-aligned title
+/// placement + clip-rect sizing.
+fn measure_buffer(buffer: &Buffer) -> (f32, f32) {
+    let mut max_w: f32 = 0.0;
+    let mut total_h: f32 = 0.0;
+    for run in buffer.layout_runs() {
+        max_w = max_w.max(run.line_w);
+        total_h += run.line_height;
+    }
+    (max_w, total_h)
 }

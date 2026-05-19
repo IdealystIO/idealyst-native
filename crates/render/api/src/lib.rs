@@ -56,7 +56,9 @@ pub use input::{
 };
 pub use profile::DeviceProfile;
 
-use std::time::Instant;
+// No time type in the contract. The render backend owns its clock —
+// shells don't sample a wall-clock and hand it in. See
+// [`EventSink::tick`] below for the rationale.
 
 /// What a render backend must accept from any native shell.
 ///
@@ -95,5 +97,11 @@ pub trait EventSink {
     /// if anything is still in flight — the shell should
     /// `request_redraw` so the next frame samples the next
     /// step.
-    fn tick(&mut self, now: Instant) -> bool;
+    ///
+    /// No `now` parameter: the render side owns its monotonic
+    /// clock (`web_time` on wgpu, anything else on a different
+    /// backend) so shells don't have to pick one or thread it
+    /// across the API boundary. Cross-target consistency is the
+    /// render backend's problem, not the shell's.
+    fn tick(&mut self) -> bool;
 }

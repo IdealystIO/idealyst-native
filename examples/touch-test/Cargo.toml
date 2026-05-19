@@ -1,0 +1,60 @@
+[package]
+name = "touch-test"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Touch-system smoke test — single platform-agnostic crate covering tap, long-press, raw touch, responder-chain bubble, and the claim protocol. Build for any platform to exercise the framework's raw touch pipeline."
+
+# `cdylib` for the wasm target (browser load via wasm-bindgen);
+# `rlib` so the CLI's generated native wrappers
+# (target/idealyst/<platform>/) can depend on this crate as a library.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# Connect to a running `idealyst dev` server instead of rendering the
+# local `app()` tree. Off by default.
+dev-hot-reload = ["dep:dev-client", "backend-web/aas-shell"]
+
+[dependencies]
+framework-core = { workspace = true }
+framework-theme = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["console"] }
+console_error_panic_hook = "0.1"
+lol_alloc = "0.4"
+dev-client = { workspace = true, optional = true }
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = [
+    "-Oz",
+    "--strip-debug",
+    "--strip-producers",
+    "--enable-bulk-memory",
+    "--enable-nontrapping-float-to-int",
+]
+
+# Idealyst project config. `idealyst build ios` / `android` / `web`
+# materializes per-platform wrappers into target/idealyst/<platform>/
+# referencing this crate as the library. iOS and Android targets pick
+# up the touch backends added in slices 5 + 6.
+[package.metadata.idealyst.app]
+name      = "Touch Test"
+# Underscore-clean — Android JNI symbol mangling can't handle hyphens
+# in the package segment (transliterates to e.g.
+# `Java_ai_truday_idealyst_touch-test_NativeBridge_attach`, invalid
+# Rust identifier). iOS doesn't care; bundle IDs over there are
+# strings, not symbol names.
+bundle_id = "ai.truday.idealyst.touchtest"
+version   = "0.0.1"
+targets   = ["web", "ios", "android"]
+
+[package.metadata.idealyst.app.splash]
+background  = "#10141a"
+title       = "Touch Test"
+title_color = "#ffffff"
+duration_ms = 600

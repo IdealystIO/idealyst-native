@@ -1,0 +1,33 @@
+[package]
+name = "port-preview"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Port + compile a React/Vue/Svelte project end-to-end so the user
+# can evaluate whether the porter's output is actually buildable
+# Rust.
+#
+# Pipeline:
+#   1. Run `port-project` against the input (local path or git URL),
+#      writing ported `.rs` files into a scratch directory.
+#   2. Scaffold a self-contained scratch Cargo crate: generate
+#      `Cargo.toml`, top-level `main.rs`, and a `mod.rs` tree under
+#      `src/ported/` so the ported files form valid Rust modules.
+#   3. Run `cargo check` on the scratch crate. Anything that
+#      compiles is a "did the port actually produce coherent Rust"
+#      signal; failures point at concrete next-fix locations.
+#
+# Eventually folds into the main CLI as a `preview` subcommand.
+# For now it ships as its own binary.
+
+[lib]
+crate-type = ["rlib"]
+
+[[bin]]
+name = "port-preview"
+path = "src/main.rs"
+
+[dependencies]
+port-core = { path = "../core" }
+port-project = { path = "../project" }

@@ -56,7 +56,7 @@ impl Backend for TraceBackend {
     fn create_button(
         &mut self,
         _label: &str,
-        _on_click: Rc<dyn Fn()>,
+        _on_click: &framework_core::Action,
         _leading: Option<&framework_core::primitives::icon::IconData>,
         _trailing: Option<&framework_core::primitives::icon::IconData>,
     ) -> u64 {
@@ -104,19 +104,24 @@ fn websocket_round_trip_basic_tree() {
                     source: TextSource::Static("hello".into()),
                     style: None,
                     ref_fill: None,
+                    test_id: None,
                 },
                 Primitive::Text {
                     source: TextSource::Static("world".into()),
                     style: None,
                     ref_fill: None,
+                    test_id: None,
                 },
             ],
             style: None,
             ref_fill: None,
+            safe_area_sides: Default::default(),
+            on_touch: None,
+            test_id: None,
         };
         let owner = render(backend_rc, tree);
         std::mem::forget(owner);
-        let _ = serve(server_addr_clone, recorder);
+        let _ = serve(server_addr_clone, recorder, "transport-test");
     });
 
     // Give the server time to bind.
@@ -214,6 +219,7 @@ fn run_with_budget(
     let hello = wire::AppToDev::Hello {
         app_name: "transport-test".to_string(),
         color_scheme: wire::WireColorScheme::Auto,
+        initial_url: None,
     };
     let bytes = serde_json::to_vec(&hello).unwrap();
     ws.send(Message::Binary(bytes.into())).ok();

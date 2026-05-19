@@ -31,7 +31,8 @@
 //!    node so they don't keep firing redraws for dead nodes.
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+// `web-time` for wasm32 compat — see `host.rs` for the rationale.
+use web_time::{Duration, Instant};
 
 use framework_core::Easing;
 use native_layout::LayoutNode;
@@ -63,9 +64,18 @@ pub enum AnimProperty {
     /// Slider thumb position. Reserved for future programmatic
     /// value changes.
     SliderThumb,
-    /// Button / Pressable press scale (1.0 = at rest, < 1.0 =
-    /// pressed). Reserved.
-    PressScale,
+    /// Button press progress. `0.0` = at rest, `1.0` = fully
+    /// pressed. The renderer hands the sampled value to the
+    /// active skin's `button_press_visual(t)`, which decides
+    /// what that means visually (iOS dims the label's alpha,
+    /// M3 paints a state-layer overlay on the background).
+    /// Driven by the host's `set_state(PRESSED, …)` path.
+    PressProgress,
+    /// Icon stroke-reveal progress (0.0 = no stroke shown,
+    /// 1.0 = fully drawn). Drives the Lottie-style draw-in
+    /// animation when authors call `IconHandle::animate_stroke`
+    /// or pass an `Icon::draw_in(...)` builder.
+    IconStroke,
 
     // --- Color ([f32; 4]) — style transitions ---
     /// `background` color crossfade.
@@ -184,7 +194,20 @@ impl Animator {
             .map(|t| t.sample(now))
             .unwrap_or(fallback_from);
         if (from - target).abs() < f32::EPSILON {
-            self.scalars.remove(&key);
+            // Already at the target — record a zero-duration
+            // tween so `sample()` returns `target` forever
+            // (vs. falling through to the caller's `fallback`,
+            // which loses the post-animation value).
+            self.scalars.insert(
+                key,
+                Tween {
+                    from: target,
+                    to: target,
+                    started: now,
+                    duration: Duration::from_millis(0),
+                    easing,
+                },
+            );
             return;
         }
         self.scalars.insert(
@@ -217,7 +240,19 @@ impl Animator {
             .map(|t| t.sample(now))
             .unwrap_or(fallback_from);
         if color_close(from, target) {
-            self.colors.remove(&key);
+            // Settle at `target` without animating — see the
+            // matching note in `animate()` about why we record
+            // a zero-duration tween instead of removing.
+            self.colors.insert(
+                key,
+                ColorTween {
+                    from: target,
+                    to: target,
+                    started: now,
+                    duration: Duration::from_millis(0),
+                    easing,
+                },
+            );
             return;
         }
         self.colors.insert(
@@ -248,13 +283,26 @@ impl Animator {
             .unwrap_or(fallback)
     }
 
-    /// Purge completed tweens across both maps. Returns `true` if
-    /// anything is still in flight — the caller should
-    /// `request_redraw` so the next frame samples the next step.
+    /// Report whether any tween is still in flight. Returns
+    /// `true` if at least one tween hasn't elapsed yet — the
+    /// caller `request_redraw`s so the next frame samples the
+    /// next step.
+    ///
+    /// Tweens that have *settled* (elapsed past their duration)
+    /// are deliberately retained: `sample()` reads them and
+    /// returns their final value indefinitely. Pruning them
+    /// here would mean a sample-after-settle falls back to the
+    /// caller's supplied `fallback`, which loses the
+    /// post-animation state — e.g. a button's press-progress
+    /// would snap back to 0 the instant the press-down tween
+    /// completed, even while the user is still holding. Stale
+    /// entries get evicted by `drop_node` and overwritten by
+    /// the next `animate()` for the same key, so the maps stay
+    /// bounded by live `(node, property)` pairs.
     pub fn tick(&mut self, now: Instant) -> bool {
-        self.scalars.retain(|_, t| !t.done(now));
-        self.colors.retain(|_, t| !t.done(now));
-        !self.scalars.is_empty() || !self.colors.is_empty()
+        let any_scalars_in_flight = self.scalars.values().any(|t| !t.done(now));
+        let any_colors_in_flight = self.colors.values().any(|t| !t.done(now));
+        any_scalars_in_flight || any_colors_in_flight
     }
 
     /// Drop every tween targeting `node` from both maps.

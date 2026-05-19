@@ -420,12 +420,18 @@ pub(crate) fn create_drawer_navigator(
             Retained::retain(Retained::as_ptr(&nav_ctrl) as *mut NSObject).unwrap()
         };
         let theme_effect = framework_core::Effect::new(move || {
-            // Touch the active-theme signal. The framework registers
-            // the dependency on this effect and re-fires us on theme
-            // swap. The closure body re-resolves header colors via
-            // the same `active_theme()` reads inside each color
-            // closure.
-            let _ = framework_core::active_theme();
+            // Subscribe to the active-theme signal so this effect
+            // re-fires on every `set_theme(...)`. We want a single
+            // "theme swapped" wake, not per-token wakes — the
+            // closure body re-resolves *all* header colors below.
+            // TODO: narrow subscription — the header reads a small
+            // known subset of tokens (header_bg / header_title /
+            // header_tint). Subscribing to just those via
+            // `Tokenized::<Color>::resolve` would avoid waking on
+            // unrelated token swaps, but the closures here read
+            // through user-defined `ScreenOptions` so the names
+            // aren't statically known from this site.
+            let _ = framework_theme::active_theme();
             let route = current_route_for_theme.borrow().clone();
             let Some(route) = route else { return };
             let map = mounted_for_theme.borrow();
@@ -454,7 +460,14 @@ pub(crate) fn create_drawer_navigator(
         let nav_view_for_bg = nav_view.clone();
         let body_for_bg = body.clone();
         let bg_effect = framework_core::Effect::new(move || {
-            let _ = framework_core::active_theme();
+            // Subscribe to the active-theme signal — same shape as
+            // the header `theme_effect` above. The `bg_closure` is a
+            // user-supplied callback; we can't introspect which
+            // token(s) it reads, so we wake on every theme swap.
+            // TODO: narrow subscription — if the closure reads a
+            // single `Tokenized<Color>::resolve()`, the natural
+            // subscription would do this for us with finer grain.
+            let _ = framework_theme::active_theme();
             let color = (bg_closure)();
             let ui_color = color_to_uicolor(&color);
             // Interpolate the body+nav background when a theme

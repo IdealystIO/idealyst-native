@@ -9,3 +9,8 @@
 // promotes it to crate-root scope where `ui!` can find it.
 #[macro_use]
 pub mod card_tabs;
+
+// Same pattern for `simulator!` — embedded live preview that runs
+// the docs' example trees through the wgpu render backend.
+#[macro_use]
+pub mod simulator;

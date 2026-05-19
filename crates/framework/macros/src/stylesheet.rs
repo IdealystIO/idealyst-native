@@ -66,6 +66,7 @@
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
+use syn::visit::{self, Visit};
 use syn::{braced, parenthesized, Expr, Ident, Token, Type, Visibility};
 
 // =============================================================================
@@ -75,6 +76,10 @@ use syn::{braced, parenthesized, Expr, Ident, Token, Type, Visibility};
 pub struct StyleSheetDecl {
     vis: Visibility,
     name: Ident,
+    /// Parsed for syntactic backward-compatibility (`pub Card<Theme>`).
+    /// Ignored at emission — stylesheet closures take `&VariantSet`,
+    /// not a theme reference. See `check_no_theme_refs`.
+    #[allow(dead_code)]
     theme_ty: Type,
     base: BaseBlock,
     variants: Vec<VariantAxisDecl>,
@@ -96,6 +101,7 @@ pub struct StyleSheetDecl {
 /// time.
 struct StateArm {
     name: Ident,
+    #[allow(dead_code)]
     theme_binding: Ident,
     rules: RulesBlock,
 }
@@ -114,6 +120,7 @@ struct TransitionDecl {
 }
 
 struct BaseBlock {
+    #[allow(dead_code)]
     theme_binding: Ident,
     rules: RulesBlock,
 }
@@ -126,6 +133,7 @@ struct VariantAxisDecl {
 struct VariantArm {
     name: Ident,
     is_default: bool,
+    #[allow(dead_code)]
     theme_binding: Ident,
     rules: RulesBlock,
 }
@@ -344,6 +352,9 @@ fn parse_rules_block(input: ParseStream) -> syn::Result<RulesBlock> {
 // =============================================================================
 
 pub fn emit(decl: StyleSheetDecl) -> TokenStream2 {
+    if let Err(err) = check_no_theme_refs(&decl) {
+        return err.to_compile_error();
+    }
     let stylesheet_fn = emit_stylesheet_fn(&decl);
     let enums = decl.variants.iter().map(|v| emit_variant_enum(&decl, v)).collect::<Vec<_>>();
     let builder = emit_builder(&decl);
@@ -353,6 +364,89 @@ pub fn emit(decl: StyleSheetDecl) -> TokenStream2 {
         #(#enums)*
         #builder
     }
+}
+
+/// Walk every rules-block expression in the declaration and reject
+/// references to the theme binding (`base(theme) { theme.colors.fg }`,
+/// `base(t) { t.colors().fg }` — whatever name the author chose for
+/// the binding). The token primitives now live in `framework-core`,
+/// so author code emits `Tokenized::Token { name, fallback }`
+/// directly. The legacy theme-struct pattern (where rules could read
+/// `theme.colors.primary` etc) lives in `framework-theme` but it's no
+/// longer wired through the stylesheet macro — emitting a clear error
+/// here keeps the migration explicit.
+fn check_no_theme_refs(decl: &StyleSheetDecl) -> syn::Result<()> {
+    // Collect every theme-binding name the declaration uses so the
+    // check is agnostic to whether the author wrote `theme`, `t`, or
+    // anything else. Bindings prefixed with `_` (idiomatic "unused")
+    // are skipped — those don't reference the theme by name in the
+    // body anyway, and rejecting them would flag stylesheets that
+    // already opted out by writing `_theme`.
+    let mut bindings: Vec<String> = Vec::new();
+    let add = |list: &mut Vec<String>, ident: &Ident| {
+        let s = ident.to_string();
+        if !s.starts_with('_') && !list.contains(&s) {
+            list.push(s);
+        }
+    };
+    add(&mut bindings, &decl.base.theme_binding);
+    for axis in &decl.variants {
+        for arm in &axis.arms {
+            add(&mut bindings, &arm.theme_binding);
+        }
+    }
+    for arm in &decl.states {
+        add(&mut bindings, &arm.theme_binding);
+    }
+
+    struct Finder<'a> {
+        bindings: &'a [String],
+        offender: Option<syn::Ident>,
+    }
+    impl<'ast, 'a> Visit<'ast> for Finder<'a> {
+        fn visit_expr_path(&mut self, node: &'ast syn::ExprPath) {
+            if self.offender.is_some() {
+                return;
+            }
+            // Detect a bare ident path matching one of the
+            // theme-binding names (`theme`, `t`, etc.). This catches
+            // both `theme.colors.fg` field chains and
+            // `theme.colors()` method chains, since the receiver
+            // parses as an `ExprPath`.
+            if let Some(seg) = node.path.segments.last() {
+                let name = seg.ident.to_string();
+                if self.bindings.iter().any(|b| b == &name) {
+                    self.offender = Some(seg.ident.clone());
+                    return;
+                }
+            }
+            visit::visit_expr_path(self, node);
+        }
+    }
+    let mut finder = Finder { bindings: &bindings, offender: None };
+    let mut blocks: Vec<&RulesBlock> = vec![&decl.base.rules];
+    for axis in &decl.variants {
+        for arm in &axis.arms {
+            blocks.push(&arm.rules);
+        }
+    }
+    for arm in &decl.states {
+        blocks.push(&arm.rules);
+    }
+    for block in blocks {
+        for (_, expr) in &block.fields {
+            finder.visit_expr(expr);
+            if let Some(offender) = finder.offender.take() {
+                return Err(syn::Error::new(
+                    offender.span(),
+                    "theme.* references are no longer supported in stylesheet bodies — \
+                     use `Tokenized::Token { name: \"...\", fallback: ... }` directly. \
+                     See framework-theme crate for the legacy theme-struct pattern.",
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn snake_case(ident: &Ident) -> Ident {
@@ -370,11 +464,15 @@ fn snake_case(ident: &Ident) -> Ident {
 /// Emits the `Rc<StyleSheet>` constructor with thread-local caching.
 /// Mirrors the hand-rolled `card_style()` / `banner_style()` style
 /// the codebase already uses.
+///
+/// The declared `<Theme>` generic and `base(theme) { ... }` bindings
+/// are accepted for syntactic backward-compatibility but ignored at
+/// emission: stylesheet closures now take `&VariantSet`, not a theme
+/// reference. Authors who relied on `theme.*` field reads will see a
+/// compile error from `check_no_theme_refs`.
 fn emit_stylesheet_fn(decl: &StyleSheetDecl) -> TokenStream2 {
     let fn_name = format_ident!("{}_style", snake_case(&decl.name));
-    let theme_ty = &decl.theme_ty;
     let vis = &decl.vis;
-    let base_theme = &decl.base.theme_binding;
     // The base rules carry the transition declarations too. Transitions
     // are property values on `StyleRules` — same field layout, just
     // sitting alongside the regular property fields.
@@ -384,10 +482,9 @@ fn emit_stylesheet_fn(decl: &StyleSheetDecl) -> TokenStream2 {
         let axis_name = axis.axis.to_string();
         let arm_calls = axis.arms.iter().map(|arm| {
             let arm_name = arm.name.to_string();
-            let arm_theme = &arm.theme_binding;
             let rules = emit_rules_struct(&arm.rules);
             quote! {
-                .variant(#axis_name, #arm_name, |#arm_theme: &#theme_ty| #rules)
+                .variant(#axis_name, #arm_name, |_vs: &::framework_core::VariantSet| #rules)
             }
         }).collect::<Vec<_>>();
         let default_calls = axis.arms.iter().filter(|a| a.is_default).map(|arm| {
@@ -407,10 +504,9 @@ fn emit_stylesheet_fn(decl: &StyleSheetDecl) -> TokenStream2 {
     // class swap, not a rule mint.
     let state_chain = decl.states.iter().map(|arm| {
         let axis = format!("__state_{}", arm.name);
-        let arm_theme = &arm.theme_binding;
         let rules = emit_rules_struct(&arm.rules);
         quote! {
-            .variant(#axis, "on", |#arm_theme: &#theme_ty| #rules)
+            .variant(#axis, "on", |_vs: &::framework_core::VariantSet| #rules)
         }
     });
 
@@ -419,7 +515,9 @@ fn emit_stylesheet_fn(decl: &StyleSheetDecl) -> TokenStream2 {
             ::std::thread_local! {
                 static SHEET: ::std::rc::Rc<::framework_core::StyleSheet> =
                     ::std::rc::Rc::new(
-                        ::framework_core::StyleSheet::new(|#base_theme: &#theme_ty| #base_rules)
+                        ::framework_core::StyleSheet::new(
+                            |_vs: &::framework_core::VariantSet| #base_rules
+                        )
                             #(#variant_chain)*
                             #(#state_chain)*
                     );

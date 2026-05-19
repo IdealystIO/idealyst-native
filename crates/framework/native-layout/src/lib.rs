@@ -105,6 +105,14 @@ pub struct Frame {
 /// multi-window backends).
 pub struct LayoutTree {
     tree: TaffyTree<()>,
+    /// Set of `NodeId`s that have been freed via [`Self::remove_node`].
+    /// Used purely as an assertion source: if anything calls
+    /// [`Self::set_style`] / [`Self::set_safe_area_extra`] on a freed
+    /// id, we panic with a clear message pointing at the bad caller
+    /// instead of letting Taffy's SlotMap panic obscure the source.
+    /// Temporary — remove once the wgpu backend lifecycle ordering is
+    /// proven correct.
+    dropped: HashSet<NodeId>,
     /// Per-node measure functions for intrinsically-sized leaves
     /// (Text, etc.). Looked up during `compute` and forwarded to
     /// Taffy's `compute_layout_with_measure`.
@@ -139,6 +147,7 @@ impl LayoutTree {
     pub fn new() -> Self {
         Self {
             tree: TaffyTree::new(),
+            dropped: HashSet::new(),
             measure_fns: HashMap::new(),
             auto_width: HashSet::new(),
             auto_height: HashSet::new(),
@@ -198,6 +207,7 @@ impl LayoutTree {
         self.auto_height.remove(&node.0);
         self.author_padding.remove(&node.0);
         self.safe_area_extra.remove(&node.0);
+        self.dropped.insert(node.0);
     }
 
     /// Set per-side safe-area extra padding for a node. The Taffy
@@ -217,6 +227,13 @@ impl LayoutTree {
         bottom: f32,
         left: f32,
     ) {
+        assert!(
+            !self.dropped.contains(&node.0),
+            "LayoutTree::set_safe_area_extra called on already-removed node {:?} — \
+             a safe-area reactive effect outlived its `drop_subtree`. \
+             Check the framework `Scope` ordering at the call site.",
+            node.0
+        );
         let extra = [top, right, bottom, left];
         // Skip the Taffy write if nothing changed — common during a
         // layout pass on every frame.
@@ -252,6 +269,20 @@ impl LayoutTree {
     /// width, …) — which is exactly the bug we saw with the dashboard
     /// page's gap getting wiped.
     pub fn set_style(&mut self, node: LayoutNode, rules: &StyleRules) {
+        // Surface lifecycle bugs cleanly: if a caller hands us a node
+        // that was already freed via `remove_node`, panic *here* with a
+        // backtrace pointing at the bad caller instead of letting
+        // Taffy's SlotMap panic obscure the chain. The actual fix
+        // belongs at the call site — keep cohort entries / reactive
+        // style effects from outliving their layout node.
+        assert!(
+            !self.dropped.contains(&node.0),
+            "LayoutTree::set_style called on already-removed node {:?} — \
+             a `StyleHandle` or reactive style effect outlived its `drop_subtree`. \
+             Check that the framework `Scope` owning this node is released \
+             BEFORE the backend frees the Taffy slot.",
+            node.0
+        );
         let mut style = self
             .tree
             .style(node.0)

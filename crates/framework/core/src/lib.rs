@@ -2,6 +2,7 @@
 
 pub mod assets;
 mod backend;
+mod batch;
 mod builder;
 mod derive;
 mod handles;
@@ -13,6 +14,7 @@ pub mod scheduling;
 pub mod time;
 mod sources;
 mod style;
+mod touch;
 mod walker;
 pub mod primitives;
 
@@ -39,6 +41,7 @@ pub use assets::{
     TypefaceId,
 };
 pub use backend::{Backend, ColorScheme, VirtualizerCallbacks};
+pub use batch::{BackendBatch, BatchOp};
 pub use handles::{
     ButtonHandle, ButtonOps, PressableHandle, PressableOps, RefFill, RefOps, StateBits, TextHandle,
     TextOps, ViewHandle, ViewOps,
@@ -53,6 +56,10 @@ pub use identity::{
 };
 pub use primitive::Primitive;
 pub use sources::{IntoStyleSource, IntoTextSource, StyleSource, TextSource};
+pub use touch::{TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint, TouchResponse};
+pub use touch::recognizers::{
+    long_press, pan, tap, LongPressRecognizer, PanEvent, PanRecognizer, TapRecognizer,
+};
 pub use walker::{render, Owner};
 pub use primitives::navigator::{
     match_pattern, ContentBuilder, DefaultLinkKind, DrawerContentProps, DrawerHandle,
@@ -72,19 +79,21 @@ pub use primitives::overlay::{
 pub use primitives::presence::{
     presence, PresenceAnim, PresenceHandle, PresenceOps, PresenceState,
 };
-pub use reactive::{arena_stats, untrack, ArenaStats, Effect, Ref, Signal};
+pub use reactive::{
+    arena_stats, batch, inject, inject_or, memo, memo_with, on, on_cleanup, on_defer, provide,
+    untrack, with_inject, ArenaStats, Effect, Ref, Signal, Trackable,
+};
 pub use safe_area::{safe_area_insets, set_safe_area_insets, EdgeInsets, SafeAreaSides};
 pub use scheduling::{
     after_animation_frame, after_ms, raf_loop, schedule_microtask, RafLoop, ScheduledTask,
 };
 
 pub use style::{
-    active_theme, derived, install_theme, install_themes, pregenerate_for_theme,
-    register_theme_variant, resolve as resolve_style, set_theme, AlignContent, AlignItems,
-    AlignSelf, Color, Derive, Easing, FlexDirection,
+    derived, install_tokens, pregenerate, resolve as resolve_style,
+    update_tokens, AlignContent, AlignItems, AlignSelf, Color, Derive, Easing, FlexDirection,
     FlexWrap, FontFamily, FontStyle, FontWeight, IntoOverrideSource, IntoVariantSource,
     JustifyContent, Length, Overflow, Position, Shadow, StyleApplication, StyleRules,
-    StyleSheet, TextAlign, TextTransform, ThemeTokens, TokenEntry, TokenValue, Tokenized,
+    StyleSheet, TextAlign, TextTransform, TokenEntry, TokenValue, Tokenized,
     Transform, Transition, VariantAxis, VariantEnum, VariantSet, VariantValue,
 };
 
@@ -133,6 +142,47 @@ pub use framework_hot as __hot;
 macro_rules! signal {
     ($value:expr) => {
         $crate::Signal::new($value)
+    };
+}
+
+/// Creates a reactive [`Effect`] that re-runs whenever a signal it
+/// reads on its previous run changes. Equivalent to writing
+/// `let _e = Effect::new(move || { ... })` but auto-binds the handle
+/// to the surrounding block and skips the `move` keyword (always
+/// implied — signal handles are `Copy`).
+///
+/// Inside a render scope the active `Scope` adopts the effect's
+/// arena slot, so the macro's hidden binding's `Drop` is a no-op and
+/// the effect lives until the scope ends. Outside any scope (tests,
+/// top-level binaries), the binding keeps the effect alive until the
+/// end of the enclosing block — call `Effect::new` directly and
+/// capture the handle if you need longer lifetime.
+///
+/// ```ignore
+/// let count = signal!(0);
+/// effect!({
+///     log("count is {}", count.get());
+/// });
+/// count.set(1); // re-runs the effect
+/// ```
+///
+/// Pairs with [`on_cleanup`] for release semantics: the registered
+/// callback fires before the effect's next re-run *and* on disposal.
+///
+/// ```ignore
+/// effect!({
+///     let task = after_ms(500, || tick());
+///     on_cleanup(move || drop(task));
+///     deps.get();
+/// });
+/// ```
+#[macro_export]
+macro_rules! effect {
+    ($body:expr) => {
+        // Hygienic binding: lives to the end of the enclosing block.
+        // Inside an active scope this is a no-op handle; outside one
+        // the binding is the slot's RAII guard.
+        let _effect = $crate::Effect::new(move || { $body });
     };
 }
 

@@ -1,0 +1,39 @@
+[package]
+name = "port-svelte"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Svelte → idealyst-native source porter.
+#
+# Svelte's reactivity is compile-time, not runtime — `let count = 0`
+# is reactive because the Svelte compiler rewrites every assignment
+# to `count = value` into an update notification. Reactive
+# statements declared with `$:` re-run when their dependencies
+# change.
+#
+# This porter does the analogous compile-time analysis but emits
+# idealyst signals instead of Svelte's invalidation calls:
+#
+#   let count = 0;     →  let count = signal!(0);
+#   count = count + 1; →  count.set(count.get() + 1);
+#   count++;           →  count.update(|c| *c += 1);
+#   $: doubled = count * 2;
+#                      →  let doubled = move || count.get() * 2;  (derived)
+#   $: console.log(count);
+#                      →  Effect::new(move || console.log(count.get()));
+#
+# Template directives (`{#if}`, `{#each}`, `on:click={fn}`,
+# `bind:value={x}`, `{expr}`) lower to JsxNode just as Vue's do —
+# the IR is framework-agnostic.
+
+[lib]
+crate-type = ["rlib"]
+
+[[bin]]
+name = "port-svelte"
+path = "src/main.rs"
+
+[dependencies]
+port-core = { path = "../core" }
+port-tsx = { path = "../tsx" }

@@ -1,36 +1,40 @@
-//! Style declarations and theme infrastructure.
+//! Style declarations and tokenization infrastructure.
 //!
 //! The framework owns the data model — what a "style" looks like, what
-//! variant axes exist, how the active theme propagates — but does **not**
-//! own the rendering strategy. Each backend interprets a `StyleRules`
-//! value however suits its platform:
+//! variant axes exist, and how named tokens propagate — but does **not**
+//! own the rendering strategy or the "theme-as-struct" pattern. Each
+//! backend interprets a `StyleRules` value however suits its platform:
 //!
 //! - **Web** can lazily mint CSS classes per unique rule set and swap
 //!   `className` on the node when the style changes.
 //! - **iOS** can update `CALayer` / `UIView` properties directly.
 //! - **Android** can call `View` setters or apply theme attributes.
 //!
-//! # Themes
+//! # Tokens
 //!
-//! Stylesheets are **closures** from the active theme to concrete
-//! `StyleRules`. The stylesheet's `base(|theme: &MyTheme| StyleRules { ... })`
-//! takes a typed reference to the app's theme and returns a rule set
-//! with concrete values. There is no token enum, no per-property
-//! indirection — just a function from theme to style.
+//! Stylesheets are **closures** from a `VariantSet` to concrete
+//! `StyleRules`. Property values can be either literals or named
+//! `Tokenized::Token { name, fallback }` references. Token values are
+//! installed via [`install_tokens`] and updated via [`update_tokens`].
 //!
-//! Theme changes flow through the existing reactive system: each styled
-//! node's apply-style call lives inside an `Effect` that reads the
-//! theme signal, so swapping the theme re-fires every styled effect
-//! and re-applies with the new theme's values. No re-render.
+//! The "theme as a typed struct" pattern is provided by the separate
+//! `framework-theme` crate as a thin wrapper over these primitives.
+//!
+//! Token updates flow through the existing reactive system: each styled
+//! node's apply-style call lives inside an `Effect` that reads token
+//! values via `Tokenized::<T>::resolve()`. `resolve` subscribes the
+//! active Effect to the per-token `Signal<TokenValue>` in the
+//! registry, so an `update_tokens(["a"])` call only re-fires effects
+//! that referenced `"a"` — token swaps are O(referencing nodes), not
+//! O(styled nodes).
 //!
 //! # Identity for caching
 //!
-//! The framework memoizes resolution per `(stylesheet pointer, variants,
-//! theme pointer)` and returns an `Rc<StyleRules>`. Backends cache
-//! their native form keyed on the rule set's content (a hash or
-//! serialization), making caching immune to allocator-reuse hazards.
+//! The framework memoizes resolution per `(stylesheet pointer, variants)`
+//! and returns an `Rc<StyleRules>`. Backends cache their native form
+//! keyed on the rule set's content (a hash or serialization), making
+//! caching immune to allocator-reuse hazards.
 
-use std::any::Any;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
@@ -149,6 +153,79 @@ impl<T> Tokenized<T> {
 }
 
 impl<T: Copy> Copy for Tokenized<T> where T: Copy {}
+
+// Per-token reactive resolution. Backends inside an `apply_style` Effect
+// call `.resolve()` instead of `.value()` so the effect subscribes to
+// the per-token signal in `TOKEN_REGISTRY` — only nodes that read a
+// token re-fire on that token's update.
+//
+// One `resolve()` per `T` (Color / Length / f32) because each variant
+// of `TokenValue` carries a different concrete type — there is no
+// generic extraction helper that would work for all three.
+
+impl Tokenized<Color> {
+    /// Reactive read. For `Literal(v)` returns `v` (no subscription).
+    /// For `Token { name, fallback }`, subscribes the active Effect to
+    /// the per-token signal in the registry, extracts the `Color` value
+    /// (or returns `fallback` if the registry has no entry / the
+    /// installed value is the wrong variant).
+    pub fn resolve(&self) -> Color {
+        match self {
+            Tokenized::Literal(v) => v.clone(),
+            Tokenized::Token { name, fallback } => {
+                with_or_create_token_signal(name, || TokenValue::Color(fallback.clone()))
+                    .map(|sig| match sig.get() {
+                        TokenValue::Color(c) => c,
+                        other => {
+                            debug_warn_token_type_mismatch(name, "Color", &other);
+                            fallback.clone()
+                        }
+                    })
+                    .unwrap_or_else(|| fallback.clone())
+            }
+        }
+    }
+}
+
+impl Tokenized<Length> {
+    /// Reactive read — see `Tokenized<Color>::resolve`.
+    pub fn resolve(&self) -> Length {
+        match self {
+            Tokenized::Literal(v) => *v,
+            Tokenized::Token { name, fallback } => {
+                with_or_create_token_signal(name, || TokenValue::Length(*fallback))
+                    .map(|sig| match sig.get() {
+                        TokenValue::Length(l) => l,
+                        other => {
+                            debug_warn_token_type_mismatch(name, "Length", &other);
+                            *fallback
+                        }
+                    })
+                    .unwrap_or(*fallback)
+            }
+        }
+    }
+}
+
+impl Tokenized<f32> {
+    /// Reactive read — see `Tokenized<Color>::resolve`.
+    pub fn resolve(&self) -> f32 {
+        match self {
+            Tokenized::Literal(v) => *v,
+            Tokenized::Token { name, fallback } => {
+                with_or_create_token_signal(name, || TokenValue::Number(*fallback))
+                    .map(|sig| match sig.get() {
+                        TokenValue::Number(n) => n,
+                        other => {
+                            debug_warn_token_type_mismatch(name, "Number", &other);
+                            *fallback
+                        }
+                    })
+                    .unwrap_or(*fallback)
+            }
+        }
+    }
+}
 
 // `From<T> for Tokenized<T>` so the stylesheet macro's
 // `Some(Into::into(expr))` accepts plain literal values.
@@ -961,10 +1038,10 @@ fn push_u32_hex(out: &mut String, n: u32) {
 }
 
 // ----------------------------------------------------------------------------
-// StyleSheet — closures from theme to rules, with variants and compounds
+// StyleSheet — closures from variants to rules, with variants and compounds
 // ----------------------------------------------------------------------------
 
-type RulesFn = Box<dyn Fn(&dyn Any) -> StyleRules>;
+type RulesFn = Box<dyn Fn(&VariantSet) -> StyleRules>;
 
 pub type VariantAxis = String;
 pub type VariantValue = String;
@@ -989,9 +1066,9 @@ pub struct CompoundVariant {
 /// wrap it in `Rc` to pass around.
 ///
 /// Each entry — `base`, every variant overlay, every compound variant —
-/// is a closure that takes the active theme (typed as the app's theme)
-/// and returns concrete `StyleRules`. There are no tokens; closures
-/// are the only mechanism for theme-aware values.
+/// is a closure that takes the effective `VariantSet` and returns
+/// concrete `StyleRules`. Stylesheets emit `Tokenized<T>` references by
+/// name; token values are managed separately via [`install_tokens`].
 ///
 /// # Resolution order
 /// 1. `base`
@@ -1012,42 +1089,24 @@ pub struct StyleSheet {
     /// Empty for the very common case of sheets with no `state` blocks
     /// — `resolve_state_overlays` short-circuits on `is_empty()` and
     /// avoids walking the variants BTreeMap per styled node.
-    ///
-    /// On the perf screen (10k rows × no state blocks) this removed
-    /// ~10μs of per-row variant-map iteration, which compounded to
-    /// ~100ms across the whole render.
     state_axes: Vec<(crate::StateBits, VariantAxis)>,
-    /// Per-sheet pointer-friendly variant cache. Keyed on
-    /// `(theme_ptr, variants)`; value is the pre-resolved
-    /// `Rc<StyleRules>` for the no-overrides case. Populated by
-    /// [`ensure_registered_with`] at registration time; pruned on
-    /// `unregister`.
-    ///
-    /// This is the hot lookup path in `resolve()` — when an
-    /// application has no overrides (the common case for
-    /// stylesheet-only styling), the resolve function consults
-    /// this map first and bypasses the global `RESOLUTION_CACHE`
-    /// entirely. Saves one thread_local RefCell borrow + one
-    /// global HashMap lookup + one `Rc::as_ptr(&app.sheet)`
-    /// indirection per styled node.
-    ///
-    /// `RefCell` for interior mutability — the sheet itself is
-    /// shared via `Rc<StyleSheet>` so we can't take `&mut self` to
-    /// populate the cache at registration time.
-    variant_cache: std::cell::RefCell<
-        HashMap<(*const (), VariantSet), Rc<StyleRules>>,
-    >,
+    /// Per-sheet variant cache. Keyed on the effective `VariantSet`;
+    /// value is the pre-resolved `Rc<StyleRules>` for the no-overrides
+    /// case. Populated by [`ensure_registered_with`] at registration
+    /// time. The cache survives token updates because tokenized
+    /// `StyleRules` carry token *names* (not values) so the rule
+    /// content is token-stable.
+    variant_cache: std::cell::RefCell<HashMap<VariantSet, Rc<StyleRules>>>,
 }
 
 impl StyleSheet {
     /// Constructs a stylesheet whose base rules are produced by `f`.
-    pub fn new<Theme, F>(f: F) -> Self
+    pub fn new<F>(f: F) -> Self
     where
-        Theme: Any + 'static,
-        F: Fn(&Theme) -> StyleRules + 'static,
+        F: Fn(&VariantSet) -> StyleRules + 'static,
     {
         Self {
-            base: wrap_theme_fn::<Theme, F>(f),
+            base: Box::new(f),
             variants: BTreeMap::new(),
             compounds: Vec::new(),
             state_axes: Vec::new(),
@@ -1055,10 +1114,10 @@ impl StyleSheet {
         }
     }
 
-    /// A stylesheet that doesn't read the theme.
+    /// A stylesheet whose base rules ignore the variant set.
     pub fn r#static(rules: StyleRules) -> Self {
         Self {
-            base: Box::new(move |_any: &dyn Any| rules.clone()),
+            base: Box::new(move |_vs: &VariantSet| rules.clone()),
             variants: BTreeMap::new(),
             compounds: Vec::new(),
             state_axes: Vec::new(),
@@ -1068,15 +1127,14 @@ impl StyleSheet {
 
     /// Adds (or replaces) a variant overlay on the given axis-value.
     /// If the axis didn't exist yet it's created with no default.
-    pub fn variant<Theme, F>(
+    pub fn variant<F>(
         mut self,
         axis: impl Into<VariantAxis>,
         value: impl Into<VariantValue>,
         f: F,
     ) -> Self
     where
-        Theme: Any + 'static,
-        F: Fn(&Theme) -> StyleRules + 'static,
+        F: Fn(&VariantSet) -> StyleRules + 'static,
     {
         let axis = axis.into();
         let value = value.into();
@@ -1094,7 +1152,7 @@ impl StyleSheet {
             default: None,
             values: BTreeMap::new(),
         });
-        entry.values.insert(value, wrap_theme_fn::<Theme, F>(f));
+        entry.values.insert(value, Box::new(f));
         self
     }
 
@@ -1108,59 +1166,17 @@ impl StyleSheet {
     }
 
     /// Per-sheet variant-cache lookup. Returns the pre-resolved
-    /// `Rc<StyleRules>` if `(theme_ptr, variants)` has been
-    /// registered, `None` otherwise. The hot path in [`resolve`]
-    /// hits this before the global resolution cache.
-    pub(crate) fn lookup_variant(
-        &self,
-        theme_ptr: *const (),
-        variants: &VariantSet,
-    ) -> Option<Rc<StyleRules>> {
-        // The hash key tuple takes `(theme_ptr, variants)` by value.
-        // Cloning the `VariantSet` here would defeat the purpose —
-        // for the no-overrides path we want to avoid that clone.
-        //
-        // HashMap's `get` takes a `&K` (so it'd require a key by
-        // value to hash against), which means we'd clone. Trick:
-        // use a borrowed-key adapter via `raw_entry` on nightly,
-        // OR change the cache to use a `BTreeMap<&VariantSet>`-
-        // style structure. Simpler: hash the variants once and use
-        // the HashMap's `Q: Borrow<...>` lookup via `&(theme_ptr,
-        // variants)` only after wrapping the key in a referenced
-        // form.
-        //
-        // For this v1 we accept the small `variants.clone()` cost
-        // on the hot path — the previous code path was already
-        // cloning the `VariantSet` *and* doing a global RefCell
-        // borrow + global HashMap lookup. We just keep the clone
-        // and drop the rest.
-        let key = (theme_ptr, variants.clone());
-        self.variant_cache.borrow().get(&key).cloned()
+    /// `Rc<StyleRules>` if `variants` has been registered, `None`
+    /// otherwise. The hot path in [`resolve`] hits this before the
+    /// global resolution cache.
+    pub(crate) fn lookup_variant(&self, variants: &VariantSet) -> Option<Rc<StyleRules>> {
+        self.variant_cache.borrow().get(variants).cloned()
     }
 
     /// Insert a pre-resolved rule into the variant cache. Called
     /// from [`ensure_registered_with`] for each pregen entry.
-    pub(crate) fn insert_variant(
-        &self,
-        theme_ptr: *const (),
-        variants: VariantSet,
-        rc: Rc<StyleRules>,
-    ) {
-        self.variant_cache
-            .borrow_mut()
-            .insert((theme_ptr, variants), rc);
-    }
-
-    /// Drop every entry for `theme_ptr`. Currently unused — theme swap
-    /// no longer purges per-sheet variant caches because tokenized
-    /// rules are theme-stable in the backend (content-key dedup makes
-    /// re-registration cost-free). Kept as a hook in case a future
-    /// non-tokenized path needs it.
-    #[allow(dead_code)]
-    pub(crate) fn forget_theme(&self, theme_ptr: *const ()) {
-        self.variant_cache
-            .borrow_mut()
-            .retain(|(t, _), _| *t != theme_ptr);
+    pub(crate) fn insert_variant(&self, variants: VariantSet, rc: Rc<StyleRules>) {
+        self.variant_cache.borrow_mut().insert(variants, rc);
     }
 
     /// Sets the default value for an axis. When a call site omits this
@@ -1184,20 +1200,19 @@ impl StyleSheet {
 
     /// Adds a compound variant: an overlay applied only when every
     /// `(axis, value)` pair in `when` is active at apply time.
-    pub fn compound<Theme, F>(
+    pub fn compound<F>(
         mut self,
         when: Vec<(impl Into<VariantAxis>, impl Into<VariantValue>)>,
         f: F,
     ) -> Self
     where
-        Theme: Any + 'static,
-        F: Fn(&Theme) -> StyleRules + 'static,
+        F: Fn(&VariantSet) -> StyleRules + 'static,
     {
         let when: BTreeMap<VariantAxis, VariantValue> =
             when.into_iter().map(|(a, v)| (a.into(), v.into())).collect();
         self.compounds.push(CompoundVariant {
             when,
-            rules: wrap_theme_fn::<Theme, F>(f),
+            rules: Box::new(f),
         });
         self
     }
@@ -1217,16 +1232,16 @@ impl StyleSheet {
         out
     }
 
-    /// Resolves the stylesheet against the given variants and theme.
-    pub fn resolve(&self, variants: &VariantSet, theme: &dyn Any) -> StyleRules {
+    /// Resolves the stylesheet against the given variant set.
+    pub fn resolve(&self, variants: &VariantSet) -> StyleRules {
         let effective_variants = self.effective_variants(variants);
-        let mut effective = (self.base)(theme);
+        let mut effective = (self.base)(&effective_variants);
 
         // Per-axis variants.
         for (axis, def) in &self.variants {
             if let Some(value) = effective_variants.0.get(axis) {
                 if let Some(f) = def.values.get(value) {
-                    effective = effective.merge(&f(theme));
+                    effective = effective.merge(&f(&effective_variants));
                 }
             }
         }
@@ -1238,7 +1253,7 @@ impl StyleSheet {
                 .iter()
                 .all(|(axis, val)| effective_variants.0.get(axis) == Some(val));
             if matches {
-                effective = effective.merge(&(c.rules)(theme));
+                effective = effective.merge(&(c.rules)(&effective_variants));
             }
         }
 
@@ -1273,9 +1288,6 @@ impl StyleSheet {
     }
 }
 
-/// Wraps an `Fn(&Theme) -> StyleRules` in the `Fn(&dyn Any) -> StyleRules`
-/// shape we store inside `StyleSheet`. The downcast happens once per
-/// call at the closure boundary — not per property.
 /// Map a variant axis name to its `StateBits` flag, or `None` if
 /// the axis isn't a state overlay. The stylesheet macro emits state
 /// axes namespaced as `__state_<name>` so they don't collide with
@@ -1288,15 +1300,6 @@ fn state_axis_bit(axis: &str) -> Option<crate::StateBits> {
         "__state_disabled" => Some(crate::StateBits::DISABLED),
         _ => None,
     }
-}
-
-fn wrap_theme_fn<Theme: Any + 'static, F: Fn(&Theme) -> StyleRules + 'static>(f: F) -> RulesFn {
-    Box::new(move |any: &dyn Any| {
-        let theme = any
-            .downcast_ref::<Theme>()
-            .expect("theme type mismatch — stylesheet expected a different theme type");
-        f(theme)
-    })
 }
 
 // ----------------------------------------------------------------------------
@@ -1501,28 +1504,8 @@ impl StyleApplication {
 }
 
 // ----------------------------------------------------------------------------
-// ThemeTokens — opt-in declaration of named token values
+// TokenEntry / TokenValue — runtime values for `Tokenized<T>` references
 // ----------------------------------------------------------------------------
-
-/// A theme that exposes its tokens by name and concrete value. Backends
-/// that support a runtime variable system (web's CSS custom properties)
-/// install these once at theme boot and update them on theme swap; the
-/// theme swap then becomes one write per token, no class regeneration,
-/// no per-element style mutation.
-///
-/// Backends without a variable layer (iOS, Android) ignore this — they
-/// read `Tokenized::value()` at apply time and behave as if the literal
-/// were set.
-///
-/// # Implementing
-///
-/// The theme struct holds whatever fields it likes; `tokens()` returns
-/// the `(name, value)` pairs that should be installed as runtime
-/// variables. The names should match the `name` fields of the
-/// `Tokenized::Token { name, .. }` variants the stylesheets construct.
-pub trait ThemeTokens: Any {
-    fn tokens(&self) -> Vec<TokenEntry>;
-}
 
 /// A single token entry — name plus concrete value. The backend
 /// translates the value to its variable system (e.g. CSS
@@ -1543,80 +1526,70 @@ pub enum TokenValue {
 }
 
 // ----------------------------------------------------------------------------
-// Global active theme & resolution cache
+// Global token state & resolution cache
 // ----------------------------------------------------------------------------
 
 thread_local! {
-    /// The active theme. Wrapped in a `Signal<Rc<dyn Any>>` so effects
-    /// subscribe via the existing reactivity system and re-apply on swap.
-    static ACTIVE_THEME: RefCell<Option<crate::Signal<Rc<dyn Any>>>> = const { RefCell::new(None) };
+    /// Per-token reactive registry. Each token name maps to a
+    /// `Signal<TokenValue>` carrying the current value. `install_tokens`
+    /// creates entries; `update_tokens` calls `.set(..)` on existing
+    /// entries (creating them if missing). `Tokenized::<T>::resolve()`
+    /// reads from here so each styled effect subscribes ONLY to the
+    /// token signals it actually reads — `update_tokens(["a"])` wakes
+    /// nodes that reference `"a"` and leaves the rest alone.
+    ///
+    /// Signals are created lazily-on-first-touch when called from
+    /// outside an `install_tokens` call (e.g. `resolve()` reaches a
+    /// token that hasn't been installed yet). That keeps subscriptions
+    /// consistent across install order — the same `Signal` exists
+    /// whether install happens before or after the first resolve.
+    static TOKEN_REGISTRY: RefCell<HashMap<&'static str, crate::Signal<TokenValue>>> =
+        RefCell::new(HashMap::new());
 
-    /// Memoization: `(stylesheet pointer, variants, theme pointer,
-    /// override content)` → `Rc<StyleRules>`. Strong refs are held by
-    /// `REGISTRATIONS` for pre-generated styles, and transiently by the
-    /// caller of `resolve(...)` for dynamic ones.
+    /// Memoization: `(stylesheet pointer, variants, override content)`
+    /// → `Rc<StyleRules>`. Strong refs are held by `REGISTRATIONS`
+    /// for pre-generated styles, and transiently by the caller of
+    /// `resolve(...)` for dynamic ones.
     ///
-    /// **Theme stays in the key** so mobile backends (which read
-    /// `Tokenized::value()` literal-or-fallback) re-resolve on swap and
-    /// see the new theme's fallbacks. Web doesn't care — it emits
-    /// `var(--name, fallback)` and the variable layer handles the
-    /// visual change.
-    ///
-    /// **What makes theme swap cheap**: the backend's content-keyed
-    /// stylesheet cache (`PregenEntry { refcount, .. }` on web)
-    /// deduplicates by the rule's `content_key()`. Tokenized fields
-    /// hash by token name (theme-independent), so the same `(sheet,
-    /// variants)` produces the same key under any theme. Theme swap
-    /// re-registers but the dedup turns it into a refcount bump, no
-    /// rule emission, no class regeneration, no `className` mutation
-    /// on any node.
-    ///
-    /// Cleared on theme change (entries reference the old theme
-    /// pointer and would never be reused).
+    /// Tokenized fields hash by token name (token-stable), so the same
+    /// `(sheet, variants)` produces the same key regardless of which
+    /// token values are currently installed. Token updates don't
+    /// invalidate this cache — they update the backend's variable
+    /// layer (web) and re-fire styled effects (mobile) so the cached
+    /// rules are re-applied with the new fallbacks.
     static RESOLUTION_CACHE: RefCell<HashMap<ResolutionKey, Rc<StyleRules>>> =
         RefCell::new(HashMap::new());
 
-    /// Each currently-registered `(stylesheet, theme)` pair, with the
-    /// rules that were pre-generated for it and a `Weak<StyleSheet>`
-    /// used to detect when the stylesheet has been dropped by all
-    /// holders. The framework calls `Backend::register_stylesheet`
-    /// exactly once per pair and tracks the rules so we can later call
+    /// Each currently-registered stylesheet, with the rules that were
+    /// pre-generated for it and a `Weak<StyleSheet>` used to detect
+    /// when the stylesheet has been dropped by all holders. The
+    /// framework calls `Backend::register_stylesheet` exactly once per
+    /// sheet and tracks the rules so we can later call
     /// `unregister_stylesheet` to free backend-side state.
     static REGISTRATIONS: RefCell<HashMap<RegKey, Registration>> =
         RefCell::new(HashMap::new());
 
-    /// Rule sets queued for `unregister_stylesheet` calls. Populated by
-    /// `set_theme` (moves all current registrations here) and by the
-    /// sweep-dead-stylesheets pass (moves dead entries here). Drained
-    /// by `ensure_registered_with`, which has the backend in scope.
+    /// Rule sets queued for `unregister_stylesheet` calls. Populated
+    /// by the sweep-dead-stylesheets pass. Drained by
+    /// `ensure_registered_with`, which has the backend in scope.
     static PENDING_UNREGISTER: RefCell<Vec<Vec<Rc<StyleRules>>>> =
         RefCell::new(Vec::new());
 
-    /// Tokens queued for the next backend interaction. `install_theme`
-    /// and `set_theme` push here; `ensure_registered_with` flushes via
-    /// `Backend::install_theme_variables`. We can't call the backend
-    /// directly from `install_theme` because the backend doesn't exist
-    /// yet at app boot.
-    static PENDING_THEME_TOKENS: RefCell<Option<Vec<TokenEntry>>> =
+    /// Tokens queued for the next backend interaction. `install_tokens`
+    /// pushes here; `ensure_registered_with` flushes via
+    /// `Backend::install_tokens`. We can't call the backend directly
+    /// from `install_tokens` because the backend doesn't exist yet at
+    /// app boot.
+    static PENDING_TOKENS: RefCell<Option<Vec<TokenEntry>>> =
         const { RefCell::new(None) };
 
-    /// Multi-variant theme registrations queued for the next backend
-    /// flush. Populated by `register_theme_variant` and `install_themes`;
-    /// drained by `ensure_registered_with` via
-    /// `Backend::register_theme_variant`. Backends without runtime
-    /// theme-switching (iOS/Android/Web) leave the default no-op;
-    /// generator backends (Roku) capture each variant so the device
-    /// can resolve token references against the active theme.
-    static PENDING_THEME_VARIANTS: RefCell<Vec<(String, Vec<TokenEntry>)>> =
+    /// Token updates queued for the next backend interaction. Each
+    /// `update_tokens` call appends here; `ensure_registered_with`
+    /// drains and dispatches via `Backend::update_tokens`. Unlike
+    /// `PENDING_TOKENS`, updates accumulate — multiple updates in a
+    /// frame all reach the backend.
+    static PENDING_TOKEN_UPDATES: RefCell<Vec<Vec<TokenEntry>>> =
         RefCell::new(Vec::new());
-
-    /// Active-theme signal binding queued for the next backend flush.
-    /// Set by `install_themes`; drained by `ensure_registered_with` via
-    /// `Backend::bind_active_theme_signal`. Carries the signal id whose
-    /// String value names the active theme on the device side, plus
-    /// the initial theme name.
-    static PENDING_ACTIVE_THEME_SIGNAL: RefCell<Option<(u64, String)>> =
-        const { RefCell::new(None) };
 
     /// Typefaces already registered with the backend this session.
     /// Drives the dedup in [`ensure_typefaces_registered_with`]: the
@@ -1630,7 +1603,6 @@ thread_local! {
 #[derive(PartialEq, Eq, Hash, Clone)]
 struct RegKey {
     sheet: *const StyleSheet,
-    theme: *const (),
 }
 
 struct Registration {
@@ -1642,174 +1614,143 @@ struct Registration {
 struct ResolutionKey {
     sheet: *const StyleSheet,
     variants: VariantSet,
-    theme: *const (),
-    /// Overrides are part of the cache key — same sheet + variants +
-    /// theme but different override values yield different rules and
-    /// must be cached separately. Serialized to a content key so we
-    /// have a comparable form.
+    /// Overrides are part of the cache key — same sheet + variants
+    /// but different override values yield different rules and must
+    /// be cached separately. Serialized to a content key so we have a
+    /// comparable form.
     overrides: String,
 }
 
-/// Register a named theme variant for backends that support
-/// runtime theme switching (Roku). The variant's tokens are
-/// queued and flushed to the backend via
-/// `register_theme_variant` on the next `ensure_registered_with`
-/// call. Backends without runtime theme switching (iOS / Android /
-/// Web) ignore the registration — they use the active theme set
-/// via `install_theme` / `set_theme` and re-resolve through
-/// Effects on swap.
+/// Look up the registry signal for `name`, or create one with
+/// `make_initial()` if no entry exists. Returns `None` only if signal
+/// creation panics inside a no-Owner context — but we rely on the
+/// caller's `Owner` to keep slots alive. In practice this always
+/// returns `Some`.
 ///
-/// Authors typically don't call this directly. `install_themes`
-/// is the higher-level wrapper that registers every variant +
-/// binds the active-theme signal in one call.
-pub fn register_theme_variant<T: ThemeTokens + 'static>(name: &str, theme: T) {
-    let tokens = theme.tokens();
-    PENDING_THEME_VARIANTS.with(|p| p.borrow_mut().push((name.to_string(), tokens)));
+/// Used by both `Tokenized::<T>::resolve()` (lazy create on first
+/// touch so subscriptions are consistent regardless of install order)
+/// and by `install_tokens` / `update_tokens` (eager create on install).
+/// Read every currently-registered token signal so the calling
+/// `Effect` subscribes to all of them. Used by the theme-cohort
+/// driver in `walker.rs` to ensure the driver re-fires on *any*
+/// `update_tokens` call — even before any cohort entries have
+/// registered (the driver's first iteration runs against an empty
+/// slab, so it'd otherwise touch no signals and subscribe to
+/// nothing).
+///
+/// Tokens added *after* this call still trigger the driver
+/// indirectly: cohort entries that read them via `Tokenized::resolve()`
+/// subscribe inside their reapply closures, so the driver picks
+/// up the new dependency on its next re-run.
+pub(crate) fn subscribe_to_all_token_signals() {
+    TOKEN_REGISTRY.with(|r| {
+        for sig in r.borrow().values() {
+            let _ = sig.get();
+        }
+    });
 }
 
-/// Install a multi-variant theme system with the active variant
-/// driven by a `Signal<String>`. The signal's current value
-/// names the initial active theme. Backends with a runtime
-/// (iOS / Android / Web) set up an Effect that watches the signal
-/// and calls `set_theme` whenever the name changes. Generator
-/// backends (Roku) capture every variant's tokens at snapshot,
-/// bind the signal id over the wire, and re-resolve token
-/// references on the device when the signal value changes.
-///
-/// Variants must include an entry whose name matches the signal's
-/// initial value; that variant becomes the initially-active theme.
-/// Missing the match panics at install time so misconfiguration
-/// surfaces before any rendering.
-pub fn install_themes<T: ThemeTokens + Clone + 'static>(
-    active: crate::Signal<String>,
-    variants: &[(&'static str, T)],
+fn with_or_create_token_signal<F>(
+    name: &'static str,
+    make_initial: F,
+) -> Option<crate::Signal<TokenValue>>
+where
+    F: FnOnce() -> TokenValue,
+{
+    // Fast path: existing entry. Done in a separate scope so the
+    // borrow is dropped before we possibly mutate below.
+    let existing = TOKEN_REGISTRY.with(|r| r.borrow().get(name).copied());
+    if existing.is_some() {
+        return existing;
+    }
+    // Miss — create. `Signal::new` registers with the active `Owner`,
+    // so the slot's lifetime is tied to the surrounding scope. Outside
+    // a scope (tests, ad-hoc usage), the slot leaks until the thread
+    // exits, which is consistent with `Signal::new`'s contract.
+    let sig = crate::Signal::new(make_initial());
+    TOKEN_REGISTRY.with(|r| {
+        r.borrow_mut().insert(name, sig);
+    });
+    Some(sig)
+}
+
+/// Debug-only warning when a token's installed `TokenValue` variant
+/// doesn't match the `Tokenized<T>` reading it. Indicates a theme bug
+/// — silently returning the fallback would mask it.
+fn debug_warn_token_type_mismatch(
+    name: &'static str,
+    expected: &str,
+    got: &TokenValue,
 ) {
-    let initial_name = active.get();
-    let initial_theme = variants
-        .iter()
-        .find(|(name, _)| *name == initial_name.as_str())
-        .map(|(_, theme)| theme.clone())
-        .unwrap_or_else(|| {
-            panic!(
-                "install_themes: active signal initial value '{}' has no matching variant; \
-                 variants registered: {:?}",
-                initial_name,
-                variants.iter().map(|(n, _)| *n).collect::<Vec<_>>()
-            )
-        });
-    install_theme(initial_theme);
-    for (name, theme) in variants {
-        register_theme_variant(name, theme.clone());
+    #[cfg(debug_assertions)]
+    {
+        let got_label = match got {
+            TokenValue::Color(_) => "Color",
+            TokenValue::Length(_) => "Length",
+            TokenValue::Number(_) => "Number",
+        };
+        eprintln!(
+            "[framework-core] token '{}' resolved as {} but installed as {} — using fallback",
+            name, expected, got_label
+        );
     }
-    // Queue the active-theme signal binding for the backend to
-    // wire up. Generator backends use this to know which signal
-    // value drives runtime theme switching.
-    PENDING_ACTIVE_THEME_SIGNAL.with(|p| {
-        *p.borrow_mut() = Some((active.id(), initial_name.clone()));
-    });
-    // Effect-driven backends watch the signal here so framework's
-    // standard `set_theme` machinery fires on every change.
-    // Generator backends ignore the closure path (the wire op
-    // handles their side). Materialize the variants list as an
-    // HashMap for runtime lookup inside the Effect.
-    let variants_owned: std::collections::HashMap<String, T> = variants
-        .iter()
-        .map(|(name, theme)| (name.to_string(), theme.clone()))
-        .collect();
-    let last_seen: std::rc::Rc<std::cell::RefCell<String>> =
-        std::rc::Rc::new(std::cell::RefCell::new(initial_name));
-    crate::Effect::new(move || {
-        let name = active.get();
-        if last_seen.borrow().as_str() == name.as_str() {
-            return;
-        }
-        if let Some(theme) = variants_owned.get(&name) {
-            set_theme(theme.clone());
-            *last_seen.borrow_mut() = name;
-        }
-    });
+    let _ = (name, expected, got);
 }
 
-/// Drain every pending theme-variant registration into `f`, which
-/// the walker wraps around the backend's
-/// `register_theme_variant(name, tokens)` call. Called once per
-/// walker pass — variants registered after the drain wait for the
-/// next pass.
-pub fn drain_pending_theme_variants<F>(mut f: F)
-where
-    F: FnMut(&str, &[TokenEntry]),
-{
-    let variants: Vec<(String, Vec<TokenEntry>)> = PENDING_THEME_VARIANTS
-        .with(|p| std::mem::take(&mut *p.borrow_mut()));
-    for (name, tokens) in variants {
-        f(&name, &tokens);
-    }
-}
-
-/// Drain the pending active-theme signal binding into `f`, which
-/// the walker wraps around the backend's
-/// `bind_active_theme_signal(signal_id, initial_name)` call.
-/// Returns `Some((signal_id, initial_name))` exactly once per
-/// `install_themes` call.
-pub fn drain_pending_active_theme_signal<F>(mut f: F)
-where
-    F: FnMut(u64, &str),
-{
-    let pending: Option<(u64, String)> = PENDING_ACTIVE_THEME_SIGNAL
-        .with(|p| p.borrow_mut().take());
-    if let Some((sig, name)) = pending {
-        f(sig, &name);
-    }
-}
-
-/// Install the initial active theme. Call once at app startup before
-/// rendering. The theme's tokens are queued and flushed to the backend
-/// via `install_theme_variables` on the first `ensure_registered_with`
+/// Push the initial token set. Call once at app startup before
+/// rendering. Creates a `Signal<TokenValue>` in the registry for each
+/// token so subsequent `Tokenized::<T>::resolve()` reads can subscribe.
+/// Tokens are also queued and flushed to the backend via
+/// `Backend::install_tokens` on the first `ensure_registered_with`
 /// call (which has the backend in scope).
-pub fn install_theme<Theme: ThemeTokens + 'static>(theme: Theme) {
-    let tokens = theme.tokens();
-    let rc: Rc<dyn Any> = Rc::new(theme);
-    let sig = crate::Signal::new(rc);
-    ACTIVE_THEME.with(|t| *t.borrow_mut() = Some(sig));
-    PENDING_THEME_TOKENS.with(|p| *p.borrow_mut() = Some(tokens));
+pub fn install_tokens(tokens: &[TokenEntry]) {
+    // Seed the per-token registry. If a token name was already
+    // registered (re-install — e.g. tests calling `install_theme`
+    // multiple times), update the existing signal instead of leaking
+    // a fresh slot.
+    for entry in tokens {
+        let installed = TOKEN_REGISTRY.with(|r| r.borrow().get(entry.name).copied());
+        match installed {
+            Some(sig) => sig.set(entry.value.clone()),
+            None => {
+                let _ = with_or_create_token_signal(entry.name, || entry.value.clone());
+            }
+        }
+    }
+    let owned: Vec<TokenEntry> = tokens.to_vec();
+    PENDING_TOKENS.with(|p| *p.borrow_mut() = Some(owned));
 }
 
-/// Swap the active theme. Push the new theme's tokens to the backend
-/// (via the pending-token queue, drained on the next
-/// `ensure_registered_with`), wipe the resolution cache so resolves
-/// produce fresh `Rc<StyleRules>` against the new theme, and re-fire
-/// the active-theme signal so every styled effect re-applies.
+/// Push new token values. For each entry, calls `.set(..)` on the
+/// existing `Signal<TokenValue>` in the registry (creates one if the
+/// caller skipped `install_tokens` for that name — permissive). Only
+/// the signals for the names in `tokens` fire, so styled effects that
+/// subscribed via `Tokenized::<T>::resolve()` only re-run if they
+/// referenced one of these tokens.
 ///
-/// **What this is NOT doing**: it doesn't queue old registrations for
-/// unregister. The previous theme's `(sheet, theme)` registration
-/// remains live, holding strong refs to its rule set. The new theme
-/// adds a separate registration. On the backend, both registrations'
-/// rules dedupe by `content_key()` — tokenized fields hash by token
-/// name, which is theme-stable, so the same `(sheet, variants)`
-/// produces the same key regardless of theme. The web backend's
-/// refcounted `pregen` map turns the new registration into a refcount
-/// bump rather than a fresh class mint, so **no `className` mutates
-/// on any node** during a swap.
-///
-/// On mobile (where `Tokenized::value()` is read directly), the
-/// resolved `StyleRules` for the new theme carry the new fallback
-/// values, and re-firing the signal causes each styled effect to
-/// re-apply with them.
-pub fn set_theme<Theme: ThemeTokens + 'static>(theme: Theme) {
-    let tokens = theme.tokens();
-    PENDING_THEME_TOKENS.with(|p| *p.borrow_mut() = Some(tokens));
-
-    let rc: Rc<dyn Any> = Rc::new(theme);
-    RESOLUTION_CACHE.with(|c| c.borrow_mut().clear());
-
-    ACTIVE_THEME.with(|t| {
-        if let Some(sig) = t.borrow().as_ref() {
-            sig.set(rc);
-        } else {
-            let new_sig = crate::Signal::new(rc);
-            *t.borrow_mut() = Some(new_sig);
+/// Pushes deltas to the backend on the next `ensure_registered_with`
+/// flush. Also wipes the framework's resolution cache so subsequent
+/// resolves see fresh `Rc<StyleRules>` (token names are stable, so
+/// the cache shape doesn't change — but content keys hash by name so
+/// the wipe is the simplest way to keep cached rules in sync with
+/// fresh fallback values).
+pub fn update_tokens(tokens: &[TokenEntry]) {
+    for entry in tokens {
+        let existing = TOKEN_REGISTRY.with(|r| r.borrow().get(entry.name).copied());
+        match existing {
+            Some(sig) => sig.set(entry.value.clone()),
+            None => {
+                // Permissive: register a fresh signal for tokens that
+                // were updated before being installed.
+                let _ = with_or_create_token_signal(entry.name, || entry.value.clone());
+            }
         }
-    });
+    }
+
+    let owned: Vec<TokenEntry> = tokens.to_vec();
+    PENDING_TOKEN_UPDATES.with(|p| p.borrow_mut().push(owned));
+
+    RESOLUTION_CACHE.with(|c| c.borrow_mut().clear());
 }
 
 /// Ensures the backend has been asked to pre-generate state for this
@@ -1874,17 +1815,19 @@ pub fn ensure_typefaces_registered_with<RA, RT>(
 
 /// - Sweeps registrations whose `Weak<StyleSheet>` no longer upgrades
 ///   into the pending-unregister queue.
-pub fn ensure_registered_with<R, U, I, RA, RT>(
+pub fn ensure_registered_with<R, U, I, UPD, RA, RT>(
     sheet: &Rc<StyleSheet>,
     register: R,
     unregister: U,
     install_tokens: I,
+    update_tokens: UPD,
     register_asset: RA,
     register_typeface: RT,
 ) where
     R: FnOnce(&[Rc<StyleRules>]),
     U: Fn(&[Rc<StyleRules>]),
     I: FnOnce(&[TokenEntry]),
+    UPD: FnMut(&[TokenEntry]),
     RA: FnMut(crate::assets::AssetId, crate::assets::AssetTag, &crate::assets::AssetSource),
     RT: FnMut(
         TypefaceId,
@@ -1896,15 +1839,22 @@ pub fn ensure_registered_with<R, U, I, RA, RT>(
     // Flush pending tokens first — backends that emit `var(--…)` need
     // the variables installed before any rule that references them
     // is parsed, otherwise the initial paint uses the fallback.
-    let pending_tokens = PENDING_THEME_TOKENS.with(|p| p.borrow_mut().take());
+    let pending_tokens = PENDING_TOKENS.with(|p| p.borrow_mut().take());
     if let Some(tokens) = pending_tokens {
         install_tokens(&tokens);
     }
 
-    let theme = active_theme();
+    // Flush any pending token updates. These accumulate across all
+    // `update_tokens` calls between walker passes.
+    let pending_updates: Vec<Vec<TokenEntry>> =
+        PENDING_TOKEN_UPDATES.with(|p| std::mem::take(&mut *p.borrow_mut()));
+    let mut update_tokens = update_tokens;
+    for upd in &pending_updates {
+        update_tokens(upd);
+    }
+
     let sheet_ptr = Rc::as_ptr(sheet);
-    let theme_ptr = Rc::as_ptr(&theme) as *const ();
-    let key = RegKey { sheet: sheet_ptr, theme: theme_ptr };
+    let key = RegKey { sheet: sheet_ptr };
 
     // Sweep dead registrations (Weak no longer upgrades). They go to
     // the pending-unregister queue, and any matching entries in the
@@ -1954,46 +1904,33 @@ pub fn ensure_registered_with<R, U, I, RA, RT>(
         return;
     }
 
-    // Register fresh. We pre-populate the resolution cache with
-    // the pregen Rcs so `resolve()` for a known (sheet, variants,
-    // theme, no-overrides) combination returns the *same Rc
-    // instance* the backend just registered. That lets the backend
-    // short-circuit on `Rc::as_ptr` identity instead of paying for
-    // `content_key()` on every node — the difference between
-    // 60ms+ overhead per 10k rows and ~5ms.
-    let keyed = pregenerate_keyed(sheet, &*theme);
+    // Register fresh. We pre-populate the resolution cache with the
+    // pregen Rcs so `resolve()` for a known (sheet, variants,
+    // no-overrides) combination returns the *same Rc instance* the
+    // backend just registered. That lets the backend short-circuit
+    // on `Rc::as_ptr` identity instead of paying for `content_key()`
+    // on every node.
+    let keyed = pregenerate_keyed(sheet);
     let sheet_ptr = Rc::as_ptr(sheet);
-    // Use the empty string as the "no overrides" marker — matches
-    // what `resolve()` uses when `StyleApplication::has_overrides`
-    // is false. The full `StyleRules::default().content_key()` is
-    // a ~600-byte hex dump of all-empty fields and would only
-    // create cache-key mismatches.
     RESOLUTION_CACHE.with(|c| {
         let mut cache = c.borrow_mut();
         for (variants, rc) in &keyed {
             let cache_key = ResolutionKey {
                 sheet: sheet_ptr,
                 variants: variants.clone(),
-                theme: theme_ptr,
                 overrides: String::new(),
             };
             cache.insert(cache_key, rc.clone());
         }
     });
     // Also populate the per-sheet pointer-keyed cache. This is the
-    // fast path `resolve()` consults first — local map on the
-    // sheet, no global RefCell, no `Rc::as_ptr(&app.sheet)`. The
-    // existing `RESOLUTION_CACHE` insert above is kept so the
-    // overrides-bearing path still benefits from caching.
+    // fast path `resolve()` consults first.
     for (variants, rc) in &keyed {
-        sheet.insert_variant(theme_ptr, variants.clone(), rc.clone());
+        sheet.insert_variant(variants.clone(), rc.clone());
     }
     let rules: Vec<Rc<StyleRules>> = keyed.into_iter().map(|(_, rc)| rc).collect();
     // Register any typefaces (and their per-face assets) the sheet
-    // references before shipping the stylesheet itself — backends
-    // emit `font-family` against a registered family, and the wire
-    // layer needs the asset bytes resident before any
-    // `RegisterStyle`/`ApplyStyle` can flow through.
+    // references before shipping the stylesheet itself.
     ensure_typefaces_registered_with(&rules, register_asset, register_typeface);
     register(&rules);
     REGISTRATIONS.with(|r| {
@@ -2007,19 +1944,8 @@ pub fn ensure_registered_with<R, U, I, RA, RT>(
     });
 }
 
-/// Read the active theme. Subscribes the current effect (if any) to
-/// theme changes — that's how reactive style application works.
-pub fn active_theme() -> Rc<dyn Any> {
-    ACTIVE_THEME.with(|t| {
-        t.borrow()
-            .as_ref()
-            .expect("no theme installed; call install_theme(...) before rendering")
-            .get()
-    })
-}
-
-/// Returns the set of pre-resolvable `StyleRules` for a stylesheet
-/// against a given theme. Includes:
+/// Returns the set of pre-resolvable `StyleRules` for a stylesheet.
+/// Includes:
 /// - The base rules (no variants active).
 /// - One entry per declared (axis, value) — variant overlay layered on
 ///   base.
@@ -2029,41 +1955,28 @@ pub fn active_theme() -> Rc<dyn Any> {
 /// Continuous overrides are NOT pre-generatable and aren't included.
 /// Backends like the web backend use this to mint CSS classes ahead of
 /// time so `apply_style` is a cache hit.
-pub fn pregenerate_for_theme(sheet: &StyleSheet, theme: &dyn Any) -> Vec<Rc<StyleRules>> {
-    pregenerate_keyed(sheet, theme)
+pub fn pregenerate(sheet: &StyleSheet) -> Vec<Rc<StyleRules>> {
+    pregenerate_keyed(sheet)
         .into_iter()
         .map(|(_, rc)| rc)
         .collect()
 }
 
-/// Convenience wrapper around [`pregenerate_for_theme`] that
-/// reads the thread-local active theme via [`active_theme`].
-pub fn pregenerate_for_active_theme(sheet: &StyleSheet) -> Vec<Rc<StyleRules>> {
-    let theme = active_theme();
-    pregenerate_for_theme(sheet, &*theme)
-}
-
-/// Same as `pregenerate_for_theme` but also returns the
-/// `VariantSet` each rule was resolved for. Used by
-/// `ensure_registered_with` to populate the resolution cache so
-/// `resolve()` returns the *same* `Rc<StyleRules>` instances the
-/// backend registered — letting the backend's apply path
-/// short-circuit a `content_key()` recomputation by keying on
-/// `Rc::as_ptr` instead.
-pub(crate) fn pregenerate_keyed(
-    sheet: &StyleSheet,
-    theme: &dyn Any,
-) -> Vec<(VariantSet, Rc<StyleRules>)> {
+/// Same as `pregenerate` but also returns the `VariantSet` each rule
+/// was resolved for. Used by `ensure_registered_with` to populate the
+/// resolution cache so `resolve()` returns the *same* `Rc<StyleRules>`
+/// instances the backend registered.
+pub(crate) fn pregenerate_keyed(sheet: &StyleSheet) -> Vec<(VariantSet, Rc<StyleRules>)> {
     let mut out: Vec<(VariantSet, Rc<StyleRules>)> = Vec::new();
 
     // 1. Base.
     let base_vs = VariantSet::new();
-    out.push((base_vs.clone(), Rc::new(sheet.resolve(&base_vs, theme))));
+    out.push((base_vs.clone(), Rc::new(sheet.resolve(&base_vs))));
 
     // 2. Each (axis, value) — every single-axis variant selection.
     for (axis, value) in sheet.variant_keys() {
         let variants = VariantSet::new().with(axis, value);
-        out.push((variants.clone(), Rc::new(sheet.resolve(&variants, theme))));
+        out.push((variants.clone(), Rc::new(sheet.resolve(&variants))));
     }
 
     // 3. Each compound — the compound's `when` clause defines the
@@ -2073,44 +1986,24 @@ pub(crate) fn pregenerate_keyed(
         for (axis, value) in compound_keys {
             variants.0.insert(axis, value);
         }
-        out.push((variants.clone(), Rc::new(sheet.resolve(&variants, theme))));
+        out.push((variants.clone(), Rc::new(sheet.resolve(&variants))));
     }
 
     out
 }
 
-/// Resolve a style application against the current active theme.
-/// Memoized: same key always returns the same `Rc<StyleRules>`
-/// across calls until the cache is cleared (theme change) or
-/// pruned (stylesheet dropped).
+/// Resolve a style application. Memoized: same key always returns
+/// the same `Rc<StyleRules>` across calls until the cache is wiped
+/// (by [`update_tokens`]) or pruned (stylesheet dropped).
 ///
 /// Cache entries are strong `Rc`s — that's what makes back-to-back
-/// applies of the same style hit the cache. With `Weak`, the
-/// returned `Rc` is the only strong holder; it dies between
-/// successive applies, the cache always misses, and the framework
-/// re-resolves rules from scratch for every styled node.
+/// applies of the same style hit the cache.
 pub fn resolve(app: &StyleApplication) -> Rc<StyleRules> {
-    let theme = active_theme();
-    let theme_ptr = Rc::as_ptr(&theme) as *const ();
-
-    // Fast path: no overrides + pre-registered variants. The most
-    // common shape — a stylesheet-only `View(style = MySheet().axis(value))`
-    // hits this. Lookup is a per-sheet RefCell borrow + one
-    // HashMap probe, no global state touched.
-    //
-    // Skips:
-    //   - `Rc::as_ptr(&app.sheet)` indirection (we already have the sheet)
-    //   - global RESOLUTION_CACHE thread_local + RefCell borrow
-    //   - building a full `ResolutionKey` with an empty-string
-    //     overrides field
-    //
-    // Falls through to the slow path for any app with overrides
-    // or with variant combinations the pregen didn't enumerate
-    // (e.g. ad-hoc multi-axis selections).
+    // Fast path: no overrides + pre-registered variants.
     if !app.has_overrides {
         #[cfg(feature = "debug-stats")]
         let _t_fast = crate::debug::now_micros();
-        if let Some(rc) = app.sheet.lookup_variant(theme_ptr, &app.variants) {
+        if let Some(rc) = app.sheet.lookup_variant(&app.variants) {
             #[cfg(feature = "debug-stats")]
             {
                 crate::debug::record_apply_phase(
@@ -2138,7 +2031,6 @@ pub fn resolve(app: &StyleApplication) -> Rc<StyleRules> {
     let key = ResolutionKey {
         sheet: Rc::as_ptr(&app.sheet),
         variants: app.variants.clone(),
-        theme: theme_ptr,
         overrides: overrides_key,
     };
 
@@ -2152,7 +2044,7 @@ pub fn resolve(app: &StyleApplication) -> Rc<StyleRules> {
     crate::debug::record_style_cache_miss();
 
     // Miss. Resolve fresh and stash a strong Rc.
-    let base_and_variants = app.sheet.resolve(&app.variants, &*theme);
+    let base_and_variants = app.sheet.resolve(&app.variants);
     let final_rules = base_and_variants.merge(&app.overrides);
     let resolved = Rc::new(final_rules);
 
@@ -2277,34 +2169,6 @@ impl<T: Clone + 'static> IntoOverrideSource<T> for crate::Signal<T> {
 mod tests {
     use super::*;
 
-    struct TestTheme {
-        surface: Tokenized<Color>,
-        medium: f32,
-    }
-
-    impl ThemeTokens for TestTheme {
-        fn tokens(&self) -> Vec<TokenEntry> {
-            vec![TokenEntry {
-                name: "surface",
-                value: TokenValue::Color(self.surface.value().clone()),
-            }]
-        }
-    }
-
-    fn light() -> TestTheme {
-        TestTheme {
-            surface: Tokenized::token("surface", Color("#fff".into())),
-            medium: 16.0,
-        }
-    }
-
-    fn dark() -> TestTheme {
-        TestTheme {
-            surface: Tokenized::token("surface", Color("#111".into())),
-            medium: 24.0,
-        }
-    }
-
     /// Helper: assert a `Tokenized<Color>` resolves to a particular
     /// fallback string. Tests express the visible color, not whether
     /// the rule used a token vs literal.
@@ -2317,51 +2181,47 @@ mod tests {
     }
 
     #[test]
-    fn closure_stylesheet_reads_theme() {
-        let sheet = StyleSheet::new(|t: &TestTheme| StyleRules {
-            background: Some(t.surface.clone()),
-            padding_top: Some(Tokenized::Literal(Length::Px(t.medium))),
+    fn closure_stylesheet_emits_rules() {
+        let sheet = StyleSheet::new(|_vs: &VariantSet| StyleRules {
+            background: Some(Tokenized::token("surface", Color("#fff".into()))),
+            padding_top: Some(Tokenized::Literal(Length::Px(16.0))),
             ..Default::default()
         });
-        let l = light();
-        let r = sheet.resolve(&VariantSet::new(), &l);
+        let r = sheet.resolve(&VariantSet::new());
         color_eq(&r.background, "#fff");
         assert_eq!(r.padding_top, Some(Tokenized::Literal(Length::Px(16.0))));
     }
 
     #[test]
-    fn static_stylesheet_ignores_theme() {
+    fn static_stylesheet_returns_fixed_rules() {
         let sheet = StyleSheet::r#static(StyleRules {
             background: Some(Tokenized::Literal(Color("#abc".into()))),
             ..Default::default()
         });
-        let l = light();
-        let r = sheet.resolve(&VariantSet::new(), &l);
+        let r = sheet.resolve(&VariantSet::new());
         color_eq(&r.background, "#abc");
     }
 
     #[test]
     fn variant_overlays_layer_on_top_of_base() {
-        let sheet = StyleSheet::new(|t: &TestTheme| StyleRules {
-            background: Some(t.surface.clone()),
-            padding_top: Some(Tokenized::Literal(Length::Px(t.medium))),
+        let sheet = StyleSheet::new(|_vs: &VariantSet| StyleRules {
+            background: Some(Tokenized::token("surface", Color("#fff".into()))),
+            padding_top: Some(Tokenized::Literal(Length::Px(16.0))),
             ..Default::default()
         })
-        .variant("size", "large", |t: &TestTheme| StyleRules {
-            padding_top: Some(Tokenized::Literal(Length::Px(t.medium * 2.0))),
+        .variant("size", "large", |_vs: &VariantSet| StyleRules {
+            padding_top: Some(Tokenized::Literal(Length::Px(32.0))),
             ..Default::default()
         });
-        let l = light();
-        let r = sheet.resolve(&VariantSet::new().with("size", "large"), &l);
+        let r = sheet.resolve(&VariantSet::new().with("size", "large"));
         color_eq(&r.background, "#fff");
         assert_eq!(r.padding_top, Some(Tokenized::Literal(Length::Px(32.0))));
     }
 
     #[test]
-    fn theme_swap_changes_resolution() {
-        install_theme(light());
-        let sheet = Rc::new(StyleSheet::new(|t: &TestTheme| StyleRules {
-            background: Some(t.surface.clone()),
+    fn update_tokens_clears_resolution_cache() {
+        let sheet = Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules {
+            background: Some(Tokenized::token("surface", Color("#fff".into()))),
             ..Default::default()
         }));
         let app = StyleApplication::new(sheet);
@@ -2369,28 +2229,36 @@ mod tests {
         let r1 = resolve(&app);
         color_eq(&r1.background, "#fff");
 
-        set_theme(dark());
+        // Subsequent resolves hit the cache and return the same Rc.
         let r2 = resolve(&app);
-        color_eq(&r2.background, "#111");
+        assert!(Rc::ptr_eq(&r1, &r2));
+
+        // `update_tokens` wipes the cache; the next resolve produces
+        // a fresh Rc (token names are stable so the content matches).
+        update_tokens(&[TokenEntry {
+            name: "surface",
+            value: TokenValue::Color(Color("#111".into())),
+        }]);
+        let r3 = resolve(&app);
+        assert!(!Rc::ptr_eq(&r1, &r3));
     }
 
     #[test]
     fn overrides_layer_on_top_of_base_and_variants() {
-        install_theme(light());
         let sheet = Rc::new(
-            StyleSheet::new(|t: &TestTheme| StyleRules {
-                background: Some(t.surface.clone()),
+            StyleSheet::new(|_vs: &VariantSet| StyleRules {
+                background: Some(Tokenized::token("surface", Color("#fff".into()))),
                 font_size: Some(Tokenized::Literal(Length::Px(14.0))),
-                padding_top: Some(Tokenized::Literal(Length::Px(t.medium))),
+                padding_top: Some(Tokenized::Literal(Length::Px(16.0))),
                 ..Default::default()
             })
-            .variant("size", "large", |_t: &TestTheme| StyleRules {
+            .variant("size", "large", |_vs: &VariantSet| StyleRules {
                 font_size: Some(Tokenized::Literal(Length::Px(20.0))),
                 ..Default::default()
             }),
         );
 
-        // Base only: background from theme, font 14, padding from theme.
+        // Base only.
         let r1 = resolve(&StyleApplication::new(sheet.clone()));
         assert_eq!(r1.font_size, Some(Tokenized::Literal(Length::Px(14.0))));
 
@@ -2420,58 +2288,56 @@ mod tests {
 
     #[test]
     fn variant_default_applies_when_axis_unselected() {
-        let sheet = StyleSheet::new(|t: &TestTheme| StyleRules {
-            background: Some(t.surface.clone()),
+        let sheet = StyleSheet::new(|_vs: &VariantSet| StyleRules {
             padding_top: Some(Tokenized::Literal(Length::Px(8.0))),
             ..Default::default()
         })
-        .variant("size", "small", |_t: &TestTheme| StyleRules {
+        .variant("size", "small", |_vs: &VariantSet| StyleRules {
             padding_top: Some(Tokenized::Literal(Length::Px(4.0))),
             ..Default::default()
         })
-        .variant("size", "large", |_t: &TestTheme| StyleRules {
+        .variant("size", "large", |_vs: &VariantSet| StyleRules {
             padding_top: Some(Tokenized::Literal(Length::Px(16.0))),
             ..Default::default()
         })
         .variant_default("size", "large");
 
         // Call site omits `size` → default "large" applies → padding 16.
-        let r = sheet.resolve(&VariantSet::new(), &light());
+        let r = sheet.resolve(&VariantSet::new());
         assert_eq!(r.padding_top, Some(Tokenized::Literal(Length::Px(16.0))));
 
         // Call site picks "small" → padding 4.
-        let r2 = sheet.resolve(&VariantSet::new().with("size", "small"), &light());
+        let r2 = sheet.resolve(&VariantSet::new().with("size", "small"));
         assert_eq!(r2.padding_top, Some(Tokenized::Literal(Length::Px(4.0))));
     }
 
     #[test]
     fn compound_variant_applies_only_when_all_match() {
-        let sheet = StyleSheet::new(|_t: &TestTheme| StyleRules::default())
-            .variant("size", "large", |_t: &TestTheme| StyleRules {
+        let sheet = StyleSheet::new(|_vs: &VariantSet| StyleRules::default())
+            .variant("size", "large", |_vs: &VariantSet| StyleRules {
                 padding_top: Some(Tokenized::Literal(Length::Px(16.0))),
                 ..Default::default()
             })
-            .variant("kind", "primary", |_t: &TestTheme| StyleRules {
+            .variant("kind", "primary", |_vs: &VariantSet| StyleRules {
                 background: Some(Tokenized::Literal(Color("primary-bg".into()))),
                 ..Default::default()
             })
-            .compound::<TestTheme, _>(
+            .compound(
                 vec![("size", "large"), ("kind", "primary")],
-                |_t| StyleRules {
+                |_vs: &VariantSet| StyleRules {
                     font_size: Some(Tokenized::Literal(Length::Px(24.0))),
                     ..Default::default()
                 },
             );
 
         // Only size=large → compound NOT applied.
-        let r1 = sheet.resolve(&VariantSet::new().with("size", "large"), &light());
+        let r1 = sheet.resolve(&VariantSet::new().with("size", "large"));
         assert_eq!(r1.padding_top, Some(Tokenized::Literal(Length::Px(16.0))));
         assert_eq!(r1.font_size, None);
 
         // Both axes match → compound APPLIED.
         let r2 = sheet.resolve(
             &VariantSet::new().with("size", "large").with("kind", "primary"),
-            &light(),
         );
         assert_eq!(r2.padding_top, Some(Tokenized::Literal(Length::Px(16.0))));
         color_eq(&r2.background, "primary-bg");
@@ -2480,10 +2346,10 @@ mod tests {
 
     #[test]
     fn variant_keys_lists_every_axis_value() {
-        let sheet = StyleSheet::new(|_t: &TestTheme| StyleRules::default())
-            .variant("size", "small", |_t: &TestTheme| StyleRules::default())
-            .variant("size", "large", |_t: &TestTheme| StyleRules::default())
-            .variant("kind", "primary", |_t: &TestTheme| StyleRules::default());
+        let sheet = StyleSheet::new(|_vs: &VariantSet| StyleRules::default())
+            .variant("size", "small", |_vs: &VariantSet| StyleRules::default())
+            .variant("size", "large", |_vs: &VariantSet| StyleRules::default())
+            .variant("kind", "primary", |_vs: &VariantSet| StyleRules::default());
         let mut keys = sheet.variant_keys();
         keys.sort();
         assert_eq!(
@@ -2498,7 +2364,6 @@ mod tests {
 
     #[test]
     fn resolve_memoizes_same_inputs() {
-        install_theme(light());
         let sheet = Rc::new(StyleSheet::r#static(StyleRules {
             background: Some(Tokenized::Literal(Color("#abc".into()))),
             ..Default::default()
@@ -2509,23 +2374,25 @@ mod tests {
         assert!(Rc::ptr_eq(&r1, &r2));
     }
 
-    /// **The core invariant of the tokenization rework**: two themes
-    /// that bind the same token name to different colors must produce
-    /// rules whose `content_key()` is identical. That's what lets the
-    /// backend's content-keyed dedup turn theme swap into a refcount
-    /// bump rather than a class regeneration.
+    /// **The core invariant of the tokenization rework**: two
+    /// stylesheets producing the same token references must hash to
+    /// the same content key regardless of installed token values.
     #[test]
-    fn tokenized_rules_have_theme_stable_content_keys() {
-        let sheet = StyleSheet::new(|t: &TestTheme| StyleRules {
-            background: Some(t.surface.clone()),
+    fn tokenized_rules_have_token_stable_content_keys() {
+        let sheet_a = StyleSheet::new(|_vs: &VariantSet| StyleRules {
+            background: Some(Tokenized::token("surface", Color("#fff".into()))),
             ..Default::default()
         });
-        let r_light = sheet.resolve(&VariantSet::new(), &light());
-        let r_dark = sheet.resolve(&VariantSet::new(), &dark());
-        assert_eq!(r_light.content_key(), r_dark.content_key());
+        let sheet_b = StyleSheet::new(|_vs: &VariantSet| StyleRules {
+            background: Some(Tokenized::token("surface", Color("#111".into()))),
+            ..Default::default()
+        });
+        let r_a = sheet_a.resolve(&VariantSet::new());
+        let r_b = sheet_b.resolve(&VariantSet::new());
+        assert_eq!(r_a.content_key(), r_b.content_key());
         // Sanity: the *fallbacks* differ so we know the test is real.
-        assert_ne!(r_light.background.as_ref().unwrap().value().0,
-                   r_dark.background.as_ref().unwrap().value().0);
+        assert_ne!(r_a.background.as_ref().unwrap().value().0,
+                   r_b.background.as_ref().unwrap().value().0);
     }
 
     /// Literal values should NOT collide with token references that
@@ -2542,6 +2409,203 @@ mod tests {
             ..Default::default()
         };
         assert_ne!(lit_rules.content_key(), tok_rules.content_key());
+    }
+
+    // -----------------------------------------------------------------
+    // Per-token reactivity (TOKEN_REGISTRY / Tokenized::resolve)
+    // -----------------------------------------------------------------
+    //
+    // Tests use globally-unique token names ("tk_<test>_<token>") to
+    // avoid cross-test contamination from the thread-local registry —
+    // the registry persists across tests on the same thread because
+    // it lives outside any `Scope`.
+
+    #[test]
+    fn install_tokens_populates_registry_and_resolve_returns_installed_value() {
+        install_tokens(&[
+            TokenEntry {
+                name: "tk_install_color",
+                value: TokenValue::Color(Color("#123".into())),
+            },
+            TokenEntry {
+                name: "tk_install_len",
+                value: TokenValue::Length(Length::Px(24.0)),
+            },
+            TokenEntry {
+                name: "tk_install_num",
+                value: TokenValue::Number(0.5),
+            },
+        ]);
+
+        let c: Tokenized<Color> = Tokenized::token("tk_install_color", Color("#fff".into()));
+        let l: Tokenized<Length> = Tokenized::token("tk_install_len", Length::Px(0.0));
+        let n: Tokenized<f32> = Tokenized::token("tk_install_num", 0.0);
+        assert_eq!(c.resolve().0, "#123");
+        assert_eq!(l.resolve(), Length::Px(24.0));
+        assert_eq!(n.resolve(), 0.5);
+    }
+
+    #[test]
+    fn resolve_literal_returns_value_and_does_not_touch_registry() {
+        let c: Tokenized<Color> = Tokenized::Literal(Color("#abc".into()));
+        assert_eq!(c.resolve().0, "#abc");
+        let l: Tokenized<Length> = Tokenized::Literal(Length::Px(8.0));
+        assert_eq!(l.resolve(), Length::Px(8.0));
+        let n: Tokenized<f32> = Tokenized::Literal(7.5);
+        assert_eq!(n.resolve(), 7.5);
+    }
+
+    #[test]
+    fn resolve_uninstalled_token_returns_fallback() {
+        // Token name never installed — resolve still works and lazily
+        // creates a registry entry seeded with the fallback so subsequent
+        // `update_tokens` for the same name can propagate.
+        let c: Tokenized<Color> = Tokenized::token("tk_uninstalled", Color("#fall".into()));
+        assert_eq!(c.resolve().0, "#fall");
+    }
+
+    /// `update_tokens(["a"])` must fire only the signal for `"a"` — the
+    /// signal for `"b"` stays still. This is the per-token isolation
+    /// invariant at the signal layer.
+    #[test]
+    fn update_tokens_fires_only_changed_token_signal() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        install_tokens(&[
+            TokenEntry {
+                name: "tk_isolate_a",
+                value: TokenValue::Color(Color("#a0".into())),
+            },
+            TokenEntry {
+                name: "tk_isolate_b",
+                value: TokenValue::Color(Color("#b0".into())),
+            },
+        ]);
+
+        let a_runs = Rc::new(Cell::new(0u32));
+        let b_runs = Rc::new(Cell::new(0u32));
+        let a_runs_c = a_runs.clone();
+        let b_runs_c = b_runs.clone();
+
+        let tok_a: Tokenized<Color> =
+            Tokenized::token("tk_isolate_a", Color("#fall".into()));
+        let tok_b: Tokenized<Color> =
+            Tokenized::token("tk_isolate_b", Color("#fall".into()));
+
+        let _ea = crate::Effect::new(move || {
+            let _ = tok_a.resolve();
+            a_runs_c.set(a_runs_c.get() + 1);
+        });
+        let _eb = crate::Effect::new(move || {
+            let _ = tok_b.resolve();
+            b_runs_c.set(b_runs_c.get() + 1);
+        });
+        assert_eq!(a_runs.get(), 1, "effect A fired once on install");
+        assert_eq!(b_runs.get(), 1, "effect B fired once on install");
+
+        update_tokens(&[TokenEntry {
+            name: "tk_isolate_a",
+            value: TokenValue::Color(Color("#a1".into())),
+        }]);
+        assert_eq!(a_runs.get(), 2, "effect A re-fires on its token's update");
+        assert_eq!(b_runs.get(), 1, "effect B did NOT re-fire on A's update");
+
+        update_tokens(&[TokenEntry {
+            name: "tk_isolate_b",
+            value: TokenValue::Color(Color("#b1".into())),
+        }]);
+        assert_eq!(a_runs.get(), 2, "effect A unchanged by B's update");
+        assert_eq!(
+            b_runs.get(),
+            2,
+            "effect B re-fires on its token's update"
+        );
+    }
+
+    /// **Load-bearing test for the whole refactor.** A styled-effect-
+    /// like setup: a `Tokenized::resolve()` read inside an Effect
+    /// subscribes that effect to ONLY the specific token signal — so
+    /// an `update_tokens` for a *different* token leaves the effect
+    /// untouched. This is the property that lets a 10k-row scoreboard
+    /// avoid waking nodes that don't reference the changed token.
+    #[test]
+    fn per_token_isolation_in_styled_effect() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        install_tokens(&[
+            TokenEntry {
+                name: "tk_styled_a",
+                value: TokenValue::Color(Color("#aaaaaa".into())),
+            },
+            TokenEntry {
+                name: "tk_styled_b",
+                value: TokenValue::Color(Color("#bbbbbb".into())),
+            },
+        ]);
+
+        // Effect that reads ONLY token A (like a node whose stylesheet
+        // references `tk_styled_a` for background).
+        let runs = Rc::new(Cell::new(0u32));
+        let last_value = Rc::new(Cell::new(String::new()));
+        let runs_c = runs.clone();
+        let last_value_c = last_value.clone();
+        let tok_a: Tokenized<Color> =
+            Tokenized::token("tk_styled_a", Color("#fff".into()));
+        let _e = crate::Effect::new(move || {
+            // Mirror what a backend's apply_style does — resolve the
+            // tokenized property to a concrete value.
+            let resolved = tok_a.resolve();
+            last_value_c.set(resolved.0);
+            runs_c.set(runs_c.get() + 1);
+        });
+        assert_eq!(runs.get(), 1, "initial run on install");
+        assert_eq!(last_value.take(), "#aaaaaa");
+
+        // Update an UNRELATED token (B). Our effect must NOT re-fire.
+        update_tokens(&[TokenEntry {
+            name: "tk_styled_b",
+            value: TokenValue::Color(Color("#b1b1b1".into())),
+        }]);
+        assert_eq!(
+            runs.get(),
+            1,
+            "styled effect reading only tk_styled_a must not wake on tk_styled_b updates"
+        );
+
+        // Update the SUBSCRIBED token (A). Effect re-fires with new value.
+        update_tokens(&[TokenEntry {
+            name: "tk_styled_a",
+            value: TokenValue::Color(Color("#a1a1a1".into())),
+        }]);
+        assert_eq!(runs.get(), 2, "styled effect re-fires on its own token");
+        assert_eq!(last_value.take(), "#a1a1a1");
+    }
+
+    #[test]
+    fn update_tokens_before_install_is_permissive() {
+        // Calling update_tokens for a never-installed name creates
+        // the registry entry — subsequent resolves see the value.
+        update_tokens(&[TokenEntry {
+            name: "tk_permissive",
+            value: TokenValue::Length(Length::Px(99.0)),
+        }]);
+        let t: Tokenized<Length> = Tokenized::token("tk_permissive", Length::Px(0.0));
+        assert_eq!(t.resolve(), Length::Px(99.0));
+    }
+
+    #[test]
+    fn resolve_with_wrong_variant_falls_back() {
+        // Install a token as Length, then read via Tokenized<Color>.
+        // Should return the fallback (and emit a debug eprintln in
+        // debug builds — not asserted to avoid coupling).
+        install_tokens(&[TokenEntry {
+            name: "tk_wrong_variant",
+            value: TokenValue::Length(Length::Px(10.0)),
+        }]);
+        let c: Tokenized<Color> = Tokenized::token("tk_wrong_variant", Color("#fb".into()));
+        assert_eq!(c.resolve().0, "#fb");
     }
 
     // -----------------------------------------------------------------

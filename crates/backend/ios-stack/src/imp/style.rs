@@ -167,7 +167,8 @@ pub(crate) fn apply_style_to_view(view: &UIView, style: &StyleRules) {
     };
     if let Some(bg) = &style.background {
         if !is_metal_view {
-            let c = color_to_uicolor(bg.value());
+            let bg_val = bg.resolve();
+            let c = color_to_uicolor(&bg_val);
             if let Some(trans) = &style.background_transition {
                 let view_ref: Retained<UIView> = unsafe { Retained::retain(view as *const UIView as *mut UIView).unwrap() };
                 let trans = *trans;
@@ -202,13 +203,14 @@ pub(crate) fn apply_style_to_view(view: &UIView, style: &StyleRules) {
             msg_send![view, isKindOfClass: objc2::class!(UIStackView)]
         };
         if is_stack {
-            let px = length_to_px(gap.value());
+            let gap_val = gap.resolve();
+            let px = length_to_px(&gap_val);
             let _: () = unsafe { msg_send![view, setSpacing: px] };
         }
     }
 
     // Opacity
-    if let Some(opacity) = style.opacity.as_ref().map(|t| *t.value()) {
+    if let Some(opacity) = style.opacity.as_ref().map(|t| t.resolve()) {
         if let Some(trans) = &style.opacity_transition {
             let view_ref: Retained<UIView> = unsafe { Retained::retain(view as *const UIView as *mut UIView).unwrap() };
             let trans = *trans;
@@ -228,7 +230,7 @@ pub(crate) fn apply_style_to_view(view: &UIView, style: &StyleRules) {
         style.border_bottom_right_radius.as_ref(),
     ]
     .iter()
-    .filter_map(|r| r.map(|t| length_to_px(t.value())))
+    .filter_map(|r| r.map(|t| length_to_px(&t.resolve())))
     .fold(0.0_f64, f64::max);
     if radius > 0.0 {
         let _: () = unsafe { msg_send![&layer, setCornerRadius: radius] };
@@ -243,7 +245,7 @@ pub(crate) fn apply_style_to_view(view: &UIView, style: &StyleRules) {
         style.border_left_width.as_ref(),
     ]
     .iter()
-    .filter_map(|w| w.map(|t| *t.value()))
+    .filter_map(|w| w.map(|t| t.resolve()))
     .fold(0.0_f32, f32::max);
     if border_w > 0.0 {
         let _: () = unsafe { msg_send![&layer, setBorderWidth: border_w as CGFloat] };
@@ -257,7 +259,8 @@ pub(crate) fn apply_style_to_view(view: &UIView, style: &StyleRules) {
         .or(style.border_bottom_color.as_ref())
         .or(style.border_left_color.as_ref());
     if let Some(bc) = border_color {
-        let c = color_to_uicolor(bc.value());
+        let bc_val = bc.resolve();
+        let c = color_to_uicolor(&bc_val);
         let cg: CGColorRef = unsafe { msg_send![&c, CGColor] };
         if !cg.0.is_null() {
             let _: () = unsafe { msg_send![&layer, setBorderColor: cg] };
@@ -282,10 +285,10 @@ pub(crate) fn apply_style_to_view(view: &UIView, style: &StyleRules) {
     }
 
     // Padding via layoutMargins
-    let pad_top = style.padding_top.as_ref().map(|t| length_to_px(t.value())).unwrap_or(0.0);
-    let pad_left = style.padding_left.as_ref().map(|t| length_to_px(t.value())).unwrap_or(0.0);
-    let pad_bottom = style.padding_bottom.as_ref().map(|t| length_to_px(t.value())).unwrap_or(0.0);
-    let pad_right = style.padding_right.as_ref().map(|t| length_to_px(t.value())).unwrap_or(0.0);
+    let pad_top = style.padding_top.as_ref().map(|t| length_to_px(&t.resolve())).unwrap_or(0.0);
+    let pad_left = style.padding_left.as_ref().map(|t| length_to_px(&t.resolve())).unwrap_or(0.0);
+    let pad_bottom = style.padding_bottom.as_ref().map(|t| length_to_px(&t.resolve())).unwrap_or(0.0);
+    let pad_right = style.padding_right.as_ref().map(|t| length_to_px(&t.resolve())).unwrap_or(0.0);
     if pad_top > 0.0 || pad_left > 0.0 || pad_bottom > 0.0 || pad_right > 0.0 {
         let is_stack: bool = unsafe {
             msg_send![view, isKindOfClass: objc2::class!(UIStackView)]
@@ -327,8 +330,8 @@ pub(crate) fn apply_style_to_view(view: &UIView, style: &StyleRules) {
     // calls, we first check if a matching constraint already exists
     // on the view and update its constant rather than adding a new one.
     if let Some(w) = &style.width {
-        if let Length::Px(px) = w.value() {
-            let px_val = *px as CGFloat;
+        if let Length::Px(px) = w.resolve() {
+            let px_val = px as CGFloat;
             if !update_dimension_constraint(view, true, px_val) {
                 let anchor: Retained<NSObject> = unsafe { msg_send_id![view, widthAnchor] };
                 let c: Retained<NSObject> = unsafe {
@@ -339,8 +342,8 @@ pub(crate) fn apply_style_to_view(view: &UIView, style: &StyleRules) {
         }
     }
     if let Some(h) = &style.height {
-        if let Length::Px(px) = h.value() {
-            let px_val = *px as CGFloat;
+        if let Length::Px(px) = h.resolve() {
+            let px_val = px as CGFloat;
             if !update_dimension_constraint(view, false, px_val) {
                 let anchor: Retained<NSObject> = unsafe { msg_send_id![view, heightAnchor] };
                 let c: Retained<NSObject> = unsafe {
@@ -355,7 +358,8 @@ pub(crate) fn apply_style_to_view(view: &UIView, style: &StyleRules) {
 pub(crate) fn apply_text_style(view: &UIView, style: &StyleRules, is_label: bool) {
     // Text color
     if let Some(color) = &style.color {
-        let c = color_to_uicolor(color.value());
+        let color_val = color.resolve();
+        let c = color_to_uicolor(&color_val);
         if let Some(trans) = &style.color_transition {
             let view_ref: Retained<UIView> = unsafe { Retained::retain(view as *const UIView as *mut UIView).unwrap() };
             let trans = *trans;
@@ -369,7 +373,8 @@ pub(crate) fn apply_text_style(view: &UIView, style: &StyleRules, is_label: bool
 
     // Font size
     if let Some(fs) = &style.font_size {
-        let size = length_to_px(fs.value());
+        let fs_val = fs.resolve();
+        let size = length_to_px(&fs_val);
         if size > 0.0 {
             let weight = style.font_weight.as_ref().copied().unwrap_or(framework_core::FontWeight::Normal);
             let ui_weight = font_weight_to_uikit(weight);

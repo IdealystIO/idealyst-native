@@ -52,7 +52,7 @@ pub fn tag(props: &TagProps) -> Primitive {
     let container_style = {
         let appearance = appearance.clone();
         move || {
-            let _ = framework_core::active_theme()
+            let _ = framework_theme::active_theme()
                 .downcast_ref::<IdeaThemeRef>()
                 .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
             StyleApplication::new(Tag::sheet()).with("appearance", appearance.clone())

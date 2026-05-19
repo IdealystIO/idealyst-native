@@ -1,0 +1,36 @@
+[package]
+name = "port-vue"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Vue → idealyst-native source porter.
+#
+# Vue Single-File Components (`.vue`) split into three blocks:
+# `<template>` (HTML-with-mustaches), `<script setup>`
+# (Composition API reactive setup), and `<style>` (CSS — out of
+# scope for now, lowered to a passthrough hole).
+#
+# The composition API maps reasonably cleanly:
+#
+#   ref(x)              →  signal!(x)
+#   computed(fn)        →  derived signal
+#   watchEffect(fn)     →  Effect::new(move || …)
+#   watch(src, fn)      →  Effect that reads `src` first
+#   .value access       →  .get() / .set()
+#
+# Templates need different work — they're not JSX, so the
+# lowering pass translates `v-if`, `v-for`, `@click`, `:attr`,
+# `{{ expr }}`, etc. into the JsxNode IR before the emitter sees
+# it. The IR itself is framework-agnostic; the porter is.
+
+[lib]
+crate-type = ["rlib"]
+
+[[bin]]
+name = "port-vue"
+path = "src/main.rs"
+
+[dependencies]
+port-core = { path = "../core" }
+port-tsx = { path = "../tsx" }

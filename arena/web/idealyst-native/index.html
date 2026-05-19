@@ -48,6 +48,17 @@
 </style>
 </head>
 <body>
+  <!-- Standalone controls — only render if NOT inside the runner iframe
+       (the runner injects its own chrome). Lets you profile a single
+       toggle from devtools without the instrumentation harness
+       wrapping each measurement. -->
+  <div class="controls" id="standalone-controls" style="display:none">
+    <span class="rows-label">rows</span>
+    <input id="rows-input" class="rows-input" type="number" min="1" max="100000" value="1000" />
+    <button id="apply-rows-btn">Apply</button>
+    <button id="toggle-btn">Toggle theme</button>
+    <span id="stats-readout"></span>
+  </div>
   <!-- #stats kept hidden; instrumentation may write into it. -->
   <span id="stats" style="display: none"></span>
   <div id="app"></div>
@@ -57,17 +68,73 @@
     // Path is relative to this file. wasm-pack with --target=web
     // emits a JS shim alongside the .wasm; importing the shim
     // bootstraps the module.
-    import init, { start, set_rows }
+    import init, { start, set_rows, toggle, row_count, arena_stats_json, debug_take_counters_json }
       from './wasm/pkg/arena_idealyst_native.js';
     import { autoRunIfRequested } from '../instrument.js';
 
+    // Read ?rows=N out of the URL so a power user can deep-link to
+    // a specific test size without retyping it on every reload.
+    const params = new URLSearchParams(window.location.search);
+    const initialRows = Math.max(1, Math.min(100_000, parseInt(params.get('rows') || '1000', 10)));
+
     await init();
-    start(1000);
+    start(initialRows);
 
     // setRows for the runner-iframe path.
     const setRows = async (n) => {
       set_rows(n);
     };
+
+    // Expose framework controls as window globals for manual profiling
+    // from the devtools console. Examples:
+    //
+    //   window.setRows(10000)
+    //   window.toggle()
+    //   window.arenaStats()
+    //
+    window.toggle = toggle;
+    window.setRows = (n) => set_rows(n);
+    window.rowCount = () => row_count();
+    window.arenaStats = () => JSON.parse(arena_stats_json());
+    // Phase counters from framework-core's debug module. Drains and
+    // returns since the last call. Built with `debug-stats` enabled —
+    // see `wasm/Cargo.toml` for how to turn off for clean benchmarks.
+    window.debugCounters = () => JSON.parse(debug_take_counters_json());
+    // Convenience: also expose the batch.js JS-side counters so you can
+    // see {calls, totalOps, lastOps, lastNodes} from the same console.
+    window.batchStats = () => window.__idealystBatchStats;
+
+    // Standalone-only controls. Hidden when:
+    //   - Loaded inside the runner iframe (the runner sets ?suite=...).
+    //   - Loaded inside any iframe at all (belt-and-suspenders — keeps
+    //     the controls from leaking into measurement runs even if the
+    //     runner ever changes how it invokes the variant).
+    const inIframe = window.self !== window.top;
+    if (!inIframe && !params.get('suite')) {
+      const controls = document.getElementById('standalone-controls');
+      const rowsInput = document.getElementById('rows-input');
+      const applyBtn = document.getElementById('apply-rows-btn');
+      const toggleBtn = document.getElementById('toggle-btn');
+      const stats = document.getElementById('stats-readout');
+
+      controls.style.display = 'flex';
+      rowsInput.value = String(initialRows);
+
+      applyBtn.addEventListener('click', () => {
+        const n = Math.max(1, Math.min(100_000, parseInt(rowsInput.value, 10) || 1));
+        set_rows(n);
+        stats.textContent = `rows: ${n}`;
+      });
+
+      toggleBtn.addEventListener('click', () => {
+        const t0 = performance.now();
+        const name = toggle();
+        const t1 = performance.now();
+        stats.textContent = `${name} · sync ${(t1 - t0).toFixed(1)}ms`;
+      });
+
+      stats.textContent = `rows: ${initialRows}`;
+    }
 
     // When the page is loaded inside the runner's iframe with a
     // `?suite=NAME` query param, this auto-runs the suite and posts

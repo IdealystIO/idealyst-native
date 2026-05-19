@@ -82,6 +82,14 @@ pub struct WebBackend {
     /// Held so JS doesn't drop them while the anchor is still in
     /// the layout tree. Same posture as `_click_closures`.
     pub(crate) _link_click_closures: Vec<Closure<dyn FnMut(web_sys::MouseEvent)>>,
+    /// Pointer Events closures installed by
+    /// [`primitives::touch::install`] — one per (node × pointer
+    /// event type) attachment. Type-erased to `JsValue` so the four
+    /// `pointer{down,move,up,cancel}` listeners and any future
+    /// pointer event types share storage. Held so JS doesn't free
+    /// them while the element is still in the layout tree;
+    /// freed wholesale on backend drop.
+    pub(crate) _touch_closures: Vec<wasm_bindgen::JsValue>,
     /// Per-node interaction-event closures. Keyed by node-id so we
     /// can drop them when `on_node_unstyled` fires. Each entry holds
     /// the listeners for one node (pointerenter, pointerleave,
@@ -96,6 +104,16 @@ pub struct WebBackend {
     /// creation injects `runtime/js/virtualizer.js` into a
     /// `<script>` tag in the document head.
     pub(crate) virtualizer_shim_injected: bool,
+    /// Has the local-render batch executor (`runtime/js/batch.js`)
+    /// been injected? First batched `Primitive::Repeat` triggers
+    /// injection, subsequent calls reuse the cached
+    /// `window.__idealystExecuteBatch` function.
+    pub(crate) batch_shim_injected: bool,
+    /// Cached handle to `window.__idealystExecuteBatch` after the
+    /// shim is injected. Avoids a per-batch `Reflect::get` lookup
+    /// off `window` — the function reference is stable for the
+    /// page's lifetime.
+    pub(crate) batch_fn: Option<js_sys::Function>,
     /// Per-virtualizer instance state — keyed by node id so we can
     /// route `virtualizer_data_changed` to the right instance AND
     /// drop its closures on `release_virtualizer`. The wrapped
@@ -261,9 +279,12 @@ impl WebBackend {
             _click_closures: Vec::new(),
             _pressable_key_closures: Vec::new(),
             _link_click_closures: Vec::new(),
+            _touch_closures: Vec::new(),
             state_listeners: HashMap::new(),
             spinner_keyframes_injected: false,
             virtualizer_shim_injected: false,
+            batch_shim_injected: false,
+            batch_fn: None,
             virtualizer_instances: HashMap::new(),
             next_virtualizer_id: 0,
             graphics_instances: HashMap::new(),
@@ -379,6 +400,20 @@ impl Backend for WebBackend {
     fn create_pressable(&mut self, on_click: Rc<dyn Fn()>) -> Self::Node {
         primitives::pressable::create(self, on_click)
     }
+
+    fn install_touch_handler(
+        &mut self,
+        node: &Self::Node,
+        handler: framework_core::TouchHandler,
+    ) {
+        primitives::touch::install(self, node, handler);
+    }
+
+    // `claim_touch` keeps the default no-op. On web, claims happen
+    // inline in the pointer-event listener closure (where we have
+    // the live `PointerEvent` to pass to `setPointerCapture`). The
+    // trait method exists for symmetry with iOS / Android where the
+    // framework dispatches events externally.
 
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
         primitives::view::insert(parent, child)
@@ -755,7 +790,14 @@ impl Backend for WebBackend {
         self.impl_unregister_stylesheet(rules)
     }
 
-    fn install_theme_variables(&mut self, tokens: &[framework_core::TokenEntry]) {
+    fn install_tokens(&mut self, tokens: &[framework_core::TokenEntry]) {
+        self.impl_install_theme_variables(tokens)
+    }
+
+    fn update_tokens(&mut self, tokens: &[framework_core::TokenEntry]) {
+        // Same machinery handles both — the impl detects whether
+        // the :root rule already exists and either inserts or
+        // setProperty's.
         self.impl_install_theme_variables(tokens)
     }
 
@@ -783,6 +825,180 @@ impl Backend for WebBackend {
 
     fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
         self.impl_apply_style(node, style)
+    }
+
+    /// Opt into the walker's batched-Repeat path. When the walker sees
+    /// a `Primitive::Repeat` whose rows are pure View+Text+static-style,
+    /// it builds a [`BackendBatch`] and ships it through
+    /// [`execute_batch`] instead of issuing per-row backend calls.
+    fn supports_batched_repeat(&self) -> bool {
+        true
+    }
+
+    /// Resolve a content-keyed CSS class for a static `StyleRules`.
+    /// Returns the cached class name if the rules were registered
+    /// (the walker calls `register_stylesheet` via
+    /// `style::ensure_registered_with` before invoking this), or
+    /// `None` if no cache hit — the walker then bails out of the
+    /// batch path for this Repeat and the per-call apply route mints
+    /// a dynamic class through `impl_apply_style`.
+    ///
+    /// Returning `None` is the safe fallback. The batch path only
+    /// fires when every row's class can be name-shipped in one FFI
+    /// call; if any row's style isn't pre-minted, falling back to
+    /// per-call is correct.
+    fn mint_style_class(&mut self, style: &Rc<StyleRules>) -> Option<String> {
+        let _t = crate::phase_timer::PhaseTimer::start("mint_style_class");
+
+        // Fast path: pointer-keyed lookup. The framework's resolution
+        // cache returns the same `Rc<StyleRules>` for a given
+        // `(sheet, variants, overrides)`, so a styled cohort of N
+        // homogeneous rows hands us identical Rcs — pointer-eq lookup
+        // skips the per-call `content_key()` hash entirely. `pregen_by_ptr`
+        // is populated alongside `pregen` during
+        // `impl_register_stylesheet`.
+        let ptr = std::rc::Rc::as_ptr(style);
+        if let Some(name) = self.pregen_by_ptr.get(&ptr) {
+            let _t_hit = crate::phase_timer::PhaseTimer::start("mint_style_class_ptr_hit");
+            let r = name.clone();
+            drop(_t_hit);
+            return Some(r);
+        }
+
+        // Slow path: content-keyed lookup. Used when the caller passes
+        // a fresh Rc whose content matches a registered stylesheet but
+        // whose pointer hasn't been seen. Hashes the full StyleRules.
+        let _t_slow = crate::phase_timer::PhaseTimer::start("mint_style_class_content_lookup");
+        let key = style.content_key();
+        let result = self.pregen.get(&key).map(|entry| entry.name.clone());
+        drop(_t_slow);
+
+        let _t2 = crate::phase_timer::PhaseTimer::start(if result.is_some() {
+            "mint_style_class_hit"
+        } else {
+            "mint_style_class_miss"
+        });
+        drop(_t2);
+        result
+    }
+
+    /// Execute a [`BackendBatch`] in one wasm→JS round-trip via the
+    /// `__idealystExecuteBatch` shim. Returns a Vec sized to
+    /// `batch.node_count`, indexed by `local_id`.
+    ///
+    /// First call lazily injects the JS shim (`runtime/js/batch.js`)
+    /// and caches the function handle so subsequent calls skip the
+    /// `Reflect::get` lookup.
+    fn execute_batch(&mut self, batch: framework_core::BackendBatch) -> Vec<Self::Node> {
+        use js_sys::Array;
+        use wasm_bindgen::JsCast;
+        use wasm_bindgen::JsValue;
+
+        let _t_total = crate::phase_timer::PhaseTimer::start("execute_batch_total");
+
+        if batch.node_count == 0 {
+            return Vec::new();
+        }
+
+        // First call: inject the shim and cache the function handle.
+        self.ensure_batch_shim();
+        if self.batch_fn.is_none() {
+            let window = web_sys::window().expect("no window");
+            let f_val = js_sys::Reflect::get(&window, &JsValue::from_str("__idealystExecuteBatch"))
+                .expect("Reflect::get for __idealystExecuteBatch failed");
+            let f = f_val
+                .dyn_into::<js_sys::Function>()
+                .expect("__idealystExecuteBatch is not a Function — shim injection failed");
+            self.batch_fn = Some(f);
+        }
+
+        // Flat-buffer encoding. Each op is exactly 4 u32s:
+        //
+        //   [kind, arg0, arg1, arg2]
+        //
+        //   CreateView         [0, local_id, 0, 0]
+        //   CreateText         [1, local_id, 0, string_idx]
+        //   ApplyStyleStatic   [2, node_id,  0, string_idx]
+        //   Insert             [3, parent,   child, 0]
+        //
+        // String payloads (CreateText content, ApplyStyleStatic class
+        // name) are concatenated with a NUL separator and shipped as
+        // a single `JsValue::from_str` — JS splits once. Our content
+        // strings ("Row #N", CSS class names) never contain NUL.
+        //
+        // Why flat: the previous per-op `js_sys::Array::push` path
+        // crossed the wasm→JS boundary ~3 times per op (about ~12k
+        // crossings for a 4000-op batch). Flat shipping is **two**
+        // input FFI calls regardless of op count: one `Uint32Array`
+        // copy + one big-string transfer. The shim does all decoding
+        // inside the JS function call.
+        let _t_encode = crate::phase_timer::PhaseTimer::start("execute_batch_encode");
+        let mut u32s: Vec<u32> = Vec::with_capacity(batch.ops.len() * 4);
+        // Rough upper bound: ~16 chars per string × one string per
+        // op. Over-allocates by ~2x for the rebuild workload, which
+        // is cheap relative to per-byte realloc costs.
+        let mut strings: String = String::with_capacity(batch.ops.len() * 16);
+        let mut string_count: u32 = 0;
+        for op in batch.ops.iter() {
+            match op {
+                framework_core::BatchOp::CreateView { local_id } => {
+                    u32s.extend_from_slice(&[0, *local_id, 0, 0]);
+                }
+                framework_core::BatchOp::CreateText { local_id, content } => {
+                    if string_count > 0 {
+                        strings.push('\0');
+                    }
+                    strings.push_str(content);
+                    u32s.extend_from_slice(&[1, *local_id, 0, string_count]);
+                    string_count += 1;
+                }
+                framework_core::BatchOp::ApplyStyleStatic {
+                    node,
+                    class_name,
+                    rules: _,
+                } => {
+                    if string_count > 0 {
+                        strings.push('\0');
+                    }
+                    strings.push_str(class_name);
+                    u32s.extend_from_slice(&[2, *node, 0, string_count]);
+                    string_count += 1;
+                }
+                framework_core::BatchOp::Insert { parent, child } => {
+                    u32s.extend_from_slice(&[3, *parent, *child, 0]);
+                }
+            }
+        }
+        // Single FFI: copies the u32 slice's bytes into a fresh JS
+        // `Uint32Array` via the wasm memory view. The whole buffer
+        // moves in one operation regardless of op count.
+        let u32_buf = js_sys::Uint32Array::from(&u32s[..]);
+        // Single FFI: transfers the concatenated string buffer.
+        let strings_buf = JsValue::from_str(&strings);
+        drop(_t_encode);
+
+        let _t_ffi = crate::phase_timer::PhaseTimer::start("execute_batch_ffi_call");
+        let f = self.batch_fn.as_ref().expect("batch_fn set above");
+        let node_count_val = JsValue::from(batch.node_count);
+        let result = f
+            .call3(&JsValue::NULL, &u32_buf, &strings_buf, &node_count_val)
+            .expect("__idealystExecuteBatch call failed");
+        drop(_t_ffi);
+
+        let _t_decode = crate::phase_timer::PhaseTimer::start("execute_batch_decode");
+        let nodes_array = result
+            .dyn_into::<Array>()
+            .expect("__idealystExecuteBatch must return an Array");
+
+        let mut nodes = Vec::with_capacity(batch.node_count as usize);
+        for i in 0..batch.node_count {
+            let val = nodes_array.get(i);
+            let node = val
+                .dyn_into::<web_sys::Node>()
+                .expect("execute_batch return-array entry must be a Node");
+            nodes.push(node);
+        }
+        nodes
     }
 
     /// Web handles interaction states via CSS pseudo-classes

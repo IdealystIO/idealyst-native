@@ -7,9 +7,9 @@
 //! so we don't have to round-trip through Taffy on every frame.
 
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
-use framework_core::{StateBits, StyleRules};
+use framework_core::{StateBits, StyleRules, TouchHandler};
 use native_layout::LayoutNode;
 
 use crate::style_convert::RenderStyle;
@@ -153,8 +153,78 @@ pub const ACTIVITY_INDICATOR_LARGE_SIZE: f32 = 36.0;
 /// UIKit medium-size spinner — 12 ticks ≈ 1 Hz.
 pub const ACTIVITY_INDICATOR_SPIN_PERIOD_SEC: f32 = 1.0;
 
+/// Default intrinsic size for an unstyled `Image` — gives the
+/// placeholder visible bulk before a real texture pipeline lands.
+pub const IMAGE_DEFAULT_SIZE: f32 = 96.0;
+/// Default square size for an unstyled `Icon`. Authors usually
+/// constrain it via styles; this is what an unstyled icon looks
+/// like.
+pub const ICON_DEFAULT_SIZE: f32 = 24.0;
+/// Height of a tab navigator's tab bar (the strip along the
+/// bottom of a tabs screen). Matches the iOS UITabBar default.
+pub const TAB_BAR_HEIGHT: f32 = 49.0;
+/// Height of a navigator's header bar.
+pub const NAV_HEADER_HEIGHT: f32 = 44.0;
+/// Width of the drawer sidebar when fully open, as a fraction of
+/// the viewport width. iOS UIKit drawers use ~80%.
+pub const DRAWER_WIDTH_RATIO: f32 = 0.78;
+/// Drawer slide-in / slide-out duration in milliseconds.
+pub const DRAWER_ANIM_MS: u32 = 250;
+/// Maximum alpha of the scrim painted behind an open drawer.
+/// Material guidelines call for 32% (`0x52`) under the scrim;
+/// matches both iOS and Android drawer chrome closely.
+pub const DRAWER_SCRIM_MAX_ALPHA: f32 = 0.32;
+/// Default height for an `Unsupported` placeholder so authors
+/// can see the "X not supported" panel without explicit sizing.
+pub const UNSUPPORTED_DEFAULT_HEIGHT: f32 = 80.0;
+
+/// Duration of the visual flash applied to a tapped keyboard
+/// key. Mirrors iOS's brief depress-then-release animation —
+/// long enough to register at typing cadence, short enough to
+/// not overlap consecutive keystrokes.
+pub const KEY_PRESS_FLASH_MS: u32 = 120;
+
 /// Public alias used by the `Backend` impl's associated type.
 pub type WgpuNode = Rc<RefCell<NodeData>>;
+
+/// One mounted route in a tab or drawer navigator. The
+/// dispatcher uses `name` to match `NavCommand::Select`
+/// targets; `scope_id` is the framework scope created when
+/// the route was first mounted, so `release_screen(id)` can
+/// fire on unmount.
+#[derive(Clone, Debug)]
+pub struct TabRoute {
+    pub name: &'static str,
+    pub scope_id: u64,
+}
+
+/// In-flight push/pop animation on a stack navigator. The
+/// dispatcher seeds this when a Push or Pop command fires; the
+/// renderer samples it each frame to translate the top two
+/// screens; the host's tick advances it (and, on completion of
+/// a Pop, fires the deferred `release_screen` + `drop_subtree`
+/// that the synchronous Pop deferred so the popping subtree
+/// could stay on-screen during the slide).
+pub struct NavTransition {
+    pub kind: NavTransitionKind,
+    pub start: web_time::Instant,
+}
+
+pub enum NavTransitionKind {
+    /// New screen sliding in from the right. The screen is
+    /// already mounted as the navigator's last child; the
+    /// renderer translates it by `(1 - progress) * width`.
+    Push,
+    /// Top screen sliding out to the right. Still mounted as
+    /// the navigator's last child for the duration of the
+    /// animation; the under-screen (the new top after pop) is
+    /// the second-to-last child. On completion the popping
+    /// node is dropped + its scope released.
+    Pop {
+        popping_scope_id: u64,
+        release_screen: Rc<dyn Fn(u64)>,
+    },
+}
 
 /// Per-node kind discriminant + payload.
 pub enum NodeKind {
@@ -218,6 +288,195 @@ pub enum NodeKind {
         size: framework_core::primitives::activity_indicator::ActivityIndicatorSize,
         color: Option<[f32; 4]>,
     },
+    /// Navigable link — text + on-activate callback. Same
+    /// interaction shape as a Pressable; held as its own kind
+    /// so future enhancements (URL preview, etc.) can branch.
+    Link {
+        on_activate: Rc<dyn Fn()>,
+    },
+    /// Bitmap image. The simulator renders a placeholder rect
+    /// with the alt text — a real texture pipeline is future
+    /// work. `src` and `alt` are kept so that placeholder can
+    /// surface what would have been loaded.
+    Image {
+        src: String,
+        alt: Option<String>,
+    },
+    /// Vector icon. Rendered as a small placeholder square
+    /// stamped with the icon's color until path/SDF rendering
+    /// lands. `color` defaults to `style.color` if unset.
+    Icon {
+        /// SVG path `d` strings. Lucide's icons are stroke-only;
+        /// the renderer parses each path into line segments and
+        /// strokes them with capsule rects.
+        paths: &'static [&'static str],
+        /// viewBox `(width, height)` in design units. Path
+        /// coords are in this space; the renderer scales them
+        /// onto the icon's actual screen rect.
+        view_box: (u16, u16),
+        /// Author-set tint. `None` falls back to the node's
+        /// text color so an icon inside a colored label gets
+        /// the same hue.
+        color: Option<[f32; 4]>,
+        /// Stroke-reveal progress in `[0.0, 1.0]`. The renderer
+        /// paints strokes whose accumulated length is below
+        /// `progress * total_path_length`; segments past the
+        /// threshold are skipped, with the boundary segment
+        /// painted partially. Driven by `update_icon_stroke` /
+        /// `animate_icon_stroke`. Default 1.0 = fully drawn.
+        stroke_progress: std::cell::Cell<f32>,
+    },
+    /// Top-level overlay. The renderer hoists Overlay subtrees
+    /// to a top z-layer after the main walk so they paint above
+    /// regular content. `backdrop` controls how the rest of the
+    /// app dims behind it.
+    Overlay {
+        placement: framework_core::primitives::overlay::ViewportPlacement,
+        backdrop: framework_core::primitives::overlay::BackdropMode,
+        on_dismiss: Option<Rc<dyn Fn()>>,
+    },
+    /// Overlay positioned relative to a trigger element's
+    /// current screen rect.
+    AnchoredOverlay {
+        side: framework_core::primitives::overlay::ElementSide,
+        align: framework_core::primitives::overlay::ElementAlign,
+        offset: f32,
+        backdrop: framework_core::primitives::overlay::BackdropMode,
+        on_dismiss: Option<Rc<dyn Fn()>>,
+        anchor: framework_core::primitives::overlay::AnchorTarget,
+    },
+    /// Virtualizer container. The simulator mounts every item
+    /// eagerly (no actual windowing) — fine for the moderate
+    /// list sizes a smoke preview uses.
+    Virtualizer {
+        horizontal: bool,
+        /// `mount_item(idx) -> (node, scope_id)`. Kept so
+        /// `virtualizer_data_changed` can re-mount items when
+        /// the data signal updates.
+        mount_item: Rc<dyn Fn(usize) -> (WgpuNode, u64)>,
+        /// `release_item(scope_id)`. Called for every removed
+        /// item during the rebuild — drops the framework scope.
+        release_item: Rc<dyn Fn(u64)>,
+        /// `item_count()` — fresh at-call value so rebuilds
+        /// don't see stale snapshots.
+        item_count: Rc<dyn Fn() -> usize>,
+        /// Scope ids for currently-mounted items, in insertion
+        /// order. Parallel to `NodeData.children`.
+        scope_ids: std::cell::RefCell<Vec<u64>>,
+    },
+    /// Stack-based navigator. The renderer paints only the
+    /// last child (top of stack); older screens stay mounted
+    /// for back-navigation but are clipped out of the visible
+    /// area. `scope_ids` records the framework scope id for
+    /// each mounted screen so `release_screen` can be called
+    /// with the right id on pop / replace / reset.
+    /// `control` is the `NavigatorControl` the framework handed
+    /// us at `create_navigator` time, kept so
+    /// `make_navigator_handle` can wire the user-facing
+    /// `NavigatorHandle` to the same control (otherwise calls
+    /// like `handle.push(...)` reach a no-op stub).
+    Navigator {
+        scope_ids: std::cell::RefCell<Vec<u64>>,
+        control: Rc<framework_core::primitives::navigator::NavigatorControl>,
+        /// Current in-flight push/pop animation, or `None` when
+        /// the navigator is at rest. Sampled by the renderer's
+        /// Navigator branch; advanced + cleared by the host's
+        /// `tick_nav_transitions`.
+        transition: std::cell::RefCell<Option<NavTransition>>,
+        /// Animator deciding how a push/pop slides — under +
+        /// top translates, duration, easing. Seeded with the
+        /// crate-wide default ([`crate::nav_anim::default_transition`])
+        /// at create time; future builder API can swap it per
+        /// navigator (slide vs. modal-up vs. fade). The same
+        /// `Rc` is sampled every frame, so cloning is cheap.
+        transition_anim: Rc<dyn crate::nav_anim::ScreenTransition>,
+        /// Navigator-level chrome styles set via
+        /// `.header_style(...)` / `.title_style(...)` /
+        /// `.button_style(...)` on the framework's `Navigator`
+        /// builder. Each screen's own `ScreenOptions` (title
+        /// color, header background, …) merges on top. The
+        /// renderer reads these every frame so theme swaps
+        /// repaint the header in lockstep with content.
+        header_style: std::cell::RefCell<Option<Rc<framework_core::StyleRules>>>,
+        title_style: std::cell::RefCell<Option<Rc<framework_core::StyleRules>>>,
+        button_style: std::cell::RefCell<Option<Rc<framework_core::StyleRules>>>,
+        /// Style for the body area below the header — shows
+        /// through any transparent regions in the active
+        /// screen's content. Currently stored but unread by the
+        /// renderer (screens paint full-bleed by default); kept
+        /// so the framework's `.body_style(...)` builder call
+        /// doesn't silently drop the value.
+        body_style: std::cell::RefCell<Option<Rc<framework_core::StyleRules>>>,
+    },
+    /// Tab navigator. The active tab index decides which child
+    /// is painted; non-active tabs stay mounted (or get released
+    /// per mount-policy — that's the framework's call). A
+    /// platform-skinned tab bar is painted at the bottom of the
+    /// navigator's rect. `routes` parallel-tracks each mounted
+    /// tab's route name + scope id so `Select` can find / mount
+    /// the right tab.
+    TabNavigator {
+        active_tab: std::cell::Cell<usize>,
+        tab_count: std::cell::Cell<usize>,
+        routes: std::cell::RefCell<Vec<TabRoute>>,
+        /// The framework's `NavigatorControl` for this tab nav.
+        /// Kept so `make_tab_navigator_handle` can wire the
+        /// user-facing `TabsHandle` to the same control the
+        /// installed dispatcher subscribes to — otherwise
+        /// `handle.select(...)` would dispatch into a no-op
+        /// default handle.
+        control: Rc<framework_core::primitives::navigator::NavigatorControl>,
+        /// Tab-bar chrome styles. `bar_style` is read at paint
+        /// time by the renderer's `paint_tab_bar`; the icon /
+        /// label styles are stored for future use (the wgpu
+        /// sim's tab bar paints abstract dots, not icons +
+        /// labels, so those don't yet have visible effect).
+        bar_style: std::cell::RefCell<Option<Rc<framework_core::StyleRules>>>,
+        icon_style: std::cell::RefCell<Option<Rc<framework_core::StyleRules>>>,
+        label_style: std::cell::RefCell<Option<Rc<framework_core::StyleRules>>>,
+    },
+    /// Drawer navigator. `is_open` controls the slide-in
+    /// state; the renderer animates `sidebar_offset` via the
+    /// host's animator just like the on-screen keyboard.
+    /// `routes` tracks the body screens (one per drawer item)
+    /// the same way `TabNavigator.routes` does.
+    DrawerNavigator {
+        is_open: Rc<std::cell::Cell<bool>>,
+        active_screen: std::cell::Cell<usize>,
+        routes: std::cell::RefCell<Vec<TabRoute>>,
+        /// The sidebar subtree, attached via
+        /// `drawer_navigator_attach_sidebar`. `None` until then.
+        sidebar: std::cell::RefCell<Option<WgpuNode>>,
+        /// `NavigatorControl` for this drawer. Same reason as
+        /// the tab variant: lets `make_drawer_navigator_handle`
+        /// produce a `DrawerHandle` whose `open_drawer()` /
+        /// `toggle_drawer()` calls reach the installed
+        /// dispatcher.
+        control: Rc<framework_core::primitives::navigator::NavigatorControl>,
+        /// Wall-clock at which the most recent open/close edge
+        /// fired. Sampled by the renderer to interpolate the
+        /// sidebar's slide-in / slide-out — the drawer's
+        /// position is `lerp(closed, open, elapsed/duration)`
+        /// where direction comes from `is_open`. `None` means no
+        /// transition currently in flight; sidebar is resting at
+        /// its current `is_open` extreme.
+        anim_started_at: std::cell::Cell<Option<web_time::Instant>>,
+        /// Drawer chrome styles. `scrim_style.background` is
+        /// read at paint time by `paint_drawer_overlay` to
+        /// override the default 32%-black scrim. `sidebar_style`
+        /// is stored for future use (the sidebar is a user-built
+        /// subtree that styles itself; this hook would supply
+        /// an outer wrap around it).
+        scrim_style: std::cell::RefCell<Option<Rc<framework_core::StyleRules>>>,
+        sidebar_style: std::cell::RefCell<Option<Rc<framework_core::StyleRules>>>,
+    },
+    /// Renders a "not supported in this simulator" panel for
+    /// primitives we don't implement (WebView, Video, Graphics).
+    /// Keeps an app that uses them visibly intact instead of
+    /// rendering a 0×0 invisible node.
+    Unsupported {
+        label: &'static str,
+    },
 }
 
 impl std::fmt::Debug for NodeKind {
@@ -242,6 +501,27 @@ impl std::fmt::Debug for NodeKind {
             NodeKind::ActivityIndicator { size, .. } => {
                 write!(f, "ActivityIndicator({size:?})")
             }
+            NodeKind::Link { .. } => f.write_str("Link"),
+            NodeKind::Image { src, .. } => write!(f, "Image({src:?})"),
+            NodeKind::Icon { .. } => f.write_str("Icon"),
+            NodeKind::Overlay { .. } => f.write_str("Overlay"),
+            NodeKind::AnchoredOverlay { .. } => f.write_str("AnchoredOverlay"),
+            NodeKind::Virtualizer { horizontal, .. } => {
+                write!(f, "Virtualizer(horizontal={horizontal})")
+            }
+            NodeKind::Navigator { scope_ids, .. } => {
+                write!(f, "Navigator(depth={})", scope_ids.borrow().len())
+            }
+            NodeKind::TabNavigator { active_tab, tab_count, .. } => write!(
+                f,
+                "TabNavigator(active={}, count={})",
+                active_tab.get(),
+                tab_count.get()
+            ),
+            NodeKind::DrawerNavigator { is_open, .. } => {
+                write!(f, "DrawerNavigator(open={})", is_open.get())
+            }
+            NodeKind::Unsupported { label } => write!(f, "Unsupported({label})"),
         }
     }
 }
@@ -281,6 +561,53 @@ pub struct NodeData {
     /// the framework re-resolves the style and pushes the result
     /// through `apply_style`. Unused state bits are no-ops.
     pub state_setter: Option<Rc<dyn Fn(StateBits, bool)>>,
+    /// Raw touch handler installed by
+    /// [`framework_core::Backend::install_touch_handler`]. Present
+    /// only on nodes whose primitive carries an `on_touch` slot. The
+    /// host's pointer dispatch resolves the responder chain by
+    /// collecting, during hit-test, every ancestor whose
+    /// `touch_handler` is `Some` and invoking them deepest-first
+    /// until one returns `consumed: true`.
+    pub touch_handler: Option<TouchHandler>,
+    /// Set when this node is the root of a screen mounted into a
+    /// `Navigator`. Forces the node to fill its navigator's rect
+    /// regardless of what styles the screen author set on the
+    /// outer view — matches the iOS / Android contract where a
+    /// pushed VC fills the navigation controller's bounds. The
+    /// flag is sticky across `apply_style` re-applies (theme
+    /// swap, reactive style flips) so the fill survives.
+    pub navigator_screen: bool,
+    /// Per-screen header config: title, button slots, header
+    /// background / tint / title color closures. Populated by
+    /// the navigator's attach methods from the framework's
+    /// `MountResult.options`. Stays `None` for non-screen nodes.
+    /// Boxed because `ScreenOptions` contains six `Rc<dyn Fn>`s
+    /// plus several `Option<String>`s — bulky for nodes that
+    /// don't carry one.
+    pub screen_options: Option<Box<framework_core::primitives::navigator::ScreenOptions>>,
+    /// Identifier of the stack `Navigator` this screen belongs
+    /// to. Lets the renderer find the navigator's chrome styles
+    /// (header_style etc.) when painting the screen's header and
+    /// lets the host's pointer dispatch route header-bar taps to
+    /// the right `NavigatorControl` for `pop()` or open-drawer.
+    /// `None` for screens of tab / drawer navigators (header
+    /// chrome of those kinds is owned by the navigator itself,
+    /// not the per-screen options shipped through `attach_initial`).
+    ///
+    /// Held as `Weak` to avoid a parent↔child Rc cycle: the
+    /// navigator's `children` Vec already strongly owns this
+    /// screen, so a strong back-pointer here would keep both
+    /// alive forever — leaking the navigator's per-screen `scopes`
+    /// (and every `StyleHandle` / theme-cohort entry inside them)
+    /// past `release_screen` + `drop_subtree`.
+    pub owning_navigator: Option<Weak<RefCell<NodeData>>>,
+    /// Free-standing Taffy node used as a key into `TextStore`
+    /// for this screen's header title buffer. Allocated when the
+    /// screen has `ScreenOptions.title = Some(_)`. Not a child
+    /// of any Taffy parent — pure handle storage so the renderer
+    /// can fetch the pre-shaped glyph buffer each frame without
+    /// reshaping.
+    pub screen_title_layout: Option<LayoutNode>,
 }
 
 pub fn new_node(kind: NodeKind, layout: LayoutNode) -> WgpuNode {
@@ -288,8 +615,13 @@ pub fn new_node(kind: NodeKind, layout: LayoutNode) -> WgpuNode {
         kind,
         layout,
         children: Vec::new(),
+        navigator_screen: false,
+        screen_options: None,
+        owning_navigator: None,
+        screen_title_layout: None,
         style: None,
         render: RenderStyle::default(),
         state_setter: None,
+        touch_handler: None,
     }))
 }

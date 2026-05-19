@@ -812,7 +812,7 @@ pub(crate) fn apply_header_style(
     let Some(color) = rules.background.as_ref() else {
         return;
     };
-    let css = color.value().0.clone();
+    let css = color.resolve().0;
     with_env(|env| {
         let Ok(jstr) = env.new_string(&css) else { return };
         let helper = match env.find_class("io/idealyst/runtime/RustActionBarHelper") {
@@ -847,7 +847,7 @@ pub(crate) fn apply_title_style(
     let Some(color) = rules.color.as_ref() else {
         return;
     };
-    let css = color.value().0.clone();
+    let css = color.resolve().0;
     with_env(|env| {
         let Ok(jstr) = env.new_string(&css) else { return };
         let helper = match env.find_class("io/idealyst/runtime/RustActionBarHelper") {
@@ -884,7 +884,7 @@ pub(crate) fn apply_body_style(
     let Some(color) = rules.background.as_ref() else {
         return;
     };
-    let css = color.value().0.clone();
+    let css = color.resolve().0;
     with_env(|env| {
         let Ok(jstr) = env.new_string(&css) else { return };
         let helper = match env.find_class("io/idealyst/runtime/RustActionBarHelper") {
@@ -919,7 +919,7 @@ pub(crate) fn apply_button_style(
     let Some(color) = rules.color.as_ref() else {
         return;
     };
-    let css = color.value().0.clone();
+    let css = color.resolve().0;
     with_env(|env| {
         let Ok(jstr) = env.new_string(&css) else { return };
         let helper = match env.find_class("io/idealyst/runtime/RustActionBarHelper") {

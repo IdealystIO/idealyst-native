@@ -174,7 +174,7 @@ pub fn button(props: &ButtonProps) -> Primitive {
     let style = move || {
         // Tickle the theme so the apply-style effect subscribes —
         // theme swaps refresh every button without our help.
-        let _ = framework_core::active_theme()
+        let _ = framework_theme::active_theme()
             .downcast_ref::<IdeaThemeRef>()
             .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
         StyleApplication::new(Button::sheet())

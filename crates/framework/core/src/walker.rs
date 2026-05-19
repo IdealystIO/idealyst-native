@@ -25,6 +25,7 @@
 //! rest is implementation detail.
 
 use crate::backend::{Backend, VirtualizerCallbacks};
+use crate::batch::{BackendBatch, BatchOp};
 use crate::handles::{RefFill, StateBits};
 use crate::primitive::Primitive;
 use crate::primitives;
@@ -147,13 +148,16 @@ fn build_inner<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) 
             }
             n
         }
-        Primitive::View { children, style, ref_fill, safe_area_sides, .. } => {
+        Primitive::View { children, style, ref_fill, safe_area_sides, on_touch, .. } => {
             let n = build_view(backend, children);
             if let Some(s) = style {
                 attach_style(backend, &n, s);
             }
             if !safe_area_sides.is_empty() {
                 attach_safe_area(backend, &n, safe_area_sides);
+            }
+            if let Some(h) = on_touch {
+                backend.borrow_mut().install_touch_handler(&n, h);
             }
             if let Some(RefFill::View(fill)) = ref_fill {
                 let handle = backend.borrow().make_view_handle(&n);
@@ -1414,12 +1418,24 @@ fn insert_children<B: Backend + 'static>(
         let slot = slot_idx as u32;
         match child {
             Primitive::Repeat { count, row_builder } => {
-                // Build every row first, then hand the lot to the
-                // backend for one batched insert. Building eagerly
-                // means each row's own subtree may have done its own
-                // backend FFI calls (createElement etc.) — those
-                // can't be batched further at this layer, but the
-                // *parent insert* is.
+                // Try the batched-Repeat path first: if the backend
+                // opts in AND every row matches the batchable shape
+                // (View+Text+static-style, no other primitives), we
+                // collapse 4N FFI calls into one. On rejection or
+                // backend-side opt-out, fall back to the per-call
+                // path (the original loop).
+                let supports = backend.borrow().supports_batched_repeat();
+                if supports {
+                    if try_build_repeat_batched(backend, parent, slot, count, &*row_builder) {
+                        continue;
+                    }
+                }
+                // Fallback: build every row eagerly, then hand the
+                // lot to the backend for one batched insert.
+                // Building eagerly means each row's own subtree may
+                // have done its own backend FFI calls (createElement
+                // etc.) — those can't be batched further at this
+                // layer, but the *parent insert* is.
                 let mut rows: Vec<B::Node> = Vec::with_capacity(count);
                 for i in 0..count {
                     let row_prim = row_builder(i);
@@ -1450,6 +1466,433 @@ fn insert_children<B: Backend + 'static>(
             }
         }
     }
+}
+
+/// Try the batched-Repeat path for a `Primitive::Repeat` expansion.
+/// Returns `true` if the batch was submitted and the parent inserted;
+/// `false` if any row failed the batchable-shape check, in which case
+/// the caller falls back to the per-call path.
+///
+/// Batchable shape (V1):
+/// - Row is a `Primitive::View` with no `safe_area_sides`, no
+///   `on_touch`, no `ref_fill`, and a `StyleSource::Static` (or no
+///   style at all).
+/// - Row's children are exclusively `Primitive::Text` with a
+///   `TextSource::Static`, no `style`, no `ref_fill`.
+///
+/// Anything else (Button, Image, reactive bindings, state overlays,
+/// nested Views, etc.) returns `false` so the whole Repeat takes the
+/// fallback. This is "all-or-nothing per Repeat" by design — no
+/// mixed batched/per-call within one expansion.
+fn try_build_repeat_batched<B: Backend + 'static>(
+    backend: &Rc<RefCell<B>>,
+    parent: &mut B::Node,
+    slot: u32,
+    count: usize,
+    row_builder: &dyn Fn(usize) -> Primitive,
+) -> bool {
+    // Empty Repeat: nothing to do, no FFI needed. Report success
+    // so the fallback doesn't run.
+    if count == 0 {
+        return true;
+    }
+
+    // Pass 1: build each row's `Primitive`, check shape, resolve
+    // static styles, and queue BatchOps. Each row's reactive setup
+    // (theme cohort, cleanup handle adoption) is captured here too
+    // — we apply it after the batch returns, against the real
+    // nodes.
+    let mut batch = BackendBatch::with_capacity(count * 3, 0);
+    // Per-row style-attachment work, collected as `(view_local_id,
+    // StyleApplication)` pairs. After `execute_batch` returns we
+    // resolve the local ids to real Nodes and hand the whole Vec to
+    // `register_static_cohort_batch` for **bulk** cohort
+    // registration — one slab insert + one guard + one Box, instead
+    // of per-row. This is the dominant cost in mount time for large
+    // N: pre-bulk, per-row registration was ~88 µs each (heap
+    // allocation churn for boxed closures, RAII guards, Rc/Node
+    // clones inside the closures).
+    let mut style_attachments: Vec<(u32, StyleApplication)> = Vec::with_capacity(count);
+    let mut row_top_ids: Vec<u32> = Vec::with_capacity(count);
+
+    let parent_identity = crate::current_identity();
+    let slot_identity = crate::Identity::node(parent_identity, slot, None, None);
+
+    #[cfg(feature = "debug-stats")]
+    let _t_enqueue_loop = crate::debug::now_micros();
+    for i in 0..count {
+        let row_prim = row_builder(i);
+        // Row identity matches the per-call path's identity exactly
+        // so identity-keyed bookkeeping (hot-reload, robot, etc.)
+        // is unchanged.
+        let row_id = crate::Identity::node(slot_identity, i as u32, None, None);
+        // The per-row scope is implicit — the row's effects (none in
+        // the batchable shape) would adopt the active scope set by
+        // `with_current_identity`. We mirror that wrapping for
+        // identity, but the body is just enqueue logic.
+        let queued = crate::with_current_identity(row_id, || {
+            enqueue_primitive(backend, &mut batch, row_prim, &mut style_attachments)
+        });
+        match queued {
+            Some(top_id) => row_top_ids.push(top_id),
+            None => {
+                // Non-batchable shape encountered. Abort.
+                return false;
+            }
+        }
+    }
+    #[cfg(feature = "debug-stats")]
+    crate::debug::record_apply_phase(
+        "batched_repeat_enqueue_loop",
+        crate::debug::now_micros().saturating_sub(_t_enqueue_loop),
+    );
+
+    // Pass 2: submit. One FFI on the web backend.
+    let nodes = backend.borrow_mut().execute_batch(batch);
+    debug_assert_eq!(
+        nodes.len(),
+        row_top_ids
+            .last()
+            .map(|_| nodes.len())
+            .unwrap_or(0),
+        "execute_batch return-vec length must match batch.node_count"
+    );
+
+    // Pass 3: resolve style attachments to real nodes and bulk-register
+    // them with the theme cohort. ONE Box, ONE slab insert, ONE guard
+    // — regardless of N rows. This replaces the previous per-row
+    // `Box<dyn FnOnce>` deferred loop which was ~88 µs/row (the
+    // dominant mount cost at large N).
+    #[cfg(feature = "debug-stats")]
+    let _t_deferred_loop = crate::debug::now_micros();
+    let mut members: Vec<(B::Node, StyleApplication)> =
+        Vec::with_capacity(style_attachments.len());
+    for (local_id, app) in style_attachments {
+        members.push((nodes[local_id as usize].clone(), app));
+    }
+    register_static_cohort_batch(backend, members);
+    #[cfg(feature = "debug-stats")]
+    crate::debug::record_apply_phase(
+        "batched_repeat_deferred_loop",
+        crate::debug::now_micros().saturating_sub(_t_deferred_loop),
+    );
+
+    // Build the rows Vec (top-level row nodes) for `insert_many`.
+    // Cheap — just a Vec of `B::Node` clones.
+    let rows: Vec<B::Node> = row_top_ids
+        .iter()
+        .map(|&top_id| nodes[top_id as usize].clone())
+        .collect();
+
+    // Insert the row tops under the parent. Web backend's
+    // `insert_many` already uses a `DocumentFragment` for the
+    // multi-child case — one more FFI for the parent insertion,
+    // batched. (We could fold this into the batch itself, but
+    // `parent` doesn't have a batch-local id; the parent already
+    // exists in the layout tree at this point.)
+    #[cfg(feature = "debug-stats")]
+    let _t_insert_many = crate::debug::now_micros();
+    backend.borrow_mut().insert_many(parent, rows);
+    #[cfg(feature = "debug-stats")]
+    crate::debug::record_apply_phase(
+        "batched_repeat_insert_many",
+        crate::debug::now_micros().saturating_sub(_t_insert_many),
+    );
+    true
+}
+
+/// Walk a single Primitive subtree and push `BatchOp` entries to
+/// `batch`. Returns the `local_id` of the subtree's top node, or
+/// `None` if the subtree contains any non-batchable shape. On `None`
+/// the caller discards `batch` and `deferred` — no partial batches.
+///
+/// Batchable shapes (V1):
+/// - `Primitive::View` with `style: None | Some(Static)`, no
+///   `safe_area_sides`, no `on_touch`, no `ref_fill`, and children
+///   that are themselves batchable.
+/// - `Primitive::Text` with `source: Static`, no `style`, no
+///   `ref_fill`.
+///
+/// Why so narrow: the rebuild benchmark uses exactly this shape, and
+/// every additional primitive variant we support here requires
+/// thinking about reactive setup, refs, and event handlers — each
+/// of which has its own per-row state to manage. V1 keeps the
+/// payoff (the 80k → 1 FFI collapse) while keeping the
+/// implementation small.
+fn enqueue_primitive<B: Backend + 'static>(
+    backend: &Rc<RefCell<B>>,
+    batch: &mut BackendBatch,
+    prim: Primitive,
+    style_attachments: &mut Vec<(u32, StyleApplication)>,
+) -> Option<u32> {
+    match prim {
+        Primitive::Text {
+            source,
+            style,
+            ref_fill,
+            ..
+        } => {
+            // Reactive bindings, styled text, or refs break out
+            // because they require per-node Effect/scope work the
+            // batch path doesn't model.
+            if ref_fill.is_some() || style.is_some() {
+                return None;
+            }
+            let content = match source {
+                TextSource::Static(s) => s,
+                TextSource::Bound(_) => return None,
+            };
+            let id = batch.next_id();
+            batch.ops.push(BatchOp::CreateText {
+                local_id: id,
+                content,
+            });
+            Some(id)
+        }
+        Primitive::View {
+            children,
+            style,
+            ref_fill,
+            safe_area_sides,
+            on_touch,
+            ..
+        } => {
+            if ref_fill.is_some() || on_touch.is_some() || !safe_area_sides.is_empty() {
+                return None;
+            }
+
+            // For a styled View, resolve & mint the class up front
+            // so the batch can ship a class-name string. Reactive
+            // styles bail out.
+            let mut style_app_for_defer: Option<StyleApplication> = None;
+            let resolved_class: Option<(String, Rc<StyleRules>)> = match style {
+                None => None,
+                Some(StyleSource::Static(app)) => {
+                    // Drive theme/asset/typeface/token registration
+                    // Rust-side immediately. This is the same call
+                    // `apply_one` would make on the per-call path —
+                    // we just defer the *DOM apply* to the batch.
+                    {
+                        let backend_for_register = backend.clone();
+                        let backend_for_unregister = backend.clone();
+                        let backend_for_install_tokens = backend.clone();
+                        let backend_for_update_tokens = backend.clone();
+                        let backend_for_asset = backend.clone();
+                        let backend_for_typeface = backend.clone();
+                        style::ensure_registered_with(
+                            &app.sheet,
+                            |rules| {
+                                backend_for_register
+                                    .borrow_mut()
+                                    .register_stylesheet(rules);
+                            },
+                            |rules| {
+                                backend_for_unregister
+                                    .borrow_mut()
+                                    .unregister_stylesheet(rules);
+                            },
+                            |tokens| {
+                                backend_for_install_tokens
+                                    .borrow_mut()
+                                    .install_tokens(tokens);
+                            },
+                            |tokens| {
+                                backend_for_update_tokens
+                                    .borrow_mut()
+                                    .update_tokens(tokens);
+                            },
+                            |id, kind, source| {
+                                backend_for_asset
+                                    .borrow_mut()
+                                    .register_asset(id, kind, source);
+                            },
+                            |id, family_name, faces, fallback| {
+                                backend_for_typeface
+                                    .borrow_mut()
+                                    .register_typeface(
+                                        id,
+                                        family_name,
+                                        faces,
+                                        fallback,
+                                    );
+                            },
+                        );
+                    }
+                    // State overlays force a fresh dynamic class
+                    // per node, which doesn't lend itself to the
+                    // share-by-pointer batch path. Bail to per-call.
+                    let overlays = resolve_state_overlays(&app);
+                    if !overlays.is_empty() {
+                        return None;
+                    }
+                    let resolved = resolve_style(&app);
+                    let class = backend.borrow_mut().mint_style_class(&resolved)?;
+                    style_app_for_defer = Some(app);
+                    Some((class, resolved))
+                }
+                Some(StyleSource::Reactive(_)) => {
+                    // Reactive styles need per-node Effects — out of
+                    // scope for V1 batching.
+                    return None;
+                }
+            };
+
+            let view_id = batch.next_id();
+            batch.ops.push(BatchOp::CreateView { local_id: view_id });
+
+            // Walk children. Order matters for the visual layout, so
+            // we enqueue Create + Insert pairs in iteration order.
+            for child in children {
+                let child_id = enqueue_primitive(backend, batch, child, style_attachments)?;
+                batch.ops.push(BatchOp::Insert {
+                    parent: view_id,
+                    child: child_id,
+                });
+            }
+
+            if let Some((class_name, rules)) = resolved_class {
+                batch.ops.push(BatchOp::ApplyStyleStatic {
+                    node: view_id,
+                    class_name,
+                    rules,
+                });
+                // Hand off the (view_id, app) pair for bulk
+                // post-batch registration. The walker's
+                // `register_static_cohort_batch` call after
+                // `execute_batch` returns resolves these pairs to
+                // real Nodes and registers them as ONE cohort entry
+                // — replacing the previous per-row
+                // `Box<dyn FnOnce>` path that allocated ~3 boxes per
+                // row × 10k rows and dominated mount time.
+                let app = style_app_for_defer
+                    .expect("style_app_for_defer set together with resolved_class");
+                style_attachments.push((view_id, app));
+            }
+            Some(view_id)
+        }
+        // Everything else is unsupported in V1. Return None so the
+        // walker falls back to the per-call path for the entire
+        // Repeat expansion.
+        _ => None,
+    }
+}
+
+/// Finish the per-row reactive/theme bookkeeping for a static-styled
+/// view that was created via the batch path. Mirrors the second half
+/// of [`attach_style_static`] — registers the node with the global
+/// theme cohort so a `set_theme` re-applies it, and adopts a
+/// cleanup handle into the active scope so the cohort entry frees
+/// on teardown. The batch already did the inline-first-apply work
+/// (via the web backend's `ApplyStyleStatic` op), so we skip the
+/// initial `apply_one` call here.
+fn finish_style_static_after_batch<B: Backend + 'static>(
+    backend: &Rc<RefCell<B>>,
+    node: &B::Node,
+    app: StyleApplication,
+) {
+    install_theme_cohort_driver();
+    let handles_states_natively = backend.borrow().handles_states_natively();
+    let backend_for_cohort = backend.clone();
+    let node_for_cohort = node.clone();
+    let app_for_cohort = Rc::new(app);
+    let cohort_id = theme_cohort_register(Box::new(move || {
+        apply_one(
+            &backend_for_cohort,
+            &node_for_cohort,
+            &app_for_cohort,
+            handles_states_natively,
+        );
+    }));
+    let cleanup_handle = StyleHandle {
+        backend: backend.clone(),
+        node: node.clone(),
+        cohort_id: Some(cohort_id),
+    };
+    let adopted = reactive::adopt_guard_into_active_scope(cleanup_handle);
+    debug_assert!(
+        adopted,
+        "finish_style_static_after_batch called outside an active Scope"
+    );
+}
+
+/// Bulk variant of [`finish_style_static_after_batch`]. Registers a
+/// **single** theme-cohort entry that owns every member of a batched
+/// `Primitive::Repeat`, plus a **single** RAII guard adopted into the
+/// active scope. On theme/token change the cohort entry's re-apply
+/// closure iterates the member Vec and calls [`apply_one`] for each
+/// — semantically identical to per-row registration but with O(1)
+/// heap allocations + slab inserts instead of O(N).
+///
+/// Per-row registration cost ~88 µs (heap alloc for the reapply
+/// closure, heap alloc for the StyleHandle guard, two
+/// `Box<dyn ...>` allocations through wasm-bindgen tracking, slab
+/// inserts). At 10k rows that's ~880 ms of pure Rust-side
+/// bookkeeping. The bulk path skips it.
+///
+/// Members move into the cohort. The shared `Rc<StyleApplication>`s
+/// avoid cloning the (possibly heavy) `StyleApplication` into the
+/// reapply closure.
+fn register_static_cohort_batch<B: Backend + 'static>(
+    backend: &Rc<RefCell<B>>,
+    members: Vec<(B::Node, StyleApplication)>,
+) {
+    if members.is_empty() {
+        return;
+    }
+    install_theme_cohort_driver();
+    let handles_states_natively = backend.borrow().handles_states_natively();
+    let backend_for_cohort = backend.clone();
+
+    // Single Rc-wrapped Vec shared between the cohort entry's
+    // reapply closure and the BulkStyleHandle guard. We do NOT
+    // per-row-wrap each `StyleApplication` in its own Rc — `apply_one`
+    // takes `&StyleApplication` and works fine from `Vec` iteration.
+    // That saves N heap allocations (was: ~88 µs/row even after the
+    // per-row deferred-closure replacement, traced to `Rc::new` calls
+    // + StyleApplication moves; StyleApplication carries a BTreeMap +
+    // StyleRules, several hundred bytes each).
+    let members_rc: Rc<Vec<(B::Node, StyleApplication)>> = Rc::new(members);
+    let members_for_cohort = members_rc.clone();
+    let cohort_id = theme_cohort_register(Box::new(move || {
+        for (node, app) in members_for_cohort.iter() {
+            apply_one(&backend_for_cohort, node, app, handles_states_natively);
+        }
+    }));
+
+    /// Bulk RAII guard for a batched-Repeat's static-style rows. On
+    /// drop: unregister the cohort entry, then invoke
+    /// `on_node_unstyled` for every member. The latter is generally
+    /// a no-op for batched-Repeat rows (they were never given a
+    /// dynamic class), but called for symmetry with the per-row
+    /// path and to keep the invariant that every `mint_style_class`
+    /// hit has a matching unstyle.
+    struct BulkStyleHandle<B: Backend + 'static> {
+        backend: Rc<RefCell<B>>,
+        members: Rc<Vec<(B::Node, StyleApplication)>>,
+        cohort_id: Option<CohortId>,
+    }
+    impl<B: Backend + 'static> Drop for BulkStyleHandle<B> {
+        fn drop(&mut self) {
+            if let Some(id) = self.cohort_id.take() {
+                theme_cohort_unregister(id);
+            }
+            let mut b = self.backend.borrow_mut();
+            for (node, _) in self.members.iter() {
+                b.on_node_unstyled(node);
+            }
+        }
+    }
+
+    let handle = BulkStyleHandle {
+        backend: backend.clone(),
+        members: members_rc,
+        cohort_id: Some(cohort_id),
+    };
+    let adopted = reactive::adopt_guard_into_active_scope(handle);
+    debug_assert!(
+        adopted,
+        "register_static_cohort_batch called outside an active Scope"
+    );
 }
 
 /// RAII wrapper that calls `Backend::on_node_unstyled` when dropped.
@@ -1589,10 +2032,26 @@ fn install_theme_cohort_driver() {
         // Anchor the guard inside the effect closure so it lives
         // exactly as long as the effect.
         let _ = &_guard;
-        // Subscribe to the active theme. We don't use the value
-        // directly — the cohort entries' `reapply` closures each
-        // call `active_theme()` themselves through `resolve_style`.
-        let _ = style::active_theme();
+        // Subscribe to every currently-registered token signal so
+        // a later `update_tokens` call (theme swap) re-fires this
+        // driver Effect even if the slab below is still empty at
+        // first-run time. Without this the first iteration touches
+        // no signals — the cohort is empty before any entry has
+        // registered — and the Effect goes idle forever.
+        //
+        // Subsequent re-runs ALSO touch each entry's tokens via the
+        // resolve calls in `apply_one`, which keeps per-token
+        // subscriptions fresh as the cohort grows.
+        crate::style::subscribe_to_all_token_signals();
+        //
+        // Trade-off: the static cohort path is intentionally
+        // coarser than per-node Effects — all entries reapply when
+        // any of their union-of-tokens changes. The reactive style
+        // path (each node owns its Effect) gets true per-node
+        // isolation. The cohort exists for the 10k-rows scoreboard
+        // memory profile; if you need finer-grained reactivity,
+        // use a reactive style source instead.
+        //
         // Iterate the slab under a single immutable borrow. Skip
         // empty slots. The `reapply` closure does DOM/backend work
         // only — never touches the cohort slab — so the long
@@ -1818,15 +2277,24 @@ fn build_navigator<B: Backend + 'static>(
         let next_id = next_scope_id.clone();
         let screens = screens.clone();
         let backend = backend.clone();
-        let control_for_mount = control.clone();
+        // Hold the control as a Weak — a strong clone here would form a
+        // cycle (control owns the dispatcher closure, the dispatcher
+        // closure captures this `mount` Rc, and `mount` captures the
+        // control). That cycle keeps the control's per-screen `scopes`
+        // alive past `release_screen`/`drop_subtree`, leaving theme
+        // cohort entries pointing at freed Taffy slots.
+        let control_for_mount = Rc::downgrade(&control);
         Rc::new(move |name, params| {
             let entry = screens
                 .get(name)
                 .unwrap_or_else(|| panic!("Navigator: route '{}' is not registered", name));
             let builder = entry.build.clone();
             let mut scope = Box::new(reactive::Scope::new());
+            let control_strong = control_for_mount
+                .upgrade()
+                .expect("mount_screen called after navigator dropped");
             let _ambient_guard =
-                primitives::navigator::AmbientNavGuard::push(control_for_mount.clone());
+                primitives::navigator::AmbientNavGuard::push(control_strong);
             // Screen channel = slot 0 of the navigator; route name as
             // the key so per-route subtrees don't alias.
             let screen_id = crate::Identity::node(
@@ -1899,12 +2367,19 @@ fn build_navigator<B: Backend + 'static>(
     // We update both the control plane (so `handle.depth()` is a
     // cheap probe) and the `nav_state.depth` signal (so reactive
     // layouts re-render). `can_go_back` is derived from depth.
+    //
+    // Weak — same cycle concern as `control_for_mount`: this closure
+    // ends up captured by the backend's dispatcher, which is owned
+    // by the control. A strong clone would close the loop and pin
+    // the navigator forever.
     let depth_changed: Rc<dyn Fn(usize)> = {
-        let control = control.clone();
+        let control = Rc::downgrade(&control);
         let depth_sig = nav_state.depth;
         let back_sig = nav_state.can_go_back;
         Rc::new(move |d| {
-            control.set_depth(d);
+            if let Some(c) = control.upgrade() {
+                c.set_depth(d);
+            }
             depth_sig.set(d);
             back_sig.set(d > 1);
         })
@@ -2106,15 +2581,19 @@ fn build_tab_navigator<B: Backend + 'static>(
         let next_id = next_scope_id.clone();
         let screens = screens.clone();
         let backend = backend.clone();
-        let control_for_mount = control.clone();
+        // Weak — see comment on the stack navigator's `control_for_mount`.
+        let control_for_mount = Rc::downgrade(&control);
         Rc::new(move |name, params| {
             let entry = screens
                 .get(name)
                 .unwrap_or_else(|| panic!("TabNavigator: route '{}' is not registered", name));
             let builder = entry.build.clone();
             let mut scope = Box::new(reactive::Scope::new());
+            let control_strong = control_for_mount
+                .upgrade()
+                .expect("mount_screen called after navigator dropped");
             let _ambient_guard =
-                primitives::navigator::AmbientNavGuard::push(control_for_mount.clone());
+                primitives::navigator::AmbientNavGuard::push(control_strong);
             // Screen channel = slot 0 of the tab navigator; route
             // name as the key so per-tab subtrees stay distinct.
             let screen_id = crate::Identity::node(
@@ -2175,12 +2654,16 @@ fn build_tab_navigator<B: Backend + 'static>(
     };
     control.attach_nav_state(nav_state.clone());
 
+    // Weak — see the stack navigator's `depth_changed` for the
+    // cycle-avoidance rationale.
     let depth_changed: Rc<dyn Fn(usize)> = {
-        let control = control.clone();
+        let control = Rc::downgrade(&control);
         let depth_sig = nav_state.depth;
         let back_sig = nav_state.can_go_back;
         Rc::new(move |d| {
-            control.set_depth(d);
+            if let Some(c) = control.upgrade() {
+                c.set_depth(d);
+            }
             depth_sig.set(d);
             back_sig.set(d > 1);
         })
@@ -2356,7 +2839,8 @@ fn build_drawer_navigator<B: Backend + 'static>(
         let next_id = next_scope_id.clone();
         let screens = screens.clone();
         let backend = backend.clone();
-        let control_for_mount = control.clone();
+        // Weak — see comment on the stack navigator's `control_for_mount`.
+        let control_for_mount = Rc::downgrade(&control);
         let defaults_for_mount = default_options.clone();
         Rc::new(move |name, params| {
             let entry = screens
@@ -2364,8 +2848,11 @@ fn build_drawer_navigator<B: Backend + 'static>(
                 .unwrap_or_else(|| panic!("DrawerNavigator: route '{}' is not registered", name));
             let builder = entry.build.clone();
             let mut scope = Box::new(reactive::Scope::new());
+            let control_strong = control_for_mount
+                .upgrade()
+                .expect("mount_screen called after navigator dropped");
             let _ambient_guard =
-                primitives::navigator::AmbientNavGuard::push(control_for_mount.clone());
+                primitives::navigator::AmbientNavGuard::push(control_strong);
             // Screen channel = slot 0 of the navigator's identity;
             // route name as the key so per-route content gets its
             // own subtree of identities.
@@ -2402,11 +2889,18 @@ fn build_drawer_navigator<B: Backend + 'static>(
             // there. Override is still trivial: pass any
             // `header_left(...)` from the author closure.
             if options.header_left.is_none() {
+                // Capture as Weak — this on_press is reachable from the
+                // drawer's own `scopes` storage (via the screen's options
+                // → header_left), so a strong clone would close the
+                // ownership cycle that `control_for_mount` exists to
+                // avoid.
                 let control = control_for_mount.clone();
                 options.header_left = Some(primitives::navigator::HeaderButton::new(
                     "line.3.horizontal",
                     move || {
-                        control.dispatch(primitives::navigator::NavCommand::ToggleDrawer);
+                        if let Some(c) = control.upgrade() {
+                            c.dispatch(primitives::navigator::NavCommand::ToggleDrawer);
+                        }
                     },
                 ));
             }
@@ -2456,12 +2950,16 @@ fn build_drawer_navigator<B: Backend + 'static>(
     // hamburger icon's open/close visual.
     let is_open = Signal::new(false);
 
+    // Weak — see the stack navigator's `depth_changed` for the
+    // cycle-avoidance rationale.
     let depth_changed: Rc<dyn Fn(usize)> = {
-        let control = control.clone();
+        let control = Rc::downgrade(&control);
         let depth_sig = nav_state.depth;
         let back_sig = nav_state.can_go_back;
         Rc::new(move |d| {
-            control.set_depth(d);
+            if let Some(c) = control.upgrade() {
+                c.set_depth(d);
+            }
             depth_sig.set(d);
             back_sig.set(d > 1);
         })
@@ -2945,7 +3443,8 @@ fn apply_one<B: Backend + 'static>(
     {
         let backend_for_register = backend.clone();
         let backend_for_unregister = backend.clone();
-        let backend_for_tokens = backend.clone();
+        let backend_for_install_tokens = backend.clone();
+        let backend_for_update_tokens = backend.clone();
         let backend_for_asset = backend.clone();
         let backend_for_typeface = backend.clone();
         style::ensure_registered_with(
@@ -2959,9 +3458,14 @@ fn apply_one<B: Backend + 'static>(
                     .unregister_stylesheet(rules);
             },
             |tokens| {
-                backend_for_tokens
+                backend_for_install_tokens
                     .borrow_mut()
-                    .install_theme_variables(tokens);
+                    .install_tokens(tokens);
+            },
+            |tokens| {
+                backend_for_update_tokens
+                    .borrow_mut()
+                    .update_tokens(tokens);
             },
             |id, kind, source| {
                 backend_for_asset.borrow_mut().register_asset(id, kind, source);
@@ -2972,23 +3476,6 @@ fn apply_one<B: Backend + 'static>(
                     .register_typeface(id, family_name, faces, fallback);
             },
         );
-        // Drain any pending multi-variant theme registrations + the
-        // active-theme-signal binding. Idempotent — the drain
-        // helpers take from their queues and leave them empty, so
-        // subsequent stylesheet registrations during the same
-        // walker pass are no-ops.
-        let backend_for_variants = backend.clone();
-        style::drain_pending_theme_variants(|name, tokens| {
-            backend_for_variants
-                .borrow_mut()
-                .register_theme_variant(name, tokens);
-        });
-        let backend_for_active = backend.clone();
-        style::drain_pending_active_theme_signal(|sig, name| {
-            backend_for_active
-                .borrow_mut()
-                .bind_active_theme_signal(sig, name);
-        });
     }
     if handles_states_natively {
         let base = resolve_style(app);
@@ -3088,7 +3575,8 @@ fn attach_style_reactive<B: Backend + 'static>(
 
         let backend_for_register = backend_for_effect.clone();
         let backend_for_unregister = backend_for_effect.clone();
-        let backend_for_tokens = backend_for_effect.clone();
+        let backend_for_install_tokens = backend_for_effect.clone();
+        let backend_for_update_tokens = backend_for_effect.clone();
         let backend_for_asset = backend_for_effect.clone();
         let backend_for_typeface = backend_for_effect.clone();
         style::ensure_registered_with(
@@ -3102,9 +3590,14 @@ fn attach_style_reactive<B: Backend + 'static>(
                     .unregister_stylesheet(rules);
             },
             |tokens| {
-                backend_for_tokens
+                backend_for_install_tokens
                     .borrow_mut()
-                    .install_theme_variables(tokens);
+                    .install_tokens(tokens);
+            },
+            |tokens| {
+                backend_for_update_tokens
+                    .borrow_mut()
+                    .update_tokens(tokens);
             },
             |id, kind, source| {
                 backend_for_asset.borrow_mut().register_asset(id, kind, source);
@@ -3115,18 +3608,6 @@ fn attach_style_reactive<B: Backend + 'static>(
                     .register_typeface(id, family_name, faces, fallback);
             },
         );
-        let backend_for_variants = backend_for_effect.clone();
-        style::drain_pending_theme_variants(|name, tokens| {
-            backend_for_variants
-                .borrow_mut()
-                .register_theme_variant(name, tokens);
-        });
-        let backend_for_active = backend_for_effect.clone();
-        style::drain_pending_active_theme_signal(|sig, name| {
-            backend_for_active
-                .borrow_mut()
-                .bind_active_theme_signal(sig, name);
-        });
 
         if handles_states_natively {
             // Resolve the base (no state axes) and each declared state
@@ -3973,11 +4454,33 @@ fn build_switch<B: Backend + 'static>(
                 }
             }
 
+            // Diagnostic timing for the Switch re-key path. With
+            // `debug-stats` off these calls are no-ops and the optimizer
+            // strips them entirely; with it on they accumulate into
+            // `framework_core::debug` phase counters so the host can
+            // see where rebuild time is going.
+            #[cfg(feature = "debug-stats")]
+            let _t_scope_drop = crate::debug::now_micros();
             *branch_scope_for_microtask.borrow_mut() = None;
+            #[cfg(feature = "debug-stats")]
+            crate::debug::record_apply_phase(
+                "switch_unmount_scope_drop",
+                crate::debug::now_micros().saturating_sub(_t_scope_drop),
+            );
+
+            #[cfg(feature = "debug-stats")]
+            let _t_clear = crate::debug::now_micros();
             backend_for_microtask
                 .borrow_mut()
                 .clear_children(&placeholder_for_microtask);
+            #[cfg(feature = "debug-stats")]
+            crate::debug::record_apply_phase(
+                "switch_unmount_clear_children",
+                crate::debug::now_micros().saturating_sub(_t_clear),
+            );
 
+            #[cfg(feature = "debug-stats")]
+            let _t_build = crate::debug::now_micros();
             let mut new_scope = Box::new(reactive::Scope::new());
             untrack(|| {
                 reactive::with_scope(&mut new_scope, || {
@@ -3985,18 +4488,47 @@ fn build_switch<B: Backend + 'static>(
                     // fall through to default. Empty arms vec
                     // (the typed builder's degenerate shape)
                     // always falls through.
+                    #[cfg(feature = "debug-stats")]
+                    let _t_arm = crate::debug::now_micros();
                     let branch = arms_for_microtask
                         .iter()
                         .find(|(pat, _)| pat == &new_key)
                         .map(|(_, builder)| builder())
                         .unwrap_or_else(|| default_for_microtask());
+                    #[cfg(feature = "debug-stats")]
+                    crate::debug::record_apply_phase(
+                        "switch_branch_arm_builder",
+                        crate::debug::now_micros().saturating_sub(_t_arm),
+                    );
+
+                    #[cfg(feature = "debug-stats")]
+                    let _t_tree = crate::debug::now_micros();
                     let child_node = build(&backend_for_microtask, 0, branch);
+                    #[cfg(feature = "debug-stats")]
+                    crate::debug::record_apply_phase(
+                        "switch_branch_build_tree",
+                        crate::debug::now_micros().saturating_sub(_t_tree),
+                    );
+
+                    #[cfg(feature = "debug-stats")]
+                    let _t_attach = crate::debug::now_micros();
                     let mut placeholder_mut = placeholder_for_microtask.clone();
                     backend_for_microtask
                         .borrow_mut()
                         .insert(&mut placeholder_mut, child_node);
+                    #[cfg(feature = "debug-stats")]
+                    crate::debug::record_apply_phase(
+                        "switch_branch_attach_to_placeholder",
+                        crate::debug::now_micros().saturating_sub(_t_attach),
+                    );
                 });
             });
+            #[cfg(feature = "debug-stats")]
+            crate::debug::record_apply_phase(
+                "switch_mount_build_branch",
+                crate::debug::now_micros().saturating_sub(_t_build),
+            );
+
             *branch_scope_for_microtask.borrow_mut() = Some(new_scope);
             *last_key_for_microtask.borrow_mut() = Some(new_key);
         });

@@ -118,6 +118,18 @@ const RUNTIME_KOTLIN_FILES: &[(&str, &str)] = &[
             "../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustToggleListener.kt"
         ),
     ),
+    (
+        "RustTouchListener.kt",
+        include_str!(
+            "../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustTouchListener.kt"
+        ),
+    ),
+    (
+        "RustScheduledRunnable.kt",
+        include_str!(
+            "../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustScheduledRunnable.kt"
+        ),
+    ),
 ];
 
 /// AndroidX modules the runtime references directly or transitively.

@@ -347,7 +347,8 @@ pub(crate) fn apply_nav_header_style(
 
         if let Some(ref bg) = style.background {
             let _: () = msg_send![&appearance, configureWithOpaqueBackground];
-            let c = color_to_uicolor(bg.value());
+            let bg_val = bg.resolve();
+            let c = color_to_uicolor(&bg_val);
             let _: () = msg_send![&appearance, setBackgroundColor: &*c];
             // Set the navigator's view AND the top VC's view background
             // so the themed color fills behind the nav bar, status bar,
@@ -388,15 +389,16 @@ pub(crate) fn apply_nav_title_style(
             msg_send_id![objc2::class!(NSMutableDictionary), new];
 
         if let Some(ref color) = style.color {
-            let c = color_to_uicolor(color.value());
+            let color_val = color.resolve();
+            let c = color_to_uicolor(&color_val);
             let key: Retained<objc2_foundation::NSObject> =
                 msg_send_id![objc2::class!(NSString), stringWithUTF8String: b"NSColor\0".as_ptr()];
             let _: () = msg_send![&dict, setObject: &*c, forKey: &*key];
         }
 
         let size: CGFloat = style.font_size.as_ref()
-            .map(|t| match t.value() {
-                framework_core::Length::Px(v) => *v as CGFloat,
+            .map(|t| match t.resolve() {
+                framework_core::Length::Px(v) => v as CGFloat,
                 _ => 17.0,
             })
             .unwrap_or(17.0);
@@ -425,7 +427,8 @@ pub(crate) fn apply_nav_button_style(
     unsafe {
         let nav_bar: Retained<objc2_foundation::NSObject> = msg_send_id![controller, navigationBar];
         if let Some(ref color) = style.color {
-            let c = color_to_uicolor(color.value());
+            let color_val = color.resolve();
+            let c = color_to_uicolor(&color_val);
             let _: () = msg_send![&nav_bar, setTintColor: &*c];
         }
     }

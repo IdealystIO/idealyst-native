@@ -17,7 +17,8 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use aas_shell_native::AasShell;
-use framework_core::{install_theme, ThemeTokens, TokenEntry};
+use framework_core::TokenEntry;
+use framework_theme::{install_theme, ThemeTokens};
 use objc2::rc::Retained;
 use objc2_foundation::MainThreadMarker;
 use objc2_ui_kit::UIView;

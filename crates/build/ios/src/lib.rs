@@ -525,6 +525,11 @@ pub unsafe extern "C" fn ios_main(root_view: *mut std::ffi::c_void) {{
     let backend = Rc::new(RefCell::new(backend));
     // Lets navigator dispatch closures re-run layout after pushes/replaces.
     backend_ios::install_global_self(Rc::downgrade(&backend));
+    // NSTimer-backed scheduler so `after_ms` / `schedule_microtask`
+    // delay correctly. Without it `after_ms` fires its callback
+    // synchronously at call time, which breaks long-press
+    // recognizers and any other timer-driven feature.
+    backend_ios::install_scheduler();
 
     let owner = framework_core::render(backend, {lib}::app());
     OWNER.with(|slot| *slot.borrow_mut() = Some(owner));

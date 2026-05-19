@@ -52,6 +52,7 @@ dev-hot-reload = ["dep:dev-client", "backend-web/aas-shell"]
 
 [dependencies]
 framework-core = { workspace = true }
+framework-theme = { workspace = true }
 icons-lucide = { workspace = true }
 bytemuck = { version = "1", features = ["derive"], optional = true }
 

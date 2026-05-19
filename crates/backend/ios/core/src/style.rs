@@ -190,7 +190,12 @@ pub fn apply_style_to_view(view: &UIView, style: &StyleRules) {
     };
     if let Some(bg) = &style.background {
         if !is_metal_view {
-            let c = color_to_uicolor(bg.value());
+            // `.resolve()` reads through the per-token registry and
+            // subscribes the enclosing apply-style Effect to the
+            // referenced token's signal. Token swaps re-fire only the
+            // nodes that referenced the changed token.
+            let bg_val = bg.resolve();
+            let c = color_to_uicolor(&bg_val);
             // Choose between snap, per-component CSS transition, or
             // the global theme-transition default. The
             // `effective_transition` helper handles the precedence:
@@ -223,7 +228,7 @@ pub fn apply_style_to_view(view: &UIView, style: &StyleRules) {
     // native-layout.
 
     // Opacity
-    if let Some(opacity) = style.opacity.as_ref().map(|t| *t.value()) {
+    if let Some(opacity) = style.opacity.as_ref().map(|t| t.resolve()) {
         if let Some(trans) = &style.opacity_transition {
             let view_ref: Retained<UIView> = unsafe { Retained::retain(view as *const UIView as *mut UIView).unwrap() };
             let trans = *trans;
@@ -243,7 +248,7 @@ pub fn apply_style_to_view(view: &UIView, style: &StyleRules) {
         style.border_bottom_right_radius.as_ref(),
     ]
     .iter()
-    .filter_map(|r| r.map(|t| length_to_px(t.value())))
+    .filter_map(|r| r.map(|t| length_to_px(&t.resolve())))
     .fold(0.0_f64, f64::max);
     if radius > 0.0 {
         let _: () = unsafe { msg_send![&layer, setCornerRadius: radius] };
@@ -258,7 +263,7 @@ pub fn apply_style_to_view(view: &UIView, style: &StyleRules) {
         style.border_left_width.as_ref(),
     ]
     .iter()
-    .filter_map(|w| w.map(|t| *t.value()))
+    .filter_map(|w| w.map(|t| t.resolve()))
     .fold(0.0_f32, f32::max);
     if border_w > 0.0 {
         let _: () = unsafe { msg_send![&layer, setBorderWidth: border_w as CGFloat] };
@@ -272,7 +277,8 @@ pub fn apply_style_to_view(view: &UIView, style: &StyleRules) {
         .or(style.border_bottom_color.as_ref())
         .or(style.border_left_color.as_ref());
     if let Some(bc) = border_color {
-        let c = color_to_uicolor(bc.value());
+        let bc_val = bc.resolve();
+        let c = color_to_uicolor(&bc_val);
         let cg: CGColorRef = unsafe { msg_send![&c, CGColor] };
         if !cg.0.is_null() {
             let _: () = unsafe { msg_send![&layer, setBorderColor: cg] };
@@ -323,7 +329,8 @@ pub fn apply_text_style(view: &UIView, style: &StyleRules, is_label: bool) {
     // Text color: same precedence as background (explicit > theme
     // transition default > snap).
     if let Some(color) = &style.color {
-        let c = color_to_uicolor(color.value());
+        let color_val = color.resolve();
+        let c = color_to_uicolor(&color_val);
         match effective_transition(style.color_transition.as_ref()) {
             Some(trans) => {
                 let view_ref: Retained<UIView> = unsafe {
@@ -341,7 +348,8 @@ pub fn apply_text_style(view: &UIView, style: &StyleRules, is_label: bool) {
 
     // Font size
     if let Some(fs) = &style.font_size {
-        let size = length_to_px(fs.value());
+        let fs_val = fs.resolve();
+        let size = length_to_px(&fs_val);
         if size > 0.0 {
             let weight = style.font_weight.as_ref().copied().unwrap_or(framework_core::FontWeight::Normal);
             let ui_weight = font_weight_to_uikit(weight);

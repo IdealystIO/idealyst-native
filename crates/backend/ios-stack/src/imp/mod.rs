@@ -696,7 +696,8 @@ impl Backend for IosBackend {
             IosNode::Label(_) => apply_text_style(view, style, true),
             IosNode::Button(button) => {
                 if let Some(color) = &style.color {
-                    let c = color_to_uicolor(color.value());
+                    let color_val = color.resolve();
+                    let c = color_to_uicolor(&color_val);
                     if let Some(trans) = &style.color_transition {
                         let btn_ref: Retained<UIButton> = button.clone();
                         let trans = *trans;
@@ -708,7 +709,8 @@ impl Backend for IosBackend {
                     }
                 }
                 if let Some(fs) = &style.font_size {
-                    let size = length_to_px(fs.value());
+                    let fs_val = fs.resolve();
+                    let size = length_to_px(&fs_val);
                     if size > 0.0 {
                         let weight = style.font_weight.as_ref().copied().unwrap_or(framework_core::FontWeight::Normal);
                         let ui_weight = font_weight_to_uikit(weight);
@@ -945,7 +947,8 @@ impl Backend for IosBackend {
         if let Some(entry) = self.tab_drawer_instances.get(&key) {
             if let Some(ref sidebar) = *entry.sidebar.borrow() {
                 if let Some(ref bg) = style.background {
-                    let c = style::color_to_uicolor(bg.value());
+                    let bg_val = bg.resolve();
+                    let c = style::color_to_uicolor(&bg_val);
                     sidebar.setBackgroundColor(Some(&c));
                 }
             }

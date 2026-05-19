@@ -70,7 +70,7 @@ pub fn skeleton(props: &SkeletonProps) -> Primitive {
         // Ensure the active theme is wrapped in IdeaThemeRef; the
         // background comes from the stylesheet's base closure
         // against that theme.
-        let _ = framework_core::active_theme()
+        let _ = framework_theme::active_theme()
             .downcast_ref::<IdeaThemeRef>()
             .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
         let mut app = StyleApplication::new(Skeleton::sheet())

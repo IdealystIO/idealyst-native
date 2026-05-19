@@ -15,12 +15,24 @@ pub use imp::{install_global_self, IosBackend};
 #[cfg(all(target_os = "ios", feature = "async-driver"))]
 pub use backend_ios_core::render_loop::install_render_loop;
 
+/// Install the iOS scheduler (NSTimer-backed). Must be called once
+/// before `framework_core::render(...)` so timer-driven features
+/// (long-press recognizer, presence animations, anything calling
+/// `after_ms` / `schedule_microtask`) delay correctly instead of
+/// firing synchronously.
+#[cfg(target_os = "ios")]
+pub use backend_ios_core::scheduler::install_scheduler;
+
 #[cfg(not(target_os = "ios"))]
 pub use stub::IosBackend;
 
 /// Non-iOS no-op so cross-compile of host code still type-checks.
 #[cfg(all(not(target_os = "ios"), feature = "async-driver"))]
 pub fn install_render_loop() {}
+
+/// Non-iOS no-op so cross-compile of host code still type-checks.
+#[cfg(not(target_os = "ios"))]
+pub fn install_scheduler() {}
 
 // Optional AAS-client entry point. Exposes `ios_main` /
 // `ios_teardown` C symbols the Swift host calls to run the iOS app

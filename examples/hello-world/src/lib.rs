@@ -25,14 +25,15 @@ mod web;
 use framework_core::embed_asset;
 use framework_core::assets::{kinds, Asset};
 use framework_core::{
-    component, icon, install_theme, set_theme, signal, ui, AlignItems, AnchorTarget, BackdropMode,
+    component, icon, signal, ui, AlignItems, AnchorTarget, BackdropMode,
     ButtonHandle, Color, DrawerContentProps, DrawerHandle, DrawerNavigator, Easing,
     ElementAlign, ElementSide, FillRule, FlexDirection, FontWeight, HeaderButton, IconData,
     IntoStyleSource, JustifyContent, LayoutProps, Length, Navigator, NavigatorHandle, Overflow,
     PresenceAnim, PresenceState, Primitive, Ref, Route, RouteParams, Screen, ScreenOptions,
     Shadow, Signal, StrokeAnimation, StyleSource, TabNavigator, TabSpec, TabsHandle, TextAlign,
-    ViewportPlacement,
+    Tokenized, ViewportPlacement,
 };
+use framework_theme::{install_theme, set_theme};
 use std::collections::HashMap;
 
 /// Custom icon defined inline — no icon pack needed.
@@ -52,7 +53,7 @@ static LOGO: Asset<kinds::Image> = embed_asset!("../assets/logo.png");
 /// Read the current theme's text color for icons. Reactive — re-fires
 /// when the theme changes.
 fn icon_color() -> Color {
-    let theme = framework_core::active_theme();
+    let theme = framework_theme::active_theme();
     let t = theme.downcast_ref::<Theme>().expect("Theme not installed");
     t.colors.text.value().clone()
 }
@@ -202,7 +203,7 @@ pub fn dark_theme() -> Theme {
 /// `TokenEntry` so the web backend can install them as `:root`
 /// custom properties — theme swap then becomes one `setProperty`
 /// per token, no class regeneration.
-impl framework_core::ThemeTokens for Theme {
+impl framework_theme::ThemeTokens for Theme {
     fn tokens(&self) -> Vec<framework_core::TokenEntry> {
         fn entry(t: &framework_core::Tokenized<framework_core::Color>) -> framework_core::TokenEntry {
             let name = t.name().expect("hello: Theme color fields must be Tokenized::Token");
@@ -236,11 +237,11 @@ impl framework_core::ThemeTokens for Theme {
 
 framework_core::stylesheet! {
     pub Page<Theme> {
-        base(t) {
-            background: t.colors.background.clone(),
-            color: t.colors.text.clone(),
-            padding: t.spacing.xl,
-            gap: Length::Px(t.spacing.lg),
+        base(_t) {
+            background: Tokenized::token("color-background", Color("#f7f7fb".into())),
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            padding: Tokenized::token("spacing-xl", Length::Px(32.0)),
+            gap: Tokenized::token("spacing-lg", Length::Px(24.0)),
             min_height: Length::pct(100.0),
         }
         transitions {
@@ -252,9 +253,9 @@ framework_core::stylesheet! {
 
 framework_core::stylesheet! {
     pub Row<Theme> {
-        base(t) {
+        base(_t) {
             flex_direction: FlexDirection::Row,
-            gap: Length::Px(t.spacing.md),
+            gap: Tokenized::token("spacing-md", Length::Px(16.0)),
             align_items: AlignItems::Stretch,
         }
     }
@@ -262,9 +263,9 @@ framework_core::stylesheet! {
 
 framework_core::stylesheet! {
     pub SpacedRow<Theme> {
-        base(t) {
+        base(_t) {
             flex_direction: FlexDirection::Row,
-            gap: Length::Px(t.spacing.md),
+            gap: Tokenized::token("spacing-md", Length::Px(16.0)),
             align_items: AlignItems::Center,
             justify_content: JustifyContent::SpaceBetween,
         }
@@ -273,9 +274,9 @@ framework_core::stylesheet! {
 
 framework_core::stylesheet! {
     pub Column<Theme> {
-        base(t) {
+        base(_t) {
             flex_direction: FlexDirection::Column,
-            gap: Length::Px(t.spacing.md),
+            gap: Tokenized::token("spacing-md", Length::Px(16.0)),
             align_items: AlignItems::Stretch,
         }
     }
@@ -287,16 +288,16 @@ framework_core::stylesheet! {
 
 framework_core::stylesheet! {
     pub NavBarHeader<Theme> {
-        base(t) {
-            background: t.colors.surface.clone(),
+        base(_t) {
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
         }
     }
 }
 
 framework_core::stylesheet! {
     pub NavBarTitle<Theme> {
-        base(t) {
-            color: t.colors.text.clone(),
+        base(_t) {
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
             font_size: 17.0,
             font_weight: FontWeight::SemiBold,
         }
@@ -305,8 +306,8 @@ framework_core::stylesheet! {
 
 framework_core::stylesheet! {
     pub NavBarButton<Theme> {
-        base(t) {
-            color: t.colors.primary.clone(),
+        base(_t) {
+            color: Tokenized::token("color-primary", Color("#5b6cff".into())),
         }
     }
 }
@@ -318,8 +319,8 @@ framework_core::stylesheet! {
 
 framework_core::stylesheet! {
     pub Title<Theme> {
-        base(t) {
-            color: t.colors.text.clone(),
+        base(_t) {
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
             font_size: 32.0,
             font_weight: FontWeight::SemiBold,
             letter_spacing: -0.5,
@@ -330,8 +331,8 @@ framework_core::stylesheet! {
 
 framework_core::stylesheet! {
     pub Subtitle<Theme> {
-        base(t) {
-            color: t.colors.muted.clone(),
+        base(_t) {
+            color: Tokenized::token("color-muted", Color("#6b7280".into())),
             font_size: 16.0,
             line_height: 22.0,
         }
@@ -340,8 +341,8 @@ framework_core::stylesheet! {
 
 framework_core::stylesheet! {
     pub SectionHeading<Theme> {
-        base(t) {
-            color: t.colors.muted.clone(),
+        base(_t) {
+            color: Tokenized::token("color-muted", Color("#6b7280".into())),
             font_size: 12.0,
             font_weight: FontWeight::SemiBold,
             letter_spacing: 1.0,
@@ -352,8 +353,8 @@ framework_core::stylesheet! {
 
 framework_core::stylesheet! {
     pub CardTitle<Theme> {
-        base(t) {
-            color: t.colors.text.clone(),
+        base(_t) {
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
             font_size: 14.0,
             font_weight: FontWeight::SemiBold,
             letter_spacing: 0.5,
@@ -364,8 +365,8 @@ framework_core::stylesheet! {
 
 framework_core::stylesheet! {
     pub LinkText<Theme> {
-        base(t) {
-            color: t.colors.primary.clone(),
+        base(_t) {
+            color: Tokenized::token("color-primary", Color("#5b6cff".into())),
             font_size: 14.0,
             font_weight: FontWeight::SemiBold,
         }
@@ -374,8 +375,8 @@ framework_core::stylesheet! {
 
 framework_core::stylesheet! {
     pub CardValue<Theme> {
-        base(t) {
-            color: t.colors.text.clone(),
+        base(_t) {
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
             font_size: 36.0,
             font_weight: FontWeight::Bold,
             letter_spacing: -1.0,
@@ -390,11 +391,11 @@ framework_core::stylesheet! {
 
 framework_core::stylesheet! {
     pub Card<Theme> {
-        base(t) {
-            background: t.colors.surface.clone(),
-            padding: t.spacing.lg,
+        base(_t) {
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            padding: Tokenized::token("spacing-lg", Length::Px(24.0)),
             border_radius: 12.0,
-            gap: Length::Px(t.spacing.sm),
+            gap: Tokenized::token("spacing-sm", Length::Px(8.0)),
             flex_grow: 1.0,
             shadow: Shadow {
                 x: 0.0,
@@ -407,9 +408,9 @@ framework_core::stylesheet! {
         variant tone {
             #[default]
             neutral(_t) {}
-            primary(t) {
-                background: t.colors.primary.clone(),
-                color: t.colors.primary_text.clone(),
+            primary(_t) {
+                background: Tokenized::token("color-primary", Color("#5b6cff".into())),
+                color: Tokenized::token("color-primary-text", Color("#ffffff".into())),
             }
         }
 
@@ -422,22 +423,22 @@ framework_core::stylesheet! {
 
 framework_core::stylesheet! {
     pub PrimaryButton<Theme> {
-        base(t) {
-            background: t.colors.primary.clone(),
-            color: t.colors.primary_text.clone(),
-            padding_vertical: t.spacing.sm,
-            padding_horizontal: t.spacing.md,
+        base(_t) {
+            background: Tokenized::token("color-primary", Color("#5b6cff".into())),
+            color: Tokenized::token("color-primary-text", Color("#ffffff".into())),
+            padding_vertical: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            padding_horizontal: Tokenized::token("spacing-md", Length::Px(16.0)),
             border_radius: 8.0,
             font_weight: FontWeight::SemiBold,
             font_size: 14.0,
             letter_spacing: 0.3,
             text_align: TextAlign::Center,
         }
-        state hovered(t) {
-            background: t.colors.primary_hover.clone(),
+        state hovered(_t) {
+            background: Tokenized::token("color-primary-hover", Color("#4a5cf0".into())),
         }
-        state pressed(t) {
-            background: t.colors.primary_pressed.clone(),
+        state pressed(_t) {
+            background: Tokenized::token("color-primary-pressed", Color("#3947d6".into())),
         }
         state disabled(_t) {
             opacity: 0.4,
@@ -452,24 +453,24 @@ framework_core::stylesheet! {
 
 framework_core::stylesheet! {
     pub SecondaryButton<Theme> {
-        base(t) {
+        base(_t) {
             background: Color("transparent".into()),
-            color: t.colors.text.clone(),
-            padding_vertical: t.spacing.sm,
-            padding_horizontal: t.spacing.md,
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            padding_vertical: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            padding_horizontal: Tokenized::token("spacing-md", Length::Px(16.0)),
             border_radius: 8.0,
             border_width: 1.0,
-            border_color: t.colors.border.clone(),
+            border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
             font_weight: FontWeight::Medium,
             font_size: 14.0,
             letter_spacing: 0.3,
             text_align: TextAlign::Center,
         }
-        state hovered(t) {
-            border_color: t.colors.border_hover.clone(),
+        state hovered(_t) {
+            border_color: Tokenized::token("color-border-hover", Color("#b9bdcc".into())),
         }
-        state pressed(t) {
-            border_color: t.colors.primary.clone(),
+        state pressed(_t) {
+            border_color: Tokenized::token("color-primary", Color("#5b6cff".into())),
         }
         transitions {
             color: 200ms EaseOut,
@@ -481,17 +482,17 @@ framework_core::stylesheet! {
 // CounterButton — the small "+ N" button inside a stat card.
 framework_core::stylesheet! {
     pub CounterButton<Theme> {
-        base(t) {
-            background: t.colors.primary.clone(),
-            color: t.colors.primary_text.clone(),
-            padding_vertical: t.spacing.xs,
-            padding_horizontal: t.spacing.md,
+        base(_t) {
+            background: Tokenized::token("color-primary", Color("#5b6cff".into())),
+            color: Tokenized::token("color-primary-text", Color("#ffffff".into())),
+            padding_vertical: Tokenized::token("spacing-xs", Length::Px(4.0)),
+            padding_horizontal: Tokenized::token("spacing-md", Length::Px(16.0)),
             border_radius: 6.0,
             font_weight: FontWeight::SemiBold,
             font_size: 12.0,
             letter_spacing: 0.5,
             text_align: TextAlign::Center,
-            margin_top: t.spacing.sm,
+            margin_top: Tokenized::token("spacing-sm", Length::Px(8.0)),
         }
         transitions {
             background: 200ms EaseOut,
@@ -502,11 +503,11 @@ framework_core::stylesheet! {
 
 framework_core::stylesheet! {
     pub GradientCanvas<Theme> {
-        base(t) {
-            background: t.colors.surface.clone(),
+        base(_t) {
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
             border_radius: 8.0,
             border_width: 1.0,
-            border_color: t.colors.border.clone(),
+            border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
             height: 200.0,
             overflow: Overflow::Hidden,
         }
@@ -516,15 +517,15 @@ framework_core::stylesheet! {
 // Header — full-width nav bar with screen buttons + theme toggle.
 framework_core::stylesheet! {
     pub HeaderBar<Theme> {
-        base(t) {
-            background: t.colors.surface.clone(),
-            padding_vertical: t.spacing.sm,
-            padding_horizontal: t.spacing.md,
+        base(_t) {
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            padding_vertical: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            padding_horizontal: Tokenized::token("spacing-md", Length::Px(16.0)),
             border_radius: 10.0,
             border_width: 1.0,
-            border_color: t.colors.border.clone(),
+            border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
             flex_direction: FlexDirection::Row,
-            gap: Length::Px(t.spacing.sm),
+            gap: Tokenized::token("spacing-sm", Length::Px(8.0)),
             align_items: AlignItems::Center,
             justify_content: JustifyContent::SpaceBetween,
         }
@@ -538,8 +539,8 @@ framework_core::stylesheet! {
 // HeaderTitle — brand label on the left side of the header.
 framework_core::stylesheet! {
     pub HeaderTitle<Theme> {
-        base(t) {
-            color: t.colors.text.clone(),
+        base(_t) {
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
             font_size: 18.0,
             font_weight: FontWeight::SemiBold,
             letter_spacing: -0.2,
@@ -553,9 +554,9 @@ framework_core::stylesheet! {
 // NavGroup — horizontal grouping of nav buttons + theme toggle.
 framework_core::stylesheet! {
     pub NavGroup<Theme> {
-        base(t) {
+        base(_t) {
             flex_direction: FlexDirection::Row,
-            gap: Length::Px(t.spacing.xs),
+            gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
             align_items: AlignItems::Center,
         }
     }
@@ -566,11 +567,11 @@ framework_core::stylesheet! {
 // rebuilding the header on every navigation.
 framework_core::stylesheet! {
     pub NavButton<Theme> {
-        base(t) {
+        base(_t) {
             background: Color("transparent".into()),
-            color: t.colors.muted.clone(),
-            padding_vertical: t.spacing.xs,
-            padding_horizontal: t.spacing.md,
+            color: Tokenized::token("color-muted", Color("#6b7280".into())),
+            padding_vertical: Tokenized::token("spacing-xs", Length::Px(4.0)),
+            padding_horizontal: Tokenized::token("spacing-md", Length::Px(16.0)),
             border_radius: 6.0,
             font_weight: FontWeight::Medium,
             font_size: 14.0,
@@ -578,13 +579,13 @@ framework_core::stylesheet! {
         variant active {
             #[default]
             off(_t) {}
-            on(t) {
-                background: t.colors.primary.clone(),
-                color: t.colors.primary_text.clone(),
+            on(_t) {
+                background: Tokenized::token("color-primary", Color("#5b6cff".into())),
+                color: Tokenized::token("color-primary-text", Color("#ffffff".into())),
             }
         }
-        state hovered(t) {
-            color: t.colors.text.clone(),
+        state hovered(_t) {
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
         }
         transitions {
             background: 200ms EaseOut,
@@ -608,11 +609,11 @@ framework_core::stylesheet! {
 // the breakpoint it slides over the body via overlay.
 framework_core::stylesheet! {
     pub DrawerShell<Theme> {
-        base(t) {
+        base(_t) {
             flex_direction: FlexDirection::Row,
             min_height: Length::pct(100.0),
-            background: t.colors.background.clone(),
-            color: t.colors.text.clone(),
+            background: Tokenized::token("color-background", Color("#f7f7fb".into())),
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
         }
         transitions {
             background: 250ms EaseInOut,
@@ -624,10 +625,10 @@ framework_core::stylesheet! {
 // DrawerSidebar — the side panel itself.
 framework_core::stylesheet! {
     pub DrawerSidebar<Theme> {
-        base(t) {
-            background: t.colors.surface.clone(),
-            padding: t.spacing.lg,
-            gap: Length::Px(t.spacing.sm),
+        base(_t) {
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            padding: Tokenized::token("spacing-lg", Length::Px(24.0)),
+            gap: Tokenized::token("spacing-sm", Length::Px(8.0)),
             width: 320.0,
         }
         transitions {
@@ -640,11 +641,11 @@ framework_core::stylesheet! {
 // space. The framework's outlet `View` mounts inside this.
 framework_core::stylesheet! {
     pub DrawerBody<Theme> {
-        base(t) {
+        base(_t) {
             flex_grow: 1.0,
-            padding: t.spacing.xl,
-            gap: Length::Px(t.spacing.lg),
-            color: t.colors.text.clone(),
+            padding: Tokenized::token("spacing-xl", Length::Px(32.0)),
+            gap: Tokenized::token("spacing-lg", Length::Px(24.0)),
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
         }
         transitions {
             color: 250ms EaseInOut,
@@ -656,11 +657,11 @@ framework_core::stylesheet! {
 // currently-visible body screen.
 framework_core::stylesheet! {
     pub DrawerItemButton<Theme> {
-        base(t) {
+        base(_t) {
             background: Color("transparent".into()),
-            color: t.colors.text.clone(),
-            padding_vertical: t.spacing.sm,
-            padding_horizontal: t.spacing.md,
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            padding_vertical: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            padding_horizontal: Tokenized::token("spacing-md", Length::Px(16.0)),
             border_radius: 6.0,
             font_size: 14.0,
             font_weight: FontWeight::Medium,
@@ -669,13 +670,13 @@ framework_core::stylesheet! {
         variant active {
             #[default]
             off(_t) {}
-            on(t) {
-                background: t.colors.primary.clone(),
-                color: t.colors.primary_text.clone(),
+            on(_t) {
+                background: Tokenized::token("color-primary", Color("#5b6cff".into())),
+                color: Tokenized::token("color-primary-text", Color("#ffffff".into())),
             }
         }
-        state hovered(t) {
-            background: t.colors.surface_alt.clone(),
+        state hovered(_t) {
+            background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())),
         }
         transitions {
             background: 200ms EaseOut,
@@ -686,12 +687,12 @@ framework_core::stylesheet! {
 
 framework_core::stylesheet! {
     pub DrawerBrand<Theme> {
-        base(t) {
-            color: t.colors.text.clone(),
+        base(_t) {
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
             font_size: 18.0,
             font_weight: FontWeight::SemiBold,
             letter_spacing: -0.2,
-            margin_bottom: t.spacing.md,
+            margin_bottom: Tokenized::token("spacing-md", Length::Px(16.0)),
         }
     }
 }
@@ -707,14 +708,14 @@ framework_core::stylesheet! {
 
 framework_core::stylesheet! {
     pub TabShell<Theme> {
-        base(t) {
+        base(_t) {
             flex_direction: FlexDirection::Row,
-            gap: Length::Px(t.spacing.md),
+            gap: Tokenized::token("spacing-md", Length::Px(16.0)),
             min_height: 320.0,
-            background: t.colors.surface.clone(),
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
             border_radius: 12.0,
             border_width: 1.0,
-            border_color: t.colors.border.clone(),
+            border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
             overflow: Overflow::Hidden,
         }
         transitions {
@@ -726,12 +727,12 @@ framework_core::stylesheet! {
 
 framework_core::stylesheet! {
     pub TabSidebar<Theme> {
-        base(t) {
-            background: t.colors.surface_alt.clone(),
-            padding: t.spacing.md,
-            gap: Length::Px(t.spacing.xs),
+        base(_t) {
+            background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())),
+            padding: Tokenized::token("spacing-md", Length::Px(16.0)),
+            gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
             border_right_width: 1.0,
-            border_right_color: t.colors.border.clone(),
+            border_right_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
             width: 180.0,
         }
         transitions {
@@ -743,11 +744,11 @@ framework_core::stylesheet! {
 
 framework_core::stylesheet! {
     pub TabBody<Theme> {
-        base(t) {
+        base(_t) {
             flex_grow: 1.0,
-            padding: t.spacing.lg,
-            gap: Length::Px(t.spacing.md),
-            color: t.colors.text.clone(),
+            padding: Tokenized::token("spacing-lg", Length::Px(24.0)),
+            gap: Tokenized::token("spacing-md", Length::Px(16.0)),
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
         }
         transitions {
             color: 250ms EaseInOut,
@@ -757,11 +758,11 @@ framework_core::stylesheet! {
 
 framework_core::stylesheet! {
     pub TabPillButton<Theme> {
-        base(t) {
+        base(_t) {
             background: Color("transparent".into()),
-            color: t.colors.muted.clone(),
-            padding_vertical: t.spacing.xs,
-            padding_horizontal: t.spacing.sm,
+            color: Tokenized::token("color-muted", Color("#6b7280".into())),
+            padding_vertical: Tokenized::token("spacing-xs", Length::Px(4.0)),
+            padding_horizontal: Tokenized::token("spacing-sm", Length::Px(8.0)),
             border_radius: 6.0,
             font_size: 13.0,
             font_weight: FontWeight::Medium,
@@ -770,13 +771,13 @@ framework_core::stylesheet! {
         variant active {
             #[default]
             off(_t) {}
-            on(t) {
-                background: t.colors.primary.clone(),
-                color: t.colors.primary_text.clone(),
+            on(_t) {
+                background: Tokenized::token("color-primary", Color("#5b6cff".into())),
+                color: Tokenized::token("color-primary-text", Color("#ffffff".into())),
             }
         }
-        state hovered(t) {
-            color: t.colors.text.clone(),
+        state hovered(_t) {
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
         }
         transitions {
             background: 200ms EaseOut,
@@ -791,13 +792,13 @@ framework_core::stylesheet! {
 // theme toggle re-fires every row's apply-style effect.
 framework_core::stylesheet! {
     pub PerfRow<Theme> {
-        base(t) {
-            padding_horizontal: t.spacing.md,
-            padding_vertical: t.spacing.sm,
-            background: t.colors.surface.clone(),
-            color: t.colors.text.clone(),
+        base(_t) {
+            padding_horizontal: Tokenized::token("spacing-md", Length::Px(16.0)),
+            padding_vertical: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
             border_bottom_width: 1.0,
-            border_bottom_color: t.colors.border.clone(),
+            border_bottom_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
             font_size: 13.0,
             height: 36.0,
             justify_content: JustifyContent::Center,
@@ -805,8 +806,8 @@ framework_core::stylesheet! {
         variant parity {
             #[default]
             even(_t) {}
-            odd(t) {
-                background: t.colors.surface_alt.clone(),
+            odd(_t) {
+                background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())),
             }
         }
         transitions {
@@ -820,11 +821,11 @@ framework_core::stylesheet! {
 // PerfList — outer container for the perf-screen scroller.
 framework_core::stylesheet! {
     pub PerfList<Theme> {
-        base(t) {
-            background: t.colors.surface.clone(),
+        base(_t) {
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
             border_radius: 10.0,
             border_width: 1.0,
-            border_color: t.colors.border.clone(),
+            border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
             height: 500.0,
             overflow: Overflow::Hidden,
         }
@@ -840,16 +841,16 @@ framework_core::stylesheet! {
 // directly above the list.
 framework_core::stylesheet! {
     pub PerfControls<Theme> {
-        base(t) {
+        base(_t) {
             flex_direction: FlexDirection::Row,
-            gap: Length::Px(t.spacing.md),
+            gap: Tokenized::token("spacing-md", Length::Px(16.0)),
             align_items: AlignItems::Center,
-            background: t.colors.surface.clone(),
-            padding_vertical: t.spacing.sm,
-            padding_horizontal: t.spacing.md,
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            padding_vertical: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            padding_horizontal: Tokenized::token("spacing-md", Length::Px(16.0)),
             border_radius: 10.0,
             border_width: 1.0,
-            border_color: t.colors.border.clone(),
+            border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
         }
         transitions {
             background: 250ms EaseInOut,
@@ -862,14 +863,14 @@ framework_core::stylesheet! {
 // stretch the rest of the controls row.
 framework_core::stylesheet! {
     pub PerfCountInput<Theme> {
-        base(t) {
-            background: t.colors.background.clone(),
-            color: t.colors.text.clone(),
-            padding_vertical: t.spacing.xs,
-            padding_horizontal: t.spacing.sm,
+        base(_t) {
+            background: Tokenized::token("color-background", Color("#f7f7fb".into())),
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            padding_vertical: Tokenized::token("spacing-xs", Length::Px(4.0)),
+            padding_horizontal: Tokenized::token("spacing-sm", Length::Px(8.0)),
             border_radius: 6.0,
             border_width: 1.0,
-            border_color: t.colors.border.clone(),
+            border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
             font_size: 14.0,
             width: 120.0,
         }
@@ -880,9 +881,9 @@ framework_core::stylesheet! {
 // edge of the controls row.
 framework_core::stylesheet! {
     pub PerfToggleGroup<Theme> {
-        base(t) {
+        base(_t) {
             flex_direction: FlexDirection::Row,
-            gap: Length::Px(t.spacing.sm),
+            gap: Tokenized::token("spacing-sm", Length::Px(8.0)),
             align_items: AlignItems::Center,
             // Push to the end of the row; the input + button occupy
             // the start.
@@ -902,14 +903,14 @@ framework_core::stylesheet! {
 
 framework_core::stylesheet! {
     pub ModalSurface<Theme> {
-        base(t) {
-            background: t.colors.surface.clone(),
-            color: t.colors.text.clone(),
-            padding: t.spacing.xl,
+        base(_t) {
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            padding: Tokenized::token("spacing-xl", Length::Px(32.0)),
             border_radius: 14.0,
             border_width: 1.0,
-            border_color: t.colors.border.clone(),
-            gap: Length::Px(t.spacing.md),
+            border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            gap: Tokenized::token("spacing-md", Length::Px(16.0)),
             flex_direction: FlexDirection::Column,
             min_width: 360.0,
             max_width: 520.0,
@@ -930,14 +931,14 @@ framework_core::stylesheet! {
 
 framework_core::stylesheet! {
     pub PopoverSurface<Theme> {
-        base(t) {
-            background: t.colors.surface.clone(),
-            color: t.colors.text.clone(),
-            padding: t.spacing.sm,
+        base(_t) {
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            padding: Tokenized::token("spacing-sm", Length::Px(8.0)),
             border_radius: 10.0,
             border_width: 1.0,
-            border_color: t.colors.border.clone(),
-            gap: Length::Px(t.spacing.xs),
+            border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
             flex_direction: FlexDirection::Column,
             min_width: 200.0,
             shadow: Shadow {
@@ -956,13 +957,13 @@ framework_core::stylesheet! {
 
 framework_core::stylesheet! {
     pub DrawerSurface<Theme> {
-        base(t) {
-            background: t.colors.surface.clone(),
-            color: t.colors.text.clone(),
-            padding: t.spacing.xl,
+        base(_t) {
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            padding: Tokenized::token("spacing-xl", Length::Px(32.0)),
             border_left_width: 1.0,
-            border_left_color: t.colors.border.clone(),
-            gap: Length::Px(t.spacing.md),
+            border_left_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            gap: Tokenized::token("spacing-md", Length::Px(16.0)),
             flex_direction: FlexDirection::Column,
             // Drawers run the full height of the viewport — the
             // overlay primitive's `Right` placement already pins
@@ -991,8 +992,8 @@ framework_core::stylesheet! {
 // adding effects like blur.
 framework_core::stylesheet! {
     pub OverlayScrim<Theme> {
-        base(t) {
-            background: t.colors.overlay.clone(),
+        base(_t) {
+            background: Tokenized::token("color-overlay", Color("rgba(15, 17, 21, 0.45)".into())),
         }
         transitions {
             background: 250ms EaseInOut,

@@ -10,14 +10,33 @@ license.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-framework-core = { workspace = true }
-backend-web = { workspace = true }
+# `debug-stats` is enabled here so the wasm crate can drain
+# `framework_core::debug::take_phase_counters()` for the perf
+# diagnostic export. The flag also turns on backend-web's
+# PhaseTimer (which forwards to framework-core's counters).
+# When you're benchmarking final perf, switch back to no features
+# — debug-stats adds a small overhead per recorded phase.
+framework-core = { workspace = true, features = ["debug-stats"] }
+framework-theme = { workspace = true }
+backend-web = { workspace = true, features = ["debug-stats"] }
 wasm-bindgen = "0.2"
 console_error_panic_hook = "0.1"
 # Smaller allocator for the wasm target. The default `dlmalloc` pulls
-# in a lot of code that the benchmark doesn't need; `lol_alloc`'s
-# `FreeListAllocator` is a few KB. Pure perf trade-off — no behavior
-# difference for the benchmark.
+# in a lot of code that this crate doesn't need; `lol_alloc`'s
+# `FreeListAllocator` is a few KB.
+#
+# CAVEAT — currently NOT installed as the `#[global_allocator]`
+# (see `src/lib.rs` for the commented-out registration). The rebuild
+# benchmark's alloc/dealloc churn (10k allocations per toggle × N
+# iterations) fragments `lol_alloc`'s freelist, and each subsequent
+# iteration slowed measurably — 1k apply went from 9ms to 67ms across
+# 4 toggles, and the slowdown was entirely in pure-Rust per-row work
+# (no FFI involvement). `dlmalloc` is significantly larger but
+# maintains stable allocation cost under churn, which is what this
+# bench's measurement integrity requires. Re-enable `lol_alloc` only
+# for steady-state workloads where binary size matters more than
+# allocation-churn behavior. The dependency stays listed so the
+# alternative is one uncomment away if the trade-off shifts.
 lol_alloc = "0.4"
 
 [dependencies.web-sys]

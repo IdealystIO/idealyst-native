@@ -270,16 +270,19 @@ pub fn hit_test(
 
 /// Paint the keyboard overlay through `skin`. The layout engine
 /// produces the rect + laid keys; the skin owns all the chrome
-/// + label drawing.
+/// + label drawing. `pressed_label` is the label of a key
+/// currently shown as pressed (for the brief tap-feedback
+/// highlight); `None` if no key is held.
 pub fn paint<'a>(
     skin: &dyn Skin,
     viewport: (f32, f32),
     slide: f32,
+    pressed_label: Option<&'static str>,
     glyphs: &'a HashMap<&'static str, Buffer>,
     rects: &mut Vec<crate::pipeline::Instance>,
     texts: &mut Vec<crate::text::StagedText<'a>>,
 ) {
     let (kb_rect, keys) = layout(skin, viewport, slide);
     let Some(rect) = kb_rect else { return };
-    skin.paint_keyboard(rect, &keys, glyphs, rects, texts);
+    skin.paint_keyboard(rect, &keys, pressed_label, glyphs, rects, texts);
 }

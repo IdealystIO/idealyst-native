@@ -60,6 +60,38 @@ thread_local! {
     /// reentry corrupts the dep set.
     static RUNNING: RefCell<HashSet<EffectId>> = RefCell::new(HashSet::new());
 
+    /// Transitive depth of nested `run_effect` calls on the current
+    /// thread. The same-id reentry guard (`RUNNING`) only catches the
+    /// case where an effect's own write retriggers itself — it does not
+    /// catch *mutual* loops where effect A writes a signal B's effect
+    /// reads, B's effect writes a signal A's effect reads, and so on.
+    /// Without a bound, that pattern stack-overflows the process.
+    ///
+    /// Threshold and panic live in `run_effect`. The counter is
+    /// incremented on entry and decremented via the `DepthGuard` RAII
+    /// so unwinding through a user-code panic still restores it.
+    static EFFECT_DEPTH: RefCell<u32> = const { RefCell::new(0) };
+
+    /// When `Some`, signal writes append their subscriber ids to this
+    /// queue instead of running them inline. Drained at the end of the
+    /// outermost `batch(..)` call. `None` outside any batch — writes
+    /// fan out synchronously as before.
+    ///
+    /// Nested `batch(..)` calls reuse the outer queue: only the
+    /// outermost batch flushes. This keeps "set a, then set b" inside a
+    /// nested batch from running effects between the two writes when
+    /// the outer batch hasn't completed yet.
+    static BATCH_PENDING: RefCell<Option<Vec<EffectId>>> = const { RefCell::new(None) };
+
+    /// Nesting depth of in-progress `memo` compute closures. Incremented
+    /// before invoking the user's `f()` in `memo_with` and decremented
+    /// on return. `Signal::set` and `Signal::update` consult it to
+    /// reject writes from inside a memo's compute — memos are
+    /// contractually pure derivations, and a write would (a) inject a
+    /// side-effecting node into the dep graph and (b) re-trigger
+    /// downstream subscribers during what should be a pure read.
+    static MEMO_COMPUTE_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+
     /// On wasm, `Scope::drop` parks its drained effect boxes here and
     /// schedules a single microtask to drain them. The arena slots
     /// are nulled synchronously (so the rebuild that follows can use
@@ -316,11 +348,399 @@ struct SignalInner<T> {
 
 struct EffectInner {
     run: Box<dyn FnMut()>,
+    /// Callbacks registered via `on_cleanup` during the effect's last
+    /// run. Drained and fired *before* the next re-run, and again on
+    /// effect disposal via `Drop`. LIFO to mirror typical
+    /// resource-acquisition order.
+    cleanups: Vec<Box<dyn FnOnce()>>,
+    /// Snapshot of the active-scope stack at the moment this effect
+    /// was constructed. Restored onto `ACTIVE_SCOPE` for the duration
+    /// of each re-run so `inject<T>` (and any other code that walks
+    /// the scope chain) sees the effect's creation-time owners
+    /// regardless of where in the call graph the signal write that
+    /// triggered the re-run actually happened. Equivalent to Solid's
+    /// "owner" field on a computation.
+    ///
+    /// Safety: raw pointers are valid for the effect's lifetime —
+    /// scope-drop frees its adopted effects before its own teardown,
+    /// so any scope on this snapshot is still live whenever its
+    /// pointer is dereferenced.
+    owning_stack: Vec<*mut Scope>,
+}
+
+impl Drop for EffectInner {
+    fn drop(&mut self) {
+        for cb in self.cleanups.drain(..).rev() {
+            cb();
+        }
+    }
 }
 
 // =============================================================================
 // untrack
 // =============================================================================
+
+/// Types that can be read as a tracked dependency of an effect — a
+/// single `Signal<T>` or a tuple of trackables. The associated `Value`
+/// is the resolved value(s) the consumer sees.
+///
+/// Implementors include `Signal<T>` (yielding `T`) and tuples of up to
+/// four `Trackable`s (yielding the tuple of values). This is the trait
+/// `on(deps, ..)` uses to separate "what to subscribe to" from "what
+/// the body does."
+pub trait Trackable: Copy + 'static {
+    type Value: Clone + 'static;
+    /// Reads the tracked value(s). Must be called from inside an effect
+    /// for subscriptions to be recorded.
+    fn track(&self) -> Self::Value;
+}
+
+impl<T: Clone + 'static> Trackable for Signal<T> {
+    type Value = T;
+    fn track(&self) -> T {
+        self.get()
+    }
+}
+
+impl<A: Trackable, B: Trackable> Trackable for (A, B) {
+    type Value = (A::Value, B::Value);
+    fn track(&self) -> Self::Value {
+        (self.0.track(), self.1.track())
+    }
+}
+
+impl<A: Trackable, B: Trackable, C: Trackable> Trackable for (A, B, C) {
+    type Value = (A::Value, B::Value, C::Value);
+    fn track(&self) -> Self::Value {
+        (self.0.track(), self.1.track(), self.2.track())
+    }
+}
+
+impl<A: Trackable, B: Trackable, C: Trackable, D: Trackable> Trackable for (A, B, C, D) {
+    type Value = (A::Value, B::Value, C::Value, D::Value);
+    fn track(&self) -> Self::Value {
+        (self.0.track(), self.1.track(), self.2.track(), self.3.track())
+    }
+}
+
+/// Reacts to changes in a specific set of dependencies, passing the new
+/// and previous values to the body. Decouples "what to subscribe to"
+/// from "what to read" — reads inside the body do NOT add to the
+/// subscription set.
+///
+/// The body fires once at creation with `prev = None`, then once per
+/// dependency change with `prev = Some(<last value>)`. For "only fire
+/// on subsequent changes" semantics, use [`on_defer`].
+///
+/// ```ignore
+/// // Single signal:
+/// on(count, |new, prev| {
+///     log!("{} -> {:?}", new, prev);
+/// });
+///
+/// // Tuple of signals — body runs when either changes:
+/// on((first, last), |(f, l), _prev| {
+///     update_full_name(format!("{} {}", f, l));
+/// });
+/// ```
+pub fn on<D, F>(deps: D, mut f: F) -> Effect
+where
+    D: Trackable,
+    F: FnMut(&D::Value, Option<&D::Value>) + 'static,
+{
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let prev: Rc<RefCell<Option<D::Value>>> = Rc::new(RefCell::new(None));
+    Effect::new(move || {
+        // Read deps under tracking — this is what builds the
+        // subscription set.
+        let new = deps.track();
+        // Pull the previous value out before invoking the body. Cloning
+        // here is cheap relative to the body's typical work; it lets
+        // the body access `prev` without re-entering the RefCell.
+        let prev_value = prev.borrow().clone();
+        // Run the body untracked so reads inside it don't subscribe.
+        untrack(|| f(&new, prev_value.as_ref()));
+        *prev.borrow_mut() = Some(new);
+    })
+}
+
+/// Like [`on`] but skips the initial run — the body only fires from the
+/// first dependency change onward. The subscription set is still
+/// established eagerly so no change is missed.
+///
+/// Useful for "react to user-driven changes, not initial mount" cases:
+/// saving to disk, animating from a known value, kicking off a
+/// fetch only when params actually change.
+///
+/// ```ignore
+/// on_defer(query, |new, _| {
+///     spawn_fetch(new.clone());
+/// });
+/// ```
+pub fn on_defer<D, F>(deps: D, mut f: F) -> Effect
+where
+    D: Trackable,
+    F: FnMut(&D::Value, Option<&D::Value>) + 'static,
+{
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let prev: Rc<RefCell<Option<D::Value>>> = Rc::new(RefCell::new(None));
+    Effect::new(move || {
+        let new = deps.track();
+        let prev_value = prev.borrow().clone();
+        // Skip the very first invocation — the body only fires once
+        // there's a meaningful "previous" to compare against.
+        if prev_value.is_some() {
+            untrack(|| f(&new, prev_value.as_ref()));
+        }
+        *prev.borrow_mut() = Some(new);
+    })
+}
+
+/// Creates a memoized derivation backed by a [`Signal<T>`]. `f` is
+/// auto-tracked: each signal it reads becomes a dependency. When any
+/// dependency changes, `f` is re-evaluated and the new value is
+/// **compared against the previous one with `PartialEq`** — subscribers
+/// are only notified when the result actually differs.
+///
+/// The cache is the key win: three sites reading the same `memo` share
+/// one computation per dep change. Equality-gated notification is
+/// load-bearing for downstream perf — a derivation like
+/// `count.get() > 10` only re-renders consumers when the boolean
+/// actually flips, not every time `count` changes.
+///
+/// Returns a `Signal<T>` so the memo plugs into every existing consumer
+/// (`.get()`, `text(|| memo.get())`, `.bind(...)`, style closures,
+/// etc.) without a new type. The signal is owned by the active scope —
+/// calling `memo` outside a scope is allowed but the underlying effect
+/// will leak.
+///
+/// For types without `PartialEq`, or to override the equality check,
+/// see [`memo_with`].
+///
+/// ```ignore
+/// let first = signal!("Jane".to_string());
+/// let last = signal!("Doe".to_string());
+/// let full = memo(move || format!("{} {}", first.get(), last.get()));
+///
+/// // Anywhere a Signal<String> works:
+/// text(move || full.get());
+/// ```
+pub fn memo<T>(f: impl Fn() -> T + 'static) -> Signal<T>
+where
+    T: Clone + PartialEq + 'static,
+{
+    memo_with(|a, b| a == b, f)
+}
+
+/// Like [`memo`] but with a caller-supplied equality function. Use this
+/// for types that don't impl `PartialEq` (e.g. when `T` contains a
+/// trait object) or when "equal enough to skip notification" doesn't
+/// match `PartialEq` (e.g. tolerance-based float comparison).
+pub fn memo_with<T, F, E>(eq: E, f: F) -> Signal<T>
+where
+    T: Clone + 'static,
+    F: Fn() -> T + 'static,
+    E: Fn(&T, &T) -> bool + 'static,
+{
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    // Seed the output signal with an initial value computed under
+    // `untrack` — the real subscription set gets recorded by the
+    // effect's first run below. Doing this here (rather than letting
+    // the effect's first run produce it) means consumers reading the
+    // signal between `memo(..)` returning and the effect's first
+    // notification get a coherent value instead of `T::default()`.
+    //
+    // Both this initial call and every subsequent re-run in the effect
+    // below run with `MemoComputeGuard` active so `Signal::set` /
+    // `Signal::update` from inside `f` panic loudly instead of
+    // injecting a side-effecting node into the dep graph.
+    let initial = {
+        let _g = MemoComputeGuard::enter();
+        untrack(|| f())
+    };
+    let signal = Signal::new(initial.clone());
+
+    // The effect compares each new computation against its own
+    // last-emitted value. Reading `signal.get()` from inside the effect
+    // would subscribe the effect to its own output — fine for the
+    // equality check itself, but it'd mean every `signal.set(new)` call
+    // re-fires the effect (caught by the same-id reentry guard, but
+    // wasteful). Holding `last` in an Rc<RefCell> keeps the comparison
+    // off the dep graph entirely.
+    let last: Rc<RefCell<T>> = Rc::new(RefCell::new(initial));
+    let last_for_effect = last.clone();
+
+    let e = Effect::new(move || {
+        // Block-scope the guard so it covers only the user's `f()`. The
+        // memo's own `signal.set(new)` below is the *output* write of
+        // the derivation and must NOT be flagged.
+        let new = {
+            let _g = MemoComputeGuard::enter();
+            f()
+        };
+        let differs = !eq(&*last_for_effect.borrow(), &new);
+        if differs {
+            *last_for_effect.borrow_mut() = new.clone();
+            signal.set(new);
+        }
+    });
+
+    // The effect must outlive this function. Inside an active scope,
+    // the scope already adopted the slot (`e.owns == false`) and
+    // forgetting is a no-op. Outside any scope, the local binding's
+    // Drop would free the slot — `forget` prevents that, leaving the
+    // memo's update logic live for the lifetime of the thread, the
+    // same way a bare `Signal::new` outside a scope is never reclaimed
+    // (the returned handle is `Copy` with no `Drop`).
+    std::mem::forget(e);
+
+    signal
+}
+
+// =============================================================================
+// Context (provide / inject)
+// =============================================================================
+
+/// Provides a value of type `T` to descendant scopes. The provision
+/// lives until the current scope drops; inner scopes inherit it via
+/// [`inject`], and inner provisions of the same type shadow outer ones
+/// for that subtree.
+///
+/// Disambiguating two providers of the same Rust type is the caller's
+/// job: wrap each in a distinct newtype (e.g. `struct PrimaryColor(...)`
+/// vs `struct AccentColor(...)`) so the type system gives each
+/// provision a unique key.
+///
+/// Panics if called outside any active scope, or from inside a memo's
+/// compute closure (memos must be pure derivations).
+///
+/// ```ignore
+/// // Once at app root:
+/// provide(Theme::dark());
+/// provide(Locale("en-US".into()));
+///
+/// // Anywhere in the subtree:
+/// let theme: Option<Theme> = inject::<Theme>();
+/// let locale: Locale = inject_or(Locale("en-US".into()));
+/// ```
+pub fn provide<T: 'static>(value: T) {
+    assert_not_in_memo_compute();
+    ACTIVE_SCOPE.with(|s| {
+        let stack = s.borrow();
+        let Some(&top) = stack.last() else {
+            panic!(
+                "`provide` called outside any active reactive scope. \
+                 Wrap with `with_scope(..)` or call from inside a \
+                 component or effect body."
+            );
+        };
+        // SAFETY: identical invariant to `register_signal` etc —
+        // ACTIVE_SCOPE only holds pointers to `Scope` values currently
+        // borrowed by `with_scope`, so no aliasing.
+        unsafe {
+            (*top)
+                .contexts
+                .push((std::any::TypeId::of::<T>(), Box::new(value)));
+        }
+    });
+}
+
+/// Returns a clone of the nearest ancestor-provided value of type `T`.
+/// Walks the active scope stack innermost-first — inner provisions
+/// shadow outer ones. Returns `None` if no provider exists.
+///
+/// For non-`Clone` types, see [`with_inject`].
+pub fn inject<T: Clone + 'static>() -> Option<T> {
+    with_inject::<T, _>(|v| v.clone())
+}
+
+/// Like [`inject`] but returns `default` when no provider exists.
+/// Convenience wrapper that avoids `unwrap_or` noise at read sites.
+pub fn inject_or<T: Clone + 'static>(default: T) -> T {
+    inject::<T>().unwrap_or(default)
+}
+
+/// Reads the nearest ancestor-provided value of type `T` by reference,
+/// without cloning. Returns `Some(f(&value))` if a provider exists,
+/// `None` otherwise.
+///
+/// Use this for types that aren't `Clone` or are expensive to clone:
+/// `with_inject::<Theme, _>(|theme| theme.background)` is cheaper than
+/// `inject::<Theme>().map(|t| t.background)` when `Theme` is large.
+pub fn with_inject<T: 'static, R>(f: impl FnOnce(&T) -> R) -> Option<R> {
+    let target = std::any::TypeId::of::<T>();
+    ACTIVE_SCOPE.with(|s| {
+        let stack = s.borrow();
+        // Innermost scope first; within a scope, last-provided wins
+        // (matches "later provision shadows earlier" if a single scope
+        // ever provides the same type twice — undefined but harmless).
+        for &scope_ptr in stack.iter().rev() {
+            let scope = unsafe { &*scope_ptr };
+            for (tid, boxed) in scope.contexts.iter().rev() {
+                if *tid == target {
+                    if let Some(v) = boxed.downcast_ref::<T>() {
+                        return Some(f(v));
+                    }
+                }
+            }
+        }
+        None
+    })
+}
+
+/// Registers a callback to run when the surrounding reactive context
+/// is torn down.
+///
+/// Resolution rules:
+///
+/// - If called from inside an `Effect`'s run, fires **before the next
+///   re-run** and **on effect disposal**. Lets an effect release the
+///   resources it acquired on its previous pass — timers, listeners,
+///   in-flight requests — before the new pass replaces them.
+/// - Otherwise, if called from inside a `Scope` (e.g. a component body
+///   between mount and unmount, outside any effect), fires once when
+///   the scope drops.
+/// - Outside any reactive context, the callback is dropped immediately.
+pub fn on_cleanup<F: FnOnce() + 'static>(f: F) {
+    let mut slot: Option<Box<dyn FnOnce()>> = Some(Box::new(f));
+
+    // Active-effect path: attach to the currently-running effect's
+    // cleanup list so the callback fires on its next re-run / drop.
+    let current_eid = CURRENT.with(|c| *c.borrow());
+    if let Some(eid) = current_eid {
+        ARENA.with(|a| {
+            let mut a = a.borrow_mut();
+            if let Some(Some(any)) = a.effects.get_mut(eid.0 as usize) {
+                if let Some(inner) = any.downcast_mut::<EffectInner>() {
+                    if let Some(cb) = slot.take() {
+                        inner.cleanups.push(cb);
+                    }
+                }
+            }
+        });
+        if slot.is_none() {
+            return;
+        }
+    }
+
+    // Active-scope fallback: attach to the topmost scope's cleanup list.
+    if let Some(cb) = slot.take() {
+        ACTIVE_SCOPE.with(|s| {
+            if let Some(&top) = s.borrow().last() {
+                // SAFETY: ACTIVE_SCOPE pointers are only set while the
+                // referenced Scope is borrowed by `with_scope`, mirroring
+                // `register_signal` / `register_effect` / `adopt_guard`.
+                unsafe { (*top).cleanups.push(cb); }
+            }
+            // No active scope: callback is dropped silently. Matches
+            // Solid's `onCleanup` (top-level call is a no-op).
+        });
+    }
+}
 
 /// Runs `f` with subscription tracking disabled. Any `Signal::get()` calls
 /// inside `f` will return their current value without subscribing the
@@ -445,22 +865,193 @@ impl<T: Clone + 'static> Signal<T> {
     }
 
     pub fn set(&self, value: T) {
+        assert_not_in_memo_compute();
         with_signal_mut::<T, _>(self.id, |inner| {
             inner.value = value;
         });
+        #[cfg(debug_assertions)]
+        record_write_in_running_effect(self.id);
         // Subscriber lists are kept tight on the cleanup side (effect
         // drop / effect re-run), so no pruning pass needed here.
         let to_run = collect_subscribers(self.id);
-        run_effects(&to_run);
+        notify_or_queue(&to_run);
     }
 
     pub fn update<F: FnOnce(&mut T)>(&self, f: F) {
+        assert_not_in_memo_compute();
         with_signal_mut::<T, _>(self.id, |inner| {
             f(&mut inner.value);
         });
+        #[cfg(debug_assertions)]
+        record_write_in_running_effect(self.id);
         let to_run = collect_subscribers(self.id);
-        run_effects(&to_run);
+        notify_or_queue(&to_run);
     }
+}
+
+/// RAII guard that marks the enclosing block as a `memo` compute. While
+/// any guard is live on the current thread, [`Signal::set`] and
+/// [`Signal::update`] panic — preventing the bug where a memo's
+/// supposed-to-be-pure derivation has a side effect that re-enters the
+/// reactive graph during its own read.
+struct MemoComputeGuard;
+
+impl MemoComputeGuard {
+    fn enter() -> Self {
+        MEMO_COMPUTE_DEPTH.with(|d| d.set(d.get() + 1));
+        MemoComputeGuard
+    }
+}
+
+impl Drop for MemoComputeGuard {
+    fn drop(&mut self) {
+        MEMO_COMPUTE_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+    }
+}
+
+/// Panics if called from inside a memo's compute closure. Invoked at
+/// the top of `Signal::set` / `Signal::update` so the failure points at
+/// the offending write, not at the downstream cascade it would have
+/// produced.
+fn assert_not_in_memo_compute() {
+    if MEMO_COMPUTE_DEPTH.with(|d| d.get()) > 0 {
+        panic!(
+            "Signal::set / Signal::update called inside a memo's compute closure. \
+             Memos must be pure derivations of their input signals. \
+             For side effects use an `Effect` or `on(deps, ..)`; \
+             for derived values use additional memos."
+        );
+    }
+}
+
+#[cfg(debug_assertions)]
+mod read_write_audit {
+    //! Debug-only detection of effects that both read AND write the
+    //! same signal. The reentry guard in `run_effect` makes the pattern
+    //! safe (no infinite loop), but it's almost always a sign the
+    //! author wanted `memo` or a guarded write — useful to flag at
+    //! development time.
+    //!
+    //! Implementation: a per-running-effect write list (keyed in a
+    //! thread-local map so nested runs don't collide), checked against
+    //! the effect's recorded read deps at the end of each run. First
+    //! occurrence per `(EffectId, SignalId)` pair on this thread emits
+    //! to stderr; subsequent hits are deduped via `WARNED_PAIRS` so a
+    //! steady-state bridge pattern only logs once.
+
+    use super::*;
+    use std::cell::RefCell;
+    use std::collections::{HashMap, HashSet};
+
+    thread_local! {
+        pub(super) static EFFECT_WRITES: RefCell<HashMap<EffectId, Vec<SignalId>>> =
+            RefCell::new(HashMap::new());
+        pub(super) static WARNED_PAIRS: RefCell<HashSet<(EffectId, SignalId)>> =
+            RefCell::new(HashSet::new());
+    }
+}
+
+/// Records a write to `sid` as having happened during the currently-
+/// running effect (if any). Used by [`run_effect`] to detect the
+/// "effect reads and writes the same signal" smell after the run
+/// completes. Debug builds only — release builds carry zero overhead.
+#[cfg(debug_assertions)]
+fn record_write_in_running_effect(sid: SignalId) {
+    let Some(eid) = CURRENT.with(|c| *c.borrow()) else {
+        return;
+    };
+    read_write_audit::EFFECT_WRITES.with(|w| {
+        w.borrow_mut().entry(eid).or_default().push(sid);
+    });
+}
+
+/// Either runs the listed effects immediately (no batch active) or
+/// appends them to the current batch's pending queue (batch active —
+/// outermost batch drains and runs them when it returns). Called from
+/// `Signal::set` / `Signal::update` instead of `run_effects` directly so
+/// every signal write participates in batching automatically.
+fn notify_or_queue(ids: &[EffectId]) {
+    let batched = BATCH_PENDING.with(|b| {
+        let mut b = b.borrow_mut();
+        if let Some(pending) = b.as_mut() {
+            pending.extend_from_slice(ids);
+            true
+        } else {
+            false
+        }
+    });
+    if !batched {
+        run_effects(ids);
+    }
+}
+
+/// Runs `f` with effect fan-out deferred until `f` returns. Multiple
+/// signal writes inside the closure coalesce into one re-run per
+/// subscribing effect, in first-write order. Nested calls reuse the
+/// outermost batch's queue and don't flush early.
+///
+/// Returns whatever `f` returns. The result of effects fired during the
+/// flush is not exposed — effects don't return values to their
+/// triggering write.
+///
+/// ```ignore
+/// // Without batch: three subscriber fan-outs, intermediate states
+/// // visible.
+/// first.set("Jane");
+/// last.set("Doe");
+/// age.set(34);
+///
+/// // With batch: one fan-out per subscriber, intermediate states
+/// // are not observed by any effect.
+/// batch(|| {
+///     first.set("Jane");
+///     last.set("Doe");
+///     age.set(34);
+/// });
+/// ```
+pub fn batch<R>(f: impl FnOnce() -> R) -> R {
+    // Only the outermost batch owns the queue. Nested batches see
+    // `Some(_)` already in place and skip the install — when the outer
+    // returns, it drains everything written across all nested batches
+    // in one pass.
+    let is_outer = BATCH_PENDING.with(|b| {
+        let mut b = b.borrow_mut();
+        if b.is_none() {
+            *b = Some(Vec::new());
+            true
+        } else {
+            false
+        }
+    });
+
+    let result = f();
+
+    if is_outer {
+        // Take the queue out and clear the slot *before* running
+        // effects. An effect's body can call set() — that write should
+        // see `BATCH_PENDING = None` (the batch is over) and fan out
+        // synchronously, not append to a queue we're already draining.
+        let mut pending = BATCH_PENDING
+            .with(|b| b.borrow_mut().take())
+            .unwrap_or_default();
+
+        if !pending.is_empty() {
+            // Dedupe while preserving first-seen order so the user can
+            // reason about ordering (writes earliest in the batch run
+            // their effects first). For typical batch sizes (a handful
+            // of writes), the linear `contains` is cheaper than
+            // allocating a HashSet.
+            let mut ordered: Vec<EffectId> = Vec::with_capacity(pending.len());
+            for eid in pending.drain(..) {
+                if !ordered.contains(&eid) {
+                    ordered.push(eid);
+                }
+            }
+            run_effects(&ordered);
+        }
+    }
+
+    result
 }
 
 /// Snapshot the current subscribers of `sid` into a `Vec` so we can
@@ -550,12 +1141,57 @@ impl Effect {
     /// no-op and the slot is freed when the scope drops. If no scope is
     /// active, the returned handle owns the slot directly.
     pub fn new<F: FnMut() + 'static>(f: F) -> Self {
+        // Capture the owner chain at creation time so re-runs can
+        // restore it. `with_scope` keeps these pointers valid for as
+        // long as each scope is held by an outer call frame.
+        let owning_stack: Vec<*mut Scope> =
+            ACTIVE_SCOPE.with(|s| s.borrow().clone());
         let id = ARENA.with(|a| {
-            a.borrow_mut().insert_effect(EffectInner { run: Box::new(f) })
+            a.borrow_mut().insert_effect(EffectInner {
+                run: Box::new(f),
+                cleanups: Vec::new(),
+                owning_stack,
+            })
         });
         let registered = register_effect(id);
         run_effect(id);
         Effect { id, owns: !registered }
+    }
+}
+
+/// Transitive run-stack depth above which `run_effect` panics. Catches
+/// the mutual-loop case (A writes B, B writes A, …) before it
+/// stack-overflows. Tuned high enough that legitimately deep dependency
+/// graphs don't trip it, low enough that the offending stack frames are
+/// still recognizable in a panic backtrace.
+const MAX_EFFECT_DEPTH: u32 = 256;
+
+/// RAII guard that increments [`EFFECT_DEPTH`] on creation and
+/// decrements on drop. Drop runs on unwind too, so a user-code panic
+/// inside an effect doesn't leave the counter stuck high.
+struct DepthGuard;
+
+impl DepthGuard {
+    /// Enter a new effect-run frame. Returns the post-increment depth so
+    /// the caller can compare against [`MAX_EFFECT_DEPTH`]. The guard is
+    /// returned regardless — if the caller decides to panic, dropping
+    /// the guard during unwind still restores the counter.
+    fn enter() -> (Self, u32) {
+        let depth = EFFECT_DEPTH.with(|d| {
+            let mut d = d.borrow_mut();
+            *d += 1;
+            *d
+        });
+        (DepthGuard, depth)
+    }
+}
+
+impl Drop for DepthGuard {
+    fn drop(&mut self) {
+        EFFECT_DEPTH.with(|d| {
+            let mut d = d.borrow_mut();
+            *d = d.saturating_sub(1);
+        });
     }
 }
 
@@ -582,6 +1218,39 @@ fn run_effect(id: EffectId) {
         return;
     }
 
+    // Transitive-depth guard. Different-id reentry is legitimate (effect
+    // A's write triggers effect B, which reads other signals), so the
+    // same-id `RUNNING` set above doesn't catch mutual loops. Count the
+    // nesting depth here and panic loudly above a threshold so an
+    // unintentional A↔B cycle produces a useful error instead of a stack
+    // overflow.
+    let (_depth_guard, depth) = DepthGuard::enter();
+    if depth > MAX_EFFECT_DEPTH {
+        panic!(
+            "effect run depth exceeded {} — likely a mutual signal/effect cycle. \
+             Check for two or more effects that read and write each other's signals.",
+            MAX_EFFECT_DEPTH
+        );
+    }
+
+    // Fire any cleanup callbacks registered during the previous run
+    // before recording fresh deps. They run in LIFO order to mirror
+    // typical resource-acquisition order. Drained out under the arena
+    // borrow so the callbacks themselves can re-borrow the arena to
+    // read or write signals.
+    let prev_cleanups: Vec<Box<dyn FnOnce()>> = ARENA.with(|a| {
+        let mut a = a.borrow_mut();
+        a.effects
+            .get_mut(id.0 as usize)
+            .and_then(|o| o.as_mut())
+            .and_then(|slot| slot.downcast_mut::<EffectInner>())
+            .map(|inner| std::mem::take(&mut inner.cleanups))
+            .unwrap_or_default()
+    });
+    for cb in prev_cleanups.into_iter().rev() {
+        cb();
+    }
+
     // Drop any subscriptions recorded by the previous run before we
     // collect this run's set. Without this, a re-run that reads a
     // *different* set of signals would leave stale `eid` entries in
@@ -590,21 +1259,47 @@ fn run_effect(id: EffectId) {
     // an effect that doesn't care about it.
     clear_effect_dependencies(id);
 
-    let mut run_fn: Option<Box<dyn FnMut()>> = ARENA.with(|a| {
-        let mut a = a.borrow_mut();
-        let slot = a.effects.get_mut(id.0 as usize)?.as_mut()?;
-        let inner = slot.downcast_mut::<EffectInner>()?;
-        // Replace with a no-op while we run, to detect re-entry and avoid
-        // a double-borrow of the arena. We restore the original afterward.
-        Some(std::mem::replace(&mut inner.run, Box::new(|| {})))
-    });
+    // Take the closure out AND clone the owning-scope snapshot under
+    // a single arena borrow. Two reasons: (a) we need the snapshot to
+    // restore the scope stack before f() runs, and reading it under
+    // the same borrow keeps the arena access cheap; (b) f() will
+    // re-enter the arena to read/write signals, so we can't hold the
+    // borrow across the call.
+    let (mut run_fn, owning_stack): (Option<Box<dyn FnMut()>>, Vec<*mut Scope>) =
+        ARENA.with(|a| {
+            let mut a = a.borrow_mut();
+            let Some(Some(slot)) = a.effects.get_mut(id.0 as usize) else {
+                return (None, Vec::new());
+            };
+            let Some(inner) = slot.downcast_mut::<EffectInner>() else {
+                return (None, Vec::new());
+            };
+            let run = std::mem::replace(&mut inner.run, Box::new(|| {}));
+            let stack = inner.owning_stack.clone();
+            (Some(run), stack)
+        });
     if let Some(f) = run_fn.as_mut() {
         RUNNING.with(|r| {
             r.borrow_mut().insert(id);
         });
+        // Restore the owner chain so `inject` etc. walk the scopes
+        // active when this effect was created — not whatever scopes
+        // happen to be on the stack when the triggering signal write
+        // fired. Reversed by the matching pop below.
+        let pushed = owning_stack.len();
+        if pushed > 0 {
+            ACTIVE_SCOPE.with(|s| s.borrow_mut().extend_from_slice(&owning_stack));
+        }
         let prev = CURRENT.with(|c| c.replace(Some(id)));
         f();
         CURRENT.with(|c| *c.borrow_mut() = prev);
+        if pushed > 0 {
+            ACTIVE_SCOPE.with(|s| {
+                let mut s = s.borrow_mut();
+                let new_len = s.len() - pushed;
+                s.truncate(new_len);
+            });
+        }
         RUNNING.with(|r| {
             r.borrow_mut().remove(&id);
         });
@@ -618,6 +1313,63 @@ fn run_effect(id: EffectId) {
                 }
             }
         });
+
+        #[cfg(debug_assertions)]
+        audit_effect_read_write_overlap(id);
+    }
+}
+
+/// Compares the set of signals this effect just *wrote* against the set
+/// of signals it just *read* (its dep set). Any signal appearing in
+/// both is logged once per `(EffectId, SignalId)` pair to stderr — it's
+/// almost always a sign the author wanted `memo` for a derived value
+/// or a guarded write. The reentry guard makes the pattern safe at
+/// runtime, so this is advisory, not fatal.
+///
+/// Debug builds only — release builds compile out the write tracking
+/// and this function. No allocation on the happy path (effect didn't
+/// write anything).
+#[cfg(debug_assertions)]
+fn audit_effect_read_write_overlap(id: EffectId) {
+    use read_write_audit::{EFFECT_WRITES, WARNED_PAIRS};
+
+    // Pop the write list for this effect's just-completed run. If the
+    // effect didn't write anything, there's nothing to check.
+    let writes: Vec<SignalId> = EFFECT_WRITES
+        .with(|w| w.borrow_mut().remove(&id))
+        .unwrap_or_default();
+    if writes.is_empty() {
+        return;
+    }
+
+    // Snapshot the post-run dep set. The arena borrow is held briefly;
+    // we collect into a Vec before releasing it because the eprintln
+    // calls below shouldn't run under an arena borrow.
+    let deps: Vec<SignalId> = ARENA.with(|a| {
+        let a = a.borrow();
+        a.effect_dependencies
+            .get(id.0 as usize)
+            .map(|d| d.iter().copied().collect())
+            .unwrap_or_default()
+    });
+    if deps.is_empty() {
+        return;
+    }
+
+    for sid in writes {
+        if !deps.contains(&sid) {
+            continue;
+        }
+        let is_new = WARNED_PAIRS.with(|w| w.borrow_mut().insert((id, sid)));
+        if is_new {
+            eprintln!(
+                "[framework-core] effect {:?} both reads AND writes signal {:?}. \
+                 This terminates safely (reentry guard) but is usually a bug — \
+                 consider `memo` for derived values, or guard the write with an \
+                 inequality check if it's an intentional bridge.",
+                id, sid
+            );
+        }
     }
 }
 
@@ -781,6 +1533,19 @@ pub(crate) struct Scope {
     signals: Vec<SignalId>,
     effects: Vec<EffectId>,
     refs: Vec<RefId>,
+    /// Callbacks registered via `on_cleanup` from inside the scope
+    /// but outside any active effect. Fired (LIFO) at the very top of
+    /// `Scope::drop`, before signals/effects/refs/guards are torn
+    /// down, so a callback can still read or write into the scope's
+    /// reactive state.
+    pub(crate) cleanups: Vec<Box<dyn FnOnce()>>,
+    /// Ambient context values provided via `provide(value)`, keyed by
+    /// the value's Rust type. Descendant scopes inherit lookups via
+    /// `inject<T>` walking the active scope stack. Stored as a `Vec`
+    /// rather than a `HashMap` because typical scopes provide 0–3
+    /// values and linear search wins at that size — also lets `provide`
+    /// push without rehashing.
+    pub(crate) contexts: Vec<(std::any::TypeId, Box<dyn Any>)>,
     /// Boxed RAII guards adopted by the scope. Used by the
     /// static-style path so a styled node can register a cleanup
     /// (cohort unregister + backend on_node_unstyled) without
@@ -793,7 +1558,14 @@ pub(crate) struct Scope {
 impl Scope {
     #[allow(dead_code)]
     pub(crate) fn new() -> Self {
-        Self { signals: Vec::new(), effects: Vec::new(), refs: Vec::new(), guards: Vec::new() }
+        Self {
+            signals: Vec::new(),
+            effects: Vec::new(),
+            refs: Vec::new(),
+            cleanups: Vec::new(),
+            contexts: Vec::new(),
+            guards: Vec::new(),
+        }
     }
 
     /// Adopt an arbitrary RAII guard into the scope. The guard's
@@ -818,6 +1590,18 @@ impl Scope {
 
 impl Drop for Scope {
     fn drop(&mut self) {
+        // Fire scope-level cleanups first, while every signal/effect
+        // owned by this scope is still live — the callbacks may
+        // legitimately read or write into them. Same reason effects
+        // drain before signals later in this function: cleanup work
+        // gets to assume the scope's reactive state still exists.
+        // Effect-level cleanups fire separately, from EffectInner's
+        // own Drop impl during the effect-drain below.
+        let scope_cleanups: Vec<Box<dyn FnOnce()>> = self.cleanups.drain(..).collect();
+        for cb in scope_cleanups.into_iter().rev() {
+            cb();
+        }
+
         // Take each slot's contents out under the ARENA borrow, then
         // drop them after releasing the borrow. The contents of an
         // EffectInner can transitively own *nested* Scopes (via
@@ -1159,6 +1943,642 @@ mod tests {
             "effect must fire again after the second value.set — before \
              the fix this was the broken case"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // Context (provide / inject)
+    // -----------------------------------------------------------------
+
+    #[derive(Clone, Debug, PartialEq)]
+    struct Theme(&'static str);
+
+    #[derive(Clone, Debug, PartialEq)]
+    struct Locale(&'static str);
+
+    #[test]
+    fn inject_returns_none_without_provider() {
+        let mut scope = Scope::new();
+        let result: Option<Theme> = with_scope(&mut scope, || inject::<Theme>());
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn provide_then_inject_in_same_scope() {
+        let mut scope = Scope::new();
+        let result = with_scope(&mut scope, || {
+            provide(Theme("dark"));
+            inject::<Theme>()
+        });
+        assert_eq!(result, Some(Theme("dark")));
+    }
+
+    #[test]
+    fn inject_finds_outer_provision_from_inner_scope() {
+        let mut outer = Scope::new();
+        let result = with_scope(&mut outer, || {
+            provide(Theme("dark"));
+            let mut inner = Scope::new();
+            with_scope(&mut inner, || inject::<Theme>())
+        });
+        assert_eq!(result, Some(Theme("dark")));
+    }
+
+    #[test]
+    fn inner_provision_shadows_outer() {
+        let mut outer = Scope::new();
+        let result = with_scope(&mut outer, || {
+            provide(Theme("light"));
+            let mut inner = Scope::new();
+            let inner_result = with_scope(&mut inner, || {
+                provide(Theme("dark"));
+                inject::<Theme>()
+            });
+            // After inner scope drops, the inner provision is gone —
+            // outer's "light" is visible again.
+            let outer_after = inject::<Theme>();
+            (inner_result, outer_after)
+        });
+        assert_eq!(result, (Some(Theme("dark")), Some(Theme("light"))));
+    }
+
+    #[test]
+    fn different_types_coexist() {
+        let mut scope = Scope::new();
+        let (theme, locale) = with_scope(&mut scope, || {
+            provide(Theme("dark"));
+            provide(Locale("ja-JP"));
+            (inject::<Theme>(), inject::<Locale>())
+        });
+        assert_eq!(theme, Some(Theme("dark")));
+        assert_eq!(locale, Some(Locale("ja-JP")));
+    }
+
+    #[test]
+    fn provision_dies_with_scope() {
+        let mut scope = Scope::new();
+        with_scope(&mut scope, || provide(Theme("dark")));
+        drop(scope);
+        // No active scope at all → inject returns None (also exercises
+        // the no-active-scope branch in inject).
+        assert_eq!(inject::<Theme>(), None);
+    }
+
+    #[test]
+    fn inject_or_falls_back_to_default() {
+        let mut scope = Scope::new();
+        let value = with_scope(&mut scope, || inject_or(Theme("default")));
+        assert_eq!(value, Theme("default"));
+    }
+
+    #[test]
+    fn with_inject_reads_by_reference() {
+        // Use a non-Clone type to prove `with_inject` doesn't need
+        // Clone — only `inject` / `inject_or` do.
+        struct NonClone(i32);
+        let mut scope = Scope::new();
+        let result: Option<i32> = with_scope(&mut scope, || {
+            provide(NonClone(42));
+            with_inject::<NonClone, _>(|v| v.0)
+        });
+        assert_eq!(result, Some(42));
+    }
+
+    #[test]
+    fn provided_signal_is_reactive_for_descendants() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        // The classic theme-switch pattern: provide a Signal<Theme>;
+        // descendant effects subscribe by reading `.get()`.
+        let mut scope = Scope::new();
+        let observed = Rc::new(Cell::new(""));
+        let theme_signal = with_scope(&mut scope, || {
+            let theme = Signal::new("light");
+            provide(theme);
+            let obs = observed.clone();
+            let _e = Effect::new(move || {
+                let t = inject::<Signal<&'static str>>().expect("provided above");
+                obs.set(t.get());
+            });
+            theme
+        });
+        assert_eq!(observed.get(), "light");
+        theme_signal.set("dark");
+        assert_eq!(observed.get(), "dark", "descendant must see signal updates");
+    }
+
+    #[test]
+    #[should_panic(expected = "outside any active reactive scope")]
+    fn provide_outside_scope_panics() {
+        provide(Theme("nope"));
+    }
+
+    #[test]
+    #[should_panic(expected = "memo's compute closure")]
+    fn provide_inside_memo_compute_panics() {
+        // `provide` is a side effect that would attach to the
+        // memo-creation scope and accumulate duplicates on each
+        // recompute. Same guard as `Signal::set`.
+        let trigger = Signal::new(0i32);
+        let _m = memo(move || {
+            let _ = trigger.get();
+            provide(Theme("dark")); // ← violation
+            7
+        });
+    }
+
+    // -----------------------------------------------------------------
+    // Memo write-during-compute: hard panic
+    // -----------------------------------------------------------------
+
+    #[test]
+    #[should_panic(expected = "memo's compute closure")]
+    fn memo_write_during_compute_panics() {
+        // A memo whose compute closure writes to a signal — the panic
+        // points at the offending write, not the downstream cascade.
+        let trigger = Signal::new(0i32);
+        let side = Signal::new(0i32);
+        let _m = memo(move || {
+            let _ = trigger.get();
+            side.set(42); // ← violation
+            7
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "memo's compute closure")]
+    fn memo_update_during_compute_panics() {
+        // `update` goes through the same guard as `set`.
+        let trigger = Signal::new(0i32);
+        let side = Signal::new(0i32);
+        let _m = memo(move || {
+            let _ = trigger.get();
+            side.update(|v| *v += 1);
+            7
+        });
+    }
+
+    #[test]
+    fn memo_writing_to_own_output_signal_does_not_panic() {
+        // Sanity: the memo's internal `signal.set(new)` (when the
+        // computed value differs from `last`) must not be caught by the
+        // guard. The guard scope is tight to the user's `f()` only.
+        let source = Signal::new(1i32);
+        let mut scope = Scope::new();
+        let m = with_scope(&mut scope, || memo(move || source.get() * 2));
+        assert_eq!(m.get(), 2);
+        source.set(5);
+        assert_eq!(m.get(), 10, "memo updates its output signal normally");
+    }
+
+    // -----------------------------------------------------------------
+    // Read+write-same-signal audit (debug-only)
+    // -----------------------------------------------------------------
+
+    #[cfg(debug_assertions)]
+    fn warned_pairs_count() -> usize {
+        super::read_write_audit::WARNED_PAIRS.with(|w| w.borrow().len())
+    }
+
+    #[cfg(debug_assertions)]
+    fn clear_warned_pairs() {
+        super::read_write_audit::WARNED_PAIRS.with(|w| w.borrow_mut().clear());
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn effect_reading_and_writing_same_signal_warns_once() {
+        clear_warned_pairs();
+        let before = warned_pairs_count();
+        let s = Signal::new(0i32);
+        let _e = Effect::new(move || {
+            // Read then unconditionally write — the canonical smell.
+            let v = s.get();
+            s.set(v + 1);
+        });
+        // First run logged exactly one new pair.
+        assert_eq!(
+            warned_pairs_count(),
+            before + 1,
+            "read-then-write produces one new warning on the first run"
+        );
+        // External writes re-fire the effect; the same pair must not
+        // produce additional warnings (dedup).
+        s.set(50);
+        s.set(60);
+        assert_eq!(
+            warned_pairs_count(),
+            before + 1,
+            "subsequent runs of the same effect on the same signal must dedup"
+        );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn effect_only_reading_does_not_warn() {
+        clear_warned_pairs();
+        let before = warned_pairs_count();
+        let s = Signal::new(0i32);
+        let _e = Effect::new(move || {
+            let _ = s.get();
+        });
+        s.set(5);
+        assert_eq!(warned_pairs_count(), before, "read-only effect must not warn");
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn effect_only_writing_does_not_warn() {
+        clear_warned_pairs();
+        let before = warned_pairs_count();
+        let s = Signal::new(0i32);
+        let _e = Effect::new(move || {
+            // No read of `s` → no dep → no overlap.
+            s.set(99);
+        });
+        assert_eq!(warned_pairs_count(), before, "write-only effect must not warn");
+    }
+
+    // -----------------------------------------------------------------
+    // batch()
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn batch_coalesces_fan_out_to_one_run_per_effect() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let a = Signal::new(0i32);
+        let b = Signal::new(0i32);
+        let runs = Rc::new(Cell::new(0));
+        let r = runs.clone();
+        let _e = Effect::new(move || {
+            let _ = a.get() + b.get();
+            r.set(r.get() + 1);
+        });
+        assert_eq!(runs.get(), 1, "effect runs once on creation");
+
+        batch(|| {
+            a.set(5);
+            b.set(7);
+            a.set(8);
+        });
+        assert_eq!(
+            runs.get(),
+            2,
+            "three writes inside a batch produce one re-run, not three"
+        );
+    }
+
+    #[test]
+    fn batch_nested_only_flushes_at_outermost() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let a = Signal::new(0i32);
+        let runs = Rc::new(Cell::new(0));
+        let r = runs.clone();
+        let _e = Effect::new(move || {
+            let _ = a.get();
+            r.set(r.get() + 1);
+        });
+        assert_eq!(runs.get(), 1);
+
+        batch(|| {
+            a.set(1);
+            // Inner batch must not flush — the outer should keep
+            // collecting and fire `_e` exactly once at its own end.
+            batch(|| {
+                a.set(2);
+            });
+            assert_eq!(runs.get(), 1, "no flush during inner batch");
+            a.set(3);
+        });
+        assert_eq!(runs.get(), 2, "outermost batch flushes once at exit");
+    }
+
+    #[test]
+    fn batch_returns_inner_result() {
+        let value = batch(|| 42);
+        assert_eq!(value, 42);
+    }
+
+    // -----------------------------------------------------------------
+    // Cycle / depth detection
+    // -----------------------------------------------------------------
+
+    #[test]
+    #[should_panic(expected = "effect run depth exceeded")]
+    fn deep_effect_chain_panics_at_depth_threshold() {
+        // The same-id reentry guard already prevents an effect from
+        // looping on itself, and incidentally catches small mutual
+        // cycles (A↔B) because the cycle revisits an effect already on
+        // the stack. The depth guard exists for cases reentry doesn't
+        // cover: long synchronous *chains* of distinct effects, where
+        // no single effect repeats but the cascade depth is unbounded.
+        //
+        // Construct N forwarding effects (read signals[i], write
+        // signals[i+1]). Setting signals[0] cascades the full length;
+        // past MAX_EFFECT_DEPTH (256) the depth guard panics with the
+        // expected message instead of stack-overflowing.
+        const N: usize = 280;
+        let signals: Vec<Signal<i32>> = (0..N).map(|_| Signal::new(0i32)).collect();
+        let mut effects: Vec<Effect> = Vec::with_capacity(N - 1);
+        for i in 0..(N - 1) {
+            let read = signals[i];
+            let write = signals[i + 1];
+            // Wrap each effect's first-run write so the initial fan-out
+            // from setup doesn't trigger the cascade prematurely — only
+            // the explicit set() below should kick it off.
+            let mut first = true;
+            let e = Effect::new(move || {
+                let v = read.get();
+                if first {
+                    first = false;
+                    return;
+                }
+                write.set(v + 1);
+            });
+            effects.push(e);
+        }
+        signals[0].set(1);
+    }
+
+    // -----------------------------------------------------------------
+    // memo()
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn memo_caches_and_skips_equal_notifications() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let source = Signal::new(0i32);
+
+        // Memo: count whether the input is over 10.
+        let mut scope = Scope::new();
+        let runs = Rc::new(Cell::new(0));
+        let m = with_scope(&mut scope, || {
+            let m = memo(move || source.get() > 10);
+            let r = runs.clone();
+            let _e = Effect::new(move || {
+                let _ = m.get();
+                r.set(r.get() + 1);
+            });
+            m
+        });
+        // Initial: subscriber ran once, memo value is `false`.
+        assert_eq!(runs.get(), 1);
+        assert_eq!(m.get(), false);
+
+        // Bump source within "false" range — memo recomputes but value
+        // stays `false`, so subscriber must NOT re-fire.
+        source.set(5);
+        assert_eq!(m.get(), false);
+        assert_eq!(
+            runs.get(),
+            1,
+            "memo gates equal results — subscriber must not re-run"
+        );
+
+        source.set(7);
+        assert_eq!(runs.get(), 1, "still false → still gated");
+
+        // Cross the threshold: memo flips, subscriber sees the change.
+        source.set(11);
+        assert_eq!(m.get(), true);
+        assert_eq!(runs.get(), 2, "subscriber fires when memo's value actually changes");
+
+        // Back below threshold: flips again, subscriber fires again.
+        source.set(3);
+        assert_eq!(m.get(), false);
+        assert_eq!(runs.get(), 3);
+    }
+
+    #[test]
+    fn memo_recomputes_once_per_dep_change_regardless_of_subscriber_count() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let source = Signal::new(1i32);
+        let compute_count = Rc::new(Cell::new(0));
+        let c = compute_count.clone();
+        let m = memo(move || {
+            c.set(c.get() + 1);
+            source.get() * 2
+        });
+        // Three independent readers of the same memo.
+        let _e1 = Effect::new(move || {
+            let _ = m.get();
+        });
+        let _e2 = Effect::new(move || {
+            let _ = m.get();
+        });
+        let _e3 = Effect::new(move || {
+            let _ = m.get();
+        });
+        let after_setup = compute_count.get();
+
+        source.set(5);
+        assert_eq!(
+            compute_count.get(),
+            after_setup + 1,
+            "memo recomputes once per dep change even when three subscribers exist"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // on() / on_defer()
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn on_passes_new_and_previous_values() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let count = Signal::new(0i32);
+        let log: Rc<RefCell<Vec<(i32, Option<i32>)>>> = Rc::new(RefCell::new(Vec::new()));
+        let l = log.clone();
+        let _e = on(count, move |new, prev| {
+            l.borrow_mut().push((*new, prev.copied()));
+        });
+        // Initial fire: prev is None.
+        count.set(5);
+        count.set(7);
+        let recorded = log.borrow().clone();
+        assert_eq!(
+            recorded,
+            vec![(0, None), (5, Some(0)), (7, Some(5))],
+            "on() must thread (current, previous) across runs"
+        );
+    }
+
+    #[test]
+    fn on_tuple_subscribes_to_every_member() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let first = Signal::new("Jane".to_string());
+        let last = Signal::new("Doe".to_string());
+        let fires = Rc::new(Cell::new(0));
+        let f = fires.clone();
+        let _e = on((first, last), move |_new, _prev| {
+            f.set(f.get() + 1);
+        });
+        assert_eq!(fires.get(), 1, "initial fire");
+        first.set("Janet".to_string());
+        assert_eq!(fires.get(), 2);
+        last.set("Smith".to_string());
+        assert_eq!(fires.get(), 3);
+    }
+
+    #[test]
+    fn on_defer_skips_initial_run() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let count = Signal::new(0i32);
+        let fires = Rc::new(Cell::new(0));
+        let f = fires.clone();
+        let _e = on_defer(count, move |_new, _prev| {
+            f.set(f.get() + 1);
+        });
+        assert_eq!(fires.get(), 0, "on_defer must not fire on creation");
+        count.set(1);
+        assert_eq!(fires.get(), 1, "first change after creation fires");
+        count.set(2);
+        assert_eq!(fires.get(), 2);
+    }
+
+    #[test]
+    fn on_body_reads_do_not_subscribe() {
+        // Body reads `other` but `other` is not in the deps tuple — only
+        // `trigger` should re-fire the effect.
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let trigger = Signal::new(0i32);
+        let other = Signal::new(0i32);
+        let fires = Rc::new(Cell::new(0));
+        let f = fires.clone();
+        let _e = on(trigger, move |_new, _prev| {
+            let _shielded = other.get();
+            f.set(f.get() + 1);
+        });
+        assert_eq!(fires.get(), 1, "initial");
+        other.set(99);
+        assert_eq!(
+            fires.get(),
+            1,
+            "writes to a signal read inside the body but not in deps must not fire"
+        );
+        trigger.set(1);
+        assert_eq!(fires.get(), 2, "writes to a dep do fire");
+    }
+
+    #[test]
+    fn effect_macro_runs_and_rebinds_in_scope() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let count = Signal::new(0i32);
+        let runs = Rc::new(Cell::new(0));
+        let r = runs.clone();
+        let mut scope = Scope::new();
+        with_scope(&mut scope, || {
+            crate::effect!({
+                let _ = count.get();
+                r.set(r.get() + 1);
+            });
+        });
+        assert_eq!(runs.get(), 1);
+        count.set(7);
+        assert_eq!(runs.get(), 2, "macro-built effect should re-fire on signal change");
+        // Scope drop disposes the effect.
+        drop(scope);
+        count.set(8);
+        assert_eq!(runs.get(), 2, "effect should not fire after its scope drops");
+    }
+
+    #[test]
+    fn on_cleanup_fires_before_effect_rerun() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let trigger = Signal::new(0i32);
+        let cleanup_count = Rc::new(Cell::new(0));
+        let run_count = Rc::new(Cell::new(0));
+        let c = cleanup_count.clone();
+        let r = run_count.clone();
+        let _e = Effect::new(move || {
+            let _ = trigger.get();
+            r.set(r.get() + 1);
+            let c2 = c.clone();
+            on_cleanup(move || {
+                c2.set(c2.get() + 1);
+            });
+        });
+        // First run: 1 run, 0 cleanups so far.
+        assert_eq!(run_count.get(), 1);
+        assert_eq!(cleanup_count.get(), 0);
+
+        // Re-run drains the previous cleanup and registers a new one.
+        trigger.set(1);
+        assert_eq!(run_count.get(), 2);
+        assert_eq!(cleanup_count.get(), 1);
+
+        trigger.set(2);
+        assert_eq!(run_count.get(), 3);
+        assert_eq!(cleanup_count.get(), 2);
+    }
+
+    #[test]
+    fn on_cleanup_fires_on_effect_drop() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let cleanup_count = Rc::new(Cell::new(0));
+        let c = cleanup_count.clone();
+        let e = Effect::new(move || {
+            let c2 = c.clone();
+            on_cleanup(move || {
+                c2.set(c2.get() + 1);
+            });
+        });
+        assert_eq!(cleanup_count.get(), 0);
+        drop(e);
+        assert_eq!(cleanup_count.get(), 1);
+    }
+
+    #[test]
+    fn on_cleanup_attaches_to_scope_outside_effect() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let cleanup_count = Rc::new(Cell::new(0));
+        let c = cleanup_count.clone();
+        let mut scope = Scope::new();
+        with_scope(&mut scope, || {
+            on_cleanup(move || {
+                c.set(c.get() + 1);
+            });
+        });
+        assert_eq!(cleanup_count.get(), 0);
+        drop(scope);
+        assert_eq!(cleanup_count.get(), 1);
+    }
+
+    #[test]
+    fn on_cleanup_outside_any_context_is_noop() {
+        // Just verify nothing panics. The callback is dropped silently;
+        // any side effect from its destructor is the test signal.
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let dropped = Rc::new(Cell::new(false));
+        let d = dropped.clone();
+        on_cleanup(move || { /* unused */ });
+        // The closure captures nothing observable; we just check this
+        // didn't panic. For a second pass, register a closure that
+        // *does* observe its drop:
+        struct Witness(Rc<Cell<bool>>);
+        impl Drop for Witness {
+            fn drop(&mut self) {
+                self.0.set(true);
+            }
+        }
+        let w = Witness(d);
+        on_cleanup(move || {
+            let _hold = w;
+        });
+        // No context → callback dropped synchronously → Witness drops now.
+        assert!(dropped.get());
     }
 
     #[test]

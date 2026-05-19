@@ -23,6 +23,11 @@ pub mod styles;
 pub mod wgpu_native_api;
 pub mod writing_a_backend;
 
+// Hand-built — embeds the `Simulator` component for a live preview.
+// The `docs!` macro only emits text-flavored blocks, so a page with
+// a custom `Primitive` in the middle is built directly.
+pub mod simulator_demo;
+
 // Pages still hand-built. To be migrated to the `docs!` macro when
 // their markdown drafts are written.
 pub mod cli;

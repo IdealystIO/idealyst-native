@@ -11,7 +11,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use framework_core::{render, Primitive, TextSource};
+use framework_core::{render, IntoAction, Primitive, TextSource};
 use dev_server::WireRecordingBackend;
 
 fn main() {
@@ -36,13 +36,15 @@ fn main() {
                 style: None,
                 ref_fill: None,
                 safe_area_sides: framework_core::SafeAreaSides::NONE,
+                on_touch: None,
                 test_id: None,
             },
             Primitive::Button {
                 label: TextSource::Static("Press me".into()),
-                on_click: Rc::new(|| {
+                on_click: (|| {
                     println!("(dev) button fired — would mutate a signal");
-                }),
+                })
+                .into_action(),
                 leading_icon: None,
                 trailing_icon: None,
                 style: None,
@@ -54,6 +56,7 @@ fn main() {
         style: None,
         ref_fill: None,
         safe_area_sides: framework_core::SafeAreaSides::NONE,
+        on_touch: None,
         test_id: None,
     };
 

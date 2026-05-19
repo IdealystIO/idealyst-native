@@ -1,0 +1,23 @@
+[package]
+name = "port-tsx"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Shared TSX parser + IR lifter for the TSX-input porters
+# (`port-react`, `port-solid`).
+#
+# Owns the swc integration so each frontend doesn't reinvent it.
+# Exposes a `Lifter` trait — frontends plug in their own reactive-
+# primitive recognition (`useState` vs `createSignal` etc.) while
+# everything else (JSX → JsxNode, TS prop type → Rust type,
+# component discovery, identifier rewriting) is shared.
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+port-core = { path = "../core" }
+swc_common = "21"
+swc_ecma_ast = "23"
+swc_ecma_parser = "39"

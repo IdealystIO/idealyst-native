@@ -23,9 +23,10 @@
 
 use backend_roku::method;
 use framework_core::{
-    install_themes, signal, stylesheet, ui, AlignItems, Color, FlexDirection, FontWeight,
-    JustifyContent, Length, Primitive, Signal, ThemeTokens, TokenEntry, TokenValue, Tokenized,
+    signal, stylesheet, ui, AlignItems, Color, FlexDirection, FontWeight,
+    JustifyContent, Length, Primitive, Signal, Tokenized,
 };
+use framework_theme::{install_themes, ThemeTokens, TokenEntry, TokenValue};
 
 // ---------------------------------------------------------------------------
 // Theme
@@ -99,7 +100,7 @@ impl ThemeTokens for Theme {
 
 stylesheet! {
     pub Page<Theme> {
-        base(t) {
+        base(_t) {
             flex_direction: FlexDirection::Column,
             gap: Length::Px(24.0),
             // TV safe zone — Roku design guidelines recommend 5%
@@ -114,27 +115,27 @@ stylesheet! {
             padding_right: Length::Px(80.0),
             align_items: AlignItems::Center,
             justify_content: JustifyContent::FlexStart,
-            background: t.bg.clone(),
+            background: Tokenized::token("page-bg", Color("#FFFFFF".into())),
         }
     }
 }
 
 stylesheet! {
     pub Title<Theme> {
-        base(t) {
+        base(_t) {
             font_size: Length::Px(40.0),
             font_weight: FontWeight::Bold,
-            color: t.fg.clone(),
+            color: Tokenized::token("page-fg", Color("#1A1A1F".into())),
         }
     }
 }
 
 stylesheet! {
     pub Counter<Theme> {
-        base(t) {
+        base(_t) {
             font_size: Length::Px(140.0),
             font_weight: FontWeight::Bold,
-            color: t.accent.clone(),
+            color: Tokenized::token("accent", Color("#FFCC00".into())),
         }
     }
 }
@@ -151,19 +152,19 @@ stylesheet! {
 
 stylesheet! {
     pub MetaKey<Theme> {
-        base(t) {
+        base(_t) {
             font_size: Length::Px(28.0),
-            color: t.muted.clone(),
+            color: Tokenized::token("muted", Color("#6B7280".into())),
         }
     }
 }
 
 stylesheet! {
     pub MetaValue<Theme> {
-        base(t) {
+        base(_t) {
             font_size: Length::Px(32.0),
             font_weight: FontWeight::SemiBold,
-            color: t.fg.clone(),
+            color: Tokenized::token("page-fg", Color("#1A1A1F".into())),
         }
     }
 }
@@ -218,11 +219,11 @@ stylesheet! {
 // accent color (fallback baked into the BS at snapshot time).
 stylesheet! {
     pub RepeatRow<Theme> {
-        base(t) {
+        base(_t) {
             font_size: Length::Px(96.0),
             font_weight: FontWeight::Bold,
-            color: t.bg.clone(),
-            background: t.accent.clone(),
+            color: Tokenized::token("page-bg", Color("#FFFFFF".into())),
+            background: Tokenized::token("accent", Color("#FFCC00".into())),
         }
     }
 }
@@ -231,9 +232,9 @@ stylesheet! {
 // "Recently Added", etc.
 stylesheet! {
     pub RowLabel<Theme> {
-        base(t) {
+        base(_t) {
             font_size: Length::Px(40.0),
-            color: t.fg.clone(),
+            color: Tokenized::token("page-fg", Color("#1A1A1F".into())),
             font_weight: FontWeight::Bold,
         }
     }
@@ -255,20 +256,20 @@ stylesheet! {
 // `.visible` between them.
 stylesheet! {
     pub BadgeEven<Theme> {
-        base(t) {
+        base(_t) {
             font_size: Length::Px(36.0),
             font_weight: FontWeight::Bold,
-            color: t.badge_even.clone(),
+            color: Tokenized::token("badge-even", Color("#10B981".into())),
         }
     }
 }
 
 stylesheet! {
     pub BadgeOdd<Theme> {
-        base(t) {
+        base(_t) {
             font_size: Length::Px(36.0),
             font_weight: FontWeight::Bold,
-            color: t.badge_odd.clone(),
+            color: Tokenized::token("badge-odd", Color("#F472B6".into())),
         }
     }
 }

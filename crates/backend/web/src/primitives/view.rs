@@ -114,7 +114,36 @@ pub(crate) fn insert_many(b: &mut crate::WebBackend, parent: &mut Node, children
 }
 
 pub(crate) fn clear_children(node: &Node) {
-    while let Some(child) = node.first_child() {
-        node.remove_child(&child).expect("remove_child failed");
+    // Single-FFI bulk detach. The previous per-child
+    // `first_child` + `remove_child` loop was 2×N boundary crossings
+    // — a 10k-row scope teardown crossed ~20,000 times and dominated
+    // rebuild benchmarks (~2 seconds for the unmount half of a
+    // `Switch` re-key at 10k rows).
+    //
+    // Casting Node → Element to use `set_inner_html("")` is safe for
+    // our use sites: `clear_children` is only called on container
+    // nodes (Views, ScrollViews, the root mount, etc.) the framework
+    // created via `create_view` / `create_scroll_view` / etc., all
+    // of which produce `Element`s. If `dyn_into` fails we fall back
+    // to the per-child loop so a non-Element Node (a Text node, say,
+    // if a caller ever passed one) still gets detached correctly.
+    //
+    // Rust-side state for the detached children (`node_ids`,
+    // `dynamic` slots, `state_listeners`, etc.) is cleaned up
+    // independently via the surrounding Scope's `StyleHandle` /
+    // RAII guard drops — that path doesn't depend on the DOM
+    // mutation order here.
+    let cleared = node
+        .clone()
+        .dyn_into::<web_sys::Element>()
+        .map(|el| {
+            el.set_inner_html("");
+            true
+        })
+        .unwrap_or(false);
+    if !cleared {
+        while let Some(child) = node.first_child() {
+            node.remove_child(&child).expect("remove_child failed");
+        }
     }
 }

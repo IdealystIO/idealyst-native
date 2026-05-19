@@ -50,8 +50,8 @@ mod web;
 use routes::{
     BACKENDS_ROUTE, CLI_ROUTE, COMPONENTS_ROUTE, DEV_TOOLS_ROUTE, ICONS_ROUTE, LISTS_ROUTE,
     MACROS_ROUTE, NAVIGATION_ROUTE, OVERVIEW_ROUTE, PLATFORMS_ROUTE, PRIMITIVES_ROUTE,
-    QUICKSTART_ROUTE, REACTIVITY_ROUTE, REFS_ROUTE, ROBOT_ROUTE, STYLES_ROUTE, UI_DSL_ROUTE,
-    WGPU_NATIVE_API_ROUTE, WRITING_A_BACKEND_ROUTE,
+    QUICKSTART_ROUTE, REACTIVITY_ROUTE, REFS_ROUTE, ROBOT_ROUTE, SIMULATOR_ROUTE, STYLES_ROUTE,
+    UI_DSL_ROUTE, WGPU_NATIVE_API_ROUTE, WRITING_A_BACKEND_ROUTE,
 };
 use shell::{content_builder, web_layout};
 
@@ -108,6 +108,9 @@ pub fn app() -> Primitive {
         })
         .screen(WGPU_NATIVE_API_ROUTE, |_| {
             Screen::new(pages::wgpu_native_api::page()).title("wgpu Native API")
+        })
+        .screen(SIMULATOR_ROUTE, |_| {
+            Screen::new(pages::simulator_demo::page()).title("Simulator")
         })
         .screen(MACROS_ROUTE, |_| Screen::new(pages::macros_page::page()).title("Macros"))
         .screen(CLI_ROUTE, |_| Screen::new(pages::cli::page()).title("CLI"))

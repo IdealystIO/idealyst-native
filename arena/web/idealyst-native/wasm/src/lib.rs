@@ -19,18 +19,28 @@
 
 use backend_web::WebBackend;
 use framework_core::{
-    install_theme, set_theme, signal, stylesheet, ui, AlignItems, Color, FlexDirection,
-    JustifyContent, Length, Overflow, Primitive, Signal, ThemeTokens, TokenEntry, TokenValue,
-    Tokenized,
+    signal, stylesheet, ui, AlignItems, Color, FlexDirection, JustifyContent, Length, Overflow,
+    Primitive, Signal, TokenEntry, TokenValue, Tokenized,
 };
+use framework_theme::{install_theme, set_theme, ThemeTokens};
 use std::cell::RefCell;
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 
-#[cfg(target_arch = "wasm32")]
-#[global_allocator]
-static ALLOCATOR: lol_alloc::AssumeSingleThreaded<lol_alloc::FreeListAllocator> =
-    unsafe { lol_alloc::AssumeSingleThreaded::new(lol_alloc::FreeListAllocator::new()) };
+// Default dlmalloc allocator (was: lol_alloc::FreeListAllocator).
+// Swapped out because the bench's repeated alloc/dealloc cycles
+// (10k allocations per row toggle × N iterations) fragmented the
+// freelist and made each subsequent iteration measurably slower —
+// 1k apply went from 9ms in iteration 1 to 67ms in iteration 7,
+// and the slowdown was entirely in pure-Rust per-row work
+// (`batched_repeat_enqueue_loop`), which only does HashMap lookups
+// + Vec pushes + String/Box allocations. dlmalloc is larger code
+// but has stable performance under churn. Keep this measurement
+// branch swapped while we evaluate.
+// #[cfg(target_arch = "wasm32")]
+// #[global_allocator]
+// static ALLOCATOR: lol_alloc::AssumeSingleThreaded<lol_alloc::FreeListAllocator> =
+//     unsafe { lol_alloc::AssumeSingleThreaded::new(lol_alloc::FreeListAllocator::new()) };
 
 // =============================================================================
 // Theme — the same shape as arena/instrument.js's LIGHT/DARK
@@ -119,11 +129,16 @@ impl ThemeTokens for Theme {
 // Stylesheets — match the dimensions/transitions every other arena variant uses
 // =============================================================================
 
+// Per-stylesheet token references. Names + fallbacks match the
+// `Theme` struct above (which is what `install_theme` registers with
+// the framework). Web backend turns these into `var(--name, fallback)`
+// in the emitted CSS, so theme swap is just a `:root` variable update.
+
 stylesheet! {
     pub Page<Theme> {
-        base(t) {
-            background: t.background.clone(),
-            color: t.text.clone(),
+        base(_t) {
+            background: Tokenized::token("color-background", Color("#f7f7fb".into())),
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
             padding: 32.0,
             gap: Length::Px(24.0),
             min_height: Length::pct(100.0),
@@ -137,7 +152,7 @@ stylesheet! {
 
 stylesheet! {
     pub Controls<Theme> {
-        base(t) {
+        base(_t) {
             flex_direction: FlexDirection::Row,
             gap: Length::Px(16.0),
             align_items: AlignItems::Center,
@@ -145,9 +160,9 @@ stylesheet! {
             padding_horizontal: 16.0,
             border_radius: 10.0,
             border_width: 1.0,
-            border_color: t.border.clone(),
-            background: t.surface.clone(),
-            color: t.text.clone(),
+            border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
         }
         transitions {
             background: 250ms EaseInOut,
@@ -159,7 +174,7 @@ stylesheet! {
 
 stylesheet! {
     pub PerfList<Theme> {
-        base(t) {
+        base(_t) {
             // `flex_direction: Column` here serves two purposes: it
             // sets the layout axis for the row children, and it
             // triggers the framework's CSS-emit auto-promotion to
@@ -171,10 +186,10 @@ stylesheet! {
             // up 53px tall — visibly larger than every other
             // arena variant's 34px rows.
             flex_direction: FlexDirection::Column,
-            background: t.surface.clone(),
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
             border_radius: 10.0,
             border_width: 1.0,
-            border_color: t.border.clone(),
+            border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
             height: 500.0,
             overflow: Overflow::Hidden,
         }
@@ -187,13 +202,13 @@ stylesheet! {
 
 stylesheet! {
     pub PerfRow<Theme> {
-        base(t) {
+        base(_t) {
             padding_horizontal: 16.0,
             padding_vertical: 8.0,
-            background: t.surface.clone(),
-            color: t.text.clone(),
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
             border_bottom_width: 1.0,
-            border_bottom_color: t.border.clone(),
+            border_bottom_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
             font_size: 13.0,
             height: 36.0,
             justify_content: JustifyContent::Center,
@@ -201,8 +216,8 @@ stylesheet! {
         variant parity {
             #[default]
             even(_t) {}
-            odd(t) {
-                background: t.surface_alt.clone(),
+            odd(_t) {
+                background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())),
             }
         }
         transitions {
@@ -304,6 +319,17 @@ fn app(initial_rows: usize) -> Primitive {
 #[wasm_bindgen]
 pub fn start(initial_rows: usize) {
     console_error_panic_hook::set_once();
+    // Register the web backend's wasm-bindgen-backed scheduler so the
+    // framework can defer work to microtasks / rAF. Without this, the
+    // first render panics the moment it hits a Switch primitive (or any
+    // other path that calls `schedule_microtask`).
+    backend_web::install_scheduler();
+    // Register the backend's `performance.now()`-backed TimeSource so
+    // `framework_core::debug::now_micros()` returns real readings and
+    // the PhaseTimer counters carry meaningful `total_us` / `max_us`.
+    // Without this, all phase timings would read zero on wasm32 (the
+    // platform-agnostic fallback in `framework_core::time`).
+    backend_web::install_time_source();
     let rows = initial_rows.clamp(1, ROW_MAX);
     let backend = Rc::new(RefCell::new(WebBackend::new("#app")));
     BACKEND.with(|slot| *slot.borrow_mut() = Some(backend.clone()));
@@ -353,6 +379,44 @@ pub fn row_count() -> usize {
     ROW_COUNT
         .with(|c| c.borrow().as_ref().map(|sig| sig.get()))
         .unwrap_or(DEFAULT_ROWS)
+}
+
+/// Diagnostic: drain framework-core's `PhaseCounter` aggregate and
+/// return it as JSON. Each phase has `{ call_count, total_us, max_us }`.
+/// Calling this **resets** the counters — the next call returns only
+/// what's been recorded since the previous drain.
+///
+/// Useful phases to look for (web backend):
+/// - `mint_style_class` / `mint_style_class_hit` / `mint_style_class_miss`
+///   — confirms whether the batch path is engaging.
+/// - `execute_batch_total` — wraps the full FFI call. `call_count` = 1
+///   per Repeat; `total_us` = the bulk of the per-Repeat backend cost.
+/// - `execute_batch_encode` / `execute_batch_ffi_call` / `execute_batch_decode`
+///   — sub-breakdown of `execute_batch_total`. Encode dominance suggests
+///   we should switch to a flat-buffer encoding instead of `js_sys::Array::push`.
+///
+/// Only meaningful when the wasm was built with `debug-stats`
+/// enabled (see this crate's Cargo.toml).
+#[wasm_bindgen]
+pub fn debug_take_counters_json() -> String {
+    let mut counters: Vec<(&'static str, framework_core::debug::PhaseCounter)> =
+        framework_core::debug::take_phase_counters().into_iter().collect();
+    // Sort by descending total time so the hottest phase reads first.
+    counters.sort_by(|a, b| b.1.total_us.cmp(&a.1.total_us));
+    let mut out = String::from("[");
+    let mut first = true;
+    for (name, c) in counters {
+        if !first {
+            out.push(',');
+        }
+        first = false;
+        out.push_str(&format!(
+            "{{\"phase\":\"{}\",\"call_count\":{},\"total_us\":{},\"max_us\":{}}}",
+            name, c.call_count, c.total_us, c.max_us,
+        ));
+    }
+    out.push(']');
+    out
 }
 
 /// Diagnostic: return arena slot counts so JS can detect when the

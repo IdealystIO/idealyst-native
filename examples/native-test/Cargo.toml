@@ -11,9 +11,11 @@ path = "src/main.rs"
 
 [dependencies]
 framework-core = { workspace = true }
+framework-theme = { workspace = true }
 native-phone = { workspace = true }
 native-tablet = { workspace = true }
 native-tv = { workspace = true }
 render-wgpu = { workspace = true }
 ios-sim = { workspace = true }
 android-sim = { workspace = true }
+icons-lucide = { workspace = true }

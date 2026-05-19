@@ -22,6 +22,7 @@ pub(crate) mod scroll_view;
 pub(crate) mod slider;
 pub(crate) mod text;
 pub(crate) mod text_input;
+pub(crate) mod touch;
 pub(crate) mod toggle;
 pub(crate) mod video;
 pub(crate) mod view;

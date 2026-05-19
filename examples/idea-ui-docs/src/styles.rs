@@ -8,14 +8,14 @@
 //! installed theme (dark/light) without re-declaring tokens.
 
 use framework_core::stylesheet;
-use framework_core::{AlignItems, Color, FlexDirection, JustifyContent, Length};
+use framework_core::{AlignItems, Color, FlexDirection, JustifyContent, Length, Tokenized};
 use idea_ui::{IdeaTheme, IdeaThemeRef};
 
 stylesheet! {
     pub PageRoot<IdeaThemeRef> {
-        base(t) {
-            background: t.colors().background.clone(),
-            color: t.colors().text.clone(),
+        base(_t) {
+            background: Tokenized::token("color-background", Color("#f7f8fb".into())),
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
             min_height: Length::pct(100.0),
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::Stretch,
@@ -29,12 +29,12 @@ stylesheet! {
 
 stylesheet! {
     pub Sidebar<IdeaThemeRef> {
-        base(t) {
-            background: t.colors().surface.clone(),
+        base(_t) {
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
             border_right_width: 1.0,
-            border_right_color: t.colors().border.clone(),
-            padding: t.spacing().lg,
-            gap: Length::Px(t.spacing().xs),
+            border_right_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            padding: Tokenized::token("spacing-lg", Length::Px(16.0)),
+            gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
             flex_direction: FlexDirection::Column,
             // Lock width — in a flex row, items shrink by default
             // when the content gets wide. `flex_shrink: 0` keeps
@@ -55,12 +55,12 @@ stylesheet! {
 
 stylesheet! {
     pub SidebarHeader<IdeaThemeRef> {
-        base(t) {
-            padding_bottom: t.spacing().md,
+        base(_t) {
+            padding_bottom: Tokenized::token("spacing-md", Length::Px(12.0)),
             border_bottom_width: 1.0,
-            border_bottom_color: t.colors().border.clone(),
-            margin_bottom: t.spacing().sm,
-            gap: Length::Px(t.spacing().xs),
+            border_bottom_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            margin_bottom: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
             flex_direction: FlexDirection::Column,
         }
         transitions {
@@ -71,9 +71,9 @@ stylesheet! {
 
 stylesheet! {
     pub Content<IdeaThemeRef> {
-        base(t) {
-            padding: t.spacing().xxl,
-            gap: Length::Px(t.spacing().xl),
+        base(_t) {
+            padding: Tokenized::token("spacing-xxl", Length::Px(32.0)),
+            gap: Tokenized::token("spacing-xl", Length::Px(24.0)),
             flex_direction: FlexDirection::Column,
             flex_grow: 1.0,
         }
@@ -85,13 +85,13 @@ stylesheet! {
 /// is a fixed-ish width.
 stylesheet! {
     pub DemoCard<IdeaThemeRef> {
-        base(t) {
-            background: t.colors().surface.clone(),
-            border_radius: t.radius().lg,
+        base(_t) {
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            border_radius: Tokenized::token("radius-lg", Length::Px(12.0)),
             border_width: 1.0,
-            border_color: t.colors().border.clone(),
-            padding: t.spacing().xl,
-            gap: Length::Px(t.spacing().lg),
+            border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            padding: Tokenized::token("spacing-xl", Length::Px(24.0)),
+            gap: Tokenized::token("spacing-lg", Length::Px(16.0)),
             flex_direction: FlexDirection::Column,
         }
         transitions {
@@ -106,9 +106,9 @@ stylesheet! {
 /// it fills the leftover space.
 stylesheet! {
     pub DemoRow<IdeaThemeRef> {
-        base(t) {
+        base(_t) {
             flex_direction: FlexDirection::Row,
-            gap: Length::Px(t.spacing().xl),
+            gap: Tokenized::token("spacing-xl", Length::Px(24.0)),
             align_items: AlignItems::FlexStart,
             flex_wrap: framework_core::FlexWrap::Wrap,
         }
@@ -117,13 +117,13 @@ stylesheet! {
 
 stylesheet! {
     pub PreviewBox<IdeaThemeRef> {
-        base(t) {
+        base(_t) {
             // No tray surface — the DemoCard's white background
             // shows through. Padding + gap keep the demo content
             // breathing without visually nesting "boxes inside
             // boxes."
-            padding: t.spacing().md,
-            gap: Length::Px(t.spacing().md),
+            padding: Tokenized::token("spacing-md", Length::Px(12.0)),
+            gap: Tokenized::token("spacing-md", Length::Px(12.0)),
             flex_direction: FlexDirection::Column,
             // `flex_basis: 0 + flex_grow: 2` so the preview claims
             // most of the row width without depending on
@@ -143,10 +143,10 @@ stylesheet! {
 
 stylesheet! {
     pub ControlsBox<IdeaThemeRef> {
-        base(t) {
+        base(_t) {
             min_width: 280.0,
             max_width: 360.0,
-            gap: Length::Px(t.spacing().sm),
+            gap: Tokenized::token("spacing-sm", Length::Px(8.0)),
         }
     }
 }
@@ -168,12 +168,12 @@ stylesheet! {
 /// produces the desired full-width box.
 stylesheet! {
     pub PreviewSlot<IdeaThemeRef> {
-        base(t) {
+        base(_t) {
             width: Length::pct(100.0),
             flex_direction: FlexDirection::Column,
             align_items: AlignItems::Center,
             justify_content: JustifyContent::Center,
-            gap: Length::Px(t.spacing().md),
+            gap: Tokenized::token("spacing-md", Length::Px(12.0)),
         }
     }
 }
@@ -182,25 +182,25 @@ stylesheet! {
 /// current route stands out.
 stylesheet! {
     pub NavLink<IdeaThemeRef> {
-        base(t) {
-            padding_vertical: t.spacing().sm,
-            padding_horizontal: t.spacing().md,
-            border_radius: t.radius().md,
+        base(_t) {
+            padding_vertical: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            padding_horizontal: Tokenized::token("spacing-md", Length::Px(12.0)),
+            border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
             background: Color("transparent".into()),
-            color: t.colors().text_muted.clone(),
-            font_size: t.typography().size_md,
+            color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+            font_size: Tokenized::token("typography-size-md", Length::Px(14.0)),
             text_align: framework_core::TextAlign::Left,
         }
         variant active {
             #[default]
             off(_t) {}
-            on(t) {
-                background: t.intents().primary.solid_bg.clone(),
-                color: t.intents().primary.solid_text.clone(),
+            on(_t) {
+                background: Tokenized::token("intent-primary-solid-bg", Color("#5b6cff".into())),
+                color: Tokenized::token("intent-primary-solid-text", Color("#ffffff".into())),
             }
         }
-        state hovered(t) {
-            color: t.colors().text.clone(),
+        state hovered(_t) {
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
         }
         transitions {
             background: 200ms EaseOut,

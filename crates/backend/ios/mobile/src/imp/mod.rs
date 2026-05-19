@@ -8,6 +8,7 @@ pub(crate) mod navigator;
 pub(crate) mod overlay;
 pub(crate) mod overlay_shared;
 pub(crate) mod tab_drawer;
+pub(crate) mod touch;
 
 /// Platform log with format. Forwards to `backend_ios_core::ios_log`
 /// which wraps NSLog.
@@ -346,10 +347,14 @@ impl IosBackend {
         let initial = Rc::new(std::cell::Cell::new(true));
         let initial_for_effect = initial.clone();
         let theme_effect = framework_core::Effect::new(move || {
-            // Subscribe to the active theme signal. Safe to call
-            // unconditionally now — `finish()` runs after the user's
-            // `install_theme(...)`.
-            let _ = framework_core::active_theme();
+            // Subscribe to the active-theme signal so this effect
+            // re-fires on every `framework_theme::set_theme(...)`
+            // call. This effect cares about "a theme swap happened"
+            // — not which individual tokens changed — so subscribing
+            // to a single signal that fires once per swap is the
+            // correct grain. Per-token signals (`Tokenized::resolve`)
+            // would fire N times per swap, which is wrong here.
+            let _ = framework_theme::active_theme();
             // Skip the initial run — Effect::new() always fires
             // once at install; we only want to animate genuine
             // subsequent theme swaps.
@@ -671,15 +676,25 @@ impl Backend for IosBackend {
     }
 
     fn create_view(&mut self) -> Self::Node {
-        // Plain UIView. Children are positioned via Taffy-computed
-        // frames in `finish`. We no longer use UIStackView — its
-        // arranged-subview model fights with flex semantics (no
-        // flex-grow/shrink, no wrap, zero-intrinsic-collapsing
-        // children, opaque constraint conflicts).
-        let view = unsafe { UIView::new(self.mtm) };
+        // IdealystTouchView is a UIView subclass that overrides the
+        // four `touchesBegan:/Moved:/Ended:/Cancelled:` entry points
+        // so a later `install_touch_handler` can attach a raw-touch
+        // handler without re-creating the view. Views with no
+        // handler installed pay one extra method dispatch per touch
+        // event (the override calls super immediately) — touch
+        // events fire only during active gestures so this isn't
+        // hot. See `imp/touch.rs` and `docs/native-touch-backends-plan.md`.
+        //
+        // Children are positioned via Taffy-computed frames in
+        // `finish`. We no longer use UIStackView — its arranged-
+        // subview model fights with flex semantics (no flex-grow/
+        // shrink, no wrap, zero-intrinsic-collapsing children,
+        // opaque constraint conflicts).
+        let touch_view = touch::IdealystTouchView::new(self.mtm);
         // `translatesAutoresizingMaskIntoConstraints` defaults to
         // YES on `[UIView new]`, which is what we want — frame
         // assignment becomes authoritative.
+        let view: Retained<UIView> = Retained::into_super(touch_view);
         let _ = self.layout_for_view(&view);
         IosNode::View(view)
     }
@@ -1166,6 +1181,48 @@ impl Backend for IosBackend {
         IosNode::View(view)
     }
 
+    fn install_touch_handler(
+        &mut self,
+        node: &Self::Node,
+        handler: framework_core::TouchHandler,
+    ) {
+        // `create_view` mints `IdealystTouchView` instances; every
+        // framework View should pass this `isKindOfClass:` check.
+        // Other primitives (Button, Pressable, etc.) don't carry
+        // an `on_touch` slot so the walker never calls us with
+        // their nodes — we don't need a fallback path.
+        let view = node.as_view();
+        let touch_cls = objc2::class!(IdealystTouchView);
+        let is_touch_view: bool = unsafe { msg_send![view, isKindOfClass: touch_cls] };
+        if !is_touch_view {
+            // Defensive: log + drop. The framework shouldn't reach
+            // here today, but adding new primitives that carry an
+            // `on_touch` slot in the future without minting them as
+            // IdealystTouchView would silently lose touches without
+            // this guard.
+            return;
+        }
+        // SAFETY: just confirmed the dynamic class is
+        // `IdealystTouchView` (or a subclass). The layout is
+        // ABI-identical to `UIView` extended with our ivars.
+        let touch_view: &touch::IdealystTouchView =
+            unsafe { &*(view as *const UIView as *const touch::IdealystTouchView) };
+        touch_view.set_handler(handler);
+    }
+
+    fn claim_touch(
+        &mut self,
+        node: &Self::Node,
+        _touch_id: framework_core::TouchId,
+    ) {
+        // Walk up the responder chain looking for any UIScrollView
+        // ancestor and force-cancel its in-flight pan. See
+        // `imp/touch.rs::claim_touch_internal` for the rationale —
+        // toggling `panGestureRecognizer.enabled` is the standard
+        // iOS pattern for "stop the parent scroll immediately."
+        touch::claim_touch_internal(node.as_view());
+    }
+
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
         let parent_view = parent.as_view();
         let parent_key = parent_view as *const UIView as usize;
@@ -1364,7 +1421,8 @@ impl Backend for IosBackend {
             IosNode::Label(_) => apply_text_style(view, style, true),
             IosNode::Button(button) => {
                 if let Some(color) = &style.color {
-                    let c = color_to_uicolor(color.value());
+                    let color_val = color.resolve();
+                    let c = color_to_uicolor(&color_val);
                     if let Some(trans) = &style.color_transition {
                         let btn_ref: Retained<UIButton> = button.clone();
                         let trans = *trans;
@@ -1376,7 +1434,8 @@ impl Backend for IosBackend {
                     }
                 }
                 if let Some(fs) = &style.font_size {
-                    let size = length_to_px(fs.value());
+                    let fs_val = fs.resolve();
+                    let size = length_to_px(&fs_val);
                     if size > 0.0 {
                         let weight = style.font_weight.as_ref().copied().unwrap_or(framework_core::FontWeight::Normal);
                         let ui_weight = font_weight_to_uikit(weight);
@@ -1778,7 +1837,8 @@ impl Backend for IosBackend {
         if let Some(entry) = self.tab_drawer_instances.get(&key) {
             if let Some(ref sidebar) = *entry.sidebar.borrow() {
                 if let Some(ref bg) = style.background {
-                    let c = backend_ios_core::style::color_to_uicolor(bg.value());
+                    let bg_val = bg.resolve();
+                    let c = backend_ios_core::style::color_to_uicolor(&bg_val);
                     sidebar.setBackgroundColor(Some(&c));
                 }
             }

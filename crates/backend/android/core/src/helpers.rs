@@ -90,10 +90,12 @@ pub fn parse_color(input: &str) -> Option<i32> {
 /// back to `default` when absent. The framework's per-side fields are
 /// all `Option<Tokenized<Length>>` after the tokenization refactor;
 /// native has no token system to point to so we resolve every token
-/// to its fallback (`.value()`) at apply-time.
+/// to its current value (`.resolve()`) at apply-time. The `.resolve()`
+/// call subscribes the enclosing apply-style Effect to the token's
+/// signal, so token swaps re-fire the apply.
 pub fn px_or(value: Option<&framework_core::Tokenized<framework_core::Length>>, default: f32) -> f32 {
-    match value.map(|t| t.value()) {
-        Some(framework_core::Length::Px(v)) => *v,
+    match value.map(|t| t.resolve()) {
+        Some(framework_core::Length::Px(v)) => v,
         // Percent/Auto don't have a well-defined value here without a
         // layout pass; treat as default.
         _ => default,

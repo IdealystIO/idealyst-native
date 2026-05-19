@@ -906,47 +906,22 @@ impl Backend for RokuBackend {
         });
     }
 
-    fn register_theme_variant(
-        &mut self,
-        name: &str,
-        tokens: &[framework_core::TokenEntry],
-    ) {
-        // Translate each TokenEntry into a wire-friendly
-        // ThemeToken. Color tokens flatten to CSS strings; Length
-        // tokens reuse the WireLength enum (px/percent/auto).
-        // Numeric tokens pass through as f32.
-        let wire_tokens: Vec<command::ThemeToken> = tokens
-            .iter()
-            .map(|t| command::ThemeToken {
-                name: t.name.to_string(),
-                value: match &t.value {
-                    framework_core::TokenValue::Color(c) => command::ThemeTokenValue::Color {
-                        value: c.0.clone(),
-                    },
-                    framework_core::TokenValue::Length(l) => command::ThemeTokenValue::Length {
-                        value: style::length(l),
-                    },
-                    framework_core::TokenValue::Number(n) => command::ThemeTokenValue::Number {
-                        value: *n,
-                    },
-                },
-            })
-            .collect();
-        // Bypass capture stack — themes are global, declared once
-        // at snapshot. They never belong inside a slot's commands.
-        self.commands.push(RokuCommand::RegisterThemeVariant {
-            name: name.to_string(),
-            tokens: wire_tokens,
-        });
+    fn install_tokens(&mut self, _tokens: &[framework_core::TokenEntry]) {
+        // Roku's runtime theme-switching machinery was tied to the
+        // (now-removed) `register_theme_variant` + `bind_active_theme_signal`
+        // backend hooks. Rewiring this through `framework-theme`'s
+        // `install_themes` requires a backend-accessible variant
+        // registry, which is deferred to the next phase of this
+        // refactor. See `crates/backend/roku/README.md`.
+        unimplemented!(
+            "Roku theme-switching pending Phase 2 refactor — see framework-theme"
+        );
     }
 
-    fn bind_active_theme_signal(&mut self, signal_id: u64, initial_name: &str) {
-        // Also global state — emit straight to the main command
-        // stream. Skip the capture stack same as `note_signal_initial`.
-        self.commands.push(RokuCommand::BindActiveThemeSignal {
-            signal_id: SignalId(signal_id),
-            initial_name: initial_name.to_string(),
-        });
+    fn update_tokens(&mut self, _tokens: &[framework_core::TokenEntry]) {
+        unimplemented!(
+            "Roku theme-switching pending Phase 2 refactor — see framework-theme"
+        );
     }
 
     fn finish(&mut self, root: Self::Node) {
@@ -991,11 +966,12 @@ mod tests {
 
     #[test]
     fn button_handler_dispatches() {
+        use framework_core::IntoAction;
         let mut be = RokuBackend::new();
         let counter = Rc::new(std::cell::Cell::new(0u32));
         let counter2 = counter.clone();
-        let on_click: Rc<dyn Fn()> = Rc::new(move || counter2.set(counter2.get() + 1));
-        let _ = be.create_button("ok", on_click, None, None);
+        let on_click = (move || counter2.set(counter2.get() + 1)).into_action();
+        let _ = be.create_button("ok", &on_click, None, None);
 
         let cmds = be.drain();
         let handler_id = match &cmds[0] {

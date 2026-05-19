@@ -33,6 +33,13 @@ pub enum Primitive {
         /// flips and dynamic-island changes propagate without a rebuild.
         /// See [`crate::SafeAreaSides`].
         safe_area_sides: crate::SafeAreaSides,
+        /// Optional raw-touch handler. When `Some`, the framework
+        /// asks the backend to deliver every touch event hitting this
+        /// view (or bubbling up from a descendant whose handler
+        /// returned `consumed: false`) into the closure. See
+        /// [`crate::touch`] for the event model and the claim
+        /// protocol.
+        on_touch: Option<crate::TouchHandler>,
         #[cfg(feature = "robot")]
         test_id: Option<&'static str>,
     },

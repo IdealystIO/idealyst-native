@@ -400,6 +400,12 @@ pub extern "system" fn Java_{jni}_NativeBridge_attach<'local>(
             context_global,
             root_global,
         )));
+        // Main-Looper-backed scheduler so `after_ms` /
+        // `schedule_microtask` delay correctly. Without it
+        // `after_ms` fires the callback synchronously at call
+        // time, which breaks the long-press recognizer and
+        // every other timer-driven feature.
+        backend_android::install_scheduler();
         let owner = framework_core::render(backend, {lib}::app());
         OWNER.with(|slot| *slot.borrow_mut() = Some(owner));
 

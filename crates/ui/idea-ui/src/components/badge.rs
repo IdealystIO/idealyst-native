@@ -71,7 +71,7 @@ pub fn badge(props: &BadgeProps) -> Primitive {
     let appearance = format!("{}_{}", intent.as_str(), kind.as_str());
 
     let style = move || {
-        let _ = framework_core::active_theme()
+        let _ = framework_theme::active_theme()
             .downcast_ref::<IdeaThemeRef>()
             .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
         StyleApplication::new(Badge::sheet()).with("appearance", appearance.clone())

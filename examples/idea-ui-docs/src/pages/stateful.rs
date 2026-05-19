@@ -48,32 +48,69 @@ fn avatar_demo() -> Primitive {
 }
 
 fn tabs_demo() -> Primitive {
-    let selected = signal!("overview".to_string());
+    // `Tabs` is intentionally minimal: it owns the strip and the
+    // active-index signal, nothing else. Panel switching is wired
+    // by the caller via `framework_core::switch`, keyed off the
+    // same signal. This keeps `Tabs` composable with any panel
+    // content the framework knows how to render — including future
+    // navigator-routed integrations — without baking a panel slot
+    // into the component's surface.
+    let active = signal!(0usize);
+    let on_change: Rc<dyn Fn(usize)> = Rc::new(move |idx| active.set(idx));
 
-    let p1: Rc<dyn Fn() -> Primitive> = Rc::new(|| ui! {
-        Body(content = "Big-picture summary content.".to_string())
-    });
-    let p2: Rc<dyn Fn() -> Primitive> = Rc::new(|| ui! {
-        Body(content = "Activity event stream.".to_string())
-    });
-    let p3: Rc<dyn Fn() -> Primitive> = Rc::new(|| ui! {
-        Body(content = "Configuration knobs.".to_string())
-    });
+    let panel = framework_core::switch(
+        move || active.get(),
+        |idx: &usize| match idx {
+            0 => ui! {
+                Stack(gap = StackGap::Sm) {
+                    Heading(content = "Overview".to_string(), kind = HeadingKind::H3)
+                    Body(content = "High-level summary of the active project. The Overview \
+                                      tab is mounted whenever the active index is 0; switching \
+                                      tabs disposes this subtree and mounts a fresh one for the \
+                                      newly-active panel.".to_string(),
+                         tone = BodyTone::Muted)
+                }
+            },
+            1 => ui! {
+                Stack(gap = StackGap::Sm) {
+                    Heading(content = "Activity".to_string(), kind = HeadingKind::H3)
+                    Body(content = "Recent events would render here. Because the panel is \
+                                      rebuilt from scratch on every tab change, any signal \
+                                      subscriptions inside it are released when the user \
+                                      switches away — no stale effects accumulate.".to_string(),
+                         tone = BodyTone::Muted)
+                }
+            },
+            _ => ui! {
+                Stack(gap = StackGap::Sm) {
+                    Heading(content = "Settings".to_string(), kind = HeadingKind::H3)
+                    Body(content = "Per-project configuration would render here. The strip \
+                                      doesn't dictate panel layout — each branch can return \
+                                      whatever primitive tree makes sense for that view.".to_string(),
+                         tone = BodyTone::Muted)
+                }
+            },
+        },
+    );
 
     ui! {
         Card {
             Heading(content = "Tabs".to_string(), kind = HeadingKind::H2)
-            Body(content = "Controlled by a `Signal<String>` naming the active tab's id. \
-                              Panels mount lazily via the framework's reactive switch.".to_string(),
+            Body(content = "Controlled by a `Signal<usize>` indexing the active tab. \
+                              Tap a tab to swap the panel below — panel content is wired \
+                              by the caller via `framework_core::switch`, keyed off the same \
+                              signal that drives the strip's highlight.".to_string(),
                  tone = BodyTone::Muted)
             Tabs(
-                selected = selected,
+                active = active,
+                on_change = on_change,
                 tabs = vec![
-                    Tab::new("overview", "Overview", p1),
-                    Tab::new("activity", "Activity", p2),
-                    Tab::new("settings", "Settings", p3),
+                    Tab { label: "Overview".to_string() },
+                    Tab { label: "Activity".to_string() },
+                    Tab { label: "Settings".to_string() },
                 ]
             )
+            panel
         }
     }
 }

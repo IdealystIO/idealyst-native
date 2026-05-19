@@ -1,0 +1,31 @@
+[package]
+name = "port-solid"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Solid → idealyst-native source porter.
+#
+# Solid is the closest match to idealyst's reactive model — both
+# use fine-grained signals + effects, components run once, JSX is
+# the template surface. Translation is mostly cosmetic:
+#
+#   createSignal(x)  →  signal!(x)
+#   createEffect(fn) →  Effect::new(move || …)
+#   createMemo(fn)   →  derived computation
+#   count()          →  count.get()
+#   setCount(v)      →  count.set(v)
+#
+# Same IR + emitter as the React porter; only the call-recognition
+# taxonomy differs.
+
+[lib]
+crate-type = ["rlib"]
+
+[[bin]]
+name = "port-solid"
+path = "src/main.rs"
+
+[dependencies]
+port-core = { path = "../core" }
+port-tsx = { path = "../tsx" }

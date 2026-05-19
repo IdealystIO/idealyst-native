@@ -86,16 +86,21 @@ pub(crate) fn apply_rules(
     if rules.width.is_some() || rules.height.is_some() {
         // Resolve up front to avoid mutably borrowing `env` from
         // inside a closure (the JNI calls all take `&mut JNIEnv`).
-        // `Tokenized<Length>` — resolve to underlying via `.value()`;
-        // native has no CSS-variable equivalent so the fallback IS
-        // the value at apply-time.
-        let w_lp = rules.width.as_ref().map(|tok| match tok.value() {
-            framework_core::Length::Px(v) => dp_to_px(env, &view, *v),
+        // `Tokenized<Length>` — resolve to underlying via `.resolve()`;
+        // native has no CSS-variable equivalent so the resolved
+        // current value is the value at apply-time, and the
+        // subscription ties this Effect to the token's signal.
+        // `.resolve()` subscribes the apply-style Effect to the per-
+        // token signal for any tokenized width/height — native has no
+        // CSS-variable equivalent, so we always materialize to the
+        // current value.
+        let w_lp = rules.width.as_ref().map(|tok| match tok.resolve() {
+            framework_core::Length::Px(v) => dp_to_px(env, &view, v),
             framework_core::Length::Percent(_) => -1,
             framework_core::Length::Auto => -2,
         });
-        let h_lp = rules.height.as_ref().map(|tok| match tok.value() {
-            framework_core::Length::Px(v) => dp_to_px(env, &view, *v),
+        let h_lp = rules.height.as_ref().map(|tok| match tok.resolve() {
+            framework_core::Length::Px(v) => dp_to_px(env, &view, v),
             framework_core::Length::Percent(_) => -1,
             framework_core::Length::Auto => -2,
         });
@@ -142,7 +147,7 @@ pub(crate) fn apply_rules(
     let is_textview = env.is_instance_of(&view, &textview_class).unwrap_or(false);
 
     if is_textview {
-        if let Some(c) = rules.color.as_ref().map(|t| t.value()) {
+        if let Some(c) = rules.color.as_ref().map(|t| t.resolve()) {
             if let Some(packed) = parse_color(&c.0) {
                 let prev = state.last_text_color;
                 let changed = prev != Some(packed);
@@ -167,7 +172,7 @@ pub(crate) fn apply_rules(
             }
         }
         if let Some(framework_core::Length::Px(size)) =
-            rules.font_size.as_ref().map(|t| *t.value())
+            rules.font_size.as_ref().map(|t| t.resolve())
         {
             // font-size isn't animatable in v1; snap.
             let _ = env.call_method(
@@ -182,7 +187,7 @@ pub(crate) fn apply_rules(
     // --- Opacity (View.alpha). Animatable via ObjectAnimator.ofFloat.
     //     `rules.opacity` is `Option<Tokenized<f32>>`; resolve to the
     //     concrete value (native has no token system).
-    if let Some(o) = rules.opacity.as_ref().map(|t| *t.value()) {
+    if let Some(o) = rules.opacity.as_ref().map(|t| t.resolve()) {
         let changed = state.last_alpha.map(|p| (p - o).abs() > 0.001).unwrap_or(true);
         let prev = state.last_alpha;
         state.last_alpha = Some(o);
@@ -215,7 +220,7 @@ pub(crate) fn apply_rules(
 
     if has_border || has_radius {
         apply_drawable_path(env, node, state, rules);
-    } else if let Some(c) = rules.background.as_ref().map(|t| t.value()) {
+    } else if let Some(c) = rules.background.as_ref().map(|t| t.resolve()) {
         if let Some(packed) = parse_color(&c.0) {
             let prev = state.last_bg;
             let changed = prev != Some(packed);
@@ -245,6 +250,61 @@ pub(crate) fn apply_rules(
             }
         }
     }
+
+    // --- Transform. Walks the optional `Vec<Transform>` and applies
+    //     each operation via the matching `View` setter:
+    //     `setTranslationX/Y`, `setScaleX/Y`, `setRotation`. Length
+    //     values are dp (Android convention), converted to px before
+    //     setting. Skew isn't supported on `View` directly — would
+    //     need a `Matrix` + custom drawable — skipped for now.
+    //
+    //     `None` resets all transform properties to identity so a
+    //     style change that *removes* the transform reverts the
+    //     view. This is the hot path for pan / drag interactions.
+    apply_transform(env, &view, rules);
+}
+
+fn apply_transform(env: &mut JNIEnv, view: &JObject, rules: &StyleRules) {
+    use framework_core::{Length, Transform};
+    // Default identity values. The loop overwrites them if matching
+    // ops appear in `transform`.
+    let mut tx_dp: f32 = 0.0;
+    let mut ty_dp: f32 = 0.0;
+    let mut sx: f32 = 1.0;
+    let mut sy: f32 = 1.0;
+    let mut rot_deg: f32 = 0.0;
+    if let Some(ops) = rules.transform.as_ref() {
+        for op in ops {
+            match op {
+                Transform::TranslateX(Length::Px(v)) => tx_dp = *v,
+                Transform::TranslateY(Length::Px(v)) => ty_dp = *v,
+                Transform::TranslateX(_) | Transform::TranslateY(_) => {
+                    // Percent / Auto don't make sense for transform
+                    // translation — silently treat as 0.
+                }
+                Transform::Scale(v) => {
+                    sx = *v;
+                    sy = *v;
+                }
+                Transform::ScaleXY { x, y } => {
+                    sx = *x;
+                    sy = *y;
+                }
+                Transform::Rotate(deg) => rot_deg = *deg,
+                // Skew not representable as a flat `View` property —
+                // would require a `Matrix` on a custom drawable. Skip.
+                Transform::SkewX(_) | Transform::SkewY(_) => {}
+            }
+        }
+    }
+    // Convert dp → px for translation; scale and rotation are unitless.
+    let tx_px = dp_to_px(env, view, tx_dp) as f32;
+    let ty_px = dp_to_px(env, view, ty_dp) as f32;
+    let _ = env.call_method(view, "setTranslationX", "(F)V", &[JValue::Float(tx_px)]);
+    let _ = env.call_method(view, "setTranslationY", "(F)V", &[JValue::Float(ty_px)]);
+    let _ = env.call_method(view, "setScaleX", "(F)V", &[JValue::Float(sx)]);
+    let _ = env.call_method(view, "setScaleY", "(F)V", &[JValue::Float(sy)]);
+    let _ = env.call_method(view, "setRotation", "(F)V", &[JValue::Float(rot_deg)]);
 }
 
 /// Background path for nodes that have a border or non-zero corner
@@ -278,7 +338,7 @@ fn apply_drawable_path(
     let drawable_obj = drawable.as_obj();
 
     // --- Fill color.
-    if let Some(c) = rules.background.as_ref().map(|t| t.value()) {
+    if let Some(c) = rules.background.as_ref().map(|t| t.resolve()) {
         if let Some(packed) = parse_color(&c.0) {
             let prev = state.last_bg;
             let changed = prev != Some(packed);
@@ -315,14 +375,14 @@ fn apply_drawable_path(
         .or(rules.border_right_width.as_ref())
         .or(rules.border_bottom_width.as_ref())
         .or(rules.border_left_width.as_ref())
-        .map(|tok| dp_to_px(env, &view, *tok.value()));
+        .map(|tok| dp_to_px(env, &view, tok.resolve()));
     let want_c = rules
         .border_top_color
         .as_ref()
         .or(rules.border_right_color.as_ref())
         .or(rules.border_bottom_color.as_ref())
         .or(rules.border_left_color.as_ref())
-        .and_then(|c| parse_color(&c.value().0));
+        .and_then(|c| parse_color(&c.resolve().0));
 
     if let (Some(w), Some(c)) = (want_w, want_c) {
         let prev_w = state.last_stroke_w;

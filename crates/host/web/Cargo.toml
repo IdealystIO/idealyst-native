@@ -1,0 +1,48 @@
+[package]
+name = "host-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Browser shell for the wgpu render backend.
+#
+# Mirrors `host-winit` on the web side: takes the framework's
+# `Graphics`-allocated `<canvas>` surface, runs the wgpu init
+# (instance → adapter → device → surface configure), constructs the
+# `render_wgpu::Host` + `Renderer`, mounts the caller's UI, drives
+# per-frame paint through `framework_core::driver::render_loop`,
+# and translates browser `pointerdown` / `pointermove` /
+# `pointerup` / `pointercancel` / `wheel` events into the
+# `render_api::EventSink` vocabulary the host already understands.
+#
+# Keeps `render-wgpu` platform-agnostic — no `web-sys` / `wasm-bindgen`
+# dep on the render side. Consumers (Simulator components, future
+# preview embeds) collapse to a single `mount(...).await` call inside
+# their `Graphics` primitive's `on_ready`.
+
+[dependencies]
+render-api = { workspace = true }
+render-wgpu = { workspace = true }
+framework-core = { workspace = true, features = ["async-driver"] }
+
+# Browser-only — same target gate as `backend-web` follows. wgpu
+# is pinned to `22` to match the version `render-wgpu` itself uses;
+# a major mismatch would resolve to two separate crates and break
+# the type graph through `wgpu::Device` etc.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = { version = "22", default-features = false, features = ["webgl", "wgsl"] }
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+raw-window-handle = "0.6"
+log = "0.4"
+web-sys = { version = "0.3", features = [
+    "console",
+    "Element",
+    "EventTarget",
+    "DomRect",
+    "Event",
+    "HtmlCanvasElement",
+    "MouseEvent",
+    "PointerEvent",
+    "WheelEvent",
+] }

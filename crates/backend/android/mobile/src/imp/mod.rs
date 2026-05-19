@@ -8,6 +8,7 @@ mod animation;
 mod callbacks;
 mod jni_exports;
 mod primitives;
+pub(crate) mod scheduler;
 mod style;
 // `view_screen_rect` lives here because it depends on this crate's
 // `with_env` / `JAVA_VM` state (owned by `JNI_OnLoad`, which is a
@@ -240,6 +241,28 @@ impl Backend for AndroidBackend {
 
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
         primitives::view::insert(self, parent, child)
+    }
+
+    fn install_touch_handler(
+        &mut self,
+        node: &Self::Node,
+        handler: framework_core::TouchHandler,
+    ) {
+        primitives::touch::install(self, node, handler)
+    }
+
+    fn claim_touch(
+        &mut self,
+        node: &Self::Node,
+        _touch_id: framework_core::TouchId,
+    ) {
+        // The Kotlin `RustTouchListener` already calls
+        // `requestDisallowInterceptTouchEvent` inline when a touch
+        // returns `claim: true`; the Backend trait method exists for
+        // symmetry with the framework's abstract claim protocol and
+        // any future code path that wants to claim outside a
+        // `MotionEvent` dispatch.
+        primitives::touch::claim(self, node)
     }
 
     fn update_text(&mut self, node: &Self::Node, content: &str) {

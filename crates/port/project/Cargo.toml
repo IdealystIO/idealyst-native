@@ -1,0 +1,32 @@
+[package]
+name = "port-project"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Project-level driver for the per-framework porters.
+#
+# Takes a directory (or a GitHub URL — shells to `git clone`)
+# walks for `.tsx` / `.jsx` / `.vue` / `.svelte` files, routes
+# each to its appropriate porter, writes Rust output preserving
+# the source tree structure, and produces a markdown report
+# summarizing success/failure rate and the hole histogram.
+#
+# Intended use: drop a real React/Vue/Svelte project on the
+# CLI, look at the report and the generated Rust, decide what to
+# fix in the porter next.
+
+[lib]
+crate-type = ["rlib"]
+
+[[bin]]
+name = "port-project"
+path = "src/main.rs"
+
+[dependencies]
+port-core = { path = "../core" }
+port-tsx = { path = "../tsx" }
+port-react = { path = "../react" }
+port-solid = { path = "../solid" }
+port-vue = { path = "../vue" }
+port-svelte = { path = "../svelte" }

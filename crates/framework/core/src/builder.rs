@@ -17,7 +17,6 @@ use crate::handles::{ButtonHandle, PressableHandle, RefFill, TextHandle, ViewHan
 use crate::primitive::Primitive;
 use crate::reactive::Ref;
 use crate::sources::{IntoStyleSource, IntoTextSource};
-use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -177,6 +176,28 @@ impl Bound<ViewHandle> {
     pub fn safe_area(mut self, sides: crate::SafeAreaSides) -> Self {
         if let Primitive::View { safe_area_sides, .. } = &mut self.primitive {
             *safe_area_sides |= sides;
+        }
+        self
+    }
+
+    /// Install a raw touch handler. The closure receives every
+    /// [`TouchEvent`](crate::TouchEvent) the backend delivers to this
+    /// view and returns a [`TouchResponse`](crate::TouchResponse) that
+    /// drives the responder-chain bubble (`consumed`) and the claim
+    /// protocol (`claim`).
+    ///
+    /// This is the lowest-level interaction primitive. Higher-level
+    /// recognizers (tap, long-press, pan, …) are built on top of it
+    /// in pure Rust — see the `touch::recognizers` module (TBD) for
+    /// the prebuilt ones, or write your own.
+    ///
+    /// Calling twice replaces the handler.
+    pub fn on_touch<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&crate::TouchEvent) -> crate::TouchResponse + 'static,
+    {
+        if let Primitive::View { on_touch, .. } = &mut self.primitive {
+            *on_touch = Some(std::rc::Rc::new(handler));
         }
         self
     }
@@ -356,6 +377,7 @@ pub fn view(children: Vec<Primitive>) -> Bound<ViewHandle> {
         style: None,
         ref_fill: None,
         safe_area_sides: crate::SafeAreaSides::NONE,
+        on_touch: None,
         #[cfg(feature = "robot")]
         test_id: None,
     })

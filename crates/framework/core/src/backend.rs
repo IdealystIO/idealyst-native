@@ -119,6 +119,45 @@ pub trait Backend {
         self.create_view()
     }
 
+    /// Install a raw touch handler on `node`. The framework calls this
+    /// once per `Primitive::View { on_touch: Some(_), .. }` (and any
+    /// other primitive that grows a touch slot in the future) after
+    /// the node is created.
+    ///
+    /// The backend's job is to wire `handler` to whatever native touch
+    /// delivery mechanism it uses (UIView subclass + `touchesBegan:`,
+    /// Android `OnTouchListener`, winit pointer events, web Pointer
+    /// Events) and invoke it for every event hitting this node, with
+    /// the event already translated into framework coordinates.
+    ///
+    /// Default impl is a no-op — appropriate for backends that don't
+    /// yet support raw touch. Subscribed views still render; they just
+    /// receive no events. See `docs/native-touch-plan.md` for the
+    /// design and the per-platform implementation notes.
+    #[allow(unused_variables)]
+    fn install_touch_handler(
+        &mut self,
+        node: &Self::Node,
+        handler: crate::TouchHandler,
+    ) {
+        // default: no-op
+    }
+
+    /// Called when a handler returns
+    /// [`TouchResponse { claim: true, .. }`](crate::TouchResponse).
+    /// The backend decides locally how to suppress competing native
+    /// consumers of this touch — parent scroll containers, system
+    /// gestures, pointer-capture, etc. The framework does not enumerate
+    /// or know about those mechanisms; they are implementation-private
+    /// to each backend.
+    ///
+    /// Default impl is a no-op. Backends that don't implement the
+    /// claim protocol will see scroll containers win contested touches.
+    #[allow(unused_variables)]
+    fn claim_touch(&mut self, node: &Self::Node, touch_id: crate::TouchId) {
+        // default: no-op
+    }
+
     /// Placeholder node for reactive `when` / `switch` branches.
     /// The walker creates one of these as a stable parent that
     /// stays put across branch swaps, with the live branch's
@@ -145,6 +184,48 @@ pub trait Backend {
         for child in children {
             self.insert(parent, child);
         }
+    }
+
+    /// Backend capability flag for the local-render batched-Repeat
+    /// path. When `true`, the walker collapses `Primitive::Repeat`
+    /// expansions whose rows match the batchable shape (static
+    /// View+Text+style — see [`crate::BackendBatch`]) into one
+    /// [`execute_batch`](Self::execute_batch) call. When `false`,
+    /// the walker uses the existing per-call path: one
+    /// `create_view`/`create_text`/`apply_style`/`insert` chain per
+    /// row.
+    ///
+    /// Web backend opts in for the rebuild benchmark's pattern.
+    /// Native backends keep the per-call path — their FFI cost per
+    /// call is already small and the batching benefit doesn't pay
+    /// for the encoding/decoding overhead. Default `false`.
+    fn supports_batched_repeat(&self) -> bool {
+        false
+    }
+
+    /// Execute a queued [`BackendBatch`] in a single round-trip and
+    /// return the materialized nodes, indexed by `local_id`.
+    ///
+    /// The walker submits this when expanding a `Primitive::Repeat`
+    /// whose rows are all batchable (static View+Text trees with
+    /// static styles). On the web backend this turns ~4N FFI calls
+    /// (createElement, createTextNode, setAttribute, appendChild ×
+    /// N) into a single wasm→JS call carrying the whole op stream.
+    ///
+    /// The returned `Vec`'s length must equal
+    /// `batch.node_count as usize`. Element at index `i` is the node
+    /// that corresponds to `local_id == i`.
+    ///
+    /// Backends that don't implement batching keep the default
+    /// `unimplemented!()` — the walker only calls this when
+    /// [`supports_batched_repeat`](Self::supports_batched_repeat)
+    /// returned `true`.
+    #[allow(unused_variables)]
+    fn execute_batch(&mut self, batch: crate::BackendBatch) -> Vec<Self::Node> {
+        unimplemented!(
+            "execute_batch is only called when supports_batched_repeat() returns true; \
+             this backend opted in without implementing it"
+        )
     }
 
     fn update_text(&mut self, node: &Self::Node, content: &str);
@@ -566,6 +647,26 @@ pub trait Backend {
     /// receives concrete `StyleRules` with literal values.
     fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>);
 
+    /// Mint (or look up) a backend-side class identifier for a
+    /// resolved style **without** touching any DOM node. Used by the
+    /// batched-Repeat path so the walker can compute class names
+    /// pre-batch and feed them into a single
+    /// [`execute_batch`](Self::execute_batch) call.
+    ///
+    /// Returns `None` for backends that don't have a named-class
+    /// model (most native backends — they apply styles imperatively
+    /// to each node and have nothing to mint up front). In that case
+    /// the walker treats the Repeat as non-batchable and falls back
+    /// to the per-call path. Web overrides this to either return a
+    /// cached pre-generated class name or mint a fresh dynamic class
+    /// (inserting the CSS rule into the shared sheet, with no
+    /// per-node tracking — the per-node bookkeeping happens later
+    /// when the batch's `ApplyStyleStatic` op fires).
+    #[allow(unused_variables)]
+    fn mint_style_class(&mut self, style: &Rc<StyleRules>) -> Option<String> {
+        None
+    }
+
     /// Apply a base style plus per-state overlays. Called when the
     /// stylesheet declares interaction-state blocks (`state hovered`,
     /// `state pressed`, etc.) AND the backend reports native state
@@ -702,51 +803,30 @@ pub trait Backend {
         // default: no-op
     }
 
-    /// Install or update the theme's named tokens as runtime variables.
-    /// Called by the framework after `install_theme` / `set_theme` —
-    /// once per theme change, with the full token list for the new
-    /// theme.
+    /// Install the initial token set as runtime variables. Called by
+    /// the framework once at app boot, before any stylesheet is
+    /// registered.
     ///
     /// Backends with a runtime variable layer (web's CSS custom
     /// properties) implement this to write `--{name}: {value}` on the
-    /// document root (or update existing values in place). Subsequent
-    /// theme swaps mutate the existing declarations rather than
-    /// re-emitting any rules — one DOM op per changed token,
-    /// regardless of how many elements consume the variable.
-    ///
-    /// Backends without a variable system (iOS, Android) leave the
-    /// default no-op; they read `Tokenized::value()` at apply time and
-    /// behave as if the literal were set.
+    /// document root. Backends without a variable system (iOS,
+    /// Android) leave the default no-op; they read
+    /// `Tokenized::value()` at apply time and behave as if the literal
+    /// were set.
     #[allow(unused_variables)]
-    fn install_theme_variables(&mut self, tokens: &[crate::TokenEntry]) {
+    fn install_tokens(&mut self, tokens: &[crate::TokenEntry]) {
         // default: no-op
     }
 
-    /// Register a *named* theme variant. Called once per variant
-    /// the author declares via `register_theme_variant(name, theme)`
-    /// or `install_themes(...)` — the framework drains the queue
-    /// just before painting so the backend sees every variant.
-    ///
-    /// Generator backends (Roku) capture each variant's token map
-    /// so the device-side runtime can resolve token references
-    /// against the currently-active theme name. Runtime backends
-    /// (iOS / Android / Web) ignore named variants — they drive
-    /// theme switching through `install_theme_variables` + an
-    /// author-provided Effect on the active-theme signal.
+    /// Push updated token values. Called by the framework on every
+    /// `update_tokens(...)`. Backends with a runtime variable layer
+    /// update the existing declarations in place — one DOM op per
+    /// changed token, no rule churn. Backends without a variable
+    /// system leave the default no-op; the framework re-fires every
+    /// styled effect via the tokens-version signal so the new
+    /// fallback values flow through `apply_style`.
     #[allow(unused_variables)]
-    fn register_theme_variant(&mut self, name: &str, tokens: &[crate::TokenEntry]) {
-        // default: no-op
-    }
-
-    /// Bind a `Signal<String>`'s arena id as the active-theme name
-    /// signal. Generator backends (Roku) emit a wire op that wires
-    /// device-side theme-switching to writes against this signal:
-    /// when the device observes a new value, it walks every styled
-    /// node and re-resolves token references against the matching
-    /// variant. Runtime backends ignore this — `install_themes`'s
-    /// internal Effect handles their side via `set_theme`.
-    #[allow(unused_variables)]
-    fn bind_active_theme_signal(&mut self, signal_id: u64, initial_name: &str) {
+    fn update_tokens(&mut self, tokens: &[crate::TokenEntry]) {
         // default: no-op
     }
 

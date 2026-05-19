@@ -24,9 +24,8 @@
 use std::any::Any;
 use std::rc::Rc;
 
-use framework_core::{
-    install_theme, set_theme, Color, ThemeTokens, TokenEntry, TokenValue, Tokenized,
-};
+use framework_core::{Color, Length, Tokenized};
+use framework_theme::{install_theme, set_theme, ThemeTokens, TokenEntry, TokenValue};
 
 // =============================================================================
 // IntentColors — per-intent palette
@@ -193,11 +192,20 @@ impl ThemeTokens for IdeaThemeRef {
     fn tokens(&self) -> Vec<TokenEntry> {
         let c = self.colors();
         let i = self.intents();
+        let s = self.spacing();
+        let r = self.radius();
+        let ty = self.typography();
         fn entry(t: &Tokenized<Color>) -> TokenEntry {
             let name = t.name().expect("color fields must be Tokenized::Token");
             TokenEntry {
                 name,
                 value: TokenValue::Color(t.value().clone()),
+            }
+        }
+        fn len(name: &'static str, v: f32) -> TokenEntry {
+            TokenEntry {
+                name,
+                value: TokenValue::Length(Length::Px(v)),
             }
         }
         // Helper: emit every field of an IntentColors block.
@@ -229,6 +237,30 @@ impl ThemeTokens for IdeaThemeRef {
         intent_entries(&i.danger, &mut out);
         intent_entries(&i.warning, &mut out);
         intent_entries(&i.info, &mut out);
+
+        // Spacing: one length token per Spacing field.
+        out.push(len("spacing-xs", s.xs));
+        out.push(len("spacing-sm", s.sm));
+        out.push(len("spacing-md", s.md));
+        out.push(len("spacing-lg", s.lg));
+        out.push(len("spacing-xl", s.xl));
+        out.push(len("spacing-xxl", s.xxl));
+
+        // Radius: one length token per Radius field.
+        out.push(len("radius-sm", r.sm));
+        out.push(len("radius-md", r.md));
+        out.push(len("radius-lg", r.lg));
+        out.push(len("radius-pill", r.pill));
+
+        // Typography: one length token per Typography size.
+        out.push(len("typography-size-xs", ty.size_xs));
+        out.push(len("typography-size-sm", ty.size_sm));
+        out.push(len("typography-size-md", ty.size_md));
+        out.push(len("typography-size-lg", ty.size_lg));
+        out.push(len("typography-size-xl", ty.size_xl));
+        out.push(len("typography-size-xxl", ty.size_xxl));
+        out.push(len("typography-size-display", ty.size_display));
+
         out
     }
 }
@@ -494,7 +526,7 @@ where
     F: Fn(&Colors) -> Tokenized<Color> + 'static,
 {
     move || {
-        let theme = framework_core::active_theme();
+        let theme = framework_theme::active_theme();
         let idea = theme
             .downcast_ref::<IdeaThemeRef>()
             .expect("idea_color: active theme is not an IdeaThemeRef — call install_idea_theme(...) first");
@@ -521,10 +553,97 @@ where
     F: Fn(&IdeaThemeRef) -> framework_core::HeaderStyle + 'static,
 {
     move || {
-        let theme = framework_core::active_theme();
+        let theme = framework_theme::active_theme();
         let idea = theme
             .downcast_ref::<IdeaThemeRef>()
             .expect("idea_header: active theme is not an IdeaThemeRef — call install_idea_theme(...) first");
         builder(idea)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use framework_core::{Length, TokenValue};
+    use framework_theme::ThemeTokens;
+
+    /// Two theme impls with different spacing/radius/typography should
+    /// emit different token values via the `ThemeTokens::tokens()`
+    /// pipeline that `install_theme` / `set_theme` consume — that's
+    /// the only contract the framework relies on to flow theme values
+    /// into rendered stylesheets.
+    fn find_length<'a>(toks: &'a [TokenEntry], name: &str) -> &'a Length {
+        let entry = toks
+            .iter()
+            .find(|e| e.name == name)
+            .unwrap_or_else(|| panic!("token '{}' not emitted", name));
+        match &entry.value {
+            TokenValue::Length(l) => l,
+            other => panic!("token '{}' is not a Length ({:?})", name, other),
+        }
+    }
+
+    fn px(l: &Length) -> f32 {
+        match l {
+            Length::Px(v) => *v,
+            other => panic!("expected Px, got {:?}", other),
+        }
+    }
+
+    fn make_theme(sm: f32, radius_md: f32, body_size: f32) -> IdeaThemeDefaults {
+        let mut t = light_theme();
+        t.spacing.sm = sm;
+        t.radius.md = radius_md;
+        t.typography.size_md = body_size;
+        t
+    }
+
+    #[test]
+    fn theme_tokens_include_spacing_radius_typography() {
+        let theme = IdeaThemeRef::new(make_theme(8.0, 8.0, 14.0));
+        let toks = theme.tokens();
+        // Spacing.
+        assert_eq!(px(find_length(&toks, "spacing-xs")), 4.0);
+        assert_eq!(px(find_length(&toks, "spacing-sm")), 8.0);
+        assert_eq!(px(find_length(&toks, "spacing-md")), 12.0);
+        assert_eq!(px(find_length(&toks, "spacing-lg")), 16.0);
+        assert_eq!(px(find_length(&toks, "spacing-xl")), 24.0);
+        assert_eq!(px(find_length(&toks, "spacing-xxl")), 32.0);
+        // Radius.
+        assert_eq!(px(find_length(&toks, "radius-sm")), 4.0);
+        assert_eq!(px(find_length(&toks, "radius-md")), 8.0);
+        assert_eq!(px(find_length(&toks, "radius-lg")), 12.0);
+        assert_eq!(px(find_length(&toks, "radius-pill")), 999.0);
+        // Typography.
+        assert_eq!(px(find_length(&toks, "typography-size-xs")), 11.0);
+        assert_eq!(px(find_length(&toks, "typography-size-sm")), 12.0);
+        assert_eq!(px(find_length(&toks, "typography-size-md")), 14.0);
+        assert_eq!(px(find_length(&toks, "typography-size-lg")), 16.0);
+        assert_eq!(px(find_length(&toks, "typography-size-xl")), 20.0);
+        assert_eq!(px(find_length(&toks, "typography-size-xxl")), 28.0);
+        assert_eq!(px(find_length(&toks, "typography-size-display")), 36.0);
+    }
+
+    #[test]
+    fn custom_idea_theme_produces_different_tokens() {
+        // Theme A: default-ish spacing/radius/typography.
+        let a = IdeaThemeRef::new(make_theme(8.0, 8.0, 14.0));
+        // Theme B: doubled values across all three categories.
+        let b = IdeaThemeRef::new(make_theme(16.0, 16.0, 28.0));
+
+        let a_toks = a.tokens();
+        let b_toks = b.tokens();
+
+        // Spacing.sm changes shows up in `spacing-sm`.
+        assert_eq!(px(find_length(&a_toks, "spacing-sm")), 8.0);
+        assert_eq!(px(find_length(&b_toks, "spacing-sm")), 16.0);
+
+        // Radius.md changes shows up in `radius-md`.
+        assert_eq!(px(find_length(&a_toks, "radius-md")), 8.0);
+        assert_eq!(px(find_length(&b_toks, "radius-md")), 16.0);
+
+        // Typography.size_md changes shows up in `typography-size-md`.
+        assert_eq!(px(find_length(&a_toks, "typography-size-md")), 14.0);
+        assert_eq!(px(find_length(&b_toks, "typography-size-md")), 28.0);
     }
 }

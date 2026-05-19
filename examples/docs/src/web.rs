@@ -37,6 +37,13 @@ pub fn start() {
     // dispatch.
     backend_web::install_scheduler();
 
+    // The `Simulator` component drives wgpu init through
+    // `spawn_async` and the per-frame render through `render_loop`.
+    // Both look up backend-supplied drivers from framework_core;
+    // without installing them here the embedded preview never wakes.
+    backend_web::install_async_executor();
+    backend_web::install_render_loop();
+
     #[cfg(feature = "dev-hot-reload")]
     {
         dev_hot_reload::start_dev_client();

@@ -30,3 +30,17 @@ bytemuck = { version = "1.18", features = ["derive"] }
 
 # Logging — lightweight; the shell wires up an env_logger or similar.
 log = "0.4"
+
+# `Instant` / `Duration` shim. Identical to `std::time` on native;
+# falls back to `performance.now()` on wasm32 (where `std::time::
+# Instant::now()` panics). Used in `Host`, `Renderer`, animator, etc.
+web-time = "1"
+
+# Raster image decode for the `Image` primitive's textured-quad
+# pipeline. Default features pull in 12+ formats; we trim to PNG
+# + JPEG to keep the binary small. Add `webp`, `gif`, etc. when
+# an app's content needs them.
+image = { version = "0.25", default-features = false, features = [
+    "png",
+    "jpeg",
+] }

@@ -18,16 +18,34 @@ crate-type = ["cdylib", "rlib"]
 dev-hot-reload = ["dep:dev-client", "backend-web/aas-shell"]
 
 [dependencies]
-framework-core = { workspace = true }
+# `async-driver` exposes `spawn_async` + `render_loop`. The Simulator
+# component delegates wgpu init + per-frame paint through `host-web`,
+# which talks to those drivers under the hood.
+framework-core = { workspace = true, features = ["async-driver"] }
 idea-ui = { workspace = true }
 docs-macro = { workspace = true }
 libc = "0.2"
+
+# Embedded preview stack used by the `Simulator` component:
+# - `host-web` does the actual wgpu init, render-loop drive, and
+#   browser-event → `EventSink` translation. The Simulator collapses
+#   to a single `mount(...).await` call.
+# - `render-api` is re-exported by `host-web`, but importing it
+#   directly lets the Simulator construct a `DeviceProfile` without
+#   piggybacking on the re-export.
+# - `ios-sim` provides the default UIKit skin.
+host-web = { workspace = true }
+render-api = { workspace = true }
+ios-sim = { workspace = true }
 
 # Everything web-specific is gated on the wasm32 target. The
 # cross-platform `app()` function never touches these — native
 # targets compile without ever resolving them.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-backend-web = { workspace = true }
+# `async-driver` brings in `install_async_executor` + `install_render_loop`,
+# which the docs' wasm entry installs so `host-web::mount` can
+# `spawn_async` and `render_loop`.
+backend-web = { workspace = true, features = ["async-driver"] }
 wasm-bindgen = "0.2"
 # `Reflect` lives in `js-sys`; the dev-client shim reads
 # `window.IDEALYST_AAS_URL` through it.

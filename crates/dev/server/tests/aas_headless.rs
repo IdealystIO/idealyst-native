@@ -28,9 +28,10 @@ use std::rc::Rc;
 use dev_server::WireRecordingBackend;
 use framework_core::robot::{Query, Robot};
 use framework_core::{
-    active_theme, install_theme, render, set_theme, signal, Color, DrawerNavigator, IntoAction,
-    Primitive, Route, SafeAreaSides, TextSource, ThemeTokens, TokenEntry,
+    render, signal, Color, DrawerNavigator, IntoAction,
+    Primitive, Route, SafeAreaSides, TextSource, TokenEntry,
 };
+use framework_theme::{active_theme, install_theme, set_theme, ThemeTokens};
 use wire::Command;
 
 /// Build a small primitive tree by hand (no `ui!` macro — keeps the
@@ -70,6 +71,7 @@ fn sample_tree() -> (Primitive, framework_core::Signal<i32>) {
         style: None,
         ref_fill: None,
         safe_area_sides: SafeAreaSides::NONE,
+        on_touch: None,
         test_id: None,
     };
 
@@ -256,6 +258,7 @@ fn aas_theme_toggle_re_emits_navigator_style_commands() {
                     style: None,
                     ref_fill: None,
                     safe_area_sides: SafeAreaSides::NONE,
+                    on_touch: None,
                     test_id: None,
                 }
             })
@@ -364,6 +367,7 @@ fn aas_set_theme_re_emits_navigator_style_commands() {
                     style: None,
                     ref_fill: None,
                     safe_area_sides: SafeAreaSides::NONE,
+                    on_touch: None,
                     test_id: None,
                 }
             })
@@ -474,6 +478,7 @@ fn aas_hot_patch_preserves_header_handler_id() {
                     style: None,
                     ref_fill: None,
                     safe_area_sides: SafeAreaSides::NONE,
+                    on_touch: None,
                     test_id: None,
                 })
                 .header_left(framework_core::primitives::navigator::HeaderButton::new(

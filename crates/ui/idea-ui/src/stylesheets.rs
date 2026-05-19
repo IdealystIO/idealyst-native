@@ -14,8 +14,10 @@
 use framework_core::stylesheet;
 use framework_core::{
     AlignItems, Color, FlexDirection, FontWeight, JustifyContent, Length, TextAlign, TextTransform,
+    Tokenized,
 };
 
+#[allow(unused_imports)]
 use crate::theme::{IdeaTheme, IdeaThemeRef};
 
 // =============================================================================
@@ -26,25 +28,25 @@ stylesheet! {
     pub Stack<IdeaThemeRef> {
         base(t) {
             flex_direction: FlexDirection::Column,
-            gap: Length::Px(t.spacing().md),
+            gap: Tokenized::token("spacing-md", Length::Px(12.0)),
         }
         variant gap {
             none(_t) { gap: Length::Px(0.0) }
-            xs(t)    { gap: Length::Px(t.spacing().xs) }
-            sm(t)    { gap: Length::Px(t.spacing().sm) }
+            xs(t)    { gap: Tokenized::token("spacing-xs", Length::Px(4.0)) }
+            sm(t)    { gap: Tokenized::token("spacing-sm", Length::Px(8.0)) }
             #[default]
-            md(t)    { gap: Length::Px(t.spacing().md) }
-            lg(t)    { gap: Length::Px(t.spacing().lg) }
-            xl(t)    { gap: Length::Px(t.spacing().xl) }
+            md(t)    { gap: Tokenized::token("spacing-md", Length::Px(12.0)) }
+            lg(t)    { gap: Tokenized::token("spacing-lg", Length::Px(16.0)) }
+            xl(t)    { gap: Tokenized::token("spacing-xl", Length::Px(24.0)) }
         }
         variant padding {
             #[default]
             none(_t) { padding: Length::Px(0.0) }
-            xs(t)    { padding: Length::Px(t.spacing().xs) }
-            sm(t)    { padding: Length::Px(t.spacing().sm) }
-            md(t)    { padding: Length::Px(t.spacing().md) }
-            lg(t)    { padding: Length::Px(t.spacing().lg) }
-            xl(t)    { padding: Length::Px(t.spacing().xl) }
+            xs(t)    { padding: Tokenized::token("spacing-xs", Length::Px(4.0)) }
+            sm(t)    { padding: Tokenized::token("spacing-sm", Length::Px(8.0)) }
+            md(t)    { padding: Tokenized::token("spacing-md", Length::Px(12.0)) }
+            lg(t)    { padding: Tokenized::token("spacing-lg", Length::Px(16.0)) }
+            xl(t)    { padding: Tokenized::token("spacing-xl", Length::Px(24.0)) }
         }
         variant axis {
             #[default]
@@ -89,179 +91,179 @@ stylesheet! {
 stylesheet! {
     pub Button<IdeaThemeRef> {
         base(t) {
-            padding_vertical: t.spacing().sm,
-            padding_horizontal: t.spacing().lg,
-            border_radius: t.radius().md,
+            padding_vertical: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            padding_horizontal: Tokenized::token("spacing-lg", Length::Px(16.0)),
+            border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
             font_weight: FontWeight::SemiBold,
-            font_size: t.typography().size_md,
+            font_size: Tokenized::token("typography-size-md", Length::Px(14.0)),
             text_align: TextAlign::Center,
             letter_spacing: 0.2,
         }
         variant size {
             sm(t) {
-                padding_vertical: t.spacing().xs,
-                padding_horizontal: t.spacing().md,
-                font_size: t.typography().size_sm,
+                padding_vertical: Tokenized::token("spacing-xs", Length::Px(4.0)),
+                padding_horizontal: Tokenized::token("spacing-md", Length::Px(12.0)),
+                font_size: Tokenized::token("typography-size-sm", Length::Px(12.0)),
             }
             #[default]
             md(t) {
-                padding_vertical: t.spacing().sm,
-                padding_horizontal: t.spacing().lg,
-                font_size: t.typography().size_md,
+                padding_vertical: Tokenized::token("spacing-sm", Length::Px(8.0)),
+                padding_horizontal: Tokenized::token("spacing-lg", Length::Px(16.0)),
+                font_size: Tokenized::token("typography-size-md", Length::Px(14.0)),
             }
             lg(t) {
-                padding_vertical: t.spacing().md,
-                padding_horizontal: t.spacing().xl,
-                font_size: t.typography().size_lg,
+                padding_vertical: Tokenized::token("spacing-md", Length::Px(12.0)),
+                padding_horizontal: Tokenized::token("spacing-xl", Length::Px(24.0)),
+                font_size: Tokenized::token("typography-size-lg", Length::Px(16.0)),
             }
         }
         variant appearance {
             #[default]
             primary_solid(t) {
-                background: t.intents().primary.solid_bg.clone(),
-                color: t.intents().primary.solid_text.clone(),
+                background: Tokenized::token("intent-primary-solid-bg", Color("#5b6cff".into())),
+                color: Tokenized::token("intent-primary-solid-text", Color("#ffffff".into())),
                 border_width: 0.0,
             }
             primary_soft(t) {
-                background: t.intents().primary.soft_bg.clone(),
-                color: t.intents().primary.soft_text.clone(),
+                background: Tokenized::token("intent-primary-soft-bg", Color("rgba(91, 108, 255, 0.12)".into())),
+                color: Tokenized::token("intent-primary-soft-text", Color("#3947d6".into())),
                 border_width: 0.0,
             }
             primary_outlined(t) {
                 background: Color("transparent".into()),
-                color: t.intents().primary.fg.clone(),
+                color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
                 border_width: 1.0,
-                border_color: t.intents().primary.border.clone(),
+                border_color: Tokenized::token("intent-primary-border", Color("#5b6cff".into())),
             }
             primary_ghost(t) {
                 background: Color("transparent".into()),
-                color: t.intents().primary.fg.clone(),
+                color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
                 border_width: 0.0,
             }
             secondary_solid(t) {
-                background: t.intents().secondary.solid_bg.clone(),
-                color: t.intents().secondary.solid_text.clone(),
+                background: Tokenized::token("intent-secondary-solid-bg", Color("#475569".into())),
+                color: Tokenized::token("intent-secondary-solid-text", Color("#ffffff".into())),
                 border_width: 0.0,
             }
             secondary_soft(t) {
-                background: t.intents().secondary.soft_bg.clone(),
-                color: t.intents().secondary.soft_text.clone(),
+                background: Tokenized::token("intent-secondary-soft-bg", Color("rgba(71, 85, 105, 0.10)".into())),
+                color: Tokenized::token("intent-secondary-soft-text", Color("#334155".into())),
                 border_width: 0.0,
             }
             secondary_outlined(t) {
                 background: Color("transparent".into()),
-                color: t.intents().secondary.fg.clone(),
+                color: Tokenized::token("intent-secondary-fg", Color("#334155".into())),
                 border_width: 1.0,
-                border_color: t.intents().secondary.border.clone(),
+                border_color: Tokenized::token("intent-secondary-border", Color("#475569".into())),
             }
             secondary_ghost(t) {
                 background: Color("transparent".into()),
-                color: t.intents().secondary.fg.clone(),
+                color: Tokenized::token("intent-secondary-fg", Color("#334155".into())),
                 border_width: 0.0,
             }
             neutral_solid(t) {
-                background: t.intents().neutral.solid_bg.clone(),
-                color: t.intents().neutral.solid_text.clone(),
+                background: Tokenized::token("intent-neutral-solid-bg", Color("#1a1a1f".into())),
+                color: Tokenized::token("intent-neutral-solid-text", Color("#ffffff".into())),
                 border_width: 0.0,
             }
             neutral_soft(t) {
-                background: t.intents().neutral.soft_bg.clone(),
-                color: t.intents().neutral.soft_text.clone(),
+                background: Tokenized::token("intent-neutral-soft-bg", Color("#eef0f7".into())),
+                color: Tokenized::token("intent-neutral-soft-text", Color("#1a1a1f".into())),
                 border_width: 0.0,
             }
             neutral_outlined(t) {
                 background: Color("transparent".into()),
-                color: t.intents().neutral.fg.clone(),
+                color: Tokenized::token("intent-neutral-fg", Color("#1a1a1f".into())),
                 border_width: 1.0,
-                border_color: t.intents().neutral.border.clone(),
+                border_color: Tokenized::token("intent-neutral-border", Color("#cbd0db".into())),
             }
             neutral_ghost(t) {
                 background: Color("transparent".into()),
-                color: t.intents().neutral.fg.clone(),
+                color: Tokenized::token("intent-neutral-fg", Color("#1a1a1f".into())),
                 border_width: 0.0,
             }
             success_solid(t) {
-                background: t.intents().success.solid_bg.clone(),
-                color: t.intents().success.solid_text.clone(),
+                background: Tokenized::token("intent-success-solid-bg", Color("#16a34a".into())),
+                color: Tokenized::token("intent-success-solid-text", Color("#ffffff".into())),
                 border_width: 0.0,
             }
             success_soft(t) {
-                background: t.intents().success.soft_bg.clone(),
-                color: t.intents().success.soft_text.clone(),
+                background: Tokenized::token("intent-success-soft-bg", Color("rgba(22, 163, 74, 0.12)".into())),
+                color: Tokenized::token("intent-success-soft-text", Color("#107a37".into())),
                 border_width: 0.0,
             }
             success_outlined(t) {
                 background: Color("transparent".into()),
-                color: t.intents().success.fg.clone(),
+                color: Tokenized::token("intent-success-fg", Color("#107a37".into())),
                 border_width: 1.0,
-                border_color: t.intents().success.border.clone(),
+                border_color: Tokenized::token("intent-success-border", Color("#16a34a".into())),
             }
             success_ghost(t) {
                 background: Color("transparent".into()),
-                color: t.intents().success.fg.clone(),
+                color: Tokenized::token("intent-success-fg", Color("#107a37".into())),
                 border_width: 0.0,
             }
             danger_solid(t) {
-                background: t.intents().danger.solid_bg.clone(),
-                color: t.intents().danger.solid_text.clone(),
+                background: Tokenized::token("intent-danger-solid-bg", Color("#dc2626".into())),
+                color: Tokenized::token("intent-danger-solid-text", Color("#ffffff".into())),
                 border_width: 0.0,
             }
             danger_soft(t) {
-                background: t.intents().danger.soft_bg.clone(),
-                color: t.intents().danger.soft_text.clone(),
+                background: Tokenized::token("intent-danger-soft-bg", Color("rgba(220, 38, 38, 0.10)".into())),
+                color: Tokenized::token("intent-danger-soft-text", Color("#b91c1c".into())),
                 border_width: 0.0,
             }
             danger_outlined(t) {
                 background: Color("transparent".into()),
-                color: t.intents().danger.fg.clone(),
+                color: Tokenized::token("intent-danger-fg", Color("#b91c1c".into())),
                 border_width: 1.0,
-                border_color: t.intents().danger.border.clone(),
+                border_color: Tokenized::token("intent-danger-border", Color("#dc2626".into())),
             }
             danger_ghost(t) {
                 background: Color("transparent".into()),
-                color: t.intents().danger.fg.clone(),
+                color: Tokenized::token("intent-danger-fg", Color("#b91c1c".into())),
                 border_width: 0.0,
             }
             warning_solid(t) {
-                background: t.intents().warning.solid_bg.clone(),
-                color: t.intents().warning.solid_text.clone(),
+                background: Tokenized::token("intent-warning-solid-bg", Color("#d97706".into())),
+                color: Tokenized::token("intent-warning-solid-text", Color("#ffffff".into())),
                 border_width: 0.0,
             }
             warning_soft(t) {
-                background: t.intents().warning.soft_bg.clone(),
-                color: t.intents().warning.soft_text.clone(),
+                background: Tokenized::token("intent-warning-soft-bg", Color("rgba(217, 119, 6, 0.12)".into())),
+                color: Tokenized::token("intent-warning-soft-text", Color("#b45309".into())),
                 border_width: 0.0,
             }
             warning_outlined(t) {
                 background: Color("transparent".into()),
-                color: t.intents().warning.fg.clone(),
+                color: Tokenized::token("intent-warning-fg", Color("#b45309".into())),
                 border_width: 1.0,
-                border_color: t.intents().warning.border.clone(),
+                border_color: Tokenized::token("intent-warning-border", Color("#d97706".into())),
             }
             warning_ghost(t) {
                 background: Color("transparent".into()),
-                color: t.intents().warning.fg.clone(),
+                color: Tokenized::token("intent-warning-fg", Color("#b45309".into())),
                 border_width: 0.0,
             }
             info_solid(t) {
-                background: t.intents().info.solid_bg.clone(),
-                color: t.intents().info.solid_text.clone(),
+                background: Tokenized::token("intent-info-solid-bg", Color("#0284c7".into())),
+                color: Tokenized::token("intent-info-solid-text", Color("#ffffff".into())),
                 border_width: 0.0,
             }
             info_soft(t) {
-                background: t.intents().info.soft_bg.clone(),
-                color: t.intents().info.soft_text.clone(),
+                background: Tokenized::token("intent-info-soft-bg", Color("rgba(2, 132, 199, 0.12)".into())),
+                color: Tokenized::token("intent-info-soft-text", Color("#075985".into())),
                 border_width: 0.0,
             }
             info_outlined(t) {
                 background: Color("transparent".into()),
-                color: t.intents().info.fg.clone(),
+                color: Tokenized::token("intent-info-fg", Color("#075985".into())),
                 border_width: 1.0,
-                border_color: t.intents().info.border.clone(),
+                border_color: Tokenized::token("intent-info-border", Color("#0284c7".into())),
             }
             info_ghost(t) {
                 background: Color("transparent".into()),
-                color: t.intents().info.fg.clone(),
+                color: Tokenized::token("intent-info-fg", Color("#075985".into())),
                 border_width: 0.0,
             }
         }
@@ -290,28 +292,28 @@ stylesheet! {
 stylesheet! {
     pub Heading<IdeaThemeRef> {
         base(t) {
-            color: t.colors().text.clone(),
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
             font_weight: FontWeight::SemiBold,
             letter_spacing: -0.3,
         }
         variant kind {
             display(t) {
-                font_size: t.typography().size_display,
+                font_size: Tokenized::token("typography-size-display", Length::Px(36.0)),
                 font_weight: FontWeight::Bold,
                 letter_spacing: -1.0,
                 line_height: 42.0,
             }
             #[default]
             h1(t) {
-                font_size: t.typography().size_xxl,
+                font_size: Tokenized::token("typography-size-xxl", Length::Px(28.0)),
                 line_height: 34.0,
             }
             h2(t) {
-                font_size: t.typography().size_xl,
+                font_size: Tokenized::token("typography-size-xl", Length::Px(20.0)),
                 line_height: 26.0,
             }
             h3(t) {
-                font_size: t.typography().size_lg,
+                font_size: Tokenized::token("typography-size-lg", Length::Px(16.0)),
                 line_height: 22.0,
             }
         }
@@ -330,18 +332,18 @@ stylesheet! {
 stylesheet! {
     pub Body<IdeaThemeRef> {
         base(t) {
-            color: t.colors().text.clone(),
-            font_size: t.typography().size_md,
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            font_size: Tokenized::token("typography-size-md", Length::Px(14.0)),
             line_height: 20.0,
         }
         variant tone {
             #[default]
             default(_t) {}
-            muted(t)    { color: t.colors().text_muted.clone() }
-            primary(t)  { color: t.intents().primary.fg.clone() }
-            danger(t)   { color: t.intents().danger.fg.clone() }
-            success(t)  { color: t.intents().success.fg.clone() }
-            warning(t)  { color: t.intents().warning.fg.clone() }
+            muted(t)    { color: Tokenized::token("color-text-muted", Color("#6b7280".into())) }
+            primary(t)  { color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())) }
+            danger(t)   { color: Tokenized::token("intent-danger-fg", Color("#b91c1c".into())) }
+            success(t)  { color: Tokenized::token("intent-success-fg", Color("#107a37".into())) }
+            warning(t)  { color: Tokenized::token("intent-warning-fg", Color("#b45309".into())) }
         }
         variant align {
             #[default]
@@ -358,15 +360,15 @@ stylesheet! {
 stylesheet! {
     pub Caption<IdeaThemeRef> {
         base(t) {
-            color: t.colors().text_muted.clone(),
-            font_size: t.typography().size_sm,
+            color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+            font_size: Tokenized::token("typography-size-sm", Length::Px(12.0)),
             line_height: 16.0,
         }
         variant tone {
             #[default]
-            default(t) { color: t.colors().text_muted.clone() }
-            danger(t)  { color: t.intents().danger.fg.clone() }
-            success(t) { color: t.intents().success.fg.clone() }
+            default(t) { color: Tokenized::token("color-text-muted", Color("#6b7280".into())) }
+            danger(t)  { color: Tokenized::token("intent-danger-fg", Color("#b91c1c".into())) }
+            success(t) { color: Tokenized::token("intent-success-fg", Color("#107a37".into())) }
         }
         variant align {
             #[default]
@@ -387,20 +389,20 @@ stylesheet! {
 stylesheet! {
     pub Card<IdeaThemeRef> {
         base(t) {
-            background: t.colors().surface.clone(),
-            padding: t.spacing().lg,
-            border_radius: t.radius().lg,
-            gap: Length::Px(t.spacing().sm),
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            padding: Tokenized::token("spacing-lg", Length::Px(16.0)),
+            border_radius: Tokenized::token("radius-lg", Length::Px(12.0)),
+            gap: Tokenized::token("spacing-sm", Length::Px(8.0)),
             border_width: 1.0,
-            border_color: t.colors().border.clone(),
+            border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
         }
         variant tone {
             #[default]
             surface(t) {
-                background: t.colors().surface.clone(),
+                background: Tokenized::token("color-surface", Color("#ffffff".into())),
             }
             elevated(t) {
-                background: t.colors().surface.clone(),
+                background: Tokenized::token("color-surface", Color("#ffffff".into())),
                 shadow: framework_core::Shadow {
                     x: 0.0,
                     y: 4.0,
@@ -409,20 +411,20 @@ stylesheet! {
                 },
             }
             primary(t) {
-                background: t.intents().primary.solid_bg.clone(),
-                color: t.intents().primary.solid_text.clone(),
-                border_color: t.intents().primary.solid_bg.clone(),
+                background: Tokenized::token("intent-primary-solid-bg", Color("#5b6cff".into())),
+                color: Tokenized::token("intent-primary-solid-text", Color("#ffffff".into())),
+                border_color: Tokenized::token("intent-primary-solid-bg", Color("#5b6cff".into())),
             }
             muted(t) {
-                background: t.colors().surface_alt.clone(),
+                background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())),
             }
         }
         variant padding {
             none(_t) { padding: 0.0 }
-            sm(t)    { padding: t.spacing().sm }
+            sm(t)    { padding: Tokenized::token("spacing-sm", Length::Px(8.0)) }
             #[default]
-            md(t)    { padding: t.spacing().lg }
-            lg(t)    { padding: t.spacing().xl }
+            md(t)    { padding: Tokenized::token("spacing-lg", Length::Px(16.0)) }
+            lg(t)    { padding: Tokenized::token("spacing-xl", Length::Px(24.0)) }
         }
         transitions {
             background: 250ms EaseInOut,
@@ -439,42 +441,42 @@ stylesheet! {
 stylesheet! {
     pub Field<IdeaThemeRef> {
         base(t) {
-            background: t.colors().surface.clone(),
-            color: t.colors().text.clone(),
-            padding_vertical: t.spacing().sm,
-            padding_horizontal: t.spacing().md,
-            border_radius: t.radius().md,
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            padding_vertical: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            padding_horizontal: Tokenized::token("spacing-md", Length::Px(12.0)),
+            border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
             border_width: 1.0,
-            border_color: t.colors().border.clone(),
-            font_size: t.typography().size_md,
+            border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            font_size: Tokenized::token("typography-size-md", Length::Px(14.0)),
         }
         variant size {
             sm(t) {
-                padding_vertical: t.spacing().xs,
-                padding_horizontal: t.spacing().sm,
-                font_size: t.typography().size_sm,
+                padding_vertical: Tokenized::token("spacing-xs", Length::Px(4.0)),
+                padding_horizontal: Tokenized::token("spacing-sm", Length::Px(8.0)),
+                font_size: Tokenized::token("typography-size-sm", Length::Px(12.0)),
             }
             #[default]
             md(t) {
-                padding_vertical: t.spacing().sm,
-                padding_horizontal: t.spacing().md,
-                font_size: t.typography().size_md,
+                padding_vertical: Tokenized::token("spacing-sm", Length::Px(8.0)),
+                padding_horizontal: Tokenized::token("spacing-md", Length::Px(12.0)),
+                font_size: Tokenized::token("typography-size-md", Length::Px(14.0)),
             }
             lg(t) {
-                padding_vertical: t.spacing().md,
-                padding_horizontal: t.spacing().lg,
-                font_size: t.typography().size_lg,
+                padding_vertical: Tokenized::token("spacing-md", Length::Px(12.0)),
+                padding_horizontal: Tokenized::token("spacing-lg", Length::Px(16.0)),
+                font_size: Tokenized::token("typography-size-lg", Length::Px(16.0)),
             }
         }
         variant tone {
             #[default]
             default(_t) {}
             error(t) {
-                border_color: t.intents().danger.solid_bg.clone(),
+                border_color: Tokenized::token("intent-danger-solid-bg", Color("#dc2626".into())),
             }
         }
         state focused(t) {
-            border_color: t.colors().focus_ring.clone(),
+            border_color: Tokenized::token("color-focus-ring", Color("#5b6cff".into())),
         }
         state disabled(_t) {
             opacity: 0.55,
@@ -491,7 +493,7 @@ stylesheet! {
     pub FieldGroup<IdeaThemeRef> {
         base(t) {
             flex_direction: FlexDirection::Column,
-            gap: Length::Px(t.spacing().xs),
+            gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
         }
     }
 }
@@ -499,8 +501,8 @@ stylesheet! {
 stylesheet! {
     pub FieldLabel<IdeaThemeRef> {
         base(t) {
-            color: t.colors().text.clone(),
-            font_size: t.typography().size_sm,
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            font_size: Tokenized::token("typography-size-sm", Length::Px(12.0)),
             font_weight: FontWeight::Medium,
         }
     }
@@ -509,13 +511,13 @@ stylesheet! {
 stylesheet! {
     pub FieldHelp<IdeaThemeRef> {
         base(t) {
-            color: t.colors().text_muted.clone(),
-            font_size: t.typography().size_sm,
+            color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+            font_size: Tokenized::token("typography-size-sm", Length::Px(12.0)),
         }
         variant tone {
             #[default]
-            default(t) { color: t.colors().text_muted.clone() }
-            error(t)   { color: t.intents().danger.fg.clone() }
+            default(t) { color: Tokenized::token("color-text-muted", Color("#6b7280".into())) }
+            error(t)   { color: Tokenized::token("intent-danger-fg", Color("#b91c1c".into())) }
         }
     }
 }
@@ -527,7 +529,7 @@ stylesheet! {
 stylesheet! {
     pub Divider<IdeaThemeRef> {
         base(t) {
-            background: t.colors().border.clone(),
+            background: Tokenized::token("color-border", Color("#e4e6ef".into())),
             height: 1.0,
             width: Length::pct(100.0),
         }
@@ -569,9 +571,9 @@ stylesheet! {
     pub Badge<IdeaThemeRef> {
         base(t) {
             padding_vertical: 2.0,
-            padding_horizontal: t.spacing().sm,
-            border_radius: t.radius().pill,
-            font_size: t.typography().size_xs,
+            padding_horizontal: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            border_radius: Tokenized::token("radius-pill", Length::Px(999.0)),
+            font_size: Tokenized::token("typography-size-xs", Length::Px(11.0)),
             font_weight: FontWeight::SemiBold,
             letter_spacing: 0.4,
             text_transform: TextTransform::Uppercase,
@@ -579,117 +581,117 @@ stylesheet! {
         }
         variant appearance {
             primary_solid(t) {
-                background: t.intents().primary.solid_bg.clone(),
-                color: t.intents().primary.solid_text.clone(),
+                background: Tokenized::token("intent-primary-solid-bg", Color("#5b6cff".into())),
+                color: Tokenized::token("intent-primary-solid-text", Color("#ffffff".into())),
                 border_width: 0.0,
             }
             primary_soft(t) {
-                background: t.intents().primary.soft_bg.clone(),
-                color: t.intents().primary.soft_text.clone(),
+                background: Tokenized::token("intent-primary-soft-bg", Color("rgba(91, 108, 255, 0.12)".into())),
+                color: Tokenized::token("intent-primary-soft-text", Color("#3947d6".into())),
                 border_width: 0.0,
             }
             primary_outlined(t) {
                 background: Color("transparent".into()),
-                color: t.intents().primary.fg.clone(),
+                color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
                 border_width: 1.0,
-                border_color: t.intents().primary.border.clone(),
+                border_color: Tokenized::token("intent-primary-border", Color("#5b6cff".into())),
             }
             secondary_solid(t) {
-                background: t.intents().secondary.solid_bg.clone(),
-                color: t.intents().secondary.solid_text.clone(),
+                background: Tokenized::token("intent-secondary-solid-bg", Color("#475569".into())),
+                color: Tokenized::token("intent-secondary-solid-text", Color("#ffffff".into())),
                 border_width: 0.0,
             }
             secondary_soft(t) {
-                background: t.intents().secondary.soft_bg.clone(),
-                color: t.intents().secondary.soft_text.clone(),
+                background: Tokenized::token("intent-secondary-soft-bg", Color("rgba(71, 85, 105, 0.10)".into())),
+                color: Tokenized::token("intent-secondary-soft-text", Color("#334155".into())),
                 border_width: 0.0,
             }
             secondary_outlined(t) {
                 background: Color("transparent".into()),
-                color: t.intents().secondary.fg.clone(),
+                color: Tokenized::token("intent-secondary-fg", Color("#334155".into())),
                 border_width: 1.0,
-                border_color: t.intents().secondary.border.clone(),
+                border_color: Tokenized::token("intent-secondary-border", Color("#475569".into())),
             }
             neutral_solid(t) {
-                background: t.intents().neutral.solid_bg.clone(),
-                color: t.intents().neutral.solid_text.clone(),
+                background: Tokenized::token("intent-neutral-solid-bg", Color("#1a1a1f".into())),
+                color: Tokenized::token("intent-neutral-solid-text", Color("#ffffff".into())),
                 border_width: 0.0,
             }
             #[default]
             neutral_soft(t) {
-                background: t.intents().neutral.soft_bg.clone(),
-                color: t.intents().neutral.soft_text.clone(),
+                background: Tokenized::token("intent-neutral-soft-bg", Color("#eef0f7".into())),
+                color: Tokenized::token("intent-neutral-soft-text", Color("#1a1a1f".into())),
                 border_width: 0.0,
             }
             neutral_outlined(t) {
                 background: Color("transparent".into()),
-                color: t.intents().neutral.fg.clone(),
+                color: Tokenized::token("intent-neutral-fg", Color("#1a1a1f".into())),
                 border_width: 1.0,
-                border_color: t.intents().neutral.border.clone(),
+                border_color: Tokenized::token("intent-neutral-border", Color("#cbd0db".into())),
             }
             success_solid(t) {
-                background: t.intents().success.solid_bg.clone(),
-                color: t.intents().success.solid_text.clone(),
+                background: Tokenized::token("intent-success-solid-bg", Color("#16a34a".into())),
+                color: Tokenized::token("intent-success-solid-text", Color("#ffffff".into())),
                 border_width: 0.0,
             }
             success_soft(t) {
-                background: t.intents().success.soft_bg.clone(),
-                color: t.intents().success.soft_text.clone(),
+                background: Tokenized::token("intent-success-soft-bg", Color("rgba(22, 163, 74, 0.12)".into())),
+                color: Tokenized::token("intent-success-soft-text", Color("#107a37".into())),
                 border_width: 0.0,
             }
             success_outlined(t) {
                 background: Color("transparent".into()),
-                color: t.intents().success.fg.clone(),
+                color: Tokenized::token("intent-success-fg", Color("#107a37".into())),
                 border_width: 1.0,
-                border_color: t.intents().success.border.clone(),
+                border_color: Tokenized::token("intent-success-border", Color("#16a34a".into())),
             }
             danger_solid(t) {
-                background: t.intents().danger.solid_bg.clone(),
-                color: t.intents().danger.solid_text.clone(),
+                background: Tokenized::token("intent-danger-solid-bg", Color("#dc2626".into())),
+                color: Tokenized::token("intent-danger-solid-text", Color("#ffffff".into())),
                 border_width: 0.0,
             }
             danger_soft(t) {
-                background: t.intents().danger.soft_bg.clone(),
-                color: t.intents().danger.soft_text.clone(),
+                background: Tokenized::token("intent-danger-soft-bg", Color("rgba(220, 38, 38, 0.10)".into())),
+                color: Tokenized::token("intent-danger-soft-text", Color("#b91c1c".into())),
                 border_width: 0.0,
             }
             danger_outlined(t) {
                 background: Color("transparent".into()),
-                color: t.intents().danger.fg.clone(),
+                color: Tokenized::token("intent-danger-fg", Color("#b91c1c".into())),
                 border_width: 1.0,
-                border_color: t.intents().danger.border.clone(),
+                border_color: Tokenized::token("intent-danger-border", Color("#dc2626".into())),
             }
             warning_solid(t) {
-                background: t.intents().warning.solid_bg.clone(),
-                color: t.intents().warning.solid_text.clone(),
+                background: Tokenized::token("intent-warning-solid-bg", Color("#d97706".into())),
+                color: Tokenized::token("intent-warning-solid-text", Color("#ffffff".into())),
                 border_width: 0.0,
             }
             warning_soft(t) {
-                background: t.intents().warning.soft_bg.clone(),
-                color: t.intents().warning.soft_text.clone(),
+                background: Tokenized::token("intent-warning-soft-bg", Color("rgba(217, 119, 6, 0.12)".into())),
+                color: Tokenized::token("intent-warning-soft-text", Color("#b45309".into())),
                 border_width: 0.0,
             }
             warning_outlined(t) {
                 background: Color("transparent".into()),
-                color: t.intents().warning.fg.clone(),
+                color: Tokenized::token("intent-warning-fg", Color("#b45309".into())),
                 border_width: 1.0,
-                border_color: t.intents().warning.border.clone(),
+                border_color: Tokenized::token("intent-warning-border", Color("#d97706".into())),
             }
             info_solid(t) {
-                background: t.intents().info.solid_bg.clone(),
-                color: t.intents().info.solid_text.clone(),
+                background: Tokenized::token("intent-info-solid-bg", Color("#0284c7".into())),
+                color: Tokenized::token("intent-info-solid-text", Color("#ffffff".into())),
                 border_width: 0.0,
             }
             info_soft(t) {
-                background: t.intents().info.soft_bg.clone(),
-                color: t.intents().info.soft_text.clone(),
+                background: Tokenized::token("intent-info-soft-bg", Color("rgba(2, 132, 199, 0.12)".into())),
+                color: Tokenized::token("intent-info-soft-text", Color("#075985".into())),
                 border_width: 0.0,
             }
             info_outlined(t) {
                 background: Color("transparent".into()),
-                color: t.intents().info.fg.clone(),
+                color: Tokenized::token("intent-info-fg", Color("#075985".into())),
                 border_width: 1.0,
-                border_color: t.intents().info.border.clone(),
+                border_color: Tokenized::token("intent-info-border", Color("#0284c7".into())),
             }
         }
         transitions {
@@ -709,7 +711,7 @@ stylesheet! {
         base(t) {
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::Center,
-            gap: Length::Px(t.spacing().sm),
+            gap: Tokenized::token("spacing-sm", Length::Px(8.0)),
         }
     }
 }
@@ -729,37 +731,37 @@ stylesheet! {
 stylesheet! {
     pub SelectTrigger<IdeaThemeRef> {
         base(t) {
-            background: t.colors().surface.clone(),
-            color: t.colors().text.clone(),
-            padding_vertical: t.spacing().sm,
-            padding_horizontal: t.spacing().md,
-            border_radius: t.radius().md,
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            padding_vertical: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            padding_horizontal: Tokenized::token("spacing-md", Length::Px(12.0)),
+            border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
             border_width: 1.0,
-            border_color: t.colors().border.clone(),
-            font_size: t.typography().size_md,
+            border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            font_size: Tokenized::token("typography-size-md", Length::Px(14.0)),
             text_align: TextAlign::Left,
             min_width: 160.0,
         }
         variant size {
             sm(t) {
-                padding_vertical: t.spacing().xs,
-                padding_horizontal: t.spacing().sm,
-                font_size: t.typography().size_sm,
+                padding_vertical: Tokenized::token("spacing-xs", Length::Px(4.0)),
+                padding_horizontal: Tokenized::token("spacing-sm", Length::Px(8.0)),
+                font_size: Tokenized::token("typography-size-sm", Length::Px(12.0)),
             }
             #[default]
             md(t) {
-                padding_vertical: t.spacing().sm,
-                padding_horizontal: t.spacing().md,
-                font_size: t.typography().size_md,
+                padding_vertical: Tokenized::token("spacing-sm", Length::Px(8.0)),
+                padding_horizontal: Tokenized::token("spacing-md", Length::Px(12.0)),
+                font_size: Tokenized::token("typography-size-md", Length::Px(14.0)),
             }
             lg(t) {
-                padding_vertical: t.spacing().md,
-                padding_horizontal: t.spacing().lg,
-                font_size: t.typography().size_lg,
+                padding_vertical: Tokenized::token("spacing-md", Length::Px(12.0)),
+                padding_horizontal: Tokenized::token("spacing-lg", Length::Px(16.0)),
+                font_size: Tokenized::token("typography-size-lg", Length::Px(16.0)),
             }
         }
         state hovered(t) {
-            border_color: t.colors().border_hover.clone(),
+            border_color: Tokenized::token("color-border-hover", Color("#b9bdcc".into())),
         }
         state disabled(_t) {
             opacity: 0.55,
@@ -775,11 +777,11 @@ stylesheet! {
 stylesheet! {
     pub SelectMenu<IdeaThemeRef> {
         base(t) {
-            background: t.colors().surface.clone(),
-            border_radius: t.radius().md,
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
             border_width: 1.0,
-            border_color: t.colors().border.clone(),
-            padding: t.spacing().xs,
+            border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            padding: Tokenized::token("spacing-xs", Length::Px(4.0)),
             gap: Length::Px(2.0),
             flex_direction: FlexDirection::Column,
             min_width: 200.0,
@@ -801,23 +803,23 @@ stylesheet! {
     pub SelectOption<IdeaThemeRef> {
         base(t) {
             background: Color("transparent".into()),
-            color: t.colors().text.clone(),
-            padding_vertical: t.spacing().xs,
-            padding_horizontal: t.spacing().sm,
-            border_radius: t.radius().sm,
-            font_size: t.typography().size_md,
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            padding_vertical: Tokenized::token("spacing-xs", Length::Px(4.0)),
+            padding_horizontal: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            border_radius: Tokenized::token("radius-sm", Length::Px(4.0)),
+            font_size: Tokenized::token("typography-size-md", Length::Px(14.0)),
             text_align: TextAlign::Left,
         }
         variant active {
             #[default]
             off(_t) {}
             on(t) {
-                background: t.intents().primary.solid_bg.clone(),
-                color: t.intents().primary.solid_text.clone(),
+                background: Tokenized::token("intent-primary-solid-bg", Color("#5b6cff".into())),
+                color: Tokenized::token("intent-primary-solid-text", Color("#ffffff".into())),
             }
         }
         state hovered(t) {
-            background: t.colors().surface_alt.clone(),
+            background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())),
         }
         transitions {
             background: 150ms EaseOut,
@@ -859,9 +861,9 @@ stylesheet! {
 stylesheet! {
     pub IconButton<IdeaThemeRef> {
         base(t) {
-            padding: t.spacing().sm,
-            border_radius: t.radius().pill,
-            font_size: t.typography().size_md,
+            padding: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            border_radius: Tokenized::token("radius-pill", Length::Px(999.0)),
+            font_size: Tokenized::token("typography-size-md", Length::Px(14.0)),
             font_weight: FontWeight::SemiBold,
             text_align: TextAlign::Center,
             align_items: AlignItems::Center,
@@ -869,21 +871,21 @@ stylesheet! {
         }
         variant size {
             sm(t) {
-                padding: t.spacing().xs,
-                font_size: t.typography().size_sm,
-                width: t.spacing().xl,
-                height: t.spacing().xl,
+                padding: Tokenized::token("spacing-xs", Length::Px(4.0)),
+                font_size: Tokenized::token("typography-size-sm", Length::Px(12.0)),
+                width: 24.0,
+                height: 24.0,
             }
             #[default]
             md(t) {
-                padding: t.spacing().sm,
-                font_size: t.typography().size_md,
-                width: t.spacing().xxl,
-                height: t.spacing().xxl,
+                padding: Tokenized::token("spacing-sm", Length::Px(8.0)),
+                font_size: Tokenized::token("typography-size-md", Length::Px(14.0)),
+                width: 32.0,
+                height: 32.0,
             }
             lg(t) {
-                padding: t.spacing().md,
-                font_size: t.typography().size_lg,
+                padding: Tokenized::token("spacing-md", Length::Px(12.0)),
+                font_size: Tokenized::token("typography-size-lg", Length::Px(16.0)),
                 width: 48.0,
                 height: 48.0,
             }
@@ -891,151 +893,151 @@ stylesheet! {
         // Identical `appearance` axis as Button — same 7 intents × 4 kinds.
         variant appearance {
             primary_solid(t) {
-                background: t.intents().primary.solid_bg.clone(),
-                color: t.intents().primary.solid_text.clone(),
+                background: Tokenized::token("intent-primary-solid-bg", Color("#5b6cff".into())),
+                color: Tokenized::token("intent-primary-solid-text", Color("#ffffff".into())),
                 border_width: 0.0,
             }
             primary_soft(t) {
-                background: t.intents().primary.soft_bg.clone(),
-                color: t.intents().primary.soft_text.clone(),
+                background: Tokenized::token("intent-primary-soft-bg", Color("rgba(91, 108, 255, 0.12)".into())),
+                color: Tokenized::token("intent-primary-soft-text", Color("#3947d6".into())),
                 border_width: 0.0,
             }
             primary_outlined(t) {
                 background: Color("transparent".into()),
-                color: t.intents().primary.fg.clone(),
+                color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
                 border_width: 1.0,
-                border_color: t.intents().primary.border.clone(),
+                border_color: Tokenized::token("intent-primary-border", Color("#5b6cff".into())),
             }
             primary_ghost(t) {
                 background: Color("transparent".into()),
-                color: t.intents().primary.fg.clone(),
+                color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
                 border_width: 0.0,
             }
             secondary_solid(t) {
-                background: t.intents().secondary.solid_bg.clone(),
-                color: t.intents().secondary.solid_text.clone(),
+                background: Tokenized::token("intent-secondary-solid-bg", Color("#475569".into())),
+                color: Tokenized::token("intent-secondary-solid-text", Color("#ffffff".into())),
                 border_width: 0.0,
             }
             secondary_soft(t) {
-                background: t.intents().secondary.soft_bg.clone(),
-                color: t.intents().secondary.soft_text.clone(),
+                background: Tokenized::token("intent-secondary-soft-bg", Color("rgba(71, 85, 105, 0.10)".into())),
+                color: Tokenized::token("intent-secondary-soft-text", Color("#334155".into())),
                 border_width: 0.0,
             }
             secondary_outlined(t) {
                 background: Color("transparent".into()),
-                color: t.intents().secondary.fg.clone(),
+                color: Tokenized::token("intent-secondary-fg", Color("#334155".into())),
                 border_width: 1.0,
-                border_color: t.intents().secondary.border.clone(),
+                border_color: Tokenized::token("intent-secondary-border", Color("#475569".into())),
             }
             secondary_ghost(t) {
                 background: Color("transparent".into()),
-                color: t.intents().secondary.fg.clone(),
+                color: Tokenized::token("intent-secondary-fg", Color("#334155".into())),
                 border_width: 0.0,
             }
             #[default]
             neutral_solid(t) {
-                background: t.intents().neutral.solid_bg.clone(),
-                color: t.intents().neutral.solid_text.clone(),
+                background: Tokenized::token("intent-neutral-solid-bg", Color("#1a1a1f".into())),
+                color: Tokenized::token("intent-neutral-solid-text", Color("#ffffff".into())),
                 border_width: 0.0,
             }
             neutral_soft(t) {
-                background: t.intents().neutral.soft_bg.clone(),
-                color: t.intents().neutral.soft_text.clone(),
+                background: Tokenized::token("intent-neutral-soft-bg", Color("#eef0f7".into())),
+                color: Tokenized::token("intent-neutral-soft-text", Color("#1a1a1f".into())),
                 border_width: 0.0,
             }
             neutral_outlined(t) {
                 background: Color("transparent".into()),
-                color: t.intents().neutral.fg.clone(),
+                color: Tokenized::token("intent-neutral-fg", Color("#1a1a1f".into())),
                 border_width: 1.0,
-                border_color: t.intents().neutral.border.clone(),
+                border_color: Tokenized::token("intent-neutral-border", Color("#cbd0db".into())),
             }
             neutral_ghost(t) {
                 background: Color("transparent".into()),
-                color: t.intents().neutral.fg.clone(),
+                color: Tokenized::token("intent-neutral-fg", Color("#1a1a1f".into())),
                 border_width: 0.0,
             }
             success_solid(t) {
-                background: t.intents().success.solid_bg.clone(),
-                color: t.intents().success.solid_text.clone(),
+                background: Tokenized::token("intent-success-solid-bg", Color("#16a34a".into())),
+                color: Tokenized::token("intent-success-solid-text", Color("#ffffff".into())),
                 border_width: 0.0,
             }
             success_soft(t) {
-                background: t.intents().success.soft_bg.clone(),
-                color: t.intents().success.soft_text.clone(),
+                background: Tokenized::token("intent-success-soft-bg", Color("rgba(22, 163, 74, 0.12)".into())),
+                color: Tokenized::token("intent-success-soft-text", Color("#107a37".into())),
                 border_width: 0.0,
             }
             success_outlined(t) {
                 background: Color("transparent".into()),
-                color: t.intents().success.fg.clone(),
+                color: Tokenized::token("intent-success-fg", Color("#107a37".into())),
                 border_width: 1.0,
-                border_color: t.intents().success.border.clone(),
+                border_color: Tokenized::token("intent-success-border", Color("#16a34a".into())),
             }
             success_ghost(t) {
                 background: Color("transparent".into()),
-                color: t.intents().success.fg.clone(),
+                color: Tokenized::token("intent-success-fg", Color("#107a37".into())),
                 border_width: 0.0,
             }
             danger_solid(t) {
-                background: t.intents().danger.solid_bg.clone(),
-                color: t.intents().danger.solid_text.clone(),
+                background: Tokenized::token("intent-danger-solid-bg", Color("#dc2626".into())),
+                color: Tokenized::token("intent-danger-solid-text", Color("#ffffff".into())),
                 border_width: 0.0,
             }
             danger_soft(t) {
-                background: t.intents().danger.soft_bg.clone(),
-                color: t.intents().danger.soft_text.clone(),
+                background: Tokenized::token("intent-danger-soft-bg", Color("rgba(220, 38, 38, 0.10)".into())),
+                color: Tokenized::token("intent-danger-soft-text", Color("#b91c1c".into())),
                 border_width: 0.0,
             }
             danger_outlined(t) {
                 background: Color("transparent".into()),
-                color: t.intents().danger.fg.clone(),
+                color: Tokenized::token("intent-danger-fg", Color("#b91c1c".into())),
                 border_width: 1.0,
-                border_color: t.intents().danger.border.clone(),
+                border_color: Tokenized::token("intent-danger-border", Color("#dc2626".into())),
             }
             danger_ghost(t) {
                 background: Color("transparent".into()),
-                color: t.intents().danger.fg.clone(),
+                color: Tokenized::token("intent-danger-fg", Color("#b91c1c".into())),
                 border_width: 0.0,
             }
             warning_solid(t) {
-                background: t.intents().warning.solid_bg.clone(),
-                color: t.intents().warning.solid_text.clone(),
+                background: Tokenized::token("intent-warning-solid-bg", Color("#d97706".into())),
+                color: Tokenized::token("intent-warning-solid-text", Color("#ffffff".into())),
                 border_width: 0.0,
             }
             warning_soft(t) {
-                background: t.intents().warning.soft_bg.clone(),
-                color: t.intents().warning.soft_text.clone(),
+                background: Tokenized::token("intent-warning-soft-bg", Color("rgba(217, 119, 6, 0.12)".into())),
+                color: Tokenized::token("intent-warning-soft-text", Color("#b45309".into())),
                 border_width: 0.0,
             }
             warning_outlined(t) {
                 background: Color("transparent".into()),
-                color: t.intents().warning.fg.clone(),
+                color: Tokenized::token("intent-warning-fg", Color("#b45309".into())),
                 border_width: 1.0,
-                border_color: t.intents().warning.border.clone(),
+                border_color: Tokenized::token("intent-warning-border", Color("#d97706".into())),
             }
             warning_ghost(t) {
                 background: Color("transparent".into()),
-                color: t.intents().warning.fg.clone(),
+                color: Tokenized::token("intent-warning-fg", Color("#b45309".into())),
                 border_width: 0.0,
             }
             info_solid(t) {
-                background: t.intents().info.solid_bg.clone(),
-                color: t.intents().info.solid_text.clone(),
+                background: Tokenized::token("intent-info-solid-bg", Color("#0284c7".into())),
+                color: Tokenized::token("intent-info-solid-text", Color("#ffffff".into())),
                 border_width: 0.0,
             }
             info_soft(t) {
-                background: t.intents().info.soft_bg.clone(),
-                color: t.intents().info.soft_text.clone(),
+                background: Tokenized::token("intent-info-soft-bg", Color("rgba(2, 132, 199, 0.12)".into())),
+                color: Tokenized::token("intent-info-soft-text", Color("#075985".into())),
                 border_width: 0.0,
             }
             info_outlined(t) {
                 background: Color("transparent".into()),
-                color: t.intents().info.fg.clone(),
+                color: Tokenized::token("intent-info-fg", Color("#075985".into())),
                 border_width: 1.0,
-                border_color: t.intents().info.border.clone(),
+                border_color: Tokenized::token("intent-info-border", Color("#0284c7".into())),
             }
             info_ghost(t) {
                 background: Color("transparent".into()),
-                color: t.intents().info.fg.clone(),
+                color: Tokenized::token("intent-info-fg", Color("#075985".into())),
                 border_width: 0.0,
             }
         }
@@ -1068,14 +1070,14 @@ stylesheet! {
 stylesheet! {
     pub Avatar<IdeaThemeRef> {
         base(t) {
-            border_radius: t.radius().pill,
+            border_radius: Tokenized::token("radius-pill", Length::Px(999.0)),
             align_items: AlignItems::Center,
             justify_content: JustifyContent::Center,
             overflow: framework_core::Overflow::Hidden,
             // Default to neutral wash so a no-prop Avatar reads as a
             // generic placeholder rather than a colored chip.
-            background: t.intents().neutral.soft_bg.clone(),
-            color: t.intents().neutral.soft_text.clone(),
+            background: Tokenized::token("intent-neutral-soft-bg", Color("#eef0f7".into())),
+            color: Tokenized::token("intent-neutral-soft-text", Color("#1a1a1f".into())),
         }
         variant size {
             xs(_t) { width: 24.0, height: 24.0 }
@@ -1088,32 +1090,32 @@ stylesheet! {
         variant color {
             #[default]
             neutral(t) {
-                background: t.intents().neutral.soft_bg.clone(),
-                color: t.intents().neutral.soft_text.clone(),
+                background: Tokenized::token("intent-neutral-soft-bg", Color("#eef0f7".into())),
+                color: Tokenized::token("intent-neutral-soft-text", Color("#1a1a1f".into())),
             }
             primary(t) {
-                background: t.intents().primary.soft_bg.clone(),
-                color: t.intents().primary.soft_text.clone(),
+                background: Tokenized::token("intent-primary-soft-bg", Color("rgba(91, 108, 255, 0.12)".into())),
+                color: Tokenized::token("intent-primary-soft-text", Color("#3947d6".into())),
             }
             secondary(t) {
-                background: t.intents().secondary.soft_bg.clone(),
-                color: t.intents().secondary.soft_text.clone(),
+                background: Tokenized::token("intent-secondary-soft-bg", Color("rgba(71, 85, 105, 0.10)".into())),
+                color: Tokenized::token("intent-secondary-soft-text", Color("#334155".into())),
             }
             success(t) {
-                background: t.intents().success.soft_bg.clone(),
-                color: t.intents().success.soft_text.clone(),
+                background: Tokenized::token("intent-success-soft-bg", Color("rgba(22, 163, 74, 0.12)".into())),
+                color: Tokenized::token("intent-success-soft-text", Color("#107a37".into())),
             }
             danger(t) {
-                background: t.intents().danger.soft_bg.clone(),
-                color: t.intents().danger.soft_text.clone(),
+                background: Tokenized::token("intent-danger-soft-bg", Color("rgba(220, 38, 38, 0.10)".into())),
+                color: Tokenized::token("intent-danger-soft-text", Color("#b91c1c".into())),
             }
             warning(t) {
-                background: t.intents().warning.soft_bg.clone(),
-                color: t.intents().warning.soft_text.clone(),
+                background: Tokenized::token("intent-warning-soft-bg", Color("rgba(217, 119, 6, 0.12)".into())),
+                color: Tokenized::token("intent-warning-soft-text", Color("#b45309".into())),
             }
             info(t) {
-                background: t.intents().info.soft_bg.clone(),
-                color: t.intents().info.soft_text.clone(),
+                background: Tokenized::token("intent-info-soft-bg", Color("rgba(2, 132, 199, 0.12)".into())),
+                color: Tokenized::token("intent-info-soft-text", Color("#075985".into())),
             }
         }
         transitions {
@@ -1133,11 +1135,11 @@ stylesheet! {
         }
         variant size {
             xs(_t) { font_size: 10.0, line_height: 24.0 }
-            sm(_t) { font_size: 12.0, line_height: 32.0 }
+            sm(_t) { font_size: Tokenized::token("typography-size-sm", Length::Px(12.0)), line_height: 32.0 }
             #[default]
-            md(_t) { font_size: 14.0, line_height: 40.0 }
-            lg(_t) { font_size: 20.0, line_height: 56.0 }
-            xl(_t) { font_size: 28.0, line_height: 80.0 }
+            md(_t) { font_size: Tokenized::token("typography-size-md", Length::Px(14.0)), line_height: 40.0 }
+            lg(_t) { font_size: Tokenized::token("typography-size-xl", Length::Px(20.0)), line_height: 56.0 }
+            xl(_t) { font_size: Tokenized::token("typography-size-xxl", Length::Px(28.0)), line_height: 80.0 }
         }
     }
 }
@@ -1151,124 +1153,124 @@ stylesheet! {
         base(t) {
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::Center,
-            gap: Length::Px(t.spacing().xs),
-            padding_vertical: t.spacing().xs,
-            padding_horizontal: t.spacing().sm,
-            border_radius: t.radius().pill,
+            gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
+            padding_vertical: Tokenized::token("spacing-xs", Length::Px(4.0)),
+            padding_horizontal: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            border_radius: Tokenized::token("radius-pill", Length::Px(999.0)),
         }
         variant appearance {
             primary_solid(t) {
-                background: t.intents().primary.solid_bg.clone(),
-                color: t.intents().primary.solid_text.clone(),
+                background: Tokenized::token("intent-primary-solid-bg", Color("#5b6cff".into())),
+                color: Tokenized::token("intent-primary-solid-text", Color("#ffffff".into())),
                 border_width: 0.0,
             }
             primary_soft(t) {
-                background: t.intents().primary.soft_bg.clone(),
-                color: t.intents().primary.soft_text.clone(),
+                background: Tokenized::token("intent-primary-soft-bg", Color("rgba(91, 108, 255, 0.12)".into())),
+                color: Tokenized::token("intent-primary-soft-text", Color("#3947d6".into())),
                 border_width: 0.0,
             }
             primary_outlined(t) {
                 background: Color("transparent".into()),
-                color: t.intents().primary.fg.clone(),
+                color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
                 border_width: 1.0,
-                border_color: t.intents().primary.border.clone(),
+                border_color: Tokenized::token("intent-primary-border", Color("#5b6cff".into())),
             }
             secondary_solid(t) {
-                background: t.intents().secondary.solid_bg.clone(),
-                color: t.intents().secondary.solid_text.clone(),
+                background: Tokenized::token("intent-secondary-solid-bg", Color("#475569".into())),
+                color: Tokenized::token("intent-secondary-solid-text", Color("#ffffff".into())),
                 border_width: 0.0,
             }
             secondary_soft(t) {
-                background: t.intents().secondary.soft_bg.clone(),
-                color: t.intents().secondary.soft_text.clone(),
+                background: Tokenized::token("intent-secondary-soft-bg", Color("rgba(71, 85, 105, 0.10)".into())),
+                color: Tokenized::token("intent-secondary-soft-text", Color("#334155".into())),
                 border_width: 0.0,
             }
             secondary_outlined(t) {
                 background: Color("transparent".into()),
-                color: t.intents().secondary.fg.clone(),
+                color: Tokenized::token("intent-secondary-fg", Color("#334155".into())),
                 border_width: 1.0,
-                border_color: t.intents().secondary.border.clone(),
+                border_color: Tokenized::token("intent-secondary-border", Color("#475569".into())),
             }
             neutral_solid(t) {
-                background: t.intents().neutral.solid_bg.clone(),
-                color: t.intents().neutral.solid_text.clone(),
+                background: Tokenized::token("intent-neutral-solid-bg", Color("#1a1a1f".into())),
+                color: Tokenized::token("intent-neutral-solid-text", Color("#ffffff".into())),
                 border_width: 0.0,
             }
             #[default]
             neutral_soft(t) {
-                background: t.intents().neutral.soft_bg.clone(),
-                color: t.intents().neutral.soft_text.clone(),
+                background: Tokenized::token("intent-neutral-soft-bg", Color("#eef0f7".into())),
+                color: Tokenized::token("intent-neutral-soft-text", Color("#1a1a1f".into())),
                 border_width: 0.0,
             }
             neutral_outlined(t) {
                 background: Color("transparent".into()),
-                color: t.intents().neutral.fg.clone(),
+                color: Tokenized::token("intent-neutral-fg", Color("#1a1a1f".into())),
                 border_width: 1.0,
-                border_color: t.intents().neutral.border.clone(),
+                border_color: Tokenized::token("intent-neutral-border", Color("#cbd0db".into())),
             }
             success_solid(t) {
-                background: t.intents().success.solid_bg.clone(),
-                color: t.intents().success.solid_text.clone(),
+                background: Tokenized::token("intent-success-solid-bg", Color("#16a34a".into())),
+                color: Tokenized::token("intent-success-solid-text", Color("#ffffff".into())),
                 border_width: 0.0,
             }
             success_soft(t) {
-                background: t.intents().success.soft_bg.clone(),
-                color: t.intents().success.soft_text.clone(),
+                background: Tokenized::token("intent-success-soft-bg", Color("rgba(22, 163, 74, 0.12)".into())),
+                color: Tokenized::token("intent-success-soft-text", Color("#107a37".into())),
                 border_width: 0.0,
             }
             success_outlined(t) {
                 background: Color("transparent".into()),
-                color: t.intents().success.fg.clone(),
+                color: Tokenized::token("intent-success-fg", Color("#107a37".into())),
                 border_width: 1.0,
-                border_color: t.intents().success.border.clone(),
+                border_color: Tokenized::token("intent-success-border", Color("#16a34a".into())),
             }
             danger_solid(t) {
-                background: t.intents().danger.solid_bg.clone(),
-                color: t.intents().danger.solid_text.clone(),
+                background: Tokenized::token("intent-danger-solid-bg", Color("#dc2626".into())),
+                color: Tokenized::token("intent-danger-solid-text", Color("#ffffff".into())),
                 border_width: 0.0,
             }
             danger_soft(t) {
-                background: t.intents().danger.soft_bg.clone(),
-                color: t.intents().danger.soft_text.clone(),
+                background: Tokenized::token("intent-danger-soft-bg", Color("rgba(220, 38, 38, 0.10)".into())),
+                color: Tokenized::token("intent-danger-soft-text", Color("#b91c1c".into())),
                 border_width: 0.0,
             }
             danger_outlined(t) {
                 background: Color("transparent".into()),
-                color: t.intents().danger.fg.clone(),
+                color: Tokenized::token("intent-danger-fg", Color("#b91c1c".into())),
                 border_width: 1.0,
-                border_color: t.intents().danger.border.clone(),
+                border_color: Tokenized::token("intent-danger-border", Color("#dc2626".into())),
             }
             warning_solid(t) {
-                background: t.intents().warning.solid_bg.clone(),
-                color: t.intents().warning.solid_text.clone(),
+                background: Tokenized::token("intent-warning-solid-bg", Color("#d97706".into())),
+                color: Tokenized::token("intent-warning-solid-text", Color("#ffffff".into())),
                 border_width: 0.0,
             }
             warning_soft(t) {
-                background: t.intents().warning.soft_bg.clone(),
-                color: t.intents().warning.soft_text.clone(),
+                background: Tokenized::token("intent-warning-soft-bg", Color("rgba(217, 119, 6, 0.12)".into())),
+                color: Tokenized::token("intent-warning-soft-text", Color("#b45309".into())),
                 border_width: 0.0,
             }
             warning_outlined(t) {
                 background: Color("transparent".into()),
-                color: t.intents().warning.fg.clone(),
+                color: Tokenized::token("intent-warning-fg", Color("#b45309".into())),
                 border_width: 1.0,
-                border_color: t.intents().warning.border.clone(),
+                border_color: Tokenized::token("intent-warning-border", Color("#d97706".into())),
             }
             info_solid(t) {
-                background: t.intents().info.solid_bg.clone(),
-                color: t.intents().info.solid_text.clone(),
+                background: Tokenized::token("intent-info-solid-bg", Color("#0284c7".into())),
+                color: Tokenized::token("intent-info-solid-text", Color("#ffffff".into())),
                 border_width: 0.0,
             }
             info_soft(t) {
-                background: t.intents().info.soft_bg.clone(),
-                color: t.intents().info.soft_text.clone(),
+                background: Tokenized::token("intent-info-soft-bg", Color("rgba(2, 132, 199, 0.12)".into())),
+                color: Tokenized::token("intent-info-soft-text", Color("#075985".into())),
                 border_width: 0.0,
             }
             info_outlined(t) {
                 background: Color("transparent".into()),
-                color: t.intents().info.fg.clone(),
+                color: Tokenized::token("intent-info-fg", Color("#075985".into())),
                 border_width: 1.0,
-                border_color: t.intents().info.border.clone(),
+                border_color: Tokenized::token("intent-info-border", Color("#0284c7".into())),
             }
         }
         transitions {
@@ -1282,7 +1284,7 @@ stylesheet! {
 stylesheet! {
     pub TagLabel<IdeaThemeRef> {
         base(t) {
-            font_size: t.typography().size_sm,
+            font_size: Tokenized::token("typography-size-sm", Length::Px(12.0)),
             font_weight: FontWeight::SemiBold,
             letter_spacing: 0.3,
         }
@@ -1295,13 +1297,13 @@ stylesheet! {
             // Inherit the parent's foreground; no fill of its own.
             background: Color("transparent".into()),
             padding: 0.0,
-            font_size: 14.0,
+            font_size: Tokenized::token("typography-size-md", Length::Px(14.0)),
             font_weight: FontWeight::Bold,
             text_align: TextAlign::Center,
             line_height: 14.0,
             width: 16.0,
             height: 16.0,
-            border_radius: 999.0,
+            border_radius: Tokenized::token("radius-pill", Length::Px(999.0)),
         }
         transitions {
             background: 150ms EaseOut,
@@ -1319,123 +1321,123 @@ stylesheet! {
         base(t) {
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::FlexStart,
-            gap: Length::Px(t.spacing().md),
-            padding: t.spacing().lg,
-            border_radius: t.radius().md,
+            gap: Tokenized::token("spacing-md", Length::Px(12.0)),
+            padding: Tokenized::token("spacing-lg", Length::Px(16.0)),
+            border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
         }
         variant appearance {
             primary_solid(t) {
-                background: t.intents().primary.solid_bg.clone(),
-                color: t.intents().primary.solid_text.clone(),
+                background: Tokenized::token("intent-primary-solid-bg", Color("#5b6cff".into())),
+                color: Tokenized::token("intent-primary-solid-text", Color("#ffffff".into())),
                 border_width: 0.0,
             }
             primary_soft(t) {
-                background: t.intents().primary.soft_bg.clone(),
-                color: t.intents().primary.soft_text.clone(),
+                background: Tokenized::token("intent-primary-soft-bg", Color("rgba(91, 108, 255, 0.12)".into())),
+                color: Tokenized::token("intent-primary-soft-text", Color("#3947d6".into())),
                 border_width: 0.0,
             }
             primary_outlined(t) {
                 background: Color("transparent".into()),
-                color: t.intents().primary.fg.clone(),
+                color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
                 border_width: 1.0,
-                border_color: t.intents().primary.border.clone(),
+                border_color: Tokenized::token("intent-primary-border", Color("#5b6cff".into())),
             }
             secondary_solid(t) {
-                background: t.intents().secondary.solid_bg.clone(),
-                color: t.intents().secondary.solid_text.clone(),
+                background: Tokenized::token("intent-secondary-solid-bg", Color("#475569".into())),
+                color: Tokenized::token("intent-secondary-solid-text", Color("#ffffff".into())),
                 border_width: 0.0,
             }
             secondary_soft(t) {
-                background: t.intents().secondary.soft_bg.clone(),
-                color: t.intents().secondary.soft_text.clone(),
+                background: Tokenized::token("intent-secondary-soft-bg", Color("rgba(71, 85, 105, 0.10)".into())),
+                color: Tokenized::token("intent-secondary-soft-text", Color("#334155".into())),
                 border_width: 0.0,
             }
             secondary_outlined(t) {
                 background: Color("transparent".into()),
-                color: t.intents().secondary.fg.clone(),
+                color: Tokenized::token("intent-secondary-fg", Color("#334155".into())),
                 border_width: 1.0,
-                border_color: t.intents().secondary.border.clone(),
+                border_color: Tokenized::token("intent-secondary-border", Color("#475569".into())),
             }
             neutral_solid(t) {
-                background: t.intents().neutral.solid_bg.clone(),
-                color: t.intents().neutral.solid_text.clone(),
+                background: Tokenized::token("intent-neutral-solid-bg", Color("#1a1a1f".into())),
+                color: Tokenized::token("intent-neutral-solid-text", Color("#ffffff".into())),
                 border_width: 0.0,
             }
             #[default]
             neutral_soft(t) {
-                background: t.intents().neutral.soft_bg.clone(),
-                color: t.intents().neutral.soft_text.clone(),
+                background: Tokenized::token("intent-neutral-soft-bg", Color("#eef0f7".into())),
+                color: Tokenized::token("intent-neutral-soft-text", Color("#1a1a1f".into())),
                 border_width: 0.0,
             }
             neutral_outlined(t) {
                 background: Color("transparent".into()),
-                color: t.intents().neutral.fg.clone(),
+                color: Tokenized::token("intent-neutral-fg", Color("#1a1a1f".into())),
                 border_width: 1.0,
-                border_color: t.intents().neutral.border.clone(),
+                border_color: Tokenized::token("intent-neutral-border", Color("#cbd0db".into())),
             }
             success_solid(t) {
-                background: t.intents().success.solid_bg.clone(),
-                color: t.intents().success.solid_text.clone(),
+                background: Tokenized::token("intent-success-solid-bg", Color("#16a34a".into())),
+                color: Tokenized::token("intent-success-solid-text", Color("#ffffff".into())),
                 border_width: 0.0,
             }
             success_soft(t) {
-                background: t.intents().success.soft_bg.clone(),
-                color: t.intents().success.soft_text.clone(),
+                background: Tokenized::token("intent-success-soft-bg", Color("rgba(22, 163, 74, 0.12)".into())),
+                color: Tokenized::token("intent-success-soft-text", Color("#107a37".into())),
                 border_width: 0.0,
             }
             success_outlined(t) {
                 background: Color("transparent".into()),
-                color: t.intents().success.fg.clone(),
+                color: Tokenized::token("intent-success-fg", Color("#107a37".into())),
                 border_width: 1.0,
-                border_color: t.intents().success.border.clone(),
+                border_color: Tokenized::token("intent-success-border", Color("#16a34a".into())),
             }
             danger_solid(t) {
-                background: t.intents().danger.solid_bg.clone(),
-                color: t.intents().danger.solid_text.clone(),
+                background: Tokenized::token("intent-danger-solid-bg", Color("#dc2626".into())),
+                color: Tokenized::token("intent-danger-solid-text", Color("#ffffff".into())),
                 border_width: 0.0,
             }
             danger_soft(t) {
-                background: t.intents().danger.soft_bg.clone(),
-                color: t.intents().danger.soft_text.clone(),
+                background: Tokenized::token("intent-danger-soft-bg", Color("rgba(220, 38, 38, 0.10)".into())),
+                color: Tokenized::token("intent-danger-soft-text", Color("#b91c1c".into())),
                 border_width: 0.0,
             }
             danger_outlined(t) {
                 background: Color("transparent".into()),
-                color: t.intents().danger.fg.clone(),
+                color: Tokenized::token("intent-danger-fg", Color("#b91c1c".into())),
                 border_width: 1.0,
-                border_color: t.intents().danger.border.clone(),
+                border_color: Tokenized::token("intent-danger-border", Color("#dc2626".into())),
             }
             warning_solid(t) {
-                background: t.intents().warning.solid_bg.clone(),
-                color: t.intents().warning.solid_text.clone(),
+                background: Tokenized::token("intent-warning-solid-bg", Color("#d97706".into())),
+                color: Tokenized::token("intent-warning-solid-text", Color("#ffffff".into())),
                 border_width: 0.0,
             }
             warning_soft(t) {
-                background: t.intents().warning.soft_bg.clone(),
-                color: t.intents().warning.soft_text.clone(),
+                background: Tokenized::token("intent-warning-soft-bg", Color("rgba(217, 119, 6, 0.12)".into())),
+                color: Tokenized::token("intent-warning-soft-text", Color("#b45309".into())),
                 border_width: 0.0,
             }
             warning_outlined(t) {
                 background: Color("transparent".into()),
-                color: t.intents().warning.fg.clone(),
+                color: Tokenized::token("intent-warning-fg", Color("#b45309".into())),
                 border_width: 1.0,
-                border_color: t.intents().warning.border.clone(),
+                border_color: Tokenized::token("intent-warning-border", Color("#d97706".into())),
             }
             info_solid(t) {
-                background: t.intents().info.solid_bg.clone(),
-                color: t.intents().info.solid_text.clone(),
+                background: Tokenized::token("intent-info-solid-bg", Color("#0284c7".into())),
+                color: Tokenized::token("intent-info-solid-text", Color("#ffffff".into())),
                 border_width: 0.0,
             }
             info_soft(t) {
-                background: t.intents().info.soft_bg.clone(),
-                color: t.intents().info.soft_text.clone(),
+                background: Tokenized::token("intent-info-soft-bg", Color("rgba(2, 132, 199, 0.12)".into())),
+                color: Tokenized::token("intent-info-soft-text", Color("#075985".into())),
                 border_width: 0.0,
             }
             info_outlined(t) {
                 background: Color("transparent".into()),
-                color: t.intents().info.fg.clone(),
+                color: Tokenized::token("intent-info-fg", Color("#075985".into())),
                 border_width: 1.0,
-                border_color: t.intents().info.border.clone(),
+                border_color: Tokenized::token("intent-info-border", Color("#0284c7".into())),
             }
         }
         transitions {
@@ -1449,7 +1451,7 @@ stylesheet! {
 stylesheet! {
     pub AlertTitle<IdeaThemeRef> {
         base(t) {
-            font_size: t.typography().size_md,
+            font_size: Tokenized::token("typography-size-md", Length::Px(14.0)),
             font_weight: FontWeight::SemiBold,
             line_height: 20.0,
         }
@@ -1459,7 +1461,7 @@ stylesheet! {
 stylesheet! {
     pub AlertBody<IdeaThemeRef> {
         base(t) {
-            font_size: t.typography().size_sm,
+            font_size: Tokenized::token("typography-size-sm", Length::Px(12.0)),
             line_height: 18.0,
         }
     }
@@ -1472,7 +1474,7 @@ stylesheet! {
 stylesheet! {
     pub Skeleton<IdeaThemeRef> {
         base(t) {
-            background: t.colors().surface_alt.clone(),
+            background: Tokenized::token("color-surface-alt", Color("#eef0f7".into())),
         }
         transitions {
             background: 250ms EaseInOut,
@@ -1494,9 +1496,9 @@ stylesheet! {
     pub TabBar<IdeaThemeRef> {
         base(t) {
             flex_direction: FlexDirection::Row,
-            gap: Length::Px(t.spacing().xs),
+            gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
             border_bottom_width: 1.0,
-            border_bottom_color: t.colors().border.clone(),
+            border_bottom_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
         }
         transitions {
             border_bottom_color: 250ms EaseInOut,
@@ -1508,11 +1510,11 @@ stylesheet! {
     pub TabButton<IdeaThemeRef> {
         base(t) {
             background: Color("transparent".into()),
-            color: t.colors().text_muted.clone(),
-            padding_vertical: t.spacing().sm,
-            padding_horizontal: t.spacing().md,
+            color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+            padding_vertical: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            padding_horizontal: Tokenized::token("spacing-md", Length::Px(12.0)),
             font_weight: FontWeight::Medium,
-            font_size: t.typography().size_md,
+            font_size: Tokenized::token("typography-size-md", Length::Px(14.0)),
             border_radius: 0.0,
             // Bottom border draws under the active tab to mark
             // selection; off-state is transparent so the bar's
@@ -1524,12 +1526,12 @@ stylesheet! {
             #[default]
             off(_t) {}
             on(t) {
-                color: t.colors().text.clone(),
-                border_bottom_color: t.intents().primary.solid_bg.clone(),
+                color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+                border_bottom_color: Tokenized::token("intent-primary-solid-bg", Color("#5b6cff".into())),
             }
         }
         state hovered(t) {
-            color: t.colors().text.clone(),
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
         }
         transitions {
             color: 150ms EaseOut,
@@ -1541,9 +1543,9 @@ stylesheet! {
 stylesheet! {
     pub TabPanel<IdeaThemeRef> {
         base(t) {
-            padding_vertical: t.spacing().lg,
+            padding_vertical: Tokenized::token("spacing-lg", Length::Px(16.0)),
             flex_direction: FlexDirection::Column,
-            gap: Length::Px(t.spacing().md),
+            gap: Tokenized::token("spacing-md", Length::Px(12.0)),
         }
     }
 }
@@ -1560,12 +1562,12 @@ stylesheet! {
 stylesheet! {
     pub Modal<IdeaThemeRef> {
         base(t) {
-            background: t.colors().surface.clone(),
-            padding: t.spacing().lg,
-            border_radius: t.radius().lg,
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            padding: Tokenized::token("spacing-lg", Length::Px(16.0)),
+            border_radius: Tokenized::token("radius-lg", Length::Px(12.0)),
             border_width: 1.0,
-            border_color: t.colors().border.clone(),
-            gap: Length::Px(t.spacing().md),
+            border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            gap: Tokenized::token("spacing-md", Length::Px(12.0)),
             flex_direction: FlexDirection::Column,
             min_width: 320.0,
             max_width: 560.0,
@@ -1586,12 +1588,12 @@ stylesheet! {
 stylesheet! {
     pub Popover<IdeaThemeRef> {
         base(t) {
-            background: t.colors().surface.clone(),
-            padding: t.spacing().sm,
-            border_radius: t.radius().md,
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            padding: Tokenized::token("spacing-sm", Length::Px(8.0)),
+            border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
             border_width: 1.0,
-            border_color: t.colors().border.clone(),
-            gap: Length::Px(t.spacing().xs),
+            border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
+            gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
             flex_direction: FlexDirection::Column,
             min_width: 180.0,
             shadow: framework_core::Shadow {

@@ -1,0 +1,68 @@
+[package]
+name = "fiddle-snippet"
+version = "0.0.1"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Wrapping crate for the fiddle's per-compile snippet — its src/snippet.rs is overwritten on every `/compile` request, then wasm-pack'd into examples/fiddle/compiled/<hash>/."
+
+# `[workspace]` makes this crate its own workspace root, so the
+# parent (`/Cargo.toml`) doesn't try to merge it in. We get our own
+# `target/` that stays warm across compiles — the workspace-shared
+# target dir would otherwise have to relink the entire docs example
+# every time the snippet changes.
+[workspace]
+
+[lib]
+# wasm-pack expects `cdylib` to emit a `.wasm` it can run wasm-bindgen
+# against. `rlib` lets `cargo check` work on native targets for IDE
+# convenience.
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# Two mutually-exclusive output modes. The server picks one per
+# `/compile` request via `--features <mode>`; no default so the
+# wrong invocation fails fast at compile time.
+#
+# - `simulator` — render the user's `app()` inside a `host-web`
+#   wgpu simulator on a canvas. iOS skin chrome, real GPU paint.
+#   Drags in `host-web` + `ios-sim` (which transitively drag in
+#   `render-wgpu`, `wgpu`, glyphon, the bundled Inter font, …).
+# - `web` — render the user's `app()` straight into the DOM via
+#   `backend-web`. No canvas, no wgpu. Smaller per-compile bundle,
+#   real DOM elements (`<button>`, `<input>`, `<div>` …) — what the
+#   snippet would look like as a native web app.
+simulator = ["dep:host-web", "dep:ios-sim"]
+web = []
+
+[dependencies]
+# Path-relative to this Cargo.toml: `examples/fiddle/template/Cargo.toml`
+# → workspace crates live four levels up.
+framework-core = { path = "../../../crates/framework/core", features = ["async-driver"] }
+idea-ui = { path = "../../../crates/ui/idea-ui" }
+
+# Browser-only deps. The compiled snippet only runs on wasm32; the
+# native rlib path above stays slim so an IDE check doesn't pull in
+# wgpu / web-sys on macOS.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { path = "../../../crates/backend/web", features = ["async-driver"] }
+# Pulled in only under the `simulator` feature. The `web` mode
+# doesn't need any of the wgpu stack.
+host-web = { path = "../../../crates/host/web", optional = true }
+ios-sim = { path = "../../../crates/skin/ios-sim", optional = true }
+wasm-bindgen = "0.2"
+# `spawn_local` for the host-web mount future — we kick it off
+# inside the Graphics primitive's `on_ready` callback.
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["console"] }
+console_error_panic_hook = "0.1"
+lol_alloc = "0.4"
+
+# Same `opt-level = "z"` trick as the workspace root — `wasm-pack
+# build --dev` hits this profile, and we still want it small enough
+# to ship in a hot-edit loop.
+[profile.dev]
+opt-level = "z"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false

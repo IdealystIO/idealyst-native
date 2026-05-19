@@ -4,6 +4,7 @@ members = [
     "crates/framework/core",
     "crates/framework/hot",
     "crates/framework/macros",
+    "crates/framework/theme",
     "crates/framework/native-layout",
     "crates/framework/wire",
     "crates/framework/dev-client",
@@ -25,6 +26,7 @@ members = [
     "crates/skin/ios-sim",
     "crates/skin/android-sim",
     "crates/host/winit",
+    "crates/host/web",
     "crates/native/phone",
     "crates/native/tablet",
     "crates/native/tv",
@@ -46,6 +48,14 @@ members = [
     "crates/dev/reload",
     "crates/dev/web-host",
     "crates/robot-mcp-proxy",
+    "crates/port/core",
+    "crates/port/tsx",
+    "crates/port/react",
+    "crates/port/solid",
+    "crates/port/vue",
+    "crates/port/svelte",
+    "crates/port/project",
+    "crates/port/preview",
     "examples/hello-world",
     "examples/hello-roku",
     "examples/idea-ui-docs",
@@ -53,6 +63,18 @@ members = [
     "examples/docs-macro",
     "examples/hot-reload-test",
     "examples/native-test",
+    "examples/touch-test",
+    "examples/fiddle",
+    "arena/web/idealyst-native/wasm",
+]
+
+# Sub-crates under `examples/fiddle/` that have their own `[workspace]`
+# section (template + webapp) so cargo doesn't try to merge them in.
+# Listing them in `exclude` documents the intent; without it cargo
+# walks the file system at `cargo check`-time and is fine either way.
+exclude = [
+    "examples/fiddle/template",
+    "examples/fiddle/webapp",
 ]
 
 [workspace.package]
@@ -64,6 +86,7 @@ license = "MIT OR Apache-2.0"
 framework-core = { path = "crates/framework/core" }
 framework-hot = { path = "crates/framework/hot" }
 framework-macros = { path = "crates/framework/macros" }
+framework-theme = { path = "crates/framework/theme" }
 docs-macro = { path = "examples/docs-macro" }
 native-layout = { path = "crates/framework/native-layout" }
 wire = { path = "crates/framework/wire" }
@@ -95,6 +118,7 @@ render-wgpu = { path = "crates/render/wgpu" }
 ios-sim = { path = "crates/skin/ios-sim" }
 android-sim = { path = "crates/skin/android-sim" }
 host-winit = { path = "crates/host/winit" }
+host-web = { path = "crates/host/web" }
 native-phone = { path = "crates/native/phone" }
 native-tablet = { path = "crates/native/tablet" }
 native-tv = { path = "crates/native/tv" }

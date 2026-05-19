@@ -13,7 +13,7 @@
 
 use std::rc::Rc;
 
-use framework_core::{Backend, Color, ColorScheme, StyleRules, Tokenized};
+use framework_core::{Action, Backend, Color, ColorScheme, IntoAction, StyleRules, Tokenized};
 use dev_client::WireBackend;
 use dev_server::WireRecordingBackend;
 use wire::{Command, DevToApp};
@@ -60,7 +60,7 @@ impl Backend for TraceBackend {
     fn create_button(
         &mut self,
         label: &str,
-        _on_click: Rc<dyn Fn()>,
+        _on_click: &framework_core::Action,
         _leading_icon: Option<&framework_core::primitives::icon::IconData>,
         _trailing_icon: Option<&framework_core::primitives::icon::IconData>,
     ) -> u64 {
@@ -98,7 +98,7 @@ impl Backend for TraceBackend {
 
     fn create_overlay(
         &mut self,
-        _anchor: framework_core::primitives::overlay::OverlayAnchor,
+        _placement: framework_core::primitives::overlay::ViewportPlacement,
         _backdrop: framework_core::primitives::overlay::BackdropMode,
         _on_dismiss: Option<Rc<dyn Fn()>>,
         _trap_focus: bool,
@@ -148,10 +148,11 @@ fn build_demo_tree(backend: &mut WireRecordingBackend) {
 
     // A button that, when fired, prints to stdout. The closure is
     // captured by the recorder — the wire only carries a HandlerId.
-    let on_click: Rc<dyn Fn()> = Rc::new(|| {
+    let on_click: Action = (|| {
         // No-op in test; in real use this would mutate a signal.
-    });
-    let button = backend.create_button("Click me", on_click, None, None);
+    })
+    .into_action();
+    let button = backend.create_button("Click me", &on_click, None, None);
     backend.insert(&mut root, button);
 
     // Reactive update: simulate the walker firing a label effect.
@@ -270,13 +271,14 @@ fn event_round_trip_through_handler_table() {
     let mut root = recorder.create_view();
 
     let fired = Rc::new(Cell::new(0u32));
-    let on_click: Rc<dyn Fn()> = {
+    let on_click: Action = {
         let fired = fired.clone();
-        Rc::new(move || {
+        (move || {
             fired.set(fired.get() + 1);
         })
+        .into_action()
     };
-    let button = recorder.create_button("go", on_click, None, None);
+    let button = recorder.create_button("go", &on_click, None, None);
     recorder.insert(&mut root, button);
     recorder.finish(root);
 
@@ -336,9 +338,13 @@ fn real_walker_drives_recorder() {
             source: framework_core::TextSource::Static("hello, wire".into()),
             style: None,
             ref_fill: None,
+            test_id: None,
         }],
         style: None,
         ref_fill: None,
+        safe_area_sides: Default::default(),
+        on_touch: None,
+        test_id: None,
     };
 
     let recorder = WireRecordingBackend::new();
@@ -431,12 +437,12 @@ fn link_round_trip() {
 /// and on_dismiss handler id.
 #[test]
 fn overlay_round_trip() {
-    use framework_core::primitives::overlay::{BackdropMode, OverlayAnchor, ViewportPlacement};
+    use framework_core::primitives::overlay::{BackdropMode, ViewportPlacement};
 
     let mut recorder = WireRecordingBackend::new();
     let on_dismiss: Option<Rc<dyn Fn()>> = Some(Rc::new(|| {}));
     let _node = recorder.create_overlay(
-        OverlayAnchor::Viewport(ViewportPlacement::Bottom),
+        ViewportPlacement::Bottom,
         BackdropMode::Dismiss,
         on_dismiss,
         false,
@@ -593,6 +599,7 @@ fn stack_navigator_initial_mount_round_trip() {
             source: TextSource::Static("Home".into()),
             style: None,
             ref_fill: None,
+            test_id: None,
         });
 
     let tree: Primitive = <framework_core::Bound<framework_core::NavigatorHandle> as framework_core::IntoPrimitive>::into_primitive(nav);

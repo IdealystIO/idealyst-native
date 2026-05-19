@@ -1,0 +1,23 @@
+[package]
+name = "port-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Shared substrate for source porters.
+#
+# This crate is target-side only — it defines the porter IR
+# (`Module` / `Component` / `Reactive` / `JsxNode` / `Hole`),
+# the idealyst Rust emitter, and the abstract `Parser` trait
+# that per-framework crates (`port-react`, `port-solid`,
+# `port-vue`, `port-svelte`) implement.
+#
+# Frontends are framework-specific (each has its own hook /
+# template / reactive taxonomy); the *output* is the same Rust
+# shape regardless of source. Anything that doesn't depend on
+# which source framework produced an IR lives here.
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]

@@ -26,15 +26,56 @@ use std::rc::Rc;
 use framework_core::primitives::activity_indicator::{
     activity_indicator, ActivityIndicatorSize,
 };
+use framework_core::primitives::icon::icon;
+use framework_core::primitives::image::image;
+use framework_core::primitives::navigator::{
+    DrawerHandle, DrawerNavigator, HeaderButton, Navigator, NavigatorHandle, Route, Screen,
+};
+use framework_core::primitives::overlay::{overlay, BackdropMode, ViewportPlacement};
 use framework_core::primitives::scroll_view::scroll_view;
 use framework_core::primitives::slider::slider;
 use framework_core::primitives::text_input::text_input;
 use framework_core::primitives::toggle::toggle;
+use framework_core::primitives::video::video;
+use framework_core::primitives::web_view::web_view;
 use framework_core::{
-    button, install_theme, pressable, set_theme, signal, text, view, AlignItems, Color, Easing,
-    FlexDirection, JustifyContent, Length, Primitive, Signal, StyleRules, StyleSheet,
-    ThemeTokens, TokenEntry, Tokenized, Transition,
+    button, pressable, signal, text, view, when, AlignItems, Color,
+    Easing, FlexDirection, JustifyContent, Length, Primitive, Ref, SafeAreaSides, Signal,
+    StyleRules, StyleSheet, TokenEntry, TokenValue, Tokenized, Transition,
 };
+use framework_theme::{install_theme, set_theme, ThemeTokens};
+
+/// Routes for the outer navigator (default `SlideFromRight`).
+/// `Home` is the primitives showcase + nav-demo launchers;
+/// `Detail` exercises a basic push/pop;
+/// `ModalNavDemo` / `InstantNavDemo` each host their own inner
+/// navigator with a non-default animator (slide-up + instant
+/// snap) so multiple `ScreenTransition` impls can be observed
+/// side-by-side in a single app run.
+const HOME_ROUTE: Route<()> = Route::<()>::new("home", "/");
+const DETAIL_ROUTE: Route<()> = Route::<()>::new("detail", "/detail");
+const MODAL_NAV_DEMO_ROUTE: Route<()> = Route::<()>::new("modal-nav-demo", "/modal-nav-demo");
+const INSTANT_NAV_DEMO_ROUTE: Route<()> =
+    Route::<()>::new("instant-nav-demo", "/instant-nav-demo");
+const DRAWER_DEMO_ROUTE: Route<()> = Route::<()>::new("drawer-demo", "/drawer-demo");
+const DRAWER_BODY_ROUTE: Route<()> = Route::<()>::new("drawer-body", "/drawer-body");
+
+/// Routes for the inner navigator inside the `ModalNavDemo`
+/// screen. Inner nav uses `SlideFromBottom` — pushes appear
+/// from below like a presented modal.
+const MODAL_INNER_HOME_ROUTE: Route<()> =
+    Route::<()>::new("modal-inner-home", "/modal-inner-home");
+const MODAL_INNER_PUSHED_ROUTE: Route<()> =
+    Route::<()>::new("modal-inner-pushed", "/modal-inner-pushed");
+
+/// Routes for the inner navigator inside the `InstantNavDemo`
+/// screen. Inner nav uses `InstantTransition` — pushes snap
+/// without animation, useful for comparing against the slide
+/// animators above.
+const INSTANT_INNER_HOME_ROUTE: Route<()> =
+    Route::<()>::new("instant-inner-home", "/instant-inner-home");
+const INSTANT_INNER_PUSHED_ROUTE: Route<()> =
+    Route::<()>::new("instant-inner-pushed", "/instant-inner-pushed");
 
 /// Duration of color crossfades for the theme swap. iOS uses
 /// ~300ms for cross-screen palette transitions.
@@ -48,12 +89,12 @@ fn theme_transition() -> Transition {
 // Theme
 // =============================================================================
 
-/// App theme. Stylesheets read from this struct; swapping the
-/// theme (via `set_theme`) re-fires every styled `Effect` so the
-/// backend's `apply_style` is called again with the new resolved
-/// colors. Tokens are empty: we don't need runtime CSS variable
-/// indirection on the wgpu backend, so all values are resolved
-/// at apply-time.
+/// App theme. Stylesheets reference tokens by name via
+/// `Tokenized::token("app-X", fallback)`; `tokens()` emits one
+/// `TokenEntry` per field so swapping the theme (via `set_theme`)
+/// pushes new values through the framework's token pipeline,
+/// which re-fires every styled `Effect` and updates the resolved
+/// values on the backend.
 #[derive(Clone)]
 struct AppTheme {
     background: Color,
@@ -70,10 +111,61 @@ struct AppTheme {
     input_text: Color,
 }
 
+// Token names emitted by `AppTheme::tokens()` and referenced by
+// every stylesheet in this crate. Centralized so a typo at the
+// emit site or the read site fails to compile rather than
+// silently returning the fallback color.
+const TOK_BACKGROUND: &str = "app-background";
+const TOK_SURFACE: &str = "app-surface";
+const TOK_SURFACE_ALT: &str = "app-surface-alt";
+const TOK_TEXT: &str = "app-text";
+const TOK_MUTED: &str = "app-muted";
+const TOK_ACCENT: &str = "app-accent";
+const TOK_ACCENT_PRESSED: &str = "app-accent-pressed";
+const TOK_PRESSABLE_BG: &str = "app-pressable-bg";
+const TOK_PRESSABLE_BG_PRESSED: &str = "app-pressable-bg-pressed";
+const TOK_BORDER: &str = "app-border";
+const TOK_INPUT_BG: &str = "app-input-bg";
+const TOK_INPUT_TEXT: &str = "app-input-text";
+
 impl ThemeTokens for AppTheme {
     fn tokens(&self) -> Vec<TokenEntry> {
-        Vec::new()
+        fn color_entry(name: &'static str, c: &Color) -> TokenEntry {
+            TokenEntry {
+                name,
+                value: TokenValue::Color(c.clone()),
+            }
+        }
+        vec![
+            color_entry(TOK_BACKGROUND, &self.background),
+            color_entry(TOK_SURFACE, &self.surface),
+            color_entry(TOK_SURFACE_ALT, &self.surface_alt),
+            color_entry(TOK_TEXT, &self.text),
+            color_entry(TOK_MUTED, &self.muted),
+            color_entry(TOK_ACCENT, &self.accent),
+            color_entry(TOK_ACCENT_PRESSED, &self.accent_pressed),
+            color_entry(TOK_PRESSABLE_BG, &self.pressable_bg),
+            color_entry(TOK_PRESSABLE_BG_PRESSED, &self.pressable_bg_pressed),
+            color_entry(TOK_BORDER, &self.border),
+            color_entry(TOK_INPUT_BG, &self.input_bg),
+            color_entry(TOK_INPUT_TEXT, &self.input_text),
+        ]
     }
+}
+
+/// Fallback palette used by every `Tokenized::token(..., fallback)`
+/// site below. Token-resolution at apply time picks up the
+/// currently-installed `AppTheme`'s value; the fallback is what
+/// renders if no theme is installed (or in unit tests).
+fn default_palette() -> AppTheme {
+    light_theme()
+}
+
+/// Build a `Tokenized<Color>` reference to one of `AppTheme`'s
+/// named tokens. The fallback is sourced from the default light
+/// palette so unstyled rendering still produces sensible colors.
+fn color_token(name: &'static str, fallback: Color) -> Tokenized<Color> {
+    Tokenized::token(name, fallback)
 }
 
 fn light_theme() -> AppTheme {
@@ -165,6 +257,11 @@ fn main() {
     let mut wants_ios = false;
     let mut wants_android = false;
     let mut explicit_position: Option<(i32, i32)> = None;
+    // Device-model overrides. Each skin defaults to its premium
+    // current-gen preset (iPhone 15 Pro / Pixel 8); these flags
+    // pick a different bundle of notch / corner / bezel.
+    let mut ios_device: Option<ios_sim::DeviceModel> = None;
+    let mut android_device: Option<android_sim::DeviceModel> = None;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -173,6 +270,47 @@ fn main() {
             "--tv" => form = FormFactor::Tv,
             "--ios" => wants_ios = true,
             "--android" => wants_android = true,
+            "--ios-device" => match iter.next().map(|s| s.as_str()) {
+                Some("iphone-15-pro") | Some("15-pro") => {
+                    ios_device = Some(ios_sim::DeviceModel::IPhone15Pro);
+                }
+                Some("iphone-13") | Some("13") => {
+                    ios_device = Some(ios_sim::DeviceModel::IPhone13);
+                }
+                Some("iphone-se") | Some("se") => {
+                    ios_device = Some(ios_sim::DeviceModel::IPhoneSE);
+                }
+                other => {
+                    eprintln!(
+                        "native-test: --ios-device expects \
+                         iphone-15-pro | iphone-13 | iphone-se \
+                         (got {other:?})"
+                    );
+                    std::process::exit(2);
+                }
+            },
+            "--android-device" => match iter.next().map(|s| s.as_str()) {
+                Some("pixel-8") | Some("pixel") => {
+                    android_device = Some(android_sim::DeviceModel::Pixel8);
+                }
+                Some("galaxy-s") | Some("galaxy") => {
+                    android_device = Some(android_sim::DeviceModel::GalaxyS);
+                }
+                Some("midrange") => {
+                    android_device = Some(android_sim::DeviceModel::Midrange);
+                }
+                Some("tablet") => {
+                    android_device = Some(android_sim::DeviceModel::Tablet);
+                }
+                other => {
+                    eprintln!(
+                        "native-test: --android-device expects \
+                         pixel-8 | galaxy-s | midrange | tablet \
+                         (got {other:?})"
+                    );
+                    std::process::exit(2);
+                }
+            },
             "--at" => match iter.next() {
                 Some(coord) => {
                     explicit_position = parse_position(coord).or_else(|| {
@@ -189,7 +327,10 @@ fn main() {
                 eprintln!("native-test: unknown flag {other:?}");
                 eprintln!(
                     "usage: cargo run -p native-test -- \
-                     [--phone|--tablet|--tv] [--ios|--android] [--at X,Y]"
+                     [--phone|--tablet|--tv] [--ios|--android] \
+                     [--ios-device <iphone-15-pro|iphone-13|iphone-se>] \
+                     [--android-device <pixel-8|galaxy-s|midrange|tablet>] \
+                     [--at X,Y]"
                 );
                 std::process::exit(2);
             }
@@ -229,8 +370,20 @@ fn main() {
 
     let skin_choice = if wants_ios { SkinChoice::Ios } else { SkinChoice::Android };
     let skin: Rc<dyn render_wgpu::Skin> = match skin_choice {
-        SkinChoice::Ios => Rc::new(ios_sim::IosSim::new()),
-        SkinChoice::Android => Rc::new(android_sim::AndroidSim::new()),
+        SkinChoice::Ios => {
+            let mut s = ios_sim::IosSim::new();
+            if let Some(m) = ios_device {
+                s = s.with_device(m);
+            }
+            Rc::new(s)
+        }
+        SkinChoice::Android => {
+            let mut s = android_sim::AndroidSim::new();
+            if let Some(m) = android_device {
+                s = s.with_device(m);
+            }
+            Rc::new(s)
+        }
     };
     let result = match form {
         FormFactor::Phone => native_phone::run_at(skin, parent_pos, app),
@@ -254,10 +407,49 @@ fn parse_position(s: &str) -> Option<(i32, i32)> {
 
 fn app() -> Primitive {
     install_theme(light_theme());
+    let nav: Ref<NavigatorHandle> = Ref::new();
+    // Outer navigator uses the crate-default `SlideFromRight`.
+    // No `with_transition` wrapper here — the demo navigators
+    // inside `modal_nav_demo_screen` / `instant_nav_demo_screen`
+    // install their own animators when their inner Navigators
+    // are constructed.
+    Navigator::new(&HOME_ROUTE)
+        .screen(HOME_ROUTE, move |_| {
+            Screen::new(home_screen(nav)).header_shown(false)
+        })
+        .screen(DETAIL_ROUTE, move |_| {
+            Screen::new(detail_screen(nav)).title("Detail")
+        })
+        .screen(MODAL_NAV_DEMO_ROUTE, move |_| {
+            // Outer-level title — appears in the outer
+            // navigator's header. The inner navigator below
+            // paints its own header for its own screens.
+            Screen::new(modal_nav_demo_screen(nav)).title("Modal-nav demo")
+        })
+        .screen(INSTANT_NAV_DEMO_ROUTE, move |_| {
+            Screen::new(instant_nav_demo_screen(nav)).title("Instant-nav demo")
+        })
+        .screen(DRAWER_DEMO_ROUTE, move |_| {
+            // Drawer demo hides its outer header so the inner
+            // drawer's hamburger header isn't double-stacked.
+            Screen::new(drawer_demo_screen(nav)).header_shown(false)
+        })
+        .bind(nav)
+        .into()
+}
+
+/// The original primitives showcase, now mounted as the
+/// navigator's `home` screen. A "Push detail" button at the top
+/// of the form fires `handle.push(&DETAIL_ROUTE, ())` — the
+/// dispatcher mounts the detail subtree, adds it as a Taffy
+/// child of the navigator, and the renderer's last-child walk
+/// paints it on top of the home stack.
+fn home_screen(nav: Ref<NavigatorHandle>) -> Primitive {
     let count: Signal<i32> = signal!(0);
     let dark_mode: Signal<bool> = signal!(false);
     let volume: Signal<f32> = signal!(0.4);
     let name: Signal<String> = signal!(String::new());
+    let overlay_open: Signal<bool> = signal!(false);
 
     // Long list rendered into the scrollview so total content
     // height exceeds the phone viewport — that's what makes the
@@ -302,6 +494,38 @@ fn app() -> Primitive {
             .with_style(subtitle_sheet())
             .into(),
 
+        // Navigator launchers — three buttons, each pushing
+        // into a route whose subtree mounts a navigator with a
+        // distinct `ScreenTransition` animator. The push from
+        // home itself always uses the outer navigator's slide
+        // (default `SlideFromRight`); the contrast comes from
+        // the inner navigators' own animations once you've
+        // landed on each demo screen.
+        button("Push detail (slide-right)", move || {
+            if let Some(h) = nav.get() {
+                h.push(&DETAIL_ROUTE, ());
+            }
+        })
+        .into(),
+        button("Open modal-nav demo (slide-up inside)", move || {
+            if let Some(h) = nav.get() {
+                h.push(&MODAL_NAV_DEMO_ROUTE, ());
+            }
+        })
+        .into(),
+        button("Open instant-nav demo (snap inside)", move || {
+            if let Some(h) = nav.get() {
+                h.push(&INSTANT_NAV_DEMO_ROUTE, ());
+            }
+        })
+        .into(),
+        button("Open drawer demo", move || {
+            if let Some(h) = nav.get() {
+                h.push(&DRAWER_DEMO_ROUTE, ());
+            }
+        })
+        .into(),
+
         // Tap count card.
         view(vec![
             text("tap count").with_style(card_label_sheet()).into(),
@@ -329,7 +553,6 @@ fn app() -> Primitive {
             let count = count;
             move || count.update(|n| *n += 1)
         })
-        .with_style(button_sheet())
         .into(),
 
         // Toggle row — flips the dark_mode signal AND swaps the
@@ -398,6 +621,83 @@ fn app() -> Primitive {
         ])
         .with_style(form_row_sheet())
         .into(),
+
+        // Image row — points at a real PNG so the textured-quad
+        // pipeline actually decodes and renders it. Failed
+        // loads (file missing / unsupported format) fall back
+        // to the placeholder rect inline.
+        view(vec![
+            text("Image").with_style(row_label_sheet()).into(),
+            image("examples/hello-world/assets/logo.png")
+                .with_style(media_thumb_sheet())
+                .into(),
+        ])
+        .with_style(form_row_sheet())
+        .into(),
+
+        // Icon row — three icons from icons-lucide stamped in
+        // the row label color. The wgpu backend renders each
+        // as a colored placeholder square; the SVG path
+        // rasterizer lands later.
+        view(vec![
+            text("Icons").with_style(row_label_sheet()).into(),
+            view(vec![
+                icon(icons_lucide::HOME).with_style(icon_sheet()).into(),
+                icon(icons_lucide::SEARCH).with_style(icon_sheet()).into(),
+                icon(icons_lucide::SETTINGS).with_style(icon_sheet()).into(),
+            ])
+            .with_style(icon_row_sheet())
+            .into(),
+        ])
+        .with_style(form_row_sheet())
+        .into(),
+
+        // Overlay row — a button that toggles a modal. The
+        // overlay paints with a scrim backdrop above the rest
+        // of the app; tapping the scrim fires `on_dismiss`.
+        view(vec![
+            text("Modal").with_style(row_label_sheet()).into(),
+            button("Show overlay", {
+                let overlay_open = overlay_open;
+                move || overlay_open.set(true)
+            })
+            .into(),
+        ])
+        .with_style(form_row_sheet())
+        .into(),
+
+        // The overlay itself — gated by a `when` so the
+        // subtree only mounts while open. On dismiss, flip
+        // the signal back to false.
+        when(
+            move || overlay_open.get(),
+            move || {
+                overlay(vec![view(vec![
+                    text("Hi from an overlay")
+                        .with_style(overlay_title_sheet())
+                        .into(),
+                    text("Tap outside to dismiss.")
+                        .with_style(overlay_body_sheet())
+                        .into(),
+                ])
+                .with_style(overlay_card_sheet())
+                .into()])
+                .placement(ViewportPlacement::default())
+                .backdrop(BackdropMode::Dismiss)
+                .on_dismiss(move || overlay_open.set(false))
+                .into()
+            },
+            || view(vec![]).into(),
+        ),
+
+        // Unsupported primitives — each renders the
+        // "not supported in this simulator" panel so authors
+        // know the slot exists, even though the wgpu backend
+        // doesn't implement them.
+        text("Unsupported").with_style(subtitle_sheet()).into(),
+        web_view("https://example.com").into(),
+        video("/assets/sample.mp4").into(),
+
         // Section header for the list — anchors the eye so the
         // scrolling boundary is obvious.
         text("Long list").with_style(subtitle_sheet()).into(),
@@ -409,6 +709,261 @@ fn app() -> Primitive {
     .with_style(inner_content_sheet())
     .into()])
     .with_style(scroll_view_sheet())
+    // Inset the scroll content off the device's status bar and
+    // home indicator so the first row + last row aren't hidden
+    // under chrome. Background still bleeds under both strips
+    // (chrome is translucent).
+    .safe_area(SafeAreaSides::VERTICAL)
+    .into()
+}
+
+/// Second screen of the stack navigator. Mounted lazily by the
+/// dispatcher's `Push` path when the home screen's "Push detail
+/// screen" button fires. The "Pop back" button fires
+/// `handle.pop()` which our `detach_top_navigator_child` helper
+/// removes from the Taffy tree + drops the scope.
+fn detail_screen(nav: Ref<NavigatorHandle>) -> Primitive {
+    view(vec![
+        text("Detail screen").with_style(title_sheet()).into(),
+        text(
+            "Pushed by the dispatcher. Pop returns to the home \
+             showcase; the home subtree stays mounted underneath.",
+        )
+        .with_style(subtitle_sheet())
+        .into(),
+        button("Pop back", move || {
+            if let Some(h) = nav.get() {
+                h.pop();
+            }
+        })
+        .into(),
+    ])
+    .with_style(detail_screen_sheet())
+    .into()
+}
+
+/// Outer-nav route that hosts a *second*, independent Navigator
+/// configured to use `SlideFromBottom` — push/pop animate the
+/// top screen up from / down to the bottom edge. Wrapping
+/// `Navigator::new(...).into()` in `with_transition(...)`
+/// installs the override that the wgpu backend's
+/// `create_navigator` consumes when it sees this nested nav.
+///
+/// `outer_nav` is captured so the inner home can also offer a
+/// "Back to home" button that pops the outer stack — handy
+/// during the demo to bounce between the three demos without
+/// chaining inner-then-outer pops.
+fn modal_nav_demo_screen(outer_nav: Ref<NavigatorHandle>) -> Primitive {
+    let inner: Ref<NavigatorHandle> = Ref::new();
+    render_wgpu::with_transition(Rc::new(render_wgpu::SlideFromBottom::new()), || {
+        Navigator::new(&MODAL_INNER_HOME_ROUTE)
+            .screen(MODAL_INNER_HOME_ROUTE, move |_| {
+                Screen::new(modal_inner_home(inner, outer_nav)).title("Sheet")
+            })
+            .screen(MODAL_INNER_PUSHED_ROUTE, move |_| {
+                Screen::new(modal_inner_pushed(inner)).title("Detail sheet")
+            })
+            .bind(inner)
+            .into()
+    })
+}
+
+fn modal_inner_home(
+    inner: Ref<NavigatorHandle>,
+    outer_nav: Ref<NavigatorHandle>,
+) -> Primitive {
+    view(vec![
+        text("Modal nav demo").with_style(title_sheet()).into(),
+        text(
+            "This inner navigator uses `SlideFromBottom`. Push \
+             a screen below to see it slide up from the bottom \
+             edge.",
+        )
+        .with_style(subtitle_sheet())
+        .into(),
+        button("Push (slide up)", move || {
+            if let Some(h) = inner.get() {
+                h.push(&MODAL_INNER_PUSHED_ROUTE, ());
+            }
+        })
+        .into(),
+        button("Back to outer home", move || {
+            if let Some(h) = outer_nav.get() {
+                h.pop();
+            }
+        })
+        .into(),
+    ])
+    .with_style(detail_screen_sheet())
+    .into()
+}
+
+fn modal_inner_pushed(inner: Ref<NavigatorHandle>) -> Primitive {
+    view(vec![
+        text("Slid up from below").with_style(title_sheet()).into(),
+        text("Pop to slide back down.")
+            .with_style(subtitle_sheet())
+            .into(),
+        button("Pop (slide down)", move || {
+            if let Some(h) = inner.get() {
+                h.pop();
+            }
+        })
+        .into(),
+    ])
+    .with_style(detail_screen_sheet())
+    .into()
+}
+
+/// Outer-nav route hosting a Navigator configured with
+/// `InstantTransition` — no animation. The deferred Pop cleanup
+/// still runs (so scope drops + Taffy removals stay correct),
+/// but the renderer samples progress=1 immediately, so each
+/// push/pop snaps in place. Useful for comparing visually
+/// against the slide animators above and as a sanity check
+/// that the rest of the pipeline works without a slide.
+fn instant_nav_demo_screen(outer_nav: Ref<NavigatorHandle>) -> Primitive {
+    let inner: Ref<NavigatorHandle> = Ref::new();
+    render_wgpu::with_transition(Rc::new(render_wgpu::InstantTransition), || {
+        Navigator::new(&INSTANT_INNER_HOME_ROUTE)
+            .screen(INSTANT_INNER_HOME_ROUTE, move |_| {
+                Screen::new(instant_inner_home(inner, outer_nav)).title("Inner home")
+            })
+            .screen(INSTANT_INNER_PUSHED_ROUTE, move |_| {
+                Screen::new(instant_inner_pushed(inner)).title("Inner pushed")
+            })
+            .bind(inner)
+            .into()
+    })
+}
+
+fn instant_inner_home(
+    inner: Ref<NavigatorHandle>,
+    outer_nav: Ref<NavigatorHandle>,
+) -> Primitive {
+    view(vec![
+        text("Instant nav demo").with_style(title_sheet()).into(),
+        text(
+            "This inner navigator uses `InstantTransition` — \
+             pushes and pops snap with no slide. Same dispatcher \
+             path as the slide demos; only the sampled frame \
+             differs.",
+        )
+        .with_style(subtitle_sheet())
+        .into(),
+        button("Push (snap)", move || {
+            if let Some(h) = inner.get() {
+                h.push(&INSTANT_INNER_PUSHED_ROUTE, ());
+            }
+        })
+        .into(),
+        button("Back to outer home", move || {
+            if let Some(h) = outer_nav.get() {
+                h.pop();
+            }
+        })
+        .into(),
+    ])
+    .with_style(detail_screen_sheet())
+    .into()
+}
+
+fn instant_inner_pushed(inner: Ref<NavigatorHandle>) -> Primitive {
+    view(vec![
+        text("Snapped in").with_style(title_sheet()).into(),
+        text("Pop to snap back.")
+            .with_style(subtitle_sheet())
+            .into(),
+        button("Pop (snap)", move || {
+            if let Some(h) = inner.get() {
+                h.pop();
+            }
+        })
+        .into(),
+    ])
+    .with_style(detail_screen_sheet())
+    .into()
+}
+
+/// Outer-nav route hosting a `DrawerNavigator`. Demonstrates
+/// the full functional flow:
+///   - `handle.open_drawer()` from a hamburger button on the
+///     body screen's header
+///   - scrim + slide-in animation
+///   - tap-outside-to-close (the scrim has a hit region wired
+///     to `CloseDrawer`)
+///   - manual `Pop back to outer` button so the user can
+///     return to the outer navigator
+fn drawer_demo_screen(outer_nav: Ref<NavigatorHandle>) -> Primitive {
+    let drawer: Ref<DrawerHandle> = Ref::new();
+    DrawerNavigator::new(&DRAWER_BODY_ROUTE)
+        .screen(DRAWER_BODY_ROUTE, move |_| {
+            let drawer = drawer;
+            let outer_nav = outer_nav;
+            Screen::new(drawer_body_screen(drawer, outer_nav))
+                .title("Drawer demo")
+                // Hamburger that opens the drawer. The wgpu
+                // simulator's chrome_icons maps
+                // `line.3.horizontal` to a platform-specific
+                // hamburger glyph (3 lines on iOS, condensed
+                // hamburger on M3).
+                .header_left(HeaderButton::new("line.3.horizontal", move || {
+                    if let Some(h) = drawer.get() {
+                        h.open();
+                    }
+                }))
+        })
+        .content(move |_props| drawer_sidebar(drawer))
+        .bind(drawer)
+        .into()
+}
+
+fn drawer_body_screen(
+    drawer: Ref<DrawerHandle>,
+    outer_nav: Ref<NavigatorHandle>,
+) -> Primitive {
+    view(vec![
+        text("Drawer demo body")
+            .with_style(title_sheet())
+            .into(),
+        text(
+            "Tap the hamburger in the header to open the drawer. \
+             Tap the scrim (or the close button in the panel) \
+             to dismiss it.",
+        )
+        .with_style(subtitle_sheet())
+        .into(),
+        button("Open drawer", move || {
+            if let Some(h) = drawer.get() {
+                h.open();
+            }
+        })
+        .into(),
+        button("Pop back to outer", move || {
+            if let Some(h) = outer_nav.get() {
+                h.pop();
+            }
+        })
+        .into(),
+    ])
+    .with_style(detail_screen_sheet())
+    .into()
+}
+
+fn drawer_sidebar(drawer: Ref<DrawerHandle>) -> Primitive {
+    view(vec![
+        text("Drawer panel").with_style(title_sheet()).into(),
+        text("Tap a row to close the drawer.")
+            .with_style(subtitle_sheet())
+            .into(),
+        button("Close drawer", move || {
+            if let Some(h) = drawer.get() {
+                h.close();
+            }
+        })
+        .into(),
+    ])
+    .with_style(drawer_sidebar_sheet())
     .into()
 }
 
@@ -416,23 +971,38 @@ fn app() -> Primitive {
 // Style helpers — every sheet now reads from `AppTheme`.
 // =============================================================================
 
+/// Wrap a `StyleRules`-producing closure as a `StyleSheet`.
+/// Stylesheets reference theme tokens by *name* via
+/// `Tokenized::token(...)` — the framework resolves those names
+/// at apply time against the currently-installed token table, so
+/// no theme downcast is needed here. Theme swaps push new token
+/// values through the framework, which re-fires every styled
+/// `Effect`.
 fn themed<F>(f: F) -> Rc<StyleSheet>
 where
-    F: Fn(&AppTheme) -> StyleRules + 'static,
+    F: Fn() -> StyleRules + 'static,
 {
-    Rc::new(StyleSheet::new::<AppTheme, _>(f))
+    Rc::new(StyleSheet::new(move |_vs: &framework_core::VariantSet| {
+        f()
+    }))
 }
 
-/// Build a themed stylesheet with a `state pressed` overlay. Both
-/// the base and pressed closures receive `&AppTheme` so the
-/// pressed color tracks the active theme too.
+/// Build a stylesheet with a `state pressed` overlay. Both
+/// closures emit `StyleRules` populated with `Tokenized::token`
+/// references; the framework re-resolves them on every theme
+/// swap.
 fn themed_with_pressed<B, P>(base: B, pressed: P) -> Rc<StyleSheet>
 where
-    B: Fn(&AppTheme) -> StyleRules + 'static,
-    P: Fn(&AppTheme) -> StyleRules + 'static,
+    B: Fn() -> StyleRules + 'static,
+    P: Fn() -> StyleRules + 'static,
 {
     Rc::new(
-        StyleSheet::new::<AppTheme, _>(base).variant("__state_pressed", "on", pressed),
+        StyleSheet::new(move |_vs: &framework_core::VariantSet| base())
+            .variant(
+                "__state_pressed",
+                "on",
+                move |_vs: &framework_core::VariantSet| pressed(),
+            ),
     )
 }
 
@@ -442,7 +1012,51 @@ where
 /// window's right edge; the padding + gap that used to live on
 /// a separate root view now live here.
 fn inner_content_sheet() -> Rc<StyleSheet> {
-    themed(|_t| StyleRules {
+    themed(|| StyleRules {
+        flex_direction: Some(FlexDirection::Column),
+        align_items: Some(AlignItems::Stretch),
+        justify_content: Some(JustifyContent::FlexStart),
+        padding_top: Some(px(48.0)),
+        padding_right: Some(px(24.0)),
+        padding_bottom: Some(px(48.0)),
+        padding_left: Some(px(24.0)),
+        gap: Some(px(16.0)),
+        ..Default::default()
+    })
+}
+
+/// Drawer sidebar — themed surface, ~75% of viewport width.
+/// Same column/padding as the detail-screen sheet; the
+/// renderer's drawer-overlay pass paints this on top of the
+/// body with the slide transform + scrim behind.
+fn drawer_sidebar_sheet() -> Rc<StyleSheet> {
+    themed(|| StyleRules {
+        background: Some(color_token(TOK_SURFACE, default_palette().surface)),
+        background_transition: Some(theme_transition()),
+        flex_direction: Some(FlexDirection::Column),
+        align_items: Some(AlignItems::Stretch),
+        justify_content: Some(JustifyContent::FlexStart),
+        padding_top: Some(px(48.0)),
+        padding_right: Some(px(24.0)),
+        padding_bottom: Some(px(48.0)),
+        padding_left: Some(px(24.0)),
+        gap: Some(px(16.0)),
+        width: Some(pct(75.0)),
+        ..Default::default()
+    })
+}
+
+/// Sheet for the detail screen's root view. Same layout shape as
+/// [`inner_content_sheet`] (column, padded), plus the theme
+/// background — the home screen gets its background from the
+/// outer scroll_view wrapper, but the detail screen is mounted
+/// directly into the navigator so it needs to paint its own
+/// fill or the home screen behind it would bleed through during
+/// the push/pop slide.
+fn detail_screen_sheet() -> Rc<StyleSheet> {
+    themed(|| StyleRules {
+        background: Some(color_token(TOK_BACKGROUND, default_palette().background)),
+        background_transition: Some(theme_transition()),
         flex_direction: Some(FlexDirection::Column),
         align_items: Some(AlignItems::Stretch),
         justify_content: Some(JustifyContent::FlexStart),
@@ -456,8 +1070,8 @@ fn inner_content_sheet() -> Rc<StyleSheet> {
 }
 
 fn title_sheet() -> Rc<StyleSheet> {
-    themed(|t| StyleRules {
-        color: Some(literal_color(&t.text)),
+    themed(|| StyleRules {
+        color: Some(color_token(TOK_TEXT, default_palette().text)),
         color_transition: Some(theme_transition()),
         font_size: Some(px(28.0)),
         ..Default::default()
@@ -465,8 +1079,8 @@ fn title_sheet() -> Rc<StyleSheet> {
 }
 
 fn subtitle_sheet() -> Rc<StyleSheet> {
-    themed(|t| StyleRules {
-        color: Some(literal_color(&t.muted)),
+    themed(|| StyleRules {
+        color: Some(color_token(TOK_MUTED, default_palette().muted)),
         color_transition: Some(theme_transition()),
         font_size: Some(px(14.0)),
         ..Default::default()
@@ -474,8 +1088,8 @@ fn subtitle_sheet() -> Rc<StyleSheet> {
 }
 
 fn card_label_sheet() -> Rc<StyleSheet> {
-    themed(|t| StyleRules {
-        color: Some(literal_color(&t.text)),
+    themed(|| StyleRules {
+        color: Some(color_token(TOK_TEXT, default_palette().text)),
         color_transition: Some(theme_transition()),
         font_size: Some(px(14.0)),
         ..Default::default()
@@ -483,8 +1097,8 @@ fn card_label_sheet() -> Rc<StyleSheet> {
 }
 
 fn count_card_sheet() -> Rc<StyleSheet> {
-    themed(|t| StyleRules {
-        background: Some(literal_color(&t.surface)),
+    themed(|| StyleRules {
+        background: Some(color_token(TOK_SURFACE, default_palette().surface)),
         background_transition: Some(theme_transition()),
         padding_top: Some(px(16.0)),
         padding_right: Some(px(20.0)),
@@ -498,10 +1112,10 @@ fn count_card_sheet() -> Rc<StyleSheet> {
         border_right_width: Some(f32_literal(1.0)),
         border_bottom_width: Some(f32_literal(1.0)),
         border_left_width: Some(f32_literal(1.0)),
-        border_top_color: Some(literal_color(&t.border)),
-        border_right_color: Some(literal_color(&t.border)),
-        border_bottom_color: Some(literal_color(&t.border)),
-        border_left_color: Some(literal_color(&t.border)),
+        border_top_color: Some(color_token(TOK_BORDER, default_palette().border)),
+        border_right_color: Some(color_token(TOK_BORDER, default_palette().border)),
+        border_bottom_color: Some(color_token(TOK_BORDER, default_palette().border)),
+        border_left_color: Some(color_token(TOK_BORDER, default_palette().border)),
         border_top_color_transition: Some(theme_transition()),
         gap: Some(px(4.0)),
         ..Default::default()
@@ -509,8 +1123,8 @@ fn count_card_sheet() -> Rc<StyleSheet> {
 }
 
 fn count_value_sheet() -> Rc<StyleSheet> {
-    themed(|t| StyleRules {
-        color: Some(literal_color(&t.accent)),
+    themed(|| StyleRules {
+        color: Some(color_token(TOK_ACCENT, default_palette().accent)),
         color_transition: Some(theme_transition()),
         font_size: Some(px(36.0)),
         ..Default::default()
@@ -519,8 +1133,11 @@ fn count_value_sheet() -> Rc<StyleSheet> {
 
 fn pressable_sheet() -> Rc<StyleSheet> {
     themed_with_pressed(
-        |t| StyleRules {
-            background: Some(literal_color(&t.pressable_bg)),
+        || StyleRules {
+            background: Some(color_token(
+                TOK_PRESSABLE_BG,
+                default_palette().pressable_bg,
+            )),
             // Press feedback should be snappy; theme swap should
             // crossfade. Same property, different durations — the
             // base style declares the theme transition; the
@@ -536,32 +1153,11 @@ fn pressable_sheet() -> Rc<StyleSheet> {
             border_bottom_left_radius: Some(px(12.0)),
             ..Default::default()
         },
-        |t| StyleRules {
-            background: Some(literal_color(&t.pressable_bg_pressed)),
-            ..Default::default()
-        },
-    )
-}
-
-fn button_sheet() -> Rc<StyleSheet> {
-    themed_with_pressed(
-        |t| StyleRules {
-            background: Some(literal_color(&t.accent)),
-            background_transition: Some(theme_transition()),
-            color: Some(literal_color(&Color("#ffffff".into()))),
-            padding_top: Some(px(14.0)),
-            padding_right: Some(px(20.0)),
-            padding_bottom: Some(px(14.0)),
-            padding_left: Some(px(20.0)),
-            border_top_left_radius: Some(px(8.0)),
-            border_top_right_radius: Some(px(8.0)),
-            border_bottom_right_radius: Some(px(8.0)),
-            border_bottom_left_radius: Some(px(8.0)),
-            font_size: Some(px(16.0)),
-            ..Default::default()
-        },
-        |t| StyleRules {
-            background: Some(literal_color(&t.accent_pressed)),
+        || StyleRules {
+            background: Some(color_token(
+                TOK_PRESSABLE_BG_PRESSED,
+                default_palette().pressable_bg_pressed,
+            )),
             ..Default::default()
         },
     )
@@ -570,8 +1166,8 @@ fn button_sheet() -> Rc<StyleSheet> {
 // ---------- Form input rows ----------
 
 fn form_row_sheet() -> Rc<StyleSheet> {
-    themed(|t| StyleRules {
-        background: Some(literal_color(&t.surface)),
+    themed(|| StyleRules {
+        background: Some(color_token(TOK_SURFACE, default_palette().surface)),
         background_transition: Some(theme_transition()),
         flex_direction: Some(FlexDirection::Row),
         align_items: Some(AlignItems::Center),
@@ -589,8 +1185,8 @@ fn form_row_sheet() -> Rc<StyleSheet> {
 }
 
 fn form_col_sheet() -> Rc<StyleSheet> {
-    themed(|t| StyleRules {
-        background: Some(literal_color(&t.surface)),
+    themed(|| StyleRules {
+        background: Some(color_token(TOK_SURFACE, default_palette().surface)),
         background_transition: Some(theme_transition()),
         flex_direction: Some(FlexDirection::Column),
         align_items: Some(AlignItems::Stretch),
@@ -608,8 +1204,8 @@ fn form_col_sheet() -> Rc<StyleSheet> {
 }
 
 fn row_label_sheet() -> Rc<StyleSheet> {
-    themed(|t| StyleRules {
-        color: Some(literal_color(&t.text)),
+    themed(|| StyleRules {
+        color: Some(color_token(TOK_TEXT, default_palette().text)),
         color_transition: Some(theme_transition()),
         font_size: Some(px(15.0)),
         ..Default::default()
@@ -617,8 +1213,8 @@ fn row_label_sheet() -> Rc<StyleSheet> {
 }
 
 fn row_value_sheet() -> Rc<StyleSheet> {
-    themed(|t| StyleRules {
-        color: Some(literal_color(&t.muted)),
+    themed(|| StyleRules {
+        color: Some(color_token(TOK_MUTED, default_palette().muted)),
         color_transition: Some(theme_transition()),
         font_size: Some(px(13.0)),
         ..Default::default()
@@ -626,7 +1222,7 @@ fn row_value_sheet() -> Rc<StyleSheet> {
 }
 
 fn spinner_row_sheet() -> Rc<StyleSheet> {
-    themed(|_t| StyleRules {
+    themed(|| StyleRules {
         flex_direction: Some(FlexDirection::Row),
         align_items: Some(AlignItems::Center),
         gap: Some(px(12.0)),
@@ -634,8 +1230,66 @@ fn spinner_row_sheet() -> Rc<StyleSheet> {
     })
 }
 
+fn icon_row_sheet() -> Rc<StyleSheet> {
+    themed(|| StyleRules {
+        flex_direction: Some(FlexDirection::Row),
+        align_items: Some(AlignItems::Center),
+        gap: Some(px(12.0)),
+        ..Default::default()
+    })
+}
+
+fn icon_sheet() -> Rc<StyleSheet> {
+    themed(|| StyleRules {
+        color: Some(color_token(TOK_TEXT, default_palette().text)),
+        width: Some(px(24.0)),
+        height: Some(px(24.0)),
+        ..Default::default()
+    })
+}
+
+fn media_thumb_sheet() -> Rc<StyleSheet> {
+    themed(|| StyleRules {
+        width: Some(px(96.0)),
+        height: Some(px(64.0)),
+        ..Default::default()
+    })
+}
+
+fn overlay_card_sheet() -> Rc<StyleSheet> {
+    themed(|| StyleRules {
+        background: Some(color_token(TOK_SURFACE, default_palette().surface)),
+        padding_top: Some(px(24.0)),
+        padding_right: Some(px(28.0)),
+        padding_bottom: Some(px(24.0)),
+        padding_left: Some(px(28.0)),
+        border_top_left_radius: Some(px(16.0)),
+        border_top_right_radius: Some(px(16.0)),
+        border_bottom_right_radius: Some(px(16.0)),
+        border_bottom_left_radius: Some(px(16.0)),
+        gap: Some(px(8.0)),
+        ..Default::default()
+    })
+}
+
+fn overlay_title_sheet() -> Rc<StyleSheet> {
+    themed(|| StyleRules {
+        color: Some(color_token(TOK_TEXT, default_palette().text)),
+        font_size: Some(px(20.0)),
+        ..Default::default()
+    })
+}
+
+fn overlay_body_sheet() -> Rc<StyleSheet> {
+    themed(|| StyleRules {
+        color: Some(color_token(TOK_MUTED, default_palette().muted)),
+        font_size: Some(px(14.0)),
+        ..Default::default()
+    })
+}
+
 fn row_label_pair_sheet() -> Rc<StyleSheet> {
-    themed(|_t| StyleRules {
+    themed(|| StyleRules {
         flex_direction: Some(FlexDirection::Row),
         align_items: Some(AlignItems::Center),
         justify_content: Some(JustifyContent::SpaceBetween),
@@ -644,15 +1298,15 @@ fn row_label_pair_sheet() -> Rc<StyleSheet> {
 }
 
 fn slider_sheet() -> Rc<StyleSheet> {
-    themed(|_t| StyleRules {
+    themed(|| StyleRules {
         flex_grow: Some(f32_literal(1.0)),
         ..Default::default()
     })
 }
 
 fn text_input_sheet() -> Rc<StyleSheet> {
-    themed(|t| StyleRules {
-        color: Some(literal_color(&t.input_text)),
+    themed(|| StyleRules {
+        color: Some(color_token(TOK_INPUT_TEXT, default_palette().input_text)),
         font_size: Some(px(17.0)),
         ..Default::default()
     })
@@ -664,8 +1318,8 @@ fn text_input_sheet() -> Rc<StyleSheet> {
 /// padding + gap so the bg keeps painting under any scroll
 /// overshoot.
 fn scroll_view_sheet() -> Rc<StyleSheet> {
-    themed(|t| StyleRules {
-        background: Some(literal_color(&t.background)),
+    themed(|| StyleRules {
+        background: Some(color_token(TOK_BACKGROUND, default_palette().background)),
         background_transition: Some(theme_transition()),
         flex_direction: Some(FlexDirection::Column),
         align_items: Some(AlignItems::Stretch),
@@ -678,10 +1332,6 @@ fn scroll_view_sheet() -> Rc<StyleSheet> {
 // =============================================================================
 // Tokenized<T> literal helpers
 // =============================================================================
-
-fn literal_color(c: &Color) -> Tokenized<Color> {
-    Tokenized::Literal(c.clone())
-}
 
 fn px(v: f32) -> Tokenized<Length> {
     Tokenized::Literal(Length::Px(v))

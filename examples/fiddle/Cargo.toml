@@ -1,0 +1,24 @@
+[package]
+name = "fiddle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Interactive Idealyst fiddle — code editor + browser-side simulator + server-side compile worker, all in one binary"
+
+# The fiddle is just the server. The template crate it compiles is
+# under `template/` and is its own `[workspace]` so the parent
+# workspace's cargo doesn't pull it in (we want it isolated with its
+# own `target/` so per-compile invocations stay warm).
+
+[dependencies]
+anyhow = "1"
+# Sync HTTP server — same crate the workspace's `dev-http` uses for
+# its static-file dev server. No async runtime, no TLS; this fiddle
+# is a local-only loop (run `cargo run -p fiddle`, open localhost).
+tiny_http = "0.12"
+# Request/response JSON envelope for /compile.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Source hashing for the compile cache — same source = same wasm,
+# served from disk without rebuilding.
+sha2 = "0.10"

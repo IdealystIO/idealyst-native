@@ -11,7 +11,6 @@
 
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Instant;
 
 use render_api::{
     DeviceProfile, Key, KeyEvent, KeyModifiers, PointerButton, PointerEvent, PointerId,
@@ -436,7 +435,8 @@ impl App {
         surface_tex.present();
 
         // If any tween is still in flight, request another frame.
-        if self.host.tick(Instant::now()) {
+        // The host samples its own clock — see `EventSink::tick`.
+        if self.host.tick() {
             gpu.window.request_redraw();
         }
         Ok(())

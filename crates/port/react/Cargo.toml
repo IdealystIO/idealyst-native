@@ -1,0 +1,26 @@
+[package]
+name = "port-react"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# React → idealyst-native source porter.
+#
+# Translates a (deliberately narrow) subset of TSX into Rust source
+# that uses `#[component]`, `signal!`, and `jsx!`. Shares IR /
+# emitter / hole machinery with the other frontends via
+# `port-core`; only the React-specific bits (hook taxonomy,
+# fixture lowering) live here.
+#
+# See `../README.md` for the full design.
+
+[lib]
+crate-type = ["rlib"]
+
+[[bin]]
+name = "port-react"
+path = "src/main.rs"
+
+[dependencies]
+port-core = { path = "../core" }
+port-tsx = { path = "../tsx" }

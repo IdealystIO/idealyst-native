@@ -106,7 +106,24 @@ async function measureOne(work) {
   let lastFrame = applyDone;
   let worstFrame = 0;
 
-  const firstFrame = await new Promise(r => requestAnimationFrame(r));
+  // `requestAnimationFrame`'s callback argument is a frame-start-
+  // aligned timestamp (per spec, snapshotted when the rendering
+  // pipeline begins the frame, not when the callback fires). For
+  // fast `work()` operations that complete mid-frame, the next
+  // frame's start time can be *before* `t0` — yielding negative
+  // `firstPaint`. The fix: capture `performance.now()` inside the
+  // callback body, which always runs after the work has completed
+  // and the frame has been committed.
+  //
+  // We use callback-fire time everywhere (firstPaint AND the
+  // worst-frame loop) to keep all timestamps in one domain;
+  // mixing rAF-arg with performance.now() would produce nonsense
+  // gaps. The cost is that gap measurements no longer reflect the
+  // pure rendering-pipeline timing — they include JS scheduling
+  // jitter. In practice that jitter is small relative to real
+  // frame drops (1ms vs 16ms+ for a missed frame), so the signal
+  // we care about (long frames during transitions) is preserved.
+  const firstFrame = await new Promise(r => requestAnimationFrame(() => r(performance.now())));
   const firstPaint = firstFrame - t0;
   let gap = firstFrame - lastFrame;
   if (gap > worstFrame) worstFrame = gap;
@@ -114,7 +131,7 @@ async function measureOne(work) {
 
   const deadline = t0 + TRANSITION_MS + SLACK_MS;
   while (performance.now() < deadline) {
-    const t = await new Promise(r => requestAnimationFrame(r));
+    const t = await new Promise(r => requestAnimationFrame(() => r(performance.now())));
     gap = t - lastFrame;
     if (gap > worstFrame) worstFrame = gap;
     lastFrame = t;

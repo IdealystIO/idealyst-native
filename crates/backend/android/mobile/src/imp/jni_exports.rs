@@ -5,10 +5,10 @@
 
 use super::callbacks::{
     ClickCallback, HeaderButtonCallback, OverlayDismissCallback, SliderChangeCallback,
-    StateCallback, TextChangeCallback, ToggleChangeCallback,
+    StateCallback, TextChangeCallback, ToggleChangeCallback, TouchCallback,
 };
 use jni::objects::{JObject, JValue};
-use jni::sys::{jint, jlong};
+use jni::sys::{jfloat, jint, jlong};
 use jni::JNIEnv;
 
 // ---------------------------------------------------------------------------
@@ -115,6 +115,105 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustStateListener_nativeS
     let maybe_cb = cb.inner.borrow().clone();
     if let Some(setter) = maybe_cb {
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| setter(bit, on)));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Touch listener (raw-touch pipeline)
+// ---------------------------------------------------------------------------
+
+/// `RustTouchListener.onTouch` per-pointer dispatch. Receives every
+/// field of the framework `TouchEvent` flattened across the JNI
+/// boundary and returns a packed response:
+///
+/// ```text
+///   bit 0 = consumed
+///   bit 1 = claim
+/// ```
+///
+/// # Safety
+///
+/// `ptr` must have been produced by `Box::into_raw` on a
+/// `Box<TouchCallback>` from `primitives::touch::install` and must
+/// still be live. The pointer is *not* freed here; late touch events
+/// can arrive after the View detaches.
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustTouchListener_nativeInvokeTouch(
+    _env: JNIEnv,
+    _this: JObject,
+    ptr: jlong,
+    id: jlong,
+    phase: jint,
+    x: jfloat,
+    y: jfloat,
+    win_x: jfloat,
+    win_y: jfloat,
+    timestamp_ns: jlong,
+    force: jfloat,
+) -> jint {
+    if ptr == 0 {
+        return 0;
+    }
+    use framework_core::{TouchEvent, TouchId, TouchPhase, TouchPoint};
+    let phase = match phase {
+        0 => TouchPhase::Began,
+        1 => TouchPhase::Moved,
+        2 => TouchPhase::Ended,
+        3 => TouchPhase::Cancelled,
+        // Defensive: an unknown phase from the Kotlin side would be
+        // a contract violation. Drop the event silently rather than
+        // crash — easier to debug a missing handler call than a
+        // SIGABRT from a JNI panic.
+        _ => return 0,
+    };
+    // MotionEvent.getPressure returns 1.0 for non-pressure-sensitive
+    // devices when a button is down. Treat that as "no information"
+    // to match the iOS / web sentinel-filter behavior. Devices that
+    // do report pressure (Surface Pen, 3D-touch-on-some-Android)
+    // produce values in (0, 1).
+    let force_opt = if force > 0.0 && force < 1.0 {
+        Some(force)
+    } else {
+        None
+    };
+    let event = TouchEvent {
+        id: TouchId(id as u64),
+        phase,
+        position: TouchPoint::new(x, y),
+        window_position: TouchPoint::new(win_x, win_y),
+        timestamp_ns: timestamp_ns as u64,
+        force: force_opt,
+    };
+    let cb = &*(ptr as *const TouchCallback);
+    let handler_opt = cb.inner.borrow().clone();
+    let Some(handler) = handler_opt else {
+        return 0;
+    };
+    // Catch unwinds across the JNI boundary — Rust panics into Java
+    // are UB.
+    let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(&event)))
+        .unwrap_or(framework_core::TouchResponse::IGNORED);
+    let mut packed: jint = 0;
+    if response.consumed {
+        packed |= 0x1;
+    }
+    if response.claim {
+        packed |= 0x2;
+    }
+    packed
+}
+
+/// Free a leaked `TouchCallback`. Currently unused (the Kotlin
+/// `RustTouchListener.finalize` isn't wired) — exposed for symmetry
+/// and future cleanup.
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustTouchListener_nativeDrop(
+    _env: JNIEnv,
+    _this: JObject,
+    ptr: jlong,
+) {
+    if ptr != 0 {
+        drop(Box::from_raw(ptr as *mut TouchCallback));
     }
 }
 

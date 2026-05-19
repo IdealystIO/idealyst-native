@@ -1,0 +1,9 @@
+# Per-compile output cache — fully reproducible from `template/`
+# given a source string, so no point committing.
+compiled/
+
+# Template + webapp each have their own `[workspace]` and therefore
+# their own `target/`. Same standard exclusion.
+template/target/
+webapp/target/
+webapp/pkg/

@@ -30,8 +30,11 @@
 
 mod animation;
 mod backend_impl;
+mod device_frame_pipeline;
 mod host;
+mod image_pipeline;
 pub mod keyboard;
+pub mod nav_anim;
 mod node;
 pub mod pipeline;
 mod renderer;
@@ -53,11 +56,18 @@ pub use render_api::{
 pub use animation::{AnimProperty, Animator, TweenKey, lerp_color};
 pub use backend_impl::WgpuBackend;
 pub use host::Host;
+pub use nav_anim::{
+    clear_transition_override, default_transition, with_transition, InstantTransition,
+    ScreenTransition, ScreenXform, SlideFromBottom, SlideFromRight, TransitionDirection,
+    TransitionFrame,
+};
 pub use node::{
     WgpuNode, KEYBOARD_KEY_FONT_SIZE, KEYBOARD_KEY_GAP, KEYBOARD_KEY_RADIUS,
-    KEYBOARD_ROW_GAP, KEYBOARD_SIDE_MARGIN, KEYBOARD_VERT_MARGIN, SLIDER_THUMB_SIZE,
-    SLIDER_TRACK_HEIGHT, TEXT_INPUT_CARET_WIDTH, TOGGLE_THUMB_INSET,
+    KEYBOARD_ROW_GAP, KEYBOARD_SIDE_MARGIN, KEYBOARD_VERT_MARGIN, NAV_HEADER_HEIGHT,
+    SLIDER_THUMB_SIZE, SLIDER_TRACK_HEIGHT, TEXT_INPUT_CARET_WIDTH, TOGGLE_THUMB_INSET,
 };
-pub use renderer::Renderer;
+pub use renderer::{paint_icon, Renderer};
 pub use scheduler::{install_redraw_hook, request_redraw};
-pub use skin::Skin;
+pub use skin::{
+    ButtonPressVisual, NavigatorHeaderAction, NavigatorHeaderChrome, NavigatorHeaderHit, Skin,
+};
