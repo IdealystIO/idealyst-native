@@ -19,6 +19,7 @@
 
 use std::rc::Rc;
 
+use framework_core::primitives::scroll_view::scroll_view;
 use framework_core::primitives::slider::slider;
 use framework_core::primitives::text_input::text_input;
 use framework_core::primitives::toggle::toggle;
@@ -126,6 +127,23 @@ fn app() -> Primitive {
     let volume: Signal<f32> = signal!(0.4);
     let name: Signal<String> = signal!(String::new());
 
+    // Long list rendered into the scrollview so total content
+    // height exceeds the phone viewport — that's what makes the
+    // scroll behavior visible.
+    let mut list_rows: Vec<Primitive> = Vec::new();
+    for i in 1..=20 {
+        list_rows.push(
+            view(vec![
+                text(format!("Row {i}")).with_style(row_label_sheet()).into(),
+                text(format!("#{i:02}"))
+                    .with_style(row_value_sheet())
+                    .into(),
+            ])
+            .with_style(form_row_sheet())
+            .into(),
+        );
+    }
+
     // Theme swap: handled inline in the toggle's `on_change`
     // callback below.
     //
@@ -141,7 +159,12 @@ fn app() -> Primitive {
     // build-walker scope), so it persists for the toggle's
     // lifetime and is the safe place to call `set_theme`.
 
-    view(vec![
+    // ScrollView is the OUTERMOST node so it fills the window
+    // edge-to-edge — that puts the scrollbar right at the
+    // screen's right edge instead of inset behind a padded root.
+    // The padding + gap that used to live on `root_sheet` now
+    // live on an inner content view that the scrollview wraps.
+    scroll_view(vec![view(vec![
         text("wgpu preview").with_style(title_sheet()).into(),
         text("themed iOS form inputs")
             .with_style(subtitle_sheet())
@@ -226,8 +249,17 @@ fn app() -> Primitive {
         ])
         .with_style(form_col_sheet())
         .into(),
+        // Section header for the list — anchors the eye so the
+        // scrolling boundary is obvious.
+        text("Long list").with_style(subtitle_sheet()).into(),
+        // The overflowing list. Each row is a themed form_row.
+        view(list_rows)
+            .with_style(form_col_sheet())
+            .into(),
     ])
-    .with_style(root_sheet())
+    .with_style(inner_content_sheet())
+    .into()])
+    .with_style(scroll_view_sheet())
     .into()
 }
 
@@ -255,10 +287,13 @@ where
     )
 }
 
-fn root_sheet() -> Rc<StyleSheet> {
-    themed(|t| StyleRules {
-        background: Some(literal_color(&t.background)),
-        background_transition: Some(theme_transition()),
+/// Inner content view that lives *inside* the outermost
+/// `ScrollView`. The scrollview owns the background + viewport
+/// dimensions so the scrollbar can sit flush against the
+/// window's right edge; the padding + gap that used to live on
+/// a separate root view now live here.
+fn inner_content_sheet() -> Rc<StyleSheet> {
+    themed(|_t| StyleRules {
         flex_direction: Some(FlexDirection::Column),
         align_items: Some(AlignItems::Stretch),
         justify_content: Some(JustifyContent::FlexStart),
@@ -267,8 +302,6 @@ fn root_sheet() -> Rc<StyleSheet> {
         padding_bottom: Some(px(48.0)),
         padding_left: Some(px(24.0)),
         gap: Some(px(16.0)),
-        width: Some(pct(100.0)),
-        height: Some(pct(100.0)),
         ..Default::default()
     })
 }
@@ -463,6 +496,23 @@ fn text_input_sheet() -> Rc<StyleSheet> {
     themed(|t| StyleRules {
         color: Some(literal_color(&t.input_text)),
         font_size: Some(px(17.0)),
+        ..Default::default()
+    })
+}
+
+/// Outermost ScrollView. Fills the window edge-to-edge so the
+/// overlay scrollbar lives against the screen's right edge.
+/// Owns the themed background; the inner content view handles
+/// padding + gap so the bg keeps painting under any scroll
+/// overshoot.
+fn scroll_view_sheet() -> Rc<StyleSheet> {
+    themed(|t| StyleRules {
+        background: Some(literal_color(&t.background)),
+        background_transition: Some(theme_transition()),
+        flex_direction: Some(FlexDirection::Column),
+        align_items: Some(AlignItems::Stretch),
+        width: Some(pct(100.0)),
+        height: Some(pct(100.0)),
         ..Default::default()
     })
 }

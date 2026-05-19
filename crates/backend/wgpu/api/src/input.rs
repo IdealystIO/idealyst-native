@@ -2,22 +2,25 @@
 //!
 //! Native shells (winit on desktop, browser DOM on web, UIKit on
 //! iOS, View.OnTouchListener on Android) translate their native
-//! event stream into these types and feed them to [`crate::Host`].
-//! Nothing in this module depends on any platform — the same types
-//! flow through every entry point.
+//! event stream into these types and feed them to a render
+//! backend through the [`crate::EventSink`] trait. Nothing in
+//! this module depends on any platform — the same types flow
+//! through every entry point.
 //!
 //! # Conventions
 //!
-//! - **Coordinates** are in logical CSS pixels (the same space Taffy
-//!   computes layout in). Native shells are responsible for
-//!   physical→logical conversion (divide by `scale_factor`).
+//! - **Coordinates** are in logical CSS pixels (the same space
+//!   the framework's layout engine computes in). Native shells
+//!   are responsible for physical→logical conversion (divide by
+//!   `scale_factor`).
 //! - **Pointer IDs** are platform-stable for the duration of a
-//!   pointer interaction (down→move…→up). Mouse uses a constant id;
-//!   touch uses the OS-reported finger id. Multi-touch isn't wired
-//!   yet but the field exists so we don't have to reshape the API.
+//!   pointer interaction (down→move…→up). Mouse uses a constant
+//!   id; touch uses the OS-reported finger id. Multi-touch isn't
+//!   wired yet but the field exists so we don't have to reshape
+//!   the API.
 //! - **Key text** is the IME-resolved character(s) for character
-//!   keys. Named keys (Backspace, Escape, …) carry `Key::Named` and
-//!   typically have `text: None`.
+//!   keys. Named keys (Backspace, Escape, …) carry their
+//!   semantic `Key` variant and typically have `text: None`.
 
 /// Identifies a pointer interaction. Use [`PointerId::MOUSE`] for
 /// the primary mouse pointer; touch shells should pass the OS's
@@ -46,6 +49,20 @@ pub struct PointerEvent {
     pub position: (f32, f32),
 }
 
+/// Scroll input — a mouse wheel tick, a trackpad two-finger pan,
+/// a kinetic-scroll OS event. `delta` is in logical CSS pixels
+/// per axis; the shell is responsible for any platform-specific
+/// unit conversion (winit's `LineDelta` lines are converted by
+/// the winit shim, browser `WheelEvent.deltaY` likewise).
+/// `position` is where the pointer is at the moment of the event
+/// — the render side uses it to decide which scroll container
+/// under the cursor receives the event.
+#[derive(Clone, Copy, Debug)]
+pub struct ScrollEvent {
+    pub position: (f32, f32),
+    pub delta: (f32, f32),
+}
+
 /// Keyboard input. `text` is filled when the press produced
 /// printable text (after IME / dead-key processing). Named keys
 /// carry their semantic identity in `key`.
@@ -71,11 +88,11 @@ pub struct KeyModifiers {
 
 /// Normalized key identity. Character-producing keys arrive as
 /// `Character` (the actual text is in [`KeyEvent::text`]); named
-/// keys get a discrete variant so the host can switch on intent
-/// instead of parsing key text.
+/// keys get a discrete variant so the render side can switch on
+/// intent instead of parsing key text.
 ///
-/// Add variants here as more shells need them — the host should
-/// match exhaustively so a missing case fails loudly.
+/// Add variants here as more shells need them — the render side
+/// should match exhaustively so a missing case fails loudly.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Key {
     Character,

@@ -19,7 +19,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use framework_core::primitives;
-use framework_core::{Backend, Color, ColorScheme, StateBits, StyleRules};
+use framework_core::{Backend, Color, ColorScheme, StateBits, StyleRules, ViewHandle, ViewOps};
 use wire::{
     Command, EventArgs, HandlerId, NodeId, StyleId, WireColor, WireStateBit,
 };
@@ -678,6 +678,46 @@ impl WireRecordingBackend {
         assigned
     }
 
+    /// If the navigator carries a `.layout(...)` closure, run it
+    /// against this recording backend so every node the closure
+    /// builds is captured into the wire stream as normal
+    /// `CreateView` / `Insert` / `ApplyStyle` commands, then emit a
+    /// trailing `AttachNavigatorLayout` to tell the receiving
+    /// backend which built node is the layout root + which is the
+    /// outlet.
+    ///
+    /// Called AFTER the navigator's own `CreateNavigator` /
+    /// `CreateDrawerNavigator` / `CreateTabNavigator` has been
+    /// emitted and after the `inner.borrow_mut()` from that path
+    /// has been released — the closure will reentrantly borrow
+    /// `inner` through `build()` calls into our `create_view` /
+    /// etc., and would deadlock if a borrow were still held.
+    fn invoke_layout(
+        &mut self,
+        nav_id: NodeId,
+        build_layout: Option<
+            Rc<dyn Fn() -> framework_core::primitives::navigator::LayoutPlan<NodeId>>,
+        >,
+    ) {
+        let Some(build_layout) = build_layout else {
+            return;
+        };
+        let plan = build_layout();
+        let outlet_handle = plan
+            .outlet_ref
+            .get()
+            .expect("build_layout returned but outlet_ref is unbound");
+        let outlet_node: NodeId = *outlet_handle
+            .as_any()
+            .downcast_ref::<NodeId>()
+            .expect("recording backend ViewHandle should wrap NodeId");
+        self.inner.borrow_mut().emit(Command::AttachNavigatorLayout {
+            navigator: nav_id,
+            root: plan.root,
+            outlet: outlet_node,
+        });
+    }
+
     fn intern_style(state: &mut RecorderState, rules: &Rc<StyleRules>) -> StyleId {
         // Fast path: same `Rc` pointer we've seen this process →
         // already registered. Skips the wire conversion + hash.
@@ -771,11 +811,28 @@ enum HandlerSnapshot {
 // Backend impl
 // ---------------------------------------------------------------------------
 
+/// Marker `ViewOps` for the recording backend. The recording side
+/// doesn't expose layout rects (no real DOM/UIKit) so every method on
+/// `ViewOps` falls back to the trait default; what matters is that
+/// the static-dyn ops pointer exists so `ViewHandle::new` accepts it.
+struct RecordingViewOps;
+impl ViewOps for RecordingViewOps {}
+
 impl Backend for WireRecordingBackend {
     type Node = NodeId;
 
     fn color_scheme(&self) -> ColorScheme {
         self.inner.borrow().color_scheme
+    }
+
+    /// Wrap the wire `NodeId` so layout authors who bind a
+    /// `Ref<ViewHandle>` (notably the framework's `outlet_ref` inside
+    /// `build_layout`) can retrieve the assigned wire id by
+    /// downcasting `ViewHandle::as_any()` back to `NodeId`. The default
+    /// trait impl returns an `Rc<()>` which would make outlet
+    /// resolution impossible.
+    fn make_view_handle(&self, node: &Self::Node) -> ViewHandle {
+        ViewHandle::new(Rc::new(*node), &RecordingViewOps)
     }
 
     fn create_view(&mut self) -> Self::Node {
@@ -1305,6 +1362,7 @@ impl Backend for WireRecordingBackend {
         let nav_id;
         let initial_route = callbacks.initial_route;
         let initial_path = callbacks.initial_path;
+        let build_layout = callbacks.build_layout.clone();
         let callbacks_rc = Rc::new(callbacks);
         {
             let mut state = self.inner.borrow_mut();
@@ -1322,6 +1380,10 @@ impl Backend for WireRecordingBackend {
                 },
             );
         }
+        // Layout is invoked AFTER the borrow above has been dropped:
+        // the closure recurses into our own create_view/insert/etc.
+        // which all take `inner.borrow_mut()`.
+        self.invoke_layout(nav_id, build_layout);
         // Install dispatcher. The closure captures a Weak ref to the
         // shared state so it doesn't keep the recorder alive past
         // teardown.
@@ -1410,6 +1472,7 @@ impl Backend for WireRecordingBackend {
                 wire::WireMountPolicy::LazyDisposing
             }
         };
+        let build_layout = callbacks.navigator.build_layout.clone();
         let inner_callbacks_rc = Rc::new(callbacks.navigator);
         {
             let mut state = self.inner.borrow_mut();
@@ -1430,6 +1493,7 @@ impl Backend for WireRecordingBackend {
                 },
             );
         }
+        self.invoke_layout(nav_id, build_layout);
         let weak_inner = Rc::downgrade(&self.inner);
         let cbs = inner_callbacks_rc.clone();
         control.install(Box::new(move |cmd| {

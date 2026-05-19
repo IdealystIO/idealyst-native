@@ -9,6 +9,7 @@ pub mod new;
 pub mod run;
 pub mod rustc_capture;
 pub mod scaffold;
+pub mod serve;
 pub mod sync;
 
 /// Shorthand for the "not implemented yet" stub each command returns

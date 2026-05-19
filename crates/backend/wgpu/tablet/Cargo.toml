@@ -4,12 +4,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# Tablet-sized preview window for the wgpu backend.
-#
-# Default size is iPad portrait (820 × 1180 logical px). All real
-# work happens in `backend-wgpu-core`; this crate just supplies a
-# `DeviceProfile` and a thin `run` wrapper.
+# Tablet-sized preview variant.
 
 [dependencies]
-backend-wgpu-core = { workspace = true }
+backend-wgpu-native = { workspace = true }
 framework-core = { workspace = true }

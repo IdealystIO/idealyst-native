@@ -51,20 +51,11 @@ impl WebBackend {
             let head = self.doc.head().expect("document has head");
             head.append_child(&elem).expect("append style to head");
             self.style_element = Some(elem);
-            // Seed the reset at index 0. We never delete or shift
-            // index 0, so the rule recycler in `insert_rule` doesn't
-            // need to know about it — it appends or recycles at
-            // index ≥ 1.
-            let reset = ":where(button) { \
-                         all: unset; \
-                         box-sizing: border-box; \
-                         cursor: pointer; \
-                         font: inherit; \
-                         color: inherit; \
-                         display: inline-flex; \
-                         align-items: center; \
-                         justify-content: center; \
-                         }";
+
+            // Seed the resets at indices 0–1. We never delete or
+            // shift these, so the rule recycler in `insert_rule`
+            // doesn't need to know about them — it appends or
+            // recycles at index ≥ 2.
             let sheet = self
                 .style_element
                 .as_ref()
@@ -72,7 +63,47 @@ impl WebBackend {
                 .sheet()
                 .expect("sheet")
                 .unchecked_into::<web_sys::CssStyleSheet>();
-            let _ = sheet.insert_rule_with_index(reset, 0);
+
+            // Index 0 — universal `box-sizing: border-box`.
+            //
+            // The framework's box model is React-Native-style:
+            // `padding`/`border_width` live INSIDE an element's
+            // declared `width`/`height`. The browser's default
+            // `content-box` adds padding OUTSIDE the declared size,
+            // which silently breaks any percent-height layout
+            // (e.g. a 100%-height sidebar with `padding: lg` ends
+            // up 100vh + 2*lg tall and overflows the viewport).
+            //
+            // Apply universally — every framework-rendered element
+            // expects border-box semantics. The specificity-0
+            // selector loses to any author class rule that
+            // explicitly sets `box-sizing`, so opting out per
+            // element is still possible.
+            let _ = sheet.insert_rule_with_index(
+                "*, *::before, *::after { box-sizing: border-box; }",
+                0,
+            );
+
+            // Index 1 — `<button>` element reset.
+            //
+            // `:where(button)` has CSS specificity 0, so any author
+            // class rule the framework attaches via `apply_style`
+            // (specificity 0,1,0) wins automatically. Without this
+            // reset, the browser's chunky outset border shows
+            // through any class rule that doesn't explicitly zero
+            // out `border`. Authors that want the border back just
+            // set `border_width: 1.0` in their stylesheet.
+            let button_reset = ":where(button) { \
+                                all: unset; \
+                                box-sizing: border-box; \
+                                cursor: pointer; \
+                                font: inherit; \
+                                color: inherit; \
+                                display: inline-flex; \
+                                align-items: center; \
+                                justify-content: center; \
+                                }";
+            let _ = sheet.insert_rule_with_index(button_reset, 1);
         }
         self.style_element.as_ref().unwrap().clone()
     }

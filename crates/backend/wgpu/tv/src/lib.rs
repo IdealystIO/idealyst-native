@@ -3,15 +3,11 @@
 //! Renders the user's UI in a 1920 × 1080 window. Reports
 //! `ColorScheme::Dark` so apps that switch palettes on TV pick
 //! the right one without a runtime check.
-//!
-//! Focus-based remote-style navigation is intentionally unwired
-//! for the MVP; the variant currently behaves like a large
-//! pointer-driven preview.
 
-use backend_wgpu_core::{run as run_core, DeviceProfile, RunError, SimulatedPlatform};
+use backend_wgpu_native::{run as run_core, DeviceProfile, RunError, SimulatedPlatform};
 use framework_core::{ColorScheme, Primitive};
 
-pub use backend_wgpu_core::SimulatedPlatform as Platform;
+pub use backend_wgpu_native::SimulatedPlatform as Platform;
 
 pub const WIDTH: u32 = 1920;
 pub const HEIGHT: u32 = 1080;

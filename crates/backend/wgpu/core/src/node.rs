@@ -35,6 +35,86 @@ pub const IOS_MIN_HIT_TARGET: f32 = 44.0;
 /// visual edge of a switch should still register. 8pt matches
 /// UIKit's typical `hitTest` override patterns.
 pub const HIT_SLOP: f32 = 8.0;
+
+/// Distance the pointer must move from its press origin before a
+/// tap-press is converted to a scroll pan. Matches iOS
+/// `UIScrollView`'s default `panGestureRecognizer` slop.
+pub const PAN_THRESHOLD: f32 = 10.0;
+
+/// Width of the scrollbar track / thumb. Matches iOS's overlay
+/// scrollbar style.
+pub const SCROLLBAR_WIDTH: f32 = 3.0;
+/// Inset from the scrollview's trailing edge. iOS-style: hugs
+/// the edge with a hairline of breathing room so the thumb's
+/// rounded cap isn't cropped at high DPI.
+pub const SCROLLBAR_INSET: f32 = 1.0;
+/// Minimum thumb length so a very long content extent still
+/// shows a tappable / visible thumb.
+pub const SCROLLBAR_MIN_THUMB: f32 = 24.0;
+
+/// Momentum-scroll exponential decay rate (per second). Matches
+/// the feel of `UIScrollView` between its "Normal" (k≈2) and
+/// "Fast" (k≈10) deceleration constants. After one second of
+/// coasting the velocity has dropped to `exp(-k) ≈ 8%`.
+pub const SCROLL_MOMENTUM_DECAY_PER_SEC: f32 = 2.5;
+/// Below this speed (px/sec) the momentum scroll is considered
+/// settled and the tick loop ends. Also the threshold for
+/// kicking off momentum on lift-off — a release at less than
+/// this velocity stays put.
+pub const SCROLL_MOMENTUM_MIN_VELOCITY: f32 = 30.0;
+/// If the user holds the pointer still for longer than this
+/// before releasing, the residual velocity is treated as zero
+/// (their finger had settled). Without this guard a long
+/// "stop, then lift" gesture would re-fire the velocity from
+/// before the stop.
+pub const SCROLL_MOMENTUM_STALE_MS: u128 = 80;
+/// EMA mix used to smooth raw `delta/dt` samples into a stable
+/// pan velocity. Higher = more weight on the latest move.
+pub const SCROLL_VELOCITY_SMOOTHING: f32 = 0.6;
+
+/// Rubber-band resistance constant. Smaller values make the
+/// overshoot stiffer; larger values let the user drag further
+/// past the edge before resistance kicks in. iOS uses a similar
+/// `c/(c+d)` saturation curve where `c` is roughly half the
+/// viewport — keeping our overshoot subtle.
+pub const SCROLL_RUBBERBAND_RESISTANCE: f32 = 0.55;
+/// Exponential approach rate (per second) used by the
+/// rubber-band spring-back. After 1s the gap to the target has
+/// dropped to `exp(-k) ≈ 1.8%` at k=4.
+pub const SCROLL_SPRINGBACK_RATE_PER_SEC: f32 = 6.0;
+/// Below this distance to target (in px), the spring-back tick
+/// snaps to the bound and ends.
+pub const SCROLL_SPRINGBACK_EPSILON: f32 = 0.5;
+
+/// Total height of the simulator's on-screen keyboard, in
+/// logical px. iOS portrait QWERTY is ~291pt; we round to a
+/// clean number that leaves room for content above.
+pub const KEYBOARD_HEIGHT: f32 = 280.0;
+/// Horizontal margin between the keyboard's edge and the
+/// first / last key in a row.
+pub const KEYBOARD_SIDE_MARGIN: f32 = 4.0;
+/// Vertical padding above the first row and below the last.
+pub const KEYBOARD_VERT_MARGIN: f32 = 8.0;
+/// Per-row vertical gap between keys.
+pub const KEYBOARD_ROW_GAP: f32 = 8.0;
+/// Per-row horizontal gap between keys.
+pub const KEYBOARD_KEY_GAP: f32 = 6.0;
+/// Corner radius on each key's rounded rect.
+pub const KEYBOARD_KEY_RADIUS: f32 = 6.0;
+/// Font size used for letter keys.
+pub const KEYBOARD_KEY_FONT_SIZE: f32 = 18.0;
+
+/// Caret blink period, full on→off→on cycle. Matches iOS's
+/// ~1.06 sec UITextField caret rhythm.
+pub const CARET_BLINK_PERIOD_SEC: f32 = 1.06;
+
+/// Duration of the keyboard's slide-up / slide-down animation.
+/// iOS uses ~250ms with an ease-out curve.
+pub const KEYBOARD_ANIM_MS: u32 = 250;
+/// Padding above the keyboard when auto-scrolling a focused
+/// input into view. Gives the input a little breathing room
+/// from the keyboard's top edge.
+pub const KEYBOARD_INPUT_MARGIN: f32 = 16.0;
 /// Padding between the track edge and the thumb at rest.
 pub const TOGGLE_THUMB_INSET: f32 = 2.0;
 /// Duration of the toggle's thumb-slide animation. Matches the
@@ -104,6 +184,17 @@ pub enum NodeKind {
         step: Option<f32>,
         on_change: Rc<dyn Fn(f32)>,
     },
+    /// Scrolling container. `horizontal=false` scrolls vertically;
+    /// `true` scrolls horizontally. The current scroll position
+    /// lives here and is mutated by the host's `scroll` event
+    /// dispatch. Children are laid out by Taffy at their natural
+    /// sizes (no main-axis constraint from this node) and the
+    /// renderer translates them by `-offset` when painting.
+    ScrollView {
+        horizontal: bool,
+        offset_x: f32,
+        offset_y: f32,
+    },
     /// Stable parent for reactive `when`/`switch` branch swaps.
     /// Same shape as a View; named separately so the renderer can
     /// treat it as layout-transparent later if needed.
@@ -121,6 +212,12 @@ impl std::fmt::Debug for NodeKind {
             NodeKind::Toggle { value, .. } => write!(f, "Toggle({value})"),
             NodeKind::Slider { value, min, max, .. } => {
                 write!(f, "Slider({value} in {min}..={max})")
+            }
+            NodeKind::ScrollView { horizontal, offset_x, offset_y } => {
+                write!(
+                    f,
+                    "ScrollView(horizontal={horizontal}, offset={offset_x},{offset_y})"
+                )
             }
             NodeKind::ReactiveAnchor => f.write_str("ReactiveAnchor"),
         }

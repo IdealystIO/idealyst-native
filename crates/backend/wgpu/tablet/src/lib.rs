@@ -3,10 +3,10 @@
 //! Renders the user's UI inside an iPad-shaped window
 //! (820 × 1180 logical px @ 1×, matching iPad 10.9" portrait).
 
-use backend_wgpu_core::{run as run_core, DeviceProfile, RunError, SimulatedPlatform};
+use backend_wgpu_native::{run as run_core, DeviceProfile, RunError, SimulatedPlatform};
 use framework_core::{ColorScheme, Primitive};
 
-pub use backend_wgpu_core::SimulatedPlatform as Platform;
+pub use backend_wgpu_native::SimulatedPlatform as Platform;
 
 pub const WIDTH: u32 = 820;
 pub const HEIGHT: u32 = 1180;

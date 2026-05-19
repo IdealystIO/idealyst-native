@@ -1083,6 +1083,30 @@ pub trait Backend {
     ) {
     }
 
+    /// Attach a pre-built layout subtree to a navigator.
+    ///
+    /// In the local-render path, `create_*_navigator` invokes the
+    /// author's `.layout(...)` closure itself (via the framework
+    /// callbacks). For the AAS / wire-replay path, the recording
+    /// backend invokes it on the dev-side and ships the layout as
+    /// a normal subtree of `CreateView`/`Insert`/`ApplyStyle`
+    /// commands; this call is what tells the receiving backend
+    /// "here is the layout's root node (insert it into the
+    /// navigator's container) and here is the outlet (mount
+    /// subsequent screens into it instead of the bare container)."
+    ///
+    /// Default no-op — only web cares (the iOS/Android backends
+    /// render navigator chrome natively and don't use the
+    /// `.layout()` slot).
+    #[allow(unused_variables)]
+    fn attach_navigator_layout(
+        &mut self,
+        navigator: &Self::Node,
+        root: Self::Node,
+        outlet: Self::Node,
+    ) {
+    }
+
     /// Tear down a drawer navigator. Same contract as
     /// [`Backend::release_navigator`]. Default no-op so backends
     /// that don't implement drawers aren't required to define this.

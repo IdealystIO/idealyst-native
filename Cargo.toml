@@ -20,7 +20,9 @@ members = [
     "crates/backend/roku/macros",
     "crates/backend/roku/transpile",
     "crates/backend/web",
+    "crates/backend/wgpu/api",
     "crates/backend/wgpu/core",
+    "crates/backend/wgpu/native",
     "crates/backend/wgpu/phone",
     "crates/backend/wgpu/tablet",
     "crates/backend/wgpu/tv",
@@ -86,7 +88,9 @@ backend-roku = { path = "crates/backend/roku" }
 backend-roku-macros = { path = "crates/backend/roku/macros" }
 backend-roku-transpile = { path = "crates/backend/roku/transpile" }
 backend-web = { path = "crates/backend/web" }
+backend-wgpu-api = { path = "crates/backend/wgpu/api" }
 backend-wgpu-core = { path = "crates/backend/wgpu/core" }
+backend-wgpu-native = { path = "crates/backend/wgpu/native" }
 backend-wgpu-phone = { path = "crates/backend/wgpu/phone" }
 backend-wgpu-tablet = { path = "crates/backend/wgpu/tablet" }
 backend-wgpu-tv = { path = "crates/backend/wgpu/tv" }
@@ -95,6 +99,15 @@ posix-log-capture = { path = "crates/backend/posix-log-capture" }
 idea-ui = { path = "crates/ui/idea-ui" }
 idea-ui-docs-derive = { path = "crates/ui/idea-ui-docs-derive" }
 icons-lucide = { path = "crates/ui/icons-lucide" }
+
+# Dev profile: `opt-level = "z"` works around a wasm OOB seen at
+# opt-level = 0 (the default). Root cause is likely an UB somewhere
+# in the framework — exposed by unoptimized codegen, masked by even
+# minimal optimization. Until that's tracked down, keep dev builds
+# at "z" so `wasm-pack build --dev` and `idealyst dev --web`
+# produce working bundles.
+[profile.dev]
+opt-level = "z"
 
 # Size-tuned release profile. We optimize for size rather than speed —
 # UI workloads aren't CPU-bound, but bytes-over-the-wire matter for the

@@ -20,6 +20,7 @@ pub mod reactivity;
 pub mod refs;
 pub mod robot;
 pub mod styles;
+pub mod wgpu_native_api;
 pub mod writing_a_backend;
 
 // Pages still hand-built. To be migrated to the `docs!` macro when

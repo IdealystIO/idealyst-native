@@ -13,10 +13,10 @@
 //! }
 //! ```
 
-use backend_wgpu_core::{run as run_core, DeviceProfile, RunError, SimulatedPlatform};
+use backend_wgpu_native::{run as run_core, DeviceProfile, RunError, SimulatedPlatform};
 use framework_core::{ColorScheme, Primitive};
 
-pub use backend_wgpu_core::SimulatedPlatform as Platform;
+pub use backend_wgpu_native::SimulatedPlatform as Platform;
 
 /// Logical width (CSS px). iPhone 14 / 15 portrait.
 pub const WIDTH: u32 = 390;

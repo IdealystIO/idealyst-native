@@ -1,0 +1,20 @@
+[package]
+name = "backend-wgpu-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Shared contract between the wgpu render backend and any
+# platform shell driving it (winit native, future web, future
+# UIKit, future Android-native).
+#
+# **No platform deps. No wgpu deps.** This crate defines only
+# the *vocabulary* — input event types, the simulated-platform
+# enum, the device profile, and the `EventSink` trait that any
+# render backend implements. A new native shell just translates
+# its platform events to these types and calls into the render
+# backend through the trait; a new render backend implements
+# the trait and wires up its own surface management.
+
+[dependencies]
+framework-core = { workspace = true }

@@ -13,7 +13,7 @@ use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 use std::time::Instant;
 
-use framework_core::{Action, Backend, ColorScheme, Easing, StateBits, StyleRules};
+use framework_core::{Action, Backend, ColorScheme, Easing, StateBits, StyleRules, Tokenized};
 use glyphon::FontSystem;
 use native_layout::{AvailableSpace, LayoutNode, LayoutTree, Size as TaffySize};
 
@@ -309,6 +309,34 @@ impl Backend for WgpuBackend {
         request_redraw();
     }
 
+    fn create_scroll_view(&mut self, horizontal: bool) -> Self::Node {
+        let layout = self.layout.new_node();
+        // Pin the scrollview's main-axis `min-size` to 0 so the
+        // parent's flex layout can shrink it below its children's
+        // content height (CSS flex-item-`min: auto` gotcha — the
+        // Taffy default would otherwise lock the scrollview to
+        // its content's intrinsic size, defeating overflow). The
+        // scrollview's children get `flex_shrink: 0` in `insert`
+        // so they stay at natural sizes and overflow the now
+        // smaller scrollview frame. `-1.0` on the other axis
+        // means "leave that axis untouched".
+        if horizontal {
+            self.layout.set_intrinsic_size(layout, 0.0, -1.0);
+        } else {
+            self.layout.set_intrinsic_size(layout, -1.0, 0.0);
+        }
+        let node = new_node(
+            NodeKind::ScrollView {
+                horizontal,
+                offset_x: 0.0,
+                offset_y: 0.0,
+            },
+            layout,
+        );
+        self.roots.push(node.clone());
+        node
+    }
+
     fn create_reactive_anchor(&mut self) -> Self::Node {
         let layout = self.layout.new_node();
         let node = new_node(NodeKind::ReactiveAnchor, layout);
@@ -319,10 +347,33 @@ impl Backend for WgpuBackend {
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
         let parent_layout = parent.borrow().layout;
         let child_layout = child.borrow().layout;
+        let parent_is_scroll =
+            matches!(parent.borrow().kind, NodeKind::ScrollView { .. });
         self.layout.add_child(parent_layout, child_layout);
         parent.borrow_mut().children.push(child.clone());
         // The child is no longer orphaned — drop it from `roots`.
         self.roots.retain(|n| !Rc::ptr_eq(n, &child));
+
+        // ScrollView children must not shrink. Taffy defaults
+        // `flex_shrink: 1.0`; when the scrollview's frame is
+        // constrained by its parent (typically `flex_grow: 1` to
+        // fill remaining space), Taffy compresses children to fit
+        // — so the content never overflows the viewport and
+        // there's nothing to scroll. Pinning shrink to 0 keeps
+        // children at their natural sizes; the overflow is what
+        // makes the scroll machinery actually do something.
+        //
+        // The author can still override via an explicit
+        // `flex_shrink` in their stylesheet — this only sets the
+        // Taffy default for children of scrollviews.
+        if parent_is_scroll {
+            let no_shrink = StyleRules {
+                flex_shrink: Some(Tokenized::Literal(0.0)),
+                ..Default::default()
+            };
+            self.layout.set_style(child_layout, &no_shrink);
+        }
+
         request_redraw();
     }
 

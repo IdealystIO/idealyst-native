@@ -1,49 +1,37 @@
-//! Bridge between the framework's reactive flush and winit's redraw
-//! request.
+//! Redraw scheduling hook. Platform-agnostic.
 //!
-//! When a `Signal` flips, the framework wants to re-run the
-//! associated `Effect`s, then re-draw the next frame. On native
-//! desktop we satisfy "re-draw" by asking winit to fire a
-//! `RedrawRequested` for our window, which the `App` event handler
-//! services.
+//! Many paths inside the backend (`apply_style`, `insert`,
+//! `update_*_value`, the animator, …) need to wake the platform
+//! event loop so the next frame paints the updated tree. Rather
+//! than hardcoding a winit `EventLoopProxy`, the core exposes an
+//! installable closure that the platform shell (`backend-wgpu-native`
+//! for winit, a future `-web` for the browser) sets up at
+//! startup.
 //!
-//! Wired into the framework via [`install_redraw_handle`]. The
-//! event-loop owner stores its `EventLoopProxy` here at startup;
-//! the framework's effect-flush hook (or the backend itself, after
-//! mutating its own state) calls [`request_redraw`] to wake the
-//! loop.
-//!
-//! NOTE: winit's `EventLoopProxy` is `Send`, but we keep redraw
-//! requests on the calling thread by funneling them through a
-//! thread-local. A future cross-thread integration (audio thread,
-//! network callback) would need to broaden this to a `Mutex` or
-//! a channel.
+//! The hook lives in thread-local storage. Single-threaded model
+//! matches the framework's reactivity system and the rest of this
+//! backend; cross-thread redraws need to post into this thread
+//! before calling.
 
 use std::cell::RefCell;
-use winit::event_loop::EventLoopProxy;
-
-/// Custom event type the app event loop receives.
-#[derive(Debug, Clone, Copy)]
-pub enum AppEvent {
-    Redraw,
-}
 
 thread_local! {
-    static PROXY: RefCell<Option<EventLoopProxy<AppEvent>>> = const { RefCell::new(None) };
+    static REDRAW_HOOK: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
 }
 
-pub fn install_proxy(proxy: EventLoopProxy<AppEvent>) {
-    PROXY.with(|cell| {
-        *cell.borrow_mut() = Some(proxy);
-    });
+/// Install the platform shell's redraw closure. First call wins;
+/// subsequent calls overwrite (handy for tests that swap hosts).
+pub fn install_redraw_hook(f: Box<dyn Fn()>) {
+    REDRAW_HOOK.with(|h| *h.borrow_mut() = Some(f));
 }
 
+/// Ask the platform shell to schedule another paint. No-op if no
+/// hook is installed yet — typical during the build phase before
+/// the shell has wired up its event loop.
 pub fn request_redraw() {
-    PROXY.with(|cell| {
-        if let Some(proxy) = cell.borrow().as_ref() {
-            // send_event can fail only if the loop has exited; we
-            // don't care in that case.
-            let _ = proxy.send_event(AppEvent::Redraw);
+    REDRAW_HOOK.with(|h| {
+        if let Some(f) = h.borrow().as_ref() {
+            f();
         }
     });
 }

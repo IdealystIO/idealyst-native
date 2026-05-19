@@ -763,6 +763,31 @@ pub(crate) fn attach_initial(b: &mut WebBackend, navigator: &Node, screen: Node,
         .attach_initial_with_node(screen, scope_id);
 }
 
+/// AAS layout attach. The dev-side recording backend ran the user's
+/// `.layout(...)` closure, the wire shipped every node it built
+/// (sidebar, chrome, outlet placeholder), and now we have to (1)
+/// drop the layout root into the navigator container and (2) record
+/// the outlet node so subsequent `attach_initial`s mount screens
+/// inside the layout's outlet — not the bare container, which would
+/// dump the screen on top of the sidebar.
+pub(crate) fn attach_layout(b: &mut WebBackend, navigator: &Node, root: Node, outlet: Node) {
+    let Some(nav_id) = navigator_id_of(navigator) else {
+        return;
+    };
+    let Some(entry) = b.navigator_instances.get(&nav_id) else {
+        return;
+    };
+    let mut inst = entry.instance.borrow_mut();
+    // Container is freshly created with no children in AAS mode
+    // (defer_initial_mount = true, so the create-time microtask
+    // bails before mounting anything). Safe to just append the
+    // layout root.
+    inst.container
+        .append_child(&root)
+        .expect("attach_navigator_layout: append root to container failed");
+    inst.outlet = Some(outlet);
+}
+
 /// Tear down a navigator: release every still-mounted screen scope
 /// and drop the instance entry (which drops the dispatcher closures).
 pub(crate) fn release(b: &mut WebBackend, node: &Node) {

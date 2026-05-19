@@ -38,6 +38,10 @@ enum Command {
     Init(cmd::init::Args),
     /// Start the hot-reload dev server.
     Dev(cmd::dev::Args),
+    /// Serve a static directory over HTTP. No build, no hot reload,
+    /// no AAS — drops in for `python3 -m http.server` when you want
+    /// to load an already-built bundle.
+    Serve(cmd::serve::Args),
     /// Build shippable artifacts for one or more platforms. Defaults
     /// to a debug profile; pass `--release` for the production
     /// pipeline (wasm-opt, xcodebuild Release, etc.).
@@ -89,6 +93,7 @@ fn main() -> anyhow::Result<()> {
         Command::New(args) => cmd::new::run(args),
         Command::Init(args) => cmd::init::run(args),
         Command::Dev(args) => cmd::dev::run(args),
+        Command::Serve(args) => cmd::serve::run(args),
         Command::Build(args) => cmd::build::run(args),
         Command::Run(args) => cmd::run::run(args),
         Command::Check(args) => cmd::check::run(args),

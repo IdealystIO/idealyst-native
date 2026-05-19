@@ -365,14 +365,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "backend-wgpu-api"
+version = "0.0.1"
+dependencies = [
+ "framework-core",
+]
+
+[[package]]
 name = "backend-wgpu-core"
 version = "0.0.1"
 dependencies = [
+ "backend-wgpu-api",
  "bytemuck",
  "framework-core",
  "glyphon",
  "log",
  "native-layout",
+ "wgpu 22.1.0",
+]
+
+[[package]]
+name = "backend-wgpu-native"
+version = "0.0.1"
+dependencies = [
+ "backend-wgpu-api",
+ "backend-wgpu-core",
+ "framework-core",
+ "log",
  "pollster",
  "raw-window-handle",
  "wgpu 22.1.0",
@@ -383,7 +402,7 @@ dependencies = [
 name = "backend-wgpu-phone"
 version = "0.0.1"
 dependencies = [
- "backend-wgpu-core",
+ "backend-wgpu-native",
  "framework-core",
 ]
 
@@ -391,7 +410,7 @@ dependencies = [
 name = "backend-wgpu-tablet"
 version = "0.0.1"
 dependencies = [
- "backend-wgpu-core",
+ "backend-wgpu-native",
  "framework-core",
 ]
 
@@ -399,7 +418,7 @@ dependencies = [
 name = "backend-wgpu-tv"
 version = "0.0.1"
 dependencies = [
- "backend-wgpu-core",
+ "backend-wgpu-native",
  "framework-core",
 ]
 
@@ -1025,6 +1044,7 @@ dependencies = [
  "docs-macro",
  "framework-core",
  "idea-ui",
+ "js-sys",
  "libc",
  "lol_alloc",
  "wasm-bindgen",

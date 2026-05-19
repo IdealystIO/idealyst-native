@@ -479,6 +479,20 @@ pub enum Command {
         navigator: NodeId,
         sidebar: NodeId,
     },
+    /// Attach a pre-built layout subtree to a navigator. Web-only
+    /// semantically — the recording backend invokes the author's
+    /// `.layout(...)` closure, emits the resulting subtree's
+    /// `CreateView`/`Insert`/`ApplyStyle` commands like any other tree,
+    /// then emits this command to tell the wire client which built
+    /// node is the layout root (inserted into the navigator's
+    /// container) and which node is the outlet (where subsequent
+    /// screen attaches land). Backends that don't render through a
+    /// layout (iOS/Android/Roku) treat this as a no-op.
+    AttachNavigatorLayout {
+        navigator: NodeId,
+        root: NodeId,
+        outlet: NodeId,
+    },
     OpenDrawer {
         navigator: NodeId,
     },

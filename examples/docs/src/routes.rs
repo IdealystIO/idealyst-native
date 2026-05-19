@@ -33,6 +33,10 @@ pub const BACKENDS_ROUTE: Route<()> = Route::<()>::new("backends", "/backends");
 pub const WRITING_A_BACKEND_ROUTE: Route<()> =
     Route::<()>::new("writing-a-backend", "/backends/writing");
 
+// Advanced
+pub const WGPU_NATIVE_API_ROUTE: Route<()> =
+    Route::<()>::new("wgpu-native-api", "/advanced/wgpu-native-api");
+
 // Reference (legacy hand-built pages — to be migrated to `docs!`)
 pub const MACROS_ROUTE: Route<()> = Route::<()>::new("macros", "/reference/macros");
 pub const CLI_ROUTE: Route<()> = Route::<()>::new("cli", "/reference/cli");
@@ -51,14 +55,59 @@ pub struct IndexSection {
 /// Hierarchical sidebar: each section gets a heading and its
 /// entries appear underneath. Order matters — sidebar renders in
 /// declaration order.
-///
-/// TEMP DEBUG: cut down to a single entry to isolate whether the
-/// wasm OOB depends on volume / specific entries / specific names.
 pub const SECTIONS: &[IndexSection] = &[
     IndexSection {
         label: "Getting Started",
         items: &[
             IndexEntry { name: "overview", label: "Overview" },
+            IndexEntry { name: "quickstart", label: "Getting Started" },
+        ],
+    },
+    IndexSection {
+        label: "Core Concepts",
+        items: &[
+            IndexEntry { name: "components", label: "Components" },
+            IndexEntry { name: "reactivity", label: "Reactivity" },
+            IndexEntry { name: "primitives", label: "Primitives" },
+            IndexEntry { name: "styles", label: "Styles & Themes" },
+            IndexEntry { name: "ui-dsl", label: "UI DSL" },
+        ],
+    },
+    IndexSection {
+        label: "Building Blocks",
+        items: &[
+            IndexEntry { name: "navigation", label: "Navigation" },
+            IndexEntry { name: "lists", label: "Lists" },
+            IndexEntry { name: "icons", label: "Icons" },
+            IndexEntry { name: "refs", label: "Refs" },
+        ],
+    },
+    IndexSection {
+        label: "Tooling",
+        items: &[
+            IndexEntry { name: "robot", label: "Robot" },
+            IndexEntry { name: "dev-tools", label: "Dev Tools" },
+        ],
+    },
+    IndexSection {
+        label: "Backends",
+        items: &[
+            IndexEntry { name: "backends", label: "Backends Overview" },
+            IndexEntry { name: "writing-a-backend", label: "Writing a Backend" },
+        ],
+    },
+    IndexSection {
+        label: "Advanced",
+        items: &[
+            IndexEntry { name: "wgpu-native-api", label: "wgpu Native API" },
+        ],
+    },
+    IndexSection {
+        label: "Reference",
+        items: &[
+            IndexEntry { name: "macros", label: "Macros" },
+            IndexEntry { name: "cli", label: "CLI" },
+            IndexEntry { name: "platforms", label: "Platforms" },
         ],
     },
 ];

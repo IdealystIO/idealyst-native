@@ -78,6 +78,10 @@ pub enum PageCategory {
     /// Reference material (Backends, Refs, Lists, Icons, Navigation,
     /// Getting Started).
     Reference,
+    /// Deeper-cutting material that goes past the everyday surface:
+    /// internal contracts, extension points, the public API of a
+    /// specific backend, etc.
+    Advanced,
     /// Cookbook recipes. Default-hidden from `list_doc_pages`; the
     /// MCP server exposes a separate `list_cookbook_recipes` tool.
     Cookbook,

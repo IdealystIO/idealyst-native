@@ -4,13 +4,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# TV-sized preview window for the wgpu backend.
-#
-# Default size is 1080p (1920 × 1080 logical px). All real work
-# happens in `backend-wgpu-core`; this crate just supplies a
-# `DeviceProfile` and a thin `run` wrapper. Focus-based navigation
-# is a TODO — current input is mouse-only, same as phone/tablet.
+# TV-sized preview variant.
 
 [dependencies]
-backend-wgpu-core = { workspace = true }
+backend-wgpu-native = { workspace = true }
 framework-core = { workspace = true }

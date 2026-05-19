@@ -73,21 +73,6 @@ fn drawer_content(active_route: Signal<&'static str>, is_dark: Signal<bool>) -> 
     }
 }
 
-pub(crate) fn sidebar_section_pub(
-    s: &'static crate::routes::IndexSection,
-    active_route: Signal<&'static str>,
-) -> Primitive {
-    sidebar_section(s, active_route)
-}
-
-pub(crate) fn nav_link_pub(
-    name: &'static str,
-    label: &'static str,
-    active_route: Signal<&'static str>,
-) -> Primitive {
-    nav_link(name, label, active_route)
-}
-
 fn sidebar_section(
     s: &'static crate::routes::IndexSection,
     active_route: Signal<&'static str>,
@@ -234,10 +219,15 @@ pub fn web_layout() -> impl Fn(LayoutProps) -> Primitive + 'static {
         let root_style = PageRoot();
         let content_style = Content();
 
+        // ScrollView (not View) around the outlet so the right
+        // column scrolls independently of the pinned sidebar. The
+        // PageRoot sets `overflow: Hidden`, so the only
+        // scrollable regions are the sidebar's own ScrollView (set
+        // up by `drawer_content`) and this content-area ScrollView.
         ui! {
             View(style = root_style) {
                 sidebar_node
-                View(style = content_style) {
+                ScrollView(style = content_style) {
                     outlet
                 }
             }

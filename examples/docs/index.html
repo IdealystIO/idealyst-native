@@ -5,6 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <base href="/" />
     <title>Idealyst Docs</title>
+    <style>
+      /* Give the framework's PageRoot a real height to fill so it
+         can use `height: 100%` and pin the sidebar while only the
+         content scrolls. The framework's `Length` doesn't have
+         viewport units (vh/vw); percentage heights cascade from a
+         parent that has a real height, which has to come from CSS.
+         (Border-box semantics are handled framework-wide by
+         backend-web's global reset.) */
+      html, body, #app { height: 100%; margin: 0; }
+    </style>
   </head>
   <body>
     <div id="app"></div>

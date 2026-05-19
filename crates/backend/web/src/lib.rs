@@ -575,6 +575,21 @@ impl Backend for WebBackend {
         primitives::navigator::make_tab_handle(self, node)
     }
 
+    fn tab_navigator_attach_initial(
+        &mut self,
+        navigator: &Self::Node,
+        screen: Self::Node,
+        scope_id: u64,
+        _options: framework_core::primitives::navigator::ScreenOptions,
+    ) {
+        // Same wire-driven mount story as `navigator_attach_initial`,
+        // and on web the three navigator kinds share one
+        // `NavigatorInstance` machine — so route through the same
+        // helper. Without this override the trait default eats the
+        // command silently and the home screen never lands in the DOM.
+        primitives::navigator::attach_initial(self, navigator, screen, scope_id)
+    }
+
     fn create_drawer_navigator(
         &mut self,
         callbacks: framework_core::DrawerNavigatorCallbacks<Self::Node>,
@@ -592,6 +607,30 @@ impl Backend for WebBackend {
         node: &Self::Node,
     ) -> framework_core::DrawerHandle {
         primitives::navigator::make_drawer_handle(self, node)
+    }
+
+    fn drawer_navigator_attach_initial(
+        &mut self,
+        navigator: &Self::Node,
+        screen: Self::Node,
+        scope_id: u64,
+        _options: framework_core::primitives::navigator::ScreenOptions,
+    ) {
+        // See `tab_navigator_attach_initial`. The trait default is a
+        // no-op, which is why AAS-driven drawer apps were rendering a
+        // fully empty `.ui-nav-root` — `Command::NavigatorAttachInitial`
+        // dispatched to drawer_navigator_attach_initial, the default
+        // ate it, and the home screen never reached the DOM.
+        primitives::navigator::attach_initial(self, navigator, screen, scope_id)
+    }
+
+    fn attach_navigator_layout(
+        &mut self,
+        navigator: &Self::Node,
+        root: Self::Node,
+        outlet: Self::Node,
+    ) {
+        primitives::navigator::attach_layout(self, navigator, root, outlet)
     }
 
     fn create_link(

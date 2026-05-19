@@ -15,7 +15,13 @@ stylesheet! {
         base(t) {
             background: t.colors().background.clone(),
             color: t.colors().text.clone(),
-            min_height: Length::pct(100.0),
+            // Exactly viewport-height so the sidebar can pin and the
+            // content area can scroll independently. `overflow: Hidden`
+            // stops the whole page from scrolling as one block; the
+            // sidebar's own ScrollView and the content-area ScrollView
+            // each handle their own overflow.
+            height: Length::pct(100.0),
+            overflow: framework_core::Overflow::Hidden,
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::Stretch,
         }
@@ -39,7 +45,12 @@ stylesheet! {
             min_width: 260.0,
             max_width: 260.0,
             flex_shrink: 0.0,
-            min_height: Length::pct(100.0),
+            // Exactly 100% of PageRoot (which is 100% of viewport).
+            // This is what activates the surrounding ScrollView's
+            // own overflow-y: auto — without a constrained height
+            // the sidebar would just grow and PageRoot's
+            // `overflow: Hidden` would clip the extra.
+            height: Length::pct(100.0),
         }
         transitions {
             background: 250ms EaseInOut,
@@ -93,8 +104,16 @@ stylesheet! {
             padding: t.spacing().xxl,
             gap: Length::Px(t.spacing().xl),
             flex_direction: FlexDirection::Column,
+            // Fill the rest of the row beside the sidebar; the
+            // explicit `height: 100%` ensures the surrounding
+            // ScrollView (in `web_layout`) has a constrained
+            // height for its overflow-y: auto to engage. The old
+            // `max_width: 920` made Content only 920px wide and
+            // left the rest of the viewport blank; if you want
+            // readable line lengths, put a `max_width` on an
+            // inner container (page-level), not the scroll surface.
             flex_grow: 1.0,
-            max_width: 920.0,
+            height: Length::pct(100.0),
         }
     }
 }

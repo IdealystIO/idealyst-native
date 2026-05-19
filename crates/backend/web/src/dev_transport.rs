@@ -38,7 +38,7 @@ use framework_core::{Backend, RafLoop};
 use js_sys::{ArrayBuffer, Uint8Array};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
-use web_sys::{BinaryType, CloseEvent, ErrorEvent, MessageEvent, WebSocket};
+use web_sys::{BinaryType, CloseEvent, Event, MessageEvent, WebSocket};
 use wire::{AppToDev, DevToApp};
 
 /// Handle returned by [`connect_web`]. Owns the socket + event
@@ -49,7 +49,7 @@ pub struct WebClientHandle {
     // to them; dropping invalidates the FFI pointer.
     _on_open: Closure<dyn FnMut(JsValue)>,
     _on_message: Closure<dyn FnMut(MessageEvent)>,
-    _on_error: Closure<dyn FnMut(ErrorEvent)>,
+    _on_error: Closure<dyn FnMut(Event)>,
     _on_close: Closure<dyn FnMut(CloseEvent)>,
     _outbound_pump: RafLoop,
 }
@@ -143,12 +143,17 @@ where
     socket.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
 
     // --- on_error -------------------------------------------------
-    let on_error = Closure::wrap(Box::new(move |evt: ErrorEvent| {
-        web_sys::console::error_2(
-            &"[dev-client] websocket error:".into(),
-            &evt.message().into(),
-        );
-    }) as Box<dyn FnMut(ErrorEvent)>);
+    // WebSocket's `error` is a plain `Event`, NOT an `ErrorEvent` —
+    // it has no `.message`, `.filename`, `.lineno`. Casting to
+    // `ErrorEvent` and reading `.message()` returns JS `undefined`,
+    // which wasm-bindgen rejects with a non-`catch` panic
+    // ("expected a string argument, found undefined"). The close
+    // event's `.reason` is the property that actually carries the
+    // human-readable disconnect cause, and the close handler below
+    // already logs it.
+    let on_error = Closure::wrap(Box::new(move |_evt: Event| {
+        web_sys::console::error_1(&"[dev-client] websocket error".into());
+    }) as Box<dyn FnMut(Event)>);
     socket.set_onerror(Some(on_error.as_ref().unchecked_ref()));
 
     // --- on_close -------------------------------------------------

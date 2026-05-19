@@ -64,10 +64,14 @@ mod dev_hot_reload {
 
     use backend_web::{connect_web, WebBackend, WebClientHandle};
     use dev_client::{OutboundSender, WireBackend};
-    use wasm_bindgen::JsCast;
+    use wasm_bindgen::{JsCast, JsValue};
 
     const HOST_SELECTOR: &str = "#app";
-    const DEV_URL: &str = "ws://127.0.0.1:9001";
+
+    /// How long to wait between attempts when the dev server URL
+    /// hasn't been injected yet (mDNS discovery is still running on
+    /// the CLI side, or the page loaded before the server was up).
+    const URL_POLL_MS: i32 = 250;
 
     type AppWire = Rc<RefCell<WireBackend<WebBackend>>>;
 
@@ -84,6 +88,18 @@ mod dev_hot_reload {
         connect_attempt();
     }
 
+    /// Read `window.IDEALYST_AAS_URL` — the dev HTTP server injects
+    /// this into served HTML once mDNS discovery resolves the AAS
+    /// host's randomly-bound port. Returns `None` while the value is
+    /// still `null` / `undefined` (page loaded before discovery
+    /// completed); caller polls.
+    fn aas_url() -> Option<String> {
+        let window = web_sys::window()?;
+        let key = JsValue::from_str("IDEALYST_AAS_URL");
+        let v = js_sys::Reflect::get(&window, &key).ok()?;
+        v.as_string()
+    }
+
     fn connect_attempt() {
         WIRE.with(|slot| {
             if slot.borrow().is_none() {
@@ -93,17 +109,27 @@ mod dev_hot_reload {
                 *slot.borrow_mut() = Some(wire);
             }
         });
+
+        let Some(url) = aas_url() else {
+            web_sys::console::log_1(
+                &"[docs] waiting for window.IDEALYST_AAS_URL (mDNS discovery in progress)…"
+                    .into(),
+            );
+            schedule_retry();
+            return;
+        };
+
         let wire = WIRE.with(|slot| slot.borrow().as_ref().unwrap().clone());
 
         let on_disconnect: Rc<dyn Fn()> = Rc::new(|| {
             connect_attempt();
         });
 
-        match connect_web(DEV_URL, wire, on_disconnect) {
+        match connect_web(&url, wire, on_disconnect) {
             Ok(handle) => {
                 CLIENT.with(|slot| *slot.borrow_mut() = Some(handle));
                 web_sys::console::log_1(
-                    &format!("[docs] hot-reload connected to {}", DEV_URL).into(),
+                    &format!("[docs] hot-reload connected to {}", url).into(),
                 );
             }
             Err(e) => {
@@ -123,7 +149,7 @@ mod dev_hot_reload {
             });
             let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
                 cb.as_ref().unchecked_ref(),
-                250,
+                URL_POLL_MS,
             );
         }
     }

@@ -1,10 +1,4 @@
-//! GPU adapter/device/surface init.
-//!
-//! Spun up once per `App::resumed` event (winit 0.30 requires the
-//! window to exist before the surface, and on some platforms
-//! `Surface` is invalidated on suspend). The render loop pulls
-//! `&Gpu` out of `Option<Gpu>` — if it's None, painting is skipped
-//! and the next `resumed` will rebuild it.
+//! wgpu device / surface init wrapping a winit `Window`.
 
 use std::sync::Arc;
 use winit::window::Window;
@@ -21,9 +15,8 @@ pub struct Gpu {
     pub queue: wgpu::Queue,
     pub surface: wgpu::Surface<'static>,
     pub config: wgpu::SurfaceConfiguration,
-    /// We keep the `Arc<Window>` alive for as long as the surface
-    /// it backs — wgpu's `'static` surface lifetime requires the
-    /// underlying handle to outlive every use.
+    /// `Arc<Window>` keeps the underlying handle alive as long as
+    /// the surface — wgpu's `'static` surface lifetime requires it.
     pub window: Arc<Window>,
 }
 

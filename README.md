@@ -37,16 +37,21 @@ Then I quit my job, and with this new free time, I started to tinker. AI became 
 | `Ref<H>` — user-component handles via `methods!` | Working |
 | Reactive `if` / `when` | Working |
 | `for` loops in DSLs | Working |
+| Primitives — `Image`, `TextInput`, `ScrollView`, `Slider`, `Toggle`, `Icon`, `Video`, `WebView`, `Overlay`, `ActivityIndicator`, `Link`, `Presence`, `Graphics` | Working |
+| List virtualization — `FlatList` / `Virtualizer` | Working |
+| Navigation — stack / tabs / drawer navigators | Working |
+| `idea-ui` component library (Card, Modal, Popover, Select, Switch, Tabs, Field, Alert, …) | Working |
+| Icon registry (`icons-lucide`) | Working |
 | `backend-web` (WASM + DOM) | Working |
 | `backend-android` (JNI + View hierarchy) | Working |
-| `backend-ios` (UIKit via objc2) | Compile-only spike |
-| Additional primitives (`Image`, `TextInput`, `ScrollView`, …) | Planned |
-| List virtualization / keyed `for` | Planned |
+| `backend-ios` (UIKit via objc2) | Working |
+| `backend-roku` (BrightScript / SceneGraph transpile) | Working |
+| Hot reload — dev server + AAS shell + wire protocol | Working |
+| Server-driven UI — wire protocol + `SceneModel` snapshot | Working |
+| Custom rendering — `backend-wgpu` (core, phone, tablet, tv) | In progress |
+| Native backend — interactions / media / OS integration | In progress |
 | Async data / `Resource<T>` | Planned |
-| Router | Planned |
-| Server-side rendering (HTML) | Planned |
-| Server-driven UI | Planned |
-| Backends: macOS (AppKit), desktop (winit + custom renderer) | Planned |
+| SSR + Hydration | Planned |
 
 ## The shape of an app
 

@@ -4,48 +4,29 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# Shared core for the wgpu desktop-preview backends (phone, tablet, tv).
+# Platform-agnostic half of the wgpu desktop-preview backend.
 #
-# The user's app is linked in normally; this crate stands up a winit
-# window the size of a target device, runs Taffy layout against the
-# framework's StyleRules, and paints the result to a wgpu surface.
-#
-# Rendering primitives:
-# - Rounded rectangles (View, Pressable, Button backgrounds + borders)
-# - Glyph runs via glyphon (Text, Button labels)
-#
-# Variants (`backend-wgpu-{phone,tablet,tv}`) are thin shims that
-# configure window size, scale factor, and safe-area insets. The
-# rendering pipeline + Backend impl live entirely here.
+# Implements `framework_core::Backend` for `WgpuBackend`, owns the
+# tween engine, the interaction `Host`, and a wgpu-bound
+# `Renderer`. **No winit, no event-loop, no browser deps** — those
+# live in the platform shells (`backend-wgpu-native`, future
+# `backend-wgpu-web`).
 
 [features]
 default = []
-# When on, the backend installs a `RenderLoopDriver` that schedules
-# redraws via winit's `EventLoopProxy`. Forwards to
-# `framework-core/async-driver` so `render_loop` / `spawn_async`
-# resolve. Hosts opt in with this feature on the chosen variant crate.
 async-driver = ["framework-core/async-driver"]
 
 [dependencies]
+backend-wgpu-api = { workspace = true }
 framework-core = { workspace = true }
 native-layout = { workspace = true }
 
-# GPU + windowing.
+# Wgpu pipelines + glyph atlas. No platform deps come along.
 wgpu = "22"
-winit = { version = "0.30", features = ["rwh_06"] }
-raw-window-handle = "0.6"
-
-# Text rendering on wgpu. glyphon wraps cosmic-text (shaping +
-# layout) and rasterizes glyph atlases into a texture the wgpu
-# pipeline samples.
 glyphon = "0.6"
 
 # Vertex / uniform buffer POD encoding.
 bytemuck = { version = "1.18", features = ["derive"] }
 
-# Logging — lightweight; the host wires up an env_logger or similar.
+# Logging — lightweight; the shell wires up an env_logger or similar.
 log = "0.4"
-
-# pollster lets us block on wgpu's async device-init from a
-# synchronous entry point. The render loop itself stays sync.
-pollster = "0.4"
