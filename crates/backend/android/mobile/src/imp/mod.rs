@@ -573,6 +573,100 @@ impl Backend for AndroidBackend {
         });
     }
 
+    fn set_animated_f32(
+        &mut self,
+        node: &Self::Node,
+        prop: framework_core::animation::AnimProp,
+        value: f32,
+    ) {
+        // Android View has separate native properties for each
+        // transform component (translationX/Y, scaleX/Y, rotation)
+        // plus alpha — no composition needed. Each AnimProp maps
+        // directly to one setter via JNI.
+        use framework_core::animation::AnimProp as P;
+        let (method, sig) = match prop {
+            P::Opacity => ("setAlpha", "(F)V"),
+            P::TranslateX => ("setTranslationX", "(F)V"),
+            P::TranslateY => ("setTranslationY", "(F)V"),
+            P::Scale | P::ScaleX => ("setScaleX", "(F)V"),
+            P::ScaleY => ("setScaleY", "(F)V"),
+            P::RotateZ => ("setRotation", "(F)V"),
+            // Wrong family; silently ignored.
+            P::BackgroundColor | P::ForegroundColor => return,
+        };
+        with_env(|env| {
+            let _ = env.call_method(
+                node.as_obj(),
+                method,
+                sig,
+                &[jni::objects::JValue::Float(value)],
+            );
+            // `Scale` is uniform — also write Y.
+            if matches!(prop, P::Scale) {
+                let _ = env.call_method(
+                    node.as_obj(),
+                    "setScaleY",
+                    "(F)V",
+                    &[jni::objects::JValue::Float(value)],
+                );
+            }
+        });
+    }
+
+    fn set_animated_color(
+        &mut self,
+        node: &Self::Node,
+        prop: framework_core::animation::AnimProp,
+        value: [f32; 4],
+    ) {
+        use framework_core::animation::AnimProp as P;
+        // Pack sRGB[r,g,b,a] (0..1 floats) into Android ARGB
+        // (0xAARRGGBB) — the int Android's setBackgroundColor takes.
+        let r = (value[0].clamp(0.0, 1.0) * 255.0).round() as u32;
+        let g = (value[1].clamp(0.0, 1.0) * 255.0).round() as u32;
+        let b = (value[2].clamp(0.0, 1.0) * 255.0).round() as u32;
+        let a = (value[3].clamp(0.0, 1.0) * 255.0).round() as u32;
+        let argb = ((a & 0xff) << 24) | ((r & 0xff) << 16) | ((g & 0xff) << 8) | (b & 0xff);
+        let argb_i32 = argb as i32;
+
+        match prop {
+            P::BackgroundColor => {
+                with_env(|env| {
+                    let _ = env.call_method(
+                        node.as_obj(),
+                        "setBackgroundColor",
+                        "(I)V",
+                        &[jni::objects::JValue::Int(argb_i32)],
+                    );
+                });
+            }
+            P::ForegroundColor => {
+                // Android's "foreground color" is widget-specific —
+                // `TextView.setTextColor`, `ImageView.setImageTintList`,
+                // etc. There is no universal View setter (`setForeground`
+                // exists on API 23+ but takes a Drawable, not a color).
+                // For now we attempt `setTextColor(int)` which TextView
+                // and its subclasses (Button, EditText) accept; on
+                // other Views the call throws which we silently swallow.
+                with_env(|env| {
+                    let _ = env.call_method(
+                        node.as_obj(),
+                        "setTextColor",
+                        "(I)V",
+                        &[jni::objects::JValue::Int(argb_i32)],
+                    );
+                });
+            }
+            P::Opacity
+            | P::TranslateX
+            | P::TranslateY
+            | P::Scale
+            | P::ScaleX
+            | P::ScaleY
+            | P::RotateZ => {}
+        }
+    }
+
     fn on_node_unstyled(&mut self, node: &Self::Node) {
         // If this node is a ScrollView outer, drop our held inner
         // GlobalRef so the JVM can GC the inner LinearLayout once

@@ -24,12 +24,15 @@ use tiny_http::{Header, Method, Request, Response, Server};
 
 use crate::compile;
 
+/// `POST /compile` payload (v2): the editor sends a whole project
+/// tree as a `<relative path>` → contents map. Paths are validated
+/// in `compile::compile`; the map must contain `lib.rs` (the snippet
+/// entry file).
 #[derive(Deserialize)]
 struct CompileReq {
-    source: String,
+    files: std::collections::BTreeMap<String, String>,
     /// Output mode: `"simulator"` or `"web"`. Defaults to simulator
-    /// when omitted so older clients (and curl-driven sanity checks)
-    /// keep working without specifying it.
+    /// when omitted so curl-driven sanity checks keep working.
     #[serde(default)]
     mode: compile::Mode,
 }
@@ -115,7 +118,7 @@ fn handle_compile(mut request: Request, root: &Path) -> Result<()> {
         }
     };
 
-    match compile::compile(&req.source, req.mode, root) {
+    match compile::compile(&req.files, req.mode, root) {
         Ok(ok) => {
             let body = serde_json::to_string(&serde_json::json!({ "hash": ok.hash }))?;
             respond_json(request, 200, &body)

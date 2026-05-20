@@ -26,6 +26,7 @@ mod methods_block;
 mod path_analysis;
 mod reactivity;
 mod stylesheet;
+mod text_fmt;
 mod ui;
 
 use proc_macro::TokenStream;
@@ -58,6 +59,25 @@ pub fn jsx(input: TokenStream) -> TokenStream {
 pub fn stylesheet(input: TokenStream) -> TokenStream {
     let parsed = parse_macro_input!(input as stylesheet::StyleSheetDecl);
     stylesheet::emit(parsed).into()
+}
+
+/// `text_fmt!("template", args...)` — sugar for constructing a
+/// reactive text binding that hands per-fire fan-out to the active
+/// backend's binding layer (web backend: JS-side).
+///
+/// Args wrapped in `bind!(...)` are signals; others are captured
+/// by-value at construction time. See the [`text_fmt`] module for
+/// the full grammar.
+///
+/// ```ignore
+/// let id: u32 = 42;
+/// let global: Signal<u32> = ...;
+/// text_fmt!("leaf {}: g={}", id, bind!(global))
+/// ```
+#[proc_macro]
+pub fn text_fmt(input: TokenStream) -> TokenStream {
+    let parsed = parse_macro_input!(input as text_fmt::TextFmtInput);
+    text_fmt::emit(parsed).into()
 }
 
 /// `#[component]` — annotates a component function. Rewrites its body for

@@ -7,10 +7,18 @@
 //! you'd swap this for a per-user worker pool with isolated target
 //! dirs.
 //!
-//! Output cache: results are keyed by `sha256(source)`. A repeat
-//! compile of the same source returns the cached hash without
-//! re-invoking cargo.
+//! Project model (v2): the request carries a `files` map of
+//! `<path-under-src/>` → contents. Each path is written into
+//! `template/src/snippet/<path>` — the snippet sub-module the
+//! template wraps. The user's entry file is conventionally
+//! `lib.rs`; the server quietly renames it to `mod.rs` on disk so
+//! Rust's submodule resolution picks it up under `mod snippet;`.
+//!
+//! Output cache: results are keyed by sha256 over the canonical
+//! sorted (path, contents) list. A repeat compile of the same
+//! project tree returns the cached hash without re-invoking cargo.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -52,16 +60,12 @@ impl Default for Mode {
 }
 
 impl Mode {
-    /// The cargo feature name passed to `wasm-pack --features`.
     fn feature(self) -> &'static str {
         match self {
             Mode::Simulator => "simulator",
             Mode::Web => "web",
         }
     }
-
-    /// Short tag baked into the cache-dir basename so simulator vs
-    /// web builds of the same source land in distinct directories.
     fn tag(self) -> &'static str {
         match self {
             Mode::Simulator => "sim",
@@ -70,92 +74,101 @@ impl Mode {
     }
 }
 
-/// Compile a user snippet by writing it to the template crate's
-/// `src/snippet.rs`, invoking wasm-pack with the right feature flag,
+/// Conventional entry path the editor uses for the project's root
+/// file. Mapped to `snippet/mod.rs` on disk so Rust's `mod snippet;`
+/// declaration picks it up; the user never has to care about the
+/// `mod.rs` convention.
+const ENTRY_PATH: &str = "lib.rs";
+
+/// Compile a multi-file project by writing each file into the
+/// template's `src/snippet/` directory (replacing any previous
+/// snippet tree), invoking wasm-pack with the right feature flag,
 /// and materializing the resulting bundle into `compiled/<hash>/`.
-/// Returns the hash on success (whether freshly built or served
-/// from cache). The hash includes the mode AND the latest mtime of
-/// any "upstream" workspace crate the snippet links against, so:
 ///
-/// - editing the snippet → new hash → fresh build (always)
-/// - flipping the mode → new hash → fresh build (always)
-/// - editing render-wgpu / host-web / etc. → upstream mtime bumps
-///   → new hash → fresh build (no manual `rm -rf compiled/`)
-pub fn compile(source: &str, mode: Mode, fiddle_root: &Path) -> Result<CompileOk> {
+/// `files` keys are paths relative to the user's logical `src/`
+/// directory. Each must be a relative `.rs` path with no `..`
+/// components; non-`.rs` files are rejected. The map must contain
+/// the entry file at [`ENTRY_PATH`] (`"lib.rs"`), or the snippet
+/// has no `app()` to call.
+///
+/// The hash includes the mode AND the latest mtime of any
+/// "upstream" workspace crate the snippet links against, so editing
+/// upstream framework code automatically invalidates the cache.
+pub fn compile(
+    files: &BTreeMap<String, String>,
+    mode: Mode,
+    fiddle_root: &Path,
+) -> Result<CompileOk> {
+    validate_files(files)?;
+
     let upstream_mtime = upstream_max_mtime(fiddle_root);
-    let hash = source_hash(source, mode, upstream_mtime);
+    let hash = files_hash(files, mode, upstream_mtime);
     let cache_dir = fiddle_root.join("compiled").join(&hash);
 
-    // Cache hit short-circuit. `index.html` is written last, so its
-    // presence is a reliable "the bundle is complete" marker — a
-    // half-finished previous run that crashed mid-`wasm-pack` won't
-    // be mistaken for a hit.
     if cache_dir.join("index.html").exists() {
         return Ok(CompileOk { hash });
     }
 
-    // Serialize compiles. The template's `target/` directory is
-    // shared, so two cargo invocations against it would race.
     let _guard = COMPILE_LOCK
         .lock()
         .map_err(|_| anyhow::anyhow!("compile lock poisoned"))?;
 
-    // Recheck under the lock — two concurrent requests for the same
-    // source would both miss above, then the first builds and the
-    // second can short-circuit on the now-present cache entry.
     if cache_dir.join("index.html").exists() {
         return Ok(CompileOk { hash });
     }
 
     let template_dir = fiddle_root.join("template");
-    let snippet_path = template_dir.join("src/snippet.rs");
-    fs::write(&snippet_path, snippet_with_prelude(source))
-        .with_context(|| format!("writing snippet to {}", snippet_path.display()))?;
+    let snippet_dir = template_dir.join("src/snippet");
 
-    // wasm-pack handles the `cargo build --target wasm32-unknown-unknown`
-    // + `wasm-bindgen` dance. `--target web` produces an ES module
-    // we can load via `<script type="module">`. `--dev` skips
-    // wasm-opt and uses dev profile so per-compile turnaround is
-    // bounded by the snippet's rebuild, not LTO.
+    // Wipe the previous snippet tree before writing the new one.
+    // Files the user deleted between runs would otherwise linger
+    // and either silently break orphan `mod foo;` declarations or
+    // be picked up by their old contents. `remove_dir_all` is a
+    // no-op when the dir doesn't exist yet (first compile).
+    if snippet_dir.exists() {
+        fs::remove_dir_all(&snippet_dir)
+            .with_context(|| format!("clearing {}", snippet_dir.display()))?;
+    }
+    fs::create_dir_all(&snippet_dir)
+        .with_context(|| format!("creating {}", snippet_dir.display()))?;
+
+    for (rel_path, contents) in files {
+        let on_disk = disk_path_for(&snippet_dir, rel_path);
+        if let Some(parent) = on_disk.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("creating parent dir {}", parent.display())
+            })?;
+        }
+        fs::write(&on_disk, wrap_with_prelude(contents))
+            .with_context(|| format!("writing {}", on_disk.display()))?;
+    }
+
+    // Snippet.rs (the legacy single-file path) is a stale leftover
+    // from the v1 compile worker. Delete it if it's there — `mod
+    // snippet;` resolves to the directory we just wrote.
+    let legacy = template_dir.join("src/snippet.rs");
+    if legacy.exists() {
+        let _ = fs::remove_file(&legacy);
+    }
+
     fs::create_dir_all(&cache_dir)
         .with_context(|| format!("creating cache dir {}", cache_dir.display()))?;
     let pkg_dir = cache_dir.join("pkg");
 
-    // `output()` (not `status()`) so we can capture stderr and ship
-    // the actual rustc / wasm-pack messages back to the editor.
-    // Without this, a missing `app()` or a borrow-check error looks
-    // like "exit status 1" — useless for fixing the snippet.
     let output = Command::new("wasm-pack")
         .arg("build")
         .arg(&template_dir)
         .args(["--target", "web", "--dev", "--out-name", "snippet"])
         .arg("--out-dir")
         .arg(&pkg_dir)
-        // wasm-pack 0.12 has no `--features` of its own; everything
-        // after `--` is forwarded to `cargo build`. The template
-        // declares no default feature, so picking exactly one here
-        // satisfies the `compile_error!` guard in
-        // `template/src/lib.rs`.
         .arg("--")
         .args(["--no-default-features", "--features", mode.feature()])
         .output()
         .context("invoking wasm-pack — is it on PATH? (`cargo install wasm-pack`)")?;
     if !output.status.success() {
-        // Wipe the cache dir so a retry (same or different source)
-        // doesn't see a half-built bundle. The check above
-        // (`index.html` presence) wouldn't be fooled, but leaving
-        // empty dirs around is noise.
         let _ = fs::remove_dir_all(&cache_dir);
-
-        // wasm-pack prints its own status spam to stderr and
-        // forwards cargo/rustc output unchanged. Returning the
-        // raw stderr is the most useful thing: the editor can
-        // surface the underlying compile error verbatim.
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
-        // Some wasm-pack failures (e.g. wasm-bindgen missing)
-        // print on stdout; include both so we don't lose the
-        // signal regardless of which stream it lands on.
         let combined = if stderr.trim().is_empty() {
             stdout.into_owned()
         } else if stdout.trim().is_empty() {
@@ -166,10 +179,6 @@ pub fn compile(source: &str, mode: Mode, fiddle_root: &Path) -> Result<CompileOk
         bail!("wasm-pack failed ({}):\n{}", output.status, combined.trim_end());
     }
 
-    // Iframe-loader shim. The wasm-pack output exposes
-    // `init(): Promise<void>` as the default export. The iframe's
-    // base URL is `/compiled/<hash>/`, so the `./pkg/snippet.js`
-    // import resolves cleanly.
     let mut index = fs::File::create(cache_dir.join("index.html"))
         .with_context(|| format!("writing index.html in {}", cache_dir.display()))?;
     index.write_all(IFRAME_SHELL.as_bytes())?;
@@ -177,37 +186,80 @@ pub fn compile(source: &str, mode: Mode, fiddle_root: &Path) -> Result<CompileOk
     Ok(CompileOk { hash })
 }
 
-/// Wrap the user's snippet with a `use` prelude + the entry-point
-/// contract the template's `lib.rs` expects (`pub fn app() ->
-/// framework_core::Primitive`). Users write the body of `app()`
-/// and any helper functions / types they need; the prelude makes
-/// the common imports ambient so tiny snippets stay tiny.
-///
-/// The framework crate names are re-exported under
-/// `fiddle_template::__rt` so the user never has to think about
-/// which crate any given symbol lives in. That's set up in
-/// `template/src/lib.rs`.
-fn snippet_with_prelude(source: &str) -> String {
+/// Map an editor-side `<rel_path>` (relative to the user's logical
+/// `src/`) to the on-disk path under `template/src/snippet/`. The
+/// only rewrite is the entry file: `lib.rs` becomes `mod.rs` so the
+/// template's `mod snippet;` declaration finds it.
+fn disk_path_for(snippet_dir: &Path, rel_path: &str) -> PathBuf {
+    if rel_path == ENTRY_PATH {
+        snippet_dir.join("mod.rs")
+    } else {
+        snippet_dir.join(rel_path)
+    }
+}
+
+/// Reject paths that could escape `snippet/` or aren't Rust source.
+/// Cheap whitelist — anything outside `.rs` files at relative paths
+/// without `..` components gets a 400 before we touch the disk.
+fn validate_files(files: &BTreeMap<String, String>) -> Result<()> {
+    if !files.contains_key(ENTRY_PATH) {
+        bail!(
+            "project missing entry file `{ENTRY_PATH}` — every snippet \
+             needs a top-level `lib.rs` that defines `pub fn app() -> Primitive`."
+        );
+    }
+    for rel in files.keys() {
+        if rel.is_empty() {
+            bail!("empty path in files map");
+        }
+        if rel.starts_with('/') || rel.contains('\\') {
+            bail!("invalid path {rel:?} — paths must be relative POSIX-style");
+        }
+        for seg in rel.split('/') {
+            if seg.is_empty() || seg == "." || seg == ".." {
+                bail!("invalid path {rel:?} — `..` / empty segments not allowed");
+            }
+        }
+        if !rel.ends_with(".rs") {
+            bail!("invalid path {rel:?} — only `.rs` files are supported");
+        }
+    }
+    Ok(())
+}
+
+/// Inject the snippet runtime prelude at the top of each user
+/// file. Same prelude as v1 (`use crate::__rt::*;`); applying it
+/// uniformly across every `.rs` means sibling files can use the
+/// re-exported framework types without their own boilerplate.
+fn wrap_with_prelude(contents: &str) -> String {
     format!(
-        "//! Auto-generated per /compile request. Do not edit by hand —\n\
-         //! it's overwritten on every build.\n\
+        "//! Auto-generated per /compile request — overwritten on every build.\n\
          \n\
          #![allow(unused_imports)]\n\
          #![allow(dead_code)]\n\
          \n\
          use crate::__rt::*;\n\
          \n\
-         {source}\n"
+         {contents}\n"
     )
 }
 
-fn source_hash(source: &str, mode: Mode, upstream_mtime: u64) -> String {
+/// Canonical hash over the project tree. We sort by path inside the
+/// `BTreeMap` iterator order (already sorted by key), then digest
+/// each (path, contents) pair with a delimiter so collisions
+/// across "ab|cd" vs. "a|bcd" are impossible.
+fn files_hash(
+    files: &BTreeMap<String, String>,
+    mode: Mode,
+    upstream_mtime: u64,
+) -> String {
     let mut h = Sha256::new();
-    h.update(source.as_bytes());
-    // Mix the upstream mtime in so a render-wgpu / host-web /
-    // framework-core edit invalidates every cached snippet. Mode
-    // and tag are appended OUTSIDE the digest so the dir name
-    // stays human-skimmable (`<sha>-sim` / `<sha>-web`).
+    for (path, contents) in files {
+        h.update(path.as_bytes());
+        h.update(b"\0");
+        h.update(contents.as_bytes());
+        h.update(b"\x1e"); // ASCII record separator
+    }
     h.update(b"\0");
     h.update(upstream_mtime.to_le_bytes());
     let digest = h.finalize();
@@ -220,35 +272,21 @@ fn source_hash(source: &str, mode: Mode, upstream_mtime: u64) -> String {
     s
 }
 
-/// Latest mtime (UNIX seconds) across the workspace crates whose
-/// source affects the snippet wasm. Cheap — a few hundred `stat`s
-/// per compile request. Catches the "I edited render-wgpu but
-/// forgot to `rm -rf compiled/`" case automatically.
-///
-/// We don't watch `Cargo.toml` files explicitly because any change
-/// to them bumps `Cargo.lock`'s mtime too.
 fn upstream_max_mtime(fiddle_root: &Path) -> u64 {
     let Some(workspace_root) = workspace_root_from(fiddle_root) else {
         return 0;
     };
     let watched: &[&str] = &[
-        // The framework + UI + backend bits the snippet always
-        // links against, regardless of mode.
         "crates/framework/core/src",
         "crates/framework/theme/src",
         "crates/ui/idea-ui/src",
         "crates/backend/web/src",
-        // Simulator-mode-only deps. Cheap to walk on every compile
-        // even when web mode is the one in play.
         "crates/host/web/src",
         "crates/render/wgpu/src",
         "crates/render/api/src",
         "crates/skin/ios-sim/src",
-        // Anything that bumps when a workspace dep version moves.
         "Cargo.lock",
-        // The template wrapper itself — editing `lib.rs` (e.g. to
-        // add a new prelude symbol) needs to invalidate too.
-        "examples/fiddle/template/src",
+        "examples/fiddle/template/src/lib.rs",
         "examples/fiddle/template/Cargo.toml",
     ];
     let mut max = 0u64;
@@ -274,16 +312,10 @@ fn scan_max_mtime(path: &Path, max: &mut u64) {
     }
 }
 
-/// `examples/fiddle/` → `examples/fiddle/../..` = workspace root.
 fn workspace_root_from(fiddle_root: &Path) -> Option<PathBuf> {
     fiddle_root.parent()?.parent().map(|p| p.to_path_buf())
 }
 
-/// Locate the fiddle root (`examples/fiddle/`) relative to the
-/// current working directory. The server is normally launched as
-/// `cargo run -p fiddle` from anywhere in the workspace; cargo
-/// puts the crate's manifest dir into `CARGO_MANIFEST_DIR` at
-/// build time, so we bake it in.
 pub fn fiddle_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }

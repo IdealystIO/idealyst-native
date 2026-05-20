@@ -293,6 +293,7 @@ pub enum RefFill {
     Icon(Box<dyn FnOnce(primitives::icon::IconHandle)>),
     Image(Box<dyn FnOnce(primitives::image::ImageHandle)>),
     TextInput(Box<dyn FnOnce(primitives::text_input::TextInputHandle)>),
+    TextArea(Box<dyn FnOnce(primitives::text_area::TextAreaHandle)>),
     Toggle(Box<dyn FnOnce(primitives::toggle::ToggleHandle)>),
     ScrollView(Box<dyn FnOnce(primitives::scroll_view::ScrollViewHandle)>),
     Slider(Box<dyn FnOnce(primitives::slider::SliderHandle)>),

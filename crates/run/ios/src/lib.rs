@@ -39,7 +39,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use build_ios::{BuildOptions, Manifest};
+use build_ios::{BuildOptions, FrameworkSource, Manifest};
 
 /// Embedded Swift sources + plist template. Tiny and identical for
 /// every project (modulo splash substitution), so we ship them as
@@ -100,6 +100,10 @@ pub struct RunOptions {
     /// client path. Both produce a working `.app` for the simulator;
     /// AAS just swaps the staticlib + the Swift glue that mounts it.
     pub mode: RunMode,
+    /// Where the wrapper Cargo.toml sources framework crates from.
+    /// AAS mode requires this to be `Workspace` because the AAS shell
+    /// crate is built directly out of the framework workspace.
+    pub source: FrameworkSource,
 }
 
 #[derive(Debug)]
@@ -117,7 +121,6 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
     let project_dir = fs::canonicalize(project_dir)
         .with_context(|| format!("resolve project dir {}", project_dir.display()))?;
     let manifest = build_ios::parse_manifest(&project_dir)?;
-    let workspace_root = build_ios::find_workspace_root(&project_dir)?;
 
     // ── 1. Produce the staticlib for the chosen mode ─────────────
     let target_triple = build_ios::pick_target(false);
@@ -128,6 +131,7 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
                 BuildOptions {
                     release: opts.release,
                     device: false,
+                    source: opts.source.clone(),
                 },
             )?;
             let dir = artifact
@@ -139,7 +143,14 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
             (dir, name)
         }
         RunMode::Aas { .. } => {
-            build_aas_shell(&workspace_root, target_triple, opts.release)?;
+            // AAS mode statically links the AAS shell crate out of
+            // the framework workspace — there's no path through git.
+            let workspace_root = opts.source.workspace_root().ok_or_else(|| anyhow::anyhow!(
+                "AAS mode requires the idealyst framework workspace on disk \
+                 (we build `backend-ios-mobile` with the `aas-shell` feature here); \
+                 either run from inside a checkout or set IDEALYST_FRAMEWORK_PATH."
+            ))?;
+            build_aas_shell(workspace_root, target_triple, opts.release)?;
             let profile = if opts.release { "release" } else { "debug" };
             let dir = workspace_root
                 .join("target")
@@ -151,8 +162,9 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
 
     // ── 2. Lay out the bundle dir ────────────────────────────────
     let ios_subdir = if opts.mode.is_aas() { "ios-aas" } else { "ios" };
-    let bundle_root = workspace_root
-        .join("target/idealyst")
+    let bundle_root = opts
+        .source
+        .wrapper_root(&project_dir)
         .join(&manifest.name)
         .join(ios_subdir);
     let swift_dir = bundle_root.join("swift");

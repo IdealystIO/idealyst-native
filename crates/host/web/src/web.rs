@@ -107,13 +107,23 @@ where
     let canvas = extract_canvas(&surface_handle).ok_or(MountError::NoCanvas)?;
 
     // 2. wgpu init. WebGL2-only; see the crate doc for why.
+    //
+    // wgpu 29: `InstanceDescriptor` no longer implements `Default`
+    // and gained `memory_budget_thresholds` / `backend_options` /
+    // `display`; pass explicit defaults. `request_adapter` now
+    // returns `Result`, and `request_device` takes one arg
+    // (descriptor) and gained `experimental_features` + `trace`.
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::GL,
         // Empty validation flags — Web's WebGPU validation paths
         // aren't universally supported. Same conservative pick as
         // the gradient demo.
         flags: wgpu::InstanceFlags::empty(),
-        ..Default::default()
+        memory_budget_thresholds: Default::default(),
+        backend_options: wgpu::BackendOptions::default(),
+        // GLES/Wayland need the explicit display handle on native;
+        // on the web the per-surface canvas handle is sufficient.
+        display: None,
     });
     let surface = instance
         .create_surface(surface_handle)
@@ -125,22 +135,21 @@ where
             force_fallback_adapter: false,
         })
         .await
-        .ok_or(MountError::NoAdapter)?;
+        .map_err(|_| MountError::NoAdapter)?;
     // Static WebGL2 defaults — DON'T call
     // `.using_resolution(adapter.limits())` because that read
     // touches `maxInterStageShaderComponents`, which modern Chrome
     // panics on (see crate doc).
     let limits = wgpu::Limits::downlevel_webgl2_defaults();
     let (device, queue) = adapter
-        .request_device(
-            &wgpu::DeviceDescriptor {
-                label: Some("host-web-device"),
-                required_features: wgpu::Features::empty(),
-                required_limits: limits,
-                memory_hints: wgpu::MemoryHints::default(),
-            },
-            None,
-        )
+        .request_device(&wgpu::DeviceDescriptor {
+            label: Some("host-web-device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: limits,
+            memory_hints: wgpu::MemoryHints::default(),
+            experimental_features: wgpu::ExperimentalFeatures::default(),
+            trace: wgpu::Trace::Off,
+        })
         .await
         .map_err(|_| MountError::RequestDevice)?;
     let caps = surface.get_capabilities(&adapter);
@@ -166,7 +175,20 @@ where
     surface.configure(&device, &config);
 
     // 3. Build the render-side stack + mount the user app.
-    let renderer = Renderer::new(&device, &queue, config.format);
+    let mut renderer = Renderer::new(&device, &queue, config.format);
+    // Install a DOM overlay over the canvas so `WebView` and
+    // `Video` primitives mount real `<iframe>` / `<video>`
+    // elements (the wgpu backend can't decode those on wasm —
+    // see `render-wgpu/src/dom_overlay.rs`). The overlay is
+    // `pointer-events: none` at the wrapper level, so canvas
+    // input keeps working everywhere outside the embedded
+    // content. If the canvas isn't attached yet we skip the
+    // install — those primitives fall back to the framework's
+    // "Unsupported" rendering. The mount path otherwise still
+    // succeeds; mounting an overlay isn't a precondition.
+    if let Some(overlay) = crate::overlay::OverlayManager::new(&canvas) {
+        renderer.set_dom_overlay(Rc::new(overlay));
+    }
     let mut host = Host::new(skin, profile.color_scheme);
     let logical = (
         profile.logical_size.0 as f32,
@@ -294,13 +316,21 @@ fn extract_canvas(surface: &GraphicsSurface) -> Option<web_sys::HtmlCanvasElemen
 }
 
 fn draw_frame(inner: &mut HostInner) {
+    // wgpu 29: `get_current_texture` returns a `CurrentSurfaceTexture`
+    // *enum* (the pre-29 `Result<SurfaceTexture, SurfaceError>` is
+    // gone). Reconfigure on Lost/Outdated; skip the frame on any
+    // other non-Success outcome.
     let surface_tex = match inner.surface.get_current_texture() {
-        Ok(t) => t,
-        Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+        wgpu::CurrentSurfaceTexture::Success(t)
+        | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+        wgpu::CurrentSurfaceTexture::Outdated
+        | wgpu::CurrentSurfaceTexture::Lost => {
             inner.surface.configure(&inner.device, &inner.config);
             return;
         }
-        Err(_) => return,
+        wgpu::CurrentSurfaceTexture::Timeout
+        | wgpu::CurrentSurfaceTexture::Occluded
+        | wgpu::CurrentSurfaceTexture::Validation => return,
     };
     let view = surface_tex
         .texture

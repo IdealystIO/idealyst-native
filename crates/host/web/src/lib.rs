@@ -40,6 +40,8 @@
 #![allow(clippy::new_without_default)]
 
 #[cfg(target_arch = "wasm32")]
+mod overlay;
+#[cfg(target_arch = "wasm32")]
 mod web;
 
 #[cfg(target_arch = "wasm32")]

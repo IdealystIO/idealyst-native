@@ -1,3 +1,4 @@
+pub(crate) mod animated;
 pub(crate) mod callbacks;
 pub(crate) mod graphics;
 pub(crate) mod handles;
@@ -112,6 +113,12 @@ pub struct IosBackend {
     /// `UINavigationController`'s top VC view, which only gets added
     /// on UIKit's first layout pass, after our `finish()` returns).
     pub(crate) view_to_layout: HashMap<usize, (Retained<UIView>, native_layout::LayoutNode)>,
+    /// Per-view cached animation state. Mirrors the web backend's
+    /// `animated_states` map; see [`animated`] for the routing
+    /// from [`AnimProp`](framework_core::animation::AnimProp) to
+    /// UIKit setters and the rationale for caching the transform
+    /// components.
+    pub(crate) animated_states: animated::AnimatedStateMap,
 }
 
 // =========================================================================
@@ -236,6 +243,7 @@ impl IosBackend {
             layout: native_layout::LayoutTree::new(),
             view_to_layout: HashMap::new(),
             theme_transition_effect: None,
+            animated_states: HashMap::new(),
         }
     }
 
@@ -1463,6 +1471,24 @@ impl Backend for IosBackend {
             IosNode::TextField(_) => apply_text_style(view, style, false),
             _ => {}
         }
+    }
+
+    fn set_animated_f32(
+        &mut self,
+        node: &Self::Node,
+        prop: framework_core::animation::AnimProp,
+        value: f32,
+    ) {
+        self.impl_set_animated_f32(node, prop, value);
+    }
+
+    fn set_animated_color(
+        &mut self,
+        node: &Self::Node,
+        prop: framework_core::animation::AnimProp,
+        value: [f32; 4],
+    ) {
+        self.impl_set_animated_color(node, prop, value);
     }
 
     fn frame(&self, node: &Self::Node) -> Option<framework_core::primitives::portal::ViewportRect> {

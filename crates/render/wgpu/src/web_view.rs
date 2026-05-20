@@ -24,7 +24,7 @@
 //! interactivity (clicks, forms, scroll), JS execution (Blitz
 //! doesn't have it anyway), resize-after-mount.
 
-#![cfg(feature = "webview")]
+#![cfg(blitz_active)]
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};

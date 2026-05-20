@@ -38,10 +38,31 @@ pub mod nav_anim;
 mod node;
 pub mod pipeline;
 mod renderer;
+// Audio + native video pipelines depend on `cpal` / `openh264` C++
+// builds that don't compile to wasm32 — see `Cargo.toml` for the
+// target-gating. On the web target the `video` module resolves to
+// `video_wasm.rs` (no-op `VideoDecoder`) instead of `video.rs`,
+// and the audio module isn't compiled at all (nothing references
+// it from the wasm-side `VideoDecoder` stub).
+#[cfg(not(target_arch = "wasm32"))]
 mod video;
+#[cfg(target_arch = "wasm32")]
+#[path = "video_wasm.rs"]
+mod video;
+#[cfg(not(target_arch = "wasm32"))]
 mod audio;
-#[cfg(feature = "webview")]
+// Same split as `video`: the Blitz-backed native module needs
+// reqwest+tokio (and threads), so on wasm the `web_view` name
+// resolves to a tiny stub that just holds the current URL. The
+// real composite lives in the host's `DomOverlay` impl, which
+// stamps `<iframe>` elements over the canvas at each WebView
+// node's screen rect.
+#[cfg(blitz_active)]
 mod web_view;
+#[cfg(all(target_arch = "wasm32", webview_node))]
+#[path = "web_view_wasm.rs"]
+mod web_view;
+mod dom_overlay;
 mod scheduler;
 mod skin;
 mod style_convert;
@@ -59,6 +80,7 @@ pub use render_api::{
 
 pub use animation::{AnimProperty, Animator, TweenKey, lerp_color};
 pub use backend_impl::{graphics_with_drawer, register_graphics_drawer, WgpuBackend};
+pub use dom_overlay::{DomOverlay, DomOverlayKey, DomVideoSpec};
 pub use host::Host;
 pub use nav_anim::{
     clear_transition_override, default_transition, with_transition, InstantTransition,

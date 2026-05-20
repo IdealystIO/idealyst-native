@@ -25,7 +25,7 @@
 
 use std::any::Any;
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 
 // =============================================================================
@@ -152,6 +152,25 @@ struct Arena {
     /// any signal's subscriber set.
     effect_dependencies: Vec<HashSet<SignalId>>,
 
+    /// Per-signal JS notifier callbacks. At most one notifier per
+    /// signal. Fires AFTER the Rust subscriber fan-out on every
+    /// `Signal::set` / `Signal::update`. The closure typically reads
+    /// the signal's current value (via its captured `Signal<T>`
+    /// handle), stringifies it, and ships the new value across the
+    /// wasm→JS boundary so a JS-side reactive layer can update its
+    /// subscribers.
+    ///
+    /// Keyed by `SignalId` raw u32 (wrapped in `u64` to match the
+    /// public `Signal::id()` API surface). `HashMap` rather than a
+    /// parallel `Vec` because most signals have no JS subscribers —
+    /// a `Vec<Option<Rc<dyn Fn()>>>` would waste a slot per
+    /// non-subscribed signal.
+    ///
+    /// Cleanup: removed in `take_signals_batched` when the signal's
+    /// slot is freed, so the notifier (which typically holds a
+    /// `Weak<RefCell<Backend>>`) doesn't outlive its signal.
+    signal_js_notifiers: HashMap<u64, std::rc::Rc<dyn Fn()>>,
+
     /// Freelists for recycling nulled slot ids. Without these, the
     /// arena vectors grow monotonically with the number of slots
     /// *ever* created — a tight rebuild loop that mounts and
@@ -181,6 +200,7 @@ impl Arena {
             refs: Vec::new(),
             signal_subscribers: Vec::new(),
             effect_dependencies: Vec::new(),
+            signal_js_notifiers: HashMap::new(),
             signal_free: Vec::new(),
             effect_free: Vec::new(),
             ref_free: Vec::new(),
@@ -318,6 +338,11 @@ impl Arena {
             if let Some(set) = self.signal_subscribers.get_mut(sid.0 as usize) {
                 set.clear();
             }
+            // Drop any JS notifier for this signal — the closure
+            // typically captures a `Weak<RefCell<Backend>>` and a
+            // signal-stringifier, both of which become meaningless
+            // once the signal slot is freed.
+            self.signal_js_notifiers.remove(&(sid.0 as u64));
             if let Some(slot) = self.signals.get_mut(sid.0 as usize) {
                 if let Some(boxed) = slot.take() {
                     out.push(boxed);
@@ -347,7 +372,15 @@ struct SignalInner<T> {
 }
 
 struct EffectInner {
-    run: Box<dyn FnMut()>,
+    /// `None` while the effect is mid-run — `run_effect` takes the
+    /// closure out before invoking it so signal callbacks can re-borrow
+    /// the arena, then puts it back when the run finishes. Making this
+    /// `Option` (rather than `Box<...>` with a per-fire `mem::replace`
+    /// against a freshly-allocated no-op) saves one Box allocation
+    /// per effect fire — material at hierarchy-scale fan-outs (2k+
+    /// leaves all subscribing to one signal) where the allocator
+    /// churn dominated the per-effect cost.
+    run: Option<Box<dyn FnMut()>>,
     /// Callbacks registered via `on_cleanup` during the effect's last
     /// run. Drained and fired *before* the next re-run, and again on
     /// effect disposal via `Drop`. LIFO to mirror typical
@@ -366,6 +399,24 @@ struct EffectInner {
     /// so any scope on this snapshot is still live whenever its
     /// pointer is dereferenced.
     owning_stack: Vec<*mut Scope>,
+    /// Opt-in fast path: when `true`, [`run_effect`] skips both
+    /// `clear_effect_dependencies` (and the matching `signal.get`
+    /// re-track on the way back in) — the caller has asserted the
+    /// effect's dep set is stable across re-runs. Use only when
+    /// every re-run reads exactly the same set of signals that the
+    /// initial run did (the walker's reactive-text builder is the
+    /// canonical caller). Set by [`Effect::new_with_stable_deps`]
+    /// after the initial run; defaults to `false` for any effect
+    /// created through [`Effect::new`].
+    ///
+    /// Why this is a win at hierarchy scale: every fire of a
+    /// general-purpose Effect drains the effect's dep set (Vec
+    /// alloc + HashSet remove per dep against a 2k-entry
+    /// subscriber HashSet) and then re-inserts via the next
+    /// `signal.get()`. For an effect with one stable dep that's
+    /// dispatched 2k times in a fan-out, the clear/resub dance
+    /// dominates the per-leaf cost.
+    stable_deps: bool,
 }
 
 impl Drop for EffectInner {
@@ -928,6 +979,10 @@ impl<T: Clone + 'static> Signal<T> {
         // drop / effect re-run), so no pruning pass needed here.
         let to_run = collect_subscribers(self.id);
         notify_or_queue(&to_run);
+        // Fire any JS-side notifier registered for this signal.
+        // No-op when no notifier exists (the common case) — single
+        // HashMap lookup, ~10 ns.
+        notify_js_subscriber(self.id);
     }
 
     pub fn update<F: FnOnce(&mut T)>(&self, f: F) {
@@ -937,7 +992,83 @@ impl<T: Clone + 'static> Signal<T> {
         });
         let to_run = collect_subscribers(self.id);
         notify_or_queue(&to_run);
+        notify_js_subscriber(self.id);
     }
+}
+
+/// Look up and invoke a JS-side notifier for `sid`, if one was
+/// registered via [`register_signal_js_notifier`]. Called from
+/// `Signal::set` / `Signal::update` after the Rust subscriber
+/// fan-out completes.
+///
+/// The notifier closure typically reads the signal's current value
+/// (via its captured `Signal<T>` handle), stringifies it, and ships
+/// the new value across the wasm→JS boundary. Whatever it does is
+/// opaque to the framework — we just call the closure if present.
+///
+/// We clone the `Rc` out under the arena borrow, then drop the
+/// borrow before invoking the closure. The closure may re-enter the
+/// arena (e.g. to read another signal) so we mustn't hold the
+/// borrow across the call.
+fn notify_js_subscriber(sid: SignalId) {
+    let notifier = ARENA.with(|a| {
+        a.borrow()
+            .signal_js_notifiers
+            .get(&(sid.0 as u64))
+            .cloned()
+    });
+    if let Some(n) = notifier {
+        n();
+    }
+}
+
+/// Register a JS-side notifier for `signal_id_raw` (the `u64`
+/// returned by [`Signal::id`]). Replaces any previously-registered
+/// notifier for the same signal — at most one notifier per signal
+/// is the contract, because the notifier's job is "ship the new
+/// value to JS", and shipping twice is wasteful (the JS side
+/// fans out to multiple bindings on its own).
+///
+/// `notifier` runs from inside `Signal::set` / `Signal::update`
+/// AFTER the Rust subscriber fan-out completes. It typically
+/// captures the `Signal<T>` handle + a backend reference and ships
+/// the new value to the backend's JS bridge. Whatever it does is
+/// opaque to the framework.
+///
+/// Cleanup: the notifier is dropped automatically when the
+/// associated signal's slot is freed (see `take_signals_batched`).
+/// Callers don't need to unregister manually unless they want to
+/// detach a notifier from a still-live signal.
+pub fn register_signal_js_notifier<F: Fn() + 'static>(signal_id_raw: u64, notifier: F) {
+    ARENA.with(|a| {
+        a.borrow_mut()
+            .signal_js_notifiers
+            .insert(signal_id_raw, std::rc::Rc::new(notifier));
+    });
+}
+
+/// Drop the JS-side notifier for `signal_id_raw`. No-op if none
+/// was registered. Use when the JS-side subscription pool empties
+/// for a still-live signal (e.g. the last text binding on `global`
+/// unmounted but `global` itself is still in use).
+pub fn unregister_signal_js_notifier(signal_id_raw: u64) {
+    ARENA.with(|a| {
+        a.borrow_mut()
+            .signal_js_notifiers
+            .remove(&signal_id_raw);
+    });
+}
+
+/// `true` if `signal_id_raw` has a JS-side notifier registered.
+/// Useful for the variant / backend to gate its own per-binding
+/// setup: if the framework doesn't have a notifier slot for this
+/// signal, the JS-side updates would never fire.
+pub fn signal_has_js_notifier(signal_id_raw: u64) -> bool {
+    ARENA.with(|a| {
+        a.borrow()
+            .signal_js_notifiers
+            .contains_key(&signal_id_raw)
+    })
 }
 
 /// RAII guard that marks the enclosing block as a `memo` compute. While
@@ -1158,13 +1289,73 @@ impl Effect {
             ACTIVE_SCOPE.with(|s| s.borrow().clone());
         let id = ARENA.with(|a| {
             a.borrow_mut().insert_effect(EffectInner {
-                run: Box::new(f),
+                run: Some(Box::new(f)),
                 cleanups: Vec::new(),
                 owning_stack,
+                stable_deps: false,
             })
         });
         let registered = register_effect(id);
         run_effect(id);
+        Effect { id, owns: !registered }
+    }
+
+    /// Like [`Effect::new`] but flips the effect into a fast-path
+    /// re-run mode after the initial tracking pass:
+    ///
+    /// - The initial run records dependencies normally (the closure
+    ///   reads signals via `Signal::get`, tracking populates the
+    ///   subscriber + dep sets exactly as for `Effect::new`).
+    /// - Every subsequent fire **skips** `clear_effect_dependencies`
+    ///   and runs the closure with tracking suppressed (CURRENT
+    ///   temporarily `None`), so the matching `signal.get` re-track
+    ///   inside the body becomes a no-op too.
+    ///
+    /// Net per-fire savings: one HashSet remove + one Vec alloc on
+    /// the clear side, plus one HashSet insert on the re-track
+    /// side. Material at fan-outs of thousands.
+    ///
+    /// # When to use
+    ///
+    /// Only when the closure provably reads the **same** set of
+    /// signals on every fire. Reactive text bindings created by
+    /// the framework's `text(closure)` factory are the canonical
+    /// fit — their closure body is a pure value computation whose
+    /// dep set is fixed at construction time.
+    ///
+    /// # When NOT to use
+    ///
+    /// Closures with conditional reads (e.g. `if a.get() { b.get() }
+    /// else { c.get() }` where `a`'s value flips between fires) —
+    /// the second branch's reads would no-op against the frozen
+    /// subscriber set, and the original branch's signal would keep
+    /// firing this effect even after no longer being read. Use
+    /// [`Effect::new`] for those.
+    pub fn new_with_stable_deps<F: FnMut() + 'static>(f: F) -> Self {
+        let owning_stack: Vec<*mut Scope> =
+            ACTIVE_SCOPE.with(|s| s.borrow().clone());
+        // Insert with `stable_deps: false` so the first `run_effect`
+        // takes the full tracking path and the dep set gets recorded.
+        // Flip the flag right after — every subsequent fire then
+        // sees `stable_deps: true` and short-circuits.
+        let id = ARENA.with(|a| {
+            a.borrow_mut().insert_effect(EffectInner {
+                run: Some(Box::new(f)),
+                cleanups: Vec::new(),
+                owning_stack,
+                stable_deps: false,
+            })
+        });
+        let registered = register_effect(id);
+        run_effect(id);
+        ARENA.with(|a| {
+            let mut a = a.borrow_mut();
+            if let Some(Some(slot)) = a.effects.get_mut(id.0 as usize) {
+                if let Some(inner) = slot.downcast_mut::<EffectInner>() {
+                    inner.stable_deps = true;
+                }
+            }
+        });
         Effect { id, owns: !registered }
     }
 }
@@ -1243,51 +1434,59 @@ fn run_effect(id: EffectId) {
         );
     }
 
-    // Fire any cleanup callbacks registered during the previous run
-    // before recording fresh deps. They run in LIFO order to mirror
-    // typical resource-acquisition order. Drained out under the arena
-    // borrow so the callbacks themselves can re-borrow the arena to
-    // read or write signals.
-    let prev_cleanups: Vec<Box<dyn FnOnce()>> = ARENA.with(|a| {
+    // Take the closure out AND clone the owning-scope snapshot AND
+    // drain cleanups AND read the `stable_deps` flag under a single
+    // arena borrow. Folding these into one borrow saves three
+    // RefCell + ARENA round-trips per fire — material at fan-outs
+    // of thousands. `prev_cleanups` is typically empty for both
+    // general and stable-deps effects (most effects don't register
+    // `on_cleanup`); taking it out via `mem::take` is a no-op
+    // memory move when empty.
+    let (mut run_fn, owning_stack, prev_cleanups, stable_deps): (
+        Option<Box<dyn FnMut()>>,
+        Vec<*mut Scope>,
+        Vec<Box<dyn FnOnce()>>,
+        bool,
+    ) = ARENA.with(|a| {
         let mut a = a.borrow_mut();
-        a.effects
-            .get_mut(id.0 as usize)
-            .and_then(|o| o.as_mut())
-            .and_then(|slot| slot.downcast_mut::<EffectInner>())
-            .map(|inner| std::mem::take(&mut inner.cleanups))
-            .unwrap_or_default()
+        let Some(Some(slot)) = a.effects.get_mut(id.0 as usize) else {
+            return (None, Vec::new(), Vec::new(), false);
+        };
+        let Some(inner) = slot.downcast_mut::<EffectInner>() else {
+            return (None, Vec::new(), Vec::new(), false);
+        };
+        // `take()` leaves `inner.run = None` for the duration of
+        // the run — re-entry is already short-circuited by the
+        // RUNNING check above, so no path observes the None.
+        let run = inner.run.take();
+        let stack = inner.owning_stack.clone();
+        let cleanups = std::mem::take(&mut inner.cleanups);
+        let stable = inner.stable_deps;
+        (run, stack, cleanups, stable)
     });
+
+    // Fire any cleanup callbacks registered during the previous
+    // run before recording fresh deps. They run in LIFO order to
+    // mirror typical resource-acquisition order. Outside the
+    // arena borrow so callbacks can re-borrow it.
     for cb in prev_cleanups.into_iter().rev() {
         cb();
     }
 
     // Drop any subscriptions recorded by the previous run before we
-    // collect this run's set. Without this, a re-run that reads a
-    // *different* set of signals would leave stale `eid` entries in
-    // the no-longer-read signals' subscriber sets — they'd be cleaned
-    // up at effect drop, but in the meantime the signal would re-fire
-    // an effect that doesn't care about it.
-    clear_effect_dependencies(id);
+    // collect this run's set. Skip for `stable_deps` effects: the
+    // caller has asserted the dep set is identical across re-runs,
+    // so clearing and re-inserting against (in the worst case)
+    // a 2 k-entry subscriber HashSet on every fire is pure waste.
+    // Without `stable_deps`, a re-run that reads a *different* set
+    // of signals would leave stale `eid` entries in the no-longer-
+    // read signals' subscriber sets — they'd be cleaned up at
+    // effect drop, but in the meantime the signal would re-fire an
+    // effect that doesn't care about it.
+    if !stable_deps {
+        clear_effect_dependencies(id);
+    }
 
-    // Take the closure out AND clone the owning-scope snapshot under
-    // a single arena borrow. Two reasons: (a) we need the snapshot to
-    // restore the scope stack before f() runs, and reading it under
-    // the same borrow keeps the arena access cheap; (b) f() will
-    // re-enter the arena to read/write signals, so we can't hold the
-    // borrow across the call.
-    let (mut run_fn, owning_stack): (Option<Box<dyn FnMut()>>, Vec<*mut Scope>) =
-        ARENA.with(|a| {
-            let mut a = a.borrow_mut();
-            let Some(Some(slot)) = a.effects.get_mut(id.0 as usize) else {
-                return (None, Vec::new());
-            };
-            let Some(inner) = slot.downcast_mut::<EffectInner>() else {
-                return (None, Vec::new());
-            };
-            let run = std::mem::replace(&mut inner.run, Box::new(|| {}));
-            let stack = inner.owning_stack.clone();
-            (Some(run), stack)
-        });
     if let Some(f) = run_fn.as_mut() {
         RUNNING.with(|r| {
             r.borrow_mut().insert(id);
@@ -1300,7 +1499,16 @@ fn run_effect(id: EffectId) {
         if pushed > 0 {
             ACTIVE_SCOPE.with(|s| s.borrow_mut().extend_from_slice(&owning_stack));
         }
-        let prev = CURRENT.with(|c| c.replace(Some(id)));
+        // For `stable_deps` effects, set CURRENT to None for the
+        // duration of f() so `signal.get` inside the body doesn't
+        // re-insert into the subscriber HashSet (the eid is already
+        // there from the initial-tracking run). For the general
+        // path, set CURRENT to `Some(id)` so reads track normally.
+        let prev = if stable_deps {
+            CURRENT.with(|c| c.replace(None))
+        } else {
+            CURRENT.with(|c| c.replace(Some(id)))
+        };
         f();
         CURRENT.with(|c| *c.borrow_mut() = prev);
         if pushed > 0 {
@@ -1319,7 +1527,7 @@ fn run_effect(id: EffectId) {
             let mut a = a.borrow_mut();
             if let Some(Some(slot)) = a.effects.get_mut(id.0 as usize) {
                 if let Some(inner) = slot.downcast_mut::<EffectInner>() {
-                    inner.run = run_fn.take().unwrap();
+                    inner.run = run_fn.take();
                 }
             }
         });

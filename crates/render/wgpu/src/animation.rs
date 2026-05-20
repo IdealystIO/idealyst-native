@@ -34,6 +34,7 @@ use std::collections::HashMap;
 // `web-time` for wasm32 compat — see `host.rs` for the rationale.
 use web_time::{Duration, Instant};
 
+use framework_core::animation::{apply_easing, Animatable};
 use framework_core::Easing;
 use native_layout::LayoutNode;
 
@@ -325,72 +326,19 @@ impl Default for Animator {
     }
 }
 
-/// Apply an [`Easing`] curve to a linear `0..=1` time parameter.
-/// CubicBezier uses an approximation suitable for UI work —
-/// equivalent to a couple of Newton-Raphson iterations on the
-/// inverse curve. Easings are taken from the framework's
-/// transition vocabulary so backend animation feels the same as
-/// the style-driven transition system.
-fn apply_easing(t: f32, easing: Easing) -> f32 {
-    let t = t.clamp(0.0, 1.0);
-    match easing {
-        Easing::Linear => t,
-        Easing::Ease => cubic_bezier_y(t, 0.25, 0.1, 0.25, 1.0),
-        Easing::EaseIn => cubic_bezier_y(t, 0.42, 0.0, 1.0, 1.0),
-        Easing::EaseOut => cubic_bezier_y(t, 0.0, 0.0, 0.58, 1.0),
-        Easing::EaseInOut => cubic_bezier_y(t, 0.42, 0.0, 0.58, 1.0),
-        Easing::CubicBezier(x1, y1, x2, y2) => cubic_bezier_y(t, x1, y1, x2, y2),
-    }
-}
-
-/// Approximate `y` on a cubic Bézier curve `(0,0) → (x1,y1) →
-/// (x2,y2) → (1,1)` at horizontal position `x = t`.
-///
-/// Standard UI-grade implementation: a few Newton-Raphson
-/// iterations to solve for the curve parameter that produces `x`,
-/// then evaluate `y` at that parameter. Cheap (< 1 µs typical)
-/// and accurate to well under a pixel for any reasonable
-/// duration.
-fn cubic_bezier_y(x: f32, x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
-    // Bezier basis coefficients along x.
-    let ax = 3.0 * x1 - 3.0 * x2 + 1.0;
-    let bx = -6.0 * x1 + 3.0 * x2;
-    let cx = 3.0 * x1;
-    let curve_x = |u: f32| ((ax * u + bx) * u + cx) * u;
-    let curve_dx = |u: f32| (3.0 * ax * u + 2.0 * bx) * u + cx;
-
-    // Bezier basis coefficients along y.
-    let ay = 3.0 * y1 - 3.0 * y2 + 1.0;
-    let by = -6.0 * y1 + 3.0 * y2;
-    let cy = 3.0 * y1;
-    let curve_y = |u: f32| ((ay * u + by) * u + cy) * u;
-
-    // Solve curve_x(u) = x for u, then return curve_y(u).
-    let mut u = x;
-    for _ in 0..6 {
-        let cx_u = curve_x(u);
-        let dx_u = curve_dx(u);
-        if dx_u.abs() < 1e-6 {
-            break;
-        }
-        u -= (cx_u - x) / dx_u;
-        u = u.clamp(0.0, 1.0);
-    }
-    curve_y(u)
-}
-
 /// Component-wise linear interpolation for color blending.
 /// Inputs are sRGB-space `[r, g, b, a]`; we lerp in sRGB which
 /// matches CSS / UIKit's `tintColor` transitions (strictly less
 /// "physically correct" than linear-space lerp, but visually
 /// indistinguishable for short transitions between similar
 /// colors).
+///
+/// Thin wrapper over the core [`Animatable`] impl for `[f32; 4]`
+/// — kept as a function (rather than calling `<[f32; 4] as
+/// Animatable>::lerp` at every call site) because the
+/// `lerp_color` symbol is part of this crate's published surface
+/// and is consumed by skin crates downstream.
 pub fn lerp_color(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
     let t = t.clamp(0.0, 1.0);
-    [
-        a[0] + (b[0] - a[0]) * t,
-        a[1] + (b[1] - a[1]) * t,
-        a[2] + (b[2] - a[2]) * t,
-        a[3] + (b[3] - a[3]) * t,
-    ]
+    <[f32; 4] as Animatable>::lerp(&a, &b, t)
 }

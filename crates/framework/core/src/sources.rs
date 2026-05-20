@@ -23,6 +23,56 @@ use std::rc::Rc;
 pub enum TextSource {
     Static(String),
     Bound(crate::derive::Derived<String>),
+    /// Pre-decomposed reactive text binding suitable for backends
+    /// that can run the per-fire fan-out entirely on their own side
+    /// (web backend: JS-side reactive layer; future native backends:
+    /// possibly platform-specific binding primitives). Carries the
+    /// signal ids + template static parts + initial values directly,
+    /// so the walker can hand the structured data straight to the
+    /// backend without running a Rust closure per fire.
+    ///
+    /// `compute_fallback` is the same closure the `Bound` variant
+    /// would carry — it gets invoked through the legacy Effect path
+    /// on backends that DON'T support JS bindings (default-impl
+    /// `Backend::supports_js_text_bindings` returns `false`). The
+    /// variant author writes the binding once via [`crate::text_fmt!`]
+    /// or by constructing `JsBindingSpec` directly, and the
+    /// framework picks the fast or fallback path based on the
+    /// active backend's capabilities.
+    JsBinding(JsBindingSpec),
+}
+
+/// Pre-decomposed reactive text binding shipped via
+/// [`TextSource::JsBinding`].
+///
+/// For `"leaf {}: g={}"` with `id=42` (captured) and `global`
+/// (a `Signal<u32>`), the bench's structured form is:
+///
+/// ```ignore
+/// JsBindingSpec {
+///     signal_ids: vec![global.id()],
+///     template_parts: vec![
+///         "leaf 42: g=".into(),  // captured `id` baked in
+///         "".into(),
+///     ],
+///     initial_values: vec!["0".into()],
+///     compute_fallback: Rc::new(move || format!("leaf {}: g={}", id, global.get())),
+/// }
+/// ```
+///
+/// `template_parts` has exactly `signal_ids.len() + 1` entries —
+/// the static text surrounding each signal interpolation slot,
+/// with any captured (non-signal) values pre-formatted into the
+/// adjacent parts.
+pub struct JsBindingSpec {
+    pub signal_ids: Vec<u64>,
+    pub template_parts: Vec<String>,
+    pub initial_values: Vec<String>,
+    /// Same shape as `Derived<String>::compute` — used by the
+    /// fallback Effect path on backends that don't support JS
+    /// bindings. Built from the same expression that
+    /// `compute_fallback` would otherwise wrap.
+    pub compute_fallback: std::rc::Rc<dyn Fn() -> String>,
 }
 
 /// Allows `text(...)` to accept strings, owned strings, or closures.

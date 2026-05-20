@@ -19,8 +19,8 @@
 
 use backend_web::WebBackend;
 use framework_core::{
-    signal, stylesheet, text, ui, view, AlignItems, Color, FlexDirection, IntoPrimitive,
-    JustifyContent, Length, Overflow, Primitive, Signal, TokenEntry, TokenValue, Tokenized,
+    signal, stylesheet, ui, view, AlignItems, Color, FlexDirection, IntoPrimitive, JustifyContent,
+    Length, Overflow, Primitive, Signal, TokenEntry, TokenValue, Tokenized,
 };
 use framework_theme::{install_theme, set_theme, ThemeTokens};
 use std::cell::RefCell;
@@ -397,12 +397,27 @@ fn gen_tree_shape(seed: u32, target_leaves: usize, max_depth: Option<u32>) -> Tr
 /// subscribes to `branch`. Other leaves only subscribe to
 /// `global`.
 fn build_leaf(id: u32, target_id: u32, global: Signal<u32>, branch: Signal<u32>) -> Primitive {
+    // `text_fmt!("template", args...)` constructs a
+    // `TextSource::JsBinding`: per-fire fan-out happens entirely
+    // on the backend side (web → JS reactive layer). Args in
+    // `bind!(...)` are signals (subscribed to + interpolated per
+    // fire); bare args are captured at construction time and
+    // formatted into the template's static parts.
     if id == target_id {
-        text(move || format!("leaf {}: g={} b={}", id, global.get(), branch.get()))
-            .into_primitive()
+        framework_core::text_fmt!(
+            "leaf {}: g={} b={}",
+            id,
+            framework_core::bind!(global),
+            framework_core::bind!(branch),
+        )
+        .into_primitive()
     } else {
-        text(move || format!("leaf {}: g={}", id, global.get()))
-            .into_primitive()
+        framework_core::text_fmt!(
+            "leaf {}: g={}",
+            id,
+            framework_core::bind!(global),
+        )
+        .into_primitive()
     }
 }
 
@@ -442,6 +457,26 @@ fn app(initial_rows: usize) -> Primitive {
     GLOBAL_COUNTER.with(|c| *c.borrow_mut() = Some(global_counter));
     let branch_counter = signal!(0u32);
     BRANCH_COUNTER.with(|c| *c.borrow_mut() = Some(branch_counter));
+
+    // Register the two hierarchy-bench signals with the web
+    // backend's JS-side reactive layer so signal writes flow into
+    // JS for per-binding fan-out (instead of firing N Rust
+    // Effects, one per leaf). Done once at startup; the leaves
+    // themselves only need to declare the binding (no per-leaf
+    // Effect setup). Wrapped in `untrack` so the stringifier
+    // can't accidentally pick up a subscription if it fires
+    // inside some outer effect's run.
+    BACKEND.with(|s| {
+        if let Some(b_rc) = s.borrow().as_ref() {
+            let mut b = b_rc.borrow_mut();
+            b.register_signal_for_js(global_counter.id(), move || {
+                framework_core::untrack(|| global_counter.get()).to_string()
+            });
+            b.register_signal_for_js(branch_counter.id(), move || {
+                framework_core::untrack(|| branch_counter.get()).to_string()
+            });
+        }
+    });
 
     ui! {
         View(style = page_style()) {
@@ -511,8 +546,22 @@ pub fn start(initial_rows: usize) {
     // first render panics the moment it hits a Switch primitive (or any
     // other path that calls `schedule_microtask`).
     backend_web::install_scheduler();
+    // Register a TimeSource so `framework_core::debug::now_micros`
+    // (used by `PhaseTimer` and the rest of the debug-stats
+    // aggregator) reads `performance.now()` instead of returning 0.
+    // Without this, every phase counter records duration 0 and the
+    // profiling output is useless.
+    backend_web::install_time_source();
     let rows = initial_rows.clamp(1, ROW_MAX);
     let backend = Rc::new(RefCell::new(WebBackend::new("#app")));
+    // Opt the variant into the web backend's batched text-update
+    // path. Without this call, `create_text_with_id` returns `None`
+    // and the framework falls back to per-fire `update_text(node,
+    // str)`. The opt-in costs +1 FFI per text-node create (one-time)
+    // and saves O(N) FFI per fan-out for every reactive text effect.
+    // Material on the hierarchy bench (2 k+ leaves subscribing to
+    // one signal); neutral elsewhere.
+    backend_web::install_text_batcher(&backend);
     BACKEND.with(|slot| *slot.borrow_mut() = Some(backend.clone()));
     let owner = framework_core::render(backend, app(rows));
     OWNER.with(|slot| *slot.borrow_mut() = Some(owner));
@@ -592,17 +641,23 @@ pub fn setup_hierarchy(seed: u32, nodes: u32, max_depth: u32) {
     let tree = gen_tree_shape(seed, nodes as usize, md);
     TARGET_LEAF_ID.with(|t| t.set(tree.target_leaf_id));
     TREE_ROOT.with(|r| *r.borrow_mut() = Some(tree.root));
-    // Mode flip first; the tree-mode Switch arm's inner Switch
-    // (on tree_version) then drives the actual tree build.
-    MODE.with(|c| {
-        if let Some(sig) = c.borrow().as_ref() {
-            sig.set(1);
-        }
-    });
-    TREE_VERSION.with(|c| {
-        if let Some(sig) = c.borrow().as_ref() {
-            sig.update(|v| *v += 1);
-        }
+    // Coalesce the mode flip + tree_version bump into one fan-out.
+    // Without `batch`, MODE.set(1) and TREE_VERSION.update(...) each
+    // re-fire the Switch arm's effect — so the tree builds TWICE
+    // (once on mode flip, again on version bump), with the first
+    // build's 100k+ Effects torn down before the second builds the
+    // same tree fresh. Batching collapses to a single rebuild.
+    framework_core::batch(|| {
+        MODE.with(|c| {
+            if let Some(sig) = c.borrow().as_ref() {
+                sig.set(1);
+            }
+        });
+        TREE_VERSION.with(|c| {
+            if let Some(sig) = c.borrow().as_ref() {
+                sig.update(|v| *v += 1);
+            }
+        });
     });
 }
 
@@ -656,12 +711,65 @@ pub fn bench_stats_json() -> String {
         ),
         None => "null".into(),
     };
+    let phases_json = phase_counters_json();
     format!(
-        "{{\"signals_in_use\":{},\"signals_total\":{},\"effects_in_use\":{},\"effects_total\":{},\"refs_in_use\":{},\"refs_total\":{},\"total_subscribers\":{},\"total_deps\":{},\"backend\":{}}}",
+        "{{\"signals_in_use\":{},\"signals_total\":{},\"effects_in_use\":{},\"effects_total\":{},\"refs_in_use\":{},\"refs_total\":{},\"total_subscribers\":{},\"total_deps\":{},\"backend\":{},\"phases\":{}}}",
         s.signals_in_use, s.signals_total,
         s.effects_in_use, s.effects_total,
         s.refs_in_use, s.refs_total,
         s.total_subscribers, s.total_deps,
         backend_json,
+        phases_json,
     )
+}
+
+/// Drain + serialize `framework_core::debug` phase counters as a
+/// JSON object: `{ "phase_name": { "calls": N, "total_us": N,
+/// "max_us": N, "avg_us": N }, … }`. Calling this also CLEARS the
+/// counters so a subsequent `bench_stats_json` measures a fresh
+/// window.
+///
+/// When `debug-stats` is OFF (the production-bench configuration),
+/// returns `"null"` — phase counters don't exist in that build.
+#[cfg(feature = "debug-stats")]
+fn phase_counters_json() -> String {
+    let counters = framework_core::debug::take_phase_counters();
+    if counters.is_empty() {
+        return "{}".into();
+    }
+    // Sort by total_us descending so the heaviest phase is first in
+    // the JSON — readers scanning the output land on the hot spot
+    // immediately.
+    let mut entries: Vec<_> = counters.into_iter().collect();
+    entries.sort_by(|a, b| b.1.total_us.cmp(&a.1.total_us));
+    let mut out = String::from("{");
+    for (i, (name, c)) in entries.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        let avg = if c.call_count == 0 { 0 } else { c.total_us / c.call_count };
+        out.push_str(&format!(
+            "\"{}\":{{\"calls\":{},\"total_us\":{},\"max_us\":{},\"avg_us\":{}}}",
+            name, c.call_count, c.total_us, c.max_us, avg
+        ));
+    }
+    out.push('}');
+    out
+}
+
+#[cfg(not(feature = "debug-stats"))]
+fn phase_counters_json() -> String {
+    "null".into()
+}
+
+/// Reset phase counters without dumping them — useful between
+/// suite runs when you want to attribute time to just the
+/// upcoming work. Pair with `bench_stats_json()` at the end of
+/// the window to read the accumulated phase data.
+///
+/// No-op when `debug-stats` is OFF.
+#[wasm_bindgen]
+pub fn clear_phase_counters() {
+    #[cfg(feature = "debug-stats")]
+    framework_core::debug::clear_phase_counters();
 }

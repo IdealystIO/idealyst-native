@@ -31,7 +31,13 @@ If you're new to the codebase, read the docs in this order:
    overrides, interaction states. How application style declarations
    reach a backend as concrete `StyleRules`.
 
-5. [`backend.md`](./backend.md) — the `Backend` trait, the render walker,
+5. [`animation.md`](./animation.md) — the gesture/spring/decay-driven
+   animation system. Value handles, animator factories, the
+   per-thread clock, and how the `Backend::set_animated_*` family
+   carries per-frame writes to native widgets. Complements styling's
+   `Transition` (declarative) with imperative, interruptible motion.
+
+6. [`backend.md`](./backend.md) — the `Backend` trait, the render walker,
    per-primitive lifecycle hooks, the rules a backend must follow.
    Read this last — it's where the seam between framework and platform
    lives, and it makes more sense after you've seen what gets handed

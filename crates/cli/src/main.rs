@@ -14,6 +14,7 @@ use clap::Parser;
 
 mod cmd;
 mod config;
+mod framework_source;
 mod platform;
 
 pub use platform::Platform;
@@ -32,43 +33,33 @@ struct Cli {
 
 #[derive(clap::Subcommand, Debug)]
 enum Command {
-    /// Scaffold a new idealyst project in a new directory.
+    /// Create a new project or library in a new directory.
     New(cmd::new::Args),
-    /// Initialize idealyst in an existing directory.
+    /// Create a new project or library in the current directory.
     Init(cmd::init::Args),
-    /// Start the hot-reload dev server.
+    /// Build and run with hot reload.
     Dev(cmd::dev::Args),
-    /// Serve a static directory over HTTP. No build, no hot reload,
-    /// no AAS — drops in for `python3 -m http.server` when you want
-    /// to load an already-built bundle.
+    /// Serve a directory over HTTP.
     Serve(cmd::serve::Args),
-    /// Build shippable artifacts for one or more platforms. Defaults
-    /// to a debug profile; pass `--release` for the production
-    /// pipeline (wasm-opt, xcodebuild Release, etc.).
+    /// Build for one or more platforms.
     Build(cmd::build::Args),
     /// Build and launch on a simulator or device.
     Run(cmd::run::Args),
-    /// Run `cargo check` across configured platforms.
+    /// Type-check across configured platforms.
     Check(cmd::check::Args),
     /// Remove build artifacts.
     Clean(cmd::clean::Args),
-    /// Diagnose the local toolchain (rustup targets, Xcode, NDK, …).
+    /// Diagnose the local toolchain (Rust targets, Xcode, Android NDK).
     Doctor(cmd::doctor::Args),
-    /// Regenerate icons / splash / other derived assets from config.
+    /// Regenerate icons, splash, and other derived assets.
     Sync(cmd::sync::Args),
-    /// Materialize a platform project from the ephemeral build cache
-    /// into the repo, so it can be edited by hand.
+    /// Materialize a hand-editable copy of a generated platform project.
     Scaffold(cmd::scaffold::Args),
-    /// Collect every `#[method]`-tagged Rust function in a project
-    /// and emit them as a single BrightScript `.brs` file.
+    /// Roku: transpile `#[method]`-tagged functions to BrightScript.
     Brs(cmd::brs::Args),
-    /// Internal: rustc wrapper used by AAS hot-patch mode to
-    /// capture per-crate rustc invocations during the initial
-    /// fat build for later replay with `--emit=obj`. Hidden from
-    /// `--help`; cargo invokes it when `RUSTC_WORKSPACE_WRAPPER`
-    /// is set to the idealyst binary + this subcommand. Most users
-    /// reach this path via the env-discriminator dispatch in
-    /// `main()` and never see the clap subcommand.
+    // Hidden — cargo invokes this when the binary is used as a
+    // RUSTC_WORKSPACE_WRAPPER for the AAS hot-patch fat build.
+    // Users never call it directly.
     #[command(hide = true)]
     RustcCapture(cmd::rustc_capture::Args),
 }

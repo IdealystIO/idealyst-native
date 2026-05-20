@@ -1,10 +1,8 @@
 //! `idealyst serve` — minimal static-file HTTP server.
 //!
-//! Same as `idealyst dev --web` minus the rebuild-watch loop, the
-//! livereload polling, AAS, and any platform-specific build step.
-//! Just point it at a directory and it serves the files. The point
-//! is to drop in for `python3 -m http.server` when you want to load
-//! an already-built wasm bundle without spinning up the dev pipeline.
+//! Same as `idealyst dev --web` minus the rebuild-watch loop. Point
+//! it at a directory that already contains `index.html` + `pkg/` and
+//! it serves the files unchanged.
 
 use std::path::PathBuf;
 
@@ -14,8 +12,7 @@ use dev_http::serve_static;
 #[derive(clap::Args, Debug)]
 pub struct Args {
     /// Directory to serve. Defaults to the current directory.
-    /// Typically you'd point this at the docs example or whatever
-    /// dir contains your `index.html` + `pkg/`.
+    /// Point this at the dir containing `index.html` + `pkg/`.
     #[arg(default_value = ".")]
     pub dir: PathBuf,
 

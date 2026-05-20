@@ -230,6 +230,114 @@ pub trait Backend {
 
     fn update_text(&mut self, node: &Self::Node, content: &str);
 
+    /// Optional batched-text-update fast path.
+    ///
+    /// At hierarchy-scale fan-outs (one signal feeding 2 k+ reactive
+    /// text leaves), the dominant cost in the per-leaf hot path is
+    /// the wasm→host FFI marshalling of each `update_text(node, str)`
+    /// call. Backends that can amortize this — e.g. the web backend's
+    /// JS-side text registry + batched flush — opt in by returning
+    /// `Some((node, id))` here. The walker captures `id` in the
+    /// reactive text effect's closure and calls
+    /// [`Backend::update_text_by_id`] on subsequent fires instead of
+    /// [`Backend::update_text`]; the backend buffers the updates and
+    /// flushes them in one FFI hop (typically via a scheduler-driven
+    /// microtask).
+    ///
+    /// Default: `None` — falls through to the unbatched
+    /// `create_text` + per-fire `update_text` path used by every
+    /// other primitive.
+    ///
+    /// Backends that override this **must** also override
+    /// [`Backend::update_text_by_id`] (default `unreachable!`) and
+    /// should arrange for the buffered updates to flush before the
+    /// next paint (microtask, rAF, end of `run_effects`, etc.) so
+    /// the bench's `apply` window still observes the DOM change.
+    fn create_text_with_id(&mut self, _content: &str) -> Option<(Self::Node, u32)> {
+        None
+    }
+
+    /// Companion to [`Backend::create_text_with_id`]. Update the text
+    /// of the node registered under `id`. Default panics: only
+    /// reached if [`Backend::create_text_with_id`] returned `Some`,
+    /// in which case the matching backend must implement this too.
+    ///
+    /// Takes `String` by value (not `&str`) so the walker can move
+    /// the already-allocated result of `(compute)()` straight into
+    /// the backend's pending buffer — at hierarchy scale (2 k+
+    /// effects per fan-out) the alternative `&str` + internal
+    /// `.to_string()` would double the allocator pressure for no
+    /// reason, since the caller's String is dropped right after the
+    /// call anyway.
+    fn update_text_by_id(&mut self, _id: u32, _content: String) {
+        unreachable!(
+            "update_text_by_id called without a matching create_text_with_id override; \
+             a backend that returns Some(_) from create_text_with_id must also override \
+             update_text_by_id"
+        )
+    }
+
+    /// Release a text id previously assigned by
+    /// [`Backend::create_text_with_id`]. Called by the walker via a
+    /// scope-level cleanup so the backend's JS-side registry slot
+    /// gets cleared on scope teardown — without this, every
+    /// switch-arm flip or component unmount would leak a registry
+    /// entry. Default: no-op (matches `create_text_with_id`'s
+    /// default of `None`).
+    fn release_text_id(&mut self, _id: u32) {}
+
+    /// `true` if this backend implements
+    /// [`Backend::register_reactive_text_binding`] (and the
+    /// matching signal-side notification plumbing). The walker
+    /// reads this once for each `TextSource::JsBinding` to decide
+    /// whether to hand the binding to the backend (fast path: per-
+    /// fire fan-out happens in backend-native code, e.g. JS for
+    /// the web backend) or fall back to building a Rust Effect
+    /// against the spec's `compute_fallback`.
+    ///
+    /// Default `false` — backends opt in only after wiring both
+    /// the registration method below AND the side-channel that
+    /// delivers signal-change notifications (the web backend uses
+    /// `framework_core::register_signal_js_notifier`).
+    fn supports_js_text_bindings(&self) -> bool {
+        false
+    }
+
+    /// Register a pre-decomposed reactive text binding with the
+    /// backend's own fan-out path. After this call, the text node
+    /// at `text_id` updates entirely from backend-side code
+    /// whenever any signal in `signal_ids` fires — no Rust Effect
+    /// is created.
+    ///
+    /// Called by the walker only when
+    /// [`Self::supports_js_text_bindings`] returns `true` AND the
+    /// matching `create_text_with_id` returned `Some(id)`. Backends
+    /// that don't override this default never have the method
+    /// called.
+    ///
+    /// `template_parts.len() == signal_ids.len() + 1` (the static
+    /// text on either side of each interpolation slot).
+    /// `initial_values.len() == signal_ids.len()` (the starting
+    /// value of each signal, stringified).
+    fn register_reactive_text_binding(
+        &mut self,
+        _text_id: u32,
+        _signal_ids: &[u64],
+        _template_parts: &[&str],
+        _initial_values: &[&str],
+    ) {
+        unreachable!(
+            "register_reactive_text_binding called without an override; \
+             a backend that returns true from supports_js_text_bindings must \
+             also override register_reactive_text_binding"
+        )
+    }
+
+    /// Release a binding previously registered via
+    /// [`Self::register_reactive_text_binding`]. Default no-op so
+    /// backends that don't support bindings can ignore the call.
+    fn release_reactive_text_binding(&mut self, _text_id: u32) {}
+
     /// Optional hook the walker calls when a `Primitive::Text`'s
     /// source is `TextSource::Bound`. Backends with declarative wire
     /// formats override this to record `signal_ids` + the
@@ -466,6 +574,49 @@ pub trait Backend {
         self.update_text(node, label);
     }
 
+    /// Per-frame write of an animated scalar property to `node`.
+    ///
+    /// Called by [`AnimatedValue`](crate::animation::AnimatedValue)
+    /// listeners that the author has wired through to a node — at
+    /// whatever frame rate the animation clock is running. Backends
+    /// implement this against their fast property-write paths
+    /// (DOM style on web, `UIView` setters on iOS, `View` setters on
+    /// Android) and dispatch on `prop` to pick the right one.
+    ///
+    /// **Units & ranges**:
+    /// - `Opacity`: `0.0..=1.0`
+    /// - `TranslateX` / `TranslateY`: device-independent pixels
+    /// - `Scale` / `ScaleX` / `ScaleY`: multiplicative (1.0 = identity)
+    /// - `RotateZ`: degrees, clockwise
+    ///
+    /// Default impl is a no-op so backends without animation
+    /// support remain author-portable — the value handle ticks
+    /// (and listeners fire), the backend just doesn't paint it.
+    #[allow(unused_variables)]
+    fn set_animated_f32(
+        &mut self,
+        node: &Self::Node,
+        prop: crate::animation::AnimProp,
+        value: f32,
+    ) {
+        // default: no-op
+    }
+
+    /// Per-frame write of an animated color property to `node`.
+    /// `value` is sRGB `[r, g, b, a]`, channels in `0..=1`.
+    ///
+    /// Same lifecycle and contract as
+    /// [`Backend::set_animated_f32`].
+    #[allow(unused_variables)]
+    fn set_animated_color(
+        &mut self,
+        node: &Self::Node,
+        prop: crate::animation::AnimProp,
+        value: [f32; 4],
+    ) {
+        // default: no-op
+    }
+
     /// Create a text input with the initial value, placeholder, and
     /// an `on_change` callback fired on every native input event.
     /// The framework wraps the controlled `value` signal in an
@@ -481,6 +632,35 @@ pub trait Backend {
     }
     #[allow(unused_variables)]
     fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {}
+
+    /// Create a multi-line text editor. Same controlled pattern as
+    /// `create_text_input` (the framework wraps `value` in an effect
+    /// that calls `update_text_area_value` on change); the only
+    /// semantic difference is that Enter inserts a newline.
+    #[allow(unused_variables)]
+    fn create_text_area(
+        &mut self,
+        initial_value: &str,
+        placeholder: Option<&str>,
+        on_change: Rc<dyn Fn(String)>,
+    ) -> Self::Node {
+        unimplemented!("create_text_area not implemented for this backend")
+    }
+    #[allow(unused_variables)]
+    fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {}
+
+    /// Create a read-only colored-text panel. `spans` is a flat
+    /// `(text, color)` run list; the backend renders each as a
+    /// styled glyph segment inside a single layout node (web: a
+    /// `<pre>` with `<span>` children). `update_code_block_spans`
+    /// swaps the runs in place — used by the fiddle's
+    /// re-tokenize-on-keystroke loop.
+    #[allow(unused_variables)]
+    fn create_code_block(&mut self, spans: &[(String, Color)]) -> Self::Node {
+        unimplemented!("create_code_block not implemented for this backend")
+    }
+    #[allow(unused_variables)]
+    fn update_code_block_spans(&mut self, node: &Self::Node, spans: &[(String, Color)]) {}
 
     /// Create a toggle (switch / checkbox) with the initial value and
     /// an `on_change` callback. Same controlled-update pattern as
@@ -1004,6 +1184,14 @@ pub trait Backend {
         node: &Self::Node,
     ) -> primitives::text_input::TextInputHandle {
         primitives::text_input::TextInputHandle::new(Rc::new(()), &NoopTextInputOps)
+    }
+
+    #[allow(unused_variables)]
+    fn make_text_area_handle(
+        &self,
+        node: &Self::Node,
+    ) -> primitives::text_area::TextAreaHandle {
+        primitives::text_area::TextAreaHandle::new(Rc::new(()), &NoopTextAreaOps)
     }
 
     #[allow(unused_variables)]
@@ -1581,6 +1769,13 @@ impl primitives::image::ImageOps for NoopImageOps {}
 
 struct NoopTextInputOps;
 impl primitives::text_input::TextInputOps for NoopTextInputOps {
+    fn focus(&self, _: &dyn Any) {}
+    fn blur(&self, _: &dyn Any) {}
+    fn select_all(&self, _: &dyn Any) {}
+}
+
+struct NoopTextAreaOps;
+impl primitives::text_area::TextAreaOps for NoopTextAreaOps {
     fn focus(&self, _: &dyn Any) {}
     fn blur(&self, _: &dyn Any) {}
     fn select_all(&self, _: &dyn Any) {}

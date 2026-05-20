@@ -59,6 +59,39 @@ impl WebBackend {
         self.batch_shim_injected = true;
     }
 
+    /// Inject the batched text-update shim
+    /// (`__idealystRegisterText` / `__idealystReleaseText` /
+    /// `__idealystUpdateTextBatch`) on first use. Same evaluation
+    /// strategy as [`ensure_batch_shim`]. Lazy so apps that never
+    /// hit the reactive-text path (e.g. pages with only static
+    /// labels) don't pay the injection cost.
+    pub(crate) fn ensure_text_batch_shim(&mut self) {
+        if self.text_batch_shim_injected {
+            return;
+        }
+        let src = include_str!("../runtime/js/text_batch.js");
+        let f = js_sys::Function::new_no_args(src);
+        let _ = f.call0(&JsValue::NULL);
+        self.text_batch_shim_injected = true;
+    }
+
+    /// Inject the JS-side reactive binding shim
+    /// (`__idealystRegisterBinding` / `__idealystReleaseBinding` /
+    /// `__idealystOnSignalChanged`). Companion to
+    /// [`ensure_text_batch_shim`] — they share the text-id space,
+    /// so a node registered for batched-text updates can ALSO have
+    /// a binding registered against its id without conflict.
+    /// Lazy: only injected when a backend op needs it.
+    pub(crate) fn ensure_text_bindings_shim(&mut self) {
+        if self.text_bindings_shim_injected {
+            return;
+        }
+        let src = include_str!("../runtime/js/text_bindings.js");
+        let f = js_sys::Function::new_no_args(src);
+        let _ = f.call0(&JsValue::NULL);
+        self.text_bindings_shim_injected = true;
+    }
+
     /// Inject `@keyframes ui-spin` into the stylesheet on first use.
     /// Subsequent ActivityIndicator constructions reuse the same
     /// keyframes — the rule is identity-stable, no need to re-create.

@@ -67,6 +67,7 @@
     // bootstraps the module.
     import init, {
       start, set_rows, set_theme_by_name, toggle, row_count, bench_stats_json,
+      clear_phase_counters,
       setup_hierarchy, branch_update, global_update,
     } from './wasm/pkg/benchmark_idealyst_native.js';
     import { autoRunIfRequested } from '../instrument.js';
@@ -152,7 +153,73 @@
     // `?suite=NAME` query param, this auto-runs the suite and posts
     // results back via `postMessage`. Standalone tab usage sees no
     // `?suite=` and this is a no-op.
-    autoRunIfRequested({ setRows, setTheme, setupHierarchy, branchUpdate, globalUpdate });
+    //
+    // We wrap each suite hook so the framework's phase counters
+    // start CLEAN at the first measured iteration — setup +
+    // warmup costs (which we don't want to attribute) get cleared
+    // before the real loop begins. After the suite finishes,
+    // we dump the accumulated phase breakdown to the console
+    // (visible in the parent devtools when the iframe is selected
+    // OR when `?logPhases=1` redirects through `console.log` which
+    // bubbles regardless of frame). Phase counters are a no-op
+    // when `debug-stats` is OFF, so this costs nothing in
+    // production builds.
+    console.log('[idealyst-native] wrapper bootstrapping (debug-stats build)');
+    (async () => {
+      try {
+        await autoRunIfRequested({
+          setRows,
+          setTheme,
+          setupHierarchy: async (seed, nodes, maxDepth) => {
+            await setupHierarchy(seed, nodes, maxDepth);
+            clear_phase_counters();
+          },
+          branchUpdate,
+          globalUpdate,
+        });
+      } catch (err) {
+        console.error('[idealyst-native] autoRunIfRequested threw:', err);
+      }
+      console.log('[idealyst-native] suite complete, draining phase counters');
+      let stats;
+      try {
+        stats = JSON.parse(bench_stats_json());
+      } catch (err) {
+        console.error('[idealyst-native] bench_stats_json parse failed:', err);
+        return;
+      }
+      const phases = stats.phases;
+      const rows = (phases && typeof phases === 'object')
+        ? Object.entries(phases).map(([name, c]) => ({
+            phase: name,
+            calls: c.calls,
+            total_ms: (c.total_us / 1000).toFixed(2),
+            max_us: c.max_us,
+            avg_us: c.avg_us,
+          }))
+        : [];
+      console.group('[idealyst-native] phase counters');
+      if (rows.length === 0) {
+        console.log('(empty — debug-stats off OR no instrumented work ran. phases value =', phases, ')');
+      } else {
+        console.table(rows);
+      }
+      console.log('raw phases JSON:', JSON.stringify(phases));
+      console.groupEnd();
+
+      // Also post the table to the parent so the runner-side
+      // console catches it even if iframe logs are filtered out
+      // in devtools. The runner's existing listener ignores
+      // unknown message types, so this is safe to send.
+      if (window.parent && window.parent !== window) {
+        try {
+          window.parent.postMessage(
+            { type: 'idealyst-phases', phases, rows },
+            '*',
+          );
+        } catch (_) { /* fine, just diagnostics */ }
+      }
+    })();
   </script>
 </body>
 </html>

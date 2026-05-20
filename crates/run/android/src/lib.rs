@@ -31,7 +31,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use build_ios::Manifest;
+use build_ios::{FrameworkSource, Manifest};
 
 mod kotlin_runtime;
 
@@ -50,7 +50,7 @@ const TARGET_SDK_VERSION: u32 = 34;
 /// hands out from the AVD wizard for a typical Pixel-class profile.
 const DEFAULT_AVD_PREFIX: &str = "Pixel";
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct RunOptions {
     /// Build the Rust cdylib in release mode.
     pub release: bool,
@@ -61,6 +61,9 @@ pub struct RunOptions {
     /// Whether the Android process runs the user's `app()` locally
     /// or acts as a thin client connected to an AAS dev-host.
     pub mode: RunMode,
+    /// Where the wrapper Cargo.toml sources framework crates from.
+    /// AAS mode requires `Workspace`.
+    pub source: FrameworkSource,
     /// AAS-mode only: the dev-server's WebSocket port on the host
     /// Mac, learned via mDNS by the CLI before this call. When set,
     /// we (a) run `adb reverse tcp:<port> tcp:<port>` so the
@@ -104,18 +107,18 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
     let project_dir = fs::canonicalize(project_dir)
         .with_context(|| format!("resolve project dir {}", project_dir.display()))?;
     let manifest = build_ios::parse_manifest(&project_dir)?;
-    let workspace_root = build_ios::find_workspace_root(&project_dir)?;
 
     // ── 1. Build the Rust cdylib ─────────────────────────────────
     let so = build_android::build(
         &project_dir,
         build_android::BuildOptions {
             release: opts.release,
+            api_level: 21,
             mode: match opts.mode {
                 RunMode::Local => build_android::BuildMode::Local,
                 RunMode::Aas => build_android::BuildMode::Aas,
             },
-            ..Default::default()
+            source: opts.source.clone(),
         },
     )?;
 
@@ -142,8 +145,9 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
     } else {
         "android/app"
     };
-    let build_dir = workspace_root
-        .join("target/idealyst")
+    let build_dir = opts
+        .source
+        .wrapper_root(&project_dir)
         .join(&manifest.name)
         .join(app_subdir);
     if build_dir.exists() {

@@ -451,19 +451,35 @@ docs! {
         p("Once your backend is built, hand it to the framework:"),
 
         code(rust, r##"
-            use framework_core::{render, Owner};
+            use framework_core::{mount, Owner};
 
             fn main() {
-                let mut backend = MyBackend::new(/* platform args */);
-                let _owner = render(&mut backend, my_app::app());
+                let backend = MyBackend::new(/* platform args */);
+                let _owner = mount(backend, my_app::app);
                 // ...platform-specific event loop here...
             }
         "##),
 
-        p(code("render(backend, root)"),
-          " walks the primitive tree, calling your backend's methods in the \
-           right order. The returned ", code("Owner"),
-          " holds the reactive scope; drop it to tear everything down."),
+        p(code("mount(backend, app)"),
+          " opens the root reactive scope, runs your ", code("app"),
+          " constructor inside it, and walks the resulting primitive tree, \
+           calling your backend's methods in the right order. The returned ",
+          code("Owner"),
+          " holds that root scope; drop it to tear everything down. See ",
+          link("Reactivity", to = "reactivity"),
+          " for the long version of why the closure form matters — short \
+           version: top-level ", code("effect!"), " / ", code("signal!"),
+          " in ", code("app()"),
+          " adopt the root scope, so their cleanups run on ",
+          code("Owner"), " drop instead of being silently cancelled."),
+
+        p("If you have a pre-built ", code("Primitive"),
+          " (e.g. in a test fixture or a wire-protocol replay) and there's \
+           no constructor to run inside the scope, ",
+          code("framework_core::render(backend, tree)"),
+          " is the value-taking variant. It's literally ",
+          code("mount(backend, move || tree)"),
+          " — same shape, no closure overhead."),
         p("What \"the event loop\" means is platform-specific:"),
         list(
             ["Native event loops (iOS's ", code("UIApplicationMain"),

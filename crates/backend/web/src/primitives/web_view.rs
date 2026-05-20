@@ -77,9 +77,13 @@ pub(crate) fn create(b: &mut WebBackend, url: &str) -> Node {
         .create_element("iframe")
         .expect("create_element iframe failed");
     let _ = iframe.set_attribute("src", url);
-    // Minimal default styling: take a sensible size; authors can
-    // override via .with_style(...).
-    let _ = iframe.set_attribute("style", "width: 100%; height: 400px; border: 0");
+    // Only `border: 0` is set inline — inline styles beat the
+    // class-based rules `apply_style` installs, so putting
+    // width/height here would silently override anything an author
+    // passes via `.with_style(...)`. Authors size the iframe via
+    // their stylesheet; with no author style the browser default
+    // (300×150) applies.
+    let _ = iframe.set_attribute("style", "border: 0");
     iframe.unchecked_into::<Node>()
 }
 

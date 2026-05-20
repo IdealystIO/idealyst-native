@@ -46,7 +46,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
-use build_ios::{find_workspace_root, parse_manifest, Manifest};
+use build_ios::{parse_manifest, FrameworkSource, Manifest};
 
 #[derive(Clone, Debug)]
 pub struct BuildOptions {
@@ -67,6 +67,10 @@ pub struct BuildOptions {
     /// `backend_android::aas::{attach, drain, detach}` and let the
     /// dev-host run the reactive tree.
     pub mode: BuildMode,
+    /// Where the wrapper Cargo.toml sources framework crates from.
+    /// AAS mode requires `Workspace` because the AAS-host build crate
+    /// must come out of the framework workspace's `target/`.
+    pub source: FrameworkSource,
 }
 
 /// Which kind of cdylib wrapper to generate.
@@ -84,15 +88,8 @@ pub enum BuildMode {
     Aas,
 }
 
-impl Default for BuildOptions {
-    fn default() -> Self {
-        Self {
-            release: false,
-            api_level: 21,
-            mode: BuildMode::Local,
-        }
-    }
-}
+// No `Default` impl — `source` has no sensible default; the CLI
+// constructs it via `FrameworkSource::detect`.
 
 #[derive(Debug)]
 pub struct BuildArtifact {
@@ -117,7 +114,17 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     let project_dir = fs::canonicalize(project_dir)
         .with_context(|| format!("resolve project dir {}", project_dir.display()))?;
     let manifest = parse_manifest(&project_dir)?;
-    let workspace_root = find_workspace_root(&project_dir)?;
+
+    // AAS mode reaches into the framework workspace's `target/` for
+    // the host's hotpatch builder (`build-aas`); it can't be wired
+    // through git deps. Fail loudly rather than producing a wrapper
+    // that won't compile.
+    if matches!(opts.mode, BuildMode::Aas) && !opts.source.is_workspace() {
+        anyhow::bail!(
+            "android AAS mode requires an in-tree idealyst framework checkout. \
+             Run from inside the workspace, or set IDEALYST_FRAMEWORK_PATH."
+        );
+    }
 
     let ndk_home = std::env::var("ANDROID_NDK_HOME")
         .map(PathBuf::from)
@@ -144,14 +151,15 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         BuildMode::Local => "android/wrapper",
         BuildMode::Aas => "android-aas/wrapper",
     };
-    let wrapper_dir = workspace_root
-        .join("target/idealyst")
+    let wrapper_dir = opts
+        .source
+        .wrapper_root(&project_dir)
         .join(&manifest.name)
         .join(wrapper_subdir);
     generate_wrapper(
         &wrapper_dir,
         &project_dir,
-        &workspace_root,
+        &opts.source,
         &manifest,
         &jni_package,
         &toolchain_bin,
@@ -168,11 +176,12 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         BuildMode::Aas => format!("lib{}_android_aas_wrapper.so", manifest.lib_name),
     };
     // Wrapper's `.cargo/config.toml` redirects build output to the
-    // workspace's `target/`, so look there — not at the wrapper's
-    // local `target/`. Sharing avoids re-compiling deps that the
-    // workspace already has cached.
-    let dylib = workspace_root
-        .join("target")
+    // resolved target dir (workspace's `target/` in-tree; the project's
+    // own `target/` for external consumers). Sharing avoids
+    // re-compiling deps that cargo already has cached for this source.
+    let dylib = opts
+        .source
+        .cargo_target_dir(&project_dir)
         .join(target_triple)
         .join(profile)
         .join(&dylib_name);
@@ -264,7 +273,7 @@ fn bundle_id_to_jni_package(bundle_id: &str) -> Result<String> {
 fn generate_wrapper(
     wrapper_dir: &Path,
     project_dir: &Path,
-    workspace_root: &Path,
+    source: &FrameworkSource,
     manifest: &Manifest,
     jni_package: &str,
     toolchain_bin: &Path,
@@ -281,8 +290,9 @@ fn generate_wrapper(
         BuildMode::Local => format!("{}-android-wrapper", manifest.name),
         BuildMode::Aas => format!("{}-android-aas-wrapper", manifest.name),
     };
-    let fcore = workspace_root.join("crates/framework/core");
-    let bandroid = workspace_root.join("crates/backend/android/mobile");
+    let fcore_dep = source.dep("crates/framework/core", &[]);
+    let bandroid_local_dep = source.dep("crates/backend/android/mobile", &[]);
+    let bandroid_aas_dep = source.dep("crates/backend/android/mobile", &["aas-shell"]);
 
     let cargo_toml = match mode {
         BuildMode::Local => format!(
@@ -311,16 +321,16 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-framework-core = {{ path = "{fcore}" }}
+framework-core = {fcore_dep}
 {user_name} = {{ path = "{user_path}" }}
 
 [target.'cfg(target_os = "android")'.dependencies]
-backend-android-mobile = {{ path = "{bandroid}" }}
+backend-android-mobile = {bandroid_dep}
 jni = "0.21"
 log = "0.4"
 "#,
-            fcore = fcore.display(),
-            bandroid = bandroid.display(),
+            fcore_dep = fcore_dep,
+            bandroid_dep = bandroid_local_dep,
             user_name = manifest.name,
             user_path = project_dir.display(),
         ),
@@ -341,19 +351,19 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-framework-core = {{ path = "{fcore}" }}
+framework-core = {fcore_dep}
 
 [target.'cfg(target_os = "android")'.dependencies]
 # `aas-shell` feature on backend-android compiles in the cross-platform
 # `AasShell` from dev-client and exposes `backend_android::aas::{{attach,
 # drain, detach}}` Rust helpers — the JNI bridge below is a thin
 # trampoline over those.
-backend-android-mobile = {{ path = "{bandroid}", features = ["aas-shell"] }}
+backend-android-mobile = {bandroid_dep}
 jni = "0.21"
 log = "0.4"
 "#,
-            fcore = fcore.display(),
-            bandroid = bandroid.display(),
+            fcore_dep = fcore_dep,
+            bandroid_dep = bandroid_aas_dep,
         ),
     };
 
@@ -406,7 +416,10 @@ pub extern "system" fn Java_{jni}_NativeBridge_attach<'local>(
         // time, which breaks the long-press recognizer and
         // every other timer-driven feature.
         backend_android::install_scheduler();
-        let owner = framework_core::render(backend, {lib}::app());
+        // `mount` runs `app()` inside the root reactive scope so
+        // top-level `effect!` / `signal!` / `Ref::new` calls in
+        // `app()` adopt the scope. See `framework_core::mount` docs.
+        let owner = framework_core::mount(backend, {lib}::app);
         OWNER.with(|slot| *slot.borrow_mut() = Some(owner));
 
         log::info!("idealyst: attach complete");
@@ -533,12 +546,14 @@ pub extern "system" fn Java_{jni}_NativeBridge_detach<'local>(
     // fails with an obscure "ld: unknown option" or similar.
     let clang_wrapper = toolchain_bin.join(format!("{target_triple}{api_level}-clang"));
     let ar = toolchain_bin.join("llvm-ar");
-    // Share `target/` with the workspace so common deps
-    // (framework-core, dev-client, backend-android) don't recompile
-    // from scratch for the wrapper. Cross-target artifacts live
-    // under `<target>/aarch64-linux-android/...`, so they coexist
+    // Share `target/` with whatever the source resolved to (the
+    // framework workspace's `target/` in-tree, the project's own
+    // `target/` for external consumers). Common deps (framework-core,
+    // dev-client, backend-android) don't recompile from scratch for
+    // the wrapper that way. Cross-target artifacts live under
+    // `<target>/aarch64-linux-android/...` so they coexist
     // peacefully with host-target artifacts in the same directory.
-    let workspace_target = workspace_root.join("target");
+    let workspace_target = source.cargo_target_dir(project_dir);
     let cargo_config = format!(
         r#"# GENERATED. Points the Android cross-compile at the NDK's
 # Clang wrapper so cargo can link the cdylib without `cargo-ndk`,

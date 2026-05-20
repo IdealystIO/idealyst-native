@@ -47,6 +47,8 @@ pub enum PrimitiveKind {
     Icon,
     Image,
     TextInput,
+    TextArea,
+    CodeBlock,
     Toggle,
     ScrollView,
     Slider,

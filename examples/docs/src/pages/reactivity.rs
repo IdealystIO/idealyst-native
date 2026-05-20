@@ -17,8 +17,8 @@ docs! {
     description = "The mechanism behind every change in an Idealyst app.",
     related = ["overview", "primitives", "styles", "components", "refs"],
     concepts = [
-        Signal, Effect, Scope, TrackedContext, Derived, Untrack, Action,
-        Memo, OnCleanup, Reducer, Resource, Context,
+        Signal, Effect, Scope, Mount, TrackedContext, Derived, Untrack,
+        Action, Memo, OnCleanup, Reducer, Resource, Context,
     ],
 
     section(heading = "Intro") {
@@ -247,14 +247,20 @@ docs! {
             });
             count.set(1);  // re-runs the effect
         "##),
-        p("Inside a render scope the active ", code("Scope"),
-          " adopts the effect's arena slot, so the hidden binding's \
-           drop is a no-op and the effect lives until the scope ends. \
-           Outside any scope (tests, top-level binaries), the binding \
-           keeps the effect alive until the end of the enclosing \
-           block — call ", code("Effect::new"),
-          " directly and capture the handle if you need a longer \
-           lifetime."),
+        p("Inside a render scope (anywhere reached by ",
+          code("mount"),
+          "'s root closure, anywhere inside a ", code("#[component]"),
+          ", anywhere inside a ", code("when()"), " / ", code("for"),
+          " / ", code("Presence"),
+          " arm), the active ", code("Scope"),
+          " adopts the effect and the hidden binding's drop is a no-op. \
+           The effect lives until the scope ends. Outside any scope — \
+           tests, top-level binaries, or constructors called via ",
+          code("render(backend, app())"),
+          " — the binding owns the effect and its drop runs the cleanups \
+           immediately. Capture the handle in a longer-lived binding (or \
+           switch the entry point to ", code("mount"),
+          ") to keep the effect alive."),
     },
 
     section(heading = "on_cleanup — release on drop") {
@@ -691,6 +697,125 @@ docs! {
               code("Drop"), ", wrap it in a Rust type with a ", code("Drop"),
               " impl and let the type system handle teardown."),
         },
+    },
+
+    section(heading = "mount() — opening the root scope") {
+        p("Scopes are nested, but every tree has a root, and the root has \
+           to come from somewhere. The framework's entry point is ",
+          code("framework_core::mount(backend, app)"),
+          " — it opens the root reactive scope and runs the user's ",
+          code("app"), " constructor inside it:"),
+
+        code(rust, r##"
+            use framework_core::mount;
+
+            // Host glue (web.rs, generated iOS/Android wrappers, etc.):
+            let backend = Rc::new(RefCell::new(WebBackend::new("#app")));
+            let owner = mount(backend, super::app);
+            //                            ^^^^^^^^^^
+            //          function pointer (`fn() -> Primitive`); `mount`
+            //          calls it inside the root scope, then walks the
+            //          returned tree.
+        "##),
+
+        p("The closure form is what makes top-level reactive primitives \
+           work as you'd expect. ", code("signal!"), " / ", code("effect!"),
+          " / ", code("Ref::new"),
+          " declared at the top of ", code("app()"),
+          " are adopted by the root scope, so they're freed on ",
+          code("Owner"),
+          " drop alongside everything inside the tree."),
+
+        p("Concretely — this welcome animation pattern works the way it \
+           reads:"),
+
+        code(rust, r##"
+            #[component]
+            pub fn app() -> Primitive {
+                let phase = signal!(0u8);
+
+                // Schedule a 3-beat timeline. Cleanups fire on
+                // page teardown (when Owner drops), not microseconds
+                // after `app()` returns.
+                effect!({
+                    let t1 = after_ms(150, move || phase.set(1));
+                    let t2 = after_ms(1050, move || phase.set(2));
+                    let t3 = after_ms(2850, move || phase.set(3));
+                    on_cleanup(move || { drop(t1); drop(t2); drop(t3); });
+                });
+
+                ui! { /* presences keyed off phase.get() */ }
+            }
+        "##),
+
+        p("Under ", code("mount"), ", the ", code("effect!"),
+          " is owned by the root scope; the timer handles stashed via ",
+          code("on_cleanup"),
+          " stay alive for the page lifetime. Nothing is leaked, nothing \
+           is cancelled prematurely."),
+
+        p("Note that ", code("mount"),
+          " is the framework entry point — not a per-component lifecycle \
+           hook. There's no equivalent of React's ",
+          code("useEffect"), " / ", code("componentDidMount"),
+          " because the component body itself plays that role: it runs \
+           once when the scope opens, again on signal change, and ",
+          code("on_cleanup"),
+          " teardowns fire when the scope drops."),
+
+        compare(from = React) {
+            p(code("mount(backend, app)"), " plays the role of ",
+              code("createRoot(container).render(<App />)"),
+              " — both are the program → backend attachment point that \
+               establishes the reactive root before user code runs."),
+        },
+        compare(from = Solid) {
+            p(code("mount(backend, app)"), " ≈ ",
+              code("render(() => <App />, root)"),
+              ". Both take a closure so the user's tree-construction code \
+               runs inside the framework's reactive root."),
+        },
+        compare(from = VueThree) {
+            p(code("mount(backend, app)"), " ≈ ",
+              code("createApp(App).mount('#app')"),
+              ". Borrowed the name from Vue 3, in fact — same idea: \
+               attach a program to a backend, opening the root scope on \
+               the way in."),
+        },
+    },
+
+    section(heading = "render() — the value-taking variant") {
+        p(code("framework_core::render(backend, primitive_value)"),
+          " is the pre-built-tree alternative: it takes a ",
+          code("Primitive"),
+          " value that the caller has already constructed, and opens \
+           the root scope around the build walk only. It's literally ",
+          code("mount(backend, move || tree)"),
+          " under the hood:"),
+
+        code(rust, r##"
+            pub fn render<B: Backend + 'static>(
+                backend: Rc<RefCell<B>>,
+                tree: Primitive,
+            ) -> Owner {
+                mount(backend, move || tree)
+            }
+        "##),
+
+        p("Reach for ", code("render"),
+          " when there is no user-authored constructor to run inside \
+           the scope — e.g. tests that build a fixture ",
+          code("Primitive"),
+          " by hand, or wire-protocol replay paths that synthesize a \
+           tree from incoming commands. New host glue should prefer ",
+          code("mount"),
+          " because as soon as user code grows a top-level ",
+          code("effect!"),
+          ", the value-taking form silently drops its cleanups."),
+
+        p("The CLI scaffold and the generated iOS / Android wrappers \
+           already use ", code("mount"),
+          " by default — new projects don't have to think about this."),
     },
 
     section(heading = "Cascades — what happens on a signal change") {

@@ -246,6 +246,13 @@ pub enum DocConcept {
     Signal,
     Effect,
     Scope,
+    /// `framework_core::mount(backend, app_fn)` — the framework's
+    /// entry point. Opens the root reactive scope, runs the user's
+    /// tree constructor inside it, hands the result to the build
+    /// walker. The lifetime boundary that turns `effect!` /
+    /// `signal!` declared at the top of `app()` from leaks into
+    /// owned arena slots cleaned up on `Owner` drop.
+    Mount,
     TrackedContext,
     Derived,
     Action,
@@ -273,6 +280,34 @@ pub enum DocConcept {
     /// "closest provider" model React introduced, adapted for
     /// fine-grained reactivity.
     Context,
+
+    // ---- Reactive text bindings (web fast path) ----
+    /// `TextSource::JsBinding` + `JsBindingSpec` — the structured
+    /// reactive-text source variant. Carries `signal_ids`,
+    /// `template_parts`, `initial_values`, and a `compute_fallback`
+    /// closure. Backends that opt into JS-side bindings (web)
+    /// process this variant without installing a per-leaf Rust
+    /// Effect; non-opting backends use `compute_fallback` via the
+    /// normal `Bound` Effect path. Authoritative explainer:
+    /// `reactive-text-bindings` page.
+    JsBinding,
+    /// The `text_fmt!("template", args..)` proc macro. Sugar for
+    /// constructing a `TextSource::JsBinding` from a format-style
+    /// template + a mix of captured exprs and `bind!(signal)`
+    /// args.
+    TextFmtMacro,
+    /// The `bind!(expr)` sentinel — marks a `text_fmt!` arg as a
+    /// reactive signal. Has no behavior outside `text_fmt!`; the
+    /// proc macro recognizes it at expansion time. Calling
+    /// `bind!` standalone errors with `compile_error!`.
+    BindSentinel,
+    /// `WebBackend::register_signal_for_js(sid, stringifier)` —
+    /// the one-call-per-signal setup that wires a signal's writes
+    /// to the JS-side reactive layer via the framework's
+    /// `signal_js_notifier` slot. Once registered, `Signal::set`
+    /// ships value changes across the wasm→JS boundary for the
+    /// backend's binding registry to fan out internally.
+    RegisterSignalForJs,
 
     // ---- Components ----
     Component,
@@ -354,6 +389,44 @@ pub enum DocConcept {
     AnchoredOverlay,
     Presence,
 
+    // ---- Animation system ----
+    /// `AnimatedValue<T>` — the user-facing value handle that drives
+    /// per-frame animation. Authoritative explainer: `animation` page.
+    AnimatedValue,
+    /// `Animator<T>` — the per-frame motion source trait. One animator
+    /// drives one value at a time.
+    Animator,
+    /// `AnimatorFactory<T>` — author-side builder that constructs an
+    /// `Animator` given the value handle's current state. The seam
+    /// that enables velocity-preserving handoff.
+    AnimatorFactory,
+    /// `TweenTo` — duration + curve interpolation factory.
+    Tween,
+    /// `SpringTo` — damped harmonic oscillator factory. Inherits
+    /// current velocity on attach.
+    Spring,
+    /// `DecayFrom` — velocity-driven exponential settle factory. The
+    /// flick/toss/fling primitive.
+    Decay,
+    /// `KeyframesTo` — multi-stop waypoint animation with per-segment
+    /// or shared curves.
+    Keyframes,
+    /// `LoopFactory` + `Repeat` — replay an inner factory N times or
+    /// forever.
+    AnimationLoop,
+    /// `SequenceFactory.then(...)` — back-to-back animator chaining
+    /// with velocity flowing across boundaries.
+    AnimationSequence,
+    /// `AnimProp` — the cross-backend vocabulary of animatable
+    /// properties.
+    AnimProp,
+    /// `AnimationClock` — per-thread tick registry, idles to zero
+    /// per-frame work when no animation is live.
+    AnimationClock,
+    /// `stagger(values, step, factory_fn)` — per-index delayed
+    /// animation across a collection.
+    Stagger,
+
     // ---- Third-party extension ----
     /// `Primitive::External` — the framework's one extension hatch for
     /// third-party primitives. Authoritative explainer:
@@ -395,6 +468,7 @@ impl DocConcept {
             DocConcept::Signal => "Signal",
             DocConcept::Effect => "Effect",
             DocConcept::Scope => "Scope",
+            DocConcept::Mount => "mount()",
             DocConcept::TrackedContext => "Tracked context",
             DocConcept::Derived => "Derived",
             DocConcept::Action => "Action",
@@ -404,6 +478,11 @@ impl DocConcept {
             DocConcept::Reducer => "reducer",
             DocConcept::Resource => "resource",
             DocConcept::Context => "Context",
+
+            DocConcept::JsBinding => "TextSource::JsBinding",
+            DocConcept::TextFmtMacro => "text_fmt!",
+            DocConcept::BindSentinel => "bind!",
+            DocConcept::RegisterSignalForJs => "register_signal_for_js",
 
             DocConcept::Component => "Component",
             DocConcept::ComponentMethods => "methods!",
@@ -456,6 +535,19 @@ impl DocConcept {
             DocConcept::AnchoredOverlay => "AnchoredOverlay (composition)",
             DocConcept::Presence => "Presence",
 
+            DocConcept::AnimatedValue => "AnimatedValue",
+            DocConcept::Animator => "Animator",
+            DocConcept::AnimatorFactory => "AnimatorFactory",
+            DocConcept::Tween => "Tween",
+            DocConcept::Spring => "Spring",
+            DocConcept::Decay => "Decay",
+            DocConcept::Keyframes => "Keyframes",
+            DocConcept::AnimationLoop => "Loop",
+            DocConcept::AnimationSequence => "Sequence",
+            DocConcept::AnimProp => "AnimProp",
+            DocConcept::AnimationClock => "Animation clock",
+            DocConcept::Stagger => "stagger",
+
             DocConcept::External => "External primitive",
 
             DocConcept::Backend => "Backend",
@@ -485,6 +577,7 @@ impl DocConcept {
             DocConcept::Signal => "signal",
             DocConcept::Effect => "effect",
             DocConcept::Scope => "scope",
+            DocConcept::Mount => "mount",
             DocConcept::TrackedContext => "tracked-context",
             DocConcept::Derived => "derived",
             DocConcept::Action => "action",
@@ -494,6 +587,11 @@ impl DocConcept {
             DocConcept::Reducer => "reducer",
             DocConcept::Resource => "resource",
             DocConcept::Context => "context",
+
+            DocConcept::JsBinding => "js-binding",
+            DocConcept::TextFmtMacro => "text-fmt-macro",
+            DocConcept::BindSentinel => "bind-sentinel",
+            DocConcept::RegisterSignalForJs => "register-signal-for-js",
 
             DocConcept::Component => "component",
             DocConcept::ComponentMethods => "component-methods",
@@ -545,6 +643,19 @@ impl DocConcept {
             DocConcept::Overlay => "overlay",
             DocConcept::AnchoredOverlay => "anchored-overlay",
             DocConcept::Presence => "presence",
+
+            DocConcept::AnimatedValue => "animated-value",
+            DocConcept::Animator => "animator",
+            DocConcept::AnimatorFactory => "animator-factory",
+            DocConcept::Tween => "tween",
+            DocConcept::Spring => "spring",
+            DocConcept::Decay => "decay",
+            DocConcept::Keyframes => "keyframes",
+            DocConcept::AnimationLoop => "animation-loop",
+            DocConcept::AnimationSequence => "animation-sequence",
+            DocConcept::AnimProp => "anim-prop",
+            DocConcept::AnimationClock => "animation-clock",
+            DocConcept::Stagger => "stagger",
 
             DocConcept::External => "external",
 

@@ -7,6 +7,7 @@
 //!   and any other introspection tool.
 
 // Pages migrated to the `docs!` macro (one `docs! { ... }` per file).
+pub mod animation;
 pub mod backends;
 pub mod building_a_theme_system;
 pub mod components;
@@ -18,6 +19,7 @@ pub mod overview;
 pub mod portal;
 pub mod primitives;
 pub mod quickstart;
+pub mod reactive_text_bindings;
 pub mod reactivity;
 pub mod refs;
 pub mod robot;

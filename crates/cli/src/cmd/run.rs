@@ -16,36 +16,30 @@ pub struct Args {
     #[arg(long)]
     pub release: bool,
 
-    /// iOS only: build the AAS-client variant of the app and have
-    /// it discover a running AAS dev-host via Bonjour. Without this
-    /// flag, the iOS app renders the user's tree locally and ships
-    /// as a self-contained process. With it, the iOS process is a
-    /// thin client driven by the dev-host's wire stream — no URL
-    /// needed, the shell finds the right server by matching the
-    /// project's bundle id against `_idealyst-dev._tcp.` records.
+    /// iOS / Android only: build the AAS-client variant and have
+    /// it discover a running dev-host over the local network.
+    /// Default is local-render (the app renders its own tree).
     #[arg(long)]
     pub aas: bool,
 
-    /// Roku only: IP address of the device in developer mode. The
-    /// device prints its IP on the dev-mode-enable screen.
+    /// Roku only: device IP address (shown on the dev-mode-enable
+    /// screen).
     #[arg(long)]
     pub device_ip: Option<String>,
 
-    /// Roku only: developer password set during dev-mode enable.
-    /// Read from $ROKU_DEV_PASSWORD if not supplied.
+    /// Roku only: developer password (set during dev-mode enable).
+    /// Falls back to $ROKU_DEV_PASSWORD.
     #[arg(long)]
     pub password: Option<String>,
 
-    /// Android `--aas` only: bake `ws://127.0.0.1:<port>` into the
-    /// APK's `IdealystAasUrl` meta-data and set up `adb reverse
-    /// tcp:<port> tcp:<port>`. Use when a dev-server / sidecar is
-    /// already running outside of `idealyst dev` (otherwise the
-    /// emulator falls back to Bonjour, which QEMU NAT blocks).
+    /// Android `--aas` only: explicit dev-server port to connect to.
+    /// Required for emulator targets; physical devices auto-discover
+    /// over the local network.
     #[arg(long)]
     pub aas_port: Option<u16>,
 
-    /// Roku only: after a successful install, stream the device's
-    /// BrightScript debug console (port 8085) to stdout.
+    /// Roku only: stream the device's BrightScript console after
+    /// install.
     #[arg(long)]
     pub console: bool,
 }
@@ -58,11 +52,13 @@ pub fn run(args: Args) -> anyhow::Result<()> {
             } else {
                 run_ios::RunMode::Local
             };
+            let source = crate::framework_source::resolve(&args.dir)?;
             let artifact = run_ios::run(
                 &args.dir,
                 run_ios::RunOptions {
                     release: args.release,
                     mode,
+                    source,
                 },
             )?;
             eprintln!();
@@ -84,9 +80,15 @@ pub fn run(args: Args) -> anyhow::Result<()> {
             // Build first (auto-snapshots via the wrapper + repacks
             // every invocation). Side-loading without a fresh build
             // is an antipattern; we don't expose `--no-build` yet.
+            let source = crate::framework_source::resolve(&args.dir)?;
             let built = build_roku::build(
                 &args.dir,
-                build_roku::BuildOptions::default(),
+                build_roku::BuildOptions {
+                    output_dir: None,
+                    ui_json: None,
+                    title: None,
+                    source,
+                },
             )?;
             eprintln!(
                 "[idealyst run roku] built {} ({} methods, {} commands)",
@@ -136,6 +138,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
             } else {
                 run_android::RunMode::Local
             };
+            let source = crate::framework_source::resolve(&args.dir)?;
             let artifact = run_android::run(
                 &args.dir,
                 run_android::RunOptions {
@@ -151,6 +154,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
                     // host (the same port the dev-server prints on
                     // startup).
                     aas_port: args.aas_port,
+                    source,
                 },
             )?;
             eprintln!();

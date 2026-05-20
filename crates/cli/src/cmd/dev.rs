@@ -30,29 +30,25 @@ use build_ios::{parse_manifest, Target};
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
-    /// Project directory containing the `Cargo.toml` (the same place
-    /// you'd run `wasm-pack build` by hand for the web target).
+    /// Project directory. Defaults to the current directory.
     #[arg(default_value = ".")]
     pub dir: PathBuf,
 
-    /// Run in Application-as-a-Server mode. A single dev-server
-    /// process runs the user's reactive runtime; each platform's
-    /// client connects over WebSocket and replays wire commands
-    /// against its native backend. Default (off) is local-render
-    /// mode where each platform builds + runs the user's app
-    /// natively with its own file-watcher rebuild loop.
+    /// Run a single dev-server process and connect each platform
+    /// client to it over WebSocket. The default (off) runs the app
+    /// natively on each platform with its own rebuild loop.
     #[arg(long)]
     pub aas: bool,
 
-    /// Build + run the web target (browser).
+    /// Build and run the web target.
     #[arg(long)]
     pub web: bool,
 
-    /// Build + run the iOS target (simulator).
+    /// Build and run on the iOS simulator.
     #[arg(long)]
     pub ios: bool,
 
-    /// Build + run the Android target. (Not wired yet — fails fast.)
+    /// Build and run on the Android emulator.
     #[arg(long)]
     pub android: bool,
 
@@ -60,15 +56,13 @@ pub struct Args {
     #[arg(long, default_value_t = 8080)]
     pub port: u16,
 
-    /// Interface for the web target's static-file server. Loopback
-    /// covers most cases; `0.0.0.0` exposes to the LAN (handy for
-    /// testing the same bundle on a phone).
+    /// Interface for the web target's static-file server.
+    /// `0.0.0.0` to expose to the LAN.
     #[arg(long, default_value = "0.0.0.0")]
     pub host: String,
 
-    /// Web local-mode only: skip the initial `wasm-pack build`. Use
-    /// when the `pkg/` directory is already current and you just
-    /// want a static server.
+    /// Web only: skip the initial build and just start the static
+    /// server. Use when `pkg/` is already up to date.
     #[arg(long)]
     pub no_build: bool,
 }
@@ -307,11 +301,13 @@ fn launch_ios(dir: &Path, args: &Args) -> Result<()> {
         run_ios::RunMode::Local
     };
     eprintln!("[dev ios] building + launching simulator (mode: {:?})…", mode);
+    let source = crate::framework_source::resolve(dir)?;
     let artifact = run_ios::run(
         dir,
         run_ios::RunOptions {
             release: false,
             mode,
+            source,
         },
     )
     .context("iOS dev launch failed")?;
@@ -368,6 +364,7 @@ fn launch_android(dir: &Path, args: &Args) -> Result<()> {
             None => ")".to_string(),
         }
     );
+    let source = crate::framework_source::resolve(dir)?;
     let artifact = run_android::run(
         dir,
         run_android::RunOptions {
@@ -375,6 +372,7 @@ fn launch_android(dir: &Path, args: &Args) -> Result<()> {
             avd: None,
             mode,
             aas_port,
+            source,
         },
     )
     .context("Android dev launch failed")?;
@@ -401,10 +399,12 @@ fn aas_port_file(project_dir: &Path) -> PathBuf {
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("project");
-    // Try to find the workspace root via `build-ios::find_workspace_root`,
-    // which already handles the walk-up. Falls back to `target/` in
-    // the project dir if we somehow can't find a workspace.
-    let workspace_root = build_ios::find_workspace_root(project_dir)
+    // AAS dev mode requires the framework workspace anyway (the
+    // hot-patch builder + sidecar templating live there). Fall back
+    // to the project dir if we somehow can't find a workspace — the
+    // caller is dev-only, so the worst case is the sentinel never
+    // appears and we time out cleanly.
+    let workspace_root = build_ios::require_workspace_root(project_dir)
         .unwrap_or_else(|_| project_dir.to_path_buf());
     workspace_root
         .join("target/idealyst")

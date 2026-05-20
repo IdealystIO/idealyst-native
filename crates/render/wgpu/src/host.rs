@@ -536,6 +536,8 @@ impl Host {
     /// running videos) alone.
     pub fn shutdown_videos(&self) {
         crate::backend_impl::shutdown_all_videos(&self.backend);
+        #[cfg(blitz_active)]
+        crate::backend_impl::shutdown_all_web_views(&self.backend);
     }
     /// The active skin. Renderer borrows this every frame to
     /// paint widget chrome + the on-screen keyboard.

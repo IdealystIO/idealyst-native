@@ -558,35 +558,22 @@ fn home_screen(nav: Ref<NavigatorHandle>) -> Primitive {
         })
         .into(),
 
-        // Embedded video demo. Renders an H.264 mp4 decoded
-        // in-process via `openh264` + `re_mp4`. Path is taken
-        // from the `IDEALYST_DEMO_VIDEO` env var, falling back
-        // to `assets/demo.mp4` next to the example. Missing /
-        // unsupported files surface as an empty card (the
-        // decoder thread logs the error to stderr).
-        video({
-            // Default path is absolute (baked at compile time)
-            // so the demo finds the bundled clip regardless of
-            // the runner's CWD. Override with `IDEALYST_DEMO_VIDEO`.
-            std::env::var("IDEALYST_DEMO_VIDEO")
-                .ok()
-                .unwrap_or_else(|| concat!(env!("CARGO_MANIFEST_DIR"), "/assets/demo.mp4").into())
-        })
-        .autoplay(true)
-        .loop_playback(true)
-        .controls(true)
-        .with_style(themed(|| StyleRules {
-            width: Some(Tokenized::Literal(Length::Px(280.0))),
-            height: Some(Tokenized::Literal(Length::Px(158.0))),
-            background: Some(Tokenized::Literal(Color("#0a0a0a".into()))),
-            border_top_left_radius: Some(px(12.0)),
-            border_top_right_radius: Some(px(12.0)),
-            border_bottom_right_radius: Some(px(12.0)),
-            border_bottom_left_radius: Some(px(12.0)),
-            overflow: Some(framework_core::Overflow::Hidden),
-            ..Default::default()
-        }))
-        .into(),
+        // Embedded WebView, backed by Blitz (pure-Rust HTML/CSS).
+        // Renders the URL into an offscreen texture and composites
+        // through the image pipeline alongside the rest of the UI.
+        text("Embedded WebView").with_style(subtitle_sheet()).into(),
+        web_view("https://example.com")
+            .with_style(themed(|| StyleRules {
+                width: Some(Tokenized::Literal(Length::Px(280.0))),
+                height: Some(Tokenized::Literal(Length::Px(420.0))),
+                border_top_left_radius: Some(px(12.0)),
+                border_top_right_radius: Some(px(12.0)),
+                border_bottom_right_radius: Some(px(12.0)),
+                border_bottom_left_radius: Some(px(12.0)),
+                overflow: Some(framework_core::Overflow::Hidden),
+                ..Default::default()
+            }))
+            .into(),
 
         // Embedded wgpu surface demo. `mandelbrot_demo()` returns
         // a `Bound<GraphicsHandle>` whose drawer renders the
@@ -800,13 +787,6 @@ fn home_screen(nav: Ref<NavigatorHandle>) -> Primitive {
             || view(vec![]).into(),
         ),
 
-        // Unsupported primitives — each renders the
-        // "not supported in this simulator" panel so authors
-        // know the slot exists, even though the wgpu backend
-        // doesn't implement them. (Video used to be in this
-        // list; now it's wired up earlier on the page.)
-        text("Unsupported").with_style(subtitle_sheet()).into(),
-        web_view("https://example.com").into(),
 
         // Section header for the list — anchors the eye so the
         // scrolling boundary is obvious.

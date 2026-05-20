@@ -538,6 +538,8 @@ impl WebBackend {
             // Drop any state-listener closures (so they stop firing
             // on the now-removed DOM element).
             self.state_listeners.remove(&id);
+            // Drop any per-node animation state.
+            self.impl_drop_animated_state(id);
             // Remove the node-id mapping itself.
             self.node_ids.remove(&p);
         }

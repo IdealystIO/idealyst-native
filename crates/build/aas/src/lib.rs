@@ -51,7 +51,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
-use build_ios::{find_workspace_root, parse_manifest, Manifest};
+use build_ios::{parse_manifest, require_workspace_root, Manifest};
 
 pub mod hotpatch;
 
@@ -86,7 +86,12 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     let project_dir = fs::canonicalize(project_dir)
         .with_context(|| format!("resolve project dir {}", project_dir.display()))?;
     let manifest = parse_manifest(&project_dir)?;
-    let workspace_root = find_workspace_root(&project_dir)?;
+    // AAS mode reaches into `<workspace>/target/` for the host's
+    // hot-patch builder + sidecar binary lookups, and statically
+    // links the in-workspace `build-aas` crate into the generated
+    // host. None of that is reachable through git, so AAS strictly
+    // requires the framework workspace on disk.
+    let workspace_root = require_workspace_root(&project_dir)?;
 
     build_sidecar_mode(&project_dir, &workspace_root, &manifest, &opts)
 }

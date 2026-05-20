@@ -11,6 +11,7 @@
 //! not the enum data.
 
 pub mod activity_indicator;
+pub mod code_block;
 pub mod flat_list;
 pub mod graphics;
 pub mod icon;
@@ -22,6 +23,7 @@ pub mod portal;
 pub mod presence;
 pub mod scroll_view;
 pub mod slider;
+pub mod text_area;
 pub mod text_input;
 pub mod toggle;
 pub mod video;

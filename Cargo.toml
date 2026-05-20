@@ -67,6 +67,8 @@ members = [
     "examples/hot-reload-test",
     "examples/native-test",
     "examples/touch-test",
+    "examples/animation-test",
+    "examples/welcome",
     "examples/maps-test",
     "examples/fiddle",
     "benchmark",

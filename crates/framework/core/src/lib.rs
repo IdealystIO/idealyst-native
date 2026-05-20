@@ -1,5 +1,6 @@
 //! Framework core: primitives, Backend trait, render walker, reactivity.
 
+pub mod animation;
 pub mod assets;
 mod backend;
 mod batch;
@@ -62,12 +63,12 @@ pub use identity::{
     Identity,
 };
 pub use primitive::Primitive;
-pub use sources::{IntoStyleSource, IntoTextSource, StyleSource, TextSource};
+pub use sources::{IntoStyleSource, IntoTextSource, JsBindingSpec, StyleSource, TextSource};
 pub use touch::{TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint, TouchResponse};
 pub use touch::recognizers::{
     long_press, pan, tap, LongPressRecognizer, PanEvent, PanRecognizer, TapRecognizer,
 };
-pub use walker::{render, Owner};
+pub use walker::{mount, render, Owner};
 pub use primitives::navigator::{
     match_pattern, ContentBuilder, DefaultLinkKind, DrawerContentProps, DrawerHandle,
     DrawerNavigator, DrawerNavigatorCallbacks, DrawerSide, DrawerType, HeaderButton, HeaderStyle,
@@ -79,6 +80,8 @@ pub use primitives::navigator::{
 pub use primitives::icon::{icon, FillRule, IconData, IconHandle, IconOps, StrokeAnimation};
 pub use primitives::image::{image, image_asset, ImageHandle, ImageOps};
 pub use primitives::text_input::{text_input, TextInputHandle, TextInputOps};
+pub use primitives::text_area::{text_area, TextAreaHandle, TextAreaOps};
+pub use primitives::code_block::{code_block, CodeBlockHandle};
 pub use primitives::toggle::{toggle, ToggleHandle, ToggleOps};
 pub use primitives::web_view::{web_view, WebViewHandle, WebViewOps};
 pub use primitives::overlay::{
@@ -96,7 +99,8 @@ pub use primitives::presence::{
 };
 pub use reactive::{
     arena_stats, batch, inject, inject_or, memo, memo_with, on, on_cleanup, on_defer, provide,
-    reducer, untrack, with_inject, ArenaStats, Effect, Ref, Signal, Trackable,
+    reducer, register_signal_js_notifier, signal_has_js_notifier, unregister_signal_js_notifier,
+    untrack, with_inject, ArenaStats, Effect, Ref, Signal, Trackable,
 };
 #[cfg(feature = "async-driver")]
 pub use resource::{resource, Resource, ResourceCancel, ResourceState};
@@ -115,8 +119,27 @@ pub use style::{
 };
 
 pub use framework_macros::{
-    component, jsx, stylesheet, ui,
+    component, jsx, stylesheet, text_fmt, ui,
 };
+
+/// Sentinel macro: marks a `text_fmt!` argument as a reactive
+/// signal (rather than a captured value). Has no behavior on its
+/// own — `text_fmt!` recognizes the `bind!(...)` token pattern
+/// inside its argument list at macro-expansion time and treats the
+/// inner expression as a `Signal<T>`. Calling `bind!` outside
+/// `text_fmt!` errors at compile time.
+///
+/// ```ignore
+/// // `id` captured, `global` subscribed:
+/// text_fmt!("leaf {}: g={}", id, bind!(global))
+/// ```
+#[macro_export]
+macro_rules! bind {
+    ($e:expr) => {
+        ::std::compile_error!("`bind!` is a sentinel for `text_fmt!` args only — \
+                               using it outside `text_fmt!(...)` has no effect")
+    };
+}
 
 // Re-export of `framework_hot` so the `#[component]` macro's
 // generated code can reach it via a path that's available to every
@@ -222,6 +245,116 @@ macro_rules! children {
         let mut __c: ::std::vec::Vec<$crate::Primitive> = ::std::vec::Vec::new();
         $( $crate::ChildList::append_to($child, &mut __c); )*
         __c
+    }};
+}
+
+/// Constructs a `Ref<H>` — the typed handle a backend mount-time
+/// callback fills, that user code reads via `.with(|h| ...)`.
+///
+/// Two shapes:
+///
+/// ```ignore
+/// let view_ref = node_ref!(ViewHandle);   // explicit handle type
+/// let view_ref: Ref<ViewHandle> = node_ref!();  // let-binding type drives inference
+/// ```
+///
+/// Spelled `node_ref!` (not `ref!`) because `ref` is a strict Rust
+/// keyword; the macro is for the handle-on-a-mounted-backend-node
+/// idiom either way.
+#[macro_export]
+macro_rules! node_ref {
+    () => {
+        $crate::Ref::new()
+    };
+    ($t:ty) => {
+        $crate::Ref::<$t>::new()
+    };
+}
+
+/// Constructs an `AnimatedValue<T>` — the per-frame motion handle
+/// you pass to `subscribe_and_apply(...)` and `.animate(...)`. `T`
+/// is inferred from the initial value: `f32` for scalar motion,
+/// `(f32, f32, f32, f32)` for color, etc.
+///
+/// ```ignore
+/// let opacity = animated!(0.0_f32);
+/// let color = animated!((0.0_f32, 0.0_f32, 0.0_f32, 1.0_f32));
+/// ```
+#[macro_export]
+macro_rules! animated {
+    ($value:expr) => {
+        $crate::animation::AnimatedValue::new($value)
+    };
+}
+
+/// Schedules a single `av.animate(animator)` call at `at_ms`
+/// milliseconds from now. Returns a `ScheduledTask` that cancels
+/// the pending dispatch on drop.
+///
+/// The macro clones the AnimatedValue handle into the closure, so
+/// `$av` is consumed by reference and the original binding stays
+/// available for further `animate_at!` calls.
+///
+/// ```ignore
+/// let task = animate_at!(800, opacity, TweenTo::new(1.0, Duration::from_millis(400)).ease_out());
+/// // hold `task` somewhere durable (e.g. on_cleanup) to keep the
+/// // timer alive.
+/// ```
+#[macro_export]
+macro_rules! animate_at {
+    ($at:expr, $av:expr, $animator:expr) => {{
+        let __av = ($av).clone();
+        $crate::after_ms($at, move || {
+            __av.animate($animator);
+        })
+    }};
+}
+
+/// Builds a `Vec<ScheduledTask>` from a declarative multi-phase
+/// animation timeline. Each `at => { ... }` clause fires one or
+/// more `av.animate(animator)` calls at that moment; AnimatedValue
+/// handles are cloned into per-task closures automatically.
+///
+/// Hold the returned Vec alive (typically via `on_cleanup(move ||
+/// drop(tasks))` inside an `effect!`) for the duration you want
+/// the timers to fire — dropping it cancels every pending
+/// dispatch.
+///
+/// ```ignore
+/// let tasks = timeline! {
+///     400 => {
+///         opacity: TweenTo::new(1.0, Duration::from_millis(700)).ease_out(),
+///         scale: SpringTo::new(1.0).stiffness(170.0).damping(22.0),
+///     },
+///     2_400 => {
+///         opacity: TweenTo::new(0.0, Duration::from_millis(500)).ease_in_out(),
+///     },
+/// };
+/// on_cleanup(move || drop(tasks));
+/// ```
+///
+/// AV slot must be a bare identifier (`opacity`, `welcome_color`)
+/// because the macro clones the handle by writing `$av.clone()`.
+/// For more complex sources (`self.av`, `foo.bar.av`), use
+/// [`animate_at!`] directly.
+#[macro_export]
+macro_rules! timeline {
+    ( $( $at:expr => { $( $av:ident : $animator:expr ),* $(,)? } ),* $(,)? ) => {{
+        let mut __tasks: ::std::vec::Vec<$crate::ScheduledTask> = ::std::vec::Vec::new();
+        $(
+            {
+                let __at = $at;
+                $(
+                    {
+                        let __av = $av.clone();
+                        __tasks.push($crate::after_ms(__at, move || {
+                            __av.animate($animator);
+                        }));
+                    }
+                )*
+            }
+        )*
+        __tasks
     }};
 }
 

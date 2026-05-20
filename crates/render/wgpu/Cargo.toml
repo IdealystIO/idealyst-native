@@ -3,6 +3,12 @@ name = "render-wgpu"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# Surfaces the `webview_node` / `blitz_active` custom cfgs — see
+# `build.rs` for the derivation. Lets every `#[cfg(...)]` gate
+# pick the right meaning ("WebView NodeKind exists" vs. "Blitz
+# upload path is live") without spelling out the
+# feature+target combo each time.
+build = "build.rs"
 
 # Wgpu renderer + interaction host. The platform-agnostic half of
 # the desktop-preview stack.
@@ -70,6 +76,16 @@ image = { version = "0.25", default-features = false, features = [
     "jpeg",
 ] }
 
+# Native-only deps. The video pipeline (`openh264` C++ source, the
+# `re_mp4` demuxer), the audio mixer (`cpal` + `symphonia`), and
+# the Blitz-backed WebView all link against either bundled C/C++
+# or system audio/network stacks that don't exist on wasm32. On
+# the web target the `video.rs` / `audio.rs` / `web_view.rs`
+# modules fall back to no-op stubs (see `video.rs` for the
+# wasm-only `VideoDecoder` placeholder), and apps that mount a
+# Video / WebView primitive on wasm get the same "unsupported"
+# rendering as any other unimplemented primitive.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Video primitive backing. `openh264` bundles Cisco's C++ source
 # via build.rs (no system FFmpeg dep at runtime); `re_mp4` is a
 # pure-Rust MP4 container demuxer. Together they let us play
@@ -106,6 +122,11 @@ symphonia = { version = "0.5", default-features = false, features = [
 # composites that texture via the standard image pipeline.
 # Every dep here is feature-gated; turn off `webview` to drop
 # them all and fall back to the "Unsupported" placeholder.
+# Target-gated alongside the video/audio stack — Blitz's
+# network provider depends on tokio + reqwest, neither of
+# which compile to wasm32. On the web target the `webview`
+# feature still toggles cleanly because Cargo silently skips
+# `dep:<name>` activations whose dep is absent for the target.
 blitz-dom    = { version = "0.3.0-alpha.4", optional = true }
 blitz-html   = { version = "0.3.0-alpha.4", optional = true }
 blitz-net    = { version = "0.3.0-alpha.4", optional = true }

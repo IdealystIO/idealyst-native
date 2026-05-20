@@ -997,7 +997,7 @@ impl Backend for WgpuBackend {
     // Unsupported primitives — render a "not supported" panel.
     // -----------------------------------------------------------
 
-    #[cfg(feature = "webview")]
+    #[cfg(blitz_active)]
     fn create_web_view(&mut self, url: &str) -> Self::Node {
         // Default render size — the author will almost always
         // override via `.with_style(...)` width/height. We size
@@ -1021,12 +1021,30 @@ impl Backend for WgpuBackend {
         node
     }
 
-    #[cfg(not(feature = "webview"))]
+    // Web target: same node shape, but the `WebView` struct is the
+    // tiny URL-holder stub from `web_view_wasm.rs`. The actual
+    // iframe is mounted by the host shell through the renderer's
+    // `DomOverlay` hook — no GPU upload here.
+    #[cfg(target_arch = "wasm32")]
+    fn create_web_view(&mut self, url: &str) -> Self::Node {
+        let layout = self.layout.new_node();
+        self.layout.set_intrinsic_size(layout, 320.0, 480.0);
+        let view = std::rc::Rc::new(crate::web_view::WebView::spawn(
+            url.to_string(),
+            320,
+            480,
+        ));
+        let node = new_node(NodeKind::WebView { view }, layout);
+        self.roots.push(node.clone());
+        node
+    }
+
+    #[cfg(not(webview_node))]
     fn create_web_view(&mut self, _url: &str) -> Self::Node {
         make_unsupported(&mut self.layout, &mut self.roots, "WebView")
     }
 
-    #[cfg(feature = "webview")]
+    #[cfg(webview_node)]
     fn make_web_view_handle(
         &self,
         node: &Self::Node,
@@ -1059,7 +1077,7 @@ impl Backend for WgpuBackend {
         // over from there. Equivalent to a synthetic "the user
         // just landed on the video" hover at creation time.
         let initial_hover = if controls {
-            Some(std::time::Instant::now())
+            Some(web_time::Instant::now())
         } else {
             None
         };
@@ -1638,15 +1656,17 @@ impl framework_core::primitives::video::VideoOps for WgpuVideoOps {
     }
 }
 
-/// `WebViewOps` impl for the wgpu preview, backed by Blitz. Only
-/// `reload` is wired in Phase 1 — `post_message` / `execute_js`
-/// require JS execution, which Blitz doesn't ship yet, so we
-/// leave them as the no-op default. `reload` re-triggers a
-/// fetch via the worker's navigate hook.
-#[cfg(feature = "webview")]
+/// `WebViewOps` impl for the wgpu preview, backed by Blitz on
+/// native or an `<iframe>` on the web. Only `reload` is wired in
+/// Phase 1 — `post_message` / `execute_js` require JS execution,
+/// which Blitz doesn't ship yet, so we leave them as the no-op
+/// default. `reload` re-triggers a fetch via the worker's
+/// navigate hook on native; on wasm it forces an iframe `src`
+/// re-set (handled host-side).
+#[cfg(webview_node)]
 struct WgpuWebViewOps;
 
-#[cfg(feature = "webview")]
+#[cfg(webview_node)]
 impl framework_core::primitives::web_view::WebViewOps for WgpuWebViewOps {
     fn reload(&self, node: &dyn std::any::Any) {
         if let Some(n) = node.downcast_ref::<WgpuNode>() {
@@ -2636,6 +2656,35 @@ fn walk_shutdown_videos(node: &WgpuNode, count: &mut usize) {
     }
 }
 
+/// Walk every WebView node and call `WebView::shutdown()`. Same
+/// rationale as `shutdown_all_videos`: drop the worker thread
+/// proactively rather than waiting for `Rc` unwinding (which
+/// reactive scopes can delay past `event_loop.exit()`).
+#[cfg(blitz_active)]
+pub(crate) fn shutdown_all_web_views(backend: &Rc<RefCell<WgpuBackend>>) {
+    let b = backend.borrow();
+    let Some(root) = b.root() else {
+        return;
+    };
+    let mut count = 0;
+    walk_shutdown_web_views(&root, &mut count);
+    if count > 0 {
+        eprintln!("[shutdown] tore down {count} web view(s)");
+    }
+}
+
+#[cfg(blitz_active)]
+fn walk_shutdown_web_views(node: &WgpuNode, count: &mut usize) {
+    if let NodeKind::WebView { view, .. } = &node.borrow().kind {
+        view.shutdown();
+        *count += 1;
+    }
+    let children: Vec<WgpuNode> = node.borrow().children.clone();
+    for child in children {
+        walk_shutdown_web_views(&child, count);
+    }
+}
+
 fn walk_for_playing_video(node: &WgpuNode) -> bool {
     if let NodeKind::Video { decoder, .. } = &node.borrow().kind {
         if decoder.shared.playing.load(std::sync::atomic::Ordering::Acquire) {
@@ -2662,12 +2711,12 @@ pub(crate) fn update_video_hover(
     let b = backend.borrow();
     let Some(root) = b.root() else { return false };
     let mut changed = false;
-    let now = std::time::Instant::now();
+    let now = web_time::Instant::now();
     walk_update_hover(&root, point, now, &mut changed);
     changed
 }
 
-fn walk_update_hover(node: &WgpuNode, point: (f32, f32), now: std::time::Instant, changed: &mut bool) {
+fn walk_update_hover(node: &WgpuNode, point: (f32, f32), now: web_time::Instant, changed: &mut bool) {
     if let NodeKind::Video { controls, last_hover, frame_rect, .. } = &node.borrow().kind {
         if *controls {
             let (rx, ry, rw, rh) = frame_rect.get();

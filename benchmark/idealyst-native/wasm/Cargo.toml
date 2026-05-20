@@ -9,13 +9,21 @@ license.workspace = true
 # still link this if anything depends on it (nothing does today).
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# `debug-stats` is OFF for headline benchmark figures — the
+# `performance.now()` reads around every backend op skew numbers
+# a few percent at hierarchy scale. Flip it ON when profiling:
+#
+#     default = ["debug-stats"]
+#
+# When ON, the variant's `bench_stats_json()` returns a `phases`
+# object with per-phase aggregated timings; the variant's
+# index.html dumps a `console.table` of them after each suite run.
+# Procedure: see CLAUDE.md §6 ("Profiling the framework").
+default = []
+debug-stats = ["framework-core/debug-stats", "backend-web/debug-stats"]
+
 [dependencies]
-# `debug-stats` is intentionally OFF here. It adds a
-# `performance.now()` reading around every backend op and bookkeeping
-# in `framework_core::debug` — small per-op but enough to skew the
-# rebuild numbers when 10k rows × 8 ops per row hit the timer.
-# Re-enable temporarily if you want to dump per-phase breakdowns,
-# but don't ship benchmark numbers with it on.
 framework-core = { workspace = true }
 framework-theme = { workspace = true }
 backend-web = { workspace = true }

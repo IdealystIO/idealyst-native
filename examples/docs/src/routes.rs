@@ -17,6 +17,7 @@ pub const REACTIVITY_ROUTE: Route<()> = Route::<()>::new("reactivity", "/concept
 pub const UI_DSL_ROUTE: Route<()> = Route::<()>::new("ui-dsl", "/concepts/ui-dsl");
 pub const PRIMITIVES_ROUTE: Route<()> = Route::<()>::new("primitives", "/concepts/primitives");
 pub const STYLES_ROUTE: Route<()> = Route::<()>::new("styles", "/concepts/styles");
+pub const ANIMATION_ROUTE: Route<()> = Route::<()>::new("animation", "/concepts/animation");
 pub const NAVIGATION_ROUTE: Route<()> = Route::<()>::new("navigation", "/concepts/navigation");
 
 // Building Blocks (reference-y pages that deepen the conceptual ones)
@@ -43,6 +44,8 @@ pub const SIMULATOR_ROUTE: Route<()> =
     Route::<()>::new("simulator", "/advanced/simulator");
 pub const BUILDING_A_THEME_SYSTEM_ROUTE: Route<()> =
     Route::<()>::new("building-a-theme-system", "/advanced/building-a-theme-system");
+pub const REACTIVE_TEXT_BINDINGS_ROUTE: Route<()> =
+    Route::<()>::new("reactive-text-bindings", "/advanced/reactive-text-bindings");
 
 // Reference (legacy hand-built pages — to be migrated to `docs!`)
 pub const MACROS_ROUTE: Route<()> = Route::<()>::new("macros", "/reference/macros");
@@ -77,6 +80,7 @@ pub const SECTIONS: &[IndexSection] = &[
             IndexEntry { name: "reactivity", label: "Reactivity" },
             IndexEntry { name: "primitives", label: "Primitives" },
             IndexEntry { name: "styles", label: "Styles & Themes" },
+            IndexEntry { name: "animation", label: "Animation" },
             IndexEntry { name: "ui-dsl", label: "UI DSL" },
         ],
     },
@@ -109,6 +113,7 @@ pub const SECTIONS: &[IndexSection] = &[
         label: "Advanced",
         items: &[
             IndexEntry { name: "building-a-theme-system", label: "Building a Theme System" },
+            IndexEntry { name: "reactive-text-bindings", label: "Reactive Text Bindings" },
             IndexEntry { name: "wgpu-native-api", label: "wgpu Native API" },
             IndexEntry { name: "simulator", label: "Simulator (live preview)" },
         ],

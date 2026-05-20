@@ -39,20 +39,18 @@ pub struct Args {
     #[arg(long)]
     pub roku: bool,
 
-    /// Build the AAS dev-host binary. Not a deploy target — useful
-    /// for inspecting the wrapper Cargo workspace or running the
-    /// host outside of `idealyst dev --aas`.
+    /// Build the AAS dev-host binary on its own. Not a deploy
+    /// target — useful for running the host outside of
+    /// `idealyst dev --aas`.
     #[arg(long)]
     pub aas: bool,
 
-    /// Release profile. Forwarded to each platform's release
-    /// pipeline (wasm-opt for web, xcodebuild Release for iOS,
-    /// `assembleRelease` for Android, cargo --release for AAS host).
+    /// Build with the release profile.
     #[arg(long)]
     pub release: bool,
 
-    /// iOS only: build for a physical device (`aarch64-apple-ios`)
-    /// rather than the simulator's host arch.
+    /// iOS only: build for a physical device rather than the
+    /// simulator.
     #[arg(long)]
     pub device: bool,
 }
@@ -151,11 +149,13 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<()> {
 }
 
 fn build_ios_target(dir: &std::path::Path, args: &Args) -> Result<()> {
+    let source = crate::framework_source::resolve(dir)?;
     let artifact = build_ios::build(
         dir,
         build_ios::BuildOptions {
             release: args.release,
             device: args.device,
+            source,
         },
     )?;
     eprintln!(
@@ -167,11 +167,14 @@ fn build_ios_target(dir: &std::path::Path, args: &Args) -> Result<()> {
 }
 
 fn build_android_target(dir: &std::path::Path, args: &Args) -> Result<()> {
+    let source = crate::framework_source::resolve(dir)?;
     let artifact = build_android::build(
         dir,
         build_android::BuildOptions {
             release: args.release,
-            ..Default::default()
+            api_level: 21,
+            mode: build_android::BuildMode::Local,
+            source,
         },
     )?;
     eprintln!(
@@ -183,7 +186,16 @@ fn build_android_target(dir: &std::path::Path, args: &Args) -> Result<()> {
 }
 
 fn build_roku_target(dir: &std::path::Path, _args: &Args) -> Result<()> {
-    let artifact = build_roku::build(dir, build_roku::BuildOptions::default())?;
+    let source = crate::framework_source::resolve(dir)?;
+    let artifact = build_roku::build(
+        dir,
+        build_roku::BuildOptions {
+            output_dir: None,
+            ui_json: None,
+            title: None,
+            source,
+        },
+    )?;
     eprintln!(
         "[build roku] success → {} ({} #[method] fns, {} ui commands)",
         artifact.package_dir.display(),

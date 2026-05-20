@@ -168,6 +168,37 @@ pub enum Primitive {
         #[cfg(feature = "robot")]
         test_id: Option<&'static str>,
     },
+    /// Controlled multi-line text editor — same controlled pattern
+    /// as `TextInput`, but the native widget accepts newlines. Web:
+    /// `<textarea>`. iOS: `UITextView`. Android: `EditText` with
+    /// `inputType="textMultiLine"`. The wgpu render backend currently
+    /// renders an Unsupported placeholder; a native multi-line editor
+    /// on that side is a follow-up.
+    TextArea {
+        value: Signal<String>,
+        on_change: Rc<dyn Fn(String)>,
+        placeholder: Option<String>,
+        style: Option<StyleSource>,
+        ref_fill: Option<RefFill>,
+        #[cfg(feature = "robot")]
+        test_id: Option<&'static str>,
+    },
+    /// Read-only colored-text panel — a sequence of `(text, color)`
+    /// runs the backend renders as discrete styled glyph spans.
+    /// Built specifically for syntax-highlighted source display
+    /// (the fiddle's code editor lays this behind a transparent
+    /// `<textarea>`), but useful anywhere a single text block needs
+    /// per-segment colors without nesting `Text` primitives.
+    ///
+    /// Web: `<pre>` with `<span style="color:#…">…</span>` children.
+    /// Other backends: same Unsupported fallback for now.
+    CodeBlock {
+        spans: Vec<(String, crate::Color)>,
+        style: Option<StyleSource>,
+        ref_fill: Option<RefFill>,
+        #[cfg(feature = "robot")]
+        test_id: Option<&'static str>,
+    },
     /// Controlled toggle (switch / checkbox). Same controlled
     /// pattern as `TextInput`: `value: Signal<bool>` round-trips
     /// through `on_change`.
@@ -493,6 +524,8 @@ impl Primitive {
             | Primitive::Pressable { test_id, .. }
             | Primitive::Image { test_id, .. }
             | Primitive::TextInput { test_id, .. }
+            | Primitive::TextArea { test_id, .. }
+            | Primitive::CodeBlock { test_id, .. }
             | Primitive::Toggle { test_id, .. }
             | Primitive::Slider { test_id, .. } => {
                 *test_id = Some(id);
@@ -514,6 +547,8 @@ impl Primitive {
             | Primitive::Pressable { test_id, .. }
             | Primitive::Image { test_id, .. }
             | Primitive::TextInput { test_id, .. }
+            | Primitive::TextArea { test_id, .. }
+            | Primitive::CodeBlock { test_id, .. }
             | Primitive::Toggle { test_id, .. }
             | Primitive::Slider { test_id, .. } => *test_id,
             _ => None,
@@ -533,6 +568,8 @@ impl Primitive {
             | Primitive::Image { style, .. }
             | Primitive::Icon { style, .. }
             | Primitive::TextInput { style, .. }
+            | Primitive::TextArea { style, .. }
+            | Primitive::CodeBlock { style, .. }
             | Primitive::Toggle { style, .. }
             | Primitive::ScrollView { style, .. }
             | Primitive::Slider { style, .. }

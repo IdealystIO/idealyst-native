@@ -21,4 +21,8 @@ serde_json = "1"
 toml = "0.8"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 backend-roku-transpile = { workspace = true }
+# Pulled in for `FrameworkSource` — the snapshot wrapper's Cargo.toml
+# uses the same workspace-or-git source resolution as iOS/Android.
+# `build-ios` is the shared home for those utilities.
+build-ios = { workspace = true }
 syn = { version = "2", features = ["full"] }

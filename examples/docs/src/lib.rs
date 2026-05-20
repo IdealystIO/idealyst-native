@@ -48,11 +48,12 @@ mod macro_test;
 mod web;
 
 use routes::{
-    BACKENDS_ROUTE, CLI_ROUTE, COMPONENTS_ROUTE, DEV_TOOLS_ROUTE, ICONS_ROUTE, LISTS_ROUTE,
-    MACROS_ROUTE, NAVIGATION_ROUTE, OVERVIEW_ROUTE, PLATFORMS_ROUTE, PRIMITIVES_ROUTE,
+    ANIMATION_ROUTE, BACKENDS_ROUTE, CLI_ROUTE, COMPONENTS_ROUTE, DEV_TOOLS_ROUTE, ICONS_ROUTE,
+    LISTS_ROUTE, MACROS_ROUTE, NAVIGATION_ROUTE, OVERVIEW_ROUTE, PLATFORMS_ROUTE, PRIMITIVES_ROUTE,
     QUICKSTART_ROUTE, REACTIVITY_ROUTE, REFS_ROUTE, ROBOT_ROUTE, SIMULATOR_ROUTE, STYLES_ROUTE,
-    BUILDING_A_THEME_SYSTEM_ROUTE, PORTAL_ROUTE, THIRD_PARTY_PRIMITIVES_ROUTE, UI_DSL_ROUTE,
-    WGPU_NATIVE_API_ROUTE, WRITING_A_BACKEND_ROUTE,
+    BUILDING_A_THEME_SYSTEM_ROUTE, PORTAL_ROUTE, REACTIVE_TEXT_BINDINGS_ROUTE,
+    THIRD_PARTY_PRIMITIVES_ROUTE, UI_DSL_ROUTE, WGPU_NATIVE_API_ROUTE,
+    WRITING_A_BACKEND_ROUTE,
 };
 use shell::{content_builder, web_layout};
 
@@ -93,6 +94,9 @@ pub fn app() -> Primitive {
             Screen::new(pages::primitives::page()).title("Primitives")
         })
         .screen(STYLES_ROUTE, |_| Screen::new(pages::styles::page()).title("Styles & Themes"))
+        .screen(ANIMATION_ROUTE, |_| {
+            Screen::new(pages::animation::page()).title("Animation")
+        })
         .screen(NAVIGATION_ROUTE, |_| {
             Screen::new(pages::navigation::page()).title("Navigation")
         })
@@ -117,6 +121,10 @@ pub fn app() -> Primitive {
         .screen(BUILDING_A_THEME_SYSTEM_ROUTE, |_| {
             Screen::new(pages::building_a_theme_system::page())
                 .title("Building a Theme System")
+        })
+        .screen(REACTIVE_TEXT_BINDINGS_ROUTE, |_| {
+            Screen::new(pages::reactive_text_bindings::page())
+                .title("Reactive Text Bindings")
         })
         .screen(WGPU_NATIVE_API_ROUTE, |_| {
             Screen::new(pages::wgpu_native_api::page()).title("wgpu Native API")

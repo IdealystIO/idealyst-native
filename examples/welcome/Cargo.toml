@@ -1,0 +1,39 @@
+[package]
+name = "welcome"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Animated welcome demo — drives `Presence` and the scheduler to sequence three phases (Welcome → to Idealyst → Hello World). Doubles as a smoke test for the presence primitive's enter/exit timing under real signal toggles."
+
+# `cdylib` for the wasm target; `rlib` so the CLI's per-platform
+# wrappers can depend on this crate as a library if someone wants to
+# build it for iOS / Android.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+framework-core  = { workspace = true }
+framework-theme = { workspace = true }
+idea-ui         = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = ["Node", "Element", "HtmlElement"] }
+console_error_panic_hook = "0.1"
+lol_alloc = "0.4"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = [
+    "-Oz",
+    "--strip-debug",
+    "--strip-producers",
+    "--enable-bulk-memory",
+    "--enable-nontrapping-float-to-int",
+]
+
+[package.metadata.idealyst.app]
+name      = "Welcome"
+bundle_id = "ai.truday.idealyst.welcome"
+version   = "0.0.1"
+targets   = ["web", "ios", "android"]

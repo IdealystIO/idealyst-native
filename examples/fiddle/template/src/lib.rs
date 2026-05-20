@@ -60,13 +60,14 @@ mod sim_mode {
 
     /// iPhone-portrait profile — matches `native-phone` so a snippet
     /// authored against the simulator lays out identically to the
-    /// native preview window.
+    /// native preview window. The fiddle picks the iframe's CSS
+    /// dimensions to match this aspect ratio (see the webapp's
+    /// `preview_style` block); the wrapper inside fills 100% / 100%
+    /// so the canvas tracks whatever physical size the iframe gives
+    /// it. No fixed `PREVIEW_WIDTH_PX` anymore — the iframe owns the
+    /// width; the canvas inherits.
     const LOGICAL_W: u32 = 390;
     const LOGICAL_H: u32 = 844;
-    /// CSS pixel width of the embedded canvas. Height is derived to
-    /// preserve the logical aspect (the docs Simulator does the same
-    /// — wide-but-short canvases stretch glyphs vertically).
-    const PREVIEW_WIDTH_PX: f32 = 320.0;
 
     #[wasm_bindgen(start)]
     pub fn start() {
@@ -87,9 +88,6 @@ mod sim_mode {
     }
 
     fn simulator_tree() -> framework_core::Primitive {
-        let preview_height_px =
-            PREVIEW_WIDTH_PX * (LOGICAL_H as f32) / (LOGICAL_W as f32);
-
         let graphics = framework_core::primitives::graphics::graphics(move |event: OnReadyEvent| {
             wasm_bindgen_futures::spawn_local(async move {
                 let profile = DeviceProfile {
@@ -125,13 +123,14 @@ mod sim_mode {
             drop(stale);
         });
 
-        // Pin the canvas to the device's aspect ratio (matches the
-        // docs Simulator's wrapper-View trick — the web `Graphics`
-        // primitive forces `width: 100%; height: 100%` inline on
-        // the canvas, so a fixed-size wrapper carries the dimensions).
+        // Fill the iframe edge-to-edge. The fiddle sizes the iframe
+        // to the simulator's logical aspect ratio, so 100% / 100%
+        // here means "canvas physical pixels track iframe size";
+        // the framework's logical → physical scale handles the
+        // (slightly different) DPI inside.
         let wrapper_sheet = Rc::new(StyleSheet::r#static(StyleRules {
-            width: Some(Length::Px(PREVIEW_WIDTH_PX).into()),
-            height: Some(Length::Px(preview_height_px).into()),
+            width: Some(Length::Percent(100.0).into()),
+            height: Some(Length::Percent(100.0).into()),
             ..Default::default()
         }));
         let wrapper = view(vec![graphics.into_primitive()]).with_style(wrapper_sheet);
@@ -199,10 +198,22 @@ pub use web_mode::start;
 /// out a full `framework_core::` / `idea_ui::` path.
 #[allow(unused_imports)]
 pub mod __rt {
+    // Framework primitives + builders the snippet hits constantly.
     pub use framework_core::{
-        button, component, pressable, signal, switch, text, ui, view, when, ColorScheme,
-        Easing, Effect, Length, Primitive, Ref, Signal, StyleRules, StyleSheet,
+        button, component, pressable, signal, switch, text, ui, view, when, AlignItems,
+        Color, ColorScheme, Easing, Effect, FlexDirection, FontWeight, JustifyContent,
+        Length, Overflow, Position, Primitive, Ref, Signal, StyleRules, StyleSheet,
     };
-    pub use idea_ui::{body, card, heading, BodyTone, HeadingKind};
+    // Style declaration macro — re-export so snippets can write
+    // `stylesheet! { pub Foo<()> { base(_t) { ... } } }` without
+    // typing the full path.
+    pub use framework_core::stylesheet;
+    // idea-ui's higher-level components, so snippets default to
+    // the styled shape rather than building everything out of bare
+    // `View` + per-instance stylesheets.
+    pub use idea_ui::{
+        body, card, heading, stack, BodyTone, CardPadding, CardTone, HeadingKind,
+        StackAlign, StackAxis, StackGap, StackJustify, StackPadding,
+    };
     pub use std::rc::Rc;
 }

@@ -1,0 +1,57 @@
+[package]
+name = "animation-test"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Animation system demo — exercises Tween, Spring, Decay, Sequence, Loop, Keyframes, and stagger end-to-end through `AnimatedValue` driving reactive style. Use as a smoke test for the per-frame clock, velocity handoff, and backend wiring."
+
+# `cdylib` for the wasm target (browser load via wasm-bindgen);
+# `rlib` so the CLI's generated native wrappers
+# (target/idealyst/<platform>/) can depend on this crate as a library.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# Connect to a running `idealyst dev` server instead of rendering the
+# local `app()` tree. Off by default.
+dev-hot-reload = ["dep:dev-client", "backend-web/aas-shell"]
+
+[dependencies]
+framework-core = { workspace = true, features = ["async-driver"] }
+framework-theme = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true, features = ["async-driver"] }
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["console"] }
+console_error_panic_hook = "0.1"
+lol_alloc = "0.4"
+dev-client = { workspace = true, optional = true }
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = [
+    "-Oz",
+    "--strip-debug",
+    "--strip-producers",
+    "--enable-bulk-memory",
+    "--enable-nontrapping-float-to-int",
+]
+
+# Idealyst project config — same shape as touch-test. CLI's
+# `idealyst dev --web` / `build web` / etc. discover this metadata
+# and materialize per-platform wrappers under
+# target/idealyst/<platform>/.
+[package.metadata.idealyst.app]
+name      = "Animation Test"
+# Underscore-clean — Android JNI symbol mangling can't handle
+# hyphens in the package segment. See touch-test's matching note.
+bundle_id = "ai.truday.idealyst.animationtest"
+version   = "0.0.1"
+targets   = ["web", "ios", "android"]
+
+[package.metadata.idealyst.app.splash]
+background  = "#101218"
+title       = "Animation Test"
+title_color = "#ffffff"
+duration_ms = 600

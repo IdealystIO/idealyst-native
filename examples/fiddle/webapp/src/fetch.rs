@@ -25,14 +25,17 @@ impl Mode {
     }
 }
 
-/// POST the snippet source to `/compile`. Returns the cache hash on
-/// success, or a human-readable error string on failure (network
-/// error, server compile failure, malformed response — all rolled
-/// into one for caller simplicity). The error string carries the
-/// raw rustc / wasm-pack stderr when the failure is a compile
-/// failure, so the editor can show the user something actionable.
-pub async fn compile(source: &str, mode: Mode) -> Result<String, String> {
-    let body = serialize_body(source, mode).map_err(|e| format!("serialize body: {e}"))?;
+/// POST the project tree to `/compile`. `files` is the user's
+/// `<relative path>` → contents map; the server treats each path
+/// as relative to the snippet's logical `src/` directory. Returns
+/// the cache hash on success, or a human-readable error string on
+/// failure (the raw rustc / wasm-pack stderr is included when the
+/// failure is a compile failure).
+pub async fn compile(
+    files: &std::collections::BTreeMap<String, String>,
+    mode: Mode,
+) -> Result<String, String> {
+    let body = serialize_body(files, mode).map_err(|e| format!("serialize body: {e}"))?;
 
     let headers = Headers::new().map_err(|e| jserr("Headers::new", e))?;
     headers
@@ -65,16 +68,30 @@ pub async fn compile(source: &str, mode: Mode) -> Result<String, String> {
     parse_response(resp.status(), &body_text)
 }
 
-/// Build the request body without pulling in `serde` — the shape is
-/// `{ "source": "...", "mode": "..." }` and
-/// `js_sys::JSON::stringify` handles the escaping in one call.
-fn serialize_body(source: &str, mode: Mode) -> Result<String, String> {
-    let obj = js_sys::Object::new();
-    js_sys::Reflect::set(&obj, &"source".into(), &JsValue::from_str(source))
-        .map_err(|e| jserr("Reflect::set source", e))?;
-    js_sys::Reflect::set(&obj, &"mode".into(), &JsValue::from_str(mode.wire()))
+/// Build the request body without pulling in `serde`. Shape is
+/// `{ "files": { "<path>": "<contents>", ... }, "mode": "..." }`;
+/// `js_sys::JSON::stringify` handles all escaping in one call so
+/// embedded `"`, newlines, control chars, etc. in user source land
+/// in the JSON correctly.
+fn serialize_body(
+    files: &std::collections::BTreeMap<String, String>,
+    mode: Mode,
+) -> Result<String, String> {
+    let outer = js_sys::Object::new();
+    let files_obj = js_sys::Object::new();
+    for (path, contents) in files {
+        js_sys::Reflect::set(
+            &files_obj,
+            &JsValue::from_str(path),
+            &JsValue::from_str(contents),
+        )
+        .map_err(|e| jserr("Reflect::set file entry", e))?;
+    }
+    js_sys::Reflect::set(&outer, &"files".into(), &files_obj)
+        .map_err(|e| jserr("Reflect::set files", e))?;
+    js_sys::Reflect::set(&outer, &"mode".into(), &JsValue::from_str(mode.wire()))
         .map_err(|e| jserr("Reflect::set mode", e))?;
-    let s = js_sys::JSON::stringify(&obj).map_err(|e| jserr("JSON.stringify", e))?;
+    let s = js_sys::JSON::stringify(&outer).map_err(|e| jserr("JSON.stringify", e))?;
     s.as_string()
         .ok_or_else(|| "stringify returned non-string".to_string())
 }

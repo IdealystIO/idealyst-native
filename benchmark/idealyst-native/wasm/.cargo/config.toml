@@ -1,0 +1,19 @@
+# Increase the wasm shadow-stack from rust-lld's default 1 MiB to 4 MiB.
+#
+# Why: the hierarchy bench builds deeply-nested Primitive trees (depth 13+
+# at target=15000 with auto max-depth). The framework's walker recurses
+# through them via build_inner → build_view → insert_children — a 3-fn
+# cycle whose frames each hold a fat `Primitive` enum (~200 B) plus locals,
+# coming in around 60-80 KB combined per tree level. At depth 13 that
+# clears 800 KB and tips into "RuntimeError: memory access out of bounds"
+# (the shadow stack underflows past linear-memory base).
+#
+# 4 MiB gives ~4x headroom — comfortable for the deepest hierarchy
+# parameterizations we measure (max depth slider caps at 30; that depth
+# would still fit) without bloating the wasm binary.
+#
+# Limited to this crate (the benchmark variant) — workspace crates and
+# the framework itself keep the default; only the bench measurement path
+# hits these depths.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "link-arg=-zstack-size=4194304"]

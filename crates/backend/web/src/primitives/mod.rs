@@ -10,6 +10,7 @@
 
 pub(crate) mod activity_indicator;
 pub(crate) mod button;
+pub(crate) mod code_block;
 pub(crate) mod graphics;
 pub(crate) mod icon;
 pub(crate) mod image;
@@ -21,6 +22,7 @@ pub(crate) mod pressable;
 pub(crate) mod scroll_view;
 pub(crate) mod slider;
 pub(crate) mod text;
+pub(crate) mod text_area;
 pub(crate) mod text_input;
 pub(crate) mod touch;
 pub(crate) mod toggle;

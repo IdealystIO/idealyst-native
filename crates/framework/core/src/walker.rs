@@ -32,7 +32,7 @@ use crate::primitives;
 use crate::reactive::{self, untrack, Effect, Ref, Signal};
 use crate::scheduling::schedule_microtask;
 use crate::sources::{StyleSource, TextSource};
-use crate::style::{self, resolve as resolve_style, StyleApplication, StyleRules};
+use crate::style::{self, resolve as resolve_style, StyleApplication, StyleRules, StyleSheet};
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -66,8 +66,58 @@ pub struct Owner {
     scope: Box<reactive::Scope>,
 }
 
+/// Render a pre-built `Primitive` tree under `backend`.
+///
+/// The root reactive scope wraps the build walk only — the tree
+/// itself is already a value by the time it's handed in. That means
+/// any signals / effects / refs declared by the caller while
+/// constructing `tree` (e.g. inside an `app()` function called by the
+/// host glue as `render(backend, app())`) run *outside* any active
+/// scope and aren't adopted by the returned `Owner`.
+///
+/// In practice this usually doesn't matter — most reactive primitives
+/// happily leak for the lifetime of the page. The exception is
+/// `effect!`: with no scope to adopt the new effect, the macro's
+/// hidden handle drops at the end of its block and the effect's
+/// cleanups fire immediately. Any timers scheduled inside (via
+/// `after_ms` + `on_cleanup`) get cancelled before they fire. See
+/// [`mount`] for the closure-taking variant that fixes this by
+/// running the constructor inside the root scope.
 #[must_use = "drop the Owner to dispose the UI; keep it alive to keep the UI reactive"]
 pub fn render<B: Backend + 'static>(backend: Rc<RefCell<B>>, tree: Primitive) -> Owner {
+    mount(backend, move || tree)
+}
+
+/// Render the tree produced by `tree_fn` under `backend`.
+///
+/// Mirrors [`render`] but takes a closure instead of a pre-built
+/// `Primitive`. The closure runs *inside* the root reactive scope,
+/// so any signals, effects, and refs declared by the closure are
+/// adopted by the returned `Owner`. That makes patterns like
+///
+/// ```ignore
+/// mount(backend, || {
+///     let phase = signal!(0u8);
+///     effect!({
+///         std::mem::forget(after_ms(900, move || phase.set(1)));
+///     });
+///     app(phase)
+/// });
+/// ```
+///
+/// behave the way author code expects: the `effect!` and its
+/// scheduled tasks live until the `Owner` drops at page teardown,
+/// not until the macro's hidden handle goes out of scope microseconds
+/// later.
+///
+/// New host-glue code should prefer `mount` over [`render`]. Both
+/// produce the same kind of `Owner`.
+#[must_use = "drop the Owner to dispose the UI; keep it alive to keep the UI reactive"]
+pub fn mount<B, F>(backend: Rc<RefCell<B>>, tree_fn: F) -> Owner
+where
+    B: Backend + 'static,
+    F: FnOnce() -> Primitive,
+{
     // Stash the backend's cascade capability so the theme-cohort
     // driver (installed lazily inside `build`) can short-circuit
     // its fan-out on token-only updates without holding a backend
@@ -78,7 +128,14 @@ pub fn render<B: Backend + 'static>(backend: Rc<RefCell<B>>, tree: Primitive) ->
     });
 
     let mut scope = Box::new(reactive::Scope::new());
-    let root = reactive::with_scope(&mut scope, || build(&backend, 0, tree));
+    let root = reactive::with_scope(&mut scope, || {
+        // Both the tree constructor and the build walk run inside the
+        // same root scope. Reactive primitives created during
+        // construction adopt this scope and are freed on `Owner`
+        // drop alongside the per-build effects that wire them up.
+        let tree = tree_fn();
+        build(&backend, 0, tree)
+    });
     backend.borrow_mut().finish(root);
     Owner { scope }
 }
@@ -207,6 +264,21 @@ fn build_inner<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) 
             let (initial_label, reactive_label) = match label {
                 TextSource::Static(s) => (s, None),
                 TextSource::Bound(d) => ((d.compute)(), Some(d.compute.clone())),
+                // JS-binding text sources flow through the JS host's
+                // own binding plumbing, not the standard reactive
+                // walker. Hitting this arm in build means the binding
+                // wasn't lowered upstream — treat as a TODO until the
+                // lowering lands.
+                // Button labels don't get the JS-binding fast path
+                // (Button isn't a hierarchy-scale hot path); fall
+                // back to `compute_fallback` as a regular `Bound`-
+                // style reactive label. The JS-binding fast path
+                // stays exclusive to `Primitive::Text`.
+                TextSource::JsBinding(spec) => {
+                    let compute = spec.compute_fallback.clone();
+                    let initial = (compute)();
+                    (initial, Some(compute))
+                }
             };
             // `on_click` is an `Action` carrying both the runtime
             // callable (`fire`) and the structured metadata
@@ -360,6 +432,45 @@ fn build_inner<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) 
             if let Some(RefFill::TextInput(fill)) = ref_fill {
                 let handle = backend.borrow().make_text_input_handle(&n);
                 fill(handle);
+            }
+            n
+        }
+        Primitive::TextArea { value, on_change, placeholder, style, ref_fill, .. } => {
+            let initial = value.get();
+            let n = time_backend_create(pkind!(TextArea), || {
+                backend.borrow_mut().create_text_area(
+                    &initial,
+                    placeholder.as_deref(),
+                    on_change,
+                )
+            });
+            if let Some(s) = style {
+                attach_style(backend, &n, s);
+            }
+            // Same controlled-value effect as TextInput. The textarea
+            // ignores no-change sets, so this is safe to fire on every
+            // signal write — including the one our own `on_change`
+            // round-trips back.
+            {
+                let backend = backend.clone();
+                let node = n.clone();
+                let _e = Effect::new(move || {
+                    let v = value.get();
+                    backend.borrow_mut().update_text_area_value(&node, &v);
+                });
+            }
+            if let Some(RefFill::TextArea(fill)) = ref_fill {
+                let handle = backend.borrow().make_text_area_handle(&n);
+                fill(handle);
+            }
+            n
+        }
+        Primitive::CodeBlock { spans, style, .. } => {
+            let n = time_backend_create(pkind!(CodeBlock), || {
+                backend.borrow_mut().create_code_block(&spans)
+            });
+            if let Some(s) = style {
+                attach_style(backend, &n, s);
             }
             n
         }
@@ -1132,6 +1243,8 @@ fn debug_kind_of(node: &Primitive) -> debug::PrimitiveKind {
         Primitive::Image { .. } => PrimitiveKind::Image,
         Primitive::Icon { .. } => PrimitiveKind::Icon,
         Primitive::TextInput { .. } => PrimitiveKind::TextInput,
+        Primitive::TextArea { .. } => PrimitiveKind::TextArea,
+        Primitive::CodeBlock { .. } => PrimitiveKind::CodeBlock,
         Primitive::Toggle { .. } => PrimitiveKind::Toggle,
         Primitive::ScrollView { .. } => PrimitiveKind::ScrollView,
         Primitive::Slider { .. } => PrimitiveKind::Slider,
@@ -1189,6 +1302,7 @@ fn robot_extract_meta(node: &Primitive) -> Option<RobotMeta> {
             let label = match source {
                 TextSource::Static(s) => Some(s.clone()),
                 TextSource::Bound(d) => Some((d.compute)()),
+                TextSource::JsBinding(spec) => Some((spec.compute_fallback)()),
             };
             Some(RobotMeta {
                 kind: ElementKind::Text,
@@ -1201,6 +1315,7 @@ fn robot_extract_meta(node: &Primitive) -> Option<RobotMeta> {
             let label_text = match label {
                 TextSource::Static(s) => Some(s.clone()),
                 TextSource::Bound(d) => Some((d.compute)()),
+                TextSource::JsBinding(spec) => Some((spec.compute_fallback)()),
             };
             // `on_click` is an `Action` (not a bare `Rc<dyn Fn()>`)
             // since the generator migration. The robot's
@@ -1237,6 +1352,23 @@ fn robot_extract_meta(node: &Primitive) -> Option<RobotMeta> {
             actions: ElementActions::empty(),
         }),
         Primitive::TextInput { on_change, test_id, .. } => {
+            let set_text = on_change.clone();
+            Some(RobotMeta {
+                kind: ElementKind::TextInput,
+                test_id: *test_id,
+                label: None,
+                actions: ElementActions {
+                    set_text: Some(set_text),
+                    ..ElementActions::empty()
+                },
+            })
+        }
+        Primitive::TextArea { on_change, test_id, .. } => {
+            // Reuse `ElementKind::TextInput` — the robot
+            // surface doesn't distinguish single- vs.
+            // multi-line; the `set_text` action covers both.
+            // Authors who care can branch on the wrapping
+            // element's test_id.
             let set_text = on_change.clone();
             Some(RobotMeta {
                 kind: ElementKind::TextInput,
@@ -1328,16 +1460,27 @@ fn build_text<B: Backend + 'static>(
             time_backend_create(pkind!(Text), || backend.borrow_mut().create_text(&content))
         }
         TextSource::Bound(d) => {
-            // Create the text node (empty initially — the Effect's
-            // first run populates it). Inform the backend of any
-            // structured metadata BEFORE the Effect kicks in so
-            // generator backends can declare the binding before
-            // the runtime path emits an `UpdateText`. Then the
-            // Effect drives the closure path identically to before
-            // the refactor.
-            let node = time_backend_create(pkind!(Text), || {
-                backend.borrow_mut().create_text("")
+            // Fast path: backends that return `Some(id)` from
+            // `create_text_with_id` get a batched effect closure
+            // that updates by id (one FFI per fan-out, regardless
+            // of subscriber count). Everything else falls through
+            // to the per-fire `update_text(&node, &str)` path.
+            //
+            // We try the batched path FIRST so backends opt in
+            // implicitly — no `if cfg!()` gating, no separate code
+            // path in the variant. The default `create_text_with_id`
+            // returns `None`, so non-web/non-batching backends
+            // see the legacy behavior unchanged.
+            let batched = time_backend_create(pkind!(Text), || {
+                backend.borrow_mut().create_text_with_id("")
             });
+            let (node, text_id) = match batched {
+                Some((n, id)) => (n, Some(id)),
+                None => (
+                    time_backend_create(pkind!(Text), || backend.borrow_mut().create_text("")),
+                    None,
+                ),
+            };
             // Only surface structured metadata when the binding
             // actually has any. Opaque Deriveds (closure-only
             // coercions) skip this entirely — generator backends
@@ -1350,16 +1493,141 @@ fn build_text<B: Backend + 'static>(
                 }
                 b.note_text_binding(&node, &d.inputs, d.method);
             }
+            // Scope-level cleanup: when the surrounding scope drops
+            // (switch-arm flip, component unmount, owner drop), tell
+            // the backend to clear the registry slot for this id.
+            // Without this, every mount/unmount cycle of a reactive
+            // text would leak a JS-side registry entry; over time
+            // the backend's `__idealystTextRegistry` would fill with
+            // dead-Node holes. `on_cleanup` here registers a
+            // scope-level callback (not an effect-level one — we
+            // want it firing only on teardown, not on every
+            // re-fire of the effect below).
+            if let Some(id) = text_id {
+                let backend_for_release = backend.clone();
+                crate::on_cleanup(move || {
+                    backend_for_release.borrow_mut().release_text_id(id);
+                });
+            }
+            // Pre-branch on `text_id` so each fire only runs the
+            // chosen body — no per-fire `match` dispatch, no
+            // unnecessary capture of `node` in the batched arm.
+            // Also lets the batched arm *move* the closure's
+            // `String` result straight into the backend's pending
+            // buffer (via `update_text_by_id(id, value)`), saving
+            // one allocation per fire vs. `&value` + internal
+            // `.to_string()`.
             let compute = d.compute.clone();
-            let node_for_effect = node.clone();
             let backend_for_effect = backend.clone();
-            let _e = Effect::new(move || {
-                let value = (compute)();
-                backend_for_effect
-                    .borrow_mut()
-                    .update_text(&node_for_effect, &value);
-            });
+            // `Effect::new_with_stable_deps` is the right fit for
+            // reactive text bindings: the closure body is a pure
+            // value computation whose dep set is fixed at
+            // construction time (the same `signal.get()` calls fire
+            // every re-run, in the same order). The fast-path
+            // re-run skips `clear_effect_dependencies` and the
+            // matching re-track inside `signal.get`, which collapses
+            // the per-fire HashSet churn on signals with thousands
+            // of subscribers.
+            let _e = match text_id {
+                Some(id) => Effect::new_with_stable_deps(move || {
+                    let value = (compute)();
+                    backend_for_effect
+                        .borrow_mut()
+                        .update_text_by_id(id, value);
+                }),
+                None => {
+                    let node_for_effect = node.clone();
+                    Effect::new_with_stable_deps(move || {
+                        let value = (compute)();
+                        backend_for_effect
+                            .borrow_mut()
+                            .update_text(&node_for_effect, &value);
+                    })
+                }
+            };
             node
+        }
+        TextSource::JsBinding(spec) => {
+            // Fast path: backend can run the per-fire fan-out on
+            // its own side (web → JS). The walker hands over the
+            // structured binding and DOESN'T install a Rust Effect
+            // — the per-leaf cost at fan-out time drops to whatever
+            // the backend can do internally.
+            //
+            // Fallback: if either (a) the backend doesn't support
+            // batched-text ids OR (b) it doesn't support JS-style
+            // bindings, lower to the same shape as `Bound` — wrap
+            // `compute_fallback` in a `Derived<String>` and re-enter
+            // the Bound arm's logic via a tail call below.
+            let batched = time_backend_create(pkind!(Text), || {
+                backend.borrow_mut().create_text_with_id("")
+            });
+            let supports_js = backend.borrow().supports_js_text_bindings();
+            match (batched, supports_js) {
+                (Some((node, text_id)), true) => {
+                    // Hand the binding over. Release on scope drop
+                    // so the JS-side registry doesn't accumulate
+                    // stale entries on switch-arm flips / unmounts.
+                    let parts_refs: Vec<&str> =
+                        spec.template_parts.iter().map(|s| s.as_str()).collect();
+                    let initials_refs: Vec<&str> =
+                        spec.initial_values.iter().map(|s| s.as_str()).collect();
+                    backend.borrow_mut().register_reactive_text_binding(
+                        text_id,
+                        &spec.signal_ids,
+                        &parts_refs,
+                        &initials_refs,
+                    );
+                    let backend_for_release = backend.clone();
+                    crate::on_cleanup(move || {
+                        let mut b = backend_for_release.borrow_mut();
+                        b.release_reactive_text_binding(text_id);
+                        b.release_text_id(text_id);
+                    });
+                    node
+                }
+                (batched_opt, _) => {
+                    // Fallback path: same shape as the legacy
+                    // `Bound` arm. We use `compute_fallback` as the
+                    // re-fire body. The batched-text-id path still
+                    // runs if available (saves per-fire FFI even on
+                    // backends that don't support JS bindings);
+                    // otherwise plain `update_text`.
+                    let (node, text_id) = match batched_opt {
+                        Some((n, id)) => (n, Some(id)),
+                        None => (
+                            time_backend_create(pkind!(Text), || {
+                                backend.borrow_mut().create_text("")
+                            }),
+                            None,
+                        ),
+                    };
+                    if let Some(id) = text_id {
+                        let backend_for_release = backend.clone();
+                        crate::on_cleanup(move || {
+                            backend_for_release.borrow_mut().release_text_id(id);
+                        });
+                    }
+                    let compute = spec.compute_fallback.clone();
+                    let backend_for_effect = backend.clone();
+                    let _e = match text_id {
+                        Some(id) => Effect::new_with_stable_deps(move || {
+                            let value = (compute)();
+                            backend_for_effect.borrow_mut().update_text_by_id(id, value);
+                        }),
+                        None => {
+                            let node_for_effect = node.clone();
+                            Effect::new_with_stable_deps(move || {
+                                let value = (compute)();
+                                backend_for_effect
+                                    .borrow_mut()
+                                    .update_text(&node_for_effect, &value);
+                            })
+                        }
+                    };
+                    node
+                }
+            }
         }
     }
 }
@@ -1615,7 +1883,16 @@ fn enqueue_primitive<B: Backend + 'static>(
             }
             let content = match source {
                 TextSource::Static(s) => s,
+                // Reactive sources break out of the batch path — the
+                // walker's per-Effect setup is the only place
+                // `update_text_by_id` / `update_text_by_id_with`
+                // wiring lives, so we drop back to it.
                 TextSource::Bound(_) => return None,
+                // JS-binding sources aren't lowered through this
+                // batch path either; same drop-back-to-per-Effect
+                // treatment as `Bound` once the binding lowering
+                // lands. For now, bail to the slow path.
+                TextSource::JsBinding(_) => return None,
             };
             let id = batch.next_id();
             batch.ops.push(BatchOp::CreateText {
@@ -3589,6 +3866,34 @@ fn attach_style_reactive<B: Backend + 'static>(
     #[cfg(feature = "debug-stats")]
     let _t_effect_alloc_start = debug::now_micros();
 
+    // Per-Effect strong handle to the latest sheet returned by the
+    // closure. Without this, a closure that builds an inline
+    // `Rc<StyleSheet>` per call (the common shape for
+    // `with_style(|| { ... StyleApplication::new(Rc::new(StyleSheet::r#static(...))) })`)
+    // would drop the sheet to refcount 0 the moment the Effect body
+    // returns. `ensure_registered_with` stores a `Weak<StyleSheet>`
+    // keyed by `Rc::as_ptr`; once the strong count hits zero the
+    // Weak is dead, and the NEXT call to `ensure_registered_with`
+    // (from any other styled view in the same mount pass) runs the
+    // dead-Weak sweep, queues the rules into PENDING_UNREGISTER,
+    // and the flush calls `unregister_stylesheet` — deleting the
+    // CSS rule the current node still references via its class
+    // attribute.
+    //
+    // Pinning the latest `Rc<StyleSheet>` in this slot keeps the
+    // Weak alive for the Effect's lifetime, which is exactly "the
+    // node has this style applied." When the surrounding scope
+    // drops (node unmount), the Effect drops, the closure drops,
+    // this slot drops, the strong ref decrements, and the sheet
+    // becomes eligible for cleanup on the next sweep — correctly,
+    // because the node is gone.
+    //
+    // The slot holds only `Rc<StyleSheet>` (not the full
+    // `StyleApplication`) so the closure can still consume `app`
+    // by move on the event-driven backend path below — we clone
+    // the cheap `Rc<StyleSheet>` into the slot before that.
+    let mut pinned_sheet: Option<Rc<StyleSheet>> = None;
+
     let _e = Effect::new(move || {
         #[cfg(feature = "debug-stats")]
         let _t_first_run_start = debug::now_micros();
@@ -3639,6 +3944,15 @@ fn attach_style_reactive<B: Backend + 'static>(
                     .register_typeface(id, family_name, faces, fallback);
             },
         );
+
+        // Pin the sheet so its `Weak` in REGISTRATIONS stays
+        // upgradeable for the rest of this Effect's lifetime. Cheap
+        // `Rc::clone` — see the long comment at the outer
+        // `pinned_sheet` declaration for why this is mandatory.
+        // Must happen AFTER `ensure_registered_with` (otherwise
+        // there's nothing to pin yet) and BEFORE the
+        // event-driven branch below consumes `app` by move.
+        pinned_sheet = Some(app.sheet.clone());
 
         if handles_states_natively {
             // Resolve the base (no state axes) and each declared state

@@ -312,6 +312,33 @@ docs! {
            until the primitive (or component) mounts."),
     },
 
+    section(heading = "node_ref! — terser allocation") {
+        p(code("node_ref!"),
+          " is the macro equivalent of ", code("Ref::new()"),
+          ". It exists because the explicit form needs a type \
+           somewhere — either on the let-binding or via turbofish:"),
+
+        code(rust, r##"
+            // Three equivalent forms — pick the most readable for the call site.
+            let row: Ref<ViewHandle> = Ref::new();
+            let row = Ref::<ViewHandle>::new();
+            let row = node_ref!(ViewHandle);
+        "##),
+
+        p("The macro accepts either zero arguments (relies on the \
+           let-binding's type annotation for inference, same as ",
+          code("Ref::new()"),
+          ") or one type argument (matches the turbofish form). The \
+           one-argument form is the common case in handler-heavy \
+           code where each ref's handle type is obvious from context."),
+
+        p("Spelled ", code("node_ref!"),
+          " — not ", code("ref!"), " — because ", code("ref"),
+          " is a strict Rust keyword (used in patterns: ",
+          code("let ref x = ..."),
+          ") and can't be a macro identifier."),
+    },
+
     section(heading = "Binding via .bind") {
         p("Every primitive's builder and every ", code("Bindable<H>"),
           "-returning component exposes ", code(".bind(ref)"), ":"),

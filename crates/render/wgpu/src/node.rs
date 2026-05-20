@@ -516,7 +516,7 @@ pub enum NodeKind {
         /// `Some(t)` keeps controls visible for ~2 s past `t`,
         /// then fades out. Always-on when the decoder is paused
         /// so the user can still grab the scrubber when stopped.
-        last_hover: std::cell::Cell<Option<std::time::Instant>>,
+        last_hover: std::cell::Cell<Option<web_time::Instant>>,
         /// Sub-rects the renderer cached on the last frame so
         /// pointer routing can hit-test without re-deriving them.
         /// All zero before the first render with controls on.
@@ -528,18 +528,22 @@ pub enum NodeKind {
         /// without re-running layout.
         frame_rect: std::cell::Cell<(f32, f32, f32, f32)>,
     },
-    /// Live HTML view rendered by the bundled Blitz engine. The
-    /// [`WebView`](crate::web_view::WebView) owns its decoder
-    /// thread; the renderer's pre-pass uploads the latest
+    /// Live HTML view. On native (with `feature = "webview"`)
+    /// the [`WebView`](crate::web_view::WebView) owns a Blitz
+    /// worker thread; the renderer's pre-pass uploads the latest
     /// painted RGBA buffer to a wgpu texture and composites via
-    /// the image pipeline. Only present when the crate is built
-    /// with the `webview` feature.
-    #[cfg(feature = "webview")]
+    /// the image pipeline. On wasm the same `WebView` is a tiny
+    /// stub that just holds the current URL — the host's
+    /// `DomOverlay` impl mounts an `<iframe>` over the canvas
+    /// and `last_uploaded_paint` is irrelevant.
+    #[cfg(webview_node)]
     WebView {
         view: std::rc::Rc<crate::web_view::WebView>,
         /// Counter value of the most-recently uploaded paint.
-        /// Cheap re-upload skip — only blit when the worker has
-        /// produced a fresh frame.
+        /// Cheap re-upload skip — only blit when the Blitz worker
+        /// has produced a fresh frame. Unused on wasm (no GPU
+        /// upload happens for iframes).
+        #[cfg(blitz_active)]
         last_uploaded_paint: std::cell::Cell<u64>,
     },
     /// Renders a "not supported in this simulator" panel for
@@ -638,7 +642,7 @@ impl std::fmt::Debug for NodeKind {
                 if drawer.borrow().is_some() { "set" } else { "unset" },
             ),
             NodeKind::Video { .. } => f.write_str("Video"),
-            #[cfg(feature = "webview")]
+            #[cfg(webview_node)]
             NodeKind::WebView { .. } => f.write_str("WebView"),
             NodeKind::Unsupported { label } => write!(f, "Unsupported({label})"),
         }

@@ -36,6 +36,7 @@
 //! contention for per-instance values and keeps dynamic-class lifecycle
 //! simple (one class per node, replaced atomically).
 
+mod animated;
 #[cfg(feature = "async-driver")]
 pub mod async_executor;
 mod assets;
@@ -58,6 +59,42 @@ pub use dev_transport::{connect_web, WebClientHandle};
 pub use render_loop::install_render_loop;
 pub use scheduler::install_scheduler;
 pub use time_source::install_time_source;
+
+/// Install a self-handle so the batched text-update path
+/// ([`Backend::create_text_with_id`] / [`Backend::update_text_by_id`])
+/// can schedule its microtask flush. Must be called once after the
+/// app's `Rc<RefCell<WebBackend>>` is constructed; if it's never
+/// called, `create_text_with_id` returns `None` and the framework
+/// falls back to the unbatched `update_text` path automatically.
+///
+/// The handle is held as a `Weak` so the backend Rc still drops
+/// cleanly on app teardown — once it drops, queued microtasks
+/// upgrade to `None` and become no-ops.
+pub fn install_text_batcher(backend: &std::rc::Rc<std::cell::RefCell<WebBackend>>) {
+    WEB_BACKEND_HANDLE.with(|s| *s.borrow_mut() = Some(std::rc::Rc::downgrade(backend)));
+    // Pre-inject the JS-side reactive-binding shim so it's
+    // available for console-driven smoke tests (`__idealystBindingsSmokeTest()`)
+    // before any text binding is actually registered through the
+    // framework. Cheap (~0.5 ms for the eval); same pattern as
+    // the batched-text shim's lazy injection on first use, just
+    // pulled forward.
+    backend.borrow_mut().ensure_text_bindings_shim();
+}
+
+std::thread_local! {
+    /// `Weak` self-handle to the active `WebBackend` so the
+    /// microtask scheduled inside `update_text_by_id` /
+    /// `release_text_id` can find its way back to a `&mut self`
+    /// borrow without cyclic Rcs.
+    ///
+    /// Set by [`install_text_batcher`]. Single-threaded by virtue
+    /// of being a thread_local in wasm32 (single-threaded by
+    /// platform). For multi-backend pages the handle gets
+    /// overwritten — `create_text_with_id` always reads back the
+    /// most-recently-installed one.
+    static WEB_BACKEND_HANDLE: std::cell::RefCell<Option<std::rc::Weak<std::cell::RefCell<WebBackend>>>> =
+        const { std::cell::RefCell::new(None) };
+}
 
 use framework_core::{
     AssetId, AssetSource, AssetTag, Backend, ButtonHandle, StyleRules, SystemFallback,
@@ -114,6 +151,75 @@ pub struct WebBackend {
     /// off `window` — the function reference is stable for the
     /// page's lifetime.
     pub(crate) batch_fn: Option<js_sys::Function>,
+    /// Has the batched-text-update shim
+    /// (`runtime/js/text_batch.js`) been injected? Mirrors
+    /// `batch_shim_injected` for the reactive-text fast path.
+    pub(crate) text_batch_shim_injected: bool,
+    /// Has the JS-side reactive-binding shim
+    /// (`runtime/js/text_bindings.js`) been injected? Companion
+    /// to `text_batch_shim_injected` — the binding shim shares
+    /// the text-id space with the batched-text shim, so any node
+    /// that owns a batched-text id can ALSO carry a JS-side
+    /// binding without conflict. Lazy: flipped true on first
+    /// `ensure_text_bindings_shim()` call.
+    pub(crate) text_bindings_shim_injected: bool,
+    /// Cached handle to `window.__idealystUpdateTextBatch`. Set on
+    /// first flush.
+    pub(crate) text_update_batch_fn: Option<js_sys::Function>,
+    /// Cached handle to `window.__idealystRegisterText`. Set on first
+    /// `create_text_with_id` call.
+    pub(crate) text_register_fn: Option<js_sys::Function>,
+    /// Cached handle to `window.__idealystReleaseText`. Set on first
+    /// `release_text_id` call. (Releases happen at scope-teardown
+    /// time; they're rare enough that lazy lookup is fine.)
+    pub(crate) text_release_fn: Option<js_sys::Function>,
+    /// Cached handle to `window.__idealystOnSignalChanged`. Set
+    /// the first time a JS-registered signal fires.
+    pub(crate) signal_changed_fn: Option<js_sys::Function>,
+    /// Cached handle to `window.__idealystRegisterBinding`. Set on
+    /// first call to `register_reactive_text_binding`.
+    pub(crate) binding_register_fn: Option<js_sys::Function>,
+    /// Cached handle to `window.__idealystReleaseBinding`. Set on
+    /// first call to `release_reactive_text_binding`.
+    pub(crate) binding_release_fn: Option<js_sys::Function>,
+    /// Monotonically-assigned text id counter. NEVER reused — a stale
+    /// `update_text_by_id` queued before a release but flushed after
+    /// would otherwise race against a re-assigned slot.
+    pub(crate) next_text_id: u32,
+    /// Pending text-update ids accumulated since the last flush.
+    /// Parallel to [`Self::pending_text_lengths`] — the i-th
+    /// segment in [`Self::pending_text_buffer`] has length
+    /// `pending_text_lengths[i]` and updates the node at
+    /// `pending_text_ids[i]`. Drained by
+    /// [`Self::flush_pending_text`].
+    pub(crate) pending_text_ids: Vec<u32>,
+    /// UTF-16 code-unit length of each pending segment. The JS
+    /// shim walks the joined buffer with `substring(offset,
+    /// offset+len)`, which uses UTF-16 indices; tracking lengths
+    /// in code units (not bytes) keeps the offsets correct when
+    /// the buffer contains non-ASCII content. For ASCII (the
+    /// common case — bench leaves, simple labels), code-unit
+    /// length equals byte length and the computation is O(1).
+    pub(crate) pending_text_lengths: Vec<u32>,
+    /// One growing UTF-8 buffer containing every pending update's
+    /// new content, segments back-to-back (NO separator — the JS
+    /// shim walks them with the parallel-array `pending_text_lengths`
+    /// instead of splitting on a sentinel).
+    ///
+    /// Cleared (not dropped) after each flush so its capacity
+    /// survives across flushes — at hierarchy scale the buffer
+    /// stabilizes at the size of the largest fan-out and never
+    /// re-allocs.
+    pub(crate) pending_text_buffer: String,
+    /// Pending releases (ids whose registry slot should be cleared).
+    /// Drained alongside `pending_text_ids` at flush time.
+    pub(crate) pending_text_releases: Vec<u32>,
+    /// `true` while a microtask flush is queued. Coalesces many
+    /// `update_text_by_id` calls in the same synchronous turn into a
+    /// single flush. Cleared by the flush microtask before it runs
+    /// (so any updates queued *during* the flush schedule another
+    /// flush rather than getting lost).
+    pub(crate) text_flush_scheduled: std::rc::Rc<std::cell::Cell<bool>>,
     /// Per-virtualizer instance state — keyed by node id so we can
     /// route `virtualizer_data_changed` to the right instance AND
     /// drop its closures on `release_virtualizer`. The wrapped
@@ -233,6 +339,13 @@ pub struct WebBackend {
     /// unregistered kinds fall through to a "not supported" placeholder.
     pub(crate) external_handlers:
         framework_core::ExternalRegistry<WebBackend>,
+    /// Per-node animated-property state. Tracks the most recent
+    /// values written via `Backend::set_animated_f32` /
+    /// `set_animated_color` so compound properties like CSS
+    /// `translate: <x> <y>` and `scale: <x> <y>` can be re-emitted
+    /// without clobbering unrelated axes. See [`animated`] module
+    /// for the per-property routing.
+    pub(crate) animated_states: animated::AnimatedStateMap,
 }
 
 /// Diagnostic snapshot returned by [`WebBackend::debug_counts`].
@@ -288,6 +401,29 @@ impl WebBackend {
             virtualizer_shim_injected: false,
             batch_shim_injected: false,
             batch_fn: None,
+            text_batch_shim_injected: false,
+            text_bindings_shim_injected: false,
+            text_update_batch_fn: None,
+            text_register_fn: None,
+            text_release_fn: None,
+            signal_changed_fn: None,
+            binding_register_fn: None,
+            binding_release_fn: None,
+            next_text_id: 0,
+            // Pre-allocate the pending buffers so the first
+            // fan-out at hierarchy scale doesn't pay ~12 grow-
+            // reallocs walking from cap 0 up to a few thousand
+            // entries. 256 covers most apps' steady-state fan-
+            // outs in a single allocation; beyond that, the
+            // doubling growth kicks in as normal.
+            pending_text_ids: Vec::with_capacity(256),
+            pending_text_lengths: Vec::with_capacity(256),
+            // 8 KiB initial buffer covers most fan-outs without
+            // grow-realloc. The buffer stabilizes after a few
+            // flushes at the size of the largest fan-out.
+            pending_text_buffer: String::with_capacity(8192),
+            pending_text_releases: Vec::with_capacity(64),
+            text_flush_scheduled: std::rc::Rc::new(std::cell::Cell::new(false)),
             virtualizer_instances: HashMap::new(),
             next_virtualizer_id: 0,
             graphics_instances: HashMap::new(),
@@ -309,6 +445,7 @@ impl WebBackend {
             blob_asset_urls: std::collections::HashSet::new(),
             font_face_rule_indices: HashMap::new(),
             external_handlers: framework_core::ExternalRegistry::new(),
+            animated_states: HashMap::new(),
         }
     }
 
@@ -329,6 +466,379 @@ impl WebBackend {
     {
         self.external_handlers
             .register::<T, _>(move |props, backend| handler(props, backend).into());
+    }
+
+    /// Register a signal with the JS-side reactive layer so its
+    /// future writes ship to JS for fan-out. Call once per signal
+    /// — subsequent calls overwrite the previous stringifier
+    /// (which is fine; the closure captures the same `Signal<T>`
+    /// handle every time).
+    ///
+    /// `stringifier` runs from inside `Signal::set` / `Signal::update`
+    /// after the Rust subscriber fan-out and must produce a `String`
+    /// representation of the signal's current value (typically
+    /// `signal.get_untracked().to_string()`). The result is shipped
+    /// across the wasm→JS boundary via
+    /// `__idealystOnSignalChanged(sid, value)`, where the JS-side
+    /// binding registry handles the per-binding fan-out.
+    ///
+    /// Caller must have installed the text batcher first (see
+    /// [`install_text_batcher`]) so the JS shim and self-handle
+    /// are both available.
+    pub fn register_signal_for_js<F>(&mut self, sid_raw: u64, stringifier: F)
+    where
+        F: Fn() -> String + 'static,
+    {
+        // Ensure the binding shim is loaded so
+        // `__idealystOnSignalChanged` is callable from the closure.
+        self.ensure_text_bindings_shim();
+        // Capture a Weak self-handle so the notifier closure can
+        // find its way back to `&mut self` when the signal fires,
+        // without creating a cyclic Rc that would leak the backend
+        // forever.
+        let weak = WEB_BACKEND_HANDLE
+            .with(|s| s.borrow().clone())
+            .expect(
+                "WEB_BACKEND_HANDLE must be set (call install_text_batcher first) \
+                 to use register_signal_for_js",
+            );
+        let stringifier = std::rc::Rc::new(stringifier);
+        framework_core::register_signal_js_notifier(sid_raw, move || {
+            let value = stringifier();
+            if let Some(rc) = weak.upgrade() {
+                rc.borrow_mut().ship_signal_change_to_js(sid_raw, &value);
+            }
+        });
+    }
+
+    /// Ship a `(signal_id, new_value)` notification to the JS-side
+    /// reactive layer. Single FFI hop — JS handles the per-binding
+    /// fan-out internally. Called from the notifier closure
+    /// installed by [`Self::register_signal_for_js`].
+    fn ship_signal_change_to_js(&mut self, sid_raw: u64, value: &str) {
+        use wasm_bindgen::JsValue;
+        if self.signal_changed_fn.is_none() {
+            let window = web_sys::window().expect("no window");
+            let f_val = js_sys::Reflect::get(
+                &window,
+                &JsValue::from_str("__idealystOnSignalChanged"),
+            )
+            .expect("Reflect::get for __idealystOnSignalChanged failed");
+            self.signal_changed_fn = Some(
+                f_val
+                    .dyn_into::<js_sys::Function>()
+                    .expect("__idealystOnSignalChanged is not a Function — shim missing"),
+            );
+        }
+        let _ = self
+            .signal_changed_fn
+            .as_ref()
+            .expect("set above")
+            .call2(
+                &JsValue::NULL,
+                // u32 fits the typical SignalId.0; we send as f64
+                // because JS treats Numbers as f64. The JS-side
+                // Map<sid, ...> uses these as keys.
+                &JsValue::from(sid_raw as u32),
+                &JsValue::from_str(value),
+            )
+            .expect("__idealystOnSignalChanged call failed");
+    }
+
+    /// Register a reactive text binding with the JS-side layer.
+    /// After this call, the text node at `text_id` updates entirely
+    /// from JS whenever any signal in `signal_ids` fires — no Rust
+    /// Effect, no per-leaf wasm crossing on fan-out.
+    ///
+    /// - `text_id`         : the id returned by
+    ///                       [`Backend::create_text_with_id`](framework_core::Backend::create_text_with_id).
+    /// - `signal_ids`      : signal raw ids (`Signal::id()`) the
+    ///                       binding interpolates, in template-slot
+    ///                       order.
+    /// - `template_parts`  : the N+1 static parts surrounding the
+    ///                       N signal slots (e.g. for `"leaf {}: g={}"`
+    ///                       pass `["leaf ", ": g=", ""]`).
+    /// - `initial_values`  : the N initial signal values as strings
+    ///                       (typically `signal.get_untracked().to_string()`).
+    ///                       Used both to seed the JS-side signal
+    ///                       cache AND to compute the binding's
+    ///                       initial `nodeValue` synchronously
+    ///                       inside this call (no empty-text flash).
+    ///
+    /// **Each signal in `signal_ids` must have had
+    /// [`Self::register_signal_for_js`] called on it first** —
+    /// otherwise the binding registers but no signal change will
+    /// ever flow through to update it. This split (register signal
+    /// once, register binding per text node) avoids re-registering
+    /// the same per-signal stringifier on every binding.
+    pub fn register_reactive_text_binding(
+        &mut self,
+        text_id: u32,
+        signal_ids: &[u64],
+        template_parts: &[&str],
+        initial_values: &[&str],
+    ) {
+        use wasm_bindgen::JsValue;
+        debug_assert_eq!(
+            template_parts.len(),
+            signal_ids.len() + 1,
+            "template_parts must have N+1 entries for N signal slots",
+        );
+        debug_assert_eq!(
+            initial_values.len(),
+            signal_ids.len(),
+            "initial_values must have one entry per signal id",
+        );
+        self.ensure_text_bindings_shim();
+        if self.binding_register_fn.is_none() {
+            let window = web_sys::window().expect("no window");
+            let f_val = js_sys::Reflect::get(
+                &window,
+                &JsValue::from_str("__idealystRegisterBinding"),
+            )
+            .expect("Reflect::get for __idealystRegisterBinding failed");
+            self.binding_register_fn = Some(
+                f_val
+                    .dyn_into::<js_sys::Function>()
+                    .expect("__idealystRegisterBinding is not a Function — shim missing"),
+            );
+        }
+
+        // Get the Text DOM node out of the registry by id. We
+        // stored Text nodes (not their wrapping spans) at create
+        // time exactly so the binding can write to `nodeValue`
+        // directly.
+        let text_node: JsValue = {
+            let window = web_sys::window().expect("no window");
+            let registry = js_sys::Reflect::get(
+                &window,
+                &JsValue::from_str("__idealystTextRegistry"),
+            )
+            .expect("Reflect::get for __idealystTextRegistry failed");
+            js_sys::Reflect::get_u32(&registry, text_id)
+                .expect("text id not in __idealystTextRegistry — was create_text_with_id called?")
+        };
+
+        // Encode signal_ids as Uint32Array (single FFI marshal),
+        // parts + initials as NUL-joined strings (single FFI each).
+        let ids_u32: Vec<u32> = signal_ids.iter().map(|&s| s as u32).collect();
+        let ids_buf = js_sys::Uint32Array::from(&ids_u32[..]);
+        let parts_joined = template_parts.join("\0");
+        let initials_joined = initial_values.join("\0");
+
+        let _ = self
+            .binding_register_fn
+            .as_ref()
+            .expect("set above")
+            .apply(
+                &JsValue::NULL,
+                &js_sys::Array::of5(
+                    &JsValue::from(text_id),
+                    &text_node,
+                    &ids_buf,
+                    &JsValue::from_str(&parts_joined),
+                    &JsValue::from_str(&initials_joined),
+                ),
+            )
+            .expect("__idealystRegisterBinding call failed");
+    }
+
+    /// Release a JS-side binding previously registered via
+    /// [`Self::register_reactive_text_binding`]. The text node
+    /// itself is released separately via the existing
+    /// `release_text_id` path; this only clears the binding
+    /// metadata (signal subscriptions) on the JS side.
+    pub fn release_reactive_text_binding(&mut self, text_id: u32) {
+        use wasm_bindgen::JsValue;
+        if self.binding_release_fn.is_none() {
+            let window = web_sys::window().expect("no window");
+            let f_val = js_sys::Reflect::get(
+                &window,
+                &JsValue::from_str("__idealystReleaseBinding"),
+            )
+            .expect("Reflect::get for __idealystReleaseBinding failed");
+            self.binding_release_fn = Some(
+                f_val
+                    .dyn_into::<js_sys::Function>()
+                    .expect("__idealystReleaseBinding is not a Function — shim missing"),
+            );
+        }
+        let _ = self
+            .binding_release_fn
+            .as_ref()
+            .expect("set above")
+            .call1(&JsValue::NULL, &JsValue::from(text_id))
+            .expect("__idealystReleaseBinding call failed");
+    }
+
+    /// Drain queued `update_text_by_id` and `release_text_id` calls
+    /// into a single FFI hop via `__idealystUpdateTextBatch`.
+    ///
+    /// Called from the microtask scheduled by
+    /// [`WebBackend::update_text_by_id`]. The bench's `apply`
+    /// timer measures synchronous JS + the immediately-following
+    /// microtask drain, so this work still counts against `apply`
+    /// — but the per-leaf FFI cost collapses from one
+    /// `set_text_content` round-trip per leaf to one
+    /// `Uint32Array`-shaped flush per fan-out.
+    pub(crate) fn flush_pending_text(&mut self) {
+        use wasm_bindgen::JsValue;
+        let _t_total = crate::phase_timer::PhaseTimer::start("text_flush_total");
+
+        // Process unregisters first as one batched FFI call. Scope
+        // teardown can drop 2 k+ text effects at once (e.g. a
+        // switch-arm flip in the hierarchy bench); ship them as a
+        // single `Uint32Array` to `__idealystReleaseTextBatch`
+        // instead of one `call1` per id.
+        if !self.pending_text_releases.is_empty() {
+            if self.text_release_fn.is_none() {
+                let window = web_sys::window().expect("no window");
+                let f_val = js_sys::Reflect::get(
+                    &window,
+                    &JsValue::from_str("__idealystReleaseTextBatch"),
+                )
+                .expect("Reflect::get for __idealystReleaseTextBatch failed");
+                self.text_release_fn = Some(
+                    f_val
+                        .dyn_into::<js_sys::Function>()
+                        .expect(
+                            "__idealystReleaseTextBatch is not a Function — shim missing",
+                        ),
+                );
+            }
+            let release_ids = std::mem::take(&mut self.pending_text_releases);
+            let release_buf = js_sys::Uint32Array::from(&release_ids[..]);
+            let _ = self
+                .text_release_fn
+                .as_ref()
+                .expect("set above")
+                .call1(&JsValue::NULL, &release_buf)
+                .expect("__idealystReleaseTextBatch call failed");
+            // Restore the empty Vec so its allocation survives.
+            self.pending_text_releases = release_ids;
+            self.pending_text_releases.clear();
+        }
+
+        let n = self.pending_text_ids.len();
+        if n == 0 {
+            return;
+        }
+
+        // Lazily resolve + cache the JS-side batch fn. First flush
+        // pays the lookup; subsequent flushes reuse the handle.
+        if self.text_update_batch_fn.is_none() {
+            self.ensure_text_batch_shim();
+            let window = web_sys::window().expect("no window");
+            let f_val = js_sys::Reflect::get(
+                &window,
+                &JsValue::from_str("__idealystUpdateTextBatch"),
+            )
+            .expect("Reflect::get for __idealystUpdateTextBatch failed");
+            self.text_update_batch_fn = Some(
+                f_val
+                    .dyn_into::<js_sys::Function>()
+                    .expect("__idealystUpdateTextBatch is not a Function — shim missing"),
+            );
+        }
+
+        // Three FFI args: ids, lengths, big string buffer. The JS
+        // shim walks `bigString.substring(offset, offset+len)` per
+        // entry — `substring` is O(1) (creates a SlicedString) so
+        // there's no upfront split-and-allocate cost like the
+        // previous NUL-separated design had. The three Vec/String
+        // are `take()`-d so we can do the FFI calls without holding
+        // `&mut self.pending_*`, then restored as empty so their
+        // capacity survives the next fan-out.
+        let ids = std::mem::take(&mut self.pending_text_ids);
+        let lengths = std::mem::take(&mut self.pending_text_lengths);
+        let buffer = std::mem::take(&mut self.pending_text_buffer);
+
+        let (ids_buf, lengths_buf, strings_buf) = {
+            let _t = crate::phase_timer::PhaseTimer::start("text_flush_marshal");
+            let ids_buf = js_sys::Uint32Array::from(&ids[..]);
+            let lengths_buf = js_sys::Uint32Array::from(&lengths[..]);
+            let strings_buf = JsValue::from_str(&buffer);
+            (ids_buf, lengths_buf, strings_buf)
+        };
+
+        {
+            let _t = crate::phase_timer::PhaseTimer::start("text_flush_ffi_call");
+            let _ = self
+                .text_update_batch_fn
+                .as_ref()
+                .expect("set above")
+                .call3(&JsValue::NULL, &ids_buf, &lengths_buf, &strings_buf)
+                .expect("__idealystUpdateTextBatch call failed");
+        }
+
+        self.pending_text_ids = ids;
+        self.pending_text_ids.clear();
+        self.pending_text_lengths = lengths;
+        self.pending_text_lengths.clear();
+        self.pending_text_buffer = buffer;
+        self.pending_text_buffer.clear();
+    }
+
+    /// Append a `(id, content)` pending entry. Bytes are written
+    /// straight into the shared `pending_text_buffer` via
+    /// `write_fn`; the segment's UTF-16 code-unit length is pushed
+    /// into a parallel `pending_text_lengths` Vec so the JS shim
+    /// can slice it back out with `substring(offset, offset+len)`.
+    ///
+    /// Why length-prefixed (not NUL-separated): the JS shim used
+    /// to receive one big NUL-joined string and `split('\0')` it
+    /// — at 20 k segments per flush, that split allocated 20 k
+    /// JS String objects up front and burned ~2-5 ms per flush.
+    /// `substring` is O(1) (creates a SlicedString view), so
+    /// length-prefixed traversal does the same total work
+    /// distributed across the per-segment loop with no upfront
+    /// allocation.
+    ///
+    /// Why UTF-16 lengths: `substring` uses UTF-16 code units. For
+    /// ASCII content (bench leaves, simple labels) UTF-8 bytes ==
+    /// UTF-16 code units so the computation is O(1) via the
+    /// `is_ascii()` fast path; for non-ASCII we walk the new
+    /// segment once with `chars().map(c.len_utf16()).sum()`. Both
+    /// paths produce a length the JS shim can use directly.
+    pub(crate) fn append_pending_text<F: FnOnce(&mut String)>(
+        &mut self,
+        id: u32,
+        write_fn: F,
+    ) {
+        let start_byte = self.pending_text_buffer.len();
+        write_fn(&mut self.pending_text_buffer);
+        let new_segment = &self.pending_text_buffer[start_byte..];
+        let utf16_len: u32 = if new_segment.is_ascii() {
+            new_segment.len() as u32
+        } else {
+            new_segment.chars().map(|c| c.len_utf16() as u32).sum()
+        };
+        self.pending_text_lengths.push(utf16_len);
+        self.pending_text_ids.push(id);
+    }
+
+    /// Schedule a microtask-driven flush of `pending_text_*`. No-op
+    /// if a flush is already scheduled this turn — the existing
+    /// microtask will drain everything queued by the time it runs.
+    /// Clearing the `text_flush_scheduled` flag inside the
+    /// microtask (before `flush_pending_text` runs) means updates
+    /// queued *during* the flush re-schedule a fresh microtask
+    /// rather than getting lost.
+    fn schedule_text_flush(&self) {
+        if self.text_flush_scheduled.get() {
+            return;
+        }
+        self.text_flush_scheduled.set(true);
+        let weak = WEB_BACKEND_HANDLE
+            .with(|s| s.borrow().clone())
+            .expect("WEB_BACKEND_HANDLE must be set when batched text path is active");
+        let flag = self.text_flush_scheduled.clone();
+        framework_core::schedule_microtask(move || {
+            flag.set(false);
+            if let Some(rc) = weak.upgrade() {
+                rc.borrow_mut().flush_pending_text();
+            }
+        });
     }
 
     /// `true` if a handler for payload type `T` has been registered.
@@ -456,6 +966,101 @@ impl Backend for WebBackend {
         primitives::text::update_text(node, content)
     }
 
+    fn create_text_with_id(&mut self, content: &str) -> Option<(Self::Node, u32)> {
+        let _t = crate::phase_timer::PhaseTimer::start("text_create_with_id");
+        // Without an installed self-handle in `WEB_BACKEND_HANDLE`,
+        // the microtask flush has no way back to `&mut self`. Bail
+        // out so the framework falls back to the unbatched path
+        // rather than queueing updates that will never drain.
+        let has_handle = WEB_BACKEND_HANDLE.with(|s| s.borrow().is_some());
+        if !has_handle {
+            return None;
+        }
+        self.ensure_text_batch_shim();
+        if self.text_register_fn.is_none() {
+            let window = web_sys::window().expect("no window");
+            let f_val = js_sys::Reflect::get(
+                &window,
+                &wasm_bindgen::JsValue::from_str("__idealystRegisterText"),
+            )
+            .expect("Reflect::get for __idealystRegisterText failed");
+            self.text_register_fn = Some(
+                f_val
+                    .dyn_into::<js_sys::Function>()
+                    .expect("__idealystRegisterText is not a Function — shim injection failed"),
+            );
+        }
+        // Create the span WITH an inner Text node and register the
+        // inner Text node — not the span — in the JS registry.
+        // Update path then sets `text.nodeValue = ...` (O(1) string-
+        // slot assignment) instead of `span.textContent = ...`
+        // (which removes all children + creates a new Text node).
+        // Measured: at 20 k leaves / 12 fan-outs, the difference is
+        // ~30 ms per flush.
+        let (span, inner_text) = primitives::text::create_with_inner_text(self, content);
+        let id = self.next_text_id;
+        self.next_text_id += 1;
+        let _ = self
+            .text_register_fn
+            .as_ref()
+            .expect("set above")
+            .call2(
+                &wasm_bindgen::JsValue::NULL,
+                &wasm_bindgen::JsValue::from(id),
+                inner_text.as_ref(),
+            )
+            .expect("__idealystRegisterText call failed");
+        Some((span, id))
+    }
+
+    fn update_text_by_id(&mut self, id: u32, content: String) {
+        let _t = crate::phase_timer::PhaseTimer::start("text_update_by_id");
+        self.append_pending_text(id, |buf| buf.push_str(&content));
+        self.schedule_text_flush();
+    }
+
+    fn release_text_id(&mut self, id: u32) {
+        self.pending_text_releases.push(id);
+        // Piggy-back on the same flush microtask the updates use.
+        // Releases without queued updates are rare (scope teardown
+        // without a triggering signal change) but cheap to schedule.
+        self.schedule_text_flush();
+    }
+
+    fn supports_js_text_bindings(&self) -> bool {
+        // True iff the variant has installed the text batcher (which
+        // also pre-injects the bindings shim and sets
+        // `WEB_BACKEND_HANDLE`). Without that, the signal-change
+        // notifier closure has no way back to `&mut self` and the
+        // JS-side update path wouldn't fire — better to fall back
+        // to the Rust Effect.
+        WEB_BACKEND_HANDLE.with(|s| s.borrow().is_some())
+    }
+
+    fn register_reactive_text_binding(
+        &mut self,
+        text_id: u32,
+        signal_ids: &[u64],
+        template_parts: &[&str],
+        initial_values: &[&str],
+    ) {
+        // Delegates to the inherent method on `WebBackend`. The
+        // inherent method exists separately because it predates the
+        // trait-method (and is also useful directly for code paths
+        // that hold a concrete `&mut WebBackend`).
+        WebBackend::register_reactive_text_binding(
+            self,
+            text_id,
+            signal_ids,
+            template_parts,
+            initial_values,
+        )
+    }
+
+    fn release_reactive_text_binding(&mut self, text_id: u32) {
+        WebBackend::release_reactive_text_binding(self, text_id)
+    }
+
     fn create_image(&mut self, src: &str, alt: Option<&str>) -> Self::Node {
         primitives::image::create(self, src, alt)
     }
@@ -504,6 +1109,41 @@ impl Backend for WebBackend {
 
     fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {
         primitives::text_input::update_value(node, value)
+    }
+
+    fn create_text_area(
+        &mut self,
+        initial_value: &str,
+        placeholder: Option<&str>,
+        on_change: Rc<dyn Fn(String)>,
+    ) -> Self::Node {
+        primitives::text_area::create(self, initial_value, placeholder, on_change)
+    }
+
+    fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {
+        primitives::text_area::update_value(node, value)
+    }
+
+    fn make_text_area_handle(
+        &self,
+        node: &Self::Node,
+    ) -> framework_core::primitives::text_area::TextAreaHandle {
+        primitives::text_area::make_handle(node)
+    }
+
+    fn create_code_block(
+        &mut self,
+        spans: &[(String, framework_core::Color)],
+    ) -> Self::Node {
+        primitives::code_block::create(self, spans)
+    }
+
+    fn update_code_block_spans(
+        &mut self,
+        node: &Self::Node,
+        spans: &[(String, framework_core::Color)],
+    ) {
+        primitives::code_block::update_spans(self, node, spans)
     }
 
     fn create_toggle(&mut self, initial_value: bool, on_change: Rc<dyn Fn(bool)>) -> Self::Node {
@@ -867,6 +1507,24 @@ impl Backend for WebBackend {
         self.impl_apply_style(node, style)
     }
 
+    fn set_animated_f32(
+        &mut self,
+        node: &Self::Node,
+        prop: framework_core::animation::AnimProp,
+        value: f32,
+    ) {
+        self.impl_set_animated_f32(node, prop, value);
+    }
+
+    fn set_animated_color(
+        &mut self,
+        node: &Self::Node,
+        prop: framework_core::animation::AnimProp,
+        value: [f32; 4],
+    ) {
+        self.impl_set_animated_color(node, prop, value);
+    }
+
     /// Opt into the walker's batched-Repeat path. When the walker sees
     /// a `Primitive::Repeat` whose rows are pure View+Text+static-style,
     /// it builds a [`BackendBatch`] and ships it through
@@ -1160,22 +1818,83 @@ impl Backend for WebBackend {
 struct WebViewOps;
 impl framework_core::ViewOps for WebViewOps {
     fn rect(&self, node: &dyn std::any::Any) -> framework_core::ViewportRect {
-        let el: &web_sys::Node = match node.downcast_ref::<web_sys::Node>() {
-            Some(n) => n,
-            None => return framework_core::ViewportRect::default(),
-        };
-        let element: web_sys::Element = match el.clone().dyn_into() {
-            Ok(e) => e,
-            Err(_) => return framework_core::ViewportRect::default(),
-        };
-        let r = element.get_bounding_client_rect();
-        framework_core::ViewportRect {
+        match view_rect_from_node(node) {
+            Some(r) => r,
+            None => framework_core::ViewportRect::default(),
+        }
+    }
+
+    /// Parent-relative frame. `offsetLeft`/`offsetTop` give the
+    /// top-left in the nearest positioned ancestor's coordinate
+    /// system (the DOM equivalent of UIKit's `view.frame` /
+    /// Taffy's per-node rect). Width and height come from
+    /// `getBoundingClientRect` because `offsetWidth`/`offsetHeight`
+    /// quantize to integers, which loses sub-pixel precision the
+    /// physics paths and overlay anchors care about. Returns
+    /// `None` when the element isn't attached to the document —
+    /// matches the trait's "not yet laid out" contract.
+    fn frame(
+        &self,
+        node: &dyn std::any::Any,
+    ) -> Option<framework_core::primitives::portal::ViewportRect> {
+        let el = element_from_any(node)?;
+        if !el.is_connected() {
+            return None;
+        }
+        let r = el.get_bounding_client_rect();
+        let (ox, oy) = el
+            .clone()
+            .dyn_into::<web_sys::HtmlElement>()
+            .map(|h| (h.offset_left() as f32, h.offset_top() as f32))
+            // SVG / non-HTML elements have no `offsetLeft`; fall
+            // back to viewport coords. Authors mixing those into
+            // overlays already opt into that trade-off via the
+            // primitives that emit them.
+            .unwrap_or((r.x() as f32, r.y() as f32));
+        Some(framework_core::primitives::portal::ViewportRect {
+            x: ox,
+            y: oy,
+            width: r.width() as f32,
+            height: r.height() as f32,
+        })
+    }
+
+    /// Viewport-relative frame. Same as `rect`, but returns `None`
+    /// when the element isn't connected so callers can tell "not
+    /// mounted yet" from "mounted at the origin" — `rect`'s
+    /// non-`Option` shape can't.
+    fn absolute_frame(
+        &self,
+        node: &dyn std::any::Any,
+    ) -> Option<framework_core::primitives::portal::ViewportRect> {
+        let el = element_from_any(node)?;
+        if !el.is_connected() {
+            return None;
+        }
+        let r = el.get_bounding_client_rect();
+        Some(framework_core::primitives::portal::ViewportRect {
             x: r.x() as f32,
             y: r.y() as f32,
             width: r.width() as f32,
             height: r.height() as f32,
-        }
+        })
     }
+}
+
+fn element_from_any(node: &dyn std::any::Any) -> Option<web_sys::Element> {
+    let n = node.downcast_ref::<web_sys::Node>()?;
+    n.clone().dyn_into::<web_sys::Element>().ok()
+}
+
+fn view_rect_from_node(node: &dyn std::any::Any) -> Option<framework_core::ViewportRect> {
+    let el = element_from_any(node)?;
+    let r = el.get_bounding_client_rect();
+    Some(framework_core::ViewportRect {
+        x: r.x() as f32,
+        y: r.y() as f32,
+        width: r.width() as f32,
+        height: r.height() as f32,
+    })
 }
 
 /// Build a "not supported" placeholder element for an unregistered

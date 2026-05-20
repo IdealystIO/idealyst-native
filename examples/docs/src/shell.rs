@@ -138,9 +138,9 @@ fn nav_link(
     };
 
     use crate::routes::{
-        CLI_ROUTE, COMPONENTS_ROUTE, MACROS_ROUTE, NAVIGATION_ROUTE, OVERVIEW_ROUTE,
-        PLATFORMS_ROUTE, PRIMITIVES_ROUTE, QUICKSTART_ROUTE, REACTIVITY_ROUTE, SIMULATOR_ROUTE,
-        STYLES_ROUTE, UI_DSL_ROUTE,
+        ANIMATION_ROUTE, CLI_ROUTE, COMPONENTS_ROUTE, MACROS_ROUTE, NAVIGATION_ROUTE,
+        OVERVIEW_ROUTE, PLATFORMS_ROUTE, PRIMITIVES_ROUTE, QUICKSTART_ROUTE, REACTIVITY_ROUTE,
+        SIMULATOR_ROUTE, STYLES_ROUTE, UI_DSL_ROUTE,
     };
 
     match name {
@@ -176,6 +176,11 @@ fn nav_link(
         },
         "styles" => ui! {
             Link(route = &STYLES_ROUTE, params = ()) {
+                Text(style = style) { label_text }
+            }
+        },
+        "animation" => ui! {
+            Link(route = &ANIMATION_ROUTE, params = ()) {
                 Text(style = style) { label_text }
             }
         },
