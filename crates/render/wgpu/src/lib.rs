@@ -40,6 +40,8 @@ pub mod pipeline;
 mod renderer;
 mod video;
 mod audio;
+#[cfg(feature = "webview")]
+mod web_view;
 mod scheduler;
 mod skin;
 mod style_convert;

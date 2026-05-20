@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Benchmark · React (memoized)</title>
+<style>
+  /*
+   * Memoized React variant. Same UI surface as `react-naive`,
+   * but every component is wrapped in `React.memo` and the
+   * global counter is delivered via Context (so non-target
+   * Leafs subscribe to global only via useContext; the target
+   * leaf subscribes to both global and a per-target ref-based
+   * state).
+   *
+   * The point: shows the spread between unmemoized React
+   * (`react-naive`) and a hand-disciplined production React
+   * variant. On BRANCH updates, only the target leaf re-renders
+   * (memo + ref-based local state). On GLOBAL updates, every
+   * Context consumer re-renders.
+   *
+   * Most real React codebases land somewhere between naive and
+   * this. We ship both so you can see the achievable floor with
+   * idiomatic perf optimization.
+   */
+  html, body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  #root { display: flex; flex-direction: column; min-height: 100vh; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@18.3.1",
+    "react/jsx-runtime": "https://esm.sh/react@18.3.1/jsx-runtime",
+    "react-dom/client": "https://esm.sh/react-dom@18.3.1/client?deps=react@18.3.1"
+  }
+}
+</script>
+</head>
+<body>
+<div id="root"></div>
+<script type="module">
+import { useState, useMemo, useContext, createContext, memo, useEffect } from 'react';
+import { jsx as _jsx, jsxs as _jsxs } from 'react/jsx-runtime';
+import { createRoot } from 'react-dom/client';
+import { flushSync } from 'https://esm.sh/react-dom@18.3.1?deps=react@18.3.1';
+import { autoRunIfRequested, LIGHT, DARK } from '../instrument.js';
+import { genTreeShape } from '../tree.js';
+
+// ── rebuild / toggle styles ──────────────────────────────────
+const pageStyle = (t) => ({
+  display: 'flex', flexDirection: 'column',
+  padding: 32, gap: 24, minHeight: '100%',
+  background: t.background, color: t.text,
+  transition: 'background 250ms ease-in-out, color 250ms ease-in-out',
+});
+const listStyle = (t) => ({
+  display: 'flex', flexDirection: 'column',
+  borderRadius: 10,
+  background: t.surface, border: `1px solid ${t.border}`,
+  height: 500, overflow: 'hidden', overflowY: 'auto',
+  transition: 'background 250ms ease-in-out, border-color 250ms ease-in-out',
+});
+const rowStyle = (t, parity) => ({
+  display: 'flex', flexDirection: 'column',
+  background: parity === 'odd' ? t.surface_alt : t.surface,
+  color: t.text,
+  padding: '8px 16px',
+  borderBottom: `1px solid ${t.border}`,
+  fontSize: 13, height: 36, justifyContent: 'center',
+  transition: 'background 250ms ease-in-out, color 250ms ease-in-out, border-bottom-color 250ms ease-in-out',
+});
+
+const Row = memo(function Row({ index, theme }) {
+  return _jsx('div', {
+    style: rowStyle(theme, index % 2 === 0 ? 'even' : 'odd'),
+    children: _jsx('span', { children: `Row #${index}` }),
+  });
+});
+
+// ── hierarchy: Context for global counter ────────────────────
+// Global counter goes via Context. Every Leaf reads via
+// `useContext` — when the context value changes, ALL consumers
+// re-render (this is React's coarse-grained behavior, even with
+// memo). That's the honest cost of global state in React.
+const GlobalContext = createContext(0);
+// Branch counter: delivered to the SINGLE target leaf via a
+// separate state-by-ref pattern. Only the target subscribes,
+// non-targets are completely insulated by `memo`.
+let setTargetBranchCounter = null;
+
+const TargetLeaf = memo(function TargetLeaf({ id, initialBranch }) {
+  const global = useContext(GlobalContext);
+  const [branch, setBranch] = useState(initialBranch);
+  // Publish the setter to module scope so `branchUpdate` can
+  // reach in from outside. One target leaf per mount; safe to
+  // overwrite the global slot.
+  useEffect(() => {
+    setTargetBranchCounter = setBranch;
+    return () => { setTargetBranchCounter = null; };
+  }, []);
+  return _jsx('span', { children: `leaf ${id}: g=${global} b=${branch}` });
+});
+
+const NormalLeaf = memo(function NormalLeaf({ id }) {
+  const global = useContext(GlobalContext);
+  return _jsx('span', { children: `leaf ${id}: g=${global}` });
+});
+
+const Branch = memo(function Branch({ node, targetId }) {
+  return _jsx('div', {
+    className: 'b',
+    children: node.children.map((child) => {
+      if (child.kind === 'leaf') {
+        return child.id === targetId
+          ? _jsx(TargetLeaf, { id: child.id, initialBranch: 0 }, child.id)
+          : _jsx(NormalLeaf, { id: child.id }, child.id);
+      }
+      return _jsx(Branch, { node: child, targetId }, child.id);
+    }),
+  });
+});
+
+// ── external hooks ───────────────────────────────────────────
+let externalSetRows = null;
+let externalSetTheme = null;
+let externalSetupHierarchy = null;
+let externalGlobalUpdate = null;
+
+function App() {
+  const [rowCount, setRowCountState] = useState(1000);
+  const [theme, setThemeState] = useState(LIGHT);
+  const [mode, setMode] = useState('rows');
+  const [tree, setTree] = useState(null);
+  const [globalCounter, setGlobal] = useState(0);
+
+  if (!externalSetRows) {
+    externalSetRows = async (n) => {
+      flushSync(() => {
+        setMode('rows');
+        setRowCountState(n);
+      });
+    };
+  }
+  if (!externalSetTheme) {
+    externalSetTheme = async (name) => {
+      flushSync(() => setThemeState(name === 'dark' ? DARK : LIGHT));
+    };
+  }
+  if (!externalSetupHierarchy) {
+    externalSetupHierarchy = async (seed, nodes, maxDepth) => {
+      const t = genTreeShape(seed, nodes, maxDepth || undefined);
+      flushSync(() => {
+        setTree({ root: t.root, targetId: t.targetLeaf.id });
+        setMode('tree');
+      });
+    };
+  }
+  if (!externalGlobalUpdate) {
+    externalGlobalUpdate = async (n) => {
+      flushSync(() => setGlobal(n));
+    };
+  }
+
+  // ALL hooks unconditional (Rules of Hooks). Compute rows
+  // useMemo before the mode branch.
+  const rows = useMemo(
+    () => Array.from({ length: rowCount }, (_, i) => _jsx(Row, { index: i, theme }, i)),
+    [theme, rowCount]
+  );
+
+  if (mode === 'tree' && tree) {
+    return _jsx(GlobalContext.Provider, {
+      value: globalCounter,
+      children: _jsx('div', {
+        style: { padding: 16, font: '12px/1.4 monospace' },
+        children: tree.root.kind === 'leaf'
+          ? (tree.root.id === tree.targetId
+              ? _jsx(TargetLeaf, { id: tree.root.id, initialBranch: 0 })
+              : _jsx(NormalLeaf, { id: tree.root.id }))
+          : _jsx(Branch, { node: tree.root, targetId: tree.targetId }),
+      }),
+    });
+  }
+
+  return _jsx('div', {
+    style: pageStyle(theme),
+    children: _jsx('div', { style: listStyle(theme), children: rows }),
+  });
+}
+
+createRoot(document.getElementById('root')).render(_jsx(App, {}));
+
+async function waitForReady() {
+  for (let i = 0; i < 50 && (!externalSetRows || !externalSetTheme); i++) {
+    await new Promise(r => requestAnimationFrame(r));
+  }
+  if (!externalSetRows) throw new Error('React mount never filled externalSetRows');
+}
+waitForReady().then(() =>
+  autoRunIfRequested({
+    setRows: (n) => externalSetRows(n),
+    setTheme: (t) => externalSetTheme(t),
+    setupHierarchy: (seed, nodes, maxDepth) => externalSetupHierarchy(seed, nodes, maxDepth),
+    branchUpdate: async (n) => {
+      // The target leaf publishes its setBranch via useEffect.
+      // Wait briefly if it's not ready yet (first tick after mount).
+      for (let i = 0; i < 5 && !setTargetBranchCounter; i++) {
+        await new Promise(r => queueMicrotask(r));
+      }
+      if (setTargetBranchCounter) flushSync(() => setTargetBranchCounter(n));
+    },
+    globalUpdate: (n) => externalGlobalUpdate(n),
+  })
+);
+</script>
+</body>
+</html>

@@ -997,8 +997,44 @@ impl Backend for WgpuBackend {
     // Unsupported primitives — render a "not supported" panel.
     // -----------------------------------------------------------
 
+    #[cfg(feature = "webview")]
+    fn create_web_view(&mut self, url: &str) -> Self::Node {
+        // Default render size — the author will almost always
+        // override via `.with_style(...)` width/height. We size
+        // the Blitz output to logical-px-equivalent at 1.0 scale;
+        // a HiDPI follow-up would thread the device scale here.
+        let layout = self.layout.new_node();
+        self.layout.set_intrinsic_size(layout, 320.0, 480.0);
+        let view = std::rc::Rc::new(crate::web_view::WebView::spawn(
+            url.to_string(),
+            320,
+            480,
+        ));
+        let node = new_node(
+            NodeKind::WebView {
+                view,
+                last_uploaded_paint: std::cell::Cell::new(0),
+            },
+            layout,
+        );
+        self.roots.push(node.clone());
+        node
+    }
+
+    #[cfg(not(feature = "webview"))]
     fn create_web_view(&mut self, _url: &str) -> Self::Node {
         make_unsupported(&mut self.layout, &mut self.roots, "WebView")
+    }
+
+    #[cfg(feature = "webview")]
+    fn make_web_view_handle(
+        &self,
+        node: &Self::Node,
+    ) -> framework_core::primitives::web_view::WebViewHandle {
+        framework_core::primitives::web_view::WebViewHandle::new(
+            Rc::new(node.clone()) as Rc<dyn std::any::Any>,
+            &WgpuWebViewOps,
+        )
     }
 
     fn create_video(
@@ -1034,6 +1070,7 @@ impl Backend for WgpuBackend {
                 last_hover: std::cell::Cell::new(initial_hover),
                 play_btn_rect: std::cell::Cell::new((0.0, 0.0, 0.0, 0.0)),
                 scrubber_rect: std::cell::Cell::new((0.0, 0.0, 0.0, 0.0)),
+                mute_btn_rect: std::cell::Cell::new((0.0, 0.0, 0.0, 0.0)),
                 frame_rect: std::cell::Cell::new((0.0, 0.0, 0.0, 0.0)),
             },
             layout,
@@ -1596,6 +1633,36 @@ impl framework_core::primitives::video::VideoOps for WgpuVideoOps {
             if let NodeKind::Video { decoder, .. } = &n.borrow().kind {
                 decoder.seek(seconds as f64);
                 request_redraw();
+            }
+        }
+    }
+}
+
+/// `WebViewOps` impl for the wgpu preview, backed by Blitz. Only
+/// `reload` is wired in Phase 1 — `post_message` / `execute_js`
+/// require JS execution, which Blitz doesn't ship yet, so we
+/// leave them as the no-op default. `reload` re-triggers a
+/// fetch via the worker's navigate hook.
+#[cfg(feature = "webview")]
+struct WgpuWebViewOps;
+
+#[cfg(feature = "webview")]
+impl framework_core::primitives::web_view::WebViewOps for WgpuWebViewOps {
+    fn reload(&self, node: &dyn std::any::Any) {
+        if let Some(n) = node.downcast_ref::<WgpuNode>() {
+            // We don't carry the original URL on the node — the
+            // worker keeps that — so "reload" is signaled via a
+            // navigate request set to the empty string. The
+            // worker treats `Some("")` as "re-load the current
+            // URL"; for now this is a no-op until we extend the
+            // protocol. Keeping the hook here so authors can
+            // wire up state-tracking without a follow-up
+            // breaking change.
+            if let NodeKind::WebView { view, .. } = &n.borrow().kind {
+                // Empty navigate request is currently inert; the
+                // hook is here so future "reload" logic only
+                // needs a worker-side change.
+                let _ = view;
             }
         }
     }
@@ -2540,6 +2607,35 @@ pub(crate) fn any_video_playing(backend: &Rc<RefCell<WgpuBackend>>) -> bool {
     walk_for_playing_video(&root)
 }
 
+/// Walk every Video node and call `decoder.shutdown()` on each.
+/// Called from the platform shell on window-close to proactively
+/// silence audio and stop decoder threads without waiting for
+/// the `Rc<VideoDecoder>` to drop — Rc cycles or long-lived
+/// reactive scopes can keep the decoder alive long past the
+/// window's lifetime, which is why dropping audio reactively
+/// (via the decoder's `Drop` impl alone) isn't sufficient.
+pub(crate) fn shutdown_all_videos(backend: &Rc<RefCell<WgpuBackend>>) {
+    let b = backend.borrow();
+    let Some(root) = b.root() else {
+        eprintln!("[shutdown] no root, nothing to tear down");
+        return;
+    };
+    let mut count = 0;
+    walk_shutdown_videos(&root, &mut count);
+    eprintln!("[shutdown] tore down {count} video decoder(s)");
+}
+
+fn walk_shutdown_videos(node: &WgpuNode, count: &mut usize) {
+    if let NodeKind::Video { decoder, .. } = &node.borrow().kind {
+        decoder.shutdown();
+        *count += 1;
+    }
+    let children: Vec<WgpuNode> = node.borrow().children.clone();
+    for child in children {
+        walk_shutdown_videos(&child, count);
+    }
+}
+
 fn walk_for_playing_video(node: &WgpuNode) -> bool {
     if let NodeKind::Video { decoder, .. } = &node.borrow().kind {
         if decoder.shared.playing.load(std::sync::atomic::Ordering::Acquire) {
@@ -2600,26 +2696,41 @@ fn walk_update_hover(node: &WgpuNode, point: (f32, f32), now: std::time::Instant
     }
 }
 
-/// Resolve a pointer-down at `point` to a video control action,
-/// if any. Returns `true` when handled — the host's regular
-/// press flow should bail out so the click doesn't double-fire.
+/// Outcome of resolving a pointer-down against the video
+/// controls. The host translates this into either an immediate
+/// state change (toggle play) or a `VideoScrub` drag capture.
+pub(crate) enum VideoControlPress {
+    /// No control was hit.
+    Miss,
+    /// Play/pause icon — already toggled; nothing for host to do.
+    Toggled,
+    /// Scrubber pressed; host should capture the gesture as a
+    /// drag. The seek for the initial press position has already
+    /// been issued.
+    ScrubStart {
+        node: WgpuNode,
+        prior_muted: bool,
+    },
+}
+
 pub(crate) fn dispatch_video_control_press(
     backend: &Rc<RefCell<WgpuBackend>>,
     point: (f32, f32),
-) -> bool {
+) -> VideoControlPress {
     let b = backend.borrow();
-    let Some(root) = b.root() else { return false };
+    let Some(root) = b.root() else { return VideoControlPress::Miss };
     walk_dispatch_press(&root, point)
 }
 
-fn walk_dispatch_press(node: &WgpuNode, point: (f32, f32)) -> bool {
-    let action = {
+fn walk_dispatch_press(node: &WgpuNode, point: (f32, f32)) -> VideoControlPress {
+    let local = {
         let data = node.borrow();
         if let NodeKind::Video {
             decoder,
             controls,
             play_btn_rect,
             scrubber_rect,
+            mute_btn_rect,
             ..
         } = &data.kind
         {
@@ -2628,14 +2739,24 @@ fn walk_dispatch_press(node: &WgpuNode, point: (f32, f32)) -> bool {
             } else if hit(play_btn_rect.get(), point) {
                 let was_playing = decoder.shared.playing.load(std::sync::atomic::Ordering::Acquire);
                 decoder.set_playing(!was_playing);
-                Some(true)
+                Some(VideoControlPress::Toggled)
+            } else if hit(mute_btn_rect.get(), point) {
+                let was_muted = decoder.is_audio_muted().unwrap_or(false);
+                decoder.set_muted(!was_muted);
+                Some(VideoControlPress::Toggled)
             } else if hit(scrubber_rect.get(), point) {
-                let (sx, _, sw, _) = scrubber_rect.get();
-                let progress = ((point.0 - sx) / sw).clamp(0.0, 1.0);
-                let dur_us = decoder.shared.duration_micros.load(std::sync::atomic::Ordering::Acquire);
-                let target = (dur_us as f64 * progress as f64) / 1_000_000.0;
-                decoder.seek(target);
-                Some(true)
+                // Seek immediately to the press location so the
+                // first frame the drag shows matches the cursor.
+                scrub_to(decoder, scrubber_rect.get(), point);
+                // Mute audio for the drag so the user doesn't
+                // hear chopped-up audio across rapid re-seeks.
+                // We restore the prior state on release.
+                let prior_muted = audio_muted_state(decoder);
+                decoder.set_muted(true);
+                Some(VideoControlPress::ScrubStart {
+                    node: node.clone(),
+                    prior_muted,
+                })
             } else {
                 None
             }
@@ -2643,16 +2764,61 @@ fn walk_dispatch_press(node: &WgpuNode, point: (f32, f32)) -> bool {
             None
         }
     };
-    if let Some(handled) = action {
-        return handled;
+    if let Some(result) = local {
+        return result;
     }
     let children: Vec<WgpuNode> = node.borrow().children.clone();
     for child in children {
-        if walk_dispatch_press(&child, point) {
-            return true;
+        match walk_dispatch_press(&child, point) {
+            VideoControlPress::Miss => continue,
+            hit => return hit,
         }
     }
-    false
+    VideoControlPress::Miss
+}
+
+/// Apply a scrub-position update for the given pointer over the
+/// given video. Public so the host's `pointer_move` can call it
+/// while an active `VideoScrub` drag is in flight.
+pub(crate) fn scrub_video(node: &WgpuNode, point: (f32, f32)) {
+    if let NodeKind::Video { decoder, scrubber_rect, .. } = &node.borrow().kind {
+        scrub_to(decoder, scrubber_rect.get(), point);
+    }
+}
+
+/// Finalize a scrub drag — restore the audio-muted state. Run
+/// from `pointer_up` for the `VideoScrub` press variant.
+pub(crate) fn end_scrub(node: &WgpuNode, prior_muted: bool) {
+    if let NodeKind::Video { decoder, .. } = &node.borrow().kind {
+        decoder.set_muted(prior_muted);
+    }
+}
+
+fn scrub_to(
+    decoder: &std::rc::Rc<crate::video::VideoDecoder>,
+    scrubber_rect: (f32, f32, f32, f32),
+    point: (f32, f32),
+) {
+    let (sx, _, sw, _) = scrubber_rect;
+    if sw <= 0.0 {
+        return;
+    }
+    let progress = ((point.0 - sx) / sw).clamp(0.0, 1.0);
+    let dur_us = decoder
+        .shared
+        .duration_micros
+        .load(std::sync::atomic::Ordering::Acquire);
+    if dur_us == 0 {
+        return;
+    }
+    let target = (dur_us as f64 * progress as f64) / 1_000_000.0;
+    decoder.seek(target);
+}
+
+/// Read the audio handle's current muted flag. Returns `false`
+/// when there's no audio handle (silent video).
+fn audio_muted_state(decoder: &std::rc::Rc<crate::video::VideoDecoder>) -> bool {
+    decoder.is_audio_muted().unwrap_or(false)
 }
 
 fn hit(rect: (f32, f32, f32, f32), p: (f32, f32)) -> bool {

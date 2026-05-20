@@ -2,16 +2,23 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Benchmark · React (naive: inline style props)</title>
+<title>Benchmark · React (naive: no memo)</title>
 <style>
   /*
-   * Naive React take: theme threaded through props, every row reads
-   * it via inline `style={...}`. Mounting at a new row count
-   * re-creates the entire list — no memoization wins to be had
-   * because every Row is freshly keyed by index.
+   * Naive React take. State at the root, threaded via props.
+   * No React.memo, no Context optimization, no fine-grained
+   * tricks. This is the code a competent dev writes first.
    *
-   * "Naive" in the sense that it's the code a competent dev writes
-   * first, before reaching for any perf tricks.
+   * Supports all three suites:
+   *   - rebuild      → re-renders rows when rowCount changes
+   *   - toggle       → flushSync state update on theme
+   *   - hierarchy    → branch/global counters live at root,
+   *                    drilled down to every leaf via props.
+   *                    Since nothing is memoized, ANY state
+   *                    change re-renders the whole tree.
+   *                    BRANCH update will be as expensive as
+   *                    GLOBAL — that's the architectural truth
+   *                    of unmemoized React.
    */
   html, body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
   #root { display: flex; flex-direction: column; min-height: 100vh; }
@@ -25,14 +32,6 @@
   }
 }
 </script>
-<!--
-  This variant uses `_jsx`/`_jsxs` from `react/jsx-runtime` directly
-  rather than `React.createElement`. That's the path JSX compiles to
-  in the modern toolchain — ~3-5% faster on render-heavy paths because
-  it skips the runtime arg-shape checks `createElement` does
-  (children-array validation, key/ref extraction). Hand-writing the
-  calls is uglier than JSX but identical at runtime.
--->
 </head>
 <body>
 <div id="root"></div>
@@ -42,7 +41,9 @@ import { jsx as _jsx, jsxs as _jsxs } from 'react/jsx-runtime';
 import { createRoot } from 'react-dom/client';
 import { flushSync } from 'https://esm.sh/react-dom@18.3.1?deps=react@18.3.1';
 import { autoRunIfRequested, LIGHT, DARK } from '../instrument.js';
+import { genTreeShape } from '../tree.js';
 
+// ── rebuild / toggle styles ──────────────────────────────────
 const pageStyle = (t) => ({
   display: 'flex', flexDirection: 'column',
   padding: 32, gap: 24, minHeight: '100%',
@@ -66,16 +67,6 @@ const rowStyle = (t, parity) => ({
   transition: 'background 250ms ease-in-out, color 250ms ease-in-out, border-bottom-color 250ms ease-in-out',
 });
 
-// Row is not memoized: its `theme` prop changes on every mount and
-// `index` is unique per row, so a memo cache would never hit.
-// Leaving it unmemoized lets the cost of rendering N leaf
-// components be honestly visible.
-//
-// Text wrapped in a <span> so the DOM shape matches the
-// idealyst-native variant's `View { Text { ... } }` output exactly
-// — its `Text` primitive emits a <span> as a stable styling
-// target. Without this, idealyst would mount 2× DOM nodes per row
-// vs. React's 1× for the same logical structure.
 function Row({ index, theme }) {
   return _jsx('div', {
     style: rowStyle(theme, index % 2 === 0 ? 'even' : 'odd'),
@@ -83,39 +74,120 @@ function Row({ index, theme }) {
   });
 }
 
-// External setRows + setTheme hooks for the runner-iframe path.
-// Filled in by App once mounted so `autoRunIfRequested` can
-// drive the React state from outside the component.
+// ── hierarchy components (no memo!) ──────────────────────────
+// Branch: receives global+branch counters as props, passes
+// them down. Re-runs on every parent re-render. Leaf does the
+// actual text rendering.
+function Leaf({ id, global, branch, isTarget }) {
+  return _jsx('span', {
+    children: isTarget
+      ? `leaf ${id}: g=${global} b=${branch}`
+      : `leaf ${id}: g=${global}`,
+  });
+}
+
+function Branch({ node, global, branch, targetId }) {
+  // Children are arranged inside a div. Each child is either
+  // another Branch or a Leaf. No memoization — any state change
+  // at the App level re-renders this whole subtree.
+  return _jsx('div', {
+    className: 'b',
+    children: node.children.map((child) =>
+      child.kind === 'leaf'
+        ? _jsx(Leaf, {
+            id: child.id,
+            global,
+            branch,
+            isTarget: child.id === targetId,
+          }, child.id)
+        : _jsx(Branch, {
+            node: child,
+            global,
+            branch,
+            targetId,
+          }, child.id)
+    ),
+  });
+}
+
+// ── external hooks for the runner ────────────────────────────
 let externalSetRows = null;
 let externalSetTheme = null;
+let externalSetupHierarchy = null;
+let externalBranchUpdate = null;
+let externalGlobalUpdate = null;
 
 function App() {
+  // rebuild/toggle state
   const [rowCount, setRowCountState] = useState(1000);
   const [theme, setThemeState] = useState(LIGHT);
+  // hierarchy state
+  const [mode, setMode] = useState('rows');
+  const [tree, setTree] = useState(null);
+  const [globalCounter, setGlobal] = useState(0);
+  const [branchCounter, setBranch] = useState(0);
 
-  // `flushSync` makes the React commit happen *inside* the
-  // suite's `apply` measurement window. Without it, React 18
-  // would batch and commit after `apply` closed — making `apply`
-  // look ~0ms but with rows that haven't actually appeared yet.
+  // Publish setters once on first render so the runner can
+  // drive them via the iframe-message path.
   if (!externalSetRows) {
     externalSetRows = async (n) => {
-      flushSync(() => setRowCountState(n));
+      flushSync(() => {
+        setMode('rows');
+        setRowCountState(n);
+      });
     };
   }
   if (!externalSetTheme) {
     externalSetTheme = async (name) => {
-      // Theme is threaded through every row's `style={...}`;
-      // setting state forces every Row to re-render with new
-      // inline styles. flushSync keeps the commit in-window so
-      // `apply` actually measures it.
       flushSync(() => setThemeState(name === 'dark' ? DARK : LIGHT));
     };
   }
+  if (!externalSetupHierarchy) {
+    externalSetupHierarchy = async (seed, nodes, maxDepth) => {
+      const t = genTreeShape(seed, nodes, maxDepth || undefined);
+      flushSync(() => {
+        setTree({ root: t.root, targetId: t.targetLeaf.id });
+        setMode('tree');
+      });
+    };
+  }
+  if (!externalBranchUpdate) {
+    externalBranchUpdate = async (n) => {
+      flushSync(() => setBranch(n));
+    };
+  }
+  if (!externalGlobalUpdate) {
+    externalGlobalUpdate = async (n) => {
+      flushSync(() => setGlobal(n));
+    };
+  }
 
+  // ALL hooks must be called unconditionally on every render
+  // (Rules of Hooks). We compute the rows useMemo before the
+  // branch — it's cheap when rowCount hasn't changed.
   const rows = useMemo(
     () => Array.from({ length: rowCount }, (_, i) => _jsx(Row, { index: i, theme }, i)),
     [theme, rowCount]
   );
+
+  if (mode === 'tree' && tree) {
+    return _jsx('div', {
+      style: { padding: 16, font: '12px/1.4 monospace' },
+      children: tree.root.kind === 'leaf'
+        ? _jsx(Leaf, {
+            id: tree.root.id,
+            global: globalCounter,
+            branch: branchCounter,
+            isTarget: tree.root.id === tree.targetId,
+          })
+        : _jsx(Branch, {
+            node: tree.root,
+            global: globalCounter,
+            branch: branchCounter,
+            targetId: tree.targetId,
+          }),
+    });
+  }
 
   return _jsx('div', {
     style: pageStyle(theme),
@@ -125,10 +197,6 @@ function App() {
 
 createRoot(document.getElementById('root')).render(_jsx(App, {}));
 
-// Initial mount may land on a microtask. Wait until
-// `externalSetRows` is filled before handing off to the runner —
-// otherwise the runner's first `setRows(n)` call would crash
-// before the component is ready.
 async function waitForReady() {
   for (let i = 0; i < 50 && (!externalSetRows || !externalSetTheme); i++) {
     await new Promise(r => requestAnimationFrame(r));
@@ -139,6 +207,9 @@ waitForReady().then(() =>
   autoRunIfRequested({
     setRows: (n) => externalSetRows(n),
     setTheme: (t) => externalSetTheme(t),
+    setupHierarchy: (seed, nodes, maxDepth) => externalSetupHierarchy(seed, nodes, maxDepth),
+    branchUpdate: (n) => externalBranchUpdate(n),
+    globalUpdate: (n) => externalGlobalUpdate(n),
   })
 );
 </script>

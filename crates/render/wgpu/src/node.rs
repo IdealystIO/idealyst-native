@@ -522,10 +522,25 @@ pub enum NodeKind {
         /// All zero before the first render with controls on.
         play_btn_rect: std::cell::Cell<(f32, f32, f32, f32)>,
         scrubber_rect: std::cell::Cell<(f32, f32, f32, f32)>,
+        mute_btn_rect: std::cell::Cell<(f32, f32, f32, f32)>,
         /// World-space rect of the video frame itself, cached
         /// during walk so the pointer pipeline can hover-test
         /// without re-running layout.
         frame_rect: std::cell::Cell<(f32, f32, f32, f32)>,
+    },
+    /// Live HTML view rendered by the bundled Blitz engine. The
+    /// [`WebView`](crate::web_view::WebView) owns its decoder
+    /// thread; the renderer's pre-pass uploads the latest
+    /// painted RGBA buffer to a wgpu texture and composites via
+    /// the image pipeline. Only present when the crate is built
+    /// with the `webview` feature.
+    #[cfg(feature = "webview")]
+    WebView {
+        view: std::rc::Rc<crate::web_view::WebView>,
+        /// Counter value of the most-recently uploaded paint.
+        /// Cheap re-upload skip — only blit when the worker has
+        /// produced a fresh frame.
+        last_uploaded_paint: std::cell::Cell<u64>,
     },
     /// Renders a "not supported in this simulator" panel for
     /// primitives we don't implement (WebView, Video, Graphics).
@@ -623,6 +638,8 @@ impl std::fmt::Debug for NodeKind {
                 if drawer.borrow().is_some() { "set" } else { "unset" },
             ),
             NodeKind::Video { .. } => f.write_str("Video"),
+            #[cfg(feature = "webview")]
+            NodeKind::WebView { .. } => f.write_str("WebView"),
             NodeKind::Unsupported { label } => write!(f, "Unsupported({label})"),
         }
     }

@@ -108,6 +108,44 @@ mod mac {
 
                 NSSize::new(content_w, content_h + TITLE_BAR_HEIGHT)
             }
+
+            // We override NSWindow's delegate to install the
+            // aspect lock above, which means winit's own
+            // delegate — the one that normally translates
+            // `windowWillClose:` into `WindowEvent::CloseRequested`
+            // — is no longer attached. Without an explicit close
+            // handler here, clicking the red traffic-light just
+            // hid the window and left the process running
+            // (audio threads, mixer, the lot). Forwarding to
+            // winit's delegate is the "proper" fix but would
+            // require holding its `Retained` and `super`-style
+            // chaining; for the single-window simulator this
+            // direct hook is simpler and correct.
+            #[method(windowWillClose:)]
+            unsafe fn window_will_close(&self, _notification: &objc2_foundation::NSNotification) {
+                // OS reclaims every thread (cpal audio, decode
+                // threads, owner park) so no manual cleanup is
+                // strictly required. Multi-window will need to
+                // skip the exit and instead post a Rust-side
+                // notification that decrements an active-window
+                // counter, calling exit only on the last close.
+                //
+                // `_exit` rather than `std::process::exit`:
+                // the latter runs Rust's thread-local destructors
+                // before exiting, and one of them ends up
+                // accessing a TLS slot that's already been torn
+                // down, panicking with "cannot access a Thread
+                // Local Storage value during or after
+                // destruction". `_exit(2)` is the raw POSIX
+                // syscall — it terminates the process
+                // immediately, skipping every destructor and
+                // atexit hook. The OS still reclaims threads,
+                // memory, and file descriptors.
+                extern "C" {
+                    fn _exit(code: i32) -> !;
+                }
+                _exit(0);
+            }
         }
     );
 
@@ -414,11 +452,23 @@ impl App {
         }
     }
 
-    fn render_frame(&mut self) -> Result<(), wgpu::SurfaceError> {
-        let Some(gpu) = self.gpu.as_mut() else { return Ok(()) };
-        let Some(renderer) = self.renderer.as_mut() else { return Ok(()) };
+    fn render_frame(&mut self) -> FrameOutcome {
+        let Some(gpu) = self.gpu.as_mut() else { return FrameOutcome::Ok };
+        let Some(renderer) = self.renderer.as_mut() else { return FrameOutcome::Ok };
 
-        let surface_tex = gpu.surface.get_current_texture()?;
+        // wgpu 29: `get_current_texture` returns a `CurrentSurfaceTexture`
+        // *enum* (was `Result<SurfaceTexture, SurfaceError>`). Map every
+        // non-Success variant we care about to our own outcome so the
+        // caller's match doesn't need to know wgpu internals.
+        let surface_tex = match gpu.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(t)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+            wgpu::CurrentSurfaceTexture::Outdated
+            | wgpu::CurrentSurfaceTexture::Lost => return FrameOutcome::Reconfigure,
+            wgpu::CurrentSurfaceTexture::Timeout
+            | wgpu::CurrentSurfaceTexture::Occluded
+            | wgpu::CurrentSurfaceTexture::Validation => return FrameOutcome::Skip,
+        };
         let view = surface_tex
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -446,8 +496,21 @@ impl App {
         if self.host.tick() {
             render_wgpu::request_redraw();
         }
-        Ok(())
+        FrameOutcome::Ok
     }
+}
+
+/// Outcome of a single render-frame pump. wgpu 29 collapsed the
+/// old `Result<SurfaceError>` into a per-call enum (`CurrentSurfaceTexture`);
+/// we surface the subset the redraw loop needs to act on without
+/// leaking wgpu types up to the event-handler arm.
+enum FrameOutcome {
+    /// Frame rendered (or no-op because gpu / renderer not initialized yet).
+    Ok,
+    /// Surface needs reconfigure (outdated / lost).
+    Reconfigure,
+    /// Frame skipped (timeout / occluded / validation). Drop & try again.
+    Skip,
 }
 
 // ---------------------------------------------------------------------------
@@ -605,8 +668,37 @@ impl ApplicationHandler<AppEvent> for App {
         _id: WindowId,
         event: WindowEvent,
     ) {
+        // Diag: surface every window event so we can tell what
+        // actually fires when the user clicks the red X. Strip
+        // once `CloseRequested` is confirmed routing.
+        if matches!(event, WindowEvent::CloseRequested | WindowEvent::Destroyed) {
+            eprintln!("[diag] window_event: {:?}", event);
+        }
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                eprintln!("[close] CloseRequested fired — shutting down");
+                // Tear down per-window resources we know about
+                // and the user can't (audio sources registered
+                // by Video nodes, decoder threads). Scoped per-
+                // host so multi-window setups don't cross-cancel.
+                self.host.shutdown_videos();
+                event_loop.exit();
+                // Force the process to exit. On macOS, NSApp
+                // does NOT terminate when the last window
+                // closes — `event_loop.exit()` returns control
+                // from `run_app`, but reactive-scope statics
+                // and the global audio subsystem's owner thread
+                // keep the process alive (cpal's stream keeps
+                // draining whatever the mixer still holds).
+                // When the run loop is single-window today, the
+                // user expectation is "X button kills the app",
+                // matching how virtually every macOS preview /
+                // simulator behaves. Multi-window support will
+                // need a window registry that calls exit only
+                // on the last close — until that lands, this
+                // unconditional exit is the right behavior.
+                std::process::exit(0);
+            }
             WindowEvent::Resized(size) => {
                 // First, snap back to the locked aspect ratio if
                 // the user dragged us off it. `enforce_aspect`
@@ -713,16 +805,15 @@ impl ApplicationHandler<AppEvent> for App {
             }
             WindowEvent::RedrawRequested => {
                 match self.render_frame() {
-                    Ok(()) => {}
-                    Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                    FrameOutcome::Ok => {}
+                    FrameOutcome::Reconfigure => {
                         if let Some(gpu) = self.gpu.as_mut() {
                             let w = gpu.config.width;
                             let h = gpu.config.height;
                             gpu.resize(w, h);
                         }
                     }
-                    Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
-                    Err(wgpu::SurfaceError::Timeout) => {}
+                    FrameOutcome::Skip => {}
                 }
             }
             _ => {}

@@ -422,10 +422,17 @@ docs! {
             });
 
             // Render against the resource's state.
-            text(move || match user.state().get() {
-                ResourceState::Loading => "Loading…".into(),
-                ResourceState::Ready(u) => format!("Hi, {}", u.name),
-                ResourceState::Error(e) => format!("Error: {}", e),
+            text(move || {
+                let s = user.state();
+                if s.loading {
+                    "Loading…".into()
+                } else if let Some(err) = s.error {
+                    format!("Error: {}", err)
+                } else if let Some(u) = s.data {
+                    format!("Hi, {}", u.name)
+                } else {
+                    "".into()
+                }
             });
 
             // Changing `user_id` cancels the in-flight fetch and

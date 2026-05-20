@@ -23,5 +23,5 @@ icons-lucide = { workspace = true }
 # `render_wgpu::graphics_with_drawer` extension. Match the
 # version + feature flags that the renderer crate links against
 # so a single wgpu instance is shared at runtime.
-wgpu = { version = "22", default-features = false, features = ["wgsl"] }
+wgpu = { version = "29", default-features = false, features = ["wgsl"] }
 bytemuck = { version = "1", features = ["derive"] }

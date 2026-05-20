@@ -86,18 +86,18 @@ impl VideoSharedState {
 pub struct VideoDecoder {
     pub shared: Arc<VideoSharedState>,
     /// Audio side, if the file had a decodable audio track and the
-    /// audio subsystem opened successfully. Drop here also drops
-    /// the audio source registration.
-    audio: Option<crate::audio::DecodedAudioHandle>,
-    join: Option<thread::JoinHandle<()>>,
+    /// audio subsystem opened successfully. Held behind a `Mutex`
+    /// so `shutdown()` can take it out from `&self` — that lets
+    /// the window-close path proactively drop the audio source
+    /// (unregistering it from the mixer) even when an outer
+    /// `Rc<VideoDecoder>` is still alive somewhere.
+    audio: std::sync::Mutex<Option<crate::audio::DecodedAudioHandle>>,
+    join: std::sync::Mutex<Option<thread::JoinHandle<()>>>,
 }
 
 impl Drop for VideoDecoder {
     fn drop(&mut self) {
-        self.shared.shutdown.store(true, Ordering::Release);
-        if let Some(j) = self.join.take() {
-            let _ = j.join();
-        }
+        self.shutdown();
     }
 }
 
@@ -121,7 +121,37 @@ impl VideoDecoder {
             .name(format!("video:{}", short_label(&src)))
             .spawn(move || run_decode_loop(src, shared_for_thread, loop_playback))
             .expect("spawn video decode thread");
-        Self { shared, audio, join: Some(join) }
+        Self {
+            shared,
+            audio: std::sync::Mutex::new(audio),
+            join: std::sync::Mutex::new(Some(join)),
+        }
+    }
+
+    /// Proactively tear the decoder down without waiting for its
+    /// owning `Rc` to drop. Signals both threads (video + audio)
+    /// to exit, unregisters the audio source from the mixer
+    /// immediately, and joins the video decoder thread. Safe to
+    /// call multiple times — subsequent calls are a no-op.
+    pub fn shutdown(&self) {
+        self.shared.shutdown.store(true, Ordering::Release);
+        // Drop the audio handle inside the lock: its `Drop` impl
+        // sets its own shutdown flag AND calls
+        // `subsystem.remove_source(...)`, so the mixer stops
+        // hearing this clip the moment the call returns.
+        if let Ok(mut g) = self.audio.lock() {
+            let _ = g.take();
+        }
+        // Join the video decoder thread — its loop polls
+        // `shared.shutdown` every ~30 ms and returns promptly.
+        let handle = self
+            .join
+            .lock()
+            .ok()
+            .and_then(|mut g| g.take());
+        if let Some(j) = handle {
+            let _ = j.join();
+        }
     }
 
     pub fn set_playing(&self, playing: bool) {
@@ -130,35 +160,57 @@ impl VideoDecoder {
         // play/pause toggles both streams. The audio ring's
         // `paused` flag silences the mixer; the decode loop on
         // the audio thread sees the same flag and parks too.
-        if let Some(audio) = self.audio.as_ref() {
-            audio.ring.paused.store(!playing, std::sync::atomic::Ordering::Release);
+        if let Ok(g) = self.audio.lock() {
+            if let Some(audio) = g.as_ref() {
+                audio.ring.paused.store(!playing, std::sync::atomic::Ordering::Release);
+            }
         }
     }
 
     pub fn set_volume(&self, vol: f32) {
-        if let Some(audio) = self.audio.as_ref() {
-            if let Ok(mut v) = audio.volume.lock() {
-                *v = vol.clamp(0.0, 1.0);
+        if let Ok(g) = self.audio.lock() {
+            if let Some(audio) = g.as_ref() {
+                if let Ok(mut v) = audio.volume.lock() {
+                    *v = vol.clamp(0.0, 1.0);
+                }
             }
         }
     }
 
     pub fn set_muted(&self, muted: bool) {
-        if let Some(audio) = self.audio.as_ref() {
-            audio.ring.muted.store(muted, std::sync::atomic::Ordering::Release);
+        if let Ok(g) = self.audio.lock() {
+            if let Some(audio) = g.as_ref() {
+                audio.ring.muted.store(muted, std::sync::atomic::Ordering::Release);
+            }
         }
     }
 
+    /// Read the audio handle's current muted flag. `None` when
+    /// the clip has no audio track (silent video) or has already
+    /// been shut down.
+    pub fn is_audio_muted(&self) -> Option<bool> {
+        self.audio
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(|a| a.ring.muted.load(std::sync::atomic::Ordering::Acquire)))
+    }
+
     /// Request a seek to `target_secs` from the start of the
-    /// clip. The decode loop notices the request at the top of
-    /// the next sample iteration and restarts at the nearest
-    /// preceding sync sample. Audio is not seek-synced in this
-    /// pass — if it matters for the demo, follow up with a
-    /// "rewind audio decoder + flush ring" hook.
+    /// clip. The video decode loop notices at the top of its
+    /// next sample iteration and restarts at the nearest
+    /// preceding sync sample; the audio decode thread receives
+    /// a parallel seek request so the sibling AAC stream jumps
+    /// to the same time and the ring is drained — A/V stays in
+    /// sync within ~one ring's worth of latency.
     pub fn seek(&self, target_secs: f64) {
         let target_micros = (target_secs.max(0.0) * 1_000_000.0) as u64;
         if let Ok(mut g) = self.shared.seek_request.lock() {
             *g = Some(target_micros);
+        }
+        if let Ok(g) = self.audio.lock() {
+            if let Some(audio) = g.as_ref() {
+                audio.request_seek(target_secs);
+            }
         }
     }
 }

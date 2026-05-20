@@ -42,7 +42,8 @@ shape; it just has to implement the `ThemeTokens` trait so the
 framework knows what to install as runtime variables.
 
 ```rust
-use framework_core::{Color, Length, Tokenized, ThemeTokens, TokenEntry, TokenValue};
+use framework_core::{Color, Length, Tokenized, TokenEntry, TokenValue};
+use framework_theme::ThemeTokens;
 
 #[derive(Clone)]
 pub struct MyTheme {
@@ -101,7 +102,7 @@ Three things to notice:
 ### Installing a theme
 
 ```rust
-use framework_core::{install_theme, set_theme};
+use framework_theme::{install_theme, set_theme};
 
 #[component]
 fn app() -> Primitive {
@@ -467,6 +468,32 @@ The theme type is generic over the stylesheets that consume it.
 specific theme type; the stylesheet's `base(theme)` closure
 receives a `&MyTheme`, so you have full IDE completion and type
 checking on theme access.
+
+You can also write a stylesheet without a theme context by using
+`<()>`. The closures don't receive a theme; instead the
+stylesheet directly references token names with
+`Tokenized::token("name", fallback)`. This is the lightest path
+— no struct, no `ThemeTokens` impl — and works fine for app-local
+styles that don't need typed theme access:
+
+```rust
+use framework_core::{stylesheet, Color, Length, Tokenized};
+
+stylesheet! {
+    pub Card<()> {
+        base(_) {
+            background: Tokenized::token("bg",       Color::from("#ffffff")),
+            color:      Tokenized::token("text",     Color::from("#111111")),
+            padding:    Tokenized::token("space-md", Length::Px(16.0)),
+            border_radius: 8.0,
+        }
+    }
+}
+```
+
+The `<MyTheme>` form is the right call when you want IDE
+completion on a richly-typed theme; the `<()>` form is the right
+call when bare token references are enough.
 
 If you want multiple themes at once (light + dark + high-contrast
 selectable from a menu), the pattern is to make `MyTheme` an enum

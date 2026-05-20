@@ -39,8 +39,9 @@ pub fn page() -> Primitive {
             Card {
                 Heading(content = "iOS (UIKit)".to_string(), kind = HeadingKind::H2)
                 Body(
-                    content = "`backend-ios` binds to UIKit via the `objc2` crate. Views \
-                               become `UIView`s; navigators wrap `UINavigationController`; \
+                    content = "The `backend-ios-*` family (`-core`, `-mobile`, `-tv`) \
+                               binds to UIKit via the `objc2` crate. Views become \
+                               `UIView`s; navigators wrap `UINavigationController`; \
                                tabs wrap `UITabBarController`; the drawer is hand-rolled \
                                because UIKit doesn't ship a stock drawer. Build via the CLI \
                                (`idealyst build --platform ios`) or open the materialized \
@@ -52,11 +53,12 @@ pub fn page() -> Primitive {
             Card {
                 Heading(content = "Android".to_string(), kind = HeadingKind::H2)
                 Body(
-                    content = "`backend-android` bridges to the native View hierarchy via \
-                               JNI. The Rust crate compiles to a `.so` the Android app loads; \
-                               the framework populates the layout when the activity hands it \
-                               a root container. Drawer maps to `DrawerLayout`, tabs to \
-                               `BottomNavigationView`, stack to `FragmentManager`.".to_string(),
+                    content = "The `backend-android-*` family (`-core`, `-mobile`, `-tv`) \
+                               bridges to the native View hierarchy via JNI. The Rust \
+                               crate compiles to a `.so` the Android app loads; the \
+                               framework populates the layout when the activity hands \
+                               it a root container. Drawer maps to `DrawerLayout`, tabs \
+                               to `BottomNavigationView`, stack to `FragmentManager`.".to_string(),
                     tone = BodyTone::Muted,
                 )
             }

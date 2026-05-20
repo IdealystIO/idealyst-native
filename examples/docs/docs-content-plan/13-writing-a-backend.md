@@ -252,20 +252,29 @@ primitive.
 - `create_navigator` — stack navigator
 - `create_tab_navigator`
 - `create_drawer_navigator`
-- `create_link`
 
 These take a callbacks bundle so the framework can ask the
 backend to mount/release per-screen subtrees on demand. The
 shape is large; the trait's source has annotated examples.
 
-### Overlays (defaults: `unimplemented!()`)
+`create_link` is also navigation, but its default falls
+through to `create_view` — see the container section.
 
-- `create_overlay`, `create_anchored_overlay`
+### Portals (defaults: `unimplemented!()` / no-op)
 
-Backends decide how to route these — iOS could send `Overlay`
-to a window-level `UIView` and `AnchoredOverlay` to
-`UIContextMenuInteraction`. Web uses the `popover` attribute
-with CSS anchor positioning.
+- `create_portal` — single entry point. Receives a
+  `PortalTarget` (either `Viewport(ViewportPlacement)` or
+  `Anchor { target, side, align }`), an `on_dismiss` callback,
+  and a `trap_focus` flag. Default: `unimplemented!()`.
+- `release_portal` — paired teardown. Defaults to no-op.
+- `make_portal_handle` — returns a `PortalHandle` for
+  imperative ops. Defaults to a no-op handle.
+
+Backends decide how to route by branching on `PortalTarget`.
+iOS could route `PortalTarget::Viewport(_)` to a window-level
+`UIView` and `PortalTarget::Anchor { .. }` to
+`UIContextMenuInteraction`, all inside one `create_portal`.
+Web uses the `popover` attribute with CSS anchor positioning.
 
 ### Styling
 

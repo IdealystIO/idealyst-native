@@ -56,8 +56,9 @@ impl TextStore {
         buffer.set_text(
             font_system,
             content,
-            Attrs::new().family(Family::SansSerif),
+            &Attrs::new().family(Family::SansSerif),
             Shaping::Advanced,
+            None,
         );
         buffer.shape_until_scroll(font_system, false);
         self.buffers.insert(id, BufferEntry { buffer, font_size });
@@ -70,8 +71,9 @@ impl TextStore {
             entry.buffer.set_text(
                 font_system,
                 content,
-                Attrs::new().family(Family::SansSerif),
+                &Attrs::new().family(Family::SansSerif),
                 Shaping::Advanced,
+                None,
             );
             entry.buffer.shape_until_scroll(font_system, false);
         }

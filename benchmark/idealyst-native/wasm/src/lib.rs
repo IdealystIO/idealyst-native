@@ -19,8 +19,8 @@
 
 use backend_web::WebBackend;
 use framework_core::{
-    signal, stylesheet, ui, AlignItems, Color, FlexDirection, JustifyContent, Length, Overflow,
-    Primitive, Signal, TokenEntry, TokenValue, Tokenized,
+    signal, stylesheet, text, ui, view, AlignItems, Color, FlexDirection, IntoPrimitive,
+    JustifyContent, Length, Overflow, Primitive, Signal, TokenEntry, TokenValue, Tokenized,
 };
 use framework_theme::{install_theme, set_theme, ThemeTokens};
 use std::cell::RefCell;
@@ -263,45 +263,232 @@ thread_local! {
     /// Initialized in `start()` once we know what value the JS side
     /// wants (from the URL's `?rows=` param). Default is 1000.
     static ROW_COUNT: RefCell<Option<Signal<usize>>> = const { RefCell::new(None) };
+
+    /// Mode signal: 0 = rows (rebuild/toggle suites), 1 = tree
+    /// (hierarchy suite). Changing this re-fires the top-level
+    /// Switch in `app()` and swaps the rendered subtree.
+    static MODE: RefCell<Option<Signal<u32>>> = const { RefCell::new(None) };
+
+    /// Tree-version signal: bumped on every `setup_hierarchy` so
+    /// the tree-mode Switch arm rebuilds with the new tree shape.
+    /// The actual tree spec lives in `TREE_ROOT` below — the
+    /// version signal is the reactivity trigger.
+    static TREE_VERSION: RefCell<Option<Signal<u64>>> = const { RefCell::new(None) };
+    static TREE_ROOT: RefCell<Option<Rc<NodeSpec>>> = const { RefCell::new(None) };
+
+    /// Leaves read this every time they re-fire. Bumping it makes
+    /// every leaf in the cohort re-render.
+    static GLOBAL_COUNTER: RefCell<Option<Signal<u32>>> = const { RefCell::new(None) };
+
+    /// Only the target leaf reads this. Bumping it makes only
+    /// that one leaf re-render.
+    static BRANCH_COUNTER: RefCell<Option<Signal<u32>>> = const { RefCell::new(None) };
+
+    /// Set by `setup_hierarchy` to the id of the leaf chosen as
+    /// the BRANCH-update target. Read by `build_leaf` to decide
+    /// whether that specific Leaf subscribes to `BRANCH_COUNTER`
+    /// in addition to `GLOBAL_COUNTER`.
+    static TARGET_LEAF_ID: std::cell::Cell<u32> = const { std::cell::Cell::new(u32::MAX) };
+}
+
+// =============================================================================
+// Hierarchy suite: deterministic tree generation (matches benchmark/tree.js)
+// =============================================================================
+
+/// Recursive tree node. Built by `gen_tree_shape` from a seed +
+/// target leaf count. Each variant (JS, Rust) must produce the
+/// SAME shape for the same seed so cross-variant numbers are
+/// comparable. The algorithm mirrors `benchmark/tree.js` exactly.
+pub struct NodeSpec {
+    pub id: u32,
+    pub kind: NodeKind,
+}
+
+pub enum NodeKind {
+    Leaf,
+    Branch(Vec<Rc<NodeSpec>>),
+}
+
+/// Mulberry32 PRNG. Same algorithm as `benchmark/tree.js`'s
+/// `mulberry32`. `Math.imul` in JS produces the lower 32 bits of
+/// a 32-bit signed multiply; `u32::wrapping_mul` matches that
+/// bit pattern.
+struct Mulberry32 {
+    state: u32,
+}
+
+impl Mulberry32 {
+    fn new(seed: u32) -> Self {
+        Self { state: seed }
+    }
+    fn next(&mut self) -> u32 {
+        self.state = self.state.wrapping_add(0x6D2B79F5);
+        let mut t = self.state;
+        t = (t ^ (t >> 15)).wrapping_mul(t | 1);
+        t = t ^ t.wrapping_add((t ^ (t >> 7)).wrapping_mul(t | 61));
+        t ^ (t >> 14)
+    }
+}
+
+/// Result of tree generation. Mirrors the JS `{ root, leaves,
+/// targetLeaf, totalNodes }` shape; we only keep what the variant
+/// actually uses (root + target leaf id).
+struct TreeShape {
+    root: Rc<NodeSpec>,
+    target_leaf_id: u32,
+}
+
+fn gen_tree_shape(seed: u32, target_leaves: usize, max_depth: Option<u32>) -> TreeShape {
+    // `max_depth` and the leaf-probability threshold (15%) must
+    // match `benchmark/tree.js`'s `genTreeShape` exactly —
+    // otherwise the JS and Rust variants produce different tree
+    // shapes from the same seed. Auto-sizing formula:
+    // log_2.55(target) + 2 headroom levels, floor 8. With leaf
+    // probability 15% and average branching factor ~2.55, this
+    // gives the tree enough room to actually hit `target` leaves
+    // before the depth cap kicks in.
+    let max_depth: u32 = max_depth.unwrap_or_else(|| {
+        let t = target_leaves.max(1) as f64;
+        let base = (t.ln() / 2.55_f64.ln()).ceil() as u32 + 2;
+        base.max(8)
+    });
+    let mut rng = Mulberry32::new(seed);
+    let mut next_id: u32 = 0;
+    let mut leaf_ids: Vec<u32> = Vec::new();
+
+    fn walk(
+        rng: &mut Mulberry32,
+        next_id: &mut u32,
+        leaf_ids: &mut Vec<u32>,
+        depth: u32,
+        max_depth: u32,
+        target: usize,
+    ) -> Rc<NodeSpec> {
+        let id = *next_id;
+        *next_id += 1;
+        let force_leaf = depth >= max_depth || leaf_ids.len() >= target;
+        if force_leaf {
+            leaf_ids.push(id);
+            return Rc::new(NodeSpec { id, kind: NodeKind::Leaf });
+        }
+        let r = rng.next() % 100;
+        if r < 15 {
+            leaf_ids.push(id);
+            return Rc::new(NodeSpec { id, kind: NodeKind::Leaf });
+        }
+        let n_children = 2 + (rng.next() % 3) as usize;
+        let mut children = Vec::with_capacity(n_children);
+        for _ in 0..n_children {
+            children.push(walk(rng, next_id, leaf_ids, depth + 1, max_depth, target));
+        }
+        Rc::new(NodeSpec { id, kind: NodeKind::Branch(children) })
+    }
+
+    let root = walk(&mut rng, &mut next_id, &mut leaf_ids, 0, max_depth, target_leaves);
+    let target_leaf_id = leaf_ids
+        .get(leaf_ids.len() / 2)
+        .copied()
+        .unwrap_or(u32::MAX);
+    TreeShape { root, target_leaf_id }
+}
+
+/// Build the Primitive for a leaf. Closes over `global` and, if
+/// the leaf is the BRANCH target, `branch` — so only the target
+/// subscribes to `branch`. Other leaves only subscribe to
+/// `global`.
+fn build_leaf(id: u32, target_id: u32, global: Signal<u32>, branch: Signal<u32>) -> Primitive {
+    if id == target_id {
+        text(move || format!("leaf {}: g={} b={}", id, global.get(), branch.get()))
+            .into_primitive()
+    } else {
+        text(move || format!("leaf {}: g={}", id, global.get()))
+            .into_primitive()
+    }
+}
+
+/// Recursively turn a NodeSpec into a Primitive tree. Branches
+/// become `view(children)`; leaves become reactive `text(...)`.
+fn build_tree_primitive(
+    node: &NodeSpec,
+    target_id: u32,
+    global: Signal<u32>,
+    branch: Signal<u32>,
+) -> Primitive {
+    match &node.kind {
+        NodeKind::Leaf => build_leaf(node.id, target_id, global, branch),
+        NodeKind::Branch(children) => {
+            let kids: Vec<Primitive> = children
+                .iter()
+                .map(|c| build_tree_primitive(c, target_id, global, branch))
+                .collect();
+            view(kids).into_primitive()
+        }
+    }
 }
 
 fn app(initial_rows: usize) -> Primitive {
     install_theme(light());
 
-    // Reactive row count. The `match` below subscribes — changing
-    // the signal rebuilds the list subtree from scratch.
+    // Reactive row count + mode + hierarchy state. Stored in
+    // thread_locals so the wasm-bindgen exports below can mutate
+    // them from JS.
     let count = signal!(initial_rows);
     ROW_COUNT.with(|c| *c.borrow_mut() = Some(count));
+    let mode = signal!(0u32);
+    MODE.with(|c| *c.borrow_mut() = Some(mode));
+    let tree_version = signal!(0u64);
+    TREE_VERSION.with(|c| *c.borrow_mut() = Some(tree_version));
+    let global_counter = signal!(0u32);
+    GLOBAL_COUNTER.with(|c| *c.borrow_mut() = Some(global_counter));
+    let branch_counter = signal!(0u32);
+    BRANCH_COUNTER.with(|c| *c.borrow_mut() = Some(branch_counter));
 
     ui! {
         View(style = page_style()) {
-            // No controls chrome — the runner (in arena/index.html)
-            // hosts every interactive control as static HTML
-            // outside the iframe, and the variant page focuses on
-            // the row list itself. We previously rendered an empty
-            // `View(style = controls_style())` here as a transition
-            // anchor; with the runner the box-with-no-children
-            // read as a stray empty card above the list.
-            //
-            // Reactive `match` on count: changing the signal
-            // re-fires the surrounding effect, drops the previous
-            // ScrollView's scope (freeing every row's effect), and
-            // builds a fresh subtree at the new size. The framework
-            // does this through `Primitive::Switch` — same path the
-            // example's perf screen uses.
-            match count.get() {
-                n => {
+            // Top-level Switch on `mode`. Flipping `mode` swaps
+            // the entire subtree atomically. Branches: 0 = row
+            // list (rebuild/toggle), 1 = hierarchy tree.
+            match mode.get() {
+                m => {
                     {
-                        let n: usize = *n;
-                        ui! {
-                            ScrollView(style = perf_list_style()) {
-                                for i in 0..n {
-                                    View(style = PerfRow().parity(if i % 2 == 0 {
-                                        PerfRowParity::Even
-                                    } else {
-                                        PerfRowParity::Odd
-                                    })) {
-                                        Text { format!("Row #{}", i) }
+                        match *m {
+                            0u32 => {
+                                let n: usize = count.get();
+                                ui! {
+                                    ScrollView(style = perf_list_style()) {
+                                        for i in 0..n {
+                                            View(style = PerfRow().parity(if i % 2 == 0 {
+                                                PerfRowParity::Even
+                                            } else {
+                                                PerfRowParity::Odd
+                                            })) {
+                                                Text { format!("Row #{}", i) }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {
+                                // Hierarchy mode. Inner match on
+                                // tree_version so changing seed/
+                                // nodes rebuilds the whole tree.
+                                ui! {
+                                    match tree_version.get() {
+                                        _v => {
+                                            {
+                                                let root = TREE_ROOT.with(|r| r.borrow().clone());
+                                                let target_id = TARGET_LEAF_ID.with(|t| t.get());
+                                                match root {
+                                                    Some(root) => build_tree_primitive(
+                                                        &root,
+                                                        target_id,
+                                                        global_counter,
+                                                        branch_counter,
+                                                    ),
+                                                    None => view(Vec::new()).into_primitive(),
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -377,9 +564,68 @@ pub fn set_theme_by_name(name: &str) {
 #[wasm_bindgen]
 pub fn set_rows(n: usize) {
     let clamped = n.clamp(1, ROW_MAX);
+    // Force back to rows mode in case the hierarchy suite left
+    // us in tree mode.
+    MODE.with(|c| {
+        if let Some(sig) = c.borrow().as_ref() {
+            if sig.get() != 0 {
+                sig.set(0);
+            }
+        }
+    });
     ROW_COUNT.with(|c| {
         if let Some(sig) = c.borrow().as_ref() {
             sig.set(clamped);
+        }
+    });
+}
+
+/// Mount a tree of `nodes` leaves for the hierarchy suite,
+/// generated deterministically from `seed`. Bumps mode → 1
+/// (tree) and the tree-version signal so the Switch arm rebuilds
+/// with the new tree shape.
+#[wasm_bindgen]
+pub fn setup_hierarchy(seed: u32, nodes: u32, max_depth: u32) {
+    // `max_depth = 0` from JS means "auto-size from `nodes`",
+    // matching tree.js's `null`/`undefined` convention.
+    let md = if max_depth == 0 { None } else { Some(max_depth) };
+    let tree = gen_tree_shape(seed, nodes as usize, md);
+    TARGET_LEAF_ID.with(|t| t.set(tree.target_leaf_id));
+    TREE_ROOT.with(|r| *r.borrow_mut() = Some(tree.root));
+    // Mode flip first; the tree-mode Switch arm's inner Switch
+    // (on tree_version) then drives the actual tree build.
+    MODE.with(|c| {
+        if let Some(sig) = c.borrow().as_ref() {
+            sig.set(1);
+        }
+    });
+    TREE_VERSION.with(|c| {
+        if let Some(sig) = c.borrow().as_ref() {
+            sig.update(|v| *v += 1);
+        }
+    });
+}
+
+/// Bump the branch counter. Only the target leaf reads this
+/// signal, so the framework's reactive graph fans out to exactly
+/// one Effect — same shape that Vue/Svelte's fine-grained
+/// reactivity produces.
+#[wasm_bindgen]
+pub fn branch_update(n: u32) {
+    BRANCH_COUNTER.with(|c| {
+        if let Some(sig) = c.borrow().as_ref() {
+            sig.set(n);
+        }
+    });
+}
+
+/// Bump the global counter. EVERY leaf reads this signal, so
+/// the framework's reactive graph fans out to N Effects.
+#[wasm_bindgen]
+pub fn global_update(n: u32) {
+    GLOBAL_COUNTER.with(|c| {
+        if let Some(sig) = c.borrow().as_ref() {
+            sig.set(n);
         }
     });
 }

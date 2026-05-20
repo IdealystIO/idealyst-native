@@ -22,15 +22,28 @@ pub struct Gpu {
 
 impl Gpu {
     pub fn new(window: Arc<Window>) -> Result<Self, String> {
+        // wgpu 29: `InstanceDescriptor` no longer implements `Default`,
+        // `Instance::new` takes `&InstanceDescriptor`, and the descriptor
+        // gained `flags` / `memory_budget_thresholds` / `backend_options`.
+        // Pass explicit defaults; we don't need any of the new knobs.
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY,
-            ..Default::default()
+            flags: wgpu::InstanceFlags::default(),
+            memory_budget_thresholds: Default::default(),
+            backend_options: wgpu::BackendOptions::default(),
+            // wgpu 29 added an explicit display-handle slot to the
+            // instance descriptor (GLES/Wayland need it; on Vulkan
+            // / Metal / DX12 it's ignored). `None` lets wgpu fall
+            // back to the per-surface handle.
+            display: None,
         });
 
         let surface = instance
             .create_surface(window.clone())
             .map_err(|e| format!("create_surface failed: {e}"))?;
 
+        // wgpu 29: `request_adapter` returns `Result<Adapter, RequestAdapterError>`
+        // (it used to return `Option<Adapter>` and we'd `.ok_or_else`).
         let adapter = pollster::block_on(instance.request_adapter(
             &wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::default(),
@@ -38,8 +51,10 @@ impl Gpu {
                 compatible_surface: Some(&surface),
             },
         ))
-        .ok_or_else(|| "no suitable GPU adapter".to_string())?;
+        .map_err(|e| format!("no suitable GPU adapter: {e}"))?;
 
+        // wgpu 29: `request_device` takes one arg (no trace path), and
+        // `DeviceDescriptor` gained `experimental_features` + `trace`.
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("idealyst-wgpu-device"),
@@ -47,8 +62,9 @@ impl Gpu {
                 required_limits: wgpu::Limits::downlevel_defaults()
                     .using_resolution(adapter.limits()),
                 memory_hints: wgpu::MemoryHints::default(),
+                experimental_features: wgpu::ExperimentalFeatures::default(),
+                trace: wgpu::Trace::Off,
             },
-            None,
         ))
         .map_err(|e| format!("request_device failed: {e}"))?;
 

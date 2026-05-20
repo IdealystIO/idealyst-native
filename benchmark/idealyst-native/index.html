@@ -65,8 +65,10 @@
     // Path is relative to this file. wasm-pack with --target=web
     // emits a JS shim alongside the .wasm; importing the shim
     // bootstraps the module.
-    import init, { start, set_rows, set_theme_by_name, toggle, row_count, bench_stats_json }
-      from './wasm/pkg/benchmark_idealyst_native.js';
+    import init, {
+      start, set_rows, set_theme_by_name, toggle, row_count, bench_stats_json,
+      setup_hierarchy, branch_update, global_update,
+    } from './wasm/pkg/benchmark_idealyst_native.js';
     import { autoRunIfRequested } from '../instrument.js';
 
     // Read ?rows=N out of the URL so a power user can deep-link to
@@ -81,12 +83,22 @@
     // resolve synchronously — the framework's signal fan-out is
     // synchronous and the web backend's DOM ops are too, so
     // by the time set_rows/set_theme_by_name return, the DOM
-    // reflects the new state.
+    // reflects the new state. Same applies to the hierarchy
+    // hooks below.
     const setRows = async (n) => {
       set_rows(n);
     };
     const setTheme = async (name) => {
       set_theme_by_name(name);
+    };
+    const setupHierarchy = async (seed, nodes, maxDepth) => {
+      setup_hierarchy(seed, nodes, maxDepth || 0);
+    };
+    const branchUpdate = async (n) => {
+      branch_update(n);
+    };
+    const globalUpdate = async (n) => {
+      global_update(n);
     };
 
     // Expose framework controls as window globals for manual profiling
@@ -140,7 +152,7 @@
     // `?suite=NAME` query param, this auto-runs the suite and posts
     // results back via `postMessage`. Standalone tab usage sees no
     // `?suite=` and this is a no-op.
-    autoRunIfRequested({ setRows, setTheme });
+    autoRunIfRequested({ setRows, setTheme, setupHierarchy, branchUpdate, globalUpdate });
   </script>
 </body>
 </html>

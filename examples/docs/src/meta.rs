@@ -303,6 +303,10 @@ pub enum DocConcept {
 
     // ---- Styling ----
     Stylesheet,
+    /// A user-space pattern of bundling tokens for app-wide swap.
+    /// NOT a framework primitive — `framework-core` only ships
+    /// `Tokenized<T>` + the token registry. The authoritative
+    /// explainer is `building-a-theme-system` (Advanced).
     Theme,
     Token,
     Variant,

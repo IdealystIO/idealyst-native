@@ -205,8 +205,7 @@ handle:
 - **`NavigatorHandle`** / **`TabsHandle`** / **`DrawerHandle`** —
   navigation commands (covered in [Navigation](#))
 - **`IconHandle`** — start a stroke animation imperatively
-- **`OverlayHandle`** / **`AnchoredOverlayHandle`** /
-  **`PresenceHandle`** — overlay control
+- **`PortalHandle`** / **`PresenceHandle`** — overlay control
 
 The rest (`TextHandle`, `ImageHandle`, `TextInputHandle`,
 `ToggleHandle`, `SliderHandle`, `WebViewHandle`, `VideoHandle`,
@@ -262,13 +261,12 @@ ui! {
     .bind(trigger)
 
     if is_open.get() {
-        AnchoredOverlay(
-            target = trigger,
-            side = ElementSide::Below,
-            align = ElementAlign::Start,
-        ) {
-            // menu content
-        }
+        { anchored_overlay(
+            AnchorTarget::from(trigger),
+            children![/* menu content */],
+        )
+        .side(ElementSide::Below)
+        .align(ElementAlign::Start) }
     }
 }
 ```

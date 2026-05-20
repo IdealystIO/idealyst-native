@@ -279,28 +279,40 @@ docs! {
             [code("create_navigator"), " — stack navigator"],
             [code("create_tab_navigator")],
             [code("create_drawer_navigator")],
-            [code("create_link")],
         ),
         p("These take a callbacks bundle so the framework can ask the \
            backend to mount/release per-screen subtrees on demand. The shape \
            is large; the trait's source has annotated examples."),
+        p(code("create_link"), " is also navigation, but its default \
+           falls through to ", code("create_view"),
+          " — see the container section below."),
     },
 
-    section(heading = "Overlays (defaults: unimplemented!())") {
+    section(heading = "Portals (defaults: unimplemented!() / no-op)") {
         list(
-            [code("create_overlay"), ", ", code("create_anchored_overlay")],
+            [code("create_portal"), " — single entry point. Receives a ",
+             code("PortalTarget"), " (either ",
+             code("Viewport(ViewportPlacement)"), " or ",
+             code("Anchor { target, side, align }"),
+             "), an ", code("on_dismiss"), " callback, and a ",
+             code("trap_focus"), " flag. Default: ", code("unimplemented!()"), "."],
+            [code("release_portal"), " — paired teardown. Defaults to no-op."],
+            [code("make_portal_handle"), " — returns a ", code("PortalHandle"),
+             " for imperative ops. Defaults to a no-op handle."],
         ),
-        p("Backends decide how to route these — iOS could send ",
-          code("Overlay"), " to a window-level ", code("UIView"), " and ",
-          code("AnchoredOverlay"), " to ",
-          code("UIContextMenuInteraction"), ". Web uses the ",
-          code("popover"), " attribute with CSS anchor positioning."),
+        p("Backends decide how to route by branching on ",
+          code("PortalTarget"), ". iOS could route ",
+          code("PortalTarget::Viewport(_)"), " to a window-level ",
+          code("UIView"), " and ", code("PortalTarget::Anchor { .. }"),
+          " to ", code("UIContextMenuInteraction"), ", all inside one ",
+          code("create_portal"), ". Web uses the ", code("popover"),
+          " attribute with CSS anchor positioning."),
     },
 
     section(heading = "Styling") {
         list(
             [code("apply_style(node, &Rc<StyleRules>)"),
-             " — required. The framework hands you concrete, theme-resolved values."],
+             " — required. The framework hands you concrete, token-resolved values."],
             [code("apply_styled_states(node, base, overlays)"),
              " — optional. If your backend supports declarative state \
               styling (web's CSS pseudo-classes), implement this and return ",
@@ -483,7 +495,7 @@ docs! {
              " gets called."],
             [link("Styles", to = "styles"), " — the ", code("StyleRules"),
              " you receive in ", code("apply_style"),
-             " and the theme-token machinery you may want to implement."],
+             " and the token-resolution machinery you may want to implement."],
             [link("Lists", to = "lists"), " — the ",
              code("VirtualizerCallbacks"), " bundle in detail."],
             [link("Navigation", to = "navigation"),

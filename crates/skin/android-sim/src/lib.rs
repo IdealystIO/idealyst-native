@@ -51,8 +51,13 @@ const M3_STATUS_FG: [f32; 4] = [
 /// Status-bar font size — M3 spec is ~14sp.
 const M3_STATUS_FONT_SIZE: f32 = 14.0;
 /// Edge inset from the bar's outer borders to the clock /
-/// status-icon group. M3 typically uses 16dp.
-const M3_STATUS_INSET: f32 = 16.0;
+/// status-icon group. M3 spec is 16dp, but our simulated
+/// viewport's edge sits directly at the bezel (real phones get
+/// some breathing room from the bezel-to-screen seal that we
+/// don't model), so the M3 value reads as visually cramped.
+/// Bumped to match the iOS skin's 24dp for cross-simulator
+/// consistency.
+const M3_STATUS_INSET: f32 = 24.0;
 
 // ---------------------------------------------------------------------------
 // Material 3 top app bar (center-aligned variant)

@@ -126,8 +126,9 @@ pub fn build_glyph_cache(
             buf.set_text(
                 font_system,
                 k.label,
-                Attrs::new().family(Family::SansSerif),
+                &Attrs::new().family(Family::SansSerif),
                 Shaping::Advanced,
+                None,
             );
             buf.shape_until_scroll(font_system, false);
             cache.insert(k.label, buf);

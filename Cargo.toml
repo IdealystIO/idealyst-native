@@ -191,6 +191,63 @@ opt-level = 3
 [profile.release.package.cpal]
 opt-level = 3
 
+# Blitz + anyrender (HTML/CSS rendering for the WebView primitive)
+# run their parse + layout + paint per-frame on each visible
+# WebView. At workspace `opt-level = "z"` they're unusably slow —
+# a small page took seconds, not milliseconds.
+[profile.dev.package.blitz-dom]
+opt-level = 3
+[profile.dev.package.blitz-html]
+opt-level = 3
+[profile.dev.package.blitz-net]
+opt-level = 3
+[profile.dev.package.blitz-paint]
+opt-level = 3
+[profile.dev.package.anyrender]
+opt-level = 3
+[profile.dev.package.anyrender_vello]
+opt-level = 3
+[profile.dev.package.vello]
+opt-level = 3
+[profile.dev.package.peniko]
+opt-level = 3
+[profile.dev.package.stylo]
+opt-level = 3
+[profile.dev.package.style]
+opt-level = 3
+[profile.dev.package.html5ever]
+opt-level = 3
+[profile.dev.package.markup5ever]
+opt-level = 3
+[profile.dev.package.parley]
+opt-level = 3
+[profile.release.package.blitz-dom]
+opt-level = 3
+[profile.release.package.blitz-html]
+opt-level = 3
+[profile.release.package.blitz-net]
+opt-level = 3
+[profile.release.package.blitz-paint]
+opt-level = 3
+[profile.release.package.anyrender]
+opt-level = 3
+[profile.release.package.anyrender_vello]
+opt-level = 3
+[profile.release.package.vello]
+opt-level = 3
+[profile.release.package.peniko]
+opt-level = 3
+[profile.release.package.stylo]
+opt-level = 3
+[profile.release.package.style]
+opt-level = 3
+[profile.release.package.html5ever]
+opt-level = 3
+[profile.release.package.markup5ever]
+opt-level = 3
+[profile.release.package.parley]
+opt-level = 3
+
 # Size-tuned release profile. We optimize for size rather than speed —
 # UI workloads aren't CPU-bound, but bytes-over-the-wire matter for the
 # WASM target. `format!` and friends are kept; they're too useful.

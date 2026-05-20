@@ -84,6 +84,8 @@ pub use primitives::web_view::{web_view, WebViewHandle, WebViewOps};
 pub use primitives::overlay::{
     anchored_overlay, overlay, AnchoredOverlayBuilder, BackdropMode, OverlayBuilder,
 };
+pub use primitives::flat_list::{flat_list, fixed_size, FlatListItemSize};
+pub use primitives::link::NavKind;
 pub use primitives::portal::{
     portal, AnchorTarget, AnchorableHandle, ElementAlign, ElementSide, PortalHandle,
     PortalOps, PortalTarget, ViewportPlacement, ViewportRect,

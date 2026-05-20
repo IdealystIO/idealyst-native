@@ -115,13 +115,21 @@ docs! {
     },
 
     section(heading = "Sub-macros at a glance") {
-        p("Five macros come with the framework. Each does one thing:"),
+        p("Seven macros come with the framework. Each does one thing:"),
         list(
             [code("#[component]"),
              " — wraps a function as a component. Generates the invocation macro, \
               handles reactivity rewriting and hot reload. Covered on this page."],
             [code("signal!(value)"), " — shorthand for ", code("Signal::new(value)"),
              ". Covered in Reactivity."],
+            [code("effect!({ … })"),
+             " — shorthand for an ", code("Effect::new(...)"),
+             " bound to the surrounding scope. Covered in Reactivity."],
+            [code("children![ … ]"),
+             " — builds a ", code("Vec<Primitive>"),
+             " from a mixed-shape list (single primitives, ",
+             code("Option<Primitive>"), ", ", code("Vec<Primitive>"),
+             "). Used to assemble children outside ", code("ui!"), "."],
             [code("ui! { … }"),
              " — the primary UI DSL. Lowers to plain framework-core calls. Covered \
               below and on the UI DSL page."],
@@ -129,10 +137,11 @@ docs! {
              " — a JSX-flavored variant of ", code("ui!"),
              " with identical output. Covered below."],
             [code("stylesheet! { … }"), " — declares a themed stylesheet. Covered in Styles."],
-            [code("methods! { … }"),
-             " — (inside a component body) declares imperative methods exposed through \
-              a handle. Covered below."],
         ),
+        p(code("methods! { … }"),
+          " is a sub-form recognized inside a ", code("#[component]"),
+          " body — it declares imperative methods exposed through a handle. \
+           Covered below."),
         p("Everything else in the framework is a plain function or type — no hidden \
            macro magic."),
     },

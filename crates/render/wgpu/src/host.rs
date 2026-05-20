@@ -276,6 +276,14 @@ enum ActivePress {
     /// Slider: press fires the initial value, every move updates,
     /// release just ends the drag.
     SliderDrag { node: WgpuNode },
+    /// Video scrubber: press → continuous seek on every pointer
+    /// move while the gesture is alive. Audio is muted for the
+    /// duration so the user doesn't hear sliced audio under rapid
+    /// re-seeks; we restore the prior muted state on release.
+    VideoScrub {
+        node: WgpuNode,
+        prior_muted: bool,
+    },
 }
 
 enum ReleaseAction {
@@ -519,6 +527,16 @@ impl Host {
     pub fn backend(&self) -> &Rc<RefCell<WgpuBackend>> { &self.backend }
     pub fn text_store(&self) -> &Rc<RefCell<TextStore>> { &self.text }
     pub fn font_system(&self) -> &Rc<RefCell<FontSystem>> { &self.font_system }
+
+    /// Tear down every active video decoder owned by this host's
+    /// tree. The platform shell calls this on window-close so
+    /// audio stops immediately instead of lingering until the
+    /// `Rc` chain to each `VideoDecoder` finishes unwinding. Per
+    /// host: closing one window leaves siblings (and their
+    /// running videos) alone.
+    pub fn shutdown_videos(&self) {
+        crate::backend_impl::shutdown_all_videos(&self.backend);
+    }
     /// The active skin. Renderer borrows this every frame to
     /// paint widget chrome + the on-screen keyboard.
     pub fn skin(&self) -> &Rc<dyn Skin> { &self.skin }
@@ -631,8 +649,9 @@ impl Host {
             buf.set_text(
                 &mut fs,
                 &label,
-                Attrs::new().family(Family::SansSerif),
+                &Attrs::new().family(Family::SansSerif),
                 Shaping::Advanced,
+                None,
             );
             buf.shape_until_scroll(&mut fs, false);
         }
@@ -875,6 +894,11 @@ impl Host {
                 self.update_slider_drag(&node);
                 self.active_press = Some(ActivePress::SliderDrag { node });
             }
+            ActivePress::VideoScrub { node, prior_muted } => {
+                crate::backend_impl::scrub_video(&node, ev.position);
+                crate::scheduler::request_redraw();
+                self.active_press = Some(ActivePress::VideoScrub { node, prior_muted });
+            }
             ActivePress::Pan {
                 scrollview,
                 last,
@@ -995,10 +1019,19 @@ impl Host {
         // Video controls dispatch — runs before the widget-action
         // path so a press on the scrubber/play-button doesn't get
         // captured as a generic Pressable. Resolves the press,
-        // fires the action (toggle play / seek), and stops here.
-        if crate::backend_impl::dispatch_video_control_press(&self.backend, ev.position) {
-            crate::scheduler::request_redraw();
-            return;
+        // fires the action (toggle play, or capture a scrub drag),
+        // and stops here.
+        match crate::backend_impl::dispatch_video_control_press(&self.backend, ev.position) {
+            crate::backend_impl::VideoControlPress::Toggled => {
+                crate::scheduler::request_redraw();
+                return;
+            }
+            crate::backend_impl::VideoControlPress::ScrubStart { node, prior_muted } => {
+                self.active_press = Some(ActivePress::VideoScrub { node, prior_muted });
+                crate::scheduler::request_redraw();
+                return;
+            }
+            crate::backend_impl::VideoControlPress::Miss => {}
         }
 
         // On-screen keyboard intercept. While an input is
@@ -1227,6 +1260,16 @@ impl Host {
                 // value. Treat as not-a-dismiss — user was
                 // interacting with a control.
             }
+            ActivePress::VideoScrub { node, prior_muted } => {
+                // Final position already seeked in the last
+                // pointer_move; here we just restore the audio
+                // muted flag we captured at press-down. The
+                // brief mute keeps rapid re-seek audio out of
+                // the user's ears; on release the next decoded
+                // packets reach the ring naturally.
+                crate::backend_impl::end_scrub(&node, prior_muted);
+                crate::scheduler::request_redraw();
+            }
             ActivePress::Pan {
                 scrollview,
                 last_time,
@@ -1411,8 +1454,16 @@ impl Host {
     /// focus, OS-canceled touch). Clears PRESSED state without
     /// firing the release action.
     pub fn pointer_cancel(&mut self) {
-        if let Some(ActivePress::Click { node, .. }) = self.active_press.take() {
-            set_state(&self.backend, &node, StateBits::PRESSED, false);
+        match self.active_press.take() {
+            Some(ActivePress::Click { node, .. }) => {
+                set_state(&self.backend, &node, StateBits::PRESSED, false);
+            }
+            Some(ActivePress::VideoScrub { node, prior_muted }) => {
+                // Restore audio so a cancelled scrub doesn't
+                // leave the clip muted indefinitely.
+                crate::backend_impl::end_scrub(&node, prior_muted);
+            }
+            _ => {}
         }
         // Slider / Pan: nothing to clean up beyond clearing the
         // active press (the `take()` above already did that for
@@ -2261,8 +2312,9 @@ fn build_chrome_glyph_cache(
         buf.set_text(
             font_system,
             &initial,
-            Attrs::new().family(Family::SansSerif),
+            &Attrs::new().family(Family::SansSerif),
             Shaping::Advanced,
+            None,
         );
         buf.shape_until_scroll(font_system, false);
         cache.insert(key, buf);

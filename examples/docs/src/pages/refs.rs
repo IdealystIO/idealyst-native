@@ -220,8 +220,8 @@ docs! {
             [code("NavigatorHandle"), " / ", code("TabsHandle"), " / ",
              code("DrawerHandle"), " — navigation commands (covered in Navigation)"],
             [code("IconHandle"), " — start a stroke animation imperatively"],
-            [code("OverlayHandle"), " / ", code("AnchoredOverlayHandle"), " / ",
-             code("PresenceHandle"), " — overlay control"],
+            [code("PortalHandle"), " / ", code("PresenceHandle"),
+             " — overlay control"],
         ),
         p("The rest (", code("TextHandle"), ", ", code("ImageHandle"), ", ",
           code("TextInputHandle"), ", ", code("ToggleHandle"), ", ",
@@ -279,13 +279,12 @@ docs! {
                 .bind(trigger)
 
                 if is_open.get() {
-                    AnchoredOverlay(
-                        target = trigger,
-                        side = ElementSide::Below,
-                        align = ElementAlign::Start,
-                    ) {
-                        // menu content
-                    }
+                    { anchored_overlay(
+                        AnchorTarget::from(trigger),
+                        children![/* menu content */],
+                    )
+                    .side(ElementSide::Below)
+                    .align(ElementAlign::Start) }
                 }
             }
         "##),

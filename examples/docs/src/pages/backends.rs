@@ -31,11 +31,15 @@ docs! {
     },
 
     section(heading = "The shipped backends") {
-        p("Five backends come in the box:"),
+        p("Five backend families come in the box:"),
         list(
             [code("backend-web"), " — Browser (WASM + DOM); production-ready"],
-            [code("backend-ios"), " — iOS / iPadOS / tvOS (UIKit); production-ready"],
-            [code("backend-android"), " — Android phones / tablets / TV (Views); production-ready"],
+            [code("backend-ios-*"), " family (", code("-core"), ", ",
+             code("-mobile"), ", ", code("-tv"),
+             ") — iOS / iPadOS / tvOS (UIKit); production-ready"],
+            [code("backend-android-*"), " family (", code("-core"), ", ",
+             code("-mobile"), ", ", code("-tv"),
+             ") — Android phones / tablets / TV (Views); production-ready"],
             [code("backend-roku"), " — Roku devices (SceneGraph + BrightScript); experimental"],
             [code("backend-aas-shell-native"), " — Dev-mode app-as-server client; dev only"],
         ),

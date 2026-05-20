@@ -53,8 +53,8 @@ gets its own page using the `docs!` macro and the
 | List with filter | `flat_list`, reactive filter via derived data |
 | Tabs with nested stacks | `TabNavigator` + `Navigator` per tab, state preservation |
 | Drawer + body | `DrawerNavigator`, content panel, breakpoint behavior |
-| Modal overlay | `Overlay`, signal-driven open/close, dismiss handling |
-| Tooltip / popover | `AnchoredOverlay`, `Ref<ButtonHandle>` as anchor |
+| Modal overlay | `overlay()`, signal-driven open/close, dismiss handling |
+| Tooltip / popover | `anchored_overlay()`, `Ref<ButtonHandle>` as anchor |
 | Animated mount / unmount | `Presence`, enter/exit transitions |
 | Counter component with methods | `methods!`, parent-side `Ref<H>` |
 | Reactive style | passing `Signal<Variant>` to a stylesheet builder |

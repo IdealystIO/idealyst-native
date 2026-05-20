@@ -110,9 +110,12 @@ docs! {
            and no top-down re-render."),
         p("Styles are written in a separate macro called ", code("stylesheet!"),
           ". A stylesheet is a typed description of how a component should look: \
-           its colors, spacing, borders, text size, and so on. Stylesheets are \
-           tied to a theme, so the same stylesheet can produce a light or dark \
-           version of itself without any code changes at the call site."),
+           its colors, spacing, borders, text size, and so on. Stylesheets emit \
+           tokenized values (named references with fallback values), so the same \
+           stylesheet can pick up different colors / spacing / sizes when the \
+           token store changes — the foundation app-wide \"theme\" patterns build \
+           on. See ", link("Building a theme system", to = "building-a-theme-system"),
+          " for that pattern."),
         p("That's the surface. The rest of this guide is mostly about how those \
            four things connect to each other and to the platform underneath."),
     },
@@ -155,7 +158,7 @@ docs! {
               code("View"), ", or whatever the platform uses to represent a thing \
               on screen."],
             ["If the primitive has a style, the walker resolves it against the \
-              active theme and calls ", code("apply_style(node, rules)"), "."],
+              token registry and calls ", code("apply_style(node, rules)"), "."],
             ["The walker recurses into children. Each child returns its own \
               handle, which the walker passes to ", code("insert(parent, child)"), "."],
         ),
@@ -165,7 +168,7 @@ docs! {
 
     section(heading = "Wiring up reactivity") {
         p("Whenever the walker meets a reactive expression — a ", code("Text"),
-          " whose contents read a signal, a style that depends on the theme, a ",
+          " whose contents read a signal, a style that reads a token, a ",
           code("for"), " loop over a signal-backed list, the condition of a \
            reactive ", code("if"), " — it wraps that expression in an Effect."),
         p("An Effect is the framework's lowest-level reactive primitive: a \
@@ -331,12 +334,12 @@ docs! {
 
     section(heading = "Reactivity") {
         p("Reactivity is the mechanism behind every change in an Idealyst app — a \
-           counter incrementing, a list growing, the theme switching from light \
-           to dark, a screen transitioning in. It is one idea, applied \
-           everywhere: when a value is read inside a place that depends on it, \
-           the framework remembers the connection; when the value changes, those \
-           places re-run."),
-        p("There is no separate update system for state, for styles, for themes, \
+           counter incrementing, a list growing, a token's value updating (which is \
+           how an app-wide \"theme\" swap works in practice), a screen \
+           transitioning in. It is one idea, applied everywhere: when a value is \
+           read inside a place that depends on it, the framework remembers the \
+           connection; when the value changes, those places re-run."),
+        p("There is no separate update system for state, for styles, for tokens, \
            or for navigation. They all use the same machinery, and the machinery \
            is deliberately small."),
     },
@@ -398,7 +401,7 @@ docs! {
               condition changes"],
             ["A ", code("for"), " loop whose source is a signal-backed list"],
             ["A prop passed as a closure that reads a signal"],
-            ["A stylesheet — reading from the active theme is itself a tracked read"],
+            ["A stylesheet — reading a tokenized value subscribes to that token"],
         ),
         p("Underneath all of these is ", code("Effect"), ", the framework's \
            lowest-level reactive primitive. Effects are how the framework wires \
@@ -454,21 +457,26 @@ docs! {
         },
     },
 
-    section(heading = "Styles and themes use the same machinery") {
-        p("Styling and theming aren't a separate system in Idealyst. They use \
-           the same reactivity that powers signals."),
-        p("A stylesheet is a description that resolves against the active theme, \
-           and the resolution is itself a tracked context. When the theme \
-           changes — say, your \"dark mode\" toggle calls ", code("set_theme(dark_theme())"),
-          " — the framework re-runs only the style resolutions that depended on \
-           the tokens that changed, and calls ", code("apply_style"), " on the \
-           backend for those specific nodes."),
-        p("The same goes for any value derived from a theme: a button color, a \
-           border radius, a font size. Swap the theme, and the framework updates \
-           exactly the parts that referenced what changed. You don't write code \
-           to listen for theme changes, because there is no separate listener to \
-           write — it's the same path that updates a ", code("Text"), " when a \
-           counter increments."),
+    section(heading = "Styles use the same machinery") {
+        p("Styling isn't a separate system in Idealyst. It uses the same \
+           reactivity that powers signals."),
+        p("A stylesheet is a description that resolves against the token \
+           registry, and the resolution is itself a tracked context. When \
+           tokens are updated — say, your \"dark mode\" toggle swaps a \
+           bundle of values — the framework re-runs only the style \
+           resolutions that depended on the tokens that changed, and \
+           calls ", code("apply_style"),
+          " on the backend for those specific nodes."),
+        p("The same goes for any value derived from a token: a button \
+           color, a border radius, a font size. Update the tokens, and \
+           the framework updates exactly the parts that referenced what \
+           changed. You don't write code to listen for token changes, \
+           because there is no separate listener to write — it's the \
+           same path that updates a ", code("Text"),
+          " when a counter increments. See ",
+          link("Building a theme system", to = "building-a-theme-system"),
+          " for the cookbook on wrapping this in an app-wide \"theme\" \
+           pattern."),
         compare(from = React) {
             p("Theme changes in React typically go through Context, and changing \
                the context value re-renders every consumer (unless you've \

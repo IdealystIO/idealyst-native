@@ -399,17 +399,51 @@ struct VariantInfo {
     id: &'static str,
     label: &'static str,
     url: &'static str,
+    /// Suite names this variant implements. The sidebar filters
+    /// the variant checklist to only those compatible with the
+    /// currently-selected suite. Variants that don't implement a
+    /// suite's required hooks would error at runtime, so we hide
+    /// them upfront to avoid the noise.
+    supports: &'static [&'static str],
 }
 
 const VARIANTS: &[VariantInfo] = &[
-    VariantInfo { id: "vanilla-css-vars",     label: "vanilla · css vars",     url: "./vanilla-css-vars/" },
-    VariantInfo { id: "vanilla-classes",      label: "vanilla · per-elem",     url: "./vanilla-classes/" },
-    VariantInfo { id: "vanilla-classes-bulk", label: "vanilla · bulk innerHTML", url: "./vanilla-classes-bulk/" },
-    VariantInfo { id: "react-naive",          label: "react · naive",          url: "./react-naive/" },
-    VariantInfo { id: "react-cssvars",        label: "react · cssvars",        url: "./react-cssvars/" },
-    VariantInfo { id: "vue",                  label: "vue",                    url: "./vue/" },
-    VariantInfo { id: "svelte",               label: "svelte",                 url: "./svelte/" },
-    VariantInfo { id: "idealyst-native",      label: "idealyst-native",        url: "./idealyst-native/" },
+    VariantInfo {
+        id: "vanilla-css-vars",     label: "vanilla · css vars",     url: "./vanilla-css-vars/",
+        supports: &["rebuild", "toggle"],
+    },
+    VariantInfo {
+        id: "vanilla-classes",      label: "vanilla · per-elem",     url: "./vanilla-classes/",
+        supports: &["rebuild", "toggle"],
+    },
+    VariantInfo {
+        id: "vanilla-classes-bulk", label: "vanilla · bulk innerHTML", url: "./vanilla-classes-bulk/",
+        supports: &["rebuild", "toggle"],
+    },
+    VariantInfo {
+        id: "react-naive",          label: "react · naive",          url: "./react-naive/",
+        supports: &["rebuild", "toggle", "hierarchy"],
+    },
+    VariantInfo {
+        id: "react-cssvars",        label: "react · cssvars",        url: "./react-cssvars/",
+        supports: &["rebuild", "toggle"],
+    },
+    VariantInfo {
+        id: "react-memo",           label: "react · memo",           url: "./react-memo/",
+        supports: &["rebuild", "toggle", "hierarchy"],
+    },
+    VariantInfo {
+        id: "vue",                  label: "vue",                    url: "./vue/",
+        supports: &["rebuild", "toggle", "hierarchy"],
+    },
+    VariantInfo {
+        id: "svelte",               label: "svelte",                 url: "./svelte/",
+        supports: &["rebuild", "toggle", "hierarchy"],
+    },
+    VariantInfo {
+        id: "idealyst-native",      label: "idealyst-native",        url: "./idealyst-native/",
+        supports: &["rebuild", "toggle", "hierarchy"],
+    },
 ];
 
 struct ParamInfo {
@@ -501,6 +535,31 @@ const SUITES: &[SuiteInfo] = &[
         // APPLY + ~16ms (next rAF). The framework differences
         // live entirely in APPLY (the JS work that kicked the
         // transition off), so TOTAL sums APPLY here.
+        total: TotalMetric::ApplySum,
+    },
+    SuiteInfo {
+        name: "hierarchy",
+        title: "Hierarchical render",
+        params: &[
+            ParamInfo { name: "seed",         label: "Seed",          default: 42.0   },
+            ParamInfo { name: "nodes",        label: "Target nodes",  default: 2000.0 },
+            // 0 means auto-size from `nodes` (log_2.55(nodes) + 2,
+            // floor 8). Bump this to force a deeper tree at a
+            // given leaf count — useful for stressing deep
+            // nesting rather than wide fanout.
+            ParamInfo { name: "maxDepth",     label: "Max depth (0=auto)", default: 0.0 },
+            ParamInfo { name: "iterations",   label: "Iterations",    default: 20.0   },
+            ParamInfo { name: "warmupCycles", label: "Warmup pairs",  default: 2.0    },
+        ],
+        // 0 = branch update (one leaf re-reads), 1 = global update
+        // (every leaf re-reads). Alternated by the suite per
+        // iteration. Surfaces what fine-grained reactivity buys.
+        bucket_labels: &["BRANCH", "GLOBAL"],
+        // PAINT here is dominated by browser rAF wait (same shape
+        // as toggle). APPLY is where framework differences live —
+        // the JS time spent fanning out through the reactive
+        // graph (or, for React without memo, re-running the
+        // entire component subtree).
         total: TotalMetric::ApplySum,
     },
 ];
@@ -907,14 +966,21 @@ fn on_run_clicked() {
         st.current_status.set("Select at least one variant.".to_string());
         return;
     }
+    let suite_name = st.current_suite.get();
+    let suite = suite_by_name(suite_name);
+    // Belt-and-suspenders: filter the queued variants by suite
+    // support too. The sidebar already hides unsupported
+    // variants, but a stale `selected_variants` set from before
+    // the suite switch could still hold ids that don't apply
+    // here. Filtering at run time avoids errored rows in the
+    // table.
     let mut order: Vec<&'static str> = VARIANTS.iter()
-        .filter(|v| selected.contains(v.id))
+        .filter(|v| selected.contains(v.id) && v.supports.contains(&suite_name))
         .map(|v| v.id)
         .collect();
     shuffle_in_place(&mut order);
 
-    let suite_name = st.current_suite.get();
-    let suite = suite_by_name(suite_name);
+
     let params = snapshot_params(&st, suite);
     *st.current_params.borrow_mut() = params;
     *st.current_run_suite.borrow_mut() = suite_name;
@@ -1070,41 +1136,63 @@ fn sidebar() -> Primitive {
         }
     }).collect();
 
-    // Variant checkbox list. Same pattern as the suite picker but
-    // with set membership instead of single selection.
-    let variant_rows: Vec<Primitive> = VARIANTS.iter().map(|v| {
-        let id = v.id;
-        let label = v.label;
-        let selected_for_read = selected.clone();
-        let selected_for_write = selected.clone();
-        let row_signal = signal!(selected.get().contains(id));
-        {
-            let row_signal = row_signal.clone();
-            let _e = framework_core::Effect::new(move || {
-                let want = selected_for_read.get().contains(id);
-                if row_signal.get() != want {
-                    row_signal.set(want);
-                }
-            });
-        }
+    // Variant checkbox list — filtered to variants that support
+    // the current suite. Wrapped in a Switch on `current_suite_sig`
+    // so flipping suites rebuilds the list with the right subset.
+    // Variants that lack the suite's required hooks (e.g. vanilla
+    // for the hierarchy suite) are simply hidden rather than
+    // shown-and-errored.
+    let variant_form = {
+        let current_suite_sig_v = current_suite_sig.clone();
+        let selected_v = selected.clone();
         ui! {
-            View(style = VariantRow()) {
-                View(style = VariantLabel()) {
+            match current_suite_sig_v.get() {
+                suite_name => {
                     {
-                        let row_signal = row_signal.clone();
-                        let id_for_write = id;
-                        toggle(row_signal.clone(), move |new_val| {
-                            let mut s = (*selected_for_write.get()).clone();
-                            if new_val { s.insert(id_for_write); }
-                            else { s.remove(id_for_write); }
-                            selected_for_write.set(Rc::new(s));
-                        })
+                        let suite_name: &'static str = suite_name;
+                        let selected = selected_v.clone();
+                        let rows: Vec<Primitive> = VARIANTS.iter()
+                            .filter(|v| v.supports.contains(&suite_name))
+                            .map(|v| {
+                                let id = v.id;
+                                let label = v.label;
+                                let selected_for_read = selected.clone();
+                                let selected_for_write = selected.clone();
+                                let row_signal = signal!(selected.get().contains(id));
+                                {
+                                    let row_signal = row_signal.clone();
+                                    let _e = framework_core::Effect::new(move || {
+                                        let want = selected_for_read.get().contains(id);
+                                        if row_signal.get() != want {
+                                            row_signal.set(want);
+                                        }
+                                    });
+                                }
+                                ui! {
+                                    View(style = VariantRow()) {
+                                        View(style = VariantLabel()) {
+                                            {
+                                                let row_signal = row_signal.clone();
+                                                let id_for_write = id;
+                                                toggle(row_signal.clone(), move |new_val| {
+                                                    let mut s = (*selected_for_write.get()).clone();
+                                                    if new_val { s.insert(id_for_write); }
+                                                    else { s.remove(id_for_write); }
+                                                    selected_for_write.set(Rc::new(s));
+                                                })
+                                            }
+                                            Text { label }
+                                        }
+                                    }
+                                }
+                            })
+                            .collect();
+                        ui! { View { { rows } } }
                     }
-                    Text { label }
                 }
             }
         }
-    }).collect();
+    };
 
     // Param form — reactive on `current_suite`. The whole
     // `Switch` rebuilds when the suite changes; each arm builds
@@ -1148,7 +1236,7 @@ fn sidebar() -> Primitive {
             Text(style = SectionH2()) { "Params" }
             { param_form }
             Text(style = SectionH2()) { "Variants" }
-            { variant_rows }
+            { variant_form }
             { button("Run", on_run_clicked).with_style(RunButton())
                 .disabled(move || run_in_progress.get()) }
         }

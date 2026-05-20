@@ -15,7 +15,7 @@ license.workspace = true
 [dependencies]
 render-wgpu = { workspace = true }
 framework-core = { workspace = true }
-glyphon = "0.6"
+glyphon = "0.11"
 # Same wasm32 `Instant`/`Duration` shim used by `render-wgpu`
 # and `ios-sim` — needed for the Skin trait's `now` parameter.
 web-time = "1"

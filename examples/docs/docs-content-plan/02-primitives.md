@@ -409,30 +409,57 @@ press dispatches in-process.
 
 See [Navigation](#) for the full route / params / dispatch model.
 
-## Overlays and animation
+## Floating UI — Portal, Overlay, AnchoredOverlay
 
-### `Overlay`
+Floating subtrees that escape the parent's layout and clipping —
+modals, popovers, drawers, sheets, tooltips.
 
-A viewport-positioned floating subtree — modals, drawers,
-full-screen sheets. Renders above the rest of the UI and escapes the
-parent's layout / clipping.
+### `Portal`
 
-The host owns open/close state. Mounting the primitive opens the
-overlay; unmounting closes it. Wire `on_dismiss` to flip your
-open-state signal when the platform requests dismissal (Escape, back
-gesture, click-outside on a dismissible backdrop).
+The one render-elsewhere primitive. `Primitive::Portal` renders
+its children at a different location in the host tree, escaping
+the parent's layout and clipping. On each backend it mounts at
+the platform's window-level surface — body portal on web,
+key-window addSubview on iOS, window-level addView on Android.
 
-### `AnchoredOverlay`
+`PortalTarget` carries both the mount location AND the
+positioning intent: `Viewport(placement)` for window-relative
+(centered, edge-pinned, full-screen) and
+`Anchor { target, side, align, offset }` for element-tracking
+(popovers, dropdowns, tooltips). The backend re-queries an
+anchored portal's rect on each scroll / layout / orientation
+event and repositions automatically.
 
-A floating subtree positioned relative to another primitive's
-rendered bounds — popovers, tooltips, dropdowns, context menus,
-edit-menus. Follows its anchor through scrolls, layout shifts, and
-orientation flips.
+See [Portal & Overlays](#) for the full target model, dismissal
+contract, focus-trap semantics, and authoring novel floating UX
+directly against the primitive.
 
-Backends can route this to a native anchored presentation
-(`UIContextMenuInteraction`, `UIPopoverPresentationController`,
-Android `PopupWindow`, web `popover` + CSS anchor positioning) or
-fall back to manual positioning with a scroll-tracking observer.
+### `Overlay` (composition)
+
+`overlay()` is not a primitive — it's a composition that lowers
+to `Primitive::Portal` with a viewport target plus a backdrop
+child. Defaults: `Center` placement, `Dismiss` backdrop,
+focus-trap on. Use for modals, drawers, sheets.
+
+The host owns open/close state. Mounting opens the overlay;
+unmounting closes it. Wire `on_dismiss` to flip your open-state
+signal when the platform requests dismissal (Escape, back
+gesture, backdrop tap).
+
+### `AnchoredOverlay` (composition)
+
+`anchored_overlay()` is also a composition, lowering to
+`Primitive::Portal` with `PortalTarget::Anchor`. Use for
+popovers, tooltips, dropdowns, context menus — anything that
+follows a trigger element.
+
+Defaults: `Below` side, `Start` align, `BackdropMode::None`
+(page behind stays interactive), focus-trap off — the popover
+defaults. Backends can route the underlying `Portal` to a native
+anchored presentation (`UIContextMenuInteraction`,
+`UIPopoverPresentationController`, Android `PopupWindow`, web
+`popover` + CSS anchor positioning) or fall back to manual
+positioning with a scroll-tracking observer.
 
 ### `Presence`
 
@@ -481,7 +508,7 @@ declared, themed, and resolved is its own subsystem — see
 - [Navigation](#) — `Navigator`, `TabNavigator`, `DrawerNavigator`,
   `Link`.
 - [Lists](#) — `Virtualizer` / `flat_list` in depth.
-- [Overlays and animation](#) — `Overlay`, `AnchoredOverlay`,
+- [Portal](#) — `Portal`, `overlay()`, `anchored_overlay()`,
   `Presence`.
 - [Graphics](#) — the wgpu canvas primitive.
 - [Robot](#) — `test_id` and the introspection layer.

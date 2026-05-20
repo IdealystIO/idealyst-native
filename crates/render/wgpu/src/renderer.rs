@@ -891,14 +891,14 @@ impl Renderer {
                 None => continue,
             };
             queue.write_texture(
-                wgpu::ImageCopyTexture {
+                wgpu::TexelCopyTextureInfo {
                     texture: &entry.texture,
                     mip_level: 0,
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
                 },
                 &frame.rgba,
-                wgpu::ImageDataLayout {
+                wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(4 * frame.width),
                     rows_per_image: Some(frame.height),
@@ -999,6 +999,7 @@ impl Renderer {
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: target_view,
                         resolve_target: None,
+                        depth_slice: None,
                         ops: wgpu::Operations {
                             // Clear to white. The display region
                             // shows this when the app's root has no
@@ -1024,6 +1025,7 @@ impl Renderer {
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
                     occlusion_query_set: None,
+                    multiview_mask: None,
                 });
                 pass.set_viewport(vx, vy, vw.max(1.0), vh.max(1.0), 0.0, 1.0);
                 self.rect.render(device, queue, &mut pass, viewport, &rects);
@@ -1079,6 +1081,7 @@ impl Renderer {
                             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                                 view: target_view,
                                 resolve_target: None,
+                                depth_slice: None,
                                 ops: wgpu::Operations {
                                     load: wgpu::LoadOp::Load,
                                     store: wgpu::StoreOp::Store,
@@ -1087,6 +1090,7 @@ impl Renderer {
                             depth_stencil_attachment: None,
                             timestamp_writes: None,
                             occlusion_query_set: None,
+                            multiview_mask: None,
                         });
                     pass2.set_viewport(vx, vy, vw.max(1.0), vh.max(1.0), 0.0, 1.0);
                     self.rect.render(
@@ -1148,6 +1152,7 @@ impl Renderer {
                         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                             view: target_view,
                             resolve_target: None,
+                            depth_slice: None,
                             ops: wgpu::Operations {
                                 load: wgpu::LoadOp::Load,
                                 store: wgpu::StoreOp::Store,
@@ -1156,6 +1161,7 @@ impl Renderer {
                         depth_stencil_attachment: None,
                         timestamp_writes: None,
                         occlusion_query_set: None,
+                        multiview_mask: None,
                     });
                 pass.set_viewport(vx, vy, vw.max(1.0), vh.max(1.0), 0.0, 1.0);
                 self.rect.render(device, queue, &mut pass, viewport, &nav_top_rects);
@@ -1227,6 +1233,7 @@ impl Renderer {
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: target_view,
                         resolve_target: None,
+                        depth_slice: None,
                         ops: wgpu::Operations {
                             // Load the main pass's output so the
                             // overlay composites on top instead
@@ -1238,6 +1245,7 @@ impl Renderer {
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
                     occlusion_query_set: None,
+                    multiview_mask: None,
                 });
                 pass.set_viewport(vx, vy, vw.max(1.0), vh.max(1.0), 0.0, 1.0);
                 if !overlay_rects.is_empty() {
@@ -1624,6 +1632,7 @@ fn walk<'a>(
                 last_hover,
                 play_btn_rect,
                 scrubber_rect,
+                mute_btn_rect,
                 frame_rect,
             } => {
                 // Same record-and-resolve-later pattern as
@@ -1638,23 +1647,26 @@ fn walk<'a>(
                 });
                 frame_rect.set((x, y, w, h));
                 if *controls {
-                    // Read playback state once; the paint helper
-                    // converts it to the elapsed/duration display
-                    // and caches the two click targets back into
-                    // the node so pointer routing can hit-test.
                     let shared = &decoder.shared;
                     let is_playing = shared.playing.load(std::sync::atomic::Ordering::Acquire);
                     let cur_micros = shared.current_time_micros.load(std::sync::atomic::Ordering::Acquire);
                     let dur_micros = shared.duration_micros.load(std::sync::atomic::Ordering::Acquire);
+                    // `is_audio_muted()` returns None for silent
+                    // clips — treat as "no mute button to show"
+                    // by mapping None to a sentinel the paint
+                    // helper recognizes.
+                    let muted = decoder.is_audio_muted();
                     paint_video_controls(
                         (x, y, w, h),
                         is_playing,
                         cur_micros,
                         dur_micros,
+                        muted,
                         last_hover.get(),
                         now,
                         play_btn_rect,
                         scrubber_rect,
+                        mute_btn_rect,
                         rects,
                     );
                 }
@@ -3352,10 +3364,14 @@ fn paint_video_controls(
     is_playing: bool,
     cur_micros: u64,
     dur_micros: u64,
+    // `muted`: Some(true) → muted; Some(false) → audible;
+    // None → silent clip with no audio track (hide button).
+    muted: Option<bool>,
     last_hover: Option<Instant>,
     now: Instant,
     play_btn_rect: &std::cell::Cell<(f32, f32, f32, f32)>,
     scrubber_rect: &std::cell::Cell<(f32, f32, f32, f32)>,
+    mute_btn_rect: &std::cell::Cell<(f32, f32, f32, f32)>,
     _rects_unused: &mut Vec<RectInstance>,
 ) {
     VIDEO_CONTROLS_RECTS.with(|cell| {
@@ -3365,10 +3381,12 @@ fn paint_video_controls(
             is_playing,
             cur_micros,
             dur_micros,
+            muted,
             last_hover,
             now,
             play_btn_rect,
             scrubber_rect,
+            mute_btn_rect,
             &mut overlay,
         );
     });
@@ -3379,10 +3397,12 @@ fn paint_video_controls_into(
     is_playing: bool,
     cur_micros: u64,
     dur_micros: u64,
+    muted: Option<bool>,
     last_hover: Option<Instant>,
     now: Instant,
     play_btn_rect: &std::cell::Cell<(f32, f32, f32, f32)>,
     scrubber_rect: &std::cell::Cell<(f32, f32, f32, f32)>,
+    mute_btn_rect: &std::cell::Cell<(f32, f32, f32, f32)>,
     rects: &mut Vec<RectInstance>,
 ) {
     let (x, y, w, h) = rect;
@@ -3410,6 +3430,7 @@ fn paint_video_controls_into(
         // resolve to a stale region.
         play_btn_rect.set((0.0, 0.0, 0.0, 0.0));
         scrubber_rect.set((0.0, 0.0, 0.0, 0.0));
+        mute_btn_rect.set((0.0, 0.0, 0.0, 0.0));
         return;
     }
 
@@ -3450,13 +3471,66 @@ fn paint_video_controls_into(
         paint_icon(btn_x, btn_y, CONTROLS_BTN, CONTROLS_BTN, &play_path, (24, 24), tint, 1.0, rects);
     }
 
-    // 3) Scrubber line — full bar width minus button + padding.
-    //    Background track at low alpha; elapsed fill at full white.
-    //    The visual line is 4 px tall but the *hit* rect spans the
-    //    full bar height so users don't have to pixel-aim at the
-    //    thin track.
+    // 3) Mute button — right-aligned in the bar, mirror of play.
+    //    Only painted when there's an audio track on the clip;
+    //    silent videos hide the button entirely.
+    let mute_btn_x = x + w - CONTROLS_PAD - CONTROLS_BTN;
+    let mute_btn_y = btn_y;
+    let has_audio = muted.is_some();
+    if has_audio {
+        mute_btn_rect.set((mute_btn_x, mute_btn_y, CONTROLS_BTN, CONTROLS_BTN));
+        // Speaker body — same for both states. Lucide "volume"
+        // body path, stroked.
+        let speaker_body = ["M 11 5 L 6 9 H 2 V 15 H 6 L 11 19 Z"];
+        paint_icon(
+            mute_btn_x,
+            mute_btn_y,
+            CONTROLS_BTN,
+            CONTROLS_BTN,
+            &speaker_body,
+            (24, 24),
+            tint,
+            1.0,
+            rects,
+        );
+        // Decorator: "X" when muted, two wave indicators when
+        // audible. Both use straight-line approximations so
+        // `paint_icon`'s stroke renderer can draw them — the
+        // existing Lucide arcs would require `A` (arc) support
+        // we don't have. Visually close enough to read.
+        let decorator: &[&str] = if muted == Some(true) {
+            &["M 16 9 L 22 15", "M 22 9 L 16 15"]
+        } else {
+            &["M 14 9 V 15", "M 17 7 V 17", "M 20 5 V 19"]
+        };
+        paint_icon(
+            mute_btn_x,
+            mute_btn_y,
+            CONTROLS_BTN,
+            CONTROLS_BTN,
+            decorator,
+            (24, 24),
+            tint,
+            1.0,
+            rects,
+        );
+    } else {
+        mute_btn_rect.set((0.0, 0.0, 0.0, 0.0));
+    }
+
+    // 4) Scrubber line — fills the space between the play and
+    //    mute buttons (or out to the right padding if there's no
+    //    audio). Background track at low alpha; elapsed fill at
+    //    full white. The visual line is 4 px tall but the *hit*
+    //    rect spans the full bar height so users don't have to
+    //    pixel-aim at the thin track.
     let scrub_x = btn_x + CONTROLS_BTN + CONTROLS_PAD;
-    let scrub_w_total = (x + w - CONTROLS_PAD) - scrub_x;
+    let scrub_right = if has_audio {
+        mute_btn_x - CONTROLS_PAD
+    } else {
+        x + w - CONTROLS_PAD
+    };
+    let scrub_w_total = scrub_right - scrub_x;
     let scrub_y = bar_y + (bar_h - CONTROLS_SCRUB_H) * 0.5;
     if scrub_w_total > 8.0 {
         // Hit rect covers the full bar vertically; the painted
@@ -3691,14 +3765,14 @@ fn decode_and_upload(
         view_formats: &[],
     });
     queue.write_texture(
-        wgpu::ImageCopyTexture {
+        wgpu::TexelCopyTextureInfo {
             texture: &texture,
             mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
         &decoded,
-        wgpu::ImageDataLayout {
+        wgpu::TexelCopyBufferLayout {
             offset: 0,
             bytes_per_row: Some(4 * w),
             rows_per_image: Some(h),

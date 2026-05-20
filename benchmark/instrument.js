@@ -85,7 +85,14 @@ const PARENT_ORIGIN = '*';  // runner + variant are same-origin in
 ///                     URL. Defaults to `../suites/` relative to
 ///                     the variant page (the layout the benchmark
 ///                     ships with).
-export async function autoRunIfRequested({ setRows, setTheme, suitesBase } = {}) {
+export async function autoRunIfRequested({
+  setRows,
+  setTheme,
+  setupHierarchy,
+  branchUpdate,
+  globalUpdate,
+  suitesBase,
+} = {}) {
   const url = new URL(window.location.href);
   const suiteName = url.searchParams.get('suite');
   if (!suiteName) {
@@ -124,6 +131,9 @@ export async function autoRunIfRequested({ setRows, setTheme, suitesBase } = {})
     const runs = await suite.run({
       setRows,
       setTheme,
+      setupHierarchy,
+      branchUpdate,
+      globalUpdate,
       params,
       onProgress: (progress) => {
         postBack({ type: 'bench-progress', suite: suiteName, runs: progress });

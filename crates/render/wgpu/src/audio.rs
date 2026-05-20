@@ -705,6 +705,8 @@ pub(crate) fn spawn_decoded_source(
 
     let ring_for_thread = ring.clone();
     let shutdown_for_thread = shutdown.clone();
+    let seek_request: Arc<Mutex<Option<f64>>> = Arc::new(Mutex::new(None));
+    let seek_for_thread = seek_request.clone();
     let hint_ext = hint_ext.map(|s| s.to_string());
     std::thread::Builder::new()
         .name("audio-decode".into())
@@ -714,6 +716,7 @@ pub(crate) fn spawn_decoded_source(
                 hint_ext,
                 ring_for_thread,
                 shutdown_for_thread,
+                seek_for_thread,
                 looping,
             );
         })
@@ -725,6 +728,7 @@ pub(crate) fn spawn_decoded_source(
         source_id,
         subsystem,
         shutdown,
+        seek_request,
     })
 }
 
@@ -733,6 +737,7 @@ fn decoded_decode_loop(
     hint_ext: Option<String>,
     ring: Arc<SampleRing>,
     shutdown: Arc<AtomicBool>,
+    seek_request: Arc<Mutex<Option<f64>>>,
     looping: bool,
 ) {
     use symphonia::core::audio::{AudioBufferRef, Signal};
@@ -793,6 +798,33 @@ fn decoded_decode_loop(
         loop {
             if shutdown.load(Ordering::Acquire) {
                 break 'outer;
+            }
+            // Seek request from the video side. Symphonia's
+            // `FormatReader::seek` jumps the demuxer to the
+            // requested time and (for AAC) resets the decoder
+            // implicitly on the next packet. We drain the ring
+            // again here in case any samples landed between the
+            // handle's earlier `clear()` and us picking up the
+            // request.
+            let seek_target = seek_request
+                .lock()
+                .ok()
+                .and_then(|mut g| g.take());
+            if let Some(target_secs) = seek_target {
+                use symphonia::core::formats::{SeekMode, SeekTo};
+                let _ = format.seek(
+                    SeekMode::Accurate,
+                    SeekTo::Time {
+                        time: symphonia::core::units::Time::from(target_secs),
+                        track_id: Some(track_id),
+                    },
+                );
+                ring.clear();
+                // The decoder is stateful; after a seek the
+                // first packet may produce a partial/silent
+                // frame as it warms up. The next loop iteration
+                // calls `decoder.decode` against the freshly
+                // demuxed packet, which is enough to recover.
             }
             // Back-pressure: if the ring is more than ~70% full,
             // the mixer is behind. Sleep briefly so the decoder

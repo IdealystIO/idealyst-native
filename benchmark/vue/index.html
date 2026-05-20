@@ -9,9 +9,14 @@
    * function. No template string, no in-browser compiler — what
    * a real production Vue app ships after its build step.
    *
-   * "Naive" only in the sense that each row reads `theme` in its
-   * `:style` binding (so the reactive graph fans out per-row on
-   * toggle). No v-memo, no CSS-variable shortcut.
+   * Supports all three suites:
+   *   - rebuild      → re-mounts a row list at varying counts
+   *   - toggle       → bumps a theme ref, every row re-reads
+   *   - hierarchy    → mounts a deeply nested component tree;
+   *                    branchUpdate bumps a ref only the target
+   *                    leaf reads, globalUpdate bumps a ref every
+   *                    leaf reads. Branch / Leaf are proper Vue
+   *                    components so reactivity is component-scoped.
    *
    * Why runtime-only: the `vue.esm-browser.prod.js` bundle ships
    * a template compiler we don't need once we're calling `h()`
@@ -26,12 +31,11 @@
 <body>
 <div id="root"></div>
 <script type="module">
-// `vue.runtime.esm-browser.prod.js` is the production *runtime-only*
-// bundle — no template compiler. Pairs with hand-written render
-// functions via `h()` instead of template strings.
 import { createApp, ref, nextTick, h } from 'https://esm.sh/vue@3.4.21/dist/vue.runtime.esm-browser.prod.js';
 import { autoRunIfRequested, LIGHT, DARK } from '../instrument.js';
+import { genTreeShape } from '../tree.js';
 
+// ── rebuild / toggle styles ──────────────────────────────────
 const pageStyle = (t) => ({
   display: 'flex', flexDirection: 'column',
   padding: '32px', gap: '24px', minHeight: '100%',
@@ -55,8 +59,75 @@ const rowStyle = (t, parity) => ({
   transition: 'background 250ms ease-in-out, color 250ms ease-in-out, border-bottom-color 250ms ease-in-out',
 });
 
+// ── hierarchy refs + components ──────────────────────────────
+// Module-scope refs the Leaf component reads. Each Leaf
+// subscribes to `globalCounter`; only the target leaf
+// (identified by its id matching `targetLeafId`) ALSO subscribes
+// to `branchCounter`. Updates therefore fan out only as far as
+// they need to — Vue's per-component reactive scope handles
+// the localization automatically.
+const globalCounter = ref(0);
+const branchCounter = ref(0);
+let targetLeafId = -1;
+
+const TARGET_STYLE = 'background: #ffcc00; color: #000; padding: 1px 4px; font-weight: 700;';
+
+// Counter readout — its own component so only it subscribes to
+// the counters (not App). Without this isolation, App's render
+// would re-fire on every counter update and skew the
+// measurement.
+const CounterReadout = {
+  setup() {
+    return () => h('div', {
+      style: 'padding: 8px; background: #1a1d24; color: #e8eaf0; margin-bottom: 12px; border-radius: 4px;',
+    }, `branch=${branchCounter.value} · global=${globalCounter.value}`);
+  },
+};
+
+const Leaf = {
+  props: ['id'],
+  setup(props) {
+    // Computed once per component instance; the render function
+    // closes over it. Cheaper than checking on every render.
+    const isTarget = props.id === targetLeafId;
+    return () => {
+      const g = globalCounter.value;
+      if (isTarget) {
+        const b = branchCounter.value;
+        return h('span', { style: TARGET_STYLE }, `★ leaf ${props.id}: g=${g} b=${b}`);
+      }
+      return h('span', null, `leaf ${props.id}: g=${g} `);
+    };
+  },
+};
+
+const Branch = {
+  props: ['vnodes'],
+  setup(props) {
+    // `Branch` doesn't read any reactive state — its props are
+    // a static vnode array assembled at mount time. So Vue
+    // never re-renders Branch after initial mount. Theme/counter
+    // changes propagate straight to the affected Leaf
+    // components, skipping all intermediate Branches.
+    return () => h('div', { class: 'b' }, props.vnodes);
+  },
+};
+
+function buildVnodes(node) {
+  if (node.kind === 'leaf') {
+    return h(Leaf, { key: node.id, id: node.id });
+  }
+  const vnodes = node.children.map(buildVnodes);
+  return h(Branch, { key: node.id, vnodes });
+}
+
+// ── App state + hooks ────────────────────────────────────────
 let externalSetRows = null;
 let externalSetTheme = null;
+let externalSetupHierarchy = null;
+
+const mode = ref('rows');  // 'rows' (rebuild/toggle) or 'tree' (hierarchy)
+const treeRoot = ref(null);
 
 const app = createApp({
   setup() {
@@ -64,31 +135,34 @@ const app = createApp({
     const theme = ref(LIGHT);
 
     externalSetRows = async (n) => {
+      mode.value = 'rows';
       rowCount.value = n;
-      // `nextTick()` resolves after Vue's microtask-scheduled
-      // DOM patch flushes — the contract `setRows` advertises
-      // to the suite.
       await nextTick();
     };
     externalSetTheme = async (name) => {
-      // Writing `theme.value` re-fires every `:style` binding
-      // that reads it. The patch lands on a microtask; `nextTick`
-      // resolves after it flushes.
       theme.value = name === 'dark' ? DARK : LIGHT;
       await nextTick();
     };
+    externalSetupHierarchy = async (seed, nodes, maxDepth) => {
+      const tree = genTreeShape(seed, nodes, maxDepth || undefined);
+      targetLeafId = tree.targetLeaf.id;
+      treeRoot.value = buildVnodes(tree.root);
+      mode.value = 'tree';
+      await nextTick();
+    };
 
-    // Hand-written render function. Equivalent to:
-    //   <div :style="pageStyle(theme)">
-    //     <div :style="listStyle(theme)">
-    //       <div v-for="i in rowCount" :key="i" :style="rowStyle(...)">
-    //         <span>Row #{{ i }}</span>
-    //       </div>
-    //     </div>
-    //   </div>
-    // but with no template compile step. `setup` returns the
-    // render function; Vue uses it directly.
     return () => {
+      if (mode.value === 'tree') {
+        // Static container. App reads only `treeRoot.value`
+        // (which is stable post-mount), so App itself doesn't
+        // re-render on counter updates. CounterReadout owns the
+        // counter subscriptions in its own component scope.
+        return h('div', { style: 'padding: 16px; font: 12px/1.4 monospace;' }, [
+          h(CounterReadout),
+          treeRoot.value,
+        ]);
+      }
+      // Default: row-list mode (rebuild/toggle).
       const t = theme.value;
       const n = rowCount.value;
       const rows = new Array(n);
@@ -107,12 +181,12 @@ const app = createApp({
 
 app.mount('#root');
 
-// `app.mount` runs synchronously, so both hooks are filled by
-// the time we get here. Hand off to the runner if we're in
-// iframe mode.
 autoRunIfRequested({
   setRows: (n) => externalSetRows(n),
   setTheme: (t) => externalSetTheme(t),
+  setupHierarchy: (seed, nodes) => externalSetupHierarchy(seed, nodes),
+  branchUpdate: async (n) => { branchCounter.value = n; await nextTick(); },
+  globalUpdate: async (n) => { globalCounter.value = n; await nextTick(); },
 });
 </script>
 </body>

@@ -69,8 +69,7 @@ docs! {
            you're building a novel floating UX, ", code("portal(...)"),
           " is the entry point. It takes a target and a children list, \
            and exposes ", code(".on_dismiss(...)"), ", ",
-          code(".trap_focus(...)"), ", ", code(".with_style(...)"),
-          ", ", code(".bind(...)"), "."),
+          code(".trap_focus(...)"), ", ", code(".bind(...)"), "."),
         code(rust, r##"
             use framework_core::{portal, PortalTarget, ViewportPlacement, view, text};
 
