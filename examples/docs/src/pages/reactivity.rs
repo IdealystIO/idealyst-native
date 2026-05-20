@@ -16,7 +16,10 @@ docs! {
     category = Foundation,
     description = "The mechanism behind every change in an Idealyst app.",
     related = ["overview", "primitives", "styles", "components", "refs"],
-    concepts = [Signal, Effect, Scope, TrackedContext, Derived, Untrack, Action],
+    concepts = [
+        Signal, Effect, Scope, TrackedContext, Derived, Untrack, Action,
+        Memo, OnCleanup, Reducer, Resource, Context,
+    ],
 
     section(heading = "Intro") {
         p("This page is the long version of what the Overview introduced. \
@@ -202,12 +205,13 @@ docs! {
                out, nothing to forget, no exhaustive-deps lint to fight. \
                Adding a signal read to the closure body subscribes to it; \
                removing the read unsubscribes."),
-            p("2. No cleanup function. When the effect's scope drops, its \
-               subscriptions are released automatically. If you need to undo \
-               a side effect on teardown — close a socket, cancel a timer — \
-               you do it by writing a destructor on whatever resource the \
-               effect created, not by returning a cleanup function from the \
-               effect itself."),
+            p("2. Cleanup is separate from the effect. Idealyst gives you ",
+              code("on_cleanup(callback)"),
+              " — call it from inside an Effect to register a teardown \
+               that fires before the next re-run and on final disposal. \
+               No \"return a function from the body,\" no implicit \
+               last-statement-is-cleanup convention. See the ",
+              code("on_cleanup"), " section below."),
             p("3. Runs synchronously on the change. Idealyst effects fire on \
                the same call stack as the ", code("signal.set()"),
               " that caused them, not after a commit phase. This is faster \
@@ -224,6 +228,290 @@ docs! {
               ". Both auto-track reads, both re-run on change, both \
                lifetime-bound to a scope."),
         },
+    },
+
+    section(heading = "effect! — shorthand macro") {
+        p(code("effect!"), " is the natural shorthand for ",
+          code("Effect::new(move || { ... })"),
+          ". The macro skips the ", code("move ||"),
+          " keyword (always implied — signal handles are ",
+          code("Copy"),
+          "), auto-binds the returned handle to a hygienic local, and \
+           reads more like the body it wraps:"),
+        code(rust, r##"
+            use framework_core::{effect, signal};
+
+            let count = signal!(0);
+            effect!({
+                println!("count is now {}", count.get());
+            });
+            count.set(1);  // re-runs the effect
+        "##),
+        p("Inside a render scope the active ", code("Scope"),
+          " adopts the effect's arena slot, so the hidden binding's \
+           drop is a no-op and the effect lives until the scope ends. \
+           Outside any scope (tests, top-level binaries), the binding \
+           keeps the effect alive until the end of the enclosing \
+           block — call ", code("Effect::new"),
+          " directly and capture the handle if you need a longer \
+           lifetime."),
+    },
+
+    section(heading = "on_cleanup — release on drop") {
+        p(code("on_cleanup(callback)"), " registers a teardown that \
+           fires when the surrounding Effect or scope drops. Pair it \
+           with any reactive run that allocates an external resource — \
+           timers, sockets, native handles, third-party subscriptions:"),
+        code(rust, r##"
+            use framework_core::{effect, on_cleanup, after_ms};
+
+            effect!({
+                let task = after_ms(500, || tick());
+                on_cleanup(move || drop(task));
+                deps.get();  // tracked: cleanup fires before each re-run
+            });
+        "##),
+        p("Cleanup fires before the effect's next re-run AND on final \
+           disposal — exactly once per resource lifetime. Multiple ",
+          code("on_cleanup"),
+          " calls within a single Effect run all fire in LIFO order \
+           (last-registered first), the way ", code("defer"),
+          " works in other languages."),
+    },
+
+    section(heading = "memo() — cached derived values") {
+        p(code("memo(|| expr)"),
+          " caches the result of a reactive computation. Readers \
+           subscribe to the cache, not to the underlying signals — so \
+           N nodes reading a memoized value pay one computation, not \
+           N. The cache invalidates only when one of the memo's \
+           tracked dependencies changes:"),
+        code(rust, r##"
+            use framework_core::{signal, memo};
+
+            let items = signal!(vec![1, 2, 3, 4, 5]);
+            let total = memo(move || items.with(|v| v.iter().sum::<i32>()));
+
+            // Many readers — all subscribe to `total`, not to `items`.
+            text(move || format!("Sum: {}", total.get()))
+        "##),
+        p(code("memo_with(eq, || expr)"),
+          " takes a custom equality predicate so the cache can skip \
+           propagation when the new value is \"equal enough\" — useful \
+           for floating-point thresholds, hash comparisons, or any \
+           expensive ", code("PartialEq"), " you'd rather not run."),
+        compare(from = React) {
+            p(code("memo()"), " is the family of ", code("useMemo"),
+              " (cached value) and ", code("useSelector"),
+              " (subscribe to a derived slice of state). Same caching \
+               semantics; no deps array because tracking is automatic; \
+               no shallow-equality skip because re-runs are already \
+               only \"when dependencies actually change.\""),
+        },
+        compare(from = Solid) {
+            p(code("memo()"), " is ", code("createMemo()"),
+              " — identical caching semantics, identical \
+               dependency-tracking model. ", code("memo_with(eq, ...)"),
+              " is ", code("createMemo(..., undefined, { equals })"), "."),
+        },
+    },
+
+    section(heading = "batch() — group writes") {
+        p(code("batch(|| { /* multi-set */ })"),
+          " defers effect notifications until the closure returns. \
+           Multiple ", code(".set(...)"),
+          " calls inside the batch produce ONE effect re-run per \
+           dependent, not N:"),
+        code(rust, r##"
+            use framework_core::{signal, batch};
+
+            let first = signal!("Ada".to_string());
+            let last  = signal!("Lovelace".to_string());
+
+            // Without batch: each set fires effects independently.
+            // With batch: both writes commit together, downstream
+            // effects see the consistent (first, last) pair and run
+            // once.
+            batch(|| {
+                first.set("Alan".into());
+                last.set("Turing".into());
+            });
+        "##),
+        p("Use this for any logically-atomic multi-write. The cost is \
+           a small allocation per batch; the win is one rebuild \
+           instead of N for the worst-case fan-out."),
+    },
+
+    section(heading = "Trackable, on(), and on_defer()") {
+        p("By default Effects auto-track every signal read on each \
+           run. Sometimes you want explicit control — \"re-run only \
+           when this specific set of deps changes\":"),
+        code(rust, r##"
+            use framework_core::{signal, on, on_defer};
+
+            let count = signal!(0);
+            let mood  = signal!("ok");
+
+            // on(deps, run) — fires immediately + on every dep change.
+            on(count, move |c| println!("count: {}", c));
+
+            // on((count, mood), ...) — multiple deps, fires on either.
+            on((count, mood), move |(c, m)| println!("{} {}", c, m));
+
+            // on_defer — same as on() but skips the initial fire.
+            // The closure only runs from the FIRST change onward.
+            on_defer(count, move |c| save_to_db(c));
+        "##),
+        p("Deps go through the ", code("Trackable"),
+          " trait — ", code("Signal<T>"),
+          " implements it, and so do tuples up to arity 4. Trackable \
+           is the \"this set of things is observable as a unit\" \
+           abstraction; the Effect uses it to subscribe to all of \
+           them at once and read them as a tuple when re-running."),
+    },
+
+    section(heading = "reducer() — action-driven state") {
+        p(code("reducer(initial, |state, action| next_state)"),
+          " gives you Redux-style state: a read-only signal of the \
+           current state, and a dispatch function for sending \
+           actions. The reducer closure is called inside a tracked \
+           context, so reads inside it auto-subscribe:"),
+        code(rust, r##"
+            use framework_core::{reducer, Action};
+
+            enum CounterAction { Inc, Dec, Reset }
+
+            let (count, dispatch) = reducer(0i32, |state, action| match action {
+                CounterAction::Inc   => state + 1,
+                CounterAction::Dec   => state - 1,
+                CounterAction::Reset => 0,
+            });
+
+            // Read: a regular signal.
+            text(move || format!("{}", count.get()));
+
+            // Write: dispatch actions.
+            button("+", move || dispatch(CounterAction::Inc));
+        "##),
+        p("Why reducer when you have signals? Two reasons. The state \
+           transitions live in one closure (easier to test, easier to \
+           reason about), and the action enum is the natural shape \
+           for time-travel / log replay / generator-backend wire \
+           formats. Reducer pairs with ", code("Action"),
+          " (see Derived values above) for round-tripping through \
+           Roku-style generator backends."),
+    },
+
+    section(heading = "resource() — async data as a primitive") {
+        p(code("resource(deps, async fetch)"),
+          " makes async data a reactive value. The fetch runs the \
+           first time you read the resource and re-runs whenever the \
+           ", code("Trackable"),
+          " deps change. The returned ", code("Resource<T, E>"),
+          " exposes ", code("data"), " / ", code("error"), " / ",
+          code("loading"),
+          " as signals, plus a ", code("refetch()"),
+          " trigger and a cancellation token:"),
+        code(rust, r##"
+            use framework_core::{resource, signal};
+
+            let user_id = signal!(42u32);
+
+            let user = resource(user_id, |id| async move {
+                fetch_user(id).await
+            });
+
+            // Render against the resource's state.
+            text(move || match user.state().get() {
+                ResourceState::Loading => "Loading…".into(),
+                ResourceState::Ready(u) => format!("Hi, {}", u.name),
+                ResourceState::Error(e) => format!("Error: {}", e),
+            });
+
+            // Changing `user_id` cancels the in-flight fetch and
+            // starts a new one against the new id.
+            user_id.set(43);
+        "##),
+        p("Cancellation is real — when a new fetch starts, the \
+           previous future's ", code("on_cancel"),
+          " hook fires so it can release its resources. Stale \
+           responses can't race against fresher ones because each \
+           run carries a sequence number and the response is \
+           discarded if a newer fetch already started."),
+        p("Feature-gated behind the framework's ",
+          code("async-driver"),
+          " feature (Resource depends on ",
+          code("spawn_async"), " for the per-fetch task)."),
+    },
+
+    section(heading = "Context — provide and inject") {
+        p("Context propagates a value down the render tree without \
+           threading it through every component's props. ",
+          code("provide(value)"), " inside a parent component makes \
+           the value visible to ", code("inject::<T>()"),
+          " in any descendant:"),
+        code(rust, r##"
+            use framework_core::{provide, inject, inject_or};
+
+            #[derive(Clone)]
+            struct Theme { primary: Color }
+
+            // In a parent (or app root):
+            provide(Theme { primary: Color::parse("#5b6cff") });
+
+            // In any descendant:
+            let theme: Theme = inject().expect("Theme provided upstream");
+            // Or with a fallback:
+            let theme: Theme = inject_or(Theme::default());
+        "##),
+        p("Lookup is closest-provider — multiple ", code("provide"),
+          " calls in a chain shadow each other the way scoped \
+           variables do, not the way a global registry would. \
+           ", code("with_inject(|t: &Theme| { ... })"),
+          " is the borrowing variant that lets you read without \
+           cloning."),
+        p("Reads through ", code("inject"), " are NOT reactive on \
+           their own — context is a structural concept, not a \
+           reactive one. If you want the provided value itself to be \
+           reactive, provide a ", code("Signal<T>"),
+          " and read its ", code(".get()"),
+          " inside whatever effect/memo needs reactivity."),
+        compare(from = React) {
+            p(code("provide"), " / ", code("inject"),
+              " is ", code("React.createContext"),
+              " + ", code("Provider"), " / ", code("useContext"),
+              ". Closest-provider semantics match. The main \
+               difference: React forces a re-render of the whole \
+               consumer subtree on context value change; Idealyst \
+               doesn't, because consumers only re-run if they read \
+               something reactive INSIDE the injected value."),
+        },
+    },
+
+    section(heading = "use_id() — stable identifiers") {
+        p(code("use_id()"), " returns an opaque, stable string \
+           identifier tied to the current call-site identity. Same \
+           component instance → same id, every render. Different \
+           instances → different ids:"),
+        code(rust, r##"
+            use framework_core::use_id;
+
+            let id = use_id();  // e.g. "ui-1a3f9c0d8e4b2671"
+            ui! {
+                Text(style = label_style) { "Label" }
+                // Use `id` to wire ARIA / form labels / unique CSS hooks.
+            }
+        "##),
+        p("The format is ", code("ui-<16 hex chars>"),
+          " — stable across re-renders, unique within the tree, safe \
+           to use as an HTML id, ARIA target, or analytics key. ",
+          code("use_id_keyed(key)"),
+          " mixes a user-supplied key into the hash for cases where \
+           the same component instance needs multiple distinct ids."),
+        p("Primarily useful for SSR-related work and accessibility \
+           (label/input pairing, ARIA controls/labelledby) — anywhere \
+           you'd reach for ", code("React.useId"),
+          " or a counter that survives reconciliation."),
     },
 
     section(heading = "Untracked reads") {

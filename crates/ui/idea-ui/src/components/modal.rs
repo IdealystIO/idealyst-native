@@ -35,7 +35,8 @@
 
 use std::rc::Rc;
 
-use framework_core::primitives::overlay::{BackdropMode, ViewportPlacement};
+use framework_core::primitives::overlay::BackdropMode;
+use framework_core::primitives::portal::ViewportPlacement;
 use framework_core::{ui, ChildList, Primitive};
 
 use crate::stylesheets::Modal;

@@ -250,6 +250,29 @@ pub enum DocConcept {
     Derived,
     Action,
     Untrack,
+    /// Cached derived value: `memo(|| expr)`. Recomputes only when its
+    /// dependencies change; readers subscribe to the cache, not the
+    /// underlying computation. Lives next to Effect/Derived in the
+    /// reactivity vocabulary.
+    Memo,
+    /// `on_cleanup(callback)` — registers a callback that fires when
+    /// the surrounding Effect / scope drops. The cleanup hook for
+    /// resources (timers, sockets, native handles) created during a
+    /// reactive run.
+    OnCleanup,
+    /// `reducer(initial, |state, action| ...)` — action-driven state.
+    /// Returns a read-only signal + a dispatch function. Pairs with
+    /// `Action` for round-tripping through generator backends.
+    Reducer,
+    /// `resource(deps, async closure)` — async data as a reactive
+    /// primitive. Re-fetches when its deps change, exposes
+    /// `data`/`error`/`loading`, supports cancellation. Feature-gated
+    /// behind `async-driver`.
+    Resource,
+    /// `provide(value)` / `inject::<T>()` — context propagation. The
+    /// "closest provider" model React introduced, adapted for
+    /// fine-grained reactivity.
+    Context,
 
     // ---- Components ----
     Component,
@@ -315,10 +338,23 @@ pub enum DocConcept {
     IconRegistry,
     StrokeAnimation,
 
-    // ---- Overlays / animation ----
+    // ---- Floating UI / animation ----
+    /// `Primitive::Portal` — the framework's one render-elsewhere
+    /// primitive. Authoritative explainer: `portal` page.
+    Portal,
+    /// `overlay()` composition. Lowers to `Primitive::Portal` with a
+    /// viewport target + backdrop child. Not a primitive itself.
     Overlay,
+    /// `anchored_overlay()` composition. Lowers to `Primitive::Portal`
+    /// with an anchor target. Not a primitive itself.
     AnchoredOverlay,
     Presence,
+
+    // ---- Third-party extension ----
+    /// `Primitive::External` — the framework's one extension hatch for
+    /// third-party primitives. Authoritative explainer:
+    /// `third-party-primitives` page.
+    External,
 
     // ---- Backends ----
     Backend,
@@ -359,6 +395,11 @@ impl DocConcept {
             DocConcept::Derived => "Derived",
             DocConcept::Action => "Action",
             DocConcept::Untrack => "untrack",
+            DocConcept::Memo => "memo",
+            DocConcept::OnCleanup => "on_cleanup",
+            DocConcept::Reducer => "reducer",
+            DocConcept::Resource => "resource",
+            DocConcept::Context => "Context",
 
             DocConcept::Component => "Component",
             DocConcept::ComponentMethods => "methods!",
@@ -406,9 +447,12 @@ impl DocConcept {
             DocConcept::IconRegistry => "Icon registry",
             DocConcept::StrokeAnimation => "Stroke animation",
 
-            DocConcept::Overlay => "Overlay",
-            DocConcept::AnchoredOverlay => "AnchoredOverlay",
+            DocConcept::Portal => "Portal",
+            DocConcept::Overlay => "Overlay (composition)",
+            DocConcept::AnchoredOverlay => "AnchoredOverlay (composition)",
             DocConcept::Presence => "Presence",
+
+            DocConcept::External => "External primitive",
 
             DocConcept::Backend => "Backend",
             DocConcept::RuntimeBackend => "Runtime backend",
@@ -441,6 +485,11 @@ impl DocConcept {
             DocConcept::Derived => "derived",
             DocConcept::Action => "action",
             DocConcept::Untrack => "untrack",
+            DocConcept::Memo => "memo",
+            DocConcept::OnCleanup => "on-cleanup",
+            DocConcept::Reducer => "reducer",
+            DocConcept::Resource => "resource",
+            DocConcept::Context => "context",
 
             DocConcept::Component => "component",
             DocConcept::ComponentMethods => "component-methods",
@@ -488,9 +537,12 @@ impl DocConcept {
             DocConcept::IconRegistry => "icon-registry",
             DocConcept::StrokeAnimation => "stroke-animation",
 
+            DocConcept::Portal => "portal",
             DocConcept::Overlay => "overlay",
             DocConcept::AnchoredOverlay => "anchored-overlay",
             DocConcept::Presence => "presence",
+
+            DocConcept::External => "external",
 
             DocConcept::Backend => "backend",
             DocConcept::RuntimeBackend => "runtime-backend",

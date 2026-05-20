@@ -145,13 +145,13 @@ pub struct AndroidBackend {
     /// for unstyled instances the entry persists for the backend's
     /// lifetime — small and bounded).
     pub(crate) scroll_view_inner: HashMap<usize, GlobalRef>,
-    /// Per-overlay state. Keyed by the dialog's content-holder
+    /// Per-portal state. Keyed by the dialog's content-holder
     /// node's raw `JObject*` pointer. Populated by `overlay::create`,
-    /// removed by `release_overlay`. `view::insert` looks here to
-    /// detect that an overlay's content holder shouldn't be spliced
+    /// removed by `release_portal`. `view::insert` looks here to
+    /// detect that a portal's content holder shouldn't be spliced
     /// into the surrounding parent view — the dialog window owns
     /// its parenting.
-    pub(crate) overlay_instances: primitives::overlay::OverlayInstances,
+    pub(crate) portal_instances: primitives::overlay::PortalInstances,
 }
 
 impl AndroidBackend {
@@ -165,7 +165,7 @@ impl AndroidBackend {
             navigator_instances: HashMap::new(),
             tab_drawer_instances: HashMap::new(),
             scroll_view_inner: HashMap::new(),
-            overlay_instances: HashMap::new(),
+            portal_instances: HashMap::new(),
         }
     }
 
@@ -543,36 +543,16 @@ impl Backend for AndroidBackend {
         primitives::graphics::make_handle(node)
     }
 
-    fn create_overlay(
+    fn create_portal(
         &mut self,
-        placement: framework_core::primitives::overlay::ViewportPlacement,
-        backdrop: framework_core::primitives::overlay::BackdropMode,
+        target: framework_core::primitives::portal::PortalTarget,
         on_dismiss: Option<Rc<dyn Fn()>>,
-        _trap_focus: bool,
+        trap_focus: bool,
     ) -> Self::Node {
-        primitives::overlay::create_viewport(self, placement, backdrop, on_dismiss)
+        primitives::overlay::create(self, target, on_dismiss, trap_focus)
     }
 
-    fn release_overlay(&mut self, node: &Self::Node) {
-        primitives::overlay::release(self, node)
-    }
-
-    fn create_anchored_overlay(
-        &mut self,
-        target: framework_core::primitives::overlay::AnchorTarget,
-        side: framework_core::primitives::overlay::ElementSide,
-        align: framework_core::primitives::overlay::ElementAlign,
-        offset: f32,
-        backdrop: framework_core::primitives::overlay::BackdropMode,
-        on_dismiss: Option<Rc<dyn Fn()>>,
-        _trap_focus: bool,
-    ) -> Self::Node {
-        primitives::overlay::create_anchored(
-            self, target, side, align, offset, backdrop, on_dismiss,
-        )
-    }
-
-    fn release_anchored_overlay(&mut self, node: &Self::Node) {
+    fn release_portal(&mut self, node: &Self::Node) {
         primitives::overlay::release(self, node)
     }
 

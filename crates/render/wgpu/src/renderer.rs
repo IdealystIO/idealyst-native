@@ -357,22 +357,6 @@ impl Renderer {
         logical_viewport: (f32, f32),
         surface_viewport: (f32, f32, f32, f32),
     ) {
-        // Diagnostic: log render rate + video-upload rate once
-        // per second. Lets us tell apart "renderer not firing"
-        // from "renderer firing but uploads being skipped".
-        // Remove once cadence is verified.
-        thread_local! {
-            static RENDER_DIAG: std::cell::Cell<(u64, u64, std::time::Instant)> =
-                std::cell::Cell::new((0, 0, std::time::Instant::now()));
-        }
-        RENDER_DIAG.with(|c| {
-            let (renders, uploads, last) = c.get();
-            c.set((renders + 1, uploads, last));
-            if last.elapsed() >= std::time::Duration::from_secs(1) {
-                eprintln!("[render] renders/s={} video_uploads/s={}", renders, uploads);
-                c.set((0, 0, std::time::Instant::now()));
-            }
-        });
         let viewport = [logical_viewport.0, logical_viewport.1];
 
         // Run Taffy layout against the logical viewport, then
@@ -873,34 +857,19 @@ impl Renderer {
         // main-pass submit reads from the texture. Lifecycle
         // mirrors the Graphics pre-pass — same data shapes,
         // different population mechanism.
-        let mut video_pending: Vec<(crate::node::WgpuNode, u64)> = Vec::new();
+        // Take whatever is in each video's slot. Slot presence
+        // is the only signal we need — the decoder thread paces
+        // its publishes (one per output frame, ~30 fps), so a
+        // 120 Hz render pass reads `Some` ~1 in every 4 ticks
+        // and `None` otherwise. No counter snapshot to race
+        // against the decoder's overwrite.
         for req in video_requests
             .iter()
             .chain(nav_top_video_requests.iter())
             .chain(overlay_video_requests.iter())
         {
-            let (counter, last) = {
+            let (layout_id, frame) = {
                 let data = req.node.borrow();
-                let (counter, last) = match &data.kind {
-                    NodeKind::Video { decoder, last_uploaded_frame } => (
-                        decoder.shared.frame_counter.load(std::sync::atomic::Ordering::Acquire),
-                        last_uploaded_frame.get(),
-                    ),
-                    _ => continue,
-                };
-                (counter, last)
-            };
-            if counter == last {
-                // No new frame since last upload. The existing
-                // texture is still current — fall through to
-                // composite without touching the queue.
-                continue;
-            }
-            video_pending.push((req.node.clone(), counter));
-        }
-        for (node, counter) in video_pending {
-            let (layout_id, frame_w, frame_h, rgba) = {
-                let data = node.borrow();
                 let decoder = match &data.kind {
                     NodeKind::Video { decoder, .. } => decoder.clone(),
                     _ => continue,
@@ -911,14 +880,13 @@ impl Renderer {
                     Ok(mut slot) => slot.take(),
                     Err(_) => None,
                 };
-                let frame = match frame {
-                    Some(f) => f,
-                    None => continue,
-                };
-                (layout_id, frame.width, frame.height, frame.rgba)
+                (layout_id, frame)
             };
-            let entry = match self.ensure_video_texture(device, layout_id, frame_w, frame_h)
-            {
+            let frame = match frame {
+                Some(f) => f,
+                None => continue,
+            };
+            let entry = match self.ensure_video_texture(device, layout_id, frame.width, frame.height) {
                 Some(e) => e,
                 None => continue,
             };
@@ -929,23 +897,18 @@ impl Renderer {
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
                 },
-                &rgba,
+                &frame.rgba,
                 wgpu::ImageDataLayout {
                     offset: 0,
-                    bytes_per_row: Some(4 * frame_w),
-                    rows_per_image: Some(frame_h),
+                    bytes_per_row: Some(4 * frame.width),
+                    rows_per_image: Some(frame.height),
                 },
-                wgpu::Extent3d { width: frame_w, height: frame_h, depth_or_array_layers: 1 },
+                wgpu::Extent3d {
+                    width: frame.width,
+                    height: frame.height,
+                    depth_or_array_layers: 1,
+                },
             );
-            // Record that we picked up this frame so the next
-            // tick skips the upload if no newer frame arrived.
-            if let NodeKind::Video { last_uploaded_frame, .. } = &node.borrow().kind {
-                last_uploaded_frame.set(counter);
-            }
-            RENDER_DIAG.with(|c| {
-                let (r, u, t) = c.get();
-                c.set((r, u + 1, t));
-            });
         }
 
         // Composite specs for Video — same shape as Graphics.
@@ -1088,6 +1051,54 @@ impl Renderer {
                 );
             }
             queue.submit(std::iter::once(encoder1.finish()));
+
+            // Video-controls overlay — staged by the walk into a
+            // thread-local, drained here. This MUST go in its
+            // own submit, not just a second pass in encoder1:
+            // `RectPipeline::render` calls `queue.write_buffer`
+            // on a shared instance buffer, and writes queued
+            // before a submit are coalesced — having two passes
+            // in one submit would leave both passes drawing the
+            // *latest* write (the controls rects), which would
+            // smear the controls geometry over the main UI rects
+            // (button backgrounds, screen bg, etc.). Submitting
+            // the main pass first commits its draws against the
+            // main-rects buffer state; this second submit then
+            // queues a fresh write for the controls rects and
+            // draws them on top via `LoadOp::Load`.
+            let controls_overlay = take_video_controls_rects();
+            if !controls_overlay.is_empty() {
+                let mut encoder_ctrl =
+                    device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("idealyst-video-controls-encoder"),
+                    });
+                {
+                    let mut pass2 =
+                        encoder_ctrl.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("idealyst-video-controls-pass"),
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: target_view,
+                                resolve_target: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Load,
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            })],
+                            depth_stencil_attachment: None,
+                            timestamp_writes: None,
+                            occlusion_query_set: None,
+                        });
+                    pass2.set_viewport(vx, vy, vw.max(1.0), vh.max(1.0), 0.0, 1.0);
+                    self.rect.render(
+                        device,
+                        queue,
+                        &mut pass2,
+                        viewport,
+                        &controls_overlay,
+                    );
+                }
+                queue.submit(std::iter::once(encoder_ctrl.finish()));
+            }
         }
 
         // ----- Submit 1.5: nav-slide top screen (loads pass 1) -----
@@ -1337,15 +1348,12 @@ fn walk<'a>(
     );
 
     let r = &data.render;
-    // Overlays are hoisted to the top-z viewport pass — they
+    // Portals are hoisted to the top-z viewport pass — they
     // must be deferred regardless of where their in-flow
     // position lands, otherwise scrolling the host content
-    // (which shifts the overlay's flow origin off-clip)
+    // (which shifts the portal's flow origin off-clip)
     // would silently drop the modal from the frame.
-    if matches!(
-        data.kind,
-        NodeKind::Overlay { .. } | NodeKind::AnchoredOverlay { .. }
-    ) {
+    if matches!(data.kind, NodeKind::Portal { .. }) {
         deferred_overlays.push((node.clone(), (parent_x, parent_y)));
         return;
     }
@@ -1610,7 +1618,14 @@ fn walk<'a>(
                     opacity: r.opacity,
                 });
             }
-            NodeKind::Video { .. } => {
+            NodeKind::Video {
+                decoder,
+                controls,
+                last_hover,
+                play_btn_rect,
+                scrubber_rect,
+                frame_rect,
+            } => {
                 // Same record-and-resolve-later pattern as
                 // Graphics; the pre-pass uploads the latest
                 // decoded RGBA frame from the node's decoder
@@ -1621,6 +1636,28 @@ fn walk<'a>(
                     rect: (x, y, w, h),
                     opacity: r.opacity,
                 });
+                frame_rect.set((x, y, w, h));
+                if *controls {
+                    // Read playback state once; the paint helper
+                    // converts it to the elapsed/duration display
+                    // and caches the two click targets back into
+                    // the node so pointer routing can hit-test.
+                    let shared = &decoder.shared;
+                    let is_playing = shared.playing.load(std::sync::atomic::Ordering::Acquire);
+                    let cur_micros = shared.current_time_micros.load(std::sync::atomic::Ordering::Acquire);
+                    let dur_micros = shared.duration_micros.load(std::sync::atomic::Ordering::Acquire);
+                    paint_video_controls(
+                        (x, y, w, h),
+                        is_playing,
+                        cur_micros,
+                        dur_micros,
+                        last_hover.get(),
+                        now,
+                        play_btn_rect,
+                        scrubber_rect,
+                        rects,
+                    );
+                }
             }
             NodeKind::Icon { paths, view_box, color, stroke_progress } => {
                 let tint = color.unwrap_or(r.color);
@@ -1807,13 +1844,12 @@ fn walk<'a>(
                 false,
             )
         }
-        // Overlay/AnchoredOverlay never reach this match —
-        // the early-return at the top of `walk` deferred them
-        // before any clip / children logic ran. Listed for
-        // exhaustiveness so a future variant can't fall into
-        // the default arm and accidentally walk overlay
-        // children inline.
-        NodeKind::Overlay { .. } | NodeKind::AnchoredOverlay { .. } => (Vec::new(), false),
+        // Portal never reaches this match — the early-return at
+        // the top of `walk` deferred it before any clip /
+        // children logic ran. Listed for exhaustiveness so a
+        // future variant can't fall into the default arm and
+        // accidentally walk portal children inline.
+        NodeKind::Portal { .. } => (Vec::new(), false),
         _ => (
             children
                 .iter()
@@ -2430,10 +2466,7 @@ fn measured_buffer_size(buffer: &Buffer) -> (f32, f32) {
 fn collect_overlays(root: &WgpuNode) -> Vec<WgpuNode> {
     fn recurse(node: &WgpuNode, out: &mut Vec<WgpuNode>) {
         let data = node.borrow();
-        if matches!(
-            data.kind,
-            NodeKind::Overlay { .. } | NodeKind::AnchoredOverlay { .. }
-        ) {
+        if matches!(data.kind, NodeKind::Portal { .. }) {
             out.push(node.clone());
         }
         let children: Vec<WgpuNode> = data.children.clone();
@@ -2472,27 +2505,32 @@ fn walk_overlay<'a>(
     let data = node.borrow();
     let frame = backend.layout.frame_of(data.layout);
 
-    // Backdrop fills the full viewport, regardless of the
-    // overlay's content size or placement.
+    // Backdrop is no longer a backend concern — the composition
+    // layer emits a backdrop primitive as a child of the portal,
+    // so it just paints through the regular child walk below.
     let viewport_clip = (0.0, 0.0, viewport.0, viewport.1);
-    if let NodeKind::Overlay { backdrop, .. }
-    | NodeKind::AnchoredOverlay { backdrop, .. } = &data.kind
-    {
-        paint_overlay_backdrop(*backdrop, viewport_clip, rects);
-    }
 
-    // Content origin: derive from `placement` for plain
-    // overlays, from the anchor rect for anchored overlays.
+    // Content origin: derive from the portal's target. `Viewport`
+    // uses the placement enum; `Anchor` re-queries the anchor rect
+    // each frame (free because we render every frame); `Named`
+    // shouldn't reach here — `create_portal` panics on construction.
     let (content_x, content_y) = match &data.kind {
-        NodeKind::Overlay { placement, .. } => place_overlay(
-            *placement,
-            frame.width,
-            frame.height,
-            viewport.0,
-            viewport.1,
-        ),
-        NodeKind::AnchoredOverlay { anchor, side, align, offset, .. } => {
-            match anchor.rect() {
+        NodeKind::Portal { target, .. } => match target {
+            framework_core::primitives::portal::PortalTarget::Viewport(
+                placement,
+            ) => place_overlay(
+                *placement,
+                frame.width,
+                frame.height,
+                viewport.0,
+                viewport.1,
+            ),
+            framework_core::primitives::portal::PortalTarget::Anchor {
+                target,
+                side,
+                align,
+                offset,
+            } => match target.rect() {
                 Some(vr) => position_anchored(
                     (vr.x, vr.y, vr.width, vr.height),
                     frame.width,
@@ -2502,8 +2540,11 @@ fn walk_overlay<'a>(
                     *offset,
                 ),
                 None => (0.0, 0.0),
+            },
+            framework_core::primitives::portal::PortalTarget::Named(_) => {
+                (0.0, 0.0)
             }
-        }
+        },
         _ => (0.0, 0.0),
     };
 
@@ -2574,13 +2615,13 @@ fn walk_overlay<'a>(
 /// pin to one edge with the cross axis full-width; `Center`
 /// centers in both axes; `FullScreen` paints at the origin.
 fn place_overlay(
-    placement: framework_core::primitives::overlay::ViewportPlacement,
+    placement: framework_core::primitives::portal::ViewportPlacement,
     content_w: f32,
     content_h: f32,
     viewport_w: f32,
     viewport_h: f32,
 ) -> (f32, f32) {
-    use framework_core::primitives::overlay::ViewportPlacement;
+    use framework_core::primitives::portal::ViewportPlacement;
     match placement {
         ViewportPlacement::Center => (
             ((viewport_w - content_w) * 0.5).max(0.0),
@@ -2607,11 +2648,11 @@ fn position_anchored(
     trigger: (f32, f32, f32, f32),
     content_w: f32,
     content_h: f32,
-    side: framework_core::primitives::overlay::ElementSide,
-    align: framework_core::primitives::overlay::ElementAlign,
+    side: framework_core::primitives::portal::ElementSide,
+    align: framework_core::primitives::portal::ElementAlign,
     offset: f32,
 ) -> (f32, f32) {
-    use framework_core::primitives::overlay::{ElementAlign, ElementSide};
+    use framework_core::primitives::portal::{ElementAlign, ElementSide};
     let (tx, ty, tw, th) = trigger;
     // `Above` / `Below` flow vertically (cross-axis = horizontal).
     // `Start` / `End` flow horizontally (cross-axis = vertical).
@@ -3266,31 +3307,218 @@ fn sample_arc(
     }
 }
 
-/// Overlay backdrop. Painted before the overlay's content
-/// children. Translucent black for `Scrim`, transparent for
-/// `Transparent`, fully opaque dim for `Solid`. The backdrop
-/// fills the *clip* rect so overlays inside scrollviews tint
-/// the right region.
-fn paint_overlay_backdrop(
-    backdrop: framework_core::primitives::overlay::BackdropMode,
-    clip: (f32, f32, f32, f32),
+// ---------------------------------------------------------------------------
+// Video controls
+// ---------------------------------------------------------------------------
+
+/// Tunable bar geometry. `CONTROLS_BAR_H` is the backdrop strip;
+/// the play button is square + centered vertically; the scrubber
+/// line is thin and full-width minus padding.
+const CONTROLS_BAR_H: f32 = 44.0;
+const CONTROLS_BTN: f32 = 28.0;
+const CONTROLS_PAD: f32 = 12.0;
+const CONTROLS_SCRUB_H: f32 = 4.0;
+/// Hover-fade window: controls stay visible for this long after
+/// the last pointer move, then fade out. Paused videos override
+/// this and stay visible.
+const CONTROLS_VISIBLE_SECS: f32 = 2.0;
+const CONTROLS_FADE_SECS: f32 = 0.25;
+
+thread_local! {
+    /// Rects staged by `paint_video_controls` during the tree
+    /// walk. Drained by the renderer immediately after the image
+    /// pass so the controls paint *on top of* the video texture
+    /// instead of being overwritten by it. Avoids threading a new
+    /// `&mut Vec<RectInstance>` parameter through every walk
+    /// recursion site.
+    static VIDEO_CONTROLS_RECTS: std::cell::RefCell<Vec<RectInstance>> =
+        std::cell::RefCell::new(Vec::new());
+}
+
+/// Drain whatever the latest walk staged. Caller is the renderer's
+/// main pass, right after `image.render` finishes — that ordering
+/// is what makes controls land above the video texture.
+pub(crate) fn take_video_controls_rects() -> Vec<RectInstance> {
+    VIDEO_CONTROLS_RECTS.with(|c| std::mem::take(&mut *c.borrow_mut()))
+}
+
+/// Paint the video controls bar on top of `(x, y, w, h)` and
+/// stash the play-button / scrubber rects back onto the node for
+/// pointer hit-testing. `is_playing` switches the icon between
+/// play and pause; `cur_micros / dur_micros` drive the scrubber's
+/// elapsed fill.
+fn paint_video_controls(
+    rect: (f32, f32, f32, f32),
+    is_playing: bool,
+    cur_micros: u64,
+    dur_micros: u64,
+    last_hover: Option<Instant>,
+    now: Instant,
+    play_btn_rect: &std::cell::Cell<(f32, f32, f32, f32)>,
+    scrubber_rect: &std::cell::Cell<(f32, f32, f32, f32)>,
+    _rects_unused: &mut Vec<RectInstance>,
+) {
+    VIDEO_CONTROLS_RECTS.with(|cell| {
+        let mut overlay = cell.borrow_mut();
+        paint_video_controls_into(
+            rect,
+            is_playing,
+            cur_micros,
+            dur_micros,
+            last_hover,
+            now,
+            play_btn_rect,
+            scrubber_rect,
+            &mut overlay,
+        );
+    });
+}
+
+fn paint_video_controls_into(
+    rect: (f32, f32, f32, f32),
+    is_playing: bool,
+    cur_micros: u64,
+    dur_micros: u64,
+    last_hover: Option<Instant>,
+    now: Instant,
+    play_btn_rect: &std::cell::Cell<(f32, f32, f32, f32)>,
+    scrubber_rect: &std::cell::Cell<(f32, f32, f32, f32)>,
     rects: &mut Vec<RectInstance>,
 ) {
-    use framework_core::primitives::overlay::BackdropMode;
-    let alpha = match backdrop {
-        BackdropMode::None => return,
-        BackdropMode::Dismiss => 0.40,
-        BackdropMode::Opaque => 0.92,
+    let (x, y, w, h) = rect;
+    if w < 80.0 || h < 50.0 {
+        return;
+    }
+    // Visibility: paused → always 1.0; playing → fade out 2s after
+    // the last pointer move. Fade is linear over CONTROLS_FADE_SECS.
+    let alpha = if !is_playing {
+        1.0
+    } else if let Some(t) = last_hover {
+        let since = now.saturating_duration_since(t).as_secs_f32();
+        if since < CONTROLS_VISIBLE_SECS {
+            1.0
+        } else if since < CONTROLS_VISIBLE_SECS + CONTROLS_FADE_SECS {
+            1.0 - (since - CONTROLS_VISIBLE_SECS) / CONTROLS_FADE_SECS
+        } else {
+            0.0
+        }
+    } else {
+        0.0
     };
+    if alpha <= 0.01 {
+        // Hidden — stash zeroed hit-rects so stray clicks don't
+        // resolve to a stale region.
+        play_btn_rect.set((0.0, 0.0, 0.0, 0.0));
+        scrubber_rect.set((0.0, 0.0, 0.0, 0.0));
+        return;
+    }
+
+    // Bar position pinned to the bottom of the video frame.
+    let bar_y = y + h - CONTROLS_BAR_H;
+    let bar_h = CONTROLS_BAR_H;
+
+    // 1) Backdrop strip — solid dark with alpha, no fancy
+    //    gradient (we don't have multi-stop gradients in the
+    //    rect shader). Looks fine on most clips.
+    let bg = srgb_rgba_to_linear([0.0, 0.0, 0.0, 0.55 * alpha]);
     rects.push(RectInstance {
-        rect: [clip.0, clip.1, clip.2, clip.3],
-        bg: srgb_rgba_to_linear([0.0, 0.0, 0.0, alpha]),
-        corner_radius: [0.0; 4],
+        rect: [x, bar_y, w, bar_h],
+        bg,
+        corner_radius: [0.0, 0.0, 0.0, 0.0],
         border_color: [0.0; 4],
         border_width: 0.0,
         rotation: 0.0,
-        shadow_blur: 0.0, _pad: 0.0,
+        shadow_blur: 0.0,
+        _pad: 0.0,
     });
+
+    // 2) Play / pause button — a 28×28 hit zone left-aligned in
+    //    the bar. We paint Lucide-style outlines so the icon
+    //    matches the rest of the framework's iconography.
+    let btn_x = x + CONTROLS_PAD;
+    let btn_y = bar_y + (bar_h - CONTROLS_BTN) * 0.5;
+    play_btn_rect.set((btn_x, btn_y, CONTROLS_BTN, CONTROLS_BTN));
+    let tint = [1.0, 1.0, 1.0, alpha];
+    // Lucide play (filled triangle) / pause (two bars). Stroke-
+    // based — `paint_icon` is stroke-only, so we get the outline
+    // look common in minimalist players.
+    let play_path = ["M 5 3 L 19 12 L 5 21 Z"];
+    let pause_path = ["M 6 4 H 10 V 20 H 6 Z", "M 14 4 H 18 V 20 H 14 Z"];
+    if is_playing {
+        paint_icon(btn_x, btn_y, CONTROLS_BTN, CONTROLS_BTN, &pause_path, (24, 24), tint, 1.0, rects);
+    } else {
+        paint_icon(btn_x, btn_y, CONTROLS_BTN, CONTROLS_BTN, &play_path, (24, 24), tint, 1.0, rects);
+    }
+
+    // 3) Scrubber line — full bar width minus button + padding.
+    //    Background track at low alpha; elapsed fill at full white.
+    //    The visual line is 4 px tall but the *hit* rect spans the
+    //    full bar height so users don't have to pixel-aim at the
+    //    thin track.
+    let scrub_x = btn_x + CONTROLS_BTN + CONTROLS_PAD;
+    let scrub_w_total = (x + w - CONTROLS_PAD) - scrub_x;
+    let scrub_y = bar_y + (bar_h - CONTROLS_SCRUB_H) * 0.5;
+    if scrub_w_total > 8.0 {
+        // Hit rect covers the full bar vertically; the painted
+        // track stays slim.
+        scrubber_rect.set((scrub_x, bar_y, scrub_w_total, bar_h));
+        // Track.
+        rects.push(RectInstance {
+            rect: [scrub_x, scrub_y, scrub_w_total, CONTROLS_SCRUB_H],
+            bg: srgb_rgba_to_linear([1.0, 1.0, 1.0, 0.30 * alpha]),
+            corner_radius: [
+                CONTROLS_SCRUB_H * 0.5,
+                CONTROLS_SCRUB_H * 0.5,
+                CONTROLS_SCRUB_H * 0.5,
+                CONTROLS_SCRUB_H * 0.5,
+            ],
+            border_color: [0.0; 4],
+            border_width: 0.0,
+            rotation: 0.0,
+            shadow_blur: 0.0,
+            _pad: 0.0,
+        });
+        // Elapsed fill — proportional to current_time / duration.
+        let progress = if dur_micros > 0 {
+            (cur_micros as f64 / dur_micros as f64).clamp(0.0, 1.0) as f32
+        } else {
+            0.0
+        };
+        let fill_w = scrub_w_total * progress;
+        if fill_w > 0.0 {
+            rects.push(RectInstance {
+                rect: [scrub_x, scrub_y, fill_w, CONTROLS_SCRUB_H],
+                bg: srgb_rgba_to_linear([1.0, 1.0, 1.0, 0.95 * alpha]),
+                corner_radius: [
+                    CONTROLS_SCRUB_H * 0.5,
+                    CONTROLS_SCRUB_H * 0.5,
+                    CONTROLS_SCRUB_H * 0.5,
+                    CONTROLS_SCRUB_H * 0.5,
+                ],
+                border_color: [0.0; 4],
+                border_width: 0.0,
+                rotation: 0.0,
+                shadow_blur: 0.0,
+                _pad: 0.0,
+            });
+            // Playhead — a small circle at the end of the fill.
+            let head_d = CONTROLS_SCRUB_H * 2.5;
+            let head_x = scrub_x + fill_w - head_d * 0.5;
+            let head_y = scrub_y + CONTROLS_SCRUB_H * 0.5 - head_d * 0.5;
+            rects.push(RectInstance {
+                rect: [head_x, head_y, head_d, head_d],
+                bg: srgb_rgba_to_linear([1.0, 1.0, 1.0, alpha]),
+                corner_radius: [head_d * 0.5, head_d * 0.5, head_d * 0.5, head_d * 0.5],
+                border_color: [0.0; 4],
+                border_width: 0.0,
+                rotation: 0.0,
+                shadow_blur: 0.0,
+                _pad: 0.0,
+            });
+        }
+    } else {
+        scrubber_rect.set((0.0, 0.0, 0.0, 0.0));
+    }
 }
 
 /// Tab-bar strip at the bottom of a TabNavigator. Renders

@@ -1753,6 +1753,14 @@ pub fn update_tokens(tokens: &[TokenEntry]) {
     RESOLUTION_CACHE.with(|c| c.borrow_mut().clear());
 }
 
+/// Drain the queue of pending token-update batches. Used by the
+/// theme-cohort driver when fan-out is short-circuited (cascade
+/// backends) so the queue gets flushed even when no `apply_one`
+/// runs.
+pub fn take_pending_token_updates() -> Vec<Vec<TokenEntry>> {
+    PENDING_TOKEN_UPDATES.with(|p| std::mem::take(&mut *p.borrow_mut()))
+}
+
 /// Ensures the backend has been asked to pre-generate state for this
 /// stylesheet against the active theme. Calls `register` with the
 /// resolved rules exactly once per `(sheet, theme)` pair.

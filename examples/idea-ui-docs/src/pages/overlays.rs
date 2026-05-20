@@ -9,7 +9,8 @@
 
 use std::rc::Rc;
 
-use framework_core::primitives::overlay::{BackdropMode, ViewportPlacement};
+use framework_core::primitives::overlay::BackdropMode;
+use framework_core::primitives::portal::ViewportPlacement;
 use framework_core::{signal, ui, Easing, Primitive, PresenceAnim, PresenceState, Signal};
 use idea_ui::{
     body, btn, card, heading, stack, BodyTone, ButtonKind, HeadingKind, IntentTag, StackGap,

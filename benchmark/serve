@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Build every variant that needs a build step, then serve the
+# benchmark dir via `idealyst-cli serve`. Run from anywhere:
+#
+#   benchmark/serve              # default port 8080
+#   PORT=9000 benchmark/serve    # custom port
+#
+# Variants that load from esm.sh (vanilla-*, react-*, vue) need
+# no build. Only the Svelte variant + the two wasm crates do.
+# Each step is idempotent — re-running is safe.
+
+set -e
+
+BENCH_DIR="$(cd "$(dirname "$0")" && pwd)"
+WORKSPACE_ROOT="$(cd "$BENCH_DIR/.." && pwd)"
+
+echo "[bench] building runner wasm..."
+(cd "$BENCH_DIR" && wasm-pack build --target web --release)
+
+echo
+echo "[bench] building idealyst-native variant wasm..."
+(cd "$BENCH_DIR/idealyst-native/wasm" && wasm-pack build --target web --release)
+
+echo
+echo "[bench] building svelte variant..."
+(
+  cd "$BENCH_DIR/svelte"
+  # npm install only if node_modules is missing — first run is
+  # slow, subsequent runs skip straight to the build.
+  if [ ! -d node_modules ]; then
+    echo "[bench]   installing svelte deps (first run only)..."
+    npm install --silent
+  fi
+  npm run build --silent
+)
+
+echo
+echo "[bench] starting server on port ${PORT:-8080}..."
+cd "$WORKSPACE_ROOT"
+exec cargo run -q -p idealyst-cli -- serve benchmark --port "${PORT:-8080}"

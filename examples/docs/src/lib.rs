@@ -51,7 +51,8 @@ use routes::{
     BACKENDS_ROUTE, CLI_ROUTE, COMPONENTS_ROUTE, DEV_TOOLS_ROUTE, ICONS_ROUTE, LISTS_ROUTE,
     MACROS_ROUTE, NAVIGATION_ROUTE, OVERVIEW_ROUTE, PLATFORMS_ROUTE, PRIMITIVES_ROUTE,
     QUICKSTART_ROUTE, REACTIVITY_ROUTE, REFS_ROUTE, ROBOT_ROUTE, SIMULATOR_ROUTE, STYLES_ROUTE,
-    UI_DSL_ROUTE, WGPU_NATIVE_API_ROUTE, WRITING_A_BACKEND_ROUTE,
+    BUILDING_A_THEME_SYSTEM_ROUTE, PORTAL_ROUTE, THIRD_PARTY_PRIMITIVES_ROUTE, UI_DSL_ROUTE,
+    WGPU_NATIVE_API_ROUTE, WRITING_A_BACKEND_ROUTE,
 };
 use shell::{content_builder, web_layout};
 
@@ -98,6 +99,9 @@ pub fn app() -> Primitive {
         .screen(LISTS_ROUTE, |_| Screen::new(pages::lists::page()).title("Lists"))
         .screen(ICONS_ROUTE, |_| Screen::new(pages::icons::page()).title("Icons"))
         .screen(REFS_ROUTE, |_| Screen::new(pages::refs::page()).title("Refs"))
+        .screen(PORTAL_ROUTE, |_| {
+            Screen::new(pages::portal::page()).title("Portal & Overlays")
+        })
         .screen(ROBOT_ROUTE, |_| Screen::new(pages::robot::page()).title("Robot"))
         .screen(DEV_TOOLS_ROUTE, |_| {
             Screen::new(pages::dev_tools::page()).title("Dev Tools")
@@ -105,6 +109,14 @@ pub fn app() -> Primitive {
         .screen(BACKENDS_ROUTE, |_| Screen::new(pages::backends::page()).title("Backends"))
         .screen(WRITING_A_BACKEND_ROUTE, |_| {
             Screen::new(pages::writing_a_backend::page()).title("Writing a Backend")
+        })
+        .screen(THIRD_PARTY_PRIMITIVES_ROUTE, |_| {
+            Screen::new(pages::third_party_primitives::page())
+                .title("Third-party Primitives")
+        })
+        .screen(BUILDING_A_THEME_SYSTEM_ROUTE, |_| {
+            Screen::new(pages::building_a_theme_system::page())
+                .title("Building a Theme System")
         })
         .screen(WGPU_NATIVE_API_ROUTE, |_| {
             Screen::new(pages::wgpu_native_api::page()).title("wgpu Native API")

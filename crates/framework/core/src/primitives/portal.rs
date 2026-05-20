@@ -4,8 +4,8 @@
 //!
 //! Portals are the only render-elsewhere primitive in the framework.
 //! Modals, popovers, dropdowns, tooltips, sheets, alerts — all
-//! decompose into `portal()` + positioning + (optional) backdrop +
-//! (optional) dismissal. The framework ships those as compositions in
+//! decompose into `portal()` + (optional) backdrop child + (optional)
+//! dismissal handler. The framework ships those as compositions in
 //! [`primitives::overlay`]; authors building novel floating UX
 //! reach for `portal()` directly.
 //!
@@ -14,12 +14,11 @@
 //! Each backend implements `Backend::create_portal` against its
 //! native window-level mount API:
 //!
-//! - **Web**: append a `<div>` to `document.body` (escapes
-//!   `overflow:hidden` ancestors and stacking contexts). For an
-//!   element-anchored portal the div remains body-mounted and the
-//!   backend updates its `transform` from the anchor's bounding rect.
-//! - **iOS**: `UIWindow`-level `addSubview:` against the key window,
-//!   or a window-spanning `UIView` overlay container.
+//! - **Web**: a `<div>` appended to `document.body` (escapes
+//!   `overflow:hidden` and stacking contexts). The div's
+//!   `position`/`inset`/anchor offset is derived from the target.
+//! - **iOS**: window-level `addSubview:` against the key window,
+//!   with the frame computed from the target.
 //! - **Android**: window-level `WindowManager.addView` or a
 //!   `Dialog`-hosted view.
 //! - **wgpu / native skins**: top-of-stack rectangle inserted into
@@ -27,71 +26,176 @@
 //! - **Roku**: a `Group` parented to the root scene above all other
 //!   content.
 //!
-//! Backends are free to leverage native popover APIs
-//! (`UIPopoverPresentationController`, `PopupWindow`,
-//! `<dialog popover>`) when the [`PortalTarget`] permits — for
-//! example a [`PortalTarget::Anchor`] portal with appropriate flags
-//! could route to a native popover on iOS rather than a custom
-//! positioned `UIView`. The trait surface deliberately leaves room
-//! for that without requiring it.
+//! # Target & positioning
+//!
+//! [`PortalTarget`] carries the positioning intent rather than a
+//! separate "placement" argument. The variants are:
+//!
+//! - [`PortalTarget::Viewport`] — viewport-relative, positioned by
+//!   the embedded [`ViewportPlacement`]. The backend translates
+//!   `Center` / `Top` / `Bottom` / `Left` / `Right` / `FullScreen`
+//!   into native frames or CSS positioning. Use for modals,
+//!   drawers, sheets, alerts.
+//! - [`PortalTarget::Anchor`] — element-tracking, positioned by
+//!   [`ElementSide`] + [`ElementAlign`] + offset. The backend
+//!   subscribes to scroll / layout / orientation events and
+//!   re-queries `target.rect()` on each, repositioning the portal
+//!   accordingly. Use for popovers, tooltips, dropdowns.
+//! - [`PortalTarget::Named`] — mount into a named container
+//!   previously registered with the backend. Reserved for future
+//!   "slot" routing.
 //!
 //! # Stacking
 //!
-//! Portals stack freely. The framework doesn't enforce a "one at a
-//! time" rule — opening a second portal while the first is mounted
-//! layers it on top. Backends order by mount order (z-index on web,
-//! addSubview order on iOS, attachment order on Android).
+//! Portals stack freely. Mounting a second portal while the first
+//! is alive layers it on top. Backends order by mount order
+//! (z-index on web, addSubview order on iOS, attachment order on
+//! Android). Platform dismiss events (Android back, web Escape,
+//! iOS swipe-down) are routed to the topmost portal whose
+//! `on_dismiss` is set.
 //!
-//! Platform dismiss events (Android back, web Escape, iOS swipe-down)
-//! are routed to the topmost portal whose `on_dismiss` is set. The
-//! framework doesn't auto-tear-down — the host is expected to flip
-//! its open-state signal in response, which causes the surrounding
-//! `when`/`switch` branch to drop the portal's scope.
+//! # Dismissal
 //!
-//! # Anchoring
-//!
-//! [`PortalTarget::Anchor`] holds a type-erased [`AnchorTarget`] —
-//! same shape as the existing element-anchor mechanism in
-//! [`primitives::overlay`]. The backend treats the anchor's
-//! `rect()` as live; on each scroll / layout / orientation event the
-//! backend re-queries it and repositions the portal contents.
-//!
-//! Placement math (preferred side, flip-on-overflow, edge clamping)
-//! is **user-space**: callers either compose with a positioning
-//! utility or wire raw `transform` updates inside their portal
-//! children. The framework's contract here is "give me a live rect
-//! and a place to mount" — nothing about preferred sides or fallback
-//! flips. Compositions like [`primitives::overlay::anchored_overlay`]
-//! own those decisions.
+//! `on_dismiss` fires only for platform-level dismissal events —
+//! NOT for backdrop taps. Backdrop-tap dismissal is composition-
+//! level: callers wire a backdrop child (typically a fullscreen
+//! `pressable()`) whose `on_click` flips the open-state signal.
+//! The framework never auto-tears-down — the host's reactive state
+//! is the source of truth; flipping it drops the surrounding scope
+//! and triggers [`Backend::release_portal`].
 
 use crate::{Bound, Primitive, Ref, RefFill};
-use crate::primitives::overlay::AnchorTarget;
 use std::any::Any;
 use std::rc::Rc;
+
+// =============================================================================
+// AnchorTarget + AnchorableHandle (formerly in primitives/overlay)
+// =============================================================================
+
+/// Type-erased handle to an anchor target. Constructed via
+/// [`AnchorTarget::from`] on any `Ref<H>` whose handle type
+/// implements [`AnchorableHandle`].
+///
+/// The erasure here lets a single [`PortalTarget::Anchor`] accept any
+/// primitive's ref without itself being generic. Backends query the
+/// target through the [`AnchorableHandle::rect`] trait method, which
+/// downcasts the type-erased node back to its concrete backend type
+/// at the call site.
+#[derive(Clone)]
+pub struct AnchorTarget {
+    inner: Rc<dyn AnchorTargetInner>,
+}
+
+impl AnchorTarget {
+    pub fn from<H: AnchorableHandle + 'static>(r: Ref<H>) -> Self {
+        Self { inner: Rc::new(AnchorTargetRef(r)) }
+    }
+
+    /// Resolve to a viewport-relative rect, or `None` if the
+    /// underlying ref hasn't been filled yet (its primitive hasn't
+    /// mounted) or the backend can't measure this handle type.
+    pub fn rect(&self) -> Option<ViewportRect> {
+        self.inner.rect()
+    }
+}
+
+trait AnchorTargetInner {
+    fn rect(&self) -> Option<ViewportRect>;
+}
+
+struct AnchorTargetRef<H: AnchorableHandle>(Ref<H>);
+impl<H: AnchorableHandle> AnchorTargetInner for AnchorTargetRef<H> {
+    fn rect(&self) -> Option<ViewportRect> {
+        let handle = self.0.get()?;
+        Some(handle.rect())
+    }
+}
+
+/// Marker trait every primitive handle implements (or doesn't) to opt
+/// into being used as an anchor target. The `rect()` method goes
+/// through the handle's existing `*Ops` trait — backends implement
+/// the position measurement once per primitive kind.
+pub trait AnchorableHandle: Clone + 'static {
+    fn rect(&self) -> ViewportRect;
+}
+
+/// Viewport-relative rect, in CSS pixels (or the backend's
+/// equivalent point unit). Origin is top-left of the viewport.
+#[derive(Copy, Clone, Debug, PartialEq, Default)]
+pub struct ViewportRect {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+// =============================================================================
+// Placement model
+// =============================================================================
+
+/// Where a viewport-anchored portal sits in the window.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ViewportPlacement {
+    Center,
+    Top,
+    Bottom,
+    Left,
+    Right,
+    FullScreen,
+}
+
+impl Default for ViewportPlacement {
+    fn default() -> Self {
+        ViewportPlacement::Center
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ElementSide {
+    Above,
+    Below,
+    Start,
+    End,
+}
+
+impl Default for ElementSide {
+    fn default() -> Self {
+        ElementSide::Below
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ElementAlign {
+    Start,
+    Center,
+    End,
+}
+
+impl Default for ElementAlign {
+    fn default() -> Self {
+        ElementAlign::Start
+    }
+}
 
 // =============================================================================
 // Target
 // =============================================================================
 
-/// Where a portal mounts in the host tree.
+/// Where a portal mounts in the host tree, plus the positioning
+/// intent the backend uses to lay out the portal's frame within that
+/// target.
 #[derive(Clone)]
 pub enum PortalTarget {
-    /// Mount at the viewport root. Equivalent to "body portal" on
-    /// web, key-window `addSubview` on iOS, top-level
-    /// `WindowManager.addView` on Android. The common case for
-    /// modals, full-screen sheets, drawers, alerts.
-    Viewport,
-    /// Mount as a viewport-rooted overlay whose position tracks an
-    /// anchor element. The backend re-queries `target.rect()` on
-    /// every scroll / layout / orientation event and updates the
-    /// portal's position to match. The common case for popovers,
-    /// tooltips, dropdowns, context menus.
-    Anchor(AnchorTarget),
-    /// Mount into a named container previously registered with the
-    /// backend. Hosts a "slot" mechanism for custom routing — e.g.
-    /// a toast region, a global snackbar host, an embed slot.
-    /// Reserved for future use; backends may unimplemented! this
-    /// until there's a concrete consumer.
+    /// Viewport-rooted, positioned per the embedded placement.
+    Viewport(ViewportPlacement),
+    /// Anchored to an element, positioned per side / align / offset.
+    Anchor {
+        target: AnchorTarget,
+        side: ElementSide,
+        align: ElementAlign,
+        offset: f32,
+    },
+    /// Named slot (reserved for future use).
     Named(&'static str),
 }
 
@@ -124,11 +228,9 @@ pub trait PortalOps {}
 
 /// Build a [`Primitive::Portal`] mounting `children` at `target`.
 ///
-/// Returns a [`Bound<PortalHandle>`] supporting `.on_dismiss(...)`,
-/// `.trap_focus(...)`, `.with_style(...)`, `.bind(...)`. No defaults
-/// for positioning or backdrop — those are caller concerns. For the
-/// common cases ship a composition (modal, popover, tooltip) on
-/// top.
+/// No defaults for backdrop — that's a caller concern. For the
+/// common cases (modal, popover, tooltip) reach for the
+/// compositions in [`primitives::overlay`].
 pub fn portal(target: PortalTarget, children: Vec<Primitive>) -> Bound<PortalHandle> {
     Bound::new(Primitive::Portal {
         children,
@@ -144,6 +246,8 @@ impl Bound<PortalHandle> {
     /// Fires when the platform requests dismissal (Android back,
     /// web Escape, iOS swipe-down). The host flips its open-state
     /// signal in response — the framework doesn't auto-unmount.
+    /// Backdrop-tap dismissal is composition-level (a backdrop
+    /// `pressable()` child with its own `on_click`).
     pub fn on_dismiss<F: Fn() + 'static>(mut self, f: F) -> Self {
         if let Primitive::Portal { on_dismiss, .. } = &mut self.primitive {
             *on_dismiss = Some(Rc::new(f));

@@ -38,9 +38,8 @@
 
 use std::rc::Rc;
 
-use framework_core::primitives::overlay::{
-    AnchorTarget, BackdropMode, ElementAlign, ElementSide,
-};
+use framework_core::primitives::overlay::BackdropMode;
+use framework_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
 use framework_core::{ui, ChildList, Primitive};
 
 use crate::stylesheets::Popover;

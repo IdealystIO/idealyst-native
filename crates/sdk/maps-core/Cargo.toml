@@ -1,0 +1,17 @@
+[package]
+name = "maps-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Shared types for the `maps` SDK. Zero platform deps so per-backend
+# leaves can depend on this without dragging in foreign FFI; the
+# umbrella `maps` re-exports its public surface.
+#
+# The split exists because per-backend leaves (`maps-web` etc.) and
+# the umbrella (`maps`) would otherwise form a dep cycle — leaves need
+# `MapViewProps` to register a handler for its TypeId, the umbrella
+# needs the leaves' `register` function. This crate is the common base
+# both can depend on without involving the other.
+
+[dependencies]

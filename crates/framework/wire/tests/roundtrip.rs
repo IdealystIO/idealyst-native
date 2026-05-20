@@ -96,10 +96,9 @@ impl Backend for TraceBackend {
         self.next
     }
 
-    fn create_overlay(
+    fn create_portal(
         &mut self,
-        _placement: framework_core::primitives::overlay::ViewportPlacement,
-        _backdrop: framework_core::primitives::overlay::BackdropMode,
+        _target: framework_core::primitives::portal::PortalTarget,
         _on_dismiss: Option<Rc<dyn Fn()>>,
         _trap_focus: bool,
     ) -> u64 {
@@ -432,53 +431,47 @@ fn link_round_trip() {
     wire_app.apply_batch(commands).expect("link replay must succeed");
 }
 
-/// Drive a Primitive::Overlay through the recording backend. The
-/// overlay command captures the anchor placement, backdrop mode,
-/// and on_dismiss handler id.
+/// Drive a Primitive::Portal through the recording backend. The
+/// portal command captures the target (viewport placement, anchor,
+/// or named), on_dismiss handler id, and focus-trap flag.
 #[test]
-fn overlay_round_trip() {
-    use framework_core::primitives::overlay::{BackdropMode, ViewportPlacement};
+fn portal_round_trip() {
+    use framework_core::primitives::portal::{PortalTarget, ViewportPlacement};
 
     let mut recorder = WireRecordingBackend::new();
     let on_dismiss: Option<Rc<dyn Fn()>> = Some(Rc::new(|| {}));
-    let _node = recorder.create_overlay(
-        ViewportPlacement::Bottom,
-        BackdropMode::Dismiss,
+    let _node = recorder.create_portal(
+        PortalTarget::Viewport(ViewportPlacement::Bottom),
         on_dismiss,
         false,
     );
 
     let commands = recorder.drain_commands();
-    let create_overlay = commands
+    let create_portal = commands
         .iter()
         .find_map(|c| match c {
-            Command::CreateOverlay {
-                anchor,
-                backdrop,
+            Command::CreatePortal {
+                target,
                 on_dismiss,
                 trap_focus,
                 ..
-            } => Some((anchor.clone(), backdrop.clone(), on_dismiss.clone(), *trap_focus)),
+            } => Some((target.clone(), on_dismiss.clone(), *trap_focus)),
             _ => None,
         })
-        .expect("CreateOverlay command must be emitted");
-    match create_overlay.0 {
-        wire::WireOverlayAnchor::Viewport(wire::WireViewportPlacement::Bottom) => {}
-        other => panic!("expected viewport bottom anchor, got {:?}", other),
+        .expect("CreatePortal command must be emitted");
+    match create_portal.0 {
+        wire::WirePortalTarget::Viewport(wire::WireViewportPlacement::Bottom) => {}
+        other => panic!("expected viewport bottom target, got {:?}", other),
     }
-    assert!(matches!(
-        create_overlay.1,
-        wire::WireBackdropMode::Dismiss
-    ));
-    assert!(create_overlay.2.is_some(), "on_dismiss handler must be registered");
-    assert!(!create_overlay.3);
+    assert!(create_portal.1.is_some(), "on_dismiss handler must be registered");
+    assert!(!create_portal.2);
 
-    // Replay round-trip — backend default falls through to create_view
-    // for the unimplemented create_overlay, which is fine for the
-    // test.
+    // Replay round-trip — backend default falls through to the
+    // trait's `unimplemented!` for unimplemented create_portal,
+    // which is fine for the test.
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut wire_app = WireBackend::new(TraceBackend::default(), tx);
-    wire_app.apply_batch(commands).expect("overlay replay must succeed");
+    wire_app.apply_batch(commands).expect("portal replay must succeed");
 }
 
 /// Drive a Primitive::Graphics through the recording backend. With

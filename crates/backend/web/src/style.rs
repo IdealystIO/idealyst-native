@@ -394,7 +394,10 @@ impl WebBackend {
         // class by Rc identity without computing `content_key()` at
         // all. The pointer is stable for the Rc's lifetime; the
         // pregen_by_ptr map is populated alongside content-keyed
-        // pregen during `register_stylesheet`.
+        // pregen during `register_stylesheet`, AND refreshed below
+        // on the content-key-hit branch so post-theme-swap Rcs
+        // (which carry new pointers) get cached after the first
+        // row in the cohort pays the content-key lookup.
         if overlays.is_empty() {
             let ptr = std::rc::Rc::as_ptr(base);
             let ptr_hit = {
@@ -417,7 +420,9 @@ impl WebBackend {
         // Content-keyed fast path. Used when the Rc identity didn't
         // hit (e.g. the user passed `.override_*` builder methods
         // that produce a fresh Rc each time, but with content
-        // identical to a pre-gen entry).
+        // identical to a pre-gen entry — including, critically,
+        // every post-theme-swap Rc whose rules only reference
+        // tokens via `var()`).
         let base_key = {
             let _t = PhaseTimer::start("content_key");
             base.content_key()

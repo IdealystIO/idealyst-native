@@ -1275,10 +1275,9 @@ impl Backend for WireRecordingBackend {
         state.emit(Command::Finish { root });
     }
 
-    fn create_overlay(
+    fn create_portal(
         &mut self,
-        placement: primitives::overlay::ViewportPlacement,
-        backdrop: primitives::overlay::BackdropMode,
+        target: primitives::portal::PortalTarget,
         on_dismiss: Option<Rc<dyn Fn()>>,
         trap_focus: bool,
     ) -> Self::Node {
@@ -1287,43 +1286,32 @@ impl Backend for WireRecordingBackend {
         let id = Self::mint_node(&mut state);
         let handler = on_dismiss
             .map(|cb| state.handlers.register_unit_for_identity(identity, cb));
-        // The framework recently split overlays into viewport
-        // (`Primitive::Overlay`) and element-anchored
-        // (`Primitive::AnchoredOverlay`). This Backend method now
-        // handles the viewport case only; element-anchored ones go
-        // through `create_anchored_overlay` below.
-        let wire_anchor = wire::WireOverlayAnchor::Viewport(match placement {
-            primitives::overlay::ViewportPlacement::Center => {
-                wire::WireViewportPlacement::Center
+        let wire_target = match target {
+            primitives::portal::PortalTarget::Viewport(placement) => {
+                wire::WirePortalTarget::Viewport(wire_viewport_placement(placement))
             }
-            primitives::overlay::ViewportPlacement::Top => {
-                wire::WireViewportPlacement::Top
+            primitives::portal::PortalTarget::Anchor { target: _, side, align, offset } => {
+                // AAS can't track anchor rects on the device — the
+                // anchor node id isn't carried in framework's
+                // type-erased AnchorTarget. Best-effort: emit a
+                // viewport-centered portal with the side/align/offset
+                // info so the client can at least position something
+                // sensible. (Future: extend AnchorTarget to expose a
+                // NodeId for wire backends.)
+                wire::WirePortalTarget::Anchor {
+                    node: id,
+                    side: wire_element_side(side),
+                    align: wire_element_align(align),
+                    offset,
+                }
             }
-            primitives::overlay::ViewportPlacement::Bottom => {
-                wire::WireViewportPlacement::Bottom
+            primitives::portal::PortalTarget::Named(name) => {
+                wire::WirePortalTarget::Named(name.to_string())
             }
-            primitives::overlay::ViewportPlacement::Left => {
-                wire::WireViewportPlacement::Left
-            }
-            primitives::overlay::ViewportPlacement::Right => {
-                wire::WireViewportPlacement::Right
-            }
-            primitives::overlay::ViewportPlacement::FullScreen => {
-                // FullScreen isn't first-class on the wire; closest
-                // fit is Center (the style sheet drives the actual
-                // size).
-                wire::WireViewportPlacement::Center
-            }
-        });
-        let wire_backdrop = match backdrop {
-            primitives::overlay::BackdropMode::None => wire::WireBackdropMode::None,
-            primitives::overlay::BackdropMode::Dismiss => wire::WireBackdropMode::Dismiss,
-            primitives::overlay::BackdropMode::Opaque => wire::WireBackdropMode::Capture,
         };
-        state.emit(Command::CreateOverlay {
+        state.emit(Command::CreatePortal {
             id,
-            anchor: wire_anchor,
-            backdrop: wire_backdrop,
+            target: wire_target,
             on_dismiss: handler,
             trap_focus,
         });
@@ -1754,15 +1742,6 @@ impl Backend for WireRecordingBackend {
         });
     }
 
-    fn apply_overlay_backdrop_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
-        let mut state = self.inner.borrow_mut();
-        let sid = Self::intern_style(&mut state, style);
-        state.emit(Command::ApplyOverlayBackdropStyle {
-            node: *node,
-            style: sid,
-        });
-    }
-
     fn create_link(&mut self, config: primitives::link::LinkConfig) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let identity = framework_core::current_identity();
@@ -1787,6 +1766,42 @@ impl Backend for WireRecordingBackend {
     // Handle constructors fall through to the trait's no-op defaults.
     // Imperative `handle.click()` from dev-side code is a v1 feature
     // (needs a synchronous round trip we don't implement yet).
+}
+
+// ---------------------------------------------------------------------------
+// Wire mappers for the new portal primitive's positioning enums.
+// ---------------------------------------------------------------------------
+
+fn wire_viewport_placement(
+    p: primitives::portal::ViewportPlacement,
+) -> wire::WireViewportPlacement {
+    match p {
+        primitives::portal::ViewportPlacement::Center => wire::WireViewportPlacement::Center,
+        primitives::portal::ViewportPlacement::Top => wire::WireViewportPlacement::Top,
+        primitives::portal::ViewportPlacement::Bottom => wire::WireViewportPlacement::Bottom,
+        primitives::portal::ViewportPlacement::Left => wire::WireViewportPlacement::Left,
+        primitives::portal::ViewportPlacement::Right => wire::WireViewportPlacement::Right,
+        primitives::portal::ViewportPlacement::FullScreen => {
+            wire::WireViewportPlacement::FullScreen
+        }
+    }
+}
+
+fn wire_element_side(s: primitives::portal::ElementSide) -> wire::WireElementSide {
+    match s {
+        primitives::portal::ElementSide::Above => wire::WireElementSide::Above,
+        primitives::portal::ElementSide::Below => wire::WireElementSide::Below,
+        primitives::portal::ElementSide::Start => wire::WireElementSide::Start,
+        primitives::portal::ElementSide::End => wire::WireElementSide::End,
+    }
+}
+
+fn wire_element_align(a: primitives::portal::ElementAlign) -> wire::WireElementAlign {
+    match a {
+        primitives::portal::ElementAlign::Start => wire::WireElementAlign::Start,
+        primitives::portal::ElementAlign::Center => wire::WireElementAlign::Center,
+        primitives::portal::ElementAlign::End => wire::WireElementAlign::End,
+    }
 }
 
 // ---------------------------------------------------------------------------

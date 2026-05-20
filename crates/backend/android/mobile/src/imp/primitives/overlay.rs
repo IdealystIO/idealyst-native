@@ -1,18 +1,18 @@
-//! `Primitive::Overlay` — Android `Dialog` (viewport-anchored) or
+//! `Primitive::Portal` — Android `Dialog` (viewport-anchored) or
 //! `PopupWindow` (element-anchored).
 //!
 //! # Two flavors, one Node shape
 //!
 //! Both code paths return a `LinearLayout` content holder as the
 //! framework `Node`. The walker calls `insert_children` on it to
-//! populate; `view::insert` checks `is_overlay_node` and skips when
+//! populate; `view::insert` checks `is_portal_node` and skips when
 //! the walker later tries to splice the holder into its surrounding
 //! parent view (the Dialog window / PopupWindow already owns its
 //! parenting).
 //!
 //! ## Viewport-anchored: `Dialog`
 //!
-//! `OverlayAnchor::Viewport(Center | Top | Bottom | Left | Right |
+//! `PortalTarget::Viewport(Center | Top | Bottom | Left | Right |
 //! FullScreen)`. Wraps the holder in an Android `Dialog`. Window
 //! gravity + size are derived from the `ViewportPlacement`:
 //!
@@ -21,31 +21,38 @@
 //! - Left / Right  → full-height drawer at edge
 //! - FullScreen    → fills the viewport
 //!
-//! `BackdropMode::Dismiss` wires `Dialog.setOnCancelListener` for
-//! tap-outside + back-button. `Opaque` disables cancellation. `None`
-//! clears the platform scrim (FLAG_DIM_BEHIND) and lets pointer
-//! events pass through.
+//! The framework-core composition layers a backdrop primitive INSIDE
+//! the portal (it becomes the first child of the content holder); the
+//! backend does not configure a scrim. We always clear
+//! `FLAG_DIM_BEHIND` and zero the window background so author-supplied
+//! backdrops show through unobstructed. Tap-outside dismissal is now
+//! a composition-level concern (the backdrop's `on_click`).
+//!
+//! Hardware/gesture **back-button** dismissal still flows through
+//! `Dialog.setOnCancelListener` — that's the only mechanism Android
+//! offers for routing back-press into the dialog without subclassing
+//! the dialog's content view. We keep `setCancelable(true)` so back
+//! reaches the listener, and `setCanceledOnTouchOutside(false)` so
+//! taps don't auto-cancel (the composition's backdrop handles that).
 //!
 //! ## Element-anchored: `PopupWindow`
 //!
-//! `OverlayAnchor::Element(ElementAnchor { target, side, align,
-//! offset })`. Anchored to the trigger's screen rect (resolved via
-//! `target.rect()` — see [`super::button::AndroidButtonOps::rect`]).
-//! Backed by an Android `PopupWindow` which floats above the
-//! activity without its own scrim. Tap-outside dismissal is wired
-//! when `BackdropMode::Dismiss` is set (`outsideTouchable = true` +
-//! `setBackgroundDrawable(transparent)` — Android refuses to
-//! deliver outside-touch dismissals without a non-null background).
-//!
-//! `BackdropMode::Opaque` and `Dismiss` both render the same
-//! visually (no scrim either way — PopupWindow doesn't render one);
-//! they differ only in dismissal behavior.
+//! `PortalTarget::Anchor { target, side, align, offset }`. Anchored
+//! to the trigger's screen rect (resolved via `target.rect()`).
+//! Backed by an Android `PopupWindow`. The popup is left
+//! non-focusable + non-outside-touchable: any backdrop the host
+//! supplies inside the portal's content tree is responsible for
+//! catching the outside tap. Back-button dismissal in this flow is
+//! best-effort; without `focusable=true` the popup doesn't receive
+//! the press, but enabling focus traps the IME and breaks input on
+//! the surrounding screen. We accept the trade-off — popovers are
+//! transient and dismissed by their own pressable backdrop or by a
+//! reactive open-state change.
 
 use crate::imp::callbacks::{leak, OverlayDismissCallback};
-use crate::imp::view_rect::view_screen_rect;
 use crate::imp::{with_env, AndroidBackend};
-use framework_core::primitives::overlay::{
-    AnchorTarget, BackdropMode, ElementAlign, ElementSide, ViewportPlacement, ViewportRect,
+use framework_core::primitives::portal::{
+    AnchorTarget, ElementAlign, ElementSide, PortalTarget, ViewportPlacement, ViewportRect,
 };
 use jni::objects::{GlobalRef, JObject, JValue};
 use jni::sys::jlong;
@@ -53,64 +60,67 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-/// Per-overlay backend state. Discriminates between the two host
-/// types so `release_overlay` knows which dismissal API to call.
-pub(crate) enum OverlayHost {
+/// Per-portal backend state. Discriminates between the two host
+/// types so `release_portal` knows which dismissal API to call.
+pub(crate) enum PortalHost {
     Dialog(GlobalRef),
     Popup(GlobalRef),
 }
 
-pub(crate) struct OverlayInstance {
+pub(crate) struct PortalInstance {
     /// The Android host object (Dialog or PopupWindow). Held as a
     /// `GlobalRef` so the JVM doesn't GC it while shown.
-    pub(crate) host: OverlayHost,
+    pub(crate) host: PortalHost,
     /// Raw pointer to the leaked `OverlayDismissCallback`. Used by
-    /// `release_overlay` to blank the inner closure before tearing
+    /// `release_portal` to blank the inner closure before tearing
     /// down the host (otherwise the host's dismiss listener would
     /// re-fire the user closure during framework-driven teardown).
     pub(crate) dismiss_cb_ptr: jlong,
 }
 
-/// All live overlays, keyed by the content-holder node's raw pointer
+/// All live portals, keyed by the content-holder node's raw pointer
 /// (same scheme `anim_state` uses for animation state).
-pub(crate) type OverlayInstances = HashMap<usize, OverlayInstance>;
+pub(crate) type PortalInstances = HashMap<usize, PortalInstance>;
 
 // ---------------------------------------------------------------------------
-// Public entry points — viewport-anchored vs element-anchored. The
-// framework's `Backend::create_overlay` / `create_anchored_overlay`
-// route here.
+// Public entry point — dispatches on PortalTarget.
 // ---------------------------------------------------------------------------
 
-pub(crate) fn create_viewport(
+pub(crate) fn create(
     b: &mut AndroidBackend,
-    placement: ViewportPlacement,
-    backdrop: BackdropMode,
+    target: PortalTarget,
     on_dismiss: Option<Rc<dyn Fn()>>,
+    trap_focus: bool,
 ) -> GlobalRef {
-    create_dialog_overlay(b, placement, backdrop, on_dismiss)
-}
-
-pub(crate) fn create_anchored(
-    b: &mut AndroidBackend,
-    target: AnchorTarget,
-    side: ElementSide,
-    align: ElementAlign,
-    offset: f32,
-    backdrop: BackdropMode,
-    on_dismiss: Option<Rc<dyn Fn()>>,
-) -> GlobalRef {
-    create_popup_overlay(b, target, side, align, offset, backdrop, on_dismiss)
+    match target {
+        PortalTarget::Viewport(placement) => {
+            create_dialog_portal(b, placement, on_dismiss, trap_focus)
+        }
+        PortalTarget::Anchor {
+            target,
+            side,
+            align,
+            offset,
+        } => create_popup_portal(b, target, side, align, offset, on_dismiss, trap_focus),
+        // Named slots: no backend mounting infrastructure yet.
+        // Fall back to a viewport-centered dialog so authors don't
+        // see a hard crash — same posture as the iOS skin's Named
+        // fallback.
+        PortalTarget::Named(_) => {
+            create_dialog_portal(b, ViewportPlacement::Center, on_dismiss, trap_focus)
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Dialog path (viewport-anchored)
 // ---------------------------------------------------------------------------
 
-fn create_dialog_overlay(
+fn create_dialog_portal(
     b: &mut AndroidBackend,
     placement: ViewportPlacement,
-    backdrop: BackdropMode,
     on_dismiss: Option<Rc<dyn Fn()>>,
+    trap_focus: bool,
 ) -> GlobalRef {
     let dismiss_cb_ptr = leak(OverlayDismissCallback {
         inner: RefCell::new(on_dismiss.clone()),
@@ -141,29 +151,19 @@ fn create_dialog_overlay(
         .unwrap();
 
         // ---- Cancellation behavior ----
-        //   Dismiss  → cancelable + cancel-on-touch-outside
-        //   Opaque   → neither
-        //   None     → neither (no scrim → no tap-outside; back-button
-        //              left to platform default of not closing)
-        let (cancelable, cancel_on_touch) = match backdrop {
-            BackdropMode::Dismiss => (true, true),
-            BackdropMode::Opaque => (false, false),
-            BackdropMode::None => (false, false),
-        };
-        let _ = env.call_method(
-            &dialog,
-            "setCancelable",
-            "(Z)V",
-            &[JValue::Bool(cancelable as u8)],
-        );
+        // Keep `cancelable = true` so the hardware/gesture back button
+        // routes through `OnCancelListener` → user's `on_dismiss`.
+        // Tap-outside is composition-level now (backdrop child handles
+        // it), so we leave `setCanceledOnTouchOutside(false)`.
+        let _ = env.call_method(&dialog, "setCancelable", "(Z)V", &[JValue::Bool(1)]);
         let _ = env.call_method(
             &dialog,
             "setCanceledOnTouchOutside",
             "(Z)V",
-            &[JValue::Bool(cancel_on_touch as u8)],
+            &[JValue::Bool(0)],
         );
 
-        if cancelable && on_dismiss.is_some() {
+        if on_dismiss.is_some() {
             let listener_class = env
                 .find_class("io/idealyst/runtime/RustOverlayDismissListener")
                 .unwrap();
@@ -211,10 +211,31 @@ fn create_dialog_overlay(
             &[JValue::Int(w), JValue::Int(h)],
         );
 
-        if matches!(backdrop, BackdropMode::None) {
-            // clearFlags(FLAG_DIM_BEHIND = 2).
-            let _ = env.call_method(&window, "clearFlags", "(I)V", &[JValue::Int(2)]);
-            set_transparent_window_background(env, &window);
+        // Backdrop is composition-level now — always clear the
+        // platform scrim (FLAG_DIM_BEHIND = 2) and zero the window
+        // background so the host-supplied backdrop child draws
+        // unobstructed.
+        let _ = env.call_method(&window, "clearFlags", "(I)V", &[JValue::Int(2)]);
+        set_transparent_window_background(env, &window);
+
+        // ---- Focus trap (best-effort) ----
+        // Android equivalent of an iOS-style focus trap is to mark
+        // the portal content as focusable in touch mode so it pulls
+        // initial focus, and to flag the dialog window as
+        // FLAG_NOT_TOUCH_MODAL=0 (default). We don't have a robust
+        // sibling-blocking API at this layer; the dialog window
+        // itself already steals focus from the surrounding activity
+        // while shown, which is the dominant focus-trap effect on
+        // mobile.
+        if trap_focus {
+            let _ = env.call_method(&content, "setFocusable", "(Z)V", &[JValue::Bool(1)]);
+            let _ = env.call_method(
+                &content,
+                "setFocusableInTouchMode",
+                "(Z)V",
+                &[JValue::Bool(1)],
+            );
+            let _ = env.call_method(&content, "requestFocus", "()Z", &[]);
         }
 
         let _ = env.call_method(&dialog, "show", "()V", &[]);
@@ -226,10 +247,10 @@ fn create_dialog_overlay(
     });
 
     let key = AndroidBackend::node_key_of(&content_holder);
-    b.overlay_instances.insert(
+    b.portal_instances.insert(
         key,
-        OverlayInstance {
-            host: OverlayHost::Dialog(dialog),
+        PortalInstance {
+            host: PortalHost::Dialog(dialog),
             dismiss_cb_ptr,
         },
     );
@@ -241,14 +262,14 @@ fn create_dialog_overlay(
 // PopupWindow path (element-anchored)
 // ---------------------------------------------------------------------------
 
-fn create_popup_overlay(
+fn create_popup_portal(
     b: &mut AndroidBackend,
     target: AnchorTarget,
     side: ElementSide,
     align: ElementAlign,
     offset: f32,
-    backdrop: BackdropMode,
     on_dismiss: Option<Rc<dyn Fn()>>,
+    trap_focus: bool,
 ) -> GlobalRef {
     let dismiss_cb_ptr = leak(OverlayDismissCallback {
         inner: RefCell::new(on_dismiss.clone()),
@@ -283,14 +304,25 @@ fn create_popup_overlay(
             )
             .unwrap();
 
-        // ---- Dismiss configuration ----
-        // For tap-outside dismissal Android REQUIRES the PopupWindow
-        // to have a non-null background drawable. Without it,
-        // outside-touch events don't make it to the popup at all
-        // (the event-dispatch shortcut path returns false). We use a
-        // transparent ColorDrawable so the visual remains scrim-less.
-        let dismiss_on_touch = matches!(backdrop, BackdropMode::Dismiss);
-        if dismiss_on_touch {
+        // Backdrop is composition-level — the host supplies a
+        // fullscreen pressable child if it wants tap-outside
+        // dismissal. PopupWindow itself stays scrim-less.
+        //
+        // Focus posture:
+        //   - trap_focus=false (default): non-focusable popup. Surface
+        //     under the popup stays interactive; back-button does NOT
+        //     dismiss (Android quirk: popup must be focusable to
+        //     receive the press). Reactive open-state flips handle the
+        //     usual close paths.
+        //   - trap_focus=true: focusable popup. Steals input focus +
+        //     receives back-button. Required for keyboard-driven UI.
+        if trap_focus {
+            let _ = env.call_method(&popup, "setFocusable", "(Z)V", &[JValue::Bool(1)]);
+            // Non-null background drawable is required for tap-outside
+            // dispatch — needed when the popup is focusable, otherwise
+            // back-button dismissal works but the popup never receives
+            // its own dismiss event. Transparent so we don't add a
+            // visible scrim.
             let color_drawable_class = env
                 .find_class("android/graphics/drawable/ColorDrawable")
                 .unwrap();
@@ -303,17 +335,6 @@ fn create_popup_overlay(
                 "(Landroid/graphics/drawable/Drawable;)V",
                 &[JValue::Object(&drawable)],
             );
-            let _ = env.call_method(
-                &popup,
-                "setOutsideTouchable",
-                "(Z)V",
-                &[JValue::Bool(1)],
-            );
-            // Focusable=true makes the popup receive the back-button
-            // press (popup.dismiss is the platform default response).
-            // Required for back-button dismissal; the on_dismiss
-            // listener picks up both paths.
-            let _ = env.call_method(&popup, "setFocusable", "(Z)V", &[JValue::Bool(1)]);
         }
 
         // ---- Dismiss listener ----
@@ -356,10 +377,10 @@ fn create_popup_overlay(
     });
 
     let key = AndroidBackend::node_key_of(&content_holder);
-    b.overlay_instances.insert(
+    b.portal_instances.insert(
         key,
-        OverlayInstance {
-            host: OverlayHost::Popup(popup),
+        PortalInstance {
+            host: PortalHost::Popup(popup),
             dismiss_cb_ptr,
         },
     );
@@ -437,7 +458,7 @@ fn align_vertical(trigger: &ViewportRect, align: ElementAlign, oh: f32) -> f32 {
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-/// Build the LinearLayout that hosts the overlay's children.
+/// Build the LinearLayout that hosts the portal's children.
 /// VERTICAL orientation matches the framework's default flex-column.
 fn make_content_holder<'l>(env: &mut jni::JNIEnv<'l>, ctx: &GlobalRef) -> JObject<'l> {
     let ll_class = env.find_class("android/widget/LinearLayout").unwrap();
@@ -454,9 +475,8 @@ fn make_content_holder<'l>(env: &mut jni::JNIEnv<'l>, ctx: &GlobalRef) -> JObjec
 }
 
 /// Set a fully-transparent ColorDrawable as the dialog window's
-/// background. Used together with `clearFlags(FLAG_DIM_BEHIND)` to
-/// achieve `BackdropMode::None` (no scrim, pointer events pass
-/// through outside the content area).
+/// background. Lets the composition-supplied backdrop primitive
+/// (drawn as a child of the portal) render unobstructed.
 fn set_transparent_window_background(env: &mut jni::JNIEnv, window: &JObject) {
     let color_drawable_class = env
         .find_class("android/graphics/drawable/ColorDrawable")
@@ -478,7 +498,7 @@ fn set_transparent_window_background(env: &mut jni::JNIEnv, window: &JObject) {
 
 pub(crate) fn release(b: &mut AndroidBackend, node: &GlobalRef) {
     let key = AndroidBackend::node_key_of(node);
-    let Some(instance) = b.overlay_instances.remove(&key) else {
+    let Some(instance) = b.portal_instances.remove(&key) else {
         return;
     };
 
@@ -500,10 +520,10 @@ pub(crate) fn release(b: &mut AndroidBackend, node: &GlobalRef) {
     // re-fire), but PopupWindow's OnDismissListener fires for ALL
     // dismissals — step 1's blanking is what keeps that benign.
     with_env(|env| match &instance.host {
-        OverlayHost::Dialog(d) => {
+        PortalHost::Dialog(d) => {
             let _ = env.call_method(d, "dismiss", "()V", &[]);
         }
-        OverlayHost::Popup(p) => {
+        PortalHost::Popup(p) => {
             let _ = env.call_method(p, "dismiss", "()V", &[]);
         }
     });
@@ -519,12 +539,12 @@ pub(crate) fn release(b: &mut AndroidBackend, node: &GlobalRef) {
 // view::insert support
 // ---------------------------------------------------------------------------
 
-/// True if `node` is a registered overlay's content holder. Used by
-/// `view::insert` to skip the `addView` call — overlay content
+/// True if `node` is a registered portal's content holder. Used by
+/// `view::insert` to skip the `addView` call — portal content
 /// holders are already parented to the dialog window / popup, and
 /// the walker's parent-side insert would throw
 /// `IllegalStateException("specified child already has a parent")`.
-pub(crate) fn is_overlay_node(b: &AndroidBackend, node: &GlobalRef) -> bool {
+pub(crate) fn is_portal_node(b: &AndroidBackend, node: &GlobalRef) -> bool {
     let key = AndroidBackend::node_key_of(node);
-    b.overlay_instances.contains_key(&key)
+    b.portal_instances.contains_key(&key)
 }

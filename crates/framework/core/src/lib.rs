@@ -5,6 +5,7 @@ mod backend;
 mod batch;
 mod builder;
 mod derive;
+mod external;
 mod handles;
 mod identity;
 mod primitive;
@@ -81,11 +82,13 @@ pub use primitives::text_input::{text_input, TextInputHandle, TextInputOps};
 pub use primitives::toggle::{toggle, ToggleHandle, ToggleOps};
 pub use primitives::web_view::{web_view, WebViewHandle, WebViewOps};
 pub use primitives::overlay::{
-    anchored_overlay, overlay, AnchoredOverlayHandle, AnchoredOverlayOps, AnchorTarget,
-    AnchorableHandle, BackdropMode, ElementAlign, ElementSide, OverlayHandle, OverlayOps,
-    ViewportPlacement, ViewportRect,
+    anchored_overlay, overlay, AnchoredOverlayBuilder, BackdropMode, OverlayBuilder,
 };
-pub use primitives::portal::{portal, PortalHandle, PortalOps, PortalTarget};
+pub use primitives::portal::{
+    portal, AnchorTarget, AnchorableHandle, ElementAlign, ElementSide, PortalHandle,
+    PortalOps, PortalTarget, ViewportPlacement, ViewportRect,
+};
+pub use external::{external, ErasedHandler, ExternalHandle, ExternalRegistry};
 pub use primitives::presence::{
     presence, PresenceAnim, PresenceHandle, PresenceOps, PresenceState,
 };

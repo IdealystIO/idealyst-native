@@ -59,11 +59,13 @@
 //!   `align_items`) and the client interprets.
 //! - **No SVG**: icon path data ships as strings; the client
 //!   rasterizes (or looks up in a sprite atlas) at first use.
-//! - **No native overlay/navigator**: the `Backend` trait's default
-//!   `unimplemented!()` panics for `create_overlay`,
-//!   `create_navigator`, etc. — implementing those means deciding
-//!   how the BrightScript client expresses navigation stacks, which
-//!   is out of scope for this initial pass.
+//! - **No native navigator**: the `Backend` trait's default
+//!   `unimplemented!()` panics for `create_navigator`, etc. —
+//!   implementing those means deciding how the BrightScript client
+//!   expresses navigation stacks, which is out of scope for this
+//!   initial pass. Portals are wired through `create_portal` — the
+//!   device-side runtime renders them as top-of-stack Groups; see
+//!   the `CreatePortal` wire op.
 
 #![deny(missing_debug_implementations)]
 
@@ -88,7 +90,8 @@ use framework_core::{
 };
 
 pub use command::{
-    HandlerId, NodeId, RokuCommand, SignalId, WireColor, WireIconData, WireLength, WireStyle,
+    HandlerId, NodeId, RokuCommand, SignalId, WireColor, WireElementAlign, WireElementSide,
+    WireIconData, WireLength, WirePortalTarget, WireStyle, WireViewportPlacement,
 };
 
 // ---------------------------------------------------------------------------
@@ -475,6 +478,83 @@ impl Backend for RokuBackend {
     fn create_reactive_anchor(&mut self) -> Self::Node {
         let id = self.mint_node();
         self.push(RokuCommand::CreateReactiveAnchor { id });
+        id
+    }
+
+    // -----------------------------------------------------------
+    // Portals — emitted as a `CreatePortal` wire op. The device-side
+    // BrightScript runtime materializes a `Group` parented to the
+    // root scene at top z-order; `target` carries the positioning
+    // intent so the runtime can compute translation / size locally.
+    //
+    // Anchor targets currently ship without a backing rect signal
+    // because the framework's `AnchorTarget` is opaque (it exposes
+    // `.rect()` for runtime backends but no signal id). A future
+    // pass should expose the anchor's reactive id so the device can
+    // subscribe and reposition; for now the runtime falls back to
+    // the side/align hints and any explicit absolute style the
+    // composition supplies. `Named` targets aren't supported.
+    // -----------------------------------------------------------
+
+    fn create_portal(
+        &mut self,
+        target: framework_core::primitives::portal::PortalTarget,
+        on_dismiss: Option<Rc<dyn Fn()>>,
+        trap_focus: bool,
+    ) -> Self::Node {
+        use framework_core::primitives::portal as p;
+        let id = self.mint_node();
+        let on_dismiss_handler = on_dismiss.map(|cb| {
+            let h = self.mint_handler();
+            self.handlers.borrow_mut().unit.push((h, cb));
+            h
+        });
+        let wire_target = match target {
+            p::PortalTarget::Viewport(placement) => command::WirePortalTarget::Viewport {
+                placement: match placement {
+                    p::ViewportPlacement::Center => command::WireViewportPlacement::Center,
+                    p::ViewportPlacement::Top => command::WireViewportPlacement::Top,
+                    p::ViewportPlacement::Bottom => command::WireViewportPlacement::Bottom,
+                    p::ViewportPlacement::Left => command::WireViewportPlacement::Left,
+                    p::ViewportPlacement::Right => command::WireViewportPlacement::Right,
+                    p::ViewportPlacement::FullScreen => {
+                        command::WireViewportPlacement::FullScreen
+                    }
+                },
+            },
+            p::PortalTarget::Anchor { side, align, offset, .. } => {
+                // No live anchor-rect signal yet — the Roku runtime
+                // applies the side/align/offset hints against
+                // whatever the composition lays down. Carrying a
+                // sentinel id (0) tells the BS client this binding
+                // is static; revisit once `AnchorTarget` exposes its
+                // backing signal id to generator backends.
+                command::WirePortalTarget::Anchor {
+                    anchor_rect_signal_id: SignalId(0),
+                    side: match side {
+                        p::ElementSide::Above => command::WireElementSide::Above,
+                        p::ElementSide::Below => command::WireElementSide::Below,
+                        p::ElementSide::Start => command::WireElementSide::Start,
+                        p::ElementSide::End => command::WireElementSide::End,
+                    },
+                    align: match align {
+                        p::ElementAlign::Start => command::WireElementAlign::Start,
+                        p::ElementAlign::Center => command::WireElementAlign::Center,
+                        p::ElementAlign::End => command::WireElementAlign::End,
+                    },
+                    offset,
+                }
+            }
+            p::PortalTarget::Named(slot) => command::WirePortalTarget::Named {
+                slot: slot.to_string(),
+            },
+        };
+        self.push(RokuCommand::CreatePortal {
+            id,
+            target: wire_target,
+            on_dismiss: on_dismiss_handler,
+            trap_focus,
+        });
         id
     }
 

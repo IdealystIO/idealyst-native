@@ -269,10 +269,9 @@ pub enum Command {
         kind: WireNavKind,
         on_activate: HandlerId,
     },
-    CreateOverlay {
+    CreatePortal {
         id: NodeId,
-        anchor: WireOverlayAnchor,
-        backdrop: WireBackdropMode,
+        target: WirePortalTarget,
         on_dismiss: Option<HandlerId>,
         trap_focus: bool,
     },
@@ -553,12 +552,6 @@ pub enum Command {
         index: usize,
         child: NodeId,
         scope: ScopeId,
-    },
-
-    // --- Overlay style ---
-    ApplyOverlayBackdropStyle {
-        node: NodeId,
-        style: StyleId,
     },
 
     // --- Lifecycle ---
@@ -887,13 +880,15 @@ pub struct WireItemSize {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum WireOverlayAnchor {
+pub enum WirePortalTarget {
     Viewport(WireViewportPlacement),
-    Element {
+    Anchor {
         node: NodeId,
         side: WireElementSide,
         align: WireElementAlign,
+        offset: f32,
     },
+    Named(String),
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -903,18 +898,15 @@ pub enum WireViewportPlacement {
     Bottom,
     Left,
     Right,
-    TopLeft,
-    TopRight,
-    BottomLeft,
-    BottomRight,
+    FullScreen,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum WireElementSide {
-    Top,
-    Bottom,
-    Left,
-    Right,
+    Above,
+    Below,
+    Start,
+    End,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -922,13 +914,6 @@ pub enum WireElementAlign {
     Start,
     Center,
     End,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub enum WireBackdropMode {
-    None,
-    Dismiss,
-    Capture,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]

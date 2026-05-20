@@ -740,6 +740,39 @@ pub trait Backend {
         false
     }
 
+    /// True if `update_tokens` on this backend propagates new token
+    /// values to every node referencing those tokens, WITHOUT
+    /// requiring the framework to re-apply each styled node's
+    /// resolved rules.
+    ///
+    /// Web backends emit `var(--token, fallback)` references in
+    /// CSS for `Tokenized<T>` values; on `update_tokens` they set
+    /// the corresponding `--token` on `:root` and the browser's
+    /// cascade does the rest. No per-node `setAttribute` or CSS
+    /// rule re-emit is needed for theme value changes.
+    ///
+    /// Native backends typically resolve tokens to literal values
+    /// at apply time, so a value change requires per-node
+    /// re-application. They return `false` (the default).
+    ///
+    /// The framework reads this at the cohort-driver level: when
+    /// true, the driver skips iterating the cohort on token-only
+    /// updates. When false (or when the stylesheet contains
+    /// `Derived<T>` that resolves to a concrete value rather than
+    /// a token reference), the driver fans out to all members.
+    ///
+    /// Caveat: if author code uses `Derived<T>` whose closure
+    /// produces a *concrete* value computed from token values
+    /// (e.g. a custom `Color::lighten` against `t.primary`), the
+    /// resulting CSS rule body contains the literal RGB and won't
+    /// re-emit on theme change. Such stylesheets need either
+    /// per-node re-apply (set this backend's capability to false)
+    /// or to be rewritten using `Tokenized<T>` references that
+    /// emit as `var()` in the CSS output.
+    fn token_updates_propagate_via_cascade(&self) -> bool {
+        false
+    }
+
     /// Pre-generate any backend-side state for a stylesheet against the
     /// current theme. Web backends typically use this to mint CSS
     /// classes for every variant + compound combination up front, so
@@ -881,7 +914,7 @@ pub trait Backend {
     /// a sidebar item's offset within its container. For viewport
     /// positions, use [`absolute_frame`](Backend::absolute_frame).
     #[allow(unused_variables)]
-    fn frame(&self, node: &Self::Node) -> Option<primitives::overlay::ViewportRect> {
+    fn frame(&self, node: &Self::Node) -> Option<primitives::portal::ViewportRect> {
         None
     }
 
@@ -894,7 +927,7 @@ pub trait Backend {
     /// (e.g. UIKit `convertRect:toView:window`, DOM
     /// `getBoundingClientRect()`).
     #[allow(unused_variables)]
-    fn absolute_frame(&self, node: &Self::Node) -> Option<primitives::overlay::ViewportRect> {
+    fn absolute_frame(&self, node: &Self::Node) -> Option<primitives::portal::ViewportRect> {
         None
     }
 
@@ -1308,147 +1341,33 @@ pub trait Backend {
         )
     }
 
-    /// Create a viewport-anchored overlay — a floating subtree
-    /// positioned somewhere in the window (centered, edge-pinned, or
-    /// full-screen). For element-anchored overlays (popovers,
-    /// dropdowns, tooltips, context menus) see
-    /// [`Backend::create_anchored_overlay`].
+    /// Create a third-party `Primitive::External` node. Backends that
+    /// expose an [`ExternalRegistry`](crate::external::ExternalRegistry)
+    /// consult it for a registered handler; on miss they should fall
+    /// through to a platform-native "not supported" placeholder.
+    /// Backends with no external support leave the default panic.
     ///
-    /// Backends stand up their platform-native presentation:
-    /// - **Web**: portal `<div>` appended to `<body>` (escapes
-    ///   overflow / stacking contexts), `position: fixed`, Escape-key
-    ///   + click-on-scrim handlers.
-    /// - **iOS**: window-level `UIView`, or
-    ///   `presentViewController:` for full-screen modals.
-    /// - **Android**: `Dialog` with gravity / size derived from the
-    ///   placement.
-    ///
-    /// The `on_dismiss` closure is invoked when the platform fires a
-    /// dismissal event the backend recognizes (Escape, back gesture,
-    /// click on `Dismiss` backdrop). The framework does NOT
-    /// auto-unmount on dismissal — the host is expected to flip its
-    /// open-state signal, which causes the surrounding `when` branch
-    /// to drop the overlay's scope and trigger `release_overlay`.
-    ///
-    /// Default: panic. Backends that don't implement overlays
-    /// shouldn't have authors trying to mount them.
+    /// `type_id` drives dispatch; `type_name` is for debug/error
+    /// messages only.
     #[allow(unused_variables)]
-    fn create_overlay(
+    fn create_external(
         &mut self,
-        placement: primitives::overlay::ViewportPlacement,
-        backdrop: primitives::overlay::BackdropMode,
-        on_dismiss: Option<Rc<dyn Fn()>>,
-        trap_focus: bool,
+        type_id: std::any::TypeId,
+        type_name: &'static str,
+        payload: &Rc<dyn Any>,
     ) -> Self::Node {
-        unimplemented!("create_overlay not implemented for this backend")
-    }
-
-    /// Apply a resolved style to an overlay's backdrop / scrim
-    /// layer. Independent of the overlay's content style. Backends
-    /// that don't render a backdrop (or that don't expose its
-    /// styling) can leave the default no-op.
-    #[allow(unused_variables)]
-    fn apply_overlay_backdrop_style(
-        &mut self,
-        node: &Self::Node,
-        style: &Rc<StyleRules>,
-    ) {
-        // default: no-op
-    }
-
-    /// Tear down an overlay's backend-side state. The framework
-    /// calls this when the primitive's enclosing scope drops —
-    /// host's open-state signal flips and the surrounding `when`
-    /// branch rebuilds.
-    ///
-    /// Backends should: detach the portal/dialog from its host,
-    /// remove Escape/back/scroll/resize listeners, drop the
-    /// wasm-bindgen / JNI closure handles wired to the dismiss
-    /// callback, and remove any per-node instance entry.
-    ///
-    /// Default impl is a no-op for backends that don't yet
-    /// implement Overlay.
-    #[allow(unused_variables)]
-    fn release_overlay(&mut self, node: &Self::Node) {
-        // default no-op
-    }
-
-    /// Default no-op handle for overlays. Backends with imperative
-    /// overlay APIs (future: `present()` / `dismiss()` /
-    /// `set_anchor()`) override to return a real handle.
-    #[allow(unused_variables)]
-    fn make_overlay_handle(
-        &self,
-        node: &Self::Node,
-    ) -> primitives::overlay::OverlayHandle {
-        primitives::overlay::OverlayHandle::new(Rc::new(()), &NoopOverlayOps)
-    }
-
-    /// Create an element-anchored overlay — a floating subtree that
-    /// follows a trigger element through scrolls / layout reflows /
-    /// orientation changes. Used for popovers, tooltips, dropdowns,
-    /// context menus.
-    ///
-    /// Backends are free to dispatch this to a native anchored
-    /// presentation API (`UIContextMenuInteraction` /
-    /// `UIPopoverPresentationController` on iOS, `PopupWindow` on
-    /// Android, `popover` attribute + CSS anchor positioning on web)
-    /// or fall back to custom positioning with a scroll-tracking
-    /// observer.
-    ///
-    /// `target.rect()` returns the trigger's current viewport rect;
-    /// backends should treat its result as live (it changes with
-    /// scroll / layout) rather than caching the value at mount.
-    ///
-    /// Same `on_dismiss` contract as [`Backend::create_overlay`] —
-    /// the framework does not auto-unmount; the host flips a signal
-    /// in response, which triggers
-    /// [`Backend::release_anchored_overlay`] on scope drop.
-    ///
-    /// Default: panic.
-    #[allow(unused_variables)]
-    fn create_anchored_overlay(
-        &mut self,
-        target: primitives::overlay::AnchorTarget,
-        side: primitives::overlay::ElementSide,
-        align: primitives::overlay::ElementAlign,
-        offset: f32,
-        backdrop: primitives::overlay::BackdropMode,
-        on_dismiss: Option<Rc<dyn Fn()>>,
-        trap_focus: bool,
-    ) -> Self::Node {
-        unimplemented!("create_anchored_overlay not implemented for this backend")
-    }
-
-    /// Apply a backdrop style to an anchored overlay. Most backends
-    /// use the same plumbing as [`Backend::apply_overlay_backdrop_style`].
-    #[allow(unused_variables)]
-    fn apply_anchored_overlay_backdrop_style(
-        &mut self,
-        node: &Self::Node,
-        style: &Rc<StyleRules>,
-    ) {
-        // default: no-op
-    }
-
-    /// Tear down an anchored overlay's backend-side state. Same
-    /// contract as [`Backend::release_overlay`]; backends release the
-    /// anchor tracker / native popup here.
-    #[allow(unused_variables)]
-    fn release_anchored_overlay(&mut self, node: &Self::Node) {
-        // default no-op
-    }
-
-    /// Default no-op handle for anchored overlays.
-    #[allow(unused_variables)]
-    fn make_anchored_overlay_handle(
-        &self,
-        node: &Self::Node,
-    ) -> primitives::overlay::AnchoredOverlayHandle {
-        primitives::overlay::AnchoredOverlayHandle::new(
-            Rc::new(()),
-            &NoopAnchoredOverlayOps,
+        unimplemented!(
+            "create_external not implemented for this backend (external primitive: {})",
+            type_name
         )
+    }
+
+    /// Tear down an external primitive's backend-side state. Default
+    /// no-op; backends that hold per-node listeners / observers /
+    /// closure handles override.
+    #[allow(unused_variables)]
+    fn release_external(&mut self, node: &Self::Node) {
+        // default no-op
     }
 
     /// Create a portal — render `children` (mounted via subsequent
@@ -1706,12 +1625,6 @@ struct NoopLinkOps;
 impl primitives::link::LinkOps for NoopLinkOps {
     fn activate(&self, _node: &dyn Any) {}
 }
-
-struct NoopOverlayOps;
-impl primitives::overlay::OverlayOps for NoopOverlayOps {}
-
-struct NoopAnchoredOverlayOps;
-impl primitives::overlay::AnchoredOverlayOps for NoopAnchoredOverlayOps {}
 
 struct NoopPresenceOps;
 impl primitives::presence::PresenceOps for NoopPresenceOps {}

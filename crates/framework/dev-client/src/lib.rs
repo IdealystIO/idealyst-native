@@ -431,66 +431,50 @@ where
                 let node = self.backend.create_link(config);
                 self.nodes.insert(id, node);
             }
-            Command::CreateOverlay {
+            Command::CreatePortal {
                 id,
-                anchor,
-                backdrop,
+                target,
                 on_dismiss,
                 trap_focus,
             } => {
-                use framework_core::primitives::overlay::{BackdropMode, ViewportPlacement};
-                // The framework recently split overlays into
-                // viewport-anchored (`Primitive::Overlay`) and
-                // element-anchored (`Primitive::AnchoredOverlay`).
-                // The wire still uses one `CreateOverlay` command
-                // with a `WireOverlayAnchor` discriminator. For the
-                // viewport case we drive `create_overlay`. For the
-                // element case we fall back to a centered viewport
-                // overlay (proper element-anchoring on the wire
-                // would need a `CreateAnchoredOverlay` command with
-                // an `AnchorTarget`-equivalent referencing a wire
-                // NodeId — TODO).
-                let placement = match anchor {
-                    wire::WireOverlayAnchor::Viewport(p) => match p {
-                        wire::WireViewportPlacement::Center => {
-                            ViewportPlacement::Center
-                        }
-                        wire::WireViewportPlacement::Top => ViewportPlacement::Top,
-                        wire::WireViewportPlacement::Bottom => {
-                            ViewportPlacement::Bottom
-                        }
-                        wire::WireViewportPlacement::Left => ViewportPlacement::Left,
-                        wire::WireViewportPlacement::Right => ViewportPlacement::Right,
-                        // Corner placements + FullScreen don't have
-                        // first-class variants today; fall back to
-                        // the nearest edge / centered. Acceptable
-                        // for the prototype — corner overlays are
-                        // rare.
-                        wire::WireViewportPlacement::TopLeft
-                        | wire::WireViewportPlacement::TopRight
-                        | wire::WireViewportPlacement::BottomLeft
-                        | wire::WireViewportPlacement::BottomRight => {
-                            ViewportPlacement::Center
-                        }
-                    },
-                    wire::WireOverlayAnchor::Element { .. } => {
-                        // Without a proper wire-side `AnchorTarget`,
-                        // collapse to a centered viewport overlay so
-                        // the overlay still mounts visibly.
-                        ViewportPlacement::Center
-                    }
+                use framework_core::primitives::portal::{
+                    ElementAlign, ElementSide, PortalTarget, ViewportPlacement,
                 };
-                let resolved_backdrop = match backdrop {
-                    wire::WireBackdropMode::None => BackdropMode::None,
-                    wire::WireBackdropMode::Dismiss => BackdropMode::Dismiss,
-                    wire::WireBackdropMode::Capture => BackdropMode::Opaque,
+                // AAS doesn't have a way to reconstruct a live
+                // `AnchorTarget` from a wire `NodeId` — that would
+                // need a bidirectional rect-query plumbed through
+                // the wire. For Anchor variants we collapse to a
+                // centered viewport portal so it still mounts
+                // visibly; popovers/tooltips that need real
+                // anchoring should be authored against a runtime
+                // backend, not over AAS.
+                let portal_target = match target {
+                    wire::WirePortalTarget::Viewport(p) => {
+                        let placement = match p {
+                            wire::WireViewportPlacement::Center => ViewportPlacement::Center,
+                            wire::WireViewportPlacement::Top => ViewportPlacement::Top,
+                            wire::WireViewportPlacement::Bottom => ViewportPlacement::Bottom,
+                            wire::WireViewportPlacement::Left => ViewportPlacement::Left,
+                            wire::WireViewportPlacement::Right => ViewportPlacement::Right,
+                            wire::WireViewportPlacement::FullScreen => {
+                                ViewportPlacement::FullScreen
+                            }
+                        };
+                        PortalTarget::Viewport(placement)
+                    }
+                    wire::WirePortalTarget::Anchor { .. } => {
+                        let _ = (ElementSide::Below, ElementAlign::Start);
+                        PortalTarget::Viewport(ViewportPlacement::Center)
+                    }
+                    wire::WirePortalTarget::Named(_) => {
+                        PortalTarget::Viewport(ViewportPlacement::Center)
+                    }
                 };
                 let dismiss_cb: Option<Rc<dyn Fn()>> =
                     on_dismiss.map(|h| self.handler_unit(h));
                 if self.nodes.contains_key(&id) { return Ok(()); }
-                let node = self.backend.create_overlay(
-                    placement,
-                    resolved_backdrop,
+                let node = self.backend.create_portal(
+                    portal_target,
                     dismiss_cb,
                     trap_focus,
                 );
@@ -1005,13 +989,6 @@ where
                 // through requires the same pending-mount-slot
                 // pattern as navigators, applied to virtualizer's
                 // callback bundle. Deferred to a follow-up.
-            }
-
-            // --- Overlay backdrop style ---
-            Command::ApplyOverlayBackdropStyle { node, style } => {
-                let n = self.lookup_node(node)?;
-                let s = self.lookup_style(style)?;
-                self.backend.apply_overlay_backdrop_style(&n, &s);
             }
 
             Command::Finish { root } => {

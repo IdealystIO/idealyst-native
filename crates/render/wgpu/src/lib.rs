@@ -39,6 +39,7 @@ mod node;
 pub mod pipeline;
 mod renderer;
 mod video;
+mod audio;
 mod scheduler;
 mod skin;
 mod style_convert;

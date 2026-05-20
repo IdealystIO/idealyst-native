@@ -133,10 +133,10 @@ pub(crate) struct ElementActions {
     /// Read the element's rect in **parent** coordinates. Wraps
     /// `Backend::frame`. Returns `None` if the node isn't mounted in
     /// a layout yet.
-    pub frame: Option<Rc<dyn Fn() -> Option<crate::primitives::overlay::ViewportRect>>>,
+    pub frame: Option<Rc<dyn Fn() -> Option<crate::primitives::portal::ViewportRect>>>,
     /// Read the element's rect in **viewport/window** coordinates.
     /// Wraps `Backend::absolute_frame`.
-    pub absolute_frame: Option<Rc<dyn Fn() -> Option<crate::primitives::overlay::ViewportRect>>>,
+    pub absolute_frame: Option<Rc<dyn Fn() -> Option<crate::primitives::portal::ViewportRect>>>,
 }
 
 impl ElementActions {
@@ -580,7 +580,7 @@ impl Robot {
     pub fn frame(
         &self,
         element: &Element,
-    ) -> Result<Option<crate::primitives::overlay::ViewportRect>, RobotError> {
+    ) -> Result<Option<crate::primitives::portal::ViewportRect>, RobotError> {
         let cb = REGISTRY.with(|r| {
             r.borrow()
                 .get(element.id)
@@ -597,7 +597,7 @@ impl Robot {
     pub fn absolute_frame(
         &self,
         element: &Element,
-    ) -> Result<Option<crate::primitives::overlay::ViewportRect>, RobotError> {
+    ) -> Result<Option<crate::primitives::portal::ViewportRect>, RobotError> {
         let cb = REGISTRY.with(|r| {
             r.borrow()
                 .get(element.id)
@@ -775,8 +775,8 @@ pub(crate) fn register(entry: RegistryEntry) -> ElementId {
 /// be read on demand.
 pub(crate) fn attach_frame_actions(
     id: ElementId,
-    frame: Rc<dyn Fn() -> Option<crate::primitives::overlay::ViewportRect>>,
-    absolute_frame: Rc<dyn Fn() -> Option<crate::primitives::overlay::ViewportRect>>,
+    frame: Rc<dyn Fn() -> Option<crate::primitives::portal::ViewportRect>>,
+    absolute_frame: Rc<dyn Fn() -> Option<crate::primitives::portal::ViewportRect>>,
 ) {
     REGISTRY.with(|r| {
         let mut reg = r.borrow_mut();

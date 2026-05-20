@@ -559,47 +559,29 @@ impl Backend for WgpuBackend {
     }
 
     // -----------------------------------------------------------
-    // Overlays — painted in a top-z pass after the main walk.
+    // Portals — painted in a top-z pass after the main walk.
+    //
+    // We own the entire frame, so a portal is just a scene-graph
+    // entry hoisted to a viewport-rooted top-z layer. The
+    // renderer's existing `walk_overlay` pass handles both viewport
+    // placement and anchor tracking — anchor positions are
+    // re-queried each frame, which is cheap because we re-render
+    // every frame anyway. `Named` slots aren't wired up.
     // -----------------------------------------------------------
 
-    fn create_overlay(
+    fn create_portal(
         &mut self,
-        placement: framework_core::primitives::overlay::ViewportPlacement,
-        backdrop: framework_core::primitives::overlay::BackdropMode,
+        target: framework_core::primitives::portal::PortalTarget,
         on_dismiss: Option<Rc<dyn Fn()>>,
         _trap_focus: bool,
     ) -> Self::Node {
+        if matches!(target, framework_core::primitives::portal::PortalTarget::Named(_)) {
+            unimplemented!(
+                "PortalTarget::Named is not supported by the wgpu backend"
+            );
+        }
         let layout = self.layout.new_node();
-        let node = new_node(
-            NodeKind::Overlay { placement, backdrop, on_dismiss },
-            layout,
-        );
-        self.roots.push(node.clone());
-        node
-    }
-
-    fn create_anchored_overlay(
-        &mut self,
-        target: framework_core::primitives::overlay::AnchorTarget,
-        side: framework_core::primitives::overlay::ElementSide,
-        align: framework_core::primitives::overlay::ElementAlign,
-        offset: f32,
-        backdrop: framework_core::primitives::overlay::BackdropMode,
-        on_dismiss: Option<Rc<dyn Fn()>>,
-        _trap_focus: bool,
-    ) -> Self::Node {
-        let layout = self.layout.new_node();
-        let node = new_node(
-            NodeKind::AnchoredOverlay {
-                side,
-                align,
-                offset,
-                backdrop,
-                on_dismiss,
-                anchor: target,
-            },
-            layout,
-        );
+        let node = new_node(NodeKind::Portal { target, on_dismiss }, layout);
         self.roots.push(node.clone());
         node
     }
@@ -1023,13 +1005,9 @@ impl Backend for WgpuBackend {
         &mut self,
         src: &str,
         autoplay: bool,
-        _controls: bool,
+        controls: bool,
         loop_playback: bool,
     ) -> Self::Node {
-        // `controls` is the on-video play/pause/scrubber overlay
-        // — Phase 1 skips it; the author can render their own
-        // controls externally. We pass `autoplay` + `loop_playback`
-        // straight through to the decoder thread.
         let decoder = std::rc::Rc::new(crate::video::VideoDecoder::spawn(
             src.to_string(),
             autoplay,
@@ -1040,10 +1018,23 @@ impl Backend for WgpuBackend {
         // width/height via stylesheet, but a non-zero default
         // keeps unsized Video visible until they do.
         self.layout.set_intrinsic_size(layout, 320.0, 180.0);
+        // Start with the controls visible at mount so it's
+        // obvious they're available; the hover-fade then takes
+        // over from there. Equivalent to a synthetic "the user
+        // just landed on the video" hover at creation time.
+        let initial_hover = if controls {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
         let node = new_node(
             NodeKind::Video {
                 decoder,
-                last_uploaded_frame: std::cell::Cell::new(0),
+                controls,
+                last_hover: std::cell::Cell::new(initial_hover),
+                play_btn_rect: std::cell::Cell::new((0.0, 0.0, 0.0, 0.0)),
+                scrubber_rect: std::cell::Cell::new((0.0, 0.0, 0.0, 0.0)),
+                frame_rect: std::cell::Cell::new((0.0, 0.0, 0.0, 0.0)),
             },
             layout,
         );
@@ -1115,26 +1106,24 @@ impl Backend for WgpuBackend {
         let child_layout = child.borrow().layout;
         let parent_is_scroll =
             matches!(parent.borrow().kind, NodeKind::ScrollView { .. });
-        // Overlay nodes are taken out of normal flow at the
+        // Portal nodes are taken out of normal flow at the
         // Taffy level so the parent's flex layout doesn't
         // reserve inline space for them. The actual screen
         // position is computed in the renderer's top-z pass.
-        let child_is_overlay = matches!(
-            child.borrow().kind,
-            NodeKind::Overlay { .. } | NodeKind::AnchoredOverlay { .. }
-        );
+        let child_is_portal =
+            matches!(child.borrow().kind, NodeKind::Portal { .. });
         self.layout.add_child(parent_layout, child_layout);
         parent.borrow_mut().children.push(child.clone());
         // The child is no longer orphaned — drop it from `roots`.
         self.roots.retain(|n| !Rc::ptr_eq(n, &child));
 
-        if child_is_overlay {
+        if child_is_portal {
             // `position: absolute` removes the node from flex
-            // flow; the renderer's overlay pass places it
+            // flow; the renderer's portal pass places it
             // against the viewport directly, so we don't need
             // explicit insets here. Taffy still lays the
-            // overlay's *children* out within whatever size we
-            // compute for the overlay node itself.
+            // portal's *children* out within whatever size we
+            // compute for the portal node itself.
             let floating = StyleRules {
                 position: Some(framework_core::Position::Absolute),
                 ..Default::default()
@@ -1261,11 +1250,11 @@ impl Backend for WgpuBackend {
     fn frame(
         &self,
         node: &Self::Node,
-    ) -> Option<framework_core::primitives::overlay::ViewportRect> {
+    ) -> Option<framework_core::primitives::portal::ViewportRect> {
         // Local frame (relative to the parent's content box) —
         // straight out of Taffy's computed layout.
         let frame = self.layout.frame_of(node.borrow().layout);
-        Some(framework_core::primitives::overlay::ViewportRect {
+        Some(framework_core::primitives::portal::ViewportRect {
             x: frame.x,
             y: frame.y,
             width: frame.width,
@@ -1276,14 +1265,14 @@ impl Backend for WgpuBackend {
     fn absolute_frame(
         &self,
         node: &Self::Node,
-    ) -> Option<framework_core::primitives::overlay::ViewportRect> {
+    ) -> Option<framework_core::primitives::portal::ViewportRect> {
         // Walk down from each root accumulating origins until we
         // hit `node`. `absolute_origin` already does this for the
         // host's pointer dispatch; the rect's size is just the
         // Taffy frame at the node.
         let origin = crate::host::absolute_origin(self, node);
         let size = self.layout.frame_of(node.borrow().layout);
-        Some(framework_core::primitives::overlay::ViewportRect {
+        Some(framework_core::primitives::portal::ViewportRect {
             x: origin.0,
             y: origin.1,
             width: size.width,
@@ -1602,11 +1591,13 @@ impl framework_core::primitives::video::VideoOps for WgpuVideoOps {
             }
         }
     }
-    fn seek(&self, _node: &dyn std::any::Any, _seconds: f32) {
-        // Phase 1: no seek. Decoder threads walk samples in
-        // file order; a seek would need a frame-accurate
-        // restart (snap to nearest keyframe before `seconds`).
-        // Follow-up.
+    fn seek(&self, node: &dyn std::any::Any, seconds: f32) {
+        if let Some(n) = node.downcast_ref::<WgpuNode>() {
+            if let NodeKind::Video { decoder, .. } = &n.borrow().kind {
+                decoder.seek(seconds as f64);
+                request_redraw();
+            }
+        }
     }
 }
 
@@ -2558,6 +2549,144 @@ fn walk_for_playing_video(node: &WgpuNode) -> bool {
     let children: Vec<WgpuNode> = node.borrow().children.clone();
     for child in children {
         if walk_for_playing_video(&child) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Update each `Video` node's hover state against a pointer
+/// position in world space. Called from `pointer_move`. Returns
+/// `true` if any Video's hover state changed (so the host can
+/// trigger a redraw to play the fade-in animation).
+pub(crate) fn update_video_hover(
+    backend: &Rc<RefCell<WgpuBackend>>,
+    point: (f32, f32),
+) -> bool {
+    let b = backend.borrow();
+    let Some(root) = b.root() else { return false };
+    let mut changed = false;
+    let now = std::time::Instant::now();
+    walk_update_hover(&root, point, now, &mut changed);
+    changed
+}
+
+fn walk_update_hover(node: &WgpuNode, point: (f32, f32), now: std::time::Instant, changed: &mut bool) {
+    if let NodeKind::Video { controls, last_hover, frame_rect, .. } = &node.borrow().kind {
+        if *controls {
+            let (rx, ry, rw, rh) = frame_rect.get();
+            if rw > 0.0 && rh > 0.0 {
+                let inside = point.0 >= rx
+                    && point.0 <= rx + rw
+                    && point.1 >= ry
+                    && point.1 <= ry + rh;
+                if inside {
+                    let prev = last_hover.get();
+                    last_hover.set(Some(now));
+                    // Trigger redraw if we just entered (was None
+                    // or stale). Mid-hover updates don't need a
+                    // redraw — paint already runs every frame
+                    // while the fade is alive.
+                    if prev.is_none() {
+                        *changed = true;
+                    }
+                }
+            }
+        }
+    }
+    let children: Vec<WgpuNode> = node.borrow().children.clone();
+    for child in children {
+        walk_update_hover(&child, point, now, changed);
+    }
+}
+
+/// Resolve a pointer-down at `point` to a video control action,
+/// if any. Returns `true` when handled — the host's regular
+/// press flow should bail out so the click doesn't double-fire.
+pub(crate) fn dispatch_video_control_press(
+    backend: &Rc<RefCell<WgpuBackend>>,
+    point: (f32, f32),
+) -> bool {
+    let b = backend.borrow();
+    let Some(root) = b.root() else { return false };
+    walk_dispatch_press(&root, point)
+}
+
+fn walk_dispatch_press(node: &WgpuNode, point: (f32, f32)) -> bool {
+    let action = {
+        let data = node.borrow();
+        if let NodeKind::Video {
+            decoder,
+            controls,
+            play_btn_rect,
+            scrubber_rect,
+            ..
+        } = &data.kind
+        {
+            if !*controls {
+                None
+            } else if hit(play_btn_rect.get(), point) {
+                let was_playing = decoder.shared.playing.load(std::sync::atomic::Ordering::Acquire);
+                decoder.set_playing(!was_playing);
+                Some(true)
+            } else if hit(scrubber_rect.get(), point) {
+                let (sx, _, sw, _) = scrubber_rect.get();
+                let progress = ((point.0 - sx) / sw).clamp(0.0, 1.0);
+                let dur_us = decoder.shared.duration_micros.load(std::sync::atomic::Ordering::Acquire);
+                let target = (dur_us as f64 * progress as f64) / 1_000_000.0;
+                decoder.seek(target);
+                Some(true)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+    if let Some(handled) = action {
+        return handled;
+    }
+    let children: Vec<WgpuNode> = node.borrow().children.clone();
+    for child in children {
+        if walk_dispatch_press(&child, point) {
+            return true;
+        }
+    }
+    false
+}
+
+fn hit(rect: (f32, f32, f32, f32), p: (f32, f32)) -> bool {
+    let (x, y, w, h) = rect;
+    w > 0.0 && h > 0.0 && p.0 >= x && p.0 <= x + w && p.1 >= y && p.1 <= y + h
+}
+
+/// Return `true` while any Video's controls are visible (in the
+/// 2 s post-hover window OR while the decoder is paused). Hosts
+/// the redraw loop so the fade-out animation completes smoothly.
+pub(crate) fn any_video_controls_alive(backend: &Rc<RefCell<WgpuBackend>>) -> bool {
+    const VISIBLE_BUDGET_SECS: f32 = 2.3;
+    let b = backend.borrow();
+    let Some(root) = b.root() else { return false };
+    walk_controls_alive(&root, VISIBLE_BUDGET_SECS)
+}
+
+fn walk_controls_alive(node: &WgpuNode, budget_secs: f32) -> bool {
+    if let NodeKind::Video { controls, last_hover, decoder, .. } = &node.borrow().kind {
+        if *controls {
+            // Paused → always alive (controls stay shown).
+            if !decoder.shared.playing.load(std::sync::atomic::Ordering::Acquire) {
+                return true;
+            }
+            if let Some(t) = last_hover.get() {
+                if t.elapsed().as_secs_f32() < budget_secs {
+                    return true;
+                }
+            }
+        }
+    }
+    let children: Vec<WgpuNode> = node.borrow().children.clone();
+    for child in children {
+        if walk_controls_alive(&child, budget_secs) {
             return true;
         }
     }

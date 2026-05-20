@@ -1,195 +1,31 @@
-//! Overlay primitive — render a subtree above the rest of the UI,
-//! escaping the parent's layout/clip, optionally anchored to either
-//! the viewport or another primitive's bounds.
+//! `overlay()` and `anchored_overlay()` — compositions on top of
+//! [`primitives::portal`]. These aren't framework primitives; they're
+//! builders that lower to `Primitive::Portal` at conversion time,
+//! adding the backdrop wiring around the caller's children.
 //!
-//! This is the platform abstraction every floating-UI affordance
-//! (modal, drawer, popover, tooltip, dropdown, context menu) builds
-//! on. Each backend implements it against its native window-level
-//! presentation API — web portals to `<body>` with
-//! `position: fixed`; iOS uses `UIView`/window-level addSubview or
-//! `UIViewController` presentation; Android uses `Dialog` /
-//! `PopupWindow`. The contract this module defines is what's stable
-//! across all of them.
-//!
-//! # Stacking
-//!
-//! Overlays stack freely — opening a second overlay while the first
-//! is still mounted layers it on top. The framework doesn't enforce
-//! any "only one overlay at a time" rule; backends are responsible
-//! for ordering the rendered layers by mount order (z-index on web,
-//! addSubview order on iOS, attachment order on Android).
-//!
-//! Dismiss events from the platform (back button on Android, escape
-//! key on web, swipe-down on iOS) are routed to the topmost overlay
-//! only. The framework's walker maintains the stack via the natural
-//! mount order — each new `Primitive::Overlay` mount pushes; each
-//! cleanup pops.
-//!
-//! # Anchoring
-//!
-//! Two flavors:
-//!
-//! - [`OverlayAnchor::Viewport`] — positioned relative to the
-//!   viewport (centered, edge-pinned, full-screen). The common case
-//!   for modals, drawers, and sheets.
-//! - [`OverlayAnchor::Element`] — positioned relative to another
-//!   primitive's rendered bounds. The common case for popovers,
-//!   tooltips, dropdowns, context menus. Requires the anchor's
-//!   `Ref<H>` so the backend can query its native position.
-//!
-//! The element-anchored path requires backends to expose a way to
-//! measure a node's viewport-relative rect. The framework reaches
-//! into the node via the [`Anchorable`] marker (impl'd by every
-//! visible-primitive handle in the backend impl) and an `ops.rect()`
-//! method, the same shape used for other imperative handle APIs.
-//!
-//! # Dismiss
-//!
-//! When the platform fires a "dismiss me" event (Escape, back gesture,
-//! click-outside on a `Dismiss` backdrop), the backend calls the
-//! `on_dismiss` callback the framework handed it. The host is
-//! expected to flip its open-state signal in that callback — which
-//! causes the surrounding `when`/`switch` branch to flip and the
-//! Overlay's scope to drop. Backends do NOT auto-tear-down the
-//! overlay on dismiss; the host's reactive state is the source of
-//! truth.
-//!
-//! # Animation
-//!
-//! Out of scope for v1. Overlays mount/unmount instantly. A future
-//! `Presence` primitive can hold a child subtree alive for a
-//! configurable duration after its `when` condition flips, letting
-//! exit transitions on stylesheets actually play.
+//! Defaults baked in here are deliberate UX choices for the common
+//! cases (centered modal with dismiss-on-tap backdrop; popover with
+//! no backdrop). Authors who want non-default behavior either chain
+//! the builder methods or reach for [`portal()`](super::portal::portal)
+//! directly and assemble their own backdrop + content children.
 
-use crate::{Bound, Primitive, Ref, RefFill};
-use std::any::Any;
+use crate::primitives::portal::{
+    AnchorTarget, ElementAlign, ElementSide, PortalHandle, PortalTarget, ViewportPlacement,
+};
+use crate::sources::{IntoStyleSource, StyleSource};
+use crate::{ChildList, IntoPrimitive, Primitive, Ref};
 use std::rc::Rc;
-
-// =============================================================================
-// Placement model
-// =============================================================================
-
-/// Where a viewport-anchored [`Primitive::Overlay`] sits in the
-/// window. For element-anchored cases (popovers, tooltips, dropdowns)
-/// use [`Primitive::AnchoredOverlay`] with [`ElementSide`] /
-/// [`ElementAlign`] instead.
-///
-/// [`Primitive::Overlay`]: crate::Primitive::Overlay
-/// [`Primitive::AnchoredOverlay`]: crate::Primitive::AnchoredOverlay
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum ViewportPlacement {
-    /// Centered in the viewport. Most common for modals.
-    Center,
-    /// Pinned to the top edge, full width. Banners, page-top sheets.
-    Top,
-    /// Pinned to the bottom edge, full width. Bottom sheets.
-    Bottom,
-    /// Pinned to the left edge, full height. Left drawers.
-    Left,
-    /// Pinned to the right edge, full height. Right drawers.
-    Right,
-    /// Covers the entire viewport with no padding.
-    FullScreen,
-}
-
-impl Default for ViewportPlacement {
-    fn default() -> Self {
-        ViewportPlacement::Center
-    }
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum ElementSide {
-    Above,
-    Below,
-    Start,
-    End,
-}
-
-impl Default for ElementSide {
-    fn default() -> Self {
-        ElementSide::Below
-    }
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum ElementAlign {
-    Start,
-    Center,
-    End,
-}
-
-impl Default for ElementAlign {
-    fn default() -> Self {
-        ElementAlign::Start
-    }
-}
-
-/// Type-erased handle to an anchor target. Constructed via
-/// [`AnchorTarget::from`] on any `Ref<H>` whose handle type
-/// implements [`AnchorableHandle`].
-///
-/// The erasure here lets a single [`Primitive::AnchoredOverlay`]
-/// accept any primitive's ref without itself being generic. Backends
-/// query the target through the [`AnchorableHandle::rect`] trait
-/// method, which downcasts the type-erased node back to its concrete
-/// backend type at the call site.
-///
-/// [`Primitive::AnchoredOverlay`]: crate::Primitive::AnchoredOverlay
-#[derive(Clone)]
-pub struct AnchorTarget {
-    inner: Rc<dyn AnchorTargetInner>,
-}
-
-impl AnchorTarget {
-    pub fn from<H: AnchorableHandle + 'static>(r: Ref<H>) -> Self {
-        Self { inner: Rc::new(AnchorTargetRef(r)) }
-    }
-
-    /// Resolve to a viewport-relative rect, or `None` if the
-    /// underlying ref hasn't been filled yet (its primitive hasn't
-    /// mounted) or the backend can't measure this handle type.
-    pub fn rect(&self) -> Option<ViewportRect> {
-        self.inner.rect()
-    }
-}
-
-/// Internal: type-erased lookup target. One impl per ref type.
-trait AnchorTargetInner {
-    fn rect(&self) -> Option<ViewportRect>;
-}
-
-struct AnchorTargetRef<H: AnchorableHandle>(Ref<H>);
-impl<H: AnchorableHandle> AnchorTargetInner for AnchorTargetRef<H> {
-    fn rect(&self) -> Option<ViewportRect> {
-        let handle = self.0.get()?;
-        Some(handle.rect())
-    }
-}
-
-/// Marker trait every primitive handle implements (or doesn't) to opt
-/// into being used as an anchor target. The `rect()` method goes
-/// through the handle's existing `*Ops` trait — backends implement
-/// the position measurement once per primitive kind.
-pub trait AnchorableHandle: Clone + 'static {
-    fn rect(&self) -> ViewportRect;
-}
-
-/// Viewport-relative rect, in CSS pixels (or the backend's
-/// equivalent point unit). Origin is top-left of the viewport.
-#[derive(Copy, Clone, Debug, PartialEq, Default)]
-pub struct ViewportRect {
-    pub x: f32,
-    pub y: f32,
-    pub width: f32,
-    pub height: f32,
-}
 
 // =============================================================================
 // Backdrop
 // =============================================================================
 
-/// How the overlay's backdrop behaves.
+/// How an overlay's backdrop layer behaves.
+///
+/// Backdrop dismissal is composition-level here — we render a
+/// fullscreen `pressable()` as the first child inside the portal and
+/// wire its `on_click` to the user's `on_dismiss` (for `Dismiss`)
+/// or leave it as a passive scrim (for `Opaque`).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum BackdropMode {
     /// Semi-transparent scrim. Clicks on the scrim fire the
@@ -197,160 +33,140 @@ pub enum BackdropMode {
     #[default]
     Dismiss,
     /// Semi-transparent scrim. Clicks on the scrim do NOT dismiss;
-    /// the host must drive open/close itself (e.g. via the
-    /// overlay's own buttons). Use when dismissal must be
-    /// deliberate.
+    /// the host must drive open/close itself.
     Opaque,
-    /// No scrim at all. The viewport behind the overlay remains
-    /// interactive. Use for popovers, tooltips, dropdowns.
+    /// No scrim at all. The viewport behind stays interactive.
     None,
 }
 
 // =============================================================================
-// Handle + ops
+// overlay() — viewport-anchored composition
 // =============================================================================
 
-#[derive(Clone)]
-pub struct OverlayHandle {
-    node: Rc<dyn Any>,
-    #[allow(dead_code)]
-    ops: &'static dyn OverlayOps,
-}
-
-impl OverlayHandle {
-    pub fn new(node: Rc<dyn Any>, ops: &'static dyn OverlayOps) -> Self {
-        Self { node, ops }
-    }
-
-    /// Convenience for backends and tests; not stable user API.
-    pub fn node(&self) -> &dyn Any {
-        &*self.node
-    }
-}
-
-pub trait OverlayOps {}
-
-#[derive(Clone)]
-pub struct AnchoredOverlayHandle {
-    node: Rc<dyn Any>,
-    #[allow(dead_code)]
-    ops: &'static dyn AnchoredOverlayOps,
-}
-
-impl AnchoredOverlayHandle {
-    pub fn new(node: Rc<dyn Any>, ops: &'static dyn AnchoredOverlayOps) -> Self {
-        Self { node, ops }
-    }
-
-    pub fn node(&self) -> &dyn Any {
-        &*self.node
-    }
-}
-
-pub trait AnchoredOverlayOps {}
-
-// =============================================================================
-// Constructor + builder — viewport-anchored
-// =============================================================================
-
-/// Build a viewport-anchored [`Primitive::Overlay`] holding the given
-/// children. The returned [`Bound<OverlayHandle>`] supports the usual
-/// builder methods: `.placement(...)`, `.backdrop(...)`,
-/// `.on_dismiss(...)`, `.trap_focus(...)`, `.with_style(...)`,
-/// `.backdrop_style(...)`, `.bind(...)`.
+/// Build a viewport-anchored overlay (modal, drawer, full-screen
+/// sheet). Returns a builder; chain `.placement(...)`,
+/// `.backdrop(...)`, `.on_dismiss(...)`, `.trap_focus(...)`,
+/// `.with_style(...)`, `.backdrop_style(...)`, `.bind(...)` and the
+/// composition lowers to a [`Primitive::Portal`] when consumed by a
+/// child list.
 ///
-/// By default an overlay is centered in the viewport with a
-/// dismiss-on-click backdrop and focus trap enabled.
-///
-/// For element-anchored overlays (popovers, tooltips, dropdowns) use
-/// [`anchored_overlay`] instead — different primitive, so backends
-/// can route to native anchored APIs.
-///
-/// [`Primitive::Overlay`]: crate::Primitive::Overlay
-pub fn overlay(children: Vec<Primitive>) -> Bound<OverlayHandle> {
-    Bound::new(Primitive::Overlay {
+/// Defaults: `Center` placement, `Dismiss` backdrop, focus-trap on.
+pub fn overlay(children: Vec<Primitive>) -> OverlayBuilder {
+    OverlayBuilder {
         children,
         placement: ViewportPlacement::default(),
         backdrop: BackdropMode::default(),
         backdrop_style: None,
         on_dismiss: None,
         trap_focus: true,
-        style: None,
+        content_style: None,
         ref_fill: None,
-    })
+    }
 }
 
-impl Bound<OverlayHandle> {
+/// Builder for the viewport-anchored overlay composition. Lowers to
+/// [`Primitive::Portal`] via `From<OverlayBuilder>`.
+pub struct OverlayBuilder {
+    children: Vec<Primitive>,
+    placement: ViewportPlacement,
+    backdrop: BackdropMode,
+    backdrop_style: Option<StyleSource>,
+    on_dismiss: Option<Rc<dyn Fn()>>,
+    trap_focus: bool,
+    content_style: Option<StyleSource>,
+    ref_fill: Option<Box<dyn FnOnce(PortalHandle)>>,
+}
+
+impl OverlayBuilder {
     pub fn placement(mut self, p: ViewportPlacement) -> Self {
-        if let Primitive::Overlay { placement, .. } = &mut self.primitive {
-            *placement = p;
-        }
+        self.placement = p;
         self
     }
 
     pub fn backdrop(mut self, b: BackdropMode) -> Self {
-        if let Primitive::Overlay { backdrop, .. } = &mut self.primitive {
-            *backdrop = b;
-        }
+        self.backdrop = b;
         self
     }
 
-    pub fn backdrop_style<S: crate::IntoStyleSource>(mut self, s: S) -> Self {
-        if let Primitive::Overlay { backdrop_style, .. } = &mut self.primitive {
-            *backdrop_style = Some(s.into_style_source());
-        }
+    pub fn backdrop_style<S: IntoStyleSource>(mut self, s: S) -> Self {
+        self.backdrop_style = Some(s.into_style_source());
         self
     }
 
     pub fn on_dismiss<F: Fn() + 'static>(mut self, f: F) -> Self {
-        if let Primitive::Overlay { on_dismiss, .. } = &mut self.primitive {
-            *on_dismiss = Some(Rc::new(f));
-        }
+        self.on_dismiss = Some(Rc::new(f));
         self
     }
 
     pub fn trap_focus(mut self, t: bool) -> Self {
-        if let Primitive::Overlay { trap_focus, .. } = &mut self.primitive {
-            *trap_focus = t;
-        }
+        self.trap_focus = t;
         self
     }
 
-    pub fn bind(mut self, r: Ref<OverlayHandle>) -> Self {
-        if let Primitive::Overlay { ref_fill, .. } = &mut self.primitive {
-            *ref_fill = Some(RefFill::Overlay(Box::new(move |h| r.fill(h))));
-        }
+    pub fn with_style<S: IntoStyleSource>(mut self, s: S) -> Self {
+        self.content_style = Some(s.into_style_source());
+        self
+    }
+
+    pub fn bind(mut self, r: Ref<PortalHandle>) -> Self {
+        self.ref_fill = Some(Box::new(move |h| r.fill(h)));
         self
     }
 }
 
+impl From<OverlayBuilder> for Primitive {
+    fn from(b: OverlayBuilder) -> Primitive {
+        build_overlay_portal(
+            PortalTarget::Viewport(b.placement),
+            b.children,
+            b.backdrop,
+            b.backdrop_style,
+            b.on_dismiss,
+            b.trap_focus,
+            b.content_style,
+            b.ref_fill,
+        )
+    }
+}
+
+impl IntoPrimitive for OverlayBuilder {
+    fn into_primitive(self) -> Primitive {
+        self.into()
+    }
+}
+
+impl ChildList for OverlayBuilder {
+    fn append_to(self, out: &mut Vec<Primitive>) {
+        out.push(self.into());
+    }
+}
+
+impl ChildList for Option<OverlayBuilder> {
+    fn append_to(self, out: &mut Vec<Primitive>) {
+        if let Some(b) = self {
+            out.push(b.into());
+        }
+    }
+}
+
 // =============================================================================
-// Constructor + builder — element-anchored
+// anchored_overlay() — element-anchored composition
 // =============================================================================
 
-/// Build an element-anchored [`Primitive::AnchoredOverlay`] holding
-/// the given children. The returned [`Bound<AnchoredOverlayHandle>`]
-/// supports `.target(...)`, `.side(...)`, `.align(...)`,
-/// `.offset(...)`, `.backdrop(...)`, `.backdrop_style(...)`,
-/// `.on_dismiss(...)`, `.trap_focus(...)`, `.with_style(...)`,
-/// `.bind(...)`.
+/// Build an element-anchored overlay (popover, tooltip, dropdown,
+/// context menu). Returns a builder; chain `.target(...)`,
+/// `.side(...)`, `.align(...)`, `.offset(...)`, `.backdrop(...)`,
+/// `.backdrop_style(...)`, `.on_dismiss(...)`, `.trap_focus(...)`,
+/// `.with_style(...)`, `.bind(...)`.
 ///
 /// Defaults: side `Below`, align `Start`, offset `0`, backdrop
 /// `None` (page behind stays interactive — the typical popover UX),
-/// focus trap disabled.
-///
-/// Backends may choose to route this to a native anchored
-/// presentation API (`UIContextMenuInteraction`,
-/// `PopupWindow.showAsDropDown`, HTML `popover` + CSS anchor
-/// positioning) or fall back to custom positioning with a
-/// scroll-tracking observer.
-///
-/// [`Primitive::AnchoredOverlay`]: crate::Primitive::AnchoredOverlay
+/// focus-trap off.
 pub fn anchored_overlay(
     target: AnchorTarget,
     children: Vec<Primitive>,
-) -> Bound<AnchoredOverlayHandle> {
-    Bound::new(Primitive::AnchoredOverlay {
+) -> AnchoredOverlayBuilder {
+    AnchoredOverlayBuilder {
         children,
         target,
         side: ElementSide::default(),
@@ -360,72 +176,182 @@ pub fn anchored_overlay(
         backdrop_style: None,
         on_dismiss: None,
         trap_focus: false,
-        style: None,
+        content_style: None,
         ref_fill: None,
-    })
+    }
 }
 
-impl Bound<AnchoredOverlayHandle> {
+/// Builder for the element-anchored overlay composition. Lowers to
+/// [`Primitive::Portal`] via `From<AnchoredOverlayBuilder>`.
+pub struct AnchoredOverlayBuilder {
+    children: Vec<Primitive>,
+    target: AnchorTarget,
+    side: ElementSide,
+    align: ElementAlign,
+    offset: f32,
+    backdrop: BackdropMode,
+    backdrop_style: Option<StyleSource>,
+    on_dismiss: Option<Rc<dyn Fn()>>,
+    trap_focus: bool,
+    content_style: Option<StyleSource>,
+    ref_fill: Option<Box<dyn FnOnce(PortalHandle)>>,
+}
+
+impl AnchoredOverlayBuilder {
     pub fn target(mut self, t: AnchorTarget) -> Self {
-        if let Primitive::AnchoredOverlay { target, .. } = &mut self.primitive {
-            *target = t;
-        }
+        self.target = t;
         self
     }
 
     pub fn side(mut self, s: ElementSide) -> Self {
-        if let Primitive::AnchoredOverlay { side, .. } = &mut self.primitive {
-            *side = s;
-        }
+        self.side = s;
         self
     }
 
     pub fn align(mut self, a: ElementAlign) -> Self {
-        if let Primitive::AnchoredOverlay { align, .. } = &mut self.primitive {
-            *align = a;
-        }
+        self.align = a;
         self
     }
 
     pub fn offset(mut self, o: f32) -> Self {
-        if let Primitive::AnchoredOverlay { offset, .. } = &mut self.primitive {
-            *offset = o;
-        }
+        self.offset = o;
         self
     }
 
     pub fn backdrop(mut self, b: BackdropMode) -> Self {
-        if let Primitive::AnchoredOverlay { backdrop, .. } = &mut self.primitive {
-            *backdrop = b;
-        }
+        self.backdrop = b;
         self
     }
 
-    pub fn backdrop_style<S: crate::IntoStyleSource>(mut self, s: S) -> Self {
-        if let Primitive::AnchoredOverlay { backdrop_style, .. } = &mut self.primitive {
-            *backdrop_style = Some(s.into_style_source());
-        }
+    pub fn backdrop_style<S: IntoStyleSource>(mut self, s: S) -> Self {
+        self.backdrop_style = Some(s.into_style_source());
         self
     }
 
     pub fn on_dismiss<F: Fn() + 'static>(mut self, f: F) -> Self {
-        if let Primitive::AnchoredOverlay { on_dismiss, .. } = &mut self.primitive {
-            *on_dismiss = Some(Rc::new(f));
-        }
+        self.on_dismiss = Some(Rc::new(f));
         self
     }
 
     pub fn trap_focus(mut self, t: bool) -> Self {
-        if let Primitive::AnchoredOverlay { trap_focus, .. } = &mut self.primitive {
-            *trap_focus = t;
-        }
+        self.trap_focus = t;
         self
     }
 
-    pub fn bind(mut self, r: Ref<AnchoredOverlayHandle>) -> Self {
-        if let Primitive::AnchoredOverlay { ref_fill, .. } = &mut self.primitive {
-            *ref_fill = Some(RefFill::AnchoredOverlay(Box::new(move |h| r.fill(h))));
-        }
+    pub fn with_style<S: IntoStyleSource>(mut self, s: S) -> Self {
+        self.content_style = Some(s.into_style_source());
         self
+    }
+
+    pub fn bind(mut self, r: Ref<PortalHandle>) -> Self {
+        self.ref_fill = Some(Box::new(move |h| r.fill(h)));
+        self
+    }
+}
+
+impl From<AnchoredOverlayBuilder> for Primitive {
+    fn from(b: AnchoredOverlayBuilder) -> Primitive {
+        build_overlay_portal(
+            PortalTarget::Anchor {
+                target: b.target,
+                side: b.side,
+                align: b.align,
+                offset: b.offset,
+            },
+            b.children,
+            b.backdrop,
+            b.backdrop_style,
+            b.on_dismiss,
+            b.trap_focus,
+            b.content_style,
+            b.ref_fill,
+        )
+    }
+}
+
+impl IntoPrimitive for AnchoredOverlayBuilder {
+    fn into_primitive(self) -> Primitive {
+        self.into()
+    }
+}
+
+impl ChildList for AnchoredOverlayBuilder {
+    fn append_to(self, out: &mut Vec<Primitive>) {
+        out.push(self.into());
+    }
+}
+
+impl ChildList for Option<AnchoredOverlayBuilder> {
+    fn append_to(self, out: &mut Vec<Primitive>) {
+        if let Some(b) = self {
+            out.push(b.into());
+        }
+    }
+}
+
+// =============================================================================
+// Lowering — shared between both compositions
+// =============================================================================
+
+fn build_overlay_portal(
+    target: PortalTarget,
+    children: Vec<Primitive>,
+    backdrop: BackdropMode,
+    backdrop_style: Option<StyleSource>,
+    on_dismiss: Option<Rc<dyn Fn()>>,
+    trap_focus: bool,
+    content_style: Option<StyleSource>,
+    ref_fill: Option<Box<dyn FnOnce(PortalHandle)>>,
+) -> Primitive {
+    let mut portal_children: Vec<Primitive> = Vec::with_capacity(2);
+
+    // Backdrop layer (first child = behind content). Skipped when
+    // `BackdropMode::None`. `Dismiss` wires the tap to `on_dismiss`;
+    // `Opaque` swallows the tap so it doesn't reach content behind.
+    if !matches!(backdrop, BackdropMode::None) {
+        let dismiss_for_backdrop = match backdrop {
+            BackdropMode::Dismiss => on_dismiss.clone(),
+            BackdropMode::Opaque => Some(Rc::new(|| {}) as Rc<dyn Fn()>),
+            BackdropMode::None => None,
+        };
+        let on_click: Rc<dyn Fn()> =
+            dismiss_for_backdrop.unwrap_or_else(|| Rc::new(|| {}));
+
+        // Construct the backdrop primitive directly so we can install
+        // the already-built `Rc<dyn Fn>` and `StyleSource` without
+        // going through `pressable()`'s closure-typed builder.
+        let backdrop_primitive = Primitive::Pressable {
+            children: Vec::new(),
+            on_click,
+            style: backdrop_style,
+            ref_fill: None,
+            disabled: None,
+            #[cfg(feature = "robot")]
+            test_id: None,
+        };
+        portal_children.push(backdrop_primitive);
+    }
+
+    // Content layer (second child = above backdrop). Wrap the user's
+    // children in a view we can style; their actual children stay as
+    // siblings under that view.
+    let mut content_view = crate::builder::view(children);
+    if let Some(cs) = content_style {
+        if let Primitive::View { style, .. } = content_view.primitive_mut() {
+            *style = Some(cs);
+        }
+    }
+    portal_children.push(content_view.into());
+
+    // Build the portal. `ref_fill` goes straight onto the Primitive
+    // since `RefFill::Portal` is the right variant for the composed
+    // primitive's handle.
+    Primitive::Portal {
+        children: portal_children,
+        target,
+        on_dismiss,
+        trap_focus,
+        style: None,
+        ref_fill: ref_fill.map(|f| crate::handles::RefFill::Portal(f)),
     }
 }

@@ -321,7 +321,7 @@ impl LayoutObserverView {
 // OverlayPassthroughView — UIView subclass that only consumes touches
 // in its subviews' frames.
 //
-// Used as the container for overlays with `BackdropMode::None`
+// Used as the container for portals (formerly: overlays without a backdrop)
 // (popovers, selects). The default `UIView.pointInside:` returns YES
 // for any point in `bounds`, so a viewport-spanning container would
 // intercept every touch on the page beneath it — including scroll

@@ -284,14 +284,14 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustSliderListener_native
 // ---------------------------------------------------------------------------
 
 /// `RustOverlayDismissListener.onCancel` dispatch. Fires the user's
-/// `on_dismiss` closure (if still set). `release_overlay` clears the
+/// `on_dismiss` closure (if still set). `release_portal` clears the
 /// `inner` slot before tearing down the dialog, so framework-driven
 /// dismissal doesn't re-fire and feedback-loop the open-state signal.
 ///
 /// # Safety
 ///
 /// `ptr` must point to a live `Box<OverlayDismissCallback>` produced
-/// by `create_overlay`. Stays valid until `release_overlay` (which
+/// by `create_portal`. Stays valid until `release_portal` (which
 /// blanks the inner closure but does NOT free the box — see the doc
 /// on `OverlayDismissCallback` for why we leak rather than drop).
 #[no_mangle]
@@ -329,9 +329,9 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustOverlayDismissListene
 }
 
 /// `RustPopupDismissListener.onDismiss` dispatch — element-anchored
-/// overlays' `PopupWindow.OnDismissListener` trampoline. Same
+/// portals' `PopupWindow.OnDismissListener` trampoline. Same
 /// contract as the Dialog-flow dispatch above: invokes the user's
-/// `on_dismiss` if `inner` is still set, no-ops if `release_overlay`
+/// `on_dismiss` if `inner` is still set, no-ops if `release_portal`
 /// has already blanked it.
 ///
 /// # Safety

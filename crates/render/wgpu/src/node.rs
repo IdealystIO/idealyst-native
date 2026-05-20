@@ -326,24 +326,20 @@ pub enum NodeKind {
         /// `animate_icon_stroke`. Default 1.0 = fully drawn.
         stroke_progress: std::cell::Cell<f32>,
     },
-    /// Top-level overlay. The renderer hoists Overlay subtrees
+    /// Top-of-stack portal. The renderer hoists Portal subtrees
     /// to a top z-layer after the main walk so they paint above
-    /// regular content. `backdrop` controls how the rest of the
-    /// app dims behind it.
-    Overlay {
-        placement: framework_core::primitives::overlay::ViewportPlacement,
-        backdrop: framework_core::primitives::overlay::BackdropMode,
+    /// regular content. Positioning is derived from `target`:
+    /// [`PortalTarget::Viewport`] uses the embedded placement
+    /// against the full window; [`PortalTarget::Anchor`] re-queries
+    /// the anchor's rect each frame (cheap because we re-render
+    /// every frame anyway); [`PortalTarget::Named`] is unsupported
+    /// in this backend. Backdrop is no longer a backend concern —
+    /// the composition layer (`framework_core::primitives::overlay`)
+    /// emits a backdrop primitive as a child of the portal, so it
+    /// just flows through the regular walk.
+    Portal {
+        target: framework_core::primitives::portal::PortalTarget,
         on_dismiss: Option<Rc<dyn Fn()>>,
-    },
-    /// Overlay positioned relative to a trigger element's
-    /// current screen rect.
-    AnchoredOverlay {
-        side: framework_core::primitives::overlay::ElementSide,
-        align: framework_core::primitives::overlay::ElementAlign,
-        offset: f32,
-        backdrop: framework_core::primitives::overlay::BackdropMode,
-        on_dismiss: Option<Rc<dyn Fn()>>,
-        anchor: framework_core::primitives::overlay::AnchorTarget,
     },
     /// Virtualizer container. The simulator mounts every item
     /// eagerly (no actual windowing) — fine for the moderate
@@ -510,11 +506,26 @@ pub enum NodeKind {
         /// in `Rc` so the `VideoHandle` ops can read the shared
         /// state without going through `NodeData`.
         decoder: std::rc::Rc<crate::video::VideoDecoder>,
-        /// Last `frame_counter` value the renderer uploaded.
-        /// Bumped when the renderer writes a new frame into the
-        /// node's GPU texture so we skip redundant uploads on
-        /// frames where the decoder hasn't produced anything new.
-        last_uploaded_frame: std::cell::Cell<u64>,
+        /// Author opted in via `.controls(true)` — the renderer
+        /// paints a play/pause + scrubber bar over the texture,
+        /// and pointer routing dispatches clicks against the
+        /// cached sub-rects.
+        controls: bool,
+        /// `Instant` of the last pointer move over the video.
+        /// Drives the hover-fade — `None` means "not hovered";
+        /// `Some(t)` keeps controls visible for ~2 s past `t`,
+        /// then fades out. Always-on when the decoder is paused
+        /// so the user can still grab the scrubber when stopped.
+        last_hover: std::cell::Cell<Option<std::time::Instant>>,
+        /// Sub-rects the renderer cached on the last frame so
+        /// pointer routing can hit-test without re-deriving them.
+        /// All zero before the first render with controls on.
+        play_btn_rect: std::cell::Cell<(f32, f32, f32, f32)>,
+        scrubber_rect: std::cell::Cell<(f32, f32, f32, f32)>,
+        /// World-space rect of the video frame itself, cached
+        /// during walk so the pointer pipeline can hover-test
+        /// without re-running layout.
+        frame_rect: std::cell::Cell<(f32, f32, f32, f32)>,
     },
     /// Renders a "not supported in this simulator" panel for
     /// primitives we don't implement (WebView, Video, Graphics).
@@ -590,8 +601,7 @@ impl std::fmt::Debug for NodeKind {
             NodeKind::Link { .. } => f.write_str("Link"),
             NodeKind::Image { src, .. } => write!(f, "Image({src:?})"),
             NodeKind::Icon { .. } => f.write_str("Icon"),
-            NodeKind::Overlay { .. } => f.write_str("Overlay"),
-            NodeKind::AnchoredOverlay { .. } => f.write_str("AnchoredOverlay"),
+            NodeKind::Portal { .. } => f.write_str("Portal"),
             NodeKind::Virtualizer { horizontal, .. } => {
                 write!(f, "Virtualizer(horizontal={horizontal})")
             }

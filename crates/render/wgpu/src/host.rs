@@ -601,6 +601,11 @@ impl Host {
         // hook is thread-local to the main thread); instead the
         // host polls here each tick.
         let any_video = crate::backend_impl::any_video_playing(&self.backend);
+        // Keep the redraw loop alive while a Video's controls bar
+        // is in its post-hover fade-out window. Otherwise the bar
+        // would freeze at "just hovered" and never reach alpha=0.
+        let any_video_controls =
+            crate::backend_impl::any_video_controls_alive(&self.backend);
         any_anim
             || any_momentum
             || kb_alive
@@ -610,6 +615,7 @@ impl Host {
             || any_nav
             || any_drawer
             || any_video
+            || any_video_controls
     }
 
     /// Re-shape the status-bar clock glyph against the current
@@ -854,6 +860,12 @@ impl Host {
 
     pub fn pointer_move(&mut self, ev: PointerEvent) {
         self.pointer = ev.position;
+        // Video controls hover-fade: every move refreshes the
+        // visibility timer for whatever Video the pointer is
+        // over. Cheap walk; bails on hit-test rejection.
+        if crate::backend_impl::update_video_hover(&self.backend, ev.position) {
+            crate::scheduler::request_redraw();
+        }
         if self.dispatch_touch_moved(&ev) {
             return;
         }
@@ -977,6 +989,15 @@ impl Host {
         // long-press recognizers replace Pressable's native path,
         // this short-circuit becomes the only branch.
         if self.dispatch_touch_began(&ev) {
+            return;
+        }
+
+        // Video controls dispatch — runs before the widget-action
+        // path so a press on the scrubber/play-button doesn't get
+        // captured as a generic Pressable. Resolves the press,
+        // fires the action (toggle play / seek), and stops here.
+        if crate::backend_impl::dispatch_video_control_press(&self.backend, ev.position) {
+            crate::scheduler::request_redraw();
             return;
         }
 

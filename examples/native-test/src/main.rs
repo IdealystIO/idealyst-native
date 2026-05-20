@@ -33,7 +33,8 @@ use framework_core::primitives::image::image;
 use framework_core::primitives::navigator::{
     DrawerHandle, DrawerNavigator, HeaderButton, Navigator, NavigatorHandle, Route, Screen,
 };
-use framework_core::primitives::overlay::{overlay, BackdropMode, ViewportPlacement};
+use framework_core::primitives::overlay::{overlay, BackdropMode};
+use framework_core::primitives::portal::ViewportPlacement;
 use framework_core::primitives::scroll_view::scroll_view;
 use framework_core::primitives::slider::slider;
 use framework_core::primitives::text_input::text_input;
@@ -573,6 +574,7 @@ fn home_screen(nav: Ref<NavigatorHandle>) -> Primitive {
         })
         .autoplay(true)
         .loop_playback(true)
+        .controls(true)
         .with_style(themed(|| StyleRules {
             width: Some(Tokenized::Literal(Length::Px(280.0))),
             height: Some(Tokenized::Literal(Length::Px(158.0))),

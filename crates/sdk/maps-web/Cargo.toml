@@ -1,0 +1,16 @@
+[package]
+name = "maps-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Web leaf for the `maps` umbrella. Provides
+# `pub fn register(backend: &mut WebBackend)` which installs a handler
+# for `MapViewProps`. The handler renders an OpenStreetMap embed
+# iframe — simple proof of the pipeline without an FFI binding story
+# for Leaflet / MapLibre.
+
+[dependencies]
+maps-core = { workspace = true }
+backend-web = { workspace = true }
+web-sys = { version = "0.3", features = ["Document", "Element", "HtmlIFrameElement", "Window"] }

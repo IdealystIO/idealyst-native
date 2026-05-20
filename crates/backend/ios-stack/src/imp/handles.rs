@@ -12,7 +12,7 @@ use objc2_foundation::{CGRect, NSObject};
 use objc2_ui_kit::UIView;
 use std::any::Any;
 
-use framework_core::primitives::overlay::ViewportRect;
+use framework_core::primitives::portal::ViewportRect;
 use framework_core::{ButtonOps, PressableOps, ViewOps};
 
 use crate::imp::IosNode;

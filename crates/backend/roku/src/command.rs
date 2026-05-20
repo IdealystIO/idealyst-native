@@ -407,11 +407,79 @@ pub enum RokuCommand {
         initial_name: String,
     },
 
+    // ---------------- Portals ----------------
+    /// Create a portal — a Group parented to the root scene at the
+    /// top of the z-order, escaping the parent layout's flow.
+    ///
+    /// `target` carries the positioning intent. For
+    /// `WirePortalTarget::Viewport`, the BrightScript client
+    /// computes the group's `translation` / `width` / `height`
+    /// statically from the scene's resolution + the placement
+    /// variant. For `WirePortalTarget::Anchor`, the client subscribes
+    /// to a backend-side "anchor rect" signal (id carried in the
+    /// wire), recomputes translation each time it fires, and uses
+    /// `side` / `align` / `offset` to position relative to the
+    /// anchor. `Named` slot routing is reserved for future use.
+    CreatePortal {
+        id: NodeId,
+        target: WirePortalTarget,
+        on_dismiss: Option<HandlerId>,
+        trap_focus: bool,
+    },
+
     // ---------------- Lifecycle ----------------
     /// First command on a fresh session. The BrightScript client
     /// uses this to clear its node table and mount `root` as the
     /// scene's content.
     Finish { root: NodeId },
+}
+
+/// Wire representation of `framework_core::primitives::portal::PortalTarget`.
+/// `Viewport` carries a placement enum; `Anchor` carries a signal id
+/// the device-side runtime subscribes to so it can re-query the
+/// anchor's bounding rect when it changes. `Named` is reserved for
+/// future "slot" routing — the backend currently rejects it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind")]
+pub enum WirePortalTarget {
+    Viewport { placement: WireViewportPlacement },
+    /// `anchor_rect_signal_id` names a signal whose value is a
+    /// `[x, y, width, height]` quad (in design coordinates) tracking
+    /// the anchor element's current rect. The BrightScript runtime
+    /// re-computes the portal's translation each time the signal
+    /// fires.
+    Anchor {
+        anchor_rect_signal_id: SignalId,
+        side: WireElementSide,
+        align: WireElementAlign,
+        offset: f32,
+    },
+    Named { slot: String },
+}
+
+#[derive(Copy, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum WireViewportPlacement {
+    Center,
+    Top,
+    Bottom,
+    Left,
+    Right,
+    FullScreen,
+}
+
+#[derive(Copy, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum WireElementSide {
+    Above,
+    Below,
+    Start,
+    End,
+}
+
+#[derive(Copy, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum WireElementAlign {
+    Start,
+    Center,
+    End,
 }
 
 /// A single token entry in a theme variant. Carries the token's

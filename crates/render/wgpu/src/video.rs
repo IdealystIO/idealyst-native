@@ -49,6 +49,22 @@ pub struct VideoSharedState {
     /// the renderer cheaply detect new frames (only upload on
     /// change) without locking the mutex on every tick.
     pub frame_counter: AtomicU64,
+    /// Wall-clock-style playback position in microseconds since
+    /// the start of the clip. The decoder updates this after
+    /// every publish so the controls UI can show a current time
+    /// without locking the mutex.
+    pub current_time_micros: AtomicU64,
+    /// Total clip duration in microseconds, populated once the
+    /// decoder has parsed the track. `0` means unknown / still
+    /// loading.
+    pub duration_micros: AtomicU64,
+    /// Seek request: target position in microseconds + `Some`-ness
+    /// is the "is requested" flag. The decoder picks it up at the
+    /// top of each sample iteration, restarts at the nearest
+    /// sync sample, and clears the field. Holding it inside a
+    /// mutex (rather than two atomics for u64 + bool) keeps the
+    /// "race-free clear after consume" cheap.
+    pub seek_request: Mutex<Option<u64>>,
 }
 
 impl VideoSharedState {
@@ -58,6 +74,9 @@ impl VideoSharedState {
             playing: AtomicBool::new(false),
             shutdown: AtomicBool::new(false),
             frame_counter: AtomicU64::new(0),
+            current_time_micros: AtomicU64::new(0),
+            duration_micros: AtomicU64::new(0),
+            seek_request: Mutex::new(None),
         }
     }
 }
@@ -66,6 +85,10 @@ impl VideoSharedState {
 /// decoder thread.
 pub struct VideoDecoder {
     pub shared: Arc<VideoSharedState>,
+    /// Audio side, if the file had a decodable audio track and the
+    /// audio subsystem opened successfully. Drop here also drops
+    /// the audio source registration.
+    audio: Option<crate::audio::DecodedAudioHandle>,
     join: Option<thread::JoinHandle<()>>,
 }
 
@@ -81,21 +104,113 @@ impl Drop for VideoDecoder {
 impl VideoDecoder {
     /// Spawn a decoder for the file at `src`. Returns immediately;
     /// the decoder runs on its own thread and publishes frames
-    /// into the shared state asynchronously.
+    /// into the shared state asynchronously. If the file has a
+    /// decodable audio track and the platform's audio subsystem
+    /// opened, a sibling decoder thread also runs for audio.
     pub fn spawn(src: String, autoplay: bool, loop_playback: bool) -> Self {
         let shared = Arc::new(VideoSharedState::new());
         shared.playing.store(autoplay, Ordering::Release);
+
+        // Try to open the audio path. Failures here (file gone,
+        // no AAC track, audio device missing) just leave the
+        // video silent — playback is still valid.
+        let audio = build_audio_handle(&src, autoplay, loop_playback);
+
         let shared_for_thread = shared.clone();
         let join = thread::Builder::new()
             .name(format!("video:{}", short_label(&src)))
             .spawn(move || run_decode_loop(src, shared_for_thread, loop_playback))
             .expect("spawn video decode thread");
-        Self { shared, join: Some(join) }
+        Self { shared, audio, join: Some(join) }
     }
 
     pub fn set_playing(&self, playing: bool) {
         self.shared.playing.store(playing, Ordering::Release);
+        // Forward to the audio side so the user-facing
+        // play/pause toggles both streams. The audio ring's
+        // `paused` flag silences the mixer; the decode loop on
+        // the audio thread sees the same flag and parks too.
+        if let Some(audio) = self.audio.as_ref() {
+            audio.ring.paused.store(!playing, std::sync::atomic::Ordering::Release);
+        }
     }
+
+    pub fn set_volume(&self, vol: f32) {
+        if let Some(audio) = self.audio.as_ref() {
+            if let Ok(mut v) = audio.volume.lock() {
+                *v = vol.clamp(0.0, 1.0);
+            }
+        }
+    }
+
+    pub fn set_muted(&self, muted: bool) {
+        if let Some(audio) = self.audio.as_ref() {
+            audio.ring.muted.store(muted, std::sync::atomic::Ordering::Release);
+        }
+    }
+
+    /// Request a seek to `target_secs` from the start of the
+    /// clip. The decode loop notices the request at the top of
+    /// the next sample iteration and restarts at the nearest
+    /// preceding sync sample. Audio is not seek-synced in this
+    /// pass — if it matters for the demo, follow up with a
+    /// "rewind audio decoder + flush ring" hook.
+    pub fn seek(&self, target_secs: f64) {
+        let target_micros = (target_secs.max(0.0) * 1_000_000.0) as u64;
+        if let Ok(mut g) = self.shared.seek_request.lock() {
+            *g = Some(target_micros);
+        }
+    }
+}
+
+/// Open the audio subsystem and start an AAC decoder against the
+/// same mp4 bytes the video pipeline consumes. Returns `None`
+/// when there's no audio to play (no track, codec disabled, or
+/// the OS refused to give us an output device).
+fn build_audio_handle(
+    src: &str,
+    autoplay: bool,
+    loop_playback: bool,
+) -> Option<crate::audio::DecodedAudioHandle> {
+    let path = strip_file_scheme(src);
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("[audio] open {path}: {e}");
+            return None;
+        }
+    };
+    let subsys = match crate::audio::subsystem() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[audio] subsystem unavailable: {e}");
+            return None;
+        }
+    };
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str());
+    let handle = match crate::audio::spawn_decoded_source(
+        Arc::new(bytes),
+        ext,
+        subsys,
+        1.0,
+        loop_playback,
+    ) {
+        Some(h) => h,
+        None => {
+            eprintln!("[audio] no decodable audio track in {path}");
+            return None;
+        }
+    };
+    // Audio defaults to "playing" semantically — but the ring is
+    // paused if the video itself starts paused, so the decoder
+    // doesn't burn through the file before the user hits play.
+    handle
+        .ring
+        .paused
+        .store(!autoplay, std::sync::atomic::Ordering::Release);
+    Some(handle)
 }
 
 fn short_label(src: &str) -> &str {
@@ -107,19 +222,24 @@ fn short_label(src: &str) -> &str {
 /// Main decoder body. Runs on its own thread; the only state it
 /// touches outside its locals is `Arc<VideoSharedState>`.
 fn run_decode_loop(src: String, shared: Arc<VideoSharedState>, loop_playback: bool) {
+    let mut start_micros: u64 = 0;
     loop {
         if shared.shutdown.load(Ordering::Acquire) {
             return;
         }
-        match decode_file_once(&src, &shared) {
+        match decode_file_once(&src, &shared, start_micros) {
             DecodeResult::Done => {
                 if !loop_playback {
                     park_until_shutdown(&shared);
                     return;
                 }
                 // Fall through to another pass for the loop.
+                start_micros = 0;
             }
             DecodeResult::Shutdown => return,
+            DecodeResult::Seek(target) => {
+                start_micros = target;
+            }
             DecodeResult::Error(e) => {
                 eprintln!("[video] decode error for {src}: {e}");
                 park_until_shutdown(&shared);
@@ -138,10 +258,17 @@ fn park_until_shutdown(shared: &Arc<VideoSharedState>) {
 enum DecodeResult {
     Done,
     Shutdown,
+    /// User requested a seek; outer loop re-enters `decode_file_once`
+    /// with the new start position in microseconds.
+    Seek(u64),
     Error(String),
 }
 
-fn decode_file_once(src: &str, shared: &Arc<VideoSharedState>) -> DecodeResult {
+fn decode_file_once(
+    src: &str,
+    shared: &Arc<VideoSharedState>,
+    start_micros: u64,
+) -> DecodeResult {
     // 1) Read mp4 bytes off disk. Phase 1 only supports local
     //    files; network sources are a follow-up.
     let path = strip_file_scheme(src);
@@ -225,19 +352,85 @@ fn decode_file_once(src: &str, shared: &Arc<VideoSharedState>) -> DecodeResult {
     let _ = keyframe_prefix;
 
     // 5) Walk samples in decode order, pacing to PTS.
-    let start_wall = Instant::now();
+    //
+    // Pacing uses the OUTPUT INDEX, not the input sample's
+    // composition_timestamp. With B-frame reordering, decode
+    // order ≠ display order: openh264 buffers some inputs and
+    // outputs frames in display order. If we paced using
+    // sample.cts we'd produce bursty publishes (a P-frame whose
+    // input cts is far in the future arrives while the decoder
+    // is still emitting earlier B-frames, so its sleep target
+    // is wrong) — the renderer would then only catch one frame
+    // per burst.
+    //
+    // Output index pacing assumes constant frame rate, which
+    // holds for the typical mp4 we'd preview. For variable-rate
+    // content, follow-up work would pair each output with its
+    // PTS via a min-heap reorder buffer; for now CFR is fine.
+    let total_duration_ticks: u64 = track.samples.iter().map(|s| s.duration as u64).sum();
+    let total_duration_secs = total_duration_ticks as f64 / timescale;
+    let frame_duration_secs = if track.samples.is_empty() {
+        1.0 / 30.0
+    } else {
+        total_duration_secs / track.samples.len() as f64
+    };
+    // Publish the total duration so the controls UI can render
+    // "0:00 / 0:15" right away even before frame 1 lands.
+    shared
+        .duration_micros
+        .store((total_duration_secs * 1_000_000.0) as u64, Ordering::Release);
+
+    let samples: Vec<re_mp4::Sample> = track.samples.clone();
+
+    // For seeks, find the latest sync sample whose composition
+    // time is ≤ the requested start. H.264 must decode forward
+    // from an IDR; if `start_micros` falls inside a GOP we step
+    // back to its IDR and ramp through the intermediate P/B
+    // frames until we hit the target, then start publishing.
+    let start_sample_idx = find_start_sample(&samples, start_micros, timescale);
+    // Once we're past this PTS, start publishing. Frames between
+    // start_sample_idx's PTS and `start_micros` are decoded
+    // (needed for reference) but not shown.
+    let publish_after_micros = start_micros;
+
+    // Reset our wall-clock anchor so pacing aligns with the new
+    // start position. Once we begin publishing at `start_micros`,
+    // `Instant::now()` = start_wall + Duration(start_micros).
+    let start_wall =
+        Instant::now() - Duration::from_micros(start_micros);
     let mut pause_accum = Duration::ZERO;
     let mut last_pause_start: Option<Instant> = None;
-    let samples: Vec<re_mp4::Sample> = track.samples.clone();
-    for sample in samples {
+    let mut output_index: u64 =
+        ((start_micros as f64 / 1_000_000.0) / frame_duration_secs) as u64;
+
+    for sample in samples.iter().skip(start_sample_idx) {
         if shared.shutdown.load(Ordering::Acquire) {
             return DecodeResult::Shutdown;
+        }
+
+        // Honor a seek request before anything else this iteration.
+        if let Some(target) = shared
+            .seek_request
+            .lock()
+            .ok()
+            .and_then(|mut g| g.take())
+        {
+            return DecodeResult::Seek(target);
         }
 
         // Pause: park here until playback resumes.
         while !shared.playing.load(Ordering::Acquire) {
             if shared.shutdown.load(Ordering::Acquire) {
                 return DecodeResult::Shutdown;
+            }
+            // Allow seek to break us out of pause too.
+            if let Some(target) = shared
+                .seek_request
+                .lock()
+                .ok()
+                .and_then(|mut g| g.take())
+            {
+                return DecodeResult::Seek(target);
             }
             if last_pause_start.is_none() {
                 last_pause_start = Some(Instant::now());
@@ -264,10 +457,6 @@ fn decode_file_once(src: &str, shared: &Arc<VideoSharedState>) -> DecodeResult {
             annex_b.extend_from_slice(&keyframe_prefix);
         }
         annex_b.extend(avcc_to_annex_b(&bytes[range], length_size));
-        // Diagnostic: time decode + YUV→RGBA. Removable once
-        // the steady-state cadence is verified. Logs every 60th
-        // frame to keep stderr quiet.
-        let t_decode = Instant::now();
         let yuv = match decoder.decode(&annex_b) {
             Ok(Some(y)) => y,
             Ok(None) => continue,
@@ -279,20 +468,16 @@ fn decode_file_once(src: &str, shared: &Arc<VideoSharedState>) -> DecodeResult {
                 continue;
             }
         };
-        let decode_ms = t_decode.elapsed().as_secs_f32() * 1000.0;
-        let t_convert = Instant::now();
         let frame = yuv_to_rgba(&yuv);
-        let convert_ms = t_convert.elapsed().as_secs_f32() * 1000.0;
-        if sample.id % 60 == 0 {
-            eprintln!(
-                "[video] sample {} decode {:.1}ms convert {:.1}ms",
-                sample.id, decode_ms, convert_ms
-            );
-        }
 
-        // Pace to composition timestamp.
-        let pts_secs = sample.composition_timestamp as f64 / timescale;
-        let target = start_wall + pause_accum + Duration::from_secs_f64(pts_secs.max(0.0));
+        // Pace to the wall-clock display time of this OUTPUT
+        // frame. See top-of-loop comment for why we use output
+        // index instead of sample.composition_timestamp.
+        let target = start_wall
+            + pause_accum
+            + Duration::from_secs_f64(output_index as f64 * frame_duration_secs);
+        let frame_pts_micros = (output_index as f64 * frame_duration_secs * 1e6) as u64;
+        output_index += 1;
         let now = Instant::now();
         if target > now {
             let mut remaining = target - now;
@@ -310,31 +495,93 @@ fn decode_file_once(src: &str, shared: &Arc<VideoSharedState>) -> DecodeResult {
             }
         }
 
-        // Publish the frame.
-        if let Ok(mut slot) = shared.latest_frame.lock() {
-            *slot = Some(frame);
+        // Skip publishing during the seek ramp-up (frames whose
+        // PTS is before the requested target). They still had to
+        // be decoded so the IDR's reference state is built up
+        // for whatever comes next, but the UI shouldn't flash
+        // them.
+        if frame_pts_micros + 1 < publish_after_micros {
+            continue;
         }
-        shared.frame_counter.fetch_add(1, Ordering::Release);
-
-        // Diagnostic: publish-rate counter. Prints once per
-        // second from the decoder thread so we can tell apart
-        // "decoder is at 30 fps but renderer drops frames" from
-        // "decoder publishes at ~5 fps and we're seeing the
-        // truth." Same shape as the render-side counter.
-        thread_local! {
-            static PUB_DIAG: std::cell::Cell<(u64, Instant)> =
-                std::cell::Cell::new((0, Instant::now()));
+        shared
+            .current_time_micros
+            .store(frame_pts_micros, Ordering::Release);
+        publish_frame(&shared, frame);
+    }
+    // Drain any frames openh264 still holds in its DPB. With
+    // `Flush::NoFlush`, B-frame buffering can leave the trailing
+    // frames in the decoder when the input ends; without this
+    // call, the last ~half-GOP of every clip never reaches the
+    // renderer and looping clips appear to restart early.
+    let remaining = decoder.flush_remaining().unwrap_or_default();
+    for yuv in remaining {
+        if shared.shutdown.load(Ordering::Acquire) {
+            return DecodeResult::Shutdown;
         }
-        PUB_DIAG.with(|c| {
-            let (n, last) = c.get();
-            c.set((n + 1, last));
-            if last.elapsed() >= Duration::from_secs(1) {
-                eprintln!("[video] publishes/s={}", n + 1);
-                c.set((0, Instant::now()));
+        let frame = yuv_to_rgba(&yuv);
+        let target = start_wall
+            + pause_accum
+            + Duration::from_secs_f64(output_index as f64 * frame_duration_secs);
+        let frame_pts_micros = (output_index as f64 * frame_duration_secs * 1e6) as u64;
+        output_index += 1;
+        let now = Instant::now();
+        if target > now {
+            let mut remaining = target - now;
+            let max_chunk = Duration::from_millis(30);
+            while remaining > Duration::ZERO {
+                if shared.shutdown.load(Ordering::Acquire) {
+                    return DecodeResult::Shutdown;
+                }
+                if !shared.playing.load(Ordering::Acquire) {
+                    break;
+                }
+                let chunk = remaining.min(max_chunk);
+                thread::sleep(chunk);
+                remaining = remaining.saturating_sub(chunk);
             }
-        });
+        }
+        if frame_pts_micros + 1 < publish_after_micros {
+            continue;
+        }
+        shared
+            .current_time_micros
+            .store(frame_pts_micros, Ordering::Release);
+        publish_frame(&shared, frame);
     }
     DecodeResult::Done
+}
+
+/// Find the latest sync sample whose composition time is ≤ the
+/// requested `target_micros`. Falls back to 0 if the target is
+/// before the first sample.
+fn find_start_sample(samples: &[re_mp4::Sample], target_micros: u64, timescale: f64) -> usize {
+    if target_micros == 0 {
+        return 0;
+    }
+    let target_ticks = (target_micros as f64 / 1_000_000.0) * timescale;
+    let mut best = 0;
+    for (i, s) in samples.iter().enumerate() {
+        if !s.is_sync {
+            continue;
+        }
+        if (s.composition_timestamp as f64) > target_ticks {
+            break;
+        }
+        best = i;
+    }
+    best
+}
+
+fn publish_frame(shared: &Arc<VideoSharedState>, frame: VideoFrame) {
+    if let Ok(mut slot) = shared.latest_frame.lock() {
+        *slot = Some(frame);
+    }
+    shared.frame_counter.fetch_add(1, Ordering::Release);
+    // Wake the event loop. Without this, the renderer's
+    // observation of `frame_counter` is coupled to whatever else
+    // is driving redraws (animations, scroll, etc.). The proxy
+    // hop is `Send + Sync`, safe to call from any thread.
+    crate::scheduler::request_redraw();
 }
 
 fn find_h264_track(mp4: &re_mp4::Mp4) -> Option<(re_mp4::TrackId, &re_mp4::Track)> {

@@ -6,33 +6,42 @@ actually measures and why those measurements were chosen.
 
 ## Running
 
-Two wasm crates need to be built first — the runner page itself (at the
-root of this directory) and the idealyst-native variant
-(`idealyst-native/wasm/`). From the repo root:
-
 ```bash
-cd benchmark                     && wasm-pack build --target web --release
-cd benchmark/idealyst-native/wasm && wasm-pack build --target web --release
+benchmark/serve
 ```
 
-Rebuild after any change to the corresponding `src/lib.rs`, or to the
-framework itself if you want the runner / variant to pick up the
-changes.
+(or `PORT=9000 benchmark/serve` for a different port). That single
+command:
 
-Then serve the directory with the idealyst CLI:
-
-```bash
-cargo run -p idealyst-cli -- serve benchmark --port 8080
-```
+- Builds the runner wasm (`benchmark/pkg/`)
+- Builds the idealyst-native variant wasm (`benchmark/idealyst-native/wasm/pkg/`)
+- Builds the Svelte variant bundle via Vite (`benchmark/svelte/pkg/`)
+- Invokes `idealyst-cli serve` on port 8080 (or `$PORT`)
 
 Open [http://localhost:8080/](http://localhost:8080/) and click **Run**.
+Subsequent invocations are fast — each build step is idempotent.
 
 Why a real HTTP server (and not `file://`): the variants use
 `<script type="module">` and ES module imports, which browsers refuse
 to load over `file://`.
 
-The React / Vue / Svelte variants load their runtimes from esm.sh via
-an import map — no build step.
+## Builds (manual)
+
+If you want to invoke the builds individually:
+
+```bash
+# Runner UI (Rust → wasm)
+cd benchmark && wasm-pack build --target web --release
+
+# idealyst-native variant (Rust → wasm)
+cd benchmark/idealyst-native/wasm && wasm-pack build --target web --release
+
+# Svelte variant (Svelte SFCs → bundled JS via Vite)
+cd benchmark/svelte && npm install && npm run build
+```
+
+The vanilla / React / Vue variants need no build step — they load
+their (production) runtimes from esm.sh.
 
 ## What's here
 
@@ -79,12 +88,15 @@ cross-suite numbers aren't comparable.
 
 ## Methodology notes
 
-- **Production builds everywhere.** React variants load production esm.sh
-  builds (no `?dev`); Vue loads `vue.esm-browser.prod.js`; Svelte compiles
-  with `dev: false`; the idealyst-native variant builds wasm with
-  `wasm-pack --release` and no `debug-stats` feature. Don't ship benchmark
-  numbers run against any of the dev-mode equivalents — they're all
-  ~2-5× slower.
+- **Production builds everywhere.** React variants use the production
+  esm.sh bundle and call `_jsx`/`_jsxs` from `react/jsx-runtime` directly
+  (~3-5% faster than `React.createElement` because it skips runtime
+  arg-shape checks); Vue uses the runtime-only `vue.runtime.esm-browser.prod.js`
+  with hand-written `h()` render functions (no template compiler shipped);
+  Svelte is AOT-compiled by Vite with `dev: false`; the idealyst-native
+  variant builds wasm with `wasm-pack --release` and no `debug-stats`
+  feature. Don't ship numbers run against any dev-mode equivalents — they're
+  all ~2-5× slower.
 - **`flushSync` in React.** The React variants wrap `setRowCountState` in
   `flushSync` so the React commit happens *inside* `setRows`'s window.
   Without it React 18 would batch and commit after `setRows` resolved —

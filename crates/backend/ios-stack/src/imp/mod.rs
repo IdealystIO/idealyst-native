@@ -3,7 +3,7 @@ pub(crate) mod graphics;
 pub(crate) mod handles;
 pub(crate) mod icon;
 pub(crate) mod navigator;
-pub(crate) mod overlay;
+pub(crate) mod portal;
 pub(crate) mod style;
 pub(crate) mod tab_drawer;
 
@@ -73,9 +73,11 @@ pub struct IosBackend {
     /// Only used by `render_to_uiimage` — the standalone `create_icon`
     /// uses CAShapeLayer (vector, no raster needed).
     icon_image_cache: HashMap<(usize, u16), Retained<NSObject>>,
-    /// Active overlays keyed by content view pointer. Stores the
-    /// presented UIViewController so release_overlay can dismiss it.
-    overlay_instances: overlay::OverlayInstances,
+    /// Active portals keyed by container view pointer. Each entry
+    /// carries the `PortalTarget` so `insert` can apply the right
+    /// positioning constraints to children as the framework mounts
+    /// them.
+    portal_instances: HashMap<usize, portal::PortalEntry>,
 }
 
 // =========================================================================
@@ -127,7 +129,7 @@ impl IosBackend {
             callback_targets: Vec::new(),
             scroll_view_inner: HashMap::new(),
             icon_image_cache: HashMap::new(),
-            overlay_instances: HashMap::new(),
+            portal_instances: HashMap::new(),
         }
     }
 
@@ -630,30 +632,30 @@ impl Backend for IosBackend {
         let child_view = child.as_view();
         let child_key = child_view as *const UIView as usize;
 
-        // If the CHILD is an overlay container, skip the regular
-        // insert — the overlay already mounted itself to the host
+        // If the CHILD is a portal container, skip the regular
+        // insert — the portal already mounted itself to the host
         // window. Letting the parent's `addSubview`/`addArrangedSubview`
-        // run would briefly put the overlay container inside the
+        // run would briefly put the portal container inside the
         // parent's layout (e.g. a UIStackView), reflowing the parent's
         // other children before the deferred `mount_in_window` moves
         // the container out. Visible symptom: the surrounding View's
         // siblings (a Select's trigger button, for example) jump
-        // position when the overlay opens.
-        if self.overlay_instances.contains_key(&child_key) {
+        // position when the portal opens.
+        if self.portal_instances.contains_key(&child_key) {
             return;
         }
 
         if let Some(inner) = self.scroll_view_inner.get(&parent_key) {
             let _: () = unsafe { msg_send![inner, addArrangedSubview: child_view] };
-        } else if let Some(entry) = self.overlay_instances.get(&parent_key) {
-            // Overlay parent: position children absolutely per the
-            // overlay's anchor. This gives content positional
-            // freedom (centered, edge-pinned, element-anchored) and
-            // avoids UIStackView's auto-canvas constraints that
-            // fight overlay layout.
+        } else if let Some(entry) = self.portal_instances.get(&parent_key) {
+            // Portal parent: position children per the portal's
+            // target. This gives content positional freedom
+            // (centered, edge-pinned, element-anchored) and avoids
+            // UIStackView's auto-canvas constraints that fight
+            // portal layout.
             unsafe { parent_view.addSubview(child_view) };
-            let anchor = entry.anchor.clone();
-            overlay::apply_anchor_to_child(parent_view, child_view, &anchor);
+            let target = entry.target.clone();
+            portal::apply_target_to_child(parent_view, child_view, &target);
         } else {
             let is_stack: bool = unsafe {
                 msg_send![parent_view, isKindOfClass: objc2::class!(UIStackView)]
@@ -816,32 +818,37 @@ impl Backend for IosBackend {
     }
 
     // =================================================================
-    // Overlay
+    // Portal
     // =================================================================
 
-    fn create_overlay(
+    fn create_portal(
         &mut self,
-        anchor: framework_core::primitives::overlay::OverlayAnchor,
-        backdrop: framework_core::primitives::overlay::BackdropMode,
-        on_dismiss: Option<Rc<dyn Fn()>>,
-        _trap_focus: bool,
+        target: framework_core::primitives::portal::PortalTarget,
+        _on_dismiss: Option<Rc<dyn Fn()>>,
+        trap_focus: bool,
     ) -> Self::Node {
-        let (content_view, entry) = overlay::create_overlay(
+        // On the iOS stack backend we mount portals as plain
+        // window-level UIViews — not `presentViewController:` sheets.
+        // No native dismiss event flows back (no swipe-down on raw
+        // views), so `on_dismiss` is effectively host-signal-driven:
+        // the framework flips its open state in response to whatever
+        // interaction the composition wires up (backdrop tap, sheet
+        // grabber, etc.). We accept the callback but never fire it.
+        let (content_view, entry) = portal::create_portal(
             self.mtm,
             self.host_root.as_ref(),
-            anchor,
-            backdrop,
-            on_dismiss,
+            target,
+            trap_focus,
         );
         let key = &*content_view as *const UIView as usize;
-        self.overlay_instances.insert(key, entry);
+        self.portal_instances.insert(key, entry);
         IosNode::View(content_view)
     }
 
-    fn release_overlay(&mut self, node: &Self::Node) {
+    fn release_portal(&mut self, node: &Self::Node) {
         let key = IosBackend::node_key(node);
-        if let Some(entry) = self.overlay_instances.remove(&key) {
-            overlay::release_overlay(entry);
+        if let Some(entry) = self.portal_instances.remove(&key) {
+            portal::release_portal(entry);
         }
     }
 

@@ -57,8 +57,6 @@ pub struct SceneModel {
     /// don't adjust `from` based on elapsed time); acceptable for
     /// dev.
     node_icon_anim: HashMap<NodeId, Command>,
-    /// Per-overlay-node backdrop style.
-    overlay_backdrop_style: HashMap<NodeId, Command>,
     /// Per-navigator: ordered list of mounted screens. `stack[0]` is
     /// the initial route (emitted as `NavigatorAttachInitial`);
     /// `stack[1..]` emit as `NavigatorPush`.
@@ -145,7 +143,7 @@ impl SceneModel {
             | Command::CreateVideo { id, .. }
             | Command::CreateActivityIndicator { id, .. }
             | Command::CreateLink { id, .. }
-            | Command::CreateOverlay { id, .. }
+            | Command::CreatePortal { id, .. }
             | Command::CreateGraphics { id, .. }
             | Command::CreateVirtualizer { id, .. } => {
                 self.node_create.insert(*id, cmd.clone());
@@ -414,10 +412,6 @@ impl SceneModel {
                 self.nav_style_slots.entry(*navigator).or_default().tab_label = Some(cmd.clone());
             }
 
-            Command::ApplyOverlayBackdropStyle { node, .. } => {
-                self.overlay_backdrop_style.insert(*node, cmd.clone());
-            }
-
             Command::VirtualizerDataChanged { .. }
             | Command::VirtualizerAttachItem { .. } => {
                 // Virtualizer items are managed live; for a fresh
@@ -438,7 +432,6 @@ impl SceneModel {
                 self.node_presence.remove(node);
                 self.node_icon_stroke.remove(node);
                 self.node_icon_anim.remove(node);
-                self.overlay_backdrop_style.remove(node);
             }
             Command::InstallThemeVariables { .. } => {
                 // Theme variables are broadcast live; not modeled
@@ -601,13 +594,6 @@ impl SceneModel {
                 out.push(cmd.clone());
             }
         }
-        // 4f. Overlay backdrop style.
-        for id in &node_ids {
-            if let Some(cmd) = self.overlay_backdrop_style.get(id) {
-                out.push(cmd.clone());
-            }
-        }
-
         // 5. Navigators.
         let mut nav_ids: Vec<NodeId> = self.navigators.keys().copied().collect();
         nav_ids.sort_by_key(|n| n.0);

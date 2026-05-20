@@ -199,22 +199,18 @@ pub struct WebBackend {
     /// each token in place — the rule itself is never deleted, so no
     /// other rule indices shift and no minted class re-emits.
     pub(crate) theme_root_rule_index: Option<u32>,
-    /// Per-overlay state, keyed by the `data-overlay-id` attribute
+    /// Per-portal state, keyed by the `data-portal-id` attribute
     /// stamped on the portal root. Holds the wasm-bindgen `Closure`
-    /// handles wired to dismiss events (Escape key, scrim click) so
-    /// they stay alive while the overlay is mounted; dropping the
-    /// instance entry in `release_overlay` is what frees the
+    /// handles wired to dismiss / reposition / focus-trap events so
+    /// they stay alive while the portal is mounted; dropping the
+    /// instance entry in `release_portal` is what frees the
     /// JS-side closures and prevents late-firing events from
     /// reaching a freed `Signal` slot.
-    pub(crate) overlay_instances: primitives::overlay::OverlayInstances,
-    /// Monotonic id counter for overlays. Same pattern as
-    /// `next_navigator_id` — stamped as `data-overlay-id` on the
+    pub(crate) portal_instances: primitives::portal::PortalInstances,
+    /// Monotonic id counter for portals. Same pattern as
+    /// `next_navigator_id` — stamped as `data-portal-id` on the
     /// portal root.
-    pub(crate) next_overlay_id: u32,
-    /// Has the (currently-empty) global overlay CSS been injected?
-    /// Reserved for future focus-trap rules; the flag exists now so
-    /// the injection step is idempotent.
-    pub(crate) overlay_css_injected: bool,
+    pub(crate) next_portal_id: u32,
     /// Asset id → resolved URL. Filled by `register_asset`; queried
     /// by `register_typeface` (for the `@font-face` `src: url(...)`)
     /// and, in a follow-up, by the `Image` primitive's `<img src>`.
@@ -230,6 +226,13 @@ pub struct WebBackend {
     /// `unregister_typeface` reclaim the slots through the regular
     /// `delete_rule` recycle path.
     pub(crate) font_face_rule_indices: HashMap<TypefaceId, Vec<u32>>,
+    /// Registry of third-party `Primitive::External` handlers,
+    /// populated by `register_external::<T>(...)` calls from
+    /// per-platform leaf crates (e.g. `idealyst-maps-web::register`).
+    /// `create_external` looks the handler up by payload TypeId;
+    /// unregistered kinds fall through to a "not supported" placeholder.
+    pub(crate) external_handlers:
+        framework_core::ExternalRegistry<WebBackend>,
 }
 
 /// Diagnostic snapshot returned by [`WebBackend::debug_counts`].
@@ -300,13 +303,39 @@ impl WebBackend {
             node_ids: HashMap::new(),
             free_rule_indices: Vec::new(),
             theme_root_rule_index: None,
-            overlay_instances: HashMap::new(),
-            next_overlay_id: 0,
-            overlay_css_injected: false,
+            portal_instances: HashMap::new(),
+            next_portal_id: 0,
             asset_urls: HashMap::new(),
             blob_asset_urls: std::collections::HashSet::new(),
             font_face_rule_indices: HashMap::new(),
+            external_handlers: framework_core::ExternalRegistry::new(),
         }
+    }
+
+    /// Register a handler for the third-party external primitive
+    /// whose payload type is `T`. Called by per-platform leaf crates
+    /// (e.g. `idealyst_maps_web::register`) during app bootstrap. The
+    /// handler receives the typed payload + a mutable borrow of the
+    /// backend and produces the `web_sys::Element` to mount.
+    ///
+    /// The backend's `Node` type is `web_sys::Node` (the supertype);
+    /// we wrap the user's `Element`-returning handler to upcast,
+    /// so third-party code can return the natural type without
+    /// thinking about the Node/Element distinction.
+    pub fn register_external<T, F>(&mut self, handler: F)
+    where
+        T: 'static,
+        F: Fn(&std::rc::Rc<T>, &mut WebBackend) -> web_sys::Element + 'static,
+    {
+        self.external_handlers
+            .register::<T, _>(move |props, backend| handler(props, backend).into());
+    }
+
+    /// `true` if a handler for payload type `T` has been registered.
+    /// Useful for opt-in graceful degradation in user code (render a
+    /// static image if the SDK isn't available on this platform).
+    pub fn has_external<T: 'static>(&self) -> bool {
+        self.external_handlers.has::<T>()
     }
 
     /// Diagnostic: snapshot of all the per-node HashMaps the backend
@@ -735,69 +764,49 @@ impl Backend for WebBackend {
         primitives::link::make_handle(node)
     }
 
-    fn create_overlay(
+    fn create_portal(
         &mut self,
-        placement: framework_core::primitives::overlay::ViewportPlacement,
-        backdrop: framework_core::primitives::overlay::BackdropMode,
+        target: framework_core::primitives::portal::PortalTarget,
         on_dismiss: Option<Rc<dyn Fn()>>,
         trap_focus: bool,
     ) -> Self::Node {
-        primitives::overlay::create_viewport(self, placement, backdrop, on_dismiss, trap_focus)
+        primitives::portal::create(self, target, on_dismiss, trap_focus)
     }
 
-    fn apply_overlay_backdrop_style(
-        &mut self,
-        node: &Self::Node,
-        style: &Rc<StyleRules>,
-    ) {
-        primitives::overlay::apply_backdrop_style(self, node, style)
+    fn release_portal(&mut self, node: &Self::Node) {
+        primitives::portal::release(self, node)
     }
 
-    fn release_overlay(&mut self, node: &Self::Node) {
-        primitives::overlay::release(self, node)
-    }
-
-    fn make_overlay_handle(
+    fn make_portal_handle(
         &self,
         node: &Self::Node,
-    ) -> framework_core::primitives::overlay::OverlayHandle {
-        primitives::overlay::make_handle(node)
+    ) -> framework_core::primitives::portal::PortalHandle {
+        primitives::portal::make_handle(node)
     }
 
-    fn create_anchored_overlay(
+    fn create_external(
         &mut self,
-        target: framework_core::primitives::overlay::AnchorTarget,
-        side: framework_core::primitives::overlay::ElementSide,
-        align: framework_core::primitives::overlay::ElementAlign,
-        offset: f32,
-        backdrop: framework_core::primitives::overlay::BackdropMode,
-        on_dismiss: Option<Rc<dyn Fn()>>,
-        trap_focus: bool,
+        type_id: std::any::TypeId,
+        type_name: &'static str,
+        payload: &Rc<dyn std::any::Any>,
     ) -> Self::Node {
-        primitives::overlay::create_anchored(
-            self, target, side, align, offset, backdrop, on_dismiss, trap_focus,
-        )
+        // Look up the handler; clone the Rc so we can drop the
+        // registry borrow before calling the handler (which needs
+        // `&mut self`).
+        if let Some(handler) = self.external_handlers.get(type_id) {
+            return handler(payload, self);
+        }
+        // No handler registered → render a "not supported" placeholder
+        // so the dev/user sees that something is missing rather than
+        // a silent hole in the UI.
+        external_placeholder_element(&self.doc, type_name).into()
     }
 
-    fn apply_anchored_overlay_backdrop_style(
-        &mut self,
-        node: &Self::Node,
-        style: &Rc<StyleRules>,
-    ) {
-        // Same plumbing as viewport overlays on the web — backdrop is
-        // a separate child element of the portal root either way.
-        primitives::overlay::apply_backdrop_style(self, node, style)
-    }
-
-    fn release_anchored_overlay(&mut self, node: &Self::Node) {
-        primitives::overlay::release(self, node)
-    }
-
-    fn make_anchored_overlay_handle(
-        &self,
-        node: &Self::Node,
-    ) -> framework_core::primitives::overlay::AnchoredOverlayHandle {
-        primitives::overlay::make_anchored_handle(node)
+    fn release_external(&mut self, _node: &Self::Node) {
+        // The web backend has no per-external bookkeeping today.
+        // Future hooks (e.g. per-instance event-listener cleanup)
+        // would land here, queried by `data-external-id` like
+        // portals/virtualizers/graphics.
     }
 
     fn apply_presence(
@@ -1041,6 +1050,15 @@ impl Backend for WebBackend {
         true
     }
 
+    /// Web emits `var(--token, fallback)` for every `Tokenized<T>`
+    /// value and `update_tokens` mutates `:root` in place. The
+    /// browser's cascade propagates the new values to every node
+    /// referencing them — no per-node re-apply needed for theme
+    /// value changes. Saves O(N) work per theme swap.
+    fn token_updates_propagate_via_cascade(&self) -> bool {
+        true
+    }
+
     fn apply_styled_states(
         &mut self,
         node: &Self::Node,
@@ -1158,4 +1176,29 @@ impl framework_core::ViewOps for WebViewOps {
             height: r.height() as f32,
         }
     }
+}
+
+/// Build a "not supported" placeholder element for an unregistered
+/// external primitive. Visible in dev so missing SDK bindings on this
+/// platform are obvious; user-space `has_external::<T>()` discovery is
+/// the supported way to render custom degradation instead.
+fn external_placeholder_element(
+    doc: &web_sys::Document,
+    type_name: &'static str,
+) -> web_sys::Element {
+    let div = doc
+        .create_element("div")
+        .expect("create_element failed for external placeholder");
+    let _ = div.set_attribute("data-external-unsupported", type_name);
+    let _ = div.set_attribute(
+        "style",
+        "display: inline-block; padding: 8px 12px; \
+         border: 1px dashed #c0392b; color: #c0392b; \
+         font-family: monospace; font-size: 12px; \
+         background: #fdecea;",
+    );
+    div.set_text_content(Some(&format!(
+        "External \"{type_name}\" not supported on web"
+    )));
+    div
 }

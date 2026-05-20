@@ -1,12 +1,10 @@
-pub(crate) mod anchored_overlay;
 pub(crate) mod callbacks;
 pub(crate) mod graphics;
 pub(crate) mod handles;
 pub(crate) mod icon;
 pub(crate) mod image;
 pub(crate) mod navigator;
-pub(crate) mod overlay;
-pub(crate) mod overlay_shared;
+pub(crate) mod portal;
 pub(crate) mod tab_drawer;
 pub(crate) mod touch;
 
@@ -95,14 +93,12 @@ pub struct IosBackend {
     /// [`Backend::create_image`] when the `src` is the
     /// `asset://{id}` sentinel.
     pub(crate) image_cache: image::ImageCache,
-    /// Active viewport-anchored overlays keyed by container view
-    /// pointer. Element-anchored ones live in
-    /// `anchored_overlay_instances` (separate map so the two
-    /// teardown paths don't have to discriminate at runtime).
-    overlay_instances: overlay::OverlayInstances,
-    /// Active element-anchored overlays keyed by container view
-    /// pointer.
-    anchored_overlay_instances: anchored_overlay::AnchoredOverlayInstances,
+    /// Active portals keyed by container view pointer. Holds both
+    /// viewport-placed and anchor-positioned portals — `PortalEntry`
+    /// discriminates via its `anchor: Option<...>` field, and the
+    /// tracker (CADisplayLink) lives on the same entry for the
+    /// anchored case.
+    portal_instances: portal::PortalInstances,
     /// Taffy-backed flex layout tree, parallel to the UIView tree.
     /// `view_to_layout` maps a view pointer to its layout node so the
     /// `apply_style` / `insert` / `finish` paths can update it. After
@@ -236,8 +232,7 @@ impl IosBackend {
             scroll_views: std::collections::HashSet::new(),
             icon_image_cache: HashMap::new(),
             image_cache: HashMap::new(),
-            overlay_instances: HashMap::new(),
-            anchored_overlay_instances: HashMap::new(),
+            portal_instances: HashMap::new(),
             layout: native_layout::LayoutTree::new(),
             view_to_layout: HashMap::new(),
             theme_transition_effect: None,
@@ -1229,60 +1224,72 @@ impl Backend for IosBackend {
         let child_view = child.as_view();
         let child_key = child_view as *const UIView as usize;
 
-        // Overlay containers (both kinds) mount themselves into the
-        // host window — skip the parent-tree insert the walker tries
-        // for them.
-        if self.overlay_instances.contains_key(&child_key)
-            || self.anchored_overlay_instances.contains_key(&child_key)
-        {
+        // Portal containers mount themselves into the host window —
+        // skip the parent-tree insert the walker tries for them.
+        if self.portal_instances.contains_key(&child_key) {
             return;
         }
 
-        // Viewport-anchored overlay parent: addSubview + Taffy
-        // add_child. The container's flex style (set in
-        // `create_overlay`) places the child via justify/align.
-        if self.overlay_instances.contains_key(&parent_key) {
-            unsafe { parent_view.addSubview(child_view) };
-            let p_layout = self.layout_for_view(parent_view);
-            let c_layout = self.layout_for_view(child_view);
-            self.layout.add_child(p_layout, c_layout);
-            // Overlays mount dynamically (when their open signal
-            // flips) so the framework's `finish()` hook can't size
-            // them — kick a layout pass now.
-            schedule_layout_pass();
-            return;
-        }
-
-        // Element-anchored overlay parent: addSubview + Taffy
-        // add_child + apply the absolute-position child style + start
-        // the per-vsync anchor tracker.
-        if self.anchored_overlay_instances.contains_key(&parent_key) {
+        // Portal parent: addSubview + Taffy add_child. For viewport
+        // portals the container's flex style places the child via
+        // justify/align. For anchored portals we additionally apply
+        // an absolute-position style to the first non-backdrop child
+        // and start the per-vsync anchor tracker.
+        if self.portal_instances.contains_key(&parent_key) {
             unsafe { parent_view.addSubview(child_view) };
             let p_layout = self.layout_for_view(parent_view);
             let c_layout = self.layout_for_view(child_view);
             self.layout.add_child(p_layout, c_layout);
 
-            // Snapshot what we need from the entry before we take a
-            // mutable borrow on `self.layout` (which the entry's
-            // tracker setup also needs).
-            let (target, side, align, offset) = {
-                let entry = self.anchored_overlay_instances.get(&parent_key).unwrap();
-                (entry.target.clone(), entry.side, entry.align, entry.offset)
+            // Anchored portals route the first inserted child through
+            // the absolute-position + tracker path. Subsequent children
+            // (rare — the typical portal has one content child plus an
+            // optional backdrop) flow into the same container without
+            // their own tracker; the backdrop child is usually inserted
+            // first by the composition (it sits behind the content) and
+            // sizes itself via the portal's flex style.
+            //
+            // For now we apply tracker treatment only when the entry
+            // doesn't already have one. Composition convention puts the
+            // anchored content as the last child; the tracker tracks
+            // whichever child we wire it to. This works for the common
+            // single-content-child case; if a future composition layers
+            // multiple anchored children we'd need a per-child policy.
+            let needs_tracker = {
+                let entry = self.portal_instances.get(&parent_key).unwrap();
+                entry.anchor.is_some() && entry.anchor_link.is_none()
             };
-            let child_rules = anchored_overlay::child_style_for_anchor(&target, side, align, offset);
-            self.layout.set_style(c_layout, &child_rules);
-            schedule_layout_pass();
+            if needs_tracker {
+                let (target, side, align, offset) = {
+                    let entry = self.portal_instances.get(&parent_key).unwrap();
+                    let anchor = entry.anchor.as_ref().unwrap();
+                    (anchor.target.clone(), anchor.side, anchor.align, anchor.offset)
+                };
+                let spec = portal::AnchorSpec {
+                    target: target.clone(),
+                    side,
+                    align,
+                    offset,
+                };
+                let child_rules = portal::child_style_for_anchor(&spec);
+                self.layout.set_style(c_layout, &child_rules);
 
-            let popover: Retained<UIView> = unsafe {
-                Retained::retain(child_view as *const UIView as *mut UIView)
-                    .expect("retain popover view")
-            };
-            let link = anchored_overlay::start_anchor_tracker(
-                self.mtm, popover, target, side, align, offset,
-            );
-            if let Some(entry_mut) = self.anchored_overlay_instances.get_mut(&parent_key) {
-                entry_mut.anchor_link = Some(link);
+                let popover: Retained<UIView> = unsafe {
+                    Retained::retain(child_view as *const UIView as *mut UIView)
+                        .expect("retain popover view")
+                };
+                let link = portal::start_anchor_tracker(
+                    self.mtm, popover, target, side, align, offset,
+                );
+                if let Some(entry_mut) = self.portal_instances.get_mut(&parent_key) {
+                    entry_mut.anchor_link = Some(link);
+                }
             }
+
+            // Portals mount dynamically (when their open signal flips)
+            // so the framework's `finish()` hook can't size them —
+            // kick a layout pass now.
+            schedule_layout_pass();
             return;
         }
 
@@ -1458,12 +1465,12 @@ impl Backend for IosBackend {
         }
     }
 
-    fn frame(&self, node: &Self::Node) -> Option<framework_core::primitives::overlay::ViewportRect> {
+    fn frame(&self, node: &Self::Node) -> Option<framework_core::primitives::portal::ViewportRect> {
         // UIView.frame is already in superview coordinates — that's
         // the relative-to-parent rect.
         let view = node.as_view();
         let frame: objc2_foundation::CGRect = unsafe { msg_send![view, frame] };
-        Some(framework_core::primitives::overlay::ViewportRect {
+        Some(framework_core::primitives::portal::ViewportRect {
             x: frame.origin.x as f32,
             y: frame.origin.y as f32,
             width: frame.size.width as f32,
@@ -1471,7 +1478,7 @@ impl Backend for IosBackend {
         })
     }
 
-    fn absolute_frame(&self, node: &Self::Node) -> Option<framework_core::primitives::overlay::ViewportRect> {
+    fn absolute_frame(&self, node: &Self::Node) -> Option<framework_core::primitives::portal::ViewportRect> {
         // Same conversion as `rect_of_node` in handles.rs: convert
         // bounds to window coordinates. Returns None if the view
         // isn't yet mounted in a window.
@@ -1485,7 +1492,7 @@ impl Backend for IosBackend {
         let frame_in_window: objc2_foundation::CGRect = unsafe {
             msg_send![view, convertRect: bounds, toView: &*window]
         };
-        Some(framework_core::primitives::overlay::ViewportRect {
+        Some(framework_core::primitives::portal::ViewportRect {
             x: frame_in_window.origin.x as f32,
             y: frame_in_window.origin.y as f32,
             width: frame_in_window.size.width as f32,
@@ -1576,83 +1583,77 @@ impl Backend for IosBackend {
     }
 
     // =================================================================
-    // Overlay
+    // Portal
     // =================================================================
 
-    fn create_overlay(
+    fn create_portal(
         &mut self,
-        placement: framework_core::primitives::overlay::ViewportPlacement,
-        backdrop: framework_core::primitives::overlay::BackdropMode,
-        on_dismiss: Option<Rc<dyn Fn()>>,
-        _trap_focus: bool,
+        target: framework_core::primitives::portal::PortalTarget,
+        _on_dismiss: Option<Rc<dyn Fn()>>,
+        trap_focus: bool,
     ) -> Self::Node {
-        let (content_view, entry) = overlay::create_overlay(
+        // On iOS-mobile we don't use `presentViewController:` for
+        // portals — they're window-level `UIView` subviews. There's
+        // no native dismiss event for that path (no swipe-down on
+        // raw views, no hardware back). `on_dismiss` is effectively
+        // host-signal-driven: the framework flips its open state in
+        // response to whatever interaction the composition wires up
+        // (backdrop tap, swipe handler on a sheet child, etc.). We
+        // accept the callback but never fire it from this backend.
+        use framework_core::primitives::portal::PortalTarget;
+
+        let (anchor_spec, container_rules) = match &target {
+            PortalTarget::Viewport(placement) => {
+                (None, portal::container_style_for_placement(*placement))
+            }
+            PortalTarget::Anchor { target, side, align, offset } => {
+                let spec = portal::AnchorSpec {
+                    target: target.clone(),
+                    side: *side,
+                    align: *align,
+                    offset: *offset,
+                };
+                (Some(spec), portal::container_style_for_anchor())
+            }
+            PortalTarget::Named(name) => {
+                // Reserved for future "slot" routing — no registry
+                // yet. Fall back to a viewport-fullscreen portal so
+                // the subtree still mounts somewhere visible. Log
+                // once so the missing wiring is obvious in dev.
+                eprintln!(
+                    "[ios-portal] PortalTarget::Named({:?}) not implemented — falling back to FullScreen",
+                    name
+                );
+                use framework_core::primitives::portal::ViewportPlacement;
+                (None, portal::container_style_for_placement(ViewportPlacement::FullScreen))
+            }
+        };
+
+        let (content_view, entry) = portal::create_portal(
             self.mtm,
             self.host_root.as_ref(),
-            placement,
-            backdrop,
-            on_dismiss,
+            anchor_spec,
+            trap_focus,
         );
         let key = &*content_view as *const UIView as usize;
-        self.overlay_instances.insert(key, entry);
+        self.portal_instances.insert(key, entry);
 
         // Register the container in the layout tree as a Taffy root.
         // It's orphan (no parent in Taffy because `insert` skips its
         // own insertion), so `compute()`'s viewport auto-fill resizes
         // it to the full viewport on every layout pass — including
-        // orientation flips. The placement-derived flex style places
-        // the overlay's content child within that frame.
+        // orientation flips. The target-derived flex style places
+        // the portal's content child within that frame.
         let layout_node = self.layout_for_view(&content_view);
-        let rules = overlay::container_style_for_placement(placement);
-        self.layout.set_style(layout_node, &rules);
+        self.layout.set_style(layout_node, &container_rules);
 
         IosNode::View(content_view)
     }
 
-    fn release_overlay(&mut self, node: &Self::Node) {
+    fn release_portal(&mut self, node: &Self::Node) {
         let key = IosBackend::node_key(node);
-        if let Some(entry) = self.overlay_instances.remove(&key) {
-            overlay::release_overlay(entry);
-        }
-    }
-
-    fn create_anchored_overlay(
-        &mut self,
-        target: framework_core::primitives::overlay::AnchorTarget,
-        side: framework_core::primitives::overlay::ElementSide,
-        align: framework_core::primitives::overlay::ElementAlign,
-        offset: f32,
-        backdrop: framework_core::primitives::overlay::BackdropMode,
-        on_dismiss: Option<Rc<dyn Fn()>>,
-        _trap_focus: bool,
-    ) -> Self::Node {
-        let (content_view, entry) = anchored_overlay::create_anchored_overlay(
-            self.mtm,
-            self.host_root.as_ref(),
-            target,
-            side,
-            align,
-            offset,
-            backdrop,
-            on_dismiss,
-        );
-        let key = &*content_view as *const UIView as usize;
-        self.anchored_overlay_instances.insert(key, entry);
-
-        // Same Taffy-root treatment as viewport overlays — neutral
-        // flex container that fills the viewport so the popover
-        // child's absolute coordinates line up with window space.
-        let layout_node = self.layout_for_view(&content_view);
-        let rules = anchored_overlay::container_style();
-        self.layout.set_style(layout_node, &rules);
-
-        IosNode::View(content_view)
-    }
-
-    fn release_anchored_overlay(&mut self, node: &Self::Node) {
-        let key = IosBackend::node_key(node);
-        if let Some(entry) = self.anchored_overlay_instances.remove(&key) {
-            anchored_overlay::release_anchored_overlay(entry);
+        if let Some(entry) = self.portal_instances.remove(&key) {
+            portal::release_portal(entry);
         }
     }
 

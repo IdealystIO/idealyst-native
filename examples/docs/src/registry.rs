@@ -31,8 +31,11 @@ pub static PAGES: &[&'static PageMeta] = &[
     &crate::pages::lists::PAGE_META,
     &crate::pages::icons::PAGE_META,
     &crate::pages::refs::PAGE_META,
+    &crate::pages::portal::PAGE_META,
     &crate::pages::writing_a_backend::PAGE_META,
+    &crate::pages::third_party_primitives::PAGE_META,
     &crate::pages::wgpu_native_api::PAGE_META,
+    &crate::pages::building_a_theme_system::PAGE_META,
 ];
 
 /// Find a page by slug. Returns `None` if no page with that slug is

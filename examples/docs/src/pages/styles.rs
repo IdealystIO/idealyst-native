@@ -8,142 +8,57 @@ use idea_ui::{body, card, heading, stack};
 
 docs! {
     slug = "styles",
-    title = "Styles and Themes",
+    title = "Styles",
     category = Foundation,
-    description = "A layered theme + stylesheet system that piggybacks on reactivity, with backend-specific swap strategies.",
-    related = ["reactivity", "primitives", "components", "backends"],
-    concepts = [Stylesheet, Theme, Token, Variant, Override, StyleState, Transition],
+    description = "Stylesheets, tokens, variants, overrides, states, transitions. The styling primitives every UI builds on.",
+    related = ["reactivity", "primitives", "components", "backends", "building-a-theme-system"],
+    concepts = [Stylesheet, Token, Variant, Override, StyleState, Transition],
 
     section(heading = "Overview") {
-        p("Styling in Idealyst is a layered system: a ", code("theme"), " holds named \
-           values; ", code("stylesheets"), " are functions that take the active theme \
-           and produce concrete rule sets; the framework caches the rule sets and \
-           applies them through the same reactive substrate everything else uses."),
-        p("What makes the system interesting is what happens on a theme change. \
-           On web, the framework updates a handful of CSS custom properties. \
-           DOM elements aren't touched. Class names don't change. No node \
-           re-renders. On native, the same change re-fires only the per-node \
-           style Effects whose values actually depended on the changed tokens. \
-           This page explains how that works, then shows you how to write your \
-           own theme and your own stylesheets."),
+        p("Styling in Idealyst is built from three primitives: ",
+          code("Stylesheet"), "s (typed declarations of style rules), ",
+          code("Tokenized<T>"),
+          " (named values that may resolve through a runtime variable \
+           store), and per-primitive ", code("style"),
+          " slots that take the resolved rule set. The framework caches \
+           resolved rules and applies them through the same reactive \
+           substrate everything else uses."),
+        p("This page is about those primitives — declaring stylesheets, \
+           using tokens, variants, overrides, interaction states, \
+           transitions, and how resolution works. A \"theme\" is not a \
+           framework concept; it's a user-space pattern of grouping \
+           tokens for app-wide swap. See ",
+          link("Building a theme system", to = "building-a-theme-system"),
+          " for the cookbook on layering one on top."),
     },
 
     section(heading = "The pieces") {
-        p("There are four moving parts:"),
+        p("Three moving parts:"),
         list(
-            [code("Theme"), " — a Rust struct you define. Holds whatever values your \
-              app needs: colors, spacing, typography, breakpoints, anything else."],
-            [code("Tokens"), " — named values inside the theme. A token is a ",
-              code("(name, fallback)"), " pair. Stylesheets reference tokens by name; \
-              the fallback is what backends use when no runtime variable system is available."],
-            [code("Stylesheets"), " — declared with the ", code("stylesheet!"),
-              " macro. A stylesheet is a typed builder that takes the active theme and produces a ",
-              code("StyleRules"), " (a flat bag of optional property values)."],
-            [code("StyleRules"), " — the concrete output. Every primitive's ",
-              code("style"), " slot eventually gets one of these."],
+            [code("Stylesheet"), " — declared with the ",
+              code("stylesheet!"),
+              " macro. A typed builder that produces a ", code("StyleRules"),
+              " from a tracked context. Stylesheets can be parameterized \
+              over any context type (your own app's config struct, \
+              \"theme\" struct, whatever) — the macro doesn't impose a \
+              shape."],
+            [code("Tokenized<T>"), " — a ", code("(name, fallback)"),
+              " pair, or just a literal value. Stylesheets emit ",
+              code("Tokenized"), " property values; backends with a \
+              runtime variable system (web) resolve through the named \
+              store, backends without one (iOS, Android) read the \
+              fallback baked into the rule."],
+            [code("StyleRules"), " — the concrete output. Every \
+              primitive's ", code("style"),
+              " slot eventually gets one of these."],
         ),
-        p("Application code writes themes and stylesheets. The framework \
-           handles caching, theme installation, resolution, and the backend \
-           calls that put the result on screen."),
-    },
-
-    section(heading = "Themes") {
-        p("A theme is a struct you write. The framework doesn't care about its \
-           shape; it just has to implement the ", code("ThemeTokens"), " trait so the \
-           framework knows what to install as runtime variables."),
-
-        code(rust, r##"
-            use framework_core::{Color, Length, Tokenized, ThemeTokens, TokenEntry, TokenValue};
-
-            #[derive(Clone)]
-            pub struct MyTheme {
-                pub background: Tokenized<Color>,
-                pub text: Tokenized<Color>,
-                pub primary: Tokenized<Color>,
-                pub spacing_md: Tokenized<Length>,
-            }
-
-            impl MyTheme {
-                pub fn light() -> Self {
-                    Self {
-                        background: Tokenized::token("bg",      Color::from("#ffffff")),
-                        text:       Tokenized::token("text",    Color::from("#111111")),
-                        primary:    Tokenized::token("primary", Color::from("#3b82f6")),
-                        spacing_md: Tokenized::token("space-md", Length::Px(16.0)),
-                    }
-                }
-
-                pub fn dark() -> Self {
-                    Self {
-                        background: Tokenized::token("bg",      Color::from("#0b0b0c")),
-                        text:       Tokenized::token("text",    Color::from("#f5f5f5")),
-                        primary:    Tokenized::token("primary", Color::from("#60a5fa")),
-                        spacing_md: Tokenized::token("space-md", Length::Px(16.0)),
-                    }
-                }
-            }
-
-            impl ThemeTokens for MyTheme {
-                fn tokens(&self) -> Vec<TokenEntry> {
-                    vec![
-                        TokenEntry { name: "bg",       value: TokenValue::Color(self.background.value().clone()) },
-                        TokenEntry { name: "text",     value: TokenValue::Color(self.text.value().clone()) },
-                        TokenEntry { name: "primary",  value: TokenValue::Color(self.primary.value().clone()) },
-                        TokenEntry { name: "space-md", value: TokenValue::Length(*self.spacing_md.value()) },
-                    ]
-                }
-            }
-        "##),
-
-        p("Three things to notice:"),
-        list(
-            ["Token names are theme-independent. ", code("light()"), " and ", code("dark()"),
-              " use the same names (", code("\"bg\""), ", ", code("\"text\""), ", ",
-              code("\"primary\""), ", ", code("\"space-md\""), ") with different fallback \
-              values. That's deliberate — see \"Why classes don't change on theme swap\" below."],
-            ["Tokens declare a fallback. The fallback is the value the token resolves to \
-              when there's no runtime variable system (iOS, Android, server-rendered HTML). \
-              On web, the fallback also fills in if the CSS variable hasn't been written yet."],
-            ["The ", code("ThemeTokens"), " impl is mechanical. It just lists the tokens \
-              that should be installed as variables. For backends without runtime variables, \
-              this impl is effectively unused."],
-        ),
-
-        p("Installing a theme:"),
-
-        code(rust, r##"
-            use framework_core::{install_theme, set_theme};
-
-            #[component]
-            fn app() -> Primitive {
-                install_theme(MyTheme::light());
-
-                ui! {
-                    // ...
-                }
-            }
-
-            // Later, from anywhere:
-            set_theme(MyTheme::dark());
-        "##),
-
-        p(code("install_theme(t)"), " registers the theme at app boot and is what \
-           stylesheet closures see when they run. ", code("set_theme(t)"),
-          " swaps it later. Both write to the same arena slot — internally, the active \
-           theme is stored as a ", code("Signal<Rc<dyn Any>>"),
-          ", so anything that reads it participates in reactivity."),
-
-        p("You can swap themes at any time, from any code path that runs in \
-           the main thread. A dark-mode toggle is a one-liner:"),
-
-        code(rust, r##"
-            Button(
-                label = "Toggle theme",
-                on_click = move || set_theme(
-                    if is_dark.get() { MyTheme::light() } else { MyTheme::dark() }
-                ),
-            )
-        "##),
+        p("Application code writes stylesheets. The framework handles \
+           caching, resolution, and the backend calls that put the \
+           result on screen. Bundling tokens into a swappable \"theme\" \
+           is one pattern (a common and useful one), but it lives in \
+           user space — see the ", link("Building a theme system",
+                                        to = "building-a-theme-system"),
+          " page for that."),
     },
 
     section(heading = "Tokens") {
@@ -157,13 +72,17 @@ docs! {
             }
         "##),
 
-        p("A stylesheet receiving ", code("theme.primary"), " reads a ",
-          code("Tokenized<Color>"), " — either a literal color, or a token reference like ",
+        p("A stylesheet emitting a ", code("Tokenized<Color>"),
+          " produces either a literal color or a token reference like ",
           code("Token { name: \"primary\", fallback: Color(\"#3b82f6\") }"),
-          ". The backend decides what to do with it."),
+          ". The backend decides what to do with it. Tokens are \
+           installed (and updated) via ", code("install_tokens(...)"),
+          " / ", code("update_tokens(...)"),
+          " — both take a flat ", code("Vec<TokenEntry>"),
+          " so any code path can register or refresh the token store."),
 
-        p("What the web backend does: the web backend installs tokens as CSS custom \
-           properties on the document root:"),
+        p("What the web backend does: tokens are installed as CSS \
+           custom properties on the document root:"),
 
         code(text, r##"
             :root {
@@ -174,8 +93,9 @@ docs! {
             }
         "##),
 
-        p("When the backend emits CSS for a stylesheet rule, every tokenized \
-           property turns into a ", code("var(--name, fallback)"), " reference:"),
+        p("When the backend emits CSS for a stylesheet rule, every \
+           tokenized property turns into a ",
+          code("var(--name, fallback)"), " reference:"),
 
         code(text, r##"
             .idealyst-card-12 {
@@ -185,72 +105,82 @@ docs! {
             }
         "##),
 
-        p("That's the whole trick. When the theme swaps to dark, the backend \
-           writes four new values to ", code(":root"), "'s style block. Every CSS rule \
-           that referenced ", code("var(--bg)"), " now resolves to the dark color \
-           automatically — by the browser, in one paint pass. The framework \
-           doesn't iterate over DOM elements. It doesn't change class names. \
-           It doesn't touch any rule body."),
+        p("That's the whole trick. When tokens are updated (say a \
+           dark-mode swap), the backend writes new values into ",
+          code(":root"),
+          "'s style block. Every CSS rule that referenced ",
+          code("var(--bg)"),
+          " now resolves to the new color automatically — by the \
+           browser, in one paint pass. The framework doesn't iterate \
+           over DOM elements. It doesn't change class names. It \
+           doesn't touch any rule body."),
 
-        p("What native backends do: iOS and Android don't have a runtime variable system, \
-           so they ignore the token name and read the ", code(".value()"),
-          " (the fallback). When the theme swaps, every styled node has an Effect \
-           wrapping its apply-style call; that Effect re-fires with the new theme, \
-           the stylesheet closure re-runs, the new rules go to the backend, the \
-           backend mutates the native widget's properties."),
+        p("What native backends do: iOS and Android don't have a \
+           runtime variable system, so they ignore the token name and \
+           read the ", code(".value()"),
+          " (the fallback). When tokens change, every styled node has \
+           a per-token reactive subscription via the framework's ",
+          code("TOKEN_REGISTRY"),
+          "; only nodes whose resolved style references the changed \
+           token re-apply. The rule-set cache deduplicates: if two \
+           token configurations produce identical rules for the same ",
+          code("(sheet, variants)"),
+          " pair, the second resolution is a refcount bump."),
 
-        p("This is more work per swap than the web's variable-update model, \
-           but it's still proportional to the number of styled nodes — not \
-           the size of the tree. And the rule-set cache deduplicates: if two \
-           themes produce identical rules for the same ", code("(sheet, variants)"),
-          ", the second swap is a refcount bump."),
-
-        p("What generator backends do: Roku and other generator backends can't \
-           ship closures to the device. They get a different deal: the ",
-          code("Derived<T>"), " machinery and the wire protocol install a device-side \
-           variable system that mirrors the host's tokens. Theme swaps on the device \
-           are device-side variable rewrites, conceptually the same as the web's model."),
+        p("What generator backends do: Roku and other generator \
+           backends can't ship closures to the device. They get a \
+           different deal — the ",
+          code("Derived<T>"),
+          " machinery and the wire protocol install a device-side \
+           variable system that mirrors the host's tokens. Token \
+           swaps on the device are device-side variable rewrites, \
+           conceptually the same as the web's model."),
     },
 
     section(heading = "Stylesheets") {
-        p("The ", code("stylesheet!"), " macro is how you declare a typed, themed \
-           stylesheet. Grammar:"),
+        p("The ", code("stylesheet!"), " macro is how you declare a \
+           typed stylesheet. The generic parameter is the context type \
+           the stylesheet's closures receive — your own app's config \
+           struct, your token bundle, a \"theme\" struct (one pattern \
+           authors use), or ", code("()"),
+          " if you don't need a context. Grammar:"),
 
         code(rust, r##"
-            use framework_core::{stylesheet, Color, Length};
+            use framework_core::{stylesheet, Color, Length, Tokenized};
 
+            // Token-only example. No context type needed; the
+            // stylesheet directly references token names.
             stylesheet! {
-                pub Card<MyTheme> {
-                    base(theme) {
-                        background: theme.background.clone(),
-                        color: theme.text.clone(),
-                        padding: theme.spacing_md,
+                pub Card<()> {
+                    base(_) {
+                        background: Tokenized::token("bg",       Color::from("#ffffff")),
+                        color:      Tokenized::token("text",     Color::from("#111111")),
+                        padding:    Tokenized::token("space-md", Length::Px(16.0)),
                         border_radius: 8.0,
                     }
 
                     variant size {
-                        small(theme)  { padding: theme.spacing_md.value().clone() }
+                        small(_)  { padding: Length::Px(8.0) }
                         #[default]
-                        medium(_)     {}
-                        large(theme)  { padding: 24.0 }
+                        medium(_) {}
+                        large(_)  { padding: Length::Px(24.0) }
                     }
 
                     variant kind {
                         #[default]
-                        elevated(theme) {
-                            background: theme.background.clone(),
+                        elevated(_) {
                             shadow: Shadow { x: 0.0, y: 2.0, blur: 8.0, color: Color::from("#0001") },
                         }
-                        outlined(theme) {
+                        outlined(_) {
                             background: Color::from("transparent"),
-                            border: (2.0, theme.text.clone()),
+                            border: (2.0, Tokenized::token("text", Color::from("#111111"))),
                         }
                     }
 
                     override padding: Length
 
-                    state hovered(theme) { opacity: 0.92 }
-                    state pressed(_)     { opacity: 0.85 }
+                    state hovered(_) { opacity: 0.92 }
+                    state pressed(_) { opacity: 0.85 }
 
                     transitions {
                         background: 200ms EaseOut
@@ -259,6 +189,14 @@ docs! {
                 }
             }
         "##),
+
+        p("Pass a context type (anything you want — most apps that go \
+           this route define a struct holding their tokens grouped \
+           semantically) when stylesheet closures should consume \
+           typed values instead of repeating token names everywhere. \
+           Both shapes are first-class; see ",
+          link("Building a theme system", to = "building-a-theme-system"),
+          " for the bundled-context pattern."),
 
         p("What the macro generates from this declaration:"),
         list(
@@ -316,52 +254,62 @@ docs! {
 
     section(heading = "How resolution works") {
         p("Resolution is a function from ",
-          code("(stylesheet, variants, theme, overrides)"), " to a concrete ",
-          code("Rc<StyleRules>"), ". The framework caches the result so the same \
-           combination of inputs returns the same ", code("Rc"), " instance."),
+          code("(stylesheet, variants, context, overrides)"),
+          " to a concrete ",
+          code("Rc<StyleRules>"),
+          ". The framework caches the result so the same combination \
+           of inputs returns the same ", code("Rc"), " instance."),
 
-        p("The cache key is interesting:"),
+        p("The cache key:"),
         list(
             ["Stylesheet is identified by ", code("Rc"), " pointer."],
-            ["Variants are an ordered set of ", code("(axis, value)"), " strings."],
-            ["Theme is identified by ", code("Rc"), " pointer."],
+            ["Variants are an ordered set of ", code("(axis, value)"),
+             " strings."],
+            ["Context (whatever the stylesheet is parameterized over) \
+              is identified by ", code("Rc"), " pointer."],
             ["Overrides are serialized into a content key."],
         ),
 
-        p("So ", code("Card().size(Large).kind(Outlined)"), " under ",
-          code("MyTheme::light()"), " maps to one cached ", code("Rc<StyleRules>"),
-          ". The same builder under ", code("MyTheme::dark()"),
-          " maps to a different one."),
-
-        p("But — and this is what makes the web backend's swap cheap — the \
-           content key that the web backend uses to mint a CSS class hashes \
-           tokens by their name, not by their resolved value. So ",
+        p("The cleverness on the web side: the content key that the \
+           web backend uses to mint a CSS class hashes tokens by their \
+           name, not by their resolved value. So ",
           code("Card().size(Large).kind(Outlined)"),
-          " produces the same content key under ", code("light"), " and ",
-          code("dark"), ". The web backend mints one class and reuses it across \
-           themes. Theme swap turns into a refcount bump on the existing class \
-           registration plus four CSS variable writes, which is what makes the swap \
+          " produces the same content key regardless of what the \
+           current token values are. The web backend mints one class \
+           per ", code("(sheet, variants)"),
+          " pair and reuses it forever — token updates turn into a \
+           handful of ", code(":root"),
+          " variable writes, never new class minting and never \
+           className mutations on individual nodes. The swap is \
            O(tokens) rather than O(styled nodes)."),
 
         compare(from = React) {
-            p("Theming in React typically goes through Context; a context value \
-               change re-renders every consumer. Even with ", code("React.memo"),
-              " and selectors, every styled component participates in the dependency \
-               graph and pays some per-swap cost. Here the graph is one signal (the \
-               active theme); only the per-node style Effects subscribe to it, and on \
-               web the Effects are bypassed entirely because CSS variables do the work."),
-            p("From styled-components / Emotion: each themed component usually \
-               generates a new class name when the theme changes, which forces every \
-               instance to re-attach. Idealyst's class names are theme-stable — the \
-               content key hashes token names, so a stylesheet's class is the same \
-               under any theme. Theme swap doesn't change className on a single element."),
-            p("From Tailwind: closest analog is CSS-variable-based theming in Tailwind \
-               (the ", code("darkMode: \"class\""), " strategy with custom properties). \
-               Same payoff: a class flip on ", code(":root"),
-              " updates colors downstream without touching anything else. Idealyst's \
-               split between literal fallbacks (for non-web backends) and variable \
-               references (for web) gives you the same payoff automatically — you don't \
-               choose between the two strategies, the backend chooses."),
+            p("Where React-style libraries typically rebuild on Context \
+               value change (every consumer re-renders), Idealyst keeps \
+               the per-node style Effects subscribed to a small set of \
+               tokens through the ", code("TOKEN_REGISTRY"),
+              " — only effects that actually read a changed token \
+               re-fire. On web the per-node effects are bypassed \
+               entirely because CSS variables do the work in the \
+               browser."),
+            p("From styled-components / Emotion: each themed component \
+               usually generates a new class name when context-derived \
+               styles change, which forces every instance to re-attach. \
+               Idealyst's class names are token-stable — the content \
+               key hashes token names, so a stylesheet's class is the \
+               same regardless of token values. No className mutations \
+               on token swap."),
+            p("From Tailwind: closest analog is CSS-variable-based \
+               theming in Tailwind (the ",
+              code("darkMode: \"class\""),
+              " strategy with custom properties). Same payoff: a class \
+               flip on ", code(":root"),
+              " updates colors downstream without touching anything \
+               else. Idealyst's split between literal fallbacks (for \
+               non-web backends) and variable references (for web) \
+               gives you the same payoff automatically — you don't \
+               choose between the two strategies, the backend \
+               chooses."),
         },
     },
 
@@ -389,8 +337,10 @@ docs! {
 
         code(rust, r##"
             stylesheet! {
-                pub Btn<MyTheme> {
-                    base(theme) { background: theme.primary.clone() }
+                pub Btn<()> {
+                    base(_) {
+                        background: Tokenized::token("primary", Color::from("#3b82f6")),
+                    }
                     state hovered(_)  { opacity: 0.9 }
                     state pressed(_)  { opacity: 0.8 }
                     state disabled(_) { opacity: 0.5 }
@@ -457,84 +407,70 @@ docs! {
            framework relies on the browser (web) or Taffy (native) to do the layout."),
     },
 
-    section(heading = "Building your own theme system") {
-        p("The ", code("MyTheme"), " walk-through above is the whole thing. To recap \
-           the steps:"),
-        list(
-            ["Define a struct with whatever fields you want. Use ", code("Tokenized<T>"),
-              " for fields that should resolve through a runtime variable on web; use \
-              plain ", code("T"), " for fields that don't need to."],
-            ["Build instance constructors (", code("light()"), ", ", code("dark()"),
-              ", ", code("high_contrast()"), "). Each constructor returns a fully-populated instance."],
-            ["Implement ", code("ThemeTokens"), " to list the ", code("(name, value)"),
-              " pairs the web backend will install as CSS variables."],
-            ["Install at boot via ", code("install_theme(MyTheme::light())"), "."],
-            ["Swap at runtime via ", code("set_theme(MyTheme::dark())"), "."],
-        ),
-
-        p("The theme type is generic over the stylesheets that consume it. ",
-          code("stylesheet! { pub Foo<MyTheme> { ... } }"),
-          " ties a stylesheet to a specific theme type; the stylesheet's ",
-          code("base(theme)"), " closure receives a ", code("&MyTheme"),
-          ", so you have full IDE completion and type checking on theme access."),
-
-        p("If you want multiple themes at once (light + dark + high-contrast \
-           selectable from a menu), the pattern is to make ", code("MyTheme"),
-          " an enum or a configurable struct whose constructors produce the variant \
-           you want. The framework just sees one type."),
-
-        p("idea-ui's ", code("IdeaTheme"), " is one example of this pattern, organized \
-           around intent palettes (Primary, Secondary, Neutral, Success, Danger, \
-           Warning, Info) instead of role-named colors. You can read its source as a \
-           reference, copy it, or ignore it entirely and roll your own."),
-    },
+    // The "Building your own theme system" section moved to a
+    // dedicated Advanced page so this page stays focused on the
+    // styling primitives. See `building-a-theme-system`.
 
     section(heading = "Building your own stylesheets") {
-        p("The ", code("stylesheet!"), " macro is part of ", code("framework-core"),
-          ". Nothing in it is idea-ui-specific. To build your own component library \
-           or just some app-local styles:"),
+        p("The ", code("stylesheet!"),
+          " macro is part of ", code("framework-core"),
+          ". Nothing in it is idea-ui-specific. To build your own \
+           component library or just some app-local styles:"),
         list(
-            ["Declare your theme as above."],
-            ["Write ", code("stylesheet!"), " blocks for each styled surface (",
-              code("Card"), ", ", code("Btn"), ", ", code("Heading"),
-              ", ...). Each one ties to your theme type via the ", code("<MyTheme>"),
-              " generic."],
+            ["Pick a context type, or use ", code("()"),
+             " if your stylesheets don't need one. (The bundled-context \
+              \"theme\" pattern is covered separately in ",
+             link("Building a theme system", to = "building-a-theme-system"),
+             ".)"],
+            ["Write ", code("stylesheet!"),
+             " blocks for each styled surface (",
+             code("Card"), ", ", code("Btn"), ", ", code("Heading"),
+             ", ...). Reference token names directly via ",
+             code("Tokenized::token(\"name\", fallback)"), "."],
             ["Attach stylesheets to primitives at the call site via the ",
-              code("style = ..."), " prop inside ", code("ui!"), "."],
+             code("style = ..."), " prop inside ", code("ui!"), "."],
         ),
 
-        p("You can mix styling sources freely. A primitive's ", code("style"),
-          " slot takes any ", code("IntoStyleSource"),
+        p("You can mix styling sources freely. A primitive's ",
+          code("style"), " slot takes any ", code("IntoStyleSource"),
           " — a stylesheet builder, a raw ", code("StyleRules"),
-          ", a closure that returns one. You can hand-write rule sets for one-off \
-           cases and use the macro for the rest."),
+          ", a closure that returns one. You can hand-write rule sets \
+           for one-off cases and use the macro for the rest."),
     },
 
     section(heading = "Pre-generation") {
-        p("For backends that benefit from up-front rule emission (web), the \
-           framework calls ", code("Backend::register_stylesheet"), " once per ",
-          code("(stylesheet, theme)"), " pair and hands it the pre-resolved rules \
-           for every variant combination. The web backend mints CSS classes eagerly; \
-           subsequent ", code("apply_style"), " calls just set ", code("className"),
-          ". This is what keeps the per-node apply path cheap on web — no string \
-           building, no rule-text emission inside the hot path."),
+        p("For backends that benefit from up-front rule emission \
+           (web), the framework calls ",
+          code("Backend::register_stylesheet"), " once per ",
+          code("(stylesheet, context)"),
+          " pair and hands it the pre-resolved rules for every \
+           variant combination. The web backend mints CSS classes \
+           eagerly; subsequent ", code("apply_style"),
+          " calls just set ", code("className"),
+          ". This is what keeps the per-node apply path cheap on web \
+           — no string building, no rule-text emission inside the hot \
+           path."),
 
-        p("You don't write code that interacts with pre-generation. It's the \
-           framework calling backends; mentioned here only so the next section \
-           about backend internals is less surprising."),
+        p("You don't write code that interacts with pre-generation. \
+           It's the framework calling backends; mentioned here only \
+           so the next section about backend internals is less \
+           surprising."),
     },
 
     section(heading = "Where to read more") {
         list(
-            ["Reactivity — how the active theme being a signal makes the reactive \
-              substrate do most of the work for free."],
-            ["idea-ui — a complete theme + stylesheet system built on this page's \
-              primitives. Use it, fork it, or read it for ideas."],
-            ["Backends — what the ", code("apply_style"), ", ",
-              code("register_stylesheet"), ", and token APIs look like from a \
-              backend's side."],
-            ["Animations — how transitions fold into the broader animation story \
-              (Presence, GPU effects, gesture-driven motion)."],
+            [link("Building a theme system", to = "building-a-theme-system"),
+             " — the cookbook for bundling tokens into a typed \"theme\" \
+              struct with install/swap-at-runtime mechanics."],
+            [link("Reactivity", to = "reactivity"),
+             " — how per-token signals plug into the same effect graph \
+              everything else uses."],
+            ["idea-ui — a complete stylesheet system built on this \
+              page's primitives. Use it, fork it, or read it for ideas."],
+            [link("Backends", to = "backends"),
+             " — what the ", code("apply_style"), ", ",
+             code("register_stylesheet"),
+             ", and token APIs look like from a backend's side."],
         ),
     },
 }

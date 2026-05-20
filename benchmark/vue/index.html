@@ -2,22 +2,22 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Benchmark · Vue (naive: reactive ref, runtime template)</title>
+<title>Benchmark · Vue (render functions, runtime-only)</title>
 <style>
   /*
-   * Naive Vue take: row count lives in a `ref`, the template
-   * iterates it with `v-for`. Each row's `:style` binding re-runs
-   * when the theme would change — under the rebuild suite, that
-   * doesn't fire; the cost we're measuring is Vue's per-row mount
-   * + reactive-graph setup.
+   * Vue with the runtime-only build + a hand-written render
+   * function. No template string, no in-browser compiler — what
+   * a real production Vue app ships after its build step.
    *
-   * "Naive" in the same sense as the React variant: idiomatic
-   * code a competent dev would write, no `v-memo`, no
-   * CSS-variable theming.
+   * "Naive" only in the sense that each row reads `theme` in its
+   * `:style` binding (so the reactive graph fans out per-row on
+   * toggle). No v-memo, no CSS-variable shortcut.
    *
-   * Build step: none. Uses the runtime+compiler bundle from
-   * esm.sh so the template string compiles in the browser. The
-   * one-time cold-start cost doesn't enter the `apply` window.
+   * Why runtime-only: the `vue.esm-browser.prod.js` bundle ships
+   * a template compiler we don't need once we're calling `h()`
+   * directly. Runtime-only drops the compiler bytes and skips
+   * the one-time template-parse at mount — closer to production
+   * deployment shape.
    */
   html, body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
   #root { display: flex; flex-direction: column; min-height: 100vh; }
@@ -26,12 +26,10 @@
 <body>
 <div id="root"></div>
 <script type="module">
-// `vue.esm-browser.prod.js` is the production runtime + compiler
-// bundle — minified, no warnings, no devtools hooks. Ships the
-// template compiler so we can pass a template string at runtime.
-// The non-prod `.js` variant adds substantial overhead per
-// reactive read and would skew the numbers.
-import { createApp, ref, nextTick } from 'https://esm.sh/vue@3.4.21/dist/vue.esm-browser.prod.js';
+// `vue.runtime.esm-browser.prod.js` is the production *runtime-only*
+// bundle — no template compiler. Pairs with hand-written render
+// functions via `h()` instead of template strings.
+import { createApp, ref, nextTick, h } from 'https://esm.sh/vue@3.4.21/dist/vue.runtime.esm-browser.prod.js';
 import { autoRunIfRequested, LIGHT, DARK } from '../instrument.js';
 
 const pageStyle = (t) => ({
@@ -74,28 +72,37 @@ const app = createApp({
     };
     externalSetTheme = async (name) => {
       // Writing `theme.value` re-fires every `:style` binding
-      // that reads it. The patch lands on a microtask;
-      // `nextTick` resolves after it flushes.
+      // that reads it. The patch lands on a microtask; `nextTick`
+      // resolves after it flushes.
       theme.value = name === 'dark' ? DARK : LIGHT;
       await nextTick();
     };
 
-    return {
-      rowCount,
-      theme,
-      pageStyle, listStyle, rowStyle,
+    // Hand-written render function. Equivalent to:
+    //   <div :style="pageStyle(theme)">
+    //     <div :style="listStyle(theme)">
+    //       <div v-for="i in rowCount" :key="i" :style="rowStyle(...)">
+    //         <span>Row #{{ i }}</span>
+    //       </div>
+    //     </div>
+    //   </div>
+    // but with no template compile step. `setup` returns the
+    // render function; Vue uses it directly.
+    return () => {
+      const t = theme.value;
+      const n = rowCount.value;
+      const rows = new Array(n);
+      for (let i = 0; i < n; i++) {
+        rows[i] = h('div',
+          { key: i, style: rowStyle(t, i % 2 === 0 ? 'even' : 'odd') },
+          h('span', null, `Row #${i}`),
+        );
+      }
+      return h('div', { style: pageStyle(t) },
+        h('div', { style: listStyle(t) }, rows),
+      );
     };
   },
-  template: `
-    <div :style="pageStyle(theme)">
-      <div :style="listStyle(theme)">
-        <div v-for="i in rowCount" :key="i - 1"
-             :style="rowStyle(theme, (i - 1) % 2 === 0 ? 'even' : 'odd')">
-          <span>Row #{{ i - 1 }}</span>
-        </div>
-      </div>
-    </div>
-  `,
 });
 
 app.mount('#root');

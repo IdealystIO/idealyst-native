@@ -68,6 +68,15 @@ pub struct Owner {
 
 #[must_use = "drop the Owner to dispose the UI; keep it alive to keep the UI reactive"]
 pub fn render<B: Backend + 'static>(backend: Rc<RefCell<B>>, tree: Primitive) -> Owner {
+    // Stash the backend's cascade capability so the theme-cohort
+    // driver (installed lazily inside `build`) can short-circuit
+    // its fan-out on token-only updates without holding a backend
+    // reference. Read once here; the value can't change for the
+    // lifetime of this `Owner`.
+    BACKEND_CASCADE_TOKENS.with(|c| {
+        c.set(backend.borrow().token_updates_propagate_via_cascade());
+    });
+
     let mut scope = Box::new(reactive::Scope::new());
     let root = reactive::with_scope(&mut scope, || build(&backend, 0, tree));
     backend.borrow_mut().finish(root);
@@ -950,127 +959,36 @@ fn build_inner<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) 
             }
             n
         }
-        Primitive::Overlay {
-            children,
-            placement,
-            backdrop,
-            backdrop_style,
-            on_dismiss,
-            trap_focus,
+        Primitive::External {
+            type_id,
+            type_name,
+            payload,
             style,
             ref_fill,
         } => {
-            // Hand the platform-side floating layer everything it
-            // needs to position itself + wire system dismissal at
-            // creation time. The framework drives mount/unmount via
-            // the surrounding scope (the host's open-state signal
-            // flipping a `when` triggers our release wrapper);
-            // backends don't have to manage the open state
-            // themselves.
-            let dismiss_for_backend = on_dismiss.clone();
-            let mut n = time_backend_create(pkind!(Overlay), || {
-                backend.borrow_mut().create_overlay(
-                    placement,
-                    backdrop,
-                    dismiss_for_backend,
-                    trap_focus,
-                )
+            let n = time_backend_create(pkind!(External), || {
+                backend
+                    .borrow_mut()
+                    .create_external(type_id, type_name, &payload)
             });
-
-            insert_children(backend, &mut n, children);
 
             if let Some(s) = style {
                 attach_style(backend, &n, s);
             }
-            if let Some(bs) = backdrop_style {
-                let backend_clone = backend.clone();
-                let node_for_backdrop = n.clone();
-                let _e = Effect::new(move || {
-                    let app = match &bs {
-                        StyleSource::Static(a) => a.clone(),
-                        StyleSource::Reactive(f) => f(),
-                    };
-                    let resolved = style::resolve(&app);
-                    backend_clone
-                        .borrow_mut()
-                        .apply_overlay_backdrop_style(&node_for_backdrop, &resolved);
-                });
+
+            // External ref-fill hands the closure an `Rc<dyn Any>`
+            // wrapping the backend node. Third-party facades downcast
+            // inside to build their `ExternalHandle<T>`.
+            if let Some(RefFill::External(fill)) = ref_fill {
+                // We don't have a uniform way to type-erase the
+                // backend's `Node` here without coupling the trait
+                // generics — but `B::Node: Clone + 'static` (a Backend
+                // requirement), so we can wrap a clone in `Rc<dyn Any>`.
+                let any_node: Rc<dyn Any> = Rc::new(n.clone());
+                fill(any_node);
             }
 
-            if let Some(RefFill::Overlay(fill)) = ref_fill {
-                let handle = backend.borrow().make_overlay_handle(&n);
-                fill(handle);
-            }
-
-            let cleanup = OverlayHandleCleanup {
-                backend: backend.clone(),
-                node: n.clone(),
-            };
-            let _cleanup_effect = Effect::new(move || {
-                let _ = &cleanup;
-            });
-
-            n
-        }
-        Primitive::AnchoredOverlay {
-            children,
-            target,
-            side,
-            align,
-            offset,
-            backdrop,
-            backdrop_style,
-            on_dismiss,
-            trap_focus,
-            style,
-            ref_fill,
-        } => {
-            // Same lifecycle pattern as `Overlay` above — the only
-            // difference is the backend hook we route to (so backends
-            // can dispatch element-anchored cases to a different
-            // native presentation API). Cleanup goes through the
-            // separate `release_anchored_overlay` so backends can
-            // tear down the anchor tracker / native popup distinctly
-            // from their viewport-overlay machinery.
-            let dismiss_for_backend = on_dismiss.clone();
-            let mut n = time_backend_create(pkind!(AnchoredOverlay), || {
-                backend.borrow_mut().create_anchored_overlay(
-                    target,
-                    side,
-                    align,
-                    offset,
-                    backdrop,
-                    dismiss_for_backend,
-                    trap_focus,
-                )
-            });
-
-            insert_children(backend, &mut n, children);
-
-            if let Some(s) = style {
-                attach_style(backend, &n, s);
-            }
-            if let Some(bs) = backdrop_style {
-                let backend_clone = backend.clone();
-                let node_for_backdrop = n.clone();
-                let _e = Effect::new(move || {
-                    let app = match &bs {
-                        StyleSource::Static(a) => a.clone(),
-                        StyleSource::Reactive(f) => f(),
-                    };
-                    let resolved = style::resolve(&app);
-                    backend_clone
-                        .borrow_mut()
-                        .apply_anchored_overlay_backdrop_style(&node_for_backdrop, &resolved);
-                });
-            }
-
-            if let Some(RefFill::AnchoredOverlay(fill)) = ref_fill {
-                let handle = backend.borrow().make_anchored_overlay_handle(&n);
-                fill(handle);
-            }
-
-            let cleanup = AnchoredOverlayHandleCleanup {
+            let cleanup = ExternalHandleCleanup {
                 backend: backend.clone(),
                 node: n.clone(),
             };
@@ -1228,9 +1146,8 @@ fn debug_kind_of(node: &Primitive) -> debug::PrimitiveKind {
         Primitive::When { .. } => PrimitiveKind::When,
         Primitive::Switch { .. } => PrimitiveKind::Switch,
         Primitive::Link { .. } => PrimitiveKind::Link,
-        Primitive::Overlay { .. } => PrimitiveKind::Overlay,
-        Primitive::AnchoredOverlay { .. } => PrimitiveKind::AnchoredOverlay,
         Primitive::Portal { .. } => PrimitiveKind::Portal,
+        Primitive::External { .. } => PrimitiveKind::External,
         Primitive::Presence { .. } => PrimitiveKind::Presence,
         // Repeat is expanded into siblings by `insert_children`
         // and never reaches the build walker as a standalone
@@ -1848,7 +1765,7 @@ fn finish_style_static_after_batch<B: Backend + 'static>(
     node: &B::Node,
     app: StyleApplication,
 ) {
-    install_theme_cohort_driver();
+    install_theme_cohort_driver(backend);
     let handles_states_natively = backend.borrow().handles_states_natively();
     let backend_for_cohort = backend.clone();
     let node_for_cohort = node.clone();
@@ -1897,7 +1814,7 @@ fn register_static_cohort_batch<B: Backend + 'static>(
     if members.is_empty() {
         return;
     }
-    install_theme_cohort_driver();
+    install_theme_cohort_driver(backend);
     let handles_states_natively = backend.borrow().handles_states_natively();
     let backend_for_cohort = backend.clone();
 
@@ -2026,6 +1943,18 @@ thread_local! {
     /// register; never cleared. The effect lives in the root
     /// `Owner`'s scope and is dropped when that scope drops.
     static THEME_COHORT_DRIVER_INSTALLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+
+    /// Mirror of `Backend::token_updates_propagate_via_cascade()`,
+    /// stashed here so the cohort driver Effect can read it without
+    /// holding a backend reference. Set by `render(...)` based on
+    /// the active backend's capability. Read in the driver to
+    /// decide whether the per-cohort-entry fan-out is even needed
+    /// on token signal change.
+    ///
+    /// Cleared when the driver's RAII guard fires (so a subsequent
+    /// `render(...)` with a different backend doesn't see stale
+    /// state).
+    static BACKEND_CASCADE_TOKENS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 fn theme_cohort_register(reapply: Box<dyn Fn()>) -> CohortId {
@@ -2066,7 +1995,7 @@ fn theme_cohort_unregister(id: CohortId) {
 /// render reinstalls. The cohort map itself is also cleared on
 /// driver drop — its entries' `reapply` closures captured Rcs to
 /// the old backend, which is gone.
-fn install_theme_cohort_driver() {
+fn install_theme_cohort_driver<B: Backend + 'static>(backend: &Rc<RefCell<B>>) {
     if THEME_COHORT_DRIVER_INSTALLED.with(|c| c.get()) {
         return;
     }
@@ -2082,9 +2011,16 @@ fn install_theme_cohort_driver() {
             THEME_COHORT_DRIVER_INSTALLED.with(|c| c.set(false));
             THEME_COHORT.with(|m| m.borrow_mut().clear());
             THEME_COHORT_FREE.with(|f| f.borrow_mut().clear());
+            // Reset the cascade flag so a follow-up `render(...)`
+            // with a different backend doesn't inherit stale state.
+            BACKEND_CASCADE_TOKENS.with(|c| c.set(false));
         }
     }
     let _guard = DriverGuard;
+
+    // Capture the backend Rc so the driver can push token updates
+    // even when the per-cohort-entry fan-out is short-circuited.
+    let backend_for_tokens = backend.clone();
 
     let _e = Effect::new(move || {
         // Anchor the guard inside the effect closure so it lives
@@ -2101,7 +2037,41 @@ fn install_theme_cohort_driver() {
         // resolve calls in `apply_one`, which keeps per-token
         // subscriptions fresh as the cohort grows.
         crate::style::subscribe_to_all_token_signals();
+
+        // Flush pending token updates to the backend BEFORE deciding
+        // whether to fan out. The normal flush path lives inside
+        // `ensure_registered_with` (called by `apply_one`) — but if
+        // the cohort fan-out short-circuits, no `apply_one` runs and
+        // the backend would never see the new `:root` variable
+        // values. Flushing here covers both code paths: cohort-skip
+        // backends get the variables in, fan-out backends find an
+        // empty queue when `apply_one` runs (idempotent).
+        let pending: Vec<Vec<crate::TokenEntry>> = crate::style::take_pending_token_updates();
+        if !pending.is_empty() {
+            let mut b = backend_for_tokens.borrow_mut();
+            for upd in &pending {
+                b.update_tokens(upd);
+            }
+        }
+
+        // Fast-path: backends that propagate token-value updates
+        // via cascade (web's `var(--token)` references on `:root`)
+        // don't need a per-node fan-out — the browser handles the
+        // visible change. Skipping saves O(N) work per theme swap.
+        // For 10k rows that's the difference between ~100 ms and
+        // ~1 ms of theme-apply cost.
         //
+        // Note: this stays correct only for stylesheets whose
+        // resolved CSS is theme-stable (every `Tokenized<T>`
+        // emits as `var()` on web). `Derived<T>` closures that
+        // produce concrete values from token VALUES would need
+        // the rule body to re-emit and aren't covered. The
+        // backend declares the capability; the framework just
+        // honors it.
+        if BACKEND_CASCADE_TOKENS.with(|c| c.get()) {
+            return;
+        }
+
         // Trade-off: the static cohort path is intentionally
         // coarser than per-node Effects — all entries reapply when
         // any of their union-of-tokens changes. The reactive style
@@ -2203,41 +2173,19 @@ impl<B: Backend + 'static> Drop for DrawerNavigatorHandleCleanup<B> {
     }
 }
 
-/// RAII wrapper that calls `Backend::release_overlay` when dropped.
-/// Installed unconditionally per Overlay primitive by a dedicated
-/// `Effect` in the build walker. When the surrounding scope drops —
-/// host's open-state signal flips, `when` rebuilds the surrounding
-/// branch, this scope drops — the backend tears down its floating
-/// layer (detaches the portal node, removes Escape/back listeners,
-/// drops the wasm-bindgen / JNI closure handles wired to system
-/// dismiss events).
+/// RAII wrapper that calls `Backend::release_portal` when dropped.
+/// Installed per Portal primitive by a dedicated `Effect` in the
+/// build walker. When the surrounding scope drops — host's
+/// open-state signal flips, `when` rebuilds the surrounding branch,
+/// this scope drops — the backend tears down its floating layer
+/// (detaches the portal node, removes Escape/back listeners, drops
+/// the wasm-bindgen / JNI closure handles wired to system dismiss
+/// events).
 ///
 /// Without this, browser-queued dismissal events or anchor-tracking
 /// observers firing after the scope dropped would invoke Rust
 /// callbacks against freed `Signal` / `Effect` slots — same failure
 /// mode `release_virtualizer` was added to prevent.
-struct OverlayHandleCleanup<B: Backend + 'static> {
-    backend: Rc<RefCell<B>>,
-    node: B::Node,
-}
-
-impl<B: Backend + 'static> Drop for OverlayHandleCleanup<B> {
-    fn drop(&mut self) {
-        self.backend.borrow_mut().release_overlay(&self.node);
-    }
-}
-
-struct AnchoredOverlayHandleCleanup<B: Backend + 'static> {
-    backend: Rc<RefCell<B>>,
-    node: B::Node,
-}
-
-impl<B: Backend + 'static> Drop for AnchoredOverlayHandleCleanup<B> {
-    fn drop(&mut self) {
-        self.backend.borrow_mut().release_anchored_overlay(&self.node);
-    }
-}
-
 struct PortalHandleCleanup<B: Backend + 'static> {
     backend: Rc<RefCell<B>>,
     node: B::Node,
@@ -2246,6 +2194,20 @@ struct PortalHandleCleanup<B: Backend + 'static> {
 impl<B: Backend + 'static> Drop for PortalHandleCleanup<B> {
     fn drop(&mut self) {
         self.backend.borrow_mut().release_portal(&self.node);
+    }
+}
+
+/// RAII guard that calls `Backend::release_external` when dropped.
+/// Mirrors the portal/virtualizer cleanup pattern so third-party
+/// primitives get scope-tied teardown without per-handler boilerplate.
+struct ExternalHandleCleanup<B: Backend + 'static> {
+    backend: Rc<RefCell<B>>,
+    node: B::Node,
+}
+
+impl<B: Backend + 'static> Drop for ExternalHandleCleanup<B> {
+    fn drop(&mut self) {
+        self.backend.borrow_mut().release_external(&self.node);
     }
 }
 
@@ -3334,7 +3296,7 @@ fn attach_navigator_slot_style<B, F>(
             let resolved = resolve_style(&app);
             apply_fn(backend, node, &resolved);
 
-            install_theme_cohort_driver();
+            install_theme_cohort_driver(backend);
             let backend_c = backend.clone();
             let node_c = node.clone();
             let app_rc = Rc::new(app);
@@ -3442,7 +3404,7 @@ fn attach_style_static<B: Backend + 'static>(
     app: StyleApplication,
 ) -> Rc<dyn Fn(StateBits, bool)> {
     // Make sure the cohort driver is alive before we register.
-    install_theme_cohort_driver();
+    install_theme_cohort_driver(backend);
 
     let handles_states_natively = backend.borrow().handles_states_natively();
 

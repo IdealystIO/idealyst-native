@@ -409,32 +409,55 @@ docs! {
         p("See Navigation for the full route / params / dispatch model."),
     },
 
-    section(heading = "Overlays and animation") {
+    section(heading = "Floating UI — Portal, Overlay, AnchoredOverlay") {
         p("Floating subtrees that escape the parent's layout and clipping — \
-           modals, popovers, presence-aware mount/unmount."),
+           modals, popovers, drawers, sheets, tooltips."),
     },
 
-    section(heading = "Overlay") {
-        p("A viewport-positioned floating subtree — modals, drawers, full-screen \
-           sheets. Renders above the rest of the UI and escapes the parent's \
-           layout / clipping."),
-        p("The host owns open/close state. Mounting the primitive opens the \
-           overlay; unmounting closes it. Wire ", code("on_dismiss"),
-          " to flip your open-state signal when the platform requests dismissal \
-           (Escape, back gesture, click-outside on a dismissible backdrop)."),
+    section(heading = "Portal") {
+        p("The one render-elsewhere primitive. ",
+          code("Primitive::Portal"),
+          " renders its children at a different location in the host tree, \
+           escaping the parent's layout and clipping. On each backend it \
+           mounts at the platform's window-level surface — body portal on \
+           web, key-window addSubview on iOS, window-level addView on Android."),
+        p(code("PortalTarget"),
+          " carries both the mount location AND the positioning intent: ",
+          code("Viewport(placement)"),
+          " for window-relative (centered, edge-pinned, full-screen) and ",
+          code("Anchor { target, side, align, offset }"),
+          " for element-tracking (popovers, dropdowns, tooltips). The \
+           backend re-queries an anchored portal's rect on each scroll / \
+           layout / orientation event and repositions automatically."),
+        p("See ", link("Portal & Overlays", to = "portal"),
+          " for the full target model, dismissal contract, focus-trap \
+           semantics, and authoring novel floating UX directly against \
+           the primitive."),
     },
 
-    section(heading = "AnchoredOverlay") {
-        p("A floating subtree positioned relative to another primitive's \
-           rendered bounds — popovers, tooltips, dropdowns, context menus, \
-           edit-menus. Follows its anchor through scrolls, layout shifts, and \
-           orientation flips."),
-        p("Backends can route this to a native anchored presentation (",
-          code("UIContextMenuInteraction"), ", ",
-          code("UIPopoverPresentationController"), ", Android ",
-          code("PopupWindow"), ", web ", code("popover"),
-          " + CSS anchor positioning) or fall back to manual positioning with \
-           a scroll-tracking observer."),
+    section(heading = "Overlay (composition)") {
+        p(code("overlay()"), " is not a primitive — it's a composition \
+           that lowers to ", code("Primitive::Portal"),
+          " with a viewport target plus a backdrop child. Defaults: ",
+          code("Center"), " placement, ", code("Dismiss"),
+          " backdrop, focus-trap on. Use for modals, drawers, sheets."),
+        p("The host owns open/close state. Mounting opens the overlay; \
+           unmounting closes it. Wire ", code("on_dismiss"),
+          " to flip your open-state signal when the platform requests \
+           dismissal (Escape, back gesture, backdrop tap)."),
+    },
+
+    section(heading = "AnchoredOverlay (composition)") {
+        p(code("anchored_overlay()"),
+          " is also a composition, lowering to ",
+          code("Primitive::Portal"), " with ",
+          code("PortalTarget::Anchor"),
+          ". Use for popovers, tooltips, dropdowns, context menus — \
+           anything that follows a trigger element."),
+        p("Defaults: ", code("Below"), " side, ", code("Start"),
+          " align, ", code("BackdropMode::None"),
+          " (page behind stays interactive), focus-trap off — the \
+           popover defaults."),
     },
 
     section(heading = "Presence") {
@@ -485,8 +508,13 @@ docs! {
             ["Navigation — ", code("Navigator"), ", ", code("TabNavigator"),
              ", ", code("DrawerNavigator"), ", ", code("Link"), "."],
             ["Lists — ", code("Virtualizer"), " / ", code("flat_list"), " in depth."],
-            ["Overlays and animation — ", code("Overlay"), ", ",
-             code("AnchoredOverlay"), ", ", code("Presence"), "."],
+            [link("Portal & Overlays", to = "portal"), " — ",
+             code("Portal"), " (the primitive), ", code("overlay()"),
+             " / ", code("anchored_overlay()"), " (compositions), and ",
+             code("Presence"), "."],
+            [link("Third-party primitives", to = "third-party-primitives"),
+             " — ", code("Primitive::External"),
+             " for primitives that need per-platform FFI."],
             ["Graphics — the wgpu canvas primitive."],
             ["Robot — ", code("test_id"), " and the introspection layer."],
         ),

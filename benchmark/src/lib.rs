@@ -418,6 +418,27 @@ struct ParamInfo {
     default: f64,
 }
 
+/// How a suite wants the TOTAL column computed. PAINT clusters
+/// across frameworks for workloads where the visible change is a
+/// browser-side animation (CSS transition, GPU compositing) — for
+/// those, the differentiating metric is APPLY, the synchronous JS
+/// work that kicked the transition off. Suites declare which makes
+/// sense for their measurement.
+#[derive(Clone, Copy)]
+enum TotalMetric {
+    /// Sum of per-bucket PAINT medians. Meaningful when PAINT
+    /// captures the full click-to-pixels time — i.e., when the
+    /// visible change is finished by the time `firstPaint` fires
+    /// (rebuild: rows are mounted and laid out by then).
+    PaintSum,
+    /// Sum of per-bucket APPLY medians. Meaningful when PAINT is
+    /// dominated by browser-side work that's identical across
+    /// frameworks — e.g., the toggle suite's 250ms CSS transition,
+    /// where every variant pays the same GPU interpolation cost
+    /// regardless of which framework wrote the CSS variables.
+    ApplySum,
+}
+
 /// Suite metadata mirrored from the JS suite modules. The runner
 /// uses this to drive the sidebar's suite picker, the param form,
 /// and the result-table column shape. The actual suite logic still
@@ -437,6 +458,7 @@ struct SuiteInfo {
     title: &'static str,
     params: &'static [ParamInfo],
     bucket_labels: &'static [&'static str],
+    total: TotalMetric,
 }
 
 /// Result-column count for a suite. `TOTAL` + per-bucket APPLY +
@@ -457,6 +479,10 @@ const SUITES: &[SuiteInfo] = &[
             ParamInfo { name: "warmupCycles", label: "Warmup cycles", default: 1.0    },
         ],
         bucket_labels: &["LOW", "HIGH"],
+        // Rebuild's visible change (mounting N rows) is finished
+        // by the time `firstPaint` fires; PAINT genuinely captures
+        // click-to-pixels.
+        total: TotalMetric::PaintSum,
     },
     SuiteInfo {
         name: "toggle",
@@ -470,6 +496,12 @@ const SUITES: &[SuiteInfo] = &[
         // bucket values verbatim; the runner labels them in this
         // order.
         bucket_labels: &["L→D", "D→L"],
+        // The 250ms CSS transition is GPU-driven and identical
+        // across frameworks — every variant's PAINT clusters at
+        // APPLY + ~16ms (next rAF). The framework differences
+        // live entirely in APPLY (the JS work that kicked the
+        // transition off), so TOTAL sums APPLY here.
+        total: TotalMetric::ApplySum,
     },
 ];
 
@@ -640,13 +672,20 @@ fn column_medians(entry: &VariantEntry, suite: &SuiteInfo) -> Vec<Option<f64>> {
     let n = suite.bucket_labels.len();
     let mut out: Vec<Option<f64>> = Vec::with_capacity(ncols(suite));
 
-    // TOTAL = sum of bucket paint medians. None until every
-    // declared bucket has data.
-    let paint_medians: Vec<Option<f64>> = (0..n)
-        .map(|i| buckets.get(i).and_then(|b| med_for(*b, |r| r.first_paint)))
-        .collect();
-    let total = if paint_medians.iter().all(|m| m.is_some()) {
-        Some(paint_medians.iter().map(|m| m.unwrap()).sum())
+    // TOTAL = sum of per-bucket medians of either PAINT or APPLY,
+    // depending on what the suite declared. None until every
+    // declared bucket has data — partial sums shrink as buckets
+    // come in and read as misleading.
+    let totals_input: Vec<Option<f64>> = match suite.total {
+        TotalMetric::PaintSum => (0..n)
+            .map(|i| buckets.get(i).and_then(|b| med_for(*b, |r| r.first_paint)))
+            .collect(),
+        TotalMetric::ApplySum => (0..n)
+            .map(|i| buckets.get(i).and_then(|b| med_for(*b, |r| r.apply)))
+            .collect(),
+    };
+    let total = if totals_input.iter().all(|m| m.is_some()) {
+        Some(totals_input.iter().map(|m| m.unwrap()).sum())
     } else {
         None
     };
@@ -880,14 +919,22 @@ fn on_run_clicked() {
     *st.current_params.borrow_mut() = params;
     *st.current_run_suite.borrow_mut() = suite_name;
 
-    // Reset state for the chosen variants only — leave prior
-    // results for unselected variants visible.
-    for &id in &order {
-        st.results.borrow_mut().insert(id, VariantEntry {
-            status: VariantStatus::Pending,
-            runs: Vec::new(),
-        });
+    // Clear the table completely, then seed Pending entries
+    // for the variants in this run. Deselecting a variant
+    // before re-running removes its row entirely — leaving
+    // stale results in the table would be misleading once the
+    // selection has changed.
+    {
+        let mut r = st.results.borrow_mut();
+        r.clear();
+        for &id in &order {
+            r.insert(id, VariantEntry {
+                status: VariantStatus::Pending,
+                runs: Vec::new(),
+            });
+        }
     }
+    st.run_finalized.set(false);
     bump_results(&st);
 
     *st.queue.borrow_mut() = order;

@@ -119,13 +119,13 @@ pub trait ButtonOps {
     /// iOS `UIView.frame`, Android `View.getLocationOnScreen`)
     /// override to return real values.
     #[allow(unused_variables)]
-    fn rect(&self, node: &dyn Any) -> primitives::overlay::ViewportRect {
-        primitives::overlay::ViewportRect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 }
+    fn rect(&self, node: &dyn Any) -> primitives::portal::ViewportRect {
+        primitives::portal::ViewportRect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 }
     }
 }
 
-impl primitives::overlay::AnchorableHandle for ButtonHandle {
-    fn rect(&self) -> primitives::overlay::ViewportRect {
+impl primitives::portal::AnchorableHandle for ButtonHandle {
+    fn rect(&self) -> primitives::portal::ViewportRect {
         self.ops.rect(&*self.node)
     }
 }
@@ -164,13 +164,13 @@ pub trait PressableOps {
     /// Viewport-relative rect, mirroring [`ButtonOps::rect`]. Used
     /// when a `Pressable` is the anchor target of an `Overlay`.
     #[allow(unused_variables)]
-    fn rect(&self, node: &dyn Any) -> primitives::overlay::ViewportRect {
-        primitives::overlay::ViewportRect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 }
+    fn rect(&self, node: &dyn Any) -> primitives::portal::ViewportRect {
+        primitives::portal::ViewportRect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 }
     }
 }
 
-impl primitives::overlay::AnchorableHandle for PressableHandle {
-    fn rect(&self) -> primitives::overlay::ViewportRect {
+impl primitives::portal::AnchorableHandle for PressableHandle {
+    fn rect(&self) -> primitives::portal::ViewportRect {
         self.ops.rect(&*self.node)
     }
 }
@@ -204,14 +204,14 @@ pub trait ViewOps {
     /// should prefer [`ViewOps::absolute_frame`] which distinguishes
     /// "not yet mounted" from "at origin".
     #[allow(unused_variables)]
-    fn rect(&self, node: &dyn Any) -> primitives::overlay::ViewportRect {
-        primitives::overlay::ViewportRect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 }
+    fn rect(&self, node: &dyn Any) -> primitives::portal::ViewportRect {
+        primitives::portal::ViewportRect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 }
     }
 
     /// Parent-relative rect. `None` when the view isn't laid out yet
     /// or the backend doesn't expose it.
     #[allow(unused_variables)]
-    fn frame(&self, node: &dyn Any) -> Option<primitives::overlay::ViewportRect> {
+    fn frame(&self, node: &dyn Any) -> Option<primitives::portal::ViewportRect> {
         None
     }
 
@@ -220,7 +220,7 @@ pub trait ViewOps {
     /// Symmetric with `frame` — neither method invents a zero rect
     /// to paper over the unmounted case.
     #[allow(unused_variables)]
-    fn absolute_frame(&self, node: &dyn Any) -> Option<primitives::overlay::ViewportRect> {
+    fn absolute_frame(&self, node: &dyn Any) -> Option<primitives::portal::ViewportRect> {
         None
     }
 }
@@ -228,19 +228,19 @@ pub trait ViewOps {
 impl ViewHandle {
     /// Rect in the parent's coordinate system. `None` if the view
     /// isn't laid out yet or the backend doesn't expose it.
-    pub fn frame(&self) -> Option<primitives::overlay::ViewportRect> {
+    pub fn frame(&self) -> Option<primitives::portal::ViewportRect> {
         self.ops.frame(&*self.node)
     }
 
     /// Rect in viewport (window) coordinates. `None` if the view
     /// isn't mounted in a window yet.
-    pub fn absolute_frame(&self) -> Option<primitives::overlay::ViewportRect> {
+    pub fn absolute_frame(&self) -> Option<primitives::portal::ViewportRect> {
         self.ops.absolute_frame(&*self.node)
     }
 }
 
-impl primitives::overlay::AnchorableHandle for ViewHandle {
-    fn rect(&self) -> primitives::overlay::ViewportRect {
+impl primitives::portal::AnchorableHandle for ViewHandle {
+    fn rect(&self) -> primitives::portal::ViewportRect {
         self.ops.rect(&*self.node)
     }
 }
@@ -305,8 +305,12 @@ pub enum RefFill {
     TabNavigator(Box<dyn FnOnce(primitives::navigator::TabsHandle)>),
     DrawerNavigator(Box<dyn FnOnce(primitives::navigator::DrawerHandle)>),
     Link(Box<dyn FnOnce(primitives::link::LinkHandle)>),
-    Overlay(Box<dyn FnOnce(primitives::overlay::OverlayHandle)>),
-    AnchoredOverlay(Box<dyn FnOnce(primitives::overlay::AnchoredOverlayHandle)>),
     Portal(Box<dyn FnOnce(primitives::portal::PortalHandle)>),
+    /// Fill closure for third-party `Primitive::External` primitives.
+    /// The framework hands the closure an `Rc<dyn Any>` wrapping the
+    /// backend's native node; the third-party facade downcasts to
+    /// build the user-facing `ExternalHandle<T>` before filling the
+    /// `Ref`.
+    External(Box<dyn FnOnce(Rc<dyn Any>)>),
     Presence(Box<dyn FnOnce(primitives::presence::PresenceHandle)>),
 }

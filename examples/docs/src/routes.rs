@@ -23,6 +23,7 @@ pub const NAVIGATION_ROUTE: Route<()> = Route::<()>::new("navigation", "/concept
 pub const LISTS_ROUTE: Route<()> = Route::<()>::new("lists", "/reference/lists");
 pub const ICONS_ROUTE: Route<()> = Route::<()>::new("icons", "/reference/icons");
 pub const REFS_ROUTE: Route<()> = Route::<()>::new("refs", "/reference/refs");
+pub const PORTAL_ROUTE: Route<()> = Route::<()>::new("portal", "/reference/portal");
 
 // Tooling
 pub const ROBOT_ROUTE: Route<()> = Route::<()>::new("robot", "/tools/robot");
@@ -32,12 +33,16 @@ pub const DEV_TOOLS_ROUTE: Route<()> = Route::<()>::new("dev-tools", "/tools/dev
 pub const BACKENDS_ROUTE: Route<()> = Route::<()>::new("backends", "/backends");
 pub const WRITING_A_BACKEND_ROUTE: Route<()> =
     Route::<()>::new("writing-a-backend", "/backends/writing");
+pub const THIRD_PARTY_PRIMITIVES_ROUTE: Route<()> =
+    Route::<()>::new("third-party-primitives", "/backends/third-party-primitives");
 
 // Advanced
 pub const WGPU_NATIVE_API_ROUTE: Route<()> =
     Route::<()>::new("wgpu-native-api", "/advanced/wgpu-native-api");
 pub const SIMULATOR_ROUTE: Route<()> =
     Route::<()>::new("simulator", "/advanced/simulator");
+pub const BUILDING_A_THEME_SYSTEM_ROUTE: Route<()> =
+    Route::<()>::new("building-a-theme-system", "/advanced/building-a-theme-system");
 
 // Reference (legacy hand-built pages — to be migrated to `docs!`)
 pub const MACROS_ROUTE: Route<()> = Route::<()>::new("macros", "/reference/macros");
@@ -82,6 +87,7 @@ pub const SECTIONS: &[IndexSection] = &[
             IndexEntry { name: "lists", label: "Lists" },
             IndexEntry { name: "icons", label: "Icons" },
             IndexEntry { name: "refs", label: "Refs" },
+            IndexEntry { name: "portal", label: "Portal & Overlays" },
         ],
     },
     IndexSection {
@@ -96,11 +102,13 @@ pub const SECTIONS: &[IndexSection] = &[
         items: &[
             IndexEntry { name: "backends", label: "Backends Overview" },
             IndexEntry { name: "writing-a-backend", label: "Writing a Backend" },
+            IndexEntry { name: "third-party-primitives", label: "Third-party Primitives" },
         ],
     },
     IndexSection {
         label: "Advanced",
         items: &[
+            IndexEntry { name: "building-a-theme-system", label: "Building a Theme System" },
             IndexEntry { name: "wgpu-native-api", label: "wgpu Native API" },
             IndexEntry { name: "simulator", label: "Simulator (live preview)" },
         ],

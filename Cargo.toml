@@ -35,6 +35,9 @@ members = [
     "crates/ui/idea-ui",
     "crates/ui/idea-ui-docs-derive",
     "crates/ui/icons-lucide",
+    "crates/sdk/maps-core",
+    "crates/sdk/maps",
+    "crates/sdk/maps-web",
     "crates/cli",
     "crates/build/aas",
     "crates/build/android",
@@ -64,6 +67,7 @@ members = [
     "examples/hot-reload-test",
     "examples/native-test",
     "examples/touch-test",
+    "examples/maps-test",
     "examples/fiddle",
     "benchmark",
     "benchmark/idealyst-native/wasm",
@@ -128,6 +132,9 @@ posix-log-capture = { path = "crates/backend/posix-log-capture" }
 idea-ui = { path = "crates/ui/idea-ui" }
 idea-ui-docs-derive = { path = "crates/ui/idea-ui-docs-derive" }
 icons-lucide = { path = "crates/ui/icons-lucide" }
+maps-core = { path = "crates/sdk/maps-core" }
+maps = { path = "crates/sdk/maps" }
+maps-web = { path = "crates/sdk/maps-web" }
 
 # Dev profile: `opt-level = "z"` works around a wasm OOB seen at
 # opt-level = 0 (the default). Root cause is likely an UB somewhere
@@ -158,6 +165,30 @@ opt-level = 3
 [profile.release.package.openh264-sys2]
 opt-level = 3
 [profile.release.package.re_mp4]
+opt-level = 3
+
+# Symphonia is the audio decoder and runs per-AAC-packet (~hundreds
+# of times per second). cpal's stream callback runs at audio rate
+# (~ every 10 ms). Both hurt at `opt-level = "z"`.
+[profile.dev.package.symphonia]
+opt-level = 3
+[profile.dev.package.symphonia-core]
+opt-level = 3
+[profile.dev.package.symphonia-bundle-mp3]
+opt-level = 3
+[profile.dev.package.symphonia-codec-aac]
+opt-level = 3
+[profile.dev.package.cpal]
+opt-level = 3
+[profile.release.package.symphonia]
+opt-level = 3
+[profile.release.package.symphonia-core]
+opt-level = 3
+[profile.release.package.symphonia-bundle-mp3]
+opt-level = 3
+[profile.release.package.symphonia-codec-aac]
+opt-level = 3
+[profile.release.package.cpal]
 opt-level = 3
 
 # Size-tuned release profile. We optimize for size rather than speed —

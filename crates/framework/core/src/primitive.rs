@@ -423,81 +423,24 @@ pub enum Primitive {
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
     },
-    /// Overlay — a viewport-positioned floating subtree rendered
-    /// above the rest of the UI, escaping the parent's layout /
-    /// clipping. Used for modals, drawers, full-screen sheets — any
-    /// floating layer that's positioned relative to the viewport
-    /// (not relative to another element).
+    /// External — third-party primitive. The framework itself knows
+    /// nothing about the specific kind; backends consult their own
+    /// [`ExternalRegistry`](crate::external::ExternalRegistry) to
+    /// dispatch on `type_id`. Unregistered kinds render a platform-
+    /// native "not supported" placeholder via the backend's
+    /// `create_external` impl.
     ///
-    /// For element-anchored cases (popovers, tooltips, dropdowns,
-    /// context menus) see [`Primitive::AnchoredOverlay`] instead. The
-    /// split exists so backends can dispatch each kind to a different
-    /// native presentation (e.g. iOS could route `AnchoredOverlay` to
-    /// `UIContextMenuInteraction` while `Overlay` stays a custom
-    /// window-level `UIView`).
+    /// `type_name` is captured at construction (via
+    /// `std::any::type_name::<T>()`) and carried alongside `type_id`
+    /// purely for debug/error messages. The `type_id` is what drives
+    /// dispatch.
     ///
-    /// The host owns the open/close state — typically a `Signal<bool>`
-    /// driving a surrounding `when(...)` or `if` inside `ui!`.
-    /// Mounting the primitive opens the overlay; unmounting closes
-    /// it. Backends ignore the primitive's position in the normal
-    /// layout flow; they render the children at the location
-    /// dictated by `placement` instead.
-    ///
-    /// See [`primitives::overlay`] for the placement, backdrop, and
-    /// dismiss model.
-    Overlay {
-        children: Vec<Primitive>,
-        placement: primitives::overlay::ViewportPlacement,
-        backdrop: primitives::overlay::BackdropMode,
-        /// Optional stylesheet applied to the backdrop / scrim
-        /// layer. Independent from `style` (which applies to the
-        /// overlay content container).
-        backdrop_style: Option<StyleSource>,
-        /// Fired when the platform requests dismissal (Escape, back
-        /// gesture, click-outside on a `Dismiss` backdrop). Hosts
-        /// wire this to flip their open-state signal; the framework
-        /// doesn't auto-tear-down — reactive state is the source of
-        /// truth.
-        on_dismiss: Option<Rc<dyn Fn()>>,
-        /// When `true`, the backend confines keyboard / accessibility
-        /// focus inside the overlay subtree until it closes. Default
-        /// `true` for modals.
-        trap_focus: bool,
-        style: Option<StyleSource>,
-        ref_fill: Option<RefFill>,
-    },
-    /// AnchoredOverlay — a floating subtree positioned relative to
-    /// another primitive's rendered bounds. Used for popovers,
-    /// tooltips, dropdowns, context menus, edit-menus — anything that
-    /// should follow a trigger element through scrolls, layout
-    /// changes, and orientation flips.
-    ///
-    /// Backends are free to dispatch this to a native anchored
-    /// presentation API (`UIContextMenuInteraction`,
-    /// `UIPopoverPresentationController`, Android `PopupWindow`, web
-    /// `popover` attribute + CSS anchor positioning) or fall back to
-    /// custom positioning with a scroll-tracking observer.
-    ///
-    /// See [`primitives::overlay`] for the anchoring, backdrop, and
-    /// dismiss model.
-    AnchoredOverlay {
-        children: Vec<Primitive>,
-        /// The element to anchor against. Type-erased so any
-        /// primitive ref with an `AnchorableHandle` impl can be the
-        /// target.
-        target: primitives::overlay::AnchorTarget,
-        /// Which side of the target the overlay sits on.
-        side: primitives::overlay::ElementSide,
-        /// How the overlay aligns along the trigger's edge.
-        align: primitives::overlay::ElementAlign,
-        /// Gap in pixels between trigger and overlay.
-        offset: f32,
-        backdrop: primitives::overlay::BackdropMode,
-        backdrop_style: Option<StyleSource>,
-        on_dismiss: Option<Rc<dyn Fn()>>,
-        /// Default `false` for popovers / dropdowns — the page behind
-        /// stays interactive while the overlay is open.
-        trap_focus: bool,
+    /// See [`crate::external`] for the third-party extension model
+    /// and the constructor `external::<T>(props)`.
+    External {
+        type_id: std::any::TypeId,
+        type_name: &'static str,
+        payload: Rc<dyn Any>,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
     },
@@ -601,9 +544,8 @@ impl Primitive {
             | Primitive::When { style, .. }
             | Primitive::Switch { style, .. }
             | Primitive::Link { style, .. }
-            | Primitive::Overlay { style, .. }
-            | Primitive::AnchoredOverlay { style, .. }
-            | Primitive::Portal { style, .. } => {
+            | Primitive::Portal { style, .. }
+            | Primitive::External { style, .. } => {
                 *style = Some(src);
             }
             Primitive::Navigator(nav) => {

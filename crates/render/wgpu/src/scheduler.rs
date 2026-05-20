@@ -8,30 +8,30 @@
 //! for winit, a future `-web` for the browser) sets up at
 //! startup.
 //!
-//! The hook lives in thread-local storage. Single-threaded model
-//! matches the framework's reactivity system and the rest of this
-//! backend; cross-thread redraws need to post into this thread
-//! before calling.
+//! Stored in a `OnceLock` with a `Send + Sync` bound so worker
+//! threads (notably the per-Video decoder thread) can ping the
+//! event loop without bouncing through the main thread. Single-
+//! threaded callers see no behavior change.
 
-use std::cell::RefCell;
+use std::sync::OnceLock;
 
-thread_local! {
-    static REDRAW_HOOK: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
-}
+type RedrawFn = Box<dyn Fn() + Send + Sync>;
+
+static REDRAW_HOOK: OnceLock<RedrawFn> = OnceLock::new();
 
 /// Install the platform shell's redraw closure. First call wins;
-/// subsequent calls overwrite (handy for tests that swap hosts).
-pub fn install_redraw_hook(f: Box<dyn Fn()>) {
-    REDRAW_HOOK.with(|h| *h.borrow_mut() = Some(f));
+/// subsequent calls are ignored (handy for tests that swap hosts —
+/// install the new one *before* spawning new infra).
+pub fn install_redraw_hook(f: RedrawFn) {
+    let _ = REDRAW_HOOK.set(f);
 }
 
 /// Ask the platform shell to schedule another paint. No-op if no
 /// hook is installed yet — typical during the build phase before
-/// the shell has wired up its event loop.
+/// the shell has wired up its event loop. Safe to call from any
+/// thread.
 pub fn request_redraw() {
-    REDRAW_HOOK.with(|h| {
-        if let Some(f) = h.borrow().as_ref() {
-            f();
-        }
-    });
+    if let Some(f) = REDRAW_HOOK.get() {
+        f();
+    }
 }
