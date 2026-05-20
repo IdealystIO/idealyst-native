@@ -1,0 +1,16 @@
+{
+  "name": "bench-runner",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Headless benchmark driver: opens variant pages in CDP-controlled Chrome, collects suite results, prints summary tables.",
+  "type": "module",
+  "bin": {
+    "bench": "./index.mjs"
+  },
+  "scripts": {
+    "bench": "node ./index.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.20.1"
+  }
+}

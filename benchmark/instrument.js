@@ -91,6 +91,14 @@ export async function autoRunIfRequested({
   setupHierarchy,
   branchUpdate,
   globalUpdate,
+  // granular suite
+  setupCounters,
+  bumpCounter,
+  bumpRange,
+  // reactive-style suite
+  setupReactiveStyles,
+  setSharedColor,
+  setPointColor,
   suitesBase,
 } = {}) {
   const url = new URL(window.location.href);
@@ -134,6 +142,12 @@ export async function autoRunIfRequested({
       setupHierarchy,
       branchUpdate,
       globalUpdate,
+      setupCounters,
+      bumpCounter,
+      bumpRange,
+      setupReactiveStyles,
+      setSharedColor,
+      setPointColor,
       params,
       onProgress: (progress) => {
         postBack({ type: 'bench-progress', suite: suiteName, runs: progress });

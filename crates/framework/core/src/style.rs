@@ -1735,6 +1735,23 @@ pub fn install_tokens(tokens: &[TokenEntry]) {
 /// the wipe is the simplest way to keep cached rules in sync with
 /// fresh fallback values).
 pub fn update_tokens(tokens: &[TokenEntry]) {
+    // Stash the pending update + clear the resolution cache BEFORE
+    // firing any signal subscribers. The theme-cohort driver `Effect`
+    // (subscribed via `subscribe_to_all_token_signals`) re-runs
+    // synchronously the moment we `sig.set` on the first token, and
+    // its body calls `take_pending_token_updates()` to flush new
+    // `:root` variables to the backend. If we did the push AFTER the
+    // fires, the cohort driver would see an EMPTY queue on this
+    // call — and end up flushing this theme's tokens on the *next*
+    // `set_theme` invocation, with a visible one-toggle delay (after
+    // `setTheme('dark')` the page still renders light; after the
+    // subsequent `setTheme('light')` it renders dark; etc.). The
+    // toggle suite catches this; the L→D→L verify trips because the
+    // light update never landed in the DOM.
+    let owned: Vec<TokenEntry> = tokens.to_vec();
+    PENDING_TOKEN_UPDATES.with(|p| p.borrow_mut().push(owned));
+    RESOLUTION_CACHE.with(|c| c.borrow_mut().clear());
+
     for entry in tokens {
         let existing = TOKEN_REGISTRY.with(|r| r.borrow().get(entry.name).copied());
         match existing {
@@ -1746,11 +1763,6 @@ pub fn update_tokens(tokens: &[TokenEntry]) {
             }
         }
     }
-
-    let owned: Vec<TokenEntry> = tokens.to_vec();
-    PENDING_TOKEN_UPDATES.with(|p| p.borrow_mut().push(owned));
-
-    RESOLUTION_CACHE.with(|c| c.borrow_mut().clear());
 }
 
 /// Drain the queue of pending token-update batches. Used by the
@@ -1819,6 +1831,26 @@ pub fn ensure_typefaces_registered_with<RA, RT>(
             }
         }
     });
+}
+
+/// Pointer-keyed peek at the registration table — `true` iff a live
+/// registration exists for this exact `StyleSheet` instance (compared
+/// by `Rc` pointer, not content).
+///
+/// This is the cheap fast-path the batched-Repeat walker uses to skip
+/// the full [`ensure_registered_with`] call after the sheet's first
+/// row in a build. The full function ALWAYS flushes pending-token
+/// queues + sweeps dead `Weak<StyleSheet>` registrations before its
+/// own `already-registered` early-return; that's correct but
+/// per-row-expensive when N rows share one sheet. The walker can
+/// safely skip when this returns `true` because:
+///   - registrations don't change mid-build (no one writes
+///     `register_stylesheet` from inside `enqueue_primitive`), and
+///   - any pending-token flushing the first call did is still in
+///     effect for the remaining rows.
+pub fn is_registered(sheet: &Rc<StyleSheet>) -> bool {
+    let key = RegKey { sheet: Rc::as_ptr(sheet) };
+    REGISTRATIONS.with(|r| r.borrow().contains_key(&key))
 }
 
 /// - Sweeps registrations whose `Weak<StyleSheet>` no longer upgrades

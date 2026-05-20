@@ -1319,71 +1319,36 @@ fn toolbar_row_sheet() -> Rc<StyleSheet> {
 /// the closure subscribes the framework's Effect, so the button
 /// re-styles whenever the active mode changes (i.e. another button
 /// gets tapped).
-///
-/// # Why two pre-built sheets instead of inlining one in the closure
-///
-/// `with_style(|| StyleApplication::new(Rc::new(StyleSheet::r#static(...))))`
-/// looks like the obvious shape, but it leaks rules. Each Effect
-/// run creates a fresh `Rc<StyleSheet>`; the framework registers
-/// it (which mints + inserts the CSS rule) and then the Rc drops
-/// at end of body. On the *next* `ensure_registered_with` call the
-/// dead-`Weak` sweep unregisters the now-dropped sheet's rules,
-/// which on web ends in `deleteRule(...)` — but the element still
-/// has the class attribute pointing at the just-deleted rule.
-/// Class with no rule = unstyled element.
-///
-/// Pre-building the active + inactive sheets here keeps strong
-/// `Rc<StyleSheet>` handles inside the closure's captures. The
-/// sheets stay alive, the registrations stay alive, the rules
-/// stay in the stylesheet. The closure just picks which one to
-/// hand back as a `StyleApplication` each time.
 fn mode_button_sheet(target: Mode, mode: Signal<Mode>) -> impl Fn() -> StyleApplication + 'static {
-    let active_sheet = static_sheet(mode_button_rules(true));
-    let inactive_sheet = static_sheet(mode_button_rules(false));
     move || {
-        let is_active = mode.get() == target;
-        let sheet = if is_active {
-            Rc::clone(&active_sheet)
+        let active = mode.get() == target;
+        let (bg, fg, border) = if active {
+            ("#7a3aff", "#ffffff", "#9b6dff")
         } else {
-            Rc::clone(&inactive_sheet)
+            ("#2a2f3c", "#dde1ea", "#3d4356")
         };
-        StyleApplication::new(sheet)
+        let mut rules = StyleRules {
+            background: Some(col(bg)),
+            color: Some(col(fg)),
+            padding_top: Some(px(8.0)),
+            padding_bottom: Some(px(8.0)),
+            padding_left: Some(px(14.0)),
+            padding_right: Some(px(14.0)),
+            align_items: Some(AlignItems::Center),
+            justify_content: Some(JustifyContent::Center),
+            border_top_width: Some(Tokenized::Literal(1.0)),
+            border_right_width: Some(Tokenized::Literal(1.0)),
+            border_bottom_width: Some(Tokenized::Literal(1.0)),
+            border_left_width: Some(Tokenized::Literal(1.0)),
+            border_top_color: Some(col(border)),
+            border_right_color: Some(col(border)),
+            border_bottom_color: Some(col(border)),
+            border_left_color: Some(col(border)),
+            ..Default::default()
+        };
+        radius(&mut rules, 6.0);
+        StyleApplication::new(Rc::new(StyleSheet::r#static(rules)))
     }
-}
-
-fn mode_button_rules(active: bool) -> StyleRules {
-    let (bg, fg, border) = if active {
-        // Active: bright violet fill, white label, slightly
-        // brighter border for a soft glow against the dark
-        // toolbar.
-        ("#7a3aff", "#ffffff", "#9b6dff")
-    } else {
-        // Inactive: panel grey clearly above the body's near-
-        // black, with a hairline edge so the button reads as a
-        // button even before you mouse over it.
-        ("#2a2f3c", "#dde1ea", "#3d4356")
-    };
-    let mut rules = StyleRules {
-        background: Some(col(bg)),
-        color: Some(col(fg)),
-        padding_top: Some(px(8.0)),
-        padding_bottom: Some(px(8.0)),
-        padding_left: Some(px(14.0)),
-        padding_right: Some(px(14.0)),
-        align_items: Some(AlignItems::Center),
-        justify_content: Some(JustifyContent::Center),
-        border_top_width: Some(Tokenized::Literal(1.0)),
-        border_right_width: Some(Tokenized::Literal(1.0)),
-        border_bottom_width: Some(Tokenized::Literal(1.0)),
-        border_left_width: Some(Tokenized::Literal(1.0)),
-        border_top_color: Some(col(border)),
-        border_right_color: Some(col(border)),
-        border_bottom_color: Some(col(border)),
-        border_left_color: Some(col(border)),
-        ..Default::default()
-    };
-    radius(&mut rules, 6.0);
-    rules
 }
 
 fn mode_button_label_sheet() -> Rc<StyleSheet> {

@@ -225,6 +225,93 @@ fn batched_update_tokens_fires_each_subscriber_once() {
     assert_eq!(count_b.get(), 2, "B subscriber fired once");
 }
 
+/// REGRESSION TEST.
+///
+/// `update_tokens` must populate `PENDING_TOKEN_UPDATES` BEFORE firing
+/// the per-token signal subscribers. The theme-cohort driver (and any
+/// equivalent backend-side flush effect) is subscribed to every token
+/// signal via `subscribe_to_all_token_signals` — it re-fires
+/// synchronously on the first `sig.set` inside `update_tokens`. If
+/// the push happens AFTER the fires, the driver's
+/// `take_pending_token_updates()` returns an empty Vec, and the
+/// theme update lands in `:root` only on the *next* `set_theme` call.
+/// User-visible symptom: theme toggles update the page one swap late
+/// (the toggle bench's L→D→L verification trips on this).
+///
+/// This test asserts the ordering invariant directly: an Effect
+/// subscribed to a token signal sees the just-pushed update in the
+/// pending queue when it fires.
+#[test]
+fn update_tokens_populates_pending_before_firing_subscribers() {
+    use framework_core::take_pending_token_updates;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    // Drain whatever pending state earlier tests left behind so this
+    // test reasons about its own writes only.
+    let _ = take_pending_token_updates();
+
+    install_tokens(&[TokenEntry {
+        name: "test-pending-order",
+        value: TokenValue::Color(Color("#aaa".into())),
+    }]);
+    // Initial install itself queues a pending entry; drain it.
+    let _ = take_pending_token_updates();
+
+    let tok: Tokenized<Color> = Tokenized::token("test-pending-order", Color("#000".into()));
+
+    // The Effect mirrors the cohort driver's read-then-flush pattern:
+    // it subscribes to the token (via `resolve`) and on every fire
+    // pulls the pending queue. We stash what each fire saw so the
+    // assertion below can inspect the second fire's view.
+    let observed: Rc<RefCell<Vec<Vec<TokenEntry>>>> = Rc::new(RefCell::new(Vec::new()));
+    let obs = observed.clone();
+    let _e = Effect::new(move || {
+        let _ = tok.resolve(); // subscribe
+        let drained = take_pending_token_updates();
+        // Flatten the Vec<Vec<...>> so the test reads naturally — we
+        // only push one TokenEntry per `update_tokens` call here.
+        for batch in drained {
+            obs.borrow_mut().push(batch);
+        }
+    });
+
+    // First fire happens at Effect::new; pending was drained above,
+    // so this fire sees nothing. The test's load-bearing assertion
+    // is about the SECOND fire (post-`update_tokens`).
+    observed.borrow_mut().clear();
+
+    update_tokens(&[TokenEntry {
+        name: "test-pending-order",
+        value: TokenValue::Color(Color("#bbb".into())),
+    }]);
+
+    let obs = observed.borrow();
+    assert_eq!(
+        obs.len(),
+        1,
+        "Effect should fire exactly once after `update_tokens`, got {} fires",
+        obs.len(),
+    );
+    let drained = &obs[0];
+    assert_eq!(
+        drained.len(),
+        1,
+        "the pending batch the Effect drained should contain the one TokenEntry \
+         that `update_tokens` was called with — instead got {} entries: {:?}",
+        drained.len(),
+        drained,
+    );
+    assert_eq!(drained[0].name, "test-pending-order");
+    assert!(
+        matches!(&drained[0].value, TokenValue::Color(c) if c.0 == "#bbb"),
+        "pending entry's value should be the JUST-written #bbb (proof that the \
+         push to PENDING_TOKEN_UPDATES happened BEFORE the sig.set that fired \
+         this Effect). Got: {:?}",
+        drained[0].value,
+    );
+}
+
 /// Reads of `Tokenized` inside an Effect that don't actually call
 /// `.resolve()` don't subscribe — only `.resolve()` is the reactive
 /// entry point.

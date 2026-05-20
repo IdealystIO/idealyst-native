@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>bench-runner host</title>
+<style>
+  /*
+   * Off-screen iframe host for the headless CLI runner.
+   *
+   * The variants post results back via `window.parent.postMessage`
+   * (see ../instrument.js). This page is the `window.parent` from
+   * inside the iframe — it relays each posted message to the Node
+   * driver by writing two parallel channels:
+   *
+   *   1) console.log('BENCH_EVENT:' + json)
+   *      Picked up by the CDP `Runtime.consoleAPICalled` listener.
+   *      Cheap, fire-and-forget, no need to coordinate timing.
+   *
+   *   2) window.__benchEvents.push(msg)
+   *      Polling fallback for when consoleAPICalled is unavailable
+   *      (rare; mainly old Chromium builds). The CLI prefers #1.
+   *
+   * Keeping both channels parallel means the CLI can pick whichever
+   * is more reliable on the running browser without a coordination
+   * round-trip. They're idempotent — every event lands in both.
+   */
+  :root { color-scheme: dark; }
+  html, body { margin: 0; padding: 0; height: 100%; background: #0f1115; color: #e8eaf0;
+               font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  iframe { display: block; border: 0; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<iframe id="frame" referrerpolicy="no-referrer"></iframe>
+<script>
+  (function () {
+    const url = new URL(window.location.href);
+    const variant = url.searchParams.get('variant');
+    const suite = url.searchParams.get('suite');
+
+    window.__benchEvents = [];
+    window.__benchDone = false;
+
+    function emit(msg) {
+      window.__benchEvents.push(msg);
+      try { console.log('BENCH_EVENT:' + JSON.stringify(msg)); } catch (_) {}
+      if (msg && (msg.type === 'bench-result' || msg.type === 'bench-error')) {
+        window.__benchDone = true;
+      }
+    }
+
+    if (!variant || !suite) {
+      emit({ type: 'bench-error', error: 'host.html: missing ?variant=... or ?suite=...' });
+      return;
+    }
+
+    // Re-emit every other query param onto the iframe URL so the
+    // suite picks up `rowsA`, `iterations`, etc. Drop `variant`
+    // and `runId` — `variant` is for us, `runId` is purely a
+    // cache-buster the CLI sets per run.
+    const childParams = new URLSearchParams();
+    childParams.set('suite', suite);
+    for (const [k, v] of url.searchParams.entries()) {
+      if (k === 'variant' || k === 'suite' || k === 'runId') continue;
+      childParams.set(k, v);
+    }
+
+    const childUrl = `../${variant}/?${childParams.toString()}`;
+
+    window.addEventListener('message', (ev) => {
+      if (!ev.data || typeof ev.data !== 'object') return;
+      const t = ev.data.type;
+      // `idealyst-phases` carries the framework's debug-stats phase
+      // counters (only emitted by variants compiled with that feature).
+      // We relay it the same way as bench events so `--phases` can pick
+      // it up without a second channel.
+      if (t !== 'bench-progress' && t !== 'bench-result' && t !== 'bench-error'
+          && t !== 'idealyst-phases') return;
+      emit(ev.data);
+    });
+
+    // Surface uncaught errors from inside the iframe — without this,
+    // a variant that throws during module init looks like a silent
+    // timeout to the CLI.
+    window.addEventListener('error', (ev) => {
+      emit({ type: 'bench-error', error: `host.html caught error: ${ev.message}` });
+    });
+
+    document.getElementById('frame').src = childUrl;
+  })();
+</script>
+</body>
+</html>

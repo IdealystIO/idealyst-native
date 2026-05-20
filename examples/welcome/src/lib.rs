@@ -34,6 +34,19 @@ use framework_core::{
     FontWeight, JustifyContent, Length, Position, Primitive, Ref, Shadow, StyleRules, StyleSheet,
     TextAlign, Tokenized, ViewHandle,
 };
+use framework_theme::{install_theme, ThemeTokens, TokenEntry};
+
+/// Minimum theme stub. The framework requires `install_theme(...)`
+/// before render — backends (iOS in particular) subscribe to
+/// `active_theme()` from their setup paths, and the resolver panics
+/// if no theme is installed. Welcome doesn't read any tokens itself,
+/// so the implementation just returns an empty entry list.
+struct EmptyTheme;
+impl ThemeTokens for EmptyTheme {
+    fn tokens(&self) -> Vec<TokenEntry> {
+        Vec::new()
+    }
+}
 
 // ---- Timing (milliseconds) ----------------------------------------------
 
@@ -105,6 +118,12 @@ const HEADLINE_SIZE_PX: f32 = 56.0;
 const SUBTITLE_SIZE_PX: f32 = 18.0;
 
 pub fn app() -> Primitive {
+    // Required even though welcome doesn't read theme tokens — the
+    // iOS backend subscribes to `active_theme()` from its finish()
+    // path and panics if nothing has been installed. The cross-
+    // platform contract is "always install_theme before render."
+    install_theme(EmptyTheme);
+
     // ---- Animated values -----------------------------------------------
     //
     // One AV per (element, property) pair. Each AV holds a current

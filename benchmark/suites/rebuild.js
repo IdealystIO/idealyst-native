@@ -74,13 +74,25 @@ export async function run({ setRows, params, onProgress }) {
   // a cold tax on its first measured iteration.
   for (let i = 0; i < warmupCycles; i++) {
     await measureOne(() => setRows(rowsA));
+    verifyRowCount(rowsA, `warmup cycle ${i + 1} (rowsA=${rowsA})`);
     await measureOne(() => setRows(rowsB));
+    verifyRowCount(rowsB, `warmup cycle ${i + 1} (rowsB=${rowsB})`);
   }
 
   const runs = [];
   for (let i = 0; i < iterations; i++) {
     const rows = counts[i % counts.length];
     const m = await measureOne(() => setRows(rows));
+    // Verify the variant actually mounted `rows` DOM nodes. A
+    // silent failure here (variant reports apply=2ms but DOM still
+    // has the previous iteration's rows) used to ship as a
+    // legitimate-looking benchmark number — that's how the
+    // idealyst-native rebuild bug went unnoticed across multiple
+    // bench sessions. Throwing here causes the variant to fail
+    // loudly via the runner's `bench-error` path; the runner
+    // displays "error" status on the variant row instead of a
+    // fake-fast median.
+    verifyRowCount(rows, `iteration ${i + 1} (rows=${rows})`);
     runs.push({
       iter: i + 1,
       // `bucket` is the runner's column-grouping key. For the
@@ -100,6 +112,44 @@ export async function run({ setRows, params, onProgress }) {
   }
 
   return runs;
+}
+
+/// Verify the variant's DOM actually contains `expected` row nodes
+/// after a `setRows(expected)` call. Throws with a clear message on
+/// mismatch — the runner's outer try/catch turns the throw into a
+/// `bench-error` postBack so the variant is flagged in the UI.
+///
+/// Strategy: count every leaf element (zero element children) whose
+/// direct text content matches `/^Row #\d+$/`. This works for every
+/// current variant — Vue renders `<div>Row #N</div>`, Svelte/React
+/// render `<span>Row #N</span>`, idealyst renders `<span>Row #N</span>`,
+/// etc. — without needing per-variant cooperation.
+///
+/// The pattern is anchored (`^` … `$`) so substring matches inside
+/// larger labels can't accidentally inflate the count.
+function verifyRowCount(expected, context) {
+  const found = countRowLeaves();
+  if (found !== expected) {
+    throw new Error(
+      `rebuild verify failed: ${context} — expected ${expected} DOM rows ` +
+      `(elements with text matching /^Row #\\d+$/), found ${found}. ` +
+      `This usually means setRows didn't actually rebuild the list — the previous ` +
+      `iteration's DOM is still mounted. See the framework's reactive-match ` +
+      `arm-body tracking limitation (the variant's setRows must trigger the ` +
+      `Switch's discriminant, not just bump the count signal).`,
+    );
+  }
+}
+
+function countRowLeaves() {
+  const all = document.querySelectorAll('*');
+  let count = 0;
+  for (const el of all) {
+    if (el.children.length !== 0) continue;
+    const txt = el.textContent;
+    if (txt && /^Row #\d+$/.test(txt.trim())) count++;
+  }
+  return count;
 }
 
 /// Time a single rebuild. Returns `{ apply, firstPaint, worstFrame }`

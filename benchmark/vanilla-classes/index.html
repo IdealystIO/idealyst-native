@@ -219,7 +219,123 @@
       }
     };
 
-    autoRunIfRequested({ setRows, setTheme });
+    // -----------------------------------------------------------
+    // Granular suite: per-row counter texts. The reference path
+    // for "framework with per-leaf reactivity" — we just keep a
+    // `Vec<HTMLElement>` of leaf spans and walk it on each bump.
+    // -----------------------------------------------------------
+    let counterLeaves = [];
+
+    const setupCounters = async (n) => {
+      // Reuse the page/list chrome we already minted (so the DOM
+      // stays themed). Just clear the list and stamp N counter rows.
+      const theme = isDark ? DARK : LIGHT;
+      const tag = `g-${++toggleN}`;
+      const { rowEven, rowOdd, textCls } = mintRules(theme, tag);
+      list.replaceChildren();
+      counterLeaves = new Array(n);
+      const frag = document.createDocumentFragment();
+      for (let i = 0; i < n; i++) {
+        const row = document.createElement('div');
+        row.className = (i % 2 === 0) ? rowEven : rowOdd;
+        const span = document.createElement('span');
+        span.className = textCls;
+        span.textContent = `row ${i}: c=0`;
+        row.appendChild(span);
+        frag.appendChild(row);
+        counterLeaves[i] = span;
+      }
+      list.appendChild(frag);
+    };
+
+    // O(1) — direct `nodeValue` write on the cached leaf.
+    const bumpCounter = async (i, v) => {
+      const span = counterLeaves[i];
+      if (span) span.firstChild.nodeValue = `row ${i}: c=${v}`;
+    };
+
+    // O(end - start) — straight loop. This is the per-leaf cost
+    // ceiling: there's no smarter way to update K disjoint leaves.
+    const bumpRange = async (s, e, v) => {
+      e = Math.min(e, counterLeaves.length);
+      for (let i = s; i < e; i++) {
+        const span = counterLeaves[i];
+        if (span) span.firstChild.nodeValue = `row ${i}: c=${v}`;
+      }
+    };
+
+    // -----------------------------------------------------------
+    // Reactive-style suite: each row's background swaps between
+    // two colors. The honest per-element baseline — walk the row
+    // list and set `style.background` directly. CSS-var variants
+    // can swap with one root write; this variant can't.
+    // -----------------------------------------------------------
+    const COLOR_A = '#5b6cff';
+    const COLOR_B = '#ff5b6c';
+    // Tracks each row's per-row override: null → follow shared,
+    // otherwise a concrete hex used in `setSharedColor`'s walk.
+    let pointOverrides = [];
+    // Cached row element refs, parallel to pointOverrides.
+    let rstyleRows = [];
+    let currentShared = COLOR_A;
+
+    const setupReactiveStyles = async (n) => {
+      // Mint a single text-class rule we can stamp on the leaf
+      // span. Each row's bg is applied as an inline style so
+      // setSharedColor can walk + overwrite it without re-minting.
+      const theme = isDark ? DARK : LIGHT;
+      const tag = `rs-${++toggleN}`;
+      // We don't actually need rowEven/rowOdd here — the row's
+      // visible bg comes from the inline style. mintRules still
+      // updates the page chrome which keeps the test page looking
+      // sane during dev runs.
+      const { textCls } = mintRules(theme, tag);
+      list.replaceChildren();
+      pointOverrides = new Array(n).fill(null);
+      rstyleRows = new Array(n);
+      currentShared = COLOR_A;
+      const frag = document.createDocumentFragment();
+      for (let i = 0; i < n; i++) {
+        const row = document.createElement('div');
+        row.style.cssText =
+          'display:flex;flex-direction:column;justify-content:center;' +
+          'padding:8px 16px;font-size:13px;height:36px;color:' + theme.text + ';' +
+          'background:' + COLOR_A + ';';
+        const span = document.createElement('span');
+        span.className = textCls;
+        span.textContent = `rstyle ${i}`;
+        row.appendChild(span);
+        frag.appendChild(row);
+        rstyleRows[i] = row;
+      }
+      list.appendChild(frag);
+    };
+
+    // O(N) — walk every row and set its `background` to the new
+    // shared color, EXCEPT rows that have a per-row override.
+    // This is the honest cost a per-element framework pays when a
+    // shared signal fans out to N subscribers.
+    const setSharedColor = async (name) => {
+      const newShared = (name === 'B') ? COLOR_B : COLOR_A;
+      currentShared = newShared;
+      for (let i = 0; i < rstyleRows.length; i++) {
+        if (pointOverrides[i] != null) continue;
+        rstyleRows[i].style.background = newShared;
+      }
+    };
+
+    // O(1) — write one row's inline bg directly.
+    const setPointColor = async (i, name) => {
+      const c = (name === 'B') ? COLOR_B : COLOR_A;
+      pointOverrides[i] = c;
+      if (rstyleRows[i]) rstyleRows[i].style.background = c;
+    };
+
+    autoRunIfRequested({
+      setRows, setTheme,
+      setupCounters, bumpCounter, bumpRange,
+      setupReactiveStyles, setSharedColor, setPointColor,
+    });
   </script>
 </body>
 </html>

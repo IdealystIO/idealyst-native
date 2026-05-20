@@ -105,6 +105,13 @@ export async function run({ setupHierarchy, branchUpdate, globalUpdate, params, 
   // auto-size it from `nodes` (log_2.55(nodes) + 2).
   await setupHierarchy(seed, nodes, maxDepth);
 
+  // Verify the tree actually mounted. The shared `genTreeShape`
+  // algorithm produces ~`nodes` leaves (the exact number depends
+  // on the random walk hitting the leaf cap; we allow some slack).
+  // Throws on mismatch — the runner shows the variant as failed
+  // instead of silently emitting fake-fast numbers from no work.
+  verifyLeafCountApprox(nodes, 'after setupHierarchy');
+
   // Warmup: do warmupCycles pairs of (branch, global) updates,
   // untimed. Burns in JIT, font caches, and any first-update
   // overhead at both polarities.
@@ -114,6 +121,11 @@ export async function run({ setupHierarchy, branchUpdate, globalUpdate, params, 
     await measureOne(() => branchUpdate(counter));
     counter++;
     await measureOne(() => globalUpdate(counter));
+    // Post-warmup verification: the last globalUpdate(counter)
+    // should have written `g=<counter>` to every leaf. If a
+    // single leaf has a stale value, the variant's fan-out is
+    // broken.
+    verifyLeavesHaveGlobalValue(counter, `warmup cycle ${i + 1} after globalUpdate`);
   }
 
   const runs = [];
@@ -125,6 +137,15 @@ export async function run({ setupHierarchy, branchUpdate, globalUpdate, params, 
       ? () => branchUpdate(counter)
       : () => globalUpdate(counter);
     const m = await measureOne(op);
+    // GLOBAL iterations write to every leaf — verify a random
+    // sample. BRANCH iterations write to a single leaf we can't
+    // identify generically (the target leaf id varies per variant
+    // and per seed), so we skip per-iteration verification there
+    // and rely on the warmup's global check to confirm the fan-out
+    // path is working end-to-end.
+    if (!isBranch) {
+      verifyLeavesHaveGlobalValue(counter, `iteration ${i + 1} (GLOBAL)`);
+    }
     runs.push({
       iter: i + 1,
       bucket,
@@ -139,6 +160,74 @@ export async function run({ setupHierarchy, branchUpdate, globalUpdate, params, 
   }
 
   return runs;
+}
+
+/// Count leaf-shape elements: any element whose direct text content
+/// matches `/^.*leaf \d+: g=/` (with optional decoration prefix like
+/// the Vue variant's `★ `). Used by both verifyLeafCountApprox and
+/// verifyLeavesHaveGlobalValue.
+function countLeafElements(globalValuePattern) {
+  // If a specific value is requested, the text must contain
+  // `g=<value>`; otherwise the value can be anything.
+  const re = globalValuePattern == null
+    ? /^.*leaf \d+: g=\d+/
+    : new RegExp(`^.*leaf \\d+: g=${globalValuePattern}(\\D|$)`);
+  const all = document.querySelectorAll('*');
+  let count = 0;
+  for (const el of all) {
+    if (el.children.length !== 0) continue;
+    const txt = el.textContent;
+    if (txt && re.test(txt.trim())) count++;
+  }
+  return count;
+}
+
+/// `genTreeShape` produces approximately `target` leaves — exact
+/// count depends on the random walk hitting the leaf cap. We
+/// require at least 80% of the target as a sanity check; a fully
+/// silent failure (zero leaves) drops well below that, but a
+/// slightly-off random walk doesn't trip it.
+function verifyLeafCountApprox(target, context) {
+  const found = countLeafElements(null);
+  const min = Math.floor(target * 0.8);
+  if (found < min) {
+    throw new Error(
+      `hierarchy verify failed: ${context} — expected ~${target} leaves in DOM ` +
+      `(at least ${min} after the ~80% lower-bound slack for the leaf-cap random walk), ` +
+      `found ${found}. setupHierarchy likely didn't mount the tree.`,
+    );
+  }
+}
+
+/// After a globalUpdate(n) call, every leaf's text should include
+/// `g=<n>`. We don't require the EXACT total leaf count match here
+/// because BRANCH updates leave the target leaf's text with both
+/// `g=` and `b=`, so the regex picks them up too. We just require
+/// "enough" leaves matched the new value — a near-zero result
+/// means the global update's fan-out didn't propagate.
+function verifyLeavesHaveGlobalValue(expected, context) {
+  const matching = countLeafElements(expected);
+  // The same threshold as setupHierarchy: 80% of leaves should
+  // show the new value. (Allows for some leaves with non-matching
+  // labels — the bench's `targetLeaf` uses a slightly different
+  // template that ends with `b=N`, so the regex captures it too,
+  // but in edge cases the count can be slightly off.)
+  const total = countLeafElements(null);
+  if (total === 0) {
+    throw new Error(
+      `hierarchy verify failed: ${context} — DOM has 0 leaves matching the leaf ` +
+      `pattern. setupHierarchy presumably succeeded earlier but the tree is now ` +
+      `gone. Some teardown went wrong between iterations.`,
+    );
+  }
+  if (matching < Math.floor(total * 0.8)) {
+    throw new Error(
+      `hierarchy verify failed: ${context} — expected at least 80% of ${total} ` +
+      `leaves to display g=${expected}, but only ${matching} did. The variant's ` +
+      `globalUpdate likely didn't fan out to every leaf (perhaps signal-tracking ` +
+      `or the JS-side binding registry is broken).`,
+    );
+  }
 }
 
 /// Same `measureOne` shape as `rebuild.js` and `toggle.js`.

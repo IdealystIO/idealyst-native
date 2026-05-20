@@ -1761,28 +1761,39 @@ fn try_build_repeat_batched<B: Backend + 'static>(
     let parent_identity = crate::current_identity();
     let slot_identity = crate::Identity::node(parent_identity, slot, None, None);
 
+    // Run the whole enqueue loop under one identity context — the
+    // slot's. The batched shape (View + Text + static style, no
+    // Effects, no scopes, no event handlers) has no per-row
+    // identity-keyed bookkeeping: there's no per-row Effect to attach
+    // to a Scope, no per-row Signal to register against an Identity,
+    // and no per-row `backend.create_*` call to feed
+    // `CURRENT_IDENTITY` to a recording backend. The only thing the
+    // outer walker reads `current_identity()` for is the slot-level
+    // identity used by `execute_batch` (one call total) and
+    // `register_static_cohort_batch` (also one call total) — both
+    // run AFTER this loop and see `slot_identity` already.
+    //
+    // Previously we computed `Identity::node(slot_identity, i, None,
+    // None)` per row and wrapped each iteration in
+    // `with_current_identity(row_id, ...)`. The mix is a SipHash —
+    // ~1µs/call — so per-row identity work was ~10ms at 10k rows
+    // (the dominant cost in `enqueue_loop` after style minting).
+    // Backends that observe `CURRENT_IDENTITY` mid-loop now see the
+    // slot identity; that's fine, no observer cares about per-row
+    // identities for the batchable shape.
     #[cfg(feature = "debug-stats")]
     let _t_enqueue_loop = crate::debug::now_micros();
-    for i in 0..count {
-        let row_prim = row_builder(i);
-        // Row identity matches the per-call path's identity exactly
-        // so identity-keyed bookkeeping (hot-reload, robot, etc.)
-        // is unchanged.
-        let row_id = crate::Identity::node(slot_identity, i as u32, None, None);
-        // The per-row scope is implicit — the row's effects (none in
-        // the batchable shape) would adopt the active scope set by
-        // `with_current_identity`. We mirror that wrapping for
-        // identity, but the body is just enqueue logic.
-        let queued = crate::with_current_identity(row_id, || {
-            enqueue_primitive(backend, &mut batch, row_prim, &mut style_attachments)
-        });
-        match queued {
-            Some(top_id) => row_top_ids.push(top_id),
-            None => {
-                // Non-batchable shape encountered. Abort.
-                return false;
-            }
+    let queued_all = crate::with_current_identity(slot_identity, || -> Option<()> {
+        for i in 0..count {
+            let row_prim = row_builder(i);
+            let queued = enqueue_primitive(backend, &mut batch, row_prim, &mut style_attachments)?;
+            row_top_ids.push(queued);
         }
+        Some(())
+    });
+    if queued_all.is_none() {
+        // Non-batchable shape encountered somewhere in the loop. Abort.
+        return false;
     }
     #[cfg(feature = "debug-stats")]
     crate::debug::record_apply_phase(
@@ -1924,7 +1935,18 @@ fn enqueue_primitive<B: Backend + 'static>(
                     // Rust-side immediately. This is the same call
                     // `apply_one` would make on the per-call path —
                     // we just defer the *DOM apply* to the batch.
-                    {
+                    //
+                    // Cheap fast-path: if the sheet's already known to
+                    // the registration table, skip the full
+                    // `ensure_registered_with` invocation. The full
+                    // version does 6 Rc clones, builds 6 closures, and
+                    // sweeps the dead-Weak table BEFORE its own
+                    // already-registered early-return — per-row that's
+                    // ~1µs of pure bookkeeping (3% of mount time at
+                    // 10k rows in a Repeat where every row shares one
+                    // sheet). The peek path is a single
+                    // thread-local-keyed `contains_key`.
+                    if !style::is_registered(&app.sheet) {
                         let backend_for_register = backend.clone();
                         let backend_for_unregister = backend.clone();
                         let backend_for_install_tokens = backend.clone();

@@ -66,6 +66,13 @@ export async function run({ setRows, setTheme, params, onProgress }) {
     await setRows(rows);
   }
 
+  // Verify the row mount worked before going into the toggle loop.
+  // A silent "0 rows in DOM" means later toggle measurements would
+  // be theming nothing — meaningless numbers.
+  if (typeof setRows === 'function') {
+    verifyRowsMounted(rows, 'after setRows in toggle suite');
+  }
+
   // Page starts in light theme by convention. Warmup toggles
   // hit both directions to warm JIT, font, and style caches at
   // both polarities before measurement starts.
@@ -73,6 +80,7 @@ export async function run({ setRows, setTheme, params, onProgress }) {
   for (let i = 0; i < warmupCycles; i++) {
     currentDark = !currentDark;
     await measureOne(() => setTheme(currentDark ? 'dark' : 'light'));
+    verifyThemeApplied(currentDark, `warmup toggle ${i + 1}`);
   }
 
   const runs = [];
@@ -80,6 +88,12 @@ export async function run({ setRows, setTheme, params, onProgress }) {
     currentDark = !currentDark;
     const direction = currentDark ? 0 : 1;  // 0 = L→D, 1 = D→L
     const m = await measureOne(() => setTheme(currentDark ? 'dark' : 'light'));
+    // Verify the toggle actually re-styled the page. If the variant
+    // silently no-ops (e.g. setTheme reachable but the framework
+    // didn't fan out the change), the bench would otherwise emit
+    // sub-millisecond apply numbers for "theme toggles" that
+    // changed nothing.
+    verifyThemeApplied(currentDark, `iteration ${i + 1} (${currentDark ? 'L→D' : 'D→L'})`);
     runs.push({
       iter: i + 1,
       bucket: direction,
@@ -92,6 +106,66 @@ export async function run({ setRows, setTheme, params, onProgress }) {
   }
 
   return runs;
+}
+
+/// Verify the row list is actually mounted. Same shape as
+/// `rebuild.js`'s row check — leaf elements whose direct text
+/// matches `Row #N`.
+function verifyRowsMounted(expected, context) {
+  const all = document.querySelectorAll('*');
+  let count = 0;
+  for (const el of all) {
+    if (el.children.length !== 0) continue;
+    const txt = el.textContent;
+    if (txt && /^Row #\d+$/.test(txt.trim())) count++;
+  }
+  if (count !== expected) {
+    throw new Error(
+      `toggle verify failed: ${context} — expected ${expected} rows in DOM, ` +
+      `found ${count}. The toggle suite needs a mounted row list to theme; ` +
+      `if rows didn't mount, every subsequent setTheme measurement is meaningless.`,
+    );
+  }
+}
+
+/// Verify the theme actually applied by sampling computed styles.
+/// We look for ANY element whose computed `background-color` matches
+/// the theme's expected background. CSS-variable, class-swap, and
+/// inline-style variants all end up with at least one element painted
+/// the theme's background color, so this is the most variant-agnostic
+/// check that still catches the "setTheme returned but nothing
+/// changed" silent-failure shape.
+///
+/// Colors here mirror the canonical LIGHT/DARK exports in
+/// `instrument.js`. Keep these in sync if those change.
+const LIGHT_BG_RGB = 'rgb(247, 247, 251)'; // #f7f7fb
+const DARK_BG_RGB = 'rgb(15, 17, 21)';     // #0f1115
+
+function verifyThemeApplied(isDark, context) {
+  const expected = isDark ? DARK_BG_RGB : LIGHT_BG_RGB;
+  const opposite = isDark ? LIGHT_BG_RGB : DARK_BG_RGB;
+  let hasExpected = false;
+  let hasOpposite = false;
+  for (const el of document.querySelectorAll('*')) {
+    const bg = window.getComputedStyle(el).backgroundColor;
+    if (bg === expected) hasExpected = true;
+    else if (bg === opposite) hasOpposite = true;
+    if (hasExpected && hasOpposite) break;
+  }
+  if (!hasExpected) {
+    const dir = isDark ? 'dark' : 'light';
+    throw new Error(
+      `toggle verify failed: ${context} — after setTheme('${dir}'), no element ` +
+      `in the DOM has computed background-color ${expected} (the canonical ` +
+      `${dir} background). The variant's setTheme likely didn't propagate the ` +
+      `change to any styled element. ` +
+      (hasOpposite
+        ? `(Elements still painted with the OPPOSITE theme's background — ` +
+          `the theme change reverted, or never applied at all.)`
+        : `(No elements match either theme — the bench may be measuring an ` +
+          `unstyled DOM.)`),
+    );
+  }
 }
 
 /// Same `measureOne` as `rebuild.js`. Repeated inline rather

@@ -4,3 +4,4 @@ target/
 /examples/hello-ios/ios/build
 /examples/hello-roku/dist
 .claude/scheduled_tasks.lock
+/benchmark/runner/node_modules

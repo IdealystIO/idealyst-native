@@ -200,6 +200,26 @@ stylesheet! {
     }
 }
 
+// Stylesheet used by the reactive-style suite. The row's
+// `background` is overridable via `.background(color_or_signal)`,
+// which is what makes the per-row Effect reactive: passing a
+// closure (or signal) here routes through `StyleSource::Reactive`
+// in the walker and gives the row its own per-node Effect that
+// re-fires on any signal the closure reads.
+stylesheet! {
+    pub RStyleRow<Theme> {
+        base(_t) {
+            padding_horizontal: 16.0,
+            padding_vertical: 8.0,
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            font_size: 13.0,
+            height: 36.0,
+            justify_content: JustifyContent::Center,
+        }
+        override background: Color
+    }
+}
+
 stylesheet! {
     pub PerfRow<Theme> {
         base(_t) {
@@ -289,6 +309,31 @@ thread_local! {
     /// whether that specific Leaf subscribes to `BRANCH_COUNTER`
     /// in addition to `GLOBAL_COUNTER`.
     static TARGET_LEAF_ID: std::cell::Cell<u32> = const { std::cell::Cell::new(u32::MAX) };
+
+    // --- granular suite (mode = 2) -------------------------------
+    /// Per-row counter signals. Each row binds its own. Length =
+    /// COUNTER_COUNT after `setup_counters`. Reset on every
+    /// `setup_counters` call.
+    static COUNTERS: RefCell<Vec<Signal<u32>>> = const { RefCell::new(Vec::new()) };
+    /// Number of counter rows mounted. Drives the granular-mode
+    /// `for` loop's range. Bumped on `setup_counters`; the inner
+    /// match arm reads it to size the row list.
+    static COUNTER_COUNT: RefCell<Option<Signal<usize>>> = const { RefCell::new(None) };
+
+    // --- reactive-style suite (mode = 3) -------------------------
+    /// Shared color signal — every reactive-style row's bg reads
+    /// from this. Driven by `set_shared_color`. 0 → color A,
+    /// 1 → color B. (Two-state so the verifier knows which RGB
+    /// to look for.)
+    static SHARED_COLOR: RefCell<Option<Signal<u32>>> = const { RefCell::new(None) };
+    /// Per-row color signals. Each row's bg blends shared + point:
+    /// the row's actual bg is determined by which of (shared OR
+    /// point) was most recently bumped. Simpler implementation:
+    /// the row reads BOTH signals and picks point if set, else
+    /// shared. (See `build_reactive_style_row` for the resolution
+    /// rule.)
+    static POINT_COLORS: RefCell<Vec<Signal<u32>>> = const { RefCell::new(Vec::new()) };
+    static RSTYLE_COUNT: RefCell<Option<Signal<usize>>> = const { RefCell::new(None) };
 }
 
 // =============================================================================
@@ -458,6 +503,16 @@ fn app(initial_rows: usize) -> Primitive {
     let branch_counter = signal!(0u32);
     BRANCH_COUNTER.with(|c| *c.borrow_mut() = Some(branch_counter));
 
+    // Granular + reactive-style suite signals. Sized to 0 at boot —
+    // each suite's `setup_*` call fills the per-row signal vectors and
+    // bumps the count signal so the matching Switch arm builds.
+    let counter_count = signal!(0usize);
+    COUNTER_COUNT.with(|c| *c.borrow_mut() = Some(counter_count));
+    let rstyle_count = signal!(0usize);
+    RSTYLE_COUNT.with(|c| *c.borrow_mut() = Some(rstyle_count));
+    let shared_color = signal!(0u32);
+    SHARED_COLOR.with(|c| *c.borrow_mut() = Some(shared_color));
+
     // Register the two hierarchy-bench signals with the web
     // backend's JS-side reactive layer so signal writes flow into
     // JS for per-binding fan-out (instead of firing N Rust
@@ -503,10 +558,102 @@ fn app(initial_rows: usize) -> Primitive {
                                     }
                                 }
                             }
+                            2u32 => {
+                                // Granular suite — N rows, each binding its own
+                                // counter signal via `text_fmt!` + `bind!`. The
+                                // JS-side text bridge handles per-binding fan-out
+                                // so a `bump_counter(i, v)` becomes one JS-side
+                                // notifier call, not a fresh Rust Effect per row.
+                                let n: usize = counter_count.get();
+                                let sigs: Vec<Signal<u32>> =
+                                    COUNTERS.with(|c| c.borrow().clone());
+                                ui! {
+                                    ScrollView(style = perf_list_style()) {
+                                        for i in 0..n {
+                                            View(style = PerfRow().parity(if i % 2 == 0 {
+                                                PerfRowParity::Even
+                                            } else {
+                                                PerfRowParity::Odd
+                                            })) {
+                                                // `bind!(sigs[i])` subscribes via
+                                                // the JS-side binding registry, so
+                                                // each counter update fans out
+                                                // through a single notifier — not
+                                                // a Rust Effect per row.
+                                                {
+                                                    framework_core::text_fmt!(
+                                                        "row {}: c={}",
+                                                        i,
+                                                        framework_core::bind!(sigs[i]),
+                                                    )
+                                                    .into_primitive()
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            3u32 => {
+                                // Reactive-style suite — N rows whose
+                                // `background` reads SHARED_COLOR + the row's
+                                // own POINT_COLORS[i] signal inside a reactive
+                                // style closure. Each row's `attach_style_reactive`
+                                // Effect subscribes to whichever signals the
+                                // closure read; a SHARED bump fans out to all
+                                // N Effects, a POINT(i) bump fans out to just
+                                // row i's. (This is the path the static-style
+                                // rebuild bench skips — exercises the per-node
+                                // style Effect path end-to-end.)
+                                let n: usize = rstyle_count.get();
+                                let points: Vec<Signal<u32>> =
+                                    POINT_COLORS.with(|p| p.borrow().clone());
+                                ui! {
+                                    ScrollView(style = perf_list_style()) {
+                                        for i in 0..n {
+                                            // Capture per-row signal handle. The
+                                            // outer style closure is moved into
+                                            // the attach_style_reactive Effect.
+                                            // We construct the StyleApplication
+                                            // manually rather than going through
+                                            // the `RStyleRow()` builder because
+                                            // `IntoStyleSource for F: Fn() ->
+                                            // StyleApplication` is what makes
+                                            // the style reactive; the builder
+                                            // returns its OWN `StyleSource` and
+                                            // would lose the reactive routing.
+                                            View(style = {
+                                                let pt = points[i];
+                                                let sh = shared_color;
+                                                move || {
+                                                    // Resolution: if the point
+                                                    // signal is non-zero, use the
+                                                    // point's choice (1 = A,
+                                                    // 2 = B); otherwise the row
+                                                    // follows the shared signal.
+                                                    let p = pt.get();
+                                                    let s = sh.get();
+                                                    let idx = if p == 0 { s } else { p - 1 };
+                                                    let color = if idx == 0 {
+                                                        Color("#5b6cff".into())
+                                                    } else {
+                                                        Color("#ff5b6c".into())
+                                                    };
+                                                    framework_core::StyleApplication::new(
+                                                        RStyleRow::sheet(),
+                                                    )
+                                                    .override_background(color)
+                                                }
+                                            }) {
+                                                Text { format!("rstyle {}", i) }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             _ => {
-                                // Hierarchy mode. Inner match on
-                                // tree_version so changing seed/
-                                // nodes rebuilds the whole tree.
+                                // Hierarchy mode (default 1u32). Inner
+                                // match on tree_version so changing
+                                // seed/nodes rebuilds the whole tree.
                                 ui! {
                                     match tree_version.get() {
                                         _v => {
@@ -610,21 +757,41 @@ pub fn set_theme_by_name(name: &str) {
 /// Change the row count. Wrapped by the arena's `runToggle(...)`
 /// so the resulting mount cost is measurable. Clamps to a sane
 /// max (100k) so a stray huge value doesn't lock the browser.
+///
+/// IMPORTANT: writes `mode` unconditionally on every call. The
+/// surrounding tree is structured as `match mode.get() { ... }`
+/// (a reactive switch), with the `mode=0` arm body reading
+/// `count.get()`. The framework's reactive-`match` lowering wraps
+/// arm-body construction in `untrack(..)`, so reads inside the arm
+/// body do NOT subscribe the Switch's Effect — only the
+/// discriminant's reads do. That means a bare `count.set(n)` alone
+/// is invisible to the Switch and the row list never rebuilds.
+///
+/// The fix is to also touch `mode` so the Switch's Effect re-fires.
+/// `Signal::set` notifies subscribers unconditionally (no
+/// value-equality skip), so `mode.set(0)` when mode is already 0
+/// still triggers the rebuild — at which point the arm body reads
+/// the latest `count.get()` and produces the new row list.
+///
+/// We could fix this at the framework level (e.g. by including
+/// `count` in the discriminant), but it's much cheaper to just
+/// keep the unconditional write here.
 #[wasm_bindgen]
 pub fn set_rows(n: usize) {
     let clamped = n.clamp(1, ROW_MAX);
-    // Force back to rows mode in case the hierarchy suite left
-    // us in tree mode.
-    MODE.with(|c| {
-        if let Some(sig) = c.borrow().as_ref() {
-            if sig.get() != 0 {
-                sig.set(0);
-            }
-        }
-    });
     ROW_COUNT.with(|c| {
         if let Some(sig) = c.borrow().as_ref() {
             sig.set(clamped);
+        }
+    });
+    // Unconditional — this is what actually triggers the rebuild.
+    // Without it, the rebuild bench stays stuck on its initial
+    // row count for every subsequent iteration (silent failure;
+    // the bench reports apply times for set-rows calls that did
+    // not actually mount any new DOM).
+    MODE.with(|c| {
+        if let Some(sig) = c.borrow().as_ref() {
+            sig.set(0);
         }
     });
 }
@@ -681,6 +848,146 @@ pub fn global_update(n: u32) {
     GLOBAL_COUNTER.with(|c| {
         if let Some(sig) = c.borrow().as_ref() {
             sig.set(n);
+        }
+    });
+}
+
+// ----------------------------------------------------------------
+// Granular suite hooks (mode = 2)
+// ----------------------------------------------------------------
+
+/// Mount `n` counter rows. Each row binds its own signal via the
+/// JS-side text-binding registry, so a `bump_counter(i, v)` is one
+/// JS notifier call (not a Rust Effect per row). Tearing down a
+/// previous mount: we drop the existing signal Vec and re-create.
+///
+/// The mode + count writes are batched so the Switch arm rebuilds
+/// exactly once. Without the batch, `MODE.set(2)` and
+/// `COUNTER_COUNT.set(n)` would each re-fire the Switch effect and
+/// the row list would build twice.
+#[wasm_bindgen]
+pub fn setup_counters(n: u32) {
+    let n = n.clamp(1, ROW_MAX as u32) as usize;
+    // Fresh signals each setup — old ones drop with the previous
+    // scope when the Switch arm rebuilds.
+    let sigs: Vec<Signal<u32>> = (0..n).map(|_| Signal::new(0u32)).collect();
+    // Register each counter signal as a JS-side notifier so
+    // `bump_counter` updates flow through the batched text bridge
+    // instead of firing per-row Rust Effects.
+    BACKEND.with(|s| {
+        if let Some(b_rc) = s.borrow().as_ref() {
+            let mut b = b_rc.borrow_mut();
+            for sig in &sigs {
+                let sig_for_notify = *sig;
+                b.register_signal_for_js(sig.id(), move || {
+                    framework_core::untrack(|| sig_for_notify.get()).to_string()
+                });
+            }
+        }
+    });
+    COUNTERS.with(|c| *c.borrow_mut() = sigs);
+    framework_core::batch(|| {
+        MODE.with(|c| {
+            if let Some(sig) = c.borrow().as_ref() {
+                sig.set(2);
+            }
+        });
+        COUNTER_COUNT.with(|c| {
+            if let Some(sig) = c.borrow().as_ref() {
+                sig.set(n);
+            }
+        });
+    });
+}
+
+/// Bump one row's counter to `v`. Routes through the JS-side text
+/// binding for that signal.
+#[wasm_bindgen]
+pub fn bump_counter(i: u32, v: u32) {
+    COUNTERS.with(|c| {
+        let c = c.borrow();
+        if let Some(sig) = c.get(i as usize) {
+            sig.set(v);
+        }
+    });
+}
+
+/// Bump every counter in `[start, end)` to `v` inside a single
+/// reactive `batch` so subscriber fan-out coalesces (each subscriber
+/// runs at most once even if multiple writes touch its deps).
+#[wasm_bindgen]
+pub fn bump_range(start: u32, end: u32, v: u32) {
+    let s = start as usize;
+    let e = (end as usize).min(COUNTERS.with(|c| c.borrow().len()));
+    if s >= e {
+        return;
+    }
+    framework_core::batch(|| {
+        COUNTERS.with(|c| {
+            let c = c.borrow();
+            for sig in c.iter().skip(s).take(e - s) {
+                sig.set(v);
+            }
+        });
+    });
+}
+
+// ----------------------------------------------------------------
+// Reactive-style suite hooks (mode = 3)
+// ----------------------------------------------------------------
+
+/// Mount `n` reactive-style rows. Each row's `background` reads
+/// `SHARED_COLOR` and the row's own `POINT_COLORS[i]` inside a
+/// reactive style closure — see the mode = 3 arm in `app()`.
+#[wasm_bindgen]
+pub fn setup_reactive_styles(n: u32) {
+    let n = n.clamp(1, ROW_MAX as u32) as usize;
+    let points: Vec<Signal<u32>> = (0..n).map(|_| Signal::new(0u32)).collect();
+    POINT_COLORS.with(|p| *p.borrow_mut() = points);
+    // Reset shared color to 0 (== color A) so the suite starts in
+    // a known state on each setup.
+    SHARED_COLOR.with(|c| {
+        if let Some(sig) = c.borrow().as_ref() {
+            sig.set(0);
+        }
+    });
+    framework_core::batch(|| {
+        MODE.with(|c| {
+            if let Some(sig) = c.borrow().as_ref() {
+                sig.set(3);
+            }
+        });
+        RSTYLE_COUNT.with(|c| {
+            if let Some(sig) = c.borrow().as_ref() {
+                sig.set(n);
+            }
+        });
+    });
+}
+
+/// Set the shared color. `name` is "A" or "B" — anything else is
+/// treated as A. Fans out to every row's reactive style Effect.
+#[wasm_bindgen]
+pub fn set_shared_color(name: &str) {
+    let v: u32 = if name == "B" { 1 } else { 0 };
+    SHARED_COLOR.with(|c| {
+        if let Some(sig) = c.borrow().as_ref() {
+            sig.set(v);
+        }
+    });
+}
+
+/// Set row `i`'s point color. `name` is "A" / "B" / anything else
+/// (anything else is treated as A). Non-zero point overrides
+/// shared for that row. Encoding: 0 = follow shared, 1 = force A,
+/// 2 = force B.
+#[wasm_bindgen]
+pub fn set_point_color(i: u32, name: &str) {
+    let v: u32 = if name == "B" { 2 } else { 1 };
+    POINT_COLORS.with(|p| {
+        let p = p.borrow();
+        if let Some(sig) = p.get(i as usize) {
+            sig.set(v);
         }
     });
 }

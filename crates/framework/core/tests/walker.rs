@@ -17,5 +17,7 @@ mod common;
 mod primitives;
 #[path = "walker/lifecycle.rs"]
 mod lifecycle;
+#[path = "walker/rebuild.rs"]
+mod rebuild;
 #[path = "walker/refs.rs"]
 mod refs;
