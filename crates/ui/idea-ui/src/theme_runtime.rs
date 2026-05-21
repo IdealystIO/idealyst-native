@@ -1,19 +1,21 @@
-//! Theme-as-struct pattern: a thin wrapper over `framework-core`'s
-//! token primitives.
+//! Theme-as-struct runtime — the previous `framework-theme` crate,
+//! folded into idea-ui.
 //!
 //! `framework-core` cares about **tokens** (named values, plus
-//! `Tokenized<T>` references in style rules). It deliberately does not
-//! care how the author organizes those tokens.
+//! `Tokenized<T>` references in style rules). It deliberately does
+//! not care how the author organizes those tokens. This module
+//! provides the optional "theme is a struct that implements
+//! [`ThemeTokens`]" pattern that lets author code keep a typed
+//! `active_theme()` stash, swap themes at runtime, and drive multi-
+//! variant theme selection from a `Signal<String>`.
 //!
-//! This crate provides the optional "theme is a struct that implements
-//! [`ThemeTokens`]" pattern that the previous, monolithic
-//! `framework-core` exposed. Users who want a typed active theme stash
-//! (`active_theme()`) plus runtime theme swap (`set_theme()`) plus the
-//! `install_themes(signal, &[(name, theme), ...])` multi-variant helper
-//! call into this crate; everything else stays in `framework-core`.
+//! Lives in idea-ui because the concept of "a theme" is a user-side
+//! convention — it's idiomatic for app code but not a framework
+//! contract. idea-ui's own typed `IdeaTheme` API (`light_theme()`
+//! etc.) builds directly on the surface defined here.
 //!
 //! ```no_run
-//! use framework_theme::{install_theme, set_theme, ThemeTokens, TokenEntry, TokenValue};
+//! use idea_ui::{install_theme, set_theme, ThemeTokens, TokenEntry, TokenValue};
 //!
 //! struct MyTheme { accent: framework_core::Color }
 //! impl ThemeTokens for MyTheme {
@@ -26,7 +28,6 @@
 //! }
 //!
 //! install_theme(MyTheme { accent: "#06f".into() });
-//! // ...later, on a dark-mode toggle...
 //! set_theme(MyTheme { accent: "#39f".into() });
 //! ```
 
@@ -37,38 +38,38 @@ use std::rc::Rc;
 
 use framework_core::{install_tokens, update_tokens, Effect, Signal};
 
-// Re-export the underlying token primitives for convenience so users
-// only need `framework_theme::*` for the legacy theme-struct pattern.
 pub use framework_core::{TokenEntry, TokenValue, Tokenized};
 
 /// A theme that exposes its tokens by name and concrete value.
 ///
 /// Implement on your theme struct (whatever shape it has); `tokens()`
 /// returns the `(name, value)` pairs that should be installed as
-/// runtime variables. The names should match the `name` fields of the
-/// `Tokenized::Token { name, .. }` variants the stylesheets construct.
+/// runtime variables. The names should match the `name` fields of
+/// the `Tokenized::Token { name, .. }` variants the stylesheets
+/// construct.
 pub trait ThemeTokens: Any {
     fn tokens(&self) -> Vec<TokenEntry>;
 }
 
 thread_local! {
-    /// The active theme. Wrapped in a `Signal<Rc<dyn Any>>` so effects
-    /// subscribe via the existing reactivity system and re-apply on
-    /// swap. Lives in this crate, not in framework-core — only callers
-    /// who use the theme-as-struct pattern need to read it.
+    /// The active theme. Wrapped in a `Signal<Rc<dyn Any>>` so
+    /// effects subscribe via the existing reactivity system and
+    /// re-apply on swap. Only callers who use the theme-as-struct
+    /// pattern read this; nothing in framework-core or backends
+    /// touches it.
     static ACTIVE_THEME: RefCell<Option<Signal<Rc<dyn Any>>>> = const { RefCell::new(None) };
 
-    /// Keepalive for [`install_themes`]'s internal Effect when called
-    /// outside any render scope (e.g. tests, top-level binaries). In
-    /// production this is unused — `install_themes` runs inside the
-    /// user's `app()` which holds an active scope and the scope owns
-    /// the slot.
+    /// Keepalive for [`install_themes`]'s internal Effect when
+    /// called outside any render scope (e.g. tests, top-level
+    /// binaries). In production this is unused — `install_themes`
+    /// runs inside the user's `app()` which holds an active scope
+    /// and the scope owns the slot.
     static INSTALL_THEMES_KEEPALIVE: RefCell<Vec<Effect>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Install the initial active theme. Call once at app startup before
-/// rendering. Stashes the theme as `Rc<dyn Any>` in this crate's
-/// signal and forwards its `tokens()` to
+/// Install the initial active theme. Call once at app startup
+/// before rendering. Stashes the theme as `Rc<dyn Any>` in this
+/// module's signal and forwards its `tokens()` to
 /// [`framework_core::install_tokens`].
 pub fn install_theme<T: ThemeTokens + 'static>(theme: T) {
     let tokens = theme.tokens();
@@ -82,7 +83,7 @@ pub fn install_theme<T: ThemeTokens + 'static>(theme: T) {
 /// [`framework_core::update_tokens`] (which wipes the framework's
 /// resolution cache, re-fires every styled effect via the tokens
 /// version signal, and pushes deltas to the backend) and re-fires
-/// this crate's [`active_theme`] signal so author code reading the
+/// this module's [`active_theme`] signal so author code reading the
 /// theme struct directly also re-runs.
 pub fn set_theme<T: ThemeTokens + 'static>(theme: T) {
     let tokens = theme.tokens();
@@ -102,9 +103,9 @@ pub fn set_theme<T: ThemeTokens + 'static>(theme: T) {
 }
 
 /// Install a multi-variant theme system with the active variant
-/// driven by a `Signal<String>`. The signal's current value names the
-/// initial active theme; an internal Effect watches the signal and
-/// calls [`set_theme`] whenever the name changes.
+/// driven by a `Signal<String>`. The signal's current value names
+/// the initial active theme; an internal Effect watches the signal
+/// and calls [`set_theme`] whenever the name changes.
 ///
 /// Variants must include an entry whose name matches the signal's
 /// initial value; that variant becomes the initially-active theme.
@@ -153,8 +154,8 @@ pub fn install_themes<T: ThemeTokens + Clone + 'static>(
 
 /// Read the active theme. Subscribes the current effect (if any) to
 /// theme changes — that's how reactive style application works for
-/// callers that read theme struct fields directly (as opposed to via
-/// tokenized stylesheet references).
+/// callers that read theme struct fields directly (as opposed to
+/// via tokenized stylesheet references).
 ///
 /// Panics if no theme has been installed. Call [`install_theme`]
 /// before render.
@@ -162,82 +163,7 @@ pub fn active_theme() -> Rc<dyn Any> {
     ACTIVE_THEME.with(|t| {
         t.borrow()
             .as_ref()
-            .expect("no theme installed; call framework_theme::install_theme(...) before rendering")
+            .expect("no theme installed; call idea_ui::install_theme(...) before rendering")
             .get()
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use framework_core::Color;
-
-    #[derive(Clone)]
-    struct TestTheme {
-        accent: Color,
-    }
-
-    impl ThemeTokens for TestTheme {
-        fn tokens(&self) -> Vec<TokenEntry> {
-            vec![TokenEntry {
-                name: "accent",
-                value: TokenValue::Color(self.accent.clone()),
-            }]
-        }
-    }
-
-    #[test]
-    fn install_theme_then_read() {
-        install_theme(TestTheme {
-            accent: Color("#06f".into()),
-        });
-        let t = active_theme();
-        let t: &TestTheme = t
-            .downcast_ref::<TestTheme>()
-            .expect("active theme is TestTheme");
-        assert_eq!(t.accent.0, "#06f");
-    }
-
-    #[test]
-    fn set_theme_updates_active() {
-        install_theme(TestTheme {
-            accent: Color("#06f".into()),
-        });
-        set_theme(TestTheme {
-            accent: Color("#f60".into()),
-        });
-        let t = active_theme();
-        let t: &TestTheme = t.downcast_ref::<TestTheme>().unwrap();
-        assert_eq!(t.accent.0, "#f60");
-    }
-
-    #[test]
-    fn install_themes_swaps_on_signal_change() {
-        let active: Signal<String> = Signal::new("light".to_string());
-        let variants = [
-            (
-                "light",
-                TestTheme {
-                    accent: Color("#000".into()),
-                },
-            ),
-            (
-                "dark",
-                TestTheme {
-                    accent: Color("#fff".into()),
-                },
-            ),
-        ];
-        install_themes(active, &variants);
-        // Initial: light.
-        let t = active_theme();
-        assert_eq!(t.downcast_ref::<TestTheme>().unwrap().accent.0, "#000");
-
-        // Flip the signal.
-        active.set("dark".to_string());
-        // The internal Effect re-runs synchronously on set; the swap
-        // is applied by the time `.set` returns.
-        let t = active_theme();
-        assert_eq!(t.downcast_ref::<TestTheme>().unwrap().accent.0, "#fff");
-    }
 }

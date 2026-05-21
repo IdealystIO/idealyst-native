@@ -215,17 +215,51 @@ impl IosBackend {
             }
             AnimProp::ForegroundColor => {
                 state.foreground_color = Some(value);
-                // `tintColor` is the closest UIKit-wide equivalent
-                // to a "foreground color" — it cascades to icon
-                // strokes, button text, and most interactive
-                // chrome. Specific widgets (UILabel `textColor`,
-                // UIButton `setTitleColor:`) intentionally aren't
-                // hit here — those are style-system territory and
-                // mirroring them would race with the static-style
-                // path. Authors animating a label colour should
-                // reach for that label's specific binding once the
-                // primitive-builder Phase 4 surface lands.
-                let _: () = unsafe { msg_send![&*view, setTintColor: &*ui_color] };
+                // Per-widget routing: UILabel and UIButton each
+                // own their text color via dedicated properties.
+                // Other UIView subclasses fall back to `tintColor`
+                // (icon strokes, interactive chrome, etc.).
+                //
+                // Without this split, animating `ForegroundColor`
+                // on a label was a no-op — tintColor doesn't
+                // cascade into UILabel's textColor.
+                match node {
+                    IosNode::Label(label) => {
+                        backend_ios_core::ios_log(
+                            "[anim] set_animated_color: Label path → setTextColor",
+                        );
+                        let _: () = unsafe {
+                            msg_send![label.as_ref(), setTextColor: &*ui_color]
+                        };
+                    }
+                    IosNode::Button(btn) => {
+                        // UIControlStateNormal = 0
+                        let _: () = unsafe {
+                            msg_send![
+                                btn.as_ref(),
+                                setTitleColor: &*ui_color,
+                                forState: 0u64
+                            ]
+                        };
+                    }
+                    other => {
+                        backend_ios_core::ios_log(&format!(
+                            "[anim] set_animated_color: {} path → setTintColor",
+                            match other {
+                                IosNode::View(_) => "View",
+                                IosNode::TextField(_) => "TextField",
+                                IosNode::Switch(_) => "Switch",
+                                IosNode::Slider(_) => "Slider",
+                                IosNode::ScrollView(_) => "ScrollView",
+                                IosNode::ActivityIndicator(_) => "ActivityIndicator",
+                                _ => "?",
+                            }
+                        ));
+                        let _: () = unsafe {
+                            msg_send![&*view, setTintColor: &*ui_color]
+                        };
+                    }
+                }
             }
             AnimProp::Opacity
             | AnimProp::TranslateX

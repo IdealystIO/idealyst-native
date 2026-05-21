@@ -39,7 +39,7 @@ use framework_core::{
     StyleRules, StyleSheet, TapRecognizer, TextHandle, Tokenized, TouchPhase, TouchResponse,
     Transform, Transition, ViewHandle,
 };
-use framework_theme::{install_theme, ThemeTokens, TokenEntry};
+use idea_ui::{install_theme, ThemeTokens, TokenEntry};
 use std::rc::Rc;
 
 /// Cap on lines kept in the visible log overlay. Older lines drop

@@ -66,7 +66,6 @@ fn write_project(
     let app_title = title_case(name);
 
     let fcore_dep = source.dep("crates/framework/core", &[]);
-    let ftheme_dep = source.dep("crates/framework/theme", &[]);
     let bweb_dep = source.dep("crates/backend/web", &[]);
 
     let cargo_toml = format!(
@@ -84,8 +83,7 @@ license = "MIT OR Apache-2.0"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-framework-core  = {fcore_dep}
-framework-theme = {ftheme_dep}
+framework-core = {fcore_dep}
 
 # Web build of the backend + the wasm-bindgen glue.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -138,25 +136,12 @@ fn project_lib_rs(lib_name: &str) -> String {
 //! everywhere.
 
 use framework_core::{{component, signal, ui, Primitive}};
-use framework_theme::{{install_theme, ThemeTokens, TokenEntry}};
 
 #[cfg(target_arch = "wasm32")]
 mod web;
 
-/// Starter theme — empty token set. Replace with a real one once you
-/// start using token-referencing styles (`Tokenized::token(...)`).
-/// Framework panics on render without a prior `install_theme(...)`,
-/// even when nothing references a token.
-struct StarterTheme;
-
-impl ThemeTokens for StarterTheme {{
-    fn tokens(&self) -> Vec<TokenEntry> {{ Vec::new() }}
-}}
-
 #[component]
 pub fn app() -> Primitive {{
-    install_theme(StarterTheme);
-
     let count = signal!(0i32);
 
     ui! {{

@@ -33,7 +33,7 @@ use framework_core::{
     Shadow, Signal, StrokeAnimation, StyleSource, TabNavigator, TabSpec, TabsHandle, TextAlign,
     Tokenized, ViewportPlacement,
 };
-use framework_theme::{install_theme, set_theme};
+use idea_ui::{install_theme, set_theme};
 use std::collections::HashMap;
 
 /// Custom icon defined inline — no icon pack needed.
@@ -53,7 +53,7 @@ static LOGO: Asset<kinds::Image> = embed_asset!("../assets/logo.png");
 /// Read the current theme's text color for icons. Reactive — re-fires
 /// when the theme changes.
 fn icon_color() -> Color {
-    let theme = framework_theme::active_theme();
+    let theme = idea_ui::active_theme();
     let t = theme.downcast_ref::<Theme>().expect("Theme not installed");
     t.colors.text.value().clone()
 }
@@ -203,7 +203,7 @@ pub fn dark_theme() -> Theme {
 /// `TokenEntry` so the web backend can install them as `:root`
 /// custom properties — theme swap then becomes one `setProperty`
 /// per token, no class regeneration.
-impl framework_theme::ThemeTokens for Theme {
+impl idea_ui::ThemeTokens for Theme {
     fn tokens(&self) -> Vec<framework_core::TokenEntry> {
         fn entry(t: &framework_core::Tokenized<framework_core::Color>) -> framework_core::TokenEntry {
             let name = t.name().expect("hello: Theme color fields must be Tokenized::Token");

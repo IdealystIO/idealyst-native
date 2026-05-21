@@ -53,7 +53,7 @@ use framework_core::{
     TouchResponse, ViewHandle,
 };
 use std::cell::RefCell;
-use framework_theme::{install_theme, ThemeTokens, TokenEntry};
+use idea_ui::{install_theme, ThemeTokens, TokenEntry};
 use std::rc::Rc;
 use std::time::Duration;
 

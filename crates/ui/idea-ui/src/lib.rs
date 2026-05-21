@@ -63,10 +63,20 @@ pub mod intent;
 pub mod invocations;
 pub mod stylesheets;
 pub mod theme;
+mod theme_runtime;
 
 pub use theme::{
     dark_theme, idea_color, idea_header, install_idea_theme, light_theme, set_idea_theme, Colors,
     IdeaTheme, IdeaThemeDefaults, IdeaThemeRef, IntentColors, Intents, Radius, Spacing, Typography,
+};
+
+// Generic theme-as-struct runtime. Re-exported at the crate root so
+// authors with their own typed theme structs (not built on idea-ui's
+// `IdeaTheme`) can install + swap them through the same APIs that
+// idea-ui's own helpers use under the hood.
+pub use theme_runtime::{
+    active_theme, install_theme, install_themes, set_theme, ThemeTokens, TokenEntry, TokenValue,
+    Tokenized,
 };
 
 // The `Intent` trait + 7 built-in marker types still exist for apps

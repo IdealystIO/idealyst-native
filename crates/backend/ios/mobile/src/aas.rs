@@ -17,29 +17,11 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use aas_shell_native::AasShell;
-use framework_core::TokenEntry;
-use framework_theme::{install_theme, ThemeTokens};
 use objc2::rc::Retained;
 use objc2_foundation::MainThreadMarker;
 use objc2_ui_kit::UIView;
 
 use crate::IosBackend;
-
-/// Placeholder theme installed on AAS-client startup. Tokens are
-/// empty; real token values arrive over the wire as
-/// `Command::InstallThemeVariables` and are forwarded to the
-/// backend separately. The iOS backend's
-/// `install_theme_transition_effect` (invoked from `finish()`)
-/// subscribes to `active_theme()` and panics if no theme is
-/// installed — in normal native builds, the user's `app()` calls
-/// `install_theme(...)` before render. In AAS mode `app()` runs on
-/// the dev-server's sidecar, so we need this stub on the client.
-struct AasPlaceholderTheme;
-impl ThemeTokens for AasPlaceholderTheme {
-    fn tokens(&self) -> Vec<TokenEntry> {
-        Vec::new()
-    }
-}
 
 thread_local! {
     /// The shell lives on the main thread for the life of the app.
@@ -89,12 +71,6 @@ pub unsafe extern "C" fn ios_main(
         Retained::retain(root_view as *mut UIView)
             .expect("ios_main: root_view must be non-null")
     };
-
-    // Install the placeholder theme before constructing the
-    // backend — the IosBackend's `finish()` later subscribes to
-    // `active_theme()` and panics if no theme has been installed
-    // by then. The real theme tokens still come in over the wire.
-    install_theme(AasPlaceholderTheme);
 
     let mut backend = IosBackend::new(mtm);
     backend.set_host_root(view);

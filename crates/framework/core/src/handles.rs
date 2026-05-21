@@ -258,6 +258,14 @@ impl TextHandle {
     pub fn new(node: Rc<dyn Any>, ops: &'static dyn TextOps) -> Self {
         Self { node, ops }
     }
+
+    /// Backend-erased view of the mounted node. Downcast to the
+    /// backend's concrete node type (e.g. `IosNode`, `web_sys::Node`)
+    /// to perform backend-specific work — same shape as
+    /// [`ViewHandle::as_any`].
+    pub fn as_any(&self) -> &dyn Any {
+        &*self.node
+    }
 }
 
 pub trait TextOps {

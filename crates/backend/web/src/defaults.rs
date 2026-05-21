@@ -92,6 +92,22 @@ impl WebBackend {
         self.text_bindings_shim_injected = true;
     }
 
+    /// Inject the JS-side batched class-attribute shim
+    /// (`__idealystRegisterStyledNode` / `__idealystApplyClassesBatch` /
+    /// `__idealystReleaseStyledNode`). Lazy: only injected when the
+    /// style apply path actually needs to queue a class update.
+    /// First-apply path also caches the `js_sys::Function` handles
+    /// so subsequent applies skip the `Reflect::get` lookup.
+    pub(crate) fn ensure_class_batch_shim(&mut self) {
+        if self.class_batch_shim_injected {
+            return;
+        }
+        let src = include_str!("../runtime/js/class_batch.js");
+        let f = js_sys::Function::new_no_args(src);
+        let _ = f.call0(&JsValue::NULL);
+        self.class_batch_shim_injected = true;
+    }
+
     /// Inject `@keyframes ui-spin` into the stylesheet on first use.
     /// Subsequent ActivityIndicator constructions reuse the same
     /// keyframes — the rule is identity-stable, no need to re-create.
@@ -108,14 +124,12 @@ impl WebBackend {
         self.spinner_keyframes_injected = true;
     }
 
-    /// Removes a node's dynamic slot, if any, and deletes its CSS rules
-    /// (base + any per-state pseudo-class overlays).
+    /// Removes a node's dynamic slot, if any, and drops its
+    /// refcount on the shared dynamic-by-content rule. If the node
+    /// was the last user, the rule is deleted.
     pub(crate) fn drop_dynamic_slot(&mut self, id: u32) {
         if let Some(slot) = self.dynamic.remove(&id) {
-            self.delete_rule(slot.rule_index);
-            for idx in slot.state_rule_indices {
-                self.delete_rule(idx);
-            }
+            self.release_dynamic_rule(&slot.shared);
         }
     }
 }

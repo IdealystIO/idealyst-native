@@ -46,7 +46,7 @@ use framework_core::{
     Easing, FlexDirection, JustifyContent, Length, Primitive, Ref, SafeAreaSides, Shadow, Signal,
     StyleRules, StyleSheet, TokenEntry, TokenValue, Tokenized, Transition,
 };
-use framework_theme::{install_theme, set_theme, ThemeTokens};
+use idea_ui::{install_theme, set_theme, ThemeTokens};
 
 /// Routes for the outer navigator (default `SlideFromRight`).
 /// `Home` is the primitives showcase + nav-demo launchers;

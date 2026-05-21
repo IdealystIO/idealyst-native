@@ -129,7 +129,7 @@ pub fn select(props: SelectProps) -> Primitive {
     use framework_core::IntoPrimitive;
     let label_child = framework_core::text(label_source).into_primitive();
     let trigger_style = move || {
-        let _ = framework_theme::active_theme()
+        let _ = crate::theme_runtime::active_theme()
             .downcast_ref::<IdeaThemeRef>()
             .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
         StyleApplication::new(SelectTrigger::sheet())
@@ -203,7 +203,7 @@ fn menu_build(
         // changes — no row rebuild required.
         let opt_id_for_style = opt_id.clone();
         let row_style = move || {
-            let _ = framework_theme::active_theme()
+            let _ = crate::theme_runtime::active_theme()
                 .downcast_ref::<IdeaThemeRef>()
                 .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
             let variant = if value.get() == opt_id_for_style { "on" } else { "off" };

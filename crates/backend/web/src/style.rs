@@ -16,7 +16,7 @@
 //!    them in lockstep.
 
 use crate::phase_timer::PhaseTimer;
-use crate::{DynamicSlot, PregenEntry, WebBackend};
+use crate::{DynamicPtrEntry, DynamicRule, DynamicSlot, PregenEntry, WebBackend};
 use framework_core::StyleRules;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -329,46 +329,55 @@ impl WebBackend {
         node: &web_sys::Node,
         style: &std::rc::Rc<StyleRules>,
     ) {
-        let Ok(element) = node.clone().dyn_into::<web_sys::Element>() else {
-            return;
-        };
         let id = self.node_id(node);
         let key = style.content_key();
 
         // Path 1: pre-generated cache hit.
         if let Some(entry) = self.pregen.get(&key) {
             let class_name = entry.name.clone();
-            element.set_attribute("class", &class_name).expect("set class");
+            self.queue_class_apply(node, &class_name);
             // If we had a dynamic class previously, remove it now —
             // the pre-generated one is what's active.
             self.drop_dynamic_slot(id);
             return;
         }
 
-        // Path 2: dynamic mint. One class per node, replace atomically.
-        let class_name = hash_class_name(&key);
-        let body = rules_to_css(style);
-        let new_index = self.insert_rule(&class_name, &body);
-        element.set_attribute("class", &class_name).expect("set class");
+        // Path 2: deduped dynamic mint via the same shared-Rc design
+        // as `impl_apply_styled_states`. Bump-before-release ordering
+        // preserves rule liveness when the new and old keys match.
+        let shared = if let Some(entry) = self.dynamic_by_content.get(&key) {
+            entry.shared.refcount.set(entry.shared.refcount.get() + 1);
+            entry.shared.clone()
+        } else {
+            let class_name = hash_class_name(&key);
+            let body = rules_to_css(style);
+            let new_index = self.insert_rule(&class_name, &body);
+            let shared = std::rc::Rc::new(DynamicPtrEntry {
+                class_name,
+                content_key: key.clone(),
+                refcount: std::cell::Cell::new(1),
+            });
+            self.dynamic_by_content.insert(
+                key,
+                DynamicRule {
+                    shared: shared.clone(),
+                    rule_index: new_index,
+                    state_rule_indices: Vec::new(),
+                },
+            );
+            self.dynamic_by_ptr
+                .insert(std::rc::Rc::as_ptr(style), shared.clone());
+            shared
+        };
 
-        // Now remove the previously-applied dynamic class for this node,
-        // if any. Order matters: we inserted before deleting so the
-        // sheet always has the active class through the swap.
-        let prev = self.dynamic.insert(
-            id,
-            DynamicSlot {
-                name: class_name,
-                rule_index: new_index,
-                state_rule_indices: Vec::new(),
-            },
-        );
+        let class_for_queue = shared.class_name.clone();
+        let prev = self.dynamic.insert(id, DynamicSlot { shared });
         if let Some(old) = prev {
-            self.delete_rule(old.rule_index);
-            // Delete any state-overlay rules from the previous slot.
-            for idx in old.state_rule_indices {
-                self.delete_rule(idx);
-            }
+            self.release_dynamic_rule(&old.shared);
         }
+        // Queue AFTER the slot bookkeeping so the borrow doesn't
+        // span the queue call (which itself takes `&mut self`).
+        self.queue_class_apply(node, &class_for_queue);
     }
 
     pub(crate) fn impl_apply_styled_states(
@@ -382,9 +391,10 @@ impl WebBackend {
         // unaccounted for (allocator, etc.).
         let _t_total = PhaseTimer::start("apply_styled_states");
 
-        let Ok(element) = node.clone().dyn_into::<web_sys::Element>() else {
-            return;
-        };
+        // No `dyn_ref` cast here: the class apply goes through
+        // `queue_class_apply` which uses the Node directly (the
+        // JS-side shim registers the Node as an Element on first
+        // call) and only the rare fallback path needs the cast.
         let id = self.node_id(node);
 
         // Fast-fast path: pointer-keyed pregen hit. When the
@@ -405,14 +415,54 @@ impl WebBackend {
                 self.pregen_by_ptr.get(&ptr).cloned()
             };
             if let Some(class_name) = ptr_hit {
-                {
-                    let _t = PhaseTimer::start("set_attribute_fast");
-                    element.set_attribute("class", &class_name).expect("set class");
-                }
+                self.queue_class_apply(node, &class_name);
                 {
                     let _t = PhaseTimer::start("drop_dynamic_slot");
                     self.drop_dynamic_slot(id);
                 }
+                return;
+            }
+            // Second fast path: pointer-keyed DYNAMIC hit. Same idea,
+            // but for content the framework didn't pre-register —
+            // typically `.override_*` builder methods on a reactive
+            // style closure. The framework's `RESOLUTION_CACHE` hands
+            // us the same `Rc<StyleRules>` for every node that
+            // resolved to the same `(sheet, variants, overrides)`,
+            // so after the first node in the cohort pays the
+            // content-key path + mints + populates this map, every
+            // subsequent node short-circuits here.
+            //
+            // Saves `content_key()` (~300-byte string format on every
+            // call) for the hot reactive-style-cohort case.
+            let dyn_ptr_hit = {
+                let _t = PhaseTimer::start("dynamic_lookup_ptr");
+                self.dynamic_by_ptr.get(&ptr).cloned()
+            };
+            if let Some(shared) = dyn_ptr_hit {
+                // Slot-already-has-this-class short-circuit. When
+                // the SAME row's Effect re-fires but resolves to
+                // the same content as last time (e.g. POINT bump on
+                // an unrelated signal), the class hasn't changed —
+                // skip the setAttribute round-trip entirely.
+                let already_applied = self
+                    .dynamic
+                    .get(&id)
+                    .map(|slot| std::rc::Rc::ptr_eq(&slot.shared, &shared))
+                    .unwrap_or(false);
+                if already_applied {
+                    return;
+                }
+
+                // Refcount bump via interior mutability on the
+                // shared `Rc<DynamicPtrEntry>` — no HashMap lookup,
+                // no `content_key` hash on the hot path.
+                shared.refcount.set(shared.refcount.get() + 1);
+                let class_for_queue = shared.class_name.clone();
+                let prev = self.dynamic.insert(id, DynamicSlot { shared });
+                if let Some(old) = prev {
+                    self.release_dynamic_rule(&old.shared);
+                }
+                self.queue_class_apply(node, &class_for_queue);
                 return;
             }
         }
@@ -434,10 +484,7 @@ impl WebBackend {
                 self.pregen.get(&base_key).map(|entry| entry.name.clone())
             };
             if let Some(class_name) = pregen_hit {
-                {
-                    let _t = PhaseTimer::start("set_attribute_fast");
-                    element.set_attribute("class", &class_name).expect("set class");
-                }
+                self.queue_class_apply(node, &class_name);
                 {
                     let _t = PhaseTimer::start("drop_dynamic_slot");
                     self.drop_dynamic_slot(id);
@@ -446,12 +493,19 @@ impl WebBackend {
             }
         }
 
-        // Slow path: state overlays present, or no pregen hit. Mint a
-        // dedicated dynamic class for the base rules, with
-        // pseudo-class overlay rules attached for each declared state.
-        // Even when the base content key matches a pre-generated
-        // class, the presence of state overlays forces us to mint a
-        // fresh class because the pregen path only emits base classes.
+        // Slow path: state overlays present, or no pregen hit. The
+        // dynamic-by-content cache is the second line of defense —
+        // when N reactive-styled nodes resolve to the same
+        // `(base + overlays)` content (e.g. one shared signal driving
+        // every row's background), they ALL share one minted class.
+        // First node mints + inserts the rule; subsequent nodes bump
+        // the refcount and just `setAttribute("class", …)`.
+        //
+        // Without this cache, every reactive-style fan-out paid
+        // `rules_to_css + insert_rule + delete_rule` per node — at
+        // 2000 rows that's ~17ms of pure rule churn for a one-signal
+        // bump that visually flips two colors. Catastrophic for any
+        // N rows × shared-signal pattern.
         //
         // Key: include the overlay states so distinct (base, overlays)
         // combinations get distinct class names. We concat each
@@ -464,65 +518,113 @@ impl WebBackend {
             key.push_str(&ov.content_key());
         }
 
-        let class_name = {
-            let _t = PhaseTimer::start("hash_class_name");
-            hash_class_name(&key)
-        };
-        // Insert the base rule.
-        let base_body = {
-            let _t = PhaseTimer::start("rules_to_css");
-            rules_to_css(base)
-        };
-        let base_idx = {
-            let _t = PhaseTimer::start("insert_rule");
-            self.insert_rule(&class_name, &base_body)
-        };
-
-        // Insert each state overlay as a pseudo-class scoped rule.
-        let mut state_indices: Vec<u32> = Vec::with_capacity(overlays.len());
-        for (bit, overlay) in overlays {
-            let pseudo = match *bit {
-                framework_core::StateBits::HOVERED => ":hover",
-                framework_core::StateBits::PRESSED => ":active",
-                framework_core::StateBits::FOCUSED => ":focus",
-                framework_core::StateBits::DISABLED => ":disabled",
-                _ => continue,
+        // Cache lookup. Refcount-bump-on-hit MUST happen before we
+        // release the old slot below — if the previous slot pointed
+        // at THIS same key, releasing first would briefly drop the
+        // refcount to zero and delete the rules we're about to use.
+        let shared = if let Some(entry) = self.dynamic_by_content.get(&key) {
+            let _t = PhaseTimer::start("dynamic_cache_hit");
+            entry.shared.refcount.set(entry.shared.refcount.get() + 1);
+            entry.shared.clone()
+        } else {
+            // Cache miss: mint fresh class + insert rules.
+            let class_name = {
+                let _t = PhaseTimer::start("hash_class_name");
+                hash_class_name(&key)
             };
-            // We emit just the overlay's rules — the browser already
-            // applies the base class, and pseudo-class rules with
-            // matching specificity layered on top override only the
-            // properties they declare.
-            let selector = format!("{}{}", class_name, pseudo);
-            let body = {
+            let base_body = {
                 let _t = PhaseTimer::start("rules_to_css");
-                rules_to_css(overlay)
+                rules_to_css(base)
             };
-            let idx = {
+            let base_idx = {
                 let _t = PhaseTimer::start("insert_rule");
-                self.insert_rule(&selector, &body)
+                self.insert_rule(&class_name, &base_body)
             };
-            state_indices.push(idx);
-        }
 
-        {
-            let _t = PhaseTimer::start("set_attribute_slow");
-            let _ = element.set_attribute("class", &class_name);
-        }
+            // Insert each state overlay as a pseudo-class scoped rule.
+            let mut state_indices: Vec<u32> = Vec::with_capacity(overlays.len());
+            for (bit, overlay) in overlays {
+                let pseudo = match *bit {
+                    framework_core::StateBits::HOVERED => ":hover",
+                    framework_core::StateBits::PRESSED => ":active",
+                    framework_core::StateBits::FOCUSED => ":focus",
+                    framework_core::StateBits::DISABLED => ":disabled",
+                    _ => continue,
+                };
+                let selector = format!("{}{}", class_name, pseudo);
+                let body = {
+                    let _t = PhaseTimer::start("rules_to_css");
+                    rules_to_css(overlay)
+                };
+                let idx = {
+                    let _t = PhaseTimer::start("insert_rule");
+                    self.insert_rule(&selector, &body)
+                };
+                state_indices.push(idx);
+            }
 
-        // Swap in the new dynamic slot; delete the previous one's
-        // rules (base + states).
-        let prev = self.dynamic.insert(
-            id,
-            DynamicSlot {
-                name: class_name,
-                rule_index: base_idx,
-                state_rule_indices: state_indices,
-            },
-        );
+            let shared = std::rc::Rc::new(DynamicPtrEntry {
+                class_name,
+                content_key: key.clone(),
+                refcount: std::cell::Cell::new(1),
+            });
+            self.dynamic_by_content.insert(
+                key,
+                DynamicRule {
+                    shared: shared.clone(),
+                    rule_index: base_idx,
+                    state_rule_indices: state_indices,
+                },
+            );
+            // Mirror into the pointer cache only for the empty-overlay
+            // path — when overlays are present, distinct base Rcs can
+            // share a base content but require distinct combined keys,
+            // so pointer identity isn't a safe shortcut.
+            if overlays.is_empty() {
+                self.dynamic_by_ptr
+                    .insert(std::rc::Rc::as_ptr(base), shared.clone());
+            }
+            shared
+        };
+
+        let class_for_queue = shared.class_name.clone();
+        let prev = self.dynamic.insert(id, DynamicSlot { shared });
         if let Some(old) = prev {
+            self.release_dynamic_rule(&old.shared);
+        }
+        self.queue_class_apply(node, &class_for_queue);
+    }
+
+    /// Drop one refcount on a dynamic-by-content entry. If the
+    /// refcount hits zero, delete the CSS rules + clear both the
+    /// content-keyed and pointer-keyed caches. Called by
+    /// `drop_dynamic_slot` (node teardown) and by
+    /// `impl_apply_styled_states` when a node's slot is replaced.
+    ///
+    /// The hot path decrements `shared.refcount` directly (interior
+    /// mutability) and only consults the maps on the cold
+    /// hit-zero branch — when we actually need `rule_index` + the
+    /// rule indices to call `delete_rule`. Pre-this, every release
+    /// hashed `content_key` to find the `dynamic_by_content` slot
+    /// just to bump a counter; at 20 k Effects per SHARED fan-out
+    /// that was ~6 ms of needless HashMap probing per bump.
+    pub(crate) fn release_dynamic_rule(&mut self, shared: &std::rc::Rc<DynamicPtrEntry>) {
+        let new_count = shared.refcount.get().saturating_sub(1);
+        shared.refcount.set(new_count);
+        if new_count != 0 {
+            return;
+        }
+        // Cold path: the last slot referencing this rule just
+        // dropped. Walk the maps to free the CSS rules + their
+        // index slots. The pointer-cache `retain` is O(N) on the
+        // map size, but the map only holds one entry per unique
+        // resolved-Rc currently in use, so this stays tiny.
+        if let Some(rule) = self.dynamic_by_content.remove(shared.content_key.as_str()) {
+            self.dynamic_by_ptr
+                .retain(|_, v| !std::rc::Rc::ptr_eq(v, &rule.shared));
             let _t = PhaseTimer::start("delete_rule");
-            self.delete_rule(old.rule_index);
-            for idx in old.state_rule_indices {
+            self.delete_rule(rule.rule_index);
+            for idx in rule.state_rule_indices {
                 self.delete_rule(idx);
             }
         }
@@ -540,6 +642,10 @@ impl WebBackend {
             self.state_listeners.remove(&id);
             // Drop any per-node animation state.
             self.impl_drop_animated_state(id);
+            // Drop the JS-side `__idealystStyledNodes` entry so the
+            // Element handle can be GC'd. No-op if the node was
+            // never registered (e.g. unstyled View).
+            self.release_styled_node(id);
             // Remove the node-id mapping itself.
             self.node_ids.remove(&p);
         }

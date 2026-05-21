@@ -25,7 +25,7 @@ use std::any::Any;
 use std::rc::Rc;
 
 use framework_core::{Color, Length, Tokenized};
-use framework_theme::{install_theme, set_theme, ThemeTokens, TokenEntry, TokenValue};
+use crate::theme_runtime::{install_theme, set_theme, ThemeTokens, TokenEntry, TokenValue};
 
 // =============================================================================
 // IntentColors — per-intent palette
@@ -526,7 +526,7 @@ where
     F: Fn(&Colors) -> Tokenized<Color> + 'static,
 {
     move || {
-        let theme = framework_theme::active_theme();
+        let theme = crate::theme_runtime::active_theme();
         let idea = theme
             .downcast_ref::<IdeaThemeRef>()
             .expect("idea_color: active theme is not an IdeaThemeRef — call install_idea_theme(...) first");
@@ -553,7 +553,7 @@ where
     F: Fn(&IdeaThemeRef) -> framework_core::HeaderStyle + 'static,
 {
     move || {
-        let theme = framework_theme::active_theme();
+        let theme = crate::theme_runtime::active_theme();
         let idea = theme
             .downcast_ref::<IdeaThemeRef>()
             .expect("idea_header: active theme is not an IdeaThemeRef — call install_idea_theme(...) first");
@@ -565,7 +565,7 @@ where
 mod tests {
     use super::*;
     use framework_core::{Length, TokenValue};
-    use framework_theme::ThemeTokens;
+    use crate::theme_runtime::ThemeTokens;
 
     /// Two theme impls with different spacing/radius/typography should
     /// emit different token values via the `ThemeTokens::tokens()`

@@ -52,7 +52,7 @@ pub fn avatar(props: &AvatarProps) -> Primitive {
     let color = props.color;
 
     let container_style = move || {
-        let _ = framework_theme::active_theme()
+        let _ = crate::theme_runtime::active_theme()
             .downcast_ref::<IdeaThemeRef>()
             .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
         StyleApplication::new(Avatar::sheet())
@@ -61,7 +61,7 @@ pub fn avatar(props: &AvatarProps) -> Primitive {
     };
 
     let text_style = move || {
-        let _ = framework_theme::active_theme()
+        let _ = crate::theme_runtime::active_theme()
             .downcast_ref::<IdeaThemeRef>()
             .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
         StyleApplication::new(AvatarText::sheet())

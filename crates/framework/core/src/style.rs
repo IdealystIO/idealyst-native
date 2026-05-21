@@ -854,8 +854,6 @@ impl StyleRules {
             push_u32_hex(&mut s, sh.blur.to_bits());
             s.push_str(&sh.color.0);
             s.push(';');
-        } else {
-            s.push_str("sh=;");
         }
         if let Some(xs) = &self.transform {
             s.push_str("tr=");
@@ -871,8 +869,6 @@ impl StyleRules {
                 }
             }
             s.push(';');
-        } else {
-            s.push_str("tr=;");
         }
 
         // Transitions — one labeled segment per animatable property.
@@ -920,33 +916,33 @@ impl StyleRules {
 }
 
 fn write_transition(out: &mut String, label: &str, t: Option<Transition>) {
+    let Some(t) = t else { return };
     out.push_str(label);
     out.push('=');
-    if let Some(t) = t {
-        push_u32_hex(out, t.duration_ms);
-        // Easing encodes as a small tag; CubicBezier appends four f32s.
-        match t.easing {
-            Easing::Linear => out.push_str("lin"),
-            Easing::Ease => out.push_str("eas"),
-            Easing::EaseIn => out.push_str("ein"),
-            Easing::EaseOut => out.push_str("eou"),
-            Easing::EaseInOut => out.push_str("eio"),
-            Easing::CubicBezier(a, b, c, d) => {
-                out.push_str("cb");
-                push_u32_hex(out, a.to_bits());
-                push_u32_hex(out, b.to_bits());
-                push_u32_hex(out, c.to_bits());
-                push_u32_hex(out, d.to_bits());
-            }
+    push_u32_hex(out, t.duration_ms);
+    // Easing encodes as a small tag; CubicBezier appends four f32s.
+    match t.easing {
+        Easing::Linear => out.push_str("lin"),
+        Easing::Ease => out.push_str("eas"),
+        Easing::EaseIn => out.push_str("ein"),
+        Easing::EaseOut => out.push_str("eou"),
+        Easing::EaseInOut => out.push_str("eio"),
+        Easing::CubicBezier(a, b, c, d) => {
+            out.push_str("cb");
+            push_u32_hex(out, a.to_bits());
+            push_u32_hex(out, b.to_bits());
+            push_u32_hex(out, c.to_bits());
+            push_u32_hex(out, d.to_bits());
         }
     }
     out.push(';');
 }
 
 fn write_str(out: &mut String, label: &str, v: Option<&str>) {
+    let Some(v) = v else { return };
     out.push_str(label);
     out.push('=');
-    if let Some(v) = v { out.push_str(v); }
+    out.push_str(v);
     out.push(';');
 }
 
@@ -955,66 +951,73 @@ fn write_str(out: &mut String, label: &str, v: Option<&str>) {
 /// different colors produce identical keys; literals hash by value.
 /// The literal/token discriminator (`L:` / `T:`) prevents a token
 /// named "ff0000" from colliding with the literal hex `#ff0000`.
+// Note on sparse encoding: each writer emits ONLY when the field is
+// `Some`. The previous emit-`label=;`-always shape wasted ~580 bytes
+// per `content_key` call on overrides that set 1-2 fields (the bulk
+// of reactive-style use cases). At hierarchy scale (20k Effects
+// firing per shared-signal bump) the per-call savings translate to
+// ~30ms / bump — pure waste because the empty `label=;` carried no
+// information the `Some(_)` writes don't already encode. Two
+// distinct override sets still produce distinct keys: the field
+// labels in `Some` writes are unique, and unset fields contribute
+// nothing rather than contributing a fixed prefix.
+
 fn write_tokenized_color(out: &mut String, label: &str, c: &Option<Tokenized<Color>>) {
+    let Some(t) = c else { return };
     out.push_str(label);
     out.push('=');
-    if let Some(t) = c {
-        match t {
-            Tokenized::Literal(c) => {
-                out.push_str("L:");
-                out.push_str(&c.0);
-            }
-            Tokenized::Token { name, .. } => {
-                out.push_str("T:");
-                out.push_str(name);
-            }
+    match t {
+        Tokenized::Literal(c) => {
+            out.push_str("L:");
+            out.push_str(&c.0);
+        }
+        Tokenized::Token { name, .. } => {
+            out.push_str("T:");
+            out.push_str(name);
         }
     }
     out.push(';');
 }
 
 fn write_tokenized_length(out: &mut String, label: &str, l: &Option<Tokenized<Length>>) {
+    let Some(t) = l else { return };
     out.push_str(label);
     out.push('=');
-    if let Some(t) = l {
-        match t {
-            Tokenized::Literal(v) => {
-                out.push_str("L:");
-                push_u64_hex(out, length_bits(*v));
-            }
-            Tokenized::Token { name, .. } => {
-                out.push_str("T:");
-                out.push_str(name);
-            }
+    match t {
+        Tokenized::Literal(v) => {
+            out.push_str("L:");
+            push_u64_hex(out, length_bits(*v));
+        }
+        Tokenized::Token { name, .. } => {
+            out.push_str("T:");
+            out.push_str(name);
         }
     }
     out.push(';');
 }
 
 fn write_tokenized_f32(out: &mut String, label: &str, v: &Option<Tokenized<f32>>) {
+    let Some(t) = v else { return };
     out.push_str(label);
     out.push('=');
-    if let Some(t) = v {
-        match t {
-            Tokenized::Literal(v) => {
-                out.push_str("L:");
-                push_u32_hex(out, v.to_bits());
-            }
-            Tokenized::Token { name, .. } => {
-                out.push_str("T:");
-                out.push_str(name);
-            }
+    match t {
+        Tokenized::Literal(v) => {
+            out.push_str("L:");
+            push_u32_hex(out, v.to_bits());
+        }
+        Tokenized::Token { name, .. } => {
+            out.push_str("T:");
+            out.push_str(name);
         }
     }
     out.push(';');
 }
 
 fn write_enum(out: &mut String, label: &str, v: Option<u8>) {
+    let Some(v) = v else { return };
     out.push_str(label);
     out.push('=');
-    if let Some(v) = v {
-        push_u32_hex(out, v as u32);
-    }
+    push_u32_hex(out, v as u32);
     out.push(';');
 }
 

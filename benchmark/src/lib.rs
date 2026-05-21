@@ -31,7 +31,7 @@ use framework_core::{
     FlexDirection, JustifyContent, Length, Overflow, Primitive, Signal, TokenEntry, TokenValue,
     Tokenized,
 };
-use framework_theme::{install_theme, ThemeTokens};
+use idea_ui::{install_theme, ThemeTokens};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -414,7 +414,7 @@ const VARIANTS: &[VariantInfo] = &[
     },
     VariantInfo {
         id: "vanilla-classes",      label: "vanilla · per-elem",     url: "./vanilla-classes/",
-        supports: &["rebuild", "toggle"],
+        supports: &["rebuild", "toggle", "granular", "reactive-style"],
     },
     VariantInfo {
         id: "vanilla-classes-bulk", label: "vanilla · bulk innerHTML", url: "./vanilla-classes-bulk/",
@@ -422,7 +422,7 @@ const VARIANTS: &[VariantInfo] = &[
     },
     VariantInfo {
         id: "react-naive",          label: "react · naive",          url: "./react-naive/",
-        supports: &["rebuild", "toggle", "hierarchy"],
+        supports: &["rebuild", "toggle", "hierarchy", "granular", "reactive-style"],
     },
     VariantInfo {
         id: "react-cssvars",        label: "react · cssvars",        url: "./react-cssvars/",
@@ -438,11 +438,11 @@ const VARIANTS: &[VariantInfo] = &[
     },
     VariantInfo {
         id: "svelte",               label: "svelte",                 url: "./svelte/",
-        supports: &["rebuild", "toggle", "hierarchy"],
+        supports: &["rebuild", "toggle", "hierarchy", "granular", "reactive-style"],
     },
     VariantInfo {
         id: "idealyst-native",      label: "idealyst-native",        url: "./idealyst-native/",
-        supports: &["rebuild", "toggle", "hierarchy"],
+        supports: &["rebuild", "toggle", "hierarchy", "granular", "reactive-style"],
     },
 ];
 
@@ -560,6 +560,44 @@ const SUITES: &[SuiteInfo] = &[
         // the JS time spent fanning out through the reactive
         // graph (or, for React without memo, re-running the
         // entire component subtree).
+        total: TotalMetric::ApplySum,
+    },
+    SuiteInfo {
+        name: "granular",
+        title: "Granular per-row updates",
+        params: &[
+            ParamInfo { name: "rows",         label: "Rows",          default: 2000.0 },
+            ParamInfo { name: "spread",       label: "Spread (K)",    default: 50.0   },
+            ParamInfo { name: "iterations",   label: "Iterations",    default: 20.0   },
+            ParamInfo { name: "warmupCycles", label: "Warmup pairs",  default: 2.0    },
+        ],
+        // 0 = POINT (single row bump), 1 = SPREAD (K-row batch).
+        // Alternated by the suite per iteration. Surfaces per-leaf
+        // reactive isolation in a flat list shape.
+        bucket_labels: &["POINT", "SPREAD"],
+        // Updates here are signal writes only — no DOM mount/unmount —
+        // so PAINT is dominated by the next-rAF wait. APPLY captures
+        // the framework's signal-fan-out cost, which is the
+        // interesting differentiator.
+        total: TotalMetric::ApplySum,
+    },
+    SuiteInfo {
+        name: "reactive-style",
+        title: "Reactive style binding",
+        params: &[
+            ParamInfo { name: "rows",         label: "Rows",          default: 2000.0 },
+            ParamInfo { name: "iterations",   label: "Iterations",    default: 20.0   },
+            ParamInfo { name: "warmupCycles", label: "Warmup pairs",  default: 2.0    },
+        ],
+        // 0 = SHARED (1 signal → all N rows re-resolve style),
+        // 1 = POINT (per-row signal, 1 Effect re-fires). Surfaces
+        // the cost of the framework's per-row reactive style path
+        // (`attach_style_reactive`), which the static-style batched
+        // rebuild path skips entirely.
+        bucket_labels: &["SHARED", "POINT"],
+        // Same PAINT/APPLY shape as toggle — the visible style
+        // change rides a CSS transition every variant pays for
+        // identically; framework differences live in APPLY.
         total: TotalMetric::ApplySum,
     },
 ];

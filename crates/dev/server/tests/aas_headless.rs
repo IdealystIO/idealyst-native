@@ -31,7 +31,7 @@ use framework_core::{
     render, signal, Color, DrawerNavigator, IntoAction,
     Primitive, Route, SafeAreaSides, TextSource, TokenEntry,
 };
-use framework_theme::{active_theme, install_theme, set_theme, ThemeTokens};
+use idea_ui::{active_theme, install_theme, set_theme, ThemeTokens};
 use wire::Command;
 
 /// Build a small primitive tree by hand (no `ui!` macro — keeps the

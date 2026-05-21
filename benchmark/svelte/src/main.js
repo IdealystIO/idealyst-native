@@ -44,10 +44,57 @@ const globalUpdate = async (n) => {
   await tick();
 };
 
+// granular hooks. Svelte 5's `$state` is deep — mutating
+// `state.counters[i]` only invalidates the read at index `i`, so
+// POINT updates fan out to exactly one row. SPREAD writes in a
+// straight loop; Svelte batches the resulting effects until the
+// next microtask flush.
+const setupCounters = async (n) => {
+  state.mode = 'counters';
+  state.counters = new Array(n).fill(0);
+  await tick();
+};
+const bumpCounter = async (i, v) => {
+  state.counters[i] = v;
+  await tick();
+};
+const bumpRange = async (s, e, v) => {
+  const end = Math.min(e, state.counters.length);
+  for (let i = s; i < end; i++) {
+    state.counters[i] = v;
+  }
+  await tick();
+};
+
+// reactive-style hooks. Same fine-grained shape as counters —
+// each row's `style` derives from `state.shared` and
+// `state.points[i]`; bumping `shared` invalidates the derive for
+// every row (O(N)), bumping `points[i]` invalidates only row i.
+const setupReactiveStyles = async (n) => {
+  state.mode = 'rstyle';
+  state.shared = 'A';
+  state.points = new Array(n).fill(null);
+  await tick();
+};
+const setSharedColor = async (name) => {
+  state.shared = name === 'B' ? 'B' : 'A';
+  await tick();
+};
+const setPointColor = async (i, name) => {
+  state.points[i] = name === 'B' ? 'B' : 'A';
+  await tick();
+};
+
 autoRunIfRequested({
   setRows,
   setTheme,
   setupHierarchy,
   branchUpdate,
   globalUpdate,
+  setupCounters,
+  bumpCounter,
+  bumpRange,
+  setupReactiveStyles,
+  setSharedColor,
+  setPointColor,
 });

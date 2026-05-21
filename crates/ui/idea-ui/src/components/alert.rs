@@ -61,7 +61,7 @@ pub fn alert(props: &AlertProps) -> Primitive {
     let container_style = {
         let appearance = appearance.clone();
         move || {
-            let _ = framework_theme::active_theme()
+            let _ = crate::theme_runtime::active_theme()
                 .downcast_ref::<IdeaThemeRef>()
                 .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
             StyleApplication::new(Alert::sheet()).with("appearance", appearance.clone())

@@ -13,7 +13,7 @@
 mod web;
 
 use framework_core::{ui, Primitive};
-use framework_theme::{install_theme, ThemeTokens};
+use idea_ui::{install_theme, ThemeTokens};
 use maps::{MapView, MapViewProps};
 
 /// Trivial theme so `install_theme` is satisfied (framework requires

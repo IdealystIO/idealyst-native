@@ -115,50 +115,14 @@ pub fn easing_to_options(easing: &framework_core::Easing) -> u64 {
     }
 }
 
-thread_local! {
-    /// True for the duration of a theme-change re-apply pass.
-    /// Set by the per-backend Effect installed in
-    /// `IosBackend::set_host_root` (mobile) whenever the global
-    /// `active_theme()` signal fires; reset on the next run-loop
-    /// tick. While true, color setters in `apply_style_to_view` /
-    /// `apply_text_style` wrap their UIKit call in a
-    /// `UIView.animate(withDuration:)` block so colors interpolate
-    /// smoothly. Outside theme transitions, setters snap so initial
-    /// mount and non-theme reactive updates carry no animation cost.
-    pub static THEME_TRANSITION_ACTIVE: std::cell::Cell<bool> =
-        const { std::cell::Cell::new(false) };
-}
-
-/// Duration of the default theme-color transition. Tuned to feel
-/// "snappy" — short enough to read as instant, long enough to soften
-/// the color flip rather than snap. Match this in [`Self::theme_transition_default`]
-/// rather than inlining the literal at call sites.
-pub const THEME_TRANSITION_DURATION_MS: u32 = 200;
-
-/// Easing curve for the default theme-color transition. EaseOut so
-/// the color starts moving immediately on toggle and settles softly
-/// at the new value.
-pub const THEME_TRANSITION_EASING: framework_core::Easing = framework_core::Easing::EaseOut;
-
-/// Snappy default for iOS theme color transitions, built from
-/// [`THEME_TRANSITION_DURATION_MS`] + [`THEME_TRANSITION_EASING`].
-pub fn theme_transition_default() -> framework_core::Transition {
-    framework_core::Transition::new(THEME_TRANSITION_DURATION_MS, THEME_TRANSITION_EASING)
-}
-
-/// Pick the transition to use for a property change: an explicit
-/// per-component transition wins, then a theme-transition default if
-/// a theme swap is in progress, otherwise `None` (snap).
+/// Pick the transition to use for a property change. With the
+/// active-theme concept gone, the only source of a transition is the
+/// stylesheet's per-property `Transition` field — explicit opt-in.
+/// Snap by default.
 fn effective_transition(
     explicit: Option<&framework_core::Transition>,
 ) -> Option<framework_core::Transition> {
-    if let Some(t) = explicit {
-        return Some(*t);
-    }
-    if THEME_TRANSITION_ACTIVE.with(|c| c.get()) {
-        return Some(theme_transition_default());
-    }
-    None
+    explicit.copied()
 }
 
 /// Run property changes inside a UIView animation block.

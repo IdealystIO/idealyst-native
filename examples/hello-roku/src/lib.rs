@@ -26,7 +26,7 @@ use framework_core::{
     signal, stylesheet, ui, AlignItems, Color, FlexDirection, FontWeight,
     JustifyContent, Length, Primitive, Signal, Tokenized,
 };
-use framework_theme::{install_themes, ThemeTokens, TokenEntry, TokenValue};
+use idea_ui::{install_themes, ThemeTokens, TokenEntry, TokenValue};
 
 // ---------------------------------------------------------------------------
 // Theme

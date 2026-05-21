@@ -79,6 +79,10 @@ pub fn install_text_batcher(backend: &std::rc::Rc<std::cell::RefCell<WebBackend>
     // the batched-text shim's lazy injection on first use, just
     // pulled forward.
     backend.borrow_mut().ensure_text_bindings_shim();
+    // Pre-inject the class-batch shim so the first style apply at
+    // mount doesn't pay an injection round-trip mid-apply. Same
+    // shape as the text-bindings pre-inject above.
+    backend.borrow_mut().ensure_class_batch_shim();
 }
 
 std::thread_local! {
@@ -220,6 +224,48 @@ pub struct WebBackend {
     /// (so any updates queued *during* the flush schedule another
     /// flush rather than getting lost).
     pub(crate) text_flush_scheduled: std::rc::Rc<std::cell::Cell<bool>>,
+
+    // ---------------------------------------------------------
+    // Batched class-attribute updates. The style apply paths
+    // queue `(node_id, class_name)` pairs here and schedule a
+    // microtask flush; the flush ships a single FFI call to
+    // `__idealystApplyClassesBatch` and the JS shim does the
+    // per-element `setAttribute` in pure JS. Each unique styled
+    // node pays ONE FFI hop in its lifetime (registration on
+    // first apply); subsequent updates cost only their share of
+    // a batch flush.
+    // ---------------------------------------------------------
+    /// Has `runtime/js/class_batch.js` been injected? First apply
+    /// triggers the injection; subsequent applies reuse the cached
+    /// function handles.
+    pub(crate) class_batch_shim_injected: bool,
+    /// Cached `window.__idealystRegisterStyledNode`. Looked up once
+    /// after the first shim injection.
+    pub(crate) class_register_fn: Option<js_sys::Function>,
+    /// Cached `window.__idealystApplyClassesBatch`.
+    pub(crate) class_apply_batch_fn: Option<js_sys::Function>,
+    /// Cached `window.__idealystReleaseStyledNode`.
+    pub(crate) class_release_fn: Option<js_sys::Function>,
+    /// Set of node ids the JS side has been told about. We register
+    /// each styled node ONCE on its first apply (1 FFI hop /
+    /// node-lifetime); subsequent applies hit the batched path.
+    pub(crate) class_nodes_registered: std::collections::HashSet<u32>,
+    /// Buffer of (node_id, class_name) updates waiting on the next
+    /// microtask flush. Three parallel arrays + a packed string so
+    /// the flush can ship everything as `(Uint32Array, JsString,
+    /// Uint32Array)` in one FFI hop.
+    pub(crate) pending_class_ids: Vec<u32>,
+    pub(crate) pending_class_lengths: Vec<u32>,
+    pub(crate) pending_class_buffer: String,
+    /// Releases queued for the next flush — same shape as text
+    /// batch's `pending_text_releases`. Ships in one FFI call to
+    /// `__idealystReleaseStyledNode` (or via a future batch
+    /// release shim if we end up wanting one).
+    pub(crate) pending_class_releases: Vec<u32>,
+    /// Set when a microtask flush is in flight. Prevents redundant
+    /// scheduling — multiple queue calls in the same turn coalesce
+    /// into one flush.
+    pub(crate) class_flush_scheduled: std::rc::Rc<std::cell::Cell<bool>>,
     /// Per-virtualizer instance state — keyed by node id so we can
     /// route `virtualizer_data_changed` to the right instance AND
     /// drop its closures on `release_virtualizer`. The wrapped
@@ -281,10 +327,41 @@ pub struct WebBackend {
     /// `pregen` map. Cleared on `unregister_stylesheet` /
     /// theme change.
     pub(crate) pregen_by_ptr: HashMap<*const framework_core::StyleRules, String>,
-    /// Per-node dynamic class slot — `node_id -> (class_name, rule_index)`.
+    /// Per-node dynamic class slot — `node_id -> (class_name, content_key)`.
     /// At most one dynamic class per node. Replaced atomically when
     /// the node's resolved style changes.
     pub(crate) dynamic: HashMap<u32, DynamicSlot>,
+    /// Content-keyed pool of dynamic CSS rules, refcounted across the
+    /// cohort of nodes that resolved to the same `(base + overlays)`
+    /// content. Populated lazily on `apply_styled_states` slow-path
+    /// misses; collapsed when the last `DynamicSlot` referencing a
+    /// key drops. The reactive-style cohort (one signal fanning out
+    /// to N styled nodes) is the canonical user — pre-dedupe, every
+    /// fan-out minted N identical rules + did N `insert_rule` / N
+    /// `delete_rule` calls; deduped, the first node mints and the
+    /// rest just bump the refcount.
+    pub(crate) dynamic_by_content: HashMap<String, DynamicRule>,
+    /// Pointer-keyed mirror of `dynamic_by_content` for the hot apply
+    /// path. The framework's `RESOLUTION_CACHE` hands us the SAME
+    /// `Rc<StyleRules>` for repeated `(sheet, variants, overrides)`
+    /// resolutions — so a cohort of N reactive-styled rows all
+    /// receive the same `Rc::as_ptr(base)`. This lets us skip
+    /// `content_key()` (a ~300-byte string format) entirely on the
+    /// second-and-later applies of any given resolved style.
+    ///
+    /// Value is `Rc<DynamicPtrEntry>` so both `dynamic_by_content`
+    /// (keyed by content) and per-node `DynamicSlot`s can share the
+    /// same `class_name` + `content_key` strings without per-call
+    /// allocation. On a fast-path hit we just `Rc::clone` the entry
+    /// (atomic refcount bump) instead of cloning two `String`s.
+    ///
+    /// Populated when `dynamic_by_content` gets a new entry;
+    /// invalidated when the entry is removed. `*const` is safe to
+    /// use as a key because: (a) we only ever compare it, never
+    /// dereference; (b) the `RESOLUTION_CACHE` keeps the Rc alive
+    /// for as long as its content is reachable, which is at least
+    /// as long as we hold any `DynamicSlot` referencing it.
+    pub(crate) dynamic_by_ptr: HashMap<*const framework_core::StyleRules, std::rc::Rc<DynamicPtrEntry>>,
     /// Stable per-Node id derived from the Node's pointer.
     pub(crate) next_node_id: u32,
     pub(crate) node_ids: HashMap<*const web_sys::Node, u32>,
@@ -368,9 +445,47 @@ pub(crate) struct PregenEntry {
 }
 
 pub(crate) struct DynamicSlot {
-    /// Kept for debugging — same hash that's set on the element's class.
-    #[allow(dead_code)]
-    pub(crate) name: String,
+    /// Shared (class_name, content_key) pair, refcounted across the
+    /// pointer cache, the dynamic_by_content entry, and every
+    /// `DynamicSlot` referencing it. Pre-Rc, every slot held its
+    /// own two `String` copies; with N reactive-styled nodes
+    /// sharing the same content, that was 2N heap allocations
+    /// every fan-out for no semantic gain.
+    pub(crate) shared: std::rc::Rc<DynamicPtrEntry>,
+}
+
+/// Strings that live as long as a dynamic content entry — pinned
+/// behind an `Rc` so the per-node slots and the pointer cache
+/// don't each hold their own copies. The `refcount` lives here
+/// too (interior mutability) so the hot apply path can bump it
+/// in O(1) without re-hashing `content_key` to find the
+/// `dynamic_by_content` slot.
+pub(crate) struct DynamicPtrEntry {
+    pub(crate) class_name: String,
+    pub(crate) content_key: String,
+    /// Number of `DynamicSlot`s currently referencing this entry's
+    /// CSS rule. Bumped on every apply that resolves to this
+    /// content; decremented when the slot is replaced or the node
+    /// unmounts. When it hits zero, the `dynamic_by_content`
+    /// entry (and the rules it owns) gets dropped.
+    pub(crate) refcount: std::cell::Cell<u32>,
+}
+
+/// Refcounted dynamic CSS rule shared across the cohort of nodes
+/// that resolved to the same `(base + overlays)` content. Sharing
+/// avoids per-node `insert_rule` churn — at scale (one signal
+/// fanning out to N reactive-styled nodes) this is the difference
+/// between O(1) and O(N) rule inserts. Lifetime: created when a
+/// node first resolves to this content; deleted when the last
+/// node's slot stops referencing it.
+pub(crate) struct DynamicRule {
+    /// Shared with `dynamic_by_ptr` and every `DynamicSlot` that
+    /// references this rule. Lets the apply hot path skip cloning
+    /// `class_name` + `content_key` `String`s per call. Refcount
+    /// lives on `shared` (interior mutability via `Cell<u32>`) so
+    /// hot-path apply doesn't need to look up this map entry at
+    /// all — it just bumps `shared.refcount`.
+    pub(crate) shared: std::rc::Rc<DynamicPtrEntry>,
     /// CSS rule index for the base rule. Always set.
     pub(crate) rule_index: u32,
     /// Additional rule indices for per-state pseudo-class overlays
@@ -424,6 +539,20 @@ impl WebBackend {
             pending_text_buffer: String::with_capacity(8192),
             pending_text_releases: Vec::with_capacity(64),
             text_flush_scheduled: std::rc::Rc::new(std::cell::Cell::new(false)),
+            class_batch_shim_injected: false,
+            class_register_fn: None,
+            class_apply_batch_fn: None,
+            class_release_fn: None,
+            class_nodes_registered: std::collections::HashSet::new(),
+            // Pre-allocate so a SHARED reactive-style fan-out at
+            // hierarchy scale (10k+) doesn't grow-realloc its way
+            // up from cap 0. The buffers are `take()`-d on each
+            // flush and restored empty so capacity survives.
+            pending_class_ids: Vec::with_capacity(256),
+            pending_class_lengths: Vec::with_capacity(256),
+            pending_class_buffer: String::with_capacity(8192),
+            pending_class_releases: Vec::with_capacity(64),
+            class_flush_scheduled: std::rc::Rc::new(std::cell::Cell::new(false)),
             virtualizer_instances: HashMap::new(),
             next_virtualizer_id: 0,
             graphics_instances: HashMap::new(),
@@ -435,6 +564,8 @@ impl WebBackend {
             pregen: HashMap::new(),
             pregen_by_ptr: HashMap::new(),
             dynamic: HashMap::new(),
+            dynamic_by_content: HashMap::new(),
+            dynamic_by_ptr: HashMap::new(),
             next_node_id: 0,
             node_ids: HashMap::new(),
             free_rule_indices: Vec::new(),
@@ -863,6 +994,198 @@ impl WebBackend {
             pregen_by_ptr: self.pregen_by_ptr.len(),
             free_rule_indices: self.free_rule_indices.len(),
             next_node_id: self.next_node_id,
+        }
+    }
+
+    /// Queue a `class` attribute update for `node` to be flushed at
+    /// the next microtask. Replaces the direct `set_attribute("class",
+    /// …)` call on the style apply hot path — saves one wasm→JS
+    /// boundary crossing per update at fan-out (~60 ms at N=100k
+    /// shared-signal subscribers).
+    ///
+    /// If the JS-side shim handle isn't installed (e.g. variant
+    /// forgot to call `install_text_batcher`), this falls back to a
+    /// direct `set_attribute` so correctness never depends on the
+    /// fast path being wired up.
+    pub(crate) fn queue_class_apply(&mut self, node: &Node, class_name: &str) {
+        let _t = crate::phase_timer::PhaseTimer::start("queue_class_apply");
+        // Fall back to direct setAttribute if the shim batcher hasn't
+        // been installed by the host crate. This keeps any backend
+        // construction path that doesn't go through
+        // `install_text_batcher` (tests, ad-hoc usage) correct, just
+        // slower.
+        let has_handle = WEB_BACKEND_HANDLE.with(|s| s.borrow().is_some());
+        if !has_handle {
+            if let Some(element) = node.dyn_ref::<web_sys::Element>() {
+                let _ = element.set_attribute("class", class_name);
+            }
+            return;
+        }
+        self.ensure_class_batch_shim();
+
+        let id = self.node_id(node);
+        if !self.class_nodes_registered.contains(&id) {
+            // One-time registration: stash the Element on the JS
+            // side under `id`. Subsequent applies just push (id,
+            // class) into the batch buffer — no per-row FFI.
+            if self.class_register_fn.is_none() {
+                let window = web_sys::window().expect("no window");
+                let f_val = js_sys::Reflect::get(
+                    &window,
+                    &wasm_bindgen::JsValue::from_str("__idealystRegisterStyledNode"),
+                )
+                .expect("Reflect::get for __idealystRegisterStyledNode failed");
+                self.class_register_fn = Some(
+                    f_val.dyn_into::<js_sys::Function>().expect(
+                        "__idealystRegisterStyledNode is not a Function — class_batch shim missing",
+                    ),
+                );
+            }
+            let _ = self
+                .class_register_fn
+                .as_ref()
+                .expect("set above")
+                .call2(
+                    &wasm_bindgen::JsValue::NULL,
+                    &wasm_bindgen::JsValue::from(id),
+                    node.as_ref(),
+                )
+                .expect("__idealystRegisterStyledNode call failed");
+            self.class_nodes_registered.insert(id);
+        }
+
+        // Push into the parallel buffers. Length is utf-16 (matching
+        // JS `String.length` semantics) so the JS shim can slice
+        // with `substring(offset, offset + len)` exactly. We compute
+        // utf-16 length cheaply on the ASCII fast path (all our
+        // emitted class names are ASCII hashes); the chars()
+        // fallback covers anything that isn't.
+        let utf16_len: u32 = if class_name.is_ascii() {
+            class_name.len() as u32
+        } else {
+            class_name.chars().map(|c| c.len_utf16() as u32).sum()
+        };
+        self.pending_class_ids.push(id);
+        self.pending_class_lengths.push(utf16_len);
+        self.pending_class_buffer.push_str(class_name);
+
+        self.schedule_class_flush();
+    }
+
+    /// Schedule a microtask flush of `pending_class_*`. Idempotent
+    /// within a turn — if one's already scheduled, subsequent
+    /// `queue_class_apply` calls just append to the buffer.
+    fn schedule_class_flush(&self) {
+        if self.class_flush_scheduled.get() {
+            return;
+        }
+        self.class_flush_scheduled.set(true);
+        let weak = WEB_BACKEND_HANDLE
+            .with(|s| s.borrow().clone())
+            .expect("WEB_BACKEND_HANDLE must be set when batched class path is active");
+        let flag = self.class_flush_scheduled.clone();
+        framework_core::schedule_microtask(move || {
+            // Clear BEFORE flushing so any updates produced during
+            // the flush (re-entrant signal writes) re-schedule a
+            // fresh microtask rather than being dropped on the
+            // floor. Same correctness shape as the text-batch flush.
+            flag.set(false);
+            if let Some(rc) = weak.upgrade() {
+                rc.borrow_mut().flush_pending_classes();
+            }
+        });
+    }
+
+    /// Drain the queue: ship every pending `(id, class)` to the JS
+    /// shim in one FFI call. Restores the empty `Vec`/`String`
+    /// containers so their backing allocation survives across
+    /// flushes (steady-state cost ≈ 0 allocs / flush).
+    pub(crate) fn flush_pending_classes(&mut self) {
+        use wasm_bindgen::JsValue;
+        let _t_total = crate::phase_timer::PhaseTimer::start("class_flush_total");
+
+        // Process queued releases first (released nodes no longer
+        // accept class updates, but the batch shim's safe-skip
+        // covers the race — releases here are just memory hygiene).
+        if !self.pending_class_releases.is_empty() {
+            if self.class_release_fn.is_none() {
+                let window = web_sys::window().expect("no window");
+                let f_val = js_sys::Reflect::get(
+                    &window,
+                    &JsValue::from_str("__idealystReleaseStyledNode"),
+                )
+                .expect("Reflect::get for __idealystReleaseStyledNode failed");
+                self.class_release_fn = Some(
+                    f_val
+                        .dyn_into::<js_sys::Function>()
+                        .expect("__idealystReleaseStyledNode is not a Function"),
+                );
+            }
+            let release_ids = std::mem::take(&mut self.pending_class_releases);
+            let f = self.class_release_fn.as_ref().expect("set above").clone();
+            for id in &release_ids {
+                let _ = f.call1(&JsValue::NULL, &JsValue::from(*id));
+            }
+            self.pending_class_releases = release_ids;
+            self.pending_class_releases.clear();
+        }
+
+        let n = self.pending_class_ids.len();
+        if n == 0 {
+            return;
+        }
+
+        if self.class_apply_batch_fn.is_none() {
+            let window = web_sys::window().expect("no window");
+            let f_val = js_sys::Reflect::get(
+                &window,
+                &JsValue::from_str("__idealystApplyClassesBatch"),
+            )
+            .expect("Reflect::get for __idealystApplyClassesBatch failed");
+            self.class_apply_batch_fn = Some(
+                f_val
+                    .dyn_into::<js_sys::Function>()
+                    .expect("__idealystApplyClassesBatch is not a Function"),
+            );
+        }
+
+        // Take the buffers out so we can do the FFI calls without
+        // holding `&mut self.pending_*`, then restore as empty so
+        // their capacity survives the next fan-out.
+        let ids = std::mem::take(&mut self.pending_class_ids);
+        let lengths = std::mem::take(&mut self.pending_class_lengths);
+        let buffer = std::mem::take(&mut self.pending_class_buffer);
+
+        let ids_buf = js_sys::Uint32Array::from(&ids[..]);
+        let lengths_buf = js_sys::Uint32Array::from(&lengths[..]);
+        let buffer_js = JsValue::from_str(&buffer);
+
+        let _ = self
+            .class_apply_batch_fn
+            .as_ref()
+            .expect("set above")
+            .call3(&JsValue::NULL, &ids_buf, &buffer_js, &lengths_buf)
+            .expect("__idealystApplyClassesBatch call failed");
+
+        // Restore the buffers so the next fan-out reuses their
+        // capacity (steady-state allocation cost: zero).
+        self.pending_class_ids = ids;
+        self.pending_class_ids.clear();
+        self.pending_class_lengths = lengths;
+        self.pending_class_lengths.clear();
+        self.pending_class_buffer = buffer;
+        self.pending_class_buffer.clear();
+    }
+
+    /// Drop a node from the JS-side styled-node registry. Called by
+    /// `impl_on_node_unstyled` so released elements can be GC'd
+    /// instead of being pinned by the shim's `Map`.
+    pub(crate) fn release_styled_node(&mut self, id: u32) {
+        if self.class_nodes_registered.remove(&id) {
+            self.pending_class_releases.push(id);
+            // If a flush isn't already scheduled, schedule one so
+            // the release reaches JS at the next microtask.
+            self.schedule_class_flush();
         }
     }
 

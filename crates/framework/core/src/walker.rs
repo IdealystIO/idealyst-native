@@ -3931,41 +3931,52 @@ fn attach_style_reactive<B: Backend + 'static>(
 
         let app = style();
 
-        let backend_for_register = backend_for_effect.clone();
-        let backend_for_unregister = backend_for_effect.clone();
-        let backend_for_install_tokens = backend_for_effect.clone();
-        let backend_for_update_tokens = backend_for_effect.clone();
-        let backend_for_asset = backend_for_effect.clone();
-        let backend_for_typeface = backend_for_effect.clone();
-        style::ensure_registered_with(
-            &app.sheet,
-            |rules| {
-                backend_for_register.borrow_mut().register_stylesheet(rules);
-            },
-            |rules| {
-                backend_for_unregister
-                    .borrow_mut()
-                    .unregister_stylesheet(rules);
-            },
-            |tokens| {
-                backend_for_install_tokens
-                    .borrow_mut()
-                    .install_tokens(tokens);
-            },
-            |tokens| {
-                backend_for_update_tokens
-                    .borrow_mut()
-                    .update_tokens(tokens);
-            },
-            |id, kind, source| {
-                backend_for_asset.borrow_mut().register_asset(id, kind, source);
-            },
-            |id, family_name, faces, fallback| {
-                backend_for_typeface
-                    .borrow_mut()
-                    .register_typeface(id, family_name, faces, fallback);
-            },
-        );
+        // Same fast-path as the batched-Repeat walker: once the
+        // sheet is registered (which holds for the entire lifetime
+        // of every steady-state row), skip the 6 Rc clones + the
+        // closure-passing into `ensure_registered_with`. The full
+        // function would early-return at its `already` check
+        // anyway, but only AFTER it's done its pending-token flush
+        // + dead-Weak sweep — ~500 ns of pure bookkeeping per fire.
+        // For a SHARED reactive-style bump that fans out to N rows
+        // with the same sheet, that's N × 500 ns we shouldn't pay.
+        if !style::is_registered(&app.sheet) {
+            let backend_for_register = backend_for_effect.clone();
+            let backend_for_unregister = backend_for_effect.clone();
+            let backend_for_install_tokens = backend_for_effect.clone();
+            let backend_for_update_tokens = backend_for_effect.clone();
+            let backend_for_asset = backend_for_effect.clone();
+            let backend_for_typeface = backend_for_effect.clone();
+            style::ensure_registered_with(
+                &app.sheet,
+                |rules| {
+                    backend_for_register.borrow_mut().register_stylesheet(rules);
+                },
+                |rules| {
+                    backend_for_unregister
+                        .borrow_mut()
+                        .unregister_stylesheet(rules);
+                },
+                |tokens| {
+                    backend_for_install_tokens
+                        .borrow_mut()
+                        .install_tokens(tokens);
+                },
+                |tokens| {
+                    backend_for_update_tokens
+                        .borrow_mut()
+                        .update_tokens(tokens);
+                },
+                |id, kind, source| {
+                    backend_for_asset.borrow_mut().register_asset(id, kind, source);
+                },
+                |id, family_name, faces, fallback| {
+                    backend_for_typeface
+                        .borrow_mut()
+                        .register_typeface(id, family_name, faces, fallback);
+                },
+            );
+        }
 
         // Pin the sheet so its `Weak` in REGISTRATIONS stays
         // upgradeable for the rest of this Effect's lifetime. Cheap

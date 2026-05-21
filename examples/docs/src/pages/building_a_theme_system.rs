@@ -6,7 +6,7 @@
 //! of the styling primitives (Tokenized<T>, Stylesheets, the token
 //! registry, reactivity).
 //!
-//! The `framework-theme` crate ships one such convention; this page
+//! The `idea-ui` crate ships one such convention; this page
 //! both documents that convention and shows what's underneath so you
 //! can roll your own if you have different needs.
 
@@ -39,14 +39,14 @@ docs! {
            choose, and any choice would be wrong for someone."),
         p("Instead, the framework provides the primitives you need to \
            build whichever theme system fits your app, and ships one \
-           opinionated convention (", code("framework-theme"),
+           opinionated convention (", code("idea-ui"),
           ") that you can use as-is or read as a reference. This page \
            covers both — the convention and the underlying mechanics \
            — so you can pick the level you want to work at."),
     },
 
-    section(heading = "The convention — framework-theme") {
-        p(code("framework-theme"),
+    section(heading = "The convention — idea-ui") {
+        p(code("idea-ui"),
           " bundles the standard \"install once, swap at runtime\" \
            pattern most apps want. The convention is three things:"),
         list(
@@ -62,7 +62,7 @@ docs! {
         ),
         code(rust, r##"
             use framework_core::{Color, Length, Tokenized, TokenEntry, TokenValue};
-            use framework_theme::ThemeTokens;
+            use idea_ui::ThemeTokens;
 
             // Your theme struct. Shape is yours — the framework
             // doesn't care what fields are on it as long as `tokens()`
@@ -108,7 +108,7 @@ docs! {
         "##),
         p("Installing + swapping:"),
         code(rust, r##"
-            use framework_theme::{install_theme, set_theme};
+            use idea_ui::{install_theme, set_theme};
 
             #[component]
             fn app() -> Primitive {
@@ -210,7 +210,7 @@ docs! {
           " surface, choosing an icon variant, branching on a token \
            value at runtime:"),
         code(rust, r##"
-            use framework_theme::active_theme;
+            use idea_ui::active_theme;
 
             let theme = active_theme();
             let primary: Color = theme
@@ -296,8 +296,8 @@ docs! {
            variations on \"build the right theme value, install it.\""),
     },
 
-    section(heading = "Rolling your own (without framework-theme)") {
-        p("If the ", code("framework-theme"),
+    section(heading = "Rolling your own (without idea-ui)") {
+        p("If the ", code("idea-ui"),
           " convention isn't a fit, skip it entirely. ",
           code("framework-core"),
           " gives you everything you need:"),
@@ -331,7 +331,7 @@ docs! {
                 TokenEntry { name: "text", value: TokenValue::Color(Color::from("#eee")) },
             ]);
         "##),
-        p("This is what ", code("framework-theme"),
+        p("This is what ", code("idea-ui"),
           " is doing under the hood, just without the trait + struct \
            ceremony. If your app's token set is fluid or comes from a \
            non-Rust source (config file, server-side theme builder, \

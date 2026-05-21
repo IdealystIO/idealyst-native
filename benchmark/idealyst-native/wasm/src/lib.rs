@@ -22,7 +22,7 @@ use framework_core::{
     signal, stylesheet, ui, view, AlignItems, Color, FlexDirection, IntoPrimitive, JustifyContent,
     Length, Overflow, Primitive, Signal, TokenEntry, TokenValue, Tokenized,
 };
-use framework_theme::{install_theme, set_theme, ThemeTokens};
+use idea_ui::{install_theme, set_theme, ThemeTokens};
 use std::cell::RefCell;
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;

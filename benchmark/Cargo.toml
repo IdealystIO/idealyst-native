@@ -9,7 +9,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 framework-core = { workspace = true }
-framework-theme = { workspace = true }
+idea-ui = { workspace = true }
 backend-web = { workspace = true }
 wasm-bindgen = "0.2"
 console_error_panic_hook = "0.1"

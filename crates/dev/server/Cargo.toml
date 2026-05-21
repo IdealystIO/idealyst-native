@@ -56,4 +56,4 @@ serde_json = "1"
 # for `cargo test` — the production builds of dev-server still
 # choose to enable `robot` via *our* feature, see `[features]` above.
 framework-core = { workspace = true, features = ["robot"] }
-framework-theme = { workspace = true }
+idea-ui = { workspace = true }

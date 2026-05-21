@@ -32,21 +32,8 @@ use framework_core::animation::{AnimProp, AnimatedValue, SpringTo, TweenTo};
 use framework_core::{
     animated, effect, node_ref, on_cleanup, timeline, ui, AlignItems, Color, FlexDirection,
     FontWeight, JustifyContent, Length, Position, Primitive, Ref, Shadow, StyleRules, StyleSheet,
-    TextAlign, Tokenized, ViewHandle,
+    TextAlign, TextHandle, Tokenized, ViewHandle,
 };
-use framework_theme::{install_theme, ThemeTokens, TokenEntry};
-
-/// Minimum theme stub. The framework requires `install_theme(...)`
-/// before render — backends (iOS in particular) subscribe to
-/// `active_theme()` from their setup paths, and the resolver panics
-/// if no theme is installed. Welcome doesn't read any tokens itself,
-/// so the implementation just returns an empty entry list.
-struct EmptyTheme;
-impl ThemeTokens for EmptyTheme {
-    fn tokens(&self) -> Vec<TokenEntry> {
-        Vec::new()
-    }
-}
 
 // ---- Timing (milliseconds) ----------------------------------------------
 
@@ -118,12 +105,6 @@ const HEADLINE_SIZE_PX: f32 = 56.0;
 const SUBTITLE_SIZE_PX: f32 = 18.0;
 
 pub fn app() -> Primitive {
-    // Required even though welcome doesn't read theme tokens — the
-    // iOS backend subscribes to `active_theme()` from its finish()
-    // path and panics if nothing has been installed. The cross-
-    // platform contract is "always install_theme before render."
-    install_theme(EmptyTheme);
-
     // ---- Animated values -----------------------------------------------
     //
     // One AV per (element, property) pair. Each AV holds a current
@@ -149,20 +130,29 @@ pub fn app() -> Primitive {
     let subtitle_opacity = animated!(0.0_f32);
     let subtitle_y = animated!(SUBTITLE_ENTER_Y);
 
-    // ---- View refs -----------------------------------------------------
+    // ---- Refs ----------------------------------------------------------
+    //
+    // `welcome_ref` (wrapper View) carries opacity / scale /
+    // translate — those properties cascade through UIView's alpha
+    // and transform to the Text child. Color animation can't ride
+    // that cascade (UILabel.textColor is independent of its
+    // parent's tintColor), so a separate `welcome_text_ref` is
+    // bound to the Text itself, and the color AV writes to it
+    // through `drive_color_text_av`.
 
     let welcome_ref = node_ref!(ViewHandle);
+    let welcome_text_ref = node_ref!(TextHandle);
     let dark_ref = node_ref!(ViewHandle);
     let glare_ref = node_ref!(ViewHandle);
     let subtitle_ref = node_ref!(ViewHandle);
 
     // Wire each AV to its target node + property. After this,
     // every `animate(...)` call automatically writes per-frame
-    // values into the DOM.
+    // values into the bound element.
     drive_av(&welcome_opacity, welcome_ref, AnimProp::Opacity);
     drive_av(&welcome_scale, welcome_ref, AnimProp::Scale);
     drive_av(&welcome_y, welcome_ref, AnimProp::TranslateY);
-    drive_color_av(&welcome_color, welcome_ref, AnimProp::ForegroundColor);
+    drive_color_text_av(&welcome_color, welcome_text_ref, AnimProp::ForegroundColor);
     drive_av(&dark_opacity, dark_ref, AnimProp::Opacity);
     drive_av(&glare_opacity, glare_ref, AnimProp::Opacity);
     drive_av(&glare_scale, glare_ref, AnimProp::Scale);
@@ -274,7 +264,7 @@ pub fn app() -> Primitive {
                 // Welcome phrase. Opacity / scale / y / color all
                 // animated.
                 View(style = welcome_wrap) {
-                    Text(style = headline) { "Welcome to Idealyst" }
+                    Text(style = headline) { "Welcome to Idealyst" }.bind(welcome_text_ref)
                 }.bind(welcome_ref)
 
                 // Subtitle. Hidden at start (opacity 0 via
@@ -300,8 +290,17 @@ pub fn app() -> Primitive {
 /// the page's animation, not a per-component effect, so its
 /// lifetime is the page lifetime.
 fn drive_av(av: &AnimatedValue<f32>, view_ref: Ref<ViewHandle>, prop: AnimProp) {
+    #[cfg(target_os = "ios")]
+    ios_diag(&format!("[welcome] drive_av registered for {:?}", prop));
     let sub = av.subscribe_and_apply(move |v, _vel| {
         let value = *v;
+        #[cfg(target_os = "ios")]
+        ios_diag(&format!(
+            "[welcome] drive_av FIRE {:?} = {} (ref filled? {})",
+            prop,
+            value,
+            view_ref.is_mounted()
+        ));
         view_ref.with(|handle| {
             #[cfg(target_arch = "wasm32")]
             {
@@ -309,7 +308,18 @@ fn drive_av(av: &AnimatedValue<f32>, view_ref: Ref<ViewHandle>, prop: AnimProp) 
                     crate::web::set_animated_f32(node, prop, value);
                 }
             }
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(target_os = "ios")]
+            {
+                if let Some(node) =
+                    handle.as_any().downcast_ref::<backend_ios::IosNode>()
+                {
+                    backend_ios::set_animated_f32(node, prop, value);
+                    ios_diag("[welcome] drive_av: set_animated_f32 called");
+                } else {
+                    ios_diag("[welcome] drive_av: downcast to IosNode FAILED");
+                }
+            }
+            #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
             {
                 let _ = (handle, value, prop);
             }
@@ -318,26 +328,63 @@ fn drive_av(av: &AnimatedValue<f32>, view_ref: Ref<ViewHandle>, prop: AnimProp) 
     std::mem::forget(sub);
 }
 
-/// Color-family counterpart of [`drive_av`]. Subscribes a
-/// 4-tuple AnimatedValue (sRGB `(r, g, b, a)` in `0..=1`) to a view
-/// ref, writing the channels through `set_animated_color` each
-/// frame. Used for the welcome phrase's color animation through the
-/// dark-wash transition.
-fn drive_color_av(
+/// NSLog wrapper for iOS-side diagnostics. Routes via the iOS-core
+/// helper which calls NSLog under the hood (so messages land in
+/// OSLog and `log show --predicate 'process == "Welcome"'`).
+#[cfg(target_os = "ios")]
+fn ios_diag(msg: &str) {
+    backend_ios_core::ios_log(msg);
+}
+
+/// Color-family counterpart of [`drive_av`], targeted at a Text
+/// element. Subscribes a 4-tuple AnimatedValue (sRGB
+/// `(r, g, b, a)` in `0..=1`) to a `Ref<TextHandle>` and writes
+/// the channels through `set_animated_color` each frame.
+///
+/// On iOS this lands on the underlying `UILabel`'s `textColor`
+/// (per the backend's per-widget routing in
+/// `set_animated_color`), which is what makes the headline's
+/// dark→light color transition visible through Act 2's wash. On
+/// web the inline `color` write on the text element produces the
+/// same visual effect.
+fn drive_color_text_av(
     av: &AnimatedValue<(f32, f32, f32, f32)>,
-    view_ref: Ref<ViewHandle>,
+    text_ref: Ref<TextHandle>,
     prop: AnimProp,
 ) {
+    #[cfg(target_os = "ios")]
+    ios_diag(&format!("[welcome] drive_color_text_av registered for {:?}", prop));
     let sub = av.subscribe_and_apply(move |v, _vel| {
         let (r, g, b, a) = *v;
-        view_ref.with(|handle| {
+        #[cfg(target_os = "ios")]
+        ios_diag(&format!(
+            "[welcome] drive_color_text_av FIRE {:?} = ({:.2},{:.2},{:.2},{:.2}) (ref filled? {})",
+            prop,
+            r,
+            g,
+            b,
+            a,
+            text_ref.is_mounted()
+        ));
+        text_ref.with(|handle| {
             #[cfg(target_arch = "wasm32")]
             {
                 if let Some(node) = handle.as_any().downcast_ref::<web_sys::Node>() {
                     crate::web::set_animated_color(node, prop, [r, g, b, a]);
                 }
             }
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(target_os = "ios")]
+            {
+                if let Some(node) =
+                    handle.as_any().downcast_ref::<backend_ios::IosNode>()
+                {
+                    backend_ios::set_animated_color(node, prop, [r, g, b, a]);
+                    ios_diag("[welcome] drive_color_text_av: set_animated_color called");
+                } else {
+                    ios_diag("[welcome] drive_color_text_av: downcast to IosNode FAILED");
+                }
+            }
+            #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
             {
                 let _ = (handle, r, g, b, a, prop);
             }
@@ -522,9 +569,12 @@ fn subtitle_wrapper_sheet() -> Rc<StyleSheet> {
     })
 }
 
-/// Headline text style — the welcome phrase wears this. Color is
-/// driven by the parent wrapper's animated `color` property, which
-/// CSS inheritance carries to the text node.
+/// Headline text style — the welcome phrase wears this. The
+/// initial `color` value matches `COLOR_HEADLINE_DARK` so the
+/// first paint reads correctly on the light frame; once the
+/// timeline kicks in, the AV-driven inline color override on the
+/// UILabel (iOS) / `style.color` (web) carries the dark→light
+/// transition through Act 2.
 fn headline_sheet() -> Rc<StyleSheet> {
     static_sheet(StyleRules {
         font_size: Some(px(HEADLINE_SIZE_PX)),
@@ -532,6 +582,7 @@ fn headline_sheet() -> Rc<StyleSheet> {
         letter_spacing: Some(Tokenized::Literal(-1.6)),
         line_height: Some(Tokenized::Literal(HEADLINE_SIZE_PX + 8.0)),
         text_align: Some(TextAlign::Center),
+        color: Some(col(COLOR_HEADLINE_DARK)),
         ..Default::default()
     })
 }

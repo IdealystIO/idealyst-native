@@ -180,7 +180,7 @@ dependencies = [
  "console_error_panic_hook",
  "dev-client",
  "framework-core",
- "framework-theme",
+ "idea-ui",
  "js-sys",
  "lol_alloc",
  "wasm-bindgen",
@@ -459,7 +459,6 @@ dependencies = [
  "backend-ios-core",
  "block2 0.5.1",
  "framework-core",
- "framework-theme",
  "native-layout",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
@@ -550,7 +549,7 @@ dependencies = [
  "backend-web",
  "console_error_panic_hook",
  "framework-core",
- "framework-theme",
+ "idea-ui",
  "wasm-bindgen",
  "web-sys",
 ]
@@ -562,7 +561,7 @@ dependencies = [
  "backend-web",
  "console_error_panic_hook",
  "framework-core",
- "framework-theme",
+ "idea-ui",
  "lol_alloc",
  "wasm-bindgen",
  "web-sys",
@@ -1418,7 +1417,7 @@ name = "dev-server"
 version = "0.0.1"
 dependencies = [
  "framework-core",
- "framework-theme",
+ "idea-ui",
  "mdns-sd",
  "notify-debouncer-mini",
  "serde",
@@ -1835,13 +1834,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "framework-theme"
-version = "0.0.1"
-dependencies = [
- "framework-core",
-]
-
-[[package]]
 name = "from_variant"
 version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2163,7 +2155,7 @@ version = "0.0.1"
 dependencies = [
  "backend-roku",
  "framework-core",
- "framework-theme",
+ "idea-ui",
 ]
 
 [[package]]
@@ -2175,8 +2167,8 @@ dependencies = [
  "console_error_panic_hook",
  "dev-client",
  "framework-core",
- "framework-theme",
  "icons-lucide",
+ "idea-ui",
  "js-sys",
  "lol_alloc",
  "wasm-bindgen",
@@ -2534,7 +2526,6 @@ name = "idea-ui"
 version = "0.0.1"
 dependencies = [
  "framework-core",
- "framework-theme",
  "idea-ui-docs-derive",
 ]
 
@@ -3044,7 +3035,7 @@ dependencies = [
  "backend-web",
  "console_error_panic_hook",
  "framework-core",
- "framework-theme",
+ "idea-ui",
  "maps",
  "wasm-bindgen",
  "web-sys",
@@ -3219,8 +3210,8 @@ dependencies = [
  "android-sim",
  "bytemuck",
  "framework-core",
- "framework-theme",
  "icons-lucide",
+ "idea-ui",
  "ios-sim",
  "native-phone",
  "native-tablet",
@@ -6220,7 +6211,7 @@ dependencies = [
  "console_error_panic_hook",
  "dev-client",
  "framework-core",
- "framework-theme",
+ "idea-ui",
  "js-sys",
  "lol_alloc",
  "wasm-bindgen",
@@ -6824,10 +6815,11 @@ checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 name = "welcome"
 version = "0.0.1"
 dependencies = [
+ "backend-ios-core",
+ "backend-ios-mobile",
  "backend-web",
  "console_error_panic_hook",
  "framework-core",
- "framework-theme",
  "idea-ui",
  "lol_alloc",
  "wasm-bindgen",

@@ -123,3 +123,12 @@ impl ViewOps for IosViewOps {
     }
 }
 pub(crate) static IOS_VIEW_OPS: IosViewOps = IosViewOps;
+
+// `TextOps` is a marker trait with no methods today — the framework's
+// `TextHandle` ships with a `NoopTextOps` default. The iOS backend
+// supplies its own static instance so the framework's
+// `make_text_handle` override can hand out handles whose `as_any()`
+// returns the underlying `IosNode::Label` for animation routing.
+pub(crate) struct IosTextOps;
+impl framework_core::TextOps for IosTextOps {}
+pub(crate) static IOS_TEXT_OPS: IosTextOps = IosTextOps;

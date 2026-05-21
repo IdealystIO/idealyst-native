@@ -10,7 +10,7 @@ mod imp;
 mod stub;
 
 #[cfg(target_os = "ios")]
-pub use imp::{install_global_self, IosBackend};
+pub use imp::{install_global_self, set_animated_color, set_animated_f32, IosBackend, IosNode};
 
 #[cfg(all(target_os = "ios", feature = "async-driver"))]
 pub use backend_ios_core::render_loop::install_render_loop;
@@ -55,3 +55,17 @@ pub use aas::{ios_main, ios_teardown};
 /// host-platform cross-compile of consumer code still type-checks.
 #[cfg(not(target_os = "ios"))]
 pub fn install_global_self(_weak: std::rc::Weak<std::cell::RefCell<IosBackend>>) {}
+
+/// Non-iOS no-op stub for the animation property helper. The
+/// matching `IosNode` is exposed only on iOS, so consumer code that
+/// reaches this path is necessarily host-target only.
+#[cfg(not(target_os = "ios"))]
+pub fn set_animated_f32<T>(_node: &T, _prop: framework_core::animation::AnimProp, _value: f32) {}
+
+#[cfg(not(target_os = "ios"))]
+pub fn set_animated_color<T>(
+    _node: &T,
+    _prop: framework_core::animation::AnimProp,
+    _value: [f32; 4],
+) {
+}

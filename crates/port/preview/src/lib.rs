@@ -26,10 +26,9 @@ pub struct PreviewConfig<'a> {
     pub output_dir: &'a Path,
     /// Filesystem path to the idealyst-native checkout root. The
     /// scratch crate's `Cargo.toml` will reference framework-core
-    /// (and, when rendering, framework-theme / render-wgpu /
-    /// ios-sim / native-phone) via path dependencies under this
-    /// root. Required because the scratch crate is *not* a
-    /// workspace member.
+    /// (and, when rendering, render-wgpu / ios-sim / native-phone)
+    /// via path dependencies under this root. Required because the
+    /// scratch crate is *not* a workspace member.
     pub workspace_root: &'a Path,
     /// PascalCase component name to use as the render root.
     /// Defaults to `"App"`. If found, a rendering `main.rs` is

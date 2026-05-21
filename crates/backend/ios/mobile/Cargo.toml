@@ -29,7 +29,6 @@ async-driver = ["framework-core/async-driver", "backend-ios-core/async-driver"]
 
 [dependencies]
 framework-core = { workspace = true }
-framework-theme = { workspace = true }
 native-layout = { workspace = true }
 # Shared iOS/tvOS helpers (style + render loop driver). Same crate
 # is consumed by `backend-ios-tv`.

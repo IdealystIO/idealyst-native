@@ -10,7 +10,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 framework-core = { workspace = true }
-framework-theme = { workspace = true }
+idea-ui = { workspace = true }
 maps = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

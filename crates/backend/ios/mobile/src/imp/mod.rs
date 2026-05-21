@@ -74,11 +74,6 @@ pub struct IosBackend {
     navigator_instances: HashMap<usize, NavigatorEntry>,
     tab_drawer_instances: HashMap<usize, TabDrawerEntry>,
     callback_targets: Vec<Retained<NSObject>>,
-    /// Holds the per-backend theme-transition Effect installed in
-    /// `set_host_root`. Kept on the struct so the subscription's
-    /// lifetime matches the backend's. None until the host root is
-    /// attached.
-    theme_transition_effect: Option<framework_core::Effect>,
     /// Set of view pointers that are UIScrollViews. Used in the
     /// post-layout pass to sync `contentSize` from Taffy children.
     scroll_views: std::collections::HashSet<usize>,
@@ -180,6 +175,43 @@ pub fn install_global_self(weak: std::rc::Weak<std::cell::RefCell<IosBackend>>) 
     });
 }
 
+/// Push a scalar animation property update to `node` on the
+/// installed global backend. The cross-platform animation system's
+/// per-frame subscribers reach the iOS backend through this — same
+/// shape as `backend_web::set_animated_f32` but routed via the
+/// global self-handle rather than a thread-local backend stash the
+/// wrapper would have to wire up.
+///
+/// Quietly no-ops if no backend has been installed yet (pre-render)
+/// or the install has been dropped (post-teardown), or if the
+/// backend is already borrowed (the in-flight Rust call will see
+/// the new value on its next frame).
+pub fn set_animated_f32(node: &IosNode, prop: framework_core::animation::AnimProp, value: f32) {
+    let weak = IOS_BACKEND_SELF.with(|s| s.borrow().clone());
+    let Some(weak) = weak else { return };
+    let Some(rc) = weak.upgrade() else { return };
+    if let Ok(mut b) = rc.try_borrow_mut() {
+        use framework_core::Backend;
+        b.set_animated_f32(node, prop, value);
+    };
+}
+
+/// Color-family counterpart of [`set_animated_f32`]. Routes through
+/// the global backend's `set_animated_color`.
+pub fn set_animated_color(
+    node: &IosNode,
+    prop: framework_core::animation::AnimProp,
+    value: [f32; 4],
+) {
+    let weak = IOS_BACKEND_SELF.with(|s| s.borrow().clone());
+    let Some(weak) = weak else { return };
+    let Some(rc) = weak.upgrade() else { return };
+    if let Ok(mut b) = rc.try_borrow_mut() {
+        use framework_core::Backend;
+        b.set_animated_color(node, prop, value);
+    };
+}
+
 /// Schedule a fresh layout pass on the next main-queue turn. Safe to
 /// call from anywhere on the main thread; no-op if the backend has
 /// been dropped or no self ref is installed.
@@ -242,7 +274,6 @@ impl IosBackend {
             portal_instances: HashMap::new(),
             layout: native_layout::LayoutTree::new(),
             view_to_layout: HashMap::new(),
-            theme_transition_effect: None,
             animated_states: HashMap::new(),
         }
     }
@@ -296,11 +327,6 @@ impl IosBackend {
         };
         self.callback_targets.push(obj);
         self.host_root = Some(view);
-        // Theme-transition Effect is installed lazily in `finish()`,
-        // not here. `set_host_root` runs BEFORE the app's
-        // `install_theme(...)` (which lives inside the user's
-        // `app()` and is invoked by `render`), so subscribing now
-        // would panic in `active_theme()` with "no theme installed".
     }
 
     /// Install a Taffy `measure_fn` for an image view so flex layout
@@ -330,70 +356,6 @@ impl IosBackend {
                 }
             }),
         );
-    }
-
-    /// Install the per-host theme-transition Effect. Subscribes to
-    /// `active_theme()`; on every fire after the initial one, flips
-    /// `backend_ios_core::style::THEME_TRANSITION_ACTIVE` so any
-    /// color setter run during the cohort re-apply wraps itself in
-    /// a 200ms `UIView.animate`. A `performSelector:afterDelay:0.0`
-    /// resets the flag on the next run-loop tick.
-    ///
-    /// Called from `finish()` (which runs after the user's `app()`
-    /// has invoked `install_theme`). Once-only — re-renders re-use
-    /// the existing subscription.
-    fn install_theme_transition_effect(&mut self) {
-        if self.theme_transition_effect.is_some() {
-            return;
-        }
-        let mtm = self.mtm;
-        let initial = Rc::new(std::cell::Cell::new(true));
-        let initial_for_effect = initial.clone();
-        let theme_effect = framework_core::Effect::new(move || {
-            // Subscribe to the active-theme signal so this effect
-            // re-fires on every `framework_theme::set_theme(...)`
-            // call. This effect cares about "a theme swap happened"
-            // — not which individual tokens changed — so subscribing
-            // to a single signal that fires once per swap is the
-            // correct grain. Per-token signals (`Tokenized::resolve`)
-            // would fire N times per swap, which is wrong here.
-            let _ = framework_theme::active_theme();
-            // Skip the initial run — Effect::new() always fires
-            // once at install; we only want to animate genuine
-            // subsequent theme swaps.
-            if initial_for_effect.get() {
-                initial_for_effect.set(false);
-                return;
-            }
-            backend_ios_core::style::THEME_TRANSITION_ACTIVE.with(|c| c.set(true));
-            // Schedule the flag reset for the next run loop pass.
-            // By then the cohort driver's synchronous reapply loop
-            // has finished and the UIView.animate blocks have all
-            // been opened — clearing the flag afterward keeps
-            // subsequent (non-theme) setters snappy.
-            let reset_target = callbacks::CallbackTarget::new(
-                mtm,
-                Rc::new(|| {
-                    backend_ios_core::style::THEME_TRANSITION_ACTIVE.with(|c| c.set(false));
-                }),
-            );
-            let reset_sel = objc2::sel!(invoke);
-            let _: () = unsafe {
-                msg_send![
-                    &reset_target,
-                    performSelector: reset_sel,
-                    withObject: std::ptr::null::<NSObject>(),
-                    afterDelay: 0.0 as objc2_foundation::CGFloat
-                ]
-            };
-            // `forget` so the target outlives the perform delay.
-            let target_obj: Retained<NSObject> = unsafe {
-                let ptr = Retained::as_ptr(&reset_target) as *mut NSObject;
-                Retained::retain(ptr).unwrap()
-            };
-            std::mem::forget(target_obj);
-        });
-        self.theme_transition_effect = Some(theme_effect);
     }
 
     fn retain_target<T: objc2::Message>(&mut self, target: &Retained<T>) {
@@ -1781,6 +1743,10 @@ impl Backend for IosBackend {
         framework_core::ViewHandle::new(Rc::new(node.clone()), &handles::IOS_VIEW_OPS)
     }
 
+    fn make_text_handle(&self, node: &Self::Node) -> framework_core::TextHandle {
+        framework_core::TextHandle::new(Rc::new(node.clone()), &handles::IOS_TEXT_OPS)
+    }
+
     // =================================================================
     // Tab Navigator
     // =================================================================
@@ -1877,11 +1843,6 @@ impl Backend for IosBackend {
             pin_to_edges(host, root.as_view());
         }
         self.run_layout_pass(&root);
-        // Theme is guaranteed installed by now — `app()` ran during
-        // the walker pass that produced `root`, and any theme-using
-        // app calls `install_theme` at the top of `app()`. Subscribe
-        // for theme-change animations.
-        self.install_theme_transition_effect();
     }
 }
 

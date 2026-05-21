@@ -74,6 +74,35 @@ function Row({ index, theme }) {
   });
 }
 
+// ── granular suite: per-row counters threaded as props ────────
+// Naive React: counters live as one array in root state. Any
+// bump produces a new array reference → the WHOLE list re-renders,
+// because no memoization sits between root and CounterRow.
+function CounterRow({ index, value, theme }) {
+  return _jsx('div', {
+    style: rowStyle(theme, index % 2 === 0 ? 'even' : 'odd'),
+    children: _jsx('span', { children: `row ${index}: c=${value}` }),
+  });
+}
+
+// ── reactive-style suite: bg derived from shared + per-row state.
+// Same naive treatment — any bump rebuilds the whole list.
+const COLOR_A = 'rgb(91, 108, 255)';
+const COLOR_B = 'rgb(255, 91, 108)';
+function rstyleRowStyle(theme, bg) {
+  return {
+    display: 'flex', flexDirection: 'column', justifyContent: 'center',
+    padding: '8px 16px', fontSize: 13, height: 36,
+    color: theme.text, background: bg,
+  };
+}
+function RStyleRow({ index, bg, theme }) {
+  return _jsx('div', {
+    style: rstyleRowStyle(theme, bg),
+    children: _jsx('span', { children: `rstyle ${index}` }),
+  });
+}
+
 // ── hierarchy components (no memo!) ──────────────────────────
 // Branch: receives global+branch counters as props, passes
 // them down. Re-runs on every parent re-render. Leaf does the
@@ -116,6 +145,12 @@ let externalSetTheme = null;
 let externalSetupHierarchy = null;
 let externalBranchUpdate = null;
 let externalGlobalUpdate = null;
+let externalSetupCounters = null;
+let externalBumpCounter = null;
+let externalBumpRange = null;
+let externalSetupReactiveStyles = null;
+let externalSetSharedColor = null;
+let externalSetPointColor = null;
 
 function App() {
   // rebuild/toggle state
@@ -126,6 +161,13 @@ function App() {
   const [tree, setTree] = useState(null);
   const [globalCounter, setGlobal] = useState(0);
   const [branchCounter, setBranch] = useState(0);
+  // granular state — one array of integers, length = counterCount.
+  // Bumps produce a new array reference so React re-renders the
+  // list (naive: no memo on CounterRow).
+  const [counters, setCounters] = useState(null);
+  // reactive-style state — shared color name + per-row overrides.
+  const [rstyle, setRstyle] = useState(null);
+  // ^ shape: { n, shared: 'A'|'B', points: Array<'A'|'B'|null> }
 
   // Publish setters once on first render so the runner can
   // drive them via the iframe-message path.
@@ -161,6 +203,66 @@ function App() {
       flushSync(() => setGlobal(n));
     };
   }
+  if (!externalSetupCounters) {
+    externalSetupCounters = async (n) => {
+      flushSync(() => {
+        setMode('counters');
+        setCounters(new Array(n).fill(0));
+      });
+    };
+  }
+  if (!externalBumpCounter) {
+    externalBumpCounter = async (i, v) => {
+      flushSync(() => {
+        setCounters((arr) => {
+          if (!arr) return arr;
+          const next = arr.slice();
+          next[i] = v;
+          return next;
+        });
+      });
+    };
+  }
+  if (!externalBumpRange) {
+    externalBumpRange = async (s, e, v) => {
+      flushSync(() => {
+        setCounters((arr) => {
+          if (!arr) return arr;
+          const next = arr.slice();
+          const end = Math.min(e, next.length);
+          for (let i = s; i < end; i++) next[i] = v;
+          return next;
+        });
+      });
+    };
+  }
+  if (!externalSetupReactiveStyles) {
+    externalSetupReactiveStyles = async (n) => {
+      flushSync(() => {
+        setMode('rstyle');
+        setRstyle({ n, shared: 'A', points: new Array(n).fill(null) });
+      });
+    };
+  }
+  if (!externalSetSharedColor) {
+    externalSetSharedColor = async (name) => {
+      flushSync(() => {
+        setRstyle((s) => s ? ({ ...s, shared: name === 'B' ? 'B' : 'A' }) : s);
+      });
+    };
+  }
+  if (!externalSetPointColor) {
+    externalSetPointColor = async (i, name) => {
+      flushSync(() => {
+        setRstyle((s) => {
+          if (!s) return s;
+          const points = s.points.slice();
+          points[i] = name === 'B' ? 'B' : 'A';
+          return { ...s, points };
+        });
+      });
+    };
+  }
 
   // ALL hooks must be called unconditionally on every render
   // (Rules of Hooks). We compute the rows useMemo before the
@@ -189,6 +291,32 @@ function App() {
     });
   }
 
+  if (mode === 'counters' && counters) {
+    return _jsx('div', {
+      style: pageStyle(theme),
+      children: _jsx('div', {
+        style: listStyle(theme),
+        children: counters.map((v, i) =>
+          _jsx(CounterRow, { index: i, value: v, theme }, i),
+        ),
+      }),
+    });
+  }
+
+  if (mode === 'rstyle' && rstyle) {
+    return _jsx('div', {
+      style: pageStyle(theme),
+      children: _jsx('div', {
+        style: listStyle(theme),
+        children: rstyle.points.map((p, i) => {
+          const choice = p ?? rstyle.shared;
+          const bg = choice === 'B' ? COLOR_B : COLOR_A;
+          return _jsx(RStyleRow, { index: i, bg, theme }, i);
+        }),
+      }),
+    });
+  }
+
   return _jsx('div', {
     style: pageStyle(theme),
     children: _jsx('div', { style: listStyle(theme), children: rows }),
@@ -210,6 +338,12 @@ waitForReady().then(() =>
     setupHierarchy: (seed, nodes, maxDepth) => externalSetupHierarchy(seed, nodes, maxDepth),
     branchUpdate: (n) => externalBranchUpdate(n),
     globalUpdate: (n) => externalGlobalUpdate(n),
+    setupCounters: (n) => externalSetupCounters(n),
+    bumpCounter: (i, v) => externalBumpCounter(i, v),
+    bumpRange: (s, e, v) => externalBumpRange(s, e, v),
+    setupReactiveStyles: (n) => externalSetupReactiveStyles(n),
+    setSharedColor: (name) => externalSetSharedColor(name),
+    setPointColor: (i, name) => externalSetPointColor(i, name),
   })
 );
 </script>
