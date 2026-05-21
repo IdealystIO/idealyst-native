@@ -44,7 +44,13 @@ mod imp;
 mod stub;
 
 #[cfg(target_os = "android")]
-pub use imp::AndroidBackend;
+pub use imp::{install_global_self, set_animated_color, set_animated_f32, AndroidBackend};
+
+/// Re-export the JNI `GlobalRef` so author-level animation drivers
+/// can downcast `view_handle.as_any()` without having to depend on
+/// `jni` directly. Matches the iOS backend's `IosNode` re-export.
+#[cfg(target_os = "android")]
+pub use jni::objects::GlobalRef as AndroidNode;
 
 #[cfg(all(target_os = "android", feature = "async-driver"))]
 pub use backend_android_core::render_loop::install_render_loop;
@@ -67,6 +73,30 @@ pub fn install_render_loop() {}
 /// Non-Android no-op so cross-compile of host code still type-checks.
 #[cfg(not(target_os = "android"))]
 pub fn install_scheduler() {}
+
+/// Non-Android stub for cross-compile. The wasm/iOS targets pull in
+/// the host's `app()` and re-export the welcome example's
+/// drive-AV bridge under `cfg(target_os = "android")`; this stub
+/// keeps non-Android `cargo check` passing.
+#[cfg(not(target_os = "android"))]
+pub struct AndroidNode;
+
+#[cfg(not(target_os = "android"))]
+pub fn install_global_self(_weak: std::rc::Weak<std::cell::RefCell<AndroidBackend>>) {}
+
+#[cfg(not(target_os = "android"))]
+pub fn set_animated_f32(
+    _node: &AndroidNode,
+    _prop: framework_core::animation::AnimProp,
+    _value: f32,
+) {}
+
+#[cfg(not(target_os = "android"))]
+pub fn set_animated_color(
+    _node: &AndroidNode,
+    _prop: framework_core::animation::AnimProp,
+    _value: [f32; 4],
+) {}
 
 /// Optional AAS-client glue. Compiled in only when the `aas-shell`
 /// Cargo feature is on. The module exposes `attach` / `drain` /

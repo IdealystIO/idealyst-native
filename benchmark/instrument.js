@@ -99,6 +99,8 @@ export async function autoRunIfRequested({
   setupReactiveStyles,
   setSharedColor,
   setPointColor,
+  // signal-class suite — JS-side reactive class binding
+  setupSignalClassRows,
   suitesBase,
 } = {}) {
   const url = new URL(window.location.href);
@@ -148,6 +150,7 @@ export async function autoRunIfRequested({
       setupReactiveStyles,
       setSharedColor,
       setPointColor,
+      setupSignalClassRows,
       params,
       onProgress: (progress) => {
         postBack({ type: 'bench-progress', suite: suiteName, runs: progress });

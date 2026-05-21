@@ -442,7 +442,7 @@ const VARIANTS: &[VariantInfo] = &[
     },
     VariantInfo {
         id: "idealyst-native",      label: "idealyst-native",        url: "./idealyst-native/",
-        supports: &["rebuild", "toggle", "hierarchy", "granular", "reactive-style"],
+        supports: &["rebuild", "toggle", "hierarchy", "granular", "reactive-style", "signal-class"],
     },
 ];
 
@@ -598,6 +598,24 @@ const SUITES: &[SuiteInfo] = &[
         // Same PAINT/APPLY shape as toggle — the visible style
         // change rides a CSS transition every variant pays for
         // identically; framework differences live in APPLY.
+        total: TotalMetric::ApplySum,
+    },
+    SuiteInfo {
+        name: "signal-class",
+        title: "Signal-class binding (JS fan-out)",
+        params: &[
+            ParamInfo { name: "rows",         label: "Rows",           default: 50000.0 },
+            ParamInfo { name: "iterations",   label: "Iterations",     default: 10.0    },
+            ParamInfo { name: "warmupCycles", label: "Warmup toggles", default: 2.0     },
+        ],
+        // 0 = A→B, 1 = B→A. Single bucket pair like toggle —
+        // we're flipping ONE signal between two values and
+        // watching N nodes follow via the JS-side dispatcher.
+        bucket_labels: &["A→B", "B→A"],
+        // Same shape as toggle / reactive-style: PAINT clusters
+        // around the CSS-transition window every variant pays
+        // for; framework differences (Rust-side vs JS-side
+        // fan-out) live entirely in APPLY.
         total: TotalMetric::ApplySum,
     },
 ];

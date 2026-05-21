@@ -638,6 +638,7 @@ pub struct WireStyleRules {
     pub min_height: Option<WireLength>,
     pub max_width: Option<WireLength>,
     pub max_height: Option<WireLength>,
+    pub aspect_ratio: Option<f32>,
 
     pub padding_top: Option<WireLength>,
     pub padding_right: Option<WireLength>,

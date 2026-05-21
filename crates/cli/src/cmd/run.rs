@@ -1,6 +1,28 @@
 use std::path::PathBuf;
 
+use anyhow::Context;
+
 use crate::Platform;
+
+/// Window form factor for `idealyst run sim`. Drives both the
+/// window size (each variant has its own `native-*` crate) and
+/// which preset the chosen skin uses by default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum SimForm {
+    #[default]
+    Phone,
+    Tablet,
+    Tv,
+}
+
+/// Skin painting the chrome around the user's tree for
+/// `idealyst run sim`. Independent of the form factor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum SimSkin {
+    #[default]
+    Ios,
+    Android,
+}
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
@@ -42,9 +64,25 @@ pub struct Args {
     /// install.
     #[arg(long)]
     pub console: bool,
+
+    /// Sim only: window form factor. Defaults to `phone`.
+    #[arg(long, value_enum, default_value_t = SimForm::Phone)]
+    pub form: SimForm,
+
+    /// Sim only: chrome skin. Defaults to `ios`.
+    #[arg(long, value_enum, default_value_t = SimSkin::Ios)]
+    pub skin: SimSkin,
 }
 
-pub fn run(args: Args) -> anyhow::Result<()> {
+pub fn run(mut args: Args) -> anyhow::Result<()> {
+    // Canonicalize the project dir so framework-source detection
+    // can walk ancestors reliably. Without this, `.` (the default)
+    // has no parent path components for `find_framework_workspace`
+    // to inspect, so in-workspace projects silently fall through to
+    // git mode. Mirrors what `cmd::dev::run` already does.
+    args.dir = std::fs::canonicalize(&args.dir).with_context(|| {
+        format!("cannot resolve project dir {}", args.dir.display())
+    })?;
     match args.platform {
         Platform::Ios => {
             let mode = if args.aas {
@@ -172,8 +210,46 @@ pub fn run(args: Args) -> anyhow::Result<()> {
             eprintln!("  device: {}", artifact.serial);
             Ok(())
         }
+        Platform::Sim => {
+            let source = crate::framework_source::resolve(&args.dir)?;
+            let form = match args.form {
+                SimForm::Phone => build_sim::FormFactor::Phone,
+                SimForm::Tablet => build_sim::FormFactor::Tablet,
+                SimForm::Tv => build_sim::FormFactor::Tv,
+            };
+            let skin = match args.skin {
+                SimSkin::Ios => build_sim::SkinChoice::Ios,
+                SimSkin::Android => build_sim::SkinChoice::Android,
+            };
+            let artifact = build_sim::build(
+                &args.dir,
+                build_sim::BuildOptions {
+                    release: args.release,
+                    form,
+                    skin,
+                    source,
+                },
+            )?;
+            eprintln!();
+            eprintln!(
+                "[idealyst run sim] launching {} ({} / {})",
+                artifact.binary.display(),
+                form.as_str(),
+                skin.as_str(),
+            );
+            // Foreground the sim binary — exits when the user closes
+            // the window. Inherit stdio so framework logs surface
+            // alongside the CLI's.
+            let status = std::process::Command::new(&artifact.binary)
+                .status()
+                .with_context(|| format!("spawn sim binary {}", artifact.binary.display()))?;
+            if !status.success() {
+                anyhow::bail!("sim binary exited with {status}");
+            }
+            Ok(())
+        }
         _ => anyhow::bail!(
-            "run for {} is not implemented yet — only ios, android, and roku are wired today",
+            "run for {} is not implemented yet — only ios, android, roku, and sim are wired today",
             args.platform,
         ),
     }

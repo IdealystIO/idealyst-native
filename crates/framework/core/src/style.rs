@@ -17,8 +17,8 @@
 //! `Tokenized::Token { name, fallback }` references. Token values are
 //! installed via [`install_tokens`] and updated via [`update_tokens`].
 //!
-//! The "theme as a typed struct" pattern is provided by the separate
-//! `framework-theme` crate as a thin wrapper over these primitives.
+//! The "theme as a typed struct" pattern is provided by `idea-ui`'s
+//! theme runtime as a thin wrapper over these primitives.
 //!
 //! Token updates flow through the existing reactive system: each styled
 //! node's apply-style call lives inside an `Effect` that reads token
@@ -499,6 +499,91 @@ pub struct Shadow {
     pub color: Color,
 }
 
+/// Gradient fill for a view's background. Sits alongside the
+/// plain `background` color: when both are set, the gradient
+/// renders over (z-replaces) the solid background. Each backend
+/// maps onto its native gradient primitive:
+/// - Web: `background-image: linear-gradient(...)` / `radial-gradient(...)`.
+/// - iOS: `CAGradientLayer` (`.axial` for linear, `.radial` for radial).
+/// - Android: `GradientDrawable` with the corresponding gradient type,
+///   or a manual `RadialGradient` + `Paint` when the type isn't expressible.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Gradient {
+    pub kind: GradientKind,
+    /// Color stops ordered by ascending offset. Each `(offset, color)`
+    /// pair lives in normalized 0..=1 space: `0.0` is the start of the
+    /// gradient (axial origin / radial center) and `1.0` is the far
+    /// end (axial terminus / radius edge). Stops outside this range
+    /// are clamped by each backend.
+    pub stops: Vec<GradientStop>,
+}
+
+/// One color stop in a [`Gradient`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct GradientStop {
+    /// Offset along the gradient's axis (linear) or radius (radial),
+    /// in normalized 0..=1 space.
+    pub offset: f32,
+    pub color: Color,
+}
+
+/// The shape of a gradient — linear or radial. Each variant carries
+/// only the parameters specific to its shape; the color stops live
+/// on the parent [`Gradient`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum GradientKind {
+    /// Linear gradient along an axis defined by an angle.
+    Linear {
+        /// Direction of the gradient axis in degrees, clockwise from
+        /// straight-up (CSS convention): `0` = bottom→top,
+        /// `90` = left→right, `180` = top→bottom, `270` = right→left.
+        angle_deg: f32,
+    },
+    /// Radial gradient emanating from a center point.
+    Radial {
+        /// Center of the radial gradient, normalized 0..=1 in the
+        /// view's local space. `(0.5, 0.5)` puts the center in the
+        /// middle of the view; `(1.0, 0.0)` puts it at top-right.
+        center: (f32, f32),
+        /// Distance at which the last stop (offset=1.0) sits,
+        /// expressed as a multiple of the chosen `extent`. With
+        /// `extent: ClosestSide` and `radius: 1.0`, the outermost
+        /// stop sits at the closest edge midpoint; with `radius: 2.0`
+        /// it sits twice as far. Values >1.0 push the last stop
+        /// past the box, which is useful when the view is clipped
+        /// to rounded corners and you don't want the gradient cut
+        /// short of the visible edge.
+        radius: f32,
+        /// What "100%" means for the gradient — the reference
+        /// distance multiplied by `radius`. Mirrors CSS's
+        /// `closest-side` / `farthest-corner` keywords on
+        /// `radial-gradient`. Use `FarthestCorner` for vignettes
+        /// that must reach the screen corners on non-square
+        /// viewports; the default `ClosestSide` works for
+        /// aspect-ratio:1 discs (suns, dots, badges).
+        extent: RadialExtent,
+    },
+}
+
+/// Reference distance for a [`GradientKind::Radial`]. Determines
+/// what "100% of radius" means in the view's local coordinate
+/// space — matches the equivalent CSS `radial-gradient(<extent>, …)`
+/// keywords.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum RadialExtent {
+    /// Distance to the closest edge midpoint. On a 100×200 box
+    /// centered, the reference is 50px (half the shorter side).
+    /// Best for circular content on square boxes — the disc
+    /// reaches the view edge at `radius: 1.0`.
+    #[default]
+    ClosestSide,
+    /// Distance to the farthest corner. On the same 100×200 box
+    /// centered, the reference is √(50² + 100²) ≈ 112px. Use this
+    /// when the gradient should reach the corners of a non-square
+    /// box — vignettes, screen-filling glows.
+    FarthestCorner,
+}
+
 /// One element of a transform stack. The full transform is a
 /// `Vec<Transform>` applied in order — matches RN's `transform: [...]`
 /// shape. Backends:
@@ -619,6 +704,13 @@ pub struct StyleRules {
     pub min_height: Option<Tokenized<Length>>,
     pub max_width: Option<Tokenized<Length>>,
     pub max_height: Option<Tokenized<Length>>,
+    /// Preferred width-to-height ratio (`width / height`). When set,
+    /// the layout engine sizes the unspecified dimension to satisfy
+    /// the ratio. Useful for keeping a square (`1.0`) or
+    /// fixed-aspect (e.g. `16.0 / 9.0`) box even when only one
+    /// dimension is sized as a percentage of the parent. Mirrors
+    /// CSS `aspect-ratio` and Taffy's `aspect_ratio` field.
+    pub aspect_ratio: Option<f32>,
 
     // --- Padding (per-side; no shorthand field) ---
     pub padding_top: Option<Tokenized<Length>>,
@@ -673,6 +765,11 @@ pub struct StyleRules {
     pub opacity: Option<Tokenized<f32>>,
     pub overflow: Option<Overflow>,
     pub shadow: Option<Shadow>,
+    /// Gradient background, rendered over (replacing) the solid
+    /// `background` color when both are set. Each backend maps to its
+    /// native gradient primitive — see [`Gradient`]'s doc for the
+    /// mapping table.
+    pub background_gradient: Option<Gradient>,
     /// Empty vec means "no transforms"; the field's `Option` distinguishes
     /// "not set, fall through to other layers" from "explicitly empty".
     pub transform: Option<Vec<Transform>>,
@@ -732,7 +829,7 @@ impl StyleRules {
             flex_direction, flex_wrap, justify_content, align_items, align_content,
             gap, row_gap, column_gap,
             flex_grow, flex_shrink, flex_basis, align_self,
-            width, height, min_width, min_height, max_width, max_height,
+            width, height, min_width, min_height, max_width, max_height, aspect_ratio,
             padding_top, padding_right, padding_bottom, padding_left,
             margin_top, margin_right, margin_bottom, margin_left,
             border_top_left_radius, border_top_right_radius,
@@ -796,6 +893,11 @@ impl StyleRules {
         write_tokenized_length(&mut s, "minh", &self.min_height);
         write_tokenized_length(&mut s, "maxw", &self.max_width);
         write_tokenized_length(&mut s, "maxh", &self.max_height);
+        if let Some(ar) = self.aspect_ratio {
+            s.push_str("ar=");
+            push_u32_hex(&mut s, ar.to_bits());
+            s.push(';');
+        }
 
         write_tokenized_length(&mut s, "pt", &self.padding_top);
         write_tokenized_length(&mut s, "pr", &self.padding_right);

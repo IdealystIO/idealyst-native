@@ -139,6 +139,45 @@ impl IntoTextSource for TextSource {
 pub enum StyleSource {
     Static(StyleApplication),
     Reactive(Box<dyn Fn() -> StyleApplication>),
+    /// Pre-resolved signal→class binding. The walker resolves each
+    /// declared `(value, app)` to a minted class name at mount, then
+    /// hands the (signal_id, values, classes) table to the backend.
+    /// Backends that support JS-side bindings (web today) install a
+    /// pure-JS dispatcher that fans signal writes out to subscribed
+    /// nodes WITHOUT firing a Rust Effect per node — for SHARED
+    /// reactive-style cohorts this collapses 50k Effect fires per
+    /// fan-out to one signal-changed callback.
+    ///
+    /// `compute_fallback` mirrors `StyleSource::Reactive`'s closure
+    /// shape so backends that don't support JS bindings (native
+    /// mobile, in-process renderers) get the same behavior — just
+    /// with the per-node Effect path they'd take anyway.
+    SignalClass(SignalClassSpec),
+}
+
+/// Spec for a `StyleSource::SignalClass` binding. Built via the
+/// [`crate::signal_class`] helper.
+///
+/// `signal_id` is the arena id of a `Signal<u32>`. The walker
+/// resolves each `(values[i], apps[i])` pair to a minted class name
+/// and ships the resulting table to the backend. On a signal write
+/// the backend updates the node's class to `classes[values.index_of(new_value)]`.
+pub struct SignalClassSpec {
+    pub signal_id: u64,
+    pub values: Vec<u32>,
+    pub apps: Vec<StyleApplication>,
+    /// Fallback closure for backends without JS-binding support.
+    /// Built once at construction from the same mapping fn the
+    /// caller supplied — runs inside a normal `Effect` and produces
+    /// a `StyleApplication` for the signal's current value.
+    pub compute_fallback: std::rc::Rc<dyn Fn() -> StyleApplication>,
+    /// Reads the signal's current value as `u32`. Used by the
+    /// JS-binding backend path to (a) seed the initial class at
+    /// mount and (b) provide a value source for the
+    /// signal-changed notifier that ships writes across the FFI
+    /// boundary. The closure does NOT subscribe — it's expected
+    /// to call the signal's untracked accessor.
+    pub read_signal: std::rc::Rc<dyn Fn() -> u32>,
 }
 
 /// Allows `with_style(...)` to accept any of:
@@ -176,5 +215,78 @@ where
 {
     fn into_style_source(self) -> StyleSource {
         StyleSource::Reactive(Box::new(self))
+    }
+}
+
+impl IntoStyleSource for SignalClassSpec {
+    fn into_style_source(self) -> StyleSource {
+        StyleSource::SignalClass(self)
+    }
+}
+
+/// Build a `StyleSource::SignalClass` from a `Signal<u32>`, a list
+/// of discrete values it will take, and a mapping from each value
+/// to a `StyleApplication`. The mapping closure runs ONCE per
+/// value at construction time — the resulting `StyleApplication`s
+/// are pre-resolved to minted class names at mount, and signal
+/// writes update the node's class via a pure-JS dispatcher.
+///
+/// ## Example
+///
+/// ```ignore
+/// let active: Signal<u32> = signal!(0u32);
+///
+/// View(style = signal_class(active, &[0, 1], |v| match v {
+///     0 => MyRow().tone(Tone::Neutral),
+///     1 => MyRow().tone(Tone::Highlighted),
+///     _ => unreachable!(),
+/// }))
+/// ```
+///
+/// On `active.set(1)`, every row whose style binds to `active`
+/// switches to the highlighted class without firing a per-row
+/// Rust `Effect`.
+///
+/// ## When to reach for this vs a reactive closure
+///
+/// `signal_class` is the right tool when:
+/// - The class is a function of exactly one signal (more general
+///   bindings exist as a future extension).
+/// - The signal takes a small, enumerable set of discrete values.
+/// - Many nodes (50+) share the same signal — the JS fan-out wins
+///   over Rust Effect dispatch dominate at this scale.
+///
+/// For arbitrary reactive logic (arithmetic, multi-signal
+/// dependencies, dynamically-computed colors), pass a closure
+/// directly to `style = ...` instead.
+pub fn signal_class<F, V>(
+    signal: crate::Signal<V>,
+    values: &[u32],
+    mapping: F,
+) -> SignalClassSpec
+where
+    F: Fn(u32) -> StyleApplication + 'static,
+    V: Copy + 'static,
+    u32: From<V>,
+{
+    let mapping = std::rc::Rc::new(mapping);
+    let apps: Vec<StyleApplication> = values.iter().map(|&v| mapping(v)).collect();
+    let signal_id = signal.id();
+    // Untracked read — the binding's reactivity is wired through
+    // the JS-side dispatcher (or `compute_fallback`'s Effect); we
+    // don't want the signal_class call site to subscribe.
+    let read_signal: std::rc::Rc<dyn Fn() -> u32> = std::rc::Rc::new(move || {
+        crate::untrack(|| u32::from(signal.get()))
+    });
+    let compute_fallback: std::rc::Rc<dyn Fn() -> StyleApplication> = {
+        let mapping = mapping.clone();
+        std::rc::Rc::new(move || mapping(u32::from(signal.get())))
+    };
+    SignalClassSpec {
+        signal_id,
+        values: values.to_vec(),
+        apps,
+        compute_fallback,
+        read_signal,
     }
 }

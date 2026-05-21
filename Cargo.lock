@@ -420,6 +420,7 @@ dependencies = [
  "framework-core",
  "jni 0.21.1",
  "log",
+ "native-layout",
  "ndk-sys 0.6.0+11769913",
  "raw-window-handle",
 ]
@@ -817,6 +818,14 @@ dependencies = [
  "syn",
  "toml",
  "zip",
+]
+
+[[package]]
+name = "build-sim"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "build-ios",
 ]
 
 [[package]]
@@ -2561,6 +2570,7 @@ dependencies = [
  "build-android",
  "build-ios",
  "build-roku",
+ "build-sim",
  "clap",
  "ctrlc",
  "dev-http",
@@ -6815,6 +6825,7 @@ checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 name = "welcome"
 version = "0.0.1"
 dependencies = [
+ "backend-android-mobile",
  "backend-ios-core",
  "backend-ios-mobile",
  "backend-web",

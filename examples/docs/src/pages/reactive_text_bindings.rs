@@ -42,14 +42,16 @@ docs! {
     },
 
     section(heading = "The shape") {
-        p("Two flavours of arg in the macro:"),
+        p("Two flavours of arg in the macro, and the macro produces a \
+           value — not a primitive — so it drops into any component \
+           slot that accepts a text source:"),
         code(rust, r##"
             use framework_core::{bind, text_fmt, signal, Signal};
 
             let id: u32 = 42;
             let global: Signal<u32> = signal!(0);
 
-            text_fmt!("leaf {}: g={}", id, bind!(global))
+            Text { text_fmt!("leaf {}: g={}", id, bind!(global)) }
         "##),
         p("Args wrapped in ", code("bind!(...)"),
           " are signals — the framework subscribes to them via ",
@@ -68,8 +70,11 @@ docs! {
     },
 
     section(heading = "What it produces") {
-        p(code("text_fmt!"), " expands to ", code("text(TextSource::JsBinding(...))"),
-          " — a structured variant of the text source that carries:"),
+        p(code("text_fmt!"), " expands to a ", code("TextSource::JsBinding(...)"),
+          " value — drop it into ", code("Text { ... }"),
+          " (or any component arg that takes ", code("IntoTextSource"),
+          " — e.g. ", code("Button(label = text_fmt!(...))"),
+          "). The macro carries a structured payload:"),
         list(
             [code("signal_ids"),
              ": ", code("Vec<u64>"),

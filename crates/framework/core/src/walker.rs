@@ -31,7 +31,7 @@ use crate::primitive::Primitive;
 use crate::primitives;
 use crate::reactive::{self, untrack, Effect, Ref, Signal};
 use crate::scheduling::schedule_microtask;
-use crate::sources::{StyleSource, TextSource};
+use crate::sources::{SignalClassSpec, StyleSource, TextSource};
 use crate::style::{self, resolve as resolve_style, StyleApplication, StyleRules, StyleSheet};
 use std::any::Any;
 use std::cell::RefCell;
@@ -1801,8 +1801,28 @@ fn try_build_repeat_batched<B: Backend + 'static>(
         crate::debug::now_micros().saturating_sub(_t_enqueue_loop),
     );
 
-    // Pass 2: submit. One FFI on the web backend.
-    let nodes = backend.borrow_mut().execute_batch(batch);
+    // Pass 2: submit batch AND attach row tops to parent in one
+    // backend call. Backends that fold both into a single FFI (web)
+    // override `execute_batch_with_attach`; the default impl is the
+    // literal "execute_batch + insert_many" sequence we used to do
+    // here, so backends that haven't been updated still work.
+    //
+    // Why combined: with separate calls, each `appendChild` of a row
+    // top to `parent` is its own FFI hop on the web backend (~100k
+    // for the rebuild bench at 100k rows). The combined call ships
+    // the row-top `local_id`s as a `Uint32Array` and lets the JS
+    // shim do all N appendChild calls without crossing the boundary
+    // per child. Measured savings: ~60 ms at 100 k.
+    #[cfg(feature = "debug-stats")]
+    let _t_execute_and_attach = crate::debug::now_micros();
+    let nodes = backend
+        .borrow_mut()
+        .execute_batch_with_attach(batch, parent, &row_top_ids);
+    #[cfg(feature = "debug-stats")]
+    crate::debug::record_apply_phase(
+        "batched_repeat_execute_and_attach",
+        crate::debug::now_micros().saturating_sub(_t_execute_and_attach),
+    );
     debug_assert_eq!(
         nodes.len(),
         row_top_ids
@@ -1829,28 +1849,6 @@ fn try_build_repeat_batched<B: Backend + 'static>(
     crate::debug::record_apply_phase(
         "batched_repeat_deferred_loop",
         crate::debug::now_micros().saturating_sub(_t_deferred_loop),
-    );
-
-    // Build the rows Vec (top-level row nodes) for `insert_many`.
-    // Cheap — just a Vec of `B::Node` clones.
-    let rows: Vec<B::Node> = row_top_ids
-        .iter()
-        .map(|&top_id| nodes[top_id as usize].clone())
-        .collect();
-
-    // Insert the row tops under the parent. Web backend's
-    // `insert_many` already uses a `DocumentFragment` for the
-    // multi-child case — one more FFI for the parent insertion,
-    // batched. (We could fold this into the batch itself, but
-    // `parent` doesn't have a batch-local id; the parent already
-    // exists in the layout tree at this point.)
-    #[cfg(feature = "debug-stats")]
-    let _t_insert_many = crate::debug::now_micros();
-    backend.borrow_mut().insert_many(parent, rows);
-    #[cfg(feature = "debug-stats")]
-    crate::debug::record_apply_phase(
-        "batched_repeat_insert_many",
-        crate::debug::now_micros().saturating_sub(_t_insert_many),
     );
     true
 }
@@ -2009,6 +2007,12 @@ fn enqueue_primitive<B: Backend + 'static>(
                     // scope for V1 batching.
                     return None;
                 }
+                Some(StyleSource::SignalClass(_)) => {
+                    // Signal-class bindings install a JS-side
+                    // dispatcher at mount; not a static-shape entry
+                    // the batch path can stamp.
+                    return None;
+                }
             };
 
             let view_id = batch.next_id();
@@ -2051,51 +2055,13 @@ fn enqueue_primitive<B: Backend + 'static>(
     }
 }
 
-/// Finish the per-row reactive/theme bookkeeping for a static-styled
-/// view that was created via the batch path. Mirrors the second half
-/// of [`attach_style_static`] — registers the node with the global
-/// theme cohort so a `set_theme` re-applies it, and adopts a
-/// cleanup handle into the active scope so the cohort entry frees
-/// on teardown. The batch already did the inline-first-apply work
-/// (via the web backend's `ApplyStyleStatic` op), so we skip the
-/// initial `apply_one` call here.
-fn finish_style_static_after_batch<B: Backend + 'static>(
-    backend: &Rc<RefCell<B>>,
-    node: &B::Node,
-    app: StyleApplication,
-) {
-    install_theme_cohort_driver(backend);
-    let handles_states_natively = backend.borrow().handles_states_natively();
-    let backend_for_cohort = backend.clone();
-    let node_for_cohort = node.clone();
-    let app_for_cohort = Rc::new(app);
-    let cohort_id = theme_cohort_register(Box::new(move || {
-        apply_one(
-            &backend_for_cohort,
-            &node_for_cohort,
-            &app_for_cohort,
-            handles_states_natively,
-        );
-    }));
-    let cleanup_handle = StyleHandle {
-        backend: backend.clone(),
-        node: node.clone(),
-        cohort_id: Some(cohort_id),
-    };
-    let adopted = reactive::adopt_guard_into_active_scope(cleanup_handle);
-    debug_assert!(
-        adopted,
-        "finish_style_static_after_batch called outside an active Scope"
-    );
-}
-
-/// Bulk variant of [`finish_style_static_after_batch`]. Registers a
-/// **single** theme-cohort entry that owns every member of a batched
-/// `Primitive::Repeat`, plus a **single** RAII guard adopted into the
-/// active scope. On theme/token change the cohort entry's re-apply
-/// closure iterates the member Vec and calls [`apply_one`] for each
-/// — semantically identical to per-row registration but with O(1)
-/// heap allocations + slab inserts instead of O(N).
+/// Registers a **single** theme-cohort entry that owns every member
+/// of a batched `Primitive::Repeat`, plus a **single** RAII guard
+/// adopted into the active scope. On theme/token change the cohort
+/// entry's re-apply closure iterates the member Vec and calls
+/// [`apply_one`] for each — semantically identical to per-row
+/// registration but with O(1) heap allocations + slab inserts
+/// instead of O(N).
 ///
 /// Per-row registration cost ~88 µs (heap alloc for the reapply
 /// closure, heap alloc for the StyleHandle guard, two
@@ -2176,7 +2142,16 @@ fn register_static_cohort_batch<B: Backend + 'static>(
 /// and on `Owner` teardown.
 struct StyleHandle<B: Backend + 'static> {
     backend: Rc<RefCell<B>>,
-    node: B::Node,
+    /// Per-row node handle, shared via `Rc` so the cohort closure
+    /// (when present) and this handle can both hold it without
+    /// each maintaining its own wasm-bindgen JsValue slot. On
+    /// web, this means one underlying `web_sys::Node` slot per
+    /// styled row instead of two — halves the
+    /// `__wbindgen_object_drop_ref` FFI hops fired at scope
+    /// teardown. On backends where `B::Node` doesn't cross an FFI
+    /// boundary (mobile native), `Rc` is just an Rc — same code
+    /// path, no per-platform fork.
+    node: Rc<B::Node>,
     /// For nodes attached via the static-style path: id into the
     /// theme cohort. `None` for reactive-style nodes (those re-apply
     /// via their own `Effect`'s theme subscription, not the cohort).
@@ -2186,10 +2161,11 @@ struct StyleHandle<B: Backend + 'static> {
 impl<B: Backend + 'static> Drop for StyleHandle<B> {
     fn drop(&mut self) {
         // Remove from the theme cohort first, if registered. The
-        // cohort holds a `Box<dyn Any>` that owns a clone of the
-        // node; dropping it triggers the JS-side decref. Doing it
-        // before `on_node_unstyled` keeps the backend's per-node
-        // maps consistent during the unwind.
+        // cohort holds a `Box<dyn Any>` that owns an `Rc` clone of
+        // the node; dropping it decrements the Rc count. The
+        // underlying `B::Node` only releases its JS-side slot when
+        // the LAST `Rc` reference drops (typically here, since the
+        // cohort entry was just unregistered).
         if let Some(id) = self.cohort_id.take() {
             theme_cohort_unregister(id);
         }
@@ -3621,6 +3597,20 @@ fn attach_navigator_slot_style<B, F>(
                 apply_fn(&backend_c, &node_c, &resolved);
             });
         }
+        StyleSource::SignalClass(spec) => {
+            // Navigator-slot styles don't go through the standard
+            // class-apply path; fall back to the compute closure so
+            // signal-class semantics still hold (just without the
+            // JS-side dispatcher).
+            let f = spec.compute_fallback.clone();
+            let backend_c = backend.clone();
+            let node_c = node.clone();
+            let _e = Effect::new(move || {
+                let app = f();
+                let resolved = resolve_style(&app);
+                apply_fn(&backend_c, &node_c, &resolved);
+            });
+        }
     }
 }
 
@@ -3640,6 +3630,7 @@ fn attach_style<B: Backend + 'static>(
     match style {
         StyleSource::Static(app) => attach_style_static(backend, node, app),
         StyleSource::Reactive(f) => attach_style_reactive(backend, node, f),
+        StyleSource::SignalClass(spec) => attach_style_signal_class(backend, node, spec),
     }
 }
 
@@ -3718,8 +3709,21 @@ fn attach_style_static<B: Backend + 'static>(
     // itself transitively owns a `StyleRules` overrides struct
     // that's ~1 KB, and at 10k rows the per-row clone of that
     // was the dominant new allocation cost vs. the reactive path.
+    //
+    // Node sharing: the cohort closure and the cleanup handle
+    // BOTH need a Node reference. Pre-Rc-share, each made an
+    // independent `node.clone()` (= a wasm-bindgen JsValue
+    // clone-FFI per clone for web), and each fired
+    // `__wbindgen_object_drop_ref` independently at teardown —
+    // 2 mount FFI hops + 2 teardown FFI hops PER ROW just for
+    // node refcount management. The shared `Rc<B::Node>` here
+    // collapses both clones to one underlying JsValue slot;
+    // the cohort and handle each hold cheap `Rc` clones (atomic
+    // bumps, no FFI), and the LAST drop fires one drop_ref hop
+    // for the row.
     let backend_for_cohort = backend.clone();
-    let node_for_cohort = node.clone();
+    let node_rc: Rc<B::Node> = Rc::new(node.clone());
+    let node_for_cohort = node_rc.clone();
     let app_for_cohort = Rc::new(app);
     let cohort_id = theme_cohort_register(Box::new(move || {
         apply_one(&backend_for_cohort, &node_for_cohort, &app_for_cohort, handles_states_natively);
@@ -3736,7 +3740,7 @@ fn attach_style_static<B: Backend + 'static>(
     // arena bookkeeping.
     let cleanup_handle = StyleHandle {
         backend: backend.clone(),
-        node: node.clone(),
+        node: node_rc,
         cohort_id: Some(cohort_id),
     };
     let adopted = reactive::adopt_guard_into_active_scope(cleanup_handle);
@@ -3758,6 +3762,126 @@ fn attach_style_static<B: Backend + 'static>(
     //
     // TODO: revisit when adding native iOS/Android backends. The
     // static path may need to keep a Signal<StateBits> after all.
+    Rc::new(|_, _| {})
+}
+
+/// Attach a `StyleSource::SignalClass` to `node`. Pre-resolves
+/// `(value, app)` pairs to minted class names at mount, hands the
+/// table to the backend's JS-binding registry (if supported), and
+/// adopts a release guard into the active scope.
+///
+/// **Fast path (backend supports JS class bindings):** at mount we
+/// resolve once and pay zero per-fire Rust work — JS-side fan-out
+/// applies the right class on every signal write. Closes the gap to
+/// React for SHARED reactive-style cohorts where one signal drives
+/// N nodes.
+///
+/// **Fallback path:** for backends that don't support JS bindings,
+/// the spec's `compute_fallback` runs inside a normal style Effect
+/// — same shape as `attach_style_reactive` would produce. No
+/// behavioral difference, just no FFI fan-out optimization.
+fn attach_style_signal_class<B: Backend + 'static>(
+    backend: &Rc<RefCell<B>>,
+    node: &B::Node,
+    spec: SignalClassSpec,
+) -> Rc<dyn Fn(StateBits, bool)> {
+    if !backend.borrow().supports_js_class_bindings() {
+        // Backend can't host the JS-side binding — fall back to the
+        // closure path. The walker would have produced the same
+        // shape if the user had passed a plain reactive closure
+        // instead of building a `SignalClassSpec`.
+        return attach_style_reactive(
+            backend,
+            node,
+            Box::new(move || (spec.compute_fallback)()),
+        );
+    }
+
+    install_theme_cohort_driver(backend);
+
+    // Resolve every (value, app) pair to a minted class. The apps
+    // themselves are pinned by `_kept_apps` below so the
+    // stylesheet registrations don't get dead-Weak-swept while
+    // the binding is live.
+    let mut class_names: Vec<String> = Vec::with_capacity(spec.apps.len());
+    for app in &spec.apps {
+        // Drive registration through the same path `apply_one`
+        // uses. We don't apply to the node here — the JS-binding
+        // dispatcher does the actual setAttribute on signal writes.
+        let backend_for_register = backend.clone();
+        let backend_for_unregister = backend.clone();
+        let backend_for_install_tokens = backend.clone();
+        let backend_for_update_tokens = backend.clone();
+        let backend_for_asset = backend.clone();
+        let backend_for_typeface = backend.clone();
+        style::ensure_registered_with(
+            &app.sheet,
+            |rules| { backend_for_register.borrow_mut().register_stylesheet(rules); },
+            |rules| { backend_for_unregister.borrow_mut().unregister_stylesheet(rules); },
+            |tokens| { backend_for_install_tokens.borrow_mut().install_tokens(tokens); },
+            |tokens| { backend_for_update_tokens.borrow_mut().update_tokens(tokens); },
+            |id, kind, source| { backend_for_asset.borrow_mut().register_asset(id, kind, source); },
+            |id, fname, faces, fb| {
+                backend_for_typeface.borrow_mut().register_typeface(id, fname, faces, fb);
+            },
+        );
+        // `mint_class_for_app` mints a fresh dynamic class if the
+        // app's resolved content isn't already a pre-generated
+        // entry (the common case for `.override_*` styles). Returns
+        // None for backends without a named-class model — in that
+        // case `supports_js_class_bindings` should also return
+        // false and we'd have already taken the fallback path
+        // above, so reaching here with None is a backend
+        // contract violation.
+        let class = backend
+            .borrow_mut()
+            .mint_class_for_app(app)
+            .expect("mint_class_for_app returned None for a SignalClass app — \
+                     backends that support JS class bindings must mint fresh \
+                     classes for dynamic override content");
+        class_names.push(class);
+    }
+
+    let class_refs: Vec<&str> = class_names.iter().map(|s| s.as_str()).collect();
+    let binding_id = backend.borrow_mut().register_reactive_class_binding(
+        node,
+        spec.signal_id,
+        &spec.values,
+        &class_refs,
+        spec.read_signal.clone(),
+    );
+
+    // Release guard: drops the binding from the backend's registry
+    // on scope teardown AND keeps the apps Vec alive so the
+    // stylesheet Rcs aren't dead-Weak-swept while the binding is
+    // live. The `_kept_apps` field is intentionally unused — its
+    // Drop is the side effect we want.
+    struct SignalClassGuard<B: Backend + 'static> {
+        backend: Rc<RefCell<B>>,
+        binding_id: u32,
+        _kept_apps: Vec<StyleApplication>,
+    }
+    impl<B: Backend + 'static> Drop for SignalClassGuard<B> {
+        fn drop(&mut self) {
+            self.backend
+                .borrow_mut()
+                .release_reactive_class_binding(self.binding_id);
+        }
+    }
+    let guard = SignalClassGuard {
+        backend: backend.clone(),
+        binding_id,
+        _kept_apps: spec.apps,
+    };
+    let adopted = reactive::adopt_guard_into_active_scope(guard);
+    debug_assert!(
+        adopted,
+        "attach_style_signal_class called outside an active Scope — \
+         binding would leak (JS-side registry entry never released)."
+    );
+
+    // Same no-op state setter the static path returns — state
+    // overlays aren't part of the SignalClass abstraction today.
     Rc::new(|_, _| {})
 }
 
@@ -3857,7 +3981,12 @@ fn attach_style_reactive<B: Backend + 'static>(
 
     let handle = StyleHandle {
         backend: backend.clone(),
-        node: node.clone(),
+        // Same `Rc<B::Node>` shape as the static path — keeps the
+        // struct's field type uniform across both call sites. The
+        // reactive path only holds one node reference (no cohort
+        // closure to share with) so there's no per-row FFI saving
+        // here, just the heap alloc for the Rc — a few ns at most.
+        node: Rc::new(node.clone()),
         cohort_id: None,
     };
 
@@ -3914,7 +4043,14 @@ fn attach_style_reactive<B: Backend + 'static>(
     // `StyleApplication`) so the closure can still consume `app`
     // by move on the event-driven backend path below — we clone
     // the cheap `Rc<StyleSheet>` into the slot before that.
-    let mut pinned_sheet: Option<Rc<StyleSheet>> = None;
+    //
+    // Underscore prefix: the variable's value is never *read* —
+    // its Drop on Effect teardown IS the side effect we want.
+    // Without the prefix, rustc rightly complains "value assigned
+    // but never read" since we only ever write to it; that
+    // warning is correct (the value isn't a value-of-interest)
+    // but the variable itself is load-bearing.
+    let mut _pinned_sheet: Option<Rc<StyleSheet>> = None;
 
     let _e = Effect::new(move || {
         #[cfg(feature = "debug-stats")]
@@ -3985,7 +4121,7 @@ fn attach_style_reactive<B: Backend + 'static>(
         // Must happen AFTER `ensure_registered_with` (otherwise
         // there's nothing to pin yet) and BEFORE the
         // event-driven branch below consumes `app` by move.
-        pinned_sheet = Some(app.sheet.clone());
+        _pinned_sheet = Some(app.sheet.clone());
 
         if handles_states_natively {
             // Resolve the base (no state axes) and each declared state

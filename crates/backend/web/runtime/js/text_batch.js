@@ -60,7 +60,11 @@
     window.__idealystTextBatchStats.released += n;
   };
 
-  window.__idealystUpdateTextBatch = function (idsU32, lengthsU32, bigString) {
+  // Standard batched-apply signature: `(ids, joined, lengths)`.
+  // Matches the convention every other `__idealystApply*Batch` shim
+  // uses (e.g. `class_batch.js`) so the Rust-side `StringBatchQueue`
+  // can ship to any of them through one code path.
+  window.__idealystUpdateTextBatch = function (idsU32, bigString, lengthsU32) {
     var stats = window.__idealystTextBatchStats;
     stats.flushes += 1;
     var n = idsU32.length;

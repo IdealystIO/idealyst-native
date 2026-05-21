@@ -326,8 +326,9 @@ docs! {
     section(heading = "Repeat") {
         p("Bulk children. The macro lowers ", code("for i in 0..n { ... }"),
           " inside ", code("ui!"), " into ", code("Repeat"),
-          ", which hands the backend a single ", code("insert_many"),
-          " call with all rows preassembled — one FFI call instead of N."),
+          ", which collapses the whole expansion into a single batched \
+           backend call when the rows are simple enough — one FFI hop \
+           instead of N."),
         p("You don't write ", code("Repeat"), " by hand; you write a ",
           code("for"), "."),
         code(rust, r##"

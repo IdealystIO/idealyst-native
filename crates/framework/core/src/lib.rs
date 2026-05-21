@@ -63,7 +63,10 @@ pub use identity::{
     Identity,
 };
 pub use primitive::Primitive;
-pub use sources::{IntoStyleSource, IntoTextSource, JsBindingSpec, StyleSource, TextSource};
+pub use sources::{
+    signal_class, IntoStyleSource, IntoTextSource, JsBindingSpec, SignalClassSpec, StyleSource,
+    TextSource,
+};
 pub use touch::{TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint, TouchResponse};
 pub use touch::recognizers::{
     long_press, pan, tap, LongPressRecognizer, PanEvent, PanRecognizer, TapRecognizer,
@@ -112,11 +115,11 @@ pub use scheduling::{
 pub use style::{
     derived, install_tokens, pregenerate, resolve as resolve_style,
     take_pending_token_updates, update_tokens, AlignContent, AlignItems, AlignSelf, Color,
-    Derive, Easing, FlexDirection, FlexWrap, FontFamily, FontStyle, FontWeight,
-    IntoOverrideSource, IntoVariantSource, JustifyContent, Length, Overflow, Position,
-    Shadow, StyleApplication, StyleRules, StyleSheet, TextAlign, TextTransform, TokenEntry,
-    TokenValue, Tokenized, Transform, Transition, VariantAxis, VariantEnum, VariantSet,
-    VariantValue,
+    Derive, Easing, FlexDirection, FlexWrap, FontFamily, FontStyle, FontWeight, Gradient,
+    GradientKind, GradientStop, IntoOverrideSource, IntoVariantSource, JustifyContent, Length, RadialExtent,
+    Overflow, Position, Shadow, StyleApplication, StyleRules, StyleSheet, TextAlign,
+    TextTransform, TokenEntry, TokenValue, Tokenized, Transform, Transition, VariantAxis,
+    VariantEnum, VariantSet, VariantValue,
 };
 
 pub use framework_macros::{

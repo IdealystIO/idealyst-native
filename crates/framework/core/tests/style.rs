@@ -515,3 +515,80 @@ fn signal_reactivity_alongside_tokens() {
     }]);
     assert_eq!(count.get(), 2, "token update didn't fire signal subscriber");
 }
+
+/// `StyleSource::SignalClass` fallback path.
+///
+/// `MockBackend` doesn't override `supports_js_class_bindings()` —
+/// the default returns `false`. When the walker hits a
+/// `SignalClass` source on such a backend, it MUST fall back to
+/// running `compute_fallback` inside a normal reactive Effect:
+/// initial mount applies the case matching the signal's current
+/// value, signal writes re-fire and re-apply.
+///
+/// This test pins that contract so a backend that wants the
+/// JS-binding fast path can opt in (and gets it) while every
+/// other backend keeps working unchanged.
+#[test]
+fn signal_class_falls_back_to_reactive_effect_on_unsupporting_backend() {
+    use framework_core::{
+        signal, signal_class, view, IntoPrimitive, Signal, StyleApplication, StyleSheet,
+        VariantSet,
+    };
+    use std::rc::Rc;
+
+    use common::{Event, TestRuntime};
+
+    let rt = TestRuntime::new();
+
+    // Two distinct stylesheets, one per value. The closure returns
+    // a `StyleApplication` per value at construction; the fallback
+    // path re-runs it on signal change.
+    let sheet_a = Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules {
+        background: Some(Tokenized::Literal(Color("#aaa".into()))),
+        ..Default::default()
+    }));
+    let sheet_b = Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules {
+        background: Some(Tokenized::Literal(Color("#bbb".into()))),
+        ..Default::default()
+    }));
+
+    let sig: Signal<u32> = signal!(0u32);
+    let sheet_a_for_map = sheet_a.clone();
+    let sheet_b_for_map = sheet_b.clone();
+    let spec = signal_class(sig, &[0u32, 1u32], move |v| match v {
+        0 => StyleApplication::new(sheet_a_for_map.clone()),
+        1 => StyleApplication::new(sheet_b_for_map.clone()),
+        _ => unreachable!(),
+    });
+
+    let _owner = rt.render(view(vec![]).with_style(spec).into_primitive());
+
+    // Initial mount: signal is 0 → sheet_a registered + applied.
+    let initial_events = rt.events();
+    let initial_applies = initial_events
+        .iter()
+        .filter(|e| matches!(e, Event::ApplyStyle { .. } | Event::ApplyStyledStates { .. }))
+        .count();
+    assert!(
+        initial_applies >= 1,
+        "fallback Effect must run apply_style at mount, got {} apply events (events: {:?})",
+        initial_applies,
+        initial_events,
+    );
+
+    // Bump the signal — the fallback Effect should re-fire and
+    // produce another apply call.
+    rt.backend_mut().clear_events();
+    sig.set(1u32);
+    let after = rt.events();
+    let after_applies = after
+        .iter()
+        .filter(|e| matches!(e, Event::ApplyStyle { .. } | Event::ApplyStyledStates { .. }))
+        .count();
+    assert_eq!(
+        after_applies, 1,
+        "signal write should re-fire exactly one apply_style on the fallback path, \
+         got {} (events: {:?})",
+        after_applies, after,
+    );
+}

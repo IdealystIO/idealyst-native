@@ -65,6 +65,22 @@
     }
   };
 
+  // Batched variant — one FFI call carries N ids. Mirrors the
+  // `__idealystReleaseTextBatch` shape. Called by the Rust-side
+  // class-batch flush when there are pending releases queued. At
+  // big-switch teardown scale (10 k+ rows torn down on a switch
+  // arm flip), this collapses N per-id FFI hops to one.
+  window.__idealystReleaseStyledNodesBatch = function (idsU32) {
+    var map = window.__idealystStyledNodes;
+    var stats = window.__idealystClassBatchStats;
+    var n = idsU32.length;
+    var released = 0;
+    for (var i = 0; i < n; i++) {
+      if (map.delete(idsU32[i])) released += 1;
+    }
+    stats.releases += released;
+  };
+
   // The batch dispatcher. Rust ships one buffer per microtask flush
   // covering every queued (node, class) pair. We walk the buffer in
   // pure JS and call setAttribute per entry — same DOM cost as

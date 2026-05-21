@@ -400,6 +400,9 @@ impl LayoutTree {
         if let Some(h) = rules.max_height.as_ref().map(|t| *t.value()) {
             style.max_size.height = length_to_dim(h);
         }
+        if let Some(ar) = rules.aspect_ratio {
+            style.aspect_ratio = Some(ar);
+        }
 
         // --- Padding (per-side, all optional) ---
         //

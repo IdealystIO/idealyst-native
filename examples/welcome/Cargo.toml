@@ -30,6 +30,14 @@ lol_alloc = "0.4"
 backend-ios-mobile = { workspace = true }
 backend-ios-core = { workspace = true }
 
+# Android: same shape as the iOS bridge above — the welcome's
+# `drive_av` / `drive_color_text_av` helpers downcast to
+# `AndroidNode` (a `GlobalRef`) and call
+# `backend_android::set_animated_*`, which route through the
+# Android backend's `install_global_self` `Weak` handle.
+[target.'cfg(target_os = "android")'.dependencies]
+backend-android-mobile = { workspace = true }
+
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = [
     "-Oz",

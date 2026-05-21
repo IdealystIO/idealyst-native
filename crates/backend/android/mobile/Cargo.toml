@@ -31,6 +31,12 @@ framework-core = { workspace = true }
 # Shared Android helpers (JNI utilities + render loop driver). Same
 # crate is consumed by `backend-android-tv`.
 backend-android-core = { workspace = true }
+# Taffy wrapper used to compute every node's `(x, y, w, h)` frame
+# from CSS-style style rules (flex direction + gap + position absolute
+# + insets + percent dimensions). The iOS backend uses the same
+# crate; Android applies the computed frames via per-child
+# `FrameLayout.LayoutParams` margins.
+native-layout = { workspace = true }
 # Used by the Graphics primitive to expose the SurfaceView's
 # `Surface` as a standard raw-window-handle so any GPU library
 # (wgpu, etc.) can plug in. Tiny dep; trait + enum definitions only.

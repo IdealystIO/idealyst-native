@@ -1,5 +1,13 @@
-//! `Primitive::View` — `android.widget.LinearLayout` in vertical
-//! orientation (matches the framework's default flex-column).
+//! `Primitive::View` — `android.widget.FrameLayout`. FrameLayout
+//! is chosen (over LinearLayout) because the backend now drives
+//! layout entirely through Taffy: every child gets its position
+//! and size written directly onto its `FrameLayout.LayoutParams`
+//! (`leftMargin`/`topMargin`/`width`/`height`) by
+//! `AndroidBackend::run_layout_pass`. FrameLayout's own
+//! `onMeasure`/`onLayout` honor those margins-as-offsets and let
+//! children overlap, which is what `Position::Absolute` needs
+//! (e.g. the welcome example's dark wash + sun-glare + content
+//! layers all stacked over the page).
 
 use backend_android_core::helpers::apply_default_layout_params;
 use crate::imp::{with_env, AndroidBackend};
@@ -7,17 +15,13 @@ use jni::objects::{GlobalRef, JValue};
 
 pub(crate) fn create(b: &AndroidBackend) -> GlobalRef {
     with_env(|env| {
-        let class = env.find_class("android/widget/LinearLayout").unwrap();
+        let class = env.find_class("android/widget/FrameLayout").unwrap();
         let local = env
             .new_object(
                 &class,
                 "(Landroid/content/Context;)V",
                 &[JValue::Object(&b.context.as_obj())],
             )
-            .unwrap();
-        // Vertical orientation (1) so children stack top-to-bottom,
-        // matching the framework's default flex-column layout.
-        env.call_method(&local, "setOrientation", "(I)V", &[JValue::Int(1)])
             .unwrap();
         apply_default_layout_params(env, &local);
         env.new_global_ref(local).unwrap()
@@ -36,7 +40,7 @@ pub(crate) fn create(b: &AndroidBackend) -> GlobalRef {
 ///   `IllegalStateException("The specified child already has a parent")`.
 ///   The walker calls `insert(presence_placeholder, portal_node)`
 ///   for every portal; we filter here.
-pub(crate) fn insert(b: &AndroidBackend, parent: &mut GlobalRef, child: GlobalRef) {
+pub(crate) fn insert(b: &mut AndroidBackend, parent: &mut GlobalRef, child: GlobalRef) {
     if super::overlay::is_portal_node(b, &child) {
         return;
     }
@@ -50,15 +54,34 @@ pub(crate) fn insert(b: &AndroidBackend, parent: &mut GlobalRef, child: GlobalRe
         )
         .unwrap();
     });
+    // Mirror the parent-child link into the Taffy tree so the
+    // layout pass on `finish` produces a frame for `child` in the
+    // parent's coordinate space. Use the Taffy-tracked parent
+    // (which may be the ScrollView's inner LinearLayout when the
+    // user-visible parent is a ScrollView outer), and `mark_dirty`
+    // the parent so cached measurements are invalidated after the
+    // child-set changes.
+    let parent_layout = b.layout_for_view(&target);
+    let child_layout = b.layout_for_view(&child);
+    b.layout.add_child(parent_layout, child_layout);
+    b.layout.mark_dirty(parent_layout);
 }
 
 /// Remove every child of `node`. If `node` is a registered
 /// ScrollView outer, only its inner LinearLayout is cleared (the
 /// outer's single child — the inner itself — must remain attached).
-pub(crate) fn clear_children(b: &AndroidBackend, node: &GlobalRef) {
+pub(crate) fn clear_children(b: &mut AndroidBackend, node: &GlobalRef) {
     let target = super::scroll_view::inner_for(b, node).unwrap_or_else(|| node.clone());
     with_env(|env| {
         env.call_method(target.as_obj(), "removeAllViews", "()V", &[])
             .unwrap();
     });
+    let parent_layout = b.layout_for_view(&target);
+    // Detach every Taffy child of `parent_layout` and mark dirty so
+    // cached parent measurements don't keep stale child sizes.
+    let children = b.layout.children_of(parent_layout);
+    for c in children {
+        b.layout.remove_child(parent_layout, c);
+    }
+    b.layout.mark_dirty(parent_layout);
 }

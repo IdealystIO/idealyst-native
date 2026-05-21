@@ -33,7 +33,7 @@ use framework_core::primitives::text_area::text_area;
 use framework_core::primitives::web_view::web_view;
 use framework_core::stylesheet;
 use framework_core::{
-    button, code_block, signal, switch, text, ui, AlignItems, Color, FlexDirection,
+    button, code_block, signal, switch, text, text_fmt, ui, AlignItems, Color, FlexDirection,
     FontWeight, JustifyContent, Length, Overflow, Position, Primitive, Signal,
 };
 use idea_ui::{install_idea_theme, light_theme};
@@ -485,14 +485,14 @@ fn render_tree_node(
     if node.is_dir {
         let is_open = expanded.contains(&node.full_path);
         let chevron = if is_open { "▾ " } else { "▸ " };
-        let label = format!("{chevron}{}", node.name);
+        let name = node.name.clone();
         let path_for_click = node.full_path.clone();
         let header_style = TreeRow()
             .state(TreeRowState::Idle)
             .padding_left(row_indent(depth));
         let mut nodes: Vec<Primitive> = vec![ui! {
             Button(
-                label = label,
+                label = text_fmt!("{}{}", chevron, name),
                 on_click = move || {
                     let path = path_for_click.clone();
                     expanded_signal.update(|set| {

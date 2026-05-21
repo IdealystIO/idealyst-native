@@ -36,7 +36,8 @@ use framework_core::animation::AnimProp;
 use framework_core::Color;
 use objc2::encode::{Encode, Encoding};
 use objc2::msg_send;
-use objc2_foundation::CGFloat;
+use objc2::rc::Retained;
+use objc2_foundation::{CGFloat, NSObject};
 
 use backend_ios_core::style::color_to_uicolor;
 
@@ -45,7 +46,8 @@ use super::IosNode;
 
 /// Mutable per-node animation state. Lives in
 /// [`IosBackend::animated_states`] keyed by `IosNode::view_key`.
-#[derive(Clone, Debug)]
+#[allow(dead_code)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct AnimatedTransformState {
     pub opacity: Option<f32>,
     pub translate_x: Option<f32>,
@@ -56,21 +58,13 @@ pub(crate) struct AnimatedTransformState {
     pub rotate_z: Option<f32>,
     pub background_color: Option<[f32; 4]>,
     pub foreground_color: Option<[f32; 4]>,
-}
-
-impl Default for AnimatedTransformState {
-    fn default() -> Self {
-        Self {
-            opacity: None,
-            translate_x: None,
-            translate_y: None,
-            scale_x: None,
-            scale_y: None,
-            rotate_z: None,
-            background_color: None,
-            foreground_color: None,
-        }
-    }
+    /// `CAGradientLayer` reference stashed by `apply_gradient`, plus
+    /// the current sRGB stop colors. Per-frame `GradientStopColor`
+    /// writes mutate `stops[idx]` and re-call `setColors:` on the
+    /// stored layer — no need to walk the parent layer's sublayers
+    /// or rebuild the whole gradient every frame.
+    pub gradient_layer: Option<Retained<NSObject>>,
+    pub gradient_stops: Vec<[f32; 4]>,
 }
 
 impl AnimatedTransformState {
@@ -182,7 +176,9 @@ impl IosBackend {
                     let _: () = unsafe { msg_send![&*view, setTransform: matrix] };
                 }
             }
-            AnimProp::BackgroundColor | AnimProp::ForegroundColor => {
+            AnimProp::BackgroundColor
+            | AnimProp::ForegroundColor
+            | AnimProp::GradientStopColor(_) => {
                 // Wrong family; silently ignored. Same posture as
                 // the web backend's f32-path: mis-routing is a
                 // diagnostic concern, not a runtime crash.
@@ -225,9 +221,6 @@ impl IosBackend {
                 // cascade into UILabel's textColor.
                 match node {
                     IosNode::Label(label) => {
-                        backend_ios_core::ios_log(
-                            "[anim] set_animated_color: Label path → setTextColor",
-                        );
                         let _: () = unsafe {
                             msg_send![label.as_ref(), setTextColor: &*ui_color]
                         };
@@ -242,24 +235,28 @@ impl IosBackend {
                             ]
                         };
                     }
-                    other => {
-                        backend_ios_core::ios_log(&format!(
-                            "[anim] set_animated_color: {} path → setTintColor",
-                            match other {
-                                IosNode::View(_) => "View",
-                                IosNode::TextField(_) => "TextField",
-                                IosNode::Switch(_) => "Switch",
-                                IosNode::Slider(_) => "Slider",
-                                IosNode::ScrollView(_) => "ScrollView",
-                                IosNode::ActivityIndicator(_) => "ActivityIndicator",
-                                _ => "?",
-                            }
-                        ));
+                    _ => {
                         let _: () = unsafe {
                             msg_send![&*view, setTintColor: &*ui_color]
                         };
                     }
                 }
+            }
+            AnimProp::GradientStopColor(idx) => {
+                // Look up the gradient layer this node owns (stashed
+                // by `apply_style` when it called
+                // `install_gradient`). Update the cached stop colors
+                // and re-emit `setColors:` — Core Animation
+                // composites the new gradient in the next frame.
+                let Some(layer) = state.gradient_layer.clone() else {
+                    return;
+                };
+                backend_ios_core::style::set_animated_gradient_stop(
+                    &*layer,
+                    &mut state.gradient_stops,
+                    idx as usize,
+                    value,
+                );
             }
             AnimProp::Opacity
             | AnimProp::TranslateX

@@ -528,6 +528,89 @@ directly.
 
 ---
 
+## Batched `Repeat` fast path
+
+When the walker expands a `Primitive::Repeat`, it inspects the row
+shape and — if every row is a static `View`/`Text` tree with static
+styles — accumulates the whole expansion into a `BackendBatch`
+instead of issuing per-row backend calls. The batch ships in one
+FFI round-trip via `execute_batch`.
+
+Backends opt in by overriding two trait methods:
+
+```rust
+fn supports_batched_repeat(&self) -> bool { true }
+fn execute_batch(&mut self, batch: BackendBatch) -> Vec<Self::Node>;
+```
+
+The default `supports_batched_repeat` is `false` — the walker then
+expands the Repeat the slow way (per-row `create_*` + `apply_style`
++ `insert`). Backends that have a cheap batched path (the web
+backend ships the whole op stream as a single `Uint32Array`
+through one wasm→JS call) flip the flag on and implement
+`execute_batch`.
+
+### One call to rule them all: `execute_batch_with_attach`
+
+`Repeat` doesn't just create its rows — it parents them under the
+surrounding container. Originally that was a separate
+`insert_many(parent, rows)` follow-up call to the backend; for the
+web backend that meant N additional `appendChild` FFI hops, which
+dominated at large N.
+
+The walker now calls a single combined method:
+
+```rust
+fn execute_batch_with_attach(
+    &mut self,
+    batch: BackendBatch,
+    parent: &mut Self::Node,
+    attach_locals: &[u32],
+) -> Vec<Self::Node>;
+```
+
+`attach_locals` is the list of batch-local ids (typically the
+row-top ids) the backend should parent under `parent` once the
+batch's structural ops have executed. The default impl is
+literally:
+
+```rust
+let nodes = self.execute_batch(batch);
+if !attach_locals.is_empty() {
+    let rows: Vec<_> = attach_locals.iter()
+        .map(|&id| nodes[id as usize].clone()).collect();
+    self.insert_many(parent, rows);
+}
+nodes
+```
+
+so backends that don't override get the old two-step behaviour.
+Backends that DO override can fold the attach into the same
+round-trip — on web that's a `Uint32Array` of the row-top
+`local_id`s passed alongside the existing batch buffers, and the
+JS shim does N pure-JS `appendChild` calls inside a single
+`DocumentFragment`. Measured savings: ~10 ms per 100 k-row
+rebuild transition.
+
+### What's batchable
+
+The walker bails on the batched path (and falls back to per-call
+expansion of the whole Repeat) the moment a row contains anything
+the batch shape doesn't model:
+
+- non-`View`/`Text` primitives
+- reactive styles (`StyleSource::Reactive`, `SignalClass`)
+- state overlays (per-node dynamic CSS class per row)
+- `ref_fill`, `on_touch`, `safe_area_sides`, reactive text sources
+
+Backends don't need to know about any of this — the walker only
+invokes `execute_batch_with_attach` when the entire row shape is
+batchable. If your backend opts in, you can assume the incoming
+`BackendBatch` is consistent with `BatchOp::{CreateView,
+CreateText, ApplyStyleStatic, Insert}`.
+
+---
+
 ## Interaction states
 
 Two paths, picked by the backend's `handles_states_natively()` flag.

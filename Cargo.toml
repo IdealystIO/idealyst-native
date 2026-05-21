@@ -42,6 +42,7 @@ members = [
     "crates/build/android",
     "crates/build/ios",
     "crates/build/roku",
+    "crates/build/sim",
     "crates/run/android",
     "crates/run/ios",
     "crates/run/roku",
@@ -107,6 +108,7 @@ build-android = { path = "crates/build/android" }
 run-android = { path = "crates/run/android" }
 build-roku = { path = "crates/build/roku" }
 run-roku = { path = "crates/run/roku" }
+build-sim = { path = "crates/build/sim" }
 backend-ios-core = { path = "crates/backend/ios/core" }
 backend-ios-mobile = { path = "crates/backend/ios/mobile" }
 backend-ios-tv = { path = "crates/backend/ios/tv" }
@@ -213,8 +215,6 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.stylo]
 opt-level = 3
-[profile.dev.package.style]
-opt-level = 3
 [profile.dev.package.html5ever]
 opt-level = 3
 [profile.dev.package.markup5ever]
@@ -238,8 +238,6 @@ opt-level = 3
 [profile.release.package.peniko]
 opt-level = 3
 [profile.release.package.stylo]
-opt-level = 3
-[profile.release.package.style]
 opt-level = 3
 [profile.release.package.html5ever]
 opt-level = 3

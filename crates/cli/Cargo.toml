@@ -39,6 +39,7 @@ build-android = { workspace = true }
 run-android = { workspace = true }
 build-roku = { workspace = true }
 run-roku = { workspace = true }
+build-sim = { workspace = true }
 # Roku BrightScript transpiler — powers the `brs` subcommand, which
 # scans the project's source files for `#[method]`-tagged fns and
 # concatenates their BrightScript output into a single `.brs` file.

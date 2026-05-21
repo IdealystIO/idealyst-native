@@ -18,7 +18,7 @@ mod style;
 pub(crate) mod view_rect;
 
 use framework_core::{Backend, ButtonHandle, StyleRules};
-use jni::objects::{GlobalRef, JValue};
+use jni::objects::{GlobalRef, JObject, JValue};
 use jni::sys::{jint, jlong, JNI_VERSION_1_6};
 use jni::{JNIEnv, JavaVM};
 use std::collections::HashMap;
@@ -107,6 +107,14 @@ pub(crate) struct NodeAnim {
     // instead of `setBackground`-ing a fresh one every tick.
     pub(crate) drawable: Option<GlobalRef>,
 
+    /// Per-stop sRGB colors for the node's `background_gradient`.
+    /// Stashed by `apply_gradient_to_drawable` so the per-frame
+    /// `set_animated_color(GradientStopColor)` path can mutate one
+    /// entry, repack the ARGB `int[]`, and call `setColors` on the
+    /// stored drawable without re-allocating. Empty when the node
+    /// has no gradient.
+    pub(crate) gradient_stops: Vec<[f32; 4]>,
+
     /// Raw pointer to the leaked `Box<StateCallback>` held by the
     /// JVM-side `RustStateListener`. Blanked (inner closure cleared)
     /// — not freed — when the node is unstyled; see the `StateCallback`
@@ -152,6 +160,125 @@ pub struct AndroidBackend {
     /// into the surrounding parent view — the dialog window owns
     /// its parenting.
     pub(crate) portal_instances: primitives::overlay::PortalInstances,
+    /// Taffy layout tree. Mirrors the iOS backend: every backend-
+    /// created view registers a Taffy node, every `insert` adds the
+    /// child to the parent's Taffy node, every `apply_style` mirrors
+    /// the resolved style into Taffy. `finish` (and any later
+    /// `apply_style` on a mounted view) runs `compute(root, vw, vh)`
+    /// and writes per-child `FrameLayout.LayoutParams { leftMargin,
+    /// topMargin, width, height }` so absolute-positioned and
+    /// flex-laid-out children both land where Taffy says they should.
+    pub(crate) layout: native_layout::LayoutTree,
+    /// View pointer → (`GlobalRef`, Taffy node). Indexed by the same
+    /// raw `JObject*` pointer scheme as `anim_state`. Iterated in the
+    /// layout pass to apply computed frames.
+    pub(crate) view_to_layout:
+        HashMap<usize, (GlobalRef, native_layout::LayoutNode)>,
+}
+
+/// Read the device's `density` (screen-pixels-per-dp) from the
+/// host view's resources. `1.0` on the unlikely happy-path where
+/// the call fails (preserves the dp-as-pixel fallback in the rest
+/// of the style path).
+fn density_of(env: &mut JNIEnv, view: &JObject) -> Option<f32> {
+    let resources = env
+        .call_method(view, "getResources", "()Landroid/content/res/Resources;", &[])
+        .and_then(|v| v.l())
+        .ok()?;
+    let metrics = env
+        .call_method(
+            &resources,
+            "getDisplayMetrics",
+            "()Landroid/util/DisplayMetrics;",
+            &[],
+        )
+        .and_then(|v| v.l())
+        .ok()?;
+    let density: f32 = env
+        .get_field(&metrics, "density", "F")
+        .and_then(|v| v.f())
+        .ok()?;
+    Some(density)
+}
+
+/// Apply a Taffy-computed `Frame` to the view's `LayoutParams`. The
+/// view is expected to be a child of a `FrameLayout`-shaped parent —
+/// `FrameLayout.LayoutParams` (which extends `MarginLayoutParams`)
+/// reads `leftMargin`/`topMargin` for the child's top-left and
+/// `width`/`height` for its size. dp-space values are converted to
+/// device pixels via the host's display density.
+fn apply_frame_to_layout_params(
+    env: &mut JNIEnv,
+    view: &GlobalRef,
+    frame: native_layout::Frame,
+) {
+    let view_obj = view.as_obj();
+    let density = density_of(env, &view_obj).unwrap_or(1.0);
+    let left_px = (frame.x * density).round() as i32;
+    let top_px = (frame.y * density).round() as i32;
+    let w_px = (frame.width * density).round() as i32;
+    let h_px = (frame.height * density).round() as i32;
+
+    // Read the current LayoutParams. If the view isn't attached
+    // yet there may be no LP — fall back to fresh
+    // `FrameLayout.LayoutParams(w, h)`.
+    let lp_obj = env
+        .call_method(
+            &view_obj,
+            "getLayoutParams",
+            "()Landroid/view/ViewGroup$LayoutParams;",
+            &[],
+        )
+        .ok()
+        .and_then(|v| v.l().ok());
+    let lp = match lp_obj {
+        Some(o) if !o.is_null() => {
+            // Already a LayoutParams of *some* shape. We need it to
+            // be `MarginLayoutParams` (or subclass — `FrameLayout`'s
+            // own LP class extends MarginLayoutParams) so we can
+            // write margins. If it isn't, wrap it.
+            let mlp_class = env
+                .find_class("android/view/ViewGroup$MarginLayoutParams")
+                .unwrap();
+            let is_mlp = env.is_instance_of(&o, &mlp_class).unwrap_or(false);
+            if is_mlp {
+                o
+            } else {
+                env.new_object(
+                    &mlp_class,
+                    "(II)V",
+                    &[JValue::Int(w_px), JValue::Int(h_px)],
+                )
+                .unwrap()
+            }
+        }
+        _ => {
+            let mlp_class = env
+                .find_class("android/view/ViewGroup$MarginLayoutParams")
+                .unwrap();
+            env.new_object(
+                &mlp_class,
+                "(II)V",
+                &[JValue::Int(w_px), JValue::Int(h_px)],
+            )
+            .unwrap()
+        }
+    };
+    let _ = env.set_field(&lp, "width", "I", JValue::Int(w_px));
+    let _ = env.set_field(&lp, "height", "I", JValue::Int(h_px));
+    let _ = env.set_field(&lp, "leftMargin", "I", JValue::Int(left_px));
+    let _ = env.set_field(&lp, "topMargin", "I", JValue::Int(top_px));
+    // Zero out trailing margins — they're authored via the same
+    // taffy-computed frame and writing 0 keeps stale values from a
+    // prior layout pass from leaking through.
+    let _ = env.set_field(&lp, "rightMargin", "I", JValue::Int(0));
+    let _ = env.set_field(&lp, "bottomMargin", "I", JValue::Int(0));
+    let _ = env.call_method(
+        &view_obj,
+        "setLayoutParams",
+        "(Landroid/view/ViewGroup$LayoutParams;)V",
+        &[JValue::Object(&lp)],
+    );
 }
 
 impl AndroidBackend {
@@ -166,7 +293,93 @@ impl AndroidBackend {
             tab_drawer_instances: HashMap::new(),
             scroll_view_inner: HashMap::new(),
             portal_instances: HashMap::new(),
+            layout: native_layout::LayoutTree::new(),
+            view_to_layout: HashMap::new(),
         }
+    }
+
+    /// Get or create a Taffy layout node for the given view. Called
+    /// from every `create_*` so each backend-created view has a
+    /// corresponding node in the layout tree.
+    pub(crate) fn layout_for_view(
+        &mut self,
+        view: &GlobalRef,
+    ) -> native_layout::LayoutNode {
+        let key = Self::node_key(view);
+        if let Some((_, node)) = self.view_to_layout.get(&key) {
+            return *node;
+        }
+        let node = self.layout.new_node();
+        self.view_to_layout.insert(key, (view.clone(), node));
+        node
+    }
+
+    /// `true` once the host has a non-zero size — the layout pass
+    /// can produce meaningful frames. Used by the retry loop in
+    /// `scheduler::schedule_layout_pass_retry`.
+    pub(crate) fn viewport_is_ready(&self) -> bool {
+        let (vw, vh) = self.viewport_size();
+        vw > 0.0 && vh > 0.0
+    }
+
+    /// Read the viewport (host_root) size in device-independent
+    /// pixels. Taffy works in dp so the layout pass needs the host
+    /// size in the same units the rest of the style path uses.
+    fn viewport_size(&self) -> (f32, f32) {
+        with_env(|env| {
+            let host = self.root.as_obj();
+            let (w_px, h_px) = (
+                env.call_method(host, "getWidth", "()I", &[])
+                    .and_then(|v| v.i())
+                    .unwrap_or(0),
+                env.call_method(host, "getHeight", "()I", &[])
+                    .and_then(|v| v.i())
+                    .unwrap_or(0),
+            );
+            if w_px <= 0 || h_px <= 0 {
+                return (0.0, 0.0);
+            }
+            // `getResources().getDisplayMetrics().density` converts
+            // device pixels back to dp so Taffy reasons in the same
+            // unit the StyleRules use.
+            let density = density_of(env, host).unwrap_or(1.0);
+            (w_px as f32 / density, h_px as f32 / density)
+        })
+    }
+
+    /// Run the layout pass: for every Taffy root (the framework's
+    /// app root plus any disconnected sub-roots), compute, then
+    /// iterate every registered view and write its frame onto the
+    /// view's `FrameLayout.LayoutParams`.
+    pub(crate) fn run_layout_pass(&mut self) {
+        let (vw, vh) = self.viewport_size();
+        if vw <= 0.0 || vh <= 0.0 {
+            return;
+        }
+        let roots: Vec<native_layout::LayoutNode> = self
+            .view_to_layout
+            .values()
+            .map(|(_, n)| *n)
+            .filter(|n| self.layout.is_root(*n))
+            .collect();
+        for root_node in &roots {
+            self.layout.compute(*root_node, vw, vh);
+        }
+        // Snapshot the entries up front so the mutable JNI calls
+        // below don't conflict with the borrow on `self.view_to_layout`.
+        let frames: Vec<(GlobalRef, native_layout::Frame)> = self
+            .view_to_layout
+            .values()
+            .map(|(view, n)| (view.clone(), self.layout.frame_of(*n)))
+            .collect();
+        with_env(|env| {
+            for (view, frame) in &frames {
+                if frame.width <= 0.0 && frame.height <= 0.0 {
+                    continue;
+                }
+                apply_frame_to_layout_params(env, view, *frame);
+            }
+        });
     }
 
     /// Stable key for the node's animation state. The pointer comes
@@ -182,6 +395,80 @@ impl AndroidBackend {
     pub(crate) fn node_key_of(node: &GlobalRef) -> usize {
         node.as_obj().as_raw() as usize
     }
+}
+
+// ---------------------------------------------------------------------------
+// Typed-handle ops impls. These ZSTs sit behind `make_view_handle` /
+// `make_text_handle`'s `&'static dyn` slots so author-level code can
+// hold a `Ref<ViewHandle>` and reach the underlying `GlobalRef` via
+// `as_any().downcast_ref::<GlobalRef>()`. They expose no methods
+// today; if a primitive grows operations (e.g. `ViewOps::rect`), the
+// impls below are the place to wire them.
+// ---------------------------------------------------------------------------
+
+pub(crate) struct AndroidViewOps;
+impl framework_core::ViewOps for AndroidViewOps {}
+pub(crate) static ANDROID_VIEW_OPS: AndroidViewOps = AndroidViewOps;
+
+pub(crate) struct AndroidTextOps;
+impl framework_core::TextOps for AndroidTextOps {}
+pub(crate) static ANDROID_TEXT_OPS: AndroidTextOps = AndroidTextOps;
+
+// ---------------------------------------------------------------------------
+// Global self-handle. Mirrors `IOS_BACKEND_SELF` — host code installs
+// a `Weak<RefCell<AndroidBackend>>` once at `attach` so the
+// cross-platform animation system's per-frame subscribers can reach
+// the backend without the welcome example having to thread the
+// `Rc<RefCell<AndroidBackend>>` through every closure.
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    static ANDROID_BACKEND_SELF: std::cell::RefCell<Option<std::rc::Weak<std::cell::RefCell<AndroidBackend>>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Install the backend's self-reference. Called once by the host
+/// wrapper after wrapping the backend in `Rc<RefCell<>>`. Without it,
+/// `set_animated_f32` / `set_animated_color` quietly no-op.
+pub fn install_global_self(weak: std::rc::Weak<std::cell::RefCell<AndroidBackend>>) {
+    ANDROID_BACKEND_SELF.with(|s| {
+        *s.borrow_mut() = Some(weak);
+    });
+}
+
+/// Push a scalar animation property update to `node` on the installed
+/// global backend. Same shape as `backend_ios::set_animated_f32`.
+/// No-ops cleanly if no backend is installed, the install has been
+/// dropped, or the backend is currently borrowed (the in-flight call
+/// will see the new AV value on its next frame).
+pub fn set_animated_f32(
+    node: &GlobalRef,
+    prop: framework_core::animation::AnimProp,
+    value: f32,
+) {
+    let weak = ANDROID_BACKEND_SELF.with(|s| s.borrow().clone());
+    let Some(weak) = weak else { return };
+    let Some(rc) = weak.upgrade() else { return };
+    if let Ok(mut b) = rc.try_borrow_mut() {
+        use framework_core::Backend;
+        b.set_animated_f32(node, prop, value);
+    };
+}
+
+/// Color-family counterpart of [`set_animated_f32`]. Routes through
+/// the global backend's `set_animated_color`.
+pub fn set_animated_color(
+    node: &GlobalRef,
+    prop: framework_core::animation::AnimProp,
+    value: [f32; 4],
+) {
+    let weak = ANDROID_BACKEND_SELF.with(|s| s.borrow().clone());
+    let Some(weak) = weak else { return };
+    let Some(rc) = weak.upgrade() else { return };
+    if let Ok(mut b) = rc.try_borrow_mut() {
+        use framework_core::Backend;
+        b.set_animated_color(node, prop, value);
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -560,6 +847,23 @@ impl Backend for AndroidBackend {
         primitives::button::make_handle(node)
     }
 
+    /// Override the framework default so the typed handle carries the
+    /// underlying `GlobalRef`. Author-level animation drivers downcast
+    /// `view_handle.as_any()` to `GlobalRef` and reach the backend
+    /// through `set_animated_f32` / `set_animated_color`; without this
+    /// override the handle stores `Rc<()>` and the downcast fails.
+    fn make_view_handle(&self, node: &Self::Node) -> framework_core::ViewHandle {
+        framework_core::ViewHandle::new(Rc::new(node.clone()), &ANDROID_VIEW_OPS)
+    }
+
+    /// See [`Self::make_view_handle`]. Same plumbing for `TextHandle`
+    /// so the welcome example's per-frame `setTextColor` write can
+    /// reach a `TextView` (rather than `setTintColor`-equivalent on a
+    /// generic wrapper) and animate `color` end-to-end.
+    fn make_text_handle(&self, node: &Self::Node) -> framework_core::TextHandle {
+        framework_core::TextHandle::new(Rc::new(node.clone()), &ANDROID_TEXT_OPS)
+    }
+
     fn clear_children(&mut self, node: &Self::Node) {
         primitives::view::clear_children(self, node)
     }
@@ -571,6 +875,16 @@ impl Backend for AndroidBackend {
         with_env(|env| {
             style::apply_rules(env, node, state, style);
         });
+        // Mirror the style into Taffy so flex direction, gaps,
+        // `position: absolute`, percent widths, inset top/right/
+        // bottom/left etc. all participate in the layout pass.
+        // Native sizing on the view's `LayoutParams` (set inside
+        // `apply_rules`) is preserved — the layout pass below
+        // overwrites width/height/margins with the Taffy-computed
+        // frame, which itself reads the style's width/height/
+        // padding/etc., so the final frame matches author intent.
+        let layout_node = self.layout_for_view(node);
+        self.layout.set_style(layout_node, style);
     }
 
     fn set_animated_f32(
@@ -592,7 +906,9 @@ impl Backend for AndroidBackend {
             P::ScaleY => ("setScaleY", "(F)V"),
             P::RotateZ => ("setRotation", "(F)V"),
             // Wrong family; silently ignored.
-            P::BackgroundColor | P::ForegroundColor => return,
+            P::BackgroundColor | P::ForegroundColor | P::GradientStopColor(_) => {
+                return
+            }
         };
         with_env(|env| {
             let _ = env.call_method(
@@ -655,6 +971,20 @@ impl Backend for AndroidBackend {
                         "(I)V",
                         &[jni::objects::JValue::Int(argb_i32)],
                     );
+                });
+            }
+            P::GradientStopColor(idx) => {
+                // Per-frame stop update on the node's
+                // `GradientDrawable`. Reads/writes only this node's
+                // animation state — `apply_gradient_to_drawable`
+                // stashed the resolved stop colors when the style
+                // was first applied.
+                let key = Self::node_key(node);
+                let Some(state) = self.anim_state.get_mut(&key) else {
+                    return;
+                };
+                with_env(|env| {
+                    style::set_animated_gradient_stop(env, state, idx as usize, value);
                 });
             }
             P::Opacity
@@ -823,5 +1153,19 @@ impl Backend for AndroidBackend {
                 }
             }
         });
+        // The host hasn't been measured yet at `finish` time —
+        // `getWidth()/getHeight()` both read back as 0. Posting via
+        // the main Looper *alone* doesn't help: Handler.post just
+        // schedules the runnable for the next looper turn, which is
+        // typically before Android's layout pass for the host. The
+        // layout machinery on the framework root + host hierarchy
+        // runs on the next vsync frame.
+        //
+        // Schedule the layout pass with a tiny delay so it lands
+        // AFTER Android's first layout cycle. If the host still
+        // measures 0 we retry once more — covers the
+        // resume-after-paused case where the activity is re-attached
+        // and the very first frame is still 0×0.
+        crate::imp::scheduler::schedule_layout_pass_retry(0);
     }
 }

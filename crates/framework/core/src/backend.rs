@@ -228,6 +228,44 @@ pub trait Backend {
         )
     }
 
+    /// Execute a [`BackendBatch`] AND parent the listed row tops to
+    /// `parent` — all in one backend call.
+    ///
+    /// `attach_locals` is a slice of `local_id`s from the batch
+    /// (typically the row-top ids), in the order they should be
+    /// appended to `parent`. Equivalent to:
+    ///
+    /// ```ignore
+    /// let nodes = backend.execute_batch(batch);
+    /// let rows: Vec<_> = attach_locals.iter().map(|&id| nodes[id as usize].clone()).collect();
+    /// backend.insert_many(parent, rows);
+    /// nodes
+    /// ```
+    ///
+    /// Backends that override [`execute_batch`](Self::execute_batch)
+    /// SHOULD also override this when they can fold the parent-attach
+    /// into the same FFI round-trip. On the web backend that saves
+    /// N `appendChild` FFI hops (one per child) — at 100 k rows that
+    /// was measured at ~60 ms in the rebuild bench. Backends that
+    /// don't override fall through to the default impl, which is
+    /// the literal sequence above.
+    fn execute_batch_with_attach(
+        &mut self,
+        batch: crate::BackendBatch,
+        parent: &mut Self::Node,
+        attach_locals: &[u32],
+    ) -> Vec<Self::Node> {
+        let nodes = self.execute_batch(batch);
+        if !attach_locals.is_empty() {
+            let rows: Vec<Self::Node> = attach_locals
+                .iter()
+                .map(|&id| nodes[id as usize].clone())
+                .collect();
+            self.insert_many(parent, rows);
+        }
+        nodes
+    }
+
     fn update_text(&mut self, node: &Self::Node, content: &str);
 
     /// Optional batched-text-update fast path.
@@ -337,6 +375,59 @@ pub trait Backend {
     /// [`Self::register_reactive_text_binding`]. Default no-op so
     /// backends that don't support bindings can ignore the call.
     fn release_reactive_text_binding(&mut self, _text_id: u32) {}
+
+    /// Capability flag for backend-side class bindings (the analog of
+    /// [`Self::supports_js_text_bindings`] for `StyleSource::SignalClass`).
+    /// When `true`, the walker hands resolved `(signal_id, values,
+    /// classes)` tables to the backend at mount and trusts the
+    /// backend's own dispatcher to apply the right class on signal
+    /// writes — no Rust Effect fires per node. When `false`, the
+    /// walker falls back to running the spec's `compute_fallback`
+    /// inside a normal style Effect.
+    fn supports_js_class_bindings(&self) -> bool {
+        false
+    }
+
+    /// Register a pre-resolved signal→class binding with the backend.
+    /// Called by the walker only when
+    /// [`Self::supports_js_class_bindings`] returns `true`.
+    ///
+    /// - `node`           — the styled DOM/native node
+    /// - `signal_id`      — the `Signal::id()` whose writes drive the
+    ///                       class change
+    /// - `values`         — discrete signal values, in declared order
+    /// - `classes`        — class names parallel to `values`; the
+    ///                       backend has already minted these via
+    ///                       [`Self::mint_style_class`]
+    /// - `value_reader`   — untracked accessor returning the signal's
+    ///                       current value as `u32`. The backend
+    ///                       uses it to seed the initial class on
+    ///                       first paint AND to install a
+    ///                       signal-changed notifier that ships
+    ///                       writes across the FFI boundary.
+    ///
+    /// Returns a `binding_id` the framework hands back to
+    /// [`Self::release_reactive_class_binding`] on scope teardown.
+    fn register_reactive_class_binding(
+        &mut self,
+        _node: &Self::Node,
+        _signal_id: u64,
+        _values: &[u32],
+        _classes: &[&str],
+        _value_reader: std::rc::Rc<dyn Fn() -> u32>,
+    ) -> u32 {
+        unreachable!(
+            "register_reactive_class_binding called without an override; \
+             a backend that returns true from supports_js_class_bindings must \
+             also override register_reactive_class_binding"
+        )
+    }
+
+    /// Release a binding previously registered via
+    /// [`Self::register_reactive_class_binding`]. Default no-op so
+    /// backends that don't support class bindings can ignore the
+    /// call.
+    fn release_reactive_class_binding(&mut self, _binding_id: u32) {}
 
     /// Optional hook the walker calls when a `Primitive::Text`'s
     /// source is `TextSource::Bound`. Backends with declarative wire
@@ -877,6 +968,28 @@ pub trait Backend {
     /// when the batch's `ApplyStyleStatic` op fires).
     #[allow(unused_variables)]
     fn mint_style_class(&mut self, style: &Rc<StyleRules>) -> Option<String> {
+        None
+    }
+
+    /// Mint a class name for a `StyleApplication` without applying it
+    /// to any node. Used by the `StyleSource::SignalClass` walker
+    /// path to pre-resolve the (value → class) table at mount: each
+    /// app needs a class name the JS-side dispatcher can stamp into
+    /// `setAttribute('class', …)` on signal writes, but the framework
+    /// won't run a node-level apply for these (the JS shim does
+    /// that itself once signals fire).
+    ///
+    /// Differs from [`Self::mint_style_class`] in two ways: it
+    /// takes a `StyleApplication` (not a resolved `Rc<StyleRules>`)
+    /// so backends can do the registration + resolve + content-key
+    /// dance internally, AND it's allowed to mint fresh dynamic
+    /// classes (insert a CSS rule for the resolved content)
+    /// rather than returning `None` for unknown content. Default
+    /// returns `None`; backends without a named-class model leave
+    /// it that way and the walker falls back to the spec's
+    /// `compute_fallback` as a normal reactive style.
+    #[allow(unused_variables)]
+    fn mint_class_for_app(&mut self, app: &crate::style::StyleApplication) -> Option<String> {
         None
     }
 

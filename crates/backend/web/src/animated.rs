@@ -42,7 +42,7 @@ use crate::WebBackend;
 /// Mutable per-node animation state. Lives in
 /// [`WebBackend::animated_states`] keyed by the node's id from
 /// [`WebBackend::node_id`].
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct AnimatedNodeState {
     pub opacity: Option<f32>,
     /// Translate components in DIPs (CSS pixels). `None` axes
@@ -57,21 +57,40 @@ pub(crate) struct AnimatedNodeState {
     pub rotate_z: Option<f32>,
     pub background_color: Option<[f32; 4]>,
     pub foreground_color: Option<[f32; 4]>,
+    /// Snapshot of the node's background gradient shape (everything
+    /// except the per-stop colors) so per-frame
+    /// `GradientStopColor` writes can rebuild the
+    /// `background-image` CSS without re-resolving the stylesheet.
+    /// `None` when the node has no gradient.
+    pub gradient_shape: Option<GradientShape>,
+    /// Per-stop sRGB colors. Mutated by the per-frame writer; the
+    /// rebuilt CSS string assembles `gradient_shape` + these
+    /// colors.
+    pub gradient_stops: Vec<[f32; 4]>,
 }
 
-impl Default for AnimatedNodeState {
-    fn default() -> Self {
-        Self {
-            opacity: None,
-            translate_x: None,
-            translate_y: None,
-            scale_x: None,
-            scale_y: None,
-            rotate_z: None,
-            background_color: None,
-            foreground_color: None,
-        }
-    }
+/// Everything about a `framework_core::Gradient` *except* the stop
+/// colors — those live on `AnimatedNodeState::gradient_stops` so
+/// they can be mutated per frame without rebuilding the rest. The
+/// fields here are flat clones of the framework's enum (we don't
+/// want to depend on framework-core internals from the animation
+/// state).
+#[derive(Clone, Debug)]
+pub(crate) struct GradientShape {
+    pub kind: GradientShapeKind,
+    /// Stop offsets in `0..=1`. Indices match
+    /// `AnimatedNodeState::gradient_stops`.
+    pub offsets: Vec<f32>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum GradientShapeKind {
+    Linear { angle_deg: f32 },
+    Radial {
+        center: (f32, f32),
+        radius: f32,
+        extent: framework_core::RadialExtent,
+    },
 }
 
 impl AnimatedNodeState {
@@ -143,7 +162,9 @@ impl WebBackend {
             // panic because animator code mis-routing a color prop
             // through the f32 path is a programmer error worth
             // diagnosing, but a panic would crash a running page.
-            AnimProp::BackgroundColor | AnimProp::ForegroundColor => {}
+            AnimProp::BackgroundColor
+            | AnimProp::ForegroundColor
+            | AnimProp::GradientStopColor(_) => {}
         }
     }
 
@@ -174,6 +195,18 @@ impl WebBackend {
             AnimProp::ForegroundColor => {
                 state.foreground_color = Some(value);
                 let _ = element.style().set_property("color", &css);
+            }
+            AnimProp::GradientStopColor(idx) => {
+                let idx = idx as usize;
+                if idx >= state.gradient_stops.len() {
+                    return;
+                }
+                state.gradient_stops[idx] = value;
+                let Some(shape) = state.gradient_shape.clone() else {
+                    return;
+                };
+                let bg = gradient_inline_css(&shape, &state.gradient_stops);
+                let _ = element.style().set_property("background-image", &bg);
             }
             // Mirror the scalar path: scalar variants are ignored
             // here rather than panicking.
@@ -243,3 +276,36 @@ fn rgba_css(value: [f32; 4]) -> String {
 /// per-node state tables use (state listeners, dynamic class
 /// slots, etc.).
 pub(crate) type AnimatedStateMap = HashMap<u32, AnimatedNodeState>;
+
+/// Build an inline `background-image` CSS value from the cached
+/// gradient shape + current stop colors. Mirrors the static
+/// `gradient_css` in `style.rs` so per-frame writes produce the
+/// same visual as the dedup-class path on the initial apply.
+pub(crate) fn gradient_inline_css(shape: &GradientShape, stops: &[[f32; 4]]) -> String {
+    let stops_joined: String = shape
+        .offsets
+        .iter()
+        .zip(stops.iter())
+        .map(|(offset, color)| format!("{} {:.2}%", rgba_css(*color), offset * 100.0))
+        .collect::<Vec<_>>()
+        .join(", ");
+    match shape.kind {
+        GradientShapeKind::Linear { angle_deg } => {
+            format!("linear-gradient({}deg, {})", angle_deg, stops_joined)
+        }
+        GradientShapeKind::Radial { center, radius, extent } => {
+            let base_pct = match extent {
+                framework_core::RadialExtent::ClosestSide => 50.0,
+                framework_core::RadialExtent::FarthestCorner => 70.7106781,
+            };
+            let pct = (radius * base_pct).max(0.0);
+            format!(
+                "radial-gradient(ellipse {pct}% {pct}% at {x}% {y}%, {stops})",
+                pct = pct,
+                x = center.0 * 100.0,
+                y = center.1 * 100.0,
+                stops = stops_joined,
+            )
+        }
+    }
+}

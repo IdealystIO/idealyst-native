@@ -26,6 +26,7 @@ pub fn lower_style(rules: &StyleRules) -> WireStyle {
         min_height: rules.min_height.as_ref().map(tokenized_length),
         max_width: rules.max_width.as_ref().map(tokenized_length),
         max_height: rules.max_height.as_ref().map(tokenized_length),
+        aspect_ratio: rules.aspect_ratio,
 
         padding_top: rules.padding_top.as_ref().map(|t| length_px(t.value())),
         padding_right: rules.padding_right.as_ref().map(|t| length_px(t.value())),

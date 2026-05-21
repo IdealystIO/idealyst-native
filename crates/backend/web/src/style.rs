@@ -332,6 +332,38 @@ impl WebBackend {
         let id = self.node_id(node);
         let key = style.content_key();
 
+        // Background gradient: capture the shape (kind + per-stop
+        // offsets) and the resolved stop colors onto the node's
+        // animation state so the per-frame
+        // `set_animated_color(GradientStopColor)` path can rebuild
+        // the gradient CSS without re-walking the stylesheet. The
+        // CSS class itself still carries the static gradient (so
+        // initial paint hits the dedup cache); animation-driven
+        // writes layer inline `style.backgroundImage` on top, which
+        // CSS precedence resolves in favor of inline.
+        if let Some(g) = style.background_gradient.as_ref() {
+            let mut stops = g.stops.clone();
+            stops.sort_by(|a, b| {
+                a.offset.partial_cmp(&b.offset).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            let offsets: Vec<f32> = stops.iter().map(|s| s.offset).collect();
+            let colors: Vec<[f32; 4]> = stops.iter().map(|s| color_to_srgb(&s.color)).collect();
+            let shape = crate::animated::GradientShape {
+                kind: match g.kind {
+                    framework_core::GradientKind::Linear { angle_deg } => {
+                        crate::animated::GradientShapeKind::Linear { angle_deg }
+                    }
+                    framework_core::GradientKind::Radial { center, radius, extent } => {
+                        crate::animated::GradientShapeKind::Radial { center, radius, extent }
+                    }
+                },
+                offsets,
+            };
+            let state = self.animated_states.entry(id).or_default();
+            state.gradient_shape = Some(shape);
+            state.gradient_stops = colors;
+        }
+
         // Path 1: pre-generated cache hit.
         if let Some(entry) = self.pregen.get(&key) {
             let class_name = entry.name.clone();
@@ -630,6 +662,67 @@ impl WebBackend {
         }
     }
 
+    /// Mint a class name for a `StyleApplication` without applying
+    /// it to any node. Used by the SignalClass walker path to
+    /// pre-resolve the (value → class) table at mount.
+    ///
+    /// Same shape as the slow path in `impl_apply_styled_states`
+    /// (resolve → check caches → mint fresh CSS rule if needed →
+    /// stash in `dynamic_by_content` + `dynamic_by_ptr`), but
+    /// stops short of the per-node bookkeeping (`DynamicSlot`,
+    /// setAttribute). The caller — the JS-side binding dispatcher
+    /// — does the actual `setAttribute` itself on signal writes.
+    ///
+    /// We bump the `refcount` on a hit so the rule survives until
+    /// the binding releases it via `release_dynamic_rule`; that
+    /// release happens through the binding's drop guard at scope
+    /// teardown.
+    pub(crate) fn impl_mint_class_for_app(
+        &mut self,
+        app: &framework_core::StyleApplication,
+    ) -> String {
+        let resolved = framework_core::resolve_style(app);
+        let key = resolved.content_key();
+
+        // 1. Existing dynamic-by-content hit: bump refcount + reuse.
+        if let Some(entry) = self.dynamic_by_content.get(&key) {
+            entry.shared.refcount.set(entry.shared.refcount.get() + 1);
+            return entry.shared.class_name.clone();
+        }
+
+        // 2. Pregen hit (pre-registered stylesheet rules — usually
+        // hit for unmodified static styles, rare for SignalClass
+        // apps which typically carry `.override_*` content).
+        if let Some(entry) = self.pregen.get(&key) {
+            return entry.name.clone();
+        }
+
+        // 3. Mint fresh. State overlays aren't expressible through
+        // the `signal_class` builder today, so we always emit just
+        // the base rule (state_rule_indices empty).
+        let class_name = hash_class_name(&key);
+        let body = rules_to_css(&resolved);
+        let rule_index = self.insert_rule(&class_name, &body);
+
+        let shared = std::rc::Rc::new(DynamicPtrEntry {
+            class_name: class_name.clone(),
+            content_key: key.clone(),
+            refcount: std::cell::Cell::new(1),
+        });
+        self.dynamic_by_content.insert(
+            key,
+            DynamicRule {
+                shared: shared.clone(),
+                rule_index,
+                state_rule_indices: Vec::new(),
+            },
+        );
+        self.dynamic_by_ptr
+            .insert(std::rc::Rc::as_ptr(&resolved), shared);
+
+        class_name
+    }
+
     pub(crate) fn impl_on_node_unstyled(&mut self, node: &web_sys::Node) {
         // Look up the node's id without minting a new one (we don't
         // want spurious id allocations during teardown).
@@ -695,12 +788,133 @@ fn length_css(l: framework_core::Length) -> String {
 /// the variable hasn't been installed (theme not yet booted, SSR
 /// without a `:root` declaration, etc.) — we always emit it so first
 /// paint never shows an unstyled element.
+/// Resolve a `framework_core::Color` (a CSS-string wrapper) to a
+/// concrete sRGB `[r, g, b, a]` in `0..=1`. Same parser shape as
+/// the iOS / Android backends — accepts `#rgb`, `#rrggbb`,
+/// `#aarrggbb`, `rgb(...)`, `rgba(...)`, and `transparent`.
+/// Used to seed the per-node `gradient_stops` snapshot the
+/// animation path mutates.
+pub(crate) fn color_to_srgb(c: &framework_core::Color) -> [f32; 4] {
+    let s = c.0.trim();
+    if s.eq_ignore_ascii_case("transparent") {
+        return [0.0; 4];
+    }
+    let lower = s.to_ascii_lowercase();
+    if lower.starts_with("rgba(") || lower.starts_with("rgb(") {
+        let inner = s
+            .trim_start_matches(|ch: char| !ch.is_ascii_digit() && ch != '.' && ch != '-')
+            .trim_end_matches(')');
+        let parts: Vec<&str> = inner.split(',').collect();
+        if parts.len() < 3 {
+            return [0.0; 4];
+        }
+        let r: f32 = parts[0].trim().parse().unwrap_or(0.0);
+        let g: f32 = parts[1].trim().parse().unwrap_or(0.0);
+        let b: f32 = parts[2].trim().parse().unwrap_or(0.0);
+        let a: f32 = if parts.len() >= 4 {
+            parts[3].trim().parse().unwrap_or(1.0)
+        } else {
+            1.0
+        };
+        let a = if a > 1.0 { a / 255.0 } else { a };
+        return [
+            (r / 255.0).clamp(0.0, 1.0),
+            (g / 255.0).clamp(0.0, 1.0),
+            (b / 255.0).clamp(0.0, 1.0),
+            a.clamp(0.0, 1.0),
+        ];
+    }
+    if let Some(hex) = s.strip_prefix('#') {
+        let chars: Vec<char> = hex.chars().collect();
+        let (r, g, b, a) = match chars.len() {
+            3 => {
+                let r = u8::from_str_radix(&format!("{0}{0}", chars[0]), 16).unwrap_or(0);
+                let g = u8::from_str_radix(&format!("{0}{0}", chars[1]), 16).unwrap_or(0);
+                let b = u8::from_str_radix(&format!("{0}{0}", chars[2]), 16).unwrap_or(0);
+                (r as f32, g as f32, b as f32, 255.0)
+            }
+            6 => {
+                let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
+                let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
+                let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
+                (r as f32, g as f32, b as f32, 255.0)
+            }
+            8 => {
+                // CSS uses `#rrggbbaa`; CG / Android use `#aarrggbb`.
+                // We don't know which the author meant — both forms
+                // are CSS-valid. Default to `#rrggbbaa` (CSS spec).
+                let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
+                let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
+                let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
+                let a = u8::from_str_radix(&hex[6..8], 16).unwrap_or(255);
+                (r as f32, g as f32, b as f32, a as f32)
+            }
+            _ => (0.0, 0.0, 0.0, 255.0),
+        };
+        return [r / 255.0, g / 255.0, b / 255.0, a / 255.0];
+    }
+    // Unknown shape (named colors, hsl(...), etc.) — let the browser
+    // handle them via the CSS class. The animation seed defaults to
+    // opaque black so accidental writes don't turn the view fully
+    // transparent.
+    [0.0, 0.0, 0.0, 1.0]
+}
+
 fn tokenized_color_css(t: &framework_core::Tokenized<framework_core::Color>) -> String {
     use framework_core::Tokenized;
     match t {
         Tokenized::Literal(c) => c.0.clone(),
         Tokenized::Token { name, fallback } => {
             format!("var(--{}, {})", name, fallback.0)
+        }
+    }
+}
+
+/// Render a `Gradient` as a CSS `linear-gradient(...)` / `radial-gradient(...)`
+/// value suitable for the `background-image` property. Stops are
+/// emitted in the order the author supplied; their `offset` (0..1)
+/// becomes a percentage. Color is taken verbatim — the framework's
+/// `Color(String)` already wraps an arbitrary CSS color expression.
+fn gradient_css(g: &framework_core::Gradient) -> String {
+    let stops: Vec<String> = g
+        .stops
+        .iter()
+        .map(|s| format!("{} {:.2}%", s.color.0, s.offset * 100.0))
+        .collect();
+    let stops_joined = stops.join(", ");
+    match g.kind {
+        framework_core::GradientKind::Linear { angle_deg } => {
+            // CSS `linear-gradient(angle, stops)`: `0deg` is
+            // bottom→top, matching the framework's convention.
+            format!("linear-gradient({}deg, {})", angle_deg, stops_joined)
+        }
+        framework_core::GradientKind::Radial { center, radius, extent } => {
+            // `radial-gradient(ellipse <rx>% <ry>% at <x>% <y>%, stops)`.
+            //
+            // CSS doesn't allow percentage sizing with the `circle`
+            // keyword (`radial-gradient(circle 50%, ...)` is invalid
+            // and silently drops the rule). The `ellipse` form
+            // accepts two percentages — relative to the box's width
+            // and height respectively.
+            //
+            // - ClosestSide: `radius * 50%` → outermost stop sits
+            //   at the closest edge midpoint (inscribed ellipse).
+            // - FarthestCorner: `radius * 70.71%` → outermost stop
+            //   sits on the corner-passing ellipse. Same shape CSS
+            //   produces with `ellipse farthest-corner`, but in
+            //   percentage form so `radius != 1.0` still scales.
+            let base_pct = match extent {
+                framework_core::RadialExtent::ClosestSide => 50.0,
+                framework_core::RadialExtent::FarthestCorner => 70.7106781,
+            };
+            let pct = (radius * base_pct).max(0.0);
+            format!(
+                "radial-gradient(ellipse {pct}% {pct}% at {x}% {y}%, {stops})",
+                pct = pct,
+                x = center.0 * 100.0,
+                y = center.1 * 100.0,
+                stops = stops_joined,
+            )
         }
     }
 }
@@ -962,6 +1176,13 @@ pub(crate) fn rules_to_css(rules: &StyleRules) -> String {
 
     // Color + text.
     if let Some(t) = &rules.background { parts.push(format!("background: {}", tokenized_color_css(t))); }
+    // Gradient renders OVER the solid background (the CSS spec stacks
+    // `background-image` above `background-color`, but emitting it
+    // through the shorthand prevents the framework's per-property
+    // animation hooks from touching the solid color cleanly).
+    if let Some(g) = &rules.background_gradient {
+        parts.push(format!("background-image: {}", gradient_css(g)));
+    }
     if let Some(t) = &rules.color { parts.push(format!("color: {}", tokenized_color_css(t))); }
     if let Some(t) = &rules.font_size { parts.push(format!("font-size: {}", tokenized_length_css(t))); }
 
@@ -988,6 +1209,7 @@ pub(crate) fn rules_to_css(rules: &StyleRules) -> String {
     if let Some(t) = &rules.min_height { parts.push(format!("min-height: {}", tokenized_length_css(t))); }
     if let Some(t) = &rules.max_width { parts.push(format!("max-width: {}", tokenized_length_css(t))); }
     if let Some(t) = &rules.max_height { parts.push(format!("max-height: {}", tokenized_length_css(t))); }
+    if let Some(ar) = rules.aspect_ratio { parts.push(format!("aspect-ratio: {}", ar)); }
 
     // Per-side padding.
     if let Some(t) = &rules.padding_top { parts.push(format!("padding-top: {}", tokenized_length_css(t))); }

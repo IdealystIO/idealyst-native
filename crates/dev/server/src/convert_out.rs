@@ -172,6 +172,7 @@ pub fn style_rules_to_wire(r: &StyleRules) -> WireStyleRules {
         min_height: r.min_height.as_ref().map(tokenized_length),
         max_width: r.max_width.as_ref().map(tokenized_length),
         max_height: r.max_height.as_ref().map(tokenized_length),
+        aspect_ratio: r.aspect_ratio,
 
         padding_top: r.padding_top.as_ref().map(tokenized_length),
         padding_right: r.padding_right.as_ref().map(tokenized_length),

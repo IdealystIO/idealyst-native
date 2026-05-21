@@ -1388,6 +1388,21 @@ impl Backend for IosBackend {
         let view = node.as_view();
         apply_style_to_view(view, style);
 
+        // Background gradient: install (or refresh) the CAGradientLayer
+        // sublayer and stash the layer ref + resolved sRGB stops on
+        // this node's animation state. The per-frame
+        // `set_animated_color(GradientStopColor)` path reads those
+        // back and calls `setColors:` without rebuilding the sublayer.
+        if let Some(installed) = backend_ios_core::style::install_gradient(
+            view,
+            style.background_gradient.as_ref(),
+        ) {
+            let key = node.view_key();
+            let state = self.animated_states.entry(key).or_default();
+            state.gradient_layer = Some(installed.0);
+            state.gradient_stops = installed.1;
+        }
+
         // Mirror the resolved style into the Taffy node so flex
         // properties (width/height/flex-direction/padding/gap/…) take
         // effect during the layout pass.
@@ -1967,6 +1982,18 @@ impl IosBackend {
             };
             let _: () = unsafe { msg_send![view, setBounds: bounds] };
             let _: () = unsafe { msg_send![view, setCenter: center] };
+            // Resize any `idealyst_gradient` CAGradientLayer this view
+            // owns to match the new bounds. The gradient was inserted
+            // at apply-style time when bounds were still 0×0; without
+            // this call it stays 0-sized and never paints (CALayer
+            // doesn't auto-resize sublayers from `autoresizingMask`
+            // on iOS in practice).
+            backend_ios_core::style::sync_gradient_sublayer(view);
+            // Re-clamp cornerRadius against the now-known bounds.
+            // `apply_style_to_view` stashes the requested radius
+            // when the view's size is percent-based; this call reads
+            // it back and writes a properly-clamped value.
+            backend_ios_core::style::sync_corner_radius(view);
             applied += 1;
         }
         backend_ios_core::ios_log(&format!("[layout] apply_frames done: applied={}", applied));

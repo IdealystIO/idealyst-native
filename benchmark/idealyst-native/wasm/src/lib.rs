@@ -334,6 +334,11 @@ thread_local! {
     /// rule.)
     static POINT_COLORS: RefCell<Vec<Signal<u32>>> = const { RefCell::new(Vec::new()) };
     static RSTYLE_COUNT: RefCell<Option<Signal<usize>>> = const { RefCell::new(None) };
+
+    // --- signal-class suite (mode = 4) ---------------------------
+    /// Number of signal-class rows mounted. Drives the mode-4 `for`
+    /// loop. Reuses `SHARED_COLOR` as the binding's signal.
+    static SCLASS_COUNT: RefCell<Option<Signal<usize>>> = const { RefCell::new(None) };
 }
 
 // =============================================================================
@@ -448,22 +453,28 @@ fn build_leaf(id: u32, target_id: u32, global: Signal<u32>, branch: Signal<u32>)
     // `bind!(...)` are signals (subscribed to + interpolated per
     // fire); bare args are captured at construction time and
     // formatted into the template's static parts.
-    if id == target_id {
+    // `text_fmt!` now produces a `TextSource` value (NOT a wrapped
+    // `text(...)` builder), so it drops naturally into the
+    // primitive constructor — same shape as `text(String)` for a
+    // static label. Was previously emitted as a raw expression
+    // block + `.into_primitive()` because the macro wrapped the
+    // whole component construction; the cleanup of that macro
+    // collapsed both arms here.
+    let source = if id == target_id {
         framework_core::text_fmt!(
             "leaf {}: g={} b={}",
             id,
             framework_core::bind!(global),
             framework_core::bind!(branch),
         )
-        .into_primitive()
     } else {
         framework_core::text_fmt!(
             "leaf {}: g={}",
             id,
             framework_core::bind!(global),
         )
-        .into_primitive()
-    }
+    };
+    framework_core::text(source).into_primitive()
 }
 
 /// Recursively turn a NodeSpec into a Primitive tree. Branches
@@ -512,6 +523,8 @@ fn app(initial_rows: usize) -> Primitive {
     RSTYLE_COUNT.with(|c| *c.borrow_mut() = Some(rstyle_count));
     let shared_color = signal!(0u32);
     SHARED_COLOR.with(|c| *c.borrow_mut() = Some(shared_color));
+    let sclass_count = signal!(0usize);
+    SCLASS_COUNT.with(|c| *c.borrow_mut() = Some(sclass_count));
 
     // Register the two hierarchy-bench signals with the web
     // backend's JS-side reactive layer so signal writes flow into
@@ -529,6 +542,16 @@ fn app(initial_rows: usize) -> Primitive {
             });
             b.register_signal_for_js(branch_counter.id(), move || {
                 framework_core::untrack(|| branch_counter.get()).to_string()
+            });
+            // Wire `shared_color` to the JS-side signal-change
+            // dispatcher so the signal-class suite's bindings (which
+            // tap `__idealystOnSignalChanged`) hear updates. The
+            // existing reactive-style suite drives this signal via
+            // a per-row Rust Effect — those Effects continue to
+            // fire (no harm), but the binding's JS dispatcher is
+            // what makes the SHARED bumps fast at scale.
+            b.register_signal_for_js(shared_color.id(), move || {
+                framework_core::untrack(|| shared_color.get()).to_string()
             });
         }
     });
@@ -579,14 +602,18 @@ fn app(initial_rows: usize) -> Primitive {
                                                 // the JS-side binding registry, so
                                                 // each counter update fans out
                                                 // through a single notifier — not
-                                                // a Rust Effect per row.
-                                                {
+                                                // a Rust Effect per row. The
+                                                // `text_fmt!` macro produces a
+                                                // `TextSource` value that drops
+                                                // straight into `Text { … }`'s
+                                                // body — same shape as a static
+                                                // `Text { format!(…) }`.
+                                                Text {
                                                     framework_core::text_fmt!(
                                                         "row {}: c={}",
                                                         i,
                                                         framework_core::bind!(sigs[i]),
                                                     )
-                                                    .into_primitive()
                                                 }
                                             }
                                         }
@@ -650,6 +677,44 @@ fn app(initial_rows: usize) -> Primitive {
                                     }
                                 }
                             }
+                            4u32 => {
+                                // Signal-class suite — N rows, each
+                                // binding its background to ONE shared
+                                // signal via `signal_class`. The
+                                // framework resolves the (value→class)
+                                // table at mount; signal writes ship
+                                // ONE FFI hop and the JS shim fans
+                                // out to every subscribed node. ZERO
+                                // per-row Rust Effects re-fire on a
+                                // SHARED bump.
+                                let n: usize = sclass_count.get();
+                                ui! {
+                                    ScrollView(style = perf_list_style()) {
+                                        for i in 0..n {
+                                            // Pre-resolve both classes
+                                            // (one per signal value)
+                                            // at construction.
+                                            View(style = framework_core::signal_class(
+                                                shared_color,
+                                                &[0u32, 1u32],
+                                                |v: u32| {
+                                                    let color = if v == 0 {
+                                                        Color("#5b6cff".into())
+                                                    } else {
+                                                        Color("#ff5b6c".into())
+                                                    };
+                                                    framework_core::StyleApplication::new(
+                                                        RStyleRow::sheet(),
+                                                    )
+                                                    .override_background(color)
+                                                },
+                                            )) {
+                                                Text { format!("sclass {}", i) }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             _ => {
                                 // Hierarchy mode (default 1u32). Inner
                                 // match on tree_version so changing
@@ -701,13 +766,6 @@ pub fn start(initial_rows: usize) {
     backend_web::install_time_source();
     let rows = initial_rows.clamp(1, ROW_MAX);
     let backend = Rc::new(RefCell::new(WebBackend::new("#app")));
-    // Opt the variant into the web backend's batched text-update
-    // path. Without this call, `create_text_with_id` returns `None`
-    // and the framework falls back to per-fire `update_text(node,
-    // str)`. The opt-in costs +1 FFI per text-node create (one-time)
-    // and saves O(N) FFI per fan-out for every reactive text effect.
-    // Material on the hierarchy bench (2 k+ leaves subscribing to
-    // one signal); neutral elsewhere.
     backend_web::install_text_batcher(&backend);
     BACKEND.with(|slot| *slot.borrow_mut() = Some(backend.clone()));
     let owner = framework_core::render(backend, app(rows));
@@ -965,6 +1023,33 @@ pub fn setup_reactive_styles(n: u32) {
     });
 }
 
+/// Mount `n` signal-class rows. Each row's `background` is bound to
+/// `SHARED_COLOR` via `signal_class` — pre-resolves the value→class
+/// table at mount, signal writes ship one FFI hop and fan out
+/// entirely in JS. The mode = 4 arm in `app()` is what hosts these.
+#[wasm_bindgen]
+pub fn setup_signal_class_rows(n: u32) {
+    let n = n.clamp(1, ROW_MAX as u32) as usize;
+    // Reset shared color to 0 so the suite starts at color A.
+    SHARED_COLOR.with(|c| {
+        if let Some(sig) = c.borrow().as_ref() {
+            sig.set(0);
+        }
+    });
+    framework_core::batch(|| {
+        MODE.with(|c| {
+            if let Some(sig) = c.borrow().as_ref() {
+                sig.set(4);
+            }
+        });
+        SCLASS_COUNT.with(|c| {
+            if let Some(sig) = c.borrow().as_ref() {
+                sig.set(n);
+            }
+        });
+    });
+}
+
 /// Set the shared color. `name` is "A" or "B" — anything else is
 /// treated as A. Fans out to every row's reactive style Effect.
 #[wasm_bindgen]
@@ -1010,13 +1095,15 @@ pub fn row_count() -> usize {
 #[wasm_bindgen]
 pub fn bench_stats_json() -> String {
     let s = framework_core::arena_stats();
-    let b = BACKEND.with(|slot| slot.borrow().as_ref().map(|rc| rc.borrow().debug_counts()));
-    let backend_json = match b {
-        Some(b) => format!(
-            "{{\"node_ids\":{},\"dynamic\":{},\"state_listeners\":{},\"pregen\":{},\"pregen_by_ptr\":{},\"free_rule_indices\":{},\"next_node_id\":{}}}",
-            b.node_ids, b.dynamic, b.state_listeners, b.pregen, b.pregen_by_ptr, b.free_rule_indices, b.next_node_id,
-        ),
-        None => "null".into(),
+    let backend_json = {
+        let b = BACKEND.with(|slot| slot.borrow().as_ref().map(|rc| rc.borrow().debug_counts()));
+        match b {
+            Some(b) => format!(
+                "{{\"node_ids\":{},\"dynamic\":{},\"state_listeners\":{},\"pregen\":{},\"pregen_by_ptr\":{},\"free_rule_indices\":{},\"next_node_id\":{}}}",
+                b.node_ids, b.dynamic, b.state_listeners, b.pregen, b.pregen_by_ptr, b.free_rule_indices, b.next_node_id,
+            ),
+            None => "null".into(),
+        }
     };
     let phases_json = phase_counters_json();
     format!(

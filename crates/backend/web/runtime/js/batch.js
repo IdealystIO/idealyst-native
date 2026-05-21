@@ -24,7 +24,19 @@
   // Diagnostic counters. Read via `window.__idealystBatchStats`.
   window.__idealystBatchStats = { calls: 0, totalOps: 0, lastOps: 0, lastNodes: 0 };
   console.log("[idealyst] batch.js shim injected, __idealystExecuteBatch ready");
-  window.__idealystExecuteBatch = function (u32Buf, stringsJoined, nodeCount) {
+  // Signature:
+  //   __idealystExecuteBatch(u32Buf, stringsJoined, nodeCount)
+  //   __idealystExecuteBatch(u32Buf, stringsJoined, nodeCount,
+  //                          attachParent, attachLocalsBuf)
+  //
+  // The 5-arg form fires when Rust opts into the combined
+  // execute-and-attach fast path: `attachParent` is the surrounding
+  // parent Node, `attachLocalsBuf` is a `Uint32Array` of `local_id`s
+  // (typically the row tops) to append in order. Doing the attach
+  // here saves N `appendChild` FFI hops vs the equivalent
+  // `insert_many` follow-up call from Rust — measured at ~60 ms
+  // savings at 100 k rows in the rebuild bench.
+  window.__idealystExecuteBatch = function (u32Buf, stringsJoined, nodeCount, attachParent, attachLocalsBuf) {
     var ops = (u32Buf.length / 4) | 0;
     window.__idealystBatchStats.calls += 1;
     window.__idealystBatchStats.totalOps += ops;
@@ -68,6 +80,26 @@
         nodes[a0].appendChild(nodes[a1]);
       }
     }
+
+    // Combined attach path. When the caller passed a parent + locals
+    // buffer, bulk-parent the row tops here. Using a
+    // `DocumentFragment` for the multi-child case so the parent sees
+    // exactly one mutation regardless of N (matches what the
+    // Rust-side `insert_many` used to do, but with the per-child
+    // `appendChild` calls living JS-side).
+    if (attachParent != null && attachLocalsBuf != null) {
+      var nLocals = attachLocalsBuf.length;
+      if (nLocals === 1) {
+        attachParent.appendChild(nodes[attachLocalsBuf[0]]);
+      } else if (nLocals > 1) {
+        var frag = doc.createDocumentFragment();
+        for (var k = 0; k < nLocals; k++) {
+          frag.appendChild(nodes[attachLocalsBuf[k]]);
+        }
+        attachParent.appendChild(frag);
+      }
+    }
+
     return nodes;
   };
 })();

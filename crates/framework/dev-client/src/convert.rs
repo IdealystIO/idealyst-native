@@ -245,6 +245,7 @@ pub fn wire_style_to_rules(w: WireStyleRules) -> StyleRules {
     s.min_height = w.min_height.map(|l| Tokenized::Literal(wire_length(l)));
     s.max_width = w.max_width.map(|l| Tokenized::Literal(wire_length(l)));
     s.max_height = w.max_height.map(|l| Tokenized::Literal(wire_length(l)));
+    s.aspect_ratio = w.aspect_ratio;
 
     s.padding_top = w.padding_top.map(|l| Tokenized::Literal(wire_length(l)));
     s.padding_right = w.padding_right.map(|l| Tokenized::Literal(wire_length(l)));

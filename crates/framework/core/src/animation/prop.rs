@@ -63,6 +63,23 @@ pub enum AnimProp {
     BackgroundColor,
     /// Foreground (text / icon stroke) color. sRGB `[r, g, b, a]`.
     ForegroundColor,
+    /// One stop in the node's `background_gradient`, indexed from
+    /// `0` (innermost / first stop) up to `stops.len() - 1`. sRGB
+    /// `[r, g, b, a]`. Updating one stop preserves the gradient's
+    /// kind, center, radius, and all other stops — the backend
+    /// rewrites only the targeted color and re-applies.
+    ///
+    /// Why a per-stop variant instead of a `transition` on the
+    /// whole gradient: CSS `transition`s on gradients don't
+    /// interpolate across browsers (web snaps, iOS interpolates
+    /// natively, Android needs a per-frame ValueAnimator). The
+    /// performance characteristics diverge wildly enough that
+    /// hiding it behind one transition field would be a perf trap.
+    /// `GradientStopColor` puts the per-frame cost at the call
+    /// site — author drives it through an explicit
+    /// `AnimatedValue<(f32,f32,f32,f32)>`, with the same shape and
+    /// cadence as the other color AVs.
+    GradientStopColor(u8),
 }
 
 impl AnimProp {
@@ -106,6 +123,7 @@ mod tests {
             AnimProp::RotateZ,
             AnimProp::BackgroundColor,
             AnimProp::ForegroundColor,
+            AnimProp::GradientStopColor(0),
         ] {
             assert!(prop.is_scalar() ^ prop.is_color(), "{:?}", prop);
         }

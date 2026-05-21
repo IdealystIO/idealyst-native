@@ -118,21 +118,13 @@ pub(crate) fn animate_stroke(
         let mut current = child;
         while let Some(el) = current {
             if infinite {
-                // Use CSS @keyframes via inline style for infinite loop.
-                let style = format!(
-                    "animation: __icon_stroke {}ms {} infinite alternate; \
-                     --from: {}; --to: {};",
-                    duration_ms, easing_to_css(easing), from_offset, to_offset,
-                );
-                // CSS keyframes can't be inlined per-element, so we use
-                // the Web Animations API approach: set stroke-dashoffset
-                // and use a transition with iteration.
-                // Simpler: just use `animation` with a data attribute hack.
-                // Actually simplest: alternate transition via JS interval.
-                // Best cross-browser: set dashoffset and use
-                // `animation: name duration easing infinite alternate`.
-                // We'll just toggle the offset and rely on transition +
-                // transitionend to loop.
+                // CSS keyframes can't be inlined per-element, so we
+                // use the transition + transitionend approach: set
+                // stroke-dashoffset and use a CSS transition with
+                // iteration. (A truly infinite version would need a
+                // transitionend listener to flip the offset back —
+                // backends that support true infinite (iOS/Android)
+                // handle it natively, web's approximation is below.)
                 let _ = el.set_attribute("stroke-dashoffset", &from_str);
                 let _ = el.set_attribute("style", &format!(
                     "transition: stroke-dashoffset {}ms {}; stroke-dashoffset: {};",

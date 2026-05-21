@@ -372,9 +372,9 @@ pub fn emit(decl: StyleSheetDecl) -> TokenStream2 {
 /// the binding). The token primitives now live in `framework-core`,
 /// so author code emits `Tokenized::Token { name, fallback }`
 /// directly. The legacy theme-struct pattern (where rules could read
-/// `theme.colors.primary` etc) lives in `framework-theme` but it's no
-/// longer wired through the stylesheet macro — emitting a clear error
-/// here keeps the migration explicit.
+/// `theme.colors.primary` etc) lives in `idea-ui`'s theme runtime but
+/// it's no longer wired through the stylesheet macro — emitting a
+/// clear error here keeps the migration explicit.
 fn check_no_theme_refs(decl: &StyleSheetDecl) -> syn::Result<()> {
     // Collect every theme-binding name the declaration uses so the
     // check is agnostic to whether the author wrote `theme`, `t`, or
@@ -441,7 +441,7 @@ fn check_no_theme_refs(decl: &StyleSheetDecl) -> syn::Result<()> {
                     offender.span(),
                     "theme.* references are no longer supported in stylesheet bodies — \
                      use `Tokenized::Token { name: \"...\", fallback: ... }` directly. \
-                     See framework-theme crate for the legacy theme-struct pattern.",
+                     See idea-ui's theme runtime for the legacy theme-struct pattern.",
                 ));
             }
         }

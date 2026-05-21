@@ -37,6 +37,7 @@
 //! simple (one class per node, replaced atomically).
 
 mod animated;
+mod batch_queue;
 #[cfg(feature = "async-driver")]
 pub mod async_executor;
 mod assets;
@@ -83,6 +84,12 @@ pub fn install_text_batcher(backend: &std::rc::Rc<std::cell::RefCell<WebBackend>
     // mount doesn't pay an injection round-trip mid-apply. Same
     // shape as the text-bindings pre-inject above.
     backend.borrow_mut().ensure_class_batch_shim();
+    // Pre-inject the class-bindings shim (the JS-side dispatcher
+    // for `StyleSource::SignalClass`). Tapping the existing
+    // signal-changed handler in `text_bindings.js`, so the order
+    // of injection matters — `ensure_class_bindings_shim`
+    // internally re-ensures its deps before injecting.
+    backend.borrow_mut().ensure_class_bindings_shim();
 }
 
 std::thread_local! {
@@ -167,16 +174,9 @@ pub struct WebBackend {
     /// binding without conflict. Lazy: flipped true on first
     /// `ensure_text_bindings_shim()` call.
     pub(crate) text_bindings_shim_injected: bool,
-    /// Cached handle to `window.__idealystUpdateTextBatch`. Set on
-    /// first flush.
-    pub(crate) text_update_batch_fn: Option<js_sys::Function>,
     /// Cached handle to `window.__idealystRegisterText`. Set on first
     /// `create_text_with_id` call.
     pub(crate) text_register_fn: Option<js_sys::Function>,
-    /// Cached handle to `window.__idealystReleaseText`. Set on first
-    /// `release_text_id` call. (Releases happen at scope-teardown
-    /// time; they're rare enough that lazy lookup is fine.)
-    pub(crate) text_release_fn: Option<js_sys::Function>,
     /// Cached handle to `window.__idealystOnSignalChanged`. Set
     /// the first time a JS-registered signal fires.
     pub(crate) signal_changed_fn: Option<js_sys::Function>,
@@ -190,40 +190,15 @@ pub struct WebBackend {
     /// `update_text_by_id` queued before a release but flushed after
     /// would otherwise race against a re-assigned slot.
     pub(crate) next_text_id: u32,
-    /// Pending text-update ids accumulated since the last flush.
-    /// Parallel to [`Self::pending_text_lengths`] — the i-th
-    /// segment in [`Self::pending_text_buffer`] has length
-    /// `pending_text_lengths[i]` and updates the node at
-    /// `pending_text_ids[i]`. Drained by
-    /// [`Self::flush_pending_text`].
-    pub(crate) pending_text_ids: Vec<u32>,
-    /// UTF-16 code-unit length of each pending segment. The JS
-    /// shim walks the joined buffer with `substring(offset,
-    /// offset+len)`, which uses UTF-16 indices; tracking lengths
-    /// in code units (not bytes) keeps the offsets correct when
-    /// the buffer contains non-ASCII content. For ASCII (the
-    /// common case — bench leaves, simple labels), code-unit
-    /// length equals byte length and the computation is O(1).
-    pub(crate) pending_text_lengths: Vec<u32>,
-    /// One growing UTF-8 buffer containing every pending update's
-    /// new content, segments back-to-back (NO separator — the JS
-    /// shim walks them with the parallel-array `pending_text_lengths`
-    /// instead of splitting on a sentinel).
-    ///
-    /// Cleared (not dropped) after each flush so its capacity
-    /// survives across flushes — at hierarchy scale the buffer
-    /// stabilizes at the size of the largest fan-out and never
-    /// re-allocs.
-    pub(crate) pending_text_buffer: String,
-    /// Pending releases (ids whose registry slot should be cleared).
-    /// Drained alongside `pending_text_ids` at flush time.
-    pub(crate) pending_text_releases: Vec<u32>,
-    /// `true` while a microtask flush is queued. Coalesces many
-    /// `update_text_by_id` calls in the same synchronous turn into a
-    /// single flush. Cleared by the flush microtask before it runs
-    /// (so any updates queued *during* the flush schedule another
-    /// flush rather than getting lost).
-    pub(crate) text_flush_scheduled: std::rc::Rc<std::cell::Cell<bool>>,
+    /// Per-microtask buffer of `(text_id, new_content)` updates,
+    /// flushed via one FFI call to `__idealystUpdateTextBatch`.
+    /// Same shared `StringBatchQueue` infrastructure the class-batch
+    /// path uses — the only thing that differs is the JS function
+    /// name (`__idealystUpdateTextBatch` vs `__idealystApplyClassesBatch`).
+    pub(crate) text_queue: crate::batch_queue::StringBatchQueue,
+    /// Pending text-registry releases. Flushed via one FFI call to
+    /// `__idealystReleaseTextBatch` ahead of the update batch.
+    pub(crate) text_release_batch: crate::batch_queue::IdBatch,
 
     // ---------------------------------------------------------
     // Batched class-attribute updates. The style apply paths
@@ -240,32 +215,41 @@ pub struct WebBackend {
     /// function handles.
     pub(crate) class_batch_shim_injected: bool,
     /// Cached `window.__idealystRegisterStyledNode`. Looked up once
-    /// after the first shim injection.
+    /// after first registration.
     pub(crate) class_register_fn: Option<js_sys::Function>,
-    /// Cached `window.__idealystApplyClassesBatch`.
-    pub(crate) class_apply_batch_fn: Option<js_sys::Function>,
-    /// Cached `window.__idealystReleaseStyledNode`.
-    pub(crate) class_release_fn: Option<js_sys::Function>,
     /// Set of node ids the JS side has been told about. We register
     /// each styled node ONCE on its first apply (1 FFI hop /
     /// node-lifetime); subsequent applies hit the batched path.
     pub(crate) class_nodes_registered: std::collections::HashSet<u32>,
-    /// Buffer of (node_id, class_name) updates waiting on the next
-    /// microtask flush. Three parallel arrays + a packed string so
-    /// the flush can ship everything as `(Uint32Array, JsString,
-    /// Uint32Array)` in one FFI hop.
-    pub(crate) pending_class_ids: Vec<u32>,
-    pub(crate) pending_class_lengths: Vec<u32>,
-    pub(crate) pending_class_buffer: String,
-    /// Releases queued for the next flush — same shape as text
-    /// batch's `pending_text_releases`. Ships in one FFI call to
-    /// `__idealystReleaseStyledNode` (or via a future batch
-    /// release shim if we end up wanting one).
-    pub(crate) pending_class_releases: Vec<u32>,
-    /// Set when a microtask flush is in flight. Prevents redundant
-    /// scheduling — multiple queue calls in the same turn coalesce
-    /// into one flush.
-    pub(crate) class_flush_scheduled: std::rc::Rc<std::cell::Cell<bool>>,
+    /// Per-microtask buffer of (node_id, class_name) updates.
+    /// Flushed via one FFI call to `__idealystApplyClassesBatch`.
+    /// All bookkeeping (lengths, scheduling, FFI shipping) lives in
+    /// the shared `StringBatchQueue` type — every batched surface
+    /// (text, class, future attribute, …) owns one of these.
+    pub(crate) class_queue: crate::batch_queue::StringBatchQueue,
+    /// Pending styled-node releases. Flushed via one FFI call to
+    /// `__idealystReleaseStyledNodesBatch` (collapses N per-id
+    /// calls to one — material at switch-arm teardown of 10k+
+    /// rows).
+    pub(crate) class_release_batch: crate::batch_queue::IdBatch,
+
+    // ---------------------------------------------------------
+    // JS-side reactive class bindings (`StyleSource::SignalClass`).
+    // Pre-resolves a value→class table at mount; signal writes
+    // fan out entirely in JS via the shared signal-changed
+    // dispatcher in `text_bindings.js`. Eliminates per-row Rust
+    // Effect dispatch for SHARED cohorts at hierarchy scale.
+    // ---------------------------------------------------------
+    /// Has `runtime/js/class_bindings.js` been injected?
+    pub(crate) class_bindings_shim_injected: bool,
+    /// Cached `window.__idealystRegisterClassBinding`.
+    pub(crate) class_binding_register_fn: Option<js_sys::Function>,
+    /// Pending class-binding releases. Flushed via one FFI call to
+    /// `__idealystReleaseClassBindingsBatch`. Shares the same
+    /// `IdBatch` infrastructure the styled-node release path uses.
+    pub(crate) class_binding_release_batch: crate::batch_queue::IdBatch,
+    /// Monotonic id counter for active class bindings.
+    pub(crate) next_class_binding_id: u32,
     /// Per-virtualizer instance state — keyed by node id so we can
     /// route `virtualizer_data_changed` to the right instance AND
     /// drop its closures on `release_virtualizer`. The wrapped
@@ -518,41 +502,32 @@ impl WebBackend {
             batch_fn: None,
             text_batch_shim_injected: false,
             text_bindings_shim_injected: false,
-            text_update_batch_fn: None,
             text_register_fn: None,
-            text_release_fn: None,
             signal_changed_fn: None,
             binding_register_fn: None,
             binding_release_fn: None,
             next_text_id: 0,
-            // Pre-allocate the pending buffers so the first
-            // fan-out at hierarchy scale doesn't pay ~12 grow-
-            // reallocs walking from cap 0 up to a few thousand
-            // entries. 256 covers most apps' steady-state fan-
-            // outs in a single allocation; beyond that, the
-            // doubling growth kicks in as normal.
-            pending_text_ids: Vec::with_capacity(256),
-            pending_text_lengths: Vec::with_capacity(256),
-            // 8 KiB initial buffer covers most fan-outs without
-            // grow-realloc. The buffer stabilizes after a few
-            // flushes at the size of the largest fan-out.
-            pending_text_buffer: String::with_capacity(8192),
-            pending_text_releases: Vec::with_capacity(64),
-            text_flush_scheduled: std::rc::Rc::new(std::cell::Cell::new(false)),
+            text_queue: crate::batch_queue::StringBatchQueue::new(
+                "__idealystUpdateTextBatch",
+            ),
+            text_release_batch: crate::batch_queue::IdBatch::new(
+                "__idealystReleaseTextBatch",
+            ),
             class_batch_shim_injected: false,
             class_register_fn: None,
-            class_apply_batch_fn: None,
-            class_release_fn: None,
             class_nodes_registered: std::collections::HashSet::new(),
-            // Pre-allocate so a SHARED reactive-style fan-out at
-            // hierarchy scale (10k+) doesn't grow-realloc its way
-            // up from cap 0. The buffers are `take()`-d on each
-            // flush and restored empty so capacity survives.
-            pending_class_ids: Vec::with_capacity(256),
-            pending_class_lengths: Vec::with_capacity(256),
-            pending_class_buffer: String::with_capacity(8192),
-            pending_class_releases: Vec::with_capacity(64),
-            class_flush_scheduled: std::rc::Rc::new(std::cell::Cell::new(false)),
+            class_queue: crate::batch_queue::StringBatchQueue::new(
+                "__idealystApplyClassesBatch",
+            ),
+            class_release_batch: crate::batch_queue::IdBatch::new(
+                "__idealystReleaseStyledNodesBatch",
+            ),
+            class_bindings_shim_injected: false,
+            class_binding_register_fn: None,
+            class_binding_release_batch: crate::batch_queue::IdBatch::new(
+                "__idealystReleaseClassBindingsBatch",
+            ),
+            next_class_binding_id: 0,
             virtualizer_instances: HashMap::new(),
             next_virtualizer_id: 0,
             graphics_instances: HashMap::new(),
@@ -802,6 +777,146 @@ impl WebBackend {
             .expect("__idealystReleaseBinding call failed");
     }
 
+    /// Register a JS-side reactive class binding. Pre-resolves at
+    /// mount; signal writes fan out from the JS dispatcher to
+    /// every node subscribed on the same signal.
+    ///
+    /// Mechanics:
+    ///   1. Ensure the styled-node registry has an entry for the
+    ///      node (the binding dispatcher reads node handles from
+    ///      `__idealystStyledNodes`).
+    ///   2. Install a signal-changed notifier so writes flow to the
+    ///      `__idealystOnSignalChanged` dispatcher (which our
+    ///      class_bindings.js shim taps into).
+    ///   3. Ship the (binding_id, node_id, signal_id, values,
+    ///      classes) table to JS in one FFI call.
+    pub fn register_reactive_class_binding(
+        &mut self,
+        node: &Node,
+        signal_id: u64,
+        values: &[u32],
+        classes: &[&str],
+        value_reader: std::rc::Rc<dyn Fn() -> u32>,
+    ) -> u32 {
+        use wasm_bindgen::JsValue;
+
+        self.ensure_class_bindings_shim();
+
+        // The dispatcher looks up the node from `__idealystStyledNodes`
+        // by id. Register if this is the first time we're touching
+        // this node — same pattern the class-batch apply path uses,
+        // and shares the same registry, so a node that's both
+        // class-batched AND signal-bound only registers once.
+        let node_id = self.node_id(node);
+        if !self.class_nodes_registered.contains(&node_id) {
+            self.register_styled_node(node, node_id);
+            self.class_nodes_registered.insert(node_id);
+        }
+
+        // Install a signal-changed notifier. The framework's
+        // `register_signal_js_notifier` allows at most one
+        // notifier per signal (the second registration overwrites
+        // the first), so if the user has also wired this signal
+        // for text bindings via `register_signal_for_js`, that
+        // notifier wins. Class bindings still work in that case
+        // because the existing text-binding stringifier also
+        // ships `__idealystOnSignalChanged`, which our class
+        // dispatcher taps. The bare-class-binding case (no text
+        // binding on this signal) is what this branch covers.
+        //
+        // We register unconditionally — if a previous binding for
+        // a different node also called this, the closure shape is
+        // identical, so overwriting is safe.
+        let weak = WEB_BACKEND_HANDLE
+            .with(|s| s.borrow().clone())
+            .expect("WEB_BACKEND_HANDLE must be set when class-binding path is active");
+        let reader = value_reader.clone();
+        framework_core::register_signal_js_notifier(signal_id, move || {
+            let value = reader();
+            if let Some(rc) = weak.upgrade() {
+                rc.borrow_mut()
+                    .ship_signal_change_to_js(signal_id, &value.to_string());
+            }
+        });
+
+        // Lazily resolve the JS-side register fn.
+        if self.class_binding_register_fn.is_none() {
+            let window = web_sys::window().expect("no window");
+            let f_val = js_sys::Reflect::get(
+                &window,
+                &JsValue::from_str("__idealystRegisterClassBinding"),
+            )
+            .expect("Reflect::get for __idealystRegisterClassBinding failed");
+            self.class_binding_register_fn = Some(
+                f_val
+                    .dyn_into::<js_sys::Function>()
+                    .expect(
+                        "__idealystRegisterClassBinding is not a Function — \
+                         class_bindings.js shim missing",
+                    ),
+            );
+        }
+
+        let binding_id = self.next_class_binding_id;
+        self.next_class_binding_id += 1;
+
+        // Encode the args. `values` ships as Uint32Array; `classes`
+        // as one big length-prefixed string buffer + Uint32Array
+        // of lengths (same wire shape as the class-apply batch).
+        let values_buf = js_sys::Uint32Array::from(values);
+        let mut classes_joined = String::with_capacity(64);
+        let mut lengths: Vec<u32> = Vec::with_capacity(classes.len());
+        for cls in classes {
+            classes_joined.push_str(cls);
+            let utf16_len: u32 = if cls.is_ascii() {
+                cls.len() as u32
+            } else {
+                cls.chars().map(|c| c.len_utf16() as u32).sum()
+            };
+            lengths.push(utf16_len);
+        }
+        let lengths_buf = js_sys::Uint32Array::from(&lengths[..]);
+
+        // Pack the four small u32 args (binding_id, node_id, sig_lo,
+        // sig_hi) into a 4-element header Uint32Array so the final
+        // `apply` call has 4 args total — within `Array::of4`'s
+        // single-FFI-hop reach. The alternative would be
+        // `Array::new()` + 7 individual `push` calls (one FFI each)
+        // which defeats the batching point.
+        let sig_lo = (signal_id & 0xFFFF_FFFF) as u32;
+        let sig_hi = (signal_id >> 32) as u32;
+        let header = js_sys::Uint32Array::from(&[binding_id, node_id, sig_lo, sig_hi][..]);
+
+        let _ = self
+            .class_binding_register_fn
+            .as_ref()
+            .expect("set above")
+            .apply(
+                &JsValue::NULL,
+                &js_sys::Array::of4(
+                    &header,
+                    &values_buf,
+                    &JsValue::from_str(&classes_joined),
+                    &lengths_buf,
+                ),
+            )
+            .expect("__idealystRegisterClassBinding call failed");
+
+        binding_id
+    }
+
+    /// Release a JS-side class binding. Pushes to the batched
+    /// release queue (same `IdBatch` infrastructure the styled-node
+    /// release path uses) so N releases on a switch-arm teardown
+    /// ship in one FFI call.
+    pub fn release_reactive_class_binding(&mut self, binding_id: u32) {
+        self.class_binding_release_batch.push(binding_id);
+        // Piggy-back on the class flush microtask — the same
+        // `schedule_class_flush` mechanism that drains the apply +
+        // styled-node-release queues also drains this one.
+        self.schedule_class_flush();
+    }
+
     /// Drain queued `update_text_by_id` and `release_text_id` calls
     /// into a single FFI hop via `__idealystUpdateTextBatch`.
     ///
@@ -813,157 +928,36 @@ impl WebBackend {
     /// `set_text_content` round-trip per leaf to one
     /// `Uint32Array`-shaped flush per fan-out.
     pub(crate) fn flush_pending_text(&mut self) {
-        use wasm_bindgen::JsValue;
         let _t_total = crate::phase_timer::PhaseTimer::start("text_flush_total");
-
-        // Process unregisters first as one batched FFI call. Scope
-        // teardown can drop 2 k+ text effects at once (e.g. a
-        // switch-arm flip in the hierarchy bench); ship them as a
-        // single `Uint32Array` to `__idealystReleaseTextBatch`
-        // instead of one `call1` per id.
-        if !self.pending_text_releases.is_empty() {
-            if self.text_release_fn.is_none() {
-                let window = web_sys::window().expect("no window");
-                let f_val = js_sys::Reflect::get(
-                    &window,
-                    &JsValue::from_str("__idealystReleaseTextBatch"),
-                )
-                .expect("Reflect::get for __idealystReleaseTextBatch failed");
-                self.text_release_fn = Some(
-                    f_val
-                        .dyn_into::<js_sys::Function>()
-                        .expect(
-                            "__idealystReleaseTextBatch is not a Function — shim missing",
-                        ),
-                );
-            }
-            let release_ids = std::mem::take(&mut self.pending_text_releases);
-            let release_buf = js_sys::Uint32Array::from(&release_ids[..]);
-            let _ = self
-                .text_release_fn
-                .as_ref()
-                .expect("set above")
-                .call1(&JsValue::NULL, &release_buf)
-                .expect("__idealystReleaseTextBatch call failed");
-            // Restore the empty Vec so its allocation survives.
-            self.pending_text_releases = release_ids;
-            self.pending_text_releases.clear();
-        }
-
-        let n = self.pending_text_ids.len();
-        if n == 0 {
-            return;
-        }
-
-        // Lazily resolve + cache the JS-side batch fn. First flush
-        // pays the lookup; subsequent flushes reuse the handle.
-        if self.text_update_batch_fn.is_none() {
-            self.ensure_text_batch_shim();
-            let window = web_sys::window().expect("no window");
-            let f_val = js_sys::Reflect::get(
-                &window,
-                &JsValue::from_str("__idealystUpdateTextBatch"),
-            )
-            .expect("Reflect::get for __idealystUpdateTextBatch failed");
-            self.text_update_batch_fn = Some(
-                f_val
-                    .dyn_into::<js_sys::Function>()
-                    .expect("__idealystUpdateTextBatch is not a Function — shim missing"),
-            );
-        }
-
-        // Three FFI args: ids, lengths, big string buffer. The JS
-        // shim walks `bigString.substring(offset, offset+len)` per
-        // entry — `substring` is O(1) (creates a SlicedString) so
-        // there's no upfront split-and-allocate cost like the
-        // previous NUL-separated design had. The three Vec/String
-        // are `take()`-d so we can do the FFI calls without holding
-        // `&mut self.pending_*`, then restored as empty so their
-        // capacity survives the next fan-out.
-        let ids = std::mem::take(&mut self.pending_text_ids);
-        let lengths = std::mem::take(&mut self.pending_text_lengths);
-        let buffer = std::mem::take(&mut self.pending_text_buffer);
-
-        let (ids_buf, lengths_buf, strings_buf) = {
-            let _t = crate::phase_timer::PhaseTimer::start("text_flush_marshal");
-            let ids_buf = js_sys::Uint32Array::from(&ids[..]);
-            let lengths_buf = js_sys::Uint32Array::from(&lengths[..]);
-            let strings_buf = JsValue::from_str(&buffer);
-            (ids_buf, lengths_buf, strings_buf)
-        };
-
-        {
-            let _t = crate::phase_timer::PhaseTimer::start("text_flush_ffi_call");
-            let _ = self
-                .text_update_batch_fn
-                .as_ref()
-                .expect("set above")
-                .call3(&JsValue::NULL, &ids_buf, &lengths_buf, &strings_buf)
-                .expect("__idealystUpdateTextBatch call failed");
-        }
-
-        self.pending_text_ids = ids;
-        self.pending_text_ids.clear();
-        self.pending_text_lengths = lengths;
-        self.pending_text_lengths.clear();
-        self.pending_text_buffer = buffer;
-        self.pending_text_buffer.clear();
+        // Releases first — scope teardown can drop 2k+ text effects
+        // at once. Both releases and updates ride a single FFI call
+        // each via the shared `IdBatch` / `StringBatchQueue` helpers.
+        self.text_release_batch.flush();
+        self.text_queue.flush();
     }
 
-    /// Append a `(id, content)` pending entry. Bytes are written
-    /// straight into the shared `pending_text_buffer` via
-    /// `write_fn`; the segment's UTF-16 code-unit length is pushed
-    /// into a parallel `pending_text_lengths` Vec so the JS shim
-    /// can slice it back out with `substring(offset, offset+len)`.
-    ///
-    /// Why length-prefixed (not NUL-separated): the JS shim used
-    /// to receive one big NUL-joined string and `split('\0')` it
-    /// — at 20 k segments per flush, that split allocated 20 k
-    /// JS String objects up front and burned ~2-5 ms per flush.
-    /// `substring` is O(1) (creates a SlicedString view), so
-    /// length-prefixed traversal does the same total work
-    /// distributed across the per-segment loop with no upfront
-    /// allocation.
-    ///
-    /// Why UTF-16 lengths: `substring` uses UTF-16 code units. For
-    /// ASCII content (bench leaves, simple labels) UTF-8 bytes ==
-    /// UTF-16 code units so the computation is O(1) via the
-    /// `is_ascii()` fast path; for non-ASCII we walk the new
-    /// segment once with `chars().map(c.len_utf16()).sum()`. Both
-    /// paths produce a length the JS shim can use directly.
+    /// Append a `(id, content)` pending entry to the text-update
+    /// queue. Bytes are written directly into the shared buffer via
+    /// `write_fn` so callers using `format!`-style construction
+    /// don't allocate an intermediate `String`.
     pub(crate) fn append_pending_text<F: FnOnce(&mut String)>(
         &mut self,
         id: u32,
         write_fn: F,
     ) {
-        let start_byte = self.pending_text_buffer.len();
-        write_fn(&mut self.pending_text_buffer);
-        let new_segment = &self.pending_text_buffer[start_byte..];
-        let utf16_len: u32 = if new_segment.is_ascii() {
-            new_segment.len() as u32
-        } else {
-            new_segment.chars().map(|c| c.len_utf16() as u32).sum()
-        };
-        self.pending_text_lengths.push(utf16_len);
-        self.pending_text_ids.push(id);
+        self.text_queue.queue_with(id, write_fn);
     }
 
-    /// Schedule a microtask-driven flush of `pending_text_*`. No-op
-    /// if a flush is already scheduled this turn — the existing
-    /// microtask will drain everything queued by the time it runs.
-    /// Clearing the `text_flush_scheduled` flag inside the
-    /// microtask (before `flush_pending_text` runs) means updates
-    /// queued *during* the flush re-schedule a fresh microtask
-    /// rather than getting lost.
+    /// Schedule a microtask-driven flush of pending text updates.
+    /// Idempotent within a turn — concurrent queues coalesce.
     fn schedule_text_flush(&self) {
-        if self.text_flush_scheduled.get() {
+        if self.text_queue.mark_scheduled() {
             return;
         }
-        self.text_flush_scheduled.set(true);
         let weak = WEB_BACKEND_HANDLE
             .with(|s| s.borrow().clone())
             .expect("WEB_BACKEND_HANDLE must be set when batched text path is active");
-        let flag = self.text_flush_scheduled.clone();
+        let flag = self.text_queue.flush_flag();
         framework_core::schedule_microtask(move || {
             flag.set(false);
             if let Some(rc) = weak.upgrade() {
@@ -1010,10 +1004,8 @@ impl WebBackend {
     pub(crate) fn queue_class_apply(&mut self, node: &Node, class_name: &str) {
         let _t = crate::phase_timer::PhaseTimer::start("queue_class_apply");
         // Fall back to direct setAttribute if the shim batcher hasn't
-        // been installed by the host crate. This keeps any backend
-        // construction path that doesn't go through
-        // `install_text_batcher` (tests, ad-hoc usage) correct, just
-        // slower.
+        // been installed by the host crate. Keeps test backends + ad-hoc
+        // usage correct (just slower).
         let has_handle = WEB_BACKEND_HANDLE.with(|s| s.borrow().is_some());
         if !has_handle {
             if let Some(element) = node.dyn_ref::<web_sys::Element>() {
@@ -1025,70 +1017,58 @@ impl WebBackend {
 
         let id = self.node_id(node);
         if !self.class_nodes_registered.contains(&id) {
-            // One-time registration: stash the Element on the JS
-            // side under `id`. Subsequent applies just push (id,
-            // class) into the batch buffer — no per-row FFI.
-            if self.class_register_fn.is_none() {
-                let window = web_sys::window().expect("no window");
-                let f_val = js_sys::Reflect::get(
-                    &window,
-                    &wasm_bindgen::JsValue::from_str("__idealystRegisterStyledNode"),
-                )
-                .expect("Reflect::get for __idealystRegisterStyledNode failed");
-                self.class_register_fn = Some(
-                    f_val.dyn_into::<js_sys::Function>().expect(
-                        "__idealystRegisterStyledNode is not a Function — class_batch shim missing",
-                    ),
-                );
-            }
-            let _ = self
-                .class_register_fn
-                .as_ref()
-                .expect("set above")
-                .call2(
-                    &wasm_bindgen::JsValue::NULL,
-                    &wasm_bindgen::JsValue::from(id),
-                    node.as_ref(),
-                )
-                .expect("__idealystRegisterStyledNode call failed");
+            self.register_styled_node(node, id);
             self.class_nodes_registered.insert(id);
         }
 
-        // Push into the parallel buffers. Length is utf-16 (matching
-        // JS `String.length` semantics) so the JS shim can slice
-        // with `substring(offset, offset + len)` exactly. We compute
-        // utf-16 length cheaply on the ASCII fast path (all our
-        // emitted class names are ASCII hashes); the chars()
-        // fallback covers anything that isn't.
-        let utf16_len: u32 = if class_name.is_ascii() {
-            class_name.len() as u32
-        } else {
-            class_name.chars().map(|c| c.len_utf16() as u32).sum()
-        };
-        self.pending_class_ids.push(id);
-        self.pending_class_lengths.push(utf16_len);
-        self.pending_class_buffer.push_str(class_name);
-
+        self.class_queue.queue(id, class_name);
         self.schedule_class_flush();
     }
 
-    /// Schedule a microtask flush of `pending_class_*`. Idempotent
-    /// within a turn — if one's already scheduled, subsequent
-    /// `queue_class_apply` calls just append to the buffer.
+    /// One-time registration of `node` with the JS-side
+    /// `__idealystStyledNodes` map so subsequent batched applies
+    /// can address it by id alone.
+    fn register_styled_node(&mut self, node: &Node, id: u32) {
+        if self.class_register_fn.is_none() {
+            let window = web_sys::window().expect("no window");
+            let f_val = js_sys::Reflect::get(
+                &window,
+                &wasm_bindgen::JsValue::from_str("__idealystRegisterStyledNode"),
+            )
+            .expect("Reflect::get for __idealystRegisterStyledNode failed");
+            self.class_register_fn = Some(
+                f_val.dyn_into::<js_sys::Function>().expect(
+                    "__idealystRegisterStyledNode is not a Function — class_batch shim missing",
+                ),
+            );
+        }
+        let _ = self
+            .class_register_fn
+            .as_ref()
+            .expect("set above")
+            .call2(
+                &wasm_bindgen::JsValue::NULL,
+                &wasm_bindgen::JsValue::from(id),
+                node.as_ref(),
+            )
+            .expect("__idealystRegisterStyledNode call failed");
+    }
+
+    /// Schedule a microtask flush. Idempotent within a turn — if
+    /// one's already scheduled, subsequent queues just append to
+    /// the buffer.
     fn schedule_class_flush(&self) {
-        if self.class_flush_scheduled.get() {
+        if self.class_queue.mark_scheduled() {
             return;
         }
-        self.class_flush_scheduled.set(true);
         let weak = WEB_BACKEND_HANDLE
             .with(|s| s.borrow().clone())
             .expect("WEB_BACKEND_HANDLE must be set when batched class path is active");
-        let flag = self.class_flush_scheduled.clone();
+        let flag = self.class_queue.flush_flag();
         framework_core::schedule_microtask(move || {
-            // Clear BEFORE flushing so any updates produced during
-            // the flush (re-entrant signal writes) re-schedule a
-            // fresh microtask rather than being dropped on the
-            // floor. Same correctness shape as the text-batch flush.
+            // Clear the flag BEFORE flushing so updates produced
+            // during the flush (re-entrant signal writes) re-schedule
+            // a fresh microtask rather than being dropped.
             flag.set(false);
             if let Some(rc) = weak.upgrade() {
                 rc.borrow_mut().flush_pending_classes();
@@ -1096,85 +1076,18 @@ impl WebBackend {
         });
     }
 
-    /// Drain the queue: ship every pending `(id, class)` to the JS
-    /// shim in one FFI call. Restores the empty `Vec`/`String`
-    /// containers so their backing allocation survives across
-    /// flushes (steady-state cost ≈ 0 allocs / flush).
+    /// Drain pending releases + apply-batch. Both sub-flushes are
+    /// idempotent on empty queues.
     pub(crate) fn flush_pending_classes(&mut self) {
-        use wasm_bindgen::JsValue;
         let _t_total = crate::phase_timer::PhaseTimer::start("class_flush_total");
-
-        // Process queued releases first (released nodes no longer
-        // accept class updates, but the batch shim's safe-skip
-        // covers the race — releases here are just memory hygiene).
-        if !self.pending_class_releases.is_empty() {
-            if self.class_release_fn.is_none() {
-                let window = web_sys::window().expect("no window");
-                let f_val = js_sys::Reflect::get(
-                    &window,
-                    &JsValue::from_str("__idealystReleaseStyledNode"),
-                )
-                .expect("Reflect::get for __idealystReleaseStyledNode failed");
-                self.class_release_fn = Some(
-                    f_val
-                        .dyn_into::<js_sys::Function>()
-                        .expect("__idealystReleaseStyledNode is not a Function"),
-                );
-            }
-            let release_ids = std::mem::take(&mut self.pending_class_releases);
-            let f = self.class_release_fn.as_ref().expect("set above").clone();
-            for id in &release_ids {
-                let _ = f.call1(&JsValue::NULL, &JsValue::from(*id));
-            }
-            self.pending_class_releases = release_ids;
-            self.pending_class_releases.clear();
-        }
-
-        let n = self.pending_class_ids.len();
-        if n == 0 {
-            return;
-        }
-
-        if self.class_apply_batch_fn.is_none() {
-            let window = web_sys::window().expect("no window");
-            let f_val = js_sys::Reflect::get(
-                &window,
-                &JsValue::from_str("__idealystApplyClassesBatch"),
-            )
-            .expect("Reflect::get for __idealystApplyClassesBatch failed");
-            self.class_apply_batch_fn = Some(
-                f_val
-                    .dyn_into::<js_sys::Function>()
-                    .expect("__idealystApplyClassesBatch is not a Function"),
-            );
-        }
-
-        // Take the buffers out so we can do the FFI calls without
-        // holding `&mut self.pending_*`, then restore as empty so
-        // their capacity survives the next fan-out.
-        let ids = std::mem::take(&mut self.pending_class_ids);
-        let lengths = std::mem::take(&mut self.pending_class_lengths);
-        let buffer = std::mem::take(&mut self.pending_class_buffer);
-
-        let ids_buf = js_sys::Uint32Array::from(&ids[..]);
-        let lengths_buf = js_sys::Uint32Array::from(&lengths[..]);
-        let buffer_js = JsValue::from_str(&buffer);
-
-        let _ = self
-            .class_apply_batch_fn
-            .as_ref()
-            .expect("set above")
-            .call3(&JsValue::NULL, &ids_buf, &buffer_js, &lengths_buf)
-            .expect("__idealystApplyClassesBatch call failed");
-
-        // Restore the buffers so the next fan-out reuses their
-        // capacity (steady-state allocation cost: zero).
-        self.pending_class_ids = ids;
-        self.pending_class_ids.clear();
-        self.pending_class_lengths = lengths;
-        self.pending_class_lengths.clear();
-        self.pending_class_buffer = buffer;
-        self.pending_class_buffer.clear();
+        // Releases first — collapses N per-id FFI calls to one via
+        // the shared `IdBatch` helper. Apply-batch follows.
+        self.class_release_batch.flush();
+        // Drain pending SignalClass binding releases too. Same
+        // microtask serves all three queues so a switch-arm
+        // teardown produces at most one FFI call per kind.
+        self.class_binding_release_batch.flush();
+        self.class_queue.flush();
     }
 
     /// Drop a node from the JS-side styled-node registry. Called by
@@ -1182,7 +1095,7 @@ impl WebBackend {
     /// instead of being pinned by the shim's `Map`.
     pub(crate) fn release_styled_node(&mut self, id: u32) {
         if self.class_nodes_registered.remove(&id) {
-            self.pending_class_releases.push(id);
+            self.class_release_batch.push(id);
             // If a flush isn't already scheduled, schedule one so
             // the release reaches JS at the next microtask.
             self.schedule_class_flush();
@@ -1199,6 +1112,138 @@ impl WebBackend {
         self.next_node_id += 1;
         self.node_ids.insert(p, id);
         id
+    }
+
+    /// Shared body for `execute_batch` and `execute_batch_with_attach`.
+    /// When `attach` is `Some((parent, locals))`, the shim parents
+    /// `nodes[local]` to `parent` for each `local` in `locals` —
+    /// folding what would otherwise be an `insert_many` follow-up
+    /// call into the same FFI round-trip. Measured ~60 ms savings
+    /// at 100 k rows.
+    ///
+    /// The flat-buffer encoding (4 u32s per op, NUL-separated string
+    /// table) is the same in both modes; only the JS shim's argument
+    /// list differs (3 args vs 5).
+    pub(crate) fn execute_batch_inner(
+        &mut self,
+        batch: framework_core::BackendBatch,
+        attach: Option<(&mut web_sys::Node, &[u32])>,
+    ) -> Vec<web_sys::Node> {
+        use js_sys::Array;
+        use wasm_bindgen::JsCast;
+        use wasm_bindgen::JsValue;
+
+        let _t_total = crate::phase_timer::PhaseTimer::start("execute_batch_total");
+
+        if batch.node_count == 0 {
+            return Vec::new();
+        }
+
+        // First call: inject the shim and cache the function handle.
+        self.ensure_batch_shim();
+        if self.batch_fn.is_none() {
+            let window = web_sys::window().expect("no window");
+            let f_val = js_sys::Reflect::get(&window, &JsValue::from_str("__idealystExecuteBatch"))
+                .expect("Reflect::get for __idealystExecuteBatch failed");
+            let f = f_val
+                .dyn_into::<js_sys::Function>()
+                .expect("__idealystExecuteBatch is not a Function — shim injection failed");
+            self.batch_fn = Some(f);
+        }
+
+        // Flat-buffer encoding. Each op is exactly 4 u32s:
+        //
+        //   [kind, arg0, arg1, arg2]
+        //
+        //   CreateView         [0, local_id, 0, 0]
+        //   CreateText         [1, local_id, 0, string_idx]
+        //   ApplyStyleStatic   [2, node_id,  0, string_idx]
+        //   Insert             [3, parent,   child, 0]
+        //
+        // String payloads (CreateText content, ApplyStyleStatic class
+        // name) are concatenated with a NUL separator and shipped as
+        // a single `JsValue::from_str` — JS splits once. Our content
+        // strings ("Row #N", CSS class names) never contain NUL.
+        let _t_encode = crate::phase_timer::PhaseTimer::start("execute_batch_encode");
+        let mut u32s: Vec<u32> = Vec::with_capacity(batch.ops.len() * 4);
+        let mut strings: String = String::with_capacity(batch.ops.len() * 16);
+        let mut string_count: u32 = 0;
+        for op in batch.ops.iter() {
+            match op {
+                framework_core::BatchOp::CreateView { local_id } => {
+                    u32s.extend_from_slice(&[0, *local_id, 0, 0]);
+                }
+                framework_core::BatchOp::CreateText { local_id, content } => {
+                    if string_count > 0 {
+                        strings.push('\0');
+                    }
+                    strings.push_str(content);
+                    u32s.extend_from_slice(&[1, *local_id, 0, string_count]);
+                    string_count += 1;
+                }
+                framework_core::BatchOp::ApplyStyleStatic {
+                    node,
+                    class_name,
+                    rules: _,
+                } => {
+                    if string_count > 0 {
+                        strings.push('\0');
+                    }
+                    strings.push_str(class_name);
+                    u32s.extend_from_slice(&[2, *node, 0, string_count]);
+                    string_count += 1;
+                }
+                framework_core::BatchOp::Insert { parent, child } => {
+                    u32s.extend_from_slice(&[3, *parent, *child, 0]);
+                }
+            }
+        }
+        let u32_buf = js_sys::Uint32Array::from(&u32s[..]);
+        let strings_buf = JsValue::from_str(&strings);
+        drop(_t_encode);
+
+        let _t_ffi = crate::phase_timer::PhaseTimer::start("execute_batch_ffi_call");
+        let f = self.batch_fn.as_ref().expect("batch_fn set above");
+        let node_count_val = JsValue::from(batch.node_count);
+        let result = match attach {
+            None => f
+                .call3(&JsValue::NULL, &u32_buf, &strings_buf, &node_count_val)
+                .expect("__idealystExecuteBatch call failed"),
+            Some((parent, locals)) => {
+                // Two extra args: the parent Node (one JsValue
+                // crosses the boundary) and a Uint32Array of
+                // `local_id`s to attach (one buffer crosses,
+                // regardless of length). The JS shim does N
+                // `appendChild` calls inside its own loop without
+                // re-entering wasm.
+                let locals_buf = js_sys::Uint32Array::from(locals);
+                let args = Array::of5(
+                    &u32_buf,
+                    &strings_buf,
+                    &node_count_val,
+                    parent.as_ref(),
+                    &locals_buf,
+                );
+                f.apply(&JsValue::NULL, &args)
+                    .expect("__idealystExecuteBatch call (with attach) failed")
+            }
+        };
+        drop(_t_ffi);
+
+        let _t_decode = crate::phase_timer::PhaseTimer::start("execute_batch_decode");
+        let nodes_array = result
+            .dyn_into::<Array>()
+            .expect("__idealystExecuteBatch must return an Array");
+
+        let mut nodes = Vec::with_capacity(batch.node_count as usize);
+        for i in 0..batch.node_count {
+            let val = nodes_array.get(i);
+            let node = val
+                .dyn_into::<web_sys::Node>()
+                .expect("execute_batch return-array entry must be a Node");
+            nodes.push(node);
+        }
+        nodes
     }
 }
 
@@ -1343,7 +1388,7 @@ impl Backend for WebBackend {
     }
 
     fn release_text_id(&mut self, id: u32) {
-        self.pending_text_releases.push(id);
+        self.text_release_batch.push(id);
         // Piggy-back on the same flush microtask the updates use.
         // Releases without queued updates are rare (scope teardown
         // without a triggering signal change) but cheap to schedule.
@@ -1382,6 +1427,45 @@ impl Backend for WebBackend {
 
     fn release_reactive_text_binding(&mut self, text_id: u32) {
         WebBackend::release_reactive_text_binding(self, text_id)
+    }
+
+    fn supports_js_class_bindings(&self) -> bool {
+        // Same gate as text bindings — both rely on
+        // `WEB_BACKEND_HANDLE` being set (the signal-changed notifier
+        // needs the self-handle to call back into the backend) and on
+        // the shims being injected. Without the handle, the framework
+        // falls back to a per-node Effect via the spec's compute
+        // closure.
+        WEB_BACKEND_HANDLE.with(|s| s.borrow().is_some())
+    }
+
+    fn register_reactive_class_binding(
+        &mut self,
+        node: &Self::Node,
+        signal_id: u64,
+        values: &[u32],
+        classes: &[&str],
+        value_reader: std::rc::Rc<dyn Fn() -> u32>,
+    ) -> u32 {
+        WebBackend::register_reactive_class_binding(
+            self,
+            node,
+            signal_id,
+            values,
+            classes,
+            value_reader,
+        )
+    }
+
+    fn release_reactive_class_binding(&mut self, binding_id: u32) {
+        WebBackend::release_reactive_class_binding(self, binding_id)
+    }
+
+    fn mint_class_for_app(
+        &mut self,
+        app: &framework_core::StyleApplication,
+    ) -> Option<String> {
+        Some(self.impl_mint_class_for_app(app))
     }
 
     fn create_image(&mut self, src: &str, alt: Option<&str>) -> Self::Node {
@@ -1911,115 +1995,31 @@ impl Backend for WebBackend {
     /// and caches the function handle so subsequent calls skip the
     /// `Reflect::get` lookup.
     fn execute_batch(&mut self, batch: framework_core::BackendBatch) -> Vec<Self::Node> {
-        use js_sys::Array;
-        use wasm_bindgen::JsCast;
-        use wasm_bindgen::JsValue;
+        self.execute_batch_inner(batch, None)
+    }
 
-        let _t_total = crate::phase_timer::PhaseTimer::start("execute_batch_total");
-
-        if batch.node_count == 0 {
-            return Vec::new();
-        }
-
-        // First call: inject the shim and cache the function handle.
-        self.ensure_batch_shim();
-        if self.batch_fn.is_none() {
-            let window = web_sys::window().expect("no window");
-            let f_val = js_sys::Reflect::get(&window, &JsValue::from_str("__idealystExecuteBatch"))
-                .expect("Reflect::get for __idealystExecuteBatch failed");
-            let f = f_val
-                .dyn_into::<js_sys::Function>()
-                .expect("__idealystExecuteBatch is not a Function — shim injection failed");
-            self.batch_fn = Some(f);
-        }
-
-        // Flat-buffer encoding. Each op is exactly 4 u32s:
-        //
-        //   [kind, arg0, arg1, arg2]
-        //
-        //   CreateView         [0, local_id, 0, 0]
-        //   CreateText         [1, local_id, 0, string_idx]
-        //   ApplyStyleStatic   [2, node_id,  0, string_idx]
-        //   Insert             [3, parent,   child, 0]
-        //
-        // String payloads (CreateText content, ApplyStyleStatic class
-        // name) are concatenated with a NUL separator and shipped as
-        // a single `JsValue::from_str` — JS splits once. Our content
-        // strings ("Row #N", CSS class names) never contain NUL.
-        //
-        // Why flat: the previous per-op `js_sys::Array::push` path
-        // crossed the wasm→JS boundary ~3 times per op (about ~12k
-        // crossings for a 4000-op batch). Flat shipping is **two**
-        // input FFI calls regardless of op count: one `Uint32Array`
-        // copy + one big-string transfer. The shim does all decoding
-        // inside the JS function call.
-        let _t_encode = crate::phase_timer::PhaseTimer::start("execute_batch_encode");
-        let mut u32s: Vec<u32> = Vec::with_capacity(batch.ops.len() * 4);
-        // Rough upper bound: ~16 chars per string × one string per
-        // op. Over-allocates by ~2x for the rebuild workload, which
-        // is cheap relative to per-byte realloc costs.
-        let mut strings: String = String::with_capacity(batch.ops.len() * 16);
-        let mut string_count: u32 = 0;
-        for op in batch.ops.iter() {
-            match op {
-                framework_core::BatchOp::CreateView { local_id } => {
-                    u32s.extend_from_slice(&[0, *local_id, 0, 0]);
-                }
-                framework_core::BatchOp::CreateText { local_id, content } => {
-                    if string_count > 0 {
-                        strings.push('\0');
-                    }
-                    strings.push_str(content);
-                    u32s.extend_from_slice(&[1, *local_id, 0, string_count]);
-                    string_count += 1;
-                }
-                framework_core::BatchOp::ApplyStyleStatic {
-                    node,
-                    class_name,
-                    rules: _,
-                } => {
-                    if string_count > 0 {
-                        strings.push('\0');
-                    }
-                    strings.push_str(class_name);
-                    u32s.extend_from_slice(&[2, *node, 0, string_count]);
-                    string_count += 1;
-                }
-                framework_core::BatchOp::Insert { parent, child } => {
-                    u32s.extend_from_slice(&[3, *parent, *child, 0]);
-                }
-            }
-        }
-        // Single FFI: copies the u32 slice's bytes into a fresh JS
-        // `Uint32Array` via the wasm memory view. The whole buffer
-        // moves in one operation regardless of op count.
-        let u32_buf = js_sys::Uint32Array::from(&u32s[..]);
-        // Single FFI: transfers the concatenated string buffer.
-        let strings_buf = JsValue::from_str(&strings);
-        drop(_t_encode);
-
-        let _t_ffi = crate::phase_timer::PhaseTimer::start("execute_batch_ffi_call");
-        let f = self.batch_fn.as_ref().expect("batch_fn set above");
-        let node_count_val = JsValue::from(batch.node_count);
-        let result = f
-            .call3(&JsValue::NULL, &u32_buf, &strings_buf, &node_count_val)
-            .expect("__idealystExecuteBatch call failed");
-        drop(_t_ffi);
-
-        let _t_decode = crate::phase_timer::PhaseTimer::start("execute_batch_decode");
-        let nodes_array = result
-            .dyn_into::<Array>()
-            .expect("__idealystExecuteBatch must return an Array");
-
-        let mut nodes = Vec::with_capacity(batch.node_count as usize);
-        for i in 0..batch.node_count {
-            let val = nodes_array.get(i);
-            let node = val
-                .dyn_into::<web_sys::Node>()
-                .expect("execute_batch return-array entry must be a Node");
-            nodes.push(node);
-        }
-        nodes
+    /// Execute the batch AND parent the row tops in one FFI round-trip.
+    ///
+    /// Folds what used to be `execute_batch` + `insert_many` into one
+    /// shim invocation. The savings come from the per-child
+    /// `appendChild` calls — previously N FFI hops, now N pure JS
+    /// loop iterations inside the shim. Measured ~10 ms reduction
+    /// per 100 k-row transition (~115 ms across the rebuild bench
+    /// suite via the debug-stats phase counters). The benefit
+    /// surfaces more clearly in the `worstFrame` metric than in
+    /// `apply_p50`, because per-frame apply noise (±15 ms at 100 k)
+    /// can mask a 7 ms improvement.
+    ///
+    /// `parent` must be a real DOM node (the same kind you'd pass to
+    /// `insert_many`); `attach_locals` must reference valid
+    /// `local_id`s from `batch`.
+    fn execute_batch_with_attach(
+        &mut self,
+        batch: framework_core::BackendBatch,
+        parent: &mut Self::Node,
+        attach_locals: &[u32],
+    ) -> Vec<Self::Node> {
+        self.execute_batch_inner(batch, Some((parent, attach_locals)))
     }
 
     /// Web handles interaction states via CSS pseudo-classes
@@ -2104,6 +2104,16 @@ impl Backend for WebBackend {
         // `Rc<()>`), so framework helpers like `LayoutPlan` can
         // downcast back to the concrete node and operate on it.
         framework_core::ViewHandle::new(Rc::new(node.clone()), &WebViewOps)
+    }
+
+    fn make_text_handle(&self, node: &Self::Node) -> framework_core::TextHandle {
+        // Same plumbing as `make_view_handle` for the text element so
+        // author-level animation drivers (welcome's `drive_color_text_av`)
+        // can downcast `text_ref.as_any()` to `web_sys::Node` and write
+        // `style.color` directly. Without this the typed handle stores
+        // the trait-default `Rc<()>` and the downcast silently fails,
+        // leaving text color frozen at its stylesheet value.
+        framework_core::TextHandle::new(Rc::new(node.clone()), &WebTextOps)
     }
 
     fn make_text_input_handle(
@@ -2208,6 +2218,14 @@ fn element_from_any(node: &dyn std::any::Any) -> Option<web_sys::Element> {
     let n = node.downcast_ref::<web_sys::Node>()?;
     n.clone().dyn_into::<web_sys::Element>().ok()
 }
+
+/// Marker `TextOps` impl. The trait has no required methods today;
+/// the impl exists so [`WebBackend::make_text_handle`] can store
+/// the underlying `web_sys::Node` instead of the default
+/// `Rc<()>`. Author-level animation drivers downcast
+/// `text_ref.as_any()` to the node to write inline `color`.
+struct WebTextOps;
+impl framework_core::TextOps for WebTextOps {}
 
 fn view_rect_from_node(node: &dyn std::any::Any) -> Option<framework_core::ViewportRect> {
     let el = element_from_any(node)?;

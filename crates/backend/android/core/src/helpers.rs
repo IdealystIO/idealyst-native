@@ -58,6 +58,47 @@ pub fn parse_color(input: &str) -> Option<i32> {
     if trimmed.eq_ignore_ascii_case("transparent") {
         return Some(0);
     }
+    // CSS `rgba(r, g, b, a)` / `rgb(r, g, b)`. Channels are 0..=255
+    // integers; alpha is 0..=1 float (or, leniently, 0..=255 — we
+    // pick whichever interpretation makes sense from the value). Used
+    // by the welcome example's gradient stops; same shape as the iOS
+    // parser so authors can write one color string and have it work
+    // on all backends.
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("rgba(") || lower.starts_with("rgb(") {
+        let inner = trimmed
+            .trim_start_matches(|c: char| !c.is_ascii_digit() && c != '.' && c != '-')
+            .trim_end_matches(')');
+        let parts: Vec<&str> = inner.split(',').collect();
+        if parts.len() < 3 {
+            return None;
+        }
+        let r: f32 = parts[0].trim().parse().ok()?;
+        let g: f32 = parts[1].trim().parse().ok()?;
+        let b: f32 = parts[2].trim().parse().ok()?;
+        let a: f32 = if parts.len() >= 4 {
+            parts[3].trim().parse().ok()?
+        } else {
+            1.0
+        };
+        // Alpha: if >1.0 we treat it as a 0..=255 byte (lenient
+        // handling of the rare `rgba(r, g, b, 255)` form); otherwise
+        // map 0..=1 to 0..=255.
+        let a_byte = if a > 1.0 {
+            a.clamp(0.0, 255.0).round() as u32
+        } else {
+            (a.clamp(0.0, 1.0) * 255.0).round() as u32
+        };
+        let r_byte = r.clamp(0.0, 255.0).round() as u32;
+        let g_byte = g.clamp(0.0, 255.0).round() as u32;
+        let b_byte = b.clamp(0.0, 255.0).round() as u32;
+        return Some(
+            (((a_byte & 0xff) << 24)
+                | ((r_byte & 0xff) << 16)
+                | ((g_byte & 0xff) << 8)
+                | (b_byte & 0xff)) as i32,
+        );
+    }
     if !trimmed.starts_with('#') {
         return None;
     }

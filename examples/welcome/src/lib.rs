@@ -31,7 +31,7 @@ use std::time::Duration;
 use framework_core::animation::{AnimProp, AnimatedValue, SpringTo, TweenTo};
 use framework_core::{
     animated, effect, node_ref, on_cleanup, timeline, ui, AlignItems, Color, FlexDirection,
-    FontWeight, JustifyContent, Length, Position, Primitive, Ref, Shadow, StyleRules, StyleSheet,
+    FontWeight, JustifyContent, Length, Position, Primitive, Ref, StyleRules, StyleSheet,
     TextAlign, TextHandle, Tokenized, ViewHandle,
 };
 
@@ -86,6 +86,34 @@ const SUBTITLE_ENTER_Y: f32 = 10.0;
 /// moderate damping) gives the bloom a slow, organic spread.
 const GLARE_INITIAL_SCALE: f32 = 0.55;
 
+/// Sun-glare anchor size as a fraction of viewport width. The
+/// stylesheet pairs this with `aspect_ratio: 1.0` so the box is
+/// always square regardless of viewport aspect — the layout engine
+/// derives height to match. `40%` of a 390-wide iPhone ≈ 156px;
+/// `40%` of a 1024-wide iPad ≈ 410px.
+const GLARE_ANCHOR_SIZE_PCT: f32 = 40.0;
+
+/// Top/right inset of the anchor from the page edges, in CSS pixels.
+/// NEGATIVE so the anchor pokes past the viewport edge — the page's
+/// `overflow: hidden` clips the off-screen portion, leaving the sun
+/// emerging from behind the top-right corner. About 25% of the
+/// 40%-wide anchor pokes off-screen at each axis on a 390-wide
+/// phone (40px × 156 = ~40px clipped).
+const GLARE_ANCHOR_INSET: f32 = -40.0;
+
+/// Sun-glare breathe amplitude. The raf-driven pulse adds
+/// `sin(t) * amp` to the resting scale of 1.0, so the sun throbs
+/// between `1 - amp` and `1 + amp`. ±8% reads as a clear, organic
+/// breath; larger feels gimmicky, smaller is invisible.
+const SUN_PULSE_AMPLITUDE: f32 = 0.08;
+
+/// How long after the entrance spring fires before the scale pulse
+/// takes over. The spring needs ~1.6 s to settle; this gives it a
+/// bit of slack so the takeover doesn't fight a still-overshooting
+/// spring. Sine starts at `sin(0) = 0` → no visible jump on takeover.
+const SUN_SCALE_PULSE_DELAY_MS: i32 = 1800;
+
+
 // ---- Color palette -------------------------------------------------------
 
 const COLOR_LIGHT_BG: &str = "#f7f5ef";
@@ -95,9 +123,24 @@ const COLOR_HEADLINE_LIGHT: &str = "#f4ead8";
 const COLOR_SUBTITLE_LIGHT: &str = "#a89a7d";
 /// Sun-glare core — near-white with the faintest warmth.
 const COLOR_SUN_CORE: &str = "#fff6d8";
-/// Sun-glare glow — warm amber. Used as the shadow color on the
-/// circular layers so the bloom bleeds outward.
-const COLOR_SUN_GLOW: &str = "rgba(255, 196, 120, 0.85)";
+
+// ---- Pulse palette -------------------------------------------------------
+//
+// Two-color cycles for the raf-driven pulse. Each pair is `(dim,
+// bright)` — `sin(t)` maps `0..1` between them. Sticking with the
+// warm-gold family on both ends keeps the pulse breathing rather
+// than oscillating between two visibly different hues. Channels
+// are 0..=1 sRGB; alpha is independent.
+const SUN_CORE_DIM:        (f32, f32, f32, f32) = (1.0, 0.95, 0.78, 0.95);
+const SUN_CORE_BRIGHT:     (f32, f32, f32, f32) = (1.0, 0.99, 0.90, 1.00);
+const SUN_CORONA_DIM:      (f32, f32, f32, f32) = (1.0, 0.78, 0.36, 0.70);
+const SUN_CORONA_BRIGHT:   (f32, f32, f32, f32) = (1.0, 0.85, 0.50, 0.95);
+// Alpha range: the vignette is supposed to read as ambient
+// warmth at the very edge of the frame. Each edge band peaks at
+// these alphas; where two bands overlap in a corner the effective
+// alpha doubles.
+const VIGNETTE_CORNER_DIM:    (f32, f32, f32, f32) = (1.0, 0.78, 0.36, 0.015);
+const VIGNETTE_CORNER_BRIGHT: (f32, f32, f32, f32) = (1.0, 0.85, 0.50, 0.06);
 
 // ---- Typography sizes ----------------------------------------------------
 
@@ -126,6 +169,21 @@ pub fn app() -> Primitive {
 
     let glare_opacity = animated!(0.0_f32);
     let glare_scale = animated!(GLARE_INITIAL_SCALE);
+    // The sun's gradient stops are animatable per-frame via
+    // `AnimProp::GradientStopColor(idx)`. Seed each AV at the same
+    // color the stylesheet uses so the per-frame writes pick up
+    // exactly where the static apply leaves off — `start_pulse`
+    // in Act 2 retargets them with a sine-driven oscillation.
+    let sun_core_color = animated!(srgb_tuple(COLOR_SUN_CORE));
+    let sun_corona_color = animated!(srgba_tuple(255.0, 210.0, 110.0, 0.85));
+
+    // Vignette — full-page radial gradient that ambient-lights the
+    // frame in warm yellow during the dark phase. Center is fully
+    // transparent so it doesn't wash out the welcome text; corners
+    // glow `COLOR_SUN_GLOW`-warm and pulse with the sun.
+    let vignette_opacity = animated!(0.0_f32);
+    // Stop 2 is the corner color (stops 0 + 1 stay transparent).
+    let vignette_corner_color = animated!(srgba_tuple(255.0, 168.0, 60.0, 0.0));
 
     let subtitle_opacity = animated!(0.0_f32);
     let subtitle_y = animated!(SUBTITLE_ENTER_Y);
@@ -143,6 +201,18 @@ pub fn app() -> Primitive {
     let welcome_ref = node_ref!(ViewHandle);
     let welcome_text_ref = node_ref!(TextHandle);
     let dark_ref = node_ref!(ViewHandle);
+    let vignette_ref = node_ref!(ViewHandle);
+    // Four edge bands give us a rounded-rectangle vignette without
+    // the elliptical center artefact a radial gradient produces on a
+    // non-square viewport. Each band is a linear gradient from
+    // its inner edge (transparent) to the screen edge (warm); where
+    // two bands overlap in a corner, their alphas add, so corners
+    // come out a touch brighter — which reads correctly as "the
+    // light is strongest at the corners."
+    let vignette_top_ref = node_ref!(ViewHandle);
+    let vignette_bottom_ref = node_ref!(ViewHandle);
+    let vignette_left_ref = node_ref!(ViewHandle);
+    let vignette_right_ref = node_ref!(ViewHandle);
     let glare_ref = node_ref!(ViewHandle);
     let subtitle_ref = node_ref!(ViewHandle);
 
@@ -154,8 +224,23 @@ pub fn app() -> Primitive {
     drive_av(&welcome_y, welcome_ref, AnimProp::TranslateY);
     drive_color_text_av(&welcome_color, welcome_text_ref, AnimProp::ForegroundColor);
     drive_av(&dark_opacity, dark_ref, AnimProp::Opacity);
+    drive_av(&vignette_opacity, vignette_ref, AnimProp::Opacity);
     drive_av(&glare_opacity, glare_ref, AnimProp::Opacity);
     drive_av(&glare_scale, glare_ref, AnimProp::Scale);
+    // Per-stop color animation. The sun has 4 stops: core (0) →
+    // corona (1) → halo (2) → transparent (3); we pulse stops 0 + 1.
+    // The vignette has 3 stops: transparent (0) → transparent (1) →
+    // warm corner (2); we pulse stop 2.
+    drive_gradient_stop_av(&sun_core_color, glare_ref, 0);
+    drive_gradient_stop_av(&sun_corona_color, glare_ref, 1);
+    // Each edge band's gradient is `[transparent at 0, warm at 1]`
+    // with the angle pointing the warm stop AT the screen edge.
+    // We drive index 1 on all four refs with the same AV so the
+    // bands breathe in lock-step.
+    drive_gradient_stop_av(&vignette_corner_color, vignette_top_ref, 1);
+    drive_gradient_stop_av(&vignette_corner_color, vignette_bottom_ref, 1);
+    drive_gradient_stop_av(&vignette_corner_color, vignette_left_ref, 1);
+    drive_gradient_stop_av(&vignette_corner_color, vignette_right_ref, 1);
     drive_av(&subtitle_opacity, subtitle_ref, AnimProp::Opacity);
     drive_av(&subtitle_y, subtitle_ref, AnimProp::TranslateY);
 
@@ -189,23 +274,26 @@ pub fn app() -> Primitive {
             // welcome phrase stays mounted; only its color animates
             // (dark ink → light cream) so the phrase remains
             // readable as the background swings under it.
+            // ── Act 2 — wash to dark + vignette glow comes up + sun
+            // begins blooming. Once everything's mounted, the
+            // raf-driven pulse below takes over the sun's and
+            // vignette's stop colors and oscillates them
+            // indefinitely.
             act_2_start => {
                 welcome_color: TweenTo::new(
                     srgb_tuple(COLOR_HEADLINE_LIGHT),
                     Duration::from_millis(DARK_FADE_MS),
                 ).ease_in_out(),
                 dark_opacity: TweenTo::new(1.0, Duration::from_millis(DARK_FADE_MS)).ease_in_out(),
+                vignette_opacity: TweenTo::new(1.0, Duration::from_millis(DARK_FADE_MS)).ease_in_out(),
             },
             // The glare lags the dark by a beat so it reads as
             // arriving INTO the dark scene, not painted with it.
-            // Loose spring (low stiffness, gentle damping) gives
-            // the bloom a slow, organic spread rather than a snap.
             act_2_start + 200 => {
                 glare_opacity: TweenTo::new(1.0, Duration::from_millis(1700)).ease_out(),
                 glare_scale: SpringTo::new(1.0).stiffness(55.0).damping(18.0),
             },
-            // ── Act 3 — welcome shuffles UP, subtitle materializes
-            // beneath it. Two parallel motions, both gentle springs.
+            // ── Act 3 — welcome shuffles UP, subtitle materializes.
             act_3_start => {
                 welcome_y: SpringTo::new(WELCOME_SHUFFLE_Y).stiffness(110.0).damping(20.0),
                 subtitle_opacity: TweenTo::new(1.0, Duration::from_millis(800)).ease_out(),
@@ -213,6 +301,73 @@ pub fn app() -> Primitive {
             },
         };
         on_cleanup(move || drop(tasks));
+
+        // ---- Pulse driver -----------------------------------------------
+        //
+        // A single `raf_loop` ticks the sun's core / corona colors
+        // and the vignette's corner color along a sine wave. Same
+        // cadence on every platform — the AV's `set()` notifies
+        // subscribers, the subscribers call `set_animated_color`
+        // with the new stop, and each backend rewrites its
+        // gradient. Started here (inside the same effect that owns
+        // the timeline) so its lifetime tracks the page's `Owner`.
+        let pulse_start_ms = act_2_start + 200; // tied to glare bloom-in
+        let core_av = sun_core_color.clone();
+        let corona_av = sun_corona_color.clone();
+        let vignette_av = vignette_corner_color.clone();
+        let pulse_task = framework_core::after_ms(pulse_start_ms, move || {
+            // Cycle period: 2.4 s. Slow enough to read as a
+            // breathing pulse, fast enough that the warm/cool swing
+            // is visible within the welcome's short runtime.
+            let period_ms = 2400.0_f64;
+            // Anchor at the moment the pulse starts so the first
+            // cycle's phase begins at `sin(0) = 0` — i.e., the
+            // gradient eases INTO the pulse from its static seed.
+            let epoch = framework_core::time::now_micros();
+            let raf = framework_core::raf_loop(move || {
+                let now = framework_core::time::now_micros();
+                let elapsed_ms = (now.saturating_sub(epoch) as f64) / 1000.0;
+                let phase = (elapsed_ms / period_ms) * std::f64::consts::TAU;
+                // sin maps to -1..1; remap to 0..1 for color lerp.
+                let t = ((phase.sin() + 1.0) * 0.5) as f32;
+                core_av.set(lerp_color(SUN_CORE_DIM, SUN_CORE_BRIGHT, t));
+                corona_av.set(lerp_color(SUN_CORONA_DIM, SUN_CORONA_BRIGHT, t));
+                vignette_av.set(lerp_color(
+                    VIGNETTE_CORNER_DIM,
+                    VIGNETTE_CORNER_BRIGHT,
+                    t,
+                ));
+            });
+            // Leak the raf handle so it lives for the page; the
+            // pulse should never stop while the welcome is on screen.
+            std::mem::forget(raf);
+        });
+        std::mem::forget(pulse_task);
+
+        // ---- Sun scale pulse -------------------------------------------
+        //
+        // The sun's entrance spring (act_2_start + 200) lands at
+        // scale 1.0; after a settle delay we take `glare_scale`
+        // over with a sine-driven breathe. `sin(0) = 0` so the
+        // takeover starts at exactly 1.0 — no visible jump from
+        // the spring's resting value. Driven by the same period
+        // as the color pulse so the warm-up and the throb feel
+        // synchronized.
+        let scale_av = glare_scale.clone();
+        let scale_pulse_start = act_2_start + 200 + SUN_SCALE_PULSE_DELAY_MS;
+        let scale_task = framework_core::after_ms(scale_pulse_start, move || {
+            let period_ms = 2400.0_f64;
+            let epoch = framework_core::time::now_micros();
+            let raf = framework_core::raf_loop(move || {
+                let now = framework_core::time::now_micros();
+                let elapsed_ms = (now.saturating_sub(epoch) as f64) / 1000.0;
+                let phase = (elapsed_ms / period_ms) * std::f64::consts::TAU;
+                let scale = 1.0_f32 + SUN_PULSE_AMPLITUDE * phase.sin() as f32;
+                scale_av.set(scale);
+            });
+            std::mem::forget(raf);
+        });
+        std::mem::forget(scale_task);
     });
 
     // ---- Build the tree ------------------------------------------------
@@ -231,10 +386,12 @@ pub fn app() -> Primitive {
 
     let page = page_sheet();
     let dark_layer = dark_layer_sheet();
+    let vignette = vignette_sheet();
+    let vignette_top = vignette_band_sheet(VignetteEdge::Top);
+    let vignette_bottom = vignette_band_sheet(VignetteEdge::Bottom);
+    let vignette_left = vignette_band_sheet(VignetteEdge::Left);
+    let vignette_right = vignette_band_sheet(VignetteEdge::Right);
     let glare_anchor = glare_anchor_sheet();
-    let glare_outer = glare_layer_sheet(true);
-    let glare_mid = glare_layer_sheet(false);
-    let glare_core = glare_core_sheet();
     let content_layer = content_layer_sheet();
     let welcome_wrap = welcome_wrapper_sheet();
     let subtitle_wrap = subtitle_wrapper_sheet();
@@ -246,14 +403,24 @@ pub fn app() -> Primitive {
             // Dark wash. Opacity driven by `dark_opacity` AV.
             View(style = dark_layer) {}.bind(dark_ref)
 
-            // Sun glare anchor — opacity AND scale driven; the
-            // three circular layers inside compose the radial
-            // bloom.
-            View(style = glare_anchor) {
-                View(style = glare_outer) {}
-                View(style = glare_mid) {}
-                View(style = glare_core) {}
-            }.bind(glare_ref)
+            // Vignette — warm yellow glow around the frame edges
+            // (transparent center). The wrapper carries the opacity
+            // animation; four child bands (one per edge) produce
+            // the rounded-rectangle silhouette via overlapping
+            // linear gradients. Each band's outer stop alpha is
+            // pulsed by the raf-driver in `app()`.
+            View(style = vignette) {
+                View(style = vignette_top) {}.bind(vignette_top_ref)
+                View(style = vignette_bottom) {}.bind(vignette_bottom_ref)
+                View(style = vignette_left) {}.bind(vignette_left_ref)
+                View(style = vignette_right) {}.bind(vignette_right_ref)
+            }.bind(vignette_ref)
+
+            // Sun glare — single view with a radial-gradient
+            // background. Core + corona stop colors are pulsed
+            // (sine wave) by the raf-driver, so the sun breathes
+            // in sync with the vignette glow.
+            View(style = glare_anchor) {}.bind(glare_ref)
 
             // Content layer — holds the welcome phrase + subtitle
             // in a vertical column. Welcome stays mounted the
@@ -290,17 +457,18 @@ pub fn app() -> Primitive {
 /// the page's animation, not a per-component effect, so its
 /// lifetime is the page lifetime.
 fn drive_av(av: &AnimatedValue<f32>, view_ref: Ref<ViewHandle>, prop: AnimProp) {
-    #[cfg(target_os = "ios")]
-    ios_diag(&format!("[welcome] drive_av registered for {:?}", prop));
+    // Leak a strong ref to the AV so its `Inner` (and the animator
+    // running inside it) outlive the timeline `after_ms` closures
+    // that call `av.animate(...)`. The framework's animation system
+    // holds only `Weak<Inner>` from the tick driver — if every
+    // strong ref drops mid-tween (which happens when the only
+    // outside handles are FnOnce closures that consume themselves
+    // on fire), the animation unregisters and the AV freezes at
+    // whatever value the closure wrote. The welcome page is a
+    // one-shot intro, so a permanent leak is fine.
+    std::mem::forget(av.clone());
     let sub = av.subscribe_and_apply(move |v, _vel| {
         let value = *v;
-        #[cfg(target_os = "ios")]
-        ios_diag(&format!(
-            "[welcome] drive_av FIRE {:?} = {} (ref filled? {})",
-            prop,
-            value,
-            view_ref.is_mounted()
-        ));
         view_ref.with(|handle| {
             #[cfg(target_arch = "wasm32")]
             {
@@ -314,26 +482,23 @@ fn drive_av(av: &AnimatedValue<f32>, view_ref: Ref<ViewHandle>, prop: AnimProp) 
                     handle.as_any().downcast_ref::<backend_ios::IosNode>()
                 {
                     backend_ios::set_animated_f32(node, prop, value);
-                    ios_diag("[welcome] drive_av: set_animated_f32 called");
-                } else {
-                    ios_diag("[welcome] drive_av: downcast to IosNode FAILED");
                 }
             }
-            #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
+            #[cfg(target_os = "android")]
+            {
+                if let Some(node) =
+                    handle.as_any().downcast_ref::<backend_android::AndroidNode>()
+                {
+                    backend_android::set_animated_f32(node, prop, value);
+                }
+            }
+            #[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
             {
                 let _ = (handle, value, prop);
             }
         });
     });
     std::mem::forget(sub);
-}
-
-/// NSLog wrapper for iOS-side diagnostics. Routes via the iOS-core
-/// helper which calls NSLog under the hood (so messages land in
-/// OSLog and `log show --predicate 'process == "Welcome"'`).
-#[cfg(target_os = "ios")]
-fn ios_diag(msg: &str) {
-    backend_ios_core::ios_log(msg);
 }
 
 /// Color-family counterpart of [`drive_av`], targeted at a Text
@@ -352,20 +517,12 @@ fn drive_color_text_av(
     text_ref: Ref<TextHandle>,
     prop: AnimProp,
 ) {
-    #[cfg(target_os = "ios")]
-    ios_diag(&format!("[welcome] drive_color_text_av registered for {:?}", prop));
+    // See `drive_av` — same leak so the color AV's `Inner` survives a
+    // running tween once the timeline closure that kicked it off has
+    // consumed itself.
+    std::mem::forget(av.clone());
     let sub = av.subscribe_and_apply(move |v, _vel| {
         let (r, g, b, a) = *v;
-        #[cfg(target_os = "ios")]
-        ios_diag(&format!(
-            "[welcome] drive_color_text_av FIRE {:?} = ({:.2},{:.2},{:.2},{:.2}) (ref filled? {})",
-            prop,
-            r,
-            g,
-            b,
-            a,
-            text_ref.is_mounted()
-        ));
         text_ref.with(|handle| {
             #[cfg(target_arch = "wasm32")]
             {
@@ -379,18 +536,92 @@ fn drive_color_text_av(
                     handle.as_any().downcast_ref::<backend_ios::IosNode>()
                 {
                     backend_ios::set_animated_color(node, prop, [r, g, b, a]);
-                    ios_diag("[welcome] drive_color_text_av: set_animated_color called");
-                } else {
-                    ios_diag("[welcome] drive_color_text_av: downcast to IosNode FAILED");
                 }
             }
-            #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
+            #[cfg(target_os = "android")]
+            {
+                if let Some(node) =
+                    handle.as_any().downcast_ref::<backend_android::AndroidNode>()
+                {
+                    backend_android::set_animated_color(node, prop, [r, g, b, a]);
+                }
+            }
+            #[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
             {
                 let _ = (handle, r, g, b, a, prop);
             }
         });
     });
     std::mem::forget(sub);
+}
+
+/// Per-stop counterpart of [`drive_color_text_av`]. Animates one
+/// stop in the node's `background_gradient` via
+/// `AnimProp::GradientStopColor(stop_idx)`. The view's other
+/// gradient state (kind, offsets, other stops) survives — each
+/// backend's per-frame writer mutates only the targeted stop.
+fn drive_gradient_stop_av(
+    av: &AnimatedValue<(f32, f32, f32, f32)>,
+    view_ref: Ref<ViewHandle>,
+    stop_idx: u8,
+) {
+    std::mem::forget(av.clone());
+    let prop = AnimProp::GradientStopColor(stop_idx);
+    let sub = av.subscribe_and_apply(move |v, _vel| {
+        let (r, g, b, a) = *v;
+        view_ref.with(|handle| {
+            #[cfg(target_arch = "wasm32")]
+            {
+                if let Some(node) = handle.as_any().downcast_ref::<web_sys::Node>() {
+                    crate::web::set_animated_color(node, prop, [r, g, b, a]);
+                }
+            }
+            #[cfg(target_os = "ios")]
+            {
+                if let Some(node) =
+                    handle.as_any().downcast_ref::<backend_ios::IosNode>()
+                {
+                    backend_ios::set_animated_color(node, prop, [r, g, b, a]);
+                }
+            }
+            #[cfg(target_os = "android")]
+            {
+                if let Some(node) =
+                    handle.as_any().downcast_ref::<backend_android::AndroidNode>()
+                {
+                    backend_android::set_animated_color(node, prop, [r, g, b, a]);
+                }
+            }
+            #[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+            {
+                let _ = (handle, r, g, b, a, prop);
+            }
+        });
+    });
+    std::mem::forget(sub);
+}
+
+/// Convert four `0..=255` channel values (CSS-style) into the
+/// `(r, g, b, a)` tuple the color AVs consume. Alpha is in
+/// `0..=1` — match the framework's gradient stop convention.
+fn srgba_tuple(r: f32, g: f32, b: f32, a: f32) -> (f32, f32, f32, f32) {
+    (r / 255.0, g / 255.0, b / 255.0, a)
+}
+
+/// Linear interpolate two `(r, g, b, a)` colors at `t` in `0..=1`.
+/// Used by the welcome's raf-driven pulse to compute the per-frame
+/// sun + vignette colors from a sine-driven `t`.
+fn lerp_color(
+    a: (f32, f32, f32, f32),
+    b: (f32, f32, f32, f32),
+    t: f32,
+) -> (f32, f32, f32, f32) {
+    (
+        a.0 + (b.0 - a.0) * t,
+        a.1 + (b.1 - a.1) * t,
+        a.2 + (b.2 - a.2) * t,
+        a.3 + (b.3 - a.3) * t,
+    )
 }
 
 /// Convert a `#rrggbb` (or `#rgb`) hex color to the
@@ -426,6 +657,11 @@ fn page_sheet() -> Rc<StyleSheet> {
         width: Some(pct(100.0)),
         height: Some(pct(100.0)),
         background: Some(col(COLOR_LIGHT_BG)),
+        // Clip children that extend past the viewport — the
+        // sun-glare anchor is offset negatively so it pokes past
+        // the top-right corner, and we want the page edge (not the
+        // anchor's bounding box) to be the visible boundary.
+        overflow: Some(framework_core::Overflow::Hidden),
         ..Default::default()
     })
 }
@@ -445,77 +681,186 @@ fn dark_layer_sheet() -> Rc<StyleSheet> {
     })
 }
 
-/// Anchor box for the sun glare. Positioned so the bloom's centre
-/// sits ABOVE and to the RIGHT of the visible viewport — most of
-/// the glow bleeds in from off-screen.
-fn glare_anchor_sheet() -> Rc<StyleSheet> {
+/// Full-page vignette overlay. A radial gradient with a
+/// fully-transparent center and warm-yellow corners produces an
+/// ambient "the sun is lighting the room" feel — the corners
+/// glow, the center stays clear so it doesn't wash out the
+/// welcome text. Stop 2 (the corner) is pulsed by the raf-driver
+/// in `app()`, so the glow breathes.
+/// Vignette wrapper — full-page transparent container. Just carries
+/// the opacity animation; the actual warm glow comes from the four
+/// child band views (see [`vignette_band_sheet`]).
+fn vignette_sheet() -> Rc<StyleSheet> {
     static_sheet(StyleRules {
         position: Some(Position::Absolute),
-        top: Some(px(-180.0)),
-        right: Some(px(-180.0)),
-        width: Some(px(360.0)),
-        height: Some(px(360.0)),
-        overflow: Some(framework_core::Overflow::Visible),
+        top: Some(px(0.0)),
+        left: Some(px(0.0)),
+        right: Some(px(0.0)),
+        bottom: Some(px(0.0)),
         opacity: Some(Tokenized::Literal(0.0)),
         ..Default::default()
     })
 }
 
-/// One ring of the sun glare. `outer = true` is the wide soft halo;
-/// `outer = false` is the medium corona. Both are circular Views
-/// stacked at the same anchor point. Their box backgrounds are
-/// half-transparent; their `Shadow` is what does the bulk of the
-/// bleed.
-fn glare_layer_sheet(outer: bool) -> Rc<StyleSheet> {
-    let (size, blur, bg_alpha) = if outer {
-        (340.0_f32, 220.0_f32, "rgba(255, 196, 120, 0.18)")
-    } else {
-        (200.0_f32, 160.0_f32, "rgba(255, 220, 160, 0.45)")
+/// Which screen edge a vignette band hugs. The band's gradient
+/// runs perpendicular to the edge, fading from "warm at the edge"
+/// inward to "fully transparent."
+#[derive(Clone, Copy)]
+enum VignetteEdge {
+    Top,
+    Bottom,
+    Left,
+    Right,
+}
+
+/// Cross-axis depth of each vignette band as a fraction of the
+/// containing viewport. The band is fully transparent at its
+/// inner edge and ramps to the warm color at the screen edge.
+/// Smaller values keep the glow hugging the very perimeter; the
+/// dark interior stays clean.
+const VIGNETTE_BAND_PCT: f32 = 28.0;
+
+/// One edge band of the rounded-box vignette. Pinned to one
+/// screen edge with a `VIGNETTE_BAND_PCT` cross-axis depth. Linear
+/// gradient runs from transparent (inner edge) to warm (screen
+/// edge); the warm stop's alpha is pulsed by the raf-driver.
+fn vignette_band_sheet(edge: VignetteEdge) -> Rc<StyleSheet> {
+    use framework_core::{Gradient, GradientKind, GradientStop};
+    // Angle convention: `0deg` = bottom→top, so stop at offset 0
+    // sits at the BOTTOM of the gradient axis and stop at offset 1
+    // at the TOP. For each band we want the warm (stop 1) end at
+    // the screen edge:
+    // - Top band: warm at the top of its own box → angle 0deg.
+    // - Bottom band: warm at the bottom → angle 180deg.
+    // - Left band: warm at the left → angle 270deg.
+    // - Right band: warm at the right → angle 90deg.
+    let (top, bottom, left, right, width, height, angle_deg) = match edge {
+        VignetteEdge::Top => (
+            Some(px(0.0)),
+            None,
+            Some(px(0.0)),
+            Some(px(0.0)),
+            None,
+            Some(pct(VIGNETTE_BAND_PCT)),
+            0.0_f32,
+        ),
+        VignetteEdge::Bottom => (
+            None,
+            Some(px(0.0)),
+            Some(px(0.0)),
+            Some(px(0.0)),
+            None,
+            Some(pct(VIGNETTE_BAND_PCT)),
+            180.0,
+        ),
+        VignetteEdge::Left => (
+            Some(px(0.0)),
+            Some(px(0.0)),
+            Some(px(0.0)),
+            None,
+            Some(pct(VIGNETTE_BAND_PCT)),
+            None,
+            270.0,
+        ),
+        VignetteEdge::Right => (
+            Some(px(0.0)),
+            Some(px(0.0)),
+            None,
+            Some(px(0.0)),
+            Some(pct(VIGNETTE_BAND_PCT)),
+            None,
+            90.0,
+        ),
     };
-    let inset = (360.0 - size) / 2.0;
     static_sheet(StyleRules {
         position: Some(Position::Absolute),
-        top: Some(px(inset)),
-        left: Some(px(inset)),
-        width: Some(px(size)),
-        height: Some(px(size)),
-        border_top_left_radius: Some(px(999.0)),
-        border_top_right_radius: Some(px(999.0)),
-        border_bottom_left_radius: Some(px(999.0)),
-        border_bottom_right_radius: Some(px(999.0)),
-        background: Some(col(bg_alpha)),
-        shadow: Some(Shadow {
-            x: 0.0,
-            y: 0.0,
-            blur,
-            color: Color(COLOR_SUN_GLOW.into()),
+        top,
+        bottom,
+        left,
+        right,
+        width,
+        height,
+        background_gradient: Some(Gradient {
+            kind: GradientKind::Linear { angle_deg },
+            // `[transparent, warm]` — the pulse driver writes
+            // index 1 (the "warm" stop) every frame; index 0
+            // stays fully transparent so the band fades out into
+            // the page interior smoothly.
+            stops: vec![
+                GradientStop { offset: 0.0, color: Color("rgba(255, 168, 60, 0.0)".into()) },
+                GradientStop { offset: 1.0, color: Color("rgba(255, 168, 60, 0.0)".into()) },
+            ],
         }),
         ..Default::default()
     })
 }
 
-/// The bright core at the centre of the sun. Small, near-white,
-/// with a tight intense shadow that adds the brightest part of the
-/// bloom.
-fn glare_core_sheet() -> Rc<StyleSheet> {
-    let size = 100.0_f32;
-    let inset = (360.0 - size) / 2.0;
+/// Anchor box for the sun glare. Positioned fully on-screen in the
+/// top-right corner — children that extend past the host view's
+/// bounds aren't rendered on iOS (UIKit clips them despite
+/// `clipsToBounds = NO` somewhere up the chain), so the
+/// off-screen-bleed feel is produced by shadow blur on the glare
+/// layers instead.
+fn glare_anchor_sheet() -> Rc<StyleSheet> {
+    use framework_core::{Gradient, GradientKind, GradientStop, RadialExtent};
     static_sheet(StyleRules {
         position: Some(Position::Absolute),
-        top: Some(px(inset)),
-        left: Some(px(inset)),
-        width: Some(px(size)),
-        height: Some(px(size)),
+        top: Some(px(GLARE_ANCHOR_INSET)),
+        right: Some(px(GLARE_ANCHOR_INSET)),
+        // Sun is sized as a fraction of viewport width and held
+        // square via `aspect_ratio: 1.0`. The layout engine sets
+        // height to match the resolved width, so the disc remains
+        // circular on phones AND tablets without per-device tuning.
+        width: Some(pct(GLARE_ANCHOR_SIZE_PCT)),
+        aspect_ratio: Some(1.0),
+        // Clip to a perfect circle. CSS-style "max radius" — each
+        // backend clamps to half the smaller side (iOS's
+        // `apply_style_to_view` handles this explicitly because
+        // UIKit's `cornerRadius` doesn't clamp on its own).
         border_top_left_radius: Some(px(999.0)),
         border_top_right_radius: Some(px(999.0)),
         border_bottom_left_radius: Some(px(999.0)),
         border_bottom_right_radius: Some(px(999.0)),
-        background: Some(col(COLOR_SUN_CORE)),
-        shadow: Some(Shadow {
-            x: 0.0,
-            y: 0.0,
-            blur: 80.0,
-            color: Color("rgba(255, 246, 216, 0.95)".into()),
+        // `Overflow::Hidden` ensures the gradient sublayer is clipped
+        // to the rounded corner. iOS's cornerRadius path already sets
+        // `clipsToBounds=true`, but stating it explicitly here makes
+        // the circle behavior an author intent visible at the call
+        // site (and protects against future backend changes that
+        // might decouple radius from clipping).
+        overflow: Some(framework_core::Overflow::Hidden),
+        opacity: Some(Tokenized::Literal(0.0)),
+        // Radial gradient: bright cream core → warm gold corona →
+        // soft orange halo → transparent edge. The transparent
+        // outermost stop produces the soft falloff that used to
+        // require stacked partial-alpha discs.
+        background_gradient: Some(Gradient {
+            kind: GradientKind::Radial {
+                center: (0.5, 0.5),
+                radius: 1.0,
+                // The sun's anchor is aspect-ratio:1 (a square),
+                // so ClosestSide puts the transparent edge stop
+                // exactly at the view boundary — the gradient
+                // fills the whole circular clip.
+                extent: RadialExtent::ClosestSide,
+            },
+            stops: vec![
+                GradientStop {
+                    offset: 0.0,
+                    color: Color(COLOR_SUN_CORE.into()),
+                },
+                GradientStop {
+                    offset: 0.25,
+                    color: Color("rgba(255, 210, 110, 0.85)".into()),
+                },
+                GradientStop {
+                    offset: 0.55,
+                    color: Color("rgba(255, 168, 60, 0.40)".into()),
+                },
+                GradientStop {
+                    offset: 1.0,
+                    color: Color("rgba(255, 168, 60, 0.0)".into()),
+                },
+            ],
         }),
         ..Default::default()
     })

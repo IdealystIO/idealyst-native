@@ -15,6 +15,13 @@ pub enum Platform {
     Aas,
     /// Roku (experimental).
     Roku,
+    /// Wgpu-backed desktop preview ("simulator"). Not a real
+    /// device target — opens a winit window on the host machine
+    /// and renders the user's tree through `render-wgpu` with a
+    /// phone / tablet / TV skin. Distinct from a future native
+    /// macOS / Windows / Linux backend, which would use OS widget
+    /// toolkits rather than custom-drawn wgpu chrome.
+    Sim,
 }
 
 impl Platform {
@@ -25,6 +32,7 @@ impl Platform {
             Platform::Web => "web",
             Platform::Aas => "aas",
             Platform::Roku => "roku",
+            Platform::Sim => "sim",
         }
     }
 }

@@ -71,6 +71,7 @@
       setup_hierarchy, branch_update, global_update,
       setup_counters, bump_counter, bump_range,
       setup_reactive_styles, set_shared_color, set_point_color,
+      setup_signal_class_rows,
     } from './wasm/pkg/benchmark_idealyst_native.js';
     import { autoRunIfRequested } from '../instrument.js';
 
@@ -120,6 +121,9 @@
     };
     const setPointColor = async (i, name) => {
       set_point_color(i, name);
+    };
+    const setupSignalClassRows = async (n) => {
+      setup_signal_class_rows(n);
     };
 
     // Expose framework controls as window globals for manual profiling
@@ -208,6 +212,10 @@
           },
           setSharedColor,
           setPointColor,
+          setupSignalClassRows: async (n) => {
+            await setupSignalClassRows(n);
+            clear_phase_counters();
+          },
         });
       } catch (err) {
         console.error('[idealyst-native] autoRunIfRequested threw:', err);

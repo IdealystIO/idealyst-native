@@ -200,9 +200,10 @@ pub use web_mode::start;
 pub mod __rt {
     // Framework primitives + builders the snippet hits constantly.
     pub use framework_core::{
-        button, component, pressable, signal, switch, text, ui, view, when, AlignItems,
-        Color, ColorScheme, Easing, Effect, FlexDirection, FontWeight, JustifyContent,
-        Length, Overflow, Position, Primitive, Ref, Signal, StyleRules, StyleSheet,
+        bind, button, component, pressable, signal, switch, text, text_fmt, ui, view, when,
+        AlignItems, Color, ColorScheme, Easing, Effect, FlexDirection, FontWeight,
+        JustifyContent, Length, Overflow, Position, Primitive, Ref, Signal, StyleRules,
+        StyleSheet,
     };
     // Style declaration macro — re-export so snippets can write
     // `stylesheet! { pub Foo<()> { base(_t) { ... } } }` without

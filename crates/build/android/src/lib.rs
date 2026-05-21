@@ -410,6 +410,14 @@ pub extern "system" fn Java_{jni}_NativeBridge_attach<'local>(
             context_global,
             root_global,
         )));
+        // Install a `Weak` self-handle so cross-platform animation
+        // drivers (the welcome example's `drive_av` and equivalents)
+        // can reach the backend through `backend_android::set_animated_*`
+        // without threading the `Rc<RefCell<>>` through every closure.
+        // Same shape as `backend_ios::install_global_self`. Must be
+        // called BEFORE `mount`, because `app()` subscribes the AVs
+        // synchronously inside `mount`.
+        backend_android::install_global_self(Rc::downgrade(&backend));
         // Main-Looper-backed scheduler so `after_ms` /
         // `schedule_microtask` delay correctly. Without it
         // `after_ms` fires the callback synchronously at call

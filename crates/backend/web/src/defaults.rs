@@ -108,6 +108,31 @@ impl WebBackend {
         self.class_batch_shim_injected = true;
     }
 
+    /// Inject the JS-side reactive class-binding shim
+    /// (`__idealystRegisterClassBinding` /
+    /// `__idealystReleaseClassBindingsBatch`). Depends on the
+    /// text-bindings shim (taps its `__idealystOnSignalChanged`)
+    /// and the class-batch shim (uses `__idealystStyledNodes` as
+    /// its registry). Both are pre-injected by
+    /// `install_text_batcher`, so by the time a `SignalClass`
+    /// binding registers, the dependencies are already present.
+    pub(crate) fn ensure_class_bindings_shim(&mut self) {
+        if self.class_bindings_shim_injected {
+            return;
+        }
+        // The class-binding dispatcher TAPS into the text-bindings
+        // signal-changed handler, so that shim must be present
+        // first. The class-batch shim provides the
+        // `__idealystStyledNodes` registry the dispatcher reads
+        // for node lookups.
+        self.ensure_text_bindings_shim();
+        self.ensure_class_batch_shim();
+        let src = include_str!("../runtime/js/class_bindings.js");
+        let f = js_sys::Function::new_no_args(src);
+        let _ = f.call0(&JsValue::NULL);
+        self.class_bindings_shim_injected = true;
+    }
+
     /// Inject `@keyframes ui-spin` into the stylesheet on first use.
     /// Subsequent ActivityIndicator constructions reuse the same
     /// keyframes — the rule is identity-stable, no need to re-create.

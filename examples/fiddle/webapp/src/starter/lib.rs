@@ -5,12 +5,11 @@ mod widgets;
 
 pub fn app() -> Primitive {
     let count: Signal<i32> = signal!(0_i32);
-    let label = move || format!("Tapped {} times", count.get());
 
     ui! {
         Stack(padding = StackPadding::Lg, gap = StackGap::Md) {
             widgets::title("Hello, fiddle!")
-            Text { label }
+            Text { text_fmt!("Tapped {} times", bind!(count)) }
             Button(
                 label = "Tap me",
                 on_click = move || count.set(count.get() + 1),

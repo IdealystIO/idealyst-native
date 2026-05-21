@@ -323,8 +323,9 @@ with the same equality semantics.
 ### `Repeat`
 
 Bulk children. The macro lowers `for i in 0..n { ... }` inside `ui!`
-into `Repeat`, which hands the backend a single `insert_many` call
-with all rows preassembled — one FFI call instead of N.
+into `Repeat`, which collapses the whole expansion into a single
+batched backend call when the rows are simple enough — one FFI hop
+instead of N.
 
 You don't write `Repeat` by hand; you write a `for`.
 

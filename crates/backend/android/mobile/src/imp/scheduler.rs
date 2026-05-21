@@ -57,7 +57,14 @@ unsafe impl Sync for AndroidScheduler {}
 
 impl Scheduler for AndroidScheduler {
     fn schedule_microtask(&self, f: Box<dyn FnOnce() + 'static>) {
-        let _ = schedule_runnable(0, f);
+        // Microtasks are fire-and-forget — the caller has no handle
+        // to keep alive. `ScheduledHandle::Drop` cancels (it removes
+        // the runnable from the looper and drops the closure), so
+        // we must leak the handle so the underlying `Handler.post`
+        // actually fires. The closure's entry in `CALLBACKS` is
+        // removed by the JVM-side invoke when it runs, so the only
+        // leaked storage is the empty handle shell.
+        std::mem::forget(schedule_runnable(0, f));
     }
 
     fn after_animation_frame(
@@ -94,6 +101,44 @@ impl Scheduler for AndroidScheduler {
         // cancel — acceptable for a 16ms cadence.
         Box::new(start_raf_loop(f))
     }
+}
+
+/// Schedule a Taffy layout pass with retry. The host view's
+/// `getWidth()/getHeight()` read back 0×0 at `finish` time (Android
+/// lays out asynchronously on the next vsync frame). The first
+/// scheduled pass usually sees 0×0; on `retry_count == 0` we then
+/// re-schedule with a longer delay so the SECOND pass runs after
+/// the host has been measured. Two attempts is enough for the
+/// initial mount in practice; further retries land at 32/64/128ms
+/// in case the activity stack still hasn't laid out (rare — e.g.
+/// resuming a backgrounded process). Stops once the host reports a
+/// non-zero size and the layout pass actually applies frames.
+pub(crate) fn schedule_layout_pass_retry(retry_count: u32) {
+    let weak = super::ANDROID_BACKEND_SELF.with(|s| s.borrow().clone());
+    let Some(weak) = weak else { return };
+    // Exponential backoff: 16, 32, 64, 128 ms then give up. The
+    // initial 16ms covers the common "first vsync" case; the rest
+    // protect against unusual lifecycles where the activity tree
+    // hasn't yet been measured by the time `finish` runs.
+    let delay = 16i32 << retry_count.min(3);
+    // `ScheduledHandle::Drop` cancels the runnable (and removes the
+    // closure from CALLBACKS), so we must leak the handle for the
+    // post to actually fire. See [[project_android_scheduler_handle_leak]].
+    std::mem::forget(schedule_runnable(delay, Box::new(move || {
+        let Some(rc) = weak.upgrade() else { return };
+        let mut viewport_ok = false;
+        if let Ok(mut b) = rc.try_borrow_mut() {
+            b.run_layout_pass();
+            // `run_layout_pass` bails when viewport is 0×0; we
+            // detect that by re-reading after the call. Re-reading
+            // via the same `viewport_size` helper is cheap (one JNI
+            // call pair).
+            viewport_ok = b.viewport_is_ready();
+        };
+        if !viewport_ok && retry_count < 4 {
+            schedule_layout_pass_retry(retry_count + 1);
+        }
+    })));
 }
 
 // ---------------------------------------------------------------------------
@@ -210,7 +255,7 @@ fn schedule_next_tick(running: std::rc::Rc<Cell<bool>>, cb: std::rc::Rc<RefCell<
     }
     let running_for_closure = running.clone();
     let cb_for_closure = cb.clone();
-    let _ = schedule_runnable(16, Box::new(move || {
+    let handle = schedule_runnable(16, Box::new(move || {
         if !running_for_closure.get() {
             return;
         }
@@ -219,6 +264,15 @@ fn schedule_next_tick(running: std::rc::Rc<Cell<bool>>, cb: std::rc::Rc<RefCell<
         // Re-arm.
         schedule_next_tick(running_for_closure, cb_for_closure);
     }));
+    // `ScheduledHandle::Drop` calls `cancel()` which removes the
+    // runnable from the main looper AND drops the closure from
+    // `CALLBACKS`. We need the runnable to *fire* (one-shot), so we
+    // mustn't drop the handle here. Leak it — the closure removes
+    // itself from `CALLBACKS` when the JVM invoke consumes it, so
+    // the underlying memory still cleans up after fire. The leaked
+    // shell is just an empty `ScheduledHandle { id, runnable: None }`-
+    // worth of bytes per tick, freed by process exit.
+    std::mem::forget(handle);
 }
 
 struct RafLoopHandle {
