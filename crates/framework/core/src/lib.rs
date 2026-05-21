@@ -82,6 +82,7 @@ pub use primitives::navigator::{
 };
 pub use primitives::icon::{icon, FillRule, IconData, IconHandle, IconOps, StrokeAnimation};
 pub use primitives::image::{image, image_asset, ImageHandle, ImageOps};
+pub use primitives::key::{KeyEvent, KeyOutcome};
 pub use primitives::text_input::{text_input, TextInputHandle, TextInputOps};
 pub use primitives::text_area::{text_area, TextAreaHandle, TextAreaOps};
 pub use primitives::code_block::{code_block, CodeBlockHandle};

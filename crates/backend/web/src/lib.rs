@@ -38,6 +38,8 @@
 
 mod animated;
 mod batch_queue;
+#[cfg(test)]
+mod tests;
 #[cfg(feature = "async-driver")]
 pub mod async_executor;
 mod assets;
@@ -242,6 +244,12 @@ pub struct WebBackend {
     // ---------------------------------------------------------
     /// Has `runtime/js/class_bindings.js` been injected?
     pub(crate) class_bindings_shim_injected: bool,
+    /// Has `runtime/js/node_ids.js` been injected? Hosts the
+    /// `WeakMap<Node, u32>` that backs [`WebBackend::node_id`].
+    pub(crate) node_id_shim_injected: bool,
+    /// Cached `window.__idealystNodeId` after first lookup —
+    /// subsequent `node_id` cache misses skip the `Reflect::get` round-trip.
+    pub(crate) node_id_fn: Option<js_sys::Function>,
     /// Cached `window.__idealystRegisterClassBinding`.
     pub(crate) class_binding_register_fn: Option<js_sys::Function>,
     /// Pending class-binding releases. Flushed via one FFI call to
@@ -291,8 +299,8 @@ pub struct WebBackend {
     /// `data-graphics-id` attribute on each `<canvas>` so
     /// `make_handle` / `release` can look the instance up from a
     /// fresh `&Node` after the create call returned. Distinct from
-    /// `next_node_id` — that one is keyed by Rust pointer identity,
-    /// which doesn't survive return-by-value.
+    /// per-Node ids (those live in a JS-side `WeakMap` keyed by
+    /// DOM identity; see [`WebBackend::node_id`]).
     pub(crate) next_graphics_id: u32,
     /// Shared `<style>` element holding every active CSS rule.
     pub(crate) style_element: Option<web_sys::HtmlStyleElement>,
@@ -346,9 +354,6 @@ pub struct WebBackend {
     /// for as long as its content is reachable, which is at least
     /// as long as we hold any `DynamicSlot` referencing it.
     pub(crate) dynamic_by_ptr: HashMap<*const framework_core::StyleRules, std::rc::Rc<DynamicPtrEntry>>,
-    /// Stable per-Node id derived from the Node's pointer.
-    pub(crate) next_node_id: u32,
-    pub(crate) node_ids: HashMap<*const web_sys::Node, u32>,
     /// Indices in the shared `<style>` sheet that previously held a
     /// dynamic rule and are now available for re-use. See
     /// `insert_rule` / `delete_rule` in [`crate::style`] — instead
@@ -412,13 +417,11 @@ pub struct WebBackend {
 /// Diagnostic snapshot returned by [`WebBackend::debug_counts`].
 #[derive(Debug, Clone, Copy)]
 pub struct WebBackendCounts {
-    pub node_ids: usize,
     pub dynamic: usize,
     pub state_listeners: usize,
     pub pregen: usize,
     pub pregen_by_ptr: usize,
     pub free_rule_indices: usize,
-    pub next_node_id: u32,
 }
 
 pub(crate) struct PregenEntry {
@@ -523,6 +526,8 @@ impl WebBackend {
                 "__idealystReleaseStyledNodesBatch",
             ),
             class_bindings_shim_injected: false,
+            node_id_shim_injected: false,
+            node_id_fn: None,
             class_binding_register_fn: None,
             class_binding_release_batch: crate::batch_queue::IdBatch::new(
                 "__idealystReleaseClassBindingsBatch",
@@ -541,8 +546,6 @@ impl WebBackend {
             dynamic: HashMap::new(),
             dynamic_by_content: HashMap::new(),
             dynamic_by_ptr: HashMap::new(),
-            next_node_id: 0,
-            node_ids: HashMap::new(),
             free_rule_indices: Vec::new(),
             theme_root_rule_index: None,
             portal_instances: HashMap::new(),
@@ -981,13 +984,11 @@ impl WebBackend {
     /// indicate a previously-grown sheet that hasn't been compacted.
     pub fn debug_counts(&self) -> WebBackendCounts {
         WebBackendCounts {
-            node_ids: self.node_ids.len(),
             dynamic: self.dynamic.len(),
             state_listeners: self.state_listeners.len(),
             pregen: self.pregen.len(),
             pregen_by_ptr: self.pregen_by_ptr.len(),
             free_rule_indices: self.free_rule_indices.len(),
-            next_node_id: self.next_node_id,
         }
     }
 
@@ -1102,15 +1103,89 @@ impl WebBackend {
         }
     }
 
-    /// Assigns a stable per-Node id we use as a key in `dynamic`.
+    /// Assigns a stable per-Node id we use as a key in `dynamic`,
+    /// `state_listeners`, `animated_states`, and friends.
+    ///
+    /// Identity is keyed by the underlying JS object — multiple
+    /// Rust `web_sys::Node` wrappers around the same DOM element
+    /// always resolve to the same id. That's necessary because the
+    /// framework freely constructs fresh wrappers (e.g. when
+    /// filling a `Ref<ViewHandle>`'s `Rc<dyn Any>`), and the
+    /// `*const Node` Rust pointer has no relationship to the
+    /// underlying JS object — different wrappers around the same
+    /// DOM element have different pointer values, and the Rust
+    /// allocator readily reuses freed wrapper addresses for
+    /// unrelated wrappers.
+    ///
+    /// Implementation:
+    ///
+    /// - **Every call goes through the JS-side `WeakMap<Node, u32>`**
+    ///   (see `runtime/js/node_ids.js`). Same JS object always →
+    ///   same id. The WeakMap auto-clears entries when DOM
+    ///   elements are GC'd, so no explicit registry teardown is
+    ///   needed.
+    /// - **No Rust-side cache.** An earlier pointer-keyed
+    ///   `HashMap<*const Node, u32>` fast cache had a stale-id
+    ///   bug: a freed wrapper's address could be reused by a
+    ///   completely unrelated wrapper, and the cache would
+    ///   return the prior wrapper's id for the new wrapper —
+    ///   leaking per-node state across DOM elements. That cache
+    ///   has been removed; correctness wins over the FFI savings.
+    /// - **Optional debug**: with the `debug-node-ids` feature
+    ///   on, mirror the id outward as a `data-idealyst-id="N"`
+    ///   attribute on Elements so it shows up in devtools / e2e
+    ///   selectors. Off by default — production builds don't
+    ///   pollute the DOM.
+    ///
+    /// Cost: one FFI hop per call. `node_id` is invoked from
+    /// every `apply_style` / `apply_styled_states` /
+    /// `set_animated_*` / `on_node_unstyled`. If this ever
+    /// becomes a measurable bottleneck, a safer cache scheme
+    /// — e.g. keying by `Rc<Node>` for paths that own one —
+    /// would restore the fast path without the correctness hole.
+    /// Not measured yet; see `tests/web_perf.rs` for the
+    /// benchmark when it lands.
     pub(crate) fn node_id(&mut self, node: &Node) -> u32 {
-        let p: *const web_sys::Node = node;
-        if let Some(&id) = self.node_ids.get(&p) {
-            return id;
+        // No Rust-side pointer cache: the framework regularly
+        // constructs fresh `web_sys::Node` wrappers around the same
+        // DOM element (e.g. when filling a `Ref<ViewHandle>`'s
+        // `Rc<dyn Any>`), and the wrapper's heap address has no
+        // relationship to the underlying JS object. The Rust
+        // allocator readily reuses freed wrapper addresses for
+        // unrelated wrappers, so a pointer-keyed cache returns a
+        // stale id the moment a fresh wrapper recycles an address
+        // we've cached before — the exact bug that left only one
+        // band's gradient animating on the welcome example. We
+        // always go through the JS-side `WeakMap` (one FFI per
+        // call) and trust *that* as the source of truth.
+        self.ensure_node_id_shim();
+        if self.node_id_fn.is_none() {
+            let window = web_sys::window().expect("no window");
+            let f_val =
+                js_sys::Reflect::get(&window, &wasm_bindgen::JsValue::from_str("__idealystNodeId"))
+                    .expect("Reflect::get for __idealystNodeId failed");
+            self.node_id_fn = Some(
+                f_val
+                    .dyn_into::<js_sys::Function>()
+                    .expect("__idealystNodeId is not a Function — shim injection failed"),
+            );
         }
-        let id = self.next_node_id;
-        self.next_node_id += 1;
-        self.node_ids.insert(p, id);
+        let f = self.node_id_fn.as_ref().expect("set above");
+        let id_val = f
+            .call1(&wasm_bindgen::JsValue::NULL, node.as_ref())
+            .expect("__idealystNodeId call failed");
+        let id = id_val
+            .as_f64()
+            .expect("__idealystNodeId must return a number") as u32;
+
+        // Optional dev-aid: mirror the id onto the Element as a
+        // `data-idealyst-id` attribute so devtools / e2e selectors
+        // can see it. Compiled out in production.
+        #[cfg(feature = "debug-node-ids")]
+        if let Some(elem) = node.dyn_ref::<web_sys::Element>() {
+            let _ = elem.set_attribute("data-idealyst-id", &id.to_string());
+        }
+
         id
     }
 
@@ -1510,8 +1585,9 @@ impl Backend for WebBackend {
         initial_value: &str,
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
+        on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
     ) -> Self::Node {
-        primitives::text_input::create(self, initial_value, placeholder, on_change)
+        primitives::text_input::create(self, initial_value, placeholder, on_change, on_key_down)
     }
 
     fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {
@@ -1523,8 +1599,9 @@ impl Backend for WebBackend {
         initial_value: &str,
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
+        on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
     ) -> Self::Node {
-        primitives::text_area::create(self, initial_value, placeholder, on_change)
+        primitives::text_area::create(self, initial_value, placeholder, on_change, on_key_down)
     }
 
     fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {

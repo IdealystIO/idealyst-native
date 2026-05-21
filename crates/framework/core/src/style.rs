@@ -679,6 +679,15 @@ pub struct StyleRules {
     // --- Color + text ---
     pub background: Option<Tokenized<Color>>,
     pub color: Option<Tokenized<Color>>,
+    /// Caret color for text-input primitives (`TextInput`, `TextArea`).
+    /// Maps to CSS `caret-color` on web, `tintColor` on UIKit, and
+    /// `setTextCursorDrawable` (API 29+) on Android. Has no effect on
+    /// non-input nodes — backends silently ignore it elsewhere. The
+    /// browser's `caret-color: auto` default follows `color`, so an
+    /// editor that paints `color: transparent` (to defer rendering to
+    /// a syntax-highlight overlay) MUST pin `caret_color` explicitly
+    /// or the caret disappears too.
+    pub caret_color: Option<Tokenized<Color>>,
     pub font_size: Option<Tokenized<Length>>,
 
     // --- Flex container (applies when this node has children) ---
@@ -773,6 +782,14 @@ pub struct StyleRules {
     /// Empty vec means "no transforms"; the field's `Option` distinguishes
     /// "not set, fall through to other layers" from "explicitly empty".
     pub transform: Option<Vec<Transform>>,
+    /// Origin point for `transform` (and per-frame animated scale /
+    /// rotate / translate). Defaults to the element's center on every
+    /// platform when `None`. Components are the X and Y origin —
+    /// `(pct(0.0), pct(0.0))` = top-left, `(pct(100.0), pct(0.0))` =
+    /// top-right, `(pct(50.0), pct(100.0))` = bottom-center. Percent
+    /// units are relative to the element's own box, NOT its parent —
+    /// matches CSS `transform-origin`.
+    pub transform_origin: Option<(Length, Length)>,
 
     // --- Transitions ---
     // One per animatable property. Set via `transitions { ... }` in
@@ -781,6 +798,7 @@ pub struct StyleRules {
     // `easing`. Properties without a transition spec change instantly.
     pub background_transition: Option<Transition>,
     pub color_transition: Option<Transition>,
+    pub caret_color_transition: Option<Transition>,
     pub opacity_transition: Option<Transition>,
     pub transform_transition: Option<Transition>,
     pub width_transition: Option<Transition>,
@@ -825,7 +843,7 @@ impl StyleRules {
             };
         }
         overlay!(
-            background, color, font_size,
+            background, color, caret_color, font_size,
             flex_direction, flex_wrap, justify_content, align_items, align_content,
             gap, row_gap, column_gap,
             flex_grow, flex_shrink, flex_basis, align_self,
@@ -839,8 +857,9 @@ impl StyleRules {
             position, top, right, bottom, left,
             font_family, font_weight, font_style, line_height, letter_spacing,
             text_align, underline, strikethrough, text_transform,
-            opacity, overflow, shadow, transform,
-            background_transition, color_transition, opacity_transition,
+            opacity, overflow, shadow, background_gradient, transform, transform_origin,
+            background_transition, color_transition, caret_color_transition,
+            opacity_transition,
             transform_transition, width_transition, height_transition,
             top_transition, right_transition, bottom_transition, left_transition,
             padding_top_transition, padding_right_transition,
@@ -871,6 +890,7 @@ impl StyleRules {
         let mut s = String::with_capacity(256);
         write_tokenized_color(&mut s, "bg", &self.background);
         write_tokenized_color(&mut s, "fg", &self.color);
+        write_tokenized_color(&mut s, "cc", &self.caret_color);
         write_tokenized_length(&mut s, "fs", &self.font_size);
 
         write_enum(&mut s, "fd", self.flex_direction.map(|x| x as u8));
@@ -957,6 +977,31 @@ impl StyleRules {
             s.push_str(&sh.color.0);
             s.push(';');
         }
+        if let Some(g) = &self.background_gradient {
+            s.push_str("bg=");
+            match g.kind {
+                GradientKind::Linear { angle_deg } => {
+                    s.push_str("lin");
+                    push_u32_hex(&mut s, angle_deg.to_bits());
+                }
+                GradientKind::Radial { center, radius, extent } => {
+                    s.push_str("rad");
+                    push_u32_hex(&mut s, center.0.to_bits());
+                    push_u32_hex(&mut s, center.1.to_bits());
+                    push_u32_hex(&mut s, radius.to_bits());
+                    s.push_str(match extent {
+                        RadialExtent::ClosestSide => "cs",
+                        RadialExtent::FarthestCorner => "fc",
+                    });
+                }
+            }
+            for stop in &g.stops {
+                push_u32_hex(&mut s, stop.offset.to_bits());
+                s.push_str(&stop.color.0);
+                s.push(',');
+            }
+            s.push(';');
+        }
         if let Some(xs) = &self.transform {
             s.push_str("tr=");
             for t in xs {
@@ -972,6 +1017,12 @@ impl StyleRules {
             }
             s.push(';');
         }
+        if let Some((ox, oy)) = self.transform_origin {
+            s.push_str("to=");
+            push_u64_hex(&mut s, length_bits(ox));
+            push_u64_hex(&mut s, length_bits(oy));
+            s.push(';');
+        }
 
         // Transitions — one labeled segment per animatable property.
         // Inactive (None) transitions write an empty value so the
@@ -984,6 +1035,7 @@ impl StyleRules {
         }
         tr!("tbg", background_transition);
         tr!("tco", color_transition);
+        tr!("tcc", caret_color_transition);
         tr!("top_t", opacity_transition);
         tr!("ttr", transform_transition);
         tr!("tw", width_transition);
@@ -1496,6 +1548,14 @@ impl StyleApplication {
     pub fn override_color(mut self, c: impl Into<Tokenized<Color>>) -> Self {
         self.has_overrides = true;
         self.overrides.color = Some(c.into());
+        self
+    }
+
+    /// Override the caret color with a per-call-site value. See
+    /// [`StyleRules::caret_color`] for the cross-platform mapping.
+    pub fn override_caret_color(mut self, c: impl Into<Tokenized<Color>>) -> Self {
+        self.has_overrides = true;
+        self.overrides.caret_color = Some(c.into());
         self
     }
 
@@ -2940,5 +3000,358 @@ mod tests {
         );
         assert!(asset_calls2.is_empty(), "no new asset registrations on dedup");
         assert!(typeface_calls2.is_empty(), "no new typeface registrations on dedup");
+    }
+
+    // ====================================================================
+    // Gradient merge + content_key + RadialExtent + aspect_ratio
+    //
+    // Regression tests for the "manual `overlay!()` macro silently
+    // drops new fields" bug class. `merge()` and `content_key()` are
+    // hand-listed; the welcome example's vignette pulse went dark on
+    // web for an entire release because `background_gradient` was
+    // omitted from `merge`'s list, and the resolved StyleRules
+    // backends received had `background_gradient: None` despite the
+    // sheet declaring one.
+    //
+    // These tests pin the property "every gradient-relevant field
+    // round-trips through merge AND distinguishes content_key" so
+    // any future field addition that forgets either path fails
+    // loudly in CI.
+    // ====================================================================
+
+    /// Helper: a Linear gradient with one stop. Specific values
+    /// don't matter for the merge/key tests; we just need a
+    /// distinct, recognizable `Some(Gradient)`.
+    fn linear_gradient(angle_deg: f32) -> Gradient {
+        Gradient {
+            kind: GradientKind::Linear { angle_deg },
+            stops: vec![GradientStop {
+                offset: 0.0,
+                color: Color("#000".into()),
+            }],
+        }
+    }
+
+    fn radial_gradient(radius: f32, extent: RadialExtent) -> Gradient {
+        Gradient {
+            kind: GradientKind::Radial {
+                center: (0.5, 0.5),
+                radius,
+                extent,
+            },
+            stops: vec![GradientStop {
+                offset: 0.0,
+                color: Color("#000".into()),
+            }],
+        }
+    }
+
+    /// `merge` must carry `background_gradient` from `other` when
+    /// `self` has none. This was the original gradient bug — `merge`
+    /// stripped the field, so backends got `None` and animation
+    /// snapshotting silently failed.
+    #[test]
+    fn merge_overlays_background_gradient_onto_empty_base() {
+        let base = StyleRules::default();
+        let overlay = StyleRules {
+            background_gradient: Some(linear_gradient(45.0)),
+            ..Default::default()
+        };
+        let merged = base.merge(&overlay);
+        assert!(
+            merged.background_gradient.is_some(),
+            "merge dropped background_gradient on empty-base + Some-overlay; \
+             this is the welcome-vignette bug class — verify the overlay! \
+             macro lists `background_gradient`",
+        );
+        assert_eq!(
+            merged.background_gradient.as_ref().unwrap(),
+            &linear_gradient(45.0),
+        );
+    }
+
+    /// `merge` must NOT clobber a base gradient when `other` has
+    /// none. (`overlay!` only overwrites when the other field is
+    /// `Some`; verifying we didn't accidentally write the wrong
+    /// branch.)
+    #[test]
+    fn merge_keeps_base_gradient_when_overlay_has_none() {
+        let base = StyleRules {
+            background_gradient: Some(linear_gradient(30.0)),
+            ..Default::default()
+        };
+        let overlay = StyleRules::default();
+        let merged = base.merge(&overlay);
+        assert_eq!(
+            merged.background_gradient.as_ref().unwrap(),
+            &linear_gradient(30.0),
+            "an empty overlay must not strip the base gradient",
+        );
+    }
+
+    /// When both base and overlay set a gradient, overlay wins.
+    /// Standard `overlay!()` semantics — the existence of this
+    /// behaviour for gradient is what makes state-overlay
+    /// transitions on gradient backgrounds work.
+    #[test]
+    fn merge_overlay_gradient_wins_over_base_gradient() {
+        let base = StyleRules {
+            background_gradient: Some(linear_gradient(0.0)),
+            ..Default::default()
+        };
+        let overlay = StyleRules {
+            background_gradient: Some(linear_gradient(90.0)),
+            ..Default::default()
+        };
+        let merged = base.merge(&overlay);
+        assert_eq!(
+            merged.background_gradient.as_ref().unwrap(),
+            &linear_gradient(90.0),
+        );
+    }
+
+    /// `content_key` must distinguish two gradients that differ
+    /// only in angle. Pre-fix, two distinct gradients could collide
+    /// on the same minted CSS class because `content_key` ignored
+    /// the gradient field entirely.
+    #[test]
+    fn content_key_differentiates_gradients_by_angle() {
+        let a = StyleRules {
+            background_gradient: Some(linear_gradient(0.0)),
+            ..Default::default()
+        };
+        let b = StyleRules {
+            background_gradient: Some(linear_gradient(45.0)),
+            ..Default::default()
+        };
+        assert_ne!(
+            a.content_key(),
+            b.content_key(),
+            "content_key must hash the angle so distinct gradients don't share a class",
+        );
+    }
+
+    /// content_key must distinguish Linear from Radial even when
+    /// they're otherwise unrelated.
+    #[test]
+    fn content_key_differentiates_linear_vs_radial() {
+        let lin = StyleRules {
+            background_gradient: Some(linear_gradient(45.0)),
+            ..Default::default()
+        };
+        let rad = StyleRules {
+            background_gradient: Some(radial_gradient(1.0, RadialExtent::ClosestSide)),
+            ..Default::default()
+        };
+        assert_ne!(lin.content_key(), rad.content_key());
+    }
+
+    /// content_key must distinguish two radial gradients whose only
+    /// difference is the `extent` (`ClosestSide` vs `FarthestCorner`).
+    /// This is the property that prevents the welcome-vignette
+    /// stops from collapsing onto the same class as a sun-disc
+    /// gradient that happens to share radius+center.
+    #[test]
+    fn content_key_differentiates_radial_extents() {
+        let cs = StyleRules {
+            background_gradient: Some(radial_gradient(1.0, RadialExtent::ClosestSide)),
+            ..Default::default()
+        };
+        let fc = StyleRules {
+            background_gradient: Some(radial_gradient(1.0, RadialExtent::FarthestCorner)),
+            ..Default::default()
+        };
+        assert_ne!(
+            cs.content_key(),
+            fc.content_key(),
+            "RadialExtent must contribute to content_key — otherwise gradients with \
+             identical center/radius but different extents share a CSS class and the \
+             wrong one wins on apply",
+        );
+    }
+
+    /// content_key for two identical gradients must MATCH (the dedup
+    /// path relies on this — same content → same minted class).
+    #[test]
+    fn content_key_matches_for_identical_gradients() {
+        let a = StyleRules {
+            background_gradient: Some(radial_gradient(1.5, RadialExtent::FarthestCorner)),
+            ..Default::default()
+        };
+        let b = StyleRules {
+            background_gradient: Some(radial_gradient(1.5, RadialExtent::FarthestCorner)),
+            ..Default::default()
+        };
+        assert_eq!(
+            a.content_key(),
+            b.content_key(),
+            "identical gradient shape must collapse to one cached class",
+        );
+    }
+
+    /// content_key must distinguish radial gradients with different
+    /// stop offsets. Important for animations that interpolate stop
+    /// positions independently of color.
+    #[test]
+    fn content_key_differentiates_gradient_stop_offsets() {
+        let g_a = Gradient {
+            kind: GradientKind::Linear { angle_deg: 45.0 },
+            stops: vec![
+                GradientStop { offset: 0.0, color: Color("#000".into()) },
+                GradientStop { offset: 0.5, color: Color("#fff".into()) },
+            ],
+        };
+        let g_b = Gradient {
+            kind: GradientKind::Linear { angle_deg: 45.0 },
+            stops: vec![
+                GradientStop { offset: 0.0, color: Color("#000".into()) },
+                GradientStop { offset: 0.8, color: Color("#fff".into()) },
+            ],
+        };
+        let a = StyleRules { background_gradient: Some(g_a), ..Default::default() };
+        let b = StyleRules { background_gradient: Some(g_b), ..Default::default() };
+        assert_ne!(a.content_key(), b.content_key());
+    }
+
+    // ----- RadialExtent: default + round-trip ---------------------------
+
+    /// `RadialExtent::default()` is `ClosestSide`. The agent's
+    /// report calls this out as the documented default; pinning the
+    /// constant down here so a future change to the default
+    /// surfaces explicitly.
+    #[test]
+    fn radial_extent_default_is_closest_side() {
+        let d: RadialExtent = RadialExtent::default();
+        assert_eq!(d, RadialExtent::ClosestSide);
+    }
+
+    /// RadialExtent must round-trip through Clone + Copy + PartialEq
+    /// — these are the derives the public API depends on.
+    #[test]
+    fn radial_extent_clone_and_eq_round_trip() {
+        let cs = RadialExtent::ClosestSide;
+        let fc = RadialExtent::FarthestCorner;
+        // Copy semantics — moving doesn't consume.
+        let cs_again = cs;
+        let _still_cs = cs;
+        assert_eq!(cs, cs_again);
+        // Distinct variants compare unequal.
+        assert_ne!(cs, fc);
+        // Clone is independent of Copy (both must work).
+        let fc_cloned = fc.clone();
+        assert_eq!(fc, fc_cloned);
+    }
+
+    /// A `Gradient` carrying a non-default `extent` must survive
+    /// being wrapped in a `Some(StyleRules { background_gradient:
+    /// Some(...) })` and pulled back out. Catches the "field
+    /// silently dropped" failure mode at the type-system level for
+    /// the gradient struct itself.
+    #[test]
+    fn radial_extent_round_trips_through_stylerules_field() {
+        let g = radial_gradient(1.5, RadialExtent::FarthestCorner);
+        let rules = StyleRules {
+            background_gradient: Some(g.clone()),
+            ..Default::default()
+        };
+        let back = rules.background_gradient.unwrap();
+        match back.kind {
+            GradientKind::Radial { extent, .. } => {
+                assert_eq!(extent, RadialExtent::FarthestCorner);
+            }
+            other => panic!("expected Radial, got {:?}", other),
+        }
+        assert_eq!(back, g);
+    }
+
+    // ----- aspect_ratio: round-trip + key + merge -----------------------
+
+    /// `aspect_ratio` round-trips through `merge` (overlay-wins
+    /// semantics). Same regression class as the gradient bug — if
+    /// `aspect_ratio` were dropped from `overlay!()`, this fails.
+    #[test]
+    fn merge_overlays_aspect_ratio() {
+        let base = StyleRules::default();
+        let overlay = StyleRules {
+            aspect_ratio: Some(1.5),
+            ..Default::default()
+        };
+        let merged = base.merge(&overlay);
+        assert_eq!(merged.aspect_ratio, Some(1.5));
+    }
+
+    /// `merge` preserves a base `aspect_ratio` when overlay is empty.
+    #[test]
+    fn merge_keeps_aspect_ratio_when_overlay_has_none() {
+        let base = StyleRules {
+            aspect_ratio: Some(2.0),
+            ..Default::default()
+        };
+        let overlay = StyleRules::default();
+        let merged = base.merge(&overlay);
+        assert_eq!(merged.aspect_ratio, Some(2.0));
+    }
+
+    /// Overlay's `aspect_ratio` wins over base.
+    #[test]
+    fn merge_overlay_aspect_ratio_wins() {
+        let base = StyleRules {
+            aspect_ratio: Some(1.0),
+            ..Default::default()
+        };
+        let overlay = StyleRules {
+            aspect_ratio: Some(16.0 / 9.0),
+            ..Default::default()
+        };
+        let merged = base.merge(&overlay);
+        assert_eq!(merged.aspect_ratio, Some(16.0 / 9.0));
+    }
+
+    /// `content_key` distinguishes different aspect ratios — two
+    /// otherwise-identical rule sets must mint distinct classes.
+    /// Bench-relevant: a 16:9 video card and a 4:3 video card must
+    /// not collapse onto the same `.uiX` class.
+    #[test]
+    fn content_key_differentiates_aspect_ratios() {
+        let a = StyleRules {
+            aspect_ratio: Some(16.0 / 9.0),
+            ..Default::default()
+        };
+        let b = StyleRules {
+            aspect_ratio: Some(4.0 / 3.0),
+            ..Default::default()
+        };
+        assert_ne!(
+            a.content_key(),
+            b.content_key(),
+            "content_key must include aspect_ratio so different ratios mint different classes",
+        );
+    }
+
+    /// content_key for the same aspect ratio collapses (dedup
+    /// invariant).
+    #[test]
+    fn content_key_matches_for_same_aspect_ratio() {
+        let a = StyleRules {
+            aspect_ratio: Some(1.5),
+            ..Default::default()
+        };
+        let b = StyleRules {
+            aspect_ratio: Some(1.5),
+            ..Default::default()
+        };
+        assert_eq!(a.content_key(), b.content_key());
+    }
+
+    /// content_key distinguishes Some(ratio) from None — the
+    /// "ratio of None" path is its own bucket.
+    #[test]
+    fn content_key_differentiates_some_aspect_ratio_from_none() {
+        let with_ratio = StyleRules {
+            aspect_ratio: Some(1.0),
+            ..Default::default()
+        };
+        let without = StyleRules::default();
+        assert_ne!(with_ratio.content_key(), without.content_key());
     }
 }

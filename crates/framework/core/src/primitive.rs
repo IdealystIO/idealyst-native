@@ -162,6 +162,14 @@ pub enum Primitive {
     TextInput {
         value: Signal<String>,
         on_change: Rc<dyn Fn(String)>,
+        /// Pre-default-action keyboard hook. Fires on every keydown
+        /// while the input has focus; returning
+        /// [`KeyOutcome::PreventDefault`] suppresses the platform's
+        /// default behaviour for that key (typing the character,
+        /// focus-traversal on Tab, submit on Enter, …). See
+        /// [`primitives::key`](crate::primitives::key) for the
+        /// cross-platform contract.
+        on_key_down: Option<Rc<dyn Fn(&crate::primitives::key::KeyEvent) -> crate::primitives::key::KeyOutcome>>,
         placeholder: Option<String>,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
@@ -177,6 +185,10 @@ pub enum Primitive {
     TextArea {
         value: Signal<String>,
         on_change: Rc<dyn Fn(String)>,
+        /// Pre-default-action keyboard hook. See
+        /// [`Primitive::TextInput::on_key_down`] for semantics — the
+        /// surface is identical between the two primitives.
+        on_key_down: Option<Rc<dyn Fn(&crate::primitives::key::KeyEvent) -> crate::primitives::key::KeyOutcome>>,
         placeholder: Option<String>,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,

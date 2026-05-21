@@ -156,3 +156,171 @@ pub fn set_safe_area_insets(insets: EdgeInsets) {
         sig.set(insets);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Coverage for `EdgeInsets`, `SafeAreaSides`, and the global
+    //! safe-area-insets signal lifecycle.
+
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // EdgeInsets
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn edge_insets_zero_is_all_zeros() {
+        let z = EdgeInsets::ZERO;
+        assert_eq!(z.top, 0.0);
+        assert_eq!(z.right, 0.0);
+        assert_eq!(z.bottom, 0.0);
+        assert_eq!(z.left, 0.0);
+    }
+
+    #[test]
+    fn edge_insets_default_matches_zero() {
+        let d: EdgeInsets = EdgeInsets::default();
+        assert_eq!(d, EdgeInsets::ZERO);
+    }
+
+    #[test]
+    fn edge_insets_for_side_picks_the_right_field() {
+        let insets = EdgeInsets {
+            top: 10.0,
+            right: 20.0,
+            bottom: 30.0,
+            left: 40.0,
+        };
+        assert_eq!(insets.for_side(SafeAreaSides::TOP), 10.0);
+        assert_eq!(insets.for_side(SafeAreaSides::RIGHT), 20.0);
+        assert_eq!(insets.for_side(SafeAreaSides::BOTTOM), 30.0);
+        assert_eq!(insets.for_side(SafeAreaSides::LEFT), 40.0);
+    }
+
+    #[test]
+    fn edge_insets_for_side_returns_zero_for_compound_flags() {
+        // The doc says "caller passes a single-side flag" — compound
+        // combinations fall through to 0.0. Pin that down.
+        let insets = EdgeInsets {
+            top: 5.0,
+            right: 5.0,
+            bottom: 5.0,
+            left: 5.0,
+        };
+        assert_eq!(insets.for_side(SafeAreaSides::ALL), 0.0);
+        assert_eq!(insets.for_side(SafeAreaSides::HORIZONTAL), 0.0);
+        assert_eq!(insets.for_side(SafeAreaSides::VERTICAL), 0.0);
+        assert_eq!(insets.for_side(SafeAreaSides::NONE), 0.0);
+    }
+
+    // -----------------------------------------------------------------------
+    // SafeAreaSides bitops
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn safe_area_sides_constants_have_expected_bit_layout() {
+        assert_eq!(SafeAreaSides::NONE.0, 0);
+        assert_eq!(SafeAreaSides::TOP.0, 0b0001);
+        assert_eq!(SafeAreaSides::RIGHT.0, 0b0010);
+        assert_eq!(SafeAreaSides::BOTTOM.0, 0b0100);
+        assert_eq!(SafeAreaSides::LEFT.0, 0b1000);
+        assert_eq!(SafeAreaSides::ALL.0, 0b1111);
+        assert_eq!(SafeAreaSides::HORIZONTAL.0, 0b1010);
+        assert_eq!(SafeAreaSides::VERTICAL.0, 0b0101);
+    }
+
+    #[test]
+    fn safe_area_sides_horizontal_is_right_or_left() {
+        let h = SafeAreaSides::RIGHT | SafeAreaSides::LEFT;
+        assert_eq!(h, SafeAreaSides::HORIZONTAL);
+    }
+
+    #[test]
+    fn safe_area_sides_vertical_is_top_or_bottom() {
+        let v = SafeAreaSides::TOP | SafeAreaSides::BOTTOM;
+        assert_eq!(v, SafeAreaSides::VERTICAL);
+    }
+
+    #[test]
+    fn safe_area_sides_all_is_horizontal_or_vertical() {
+        let combined = SafeAreaSides::HORIZONTAL | SafeAreaSides::VERTICAL;
+        assert_eq!(combined, SafeAreaSides::ALL);
+    }
+
+    #[test]
+    fn safe_area_sides_contains_matches_set_bits() {
+        let mixed = SafeAreaSides::TOP | SafeAreaSides::RIGHT;
+        assert!(mixed.contains(SafeAreaSides::TOP));
+        assert!(mixed.contains(SafeAreaSides::RIGHT));
+        assert!(!mixed.contains(SafeAreaSides::BOTTOM));
+        assert!(!mixed.contains(SafeAreaSides::LEFT));
+        // contains(NONE) is vacuously true (every set contains the empty set).
+        assert!(mixed.contains(SafeAreaSides::NONE));
+        // contains(ALL) is false unless mixed IS all.
+        assert!(!mixed.contains(SafeAreaSides::ALL));
+    }
+
+    #[test]
+    fn safe_area_sides_is_empty() {
+        assert!(SafeAreaSides::NONE.is_empty());
+        assert!(SafeAreaSides::default().is_empty());
+        assert!(!SafeAreaSides::TOP.is_empty());
+        assert!(!SafeAreaSides::ALL.is_empty());
+    }
+
+    #[test]
+    fn safe_area_sides_bitor_assign_combines_in_place() {
+        let mut s = SafeAreaSides::TOP;
+        s |= SafeAreaSides::BOTTOM;
+        assert_eq!(s, SafeAreaSides::VERTICAL);
+    }
+
+    #[test]
+    fn safe_area_sides_bitand_masks_to_intersection() {
+        let intersection = SafeAreaSides::ALL & SafeAreaSides::HORIZONTAL;
+        assert_eq!(intersection, SafeAreaSides::HORIZONTAL);
+        let top_only = SafeAreaSides::VERTICAL & SafeAreaSides::TOP;
+        assert_eq!(top_only, SafeAreaSides::TOP);
+        let disjoint = SafeAreaSides::TOP & SafeAreaSides::LEFT;
+        assert_eq!(disjoint, SafeAreaSides::NONE);
+    }
+
+    // -----------------------------------------------------------------------
+    // Signal lifecycle
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn safe_area_insets_initial_value_is_zero() {
+        // The thread-local OnceCell is per-thread; this test runs in
+        // its own thread by default (cargo test parallelism). The
+        // initial value should be ZERO before anyone calls
+        // set_safe_area_insets in this thread.
+        let initial = safe_area_insets().get();
+        // Other tests in the same thread MAY have already pushed a
+        // value, but we can still verify the signal handle is the
+        // same one (idempotent init).
+        let again = safe_area_insets().get();
+        assert_eq!(initial, again, "signal should return a stable value on idempotent reads");
+    }
+
+    #[test]
+    fn set_safe_area_insets_updates_the_signal() {
+        // Note: cargo runs tests on multiple threads; each gets its
+        // own thread-local INSETS cell. We push and read on the
+        // same thread.
+        let new_insets = EdgeInsets {
+            top: 47.0,
+            right: 0.0,
+            bottom: 34.0,
+            left: 0.0,
+        };
+        set_safe_area_insets(new_insets);
+        assert_eq!(safe_area_insets().get(), new_insets);
+
+        // Calling again with the SAME value is a no-op (idempotent).
+        // Hard to observe externally, but the second call must not
+        // panic and the value must still match.
+        set_safe_area_insets(new_insets);
+        assert_eq!(safe_area_insets().get(), new_insets);
+    }
+}

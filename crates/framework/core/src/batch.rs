@@ -107,3 +107,118 @@ impl Default for BackendBatch {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Tests for the batch protocol — small, but a few invariants
+    //! callers (the walker, backend impls) depend on:
+    //!
+    //! - `next_id` allocates strictly monotonically from 0 on a fresh
+    //!   batch, matching the walker's "local_ids index into the
+    //!   returned `Vec<Self::Node>`" contract.
+    //! - `with_capacity(ops, nodes)` seeds `node_count` to `nodes`,
+    //!   so subsequent `next_id`s start at `nodes` — letting backends
+    //!   that pre-mint placeholder nodes interleave with the walker
+    //!   without id collisions.
+    //! - The `ops` Vec capacity is a hint, not a cap — pushes past
+    //!   the initial capacity are allowed (just slower if they
+    //!   trigger a realloc).
+
+    use super::*;
+
+    #[test]
+    fn new_batch_has_zero_node_count_and_no_ops() {
+        let batch = BackendBatch::new();
+        assert_eq!(batch.node_count, 0);
+        assert!(batch.ops.is_empty());
+    }
+
+    #[test]
+    fn default_matches_new() {
+        let a = BackendBatch::default();
+        let b = BackendBatch::new();
+        assert_eq!(a.node_count, b.node_count);
+        assert_eq!(a.ops.len(), b.ops.len());
+    }
+
+    #[test]
+    fn with_capacity_zero_nodes_starts_ids_at_zero() {
+        let mut batch = BackendBatch::with_capacity(10, 0);
+        assert_eq!(batch.next_id(), 0);
+        assert_eq!(batch.next_id(), 1);
+        assert_eq!(batch.next_id(), 2);
+        assert_eq!(batch.node_count, 3);
+    }
+
+    #[test]
+    fn with_capacity_nonzero_nodes_starts_ids_at_nodes() {
+        // Caller passes 5 — `next_id` should resume from 5, not 0.
+        // Lets backends that pre-mint placeholder local_ids leave
+        // a contiguous gap for them at the front of the table.
+        let mut batch = BackendBatch::with_capacity(10, 5);
+        assert_eq!(batch.next_id(), 5);
+        assert_eq!(batch.next_id(), 6);
+        assert_eq!(batch.node_count, 7);
+    }
+
+    #[test]
+    fn next_id_is_strictly_monotonic_across_many_calls() {
+        let mut batch = BackendBatch::new();
+        let ids: Vec<u32> = (0..1_000).map(|_| batch.next_id()).collect();
+        for (idx, &id) in ids.iter().enumerate() {
+            assert_eq!(id as usize, idx, "ids must equal their position");
+        }
+        assert_eq!(batch.node_count, 1_000);
+    }
+
+    #[test]
+    fn ops_capacity_is_a_hint_not_a_cap() {
+        // `with_capacity(3, …)` hints 3 ops; pushing 10 must still
+        // work without panic. The walker over-allocates in
+        // production paths but small-batch cases might under-shoot.
+        let mut batch = BackendBatch::with_capacity(3, 0);
+        for _ in 0..10 {
+            batch.ops.push(BatchOp::CreateView {
+                local_id: batch.node_count,
+            });
+            batch.node_count += 1;
+        }
+        assert_eq!(batch.ops.len(), 10);
+        assert_eq!(batch.node_count, 10);
+    }
+
+    #[test]
+    fn batch_op_variants_construct_with_expected_fields() {
+        // Type-shape regression — if any variant gets renamed or
+        // restructured this fails to compile. Cheap canary.
+        let _create_view = BatchOp::CreateView { local_id: 0 };
+        let _create_text = BatchOp::CreateText {
+            local_id: 1,
+            content: "hi".to_string(),
+        };
+        let _apply_style = BatchOp::ApplyStyleStatic {
+            node: 0,
+            class_name: "c".to_string(),
+            rules: Rc::new(StyleRules::default()),
+        };
+        let _insert = BatchOp::Insert {
+            parent: 0,
+            child: 1,
+        };
+    }
+
+    #[test]
+    fn next_id_advances_node_count_in_lockstep() {
+        // The walker uses `node_count` as both "how many slots the
+        // backend should pre-allocate" and "the value of the next
+        // local_id". `next_id` must keep these in sync.
+        let mut batch = BackendBatch::new();
+        assert_eq!(batch.node_count, 0);
+        let _id0 = batch.next_id();
+        assert_eq!(batch.node_count, 1);
+        let _id1 = batch.next_id();
+        assert_eq!(batch.node_count, 2);
+        let _id2 = batch.next_id();
+        assert_eq!(batch.node_count, 3);
+    }
+}

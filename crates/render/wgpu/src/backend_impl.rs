@@ -236,6 +236,7 @@ impl Backend for WgpuBackend {
         initial_value: &str,
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
+        _on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
     ) -> Self::Node {
         let layout = self.layout.new_node();
         // The visible glyph buffer holds whichever of value /

@@ -598,7 +598,12 @@ impl Backend for RokuBackend {
         initial_value: &str,
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
+        _on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
     ) -> Self::Node {
+        // `_on_key_down` is unused on Roku — the SceneGraph keyboard
+        // surface doesn't expose pre-default key interception in the
+        // way Web/UIKit/Android do. Document explicitly so the
+        // asymmetry is visible at the API boundary.
         let id = self.mint_node();
         let handler = self.mint_handler();
         self.handlers.borrow_mut().string.push((handler, on_change));

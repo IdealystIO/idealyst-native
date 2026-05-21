@@ -16,6 +16,7 @@ pub mod flat_list;
 pub mod graphics;
 pub mod icon;
 pub mod image;
+pub mod key;
 pub mod link;
 pub mod navigator;
 pub mod overlay;

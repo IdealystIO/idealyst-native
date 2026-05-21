@@ -9,6 +9,7 @@
 //!   cargo test -p framework-core --test walker primitives
 //!   cargo test -p framework-core --test walker lifecycle
 //!   cargo test -p framework-core --test walker refs
+//!   cargo test -p framework-core --test walker batched_repeat
 
 #[path = "common/mod.rs"]
 mod common;
@@ -21,3 +22,9 @@ mod lifecycle;
 mod rebuild;
 #[path = "walker/refs.rs"]
 mod refs;
+#[path = "walker/batched_repeat.rs"]
+mod batched_repeat;
+#[path = "walker/control_flow.rs"]
+mod control_flow;
+#[path = "walker/key_events.rs"]
+mod key_events;

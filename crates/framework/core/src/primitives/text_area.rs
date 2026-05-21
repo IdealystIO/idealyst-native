@@ -15,14 +15,15 @@
 //! different platform widget mappings. Keeping them separate keeps
 //! each call site honest about which shape it wants.
 
+use crate::primitives::key::{KeyEvent, KeyOutcome};
 use crate::{Bound, Primitive, Ref, RefFill, Signal};
 use std::any::Any;
 use std::rc::Rc;
 
 /// Handle exposed to a parent via `Ref<TextAreaHandle>`. Backends
-/// implement the ops trait below to make `focus()`, `blur()`, and
-/// `select_all()` work — same surface as `TextInputHandle`, just on
-/// the multi-line widget.
+/// implement the ops trait below to make `focus()`, `blur()`,
+/// `select_all()`, and `insert_text()` work — same surface as
+/// `TextInputHandle`, just on the multi-line widget.
 #[derive(Clone)]
 pub struct TextAreaHandle {
     node: Rc<dyn Any>,
@@ -45,12 +46,25 @@ impl TextAreaHandle {
     pub fn select_all(&self) {
         self.ops.select_all(&*self.node);
     }
+
+    /// Replace the current selection (or insert at the caret if no
+    /// selection) with `text`, then place the caret immediately
+    /// after the inserted text. Fires the same on-change signal
+    /// path a real keystroke would, so the controlling `Signal`
+    /// stays in sync. See
+    /// [`TextInputHandle::insert_text`](crate::TextInputHandle::insert_text)
+    /// for the canonical use-case.
+    pub fn insert_text(&self, text: &str) {
+        self.ops.insert_text(&*self.node, text);
+    }
 }
 
 pub trait TextAreaOps {
     fn focus(&self, node: &dyn Any);
     fn blur(&self, node: &dyn Any);
     fn select_all(&self, node: &dyn Any);
+    /// See [`TextAreaHandle::insert_text`].
+    fn insert_text(&self, node: &dyn Any, text: &str);
 }
 
 /// Construct a `TextArea`. Controlled — `value` is the source of
@@ -67,6 +81,7 @@ pub fn text_area<F: Fn(String) + 'static>(
     Bound::new(Primitive::TextArea {
         value,
         on_change: Rc::new(on_change),
+        on_key_down: None,
         placeholder: None,
         style: None,
         ref_fill: None,
@@ -86,6 +101,21 @@ impl Bound<TextAreaHandle> {
     pub fn bind(mut self, r: Ref<TextAreaHandle>) -> Self {
         if let Primitive::TextArea { ref_fill, .. } = &mut self.primitive {
             *ref_fill = Some(RefFill::TextArea(Box::new(move |h| r.fill(h))));
+        }
+        self
+    }
+
+    /// Attach a keyboard hook that fires on every keydown while the
+    /// textarea has focus. Return [`KeyOutcome::PreventDefault`] to
+    /// suppress the platform's default behaviour for that key. See
+    /// [`primitives::key`](crate::primitives::key) for the
+    /// cross-platform contract.
+    pub fn on_key_down<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&KeyEvent) -> KeyOutcome + 'static,
+    {
+        if let Primitive::TextArea { on_key_down, .. } = &mut self.primitive {
+            *on_key_down = Some(Rc::new(handler));
         }
         self
     }

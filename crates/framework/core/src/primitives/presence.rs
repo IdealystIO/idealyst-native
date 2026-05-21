@@ -243,3 +243,109 @@ impl Bound<PresenceHandle> {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! PresenceState + PresenceAnim builder coverage. Pure data —
+    //! no backend needed.
+
+    use super::*;
+    use crate::Easing;
+
+    #[test]
+    fn presence_state_rest_is_all_none() {
+        let s = PresenceState::rest();
+        assert!(s.opacity.is_none());
+        assert!(s.translate_x.is_none());
+        assert!(s.translate_y.is_none());
+        assert!(s.scale.is_none());
+    }
+
+    #[test]
+    fn presence_state_default_matches_rest() {
+        let a: PresenceState = PresenceState::default();
+        let b = PresenceState::rest();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn presence_state_opacity_sets_only_opacity() {
+        let s = PresenceState::rest().opacity(0.5);
+        assert_eq!(s.opacity, Some(0.5));
+        assert!(s.translate_x.is_none());
+        assert!(s.translate_y.is_none());
+        assert!(s.scale.is_none());
+    }
+
+    #[test]
+    fn presence_state_translate_sets_both_axes() {
+        let s = PresenceState::rest().translate(3.0, 4.0);
+        assert_eq!(s.translate_x, Some(3.0));
+        assert_eq!(s.translate_y, Some(4.0));
+        // Other fields untouched.
+        assert!(s.opacity.is_none());
+        assert!(s.scale.is_none());
+    }
+
+    #[test]
+    fn presence_state_translate_x_and_translate_y_are_orthogonal() {
+        let only_x = PresenceState::rest().translate_x(7.0);
+        assert_eq!(only_x.translate_x, Some(7.0));
+        assert!(only_x.translate_y.is_none());
+
+        let only_y = PresenceState::rest().translate_y(9.0);
+        assert!(only_y.translate_x.is_none());
+        assert_eq!(only_y.translate_y, Some(9.0));
+    }
+
+    #[test]
+    fn presence_state_scale_sets_only_scale() {
+        let s = PresenceState::rest().scale(2.0);
+        assert_eq!(s.scale, Some(2.0));
+        assert!(s.opacity.is_none());
+    }
+
+    #[test]
+    fn presence_state_builders_chain_and_compose() {
+        let s = PresenceState::rest()
+            .opacity(0.2)
+            .translate(1.0, 2.0)
+            .scale(0.9);
+        assert_eq!(s.opacity, Some(0.2));
+        assert_eq!(s.translate_x, Some(1.0));
+        assert_eq!(s.translate_y, Some(2.0));
+        assert_eq!(s.scale, Some(0.9));
+    }
+
+    #[test]
+    fn presence_state_translate_overwrites_individual_axis_setters() {
+        // `translate(x, y)` sets both axes regardless of prior
+        // individual sets — last write wins.
+        let s = PresenceState::rest()
+            .translate_x(100.0)
+            .translate_y(200.0)
+            .translate(0.0, 0.0);
+        assert_eq!(s.translate_x, Some(0.0));
+        assert_eq!(s.translate_y, Some(0.0));
+    }
+
+    #[test]
+    fn presence_anim_new_carries_all_three_fields() {
+        let state = PresenceState::rest().opacity(0.3);
+        let anim = PresenceAnim::new(state, 250, Easing::Linear);
+        assert_eq!(anim.duration_ms, 250);
+        assert_eq!(anim.state.opacity, Some(0.3));
+        // Easing has a known Default; assert the variant we passed.
+        matches!(anim.easing, Easing::Linear);
+    }
+
+    #[test]
+    fn presence_anim_fade_zeros_opacity_only() {
+        let anim = PresenceAnim::fade(180, Easing::Linear);
+        assert_eq!(anim.state.opacity, Some(0.0));
+        assert!(anim.state.translate_x.is_none());
+        assert!(anim.state.translate_y.is_none());
+        assert!(anim.state.scale.is_none());
+        assert_eq!(anim.duration_ms, 180);
+    }
+}

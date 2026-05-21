@@ -82,8 +82,9 @@ pub(crate) fn with_env<R>(f: impl FnOnce(&mut JNIEnv) -> R) -> R {
 #[derive(Default)]
 pub(crate) struct NodeAnim {
     // Last-applied snapshots (Android pixel-space values).
-    pub(crate) last_bg: Option<i32>,         // packed ARGB
-    pub(crate) last_text_color: Option<i32>, // packed ARGB
+    pub(crate) last_bg: Option<i32>,           // packed ARGB
+    pub(crate) last_text_color: Option<i32>,   // packed ARGB
+    pub(crate) last_caret_color: Option<i32>,  // packed ARGB — short-circuits redundant setTextCursorDrawable
     pub(crate) last_alpha: Option<f32>,
     pub(crate) last_padding: [Option<i32>; 4], // L, T, R, B
     pub(crate) last_radii: [Option<f32>; 4],   // tl, tr, br, bl (px)
@@ -594,8 +595,9 @@ impl Backend for AndroidBackend {
         initial_value: &str,
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
+        on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
     ) -> Self::Node {
-        primitives::text_input::create(self, initial_value, placeholder, on_change)
+        primitives::text_input::create(self, initial_value, placeholder, on_change, on_key_down)
     }
 
     fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {

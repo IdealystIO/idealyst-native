@@ -378,6 +378,7 @@ impl Backend for IosBackend {
         initial_value: &str,
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
+        _on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
     ) -> Self::Node {
         let field = unsafe { UITextField::new(self.mtm) };
         let ns_val = NSString::from_str(initial_value);

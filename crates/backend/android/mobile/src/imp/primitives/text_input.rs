@@ -13,7 +13,11 @@ pub(crate) fn create(
     initial_value: &str,
     placeholder: Option<&str>,
     on_change: Rc<dyn Fn(String)>,
+    _on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
 ) -> GlobalRef {
+    // TODO: wire `_on_key_down` through `View.setOnKeyListener` once
+    // the `RustKeyListener.kt` Kotlin runtime file is added + registered
+    // in `crates/run/android/src/kotlin_runtime.rs`. See [[project_kotlin_runtime_registry]].
     // EditText with a TextWatcher dispatched through Kotlin
     // `RustTextWatcher`. Same lifecycle/leak pattern as
     // RustClickListener: box + leak the on_change closure. The native

@@ -52,3 +52,71 @@ pub fn now_micros() -> u64 {
         0
     }
 }
+
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
+mod tests {
+    //! Native-fallback path tests for the time abstraction.
+    //!
+    //! `TIME_SOURCE` is a `OnceLock` so we can only install ONCE per
+    //! process. The test binary's other modules don't install one,
+    //! so the tests below exercise the `Instant`-based fallback (the
+    //! actual path framework-core ships on native test runs anyway).
+
+    use super::*;
+    use std::thread::sleep;
+    use std::time::Duration;
+
+    #[test]
+    fn now_micros_is_monotonic_native_fallback() {
+        let a = now_micros();
+        let b = now_micros();
+        assert!(b >= a, "now_micros must not go backwards (got a={a}, b={b})");
+    }
+
+    #[test]
+    fn now_micros_advances_with_sleep() {
+        let before = now_micros();
+        sleep(Duration::from_millis(2));
+        let after = now_micros();
+        let delta = after.saturating_sub(before);
+        // Sleeping 2 ms should produce at least ~1 ms of monotonic
+        // advance even on a heavily-loaded CI host. We assert
+        // > 500 µs to leave room for jitter while still catching a
+        // dead clock.
+        assert!(
+            delta >= 500,
+            "expected at least 500 µs of progress, got {delta} µs (before={before}, after={after})",
+        );
+    }
+
+    #[test]
+    fn time_source_trait_can_be_implemented_with_a_const_value() {
+        // Pinning down the trait's shape: a TimeSource is a single
+        // `now_micros(&self) -> u64`. Verify a trivial impl
+        // compiles + executes the expected value.
+        struct Fixed(u64);
+        impl TimeSource for Fixed {
+            fn now_micros(&self) -> u64 {
+                self.0
+            }
+        }
+        let s = Fixed(12_345);
+        assert_eq!(s.now_micros(), 12_345);
+    }
+
+    #[test]
+    fn deltas_between_two_now_micros_calls_are_small_when_idle() {
+        // Sanity that the clock isn't returning wild values per call
+        // (no second-scale jumps). Two back-to-back reads on the
+        // same thread should be within ~1 second of each other —
+        // generous bound to avoid CI flakiness.
+        let a = now_micros();
+        let b = now_micros();
+        let delta = b.saturating_sub(a);
+        assert!(
+            delta < 1_000_000,
+            "two back-to-back now_micros reads diverged by {delta} µs; clock seems wrong",
+        );
+    }
+}

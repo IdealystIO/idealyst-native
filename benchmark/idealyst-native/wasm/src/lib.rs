@@ -1098,9 +1098,12 @@ pub fn bench_stats_json() -> String {
     let backend_json = {
         let b = BACKEND.with(|slot| slot.borrow().as_ref().map(|rc| rc.borrow().debug_counts()));
         match b {
+            // Node-id allocation moved to a JS-side WeakMap (see
+            // `WebBackend::node_id`); there's no Rust-side counter
+            // or cache to report anymore.
             Some(b) => format!(
-                "{{\"node_ids\":{},\"dynamic\":{},\"state_listeners\":{},\"pregen\":{},\"pregen_by_ptr\":{},\"free_rule_indices\":{},\"next_node_id\":{}}}",
-                b.node_ids, b.dynamic, b.state_listeners, b.pregen, b.pregen_by_ptr, b.free_rule_indices, b.next_node_id,
+                "{{\"dynamic\":{},\"state_listeners\":{},\"pregen\":{},\"pregen_by_ptr\":{},\"free_rule_indices\":{}}}",
+                b.dynamic, b.state_listeners, b.pregen, b.pregen_by_ptr, b.free_rule_indices,
             ),
             None => "null".into(),
         }

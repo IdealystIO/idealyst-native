@@ -405,13 +405,14 @@ fn build_inner<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) 
             }
             n
         }
-        Primitive::TextInput { value, on_change, placeholder, style, ref_fill, .. } => {
+        Primitive::TextInput { value, on_change, on_key_down, placeholder, style, ref_fill, .. } => {
             let initial = value.get();
             let n = time_backend_create(pkind!(TextInput), || {
                 backend.borrow_mut().create_text_input(
                     &initial,
                     placeholder.as_deref(),
                     on_change,
+                    on_key_down,
                 )
             });
             if let Some(s) = style {
@@ -435,13 +436,14 @@ fn build_inner<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) 
             }
             n
         }
-        Primitive::TextArea { value, on_change, placeholder, style, ref_fill, .. } => {
+        Primitive::TextArea { value, on_change, on_key_down, placeholder, style, ref_fill, .. } => {
             let initial = value.get();
             let n = time_backend_create(pkind!(TextArea), || {
                 backend.borrow_mut().create_text_area(
                     &initial,
                     placeholder.as_deref(),
                     on_change,
+                    on_key_down,
                 )
             });
             if let Some(s) = style {

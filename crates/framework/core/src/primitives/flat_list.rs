@@ -124,3 +124,59 @@ where
 pub fn fixed_size<T: 'static>(size: f32) -> FlatListItemSize<T> {
     FlatListItemSize::Known(Rc::new(move |_, _| size))
 }
+
+#[cfg(test)]
+mod tests {
+    //! flat_list helper coverage. The `flat_list` constructor itself
+    //! returns a `Bound<VirtualizerHandle>` whose internals only
+    //! activate inside a render path with a virtualizer-supporting
+    //! backend — covered by `tests/walker/*`. Here we test the
+    //! free-function helpers that compose its arguments.
+    use super::*;
+
+    #[test]
+    fn fixed_size_returns_known_variant_with_constant_value() {
+        let sz: FlatListItemSize<u32> = fixed_size(42.0);
+        match sz {
+            FlatListItemSize::Known(f) => {
+                // The closure must return the same value regardless
+                // of (idx, item).
+                assert_eq!(f(0, &7u32), 42.0);
+                assert_eq!(f(1000, &0u32), 42.0);
+                assert_eq!(f(usize::MAX, &u32::MAX), 42.0);
+            }
+            FlatListItemSize::Measured(_) => {
+                panic!("fixed_size should always return the Known variant");
+            }
+        }
+    }
+
+    #[test]
+    fn fixed_size_is_consistent_across_clones_of_the_closure() {
+        // The Known variant carries an Rc; cloning it must NOT
+        // re-evaluate `size` (no captured mutable state).
+        let sz: FlatListItemSize<u32> = fixed_size(7.5);
+        match sz {
+            FlatListItemSize::Known(f) => {
+                let f2 = f.clone();
+                assert_eq!(f(0, &0), 7.5);
+                assert_eq!(f2(0, &0), 7.5);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn fixed_size_works_with_non_copy_item_type() {
+        // The `T` parameter goes unused inside `fixed_size`, but the
+        // trait bound is `T: 'static`. Verify it accepts a non-Copy
+        // type — the closure body discards its argument.
+        let sz: FlatListItemSize<String> = fixed_size(99.0);
+        match sz {
+            FlatListItemSize::Known(f) => {
+                assert_eq!(f(0, &"row".to_string()), 99.0);
+            }
+            _ => unreachable!(),
+        }
+    }
+}

@@ -6,6 +6,7 @@
 //! property rather than `<input>.value`.
 
 use crate::WebBackend;
+use framework_core::primitives::key::{KeyDownHandler, KeyEvent, KeyOutcome};
 use framework_core::primitives::text_area::{TextAreaHandle, TextAreaOps};
 use std::any::Any;
 use std::rc::Rc;
@@ -18,6 +19,7 @@ pub(crate) fn create(
     initial_value: &str,
     placeholder: Option<&str>,
     on_change: Rc<dyn Fn(String)>,
+    on_key_down: Option<KeyDownHandler>,
 ) -> Node {
     let textarea: web_sys::HtmlTextAreaElement = b
         .doc
@@ -75,7 +77,51 @@ pub(crate) fn create(
     );
     let id = b.node_id(&textarea.clone().unchecked_into::<Node>());
     b.state_listeners.entry(id).or_default().push(closure);
+    if let Some(handler) = on_key_down {
+        attach_key_listener_textarea(&textarea, id, b, handler);
+    }
     textarea.unchecked_into::<Node>()
+}
+
+/// Mirror of `text_input::attach_key_listener_input` for the
+/// textarea-specific element type. See that function for the design
+/// notes — the only difference is the DOM type we read selection from.
+fn attach_key_listener_textarea(
+    textarea: &web_sys::HtmlTextAreaElement,
+    id: u32,
+    b: &mut WebBackend,
+    handler: KeyDownHandler,
+) {
+    let textarea_clone = textarea.clone();
+    let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |e: web_sys::Event| {
+        if let Ok(ke) = e.dyn_into::<web_sys::KeyboardEvent>() {
+            let event = KeyEvent {
+                key: ke.key(),
+                shift: ke.shift_key(),
+                ctrl: ke.ctrl_key(),
+                alt: ke.alt_key(),
+                meta: ke.meta_key(),
+                selection_start: textarea_clone
+                    .selection_start()
+                    .ok()
+                    .flatten()
+                    .unwrap_or(0) as usize,
+                selection_end: textarea_clone
+                    .selection_end()
+                    .ok()
+                    .flatten()
+                    .unwrap_or(0) as usize,
+            };
+            if handler(&event) == KeyOutcome::PreventDefault {
+                ke.prevent_default();
+            }
+        }
+    });
+    let _ = textarea.add_event_listener_with_callback(
+        "keydown",
+        closure.as_ref().unchecked_ref(),
+    );
+    b.state_listeners.entry(id).or_default().push(closure);
 }
 
 pub(crate) fn update_value(node: &Node, value: &str) {
@@ -112,6 +158,16 @@ impl TextAreaOps for WebTextAreaOps {
     fn select_all(&self, node: &dyn Any) {
         if let Some(t) = node.downcast_ref::<web_sys::HtmlTextAreaElement>() {
             t.select();
+        }
+    }
+    fn insert_text(&self, node: &dyn Any, text: &str) {
+        if let Some(t) = node.downcast_ref::<web_sys::HtmlTextAreaElement>() {
+            let start = t.selection_start().ok().flatten().unwrap_or(0);
+            let end = t.selection_end().ok().flatten().unwrap_or(start);
+            let _ = t.set_range_text_with_start_and_end(text, start, end);
+            if let Ok(event) = web_sys::Event::new("input") {
+                let _ = t.dispatch_event(&event);
+            }
         }
     }
 }

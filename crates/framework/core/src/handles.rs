@@ -323,3 +323,286 @@ pub enum RefFill {
     External(Box<dyn FnOnce(Rc<dyn Any>)>),
     Presence(Box<dyn FnOnce(primitives::presence::PresenceHandle)>),
 }
+
+#[cfg(test)]
+mod tests {
+    //! Tests for the handle layer:
+    //!
+    //! - `StateBits` bitset arithmetic + axis-name mapping
+    //! - Type-erased `Rc<dyn Any>` round-trips through `as_any` /
+    //!   downcast (matches what backends do at handle construction)
+    //! - `click()` / `rect()` route through the `&'static dyn …Ops`
+    //!   trait object — verifies the dispatch pipe between user code
+    //!   and backend ops
+    //! - Cloning a handle is cheap (Rc bump, same underlying node)
+
+    use super::*;
+    use std::cell::Cell;
+
+    // -----------------------------------------------------------------------
+    // StateBits
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn statebits_constants_have_disjoint_bits() {
+        let bits = [
+            StateBits::HOVERED,
+            StateBits::PRESSED,
+            StateBits::FOCUSED,
+            StateBits::DISABLED,
+        ];
+        for (i, &a) in bits.iter().enumerate() {
+            for &b in &bits[i + 1..] {
+                assert_eq!(a.0 & b.0, 0, "{:?} and {:?} overlap", a, b);
+            }
+        }
+    }
+
+    #[test]
+    fn statebits_none_contains_nothing_and_with_or_combines() {
+        assert_eq!(StateBits::NONE.0, 0);
+        let combined = StateBits::HOVERED.with(StateBits::FOCUSED);
+        assert!(combined.contains(StateBits::HOVERED));
+        assert!(combined.contains(StateBits::FOCUSED));
+        assert!(!combined.contains(StateBits::PRESSED));
+    }
+
+    #[test]
+    fn statebits_without_clears_listed_bits_only() {
+        let combined = StateBits::HOVERED
+            .with(StateBits::FOCUSED)
+            .with(StateBits::PRESSED);
+        let cleared = combined.without(StateBits::HOVERED);
+        assert!(!cleared.contains(StateBits::HOVERED));
+        assert!(cleared.contains(StateBits::FOCUSED));
+        assert!(cleared.contains(StateBits::PRESSED));
+    }
+
+    #[test]
+    fn statebits_axis_name_maps_to_known_names() {
+        assert_eq!(StateBits::HOVERED.axis_name(), Some("__state_hovered"));
+        assert_eq!(StateBits::PRESSED.axis_name(), Some("__state_pressed"));
+        assert_eq!(StateBits::FOCUSED.axis_name(), Some("__state_focused"));
+        assert_eq!(StateBits::DISABLED.axis_name(), Some("__state_disabled"));
+        assert_eq!(StateBits::NONE.axis_name(), None);
+        // Combined bits aren't a single named axis.
+        let combined = StateBits::HOVERED.with(StateBits::FOCUSED);
+        assert_eq!(combined.axis_name(), None);
+    }
+
+    #[test]
+    fn statebits_active_axes_yields_set_bits_in_canonical_order() {
+        let combined = StateBits::HOVERED
+            .with(StateBits::FOCUSED)
+            .with(StateBits::DISABLED);
+        let axes: Vec<&'static str> = combined.active_axes().collect();
+        // Iteration order: HOVERED, PRESSED, FOCUSED, DISABLED.
+        // PRESSED isn't set so it's skipped.
+        assert_eq!(
+            axes,
+            vec!["__state_hovered", "__state_focused", "__state_disabled"],
+        );
+    }
+
+    #[test]
+    fn statebits_active_axes_empty_when_none() {
+        let axes: Vec<&'static str> = StateBits::NONE.active_axes().collect();
+        assert!(axes.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Test-only Ops impls
+    // -----------------------------------------------------------------------
+
+    /// Records that `click` was called and the `node` payload it
+    /// received (downcast to `u32`).
+    struct RecordingButtonOps {
+        last_node: Cell<u32>,
+        click_count: Cell<u32>,
+    }
+
+    // Make the struct shareable via static references in tests. We
+    // need `&'static dyn ButtonOps` for `ButtonHandle::new`; a
+    // `Box::leak` gives us that without unsafe.
+    impl ButtonOps for RecordingButtonOps {
+        fn click(&self, node: &dyn Any) {
+            self.click_count.set(self.click_count.get() + 1);
+            if let Some(&id) = node.downcast_ref::<u32>() {
+                self.last_node.set(id);
+            }
+        }
+
+        fn rect(&self, _node: &dyn Any) -> primitives::portal::ViewportRect {
+            primitives::portal::ViewportRect {
+                x: 10.0,
+                y: 20.0,
+                width: 100.0,
+                height: 50.0,
+            }
+        }
+    }
+
+    fn make_recording_button_ops() -> &'static RecordingButtonOps {
+        Box::leak(Box::new(RecordingButtonOps {
+            last_node: Cell::new(0),
+            click_count: Cell::new(0),
+        }))
+    }
+
+    /// View ops that return non-default rects so we can confirm
+    /// the handle's rect/frame methods route through.
+    struct RecordingViewOps;
+    impl ViewOps for RecordingViewOps {
+        fn rect(&self, _node: &dyn Any) -> primitives::portal::ViewportRect {
+            primitives::portal::ViewportRect {
+                x: 1.0,
+                y: 2.0,
+                width: 3.0,
+                height: 4.0,
+            }
+        }
+
+        fn frame(&self, _node: &dyn Any) -> Option<primitives::portal::ViewportRect> {
+            Some(primitives::portal::ViewportRect {
+                x: 5.0,
+                y: 6.0,
+                width: 7.0,
+                height: 8.0,
+            })
+        }
+
+        fn absolute_frame(
+            &self,
+            _node: &dyn Any,
+        ) -> Option<primitives::portal::ViewportRect> {
+            Some(primitives::portal::ViewportRect {
+                x: 9.0,
+                y: 10.0,
+                width: 11.0,
+                height: 12.0,
+            })
+        }
+    }
+
+    struct StubTextOps;
+    impl TextOps for StubTextOps {}
+
+    // -----------------------------------------------------------------------
+    // ButtonHandle
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn button_handle_click_routes_to_ops_with_node_payload() {
+        let ops = make_recording_button_ops();
+        let handle = ButtonHandle::new(Rc::new(42u32), ops);
+
+        assert_eq!(ops.click_count.get(), 0);
+        handle.click();
+        assert_eq!(ops.click_count.get(), 1);
+        assert_eq!(ops.last_node.get(), 42, "ops.click received node payload");
+
+        handle.click();
+        assert_eq!(ops.click_count.get(), 2);
+    }
+
+    #[test]
+    fn button_handle_anchorable_rect_returns_ops_rect() {
+        use primitives::portal::AnchorableHandle;
+        let ops = make_recording_button_ops();
+        let handle = ButtonHandle::new(Rc::new(0u32), ops);
+        let rect = handle.rect();
+        assert_eq!(rect.x, 10.0);
+        assert_eq!(rect.y, 20.0);
+        assert_eq!(rect.width, 100.0);
+        assert_eq!(rect.height, 50.0);
+    }
+
+    #[test]
+    fn button_handle_clone_is_cheap_and_shares_node() {
+        let ops = make_recording_button_ops();
+        let payload: Rc<u32> = Rc::new(7u32);
+        // 1 strong ref before wrapping
+        assert_eq!(Rc::strong_count(&payload), 1);
+
+        let handle: ButtonHandle = ButtonHandle::new(payload.clone() as Rc<dyn Any>, ops);
+        // 2: original + the Rc<dyn Any> coercion
+        assert_eq!(Rc::strong_count(&payload), 2);
+
+        let h2 = handle.clone();
+        // 3: the clone bumps the inner Rc<dyn Any>'s count
+        assert_eq!(Rc::strong_count(&payload), 3);
+
+        // Both clones invoke the same ops with the same payload.
+        h2.click();
+        assert_eq!(ops.click_count.get(), 1);
+        assert_eq!(ops.last_node.get(), 7);
+
+        drop(h2);
+        // Back to 2 after the clone drops.
+        assert_eq!(Rc::strong_count(&payload), 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // ViewHandle
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn view_handle_as_any_round_trips_to_concrete_node() {
+        static OPS: RecordingViewOps = RecordingViewOps;
+        // Pretend the backend's Node is `String`.
+        let handle = ViewHandle::new(Rc::new("v1".to_string()), &OPS);
+        let any: &dyn Any = handle.as_any();
+        let s: &String = any.downcast_ref().expect("downcast to backend node type");
+        assert_eq!(s, "v1");
+    }
+
+    #[test]
+    fn view_handle_frame_and_absolute_frame_delegate_to_ops() {
+        static OPS: RecordingViewOps = RecordingViewOps;
+        let handle = ViewHandle::new(Rc::new(0u32), &OPS);
+
+        let frame = handle.frame().expect("ops returns Some");
+        assert_eq!(frame.x, 5.0);
+        assert_eq!(frame.y, 6.0);
+
+        let abs = handle.absolute_frame().expect("ops returns Some");
+        assert_eq!(abs.x, 9.0);
+        assert_eq!(abs.y, 10.0);
+    }
+
+    #[test]
+    fn view_handle_anchorable_rect_returns_ops_rect() {
+        use primitives::portal::AnchorableHandle;
+        static OPS: RecordingViewOps = RecordingViewOps;
+        let handle = ViewHandle::new(Rc::new(0u32), &OPS);
+        let rect = handle.rect();
+        assert_eq!(rect.x, 1.0);
+        assert_eq!(rect.y, 2.0);
+        assert_eq!(rect.width, 3.0);
+        assert_eq!(rect.height, 4.0);
+    }
+
+    // -----------------------------------------------------------------------
+    // TextHandle
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn text_handle_as_any_round_trips_to_concrete_node() {
+        static OPS: StubTextOps = StubTextOps;
+        let handle = TextHandle::new(Rc::new(123_i64), &OPS);
+        let any = handle.as_any();
+        let v: &i64 = any.downcast_ref().expect("downcast to text node payload");
+        assert_eq!(*v, 123);
+    }
+
+    #[test]
+    fn text_handle_clone_shares_payload_rc() {
+        static OPS: StubTextOps = StubTextOps;
+        let payload: Rc<u32> = Rc::new(5);
+        assert_eq!(Rc::strong_count(&payload), 1);
+        let handle = TextHandle::new(payload.clone() as Rc<dyn Any>, &OPS);
+        assert_eq!(Rc::strong_count(&payload), 2);
+        let _h2 = handle.clone();
+        assert_eq!(Rc::strong_count(&payload), 3);
+    }
+}

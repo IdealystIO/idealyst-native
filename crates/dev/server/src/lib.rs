@@ -973,7 +973,12 @@ impl Backend for WireRecordingBackend {
         initial_value: &str,
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
+        _on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
     ) -> Self::Node {
+        // `_on_key_down` is not yet wired across the AAS protocol
+        // (would require a new wire op + per-frame key event
+        // dispatch). Snapshot/replay clients don't observe key
+        // interception — they see the resulting Signal updates only.
         let mut state = self.inner.borrow_mut();
         let identity = framework_core::current_identity();
         let id = Self::mint_node(&mut state);

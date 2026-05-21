@@ -24,6 +24,14 @@ async-driver = ["framework-core/async-driver", "dep:wasm-bindgen-futures"]
 # `WireBackend` replay engine is available. Off by default — the
 # native-rendering build path pays no cost.
 aas-shell = ["dep:dev-client", "dep:wire", "dev-client/dev-hot-reload"]
+# Stamp a `data-idealyst-id="N"` attribute on every Element the
+# framework has minted a node id for. Pure developer ergonomic —
+# makes the per-node id visible in browser devtools and e2e
+# selectors. Off by default so production builds don't pollute the
+# DOM. Identity itself doesn't depend on this attribute (a JS-side
+# `WeakMap` is the source of truth either way); this just mirrors
+# the id outwards for inspection.
+debug-node-ids = []
 
 [dependencies]
 framework-core = { workspace = true }
@@ -43,6 +51,13 @@ wire = { workspace = true, optional = true }
 # library the author chooses (wgpu, glow, vello, ...). Tiny dep
 # (a handful of enums + traits, no platform code).
 raw-window-handle = "0.6"
+
+[dev-dependencies]
+# Browser-side test harness for `WebBackend` unit tests. Runs via
+# `wasm-pack test --headless --chrome --package backend-web`. Required
+# for tests that need real DOM (the `node_id` identity invariant
+# can't be verified without it).
+wasm-bindgen-test = "0.3"
 
 [dependencies.web-sys]
 version = "0.3"
@@ -79,6 +94,7 @@ features = [
     "MessageEvent",
     "MouseEvent",
     "Node",
+    "Performance",
     "PointerEvent",
     "Text",
     "PopStateEvent",

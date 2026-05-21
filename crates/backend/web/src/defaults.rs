@@ -133,6 +133,22 @@ impl WebBackend {
         self.class_bindings_shim_injected = true;
     }
 
+    /// Inject the JS-side stable-node-id shim
+    /// (`__idealystNodeId(node) -> u32`). Backs
+    /// [`WebBackend::node_id`] with a `WeakMap` so the same JS DOM
+    /// object always resolves to the same `u32` regardless of which
+    /// Rust `web_sys::Node` wrapper holds a reference to it.
+    /// Auto-injected on first `node_id` call.
+    pub(crate) fn ensure_node_id_shim(&mut self) {
+        if self.node_id_shim_injected {
+            return;
+        }
+        let src = include_str!("../runtime/js/node_ids.js");
+        let f = js_sys::Function::new_no_args(src);
+        let _ = f.call0(&JsValue::NULL);
+        self.node_id_shim_injected = true;
+    }
+
     /// Inject `@keyframes ui-spin` into the stylesheet on first use.
     /// Subsequent ActivityIndicator constructions reuse the same
     /// keyframes — the rule is identity-stable, no need to re-create.

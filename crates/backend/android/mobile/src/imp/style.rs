@@ -203,6 +203,51 @@ pub(crate) fn apply_rules(
                 &[JValue::Int(gravity)],
             );
         }
+        // Caret color → `setTextCursorDrawable` with a GradientDrawable
+        // fill. API 29+ only; on older Android we silently drop back to
+        // the theme default (the JNI call resolves to a missing method
+        // and errors, which we ignore). `caret_color_transition` is
+        // declared on `StyleRules` but not honored here — animating the
+        // cursor drawable would require a custom Drawable subclass; for
+        // v1 we snap on Android even when iOS/web tween smoothly. The
+        // mismatch is documented; revisit if a use case demands parity.
+        if let Some(c) = rules.caret_color.as_ref().map(|t| t.resolve()) {
+            if let Some(packed) = parse_color(&c.0) {
+                let prev = state.last_caret_color;
+                let changed = prev != Some(packed);
+                state.last_caret_color = Some(packed);
+                if changed {
+                    let _ = (|| -> jni::errors::Result<()> {
+                        let gd_class = env
+                            .find_class("android/graphics/drawable/GradientDrawable")?;
+                        let drawable = env.new_object(&gd_class, "()V", &[])?;
+                        env.call_method(
+                            &drawable,
+                            "setColor",
+                            "(I)V",
+                            &[JValue::Int(packed)],
+                        )?;
+                        // Intrinsic width = 2 px (matches the system
+                        // default caret thickness). Height is ignored:
+                        // TextView always passes its own line-height
+                        // bounds via `setBounds` before drawing.
+                        env.call_method(
+                            &drawable,
+                            "setSize",
+                            "(II)V",
+                            &[JValue::Int(2), JValue::Int(0)],
+                        )?;
+                        env.call_method(
+                            &view,
+                            "setTextCursorDrawable",
+                            "(Landroid/graphics/drawable/Drawable;)V",
+                            &[JValue::Object(&drawable)],
+                        )?;
+                        Ok(())
+                    })();
+                }
+            }
+        }
     }
 
     // --- Opacity (View.alpha). Animatable via ObjectAnimator.ofFloat.

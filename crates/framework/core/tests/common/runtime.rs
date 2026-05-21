@@ -22,7 +22,7 @@ use std::rc::Rc;
 
 use framework_core::{render, Owner, Primitive};
 
-use super::mock_backend::MockBackend;
+use super::mock_backend::{MockBackend, MockBackendConfig};
 
 pub struct TestRuntime {
     backend: Rc<RefCell<MockBackend>>,
@@ -32,6 +32,15 @@ impl TestRuntime {
     pub fn new() -> Self {
         Self {
             backend: Rc::new(RefCell::new(MockBackend::new())),
+        }
+    }
+
+    /// Construct a runtime with a custom mock-backend config — used by
+    /// tests that want to opt into the batched-Repeat fast path
+    /// (`MockBackendConfig { supports_batched_repeat: true }`).
+    pub fn with_config(config: MockBackendConfig) -> Self {
+        Self {
+            backend: Rc::new(RefCell::new(MockBackend::with_config(config))),
         }
     }
 

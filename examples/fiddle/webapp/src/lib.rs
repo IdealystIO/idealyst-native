@@ -29,12 +29,13 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
-use framework_core::primitives::text_area::text_area;
+use framework_core::primitives::text_area::{text_area, TextAreaHandle};
 use framework_core::primitives::web_view::web_view;
 use framework_core::stylesheet;
 use framework_core::{
     button, code_block, signal, switch, text, text_fmt, ui, AlignItems, Color, FlexDirection,
-    FontWeight, JustifyContent, Length, Overflow, Position, Primitive, Signal,
+    FontWeight, JustifyContent, KeyEvent, KeyOutcome, Length, Overflow, Position, Primitive, Ref,
+    Signal,
 };
 use idea_ui::{install_idea_theme, light_theme};
 
@@ -119,6 +120,18 @@ stylesheet! {
 }
 
 stylesheet! {
+    pub TreeHint<IdeaThemeRef> {
+        base(_t) {
+            margin_top: Length::Px(12.0),
+            padding_top: Length::Px(8.0),
+            font_size: Length::Px(11.0),
+            line_height: 16.0,
+            color: Color("#57606a".into()),
+        }
+    }
+}
+
+stylesheet! {
     pub Center<IdeaThemeRef> {
         base(_t) {
             flex_direction: FlexDirection::Column,
@@ -155,10 +168,15 @@ stylesheet! {
             font_size: Length::Px(EDITOR_FONT_SIZE),
             line_height: EDITOR_LINE_HEIGHT,
             // Textarea's own glyphs are invisible — the colored
-            // overlay carries the visible text. The browser keeps
-            // painting the caret through `caret-color`'s user-agent
-            // default (form-control fg color), which stays solid.
+            // overlay carries the visible text. The caret would also
+            // vanish here (its default `caret-color: auto` follows
+            // `color`); `caret_color` pins it to the editor fg hex
+            // so the cursor stays visible. The framework's
+            // `StyleRules::caret_color` field maps to CSS
+            // `caret-color` on web, `tintColor` on UIKit, and
+            // `setTextCursorDrawable` on Android (API 29+).
             color: Color("transparent".into()),
+            caret_color: Color("#24292f".into()),
             background: Color("transparent".into()),
         }
     }
@@ -388,6 +406,11 @@ fn file_tree_panel(
         View(style = tree_panel_style()) {
             Text(style = tree_header_style()) { "Files" }
             ScrollView { body }
+            Text(style = tree_hint_style()) {
+                "Tip: idea-ui components (Stack, Heading, Body, Card, …) \
+                 are in scope alongside framework primitives. Reach for \
+                 idea-ui when you want styled, opinionated shapes."
+            }
         }
     }
 }
@@ -575,7 +598,28 @@ fn editor_panel(
         });
     };
 
-    let textarea = text_area(buffer, on_change).with_style(textarea_style());
+    // Ref into the textarea so the on_key_down handler can call
+    // `insert_text("    ")` for unmodified Tab. The handler captures
+    // the Ref by value (it's Copy); the actual handle is filled at
+    // mount time and remains usable for the lifetime of the textarea.
+    let textarea_ref: Ref<TextAreaHandle> = Ref::new();
+    let on_key_down = move |ev: &KeyEvent| {
+        // Plain Tab → insert four spaces. With any modifier we let the
+        // browser do its default (focus traversal, shift-tab back, …)
+        // so power-users can still escape the textarea.
+        if ev.key == "Tab" && !ev.shift && !ev.ctrl && !ev.alt && !ev.meta {
+            if let Some(h) = textarea_ref.get() {
+                h.insert_text("    ");
+            }
+            KeyOutcome::PreventDefault
+        } else {
+            KeyOutcome::Default
+        }
+    };
+    let textarea = text_area(buffer, on_change)
+        .on_key_down(on_key_down)
+        .bind(textarea_ref)
+        .with_style(textarea_style());
 
     // Highlight overlay — re-renders only when `buffer` changes.
     // `switch`'s `PartialEq` diff on the inner `String` gates the

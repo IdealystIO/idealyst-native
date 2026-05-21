@@ -36,9 +36,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use framework_core::{
-    primitives, AssetId, AssetSource, AssetTag, Backend, ButtonHandle, ButtonOps, Color,
-    PressableHandle, PressableOps, StyleRules, SystemFallback, TextHandle, TextOps, TypefaceFace,
-    TypefaceId, ViewHandle, ViewOps, ViewportRect,
+    primitives, AssetId, AssetSource, AssetTag, BackendBatch, Backend, BatchOp, ButtonHandle,
+    ButtonOps, Color, PressableHandle, PressableOps, StyleRules, SystemFallback, TextHandle,
+    TextOps, TypefaceFace, TypefaceId, ViewHandle, ViewOps, ViewportRect,
 };
 
 // =============================================================================
@@ -67,7 +67,8 @@ pub enum Event {
     CreatePressable,
     CreateImage { src: String, alt: Option<String> },
     CreateIcon,
-    CreateTextInput { placeholder: Option<String> },
+    CreateTextInput { placeholder: Option<String>, has_key_handler: bool },
+    CreateTextArea { placeholder: Option<String>, has_key_handler: bool },
     CreateToggle { value: bool },
     CreateScrollView { horizontal: bool },
     CreateSlider { value: f32, min: f32, max: f32, step: Option<f32> },
@@ -135,11 +136,92 @@ pub enum Event {
     /// `virtualizer_data_changed(node)` — emitted when the framework
     /// signals a virtualized list's data has been edited.
     VirtualizerDataChanged { node: NodeId },
+
+    // --- Batched-Repeat fast path ---
+    /// `execute_batch(batch)` — emitted when the walker takes the
+    /// batched-Repeat path and `supports_batched_repeat` is enabled
+    /// on the mock. Only fires if the test runtime opted in via
+    /// [`MockBackendConfig::supports_batched_repeat`].
+    ExecuteBatch {
+        ops: Vec<BatchOpSummary>,
+        node_count: u32,
+    },
+    /// `execute_batch_with_attach(batch, parent, attach_locals)` —
+    /// the walker's combined fast path. `attach_locals` is the
+    /// row-top `local_id` list the walker handed off for the
+    /// parent-attach step.
+    ExecuteBatchWithAttach {
+        ops: Vec<BatchOpSummary>,
+        node_count: u32,
+        parent: NodeId,
+        attach_locals: Vec<u32>,
+    },
+}
+
+/// Clone-able shadow of [`BatchOp`] used by the [`Event::ExecuteBatch`]
+/// / [`Event::ExecuteBatchWithAttach`] variants. `BatchOp` itself
+/// isn't `Clone` because [`ApplyStyleStatic`](BatchOp::ApplyStyleStatic)
+/// carries an `Rc<StyleRules>` we don't want to bake into the public
+/// type. We snapshot the salient fields into this enum at record time
+/// so test assertions can inspect them without holding the original
+/// `Rc`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BatchOpSummary {
+    CreateView { local_id: u32 },
+    CreateText { local_id: u32, content: String },
+    ApplyStyleStatic { node: u32, class_name: String },
+    Insert { parent: u32, child: u32 },
+}
+
+impl BatchOpSummary {
+    fn from_op(op: &BatchOp) -> Self {
+        match op {
+            BatchOp::CreateView { local_id } => Self::CreateView { local_id: *local_id },
+            BatchOp::CreateText { local_id, content } => Self::CreateText {
+                local_id: *local_id,
+                content: content.clone(),
+            },
+            BatchOp::ApplyStyleStatic {
+                node, class_name, ..
+            } => Self::ApplyStyleStatic {
+                node: *node,
+                class_name: class_name.clone(),
+            },
+            BatchOp::Insert { parent, child } => Self::Insert {
+                parent: *parent,
+                child: *child,
+            },
+        }
+    }
 }
 
 // =============================================================================
 // MockBackend
 // =============================================================================
+
+/// Tunable behaviours the mock backend can toggle for individual
+/// tests. Most tests want the defaults (per-call backend ops, no
+/// batched-Repeat opt-in) so existing assertions stay valid; the
+/// batched-Repeat coverage tests flip
+/// [`supports_batched_repeat`](Self::supports_batched_repeat) on to
+/// exercise the walker's fast path.
+#[derive(Clone, Copy, Debug)]
+pub struct MockBackendConfig {
+    /// When `true`, the mock reports `supports_batched_repeat()` =
+    /// `true` to the walker, which then takes the batched-Repeat
+    /// fast path for compatible row shapes and ends up calling
+    /// `execute_batch_with_attach` instead of the per-row
+    /// `create_*` + `apply_style` + `insert` sequence.
+    pub supports_batched_repeat: bool,
+}
+
+impl Default for MockBackendConfig {
+    fn default() -> Self {
+        Self {
+            supports_batched_repeat: false,
+        }
+    }
+}
 
 /// Shared event log + monotonic id state. Cloning a `MockBackendCore`
 /// is cheap (Rc-clone) and gives you the same log + same id counter.
@@ -147,6 +229,10 @@ pub enum Event {
 pub struct MockBackendCore {
     next_id: Rc<RefCell<u64>>,
     events: Rc<RefCell<Vec<Event>>>,
+    /// Registered key-down handlers keyed by node id. Lets tests call
+    /// [`MockBackend::fire_key_event`] to synthesize a keydown without
+    /// going through a real platform.
+    pub(crate) key_handlers: Rc<RefCell<std::collections::HashMap<NodeId, framework_core::primitives::key::KeyDownHandler>>>,
 }
 
 impl Default for MockBackendCore {
@@ -154,6 +240,7 @@ impl Default for MockBackendCore {
         Self {
             next_id: Rc::new(RefCell::new(0)),
             events: Rc::new(RefCell::new(Vec::new())),
+            key_handlers: Rc::new(RefCell::new(std::collections::HashMap::new())),
         }
     }
 }
@@ -175,11 +262,24 @@ impl MockBackendCore {
 /// a `MockBackendCore` so cloning a backend share the same event log.
 pub struct MockBackend {
     core: MockBackendCore,
+    config: MockBackendConfig,
 }
 
 impl MockBackend {
     pub fn new() -> Self {
-        Self { core: MockBackendCore::default() }
+        Self {
+            core: MockBackendCore::default(),
+            config: MockBackendConfig::default(),
+        }
+    }
+
+    /// Build a mock backend with a custom config (e.g. to opt into
+    /// the batched-Repeat fast path).
+    pub fn with_config(config: MockBackendConfig) -> Self {
+        Self {
+            core: MockBackendCore::default(),
+            config,
+        }
     }
 
     /// Return a clone of the shared core for inspection.
@@ -223,6 +323,20 @@ impl MockBackend {
                 self.events()
             );
         }
+    }
+
+    /// Synthesize a keydown on the registered handler for `node`.
+    /// Returns the handler's [`KeyOutcome`], or `None` if no handler
+    /// is registered for that node. Used by walker tests to verify
+    /// the on_key_down plumbing without going through a real
+    /// platform.
+    pub fn fire_key_event(
+        &self,
+        node: NodeId,
+        event: &framework_core::primitives::key::KeyEvent,
+    ) -> Option<framework_core::primitives::key::KeyOutcome> {
+        let handler = self.core.key_handlers.borrow().get(&node).cloned()?;
+        Some(handler(event))
     }
 
     /// Count events matching a predicate.
@@ -330,6 +444,68 @@ impl Backend for MockBackend {
         self.core.record(Event::InsertMany { parent: *parent, children });
     }
 
+    // --- Batched-Repeat fast path ---
+    //
+    // `supports_batched_repeat` defaults to false (see
+    // [`MockBackendConfig`]) so existing per-call walker tests keep
+    // observing the granular CreateView / CreateText / Insert /
+    // ApplyStyle event stream they were written against. Tests that
+    // want to exercise the batched fast path opt in via
+    // `MockBackend::with_config(MockBackendConfig {
+    //     supports_batched_repeat: true,
+    // })`.
+
+    fn supports_batched_repeat(&self) -> bool {
+        self.config.supports_batched_repeat
+    }
+
+    /// Hand back a fixed class name so the walker's batched-Repeat
+    /// path doesn't bail when it asks the backend to resolve a static
+    /// style. The trait default is `None` (which signals "I don't
+    /// have a cache for this; please take the per-call path"), so a
+    /// backend that wants `supports_batched_repeat = true` to actually
+    /// fire must override this. The literal class name doesn't
+    /// matter for the mock — it just needs to be `Some`.
+    fn mint_style_class(&mut self, _style: &Rc<StyleRules>) -> Option<String> {
+        Some("mock-class".to_string())
+    }
+
+    fn execute_batch(&mut self, batch: BackendBatch) -> Vec<Self::Node> {
+        // Mint `node_count` fresh ids — the walker indexes into the
+        // returned Vec by `local_id`, so the slot ordering must
+        // match the batch's id-allocation order (0..node_count).
+        let ops: Vec<BatchOpSummary> = batch.ops.iter().map(BatchOpSummary::from_op).collect();
+        let nodes: Vec<NodeId> = (0..batch.node_count).map(|_| self.core.mint()).collect();
+        self.core.record(Event::ExecuteBatch {
+            ops,
+            node_count: batch.node_count,
+        });
+        nodes
+    }
+
+    fn execute_batch_with_attach(
+        &mut self,
+        batch: BackendBatch,
+        parent: &mut Self::Node,
+        attach_locals: &[u32],
+    ) -> Vec<Self::Node> {
+        // Snapshot the ops + attach plan into a single event so tests
+        // can assert on the combined call. The trait default impl
+        // would emit `ExecuteBatch` + `InsertMany` separately; this
+        // override is what the production web backend does, so
+        // recording it specifically lets tests distinguish the two
+        // paths.
+        let ops: Vec<BatchOpSummary> = batch.ops.iter().map(BatchOpSummary::from_op).collect();
+        let nodes: Vec<NodeId> = (0..batch.node_count).map(|_| self.core.mint()).collect();
+        self.core.record(Event::ExecuteBatchWithAttach {
+            ops,
+            node_count: batch.node_count,
+            parent: *parent,
+            attach_locals: attach_locals.to_vec(),
+        });
+        nodes
+    }
+
     fn create_image(&mut self, src: &str, alt: Option<&str>) -> Self::Node {
         let id = self.core.mint();
         self.core.record(Event::CreateImage {
@@ -388,11 +564,34 @@ impl Backend for MockBackend {
         _initial_value: &str,
         placeholder: Option<&str>,
         _on_change: Rc<dyn Fn(String)>,
+        on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
     ) -> Self::Node {
         let id = self.core.mint();
         self.core.record(Event::CreateTextInput {
             placeholder: placeholder.map(|s| s.to_string()),
+            has_key_handler: on_key_down.is_some(),
         });
+        if let Some(h) = on_key_down {
+            self.core.key_handlers.borrow_mut().insert(id, h);
+        }
+        id
+    }
+
+    fn create_text_area(
+        &mut self,
+        _initial_value: &str,
+        placeholder: Option<&str>,
+        _on_change: Rc<dyn Fn(String)>,
+        on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
+    ) -> Self::Node {
+        let id = self.core.mint();
+        self.core.record(Event::CreateTextArea {
+            placeholder: placeholder.map(|s| s.to_string()),
+            has_key_handler: on_key_down.is_some(),
+        });
+        if let Some(h) = on_key_down {
+            self.core.key_handlers.borrow_mut().insert(id, h);
+        }
         id
     }
 

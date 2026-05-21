@@ -318,6 +318,48 @@ impl WebBackend {
         }
     }
 
+    /// Snapshot the resolved gradient onto the node's animation
+    /// state so the per-frame `set_animated_color(GradientStopColor)`
+    /// writer can rebuild inline CSS without re-walking the
+    /// stylesheet. No-op when the rules carry no gradient.
+    ///
+    /// Called from BOTH `impl_apply_style` and
+    /// `impl_apply_styled_states` — the walker picks one based on
+    /// `Backend::handles_states_natively`, and we want the snapshot
+    /// to land identically either way. Keeping the logic in one
+    /// place prevents the two paths from drifting (every prior
+    /// drift left animations broken on whichever path didn't get
+    /// the latest changes).
+    pub(crate) fn snapshot_gradient_for_animation(
+        &mut self,
+        id: u32,
+        gradient: Option<&framework_core::Gradient>,
+    ) {
+        let Some(g) = gradient else {
+            return;
+        };
+        let mut stops = g.stops.clone();
+        stops.sort_by(|a, b| {
+            a.offset.partial_cmp(&b.offset).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let offsets: Vec<f32> = stops.iter().map(|s| s.offset).collect();
+        let colors: Vec<[f32; 4]> = stops.iter().map(|s| color_to_srgb(&s.color)).collect();
+        let shape = crate::animated::GradientShape {
+            kind: match g.kind {
+                framework_core::GradientKind::Linear { angle_deg } => {
+                    crate::animated::GradientShapeKind::Linear { angle_deg }
+                }
+                framework_core::GradientKind::Radial { center, radius, extent } => {
+                    crate::animated::GradientShapeKind::Radial { center, radius, extent }
+                }
+            },
+            offsets,
+        };
+        let state = self.animated_states.entry(id).or_default();
+        state.gradient_shape = Some(shape);
+        state.gradient_stops = colors;
+    }
+
     /// Apply a resolved style to a node.
     ///
     /// - If the rule's content matches a pre-generated class, set
@@ -341,28 +383,7 @@ impl WebBackend {
         // initial paint hits the dedup cache); animation-driven
         // writes layer inline `style.backgroundImage` on top, which
         // CSS precedence resolves in favor of inline.
-        if let Some(g) = style.background_gradient.as_ref() {
-            let mut stops = g.stops.clone();
-            stops.sort_by(|a, b| {
-                a.offset.partial_cmp(&b.offset).unwrap_or(std::cmp::Ordering::Equal)
-            });
-            let offsets: Vec<f32> = stops.iter().map(|s| s.offset).collect();
-            let colors: Vec<[f32; 4]> = stops.iter().map(|s| color_to_srgb(&s.color)).collect();
-            let shape = crate::animated::GradientShape {
-                kind: match g.kind {
-                    framework_core::GradientKind::Linear { angle_deg } => {
-                        crate::animated::GradientShapeKind::Linear { angle_deg }
-                    }
-                    framework_core::GradientKind::Radial { center, radius, extent } => {
-                        crate::animated::GradientShapeKind::Radial { center, radius, extent }
-                    }
-                },
-                offsets,
-            };
-            let state = self.animated_states.entry(id).or_default();
-            state.gradient_shape = Some(shape);
-            state.gradient_stops = colors;
-        }
+        self.snapshot_gradient_for_animation(id, style.background_gradient.as_ref());
 
         // Path 1: pre-generated cache hit.
         if let Some(entry) = self.pregen.get(&key) {
@@ -428,6 +449,20 @@ impl WebBackend {
         // JS-side shim registers the Node as an Element on first
         // call) and only the rare fallback path needs the cast.
         let id = self.node_id(node);
+
+        // Background gradient: snapshot the shape (kind + offsets) +
+        // resolved stop colors onto the node's animation state so the
+        // per-frame `GradientStopColor` writer can rebuild inline CSS
+        // without re-walking the stylesheet. The class itself still
+        // carries the static gradient via the dedup cache; this just
+        // priors the animated-states slot. Done BEFORE the fast-path
+        // pregen returns because any of them might apply, and the
+        // snapshot is independent of which class-application path
+        // wins. (Mirrors the same block in `impl_apply_style` — the
+        // walker dispatches to `apply_styled_states` whenever the
+        // backend reports `handles_states_natively = true`, which is
+        // every web view.)
+        self.snapshot_gradient_for_animation(id, base.background_gradient.as_ref());
 
         // Fast-fast path: pointer-keyed pregen hit. When the
         // framework's resolution cache returns the same
@@ -724,24 +759,28 @@ impl WebBackend {
     }
 
     pub(crate) fn impl_on_node_unstyled(&mut self, node: &web_sys::Node) {
-        // Look up the node's id without minting a new one (we don't
-        // want spurious id allocations during teardown).
-        let p: *const web_sys::Node = node;
-        if let Some(&id) = self.node_ids.get(&p) {
-            // Drop the dynamic slot (deletes its CSS rule if any).
-            self.drop_dynamic_slot(id);
-            // Drop any state-listener closures (so they stop firing
-            // on the now-removed DOM element).
-            self.state_listeners.remove(&id);
-            // Drop any per-node animation state.
-            self.impl_drop_animated_state(id);
-            // Drop the JS-side `__idealystStyledNodes` entry so the
-            // Element handle can be GC'd. No-op if the node was
-            // never registered (e.g. unstyled View).
-            self.release_styled_node(id);
-            // Remove the node-id mapping itself.
-            self.node_ids.remove(&p);
-        }
+        // Resolve the JS-side id for this DOM node. `node_id` is
+        // the single source of truth — going through it here means
+        // teardown sees the same id `apply_style` stamped state
+        // under, even though the Rust wrapper pointer has no
+        // relationship to the underlying JS object identity.
+        //
+        // `node_id` always goes through the JS-side WeakMap (no
+        // Rust-side cache, by design — see `WebBackend::node_id`)
+        // so this costs one FFI hop per unstyle. Acceptable —
+        // teardown isn't on the per-frame hot path.
+        //
+        // The sub-cleanups (`drop_dynamic_slot`, `state_listeners
+        // .remove`, `impl_drop_animated_state`, `release_styled_node`)
+        // are idempotent on missing keys, so unstyling a never-
+        // styled node is harmlessly a no-op. The WeakMap entry
+        // node_id allocates will auto-clear when the DOM element
+        // is GC'd, so no explicit cleanup is needed for it either.
+        let id = self.node_id(node);
+        self.drop_dynamic_slot(id);
+        self.state_listeners.remove(&id);
+        self.impl_drop_animated_state(id);
+        self.release_styled_node(id);
     }
 }
 
@@ -1184,6 +1223,7 @@ pub(crate) fn rules_to_css(rules: &StyleRules) -> String {
         parts.push(format!("background-image: {}", gradient_css(g)));
     }
     if let Some(t) = &rules.color { parts.push(format!("color: {}", tokenized_color_css(t))); }
+    if let Some(t) = &rules.caret_color { parts.push(format!("caret-color: {}", tokenized_color_css(t))); }
     if let Some(t) = &rules.font_size { parts.push(format!("font-size: {}", tokenized_length_css(t))); }
 
     // Flex container.
@@ -1315,6 +1355,13 @@ pub(crate) fn rules_to_css(rules: &StyleRules) -> String {
             parts.push(format!("transform: {}", joined.join(" ")));
         }
     }
+    if let Some((ox, oy)) = rules.transform_origin {
+        parts.push(format!(
+            "transform-origin: {} {}",
+            length_css(ox),
+            length_css(oy)
+        ));
+    }
 
     // Transitions: emit a single CSS `transition` declaration listing
     // every active per-property transition. The browser interpolates
@@ -1347,6 +1394,7 @@ fn collect_transitions(rules: &StyleRules) -> Vec<String> {
     }
     tr!(background_transition, "background");
     tr!(color_transition, "color");
+    tr!(caret_color_transition, "caret-color");
     tr!(opacity_transition, "opacity");
     tr!(transform_transition, "transform");
     tr!(width_transition, "width");

@@ -829,7 +829,12 @@ impl Backend for IosBackend {
         initial_value: &str,
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
+        _on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
     ) -> Self::Node {
+        // TODO: wire `_on_key_down` through `UIKeyCommand` + the
+        // `UITextFieldDelegate.shouldChangeCharactersInRange:` path.
+        // Tracked in the same change that adds UITextView TextArea
+        // support — the keyboard bridge is shared between both.
         let field = unsafe { UITextField::new(self.mtm) };
         let ns_val = NSString::from_str(initial_value);
         unsafe { field.setText(Some(&ns_val)) };
@@ -1445,7 +1450,26 @@ impl Backend for IosBackend {
                     }
                 }
             }
-            IosNode::TextField(_) => apply_text_style(view, style, false),
+            IosNode::TextField(field) => {
+                apply_text_style(view, style, false);
+                // Caret color → UIKit `tintColor`. On a UITextField the
+                // caret + selection handles both follow tintColor, so a
+                // single setter covers them. Mirrors the web `caret-color`
+                // mapping. The text color itself lives on `color` and is
+                // already applied by `apply_text_style` above.
+                if let Some(caret) = &style.caret_color {
+                    let c = color_to_uicolor(&caret.resolve());
+                    if let Some(trans) = &style.caret_color_transition {
+                        let field_ref: Retained<UITextField> = field.clone();
+                        let trans = *trans;
+                        animate(&trans, Rc::new(move || {
+                            let _: () = unsafe { msg_send![&field_ref, setTintColor: &*c] };
+                        }));
+                    } else {
+                        let _: () = unsafe { msg_send![field, setTintColor: &*c] };
+                    }
+                }
+            }
             _ => {}
         }
     }

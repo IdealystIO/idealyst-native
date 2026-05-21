@@ -2,6 +2,7 @@
 //! value signal and a per-keystroke `on_change` callback.
 
 use crate::WebBackend;
+use framework_core::primitives::key::{KeyDownHandler, KeyEvent, KeyOutcome};
 use framework_core::primitives::text_input::{TextInputHandle, TextInputOps};
 use std::any::Any;
 use std::rc::Rc;
@@ -14,6 +15,7 @@ pub(crate) fn create(
     initial_value: &str,
     placeholder: Option<&str>,
     on_change: Rc<dyn Fn(String)>,
+    on_key_down: Option<KeyDownHandler>,
 ) -> Node {
     let input: web_sys::HtmlInputElement = b
         .doc
@@ -42,7 +44,58 @@ pub(crate) fn create(
     // existing per-node closure holder.
     let id = b.node_id(&input.clone().unchecked_into::<Node>());
     b.state_listeners.entry(id).or_default().push(closure);
+    if let Some(handler) = on_key_down {
+        attach_key_listener_input(&input, id, b, handler);
+    }
     input.unchecked_into::<Node>()
+}
+
+/// Wire a DOM `keydown` listener that calls the Rust `KeyDownHandler`
+/// with the same `KeyEvent` shape used by every other backend, and
+/// calls `event.preventDefault()` when the handler returns
+/// `KeyOutcome::PreventDefault`. Kept as a free function so both
+/// `text_input::create` and `text_area::create` can call it without
+/// monomorphising over the element type.
+///
+/// The closure stored under `state_listeners` is typed
+/// `FnMut(web_sys::Event)` to match the existing map's value type;
+/// we `dyn_into` to `KeyboardEvent` inside.
+pub(crate) fn attach_key_listener_input(
+    input: &web_sys::HtmlInputElement,
+    id: u32,
+    b: &mut WebBackend,
+    handler: KeyDownHandler,
+) {
+    let input_clone = input.clone();
+    let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |e: web_sys::Event| {
+        if let Ok(ke) = e.dyn_into::<web_sys::KeyboardEvent>() {
+            let event = KeyEvent {
+                key: ke.key(),
+                shift: ke.shift_key(),
+                ctrl: ke.ctrl_key(),
+                alt: ke.alt_key(),
+                meta: ke.meta_key(),
+                selection_start: input_clone
+                    .selection_start()
+                    .ok()
+                    .flatten()
+                    .unwrap_or(0) as usize,
+                selection_end: input_clone
+                    .selection_end()
+                    .ok()
+                    .flatten()
+                    .unwrap_or(0) as usize,
+            };
+            if handler(&event) == KeyOutcome::PreventDefault {
+                ke.prevent_default();
+            }
+        }
+    });
+    let _ = input.add_event_listener_with_callback(
+        "keydown",
+        closure.as_ref().unchecked_ref(),
+    );
+    b.state_listeners.entry(id).or_default().push(closure);
 }
 
 pub(crate) fn update_value(node: &Node, value: &str) {
@@ -78,6 +131,23 @@ impl TextInputOps for WebTextInputOps {
     fn select_all(&self, node: &dyn Any) {
         if let Some(input) = node.downcast_ref::<web_sys::HtmlInputElement>() {
             input.select();
+        }
+    }
+    fn insert_text(&self, node: &dyn Any, text: &str) {
+        if let Some(input) = node.downcast_ref::<web_sys::HtmlInputElement>() {
+            // Splice `text` into the active selection. `setRangeText`
+            // is the modern API that does this in one call and
+            // dispatches the implicit `input` event the framework's
+            // change wire-up listens for, so the controlling Signal
+            // updates without us touching `.value` directly.
+            let start = input.selection_start().ok().flatten().unwrap_or(0);
+            let end = input.selection_end().ok().flatten().unwrap_or(start);
+            let _ = input.set_range_text_with_start_and_end(text, start, end);
+            // Dispatch an `input` event so the on_change closure
+            // wired in `create()` runs and Signals get notified.
+            if let Ok(event) = web_sys::Event::new("input") {
+                let _ = input.dispatch_event(&event);
+            }
         }
     }
 }

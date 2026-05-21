@@ -709,15 +709,20 @@ pub trait Backend {
     }
 
     /// Create a text input with the initial value, placeholder, and
-    /// an `on_change` callback fired on every native input event.
-    /// The framework wraps the controlled `value` signal in an
-    /// effect that calls `update_text_input_value` on signal change.
+    /// callbacks. `on_change` fires on every native input event;
+    /// `on_key_down`, if set, fires on every keydown before the
+    /// platform's default action (see
+    /// [`primitives::key`](crate::primitives::key) for the
+    /// cross-platform contract). The framework wraps the controlled
+    /// `value` signal in an effect that calls
+    /// `update_text_input_value` on signal change.
     #[allow(unused_variables)]
     fn create_text_input(
         &mut self,
         initial_value: &str,
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
+        on_key_down: Option<primitives::key::KeyDownHandler>,
     ) -> Self::Node {
         unimplemented!("create_text_input not implemented for this backend")
     }
@@ -734,6 +739,7 @@ pub trait Backend {
         initial_value: &str,
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
+        on_key_down: Option<primitives::key::KeyDownHandler>,
     ) -> Self::Node {
         unimplemented!("create_text_area not implemented for this backend")
     }
@@ -1885,6 +1891,7 @@ impl primitives::text_input::TextInputOps for NoopTextInputOps {
     fn focus(&self, _: &dyn Any) {}
     fn blur(&self, _: &dyn Any) {}
     fn select_all(&self, _: &dyn Any) {}
+    fn insert_text(&self, _: &dyn Any, _: &str) {}
 }
 
 struct NoopTextAreaOps;
@@ -1892,6 +1899,7 @@ impl primitives::text_area::TextAreaOps for NoopTextAreaOps {
     fn focus(&self, _: &dyn Any) {}
     fn blur(&self, _: &dyn Any) {}
     fn select_all(&self, _: &dyn Any) {}
+    fn insert_text(&self, _: &dyn Any, _: &str) {}
 }
 
 struct NoopToggleOps;
@@ -1955,3 +1963,234 @@ impl ViewOps for NoopViewOps {}
 
 struct NoopTextOps;
 impl TextOps for NoopTextOps {}
+
+// =============================================================================
+// Trait default-impl tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    //! Unit tests for the `Backend` trait's default method
+    //! implementations. The framework relies on these defaults
+    //! behaving correctly for every backend that doesn't override
+    //! them — silent drift here would surface as bugs in mobile
+    //! backends (which inherit most defaults).
+
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use super::*;
+    use crate::batch::{BackendBatch, BatchOp};
+
+    /// Records every Backend method we care about so default-impl
+    /// tests can observe the call sequence and arguments.
+    #[derive(Debug, Clone, PartialEq)]
+    enum Call {
+        ExecuteBatch { node_count: u32, ops: usize },
+        InsertMany { parent: u32, children: Vec<u32> },
+        Insert { parent: u32, child: u32 },
+    }
+
+    /// Minimal `Backend` impl for default-impl coverage. Only the
+    /// methods needed to exercise `execute_batch_with_attach`'s
+    /// default path are implemented; everything else falls through
+    /// to the trait's own defaults (`unimplemented!()` for required
+    /// methods we don't call, no-op for the optional ones).
+    ///
+    /// Deliberately does NOT override `execute_batch_with_attach`:
+    /// that's the whole point — we want to assert that the trait
+    /// default fires `execute_batch` + `insert_many` in the right
+    /// order with the right args.
+    struct StubBackend {
+        next_id: RefCell<u32>,
+        calls: Rc<RefCell<Vec<Call>>>,
+    }
+
+    impl StubBackend {
+        fn new() -> Self {
+            Self {
+                next_id: RefCell::new(0),
+                calls: Rc::new(RefCell::new(Vec::new())),
+            }
+        }
+
+        fn calls(&self) -> Vec<Call> {
+            self.calls.borrow().clone()
+        }
+
+        fn mint(&self) -> u32 {
+            let id = *self.next_id.borrow();
+            *self.next_id.borrow_mut() = id + 1;
+            id
+        }
+    }
+
+    impl Backend for StubBackend {
+        type Node = u32;
+
+        fn create_view(&mut self) -> Self::Node {
+            self.mint()
+        }
+        fn create_text(&mut self, _content: &str) -> Self::Node {
+            self.mint()
+        }
+        fn create_button(
+            &mut self,
+            _label: &str,
+            _on_click: &crate::Action,
+            _leading: Option<&primitives::icon::IconData>,
+            _trailing: Option<&primitives::icon::IconData>,
+        ) -> Self::Node {
+            self.mint()
+        }
+        fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
+            self.calls.borrow_mut().push(Call::Insert {
+                parent: *parent,
+                child,
+            });
+        }
+        fn update_text(&mut self, _node: &Self::Node, _content: &str) {}
+        fn clear_children(&mut self, _node: &Self::Node) {}
+        fn apply_style(&mut self, _node: &Self::Node, _style: &Rc<StyleRules>) {}
+
+        // Opt into the batched-Repeat path *only* for `execute_batch`
+        // — leave `execute_batch_with_attach` to the trait default.
+        fn supports_batched_repeat(&self) -> bool {
+            true
+        }
+
+        fn execute_batch(&mut self, batch: BackendBatch) -> Vec<Self::Node> {
+            let count = batch.node_count;
+            self.calls.borrow_mut().push(Call::ExecuteBatch {
+                node_count: count,
+                ops: batch.ops.len(),
+            });
+            (0..count).map(|_| self.mint()).collect()
+        }
+
+        fn insert_many(&mut self, parent: &mut Self::Node, children: Vec<Self::Node>) {
+            self.calls.borrow_mut().push(Call::InsertMany {
+                parent: *parent,
+                children,
+            });
+        }
+
+        fn finish(&mut self, _root: Self::Node) {}
+    }
+
+    /// `execute_batch_with_attach`'s default impl must call
+    /// `execute_batch` then `insert_many` — in that order. The
+    /// `insert_many` children must be the `attach_locals` resolved
+    /// through the batch's return Vec.
+    #[test]
+    fn default_impl_calls_execute_batch_then_insert_many() {
+        let mut backend = StubBackend::new();
+        let mut parent: u32 = 999; // any pre-existing id
+        let mut batch = BackendBatch::with_capacity(3, 0);
+        // Three nodes, two of them flagged for attach.
+        let id_a = batch.next_id();
+        let id_b = batch.next_id();
+        let id_c = batch.next_id();
+        batch.ops.push(BatchOp::CreateView { local_id: id_a });
+        batch.ops.push(BatchOp::CreateView { local_id: id_b });
+        batch.ops.push(BatchOp::CreateView { local_id: id_c });
+        let attach_locals = [id_a, id_c];
+
+        let returned = backend.execute_batch_with_attach(batch, &mut parent, &attach_locals);
+
+        // Default impl returns the full Vec from execute_batch
+        // — sized to node_count, ordered by local_id.
+        assert_eq!(
+            returned.len(),
+            3,
+            "default impl must return execute_batch's Vec unchanged",
+        );
+
+        let calls = backend.calls();
+        // First: execute_batch with 3 node_count, 3 ops.
+        // Second: insert_many with the 2 attach-flagged children.
+        assert_eq!(calls.len(), 2, "exactly two recorded calls; got {:?}", calls);
+        match &calls[0] {
+            Call::ExecuteBatch { node_count, ops } => {
+                assert_eq!(*node_count, 3);
+                assert_eq!(*ops, 3);
+            }
+            other => panic!("expected ExecuteBatch first, got {:?}", other),
+        }
+        match &calls[1] {
+            Call::InsertMany { parent: p, children } => {
+                assert_eq!(*p, 999, "parent should be the caller's parent id");
+                // children = [returned[id_a], returned[id_c]].
+                // returned was minted by `execute_batch` AFTER parent
+                // was minted-by-test, so children should be the
+                // freshly-minted ids the stub allocated inside
+                // execute_batch.
+                assert_eq!(children.len(), 2);
+                assert_eq!(children[0], returned[id_a as usize]);
+                assert_eq!(children[1], returned[id_c as usize]);
+            }
+            other => panic!("expected InsertMany second, got {:?}", other),
+        }
+    }
+
+    /// Empty `attach_locals` short-circuits past the `insert_many`
+    /// call — important so backends that override `execute_batch`
+    /// but never want auto-attach (no-op repeats, or callers using
+    /// the bare `execute_batch` path) don't pay an extra `insert_many`
+    /// hop.
+    #[test]
+    fn default_impl_skips_insert_many_when_attach_locals_is_empty() {
+        let mut backend = StubBackend::new();
+        let mut parent: u32 = 7;
+        let mut batch = BackendBatch::with_capacity(1, 0);
+        let id = batch.next_id();
+        batch.ops.push(BatchOp::CreateView { local_id: id });
+
+        let _ = backend.execute_batch_with_attach(batch, &mut parent, &[]);
+
+        let calls = backend.calls();
+        assert_eq!(
+            calls.len(),
+            1,
+            "only execute_batch should fire when attach_locals is empty; got {:?}",
+            calls,
+        );
+        assert!(matches!(calls[0], Call::ExecuteBatch { .. }));
+    }
+
+    /// `attach_locals` ordering must be preserved into `insert_many`
+    /// — the framework's contract is that the row tops appear in the
+    /// surrounding View in iteration order.
+    #[test]
+    fn default_impl_preserves_attach_locals_order() {
+        let mut backend = StubBackend::new();
+        let mut parent: u32 = 100;
+        let mut batch = BackendBatch::with_capacity(4, 0);
+        let id_a = batch.next_id();
+        let id_b = batch.next_id();
+        let id_c = batch.next_id();
+        let id_d = batch.next_id();
+        batch.ops.push(BatchOp::CreateView { local_id: id_a });
+        batch.ops.push(BatchOp::CreateView { local_id: id_b });
+        batch.ops.push(BatchOp::CreateView { local_id: id_c });
+        batch.ops.push(BatchOp::CreateView { local_id: id_d });
+        // Out of natural order — c then a then d, skipping b.
+        let attach_locals = [id_c, id_a, id_d];
+
+        let returned = backend.execute_batch_with_attach(batch, &mut parent, &attach_locals);
+        let calls = backend.calls();
+        let children = match &calls[1] {
+            Call::InsertMany { children, .. } => children.clone(),
+            other => panic!("expected InsertMany, got {:?}", other),
+        };
+        assert_eq!(
+            children,
+            vec![
+                returned[id_c as usize],
+                returned[id_a as usize],
+                returned[id_d as usize],
+            ],
+            "attach_locals order must round-trip into insert_many",
+        );
+    }
+}

@@ -236,3 +236,129 @@ pub fn raf_loop<F: FnMut() + 'static>(f: F) -> RafLoop {
         );
     }
 }
+
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
+mod tests {
+    //! Native-fallback path tests for the scheduling helpers.
+    //!
+    //! These tests exercise the path the framework takes on
+    //! non-wasm targets when no platform [`Scheduler`] has been
+    //! installed (which is the test-binary configuration —
+    //! `install_scheduler` is a `OnceLock` and we deliberately
+    //! never call it here so the unit tests see a clean state).
+    //!
+    //! The wasm-target panic branches aren't reachable on native
+    //! and aren't covered by these tests; they're verified by
+    //! eyeballing the matching `panic!` messages with the
+    //! installer's call-site docs.
+
+    use super::*;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    #[test]
+    fn schedule_microtask_runs_synchronously_without_scheduler() {
+        // No scheduler installed -> synchronous on native. The
+        // closure must fire by the time `schedule_microtask`
+        // returns.
+        let fired = Rc::new(Cell::new(false));
+        let fired_for_closure = fired.clone();
+        schedule_microtask(move || {
+            fired_for_closure.set(true);
+        });
+        assert!(
+            fired.get(),
+            "schedule_microtask should run synchronously on native without an installed scheduler",
+        );
+    }
+
+    #[test]
+    fn after_animation_frame_runs_synchronously_without_scheduler() {
+        let fired = Rc::new(Cell::new(false));
+        let fired_for_closure = fired.clone();
+        let task = after_animation_frame(move || {
+            fired_for_closure.set(true);
+        });
+        assert!(
+            fired.get(),
+            "after_animation_frame should fire synchronously on native without a scheduler",
+        );
+        // The returned ScheduledTask should hold no inner handle
+        // since the body already ran.
+        assert!(
+            task.inner.is_none(),
+            "native-fallback ScheduledTask should have no inner handle",
+        );
+    }
+
+    #[test]
+    fn after_ms_runs_synchronously_without_scheduler() {
+        let fired = Rc::new(Cell::new(false));
+        let fired_for_closure = fired.clone();
+        // Big delay — synchronous fallback should ignore it.
+        let task = after_ms(10_000, move || {
+            fired_for_closure.set(true);
+        });
+        assert!(
+            fired.get(),
+            "after_ms should fire synchronously on native without a scheduler (delay ignored)",
+        );
+        assert!(task.inner.is_none());
+    }
+
+    #[test]
+    fn raf_loop_is_inert_on_native_without_scheduler() {
+        // The wasm raf_loop is FnMut+self-rearming; on native
+        // without a scheduler the body must NEVER fire (we have
+        // no frame source).
+        let fired = Rc::new(Cell::new(0u32));
+        let fired_for_closure = fired.clone();
+        let _loop_handle = raf_loop(move || {
+            fired_for_closure.set(fired_for_closure.get() + 1);
+        });
+        assert_eq!(
+            fired.get(),
+            0,
+            "raf_loop body should not run on native without a scheduler",
+        );
+    }
+
+    #[test]
+    fn scheduled_task_cancel_is_idempotent_on_native_fallback() {
+        let mut task = after_animation_frame(|| {});
+        // First cancel is a no-op (no inner handle on native).
+        task.cancel();
+        // Second cancel must not panic.
+        task.cancel();
+        // And drop must not panic either.
+        drop(task);
+    }
+
+    #[test]
+    fn raf_loop_cancel_is_idempotent_on_native_fallback() {
+        let mut handle = raf_loop(|| {});
+        handle.cancel();
+        handle.cancel();
+        drop(handle);
+    }
+
+    #[test]
+    fn schedule_microtask_with_capture_runs_body_with_captured_values() {
+        let cell = Rc::new(Cell::new(0));
+        let cell_clone = cell.clone();
+        schedule_microtask(move || {
+            cell_clone.set(42);
+        });
+        assert_eq!(cell.get(), 42);
+    }
+
+    #[test]
+    fn drop_of_scheduled_task_without_inner_does_not_panic() {
+        // ScheduledTask construction on native (no scheduler)
+        // never builds an inner handle; verify the Drop path is
+        // benign.
+        let task = after_ms(0, || {});
+        drop(task); // should not panic
+    }
+}

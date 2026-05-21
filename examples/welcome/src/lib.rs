@@ -91,15 +91,16 @@ const GLARE_INITIAL_SCALE: f32 = 0.55;
 /// always square regardless of viewport aspect — the layout engine
 /// derives height to match. `40%` of a 390-wide iPhone ≈ 156px;
 /// `40%` of a 1024-wide iPad ≈ 410px.
-const GLARE_ANCHOR_SIZE_PCT: f32 = 40.0;
+const GLARE_ANCHOR_SIZE_PCT: f32 = 60.0;
 
-/// Top/right inset of the anchor from the page edges, in CSS pixels.
-/// NEGATIVE so the anchor pokes past the viewport edge — the page's
-/// `overflow: hidden` clips the off-screen portion, leaving the sun
-/// emerging from behind the top-right corner. About 25% of the
-/// 40%-wide anchor pokes off-screen at each axis on a 390-wide
-/// phone (40px × 156 = ~40px clipped).
-const GLARE_ANCHOR_INSET: f32 = -40.0;
+/// Negative-margin shift that centers the anchor on the top-right
+/// viewport corner. Both `margin_top` and `margin_right` percentages
+/// resolve against the parent's INLINE size (= width) per CSS
+/// spec, so a single value works for both axes regardless of
+/// device aspect ratio — half the anchor's width-as-percent shifts
+/// the box up by half its (square) height AND right by half its
+/// width, putting the box center exactly on the corner.
+const GLARE_CENTER_SHIFT_PCT: f32 = -(GLARE_ANCHOR_SIZE_PCT / 2.0);
 
 /// Sun-glare breathe amplitude. The raf-driven pulse adds
 /// `sin(t) * amp` to the resting scale of 1.0, so the sun throbs
@@ -107,11 +108,11 @@ const GLARE_ANCHOR_INSET: f32 = -40.0;
 /// breath; larger feels gimmicky, smaller is invisible.
 const SUN_PULSE_AMPLITUDE: f32 = 0.08;
 
-/// How long after the entrance spring fires before the scale pulse
-/// takes over. The spring needs ~1.6 s to settle; this gives it a
-/// bit of slack so the takeover doesn't fight a still-overshooting
-/// spring. Sine starts at `sin(0) = 0` → no visible jump on takeover.
-const SUN_SCALE_PULSE_DELAY_MS: i32 = 1800;
+/// Period of the sun's color + scale breathe, in milliseconds. Both
+/// the per-stop color animator and the scale animator share this so
+/// the warmth swell and the size swell stay phase-locked. ~5 s reads
+/// as an unhurried, alive presence; faster starts to feel anxious.
+const SUN_PULSE_PERIOD_MS: f64 = 5200.0;
 
 
 // ---- Color palette -------------------------------------------------------
@@ -302,34 +303,56 @@ pub fn app() -> Primitive {
         };
         on_cleanup(move || drop(tasks));
 
-        // ---- Pulse driver -----------------------------------------------
+        // ---- Unified pulse driver --------------------------------------
         //
-        // A single `raf_loop` ticks the sun's core / corona colors
-        // and the vignette's corner color along a sine wave. Same
-        // cadence on every platform — the AV's `set()` notifies
-        // subscribers, the subscribers call `set_animated_color`
-        // with the new stop, and each backend rewrites its
-        // gradient. Started here (inside the same effect that owns
-        // the timeline) so its lifetime tracks the page's `Owner`.
-        let pulse_start_ms = act_2_start + 200; // tied to glare bloom-in
+        // ONE `raf_loop`, ONE epoch — drives the sun's core/corona
+        // colors, the vignette's corner color, AND the sun's scale
+        // along a single shared sine wave. Sharing the phase is the
+        // whole point: the sun "growing larger" and the vignette
+        // brightest must peak at the same moment or the scene reads
+        // as two unrelated animations laid over each other.
+        //
+        // Timing:
+        // - Pulse starts at `act_2_start + 200` (same tick the
+        //   glare-bloom tween begins), so its first frame writes
+        //   `t=0` colors / scale=1.0 — no discontinuity from the
+        //   pre-pulse static seed.
+        // - The sun's entrance SpringTo on `glare_scale` is set at
+        //   `act_2_start + 200` and lands near 1.0 in ~1.6 s. The
+        //   pulse's `AV.set()` would normally cancel the spring; we
+        //   gate scale writes until the spring has had time to
+        //   settle, then start writing — `sin(0) = 0` at the gate
+        //   means the takeover joins at scale 1.0 with no jump.
+        // - Because the phase is the SAME formula for color and
+        //   scale, gating the scale just hides the first half-period
+        //   of motion; once it joins, it's already in phase with the
+        //   color pulse for the rest of the page lifetime.
+        let pulse_start_ms = act_2_start + 200;
         let core_av = sun_core_color.clone();
         let corona_av = sun_corona_color.clone();
         let vignette_av = vignette_corner_color.clone();
+        let scale_av = glare_scale.clone();
         let pulse_task = framework_core::after_ms(pulse_start_ms, move || {
-            // Cycle period: 2.4 s. Slow enough to read as a
-            // breathing pulse, fast enough that the warm/cool swing
-            // is visible within the welcome's short runtime.
-            let period_ms = 2400.0_f64;
-            // Anchor at the moment the pulse starts so the first
-            // cycle's phase begins at `sin(0) = 0` — i.e., the
-            // gradient eases INTO the pulse from its static seed.
+            let period_ms = SUN_PULSE_PERIOD_MS;
+            // Scale takeover gate: the entrance spring needs ~1.6 s
+            // to settle and we don't want `AV::set` cancelling it
+            // mid-flight. We ALSO need the takeover to land on a
+            // sine zero so scale writes start at 1.0 (the spring's
+            // resting value) with no visible jump. The smallest
+            // sin-zero moment after settle is `period / 2`; that
+            // gives a slightly delayed scale start but a perfectly
+            // clean handoff. After that, scale and color share a
+            // sin and peak together every cycle.
+            let scale_gate_ms = period_ms / 2.0;
             let epoch = framework_core::time::now_micros();
             let raf = framework_core::raf_loop(move || {
                 let now = framework_core::time::now_micros();
                 let elapsed_ms = (now.saturating_sub(epoch) as f64) / 1000.0;
                 let phase = (elapsed_ms / period_ms) * std::f64::consts::TAU;
-                // sin maps to -1..1; remap to 0..1 for color lerp.
-                let t = ((phase.sin() + 1.0) * 0.5) as f32;
+                let sin = phase.sin();
+                // Colors: `t = (sin + 1) / 2` so dim↔bright maps to
+                // the sine excursion 0..1.
+                let t = ((sin + 1.0) * 0.5) as f32;
                 core_av.set(lerp_color(SUN_CORE_DIM, SUN_CORE_BRIGHT, t));
                 corona_av.set(lerp_color(SUN_CORONA_DIM, SUN_CORONA_BRIGHT, t));
                 vignette_av.set(lerp_color(
@@ -337,37 +360,20 @@ pub fn app() -> Primitive {
                     VIGNETTE_CORNER_BRIGHT,
                     t,
                 ));
+                // Scale joins after the entrance spring settles,
+                // using the SAME `sin` value as the color writes
+                // so brightest-warm and largest-disc land on the
+                // same frame.
+                if elapsed_ms >= scale_gate_ms {
+                    let scale = 1.0_f32 + SUN_PULSE_AMPLITUDE * sin as f32;
+                    scale_av.set(scale);
+                }
             });
             // Leak the raf handle so it lives for the page; the
             // pulse should never stop while the welcome is on screen.
             std::mem::forget(raf);
         });
         std::mem::forget(pulse_task);
-
-        // ---- Sun scale pulse -------------------------------------------
-        //
-        // The sun's entrance spring (act_2_start + 200) lands at
-        // scale 1.0; after a settle delay we take `glare_scale`
-        // over with a sine-driven breathe. `sin(0) = 0` so the
-        // takeover starts at exactly 1.0 — no visible jump from
-        // the spring's resting value. Driven by the same period
-        // as the color pulse so the warm-up and the throb feel
-        // synchronized.
-        let scale_av = glare_scale.clone();
-        let scale_pulse_start = act_2_start + 200 + SUN_SCALE_PULSE_DELAY_MS;
-        let scale_task = framework_core::after_ms(scale_pulse_start, move || {
-            let period_ms = 2400.0_f64;
-            let epoch = framework_core::time::now_micros();
-            let raf = framework_core::raf_loop(move || {
-                let now = framework_core::time::now_micros();
-                let elapsed_ms = (now.saturating_sub(epoch) as f64) / 1000.0;
-                let phase = (elapsed_ms / period_ms) * std::f64::consts::TAU;
-                let scale = 1.0_f32 + SUN_PULSE_AMPLITUDE * phase.sin() as f32;
-                scale_av.set(scale);
-            });
-            std::mem::forget(raf);
-        });
-        std::mem::forget(scale_task);
     });
 
     // ---- Build the tree ------------------------------------------------
@@ -805,8 +811,16 @@ fn glare_anchor_sheet() -> Rc<StyleSheet> {
     use framework_core::{Gradient, GradientKind, GradientStop, RadialExtent};
     static_sheet(StyleRules {
         position: Some(Position::Absolute),
-        top: Some(px(GLARE_ANCHOR_INSET)),
-        right: Some(px(GLARE_ANCHOR_INSET)),
+        // Pin the anchor's bounding box to the viewport's top-right
+        // edge, then shift it by half its own width on each axis so
+        // its CENTER lands on the corner. The visible quadrant is
+        // the lower-left of the disc; the scale pulse still emits
+        // from the disc's geometric center (which is the corner
+        // itself) since transform-origin is the default 50% 50%.
+        top: Some(px(0.0)),
+        right: Some(px(0.0)),
+        margin_top: Some(pct(GLARE_CENTER_SHIFT_PCT)),
+        margin_right: Some(pct(GLARE_CENTER_SHIFT_PCT)),
         // Sun is sized as a fraction of viewport width and held
         // square via `aspect_ratio: 1.0`. The layout engine sets
         // height to match the resolved width, so the disc remains
@@ -843,18 +857,30 @@ fn glare_anchor_sheet() -> Rc<StyleSheet> {
                 // fills the whole circular clip.
                 extent: RadialExtent::ClosestSide,
             },
+            // Four-stop falloff tuned for the larger anchor: bright
+            // cream core kept tight (offset 0–0.18) so the hot
+            // center reads as a sun, then a long, mostly-transparent
+            // tail that fades out gently to the edge of the disc.
+            // Each ring's alpha is roughly half the previous, which
+            // gives a perceptually-even brightness ramp (alpha is
+            // gamma-space additive, the eye expects exponential
+            // falloff for a "smooth" gradient).
             stops: vec![
                 GradientStop {
                     offset: 0.0,
                     color: Color(COLOR_SUN_CORE.into()),
                 },
                 GradientStop {
-                    offset: 0.25,
-                    color: Color("rgba(255, 210, 110, 0.85)".into()),
+                    offset: 0.18,
+                    color: Color("rgba(255, 210, 110, 0.70)".into()),
                 },
                 GradientStop {
-                    offset: 0.55,
-                    color: Color("rgba(255, 168, 60, 0.40)".into()),
+                    offset: 0.45,
+                    color: Color("rgba(255, 168, 60, 0.22)".into()),
+                },
+                GradientStop {
+                    offset: 0.75,
+                    color: Color("rgba(255, 168, 60, 0.06)".into()),
                 },
                 GradientStop {
                     offset: 1.0,
