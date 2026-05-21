@@ -223,7 +223,17 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
     // to a `.flata` so the aapt2 link step can produce a real resource
     // table + R.java files (DrawerLayout's `obtainStyledAttributes`
     // refuses zero IDs, so stub R classes don't work).
-    let runtime = kotlin_runtime::build_runtime(&build_dir, &android_jar, &build_tools)?;
+    // The wrapper's Cargo.toml is what `cargo metadata` walks to find
+    // any third-party SDK Kotlin runtime sources + AndroidX
+    // requirements (declared in each SDK's
+    // `[package.metadata.idealyst.android]`).
+    let wrapper_manifest = so.wrapper_dir.join("Cargo.toml");
+    let runtime = kotlin_runtime::build_runtime(
+        &build_dir,
+        &android_jar,
+        &build_tools,
+        &wrapper_manifest,
+    )?;
 
     // ── 6. aapt2 link → APK + generated R.java ───────────────────
     let unsigned_apk = build_dir.join("unsigned.apk");
@@ -237,14 +247,22 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
         &unsigned_apk,
     )?;
 
-    // ── 7. javac (user .java + generated R.java) ─────────────────
+    // ── 7. javac (user .java + generated R.java + SDK .java) ─────
     let class_dir = build_dir.join("classes");
     fs::create_dir_all(&class_dir)?;
     let mut java_classpath = vec![android_jar.clone()];
     java_classpath.push(runtime.kotlin_class_dir.clone());
     java_classpath.extend(runtime.androidx_jars.iter().cloned());
     java_classpath.push(runtime.kotlin_stdlib_jar.clone());
-    compile_java_dirs(&[java_dir.clone(), runtime.r_java_dir.clone()], &class_dir, &java_classpath)?;
+    let mut java_input_dirs = vec![java_dir.clone(), runtime.r_java_dir.clone()];
+    if let Some(ref ext_java) = runtime.extension_java_dir {
+        // Third-party SDKs that contribute `.java` (e.g. via
+        // `metadata.idealyst.android.runtime_java`) get compiled in
+        // the same javac invocation as the user's project Java + the
+        // AAR-generated R.java. Same classpath, same -d output.
+        java_input_dirs.push(ext_java.clone());
+    }
+    compile_java_dirs(&java_input_dirs, &class_dir, &java_classpath)?;
 
     // ── 8. d8 → classes.dex ─────────────────────────────────────
     // Hand d8 everything that needs to land in the APK as dex:

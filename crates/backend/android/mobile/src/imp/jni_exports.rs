@@ -4,11 +4,11 @@
 //! `catch_unwind` because Rust panics across the FFI boundary are UB.
 
 use super::callbacks::{
-    ClickCallback, HeaderButtonCallback, OverlayDismissCallback, SliderChangeCallback,
-    StateCallback, TextChangeCallback, ToggleChangeCallback, TouchCallback,
+    ClickCallback, HeaderButtonCallback, KeyDownCallback, OverlayDismissCallback,
+    SliderChangeCallback, StateCallback, TextChangeCallback, ToggleChangeCallback, TouchCallback,
 };
 use jni::objects::{JObject, JValue};
-use jni::sys::{jfloat, jint, jlong};
+use jni::sys::{jboolean, jfloat, jint, jlong};
 use jni::JNIEnv;
 
 // ---------------------------------------------------------------------------
@@ -240,6 +240,99 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustTextWatcher_nativeCha
         .unwrap_or_default();
     let cb = &*(ptr as *const TextChangeCallback);
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (cb.0)(s)));
+}
+
+/// `RustKeyListener.onKey` dispatch. Maps the Android keycode +
+/// metaState + unicodeChar into the canonical `KeyEvent` shape
+/// documented on `framework_core::primitives::key`, invokes the
+/// user's handler, and returns `true` for `KeyOutcome::PreventDefault`
+/// so the EditText's default action is suppressed.
+///
+/// The keycode → string mapping uses the [Web `KeyboardEvent.key`
+/// spec](https://developer.mozilla.org/en-US/docs/Web/API/UI_Events/Keyboard_event_key_values)
+/// as its target vocabulary — same as the iOS and web backends do —
+/// so a handler `if ev.key == "Tab"` works identically across all
+/// three platforms. Unmapped keycodes fall back to the unicode
+/// character if printable, else the empty string.
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustKeyListener_nativeKey(
+    _env: JNIEnv,
+    _this: JObject,
+    ptr: jlong,
+    key_code: jint,
+    meta_state: jint,
+    unicode_char: jint,
+    sel_start: jint,
+    sel_end: jint,
+) -> jboolean {
+    if ptr == 0 {
+        return 0;
+    }
+    let cb = &*(ptr as *const KeyDownCallback);
+    let key = android_key_name(key_code, unicode_char);
+    // Android meta-state bitmask constants (see KeyEvent.java):
+    // META_SHIFT_ON = 0x1, META_ALT_ON = 0x2, META_CTRL_ON = 0x1000,
+    // META_META_ON = 0x10000. Bitmask check matches whether *either*
+    // L/R variant of the modifier is pressed.
+    let event = framework_core::primitives::key::KeyEvent {
+        key,
+        shift: (meta_state & 0x1) != 0,
+        ctrl: (meta_state & 0x1000) != 0,
+        alt: (meta_state & 0x2) != 0,
+        meta: (meta_state & 0x10000) != 0,
+        selection_start: sel_start.max(0) as usize,
+        selection_end: sel_end.max(0) as usize,
+    };
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (cb.0)(&event)))
+        .unwrap_or(framework_core::primitives::key::KeyOutcome::Default);
+    match outcome {
+        framework_core::primitives::key::KeyOutcome::PreventDefault => 1,
+        framework_core::primitives::key::KeyOutcome::Default => 0,
+    }
+}
+
+/// Map an Android keycode (plus a fallback unicode char for printable
+/// keys) to the canonical web-style key name. Kept tight: only the
+/// keys text-editor handlers typically reach for are named; everything
+/// else falls back to the unicode char or an empty string.
+fn android_key_name(key_code: jint, unicode_char: jint) -> String {
+    // KeyEvent.KEYCODE_* constants. Numeric values copied from
+    // Android source — they're stable ABI.
+    match key_code {
+        61 => "Tab".to_string(),
+        66 | 160 => "Enter".to_string(),    // ENTER, NUMPAD_ENTER
+        111 => "Escape".to_string(),
+        67 => "Backspace".to_string(),       // KEYCODE_DEL is Android's name for Backspace
+        112 => "Delete".to_string(),         // KEYCODE_FORWARD_DEL
+        19 => "ArrowUp".to_string(),
+        20 => "ArrowDown".to_string(),
+        21 => "ArrowLeft".to_string(),
+        22 => "ArrowRight".to_string(),
+        122 => "Home".to_string(),
+        123 => "End".to_string(),
+        92 => "PageUp".to_string(),
+        93 => "PageDown".to_string(),
+        59 | 60 => "Shift".to_string(),      // SHIFT_LEFT, SHIFT_RIGHT
+        57 | 58 => "Alt".to_string(),
+        113 | 114 => "Control".to_string(),
+        117 | 118 => "Meta".to_string(),
+        _ => {
+            // Printable: convert the unicode int to a Rust char. The
+            // Android KeyEvent already accounts for modifier state in
+            // `unicodeChar`, so shifted letters come through as
+            // uppercase. Non-printable keys not in the named list
+            // above fall through to "" — the handler can still see
+            // the keydown via the selection_* fields and choose to
+            // ignore.
+            if unicode_char > 0 {
+                std::char::from_u32(unicode_char as u32)
+                    .map(|c| c.to_string())
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            }
+        }
+    }
 }
 
 /// `RustToggleListener.onCheckedChanged` dispatch.

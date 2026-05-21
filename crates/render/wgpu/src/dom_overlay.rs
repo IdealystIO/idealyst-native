@@ -3,33 +3,32 @@
 //! is delegated to the platform rather than the GPU.
 //!
 //! The wgpu preview renders everything into a single
-//! `wgpu::TextureView`, but two primitives — `WebView` and
-//! `Video` — don't fit that model on the web target. There's no
-//! Blitz network stack on wasm and no in-process H.264 decoder;
-//! the natural compositor is the browser itself. This trait lets
-//! the host shell (currently `host-web`) own a sibling DOM layer
-//! over the canvas and reposition `<iframe>` / `<video>` children
-//! to track the framework's layout each frame.
+//! `wgpu::TextureView`, but the `Video` primitive doesn't fit
+//! that model on the web target. There's no in-process H.264
+//! decoder on wasm; the natural compositor is the browser
+//! itself. This trait lets the host shell (currently `host-web`)
+//! own a sibling DOM layer over the canvas and reposition
+//! `<video>` children to track the framework's layout each frame.
 //!
 //! Lifecycle, called by the renderer:
 //!
 //! 1. [`DomOverlay::begin_frame`] — reset the "seen this frame"
 //!    bookkeeping. The host clears whichever set it uses to
 //!    detect stale children.
-//! 2. [`DomOverlay::place_iframe`] / [`DomOverlay::place_video`]
-//!    — fired once per visible WebView / Video node during the
-//!    tree walk, after layout-resolution. Idempotent: the same
-//!    `key` for the same node every frame; the host should
-//!    find-or-create the matching DOM child and sync attributes.
-//!    `rect` is logical CSS px against the canvas origin.
+//! 2. [`DomOverlay::place_video`] — fired once per visible Video
+//!    node during the tree walk, after layout-resolution.
+//!    Idempotent: the same `key` for the same node every frame;
+//!    the host should find-or-create the matching DOM child and
+//!    sync attributes. `rect` is logical CSS px against the
+//!    canvas origin.
 //! 3. [`DomOverlay::end_frame`] — the renderer is done emitting
 //!    placements for the frame. The host drops any DOM children
 //!    not touched between `begin_frame` and now.
 //!
 //! Native shells (`host-winit`) don't install an overlay; the
 //! `Renderer::set_dom_overlay` slot stays `None` and the methods
-//! are never called. The wgpu side composites Blitz / openh264
-//! into its own texture as before.
+//! are never called. The wgpu side composites openh264 into its
+//! own texture as before.
 //!
 //! Why a trait rather than a fixed `host-web` callback: the
 //! renderer crate is platform-agnostic on purpose (no `web-sys`,
@@ -71,22 +70,9 @@ pub trait DomOverlay {
     /// this to reset whatever "still visible" tracking they keep.
     fn begin_frame(&self);
 
-    /// Place / update an iframe at `rect` (logical CSS px,
-    /// canvas-relative). `opacity` is the composited alpha
-    /// multiplier from the node's style — the host maps it to
-    /// CSS `opacity`. The host owns the iframe element lifecycle
-    /// keyed by `key`.
-    fn place_iframe(
-        &self,
-        key: DomOverlayKey,
-        url: &str,
-        rect: (f32, f32, f32, f32),
-        opacity: f32,
-    );
-
     /// Place / update a `<video>` at `rect` with the playback
-    /// state in `spec`. Same key/lifecycle rules as
-    /// [`Self::place_iframe`].
+    /// state in `spec`. The host owns the video element lifecycle
+    /// keyed by `key`.
     fn place_video(
         &self,
         key: DomOverlayKey,

@@ -328,15 +328,27 @@ pub(crate) fn apply_rules(
     //     `None` resets all transform properties to identity so a
     //     style change that *removes* the transform reverts the
     //     view. This is the hot path for pan / drag interactions.
-    apply_transform(env, &view, rules);
+    apply_transform(env, &view, state, rules);
 }
 
-fn apply_transform(env: &mut JNIEnv, view: &JObject, rules: &StyleRules) {
+fn apply_transform(
+    env: &mut JNIEnv,
+    view: &JObject,
+    state: &mut NodeAnim,
+    rules: &StyleRules,
+) {
     use framework_core::{Length, Transform};
     // Default identity values. The loop overwrites them if matching
-    // ops appear in `transform`.
+    // ops appear in `transform`. Percent translates are stashed on
+    // `state` instead of converted here — translate-% is CSS-spec
+    // BOX-relative, and the box's pixel size isn't known until
+    // Taffy lays out. `sync_transform_translate_percent` (called
+    // from the layout pass) reads the stashed values and writes
+    // `setTranslationX/Y` with the resolved px.
     let mut tx_dp: f32 = 0.0;
     let mut ty_dp: f32 = 0.0;
+    let mut pct_x: Option<f32> = None;
+    let mut pct_y: Option<f32> = None;
     let mut sx: f32 = 1.0;
     let mut sy: f32 = 1.0;
     let mut rot_deg: f32 = 0.0;
@@ -345,9 +357,10 @@ fn apply_transform(env: &mut JNIEnv, view: &JObject, rules: &StyleRules) {
             match op {
                 Transform::TranslateX(Length::Px(v)) => tx_dp = *v,
                 Transform::TranslateY(Length::Px(v)) => ty_dp = *v,
-                Transform::TranslateX(_) | Transform::TranslateY(_) => {
-                    // Percent / Auto don't make sense for transform
-                    // translation — silently treat as 0.
+                Transform::TranslateX(Length::Percent(v)) => pct_x = Some(*v),
+                Transform::TranslateY(Length::Percent(v)) => pct_y = Some(*v),
+                Transform::TranslateX(Length::Auto) | Transform::TranslateY(Length::Auto) => {
+                    // `Auto` makes no sense for translate — treat as 0.
                 }
                 Transform::Scale(v) => {
                     sx = *v;
@@ -364,7 +377,10 @@ fn apply_transform(env: &mut JNIEnv, view: &JObject, rules: &StyleRules) {
             }
         }
     }
-    // Convert dp → px for translation; scale and rotation are unitless.
+    state.transform_translate_pct_x = pct_x;
+    state.transform_translate_pct_y = pct_y;
+    // Convert dp → px for px translations; the percent translates
+    // are resolved later when the view has real bounds.
     let tx_px = dp_to_px(env, view, tx_dp) as f32;
     let ty_px = dp_to_px(env, view, ty_dp) as f32;
     let _ = env.call_method(view, "setTranslationX", "(F)V", &[JValue::Float(tx_px)]);
@@ -372,6 +388,80 @@ fn apply_transform(env: &mut JNIEnv, view: &JObject, rules: &StyleRules) {
     let _ = env.call_method(view, "setScaleX", "(F)V", &[JValue::Float(sx)]);
     let _ = env.call_method(view, "setScaleY", "(F)V", &[JValue::Float(sy)]);
     let _ = env.call_method(view, "setRotation", "(F)V", &[JValue::Float(rot_deg)]);
+}
+
+/// Resolve any `transform: translate(%, %)` requests stashed on
+/// `state` against the view's just-laid-out dp dimensions
+/// (`width_dp` / `height_dp` come straight from the Taffy frame,
+/// which reasons in dp — see `viewport_size()`). Writes
+/// `setTranslationX/Y` only when a percent translate is actually
+/// requested — px-only translates were applied at style time and
+/// don't go through this path.
+///
+/// CSS `translate: %` is BOX-relative, hence the multiply against
+/// the box's own width / height. Android's `setTranslationX/Y`
+/// expects DEVICE PIXELS (not dp), so the resolved dp shift is
+/// converted via the same `dp_to_px` helper the px-path uses.
+/// Resolve a radial `background_gradient`'s reference radius
+/// against the view's just-laid-out pixel dimensions and call
+/// `GradientDrawable.setGradientRadius`. At apply-style time the
+/// view hadn't been measured (`getMeasuredWidth/Height` returned
+/// 0) so the apply path wrote a placeholder; this overwrites it
+/// with the real radius. Iterates `state.gradient_radial_extent`
+/// + `state.gradient_radial_radius_factor` + `state.drawable`,
+/// and skips when any of them is `None` (linear / no-gradient
+/// path).
+pub(crate) fn sync_radial_gradient_radius(
+    env: &mut JNIEnv,
+    state: &NodeAnim,
+    width_dp: f32,
+    height_dp: f32,
+    density: f32,
+) {
+    let (Some(extent), Some(factor), Some(drawable)) = (
+        state.gradient_radial_extent,
+        state.gradient_radial_radius_factor,
+        state.drawable.as_ref(),
+    ) else {
+        return;
+    };
+    if width_dp <= 0.0 || height_dp <= 0.0 {
+        return;
+    }
+    let half_w_px = width_dp * 0.5 * density;
+    let half_h_px = height_dp * 0.5 * density;
+    let reference_px = match extent {
+        framework_core::RadialExtent::ClosestSide => half_w_px.min(half_h_px),
+        framework_core::RadialExtent::FarthestCorner => {
+            (half_w_px * half_w_px + half_h_px * half_h_px).sqrt()
+        }
+    };
+    let radius_px = reference_px * factor;
+    let _ = env.call_method(
+        drawable.as_obj(),
+        "setGradientRadius",
+        "(F)V",
+        &[JValue::Float(radius_px)],
+    );
+}
+
+pub(crate) fn sync_transform_translate_percent(
+    env: &mut JNIEnv,
+    view: &JObject,
+    state: &NodeAnim,
+    width_dp: f32,
+    height_dp: f32,
+) {
+    if let Some(pct_x) = state.transform_translate_pct_x {
+        let tx_dp = width_dp * (pct_x / 100.0);
+        let tx_px = dp_to_px(env, view, tx_dp) as f32;
+        let _ = env.call_method(view, "setTranslationX", "(F)V", &[JValue::Float(tx_px)]);
+    }
+    if let Some(pct_y) = state.transform_translate_pct_y {
+        let ty_dp = height_dp * (pct_y / 100.0);
+        let ty_px = dp_to_px(env, view, ty_dp) as f32;
+        let _ = env.call_method(view, "setTranslationY", "(F)V", &[JValue::Float(ty_px)]);
+    }
 }
 
 /// Background path for nodes that have a border or non-zero corner
@@ -603,32 +693,18 @@ fn apply_gradient_to_drawable(
     // mutates `state.gradient_stops[idx]` and re-emits the ARGB int
     // array without re-resolving the stylesheet.
     let stops_srgb: Vec<[f32; 4]> = stops.iter().map(|s| color_to_srgb(&s.color)).collect();
+    let offsets: Vec<f32> = stops.iter().map(|s| s.offset.clamp(0.0, 1.0)).collect();
     state.gradient_stops = stops_srgb;
+    state.gradient_offsets = offsets;
 
-    // Build the packed ARGB int array. `GradientDrawable.setColors(int[])`
-    // distributes the colors uniformly along the gradient; to honor
-    // explicit `offset` values we'd need to upsample the array (insert
-    // duplicates at the right indices). For v1 we pass the colors in
-    // order and accept uniform spacing — matches typical sun/glow use
-    // cases where stops are usually evenly spaced or so close that
-    // the visual difference is minor. Non-uniform stops can be added
-    // later by switching to `GradientDrawable.setColors(int[],
-    // float[])` (API 29+).
-    let colors: Vec<i32> = state
-        .gradient_stops
-        .iter()
-        .map(|c| srgb_to_argb_i32(*c))
-        .collect();
-    if colors.is_empty() {
+    if state.gradient_stops.is_empty() {
         return;
     }
-    let arr = env.new_int_array(colors.len() as i32).unwrap();
-    env.set_int_array_region(&arr, 0, &colors).unwrap();
-    let _ = env.call_method(
+    push_gradient_colors_to_drawable(
+        env,
         drawable,
-        "setColors",
-        "([I)V",
-        &[JValue::Object(&JObject::from(arr))],
+        &state.gradient_stops,
+        &state.gradient_offsets,
     );
 
     match g.kind {
@@ -681,15 +757,18 @@ fn apply_gradient_to_drawable(
                 "(I)V",
                 &[JValue::Int(1)],
             );
-            // The radius is a fraction of the smaller side, expressed
-            // in dp via the view's bounds. `GradientDrawable.setGradientRadius`
-            // takes pixels; convert dp→px using the view's density.
-            // We can't read the view's bounds reliably here (the
-            // layout pass may not have run yet); approximate with
-            // the view's current measured width if available, else
-            // fall back to a fixed 200dp — radius then gets re-applied
-            // on the next style cycle once layout has produced real
-            // dimensions.
+            // Stash extent + radius factor so the layout pass can
+            // recompute the real px radius once the view has been
+            // laid out. `getMeasuredWidth/Height` here are usually
+            // 0 (the measure pass hasn't run yet), so any radius
+            // we compute now is a placeholder — `sync_radial_gradient_radius`
+            // overwrites it once Taffy has produced a frame.
+            state.gradient_radial_extent = Some(extent);
+            state.gradient_radial_radius_factor = Some(radius);
+            // Initial placeholder: try the view's currently-measured
+            // size, fall back to 100dp. The layout pass below will
+            // call `sync_radial_gradient_radius` with the real frame
+            // dimensions and overwrite this value.
             let w_px: i32 = env
                 .call_method(view, "getMeasuredWidth", "()I", &[])
                 .and_then(|v| v.i())
@@ -698,14 +777,6 @@ fn apply_gradient_to_drawable(
                 .call_method(view, "getMeasuredHeight", "()I", &[])
                 .and_then(|v| v.i())
                 .unwrap_or(0);
-            // Reference distance: half the closer side for
-            // `ClosestSide`, the corner distance for `FarthestCorner`.
-            // GradientDrawable's radial type is strictly circular —
-            // a non-square `FarthestCorner` box produces a circle
-            // that reaches the corners (asymmetric edge falloff
-            // compared to the elliptical iOS/web shape, but the
-            // corners reach the last stop on all platforms which is
-            // the goal for vignette use cases).
             let half_w = (w_px as f32 * 0.5).max(0.0);
             let half_h = (h_px as f32 * 0.5).max(0.0);
             let reference_px = match extent {
@@ -715,9 +786,6 @@ fn apply_gradient_to_drawable(
             let radius_px = if reference_px > 0.0 {
                 reference_px * radius
             } else {
-                // Fallback while waiting for layout: convert a
-                // sensible default 100dp radius to px via the
-                // existing dp→px helper.
                 dp_to_px(env, view, 100.0) as f32
             };
             let _ = env.call_method(
@@ -813,6 +881,87 @@ pub(crate) fn color_to_srgb(c: &framework_core::Color) -> [f32; 4] {
     [r, g, b, a]
 }
 
+/// Cached `Build.VERSION.SDK_INT` — read once from the JVM on the
+/// first gradient apply and reused thereafter. Wrapped in
+/// `AtomicI32` rather than `OnceLock<i32>` so it can be read
+/// without holding a lock on the hot per-frame writer path.
+/// `-1` is the sentinel for "not yet probed".
+static ANDROID_SDK_INT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
+/// Read `android.os.Build.VERSION.SDK_INT` once and cache it. Used
+/// to gate the API-29+ `GradientDrawable.setColors(int[], float[])`
+/// path that honors non-uniform stop offsets.
+fn android_sdk_int(env: &mut JNIEnv) -> i32 {
+    let cached = ANDROID_SDK_INT.load(std::sync::atomic::Ordering::Relaxed);
+    if cached >= 0 {
+        return cached;
+    }
+    let v = env
+        .find_class("android/os/Build$VERSION")
+        .and_then(|cls| env.get_static_field(&cls, "SDK_INT", "I"))
+        .and_then(|jv| jv.i())
+        .unwrap_or(0);
+    ANDROID_SDK_INT.store(v, std::sync::atomic::Ordering::Relaxed);
+    v
+}
+
+/// Push a gradient's color stops to an existing `GradientDrawable`,
+/// honoring per-stop offsets on API 29+ via the
+/// `setColors(int[], float[])` overload and falling back to the
+/// legacy uniform-spacing `setColors(int[])` on older devices.
+///
+/// `colors` and `offsets` are parallel slices of the same length
+/// (already sorted by offset). No-op on empty input.
+fn push_gradient_colors_to_drawable(
+    env: &mut JNIEnv,
+    drawable: &JObject,
+    colors: &[[f32; 4]],
+    offsets: &[f32],
+) {
+    if colors.is_empty() {
+        return;
+    }
+    let packed: Vec<i32> = colors.iter().map(|c| srgb_to_argb_i32(*c)).collect();
+    let color_arr = match env.new_int_array(packed.len() as i32) {
+        Ok(a) => a,
+        Err(_) => return,
+    };
+    if env.set_int_array_region(&color_arr, 0, &packed).is_err() {
+        return;
+    }
+
+    // API 29 (Android 10) added `setColors(int[], float[])` — the
+    // first overload that honors arbitrary stop positions. Older
+    // devices fall back to the uniform-distribution overload.
+    // Min SDK in `crates/build/ios/src/source.rs` is 21 (Lollipop),
+    // so the fallback is load-bearing.
+    if android_sdk_int(env) >= 29 && offsets.len() == colors.len() {
+        let off_arr = match env.new_float_array(offsets.len() as i32) {
+            Ok(a) => a,
+            Err(_) => return,
+        };
+        if env.set_float_array_region(&off_arr, 0, offsets).is_err() {
+            return;
+        }
+        let _ = env.call_method(
+            drawable,
+            "setColors",
+            "([I[F)V",
+            &[
+                JValue::Object(&JObject::from(color_arr)),
+                JValue::Object(&JObject::from(off_arr)),
+            ],
+        );
+    } else {
+        let _ = env.call_method(
+            drawable,
+            "setColors",
+            "([I)V",
+            &[JValue::Object(&JObject::from(color_arr))],
+        );
+    }
+}
+
 /// sRGB float `[r, g, b, a]` → packed ARGB `i32` (Android's color
 /// representation). Symmetric with `color_to_srgb`.
 pub(crate) fn srgb_to_argb_i32(c: [f32; 4]) -> i32 {
@@ -840,22 +989,10 @@ pub(crate) fn set_animated_gradient_stop(
         return;
     };
     state.gradient_stops[idx] = value;
-    let colors: Vec<i32> = state
-        .gradient_stops
-        .iter()
-        .map(|c| srgb_to_argb_i32(*c))
-        .collect();
-    let arr = match env.new_int_array(colors.len() as i32) {
-        Ok(a) => a,
-        Err(_) => return,
-    };
-    if env.set_int_array_region(&arr, 0, &colors).is_err() {
-        return;
-    }
-    let _ = env.call_method(
-        drawable.as_obj(),
-        "setColors",
-        "([I)V",
-        &[JValue::Object(&JObject::from(arr))],
-    );
+    // `drawable.as_obj()` borrows `state.drawable`; clone the stops
+    // + offsets out so we don't double-borrow `state` inside
+    // `push_gradient_colors_to_drawable`.
+    let colors_copy = state.gradient_stops.clone();
+    let offsets_copy = state.gradient_offsets.clone();
+    push_gradient_colors_to_drawable(env, drawable.as_obj(), &colors_copy, &offsets_copy);
 }

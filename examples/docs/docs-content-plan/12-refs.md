@@ -208,11 +208,13 @@ handle:
 - **`PortalHandle`** / **`PresenceHandle`** — overlay control
 
 The rest (`TextHandle`, `ImageHandle`, `TextInputHandle`,
-`ToggleHandle`, `SliderHandle`, `WebViewHandle`, `VideoHandle`,
+`ToggleHandle`, `SliderHandle`, `VideoHandle`,
 `ActivityIndicatorHandle`, `VirtualizerHandle`,
 `GraphicsHandle`) exist but their method surfaces are still being
 filled in. New operations land on those traits without app code
-needing to change.
+needing to change. Third-party SDKs ship their own handles — e.g.
+`webview::WebViewHandle` with `.post_message()` / `.reload()` /
+`.execute_js()`.
 
 ### Reading geometry
 

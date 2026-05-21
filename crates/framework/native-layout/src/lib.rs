@@ -698,3 +698,67 @@ fn length_to_dim(l: FwLength) -> Dimension {
         FwLength::Auto => Dimension::Auto,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use framework_core::Tokenized;
+
+    fn px(v: f32) -> Tokenized<FwLength> {
+        Tokenized::Literal(FwLength::Px(v))
+    }
+    fn pct(v: f32) -> Tokenized<FwLength> {
+        Tokenized::Literal(FwLength::Percent(v))
+    }
+
+    /// Reproduces the welcome example's sun-glare wrapper layout
+    /// to verify Taffy resolves width from height + aspect_ratio
+    /// for an absolutely-positioned child.
+    ///
+    /// Setup: page (100% × 100%, relative) → wrapper (abs, top:0,
+    /// right:0, height: 60%, aspect_ratio: 1.0). With viewport
+    /// 390 × 844, the wrapper's height should be 506.4 and width
+    /// should also be 506.4 (from aspect_ratio).
+    #[test]
+    fn aspect_ratio_resolves_width_from_height_pct_on_abs_child() {
+        let mut t = LayoutTree::new();
+
+        let page = t.new_node();
+        let mut page_rules = StyleRules::default();
+        page_rules.position = Some(FwPosition::Relative);
+        page_rules.width = Some(pct(100.0));
+        page_rules.height = Some(pct(100.0));
+        t.set_style(page, &page_rules);
+
+        let wrapper = t.new_node();
+        let mut wrapper_rules = StyleRules::default();
+        wrapper_rules.position = Some(FwPosition::Absolute);
+        wrapper_rules.top = Some(px(0.0));
+        wrapper_rules.right = Some(px(0.0));
+        wrapper_rules.height = Some(pct(60.0));
+        wrapper_rules.aspect_ratio = Some(1.0);
+        t.set_style(wrapper, &wrapper_rules);
+        t.add_child(page, wrapper);
+
+        t.compute(page, 390.0, 844.0);
+
+        let pf = t.frame_of(page);
+        let wf = t.frame_of(wrapper);
+        eprintln!("page  : {:?}", pf);
+        eprintln!("wrap  : {:?}", wf);
+
+        let expected = 844.0 * 0.6;
+        assert!(
+            (wf.height - expected).abs() < 0.5,
+            "wrapper height {} should be ~{}",
+            wf.height,
+            expected
+        );
+        assert!(
+            (wf.width - expected).abs() < 0.5,
+            "wrapper width {} should be ~{} (resolved from height via aspect_ratio)",
+            wf.width,
+            expected
+        );
+    }
+}

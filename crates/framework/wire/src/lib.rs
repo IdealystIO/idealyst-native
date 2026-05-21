@@ -246,10 +246,6 @@ pub enum Command {
         id: NodeId,
         horizontal: bool,
     },
-    CreateWebView {
-        id: NodeId,
-        url: String,
-    },
     CreateVideo {
         id: NodeId,
         src: String,
@@ -368,10 +364,6 @@ pub enum Command {
     UpdateSliderValue {
         node: NodeId,
         value: f32,
-    },
-    UpdateWebViewUrl {
-        node: NodeId,
-        url: String,
     },
     UpdateVideoSrc {
         node: NodeId,

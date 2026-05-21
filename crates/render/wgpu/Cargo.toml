@@ -3,11 +3,7 @@ name = "render-wgpu"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-# Surfaces the `webview_node` / `blitz_active` custom cfgs — see
-# `build.rs` for the derivation. Lets every `#[cfg(...)]` gate
-# pick the right meaning ("WebView NodeKind exists" vs. "Blitz
-# upload path is live") without spelling out the
-# feature+target combo each time.
+# Retained stub — see `build.rs`. No custom cfgs surfaced today.
 build = "build.rs"
 
 # Wgpu renderer + interaction host. The platform-agnostic half of
@@ -25,25 +21,8 @@ build = "build.rs"
 # `default-features = false, features = ["…"]`. Follow-up:
 # `video` and `audio` are still always-on (no `dep:`-style
 # wiring yet) — retrofit as a small dedicated pass.
-default = ["webview"]
+default = []
 async-driver = ["framework-core/async-driver"]
-# The `webview` feature pulls in Blitz (HTML/CSS), anyrender's
-# GPU-vello renderer, the network provider, tokio (for the
-# per-WebView fetch thread), and `url`. Without it, the
-# WebView primitive falls back to the "Unsupported" placeholder.
-webview = [
-    "dep:blitz-dom",
-    "dep:blitz-html",
-    "dep:blitz-net",
-    "dep:blitz-paint",
-    "dep:blitz-traits",
-    "dep:anyrender",
-    "dep:anyrender_vello",
-    "dep:peniko",
-    "dep:tokio",
-    "dep:url",
-    "dep:reqwest",
-]
 
 [dependencies]
 render-api = { workspace = true }
@@ -77,14 +56,13 @@ image = { version = "0.25", default-features = false, features = [
 ] }
 
 # Native-only deps. The video pipeline (`openh264` C++ source, the
-# `re_mp4` demuxer), the audio mixer (`cpal` + `symphonia`), and
-# the Blitz-backed WebView all link against either bundled C/C++
-# or system audio/network stacks that don't exist on wasm32. On
-# the web target the `video.rs` / `audio.rs` / `web_view.rs`
-# modules fall back to no-op stubs (see `video.rs` for the
-# wasm-only `VideoDecoder` placeholder), and apps that mount a
-# Video / WebView primitive on wasm get the same "unsupported"
-# rendering as any other unimplemented primitive.
+# `re_mp4` demuxer) and the audio mixer (`cpal` + `symphonia`)
+# link against either bundled C/C++ or system audio stacks that
+# don't exist on wasm32. On the web target the `video.rs` /
+# `audio.rs` modules fall back to no-op stubs (see `video.rs` for
+# the wasm-only `VideoDecoder` placeholder), and apps that mount a
+# Video primitive on wasm get the same "unsupported" rendering as
+# any other unimplemented primitive.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Video primitive backing. `openh264` bundles Cisco's C++ source
 # via build.rs (no system FFmpeg dep at runtime); `re_mp4` is a
@@ -114,41 +92,3 @@ symphonia = { version = "0.5", default-features = false, features = [
     "isomp4",
 ] }
 
-# WebView primitive backing — Blitz, Dioxus Labs' pure-Rust
-# HTML/CSS engine. No system WebView dep, matching the
-# openh264/symphonia philosophy. We pull `anyrender_vello`
-# (GPU vello, also wgpu 29) so Blitz renders directly into a
-# texture on *our* wgpu device; the renderer's pre-pass then
-# composites that texture via the standard image pipeline.
-# Every dep here is feature-gated; turn off `webview` to drop
-# them all and fall back to the "Unsupported" placeholder.
-# Target-gated alongside the video/audio stack — Blitz's
-# network provider depends on tokio + reqwest, neither of
-# which compile to wasm32. On the web target the `webview`
-# feature still toggles cleanly because Cargo silently skips
-# `dep:<name>` activations whose dep is absent for the target.
-blitz-dom    = { version = "0.3.0-alpha.4", optional = true }
-blitz-html   = { version = "0.3.0-alpha.4", optional = true }
-blitz-net    = { version = "0.3.0-alpha.4", optional = true }
-blitz-paint  = { version = "0.3.0-alpha.4", optional = true }
-blitz-traits = { version = "0.3.0-alpha.4", optional = true }
-anyrender = { version = "0.10", optional = true }
-anyrender_vello = { version = "0.10", optional = true }
-peniko = { version = "0.6", optional = true }
-# The initial HTML GET. Blitz's `Provider` only handles
-# sub-resource fetches; the screenshot example fetches the top
-# document itself via reqwest, and we follow the same pattern.
-# `default-features = false` drops the gzip/brotli/json bag.
-reqwest = { version = "0.13", default-features = false, optional = true, features = [
-    "default-tls",
-] }
-# Per-WebView fetch thread runs a small tokio runtime because
-# `blitz-net::Provider` is async. Single-thread `rt` flavor
-# keeps the binary footprint reasonable.
-tokio = { version = "1.42", default-features = false, optional = true, features = [
-    "rt",
-    "macros",
-    "sync",
-    "time",
-] }
-url = { version = "2.5", optional = true }

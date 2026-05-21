@@ -46,6 +46,20 @@ mod stub;
 #[cfg(target_os = "android")]
 pub use imp::{install_global_self, set_animated_color, set_animated_f32, AndroidBackend};
 
+/// Attach the current thread to the JVM (cached `JavaVM` captured at
+/// `JNI_OnLoad`) and run `f` with the resulting `JNIEnv`. Public entry
+/// point for third-party SDK code (e.g. `webview`'s `Effect` closures
+/// that fire outside the build path and need to reach Java without a
+/// `&mut AndroidBackend` in scope).
+///
+/// Panics if `JNI_OnLoad` hasn't fired — which can only happen if the
+/// library wasn't loaded by an Android process. Don't call from
+/// non-Android code; gate at the SDK level on `cfg(target_os = "android")`.
+#[cfg(target_os = "android")]
+pub fn with_jni_env<R>(f: impl FnOnce(&mut jni::JNIEnv) -> R) -> R {
+    imp::with_env(f)
+}
+
 /// Re-export the JNI `GlobalRef` so author-level animation drivers
 /// can downcast `view_handle.as_any()` without having to depend on
 /// `jni` directly. Matches the iOS backend's `IosNode` re-export.

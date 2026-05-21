@@ -139,7 +139,6 @@ impl SceneModel {
             | Command::CreateToggle { id, .. }
             | Command::CreateSlider { id, .. }
             | Command::CreateScrollView { id, .. }
-            | Command::CreateWebView { id, .. }
             | Command::CreateVideo { id, .. }
             | Command::CreateActivityIndicator { id, .. }
             | Command::CreateLink { id, .. }
@@ -226,13 +225,6 @@ impl SceneModel {
                     self.node_create.get_mut(node)
                 {
                     *v = *value;
-                }
-            }
-            Command::UpdateWebViewUrl { node, url } => {
-                if let Some(Command::CreateWebView { url: u, .. }) =
-                    self.node_create.get_mut(node)
-                {
-                    *u = url.clone();
                 }
             }
             Command::UpdateVideoSrc { node, src } => {

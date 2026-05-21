@@ -176,16 +176,15 @@ where
 
     // 3. Build the render-side stack + mount the user app.
     let mut renderer = Renderer::new(&device, &queue, config.format);
-    // Install a DOM overlay over the canvas so `WebView` and
-    // `Video` primitives mount real `<iframe>` / `<video>`
-    // elements (the wgpu backend can't decode those on wasm —
-    // see `render-wgpu/src/dom_overlay.rs`). The overlay is
-    // `pointer-events: none` at the wrapper level, so canvas
-    // input keeps working everywhere outside the embedded
-    // content. If the canvas isn't attached yet we skip the
-    // install — those primitives fall back to the framework's
-    // "Unsupported" rendering. The mount path otherwise still
-    // succeeds; mounting an overlay isn't a precondition.
+    // Install a DOM overlay over the canvas so `Video` primitives
+    // mount real `<video>` elements (the wgpu backend can't decode
+    // video on wasm — see `render-wgpu/src/dom_overlay.rs`). The
+    // overlay is `pointer-events: none` at the wrapper level, so
+    // canvas input keeps working everywhere outside the embedded
+    // content. If the canvas isn't attached yet we skip the install
+    // — Video falls back to the framework's "Unsupported" rendering.
+    // The mount path otherwise still succeeds; mounting an overlay
+    // isn't a precondition.
     if let Some(overlay) = crate::overlay::OverlayManager::new(&canvas) {
         renderer.set_dom_overlay(Rc::new(overlay));
     }

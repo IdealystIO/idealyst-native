@@ -40,7 +40,6 @@ use framework_core::primitives::slider::slider;
 use framework_core::primitives::text_input::text_input;
 use framework_core::primitives::toggle::toggle;
 use framework_core::primitives::video::video;
-use framework_core::primitives::web_view::web_view;
 use framework_core::{
     button, pressable, signal, text, view, when, AlignItems, Color,
     Easing, FlexDirection, JustifyContent, Length, Primitive, Ref, SafeAreaSides, Shadow, Signal,
@@ -558,22 +557,13 @@ fn home_screen(nav: Ref<NavigatorHandle>) -> Primitive {
         })
         .into(),
 
-        // Embedded WebView, backed by Blitz (pure-Rust HTML/CSS).
-        // Renders the URL into an offscreen texture and composites
-        // through the image pipeline alongside the rest of the UI.
-        text("Embedded WebView").with_style(subtitle_sheet()).into(),
-        web_view("https://example.com")
-            .with_style(themed(|| StyleRules {
-                width: Some(Tokenized::Literal(Length::Px(280.0))),
-                height: Some(Tokenized::Literal(Length::Px(420.0))),
-                border_top_left_radius: Some(px(12.0)),
-                border_top_right_radius: Some(px(12.0)),
-                border_bottom_right_radius: Some(px(12.0)),
-                border_bottom_left_radius: Some(px(12.0)),
-                overflow: Some(framework_core::Overflow::Hidden),
-                ..Default::default()
-            }))
-            .into(),
+        // (WebView demo dropped: WebView moved out of framework-core
+        // into the third-party `webview` SDK crate, which currently
+        // ships cfg-gated leaves for web/iOS/Android only. A
+        // `webview-wgpu` cfg target backed by Blitz can be added when
+        // wgpu's `Backend::create_external` grows the registry; until
+        // then `webview::WebView(...)` would render as the framework's
+        // External placeholder on wgpu.)
 
         // Embedded wgpu surface demo. `mandelbrot_demo()` returns
         // a `Bound<GraphicsHandle>` whose drawer renders the

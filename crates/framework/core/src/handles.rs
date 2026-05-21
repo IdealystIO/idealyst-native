@@ -305,7 +305,6 @@ pub enum RefFill {
     Toggle(Box<dyn FnOnce(primitives::toggle::ToggleHandle)>),
     ScrollView(Box<dyn FnOnce(primitives::scroll_view::ScrollViewHandle)>),
     Slider(Box<dyn FnOnce(primitives::slider::SliderHandle)>),
-    WebView(Box<dyn FnOnce(primitives::web_view::WebViewHandle)>),
     Video(Box<dyn FnOnce(primitives::video::VideoHandle)>),
     ActivityIndicator(Box<dyn FnOnce(primitives::activity_indicator::ActivityIndicatorHandle)>),
     Virtualizer(Box<dyn FnOnce(primitives::virtualizer::VirtualizerHandle)>),

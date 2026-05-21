@@ -22,7 +22,7 @@ use std::collections::{HashMap, HashSet};
 use render_wgpu::{DomOverlay, DomOverlayKey, DomVideoSpec};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
-use web_sys::{Document, HtmlElement, HtmlIFrameElement, HtmlVideoElement};
+use web_sys::{Document, HtmlElement, HtmlVideoElement};
 
 thread_local! {
     /// One process-wide rejection sink for `<video>.play()`
@@ -72,7 +72,6 @@ struct OverlayChild {
 }
 
 enum ChildKind {
-    Iframe,
     Video,
 }
 
@@ -153,13 +152,7 @@ impl OverlayManager {
         // one gets a clean attribute baseline.
         let needs_replace = children
             .get(&key)
-            .map(|c| {
-                !matches!(
-                    (&c.kind, &expected),
-                    (ChildKind::Iframe, ChildKind::Iframe)
-                        | (ChildKind::Video, ChildKind::Video)
-                )
-            })
+            .map(|c| !matches!((&c.kind, &expected), (ChildKind::Video, ChildKind::Video)))
             .unwrap_or(false);
         if needs_replace {
             if let Some(old) = children.remove(&key) {
@@ -234,41 +227,6 @@ impl Drop for OverlayManager {
 impl DomOverlay for OverlayManager {
     fn begin_frame(&self) {
         self.seen.borrow_mut().clear();
-    }
-
-    fn place_iframe(
-        &self,
-        key: DomOverlayKey,
-        url: &str,
-        rect: (f32, f32, f32, f32),
-        opacity: f32,
-    ) {
-        self.seen.borrow_mut().insert(key);
-        let _element = self.ensure_child(key, ChildKind::Iframe, |document| {
-            let iframe: HtmlIFrameElement = document
-                .create_element("iframe")
-                .ok()?
-                .dyn_into()
-                .ok()?;
-            // sandbox + referrerpolicy keep embedded content
-            // from poking at the host page. Authors can widen
-            // these later if a use case needs it.
-            iframe.set_attribute("sandbox", "allow-scripts allow-forms allow-same-origin").ok()?;
-            iframe.set_attribute("referrerpolicy", "no-referrer").ok()?;
-            iframe.set_attribute("loading", "lazy").ok()?;
-            Some(iframe.unchecked_into())
-        });
-        // Diff src to avoid re-navigating on every frame.
-        {
-            let mut children = self.children.borrow_mut();
-            if let Some(child) = children.get_mut(&key) {
-                if child.last_src != url {
-                    let _ = child.element.set_attribute("src", url);
-                    child.last_src = url.to_string();
-                }
-            }
-        }
-        self.apply_position(key, rect, opacity);
     }
 
     fn place_video(

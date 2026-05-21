@@ -329,7 +329,7 @@ pub enum DocConcept {
     Primitive,
     /// View / ScrollView / Pressable.
     Container,
-    /// Text / Image / Icon / Video / WebView.
+    /// Text / Image / Icon / Video.
     Content,
     /// Button / TextInput / Toggle / Slider.
     Input,

@@ -10,7 +10,7 @@
 //! - the `build` walker (dispatches on `Primitive` variant);
 //! - per-primitive builders for everything mountable (Text, View,
 //!   Button, Image, TextInput, Toggle, ScrollView, Slider, Video,
-//!   WebView, ActivityIndicator, Graphics, Virtualizer, Navigator,
+//!   ActivityIndicator, Graphics, Virtualizer, Navigator,
 //!   Link, Overlay, Presence) plus the reactive-branching builders
 //!   (`build_when`, `build_switch`);
 //! - the style-attach machinery (static + reactive paths) and the
@@ -467,15 +467,6 @@ fn build_inner<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) 
             }
             n
         }
-        Primitive::CodeBlock { spans, style, .. } => {
-            let n = time_backend_create(pkind!(CodeBlock), || {
-                backend.borrow_mut().create_code_block(&spans)
-            });
-            if let Some(s) = style {
-                attach_style(backend, &n, s);
-            }
-            n
-        }
         Primitive::Toggle { value, on_change, style, ref_fill, .. } => {
             let initial = value.get();
             let n = time_backend_create(pkind!(Toggle), || backend.borrow_mut().create_toggle(initial, on_change));
@@ -552,39 +543,6 @@ fn build_inner<B: Backend + 'static>(backend: &Rc<RefCell<B>>, node: Primitive) 
             }
             if let Some(RefFill::Slider(fill)) = ref_fill {
                 let handle = backend.borrow().make_slider_handle(&n);
-                fill(handle);
-            }
-            n
-        }
-        Primitive::WebView { url, on_message, on_load, on_error, style, ref_fill } => {
-            let initial = url();
-            let n = time_backend_create(pkind!(WebView), || backend.borrow_mut().create_web_view(&initial));
-            if let Some(s) = style {
-                attach_style(backend, &n, s);
-            }
-            {
-                let backend = backend.clone();
-                let node = n.clone();
-                let _e = Effect::new(move || {
-                    let u = url();
-                    backend.borrow_mut().update_web_view_url(&node, &u);
-                });
-            }
-            // Register lifecycle / message callbacks BEFORE the
-            // RefFill runs — handle consumers may immediately
-            // post a message or trigger a reload and expect the
-            // message channel to already be wired.
-            if let Some(cb) = on_message {
-                backend.borrow_mut().web_view_set_on_message(&n, cb);
-            }
-            if let Some(cb) = on_load {
-                backend.borrow_mut().web_view_set_on_load(&n, cb);
-            }
-            if let Some(cb) = on_error {
-                backend.borrow_mut().web_view_set_on_error(&n, cb);
-            }
-            if let Some(RefFill::WebView(fill)) = ref_fill {
-                let handle = backend.borrow().make_web_view_handle(&n);
                 fill(handle);
             }
             n
@@ -1246,11 +1204,9 @@ fn debug_kind_of(node: &Primitive) -> debug::PrimitiveKind {
         Primitive::Icon { .. } => PrimitiveKind::Icon,
         Primitive::TextInput { .. } => PrimitiveKind::TextInput,
         Primitive::TextArea { .. } => PrimitiveKind::TextArea,
-        Primitive::CodeBlock { .. } => PrimitiveKind::CodeBlock,
         Primitive::Toggle { .. } => PrimitiveKind::Toggle,
         Primitive::ScrollView { .. } => PrimitiveKind::ScrollView,
         Primitive::Slider { .. } => PrimitiveKind::Slider,
-        Primitive::WebView { .. } => PrimitiveKind::WebView,
         Primitive::Video { .. } => PrimitiveKind::Video,
         Primitive::ActivityIndicator { .. } => PrimitiveKind::ActivityIndicator,
         Primitive::Virtualizer { .. } => PrimitiveKind::Virtualizer,

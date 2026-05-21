@@ -353,9 +353,13 @@ where
             } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
                 let cb = self.handler_string(on_change);
+                // `on_key_down` isn't wire-encoded yet — dev-client
+                // replays a plain text input. AAS-rendered apps that
+                // rely on per-keystroke control should send the
+                // KeyEvent over a custom wire variant in a follow-up.
                 let node = self
                     .backend
-                    .create_text_input(&initial_value, placeholder.as_deref(), cb);
+                    .create_text_input(&initial_value, placeholder.as_deref(), cb, None);
                 self.nodes.insert(id, node);
             }
             Command::CreateToggle {
@@ -386,11 +390,6 @@ where
             Command::CreateScrollView { id, horizontal } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
                 let node = self.backend.create_scroll_view(horizontal);
-                self.nodes.insert(id, node);
-            }
-            Command::CreateWebView { id, url } => {
-                if self.nodes.contains_key(&id) { return Ok(()); }
-                let node = self.backend.create_web_view(&url);
                 self.nodes.insert(id, node);
             }
             Command::CreateVideo {
@@ -637,10 +636,6 @@ where
             Command::UpdateSliderValue { node, value } => {
                 let n = self.nodes.get(&node).ok_or(ReplayError::UnknownNode(node))?.clone();
                 self.backend.update_slider_value(&n, value);
-            }
-            Command::UpdateWebViewUrl { node, url } => {
-                let n = self.nodes.get(&node).ok_or(ReplayError::UnknownNode(node))?.clone();
-                self.backend.update_web_view_url(&n, &url);
             }
             Command::UpdateVideoSrc { node, src } => {
                 let n = self.nodes.get(&node).ok_or(ReplayError::UnknownNode(node))?.clone();

@@ -1,0 +1,69 @@
+[package]
+name = "webview"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Third-party `WebView` SDK — one crate, cfg-gated per-backend impl
+# modules. Demonstrates the single-crate variant of the third-party
+# primitive pattern (as opposed to the multi-crate maps SDK split).
+#
+# Why one crate: this SDK has a single owner and ships every backend
+# from the same release. Cargo's `[target.'cfg(...)'.dependencies]`
+# handles per-target deps cleanly, so the multi-crate split (umbrella
+# + per-platform leaves) buys nothing here. The maps SDK split was
+# justifiable as a proof-of-concept; this is the simpler model future
+# SDKs should follow unless they genuinely have independent owners
+# per backend.
+#
+# # Android Kotlin contributions
+#
+# When the Android impl grows a `WebViewClient` shim (for
+# `onPageFinished`/`onReceivedError`) or a `@JavascriptInterface`
+# bridge (for `postMessage`), declare the source files under
+# `[package.metadata.idealyst.android]` and they'll get picked up
+# automatically by `idealyst run android`. The `run-android` CLI's
+# Kotlin/Java discovery walks `cargo metadata` against the wrapper
+# manifest and stages every declared file alongside the framework's
+# own runtime sources.
+
+[dependencies]
+framework-core = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+web-sys = { version = "0.3", features = [
+    "Document",
+    "Element",
+    "HtmlIFrameElement",
+    "Window",
+    "MessageEvent",
+    "EventTarget",
+] }
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+
+[target.'cfg(target_os = "android")'.dependencies]
+backend-android-mobile = { workspace = true }
+backend-android-core = { workspace = true }
+jni = "0.21"
+
+[target.'cfg(target_os = "ios")'.dependencies]
+backend-ios-mobile = { workspace = true }
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = [
+    "NSString",
+    "NSURL",
+    "NSURLRequest",
+    "NSGeometry",
+] }
+objc2-ui-kit = { version = "0.2", features = [
+    "UIView",
+    "UIResponder",
+] }
+# Skipping `objc2-web-kit` deliberately: v0.2.2's WKWebView re-export
+# is mis-gated to `feature = "objc2-app-kit"` (a macOS-only flag),
+# making the type unavailable on iOS targets. Upgrading to v0.3+ would
+# pull in objc2 0.6 and conflict with backend-ios-mobile's 0.5. We
+# reach WKWebView via `class!()` + `msg_send` instead — equivalent
+# semantics at the Obj-C runtime layer, no dep upgrade required.

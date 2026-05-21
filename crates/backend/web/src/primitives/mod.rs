@@ -10,7 +10,6 @@
 
 pub(crate) mod activity_indicator;
 pub(crate) mod button;
-pub(crate) mod code_block;
 pub(crate) mod graphics;
 pub(crate) mod icon;
 pub(crate) mod image;
@@ -29,4 +28,3 @@ pub(crate) mod toggle;
 pub(crate) mod video;
 pub(crate) mod view;
 pub(crate) mod virtualizer;
-pub(crate) mod web_view;

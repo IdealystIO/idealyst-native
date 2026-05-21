@@ -76,20 +76,10 @@ pub struct Renderer {
         native_layout::LayoutNode,
         VideoTextureEntry,
     >,
-    /// Per-`WebView`-node GPU texture state. Same `VideoTextureEntry`
-    /// shape — both are RGBA8 textures populated via `write_texture`
-    /// from a CPU buffer; only the producer (decoder vs. Blitz)
-    /// differs. Only present with the `webview` feature.
-    #[cfg(blitz_active)]
-    web_view_cache: std::collections::HashMap<
-        native_layout::LayoutNode,
-        VideoTextureEntry,
-    >,
     /// Pluggable hook for host shells that mount platform DOM
-    /// elements (currently `host-web`, for the `<iframe>` /
-    /// `<video>` overlay). `None` on native — Blitz / openh264
-    /// paint into wgpu textures the regular way; the overlay
-    /// methods never fire.
+    /// elements (currently `host-web`, for the `<video>` overlay).
+    /// `None` on native — openh264 paints into wgpu textures the
+    /// regular way; the overlay methods never fire.
     dom_overlay: Option<std::rc::Rc<dyn crate::dom_overlay::DomOverlay>>,
 }
 
@@ -184,30 +174,6 @@ pub struct VideoRequest {
     pub opacity: f32,
 }
 
-/// One [`NodeKind::WebView`] encountered during the walk. The
-/// composite path mirrors Video / Graphics: an offscreen texture
-/// per node, uploaded in the pre-pass, composited in the image
-/// pipeline. Collected via a thread-local from the walk arm to
-/// avoid threading a third request vec through every call site;
-/// drained by the renderer at the start of `render`.
-#[cfg(webview_node)]
-pub struct WebViewRequest {
-    pub node: crate::node::WgpuNode,
-    pub rect: (f32, f32, f32, f32),
-    pub opacity: f32,
-}
-
-#[cfg(webview_node)]
-thread_local! {
-    pub(crate) static WEB_VIEW_REQUESTS: std::cell::RefCell<Vec<WebViewRequest>> =
-        std::cell::RefCell::new(Vec::new());
-}
-
-#[cfg(webview_node)]
-pub(crate) fn take_web_view_requests() -> Vec<WebViewRequest> {
-    WEB_VIEW_REQUESTS.with(|c| std::mem::take(&mut *c.borrow_mut()))
-}
-
 impl Renderer {
     /// Create the renderer's GPU resources. `format` must match
     /// the surface's color format; the rect + image pipelines
@@ -227,18 +193,16 @@ impl Renderer {
             image_cache: std::collections::HashMap::new(),
             graphics_cache: std::collections::HashMap::new(),
             video_cache: std::collections::HashMap::new(),
-            #[cfg(blitz_active)]
-            web_view_cache: std::collections::HashMap::new(),
             dom_overlay: None,
         }
     }
 
     /// Install a [`crate::dom_overlay::DomOverlay`] for shells
-    /// that paint WebView / Video by stamping native DOM elements
-    /// over the canvas (currently `host-web`'s iframe + `<video>`
-    /// overlay). Replaces any previously-installed overlay. The
-    /// renderer drives `begin_frame` / `place_*` / `end_frame`
-    /// per render call when an overlay is present.
+    /// that paint Video by stamping native DOM elements over the
+    /// canvas (currently `host-web`'s `<video>` overlay). Replaces
+    /// any previously-installed overlay. The renderer drives
+    /// `begin_frame` / `place_*` / `end_frame` per render call when
+    /// an overlay is present.
     pub fn set_dom_overlay(
         &mut self,
         overlay: std::rc::Rc<dyn crate::dom_overlay::DomOverlay>,
@@ -304,60 +268,6 @@ impl Renderer {
             );
         }
         self.video_cache.get(&layout)
-    }
-
-    /// Ensure a WebView texture exists for `layout` at `(w, h)`.
-    /// Same shape as `ensure_video_texture`; sharing the entry
-    /// type keeps the composite code paths identical.
-    #[cfg(blitz_active)]
-    fn ensure_web_view_texture(
-        &mut self,
-        device: &wgpu::Device,
-        layout: native_layout::LayoutNode,
-        w: u32,
-        h: u32,
-    ) -> Option<&VideoTextureEntry> {
-        if w == 0 || h == 0 {
-            return None;
-        }
-        let needs_alloc = self
-            .web_view_cache
-            .get(&layout)
-            .map(|e| e.size != (w, h))
-            .unwrap_or(true);
-        if needs_alloc {
-            let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("webview-frame"),
-                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            });
-            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("webview-frame-bg"),
-                layout: &self.image.texture_bgl,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.image.sampler),
-                    },
-                ],
-            });
-            self.web_view_cache.insert(
-                layout,
-                VideoTextureEntry { texture, view, bind_group, size: (w, h) },
-            );
-        }
-        self.web_view_cache.get(&layout)
     }
 
     /// Ensure the cache holds a `GraphicsTextureEntry` for `layout`
@@ -1020,87 +930,6 @@ impl Renderer {
             );
         }
 
-        // WebView pre-pass — drain the thread-local the walk
-        // filled, ensure a texture per node, and upload the
-        // latest painted page from the worker thread. On wasm
-        // there's no Blitz pre-pass; the same drained list
-        // feeds the `DomOverlay::place_iframe` calls below.
-        #[cfg(webview_node)]
-        let web_view_reqs = take_web_view_requests();
-        #[cfg(blitz_active)]
-        for req in web_view_reqs.iter() {
-            let (layout_id, view_rc, last_seen) = {
-                let data = req.node.borrow();
-                match &data.kind {
-                    NodeKind::WebView { view, last_uploaded_paint } => (
-                        data.layout,
-                        view.clone(),
-                        last_uploaded_paint.get(),
-                    ),
-                    _ => continue,
-                }
-            };
-            let counter = view_rc
-                .shared
-                .paint_counter
-                .load(std::sync::atomic::Ordering::Acquire);
-            if counter == last_seen {
-                // No new paint since the previous render; the
-                // cached texture is still current. Composite
-                // step below will pick it up via the cache.
-                continue;
-            }
-            let painted = {
-                let mut slot = match view_rc.shared.latest_paint.lock() {
-                    Ok(s) => s,
-                    Err(_) => continue,
-                };
-                slot.take()
-            };
-            let painted = match painted {
-                Some(p) => p,
-                None => continue,
-            };
-            let entry = match self.ensure_web_view_texture(
-                device,
-                layout_id,
-                painted.width,
-                painted.height,
-            ) {
-                Some(e) => e,
-                None => continue,
-            };
-            queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &entry.texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                &painted.rgba,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(4 * painted.width),
-                    rows_per_image: Some(painted.height),
-                },
-                wgpu::Extent3d {
-                    width: painted.width,
-                    height: painted.height,
-                    depth_or_array_layers: 1,
-                },
-            );
-            // Record the counter so the next render skips the
-            // upload until the worker publishes again. Mutating
-            // borrow has to be a separate scope because the
-            // earlier borrow returns the data we needed.
-            {
-                let data = req.node.borrow();
-                if let NodeKind::WebView { last_uploaded_paint, .. } = &data.kind {
-                    last_uploaded_paint.set(counter);
-                }
-            }
-        }
-
         // Composite specs for Video — same shape as Graphics.
         let mut main_video_specs: Vec<(ImageInstance, native_layout::LayoutNode)> = Vec::new();
         let mut nav_top_video_specs: Vec<(ImageInstance, native_layout::LayoutNode)> = Vec::new();
@@ -1139,33 +968,6 @@ impl Renderer {
             &self.video_cache,
         );
 
-        // WebView composite specs — append to the main bucket
-        // (deferred-nav-top / overlay WebView placement isn't
-        // supported in Phase 1; the walk collects every WebView
-        // into the same thread-local regardless of branch and
-        // we composite them in the main pass).
-        #[cfg(blitz_active)]
-        for req in web_view_reqs.iter() {
-            let layout_id = req.node.borrow().layout;
-            if !self.web_view_cache.contains_key(&layout_id) {
-                // First paint hasn't landed yet — skip; the
-                // walker will re-emit a request next frame and
-                // the pre-pass above will upload then.
-                continue;
-            }
-            main_video_specs.push((
-                ImageInstance {
-                    rect: [req.rect.0, req.rect.1, req.rect.2, req.rect.3],
-                    uv_rect: [0.0, 0.0, 1.0, 1.0],
-                    tint: [1.0, 1.0, 1.0, 1.0],
-                    rotation: 0.0,
-                    opacity: req.opacity,
-                    _pad: [0.0; 2],
-                },
-                layout_id,
-            ));
-        }
-
         // ----- Submit 1: main content + keyboard -----
         //
         // Encoded + submitted alone so the overlay batch's
@@ -1201,23 +1003,16 @@ impl Renderer {
                 }
             }));
             main_image_draws.extend(main_video_specs.iter().map(|(inst, layout_id)| {
-                // Video specs are populated from either
-                // `self.video_cache` (decoded mp4 frames) or
-                // `self.web_view_cache` (Blitz paints). They
-                // share `VideoTextureEntry` shape but live in
-                // separate maps; check both at draw time.
+                // Video specs reference `self.video_cache`
+                // (decoded mp4 frames).
                 let bind_group = self
                     .video_cache
                     .get(layout_id)
                     .map(|e| &e.bind_group);
-                #[cfg(blitz_active)]
-                let bind_group = bind_group.or_else(|| {
-                    self.web_view_cache.get(layout_id).map(|e| &e.bind_group)
-                });
                 ImageDraw {
                     instance: *inst,
                     bind_group: bind_group
-                        .expect("video / webview spec referenced an unknown layout id"),
+                        .expect("video spec referenced an unknown layout id"),
                 }
             }));
             let mut encoder1 =
@@ -1527,29 +1322,13 @@ impl Renderer {
         //
         // After all GPU work is dispatched, drive the host's
         // `DomOverlay` impl (if installed — currently only
-        // `host-web`). Each visible WebView / Video node is
-        // reported with its screen rect so the host can
-        // create / reposition / drop matching `<iframe>` and
-        // `<video>` children over the canvas. Native shells
-        // don't install an overlay, so this block does nothing
-        // there.
+        // `host-web`). Each visible Video node is reported with its
+        // screen rect so the host can create / reposition / drop
+        // matching `<video>` children over the canvas. Native
+        // shells don't install an overlay, so this block does
+        // nothing there.
         if let Some(overlay) = self.dom_overlay.clone() {
             overlay.begin_frame();
-            #[cfg(webview_node)]
-            for req in web_view_reqs.iter() {
-                let data = req.node.borrow();
-                if let NodeKind::WebView { view, .. } = &data.kind {
-                    let key = crate::dom_overlay::DomOverlayKey(
-                        std::rc::Rc::as_ptr(&req.node) as usize,
-                    );
-                    overlay.place_iframe(
-                        key,
-                        &web_view_url_for_overlay(view),
-                        req.rect,
-                        req.opacity,
-                    );
-                }
-            }
             // Video placements come from all three walk buckets
             // — main, nav-top, and overlay — so an in-flight
             // navigator transition or a modal that hosts a
@@ -1597,21 +1376,6 @@ impl Renderer {
         drop(text_store);
         drop(backend);
     }
-}
-
-/// Pull the iframe URL for an overlay placement. The wasm stub
-/// stores it inline; the native Blitz `WebView` keeps it inside
-/// a worker thread, but the native path doesn't drive
-/// `DomOverlay` anyway — return empty so the code path type-
-/// checks without adding a no-op getter to the native side.
-#[cfg(target_arch = "wasm32")]
-fn web_view_url_for_overlay(view: &crate::web_view::WebView) -> String {
-    view.url()
-}
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(webview_node)]
-fn web_view_url_for_overlay(_view: &crate::web_view::WebView) -> String {
-    String::new()
 }
 
 /// Read the source URL for the `DomOverlay`'s `<video>`
@@ -2081,24 +1845,6 @@ fn walk<'a>(
             }
             NodeKind::Unsupported { label } => {
                 paint_unsupported(x, y, w, h, label, rects);
-            }
-            #[cfg(webview_node)]
-            NodeKind::WebView { .. } => {
-                // Same record-and-resolve-later pattern as Video
-                // / Graphics. We stash the request in a thread-
-                // local so we don't have to thread a fourth
-                // `&mut Vec` through every walk recursion site.
-                // On native the renderer's pre-pass uploads the
-                // latest Blitz paint to a wgpu texture; on wasm
-                // the `DomOverlay` placement loop reads the same
-                // list and stamps an `<iframe>` over the canvas.
-                WEB_VIEW_REQUESTS.with(|c| {
-                    c.borrow_mut().push(WebViewRequest {
-                        node: node.clone(),
-                        rect: (x, y, w, h),
-                        opacity: r.opacity,
-                    });
-                });
             }
             _ => {}
         }
@@ -4020,10 +3766,10 @@ fn paint_tab_bar(
     });
 }
 
-/// "Not supported in this simulator" panel for WebView / Video /
-/// Graphics. A striped warning-colored box with a horizontal
-/// caption stripe across the middle; authors immediately see
-/// *what* would have rendered.
+/// "Not supported in this simulator" panel for Video / Graphics.
+/// A striped warning-colored box with a horizontal caption stripe
+/// across the middle; authors immediately see *what* would have
+/// rendered.
 fn paint_unsupported(
     x: f32,
     y: f32,

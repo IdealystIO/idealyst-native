@@ -56,7 +56,7 @@ pub extern "system" fn JNI_OnLoad(vm: JavaVM, _reserved: *mut c_void) -> jint {
 /// Attach the current thread to the JVM and run `f` with the
 /// resulting `JNIEnv`. Panics if `JNI_OnLoad` hasn't fired (which
 /// can only happen if the library was loaded incorrectly).
-pub(crate) fn with_env<R>(f: impl FnOnce(&mut JNIEnv) -> R) -> R {
+pub(super) fn with_env<R>(f: impl FnOnce(&mut JNIEnv) -> R) -> R {
     let vm = JAVA_VM.get().expect("JNI_OnLoad has not been called");
     let mut env = vm
         .attach_current_thread_permanently()
@@ -115,6 +115,33 @@ pub(crate) struct NodeAnim {
     /// stored drawable without re-allocating. Empty when the node
     /// has no gradient.
     pub(crate) gradient_stops: Vec<[f32; 4]>,
+    /// Per-stop offsets (0.0..=1.0) parallel to `gradient_stops`.
+    /// Required for the API-29+ `setColors(int[], float[])` path
+    /// that honors non-uniform offsets; ignored on the legacy
+    /// path. Stashed alongside `gradient_stops` at apply time so
+    /// the per-frame writer doesn't need to walk the original
+    /// `Gradient.stops` again.
+    pub(crate) gradient_offsets: Vec<f32>,
+
+    /// Static `transform: translate(N%, …)` requests, stashed at
+    /// apply-style time and resolved against the view's actual
+    /// pixel dimensions in the layout pass. CSS-spec translate-% is
+    /// BOX-relative, so we can't compute the px shift until Taffy
+    /// produces a frame. `None` on an axis means "no percent
+    /// translate requested" (a `Length::Px` translate was already
+    /// applied directly at style time).
+    pub(crate) transform_translate_pct_x: Option<f32>,
+    pub(crate) transform_translate_pct_y: Option<f32>,
+
+    /// Radial gradient extent + radius factor, stashed when a
+    /// `GradientKind::Radial` is applied. `GradientDrawable.setGradientRadius`
+    /// takes pixels, but at apply-style time the view hasn't been
+    /// measured yet — `getMeasuredWidth/Height` both return 0, and
+    /// the apply path falls back to a fixed default. The layout
+    /// pass calls `sync_radial_gradient_radius` with the just-laid-
+    /// out frame to recompute the radius and write the real value.
+    pub(crate) gradient_radial_extent: Option<framework_core::RadialExtent>,
+    pub(crate) gradient_radial_radius_factor: Option<f32>,
 
     /// Raw pointer to the leaked `Box<StateCallback>` held by the
     /// JVM-side `RustStateListener`. Blanked (inner closure cleared)
@@ -175,6 +202,14 @@ pub struct AndroidBackend {
     /// layout pass to apply computed frames.
     pub(crate) view_to_layout:
         HashMap<usize, (GlobalRef, native_layout::LayoutNode)>,
+    /// Registry of third-party `Primitive::External` handlers,
+    /// populated by `register_external::<T>(...)` calls from
+    /// per-platform leaf crates (e.g. `webview-android::register`).
+    /// `create_external` looks the handler up by payload TypeId;
+    /// unregistered kinds fall through to a "not supported" placeholder
+    /// TextView.
+    pub(crate) external_handlers:
+        framework_core::ExternalRegistry<AndroidBackend>,
 }
 
 /// Read the device's `density` (screen-pixels-per-dp) from the
@@ -296,7 +331,42 @@ impl AndroidBackend {
             portal_instances: HashMap::new(),
             layout: native_layout::LayoutTree::new(),
             view_to_layout: HashMap::new(),
+            external_handlers: framework_core::ExternalRegistry::new(),
         }
+    }
+
+    /// Register a handler for the third-party external primitive whose
+    /// payload type is `T`. Called by per-platform leaf crates (e.g.
+    /// `webview_android::register`) during app bootstrap. The handler
+    /// receives the typed payload + a mutable borrow of the backend
+    /// and produces the `GlobalRef` to the Android `View` to mount.
+    pub fn register_external<T, F>(&mut self, handler: F)
+    where
+        T: 'static,
+        F: Fn(&std::rc::Rc<T>, &mut AndroidBackend) -> GlobalRef + 'static,
+    {
+        self.external_handlers.register::<T, _>(handler);
+    }
+
+    /// `true` if a handler for payload type `T` has been registered.
+    /// Useful for opt-in graceful degradation in user code (render a
+    /// static fallback if the SDK isn't available on Android).
+    pub fn has_external<T: 'static>(&self) -> bool {
+        self.external_handlers.has::<T>()
+    }
+
+    /// SDK extension entry point: run a closure with a JNI env and the
+    /// backend's Activity/Application context. Third-party
+    /// `register_external` handlers use this to construct Android
+    /// `View`s (every `View(Context)` constructor takes the context as
+    /// its first argument).
+    ///
+    /// The context is reference-stable for the backend's lifetime — it
+    /// matches the `Context` passed to `AndroidBackend::new`. Returning
+    /// a `GlobalRef` from the closure is the usual pattern (the SDK
+    /// stashes it as its node).
+    pub fn with_jni<R>(&self, f: impl FnOnce(&mut jni::JNIEnv, &GlobalRef) -> R) -> R {
+        with_env(|env| f(env, &self.context))
     }
 
     /// Get or create a Taffy layout node for the given view. Called
@@ -379,6 +449,36 @@ impl AndroidBackend {
                     continue;
                 }
                 apply_frame_to_layout_params(env, view, *frame);
+                let key = Self::node_key(view);
+                if let Some(state) = self.anim_state.get(&key) {
+                    // Resolve any percent-valued `transform: translate`
+                    // requests now that the box has real pixel
+                    // dimensions. CSS spec: translate-% is box-relative,
+                    // so the shift needs the box's own width / height —
+                    // not knowable at apply-style time when bounds are
+                    // still zero.
+                    style::sync_transform_translate_percent(
+                        env,
+                        view.as_obj(),
+                        state,
+                        frame.width,
+                        frame.height,
+                    );
+                    // Recompute the radial gradient's px radius now that
+                    // the view has a real size. The apply-style path
+                    // ran `getMeasuredWidth/Height` before the view was
+                    // measured (both returned 0) and wrote a placeholder
+                    // 100dp radius — that's the "small sun" smell on
+                    // any view sized via a percent / aspect_ratio.
+                    let density = density_of(env, &view.as_obj()).unwrap_or(1.0);
+                    style::sync_radial_gradient_radius(
+                        env,
+                        state,
+                        frame.width,
+                        frame.height,
+                        density,
+                    );
+                }
             }
         });
     }
@@ -604,6 +704,34 @@ impl Backend for AndroidBackend {
         primitives::text_input::update_value(node, value)
     }
 
+    fn create_text_area(
+        &mut self,
+        initial_value: &str,
+        placeholder: Option<&str>,
+        on_change: Rc<dyn Fn(String)>,
+        on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
+    ) -> Self::Node {
+        primitives::text_input::create_multiline(self, initial_value, placeholder, on_change, on_key_down)
+    }
+
+    fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {
+        primitives::text_input::update_value(node, value)
+    }
+
+    fn make_text_input_handle(
+        &self,
+        node: &Self::Node,
+    ) -> framework_core::primitives::text_input::TextInputHandle {
+        primitives::text_input::make_text_input_handle(node)
+    }
+
+    fn make_text_area_handle(
+        &self,
+        node: &Self::Node,
+    ) -> framework_core::primitives::text_area::TextAreaHandle {
+        primitives::text_input::make_text_area_handle(node)
+    }
+
     fn create_toggle(&mut self, initial_value: bool, on_change: Rc<dyn Fn(bool)>) -> Self::Node {
         primitives::toggle::create(self, initial_value, on_change)
     }
@@ -629,14 +757,6 @@ impl Backend for AndroidBackend {
 
     fn update_slider_value(&mut self, node: &Self::Node, value: f32) {
         primitives::slider::update_value(node, value)
-    }
-
-    fn create_web_view(&mut self, url: &str) -> Self::Node {
-        primitives::web_view::create(self, url)
-    }
-
-    fn update_web_view_url(&mut self, node: &Self::Node, url: &str) {
-        primitives::web_view::update_url(node, url)
     }
 
     fn create_video(
@@ -843,6 +963,32 @@ impl Backend for AndroidBackend {
 
     fn release_portal(&mut self, node: &Self::Node) {
         primitives::overlay::release(self, node)
+    }
+
+    fn create_external(
+        &mut self,
+        type_id: std::any::TypeId,
+        type_name: &'static str,
+        payload: &Rc<dyn std::any::Any>,
+    ) -> Self::Node {
+        // Look up the handler; clone the Rc so we can drop the registry
+        // borrow before calling the handler (which itself needs
+        // `&mut self`).
+        if let Some(handler) = self.external_handlers.get(type_id) {
+            return handler(payload, self);
+        }
+        // No handler registered → render a placeholder TextView so the
+        // dev/user sees that an SDK binding is missing on Android
+        // rather than a silent hole. `has_external::<T>()` is the
+        // supported way to render custom degradation in user space.
+        external_placeholder_view(self, type_name)
+    }
+
+    fn release_external(&mut self, _node: &Self::Node) {
+        // No per-external bookkeeping today. Future SDK leaves that
+        // keep instance state (e.g. cached callback pointers, GL
+        // contexts) would clean up here, keyed by `node_key` like
+        // animations/navigators do.
     }
 
     fn make_button_handle(&self, node: &Self::Node) -> ButtonHandle {
@@ -1170,4 +1316,39 @@ impl Backend for AndroidBackend {
         // and the very first frame is still 0×0.
         crate::imp::scheduler::schedule_layout_pass_retry(0);
     }
+}
+
+/// Build a placeholder TextView for an unregistered external primitive
+/// — visible in dev so missing SDK bindings on Android are obvious.
+/// User-space `has_external::<T>()` discovery is the supported way to
+/// render custom degradation instead of relying on this fallback.
+fn external_placeholder_view(b: &mut AndroidBackend, type_name: &'static str) -> GlobalRef {
+    use backend_android_core::helpers::{apply_default_layout_params, set_text};
+    with_env(|env| {
+        let class = env.find_class("android/widget/TextView").unwrap();
+        let local = env
+            .new_object(
+                &class,
+                "(Landroid/content/Context;)V",
+                &[JValue::Object(&b.context.as_obj())],
+            )
+            .unwrap();
+        set_text(
+            env,
+            &local,
+            &format!("External \"{type_name}\" not supported on Android"),
+        );
+        // Red text on the system default background, matching the web
+        // placeholder's intent (visible, clearly an error, not a
+        // production-quality rendering).
+        let _ = env.call_method(
+            &local,
+            "setTextColor",
+            "(I)V",
+            // 0xFF C0392B — same hex the web placeholder uses.
+            &[JValue::Int(0xFFC0392Bu32 as i32)],
+        );
+        apply_default_layout_params(env, &local);
+        env.new_global_ref(local).unwrap()
+    })
 }

@@ -173,11 +173,20 @@ docs! {
     },
 
     section(heading = "WebView") {
-        p("Embedded web content. A sandboxed iframe on web, ", code("WKWebView"),
-          " on iOS, ", code("android.webkit.WebView"), " on Android."),
+        p("Embedded web content lives in the third-party ",
+          code("webview"), " SDK crate, not the closed-enum primitive \
+          set. A sandboxed iframe on web, ", code("WKWebView"),
+          " on iOS, ", code("android.webkit.WebView"), " on Android. \
+          Call ", code("webview::register(&mut backend)"),
+          " once at bootstrap, then mount via interpolation:"),
         code(rust, r##"
             ui! {
-                WebView(url = "https://example.com")
+                View {
+                    { webview::WebView(webview::WebViewProps {
+                        url: webview::url("https://example.com"),
+                        ..Default::default()
+                    }) }
+                }
             }
         "##),
     },

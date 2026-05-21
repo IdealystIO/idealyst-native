@@ -11,6 +11,7 @@ crate-type = ["cdylib", "rlib"]
 framework-core = { workspace = true }
 idea-ui = { workspace = true }
 backend-web = { workspace = true }
+webview = { workspace = true }
 wasm-bindgen = "0.2"
 console_error_panic_hook = "0.1"
 # Same allocator caveat applies as in the idealyst-native variant —

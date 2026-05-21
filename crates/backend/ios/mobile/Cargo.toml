@@ -55,6 +55,8 @@ objc2-ui-kit = { version = "0.2", features = [
     "UIButton",
     "UIControl",
     "UITextField",
+    "UITextView",
+    "UITextInput",
     "UISwitch",
     "UISlider",
     "UIScrollView",

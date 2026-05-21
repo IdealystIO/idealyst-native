@@ -471,7 +471,6 @@ fn emit_component(
         "toggle" => emit_toggle(&other_props, children),
         "scrollview" => emit_scroll_view(&other_props, children),
         "slider" => emit_slider(&other_props, children),
-        "webview" => emit_web_view(&other_props, children),
         "video" => emit_video(&other_props, children),
         "activityindicator" => emit_activity_indicator(&other_props, children),
         "flatlist" => emit_flat_list(&other_props, children),
@@ -992,15 +991,6 @@ fn emit_slider(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
     }
 }
 
-/// `WebView(url = ...)`.
-fn emit_web_view(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
-    let url = props
-        .iter()
-        .find(|p| p.name == "url")
-        .map(|p| p.value.to_token_stream())
-        .unwrap_or_else(|| quote! { "" });
-    quote! { ::framework_core::primitives::web_view::web_view(#url) }
-}
 
 /// `Video(src = ..., autoplay = bool, controls = bool, loop_playback = bool)`.
 fn emit_video(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {

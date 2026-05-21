@@ -1069,24 +1069,6 @@ impl Backend for WireRecordingBackend {
         });
     }
 
-    fn create_web_view(&mut self, url: &str) -> Self::Node {
-        let mut state = self.inner.borrow_mut();
-        let id = Self::mint_node(&mut state);
-        state.emit(Command::CreateWebView {
-            id,
-            url: url.to_string(),
-        });
-        id
-    }
-
-    fn update_web_view_url(&mut self, node: &Self::Node, url: &str) {
-        let mut state = self.inner.borrow_mut();
-        state.emit(Command::UpdateWebViewUrl {
-            node: *node,
-            url: url.to_string(),
-        });
-    }
-
     fn create_video(
         &mut self,
         src: &str,

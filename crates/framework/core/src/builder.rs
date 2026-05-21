@@ -46,7 +46,16 @@ pub struct Bound<H> {
 }
 
 impl<H> Bound<H> {
-    pub(crate) fn new(primitive: Primitive) -> Self {
+    /// Wrap a `Primitive` in a typed `Bound<H>`. The handle marker `H`
+    /// is purely a type-check hook for `.bind(r: Ref<H>)`; it doesn't
+    /// affect the wrapped primitive.
+    ///
+    /// First-party primitives use their dedicated builder functions
+    /// (`view(...)`, `button(...)`, …) which call this internally.
+    /// Third-party SDK crates that want a typed handle (e.g.
+    /// `Bound<WebViewHandle>` for `webview::WebView(...)`) build a
+    /// `Primitive::External` and wrap it here.
+    pub fn new(primitive: Primitive) -> Self {
         Self { primitive, _handle: std::marker::PhantomData }
     }
 

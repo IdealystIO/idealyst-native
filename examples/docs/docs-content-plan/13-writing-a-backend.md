@@ -233,7 +233,6 @@ notes are "create + update" pairs for a specific primitive.
 - `create_icon`, `update_icon_color`, `update_icon_stroke`,
   `animate_icon_stroke`
 - `create_video`, `update_video_src`
-- `create_web_view`, `update_web_view_url`
 - `create_activity_indicator`
 
 The walker only calls these if your app uses the corresponding

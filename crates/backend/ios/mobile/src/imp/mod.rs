@@ -32,13 +32,13 @@ use objc2_foundation::{MainThreadMarker, NSObject, NSString};
 use objc2_ui_kit::{
     UIActivityIndicatorView, UIActivityIndicatorViewStyle, UIButton, UIButtonType,
     UILabel, UIScrollView, UISlider, UISwitch,
-    UITextField, UIView, UIViewController,
+    UITextField, UITextView, UIView, UIViewController,
 };
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use callbacks::{
-    BoolCallbackTarget, CallbackTarget, FloatCallbackTarget, StringCallbackTarget,
+    BoolCallbackTarget, CallbackTarget, FloatCallbackTarget, StringCallbackTarget, TextKeyDelegate,
 };
 use navigator::NavigatorEntry;
 use backend_ios_core::style::{
@@ -114,6 +114,14 @@ pub struct IosBackend {
     /// UIKit setters and the rationale for caching the transform
     /// components.
     pub(crate) animated_states: animated::AnimatedStateMap,
+    /// Registry of third-party `Primitive::External` handlers,
+    /// populated by `register_external::<T>(...)` calls from
+    /// per-platform leaf crates (e.g. `webview-ios::register`).
+    /// `create_external` looks the handler up by payload TypeId;
+    /// unregistered kinds fall through to a "not supported" placeholder
+    /// UILabel.
+    pub(crate) external_handlers:
+        framework_core::ExternalRegistry<IosBackend>,
 }
 
 // =========================================================================
@@ -126,6 +134,12 @@ pub enum IosNode {
     Label(Retained<UILabel>),
     Button(Retained<UIButton>),
     TextField(Retained<UITextField>),
+    /// `TextArea` materialised as `UITextView` — the multi-line
+    /// equivalent of `UITextField`. UITextView accepts newlines, has
+    /// scrollable content, and uses a `UITextViewDelegate` rather
+    /// than the target/action pattern UITextField uses for change
+    /// notifications.
+    TextView(Retained<objc2_ui_kit::UITextView>),
     Switch(Retained<UISwitch>),
     Slider(Retained<UISlider>),
     ScrollView(Retained<UIScrollView>),
@@ -139,6 +153,7 @@ impl IosNode {
             IosNode::Label(l) => l,
             IosNode::Button(b) => b,
             IosNode::TextField(t) => t,
+            IosNode::TextView(t) => t,
             IosNode::Switch(s) => s,
             IosNode::Slider(s) => s,
             IosNode::ScrollView(s) => s,
@@ -275,7 +290,50 @@ impl IosBackend {
             layout: native_layout::LayoutTree::new(),
             view_to_layout: HashMap::new(),
             animated_states: HashMap::new(),
+            external_handlers: framework_core::ExternalRegistry::new(),
         }
+    }
+
+    /// Register a handler for the third-party external primitive whose
+    /// payload type is `T`. Called by per-platform leaf crates (e.g.
+    /// `webview_ios::register`) during app bootstrap. The handler
+    /// receives the typed payload + a mutable borrow of the backend
+    /// and produces the `IosNode` to mount.
+    pub fn register_external<T, F>(&mut self, handler: F)
+    where
+        T: 'static,
+        F: Fn(&std::rc::Rc<T>, &mut IosBackend) -> IosNode + 'static,
+    {
+        self.external_handlers.register::<T, _>(handler);
+    }
+
+    /// `true` if a handler for payload type `T` has been registered.
+    /// Useful for opt-in graceful degradation in user code (render a
+    /// static fallback if the SDK isn't available on iOS).
+    pub fn has_external<T: 'static>(&self) -> bool {
+        self.external_handlers.has::<T>()
+    }
+
+    /// `MainThreadMarker` accessor for third-party SDK extension code
+    /// that needs to construct main-thread-only Obj-C objects (e.g.
+    /// `WKWebView::initWithFrame_configuration`). Mirrors the backend's
+    /// internal `mtm` field; the marker is `Copy` so handing it out
+    /// doesn't tie the SDK to the backend's borrow lifetime.
+    pub fn mtm(&self) -> objc2_foundation::MainThreadMarker {
+        self.mtm
+    }
+
+    /// SDK extension helper: register a UIView (or subclass) with the
+    /// backend's Taffy layout tree so flex parents can size + position
+    /// it. Third-party `register_external` handlers call this once
+    /// after constructing their native view so the layout pass picks
+    /// it up. Without it, the view is laid out as 0×0.
+    ///
+    /// The view's `frame` is written by `Backend::finish` /
+    /// `apply_style`'s layout pass — leaf widgets that don't need a
+    /// custom measure function are fully serviced by this call alone.
+    pub fn register_external_view(&mut self, view: &objc2_ui_kit::UIView) {
+        let _ = self.layout_for_view(view);
     }
 
     /// Get or create a layout node for a UIView. Called from every
@@ -829,12 +887,8 @@ impl Backend for IosBackend {
         initial_value: &str,
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
-        _on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
+        on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
     ) -> Self::Node {
-        // TODO: wire `_on_key_down` through `UIKeyCommand` + the
-        // `UITextFieldDelegate.shouldChangeCharactersInRange:` path.
-        // Tracked in the same change that adds UITextView TextArea
-        // support — the keyboard bridge is shared between both.
         let field = unsafe { UITextField::new(self.mtm) };
         let ns_val = NSString::from_str(initial_value);
         unsafe { field.setText(Some(&ns_val)) };
@@ -853,6 +907,17 @@ impl Backend for IosBackend {
         };
         self.retain_target(&target);
 
+        // Keydown bridge — UITextField's delegate's
+        // `shouldChangeCharactersInRange:` fires for every keystroke
+        // (Tab/Enter/printable/Backspace) before UIKit applies the
+        // change. The delegate carries `None` for on_change because
+        // UITextField already reports change via target/action above.
+        if let Some(handler) = on_key_down {
+            let delegate = TextKeyDelegate::new(self.mtm, Some(handler), None);
+            let _: () = unsafe { msg_send![&field, setDelegate: &*delegate] };
+            self.retain_target(&delegate);
+        }
+
         IosNode::TextField(field)
     }
 
@@ -863,6 +928,46 @@ impl Backend for IosBackend {
             if current_str != value {
                 let ns = NSString::from_str(value);
                 unsafe { field.setText(Some(&ns)) };
+            }
+        }
+    }
+
+    fn create_text_area(
+        &mut self,
+        initial_value: &str,
+        _placeholder: Option<&str>,
+        on_change: Rc<dyn Fn(String)>,
+        on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
+    ) -> Self::Node {
+        // UITextView is the multi-line equivalent of UITextField. It
+        // ships with `editable: true` already, so we don't need to
+        // flip it. Note: UITextView has no `placeholder` property —
+        // matching the framework primitive shape requires a manual
+        // overlay-label hack; for v1 we accept the `placeholder` arg
+        // but ignore it (callers shouldn't depend on placeholder
+        // text rendering on iOS yet — flagged on Primitive::TextArea).
+        let view: Retained<UITextView> = unsafe { UITextView::new(self.mtm) };
+        let ns_val = NSString::from_str(initial_value);
+        unsafe { view.setText(Some(&ns_val)) };
+
+        // One delegate carries BOTH on_change (via textViewDidChange:)
+        // and on_key_down (via shouldChangeTextInRange:). UITextView
+        // has no target/action editing-changed event; the delegate is
+        // the only canonical change-notification path.
+        let delegate = TextKeyDelegate::new(self.mtm, on_key_down, Some(on_change));
+        let _: () = unsafe { msg_send![&view, setDelegate: &*delegate] };
+        self.retain_target(&delegate);
+
+        IosNode::TextView(view)
+    }
+
+    fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {
+        if let IosNode::TextView(view) = node {
+            let current: Option<Retained<NSString>> = unsafe { msg_send_id![view, text] };
+            let current_str = current.map(|ns| ns.to_string()).unwrap_or_default();
+            if current_str != value {
+                let ns = NSString::from_str(value);
+                unsafe { view.setText(Some(&ns)) };
             }
         }
     }
@@ -1393,6 +1498,14 @@ impl Backend for IosBackend {
         let view = node.as_view();
         apply_style_to_view(view, style);
 
+        // Static `transform: …` ops from the stylesheet. iOS's
+        // animation system composes a single `CGAffineTransform`
+        // from per-axis slots in `AnimatedTransformState`; static
+        // transforms share those slots (CSS semantics: animation
+        // wins on conflict). Percent translates are stashed and
+        // resolved in the layout pass once the box has a real size.
+        self.apply_static_transform(node, style);
+
         // Background gradient: install (or refresh) the CAGradientLayer
         // sublayer and stash the layer ref + resolved sRGB stops on
         // this node's animation state. The per-frame
@@ -1467,6 +1580,25 @@ impl Backend for IosBackend {
                         }));
                     } else {
                         let _: () = unsafe { msg_send![field, setTintColor: &*c] };
+                    }
+                }
+            }
+            IosNode::TextView(textview) => {
+                // UITextView is the multi-line analogue. Same text
+                // styling path applies (font, color, font-size); we
+                // pass `is_label = false` because UITextView is an
+                // editable widget, not a label.
+                apply_text_style(view, style, false);
+                if let Some(caret) = &style.caret_color {
+                    let c = color_to_uicolor(&caret.resolve());
+                    if let Some(trans) = &style.caret_color_transition {
+                        let view_ref: Retained<UITextView> = textview.clone();
+                        let trans = *trans;
+                        animate(&trans, Rc::new(move || {
+                            let _: () = unsafe { msg_send![&view_ref, setTintColor: &*c] };
+                        }));
+                    } else {
+                        let _: () = unsafe { msg_send![textview, setTintColor: &*c] };
                     }
                 }
             }
@@ -1684,6 +1816,28 @@ impl Backend for IosBackend {
         }
     }
 
+    fn create_external(
+        &mut self,
+        type_id: std::any::TypeId,
+        type_name: &'static str,
+        payload: &std::rc::Rc<dyn std::any::Any>,
+    ) -> Self::Node {
+        if let Some(handler) = self.external_handlers.get(type_id) {
+            return handler(payload, self);
+        }
+        // No handler registered → render a placeholder UILabel so the
+        // dev/user sees that an SDK binding is missing on iOS rather
+        // than a silent hole. `has_external::<T>()` is the supported
+        // way to render custom degradation in user space.
+        external_placeholder_node(self, type_name)
+    }
+
+    fn release_external(&mut self, _node: &Self::Node) {
+        // No per-external bookkeeping today. Future SDK leaves that
+        // hold instance state (KVO observers, CADisplayLink, etc.)
+        // would clean up here, keyed by `node_key` like portals do.
+    }
+
     fn apply_safe_area_padding(
         &mut self,
         node: &Self::Node,
@@ -1784,6 +1938,42 @@ impl Backend for IosBackend {
 
     fn make_text_handle(&self, node: &Self::Node) -> framework_core::TextHandle {
         framework_core::TextHandle::new(Rc::new(node.clone()), &handles::IOS_TEXT_OPS)
+    }
+
+    fn make_text_input_handle(
+        &self,
+        node: &Self::Node,
+    ) -> framework_core::primitives::text_input::TextInputHandle {
+        if let IosNode::TextField(field) = node {
+            framework_core::primitives::text_input::TextInputHandle::new(
+                Rc::new(field.clone()),
+                &handles::IOS_TEXT_INPUT_OPS,
+            )
+        } else {
+            // Shouldn't happen — walker only calls this for TextInput
+            // nodes. Fall back to a no-op handle wrapping an empty box.
+            framework_core::primitives::text_input::TextInputHandle::new(
+                Rc::new(()),
+                &handles::IOS_TEXT_INPUT_OPS,
+            )
+        }
+    }
+
+    fn make_text_area_handle(
+        &self,
+        node: &Self::Node,
+    ) -> framework_core::primitives::text_area::TextAreaHandle {
+        if let IosNode::TextView(view) = node {
+            framework_core::primitives::text_area::TextAreaHandle::new(
+                Rc::new(view.clone()),
+                &handles::IOS_TEXT_AREA_OPS,
+            )
+        } else {
+            framework_core::primitives::text_area::TextAreaHandle::new(
+                Rc::new(()),
+                &handles::IOS_TEXT_AREA_OPS,
+            )
+        }
     }
 
     // =================================================================
@@ -2018,6 +2208,18 @@ impl IosBackend {
             // when the view's size is percent-based; this call reads
             // it back and writes a properly-clamped value.
             backend_ios_core::style::sync_corner_radius(view);
+            // Resolve any percent-valued static `transform: translate`
+            // requests now that the box has real pixel dimensions.
+            // CSS spec: translate-% is BOX-relative, so the shift
+            // needs the box's own width / height — not knowable at
+            // apply-style time when bounds are still zero.
+            crate::imp::animated::sync_static_transform_percent(
+                &mut self.animated_states,
+                *key,
+                view,
+                frame.width,
+                frame.height,
+            );
             applied += 1;
         }
         backend_ios_core::ios_log(&format!("[layout] apply_frames done: applied={}", applied));
@@ -2112,4 +2314,24 @@ impl IosBackend {
             left: insets.left as f32,
         }
     }
+}
+
+/// Build a placeholder UILabel for an unregistered external primitive
+/// — visible in dev so missing SDK bindings on iOS are obvious.
+/// User-space `has_external::<T>()` discovery is the supported way to
+/// render custom degradation instead of relying on this fallback.
+fn external_placeholder_node(b: &mut IosBackend, type_name: &'static str) -> IosNode {
+    let label = unsafe { UILabel::new(b.mtm) };
+    let text = format!("External \"{type_name}\" not supported on iOS");
+    let ns_text = NSString::from_str(&text);
+    unsafe { label.setText(Some(&ns_text)) };
+    let _: () = unsafe { msg_send![&label, setNumberOfLines: 0isize] };
+    // Match the red intent of the web placeholder. UIColor.systemRed
+    // is the dynamic color that adapts to light/dark — same intent
+    // across platforms, no manual hex needed.
+    let red: Retained<NSObject> =
+        unsafe { msg_send_id![objc2::class!(UIColor), systemRedColor] };
+    let _: () = unsafe { msg_send![&label, setTextColor: &*red] };
+    let _ = b.layout_for_view(&label);
+    IosNode::Label(label)
 }

@@ -225,11 +225,15 @@ docs! {
         ),
         p("The rest (", code("TextHandle"), ", ", code("ImageHandle"), ", ",
           code("TextInputHandle"), ", ", code("ToggleHandle"), ", ",
-          code("SliderHandle"), ", ", code("WebViewHandle"), ", ",
+          code("SliderHandle"), ", ",
           code("VideoHandle"), ", ", code("ActivityIndicatorHandle"), ", ",
           code("VirtualizerHandle"), ", ", code("GraphicsHandle"),
           ") exist but their method surfaces are still being filled in. New \
-           operations land on those traits without app code needing to change."),
+           operations land on those traits without app code needing to change. \
+           Third-party SDKs ship their own handles — e.g. ",
+          code("webview::WebViewHandle"),
+          " with ", code(".post_message()"), " / ", code(".reload()"), " / ",
+          code(".execute_js()"), "."),
     },
 
     section(heading = "Reading geometry") {

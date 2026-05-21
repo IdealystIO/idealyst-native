@@ -85,9 +85,7 @@ pub use primitives::image::{image, image_asset, ImageHandle, ImageOps};
 pub use primitives::key::{KeyEvent, KeyOutcome};
 pub use primitives::text_input::{text_input, TextInputHandle, TextInputOps};
 pub use primitives::text_area::{text_area, TextAreaHandle, TextAreaOps};
-pub use primitives::code_block::{code_block, CodeBlockHandle};
 pub use primitives::toggle::{toggle, ToggleHandle, ToggleOps};
-pub use primitives::web_view::{web_view, WebViewHandle, WebViewOps};
 pub use primitives::overlay::{
     anchored_overlay, overlay, AnchoredOverlayBuilder, BackdropMode, OverlayBuilder,
 };

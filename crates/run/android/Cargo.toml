@@ -9,3 +9,4 @@ description = "Build and launch an idealyst Android app on emulator or device wi
 anyhow = "1"
 build-android = { workspace = true }
 build-ios = { workspace = true }
+serde_json = "1"

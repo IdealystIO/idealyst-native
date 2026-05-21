@@ -174,10 +174,6 @@ pub const DRAWER_ANIM_MS: u32 = 250;
 /// Material guidelines call for 32% (`0x52`) under the scrim;
 /// matches both iOS and Android drawer chrome closely.
 pub const DRAWER_SCRIM_MAX_ALPHA: f32 = 0.32;
-/// Default height for an `Unsupported` placeholder so authors
-/// can see the "X not supported" panel without explicit sizing.
-pub const UNSUPPORTED_DEFAULT_HEIGHT: f32 = 80.0;
-
 /// Duration of the visual flash applied to a tapped keyboard
 /// key. Mirrors iOS's brief depress-then-release animation —
 /// long enough to register at typing cadence, short enough to
@@ -528,26 +524,8 @@ pub enum NodeKind {
         /// without re-running layout.
         frame_rect: std::cell::Cell<(f32, f32, f32, f32)>,
     },
-    /// Live HTML view. On native (with `feature = "webview"`)
-    /// the [`WebView`](crate::web_view::WebView) owns a Blitz
-    /// worker thread; the renderer's pre-pass uploads the latest
-    /// painted RGBA buffer to a wgpu texture and composites via
-    /// the image pipeline. On wasm the same `WebView` is a tiny
-    /// stub that just holds the current URL — the host's
-    /// `DomOverlay` impl mounts an `<iframe>` over the canvas
-    /// and `last_uploaded_paint` is irrelevant.
-    #[cfg(webview_node)]
-    WebView {
-        view: std::rc::Rc<crate::web_view::WebView>,
-        /// Counter value of the most-recently uploaded paint.
-        /// Cheap re-upload skip — only blit when the Blitz worker
-        /// has produced a fresh frame. Unused on wasm (no GPU
-        /// upload happens for iframes).
-        #[cfg(blitz_active)]
-        last_uploaded_paint: std::cell::Cell<u64>,
-    },
     /// Renders a "not supported in this simulator" panel for
-    /// primitives we don't implement (WebView, Video, Graphics).
+    /// primitives we don't implement (Video, Graphics).
     /// Keeps an app that uses them visibly intact instead of
     /// rendering a 0×0 invisible node.
     Unsupported {
@@ -642,8 +620,6 @@ impl std::fmt::Debug for NodeKind {
                 if drawer.borrow().is_some() { "set" } else { "unset" },
             ),
             NodeKind::Video { .. } => f.write_str("Video"),
-            #[cfg(webview_node)]
-            NodeKind::WebView { .. } => f.write_str("WebView"),
             NodeKind::Unsupported { label } => write!(f, "Unsupported({label})"),
         }
     }

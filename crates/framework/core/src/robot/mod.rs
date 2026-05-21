@@ -85,7 +85,6 @@ pub enum ElementKind {
     Toggle,
     ScrollView,
     Slider,
-    WebView,
     Video,
     ActivityIndicator,
     Virtualizer,

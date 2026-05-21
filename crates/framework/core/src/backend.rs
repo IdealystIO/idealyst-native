@@ -746,19 +746,6 @@ pub trait Backend {
     #[allow(unused_variables)]
     fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {}
 
-    /// Create a read-only colored-text panel. `spans` is a flat
-    /// `(text, color)` run list; the backend renders each as a
-    /// styled glyph segment inside a single layout node (web: a
-    /// `<pre>` with `<span>` children). `update_code_block_spans`
-    /// swaps the runs in place — used by the fiddle's
-    /// re-tokenize-on-keystroke loop.
-    #[allow(unused_variables)]
-    fn create_code_block(&mut self, spans: &[(String, Color)]) -> Self::Node {
-        unimplemented!("create_code_block not implemented for this backend")
-    }
-    #[allow(unused_variables)]
-    fn update_code_block_spans(&mut self, node: &Self::Node, spans: &[(String, Color)]) {}
-
     /// Create a toggle (switch / checkbox) with the initial value and
     /// an `on_change` callback. Same controlled-update pattern as
     /// text input.
@@ -796,48 +783,6 @@ pub trait Backend {
     }
     #[allow(unused_variables)]
     fn update_slider_value(&mut self, node: &Self::Node, value: f32) {}
-
-    /// Create a WebView with the initial URL. `update_web_view_url`
-    /// drives subsequent navigations from the reactive source.
-    #[allow(unused_variables)]
-    fn create_web_view(&mut self, url: &str) -> Self::Node {
-        unimplemented!("create_web_view not implemented for this backend")
-    }
-    #[allow(unused_variables)]
-    fn update_web_view_url(&mut self, node: &Self::Node, url: &str) {}
-
-    /// Register a callback fired for each `postMessage` from the
-    /// embedded content. The walker calls this after
-    /// `create_web_view` when the primitive carries an
-    /// `on_message` slot. Default: drop the callback (backend
-    /// doesn't service the message channel).
-    #[allow(unused_variables)]
-    fn web_view_set_on_message(
-        &mut self,
-        node: &Self::Node,
-        callback: Box<dyn Fn(String)>,
-    ) {
-    }
-
-    /// Register a callback fired when the embedded content
-    /// finishes loading.
-    #[allow(unused_variables)]
-    fn web_view_set_on_load(
-        &mut self,
-        node: &Self::Node,
-        callback: Box<dyn Fn()>,
-    ) {
-    }
-
-    /// Register a callback fired when the embedded content fails
-    /// to load.
-    #[allow(unused_variables)]
-    fn web_view_set_on_error(
-        &mut self,
-        node: &Self::Node,
-        callback: Box<dyn Fn()>,
-    ) {
-    }
 
     /// Create a Video element. Static autoplay/controls/loop are
     /// passed at construction time; reactive `src` updates flow
@@ -1329,14 +1274,6 @@ pub trait Backend {
     #[allow(unused_variables)]
     fn make_slider_handle(&self, node: &Self::Node) -> primitives::slider::SliderHandle {
         primitives::slider::SliderHandle::new(Rc::new(()), &NoopSliderOps)
-    }
-
-    #[allow(unused_variables)]
-    fn make_web_view_handle(
-        &self,
-        node: &Self::Node,
-    ) -> primitives::web_view::WebViewHandle {
-        primitives::web_view::WebViewHandle::new(Rc::new(()), &NoopWebViewOps)
     }
 
     #[allow(unused_variables)]
@@ -1912,9 +1849,6 @@ impl primitives::scroll_view::ScrollViewOps for NoopScrollViewOps {
 
 struct NoopSliderOps;
 impl primitives::slider::SliderOps for NoopSliderOps {}
-
-struct NoopWebViewOps;
-impl primitives::web_view::WebViewOps for NoopWebViewOps {}
 
 struct NoopVideoOps;
 impl primitives::video::VideoOps for NoopVideoOps {

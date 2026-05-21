@@ -160,14 +160,27 @@ ui! {
 }
 ```
 
-### `WebView`
+### `WebView` (third-party SDK)
 
-Embedded web content. A sandboxed iframe on web, `WKWebView` on iOS,
-`android.webkit.WebView` on Android.
+Embedded web content moved out of framework-core into the standalone
+`webview` SDK crate. A sandboxed iframe on web, `WKWebView` on iOS,
+`android.webkit.WebView` on Android. Register once at bootstrap, then
+mount via expression interpolation (third-party primitives don't get
+`ui!` block syntax):
 
 ```rust
+// bootstrap
+let mut backend = WebBackend::new("#app");
+webview::register(&mut backend);
+
+// inside a `ui!` block
 ui! {
-    WebView(url = "https://example.com")
+    View {
+        { webview::WebView(webview::WebViewProps {
+            url: webview::url("https://example.com"),
+            ..Default::default()
+        }) }
+    }
 }
 ```
 

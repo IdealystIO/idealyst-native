@@ -1,8 +1,9 @@
+use framework_core::primitives::key::{KeyDownHandler, KeyEvent, KeyOutcome};
 use objc2::encode::{Encode, Encoding};
 use objc2::rc::Retained;
 use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
-use objc2_foundation::{CGFloat, MainThreadMarker, NSObject, NSString};
-use objc2_ui_kit::UIView;
+use objc2_foundation::{CGFloat, MainThreadMarker, NSObject, NSRange, NSString};
+use objc2_ui_kit::{UITextField, UITextView, UIView};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -433,5 +434,156 @@ impl DisplayLinkTarget {
             callback: RefCell::new(Some(callback)),
         });
         unsafe { msg_send_id![super(this), init] }
+    }
+}
+
+// =========================================================================
+// TextKeyDelegate — UITextFieldDelegate + UITextViewDelegate bridge
+// =========================================================================
+//
+// Single delegate object that handles BOTH UIKit text widgets. The
+// keydown bridge uses `shouldChangeText` (the universal UIKit hook
+// that fires for every typed character, paste, and named-key insert
+// like Tab/Enter/Backspace) — returning `false` suppresses the
+// change, which maps cleanly to `KeyOutcome::PreventDefault`.
+//
+// For UITextView we ALSO carry the on_change closure here, because
+// UITextView reports value changes via `textViewDidChange:` on the
+// delegate rather than the target/action pattern UITextField uses.
+// UITextField's on_change continues to ride target/action with the
+// existing `StringCallbackTarget`; the delegate slot on that widget
+// only carries the optional key handler.
+//
+// `key` and `on_change` are both Option so the same class works for
+// either widget — UITextField sets only `key`, UITextView sets both.
+
+pub(crate) struct TextKeyDelegateIvars {
+    pub(crate) key: RefCell<Option<KeyDownHandler>>,
+    pub(crate) on_change: RefCell<Option<Rc<dyn Fn(String)>>>,
+}
+
+declare_class!(
+    pub(crate) struct TextKeyDelegate;
+
+    unsafe impl ClassType for TextKeyDelegate {
+        type Super = NSObject;
+        type Mutability = mutability::InteriorMutable;
+        const NAME: &'static str = "IdealystTextKeyDelegate";
+    }
+
+    impl DeclaredClass for TextKeyDelegate {
+        type Ivars = TextKeyDelegateIvars;
+    }
+
+    unsafe impl TextKeyDelegate {
+        /// `UITextFieldDelegate.textField:shouldChangeCharactersInRange:replacementString:`
+        /// — UIKit's pre-default-action hook for UITextField input.
+        /// Fires once per typed character (incl. Tab, Backspace,
+        /// Enter), once per pasted blob, etc.
+        #[method(textField:shouldChangeCharactersInRange:replacementString:)]
+        fn text_field_should_change(
+            &self,
+            _text_field: &UITextField,
+            range: NSRange,
+            string: &NSString,
+        ) -> bool {
+            self.dispatch_key(range, string)
+        }
+
+        /// `UITextViewDelegate.textView:shouldChangeTextInRange:replacementText:`
+        /// — identical contract on the multi-line widget.
+        #[method(textView:shouldChangeTextInRange:replacementText:)]
+        fn text_view_should_change(
+            &self,
+            _text_view: &UITextView,
+            range: NSRange,
+            text: &NSString,
+        ) -> bool {
+            self.dispatch_key(range, text)
+        }
+
+        /// `UITextViewDelegate.textViewDidChange:` — fires after the
+        /// content actually changes (post-shouldChangeText accept).
+        /// UITextView has no target/action equivalent, so on_change
+        /// rides this method.
+        #[method(textViewDidChange:)]
+        fn text_view_did_change(&self, text_view: &UITextView) {
+            let ivars = self.ivars();
+            if let Some(cb) = ivars.on_change.borrow().as_ref() {
+                let text: Option<Retained<NSString>> =
+                    unsafe { msg_send_id![text_view, text] };
+                let s = text.map(|ns| ns.to_string()).unwrap_or_default();
+                cb(s);
+            }
+        }
+    }
+);
+
+impl TextKeyDelegate {
+    pub(crate) fn new(
+        mtm: MainThreadMarker,
+        key: Option<KeyDownHandler>,
+        on_change: Option<Rc<dyn Fn(String)>>,
+    ) -> Retained<Self> {
+        let this = mtm.alloc::<Self>();
+        let this = this.set_ivars(TextKeyDelegateIvars {
+            key: RefCell::new(key),
+            on_change: RefCell::new(on_change),
+        });
+        unsafe { msg_send_id![super(this), init] }
+    }
+
+    /// Map the (range, replacement) tuple UIKit hands us into our
+    /// canonical [`KeyEvent`] shape, invoke the user handler, and
+    /// translate [`KeyOutcome`] into the BOOL UIKit expects.
+    ///
+    /// Replacement-text → `key` heuristics — chosen to match the
+    /// vocabulary documented on `framework_core::primitives::key`:
+    ///
+    /// - `""` with `range.length > 0` → `"Backspace"`. (UIKit reports
+    ///   backspace as a deletion of the character behind the caret;
+    ///   no other Apple-platform code path fires shouldChangeText
+    ///   with empty replacement.)
+    /// - `"\t"` → `"Tab"`.
+    /// - `"\n"` → `"Enter"`.
+    /// - single character → the character itself ("a", "A", " ").
+    /// - longer string → first char, mirroring browser keydown
+    ///   semantics for IME composition / paste-as-single-key.
+    fn dispatch_key(&self, range: NSRange, replacement: &NSString) -> bool {
+        let ivars = self.ivars();
+        let handler = match ivars.key.borrow().as_ref() {
+            Some(h) => h.clone(),
+            None => return true,
+        };
+        let text = replacement.to_string();
+        let key = if text.is_empty() {
+            "Backspace".to_string()
+        } else if text == "\t" {
+            "Tab".to_string()
+        } else if text == "\n" {
+            "Enter".to_string()
+        } else if let Some(c) = text.chars().next() {
+            c.to_string()
+        } else {
+            String::new()
+        };
+        let event = KeyEvent {
+            key,
+            // UIKit doesn't surface modifier state through
+            // shouldChangeText. For text-editor use cases (Tab to
+            // indent, etc.) the modifier doesn't matter; richer
+            // modifier reads would need UIPress / pressesBegan
+            // tracking layered on top.
+            shift: false,
+            ctrl: false,
+            alt: false,
+            meta: false,
+            selection_start: range.location,
+            selection_end: range.location + range.length,
+        };
+        match handler(&event) {
+            KeyOutcome::PreventDefault => false,
+            KeyOutcome::Default => true,
+        }
     }
 }

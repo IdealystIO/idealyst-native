@@ -27,7 +27,7 @@
 
 use backend_web::WebBackend;
 use framework_core::{
-    button, signal, stylesheet, text_input, toggle, ui, web_view, AlignItems, Color,
+    button, signal, stylesheet, text_input, toggle, ui, AlignItems, Color,
     FlexDirection, JustifyContent, Length, Overflow, Primitive, Signal, TokenEntry, TokenValue,
     Tokenized,
 };
@@ -1344,9 +1344,12 @@ fn frame_wrap() -> Primitive {
         View(style = FrameWrap()) {
             { frame_header() }
             {
-                web_view(move || url_sig.get())
-                    .on_message(handle_message)
-                    .with_style(IframeStyle())
+                webview::WebView(webview::WebViewProps {
+                    url: webview::url(move || url_sig.get()),
+                    on_message: Some(std::rc::Rc::new(handle_message)),
+                    ..Default::default()
+                })
+                .with_style(IframeStyle())
             }
         }
     }
@@ -1526,6 +1529,16 @@ pub fn start() {
     STATE.with(|s| *s.borrow_mut() = Some(state));
 
     let backend = Rc::new(RefCell::new(WebBackend::new("#app")));
+    // Install the webview SDK so `frame_wrap()`'s iframe primitive
+    // mounts as a real `<iframe>` instead of the framework's
+    // "external not supported" placeholder. Explicit deref because
+    // the host-target fallback `register<B>` is generic — it doesn't
+    // autoderef `RefMut` to `&mut WebBackend` like the wasm32-specific
+    // signature would.
+    {
+        let mut b = backend.borrow_mut();
+        webview::register(&mut *b);
+    }
     let owner = framework_core::render(backend, app());
     OWNER.with(|s| *s.borrow_mut() = Some(owner));
 }

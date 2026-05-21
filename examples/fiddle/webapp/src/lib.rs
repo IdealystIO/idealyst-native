@@ -30,13 +30,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use framework_core::primitives::text_area::{text_area, TextAreaHandle};
-use framework_core::primitives::web_view::web_view;
 use framework_core::stylesheet;
 use framework_core::{
-    button, code_block, signal, switch, text, text_fmt, ui, AlignItems, Color, FlexDirection,
+    button, signal, switch, text, text_fmt, ui, AlignItems, Color, FlexDirection,
     FontWeight, JustifyContent, KeyEvent, KeyOutcome, Length, Overflow, Position, Primitive, Ref,
     Signal,
 };
+use idea_codeblock::code_block;
 use idea_ui::{install_idea_theme, light_theme};
 
 // The `stylesheet!` macro takes a `<Theme>` generic for syntactic
@@ -321,6 +321,17 @@ pub fn start() {
     install_idea_theme(light_theme());
 
     let backend = Rc::new(RefCell::new(backend_web::WebBackend::new("#app")));
+    // Register third-party SDK primitives. The fiddle uses
+    // `idea_codeblock::code_block` for the syntax-highlight overlay
+    // behind the textarea — see `editor_panel()`. `webview::register`
+    // installs the `WebView` SDK so `preview_panel()`'s iframe shows
+    // up; without it the framework's "external not supported"
+    // placeholder renders instead.
+    {
+        let mut b = backend.borrow_mut();
+        idea_codeblock::register(&mut b);
+        webview::register(&mut b);
+    }
     let owner = framework_core::render(backend, app());
     OWNER.with(|slot| *slot.borrow_mut() = Some(owner));
 }
@@ -715,7 +726,10 @@ fn controls_panel(
 // =============================================================================
 
 fn preview_panel(iframe_url: Signal<String>) -> Primitive {
-    web_view(move || iframe_url.get())
-        .with_style(preview_style())
-        .into()
+    webview::WebView(webview::WebViewProps {
+        url: webview::url(move || iframe_url.get()),
+        ..Default::default()
+    })
+    .with_style(preview_style())
+    .into()
 }

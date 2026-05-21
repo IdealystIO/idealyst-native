@@ -1,5 +1,6 @@
 //! Compile the backend's Kotlin runtime classes (`RustNavigator`,
-//! `RustDrawerLayout`, etc.) into the APK.
+//! `RustDrawerLayout`, etc.) plus any third-party Kotlin runtime
+//! sources contributed by SDK crates into the APK.
 //!
 //! `backend-android-mobile` ships a small JVM-side runtime — listener
 //! shims, fragment hosts, layout subclasses — that the Rust code
@@ -8,22 +9,58 @@
 //! and are owned by the backend, but the `run-android` build pipeline
 //! is what actually compiles + bundles them into the user's APK.
 //!
-//! The files are embedded into the CLI binary via `include_str!`, so
-//! the CLI carries its own copy and external `cargo install` builds
-//! still see them.
+//! The first-party files are embedded into the CLI binary via
+//! `include_str!`, so the CLI carries its own copy and external
+//! `cargo install` builds still see them.
+//!
+//! # Third-party SDK contributions
+//!
+//! Third-party SDKs (e.g. a `webview-android` leaf that ships a
+//! `RustWebViewClient.kt`) declare their Kotlin sources in their own
+//! `Cargo.toml` under `[package.metadata.idealyst.android]`:
+//!
+//! ```toml
+//! [package.metadata.idealyst.android]
+//! runtime_kotlin = ["runtime/kotlin/io/foo/RustFoo.kt"]
+//! runtime_java   = ["runtime/java/io/foo/FooBridge.java"]
+//! androidx = [
+//!     ["androidx.media3", "media3-exoplayer"],
+//!     ["androidx.media3", "media3-common"],
+//! ]
+//! ```
+//!
+//! `runtime_kotlin` files are staged under the Kotlin source root and
+//! compiled by `kotlinc`; `runtime_java` files are staged under a
+//! parallel Java extension root and join the user's project Java in
+//! the `javac` invocation. Both convention-strip a leading
+//! `runtime/kotlin/` or `runtime/java/` (or just `runtime/`) so the
+//! staged tree mirrors the Java package hierarchy directly.
+//!
+//! Paths are resolved relative to the declaring package's manifest
+//! directory. We discover them by running `cargo metadata` against
+//! the user's wrapper crate (which transitively depends on every
+//! SDK), then read the files off disk at build time. Unlike the
+//! first-party runtime — which the CLI bakes in via `include_str!` —
+//! third-party files must exist on disk during `idealyst run`.
+//!
+//! # AndroidX resolution
 //!
 //! The runtime imports a handful of `androidx.*` classes
 //! (drawerlayout, fragment, recyclerview). We resolve those from the
 //! user's local gradle cache rather than fetching from Maven — every
 //! Android Studio installation populates the cache by default, so
 //! there is no extra setup. Missing artifacts fail loudly with a
-//! pointer at the file we expected.
+//! pointer at the file we expected. Third-party AndroidX requirements
+//! get merged into the same resolution pass (deduped by
+//! (group, artifact)). SDKs must declare the full transitive closure
+//! they need — we don't read AAR `.pom` files to chase dependencies.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
+use serde_json::Value;
 
 /// Embedded copy of the backend's Kotlin runtime. Each entry is the
 /// filename + raw source; we stage them into the per-build directory
@@ -80,6 +117,12 @@ const RUNTIME_KOTLIN_FILES: &[(&str, &str)] = &[
         "RustNavigator.kt",
         include_str!(
             "../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustNavigator.kt"
+        ),
+    ),
+    (
+        "RustKeyListener.kt",
+        include_str!(
+            "../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustKeyListener.kt"
         ),
     ),
     (
@@ -170,9 +213,15 @@ const REQUIRED_ANDROIDX: &[(&str, &str)] = &[
 /// processing finishes.
 pub struct RuntimeArtifacts {
     /// Directory containing the kotlinc-compiled .class files
-    /// (`io/idealyst/runtime/*.class`). Hand to d8 alongside the
-    /// javac output.
+    /// (`io/idealyst/runtime/*.class` plus any third-party Kotlin
+    /// classes). Hand to d8 alongside the javac output.
     pub kotlin_class_dir: PathBuf,
+    /// Directory containing third-party Java sources contributed by
+    /// SDKs via `[package.metadata.idealyst.android].runtime_java`.
+    /// `None` if no SDK contributed any. When `Some`, pass it as an
+    /// additional input dir to `javac` alongside the user's `java/`
+    /// tree and the AAR-generated `r_java_dir`.
+    pub extension_java_dir: Option<PathBuf>,
     /// AAR `classes.jar` extracts (one per androidx artifact).
     /// d8-friendly inputs.
     pub androidx_jars: Vec<PathBuf>,
@@ -205,22 +254,264 @@ struct ResolvedArtifact {
     classes_jar: PathBuf,
 }
 
+/// One JVM source file contributed by a third-party SDK. Same shape
+/// for both Kotlin (`.kt`) and Java (`.java`) — only the staging root
+/// + compile step differ. The framework's own runtime Kotlin files are
+/// staged the same way but originate from [`RUNTIME_KOTLIN_FILES`]
+/// (embedded via `include_str!`).
+struct ExtensionSource {
+    /// The crate that declared this file — used only for diagnostics
+    /// (conflict messages, "where did this come from?" errors).
+    package: String,
+    /// Absolute path to the .kt / .java file on disk. The CLI doesn't
+    /// embed third-party sources; they have to be present at
+    /// `idealyst run` time.
+    source_path: PathBuf,
+    /// Relative subpath under the language-specific source root where
+    /// the file should be staged. Mirrors the directory layout the SDK
+    /// author chose. e.g. `io/foo/RustFoo.kt` or `io/foo/FooBridge.java`.
+    staged_relpath: PathBuf,
+}
+
+/// Bundle of everything `cargo metadata` discovered across the user's
+/// transitive dep tree.
+#[derive(Default)]
+struct DiscoveredExtensions {
+    kotlin: Vec<ExtensionSource>,
+    java: Vec<ExtensionSource>,
+    /// Additional (group, artifact) pairs to feed into AndroidX
+    /// resolution. Deduped against [`REQUIRED_ANDROIDX`] and against
+    /// itself before resolution runs.
+    androidx: Vec<(String, String)>,
+}
+
+/// Walk the wrapper's dep tree via `cargo metadata` and collect every
+/// package's `[package.metadata.idealyst.android]` block.
+///
+/// The wrapper is generated under `target/idealyst/.../<project>/android/
+/// wrapper/` and depends on the user's project crate, which transitively
+/// pulls in every third-party SDK. So `cargo metadata` on the wrapper
+/// gives us the full set of SDKs the app will mount at runtime — the
+/// exact same scope that `cargo build` will compile.
+fn discover_extensions(wrapper_manifest: &Path) -> Result<DiscoveredExtensions> {
+    if !wrapper_manifest.is_file() {
+        // No wrapper yet — caller hasn't generated one. The framework's
+        // own runtime still works without third-party extensions.
+        return Ok(DiscoveredExtensions::default());
+    }
+
+    let output = Command::new("cargo")
+        .args(["metadata", "--format-version", "1"])
+        .arg("--manifest-path")
+        .arg(wrapper_manifest)
+        .output()
+        .with_context(|| {
+            format!(
+                "spawn cargo metadata --manifest-path {}",
+                wrapper_manifest.display()
+            )
+        })?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "cargo metadata failed for {}: {}",
+            wrapper_manifest.display(),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+    let json: Value = serde_json::from_slice(&output.stdout)
+        .with_context(|| "parse cargo metadata JSON")?;
+
+    let mut out = DiscoveredExtensions::default();
+    let Some(packages) = json.get("packages").and_then(|v| v.as_array()) else {
+        return Ok(out);
+    };
+
+    for pkg in packages {
+        let Some(android) = pkg
+            .pointer("/metadata/idealyst/android")
+            .and_then(|v| v.as_object())
+        else {
+            continue;
+        };
+        let pkg_name = pkg
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("<unknown>");
+        let manifest_path = pkg
+            .get("manifest_path")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("package {} missing manifest_path", pkg_name))?;
+        let pkg_dir = Path::new(manifest_path)
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("manifest_path {} has no parent", manifest_path))?
+            .to_path_buf();
+
+        collect_jvm_sources(android, "runtime_kotlin", pkg_name, &pkg_dir, &mut out.kotlin)?;
+        collect_jvm_sources(android, "runtime_java", pkg_name, &pkg_dir, &mut out.java)?;
+
+        if let Some(deps) = android.get("androidx").and_then(|v| v.as_array()) {
+            for entry in deps {
+                let pair = entry.as_array().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "{}: metadata.idealyst.android.androidx entries must be [group, artifact] arrays",
+                        pkg_name
+                    )
+                })?;
+                if pair.len() != 2 {
+                    anyhow::bail!(
+                        "{}: metadata.idealyst.android.androidx entry must have exactly 2 elements (group, artifact)",
+                        pkg_name
+                    );
+                }
+                let group = pair[0].as_str().ok_or_else(|| {
+                    anyhow::anyhow!("{}: androidx group must be a string", pkg_name)
+                })?;
+                let artifact = pair[1].as_str().ok_or_else(|| {
+                    anyhow::anyhow!("{}: androidx artifact must be a string", pkg_name)
+                })?;
+                out.androidx.push((group.to_string(), artifact.to_string()));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Pull every entry for one `runtime_*` key (e.g. `"runtime_kotlin"`
+/// or `"runtime_java"`) out of an SDK's
+/// `[package.metadata.idealyst.android]` block and append them to
+/// `sink`. Validates each entry is a string + the referenced file
+/// exists on disk; fails loudly with the declaring package name if not.
+fn collect_jvm_sources(
+    android: &serde_json::Map<String, Value>,
+    key: &'static str,
+    pkg_name: &str,
+    pkg_dir: &Path,
+    sink: &mut Vec<ExtensionSource>,
+) -> Result<()> {
+    let Some(files) = android.get(key).and_then(|v| v.as_array()) else {
+        return Ok(());
+    };
+    for entry in files {
+        let rel = entry.as_str().ok_or_else(|| {
+            anyhow::anyhow!(
+                "{}: metadata.idealyst.android.{} entries must be strings",
+                pkg_name,
+                key,
+            )
+        })?;
+        let source_path = pkg_dir.join(rel);
+        if !source_path.is_file() {
+            anyhow::bail!(
+                "{} declares runtime source {} (via {}) but the file does not exist on disk",
+                pkg_name,
+                source_path.display(),
+                key,
+            );
+        }
+        sink.push(ExtensionSource {
+            package: pkg_name.to_string(),
+            source_path,
+            staged_relpath: staged_relpath_from(rel)?,
+        });
+    }
+    Ok(())
+}
+
+/// Given a `runtime_kotlin`/`runtime_java` entry relative to the SDK's
+/// manifest dir, produce the path the file should be staged at under
+/// the language-specific source root. Entries are conventionally
+/// `runtime/{kotlin,java}/<java/pkg/path>/<File>.{kt,java}`; we strip
+/// the `runtime/` (and optional language-name) prefix so the staged
+/// tree reflects the Java package hierarchy directly.
+fn staged_relpath_from(declared: &str) -> Result<PathBuf> {
+    // Reject absolute paths or anything escaping the package dir.
+    let p = PathBuf::from(declared);
+    if p.is_absolute() {
+        anyhow::bail!(
+            "runtime source entries must be relative to the package manifest dir (got {})",
+            declared,
+        );
+    }
+    for comp in p.components() {
+        if matches!(comp, std::path::Component::ParentDir) {
+            anyhow::bail!(
+                "runtime source entries must not escape the package dir with `..` (got {})",
+                declared,
+            );
+        }
+    }
+    // Convention: SDKs put files under
+    // `runtime/{kotlin,java}/<java/package>/<File>.{kt,java}`. Strip
+    // the language-specific prefix first (most specific), then the
+    // bare `runtime/` fallback. If neither matches, stage exactly as
+    // declared.
+    let stripped = p
+        .strip_prefix("runtime/kotlin")
+        .or_else(|_| p.strip_prefix("runtime/java"))
+        .or_else(|_| p.strip_prefix("runtime"))
+        .unwrap_or(&p);
+    Ok(stripped.to_path_buf())
+}
+
 /// Stage the runtime .kt files into `build_dir`, locate kotlinc + the
 /// required androidx AARs, compile to `build_dir/kotlin-classes/`,
 /// extract every AAR's `res/` and compile it to a `.flata` for the
 /// later aapt2 link, and return the inputs the rest of the pipeline
 /// needs.
+///
+/// `wrapper_manifest` is the Cargo.toml of the generated wrapper crate
+/// for this build. `cargo metadata` runs against it to discover any
+/// third-party SDK Kotlin sources and additional AndroidX requirements.
 pub fn build_runtime(
     build_dir: &Path,
     android_jar: &Path,
     build_tools: &Path,
+    wrapper_manifest: &Path,
 ) -> Result<RuntimeArtifacts> {
-    let runtime_src = build_dir.join("kotlin/io/idealyst/runtime");
-    fs::create_dir_all(&runtime_src)
-        .with_context(|| format!("create {}", runtime_src.display()))?;
+    let kotlin_src_root = build_dir.join("kotlin");
+    fs::create_dir_all(&kotlin_src_root)
+        .with_context(|| format!("create {}", kotlin_src_root.display()))?;
+
+    // Stage first-party (framework) runtime files under
+    // `io/idealyst/runtime/`.
+    let idealyst_runtime_dir = kotlin_src_root.join("io/idealyst/runtime");
+    fs::create_dir_all(&idealyst_runtime_dir)
+        .with_context(|| format!("create {}", idealyst_runtime_dir.display()))?;
     for (name, body) in RUNTIME_KOTLIN_FILES {
-        fs::write(runtime_src.join(name), body)
+        fs::write(idealyst_runtime_dir.join(name), body)
             .with_context(|| format!("write runtime kotlin {}", name))?;
+    }
+
+    // Discover + stage third-party runtime files. Kotlin sources go
+    // under `kotlin_src_root`; Java sources under `extension-java/`
+    // (kept separate from the user's `java/` tree so we can mix-and-
+    // -match per call without disturbing the user's source layout).
+    let extensions = discover_extensions(wrapper_manifest)?;
+    stage_extension_sources(&extensions.kotlin, &kotlin_src_root, "kotlin")?;
+
+    let extension_java_dir = if extensions.java.is_empty() {
+        None
+    } else {
+        let dir = build_dir.join("extension-java");
+        if dir.exists() {
+            fs::remove_dir_all(&dir)?;
+        }
+        fs::create_dir_all(&dir)?;
+        stage_extension_sources(&extensions.java, &dir, "java")?;
+        Some(dir)
+    };
+
+    // Build the merged AndroidX list: built-in pairs first (preserves
+    // existing resolution order) + any third-party pairs not already
+    // present. Dedup is by exact (group, artifact) match.
+    let mut androidx_pairs: Vec<(String, String)> = REQUIRED_ANDROIDX
+        .iter()
+        .map(|(g, a)| ((*g).to_string(), (*a).to_string()))
+        .collect();
+    for (g, a) in &extensions.androidx {
+        if !androidx_pairs.iter().any(|(eg, ea)| eg == g && ea == a) {
+            androidx_pairs.push((g.clone(), a.clone()));
+        }
     }
 
     let kotlin_dist = find_kotlin_dist()?;
@@ -241,7 +532,7 @@ pub fn build_runtime(
 
     let aar_cache = build_dir.join("aar-cache");
     fs::create_dir_all(&aar_cache)?;
-    let resolved = resolve_androidx(&aar_cache)?;
+    let resolved = resolve_androidx(&aar_cache, &androidx_pairs)?;
     let androidx_jars: Vec<PathBuf> = resolved.iter().map(|r| r.classes_jar.clone()).collect();
 
     // Resource pipeline: pull each AAR's `res/` out, compile it to a
@@ -266,7 +557,11 @@ pub fn build_runtime(
     }
     let classpath = classpath_parts.join(":");
 
-    let runtime_src_arg = runtime_src.display().to_string();
+    // kotlinc accepts a directory and recursively finds every .kt file
+    // beneath it, so we pass the staged source root (which contains
+    // first-party files under `io/idealyst/runtime/` plus any
+    // third-party files under their own package directories).
+    let kotlin_src_arg = kotlin_src_root.display().to_string();
     let class_dir_arg = kotlin_class_dir.display().to_string();
     eprintln!("[run-android] kotlinc → {}", kotlin_class_dir.display());
     let status = Command::new("java")
@@ -282,7 +577,7 @@ pub fn build_runtime(
         .arg("-jvm-target")
         .arg("1.8")
         .arg("-no-stdlib")
-        .arg(&runtime_src_arg)
+        .arg(&kotlin_src_arg)
         .status()
         .with_context(|| "spawn java -jar kotlin-compiler.jar — is JDK 11+ on your PATH?")?;
     if !status.success() {
@@ -291,12 +586,64 @@ pub fn build_runtime(
 
     Ok(RuntimeArtifacts {
         kotlin_class_dir,
+        extension_java_dir,
         androidx_jars,
         r_java_dir,
         aar_resource_flats,
         aar_extra_packages,
         kotlin_stdlib_jar,
     })
+}
+
+/// Copy every `sources` entry into `dest_root` at its `staged_relpath`,
+/// creating parent dirs as needed. Detects conflicts between SDKs
+/// staging to the same target path — silently overwriting would produce
+/// confusing class-loading failures at runtime, so we surface them as
+/// build errors with both declaring package names.
+///
+/// `label` is a human-readable language tag ("kotlin" or "java") used
+/// only in eprintln + error messages.
+fn stage_extension_sources(
+    sources: &[ExtensionSource],
+    dest_root: &Path,
+    label: &str,
+) -> Result<()> {
+    let mut staged_paths: std::collections::HashMap<PathBuf, String> =
+        std::collections::HashMap::new();
+    for ext in sources {
+        let dest = dest_root.join(&ext.staged_relpath);
+        if let Some(prior) = staged_paths.get(&dest) {
+            anyhow::bail!(
+                "{} runtime path conflict at {}: both `{}` and `{}` declare this file. \
+                 SDKs must use distinct Java packages.",
+                label,
+                dest.display(),
+                prior,
+                ext.package,
+            );
+        }
+        staged_paths.insert(dest.clone(), ext.package.clone());
+
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("create {}", parent.display()))?;
+        }
+        fs::copy(&ext.source_path, &dest).with_context(|| {
+            format!(
+                "stage extension {} source {} → {}",
+                label,
+                ext.source_path.display(),
+                dest.display(),
+            )
+        })?;
+        eprintln!(
+            "[run-android] {} runtime extension from {} → {}",
+            label,
+            ext.package,
+            ext.staged_relpath.display()
+        );
+    }
+    Ok(())
 }
 
 /// Locate the Kotlin distribution we'll invoke. Tries (in order):
@@ -335,10 +682,17 @@ fn find_kotlin_dist() -> Result<PathBuf> {
 /// and extract its `classes.jar` (for .aar) under `out_dir`. Uses
 /// the user's local gradle cache (`~/.gradle/caches/modules-2/files-2.1/`)
 /// as the source.
-fn resolve_androidx(out_dir: &Path) -> Result<Vec<ResolvedArtifact>> {
+///
+/// `pairs` is the merged (first-party + third-party) list of
+/// (group, artifact) tuples. Order matters only for deterministic
+/// classpath assembly; resolution itself doesn't depend on it.
+fn resolve_androidx(
+    out_dir: &Path,
+    pairs: &[(String, String)],
+) -> Result<Vec<ResolvedArtifact>> {
     let cache = gradle_cache_dir()?;
-    let mut out = Vec::with_capacity(REQUIRED_ANDROIDX.len());
-    for (group, artifact) in REQUIRED_ANDROIDX {
+    let mut out = Vec::with_capacity(pairs.len());
+    for (group, artifact) in pairs {
         let source = find_artifact(&cache, group, artifact).with_context(|| {
             format!(
                 "missing {}:{} in the gradle cache — \
@@ -351,7 +705,7 @@ fn resolve_androidx(out_dir: &Path) -> Result<Vec<ResolvedArtifact>> {
         })?;
         let classes_jar = extract_classes(&source, out_dir, artifact)?;
         out.push(ResolvedArtifact {
-            artifact: (*artifact).to_string(),
+            artifact: artifact.clone(),
             source,
             classes_jar,
         });

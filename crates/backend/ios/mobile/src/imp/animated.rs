@@ -38,6 +38,7 @@ use objc2::encode::{Encode, Encoding};
 use objc2::msg_send;
 use objc2::rc::Retained;
 use objc2_foundation::{CGFloat, NSObject};
+use objc2_ui_kit::UIView;
 
 use backend_ios_core::style::color_to_uicolor;
 
@@ -65,6 +66,14 @@ pub(crate) struct AnimatedTransformState {
     /// or rebuild the whole gradient every frame.
     pub gradient_layer: Option<Retained<NSObject>>,
     pub gradient_stops: Vec<[f32; 4]>,
+    /// Static `transform: translate(N%, …)` requests parked here at
+    /// apply-style time and resolved against the view's actual
+    /// pixel dimensions in the layout pass. CSS-spec translate-% is
+    /// BOX-relative — the px shift can't be computed until Taffy
+    /// produces a frame. Once resolved, the px value is written
+    /// into `translate_x` / `translate_y` so `compose()` sees it.
+    pub static_translate_pct_x: Option<f32>,
+    pub static_translate_pct_y: Option<f32>,
 }
 
 impl AnimatedTransformState {
@@ -137,7 +146,116 @@ unsafe impl Encode for CGAffineTransform {
     );
 }
 
+/// Resolve any `static_translate_pct_x` / `_y` requests parked on
+/// the per-view animation state against the view's just-laid-out
+/// pixel dimensions (CSS spec: translate-% is BOX-relative — the
+/// shift is a fraction of the box's own size). Writes the resolved
+/// px into `translate_x` / `translate_y` and re-emits
+/// `setTransform` so the static shift takes effect.
+///
+/// Free function (not a method) so it can be called from inside
+/// `run_layout_pass`'s borrow on `view_to_layout` without a
+/// `&mut self` borrow conflict — callers pass only the slice of
+/// state they need.
+pub(crate) fn sync_static_transform_percent(
+    states: &mut HashMap<usize, AnimatedTransformState>,
+    view_ptr: usize,
+    view: &UIView,
+    width_px: f32,
+    height_px: f32,
+) {
+    let Some(state) = states.get_mut(&view_ptr) else {
+        return;
+    };
+    if state.static_translate_pct_x.is_none() && state.static_translate_pct_y.is_none() {
+        return;
+    }
+    if let Some(pct_x) = state.static_translate_pct_x {
+        state.translate_x = Some(width_px * (pct_x / 100.0));
+    }
+    if let Some(pct_y) = state.static_translate_pct_y {
+        state.translate_y = Some(height_px * (pct_y / 100.0));
+    }
+    let matrix = state.compose();
+    let _: () = unsafe { msg_send![view, setTransform: matrix] };
+}
+
 impl IosBackend {
+    /// Walk a stylesheet's `transform` Vec and apply each op to the
+    /// view via the cached [`AnimatedTransformState`]. Px translates,
+    /// scale, and rotate get written directly into `translate_x` /
+    /// `translate_y` / `scale_x` / `scale_y` / `rotate_z` (the same
+    /// slots the animation system uses, so a later animated write
+    /// will naturally override — CSS semantics: animated wins).
+    /// Percent translates are stashed in `static_translate_pct_x` /
+    /// `static_translate_pct_y`; the box-relative px shift can't be
+    /// computed until Taffy hands us a frame in the layout pass —
+    /// see [`sync_static_transform_percent`].
+    ///
+    /// Called from `apply_style` whether or not the stylesheet
+    /// includes a `transform` block — when it doesn't, the slots
+    /// are reset to `None` so a style change that *removes* the
+    /// transform reverts the view to identity.
+    pub(crate) fn apply_static_transform(
+        &mut self,
+        node: &IosNode,
+        style: &framework_core::StyleRules,
+    ) {
+        use framework_core::{Length, Transform};
+        let key = node.view_key();
+        let view = node.as_view();
+        let state = self.animated_states.entry(key).or_default();
+
+        // Clear the static slots first so removing the transform
+        // reverts to identity. Animation system slots aren't touched
+        // beyond translate / scale / rotate — those are static-or-
+        // animated; the latest write wins.
+        state.translate_x = None;
+        state.translate_y = None;
+        state.scale_x = None;
+        state.scale_y = None;
+        state.rotate_z = None;
+        state.static_translate_pct_x = None;
+        state.static_translate_pct_y = None;
+
+        if let Some(ops) = style.transform.as_ref() {
+            for op in ops {
+                match op {
+                    Transform::TranslateX(Length::Px(v)) => state.translate_x = Some(*v),
+                    Transform::TranslateY(Length::Px(v)) => state.translate_y = Some(*v),
+                    Transform::TranslateX(Length::Percent(v)) => {
+                        state.static_translate_pct_x = Some(*v)
+                    }
+                    Transform::TranslateY(Length::Percent(v)) => {
+                        state.static_translate_pct_y = Some(*v)
+                    }
+                    Transform::TranslateX(Length::Auto)
+                    | Transform::TranslateY(Length::Auto) => {
+                        // Auto doesn't make sense for translate — leave at identity.
+                    }
+                    Transform::Scale(v) => {
+                        state.scale_x = Some(*v);
+                        state.scale_y = Some(*v);
+                    }
+                    Transform::ScaleXY { x, y } => {
+                        state.scale_x = Some(*x);
+                        state.scale_y = Some(*y);
+                    }
+                    Transform::Rotate(deg) => state.rotate_z = Some(*deg),
+                    // Skew not representable as a flat CGAffineTransform
+                    // here (would conflict with rotation matrix math).
+                    Transform::SkewX(_) | Transform::SkewY(_) => {}
+                }
+            }
+        }
+
+        // Compose + emit. Percent translates contribute 0 at this
+        // stage (translate_x/y still None for those axes); the
+        // layout pass resolves them once the view has real bounds.
+        let matrix = state.compose();
+        let _: () = unsafe { msg_send![&*view, setTransform: matrix] };
+    }
+
     pub(crate) fn impl_set_animated_f32(
         &mut self,
         node: &IosNode,

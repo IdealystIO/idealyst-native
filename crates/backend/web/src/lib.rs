@@ -1615,21 +1615,6 @@ impl Backend for WebBackend {
         primitives::text_area::make_handle(node)
     }
 
-    fn create_code_block(
-        &mut self,
-        spans: &[(String, framework_core::Color)],
-    ) -> Self::Node {
-        primitives::code_block::create(self, spans)
-    }
-
-    fn update_code_block_spans(
-        &mut self,
-        node: &Self::Node,
-        spans: &[(String, framework_core::Color)],
-    ) {
-        primitives::code_block::update_spans(self, node, spans)
-    }
-
     fn create_toggle(&mut self, initial_value: bool, on_change: Rc<dyn Fn(bool)>) -> Self::Node {
         primitives::toggle::create(self, initial_value, on_change)
     }
@@ -1655,45 +1640,6 @@ impl Backend for WebBackend {
 
     fn update_slider_value(&mut self, node: &Self::Node, value: f32) {
         primitives::slider::update_value(node, value)
-    }
-
-    fn create_web_view(&mut self, url: &str) -> Self::Node {
-        primitives::web_view::create(self, url)
-    }
-
-    fn update_web_view_url(&mut self, node: &Self::Node, url: &str) {
-        primitives::web_view::update_url(node, url)
-    }
-
-    fn web_view_set_on_message(
-        &mut self,
-        node: &Self::Node,
-        callback: Box<dyn Fn(String)>,
-    ) {
-        primitives::web_view::set_on_message(node, callback)
-    }
-
-    fn web_view_set_on_load(
-        &mut self,
-        node: &Self::Node,
-        callback: Box<dyn Fn()>,
-    ) {
-        primitives::web_view::set_on_load(node, callback)
-    }
-
-    fn web_view_set_on_error(
-        &mut self,
-        node: &Self::Node,
-        callback: Box<dyn Fn()>,
-    ) {
-        primitives::web_view::set_on_error(node, callback)
-    }
-
-    fn make_web_view_handle(
-        &self,
-        node: &Self::Node,
-    ) -> framework_core::primitives::web_view::WebViewHandle {
-        primitives::web_view::make_handle(node)
     }
 
     fn create_video(

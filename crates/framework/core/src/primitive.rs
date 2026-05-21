@@ -195,22 +195,6 @@ pub enum Primitive {
         #[cfg(feature = "robot")]
         test_id: Option<&'static str>,
     },
-    /// Read-only colored-text panel — a sequence of `(text, color)`
-    /// runs the backend renders as discrete styled glyph spans.
-    /// Built specifically for syntax-highlighted source display
-    /// (the fiddle's code editor lays this behind a transparent
-    /// `<textarea>`), but useful anywhere a single text block needs
-    /// per-segment colors without nesting `Text` primitives.
-    ///
-    /// Web: `<pre>` with `<span style="color:#…">…</span>` children.
-    /// Other backends: same Unsupported fallback for now.
-    CodeBlock {
-        spans: Vec<(String, crate::Color)>,
-        style: Option<StyleSource>,
-        ref_fill: Option<RefFill>,
-        #[cfg(feature = "robot")]
-        test_id: Option<&'static str>,
-    },
     /// Controlled toggle (switch / checkbox). Same controlled
     /// pattern as `TextInput`: `value: Signal<bool>` round-trips
     /// through `on_change`.
@@ -253,22 +237,6 @@ pub enum Primitive {
         ref_fill: Option<RefFill>,
         #[cfg(feature = "robot")]
         test_id: Option<&'static str>,
-    },
-    /// Embedded web content view. Web: a (sandboxed-by-default-no)
-    /// `<iframe>`. iOS: `WKWebView`. Android: `android.webkit.WebView`.
-    ///
-    /// The three callback slots are message channel + lifecycle:
-    /// `on_message` fires for each `postMessage` from the embedded
-    /// content; `on_load` / `on_error` fire on the iframe's
-    /// `load` / `error` events. All three are optional; backends
-    /// that can't service them ignore the callback.
-    WebView {
-        url: Box<dyn Fn() -> String>,
-        on_message: Option<Box<dyn Fn(String)>>,
-        on_load: Option<Box<dyn Fn()>>,
-        on_error: Option<Box<dyn Fn()>>,
-        style: Option<StyleSource>,
-        ref_fill: Option<RefFill>,
     },
     /// Video playback. URL-only; backends use their native players
     /// so codec/format support is whatever the platform handles.
@@ -537,7 +505,6 @@ impl Primitive {
             | Primitive::Image { test_id, .. }
             | Primitive::TextInput { test_id, .. }
             | Primitive::TextArea { test_id, .. }
-            | Primitive::CodeBlock { test_id, .. }
             | Primitive::Toggle { test_id, .. }
             | Primitive::Slider { test_id, .. } => {
                 *test_id = Some(id);
@@ -560,7 +527,6 @@ impl Primitive {
             | Primitive::Image { test_id, .. }
             | Primitive::TextInput { test_id, .. }
             | Primitive::TextArea { test_id, .. }
-            | Primitive::CodeBlock { test_id, .. }
             | Primitive::Toggle { test_id, .. }
             | Primitive::Slider { test_id, .. } => *test_id,
             _ => None,
@@ -581,11 +547,9 @@ impl Primitive {
             | Primitive::Icon { style, .. }
             | Primitive::TextInput { style, .. }
             | Primitive::TextArea { style, .. }
-            | Primitive::CodeBlock { style, .. }
             | Primitive::Toggle { style, .. }
             | Primitive::ScrollView { style, .. }
             | Primitive::Slider { style, .. }
-            | Primitive::WebView { style, .. }
             | Primitive::Video { style, .. }
             | Primitive::ActivityIndicator { style, .. }
             | Primitive::Virtualizer { style, .. }

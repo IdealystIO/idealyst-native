@@ -86,21 +86,21 @@ const SUBTITLE_ENTER_Y: f32 = 10.0;
 /// moderate damping) gives the bloom a slow, organic spread.
 const GLARE_INITIAL_SCALE: f32 = 0.55;
 
-/// Sun-glare anchor size as a fraction of viewport width. The
-/// stylesheet pairs this with `aspect_ratio: 1.0` so the box is
-/// always square regardless of viewport aspect — the layout engine
-/// derives height to match. `40%` of a 390-wide iPhone ≈ 156px;
-/// `40%` of a 1024-wide iPad ≈ 410px.
-const GLARE_ANCHOR_SIZE_PCT: f32 = 60.0;
+/// Sun-glare anchor size as a fraction of viewport HEIGHT. The
+/// stylesheet pairs this with `aspect_ratio: 1.0` so the box stays
+/// square; the layout engine derives width from height. Height-
+/// relative ties the sun's apparent size to the vertical extent
+/// of the screen — feels more grounded than width-relative, where
+/// a wide landscape window would push the sun comically large.
+///
+/// Note: the wrapper sits at the top-right corner with
+/// `translate(50%, -50%)`, so only the bottom-left **quadrant** of
+/// the disc is on-screen. Effective visible reach is therefore
+/// roughly `height_pct / 2` along each axis — `60%` means the
+/// bloom extends ~30% of viewport height into the page, which
+/// reads as a hero light source rather than a decorative dot.
+const GLARE_ANCHOR_HEIGHT_PCT: f32 = 60.0;
 
-/// Negative-margin shift that centers the anchor on the top-right
-/// viewport corner. Both `margin_top` and `margin_right` percentages
-/// resolve against the parent's INLINE size (= width) per CSS
-/// spec, so a single value works for both axes regardless of
-/// device aspect ratio — half the anchor's width-as-percent shifts
-/// the box up by half its (square) height AND right by half its
-/// width, putting the box center exactly on the corner.
-const GLARE_CENTER_SHIFT_PCT: f32 = -(GLARE_ANCHOR_SIZE_PCT / 2.0);
 
 /// Sun-glare breathe amplitude. The raf-driven pulse adds
 /// `sin(t) * amp` to the resting scale of 1.0, so the sun throbs
@@ -113,6 +113,124 @@ const SUN_PULSE_AMPLITUDE: f32 = 0.08;
 /// the warmth swell and the size swell stay phase-locked. ~5 s reads
 /// as an unhurried, alive presence; faster starts to feel anxious.
 const SUN_PULSE_PERIOD_MS: f64 = 5200.0;
+
+// ---- Planet system -------------------------------------------------------
+//
+// Three planets orbit the sun on tight elliptical paths sized to pass
+// across the welcome text in the middle of the viewport. Each planet
+// is rendered TWICE — once before the content layer (back), once
+// after (front) — sharing position AVs but with opposite-phase
+// opacity AVs. The raf-driver writes `opacity = max(sin θ, 0)` on
+// the front view and `max(-sin θ, 0)` on the back view, so a single
+// planet "passes behind" the text when its orbit angle is in the
+// upper half of the circle (sin < 0) and "in front of" when in the
+// lower half. The z-swap is the whole point of the duplication —
+// the framework doesn't have a per-frame z-index animation, but
+// document-order render + opacity flip-flop is equivalent.
+
+/// Per-planet config. `rx_frac` / `ry_frac` are fractions of viewport
+/// width / height for the elliptical semi-axes (orbit center is the
+/// top-right corner, where the sun lives). `period_ms` is one full
+/// revolution; `phase_offset` (radians) staggers the three planets
+/// so they don't all line up. `size_dp` is the dot diameter;
+/// `color` is a CSS string.
+struct PlanetConfig {
+    rx_frac: f32,
+    ry_frac: f32,
+    period_ms: f64,
+    phase_offset: f32,
+    size_dp: f32,
+    color: &'static str,
+}
+
+/// Three planets at increasing radii / decreasing speeds — closer
+/// to the sun = faster, like real Keplerian orbits. The middle
+/// planet's orbit (`rx ≈ 0.5 * vw`, `ry ≈ 0.5 * vh`) passes
+/// directly through the welcome text's bbox, so the z-swap is most
+/// visible there. The inner planet is small + tight + fast; the
+/// outer is larger + wider + slow, sweeping past the bottom-left
+/// corner once every ~20 s.
+const PLANETS: [PlanetConfig; 3] = [
+    // Each planet orbits the welcome text (NOT the sun) on a
+    // diagonally-tilted plane. `rx_frac` is the 2D ellipse's
+    // semi-major (along the diagonal) as fraction of viewport
+    // WIDTH; `ry_frac` is the semi-minor (perpendicular) as
+    // fraction of viewport HEIGHT. The tilt is implicit in the
+    // 2D vs depth axes — the same `sin(θ)` that swings the
+    // planet along the minor axis ALSO drives its depth, so
+    // every planet visit along the orbit has a depth that
+    // matches the perpendicular sway. Combined with the
+    // scale animation (`small back ↔ large front`), this reads
+    // as a real 3D circle viewed from above the orbit plane.
+    // All three orbits share the centre (viewport centre) and
+    // the 45° diagonal major axis; they differ in size + speed.
+    // `ry_frac` × vh sizes the diagonal MAJOR semi-axis; the
+    // major direction is at 45° so the orbit's vertical reach
+    // is `ry_frac × vh / √2`. To extend past the welcome text
+    // (which roughly spans the middle 30% of the viewport
+    // vertically), the middle planet uses `ry_frac ≈ 0.45` →
+    // vertical reach ≈ 0.32 × vh, clearing the text by ~17%
+    // on each side.
+    // For a 45° diagonal major axis, a unit of `r_major`
+    // contributes 1/√2 ≈ 0.707 to BOTH the horizontal and
+    // vertical reach. So if `r_major = 0.30 × vh` on a 393×852
+    // viewport, the orbit spans ±0.21 × vh ≈ ±180 px in both
+    // x and y from the centre — fits horizontally (vw/2 = 197)
+    // and clears the text vertically (text band ≈ 350-540, so
+    // half-text = 95 px). Bigger `r_major` lets the diagonal
+    // extremes hang off the left/right edges (intentional for
+    // the outer planet).
+    PlanetConfig {
+        // Inner — small orbit, fast. Stays well inside the
+        // viewport, extends just past the text vertically.
+        // Vertical reach ≈ 0.14 × vh = 119 px.
+        rx_frac: 0.10,  // semi-MINOR (perp to diagonal) as frac of vh
+        ry_frac: 0.20,  // semi-MAJOR (along diagonal) as frac of vh
+        period_ms: 8000.0,
+        phase_offset: 0.0,
+        size_dp: 8.0,
+        color: "#c9b88c",
+    },
+    PlanetConfig {
+        // Middle — extends comfortably past the text. Vertical
+        // reach ≈ 0.21 × vh = 180 px.
+        rx_frac: 0.15,
+        ry_frac: 0.30,
+        period_ms: 13000.0,
+        phase_offset: 2.09,
+        size_dp: 14.0,
+        color: "#c9b88c",
+    },
+    PlanetConfig {
+        // Outer — broad sweep, just past the horizontal limit
+        // so the diagonal extremes graze the left/right edges
+        // of the viewport. Vertical reach ≈ 0.24 × vh = 209 px.
+        // Slowest period gives a stately feel.
+        rx_frac: 0.20,
+        ry_frac: 0.34,
+        period_ms: 20000.0,
+        phase_offset: 4.18,
+        size_dp: 11.0,
+        color: "#c9b88c",
+    },
+];
+
+/// Scale at the orbit's back extreme (depth = -1). Sub-1.0 so
+/// the planet visibly shrinks when it's "behind" the welcome
+/// text. The contrast against `PLANET_SCALE_FRONT` is the main
+/// depth cue in the 3D illusion.
+const PLANET_SCALE_BACK: f32 = 0.45;
+
+/// Scale at the orbit's front extreme (depth = +1). >1.0 so
+/// the planet visibly grows when it's "in front of" the text.
+const PLANET_SCALE_FRONT: f32 = 1.55;
+
+/// How long the planets take to fade in from invisible once the
+/// raf-driver starts running (= Act 2 + 200 ms, same as sun
+/// bloom). Without a fade-in, the planet whose `phase_offset`
+/// puts it on the lower half at t=0 would pop on at non-zero
+/// alpha; this ramps the whole system up smoothly.
+const PLANET_FADE_IN_MS: f64 = 1500.0;
 
 
 // ---- Color palette -------------------------------------------------------
@@ -189,6 +307,41 @@ pub fn app() -> Primitive {
     let subtitle_opacity = animated!(0.0_f32);
     let subtitle_y = animated!(SUBTITLE_ENTER_Y);
 
+    // Planet animation values — one quad (x, y, back-alpha,
+    // front-alpha) per planet. Position AVs are SHARED between
+    // back and front views (they're at the same place); only the
+    // opacity AVs differ so the z-swap reads correctly. See
+    // `PLANETS` for orbit config.
+    let planet_x: [AnimatedValue<f32>; 3] = [
+        animated!(0.0_f32),
+        animated!(0.0_f32),
+        animated!(0.0_f32),
+    ];
+    let planet_y: [AnimatedValue<f32>; 3] = [
+        animated!(0.0_f32),
+        animated!(0.0_f32),
+        animated!(0.0_f32),
+    ];
+    let planet_back_alpha: [AnimatedValue<f32>; 3] = [
+        animated!(0.0_f32),
+        animated!(0.0_f32),
+        animated!(0.0_f32),
+    ];
+    let planet_front_alpha: [AnimatedValue<f32>; 3] = [
+        animated!(0.0_f32),
+        animated!(0.0_f32),
+        animated!(0.0_f32),
+    ];
+    // Scale per planet — driven by the orbit depth (sin θ). At
+    // depth = -1 the planet is at the back of its orbit, drawn
+    // small (PLANET_SCALE_BACK); at depth = +1 it's at the
+    // front, drawn large (PLANET_SCALE_FRONT). Linear interp.
+    let planet_scale: [AnimatedValue<f32>; 3] = [
+        animated!(1.0_f32),
+        animated!(1.0_f32),
+        animated!(1.0_f32),
+    ];
+
     // ---- Refs ----------------------------------------------------------
     //
     // `welcome_ref` (wrapper View) carries opacity / scale /
@@ -217,6 +370,28 @@ pub fn app() -> Primitive {
     let glare_ref = node_ref!(ViewHandle);
     let subtitle_ref = node_ref!(ViewHandle);
 
+    // Page ref — read at raf-time to get viewport dimensions for
+    // computing orbit positions in absolute pixels. The orbit
+    // semi-axes are viewport-fractional, so the orbit scales with
+    // window size on web and follows the safe-area on mobile.
+    let page_ref = node_ref!(ViewHandle);
+
+    // Two refs per planet — one for the view BEFORE the content
+    // layer in document order (z-back) and one AFTER (z-front).
+    // Both share `planet_x` / `planet_y` so they always overlap;
+    // opposite-phase opacity AVs make exactly one visible at a
+    // time as the orbit crosses the horizontal axis.
+    let planet_back_refs: [Ref<ViewHandle>; 3] = [
+        node_ref!(ViewHandle),
+        node_ref!(ViewHandle),
+        node_ref!(ViewHandle),
+    ];
+    let planet_front_refs: [Ref<ViewHandle>; 3] = [
+        node_ref!(ViewHandle),
+        node_ref!(ViewHandle),
+        node_ref!(ViewHandle),
+    ];
+
     // Wire each AV to its target node + property. After this,
     // every `animate(...)` call automatically writes per-frame
     // values into the bound element.
@@ -244,6 +419,21 @@ pub fn app() -> Primitive {
     drive_gradient_stop_av(&vignette_corner_color, vignette_right_ref, 1);
     drive_av(&subtitle_opacity, subtitle_ref, AnimProp::Opacity);
     drive_av(&subtitle_y, subtitle_ref, AnimProp::TranslateY);
+
+    // Planet wiring: each planet has TWO views (back + front)
+    // sharing position AVs but with opposite-phase opacity AVs.
+    // The for-loop is identical for both halves, just keyed by
+    // the alpha AV that's specific to that half.
+    for i in 0..3 {
+        drive_av(&planet_x[i], planet_back_refs[i], AnimProp::TranslateX);
+        drive_av(&planet_y[i], planet_back_refs[i], AnimProp::TranslateY);
+        drive_av(&planet_back_alpha[i], planet_back_refs[i], AnimProp::Opacity);
+        drive_av(&planet_scale[i], planet_back_refs[i], AnimProp::Scale);
+        drive_av(&planet_x[i], planet_front_refs[i], AnimProp::TranslateX);
+        drive_av(&planet_y[i], planet_front_refs[i], AnimProp::TranslateY);
+        drive_av(&planet_front_alpha[i], planet_front_refs[i], AnimProp::Opacity);
+        drive_av(&planet_scale[i], planet_front_refs[i], AnimProp::Scale);
+    }
 
     // ---- Schedule the timeline -----------------------------------------
     //
@@ -332,6 +522,35 @@ pub fn app() -> Primitive {
         let corona_av = sun_corona_color.clone();
         let vignette_av = vignette_corner_color.clone();
         let scale_av = glare_scale.clone();
+        // Clone planet AVs + page ref into the closure. The closure
+        // gets moved into `raf_loop`, which holds it for the page
+        // lifetime; the AV clones share Rc<Inner> with the originals
+        // so writes propagate to bound views the same way.
+        let planet_x_clones: [AnimatedValue<f32>; 3] = [
+            planet_x[0].clone(),
+            planet_x[1].clone(),
+            planet_x[2].clone(),
+        ];
+        let planet_y_clones: [AnimatedValue<f32>; 3] = [
+            planet_y[0].clone(),
+            planet_y[1].clone(),
+            planet_y[2].clone(),
+        ];
+        let planet_back_alpha_clones: [AnimatedValue<f32>; 3] = [
+            planet_back_alpha[0].clone(),
+            planet_back_alpha[1].clone(),
+            planet_back_alpha[2].clone(),
+        ];
+        let planet_front_alpha_clones: [AnimatedValue<f32>; 3] = [
+            planet_front_alpha[0].clone(),
+            planet_front_alpha[1].clone(),
+            planet_front_alpha[2].clone(),
+        ];
+        let planet_scale_clones: [AnimatedValue<f32>; 3] = [
+            planet_scale[0].clone(),
+            planet_scale[1].clone(),
+            planet_scale[2].clone(),
+        ];
         let pulse_task = framework_core::after_ms(pulse_start_ms, move || {
             let period_ms = SUN_PULSE_PERIOD_MS;
             // Scale takeover gate: the entrance spring needs ~1.6 s
@@ -368,6 +587,126 @@ pub fn app() -> Primitive {
                     let scale = 1.0_f32 + SUN_PULSE_AMPLITUDE * sin as f32;
                     scale_av.set(scale);
                 }
+
+                // ---- Planets ---------------------------------------
+                //
+                // Orbit center = top-right corner of viewport (sun
+                // position). Read live viewport dims via `page_ref`
+                // when available so the orbit scales with resize /
+                // rotation; otherwise fall back to a sensible
+                // portrait-phone default (393×800 dp) so the system
+                // still animates even if the handle isn't queryable.
+                let viewport = page_ref.with(|h| h.frame()).flatten();
+                let raw_frame = viewport;
+                let (vw, vh) = viewport
+                    .map(|r| (r.width, r.height))
+                    .filter(|(w, h)| *w > 0.0 && *h > 0.0)
+                    .unwrap_or((393.0, 800.0));
+                #[cfg(target_os = "ios")]
+                {
+                    // Log once every ~2s
+                    if (elapsed_ms as i32) % 2000 < 17 {
+                        backend_ios_core::ios_log(&format!(
+                            "[planet] viewport raw={:?} vw={:.1} vh={:.1} cx={:.1} cy={:.1}",
+                            raw_frame,
+                            vw,
+                            vh,
+                            vw * 0.50,
+                            vh * 0.50,
+                        ));
+                    }
+                }
+                let fade_in =
+                    ((elapsed_ms / PLANET_FADE_IN_MS).min(1.0)) as f32;
+                // Orbit: diagonal ellipse centred on the SCREEN
+                // CENTRE, with its major axis at 45° (upper-right
+                // ↔ lower-left). Sized so the major-axis extremes
+                // reach beyond the vertical bounds of the welcome
+                // text. Reads as a 3D circular orbit viewed from
+                // above the orbit plane — the planet appears LARGE
+                // on the front arc (sin θ > 0) and SMALL on the
+                // back arc (sin θ < 0), with the size change
+                // selling the depth cue.
+                let cx = vw * 0.50;
+                let cy = vh * 0.50;
+                // Major axis direction in screen — 45° diagonal,
+                // pointing from upper-right toward lower-left.
+                // `1/√2` is the projection of a unit vector on
+                // each axis at exactly 45°.
+                let major_x: f32 = -std::f32::consts::FRAC_1_SQRT_2;
+                let major_y: f32 = std::f32::consts::FRAC_1_SQRT_2;
+                // Minor axis perpendicular (rotate major 90° CW
+                // in screen coords: (x, y) → (y, -x)) — points
+                // from upper-left toward lower-right.
+                let minor_x: f32 = major_y;
+                let minor_y: f32 = -major_x;
+                for (i, cfg) in PLANETS.iter().enumerate() {
+                    let theta = (elapsed_ms / cfg.period_ms)
+                        * std::f64::consts::TAU
+                        + cfg.phase_offset as f64;
+                    let cos_t = theta.cos() as f32;
+                    let sin_t = theta.sin() as f32;
+                    // Both `r_major` and `r_minor` scale with
+                    // viewport HEIGHT so the orbit's vertical
+                    // reach is what the spec calls for (must
+                    // extend past the text top/bottom). The
+                    // diagonal direction means a unit of
+                    // `r_major` contributes `1/√2` to both x and
+                    // y — so vertical reach = `r_major / √2`.
+                    let r_major = vh * cfg.ry_frac;
+                    let r_minor = vh * cfg.rx_frac;
+                    let offset_x = r_major * cos_t * major_x
+                        + r_minor * sin_t * minor_x;
+                    let offset_y = r_major * cos_t * major_y
+                        + r_minor * sin_t * minor_y;
+                    let center_x = cx + offset_x;
+                    let center_y = cy + offset_y;
+                    #[cfg(target_os = "ios")]
+                    {
+                        if i == 1 && (elapsed_ms as i32) % 1000 < 17 {
+                            backend_ios_core::ios_log(&format!(
+                                "[planet i={}] theta={:.2} center=({:.1},{:.1}) tx={:.1} ty={:.1}",
+                                i,
+                                theta,
+                                center_x,
+                                center_y,
+                                center_x - vw + cfg.size_dp * 0.5,
+                                center_y - cfg.size_dp * 0.5,
+                            ));
+                        }
+                    }
+                    // Planet view sits at `top:0, right:0` with
+                    // size = `size_dp`, so its natural top-left is
+                    // at (vw - size_dp, 0). Convert the desired
+                    // centre into a translate from that position.
+                    let tx = center_x - vw + cfg.size_dp * 0.5;
+                    let ty = center_y - cfg.size_dp * 0.5;
+                    planet_x_clones[i].set(tx);
+                    planet_y_clones[i].set(ty);
+                    // Depth = sin θ. Lerp scale from BACK (depth=-1)
+                    // to FRONT (depth=+1). Lerp parameter `t` maps
+                    // -1..+1 → 0..1.
+                    let depth_t = (sin_t + 1.0) * 0.5;
+                    let scale = PLANET_SCALE_BACK
+                        + (PLANET_SCALE_FRONT - PLANET_SCALE_BACK)
+                            * depth_t;
+                    planet_scale_clones[i].set(scale);
+                    // Z-swap with a soft crossfade band around the
+                    // side passes (where depth crosses zero).
+                    // Outside the band: ONE view is fully visible,
+                    // the other fully hidden. Inside the band:
+                    // both share the alpha, summing to ~1.0 so the
+                    // planet never fades to nothing — only the
+                    // z-order swaps. Without this the planet would
+                    // disappear twice per orbit when sin θ ≈ 0.
+                    const CROSSFADE_HALF_WIDTH: f32 = 0.10;
+                    let front_t = ((sin_t + CROSSFADE_HALF_WIDTH)
+                        / (2.0 * CROSSFADE_HALF_WIDTH))
+                        .clamp(0.0, 1.0);
+                    let back_t = 1.0 - front_t;
+                    planet_front_alpha_clones[i].set(front_t * fade_in);
+                    planet_back_alpha_clones[i].set(back_t * fade_in);
+                }
             });
             // Leak the raf handle so it lives for the page; the
             // pulse should never stop while the welcome is on screen.
@@ -397,12 +736,27 @@ pub fn app() -> Primitive {
     let vignette_bottom = vignette_band_sheet(VignetteEdge::Bottom);
     let vignette_left = vignette_band_sheet(VignetteEdge::Left);
     let vignette_right = vignette_band_sheet(VignetteEdge::Right);
+    let glare_wrapper = glare_wrapper_sheet();
     let glare_anchor = glare_anchor_sheet();
     let content_layer = content_layer_sheet();
     let welcome_wrap = welcome_wrapper_sheet();
     let subtitle_wrap = subtitle_wrapper_sheet();
     let headline = headline_sheet();
     let subtitle = subtitle_sheet();
+
+    // Planet sheets — one per planet, sized by the config. Two
+    // copies of each are mounted (back + front of content) and
+    // share the same StyleSheet content, so the framework dedups
+    // them into one CSS class on web.
+    let planet_sheet_0 = planet_sheet(PLANETS[0].size_dp, PLANETS[0].color);
+    let planet_sheet_1 = planet_sheet(PLANETS[1].size_dp, PLANETS[1].color);
+    let planet_sheet_2 = planet_sheet(PLANETS[2].size_dp, PLANETS[2].color);
+    let planet_back_0 = planet_back_refs[0];
+    let planet_back_1 = planet_back_refs[1];
+    let planet_back_2 = planet_back_refs[2];
+    let planet_front_0 = planet_front_refs[0];
+    let planet_front_1 = planet_front_refs[1];
+    let planet_front_2 = planet_front_refs[2];
 
     ui! {
         View(style = page) {
@@ -422,11 +776,25 @@ pub fn app() -> Primitive {
                 View(style = vignette_right) {}.bind(vignette_right_ref)
             }.bind(vignette_ref)
 
-            // Sun glare — single view with a radial-gradient
-            // background. Core + corona stop colors are pulsed
-            // (sine wave) by the raf-driver, so the sun breathes
-            // in sync with the vignette glow.
-            View(style = glare_anchor) {}.bind(glare_ref)
+            // Sun glare — wrapper does the responsive corner-
+            // centering via `translate(50%, -50%)`; inner disc
+            // holds the gradient + opacity + scale + per-stop
+            // color animations. Separating the two keeps the
+            // animated transform from clobbering the static
+            // centering translate on iOS.
+            View(style = glare_wrapper) {
+                View(style = glare_anchor) {}.bind(glare_ref)
+            }
+
+            // Planets (back half) — these render BEFORE the content
+            // layer in document order, which puts them behind the
+            // welcome text. The raf-driver gates their opacity by
+            // `max(-sin θ, 0)` so they only appear when the orbit
+            // angle is in the upper half (where the planet is
+            // "behind" the sun in the implicit 3D model).
+            View(style = planet_sheet_0.clone()) {}.bind(planet_back_0)
+            View(style = planet_sheet_1.clone()) {}.bind(planet_back_1)
+            View(style = planet_sheet_2.clone()) {}.bind(planet_back_2)
 
             // Content layer — holds the welcome phrase + subtitle
             // in a vertical column. Welcome stays mounted the
@@ -446,7 +814,16 @@ pub fn app() -> Primitive {
                     Text(style = subtitle) { "Your app starts here." }
                 }.bind(subtitle_ref)
             }
-        }
+
+            // Planets (front half) — same set, rendered AFTER the
+            // content layer so they appear in front of the welcome
+            // text. Opacity-gated by `max(sin θ, 0)` (opposite of
+            // the back set), so exactly one half of each planet
+            // pair is visible at any frame.
+            View(style = planet_sheet_0) {}.bind(planet_front_0)
+            View(style = planet_sheet_1) {}.bind(planet_front_1)
+            View(style = planet_sheet_2) {}.bind(planet_front_2)
+        }.bind(page_ref)
     }
 }
 
@@ -801,32 +1178,86 @@ fn vignette_band_sheet(edge: VignetteEdge) -> Rc<StyleSheet> {
     })
 }
 
-/// Anchor box for the sun glare. Positioned fully on-screen in the
-/// top-right corner — children that extend past the host view's
-/// bounds aren't rendered on iOS (UIKit clips them despite
-/// `clipsToBounds = NO` somewhere up the chain), so the
-/// off-screen-bleed feel is produced by shadow blur on the glare
-/// layers instead.
+/// One planet body — a solid-color circle, positioned at the
+/// viewport's top-right corner by default (same anchor as the sun)
+/// and moved into orbit by the raf-driver via animated translate.
+/// Two of these are rendered per `PlanetConfig` — one before the
+/// content layer (z-behind) and one after (z-in-front); the
+/// per-frame opacity AVs gate visibility so exactly one is on
+/// screen at a time. Sized in dp because translate writes from
+/// the raf-driver are in dp too — keeping the unit consistent
+/// across the orbit math is what makes the centering arithmetic
+/// (`tx = center_x - vw + size_dp/2`) work without conversion.
+fn planet_sheet(size_dp: f32, color: &'static str) -> Rc<StyleSheet> {
+    static_sheet(StyleRules {
+        position: Some(Position::Absolute),
+        top: Some(px(0.0)),
+        right: Some(px(0.0)),
+        width: Some(px(size_dp)),
+        height: Some(px(size_dp)),
+        background: Some(col(color)),
+        // Half-side radius — turns the square into a circle on
+        // every backend's clamp path (iOS / web / Android all
+        // clamp `border-radius > min(w, h)/2` to that value).
+        border_top_left_radius: Some(px(999.0)),
+        border_top_right_radius: Some(px(999.0)),
+        border_bottom_left_radius: Some(px(999.0)),
+        border_bottom_right_radius: Some(px(999.0)),
+        // Start invisible — the raf-driver writes the real
+        // opacity (one half of `sin θ`) once it begins running
+        // at Act 2 + 200 ms.
+        opacity: Some(Tokenized::Literal(0.0)),
+        ..Default::default()
+    })
+}
+
+/// Positioned wrapper for the sun. Pinned to the viewport's
+/// top-right edge then translated by HALF its own dimensions on
+/// each axis — `translate(50%, -50%)` is BOX-relative in CSS, so
+/// the shift is always exactly half the wrapper's size on any
+/// device. Half the disc hangs offscreen by design: the radial
+/// gradient reads as a light source cresting through the top-right
+/// corner rather than as a visible circle.
+///
+/// The wrapper carries ONLY the static layout / static transform.
+/// The animated disc lives inside it (see [`glare_anchor_sheet`])
+/// so per-frame writes to scale don't clobber this translate —
+/// iOS in particular bakes scale + translate into a single
+/// `CGAffineTransform`, and any animated write would otherwise
+/// overwrite our centering offset.
+fn glare_wrapper_sheet() -> Rc<StyleSheet> {
+    static_sheet(StyleRules {
+        position: Some(Position::Absolute),
+        top: Some(px(0.0)),
+        right: Some(px(0.0)),
+        // Size by HEIGHT (aspect_ratio:1.0 makes the box square,
+        // deriving width from height). Reads as a screen-vertical
+        // anchor — taller phone = bigger sun.
+        height: Some(pct(GLARE_ANCHOR_HEIGHT_PCT)),
+        aspect_ratio: Some(1.0),
+        transform: Some(vec![
+            framework_core::Transform::TranslateX(Length::Percent(50.0)),
+            framework_core::Transform::TranslateY(Length::Percent(-50.0)),
+        ]),
+        ..Default::default()
+    })
+}
+
+/// Inner disc: fills the wrapper, holds the gradient, takes the
+/// per-frame opacity + scale + stop-color animations. Scale
+/// animation pivots from the disc's own center (default
+/// transform-origin), which the wrapper has placed exactly on
+/// the viewport's top-right corner — so the pulse "breathes
+/// from the corner" without any per-axis math here.
 fn glare_anchor_sheet() -> Rc<StyleSheet> {
     use framework_core::{Gradient, GradientKind, GradientStop, RadialExtent};
     static_sheet(StyleRules {
         position: Some(Position::Absolute),
-        // Pin the anchor's bounding box to the viewport's top-right
-        // edge, then shift it by half its own width on each axis so
-        // its CENTER lands on the corner. The visible quadrant is
-        // the lower-left of the disc; the scale pulse still emits
-        // from the disc's geometric center (which is the corner
-        // itself) since transform-origin is the default 50% 50%.
+        // Fill the wrapper.
         top: Some(px(0.0)),
         right: Some(px(0.0)),
-        margin_top: Some(pct(GLARE_CENTER_SHIFT_PCT)),
-        margin_right: Some(pct(GLARE_CENTER_SHIFT_PCT)),
-        // Sun is sized as a fraction of viewport width and held
-        // square via `aspect_ratio: 1.0`. The layout engine sets
-        // height to match the resolved width, so the disc remains
-        // circular on phones AND tablets without per-device tuning.
-        width: Some(pct(GLARE_ANCHOR_SIZE_PCT)),
-        aspect_ratio: Some(1.0),
+        bottom: Some(px(0.0)),
+        left: Some(px(0.0)),
         // Clip to a perfect circle. CSS-style "max radius" — each
         // backend clamps to half the smaller side (iOS's
         // `apply_style_to_view` handles this explicitly because
@@ -871,15 +1302,15 @@ fn glare_anchor_sheet() -> Rc<StyleSheet> {
                     color: Color(COLOR_SUN_CORE.into()),
                 },
                 GradientStop {
-                    offset: 0.18,
+                    offset: 0.30,
                     color: Color("rgba(255, 210, 110, 0.70)".into()),
                 },
                 GradientStop {
-                    offset: 0.45,
+                    offset: 0.55,
                     color: Color("rgba(255, 168, 60, 0.22)".into()),
                 },
                 GradientStop {
-                    offset: 0.75,
+                    offset: 0.80,
                     color: Color("rgba(255, 168, 60, 0.06)".into()),
                 },
                 GradientStop {

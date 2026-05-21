@@ -24,7 +24,7 @@ use crate::node::{
     new_node, NodeData, NodeKind, WgpuNode, ACTIVITY_INDICATOR_LARGE_SIZE,
     ACTIVITY_INDICATOR_SMALL_SIZE, ICON_DEFAULT_SIZE, IMAGE_DEFAULT_SIZE,
     SLIDER_DEFAULT_WIDTH, SLIDER_HEIGHT, TEXT_INPUT_DEFAULT_HEIGHT, TOGGLE_ANIM_MS,
-    TOGGLE_HEIGHT, TOGGLE_WIDTH, UNSUPPORTED_DEFAULT_HEIGHT,
+    TOGGLE_HEIGHT, TOGGLE_WIDTH,
 };
 use crate::style_convert::parse_color;
 use crate::scheduler::request_redraw;
@@ -998,64 +998,6 @@ impl Backend for WgpuBackend {
     // Unsupported primitives — render a "not supported" panel.
     // -----------------------------------------------------------
 
-    #[cfg(blitz_active)]
-    fn create_web_view(&mut self, url: &str) -> Self::Node {
-        // Default render size — the author will almost always
-        // override via `.with_style(...)` width/height. We size
-        // the Blitz output to logical-px-equivalent at 1.0 scale;
-        // a HiDPI follow-up would thread the device scale here.
-        let layout = self.layout.new_node();
-        self.layout.set_intrinsic_size(layout, 320.0, 480.0);
-        let view = std::rc::Rc::new(crate::web_view::WebView::spawn(
-            url.to_string(),
-            320,
-            480,
-        ));
-        let node = new_node(
-            NodeKind::WebView {
-                view,
-                last_uploaded_paint: std::cell::Cell::new(0),
-            },
-            layout,
-        );
-        self.roots.push(node.clone());
-        node
-    }
-
-    // Web target: same node shape, but the `WebView` struct is the
-    // tiny URL-holder stub from `web_view_wasm.rs`. The actual
-    // iframe is mounted by the host shell through the renderer's
-    // `DomOverlay` hook — no GPU upload here.
-    #[cfg(target_arch = "wasm32")]
-    fn create_web_view(&mut self, url: &str) -> Self::Node {
-        let layout = self.layout.new_node();
-        self.layout.set_intrinsic_size(layout, 320.0, 480.0);
-        let view = std::rc::Rc::new(crate::web_view::WebView::spawn(
-            url.to_string(),
-            320,
-            480,
-        ));
-        let node = new_node(NodeKind::WebView { view }, layout);
-        self.roots.push(node.clone());
-        node
-    }
-
-    #[cfg(not(webview_node))]
-    fn create_web_view(&mut self, _url: &str) -> Self::Node {
-        make_unsupported(&mut self.layout, &mut self.roots, "WebView")
-    }
-
-    #[cfg(webview_node)]
-    fn make_web_view_handle(
-        &self,
-        node: &Self::Node,
-    ) -> framework_core::primitives::web_view::WebViewHandle {
-        framework_core::primitives::web_view::WebViewHandle::new(
-            Rc::new(node.clone()) as Rc<dyn std::any::Any>,
-            &WgpuWebViewOps,
-        )
-    }
-
     fn create_video(
         &mut self,
         src: &str,
@@ -1657,38 +1599,6 @@ impl framework_core::primitives::video::VideoOps for WgpuVideoOps {
     }
 }
 
-/// `WebViewOps` impl for the wgpu preview, backed by Blitz on
-/// native or an `<iframe>` on the web. Only `reload` is wired in
-/// Phase 1 — `post_message` / `execute_js` require JS execution,
-/// which Blitz doesn't ship yet, so we leave them as the no-op
-/// default. `reload` re-triggers a fetch via the worker's
-/// navigate hook on native; on wasm it forces an iframe `src`
-/// re-set (handled host-side).
-#[cfg(webview_node)]
-struct WgpuWebViewOps;
-
-#[cfg(webview_node)]
-impl framework_core::primitives::web_view::WebViewOps for WgpuWebViewOps {
-    fn reload(&self, node: &dyn std::any::Any) {
-        if let Some(n) = node.downcast_ref::<WgpuNode>() {
-            // We don't carry the original URL on the node — the
-            // worker keeps that — so "reload" is signaled via a
-            // navigate request set to the empty string. The
-            // worker treats `Some("")` as "re-load the current
-            // URL"; for now this is a no-op until we extend the
-            // protocol. Keeping the hook here so authors can
-            // wire up state-tracking without a follow-up
-            // breaking change.
-            if let NodeKind::WebView { view, .. } = &n.borrow().kind {
-                // Empty navigate request is currently inert; the
-                // hook is here so future "reload" logic only
-                // needs a worker-side change.
-                let _ = view;
-            }
-        }
-    }
-}
-
 /// Install a per-frame draw closure on a `GraphicsHandle`'s
 /// node. The handle must be obtained from
 /// `framework_core::primitives::graphics::graphics(...).bind(ref)`
@@ -1829,22 +1739,6 @@ fn drop_subtree(
 const _: fn() = || {
     let _: fn(&NodeData) -> Option<&Rc<StyleRules>> = |n| n.style.as_ref();
 };
-
-/// Build an `Unsupported` placeholder node — used by primitives
-/// that the simulator chooses not to implement (WebView, Video,
-/// Graphics). The placeholder gets an intrinsic height so it's
-/// visible even with no explicit sizing from the author.
-fn make_unsupported(
-    layout: &mut LayoutTree,
-    roots: &mut Vec<WgpuNode>,
-    label: &'static str,
-) -> WgpuNode {
-    let id = layout.new_node();
-    layout.set_intrinsic_size(id, -1.0, UNSUPPORTED_DEFAULT_HEIGHT);
-    let node = new_node(NodeKind::Unsupported { label }, id);
-    roots.push(node.clone());
-    node
-}
 
 /// Install the framework's command dispatcher for a stack
 /// `Navigator`. Captures a weak handle to the backend so the
@@ -2654,35 +2548,6 @@ fn walk_shutdown_videos(node: &WgpuNode, count: &mut usize) {
     let children: Vec<WgpuNode> = node.borrow().children.clone();
     for child in children {
         walk_shutdown_videos(&child, count);
-    }
-}
-
-/// Walk every WebView node and call `WebView::shutdown()`. Same
-/// rationale as `shutdown_all_videos`: drop the worker thread
-/// proactively rather than waiting for `Rc` unwinding (which
-/// reactive scopes can delay past `event_loop.exit()`).
-#[cfg(blitz_active)]
-pub(crate) fn shutdown_all_web_views(backend: &Rc<RefCell<WgpuBackend>>) {
-    let b = backend.borrow();
-    let Some(root) = b.root() else {
-        return;
-    };
-    let mut count = 0;
-    walk_shutdown_web_views(&root, &mut count);
-    if count > 0 {
-        eprintln!("[shutdown] tore down {count} web view(s)");
-    }
-}
-
-#[cfg(blitz_active)]
-fn walk_shutdown_web_views(node: &WgpuNode, count: &mut usize) {
-    if let NodeKind::WebView { view, .. } = &node.borrow().kind {
-        view.shutdown();
-        *count += 1;
-    }
-    let children: Vec<WgpuNode> = node.borrow().children.clone();
-    for child in children {
-        walk_shutdown_web_views(&child, count);
     }
 }
 

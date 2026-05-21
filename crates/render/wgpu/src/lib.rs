@@ -51,17 +51,6 @@ mod video;
 mod video;
 #[cfg(not(target_arch = "wasm32"))]
 mod audio;
-// Same split as `video`: the Blitz-backed native module needs
-// reqwest+tokio (and threads), so on wasm the `web_view` name
-// resolves to a tiny stub that just holds the current URL. The
-// real composite lives in the host's `DomOverlay` impl, which
-// stamps `<iframe>` elements over the canvas at each WebView
-// node's screen rect.
-#[cfg(blitz_active)]
-mod web_view;
-#[cfg(all(target_arch = "wasm32", webview_node))]
-#[path = "web_view_wasm.rs"]
-mod web_view;
 mod dom_overlay;
 mod scheduler;
 mod skin;

@@ -59,6 +59,16 @@ pub(crate) struct StateCallback {
 /// calls `nativeChanged(ptr, text)`.
 pub(crate) struct TextChangeCallback(pub(crate) Rc<dyn Fn(String)>);
 
+/// `TextInput.on_key_down` / `TextArea.on_key_down`. JVM-side
+/// `RustKeyListener.onKey` calls `nativeKey(ptr, keyCode, metaState,
+/// unicodeChar, selStart, selEnd)` and uses the returned bool as the
+/// listener's "consumed" flag — true suppresses the platform default,
+/// matching `KeyOutcome::PreventDefault`. The Rust handler closure
+/// already takes a built `KeyEvent`, so this wrapper carries it
+/// directly; the keycode → canonical-name mapping happens in the JNI
+/// export itself.
+pub(crate) struct KeyDownCallback(pub(crate) framework_core::primitives::key::KeyDownHandler);
+
 /// `Toggle.on_change`. JVM-side `RustToggleListener.onCheckedChanged`
 /// calls `nativeChanged(ptr, checked)`.
 pub(crate) struct ToggleChangeCallback(pub(crate) Rc<dyn Fn(bool)>);

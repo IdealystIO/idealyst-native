@@ -1,0 +1,35 @@
+[package]
+name = "idea-codeblock"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Third-party `CodeBlock` primitive — a single backend node rendering
+# a flat sequence of `(text, color)` runs. Carved out of
+# `framework-core` after a measurement showed the equivalent
+# composition (`View` + `Repeat<styled-View-with-Text>`) generates
+# 100-300× more backend ops per re-render than the single-node
+# primitive, even with the batched-Repeat fast path. The structural
+# gap (composition rebuilds every span on each render; the primitive
+# replaces a single node) couldn't be closed by framework
+# optimization alone, so the primitive moved out of core to keep
+# core clean while preserving the perf shape.
+#
+# Layering matches the `maps` SDK pattern: facade + cfg-routed
+# `register` re-export. Web is the only backend that ships an impl
+# today; on iOS / Android, `register` is a no-op and the framework's
+# "External CodeBlockProps not supported" placeholder renders.
+#
+# Single-crate variant (not split into `idea-codeblock-core` +
+# `idea-codeblock-web`) because the surface is small enough that the
+# split would be more Cargo.toml plumbing than it's worth. If a new
+# backend wants to ship a CodeBlock impl, splitting becomes the
+# right move.
+
+[dependencies]
+framework-core = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = ["Document", "Element", "Window"] }
