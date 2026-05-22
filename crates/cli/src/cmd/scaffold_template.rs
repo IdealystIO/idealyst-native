@@ -2,10 +2,13 @@
 //!
 //! Two flavours:
 //!
-//! - **Project** — a cross-platform app crate. Single `[lib]` with
-//!   `cdylib + rlib`, a `#[component] fn app()` entry point, web
-//!   bootstrap, and `[package.metadata.idealyst.app]` so the CLI's
-//!   `build` / `run` / `dev` commands pick it up.
+//! - **Project** — a full Idealyst app. The default scaffold is a
+//!   verbatim copy of the in-tree `examples/welcome` project: a
+//!   three-act cinematic intro driven by springs / tweens / a raf-
+//!   pulse, complete with bundled Inter typeface. The source is
+//!   embedded into the CLI binary via `include_str!` /
+//!   `include_bytes!`, so the scaffold is always identical to the
+//!   reference welcome example — no separate template to drift.
 //! - **Library** — a third-party External-primitive extension. Pure
 //!   `rlib`, defines a `*Props` struct + a PascalCase constructor,
 //!   per-backend `register` stubs gated on `target_arch` /
@@ -47,8 +50,90 @@ pub fn write(
 }
 
 // =============================================================================
-// Project (app)
+// Project (app) — verbatim copy of the welcome example
 // =============================================================================
+//
+// Each source file is pulled from `examples/welcome/` at compile time
+// so any change to the reference welcome propagates here on the next
+// CLI rebuild. Cargo.toml + index.html are reformatted with the
+// caller's name / bundle id / framework source; everything else is
+// dropped through unchanged. The welcome source is intentionally
+// name-agnostic (no `welcome::*` self-references, no `mod welcome`)
+// so the verbatim copy compiles under any crate name.
+
+const WELCOME_LIB_RS: &str = include_str!("../../../../examples/welcome/src/lib.rs");
+const WELCOME_APP_RS: &str = include_str!("../../../../examples/welcome/src/app.rs");
+const WELCOME_WEB_RS: &str = include_str!("../../../../examples/welcome/src/web.rs");
+const WELCOME_CONSTANTS_RS: &str =
+    include_str!("../../../../examples/welcome/src/constants.rs");
+const WELCOME_TYPEFACE_RS: &str =
+    include_str!("../../../../examples/welcome/src/typeface.rs");
+const WELCOME_COLOR_RS: &str = include_str!("../../../../examples/welcome/src/color.rs");
+const WELCOME_STYLE_HELPERS_RS: &str =
+    include_str!("../../../../examples/welcome/src/style_helpers.rs");
+const WELCOME_ANIMATION_BRIDGE_RS: &str =
+    include_str!("../../../../examples/welcome/src/animation_bridge.rs");
+const WELCOME_COMPONENTS_RS: &str =
+    include_str!("../../../../examples/welcome/src/components.rs");
+const WELCOME_COMPONENT_PAGE: &str =
+    include_str!("../../../../examples/welcome/src/components/page.rs");
+const WELCOME_COMPONENT_DARK_LAYER: &str =
+    include_str!("../../../../examples/welcome/src/components/dark_layer.rs");
+const WELCOME_COMPONENT_VIGNETTE: &str =
+    include_str!("../../../../examples/welcome/src/components/vignette.rs");
+const WELCOME_COMPONENT_SUN_GLARE: &str =
+    include_str!("../../../../examples/welcome/src/components/sun_glare.rs");
+const WELCOME_COMPONENT_PLANET: &str =
+    include_str!("../../../../examples/welcome/src/components/planet.rs");
+const WELCOME_COMPONENT_WELCOME_PHRASE: &str =
+    include_str!("../../../../examples/welcome/src/components/welcome_phrase.rs");
+const WELCOME_COMPONENT_SUBTITLE: &str =
+    include_str!("../../../../examples/welcome/src/components/subtitle.rs");
+const WELCOME_COMPONENT_CONTENT_LAYER: &str =
+    include_str!("../../../../examples/welcome/src/components/content_layer.rs");
+
+// Inter typeface — full upright family bundled with every new project
+// so the headline / subtitle render at real weight rather than
+// platform fake-bold. ~3.6 MB total; embedded into the CLI binary so
+// the scaffold has no out-of-tree dependencies.
+const INTER_FONTS: &[(&str, &[u8])] = &[
+    (
+        "fonts/Inter-Thin.ttf",
+        include_bytes!("../../../../examples/welcome/fonts/Inter-Thin.ttf"),
+    ),
+    (
+        "fonts/Inter-ExtraLight.ttf",
+        include_bytes!("../../../../examples/welcome/fonts/Inter-ExtraLight.ttf"),
+    ),
+    (
+        "fonts/Inter-Light.ttf",
+        include_bytes!("../../../../examples/welcome/fonts/Inter-Light.ttf"),
+    ),
+    (
+        "fonts/Inter-Regular.ttf",
+        include_bytes!("../../../../examples/welcome/fonts/Inter-Regular.ttf"),
+    ),
+    (
+        "fonts/Inter-Medium.ttf",
+        include_bytes!("../../../../examples/welcome/fonts/Inter-Medium.ttf"),
+    ),
+    (
+        "fonts/Inter-SemiBold.ttf",
+        include_bytes!("../../../../examples/welcome/fonts/Inter-SemiBold.ttf"),
+    ),
+    (
+        "fonts/Inter-Bold.ttf",
+        include_bytes!("../../../../examples/welcome/fonts/Inter-Bold.ttf"),
+    ),
+    (
+        "fonts/Inter-ExtraBold.ttf",
+        include_bytes!("../../../../examples/welcome/fonts/Inter-ExtraBold.ttf"),
+    ),
+    (
+        "fonts/Inter-Black.ttf",
+        include_bytes!("../../../../examples/welcome/fonts/Inter-Black.ttf"),
+    ),
+];
 
 fn write_project(
     dir: &Path,
@@ -57,18 +142,67 @@ fn write_project(
     source: &FrameworkSource,
     bundle_id: Option<&str>,
 ) -> Result<()> {
-    fs::create_dir_all(dir.join("src"))
-        .with_context(|| format!("create {}", dir.join("src").display()))?;
+    fs::create_dir_all(dir.join("src/components"))
+        .with_context(|| format!("create {}", dir.join("src/components").display()))?;
+    fs::create_dir_all(dir.join("fonts"))
+        .with_context(|| format!("create {}", dir.join("fonts").display()))?;
 
     let bundle_id = bundle_id
         .map(|s| s.to_string())
         .unwrap_or_else(|| default_bundle_id(name));
     let app_title = title_case(name);
 
+    fs::write(dir.join("Cargo.toml"), project_cargo_toml(name, &app_title, &bundle_id, source))?;
+    fs::write(dir.join("index.html"), project_index_html(&app_title, lib_name))?;
+    fs::write(dir.join(".gitignore"), GITIGNORE)?;
+
+    // Source tree — copied verbatim from `examples/welcome/src/`.
+    // The welcome source has no self-name references so it compiles
+    // under any crate name.
+    fs::write(dir.join("src/lib.rs"), WELCOME_LIB_RS)?;
+    fs::write(dir.join("src/app.rs"), WELCOME_APP_RS)?;
+    fs::write(dir.join("src/web.rs"), WELCOME_WEB_RS)?;
+    fs::write(dir.join("src/constants.rs"), WELCOME_CONSTANTS_RS)?;
+    fs::write(dir.join("src/typeface.rs"), WELCOME_TYPEFACE_RS)?;
+    fs::write(dir.join("src/color.rs"), WELCOME_COLOR_RS)?;
+    fs::write(dir.join("src/style_helpers.rs"), WELCOME_STYLE_HELPERS_RS)?;
+    fs::write(dir.join("src/animation_bridge.rs"), WELCOME_ANIMATION_BRIDGE_RS)?;
+    fs::write(dir.join("src/components.rs"), WELCOME_COMPONENTS_RS)?;
+    fs::write(dir.join("src/components/page.rs"), WELCOME_COMPONENT_PAGE)?;
+    fs::write(dir.join("src/components/dark_layer.rs"), WELCOME_COMPONENT_DARK_LAYER)?;
+    fs::write(dir.join("src/components/vignette.rs"), WELCOME_COMPONENT_VIGNETTE)?;
+    fs::write(dir.join("src/components/sun_glare.rs"), WELCOME_COMPONENT_SUN_GLARE)?;
+    fs::write(dir.join("src/components/planet.rs"), WELCOME_COMPONENT_PLANET)?;
+    fs::write(
+        dir.join("src/components/welcome_phrase.rs"),
+        WELCOME_COMPONENT_WELCOME_PHRASE,
+    )?;
+    fs::write(dir.join("src/components/subtitle.rs"), WELCOME_COMPONENT_SUBTITLE)?;
+    fs::write(
+        dir.join("src/components/content_layer.rs"),
+        WELCOME_COMPONENT_CONTENT_LAYER,
+    )?;
+
+    for (rel_path, bytes) in INTER_FONTS {
+        fs::write(dir.join(rel_path), bytes)
+            .with_context(|| format!("write {}", dir.join(rel_path).display()))?;
+    }
+
+    Ok(())
+}
+
+fn project_cargo_toml(
+    name: &str,
+    app_title: &str,
+    bundle_id: &str,
+    source: &FrameworkSource,
+) -> String {
     let fcore_dep = source.dep("crates/framework/core", &[]);
     let bweb_dep = source.dep("crates/backend/web", &[]);
+    let bios_dep = source.dep("crates/backend/ios/mobile", &[]);
+    let bandroid_dep = source.dep("crates/backend/android/mobile", &[]);
 
-    let cargo_toml = format!(
+    format!(
         r##"[package]
 name = "{name}"
 version = "0.0.1"
@@ -76,9 +210,8 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 
 # `cdylib` for the web build (wasm-bindgen's `--target web` consumes
-# the produced `.wasm`); `rlib` so the CLI's per-platform wrapper
-# crates (materialized into `target/idealyst/<platform>/`) can depend
-# on this crate as a library.
+# the produced `.wasm`); `rlib` so the CLI's per-platform wrappers
+# (iOS / Android) can depend on this crate as a library.
 [lib]
 crate-type = ["cdylib", "rlib"]
 
@@ -89,10 +222,22 @@ framework-core = {fcore_dep}
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = {bweb_dep}
 wasm-bindgen = "0.2"
+web-sys = {{ version = "0.3", features = ["Node", "Element", "HtmlElement"] }}
 console_error_panic_hook = "0.1"
 # Smaller WASM allocator — slightly higher per-alloc cost in exchange
 # for a few KB shaved off the bundle.
 lol_alloc = "0.4"
+
+# iOS leaf: the per-frame AnimatedValue → UIView bridge in
+# `animation_bridge.rs` downcasts to `IosNode` and calls
+# `backend_ios::set_animated_*`.
+[target.'cfg(target_os = "ios")'.dependencies]
+backend-ios-mobile = {bios_dep}
+
+# Android leaf: same shape as iOS — `animation_bridge.rs` reaches the
+# backend via `set_animated_*` after downcasting to `AndroidNode`.
+[target.'cfg(target_os = "android")'.dependencies]
+backend-android-mobile = {bandroid_dep}
 
 # wasm-opt's bundled binaryen rejects bulk-memory ops emitted by recent
 # rustc; pass the enable flags explicitly. `-Oz` prioritizes size like
@@ -106,123 +251,42 @@ wasm-opt = ["-Oz", "--strip-debug", "--strip-producers", "--enable-bulk-memory",
 name      = "{app_title}"
 bundle_id = "{bundle_id}"
 version   = "0.0.1"
-# Platforms `idealyst build` produces when no target list is given on
-# the command line. Override per-invocation: `idealyst build ios`.
-targets   = ["web", "ios", "android"]
-
-[package.metadata.idealyst.app.splash]
-background  = "#0f1115"
-title       = "{app_title}"
-title_color = "#ffffff"
-duration_ms = 1200
+# Platforms `idealyst dev` and `idealyst build` fan out across when
+# no `--web` / `--ios` / `--android` flag is passed on the command
+# line. We default to web-only because it's the broadest target with
+# zero per-platform toolchain setup (no Xcode, no NDK) — a fresh
+# clone of this project will `idealyst dev` straight into a hot-
+# reloading browser preview. Add the mobile targets when you're
+# ready: `targets = ["web", "ios", "android"]`. The `run ios` /
+# `run android` subcommands work regardless of what's listed here
+# (they take an explicit platform argument), so you can also just
+# leave this alone and invoke them directly.
+targets   = ["web"]
 "##,
-    );
-
-    fs::write(dir.join("Cargo.toml"), cargo_toml)?;
-    fs::write(dir.join("src/lib.rs"), project_lib_rs(lib_name))?;
-    fs::write(dir.join("src/web.rs"), project_web_rs())?;
-    fs::write(dir.join("index.html"), project_index_html(&app_title, lib_name))?;
-    fs::write(dir.join(".gitignore"), GITIGNORE)?;
-    Ok(())
-}
-
-fn project_lib_rs(lib_name: &str) -> String {
-    format!(
-        r##"//! `{lib_name}` — cross-platform Idealyst app.
-//!
-//! `app()` returns the root primitive tree. Per-platform glue
-//! (wasm-bindgen start fn for web, generated iOS / Android wrappers
-//! produced by `idealyst build`) calls it; the same tree renders
-//! everywhere.
-
-use framework_core::{{component, signal, ui, Primitive}};
-
-#[cfg(target_arch = "wasm32")]
-mod web;
-
-#[component]
-pub fn app() -> Primitive {{
-    let count = signal!(0i32);
-
-    ui! {{
-        View {{
-            Text {{ "Hello from {lib_name}" }}
-            Button(
-                label = "Increment",
-                on_click = move || count.update(|n| *n += 1),
-            )
-            Text {{ format!("Count: {{}}", count.get()) }}
-        }}
-    }}
-}}
-"##
     )
-}
-
-fn project_web_rs() -> String {
-    r##"//! Web entry — wasm-bindgen `start()`. Wires the framework's web
-//! backend up to `#app` in `index.html`.
-//!
-//! Built only on `wasm32` so native targets (iOS / Android wrappers)
-//! don't pull in `wasm-bindgen`.
-
-use std::cell::RefCell;
-use std::rc::Rc;
-
-use backend_web::WebBackend;
-use wasm_bindgen::prelude::*;
-
-// Smaller WASM allocator — trades a few cycles per allocation for a
-// few KB shaved off the bundle.
-#[global_allocator]
-static ALLOCATOR: lol_alloc::AssumeSingleThreaded<lol_alloc::FreeListAllocator> =
-    unsafe { lol_alloc::AssumeSingleThreaded::new(lol_alloc::FreeListAllocator::new()) };
-
-thread_local! {
-    /// `render` returns an `Owner` that must outlive the page. Stash
-    /// it in a thread-local so it survives `start()` returning.
-    static OWNER: RefCell<Option<framework_core::Owner>> =
-        const { RefCell::new(None) };
-}
-
-#[wasm_bindgen(start)]
-pub fn start() {
-    console_error_panic_hook::set_once();
-
-    // Register the web scheduler so framework_core::scheduling
-    // (microtasks, after_animation_frame, etc.) has a backend. Without
-    // this the framework panics on first dispatch.
-    backend_web::install_scheduler();
-
-    // `mount` runs `app()` inside the root reactive scope. Use this
-    // (not `render`) when `app()` declares any top-level `effect!` /
-    // `signal!` / `Ref::new` — those need a scope to adopt them.
-    let backend = Rc::new(RefCell::new(WebBackend::new("#app")));
-    let owner = framework_core::mount(backend, super::app);
-    OWNER.with(|slot| *slot.borrow_mut() = Some(owner));
-}
-"##.to_string()
 }
 
 fn project_index_html(title: &str, lib_name: &str) -> String {
     format!(
         r##"<!DOCTYPE html>
 <html lang="en">
-<head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>{title}</title>
-<style>
-  html, body, #app {{ margin: 0; padding: 0; height: 100%; font-family: system-ui, sans-serif; }}
-</style>
-</head>
-<body>
-<div id="app"></div>
-<script type="module">
-import init from './pkg/{lib_name}.js';
-init();
-</script>
-</body>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+    <base href="/" />
+    <title>{title}</title>
+    <style>
+      html, body, #app {{ height: 100%; margin: 0; }}
+      body {{ background: #f7f8fb; }}
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      import init from "/pkg/{lib_name}.js";
+      init();
+    </script>
+  </body>
 </html>
 "##
     )

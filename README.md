@@ -12,6 +12,82 @@ display — without touching app code.
 
 > **Status: under construction.** APIs are unstable; do not use in production.
 
+## Installing the CLI
+
+The `idealyst` CLI is the entry point for everything user-facing — scaffolding
+new projects, building / running them for web / iOS / Android, the hot-reload
+dev server, the doctor command for diagnosing your toolchain. It's built from
+source via `cargo install`; there are no pre-built binaries yet.
+
+### Prerequisites
+
+- **Rust** — stable toolchain (1.78+ recommended). Install via
+  [rustup](https://rustup.rs/) if you don't already have it.
+- **Git** — `cargo install --git` needs it on your `PATH`.
+
+Per-platform tooling (Xcode for iOS, Android NDK for Android, `wasm-pack` for
+web bundling) is only needed when you actually `build` / `run` for that target.
+The CLI itself has no platform dependencies — `idealyst doctor` will tell you
+what each enabled target is missing.
+
+### Install
+
+```bash
+cargo install --git https://github.com/IdealystIO/idealyst-native idealyst-cli
+```
+
+That fetches the latest commit on `master`, compiles in release mode, and drops
+the `idealyst` binary into `~/.cargo/bin/` (which is on your `PATH` if you set
+Rust up through `rustup`).
+
+To pin to a specific commit / tag / branch:
+
+```bash
+cargo install --git https://github.com/IdealystIO/idealyst-native --rev <sha>    idealyst-cli
+cargo install --git https://github.com/IdealystIO/idealyst-native --tag <tag>    idealyst-cli
+cargo install --git https://github.com/IdealystIO/idealyst-native --branch <br>  idealyst-cli
+```
+
+To re-install / upgrade over an existing copy, add `--force`.
+
+### Verify
+
+```bash
+idealyst --help
+```
+
+You should see the subcommand list (`new`, `init`, `dev`, `build`, `run`,
+`doctor`, …).
+
+### Building from a local checkout
+
+If you've cloned the repo and want to install your local working copy instead
+of fetching from GitHub:
+
+```bash
+git clone https://github.com/IdealystIO/idealyst-native
+cd idealyst-native
+cargo install --path crates/cli --force
+```
+
+The `--force` is needed once you already have `idealyst` installed; cargo
+otherwise refuses to overwrite an existing binary of the same name.
+
+### Your first project
+
+```bash
+idealyst new my-app
+cd my-app
+idealyst dev          # hot-reload web preview at http://localhost:8080
+idealyst run ios      # build + boot in the iOS simulator (requires Xcode)
+idealyst run android  # build + install on a running emulator / device
+```
+
+`idealyst new` scaffolds the `examples/welcome` project verbatim — a complete
+three-act animated intro, full Inter typeface bundle, web + iOS + Android wiring
+already in place. Edit `src/app.rs` and the per-element files under
+`src/components/` to make it yours.
+
 ## What is Idealyst?
 
 I quit my job and got bored, so I started working on this.

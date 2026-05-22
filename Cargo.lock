@@ -1661,24 +1661,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hello-world"
-version = "0.0.1"
-dependencies = [
- "backend-web",
- "bytemuck",
- "console_error_panic_hook",
- "dev-client",
- "framework-core",
- "icons-lucide",
- "idea-ui",
- "js-sys",
- "lol_alloc",
- "wasm-bindgen",
- "web-sys",
- "wgpu",
-]
-
-[[package]]
 name = "hermit-abi"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1720,20 +1702,6 @@ dependencies = [
  "render-wgpu",
  "wgpu",
  "winit",
-]
-
-[[package]]
-name = "hot-reload-test"
-version = "0.0.1"
-dependencies = [
- "backend-web",
- "console_error_panic_hook",
- "dev-client",
- "framework-core",
- "idea-ui",
- "lol_alloc",
- "wasm-bindgen",
- "web-sys",
 ]
 
 [[package]]
@@ -2300,19 +2268,6 @@ name = "maps-core"
 version = "0.0.1"
 
 [[package]]
-name = "maps-test"
-version = "0.0.1"
-dependencies = [
- "backend-web",
- "console_error_panic_hook",
- "framework-core",
- "idea-ui",
- "maps",
- "wasm-bindgen",
- "web-sys",
-]
-
-[[package]]
 name = "maps-web"
 version = "0.0.1"
 dependencies = [
@@ -2454,23 +2409,6 @@ dependencies = [
  "framework-core",
  "host-winit",
  "render-wgpu",
-]
-
-[[package]]
-name = "native-test"
-version = "0.0.1"
-dependencies = [
- "android-sim",
- "bytemuck",
- "framework-core",
- "icons-lucide",
- "idea-ui",
- "ios-sim",
- "native-phone",
- "native-tablet",
- "native-tv",
- "render-wgpu",
- "wgpu",
 ]
 
 [[package]]
@@ -4488,21 +4426,6 @@ name = "toml_write"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
-
-[[package]]
-name = "touch-test"
-version = "0.0.1"
-dependencies = [
- "backend-web",
- "console_error_panic_hook",
- "dev-client",
- "framework-core",
- "idea-ui",
- "js-sys",
- "lol_alloc",
- "wasm-bindgen",
- "web-sys",
-]
 
 [[package]]
 name = "tracing"
