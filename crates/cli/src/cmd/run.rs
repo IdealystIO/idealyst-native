@@ -97,6 +97,7 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
                     release: args.release,
                     mode,
                     source,
+                    user_features: Vec::new(),
                 },
             )?;
             eprintln!();
@@ -193,6 +194,7 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
                     // startup).
                     aas_port: args.aas_port,
                     source,
+                    user_features: Vec::new(),
                 },
             )?;
             eprintln!();
@@ -264,6 +266,7 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
                     // session — block on the app so Ctrl-C in the
                     // terminal still tears it down cleanly.
                     background: false,
+                    user_features: Vec::new(),
                 },
             )?;
             eprintln!();

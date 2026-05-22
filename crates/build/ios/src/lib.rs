@@ -52,6 +52,11 @@ pub struct BuildOptions {
     /// from. The CLI constructs this with `FrameworkSource::detect`
     /// before invoking `build()`.
     pub source: FrameworkSource,
+    /// Cargo features to enable on the cargo invocation. Forwarded
+    /// as `--features <list>`. Used by `idealyst dev` to pass
+    /// `framework-core/dev` so the Robot bridge auto-starts; left
+    /// empty for plain `idealyst build`.
+    pub user_features: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -234,7 +239,7 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     generate_wrapper(&wrapper_dir, &project_dir, &opts.source, &manifest)?;
 
     let target = pick_target(opts.device);
-    cargo_build(&wrapper_dir, target, opts.release)?;
+    cargo_build(&wrapper_dir, target, opts.release, &opts.user_features)?;
 
     let profile = if opts.release { "release" } else { "debug" };
     let staticlib_name = format!("lib{}_ios_wrapper.a", manifest.lib_name);
@@ -562,16 +567,29 @@ pub unsafe extern "C" fn ios_teardown() {{
 // Cargo invocation
 // ---------------------------------------------------------------------------
 
-fn cargo_build(wrapper_dir: &Path, target: &str, release: bool) -> Result<()> {
+fn cargo_build(
+    wrapper_dir: &Path,
+    target: &str,
+    release: bool,
+    user_features: &[String],
+) -> Result<()> {
     let mut cmd = Command::new("cargo");
     cmd.args(["build", "--target", target]).current_dir(wrapper_dir);
     if release {
         cmd.arg("--release");
     }
+    if !user_features.is_empty() {
+        cmd.arg("--features").arg(user_features.join(","));
+    }
 
     eprintln!(
-        "[build-ios] cargo build --target {target}{} (in {})",
+        "[build-ios] cargo build --target {target}{}{} (in {})",
         if release { " --release" } else { "" },
+        if user_features.is_empty() {
+            String::new()
+        } else {
+            format!(" --features {}", user_features.join(","))
+        },
         wrapper_dir.display(),
     );
     let status = cmd

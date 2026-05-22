@@ -109,6 +109,10 @@ framework-hot = { workspace = true, optional = true }
 framework-mcp = { workspace = true, optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Bitflags for `AccessibilityTraits` (one u16 of orthogonal a11y flags
+# per primitive). Already transitively pulled by several deps; declaring
+# it directly here so the module owns the version pin.
+bitflags = "2"
 # The `Graphics` primitive exposes its surface as a standard
 # `raw_window_handle` handle so authors can plug any GPU library
 # (wgpu, glow, vello, softbuffer, …) on top. Tiny dep — a handful of

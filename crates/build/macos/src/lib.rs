@@ -27,6 +27,10 @@ pub struct BuildOptions {
     /// Compile with `--release`. Default: debug. Native macOS builds
     /// are usually for dev iteration; release matters for shipping.
     pub release: bool,
+    /// Cargo features to enable on the cargo invocation. Forwarded
+    /// as `--features <list>`. Used by `idealyst dev` to pass
+    /// `framework-core/dev` so the Robot bridge auto-starts.
+    pub user_features: Vec<String>,
     /// Framework-source resolution: workspace path-deps for in-tree
     /// projects, git deps for external installs. Same shape sim uses.
     pub source: FrameworkSource,
@@ -54,7 +58,7 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     let cargo_target_dir = opts.source.cargo_target_dir(&project_dir);
 
     generate_wrapper(&wrapper_dir, &cargo_target_dir, &project_dir, &manifest, &opts)?;
-    cargo_build(&wrapper_dir, opts.release)?;
+    cargo_build(&wrapper_dir, opts.release, &opts.user_features)?;
 
     let profile = if opts.release { "release" } else { "debug" };
     let bin_name = binary_name(&manifest.name);
@@ -90,6 +94,12 @@ fn generate_wrapper(
     let bin_name = binary_name(&manifest.name);
 
     let host_dep = opts.source.dep("crates/host/appkit", &[]);
+    // `framework-core` as a direct dep of the wrapper so the dev
+    // command can pass `--features framework-core/dev` from cargo
+    // without needing a [features] section. Without this, cargo
+    // rejects the spec because framework-core is only reachable
+    // transitively through host-appkit / the user crate.
+    let fcore_dep = opts.source.dep("crates/framework/core", &[]);
     let user_dep = format!("{{ path = \"{}\" }}", project_dir.display());
 
     let cargo_toml = format!(
@@ -108,10 +118,12 @@ edition = "2021"
 
 [dependencies]
 host-appkit = {host_dep}
+framework-core = {fcore_dep}
 {user_name} = {user_dep}
 "#,
         bin_name = bin_name,
         host_dep = host_dep,
+        fcore_dep = fcore_dep,
         user_name = manifest.name,
         user_dep = user_dep,
     );
@@ -162,15 +174,27 @@ fn write_shared_target_config(dir: &Path, target_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn cargo_build(wrapper_dir: &Path, release: bool) -> Result<()> {
+fn cargo_build(
+    wrapper_dir: &Path,
+    release: bool,
+    user_features: &[String],
+) -> Result<()> {
     let mut cmd = Command::new("cargo");
     cmd.args(["build"]).current_dir(wrapper_dir);
     if release {
         cmd.arg("--release");
     }
+    if !user_features.is_empty() {
+        cmd.arg("--features").arg(user_features.join(","));
+    }
     eprintln!(
-        "[build-macos] cargo build{} (in {})",
+        "[build-macos] cargo build{}{} (in {})",
         if release { " --release" } else { "" },
+        if user_features.is_empty() {
+            String::new()
+        } else {
+            format!(" --features {}", user_features.join(","))
+        },
         wrapper_dir.display(),
     );
     let status = cmd

@@ -8,6 +8,8 @@ pub(crate) mod navigator;
 pub(crate) mod portal;
 pub(crate) mod tab_drawer;
 pub(crate) mod touch;
+pub(crate) mod video;
+pub(crate) mod virtualizer;
 
 /// Platform log with format. Forwards to `backend_ios_core::ios_log`
 /// which wraps NSLog.
@@ -127,6 +129,32 @@ pub struct IosBackend {
     /// UILabel.
     pub(crate) external_handlers:
         framework_core::ExternalRegistry<IosBackend>,
+    /// Per-view AVPlayer/AVPlayerLayer retention for `Primitive::Video`,
+    /// keyed by the host UIView pointer. The post-layout pass walks
+    /// every registered view; for any video-backed view, the entry's
+    /// `AVPlayerLayer` is resized to the view's new bounds (CALayer
+    /// sublayers don't auto-resize from autoresizingMask in practice
+    /// on iOS — same gotcha as `idealyst_gradient`).
+    pub(crate) video_instances: video::VideoInstances,
+    /// Per-virtualizer side state — keyed by the `UICollectionView`'s
+    /// pointer. UIKit holds dataSource + delegate as weak refs, so
+    /// we keep the `VirtualizerDataSource` retained here for the
+    /// collection view's lifetime. `release_virtualizer` removes
+    /// the entry; that drops the data source's `Retained`, which
+    /// frees it after the next ObjC autorelease drain.
+    pub(crate) virtualizer_instances:
+        HashMap<usize, virtualizer::VirtualizerInstance>,
+    /// Set of UICollectionView pointers we created via
+    /// `create_virtualizer`. Listed separately from `scroll_views`
+    /// because UICollectionView IS a UIScrollView (so `bounds.origin`
+    /// = contentOffset and must be preserved across `apply_frames`),
+    /// but its content layout is owned by `UICollectionViewLayout`,
+    /// NOT by Taffy — meaning the contentSize-sync loop in
+    /// `apply_frames` would otherwise compute `0×0` (no Taffy
+    /// children registered for cells) and clobber UIKit's own
+    /// contentSize. Membership in this set opts a view into
+    /// origin-preservation but out of the contentSize sync.
+    pub(crate) collection_views: std::collections::HashSet<usize>,
 }
 
 // =========================================================================
@@ -313,6 +341,9 @@ impl IosBackend {
             view_to_layout: HashMap::new(),
             animated_states: HashMap::new(),
             external_handlers: framework_core::ExternalRegistry::new(),
+            video_instances: HashMap::new(),
+            virtualizer_instances: HashMap::new(),
+            collection_views: std::collections::HashSet::new(),
         }
     }
 
@@ -1223,6 +1254,111 @@ impl Backend for IosBackend {
             let view_clone = view.clone();
             self.install_image_measure(&view_clone);
         }
+    }
+
+    fn create_video(
+        &mut self,
+        src: &str,
+        autoplay: bool,
+        controls: bool,
+        loop_playback: bool,
+    ) -> Self::Node {
+        let node = video::create_video(
+            self.mtm,
+            &mut self.video_instances,
+            src,
+            autoplay,
+            controls,
+            loop_playback,
+        );
+        // Stage in the layout tree so Taffy gives the host view a
+        // frame. The post-layout pass picks up
+        // `video_instances` and syncs the AVPlayerLayer to that
+        // frame — without registering, the frame stays CGRectZero
+        // and the video never paints. Video doesn't need an
+        // intrinsic-size measurer because the player gives the view
+        // no intrinsic content size; authors size it via flex props
+        // (width/height/aspect-ratio) just like a Graphics surface.
+        if let IosNode::View(view) = &node {
+            let _ = self.layout_for_view(view);
+        }
+        node
+    }
+
+    fn update_video_src(&mut self, node: &Self::Node, src: &str) {
+        video::update_video_src(&self.video_instances, node, src);
+    }
+
+    fn make_video_handle(
+        &self,
+        node: &Self::Node,
+    ) -> framework_core::primitives::video::VideoHandle {
+        video::make_handle(&self.video_instances, node)
+    }
+
+    fn create_virtualizer(
+        &mut self,
+        callbacks: framework_core::VirtualizerCallbacks<Self::Node>,
+        overscan: f32,
+        horizontal: bool,
+    ) -> Self::Node {
+        // Build the UICollectionView + flow layout + data source.
+        // Phase-1 MVP: vertical-scrolling, single-column, Known sizing.
+        // Phase-2 gaps (documented in `imp/virtualizer.rs`):
+        //   - horizontal scrolling (the `horizontal` param is parked).
+        //   - Measured sizing via `preferredLayoutAttributesFitting`.
+        //   - Sections + sticky headers.
+        //   - `performBatchUpdates` instead of `reloadData` on data
+        //     changes, for animated row mutations.
+        //   - Overscan tuning (UIKit's prefetch surface).
+        let view = virtualizer::create(
+            self.mtm,
+            &mut self.virtualizer_instances,
+            callbacks,
+            overscan,
+            horizontal,
+        );
+        // Stage in the layout tree so Taffy gives the collection view
+        // an outer frame. Cells inside the collection view are NOT
+        // Taffy-managed — UICollectionViewLayout owns their layout.
+        let _ = self.layout_for_view(&view);
+        // Register for origin-preservation in `apply_frames` (so the
+        // user's scroll position survives every relayout) but NOT in
+        // `scroll_views` because that would also pull the view into
+        // the contentSize-sync loop, which assumes Taffy-managed
+        // children. See the comment on `IosBackend::collection_views`.
+        let key = &*view as *const UIView as usize;
+        self.collection_views.insert(key);
+        IosNode::View(view)
+    }
+
+    fn virtualizer_data_changed(&mut self, node: &Self::Node) {
+        // Phase-1: full reload. Phase-2 would diff item keys against
+        // the previous snapshot and issue `performBatchUpdates` so
+        // surviving rows animate in place. `reloadData()` is correct
+        // (UIKit re-queries item_count + sizes + cellForItem on every
+        // visible index) but throws away every mounted cell — every
+        // item gets remounted via a fresh per-item Scope. For lists
+        // whose data churns rarely, that cost is fine; for live
+        // streams it's the obvious next thing to optimize.
+        let view = node.as_view();
+        virtualizer::data_changed(view);
+    }
+
+    fn release_virtualizer(&mut self, node: &Self::Node) {
+        // Tear down — runs from the cleanup Effect installed by the
+        // walker when the surrounding Scope drops. We do this BEFORE
+        // the UICollectionView itself goes out of scope so any UIKit
+        // event already queued for the next runloop turn drains as a
+        // no-op against `alive == false`. Without this hook, the
+        // user's data closures (which captured per-item `Signal`s
+        // scoped to the same teardown event) would be invoked by
+        // UIKit's lingering layout pass and panic with "signal used
+        // after its scope was dropped".
+        let view = node.as_view();
+        let key = view as *const UIView as usize;
+        self.collection_views.remove(&key);
+        virtualizer::release(&mut self.virtualizer_instances, view);
     }
 
     fn update_icon_color(&mut self, node: &Self::Node, color: &Color) {
@@ -2231,8 +2367,20 @@ impl IosBackend {
             // content from `y = adjustedContentInset.top` to
             // `y = 0` (under the status bar) until the next gesture
             // made UIKit re-clamp.
-            let is_scroll_view = self.scroll_views.contains(key);
-            let origin = if is_scroll_view {
+            // `collection_views` is the virtualizer/UICollectionView
+            // set. UICollectionView inherits from UIScrollView, so the
+            // same bounds.origin = contentOffset invariant applies —
+            // overwriting it with (0, 0) every layout pass scrolls the
+            // list back to row 0 on every relayout (every reactive
+            // signal update, every navigation, every safe-area inset
+            // change). Treat both sets the same way here; they only
+            // differ in how `contentSize` is computed downstream (see
+            // the scroll-view contentSize sync loop, which skips
+            // collection_views because UICollectionViewLayout owns
+            // contentSize, not Taffy).
+            let is_scrollable =
+                self.scroll_views.contains(key) || self.collection_views.contains(key);
+            let origin = if is_scrollable {
                 let current: objc2_foundation::CGRect =
                     unsafe { msg_send![view, bounds] };
                 current.origin
@@ -2259,6 +2407,13 @@ impl IosBackend {
             // doesn't auto-resize sublayers from `autoresizingMask`
             // on iOS in practice).
             backend_ios_core::style::sync_gradient_sublayer(view);
+            // Resize any AVPlayerLayer sublayer this view owns to
+            // match the new bounds. The layer was added at create
+            // time when bounds were 0×0; CALayer sublayers don't
+            // auto-resize from autoresizingMask on iOS, so the
+            // video would otherwise render as a 0×0 tile in the
+            // top-left and decode without anything visible.
+            video::sync_video_sublayer(&self.video_instances, view);
             // Re-clamp cornerRadius against the now-known bounds.
             // `apply_style_to_view` stashes the requested radius
             // when the view's size is percent-based; this call reads

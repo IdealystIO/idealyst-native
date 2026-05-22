@@ -11,21 +11,21 @@ implementations; new platforms slot in next to them.
 
 ## Architecture
 
-- **`backend_impl::WgpuBackend`** — the `framework_core::Backend` trait
+- **`backend_impl::WgpuBackend`**: the `framework_core::Backend` trait
   impl. Builds and mutates the node tree + Taffy layout tree. Owns the
   animator and the shared text + font-system stores.
-- **`Host`** — interaction state (focus, press, drag, momentum, keyboard
+- **`Host`**: interaction state (focus, press, drag, momentum, keyboard
   slide) + the `EventSink` impl. The native shell talks to the render side
   only through this trait.
-- **`Renderer`** — wgpu pipeline + tree walker. Renders one frame into a
+- **`Renderer`**: wgpu pipeline + tree walker. Renders one frame into a
   `wgpu::TextureView`.
-- **`animation::Animator`** — tween engine used by both widget animations
+- **`animation::Animator`**: tween engine used by both widget animations
   (toggle thumb) and style-driven transitions (theme crossfade).
-- **`Skin`** — the pluggable platform skin contract. Concrete skins
+- **`Skin`**: the pluggable platform skin contract. Concrete skins
   ([`ios-sim`](../../skin/ios-sim), [`android-sim`](../../skin/android-sim))
   live in their own crates; the renderer holds an `Rc<dyn Skin>` and
   dispatches every widget + keyboard paint call through it.
-- **`scheduler::install_redraw_hook`** — the shell installs its redraw
+- **`scheduler::install_redraw_hook`**: the shell installs its redraw
   closure here; render-side state changes call `request_redraw()` to wake
   it.
 
@@ -52,7 +52,7 @@ implementations; new platforms slot in next to them.
 4. wgpu encodes commands and submits. The shell presents.
 
 The `host::Host` receives platform events between frames and updates
-interaction state — `request_redraw` is what shells listen for to know a
+interaction state. `request_redraw` is what shells listen for to know a
 frame is needed.
 
 ## Animated property writes
@@ -68,13 +68,13 @@ The crate participates in the framework's `debug-stats` feature
 (`framework-core/debug-stats`). With it enabled, `PhaseTimer` calls report
 microsecond durations into a thread-local map; `framework_core::debug::take_phase_counters()`
 drains them. See project CLAUDE.md §6 for the full timing-instrumentation
-guide — including the **`install_time_source()` requirement** without
-which durations come back as 0.
+guide, including the **`install_time_source()` requirement** without which
+durations come back as 0.
 
 ## Status
 
 Listed as "In progress" in the root README's roadmap. The `Backend` trait
 implementation covers all the primitives the trait can name, but the GPU
-side (skins, pipelines, text shaping) is still under active development —
-expect rough edges on advanced primitives until the rendering side
+side (skins, pipelines, text shaping) is still under active development.
+Expect rough edges on advanced primitives until the rendering side
 catches up to the structural side.

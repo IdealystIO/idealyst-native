@@ -104,6 +104,9 @@ pub struct RunOptions {
     /// AAS mode requires this to be `Workspace` because the AAS shell
     /// crate is built directly out of the framework workspace.
     pub source: FrameworkSource,
+    /// Cargo features to enable on the build. `idealyst dev` passes
+    /// `framework-core/dev` here so the Robot bridge auto-starts.
+    pub user_features: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -132,6 +135,7 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
                     release: opts.release,
                     device: false,
                     source: opts.source.clone(),
+                    user_features: opts.user_features.clone(),
                 },
             )?;
             let dir = artifact

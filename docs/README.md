@@ -1,6 +1,6 @@
 # idealyst-native architecture
 
-These docs explain the design of the framework — what each layer does, why
+These docs explain the design of the framework: what each layer does, why
 the seams are where they are, and how to extend the system without
 reaching into other layers' internals.
 
@@ -14,39 +14,39 @@ the others.
 
 If you're new to the codebase, read the docs in this order:
 
-1. [`ui-layer.md`](./ui-layer.md) — the author-facing surface. Components,
+1. [`ui-layer.md`](./ui-layer.md). The author-facing surface. Components,
    `ui!` / `jsx!`, `Primitive`, `Bound<H>`, refs, `stylesheet!`. Read this
    first to see what application code looks like.
 
-2. [`primitives.md`](./primitives.md) — the framework's structural
+2. [`primitives.md`](./primitives.md). The framework's structural
    vocabulary. The fixed set of "things the renderer knows about,"
    what each one's contract is, and how to build a component suite
    on top. The entry point if you're designing your own widget kit.
 
-3. [`reactivity.md`](./reactivity.md) — `Signal<T>`, `Effect`, `Scope`,
+3. [`reactivity.md`](./reactivity.md). `Signal<T>`, `Effect`, `Scope`,
    the arena, fine-grained updates. The reactive substrate everything
    else assumes.
 
-4. [`styling.md`](./styling.md) — themes, stylesheets, variants,
+4. [`styling.md`](./styling.md). Themes, stylesheets, variants,
    overrides, interaction states. How application style declarations
    reach a backend as concrete `StyleRules`.
 
-5. [`animation.md`](./animation.md) — the gesture/spring/decay-driven
+5. [`animation.md`](./animation.md). The gesture/spring/decay-driven
    animation system. Value handles, animator factories, the
    per-thread clock, and how the `Backend::set_animated_*` family
    carries per-frame writes to native widgets. Complements styling's
    `Transition` (declarative) with imperative, interruptible motion.
 
-6. [`fonts.md`](./fonts.md) — bundling custom typefaces with the
+6. [`fonts.md`](./fonts.md). Bundling custom typefaces with the
    `typeface!` + `face!` macros, and how each backend turns that
    declaration into a native font registration (CoreText on iOS,
    `Typeface.createFromFile` on Android, `@font-face` on web).
    Read this when you're adding a custom font or debugging why one
    isn't rendering the weight you expected.
 
-7. [`backend.md`](./backend.md) — the `Backend` trait, the render walker,
+7. [`backend.md`](./backend.md). The `Backend` trait, the render walker,
    per-primitive lifecycle hooks, the rules a backend must follow.
-   Read this last — it's where the seam between framework and platform
+   Read this last; it's where the seam between framework and platform
    lives, and it makes more sense after you've seen what gets handed
    across it.
 
@@ -71,10 +71,10 @@ The repo is grouped by concern (`crates/framework/`, `crates/backend/`,
 | `render-wgpu` | `crates/render/wgpu` | wgpu-backed renderer that implements `Backend` on a GPU pipeline |
 
 Per-backend behaviour notes live in `README.md` files next to each backend
-crate — start there if you're investigating a platform-specific quirk.
+crate. Start there if you're investigating a platform-specific quirk.
 
 Application crates depend on `framework-core` and the macros. They do
-**not** depend on any backend — the platform host crate is the only
+**not** depend on any backend; the platform host crate is the only
 place that names a concrete backend.
 
 ## One-screen summary

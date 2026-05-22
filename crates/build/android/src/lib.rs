@@ -71,6 +71,10 @@ pub struct BuildOptions {
     /// AAS mode requires `Workspace` because the AAS-host build crate
     /// must come out of the framework workspace's `target/`.
     pub source: FrameworkSource,
+    /// Cargo features to enable on the cargo invocation. Forwarded
+    /// as `--features <list>`. Used by `idealyst dev` to pass
+    /// `framework-core/dev` so the Robot bridge auto-starts.
+    pub user_features: Vec<String>,
 }
 
 /// Which kind of cdylib wrapper to generate.
@@ -168,7 +172,7 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         opts.mode,
     )?;
 
-    cargo_build(&wrapper_dir, target_triple, opts.release)?;
+    cargo_build(&wrapper_dir, target_triple, opts.release, &opts.user_features)?;
 
     let profile = if opts.release { "release" } else { "debug" };
     let dylib_name = match opts.mode {
@@ -626,16 +630,29 @@ ar = "{ar}"
 // Cargo invocation
 // ---------------------------------------------------------------------------
 
-fn cargo_build(wrapper_dir: &Path, target: &str, release: bool) -> Result<()> {
+fn cargo_build(
+    wrapper_dir: &Path,
+    target: &str,
+    release: bool,
+    user_features: &[String],
+) -> Result<()> {
     let mut cmd = Command::new("cargo");
     cmd.args(["build", "--target", target]).current_dir(wrapper_dir);
     if release {
         cmd.arg("--release");
     }
+    if !user_features.is_empty() {
+        cmd.arg("--features").arg(user_features.join(","));
+    }
 
     eprintln!(
-        "[build-android] cargo build --target {target}{} (in {})",
+        "[build-android] cargo build --target {target}{}{} (in {})",
         if release { " --release" } else { "" },
+        if user_features.is_empty() {
+            String::new()
+        } else {
+            format!(" --features {}", user_features.join(","))
+        },
         wrapper_dir.display(),
     );
     let status = cmd

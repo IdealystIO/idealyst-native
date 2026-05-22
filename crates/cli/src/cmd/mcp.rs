@@ -51,7 +51,7 @@ pub struct Args {
     /// without this flag the catalog tools return no results.
     /// Typical usage:
     ///
-    ///   idealyst mcp --robot --from-bin target/debug/my-app
+    ///   idealyst mcp --from-bin target/debug/my-app
     ///
     /// The CLI spawns this binary at startup (and again on file
     /// change if `--watch` is set) and pipes the JSON back into the

@@ -20,8 +20,8 @@ backend_ios_mobile::install_global_self(&backend); // for AnimatedValue::bind
   property writes can find the backend without threading it through
   closures. Without it, `AnimatedValue::bind` silently no-ops.
 
-`framework_core::mount(backend, app)` — not `render(backend, app())` — see
-`project_mount_vs_render` in memory.
+Call `framework_core::mount(backend, app)`, not `render(backend, app())`.
+See `project_mount_vs_render` in memory.
 
 ## Layout
 
@@ -43,7 +43,7 @@ backend's structure but skip the workarounds:
   `UITextField`, etc. have an intrinsic content size UIKit reports through
   `intrinsicContentSize`. Taffy doesn't know about it. Each control's
   `create_*` registers a Taffy `measure_fn` that returns the platform's
-  intrinsic size — without it, the control gets laid out as `0×0` and fails
+  intrinsic size. Without it, the control gets laid out as `0×0` and fails
   hit-testing. See `project_ios_intrinsic_size_measurer`.
 - **`clear_children` + Taffy sync.** `clear_children` must call `remove_child`
   on Taffy and `mark_dirty(parent)` before/after `removeFromSuperview`, or
@@ -68,7 +68,7 @@ backend's structure but skip the workarounds:
 
 If you're patching a primitive on this backend and you find yourself
 adding a per-platform hack to the *call site* (in framework-core or in
-author code), stop. The fix belongs in this backend — see
+author code), stop. The fix belongs in this backend. See
 `feedback_backend_owns_rendering` in memory and the project CLAUDE.md §7.
 
 ## Primitive coverage status
@@ -76,18 +76,18 @@ author code), stop. The fix belongs in this backend — see
 Not all primitives are implemented yet. As of this README, the iOS backend
 is missing:
 
-- **`create_video`** — no `AVPlayerLayer` wiring yet.
-- **`create_virtualizer`** — no `UICollectionView`-backed list yet, even
+- **`create_video`**: no `AVPlayerLayer` wiring yet.
+- **`create_virtualizer`**: no `UICollectionView`-backed list yet, even
   though the framework's `FlatList` / `Virtualizer` works on web and Android.
 
 The root README's per-backend matrix is the source of truth for parity.
 
 ## File layout
 
-- **`src/imp/`** — the real backend. Compiled under `target_os = "ios"`.
-- **`src/stub.rs`** — type-checking stub for cross-compile from non-iOS
+- **`src/imp/`**: the real backend. Compiled under `target_os = "ios"`.
+- **`src/stub.rs`**: type-checking stub for cross-compile from non-iOS
   hosts. Lets `cargo check` work workspace-wide from a Linux laptop.
-- **`runtime_kotlin` is not relevant here** — iOS doesn't need a JVM-side
+- **`runtime_kotlin` is not relevant here**: iOS doesn't need a JVM-side
   runtime the way Android does (Android needs Kotlin trampolines for
   `View.OnClickListener` and `ValueAnimator`; UIKit's blocks + `@selector`
   bridge through objc2 directly).

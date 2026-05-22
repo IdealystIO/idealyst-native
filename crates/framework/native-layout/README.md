@@ -1,8 +1,8 @@
 # native-layout
 
 Flex-layout helper for native backends (iOS, Android, macOS). Wraps
-[`taffy`](https://crates.io/crates/taffy) — a pure-Rust flex engine matching
-CSS semantics — and translates `framework_core::StyleRules` into Taffy
+[`taffy`](https://crates.io/crates/taffy), a pure-Rust flex engine matching
+CSS semantics, and translates `framework_core::StyleRules` into Taffy
 styles.
 
 The DOM gives the web backend layout for free. UIKit / AppKit / Android
@@ -17,7 +17,7 @@ use native_layout::{LayoutTree, LayoutNode};
 
 struct MyBackend {
     layout: LayoutTree,
-    // (LayoutNode → native view) association is the backend's choice —
+    // (LayoutNode → native view) association is the backend's choice:
     // a Vec, a HashMap keyed by view pointer, or stored alongside the
     // native view in an enum variant.
 }
@@ -55,28 +55,28 @@ same way:
 - **`clear_children` must sync with Taffy.** Removing a child from the
   native parent (`removeFromSuperview`, `removeAllViews`, `removeFromParent`)
   without also calling `remove_child` + `mark_dirty(parent)` leaves Taffy
-  with a stale child set and a cached parent size — ghost layout. See
-  `project_ios_clear_children_taffy_sync` in memory.
+  with a stale child set and a cached parent size, producing ghost layout.
+  See `project_ios_clear_children_taffy_sync` in memory.
 - **Intrinsic sizes need `set_measure_fn`.** Native controls with their own
   intrinsic content size (UISwitch, UISlider, TextView, etc.) need a Taffy
-  `measure_fn` that returns the platform's intrinsic content size — otherwise
-  Taffy lays them out as `0×0` and they fail hit-testing. See
+  `measure_fn` that returns the platform's intrinsic content size,
+  otherwise Taffy lays them out as `0×0` and they fail hit-testing. See
   `project_ios_intrinsic_size_measurer` and `project_android_taffy_layout`
   in memory.
 - **`bounds.origin` must be preserved on iOS scroll views.** A naive
   `apply_frames` writes to `frame`, which on UIKit resets `bounds.origin`
-  (which is `contentOffset`) — scroll position jumps to 0 on every layout
+  (which is `contentOffset`); scroll position jumps to 0 on every layout
   pass. See `project_ios_scrollview_bounds_origin`.
 - **iOS insert layout discriminator.** `insert()` decides sync vs deferred
-  Taffy layout based on `parent.window != nil`, not a `mounted` flag —
-  mid-build inserts on floating parents would corrupt cached sizes. See
+  Taffy layout based on `parent.window != nil`, not a `mounted` flag.
+  Mid-build inserts on floating parents would corrupt cached sizes. See
   `project_ios_insert_layout_discriminator`.
 - **Android `setTranslationX/Y` is in device px, not dp.** Taffy frames are
   in dp; convert via `dp_to_px` before calling the View setters. See
   `project_android_setTranslation_device_px`.
 
 If you're writing a new native backend, read `docs/backend.md` first and
-then come back here — the gotchas above are what you'll hit if you don't.
+then come back here. The gotchas above are what you'll hit if you don't.
 
 ## Style translation
 
@@ -87,4 +87,4 @@ alongside whatever native paint changes the backend needs.
 
 Layout-only properties (flex direction, justify, gap, padding, …) go
 through Taffy. Paint properties (background color, border, shadow, …) are
-the backend's job — this crate has no opinion on them.
+the backend's job; this crate has no opinion on them.

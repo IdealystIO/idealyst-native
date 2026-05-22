@@ -166,6 +166,7 @@ fn build_ios_target(dir: &std::path::Path, args: &Args) -> Result<()> {
             release: args.release,
             device: args.device,
             source,
+            user_features: Vec::new(),
         },
     )?;
     eprintln!(
@@ -185,6 +186,7 @@ fn build_android_target(dir: &std::path::Path, args: &Args) -> Result<()> {
             api_level: 21,
             mode: build_android::BuildMode::Local,
             source,
+            user_features: Vec::new(),
         },
     )?;
     eprintln!(
@@ -227,6 +229,7 @@ fn build_macos_target(dir: &std::path::Path, args: &Args) -> Result<()> {
         build_macos::BuildOptions {
             release: args.release,
             source,
+            user_features: Vec::new(),
         },
     )?;
     eprintln!(

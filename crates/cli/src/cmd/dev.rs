@@ -33,6 +33,16 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 use build_ios::{parse_manifest, Target};
 
+/// Cargo features always passed to dev-mode builds across every
+/// target. `framework-core/dev` activates the `dev` umbrella feature
+/// (which bundles `robot` + `mcp`), so the Robot bridge auto-starts
+/// in the user's app without any user-side wiring. Production
+/// builds via `idealyst build` / `idealyst run` don't go through
+/// this helper and don't get the feature.
+fn dev_user_features() -> Vec<String> {
+    vec!["framework-core/dev".to_string()]
+}
+
 #[derive(clap::Args, Debug)]
 pub struct Args {
     /// Project directory. Defaults to the current directory.
@@ -434,6 +444,7 @@ fn launch_ios(dir: &Path, args: &Args) -> Result<()> {
             release: false,
             mode,
             source,
+            user_features: dev_user_features(),
         },
     )
     .context("iOS dev launch failed")?;
@@ -499,6 +510,7 @@ fn launch_android(dir: &Path, args: &Args) -> Result<()> {
             mode,
             aas_port,
             source,
+            user_features: dev_user_features(),
         },
     )
     .context("Android dev launch failed")?;
@@ -531,6 +543,7 @@ fn launch_macos(dir: &Path, args: &Args) -> Result<()> {
             // Dev orchestrator runs other targets in parallel; we
             // can't block the worker on the macOS app's lifetime.
             background: true,
+            user_features: dev_user_features(),
         },
     )
     .context("macOS dev launch failed")?;

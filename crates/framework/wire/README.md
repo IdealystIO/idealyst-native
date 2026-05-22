@@ -3,11 +3,11 @@
 The dev-mode wire protocol that connects a Rust dev process to a running app
 on a device, simulator, or browser. Used by:
 
-- **Hot reload** — the dev process re-runs the user's component tree on each
+- **Hot reload.** The dev process re-runs the user's component tree on each
   edit and ships the resulting `Backend` calls as `Command`s to the app.
-- **Server-driven UI (AAS, "Application-as-a-Server")** — the same protocol
-  drives apps where the *production* UI runs on a dev-controlled server and
-  the device is a thin replayer.
+- **Server-driven UI (AAS, "Application-as-a-Service").** The same protocol
+  drives apps where the *production* UI runs on a dev-controlled server
+  and the device is a thin replayer.
 
 Both modes share this crate's data definitions; transport + replay live
 elsewhere (see "Where transport / replay live" below).
@@ -21,20 +21,20 @@ receives the command stream and a [`WireBackend<B>`] (in
 [`../dev-client`](../dev-client)) replays each command against the real
 platform backend (`WebBackend`, `IosBackend`, `AndroidBackend`, …).
 
-The protocol is **pure data** — this crate has no `framework-core`
-dependency. Conversion to/from in-memory framework types is the
-caller's job (`dev-server` for the dev side, `dev-client` for the app side).
+The protocol is **pure data**. This crate has no `framework-core`
+dependency. Conversion to/from in-memory framework types is the caller's
+job (`dev-server` for the dev side, `dev-client` for the app side).
 
 ## ID namespaces
 
 Three id namespaces are minted on the dev side and held opaquely on the app
 side:
 
-- **`NodeId`** — backend nodes (every `create_*` call mints one).
-- **`HandlerId`** — closures (every primitive callback gets one). Most
+- **`NodeId`**: backend nodes (every `create_*` call mints one).
+- **`HandlerId`**: closures (every primitive callback gets one). Most
   resolve back to dev-side closures via the reverse channel; GPU-bound
   callbacks resolve to app-local registered renderers.
-- **`StyleId`** — pre-registered styles. The dev side ships the rule body
+- **`StyleId`**: pre-registered styles. The dev side ships the rule body
   once via `Command::RegisterStyle`; subsequent `Command::ApplyStyle`s
   reference by id.
 
@@ -44,7 +44,7 @@ follow the same pattern.
 ## Versioning
 
 `PROTOCOL_VERSION` is bumped on **any** breaking wire change. Dev and app
-versions must match exactly — this is a dev-mode tool, so the protocol does
+versions must match exactly. This is a dev-mode tool, so the protocol does
 not pay for backward compatibility. Mismatched versions fail loudly at the
 `DevToApp::Hello` exchange.
 
@@ -65,12 +65,12 @@ A new `Backend` trait method that needs to traverse the wire requires:
 
 This crate is data-only. The pieces that move bytes:
 
-- **App-side replay engine**: [`../dev-client`](../dev-client) — wraps any
+- **App-side replay engine**: [`../dev-client`](../dev-client). Wraps any
   `framework_core::Backend` and feeds it `Command`s.
-- **App-side native transport**: [`../../backend/aas-shell-native`](../../backend/aas-shell-native)
-  — sync WebSocket + mDNS discovery. Used on iOS / Android / desktop.
-- **App-side web transport**: `backend-web`'s `dev_transport` module —
+- **App-side native transport**: [`../../backend/aas-shell-native`](../../backend/aas-shell-native).
+  Sync WebSocket + mDNS discovery. Used on iOS / Android / desktop.
+- **App-side web transport**: `backend-web`'s `dev_transport` module.
   `web_sys::WebSocket` + rAF outbound pump.
-- **Dev side**: [`../../dev/server`](../../dev/server) (`dev-server`) — runs
+- **Dev side**: [`../../dev/server`](../../dev/server) (`dev-server`). Runs
   the user's component tree, owns the `WireRecordingBackend`, manages all
   three id namespaces, ships commands over the chosen transport.

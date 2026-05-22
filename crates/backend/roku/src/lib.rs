@@ -996,21 +996,33 @@ impl Backend for RokuBackend {
     }
 
     fn install_tokens(&mut self, _tokens: &[framework_core::TokenEntry]) {
-        // Roku's runtime theme-switching machinery was tied to the
-        // (now-removed) `register_theme_variant` + `bind_active_theme_signal`
-        // backend hooks. Rewiring this through `framework-theme`'s
-        // `install_themes` requires a backend-accessible variant
-        // registry, which is deferred to the next phase of this
-        // refactor. See `crates/backend/roku/README.md`.
-        unimplemented!(
-            "Roku theme-switching pending Phase 2 refactor — see framework-theme"
-        );
+        // No-op (matches iOS / Android posture).
+        //
+        // The Roku wire protocol has no runtime variable layer — there is no
+        // analog of CSS custom properties on SceneGraph. Styles are lowered
+        // through `style::lower_style` at every `apply_style` call, and any
+        // `Tokenized<T>` field has already been read via `Tokenized::value()`
+        // by then, producing a literal `WireColor` / `WireLength` / number in
+        // the emitted `ApplyStyle` command.
+        //
+        // When the app calls `update_tokens(...)`, the framework's
+        // tokens-version signal re-fires every styled effect that subscribed
+        // to any of the changed tokens; each of those effects calls
+        // `apply_style` again with freshly-resolved literal values. So the
+        // wire stream picks up the new values automatically — this method
+        // doesn't need to emit anything.
+        //
+        // Previously this panicked via `unimplemented!()`, breaking any app
+        // that touched the token system on Roku (theme switching, custom
+        // tokens). The earlier comment referenced a removed
+        // `register_theme_variant` hook; the framework moved on to a
+        // re-apply-driven model, so the no-op is now the correct behavior.
     }
 
     fn update_tokens(&mut self, _tokens: &[framework_core::TokenEntry]) {
-        unimplemented!(
-            "Roku theme-switching pending Phase 2 refactor — see framework-theme"
-        );
+        // See `install_tokens` above — same no-op rationale. Updated token
+        // values propagate to the wire via re-application of every styled
+        // effect that subscribed to a changed token.
     }
 
     fn finish(&mut self, root: Self::Node) {
@@ -1070,6 +1082,57 @@ mod tests {
 
         be.handlers().dispatch_unit(handler_id);
         assert_eq!(counter.get(), 1);
+    }
+
+    #[test]
+    fn regression_roku_install_and_update_tokens_no_panic() {
+        // Regression for the `install_tokens` / `update_tokens`
+        // `unimplemented!()` panic that blocked any Roku app using the
+        // token system (theme switching, custom tokens). Both calls must
+        // be no-ops: the Roku wire protocol has no runtime variable
+        // layer, and the framework re-fires every styled effect on
+        // token updates so apply_style picks up the new literal values.
+        use framework_core::{TokenEntry, TokenValue};
+
+        let mut be = RokuBackend::new();
+
+        let tokens = [
+            TokenEntry {
+                name: "test-token",
+                value: TokenValue::Number(1.0),
+            },
+            TokenEntry {
+                name: "primary-color",
+                value: TokenValue::Color(framework_core::Color(
+                    "#ff0000".to_string(),
+                )),
+            },
+        ];
+
+        // Initial install at app boot — must not panic.
+        be.install_tokens(&tokens);
+
+        // A subsequent theme switch — must not panic.
+        let updated = [TokenEntry {
+            name: "test-token",
+            value: TokenValue::Number(2.0),
+        }];
+        be.update_tokens(&updated);
+
+        // Empty input is also legal (degenerate update).
+        be.update_tokens(&[]);
+
+        // No-op semantics: neither call should have emitted any
+        // commands onto the wire. Token values flow into the wire via
+        // re-application of styled effects (apply_style → ApplyStyle
+        // commands), not via a dedicated install/update token command.
+        let cmds = be.drain();
+        assert!(
+            cmds.is_empty(),
+            "install_tokens / update_tokens must not emit wire commands, \
+             got: {:?}",
+            cmds
+        );
     }
 
     #[test]

@@ -70,5 +70,15 @@ objc2-ui-kit = { version = "0.2", features = [
     "UITextInputTraits",
     "UITouch",
     "UIEvent",
+    # UICollectionView family — gates the constants + class bindings
+    # the `Primitive::Virtualizer` impl pulls in via msg_send. We
+    # bind the runtime via `objc2::class!(UICollectionView)`, but
+    # the feature flags enable bitflags / type re-exports the
+    # imp/virtualizer.rs module touches indirectly through
+    # `UIViewAutoresizing`.
+    "UICollectionView",
+    "UICollectionViewFlowLayout",
+    "UICollectionViewCell",
+    "UICollectionViewLayout",
 ] }
 raw-window-handle = "0.6"

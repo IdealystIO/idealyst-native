@@ -1,6 +1,6 @@
 # framework-hot
 
-Thin facade over [`subsecond`](https://docs.rs/subsecond) — the hot-reload
+Thin facade over [`subsecond`](https://docs.rs/subsecond), the hot-reload
 substrate. The framework calls into `hot::call` instead of `subsecond::HotFn`
 directly so the rest of the codebase doesn't grow a hard dependency on the
 upstream API surface.
@@ -17,10 +17,10 @@ upstream API surface.
   removes every reference; this crate could then be deleted in one PR with
   no other code edits.
 - **Platform-agnostic.** Built for the AAS dylib host today, but the same
-  wrappers + jump-table protocol apply when the user's reactive runtime lives
-  inside a native dev build (Android, iOS, eventually). The transport for
-  delivering patches differs (in-process dlopen vs. WebSocket-shipped dylib
-  that the device dlopens locally) — `apply_patch` is the same call
+  wrappers + jump-table protocol apply when the user's reactive runtime
+  lives inside a native dev build (Android, iOS, eventually). The transport
+  for delivering patches differs (in-process dlopen vs. WebSocket-shipped
+  dylib that the device dlopens locally); `apply_patch` is the same call
   regardless.
 
 ## Two modes
@@ -29,8 +29,8 @@ upstream API surface.
   `HotFnPanic` is a unit type that nothing ever constructs.
 - **On (`hot` feature)**: `call(f, args)` wraps the inner function in
   `subsecond::HotFn::current(...).call(args)`, going through the global jump
-  table. `apply_patch` installs a new jump table. A `HotFnPanic` from a stale
-  call site unwinds up to the nearest `catch_unwind` boundary in
+  table. `apply_patch` installs a new jump table. A `HotFnPanic` from a
+  stale call site unwinds up to the nearest `catch_unwind` boundary in
   `framework_core::render`.
 
 ## How `#[component]` uses it
@@ -51,7 +51,7 @@ fn Counter(props: &CounterProps) -> Primitive {
 fn __Counter_hot_impl(props: &CounterProps) -> Primitive { /* body */ }
 ```
 
-Without the feature, no wrapper is generated — `Counter` is emitted unchanged.
+Without the feature, no wrapper is generated; `Counter` is emitted unchanged.
 
 ## Where the patches come from
 
@@ -61,5 +61,5 @@ receives the dylib, `dlopen`s it locally, and calls `apply_patch` with the
 new jump table. On web, the same flow runs through `backend-web`'s
 `dev_transport` module.
 
-Hot-reload is wire-protocol-orthogonal — the `wire::Command` stream and the
+Hot-reload is wire-protocol-orthogonal: the `wire::Command` stream and the
 hot-patch dylib travel over the same WebSocket but at different layers.

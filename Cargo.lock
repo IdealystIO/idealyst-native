@@ -1489,6 +1489,7 @@ dependencies = [
 name = "framework-core"
 version = "0.0.1"
 dependencies = [
+ "bitflags 2.11.1",
  "framework-hot",
  "framework-macros",
  "framework-mcp",

@@ -3,8 +3,8 @@
 The author-facing proc macros: `#[component]`, `ui!`, `jsx!`, `stylesheet!`.
 
 This crate sits between application code and `framework-core`. It takes the
-ergonomic surface — a Rust-shaped DSL, a JSX-flavored DSL, attribute macros
-for components and stylesheets — and emits plain function calls into
+ergonomic surface (a Rust-shaped DSL, a JSX-flavored DSL, attribute macros
+for components and stylesheets) and emits plain function calls into
 `framework-core`'s primitive constructors.
 
 ## What each macro emits
@@ -22,9 +22,9 @@ Rewrites a function into a reusable component:
    the next call (see [`../hot`](../hot)).
 4. With the `mcp` feature, emits a `ComponentEntry` into the `inventory`
    slice consumed by [`../mcp`](../mcp).
-5. A `methods!` block inside the body declares imperative methods the parent
-   can call through a `Ref<MyHandle>` — the macro generates the handle
-   struct, the dispatch table, and the registration call.
+5. A `methods!` block inside the body declares imperative methods the
+   parent can call through a `Ref<MyHandle>`. The macro generates the
+   handle struct, the dispatch table, and the registration call.
 
 ### `ui!`
 
@@ -36,19 +36,19 @@ Function-like macro. Parses `Name(prop = value) { children }` and desugars to:
   components.
 - `.with_style(...)` for `style = …` props.
 - `when(cond_closure, then_closure, else_closure)` for `if` expressions that
-  read at least one `signal.get()` — the reactive-`if` rewrite.
-- Plain `if` for conditions with no `.get()` — chosen once at construction.
+  read at least one `signal.get()` (the reactive-`if` rewrite).
+- Plain `if` for conditions with no `.get()` (chosen once at construction).
 
 Children flow through the `ChildList` trait, which knows how to flatten a
-`Primitive`, an `Option<Primitive>`, a `Vec<Primitive>`, or a `Bound<H>` into
-the surrounding slot.
+`Primitive`, an `Option<Primitive>`, a `Vec<Primitive>`, or a `Bound<H>`
+into the surrounding slot.
 
 ### `jsx!`
 
-Structurally equivalent to `ui!` — same emission backend, same `when(...)`
+Structurally equivalent to `ui!`: same emission backend, same `when(...)`
 rewrite, same `.with_style` lifting, same `ChildList` flattening. Only the
-surface grammar changes (`<Foo prop="x" expr={e}>...</Foo>`, `ref={r}` lifted
-to `.bind(r)`).
+surface grammar changes (`<Foo prop="x" expr={e}>...</Foo>`, `ref={r}`
+lifted to `.bind(r)`).
 
 The choice between `ui!` and `jsx!` is purely ergonomic; you can mix them in
 the same component, the same file, the same project. The framework sees the
@@ -58,7 +58,7 @@ same primitive tree either way.
 
 Declares a themed stylesheet with discrete variants (`size`, `kind`, …),
 continuous overrides (`padding`, `radius`, …), and interaction states
-(`hover`, `pressed`, `focus`, `disabled`). The theme type is generic — apps
+(`hover`, `pressed`, `focus`, `disabled`). The theme type is generic; apps
 define `struct Theme` however they like. The macro emits:
 
 - A `Style*` struct (the variant tuple).
@@ -71,13 +71,13 @@ the consumer hands it via `framework_core::install_theme(...)`.
 
 The generated `*_style()` function memoizes resolved `Rc<StyleRules>` in a
 **thread-local** `Rc<StyleSheet>` cache keyed by `(variant tuple, theme
-identity)`. Repeat calls in the same component body are cheap — the second
+identity)`. Repeat calls in the same component body are cheap; the second
 `card_style(.size(.large))` returns the cached `Rc` without re-running the
 resolver.
 
 > **Constraint:** the cache is thread-local because the framework runs on
-> a single thread per render — the web main thread, the iOS / Android main
-> thread, the host thread for native targets. Driving `*_style()` calls
+> a single thread per render (the web main thread, the iOS / Android main
+> thread, the host thread for native targets). Driving `*_style()` calls
 > from a worker thread (speculative renders, future server-side rendering,
 > off-main-thread layout) will miss the cache and may also miss the
 > installed theme, since `install_theme` writes into the same thread-local
@@ -91,20 +91,20 @@ resolver.
   anything. Renamed imports or paths like `my::signal::get(s)` are not
   detected.
 - **Primitive name dispatch is by literal ident.** `Text`, `Button`, `View`,
-  `When` are recognized by name only — renamed imports won't dispatch.
+  `When` are recognized by name only; renamed imports won't dispatch.
 - **`vec![...]` and `children![...]` are special-cased** in the rewriter;
   other list-shaped macros are opaque.
 
-These are call-site contracts, not bugs to fix — the macros are kept simple
+These are call-site contracts, not bugs to fix; the macros are kept simple
 on purpose. If you need a different convention, write your own front-end
 macro that emits the same primitive calls (see "Advanced: swapping the
 front-end syntax" in the root README).
 
 ## Where to read more
 
-- `docs/ui-layer.md` — the authoring surface, including the full `ui!` /
+- `docs/ui-layer.md`: the authoring surface, including the full `ui!` /
   `jsx!` grammar and the contract a new front-end macro needs to satisfy.
-- `docs/styling.md` — what `stylesheet!` emits and how theme resolution
+- `docs/styling.md`: what `stylesheet!` emits and how theme resolution
   works.
 
 The `#[component]`-generated invocation macros and the reactivity-rewriter

@@ -35,7 +35,7 @@
 //! keyed on the rule set's content (a hash or serialization), making
 //! caching immune to allocator-reuse hazards.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
@@ -173,6 +173,7 @@ impl Tokenized<Color> {
         match self {
             Tokenized::Literal(v) => v.clone(),
             Tokenized::Token { name, fallback } => {
+                debug_assert_theme_installed(name);
                 with_or_create_token_signal(name, || TokenValue::Color(fallback.clone()))
                     .map(|sig| match sig.get() {
                         TokenValue::Color(c) => c,
@@ -193,6 +194,7 @@ impl Tokenized<Length> {
         match self {
             Tokenized::Literal(v) => *v,
             Tokenized::Token { name, fallback } => {
+                debug_assert_theme_installed(name);
                 with_or_create_token_signal(name, || TokenValue::Length(*fallback))
                     .map(|sig| match sig.get() {
                         TokenValue::Length(l) => l,
@@ -213,6 +215,7 @@ impl Tokenized<f32> {
         match self {
             Tokenized::Literal(v) => *v,
             Tokenized::Token { name, fallback } => {
+                debug_assert_theme_installed(name);
                 with_or_create_token_signal(name, || TokenValue::Number(*fallback))
                     .map(|sig| match sig.get() {
                         TokenValue::Number(n) => n,
@@ -1763,6 +1766,73 @@ thread_local! {
     /// rules within a stylesheet — reference the same typeface.
     static REGISTERED_TYPEFACES: RefCell<HashSet<TypefaceId>> =
         RefCell::new(HashSet::new());
+
+    /// Debug-only tripwire: `true` once `install_tokens` (or
+    /// `update_tokens`) has been called on this thread. Read in
+    /// `Tokenized::<T>::resolve()` for `Tokenized::Token` variants;
+    /// fires a `debug_assert!` when a token is resolved on a thread
+    /// that has never been themed.
+    ///
+    /// **Why thread-local, not global.** The token registry above is
+    /// itself thread-local — every supported backend today renders on
+    /// a single thread, and the registry, resolution cache, and
+    /// signal state all live on that thread. A render thread that
+    /// hasn't installed tokens would silently fall back to
+    /// `Tokenized::fallback` and miss every theme value. The check
+    /// surfaces that misuse loudly in debug builds rather than
+    /// shipping the silent-default-paint regression to a user.
+    ///
+    /// **Why a separate flag and not "registry non-empty".** The
+    /// registry can be non-empty on this thread because *some other
+    /// code path* (e.g. `with_or_create_token_signal` from a prior
+    /// resolve) lazily inserted a slot. That's not a theme install.
+    /// We want the assert to track the explicit theme-install event,
+    /// not registry shape.
+    ///
+    /// **Trade-off.** The audit's preferred long-term fix is a
+    /// `OnceCell` keyed per-`ThemeId` so the cache is multi-thread
+    /// safe by construction. That refactor is deferred — this flag
+    /// is the minimum-viable check to make misuse visible while the
+    /// thread-local cache stands.
+    static THEME_INSTALLED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Mark this thread as having an installed theme. Idempotent.
+/// `install_tokens` / `update_tokens` call this so the
+/// `debug_assert_theme_installed` check in `Tokenized::resolve()`
+/// can distinguish a genuinely-unthemed thread from one that just
+/// hasn't lazily registered every individual token signal yet.
+#[inline]
+fn mark_theme_installed() {
+    THEME_INSTALLED.with(|f| f.set(true));
+}
+
+/// Debug-build-only check: panic if the calling thread has never
+/// had `install_tokens` (or `update_tokens`) invoked. Called from
+/// `Tokenized::<T>::resolve()` for the `Tokenized::Token` variant.
+///
+/// `Tokenized::Literal` resolves bypass this — literals don't read
+/// the registry and don't need a theme to be installed.
+///
+/// In release builds this compiles to a no-op so the silent-fallback
+/// behavior is preserved for production code. The audit-tracked
+/// long-term fix is to key the cache on a `ThemeId` shared across
+/// threads, eliminating the misuse surface entirely.
+#[inline]
+fn debug_assert_theme_installed(token_name: &'static str) {
+    debug_assert!(
+        THEME_INSTALLED.with(|f| f.get()),
+        "Tokenized::resolve() called for token '{}' on thread '{:?}' \
+         that has never had install_tokens() (or update_tokens()) invoked. \
+         The Stylesheet token registry is thread-local — resolves on a \
+         thread without an installed theme silently return the literal \
+         fallback and miss every theme value. Call \
+         `framework_core::style::install_tokens(...)` on this thread \
+         before resolving styles, or move the resolve to the host \
+         render thread.",
+        token_name,
+        std::thread::current().name().unwrap_or("<unnamed>")
+    );
 }
 
 #[derive(PartialEq, Eq, Hash, Clone)]
@@ -1878,6 +1948,10 @@ fn debug_warn_token_type_mismatch(
 /// `Backend::install_tokens` on the first `ensure_registered_with`
 /// call (which has the backend in scope).
 pub fn install_tokens(tokens: &[TokenEntry]) {
+    // Tripwire for the debug-only "resolve on unthemed thread" check.
+    // Set unconditionally — the cost is a single thread-local store
+    // and idempotency is fine.
+    mark_theme_installed();
     // Seed the per-token registry. If a token name was already
     // registered (re-install — e.g. tests calling `install_theme`
     // multiple times), update the existing signal instead of leaking
@@ -1909,6 +1983,11 @@ pub fn install_tokens(tokens: &[TokenEntry]) {
 /// the wipe is the simplest way to keep cached rules in sync with
 /// fresh fallback values).
 pub fn update_tokens(tokens: &[TokenEntry]) {
+    // Tripwire for the debug-only "resolve on unthemed thread" check.
+    // `update_tokens` is the permissive partner to `install_tokens` —
+    // a thread that has only ever called `update_tokens` is still a
+    // themed thread.
+    mark_theme_installed();
     // Stash the pending update + clear the resolution cache BEFORE
     // firing any signal subscribers. The theme-cohort driver `Effect`
     // (subscribed via `subscribe_to_all_token_signals`) re-runs
@@ -2674,6 +2753,15 @@ mod tests {
         // Token name never installed — resolve still works and lazily
         // creates a registry entry seeded with the fallback so subsequent
         // `update_tokens` for the same name can propagate.
+        //
+        // Install a *different* token first so the thread is marked
+        // themed and `debug_assert_theme_installed` doesn't trip; the
+        // permissive lazy-fallback semantics we're exercising apply to
+        // individual missing tokens, not to a totally-unthemed thread.
+        install_tokens(&[TokenEntry {
+            name: "tk_uninstalled_sentinel",
+            value: TokenValue::Color(Color("#000".into())),
+        }]);
         let c: Tokenized<Color> = Tokenized::token("tk_uninstalled", Color("#fall".into()));
         assert_eq!(c.resolve().0, "#fall");
     }
@@ -2699,6 +2787,15 @@ mod tests {
         // Use a unique token name so this test doesn't collide with the
         // other registry-touching tests (registry is process-wide).
         const NAME: &str = "tk_scope_survival_color";
+
+        // Mark the thread as themed so `debug_assert_theme_installed`
+        // doesn't trip on the first lazy resolve below. The bug under
+        // test is about lazy creation of a *single missing* token's
+        // signal slot, not about a totally-unthemed thread.
+        install_tokens(&[TokenEntry {
+            name: "tk_scope_survival_sentinel",
+            value: TokenValue::Color(Color("#000".into())),
+        }]);
 
         // First read happens inside scope A. Resolves the token, which
         // creates the registry signal lazily.
@@ -2889,6 +2986,46 @@ mod tests {
         }]);
         let c: Tokenized<Color> = Tokenized::token("tk_wrong_variant", Color("#fb".into()));
         assert_eq!(c.resolve().0, "#fb");
+    }
+
+    /// Regression test for the debug-only "resolve on unthemed thread"
+    /// tripwire. The token registry, resolution cache, and installed
+    /// `THEME_INSTALLED` flag are all thread-local; a `Tokenized::Token`
+    /// resolved on a thread that never called `install_tokens` would
+    /// silently fall back to the literal value and miss every theme
+    /// value — a footgun once any future code path (speculative renders,
+    /// SSR, off-main-thread layout) tries to render off the host thread.
+    /// In debug builds we panic loudly instead of silently degrading.
+    ///
+    /// Release builds preserve the silent-fallback behavior (the assert
+    /// is `debug_assert!`); the corresponding `#[cfg(debug_assertions)]`
+    /// gate on this test makes that explicit — the panic disappears in
+    /// `--release`, so the test would no-op there.
+    #[test]
+    #[cfg(debug_assertions)]
+    fn resolve_panics_in_debug_when_thread_has_no_installed_theme() {
+        // Spawn a fresh thread that has NEVER touched the registry or
+        // called install_tokens — the only way to deterministically
+        // exercise an unthemed thread, since the test runner reuses
+        // threads across tests and the parent thread is themed by all
+        // the other tests in this module.
+        let handle = std::thread::Builder::new()
+            .name("resolve_panics_in_debug_thread".into())
+            .spawn(|| {
+                let c: Tokenized<Color> =
+                    Tokenized::token("tk_unthemed_thread", Color("#fall".into()));
+                // This must trip `debug_assert_theme_installed` and
+                // panic. If it ever returns, the tripwire is broken.
+                let _ = c.resolve();
+            })
+            .expect("spawn worker thread");
+
+        let result = handle.join();
+        assert!(
+            result.is_err(),
+            "expected the spawned thread to panic via debug_assert_theme_installed, \
+             but it returned successfully — the tripwire is silently broken"
+        );
     }
 
     // -----------------------------------------------------------------

@@ -21,6 +21,9 @@ pub struct RunOptions {
     /// `idealyst run macos` leaves this false — the user there
     /// expects a foreground process they can Ctrl-C.
     pub background: bool,
+    /// Cargo features to enable on the build. `idealyst dev` passes
+    /// `framework-core/dev` here so the Robot bridge auto-starts.
+    pub user_features: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -38,6 +41,7 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
         build_macos::BuildOptions {
             release: opts.release,
             source: opts.source,
+            user_features: opts.user_features.clone(),
         },
     )?;
 

@@ -74,6 +74,9 @@ pub struct RunOptions {
     /// is the right shape for physical devices on the same Wi-Fi
     /// as the dev Mac, which the emulator's QEMU NAT prevents.
     pub aas_port: Option<u16>,
+    /// Cargo features to enable on the build. `idealyst dev` passes
+    /// `framework-core/dev` here so the Robot bridge auto-starts.
+    pub user_features: Vec<String>,
 }
 
 /// Mirrors `run-ios::RunMode` — same trade-offs (local self-contained
@@ -119,6 +122,7 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
                 RunMode::Aas => build_android::BuildMode::Aas,
             },
             source: opts.source.clone(),
+            user_features: opts.user_features.clone(),
         },
     )?;
 
