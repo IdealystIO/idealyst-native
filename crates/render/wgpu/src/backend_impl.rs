@@ -128,6 +128,15 @@ impl WgpuBackend {
 impl Backend for WgpuBackend {
     type Node = WgpuNode;
 
+    fn platform(&self) -> framework_core::Platform {
+        // The wgpu renderer itself is platform-agnostic; the active
+        // `Skin` decides what host it's pretending to be. Delegating
+        // here means iOS-sim / android-sim skins each self-report
+        // (typically `Custom("Sim")`) without the wgpu crate having
+        // to enumerate them.
+        self.skin.platform()
+    }
+
     fn color_scheme(&self) -> ColorScheme {
         self.color_scheme
     }

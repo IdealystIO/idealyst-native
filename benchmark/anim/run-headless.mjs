@@ -27,8 +27,11 @@ import { join } from 'node:path';
 const PORT = 9223;
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const BENCH_BASE = 'http://localhost:8080';
+// Each suite has its own nValues default (anim-nbody uses smaller N
+// because O(N²) saturates faster). We don't override nValues here so
+// each suite gets its own appropriate sweep; only the shared knobs
+// (iterations, sample window, seed) are pinned.
 const DEFAULT_SUITE_PARAMS = {
-  nValues: '0,100,1000,5000,10000',
   iterations: '3',
   windowMs: '3000',
   seed: '1',
@@ -41,8 +44,13 @@ const DEFAULT_SUITE_PARAMS = {
 const args = process.argv.slice(2);
 const suiteFlags = [];
 const variantArgs = [];
+const paramOverrides = {};
 for (const a of args) {
   if (a.startsWith('--suite=')) suiteFlags.push(a.slice(8));
+  else if (a.startsWith('--param=')) {
+    const [k, v] = a.slice(8).split('=');
+    paramOverrides[k] = v;
+  }
   else variantArgs.push(a);
 }
 const suites = suiteFlags.length ? suiteFlags : ['anim-bounce'];
@@ -186,7 +194,7 @@ async function runVariant(variant, suite) {
 }
 
 function buildVariantUrl(variant, suite) {
-  const qs = new URLSearchParams({ suite, ...DEFAULT_SUITE_PARAMS });
+  const qs = new URLSearchParams({ suite, ...DEFAULT_SUITE_PARAMS, ...paramOverrides });
   return `${BENCH_BASE}/${variant}/?${qs}`;
 }
 

@@ -159,23 +159,19 @@ impl Platform {
     /// not "ios" / "macos" / "androidtv"). Stable spelling, safe to
     /// slot into UI strings, diagnostic dumps, or log lines.
     ///
-    /// `Custom(name)` renders as `"Custom(<name>)"` so the wrapping
-    /// is visible at the call site — author code (and the welcome
-    /// example) can tell at a glance that the backend self-reported
-    /// rather than declaring a named variant. Empty `Custom("")`
-    /// (the trait default) is special-cased to the empty string so
-    /// undeclared backends don't leak a placeholder into the UI.
-    pub fn canonical(self) -> String {
+    /// `Custom(name)` passes the self-reported string through
+    /// verbatim — the backend is the source of truth. Empty
+    /// `Custom("")` (the trait default) produces `""`.
+    pub fn canonical(self) -> &'static str {
         match self {
-            Self::Web => "web".to_string(),
-            Self::Ios => "iOS".to_string(),
-            Self::Android => "Android".to_string(),
-            Self::MacOs => "macOS".to_string(),
-            Self::TvOs => "tvOS".to_string(),
-            Self::AndroidTv => "Android TV".to_string(),
-            Self::Roku => "Roku".to_string(),
-            Self::Custom("") => String::new(),
-            Self::Custom(name) => format!("Custom({name})"),
+            Self::Web => "web",
+            Self::Ios => "iOS",
+            Self::Android => "Android",
+            Self::MacOs => "macOS",
+            Self::TvOs => "tvOS",
+            Self::AndroidTv => "Android TV",
+            Self::Roku => "Roku",
+            Self::Custom(name) => name,
         }
     }
 }
@@ -2295,8 +2291,7 @@ mod tests {
     /// `Platform::canonical` is the documented display form authors
     /// slot into prose. Downstream code (UI strings, log lines, this
     /// repo's own `welcome` example) depends on the exact spelling.
-    /// Lock it in, including the `Custom`-variant wrapping
-    /// (`"Custom(<name>)"`) and the empty-string special case.
+    /// Lock it in, including the `Custom`-variant passthrough.
     #[test]
     fn platform_canonical_returns_display_form() {
         assert_eq!(Platform::Web.canonical(), "web");
@@ -2306,13 +2301,11 @@ mod tests {
         assert_eq!(Platform::TvOs.canonical(), "tvOS");
         assert_eq!(Platform::AndroidTv.canonical(), "Android TV");
         assert_eq!(Platform::Roku.canonical(), "Roku");
-        // Empty `Custom` slots in as empty so an undeclared backend
-        // doesn't leak `Custom()` into the UI.
+        // `Custom` passes through verbatim — empty stays empty, so
+        // an undeclared backend doesn't leak a placeholder.
         assert_eq!(Platform::Custom("").canonical(), "");
-        // Self-reported names are wrapped so the call site shows the
-        // backend opted into the `Custom` escape hatch.
-        assert_eq!(Platform::Custom("Sim").canonical(), "Custom(Sim)");
-        assert_eq!(Platform::Custom("aas-shell").canonical(), "Custom(aas-shell)");
+        assert_eq!(Platform::Custom("Sim").canonical(), "Sim");
+        assert_eq!(Platform::Custom("aas-shell").canonical(), "aas-shell");
     }
 
     /// `install_current_platform` must round-trip through the global

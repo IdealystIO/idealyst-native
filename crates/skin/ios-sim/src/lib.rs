@@ -235,6 +235,10 @@ fn ios_button_defaults() -> framework_core::StyleRules {
 }
 
 impl Skin for IosSim {
+    fn platform(&self) -> framework_core::Platform {
+        framework_core::Platform::Custom("Sim")
+    }
+
     fn button_defaults(&self) -> framework_core::StyleRules {
         ios_button_defaults()
     }

@@ -177,6 +177,11 @@ enum TestMode {
     /// the per-frame tick; the variant's rAF only handles re-kicks
     /// and frame logging.
     Springstorm,
+    /// O(N²) all-pairs gravity + elastic collisions. Same imperative
+    /// shape as Bounce — variant owns the rAF, calls AV.set() per
+    /// ball — but per-frame work scales N² in compute. Tests whether
+    /// wasm beats V8 on the math at scale.
+    Nbody,
 }
 
 struct AnimStore {
@@ -228,6 +233,128 @@ impl AnimStore {
 const SPRING_REKICK_MS: f64 = 500.0;
 const SPRING_TARGET_MIN: f64 = 50.0;
 const SPRING_TARGET_MAX: f64 = (VIEWPORT_H as f64) - 50.0;
+
+// N-body constants — match harness.js. Same f64-intermediate pattern
+// as bounce (see [[project_cross_language_f64_constants]]) so the
+// cross-language determinism check passes.
+const NBODY_BALL_RADIUS: f32 = 6.0;
+const NBODY_G: f64 = 800.0;
+const NBODY_SOFTENING_SQ: f64 = 16.0;
+const NBODY_MASS_MIN: f64 = 1.0;
+const NBODY_MASS_MAX: f64 = 4.0;
+const NBODY_VEL_RANGE: f64 = 30.0;
+
+fn nbody_initial(n: usize, seed: u32) -> Vec<f32> {
+    let r = NBODY_BALL_RADIUS as f64;
+    let w = VIEWPORT_W as f64;
+    let h = VIEWPORT_H as f64;
+    let mut rng = Mulberry32::new(seed);
+    let mut out = vec![0.0_f32; 5 * n];
+    for i in 0..n {
+        out[5 * i]     = rng.uniform(r, w - r) as f32;
+        out[5 * i + 1] = rng.uniform(r, h - r) as f32;
+        out[5 * i + 2] = rng.uniform(-NBODY_VEL_RANGE, NBODY_VEL_RANGE) as f32;
+        out[5 * i + 3] = rng.uniform(-NBODY_VEL_RANGE, NBODY_VEL_RANGE) as f32;
+        out[5 * i + 4] = rng.uniform(NBODY_MASS_MIN, NBODY_MASS_MAX) as f32;
+    }
+    out
+}
+
+/// Advance the N-body sim one fixed timestep. Iteration order MUST
+/// match harness.js's `nbodyStep` byte-for-byte — FP summation order
+/// is what makes the cross-language determinism check converge.
+fn nbody_step(state: &mut [f32], dt: f64) {
+    let r = NBODY_BALL_RADIUS as f64;
+    let w = VIEWPORT_W as f64;
+    let h = VIEWPORT_H as f64;
+    let eps2 = NBODY_SOFTENING_SQ;
+    let n = state.len() / 5;
+
+    // f64 accumulators — matches JS's `new Float64Array(n)`.
+    let mut ax = vec![0.0_f64; n];
+    let mut ay = vec![0.0_f64; n];
+
+    // O(N²) pair-force accumulation. Symmetric (Newton's 3rd law).
+    for i in 0..n {
+        let xi = state[5 * i] as f64;
+        let yi = state[5 * i + 1] as f64;
+        let mi = state[5 * i + 4] as f64;
+        for j in (i + 1)..n {
+            let dx = (state[5 * j] as f64) - xi;
+            let dy = (state[5 * j + 1] as f64) - yi;
+            let r2 = dx * dx + dy * dy + eps2;
+            let inv_r3 = 1.0 / (r2 * r2.sqrt());
+            let mj = state[5 * j + 4] as f64;
+            let f = NBODY_G * inv_r3;
+            ax[i] += f * mj * dx;
+            ay[i] += f * mj * dy;
+            ax[j] -= f * mi * dx;
+            ay[j] -= f * mi * dy;
+        }
+    }
+
+    // O(N²) elastic collisions. Same iteration order.
+    let min_dist = 2.0 * r;
+    let min_dist_sq = min_dist * min_dist;
+    for i in 0..n {
+        let mi = state[5 * i + 4] as f64;
+        for j in (i + 1)..n {
+            let dx = (state[5 * j] as f64) - (state[5 * i] as f64);
+            let dy = (state[5 * j + 1] as f64) - (state[5 * i + 1] as f64);
+            let d_sq = dx * dx + dy * dy;
+            if d_sq >= min_dist_sq || d_sq == 0.0 {
+                continue;
+            }
+            let d = d_sq.sqrt();
+            let nx = dx / d;
+            let ny = dy / d;
+            let vxi = state[5 * i + 2] as f64;
+            let vyi = state[5 * i + 3] as f64;
+            let vxj = state[5 * j + 2] as f64;
+            let vyj = state[5 * j + 3] as f64;
+            let v_rel_n = (vxi - vxj) * nx + (vyi - vyj) * ny;
+            if v_rel_n < 0.0 {
+                continue;
+            }
+            let mj = state[5 * j + 4] as f64;
+            let total_m = mi + mj;
+            let j_imp = (2.0 * v_rel_n) / (1.0 / mi + 1.0 / mj);
+            state[5 * i + 2] = (vxi - (j_imp / mi) * nx) as f32;
+            state[5 * i + 3] = (vyi - (j_imp / mi) * ny) as f32;
+            state[5 * j + 2] = (vxj + (j_imp / mj) * nx) as f32;
+            state[5 * j + 3] = (vyj + (j_imp / mj) * ny) as f32;
+            let overlap = min_dist - d;
+            let push_i = overlap * (mj / total_m);
+            let push_j = overlap * (mi / total_m);
+            state[5 * i]     = ((state[5 * i] as f64) - nx * push_i) as f32;
+            state[5 * i + 1] = ((state[5 * i + 1] as f64) - ny * push_i) as f32;
+            state[5 * j]     = ((state[5 * j] as f64) + nx * push_j) as f32;
+            state[5 * j + 1] = ((state[5 * j + 1] as f64) + ny * push_j) as f32;
+        }
+    }
+
+    // Integrate + reflect. Reads collision-updated velocities from
+    // state; reads accelerations from the local buffer.
+    for i in 0..n {
+        let mut x  = state[5 * i] as f64;
+        let mut y  = state[5 * i + 1] as f64;
+        let mut vx = state[5 * i + 2] as f64;
+        let mut vy = state[5 * i + 3] as f64;
+        vx += ax[i] * dt;
+        vy += ay[i] * dt;
+        x  += vx * dt;
+        y  += vy * dt;
+        if x < r { x = r; vx = -vx; }
+        else if x > w - r { x = w - r; vx = -vx; }
+        if y < r { y = r; vy = -vy; }
+        else if y > h - r { y = h - r; vy = -vy; }
+        state[5 * i]     = x as f32;
+        state[5 * i + 1] = y as f32;
+        state[5 * i + 2] = vx as f32;
+        state[5 * i + 3] = vy as f32;
+        // mass unchanged
+    }
+}
 
 thread_local! {
     static STORE: RefCell<AnimStore> = RefCell::new(AnimStore::empty());
@@ -338,6 +465,7 @@ pub fn setup_anim(test: &str, n: u32, seed: u32) {
     let mode = match test {
         "bounce" => TestMode::Bounce,
         "springstorm" => TestMode::Springstorm,
+        "nbody" => TestMode::Nbody,
         _ => panic!("idealyst-native-anim: unknown test '{}'", test),
     };
     let n = n as usize;
@@ -366,6 +494,13 @@ pub fn setup_anim(test: &str, n: u32, seed: u32) {
             let s = bounce_initial(n, seed);
             let xs = (0..n).map(|i| s[4 * i]).collect();
             let ys = (0..n).map(|i| s[4 * i + 1]).collect();
+            (s, xs, ys)
+        }
+        TestMode::Nbody => {
+            // Stride-5 layout — initial xs/ys read from [5*i, 5*i+1].
+            let s = nbody_initial(n, seed);
+            let xs = (0..n).map(|i| s[5 * i]).collect();
+            let ys = (0..n).map(|i| s[5 * i + 1]).collect();
             (s, xs, ys)
         }
         TestMode::Springstorm => {
@@ -418,22 +553,52 @@ pub fn setup_anim(test: &str, n: u32, seed: u32) {
 pub fn step_to(frame_n: u32) {
     STORE.with(|s| {
         let mut store = s.borrow_mut();
+        let mode = store.mode;
         for _ in 0..frame_n {
-            bounce_step(&mut store.state, FIXED_DT);
+            match mode {
+                TestMode::Bounce => bounce_step(&mut store.state, FIXED_DT),
+                TestMode::Nbody => nbody_step(&mut store.state, FIXED_DT),
+                // Springstorm has no deterministic stepTo — its physics
+                // is the framework's spring integrator, which runs
+                // off the clock. Suite skips determinism for spring
+                // suites so this branch is unreachable in practice.
+                TestMode::Springstorm => {}
+            }
         }
         // Push the post-step state into the AVs too. Determinism check
         // only reads `get_state()` so this is technically optional, but
-        // symmetry with the perf path (which writes AVs every frame)
-        // means the rendered tree reflects the simulated state after
-        // step_to, not whatever was there before.
+        // symmetry with the perf path keeps the rendered tree
+        // consistent with simulated state after step_to.
         let n = store.n;
+        let (sx, sy) = stride_offsets(mode);
         for i in 0..n {
-            let x = store.state[4 * i];
-            let y = store.state[4 * i + 1];
+            let x = store.state[sx + i * stride(mode)];
+            let y = store.state[sy + i * stride(mode)];
             store.xs[i].set(x);
             store.ys[i].set(y);
         }
     });
+}
+
+/// Stride between consecutive bodies in the `state` buffer for each
+/// test mode. Bounce: 4 (x,y,vx,vy). Nbody: 5 (x,y,vx,vy,mass).
+/// Springstorm: 1 (single target_y per ball).
+fn stride(mode: TestMode) -> usize {
+    match mode {
+        TestMode::Bounce => 4,
+        TestMode::Nbody => 5,
+        TestMode::Springstorm => 1,
+    }
+}
+
+/// Offsets of `x` and `y` within a single body's stride. Bounce + nbody:
+/// (0, 1). Springstorm: state is just target_y so x/y unused via this
+/// path.
+fn stride_offsets(mode: TestMode) -> (usize, usize) {
+    match mode {
+        TestMode::Bounce | TestMode::Nbody => (0, 1),
+        TestMode::Springstorm => (0, 0),
+    }
 }
 
 /// Return the current sim state as `Vec<f32>`. wasm-bindgen marshals
@@ -495,6 +660,7 @@ pub fn start_anim() {
             let t0 = p.now();
             match store.mode {
                 TestMode::Bounce => bounce_tick(&mut store),
+                TestMode::Nbody => nbody_tick(&mut store),
                 TestMode::Springstorm => springstorm_tick(&mut store, now),
             }
             let t1 = p.now();
@@ -512,6 +678,20 @@ fn bounce_tick(store: &mut AnimStore) {
     for i in 0..n {
         let x = store.state[4 * i];
         let y = store.state[4 * i + 1];
+        store.xs[i].set(x);
+        store.ys[i].set(y);
+    }
+}
+
+/// N-body: O(N²) gravity + collisions, then write the new (x, y) of
+/// each body. Compute-dominated above ~200 bodies (where the N² term
+/// outpaces the linear write cost).
+fn nbody_tick(store: &mut AnimStore) {
+    nbody_step(&mut store.state, FIXED_DT);
+    let n = store.n;
+    for i in 0..n {
+        let x = store.state[5 * i];
+        let y = store.state[5 * i + 1];
         store.xs[i].set(x);
         store.ys[i].set(y);
     }

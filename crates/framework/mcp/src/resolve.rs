@@ -289,6 +289,7 @@ mod tests {
             line: 0,
             docs: "",
             composes,
+            params: &[],
         }))
     }
 

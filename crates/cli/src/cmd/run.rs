@@ -260,6 +260,10 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
                 run_macos::RunOptions {
                     release: args.release,
                     source,
+                    // One-shot `idealyst run macos` is a foreground
+                    // session — block on the app so Ctrl-C in the
+                    // terminal still tears it down cleanly.
+                    background: false,
                 },
             )?;
             eprintln!();

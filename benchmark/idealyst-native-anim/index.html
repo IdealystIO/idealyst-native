@@ -40,7 +40,7 @@
     // browser hard-refresh.
     import init, {
       start, setup_anim, step_to, get_state, start_anim, stop_anim,
-    } from './wasm/pkg/benchmark_idealyst_native_anim.js?v=5';
+    } from './wasm/pkg/benchmark_idealyst_native_anim.js?v=6';
     import { autoRunIfRequested } from '../instrument.js';
 
     // Pass an explicit cache-busted URL for the wasm binary. Without
@@ -48,7 +48,7 @@
     // and the ?v=2 on the shim import doesn't propagate — so a
     // stale `_bg.wasm` would still be served from disk cache even
     // after rebuilding.
-    await init({ module_or_path: './wasm/pkg/benchmark_idealyst_native_anim_bg.wasm?v=5' });
+    await init({ module_or_path: './wasm/pkg/benchmark_idealyst_native_anim_bg.wasm?v=6' });
     start();
 
     // ─────────────────────────────────────────────────────────────────

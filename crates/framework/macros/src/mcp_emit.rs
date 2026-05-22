@@ -27,12 +27,22 @@ pub(crate) fn emit(item_fn: &ItemFn) -> TokenStream2 {
     let name_str = item_fn.sig.ident.to_string();
     let docs = collect_doc_comments(&item_fn.attrs);
     let composes = collect_composes(&item_fn.block);
+    let params = collect_params(&item_fn.sig);
 
     let edges = composes.iter().map(|(name, line)| {
         quote! {
             ::framework_core::__mcp::EdgeRef {
                 name: #name,
                 line: #line,
+            }
+        }
+    });
+
+    let param_entries = params.iter().map(|(name, ty)| {
+        quote! {
+            ::framework_core::__mcp::ParamSpec {
+                name: #name,
+                type_str: #ty,
             }
         }
     });
@@ -46,9 +56,39 @@ pub(crate) fn emit(item_fn: &ItemFn) -> TokenStream2 {
                 line: line!(),
                 docs: #docs,
                 composes: &[ #(#edges),* ],
+                params: &[ #(#param_entries),* ],
             }
         }
     }
+}
+
+/// Pull each parameter off the fn signature and produce a
+/// `(name, type_str)` pair. The name comes from the parameter
+/// pattern's binding ident (the common `name: Type` shape). Complex
+/// patterns (tuple destructuring, `mut name`, ref patterns) reduce
+/// to `"_"` — the catalog records that the slot exists but can't
+/// name it. The type is `quote!`-stringified for catalog
+/// consumption; spacing follows `quote!`'s defaults (e.g.
+/// `"& PlanetProps"` with a space between `&` and the type).
+fn collect_params(sig: &syn::Signature) -> Vec<(String, String)> {
+    let mut out = Vec::with_capacity(sig.inputs.len());
+    for arg in &sig.inputs {
+        let syn::FnArg::Typed(pat_type) = arg else {
+            // `self` / `&self` / `&mut self` — not a value-position
+            // parameter. Components are free functions in this
+            // framework so this branch shouldn't fire, but skip
+            // rather than panic if it does.
+            continue;
+        };
+        let name = match pat_type.pat.as_ref() {
+            syn::Pat::Ident(pi) => pi.ident.to_string(),
+            _ => "_".to_string(),
+        };
+        let ty = &*pat_type.ty;
+        let type_str = quote! { #ty }.to_string();
+        out.push((name, type_str));
+    }
+    out
 }
 
 /// Pull every `#[doc = "..."]` attribute off the fn and concatenate

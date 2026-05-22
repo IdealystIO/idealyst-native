@@ -374,6 +374,70 @@ fn resolver_links_ui_host_to_actual_child_entries() {
     );
 }
 
+/// `democomponent` has a single `&DemoProps` parameter — the macro
+/// should record one `ParamSpec` whose `type_str` names the struct.
+#[test]
+fn single_struct_param_captured() {
+    let entry = find_entry("democomponent");
+    assert_eq!(entry.params.len(), 1, "expected one param; got {:?}", entry.params);
+    let p = &entry.params[0];
+    assert_eq!(p.name, "_props");
+    // `quote!` stringifies a borrow with a space; tolerate both
+    // forms so future formatter changes don't break the test.
+    let normalized: String = p.type_str.chars().filter(|c| !c.is_whitespace()).collect();
+    assert_eq!(normalized, "&DemoProps", "got {:?}", p.type_str);
+}
+
+/// Zero-arg components should record an empty `params` slice — not
+/// panic, not record a sentinel entry.
+#[test]
+fn zero_arg_records_empty_params() {
+    let entry = find_entry("child_a");
+    assert!(entry.params.is_empty(), "expected empty; got {:?}", entry.params);
+}
+
+/// Positional multi-parameter signature — record every parameter in
+/// declaration order. Declared inside this test for tight locality;
+/// it registers in the global catalog like any other `#[component]`.
+#[allow(non_snake_case)]
+#[component]
+pub fn positional_host(idx: u32, _label: &'static str) -> u32 {
+    let _ = (idx, _label);
+    0
+}
+
+#[test]
+fn positional_params_captured_in_order() {
+    let entry = find_entry("positional_host");
+    assert_eq!(entry.params.len(), 2, "got {:?}", entry.params);
+    assert_eq!(entry.params[0].name, "idx");
+    assert_eq!(entry.params[1].name, "_label");
+    assert!(
+        entry.params[0].type_str.contains("u32"),
+        "type_str {:?}",
+        entry.params[0].type_str
+    );
+    assert!(
+        entry.params[1].type_str.contains("str"),
+        "type_str {:?}",
+        entry.params[1].type_str
+    );
+}
+
+#[test]
+fn catalog_json_includes_params_array() {
+    let json = framework_mcp::catalog_json();
+    let components = json["components"].as_array().expect("components");
+    let demo = components
+        .iter()
+        .find(|c| c["name"] == "democomponent")
+        .expect("democomponent in JSON");
+    let params = demo["params"].as_array().expect("params is an array");
+    assert_eq!(params.len(), 1);
+    assert_eq!(params[0]["name"], "_props");
+    assert!(params[0]["type"].is_string());
+}
+
 #[test]
 fn catalog_json_includes_composes_array() {
     let json = framework_mcp::catalog_json();

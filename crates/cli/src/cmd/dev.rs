@@ -13,12 +13,17 @@
 //!     only rebuild the dev-host binary, the navigator stack
 //!     survives, every client stays in sync.
 //!
-//! - **Targets**: `--web`, `--ios`, `--android`. If none are passed
-//!   explicitly, the active set comes from `[package.metadata
-//!   .idealyst.app].targets` in `Cargo.toml`.
+//! - **Targets**: `--web`, `--ios`, `--android`, `--macos`. If none
+//!   are passed explicitly, the active set comes from `[package
+//!   .metadata.idealyst.app].targets` in `Cargo.toml`. `--all`
+//!   expands to every platform the host can build for (web + android
+//!   anywhere, plus ios + macos on darwin); use it for a side-by-side
+//!   comparison of every backend at once.
 //!
 //! Multiple platforms run in parallel — each in its own thread —
-//! and Ctrl-C tears all of them down together.
+//! and Ctrl-C tears all of them down together. A failure in one
+//! target prints a `[dev <target>] launch failed: …` line and the
+//! remaining targets keep running.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -56,6 +61,13 @@ pub struct Args {
     /// `host-appkit` + `backend-macos`).
     #[arg(long)]
     pub macos: bool,
+
+    /// Launch every platform the host can build for in parallel —
+    /// web + android always; ios + macos additionally on darwin.
+    /// Targets that fail to launch don't abort the others. Useful
+    /// for a side-by-side comparison of every backend at once.
+    #[arg(long)]
+    pub all: bool,
 
     /// HTTP port for the web target's static-file server.
     #[arg(long, default_value_t = 8080)]
@@ -163,13 +175,22 @@ pub fn run(args: Args) -> Result<()> {
 
 /// Compute which targets to launch.
 ///
-/// - If any of `--web` / `--ios` / `--android` is set, take that
-///   union (so `idealyst dev --web --ios` runs both, explicitly).
+/// - `--all` expands to every platform the host can build for (see
+///   [`all_targets_for_host`]). Combines with any explicit
+///   `--web` / `--ios` / `--android` / `--macos` flags as a union.
+/// - Otherwise, if any per-platform flag is set, take that union.
 /// - Otherwise, fall back to the manifest's declared `targets`.
-/// - If both are empty, error — the user has to declare somewhere
-///   what they want.
+/// - If everything is empty, error — the user has to declare
+///   somewhere what they want.
+///
+/// Roku is intentionally excluded from `--all` because it has no
+/// dev-mode pipeline yet (see [`launch_target`]); spawning it would
+/// just emit a launch-failed line for no reason.
 fn resolve_targets(args: &Args, manifest_targets: &[Target]) -> Result<Vec<Target>> {
     let mut from_flags: Vec<Target> = Vec::new();
+    if args.all {
+        from_flags.extend(all_targets_for_host());
+    }
     if args.web {
         from_flags.push(Target::Web);
     }
@@ -190,9 +211,23 @@ fn resolve_targets(args: &Args, manifest_targets: &[Target]) -> Result<Vec<Targe
         return Ok(dedup_preserve_order(manifest_targets.to_vec()));
     }
     anyhow::bail!(
-        "no targets to run: pass `--web` / `--ios` / `--android` / `--macos`, or add \
-         `targets = [\"web\", ...]` to `[package.metadata.idealyst.app]`"
+        "no targets to run: pass `--all`, or `--web` / `--ios` / `--android` / \
+         `--macos`, or add `targets = [\"web\", ...]` to \
+         `[package.metadata.idealyst.app]`"
     )
+}
+
+/// Targets `--all` expands to. iOS and macOS toolchains only exist on
+/// darwin, so we filter those out on other hosts rather than queueing
+/// up workers that are guaranteed to fail. Roku is excluded because
+/// dev-mode isn't wired for it.
+fn all_targets_for_host() -> Vec<Target> {
+    let mut targets = vec![Target::Web, Target::Android];
+    if cfg!(target_os = "macos") {
+        targets.push(Target::Ios);
+        targets.push(Target::Macos);
+    }
+    targets
 }
 
 fn dedup_preserve_order(xs: Vec<Target>) -> Vec<Target> {
@@ -274,6 +309,11 @@ fn launch_web(dir: &Path, args: &Args) -> Result<()> {
             "[dev web] AAS-bridged HTTP at http://{}:{}",
             args.host, args.port
         );
+        // Fire-and-forget browser open — matches the iOS sim
+        // `open -a Simulator` UX. Spawned before `serve_static`
+        // (which blocks forever) and TCP-polls until the bind lands
+        // so we don't beat the server to the punch.
+        spawn_browser_opener(&args.host, args.port);
         serve_static(&args.host, args.port, dir, None, Some(ctx))?;
         Ok(())
     } else {
@@ -292,9 +332,71 @@ fn launch_web(dir: &Path, args: &Args) -> Result<()> {
             "[dev web] livereload HTTP at http://{}:{}",
             args.host, args.port
         );
+        spawn_browser_opener(&args.host, args.port);
         serve_static(&args.host, args.port, dir, Some(ctx), None)?;
         Ok(())
     }
+}
+
+/// Open the browser at the project's web URL once the server is
+/// actually accepting connections. Background-threaded because
+/// `serve_static` blocks the caller.
+///
+/// Host translation: the server may bind `0.0.0.0` / `::` to expose
+/// over LAN, but the *connect* address has to be loopback —
+/// `http://0.0.0.0:…` doesn't resolve in any browser. We rewrite any
+/// wildcard host to `localhost`.
+///
+/// If `open` (macOS) / `xdg-open` (Linux) / `start` (Windows) isn't
+/// available, or the TCP poll times out, we exit silently — the URL
+/// is already logged above, so the user can click that.
+fn spawn_browser_opener(host: &str, port: u16) {
+    let connect_host = match host {
+        "0.0.0.0" | "::" | "[::]" => "localhost".to_string(),
+        other => other.to_string(),
+    };
+    let url = format!("http://{}:{}", connect_host, port);
+    std::thread::spawn(move || {
+        // Poll until the listener is up. Short cap — the bind is
+        // synchronous from the spawning thread's perspective so this
+        // usually resolves in <50 ms.
+        use std::net::TcpStream;
+        use std::time::{Duration, Instant};
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let probe_addr = format!("127.0.0.1:{port}");
+        while Instant::now() < deadline {
+            if TcpStream::connect_timeout(
+                &probe_addr.parse().expect("valid socket addr"),
+                Duration::from_millis(100),
+            )
+            .is_ok()
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        open_url_in_browser(&url);
+    });
+}
+
+fn open_url_in_browser(url: &str) {
+    #[cfg(target_os = "macos")]
+    let (cmd, args): (&str, Vec<&str>) = ("open", vec![url]);
+    #[cfg(target_os = "linux")]
+    let (cmd, args): (&str, Vec<&str>) = ("xdg-open", vec![url]);
+    #[cfg(target_os = "windows")]
+    let (cmd, args): (&str, Vec<&str>) = ("cmd", vec!["/C", "start", "", url]);
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    let (cmd, args): (&str, Vec<&str>) = ("", vec![url]);
+
+    if cmd.is_empty() {
+        return;
+    }
+    let _ = Command::new(cmd)
+        .args(&args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
 }
 
 /// iOS launcher. Reuses the `run-ios` crate's pipeline:
@@ -414,10 +516,13 @@ fn launch_macos(dir: &Path, args: &Args) -> Result<()> {
         run_macos::RunOptions {
             release: false,
             source,
+            // Dev orchestrator runs other targets in parallel; we
+            // can't block the worker on the macOS app's lifetime.
+            background: true,
         },
     )
     .context("macOS dev launch failed")?;
-    eprintln!("[dev macos] running ({})", artifact.binary.display());
+    eprintln!("[dev macos] running detached ({})", artifact.binary.display());
     Ok(())
 }
 
@@ -561,6 +666,7 @@ impl Args {
             ios: self.ios,
             android: self.android,
             macos: self.macos,
+            all: self.all,
             port: self.port,
             host: self.host.clone(),
             no_build: self.no_build,

@@ -289,6 +289,10 @@ fn m3_button_defaults() -> framework_core::StyleRules {
 }
 
 impl Skin for AndroidSim {
+    fn platform(&self) -> framework_core::Platform {
+        framework_core::Platform::Custom("Sim")
+    }
+
     fn button_defaults(&self) -> framework_core::StyleRules {
         m3_button_defaults()
     }

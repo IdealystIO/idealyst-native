@@ -452,11 +452,11 @@ const VARIANTS: &[VariantInfo] = &[
     // hides vanilla from the hierarchy suite.
     VariantInfo {
         id: "vanilla-anim",         label: "vanilla · anim",         url: "./vanilla-anim/",
-        supports: &["anim-bounce", "anim-springstorm"],
+        supports: &["anim-bounce", "anim-springstorm", "anim-nbody"],
     },
     VariantInfo {
         id: "idealyst-native-anim", label: "idealyst-native · anim", url: "./idealyst-native-anim/",
-        supports: &["anim-bounce", "anim-springstorm"],
+        supports: &["anim-bounce", "anim-springstorm", "anim-nbody"],
     },
 ];
 
@@ -475,6 +475,7 @@ struct ParamInfo {
 const PARAM_STRING_DEFAULTS: &[(&str, &str, &str)] = &[
     ("anim-bounce",       "nValues", "0,100,1000,5000,10000"),
     ("anim-springstorm",  "nValues", "0,100,1000,5000,10000"),
+    ("anim-nbody",        "nValues", "0,50,100,200,500"),
 ];
 
 /// Per-suite override for the APPLY / PAINT / WORST column headers.
@@ -497,6 +498,10 @@ const SUITE_COLUMN_LABELS: &[(&str, &str, &str, &str)] = &[
     // owns the spring tick). Use FPS / MAX ms as the headline; see
     // spec.md "Asymmetric apply measurement".
     ("anim-springstorm", "µs/FRAME", "FPS", "MAX ms"),
+    // anim-nbody is the compute-dominated test. Same column shape as
+    // bounce — both variants own their rAF and time the full work,
+    // so µs/FRAME is meaningful here (unlike springstorm).
+    ("anim-nbody",       "µs/FRAME", "FPS", "MAX ms"),
 ];
 
 fn suite_column_labels(suite: &str) -> (&'static str, &'static str, &'static str) {
@@ -729,6 +734,21 @@ const SUITES: &[SuiteInfo] = &[
         // (sum of µs/FRAME) is meaningful for vanilla but not
         // idealyst — both are reported anyway since the runner's
         // shape doesn't allow per-variant column omission.
+        total: TotalMetric::ApplySum,
+    },
+    SuiteInfo {
+        name: "anim-nbody",
+        title: "Animation · N-body gravity",
+        params: &[
+            ParamInfo { name: "nValues",      label: "N values (CSV)",  default: 0.0 },
+            ParamInfo { name: "iterations",   label: "Iterations per N", default: 3.0 },
+            ParamInfo { name: "windowMs",     label: "Sample window (ms)", default: 3000.0 },
+            ParamInfo { name: "seed",         label: "Seed",            default: 1.0 },
+        ],
+        // Smaller N sweep than bounce — O(N²) saturates fast.
+        // 500² = 250K pair ops per frame; past that both variants
+        // are below 30 FPS.
+        bucket_labels: &["0", "50", "100", "200", "500"],
         total: TotalMetric::ApplySum,
     },
 ];

@@ -5,6 +5,7 @@ members = [
     "crates/framework/hot",
     "crates/framework/macros",
     "crates/framework/mcp",
+    "crates/mcp-server",
     "crates/framework/native-layout",
     "crates/framework/wire",
     "crates/framework/dev-client",
@@ -100,6 +101,7 @@ framework-core = { path = "crates/framework/core" }
 framework-hot = { path = "crates/framework/hot" }
 framework-macros = { path = "crates/framework/macros" }
 framework-mcp = { path = "crates/framework/mcp" }
+mcp-server = { path = "crates/mcp-server" }
 docs-macro = { path = "examples/docs-macro" }
 native-layout = { path = "crates/framework/native-layout" }
 wire = { path = "crates/framework/wire" }

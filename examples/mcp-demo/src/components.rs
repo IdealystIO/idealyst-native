@@ -82,6 +82,24 @@ pub fn app_shell() -> Primitive {
     }
 }
 
+/// Props for [`labeled_badge`] — the demo's only component with a
+/// real props struct. Phase 3a records the function's *parameter*
+/// (`props: &LabeledBadgeProps`); the struct's fields stay opaque
+/// to the catalog until `#[derive(IdealystSchema)]` lands.
+#[derive(Debug)]
+pub struct LabeledBadgeProps {
+    pub label: String,
+    pub count: u32,
+}
+
+/// A badge with a text label and a count. Demonstrates a single-
+/// struct signature in the catalog: the resolved view shows
+/// `params: props: &LabeledBadgeProps`.
+#[component]
+pub fn labeled_badge(_props: &LabeledBadgeProps) -> Primitive {
+    ::framework_core::view(::std::vec::Vec::new())
+}
+
 /// Submodule whose `form_root` host references a `Submit` button.
 /// The resolver should resolve `Submit` to `forms::submit` since
 /// only one entry has that short-name.

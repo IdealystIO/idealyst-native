@@ -59,6 +59,23 @@ impl ButtonPressVisual {
 
 pub trait Skin {
     // -----------------------------------------------------------
+    // Identity
+    // -----------------------------------------------------------
+
+    /// The platform identity this skin presents to the framework.
+    /// `WgpuBackend::platform` delegates here so author code reading
+    /// `framework_core::platform()` sees the skin's emulated host
+    /// (e.g. `Custom("Sim")` for the ios-sim / android-sim skins
+    /// — the renderer is wgpu under the hood, but as far as the
+    /// app is concerned it's running in a simulator).
+    ///
+    /// Default is `Custom("")` (no identity declared) for skins
+    /// that don't care to opinion the platform read-out.
+    fn platform(&self) -> framework_core::Platform {
+        framework_core::Platform::Custom("")
+    }
+
+    // -----------------------------------------------------------
     // Primitive style defaults
     // -----------------------------------------------------------
 

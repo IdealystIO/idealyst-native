@@ -1,12 +1,15 @@
 //! Walk-through of the framework-mcp catalog.
 //!
-//! Run from the workspace root:
+//! Two run modes:
 //!
 //! ```text
-//! cargo run -p mcp-demo
+//! cargo run -p mcp-demo              # prints catalog (default)
+//! cargo run -p mcp-demo -- --serve   # launches stdio MCP server
+//! cargo run -p mcp-demo -- --watch   # MCP server + file-watch reload
+//! cargo run -p mcp-demo -- --check   # lint pass (phase 6)
 //! ```
 //!
-//! Prints two views of the same catalog:
+//! The print mode (default) shows two views of the same catalog:
 //!
 //! 1. **Flat catalog** — exactly what `framework_mcp::catalog_json()`
 //!    emits. Each component carries its bare composes idents, not
@@ -24,6 +27,63 @@ use framework_mcp::{catalog_json, ComponentEntry, EdgeStatus, EntryRef, Resolved
 mod components;
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--serve") {
+        return run_server(false);
+    }
+    if args.iter().any(|a| a == "--watch") {
+        return run_server(true);
+    }
+    if args.iter().any(|a| a == "--check") {
+        return run_check();
+    }
+    print_catalog();
+}
+
+/// Phase 6: run the lint pass and exit non-zero if anything fired.
+/// Output is one line per finding, sorted by FQN.
+fn run_check() {
+    let cat = framework_mcp::ResolvedCatalog::build();
+    let findings = mcp_server::lint_catalog(&cat);
+    if findings.is_empty() {
+        println!("OK — {} components, no catalog-integrity issues", cat.entries().len());
+        return;
+    }
+    for f in &findings {
+        let tag = match f.severity {
+            mcp_server::Severity::Warning => "warn",
+            mcp_server::Severity::Error => "error",
+        };
+        println!("[{}] {} — {}", tag, f.fqn, f.message);
+    }
+    println!("\n{} findings", findings.len());
+    std::process::exit(1);
+}
+
+/// Launch the MCP server on stdio. Blocks until the client
+/// disconnects. With `watch = true`, file changes under this
+/// crate's `src/` trigger an in-process catalog reload (see
+/// [`mcp_server::run_stdio_with_watch`] for the limitations).
+fn run_server(watch: bool) {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let result = rt.block_on(async move {
+        if watch {
+            let src = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+            mcp_server::run_stdio_with_watch(vec![src]).await
+        } else {
+            mcp_server::run_stdio().await
+        }
+    });
+    if let Err(e) = result {
+        eprintln!("mcp server exited with error: {:?}", e);
+        std::process::exit(1);
+    }
+}
+
+fn print_catalog() {
     print_header("Flat catalog (raw composes, unresolved)");
     let flat = catalog_json();
     println!("{}", serde_json::to_string_pretty(&flat).unwrap());
@@ -50,6 +110,13 @@ fn print_entry(cat: &ResolvedCatalog, entry: &ComponentEntry) {
         // visually grouped with the entry header.
         for line in entry.docs.lines() {
             println!("    /// {}", line);
+        }
+    }
+
+    if !entry.params.is_empty() {
+        println!("    params:");
+        for p in entry.params {
+            println!("      {}: {}", p.name, p.type_str);
         }
     }
 

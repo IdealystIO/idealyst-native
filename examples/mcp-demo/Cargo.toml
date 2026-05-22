@@ -21,6 +21,11 @@ framework-core = { workspace = true, features = ["mcp"] }
 # does need `framework-mcp` directly. A pure-consumer crate that
 # just registers components would only need `framework-core/mcp`.
 framework-mcp = { workspace = true }
+# `mcp-server` provides the stdio MCP entry-point so the demo can
+# also launch as a real MCP server (`cargo run -p mcp-demo -- --serve`).
+mcp-server = { workspace = true }
+# `tokio` for the `--serve` async runtime — small enough as a demo dep.
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 serde_json = "1"
 
 # NOTE on third-party catalog flow (e.g. pulling in idea-ui):

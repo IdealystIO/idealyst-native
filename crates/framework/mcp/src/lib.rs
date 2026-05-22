@@ -33,6 +33,27 @@ pub struct EdgeRef {
     pub line: u32,
 }
 
+/// One parameter of a `#[component]` function's signature, as
+/// extracted by the proc-macro at definition time.
+///
+/// Phase 3a records the surface-level info available directly from
+/// `syn::Signature`: parameter name and pretty-printed type. Per-field
+/// information about a props struct (when the signature is
+/// `fn foo(props: &FooProps)`) is the job of `#[derive(IdealystSchema)]`
+/// — a future addition in this phase. For now, a single-struct
+/// signature surfaces as one `ParamSpec` whose `type_str` names the
+/// struct; consumers can cross-reference the struct's own catalog
+/// entry once `IdealystSchema` lands.
+///
+/// `type_str` is `quote!`-stringified, so a borrow shows as `"& Foo"`
+/// (space between `&` and the type) — the catalog is for tooling /
+/// AI consumption, which normalize trivially.
+#[derive(Debug)]
+pub struct ParamSpec {
+    pub name: &'static str,
+    pub type_str: &'static str,
+}
+
 /// A component the `#[component]` proc-macro registered at compile time.
 /// Fields are all `&'static str` so the entry can live in a linker
 /// section without any heap allocation. `line` is a `u32` because
@@ -54,6 +75,9 @@ pub struct ComponentEntry {
     /// `ui!` / `jsx!` invocations in the function body, in source
     /// order. Bare names; unresolved. See spec §3.2 / §6.
     pub composes: &'static [EdgeRef],
+    /// Function parameters in declaration order. Empty for zero-arg
+    /// components. See [`ParamSpec`].
+    pub params: &'static [ParamSpec],
 }
 
 inventory::collect!(ComponentEntry);
@@ -85,6 +109,16 @@ pub fn catalog_json() -> serde_json::Value {
                     })
                 })
                 .collect();
+            let params: Vec<serde_json::Value> = e
+                .params
+                .iter()
+                .map(|p| {
+                    serde_json::json!({
+                        "name": p.name,
+                        "type": p.type_str,
+                    })
+                })
+                .collect();
             serde_json::json!({
                 "name": e.name,
                 "module_path": e.module_path,
@@ -92,6 +126,7 @@ pub fn catalog_json() -> serde_json::Value {
                 "line": e.line,
                 "docs": e.docs,
                 "composes": composes,
+                "params": params,
             })
         })
         .collect();

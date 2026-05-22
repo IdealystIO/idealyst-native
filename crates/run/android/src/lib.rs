@@ -319,10 +319,40 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
     let component = format!("{}/.MainActivity", manifest.app.require_bundle_id()?);
     adb_launch(&adb, &serial, &component)?;
 
+    // Surface the emulator window. Matches the iOS launcher, which
+    // does `open -a Simulator` so the user doesn't have to alt-tab
+    // out of the terminal to see the result. No-op for physical
+    // devices (the qemu-system process doesn't exist) and a no-op
+    // on non-macOS hosts.
+    bring_emulator_to_front();
+
     Ok(RunArtifact {
         apk: signed_apk,
         serial,
     })
+}
+
+/// Best-effort: focus the Android emulator's window so it surfaces
+/// when launch finishes. macOS only — the emulator runs as
+/// `qemu-system-aarch64` (Apple Silicon) or `qemu-system-x86_64`
+/// (Intel), so we match by name prefix via System Events. Silent on
+/// failure: a missing process or denied automation permission
+/// shouldn't break the launch.
+fn bring_emulator_to_front() {
+    if !cfg!(target_os = "macos") {
+        return;
+    }
+    let script = r#"tell application "System Events"
+        set procs to (every process whose name starts with "qemu-system")
+        repeat with p in procs
+            set frontmost of p to true
+        end repeat
+    end tell"#;
+    let _ = Command::new("osascript")
+        .args(["-e", script])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
 }
 
 // ---------------------------------------------------------------------------
