@@ -53,18 +53,36 @@ use syn::{Block, FnArg, Ident, ItemFn, Pat, Stmt, Type};
 ///
 /// If no `methods!` block is present, returns an empty `TokenStream2`
 /// and leaves the function untouched.
-pub(crate) fn extract_and_rewrite(item_fn: &mut ItemFn) -> syn::Result<TokenStream2> {
+pub(crate) fn extract_and_rewrite(
+    item_fn: &mut ItemFn,
+) -> syn::Result<(TokenStream2, Vec<MethodInfo>)> {
     let Some((idx, methods)) = find_and_parse_methods(item_fn)? else {
-        return Ok(TokenStream2::new());
+        return Ok((TokenStream2::new(), Vec::new()));
     };
 
     let handle_name = derive_handle_name(&item_fn.sig.ident);
     let fn_name = item_fn.sig.ident.clone();
     let extra = generate_handle_type(&handle_name, &methods);
 
+    let infos: Vec<MethodInfo> = methods
+        .iter()
+        .map(|m| MethodInfo {
+            name: m.name.to_string(),
+            docs: method_docs(&m.attrs),
+            params: m
+                .args
+                .iter()
+                .map(|(ident, ty)| {
+                    let ty_str = quote::quote! { #ty }.to_string();
+                    (ident.to_string(), ty_str)
+                })
+                .collect(),
+        })
+        .collect();
+
     rewrite_body(item_fn, idx, &handle_name, &fn_name, &methods);
 
-    Ok(extra)
+    Ok((extra, infos))
 }
 
 /// Walks the function body for a `methods! { ... }` statement. Returns
@@ -107,14 +125,45 @@ impl Parse for MethodsBody {
 
 /// One method declaration inside `methods! { ... }`.
 struct MethodDef {
+    /// Outer attributes (most importantly, `///` doc comments) attached
+    /// to the `fn name(...)` line. Captured so the MCP catalog can
+    /// surface per-method documentation.
+    attrs: Vec<syn::Attribute>,
     name: Ident,
     /// Args other than `&self`. Each is (binding, type).
     args: Vec<(Ident, Type)>,
     body: Block,
 }
 
+/// Per-method summary exported to the parent macro for MCP registration
+/// — read-only view over a parsed `MethodDef` that callers outside this
+/// module can consume without touching the inner `Block`.
+pub(crate) struct MethodInfo {
+    pub name: String,
+    pub docs: String,
+    /// `(name, pretty-printed type)` for each non-`&self` arg.
+    pub params: Vec<(String, String)>,
+}
+
+fn method_docs(attrs: &[syn::Attribute]) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for attr in attrs {
+        if !attr.path().is_ident("doc") {
+            continue;
+        }
+        if let syn::Meta::NameValue(nv) = &attr.meta {
+            if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(s), .. }) = &nv.value {
+                let raw = s.value();
+                lines.push(raw.strip_prefix(' ').unwrap_or(&raw).to_string());
+            }
+        }
+    }
+    lines.join("\n")
+}
+
 impl Parse for MethodDef {
     fn parse(input: ParseStream) -> syn::Result<Self> {
+        let attrs = input.call(syn::Attribute::parse_outer)?;
         let _fn_kw: syn::Token![fn] = input.parse()?;
         let name: Ident = input.parse()?;
         let args_content;
@@ -174,7 +223,7 @@ impl Parse for MethodDef {
             ));
         }
         let body: Block = input.parse()?;
-        Ok(MethodDef { name, args, body })
+        Ok(MethodDef { attrs, name, args, body })
     }
 }
 

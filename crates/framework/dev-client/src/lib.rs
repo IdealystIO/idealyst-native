@@ -267,15 +267,14 @@ where
     /// produce DOM work.
     pub fn apply(&mut self, cmd: Command) -> Result<(), ReplayError> {
         match cmd {
-            Command::CreateView { id } => {
+            Command::CreateView { id, a11y } => {
                 if !self.nodes.contains_key(&id) {
-                    let node = self
-                        .backend
-                        .create_view(&framework_core::accessibility::AccessibilityProps::default());
+                    let a11y = convert::wire_a11y_to_props(a11y);
+                    let node = self.backend.create_view(&a11y);
                     self.nodes.insert(id, node);
                 }
             }
-            Command::CreateText { id, content } => {
+            Command::CreateText { id, content, a11y } => {
                 if let Some(existing) = self.nodes.get(&id).cloned() {
                     // Same node id, same content → no-op. Same id,
                     // different content → update_text.
@@ -284,11 +283,10 @@ where
                         self.backend.update_text(&existing, &content);
                         self.text_content.insert(id, content);
                     }
+                    let _ = a11y;
                 } else {
-                    let node = self.backend.create_text(
-                        &content,
-                        &framework_core::accessibility::AccessibilityProps::default(),
-                    );
+                    let a11y = convert::wire_a11y_to_props(a11y);
+                    let node = self.backend.create_text(&content, &a11y);
                     self.nodes.insert(id, node);
                     self.text_content.insert(id, content);
                 }
@@ -299,6 +297,7 @@ where
                 on_click,
                 leading_icon,
                 trailing_icon,
+                a11y,
             } => {
                 if let Some(existing) = self.nodes.get(&id).cloned() {
                     // Button already exists. Update label if it
@@ -317,7 +316,7 @@ where
                     }
                     // Drop the synthesized handler — the existing
                     // one stays attached.
-                    let _ = (on_click, leading_icon, trailing_icon);
+                    let _ = (on_click, leading_icon, trailing_icon, a11y);
                     return Ok(());
                 }
                 let cb = self.handler_unit(on_click);
@@ -327,22 +326,21 @@ where
                 // the closure as an opaque Action and let the
                 // backend's runtime path use `.fire`.
                 let action = framework_core::IntoAction::into_action(move || cb());
+                let a11y = convert::wire_a11y_to_props(a11y);
                 let node = self.backend.create_button(
                     &label,
                     &action,
                     leading.as_ref(),
                     trailing.as_ref(),
-                    &framework_core::accessibility::AccessibilityProps::default(),
+                    &a11y,
                 );
                 self.nodes.insert(id, node);
             }
-            Command::CreatePressable { id, on_click } => {
+            Command::CreatePressable { id, on_click, a11y } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
                 let cb = self.handler_unit(on_click);
-                let node = self.backend.create_pressable(
-                    cb,
-                    &framework_core::accessibility::AccessibilityProps::default(),
-                );
+                let a11y = convert::wire_a11y_to_props(a11y);
+                let node = self.backend.create_pressable(cb, &a11y);
                 self.nodes.insert(id, node);
             }
             Command::CreateReactiveAnchor { id } => {
@@ -350,24 +348,18 @@ where
                 let node = self.backend.create_reactive_anchor();
                 self.nodes.insert(id, node);
             }
-            Command::CreateImage { id, src, alt } => {
+            Command::CreateImage { id, src, alt, a11y } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
-                let node = self.backend.create_image(
-                    &src,
-                    alt.as_deref(),
-                    &framework_core::accessibility::AccessibilityProps::default(),
-                );
+                let a11y = convert::wire_a11y_to_props(a11y);
+                let node = self.backend.create_image(&src, alt.as_deref(), &a11y);
                 self.nodes.insert(id, node);
             }
-            Command::CreateIcon { id, data, color } => {
+            Command::CreateIcon { id, data, color, a11y } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
                 let icon = convert::wire_icon_to_static(data);
                 let color = color.map(convert::wire_color_to_color);
-                let node = self.backend.create_icon(
-                    &icon,
-                    color.as_ref(),
-                    &framework_core::accessibility::AccessibilityProps::default(),
-                );
+                let a11y = convert::wire_a11y_to_props(a11y);
+                let node = self.backend.create_icon(&icon, color.as_ref(), &a11y);
                 self.nodes.insert(id, node);
             }
             Command::CreateTextInput {
@@ -375,15 +367,17 @@ where
                 initial_value,
                 placeholder,
                 on_change,
+                a11y,
             } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
                 let cb = self.handler_string(on_change);
+                let a11y = convert::wire_a11y_to_props(a11y);
                 let node = self.backend.create_text_input(
                     &initial_value,
                     placeholder.as_deref(),
                     cb,
                     None,
-                    &framework_core::accessibility::AccessibilityProps::default(),
+                    &a11y,
                 );
                 self.nodes.insert(id, node);
             }
@@ -392,19 +386,21 @@ where
                 initial_value,
                 placeholder,
                 on_change,
+                a11y,
             } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
                 let cb = self.handler_string(on_change);
+                let a11y = convert::wire_a11y_to_props(a11y);
                 let node = self.backend.create_text_area(
                     &initial_value,
                     placeholder.as_deref(),
                     cb,
                     None,
-                    &framework_core::accessibility::AccessibilityProps::default(),
+                    &a11y,
                 );
                 self.nodes.insert(id, node);
             }
-            Command::CreateExternal { id, type_name } => {
+            Command::CreateExternal { id, type_name, a11y } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
                 // Payload couldn't cross the wire. Fall back to a plain
                 // View placeholder so the tree stays well-formed; the
@@ -413,23 +409,20 @@ where
                 // placeholder, this code path leaves room for client-
                 // side external-registry lookup as future work.
                 let _ = type_name;
-                let node = self
-                    .backend
-                    .create_view(&framework_core::accessibility::AccessibilityProps::default());
+                let a11y = convert::wire_a11y_to_props(a11y);
+                let node = self.backend.create_view(&a11y);
                 self.nodes.insert(id, node);
             }
             Command::CreateToggle {
                 id,
                 initial_value,
                 on_change,
+                a11y,
             } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
                 let cb = self.handler_bool(on_change);
-                let node = self.backend.create_toggle(
-                    initial_value,
-                    cb,
-                    &framework_core::accessibility::AccessibilityProps::default(),
-                );
+                let a11y = convert::wire_a11y_to_props(a11y);
+                let node = self.backend.create_toggle(initial_value, cb, &a11y);
                 self.nodes.insert(id, node);
             }
             Command::CreateSlider {
@@ -439,25 +432,18 @@ where
                 max,
                 step,
                 on_change,
+                a11y,
             } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
                 let cb = self.handler_float(on_change);
-                let node = self.backend.create_slider(
-                    initial_value,
-                    min,
-                    max,
-                    step,
-                    cb,
-                    &framework_core::accessibility::AccessibilityProps::default(),
-                );
+                let a11y = convert::wire_a11y_to_props(a11y);
+                let node = self.backend.create_slider(initial_value, min, max, step, cb, &a11y);
                 self.nodes.insert(id, node);
             }
-            Command::CreateScrollView { id, horizontal } => {
+            Command::CreateScrollView { id, horizontal, a11y } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
-                let node = self.backend.create_scroll_view(
-                    horizontal,
-                    &framework_core::accessibility::AccessibilityProps::default(),
-                );
+                let a11y = convert::wire_a11y_to_props(a11y);
+                let node = self.backend.create_scroll_view(horizontal, &a11y);
                 self.nodes.insert(id, node);
             }
             Command::CreateVideo {
@@ -466,26 +452,25 @@ where
                 autoplay,
                 controls,
                 loop_playback,
+                a11y,
             } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
+                let a11y = convert::wire_a11y_to_props(a11y);
                 let node = self.backend.create_video(
                     &src,
                     autoplay,
                     controls,
                     loop_playback,
-                    &framework_core::accessibility::AccessibilityProps::default(),
+                    &a11y,
                 );
                 self.nodes.insert(id, node);
             }
-            Command::CreateActivityIndicator { id, size, color } => {
+            Command::CreateActivityIndicator { id, size, color, a11y } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
                 let size = convert::wire_activity_size(size);
                 let color = color.map(convert::wire_color_to_color);
-                let node = self.backend.create_activity_indicator(
-                    size,
-                    color.as_ref(),
-                    &framework_core::accessibility::AccessibilityProps::default(),
-                );
+                let a11y = convert::wire_a11y_to_props(a11y);
+                let node = self.backend.create_activity_indicator(size, color.as_ref(), &a11y);
                 self.nodes.insert(id, node);
             }
             Command::CreateLink {
@@ -494,6 +479,7 @@ where
                 url,
                 kind: _,
                 on_activate,
+                a11y,
             } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
                 let cb = self.handler_unit(on_activate);
@@ -503,10 +489,8 @@ where
                     url,
                     on_activate: cb,
                 };
-                let node = self.backend.create_link(
-                    config,
-                    &framework_core::accessibility::AccessibilityProps::default(),
-                );
+                let a11y = convert::wire_a11y_to_props(a11y);
+                let node = self.backend.create_link(config, &a11y);
                 self.nodes.insert(id, node);
             }
             Command::CreatePortal {
@@ -514,6 +498,7 @@ where
                 target,
                 on_dismiss,
                 trap_focus,
+                a11y,
             } => {
                 use framework_core::primitives::portal::{
                     ElementAlign, ElementSide, PortalTarget, ViewportPlacement,
@@ -551,15 +536,16 @@ where
                 let dismiss_cb: Option<Rc<dyn Fn()>> =
                     on_dismiss.map(|h| self.handler_unit(h));
                 if self.nodes.contains_key(&id) { return Ok(()); }
+                let a11y = convert::wire_a11y_to_props(a11y);
                 let node = self.backend.create_portal(
                     portal_target,
                     dismiss_cb,
                     trap_focus,
-                    &framework_core::accessibility::AccessibilityProps::default(),
+                    &a11y,
                 );
                 self.nodes.insert(id, node);
             }
-            Command::CreateGraphics { id, renderer } => {
+            Command::CreateGraphics { id, renderer, a11y } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
                 // Look up the renderer in the app-local registry. If
                 // absent, the Graphics surface is still created (so the
@@ -569,12 +555,8 @@ where
                     Some(triple) => triple,
                     None => no_op_graphics_handlers(),
                 };
-                let node = self.backend.create_graphics(
-                    on_ready,
-                    on_resize,
-                    on_lost,
-                    &framework_core::accessibility::AccessibilityProps::default(),
-                );
+                let a11y = convert::wire_a11y_to_props(a11y);
+                let node = self.backend.create_graphics(on_ready, on_resize, on_lost, &a11y);
                 self.nodes.insert(id, node);
             }
             Command::CreateVirtualizer {
@@ -583,11 +565,14 @@ where
                 horizontal,
                 initial_size,
                 initial_keys,
+                a11y,
             } => {
-                self.apply_create_virtualizer(id, overscan, horizontal, initial_size, initial_keys);
+                self.apply_create_virtualizer(
+                    id, overscan, horizontal, initial_size, initial_keys, a11y,
+                );
             }
-            Command::CreateNavigator { id, initial_route, initial_path } => {
-                self.apply_create_navigator(id, initial_route, initial_path);
+            Command::CreateNavigator { id, initial_route, initial_path, a11y } => {
+                self.apply_create_navigator(id, initial_route, initial_path, a11y);
             }
             Command::CreateTabNavigator {
                 id,
@@ -596,9 +581,10 @@ where
                 tabs,
                 placement,
                 mount_policy,
+                a11y,
             } => {
                 self.apply_create_tab_navigator(
-                    id, initial_route, initial_path, tabs, placement, mount_policy,
+                    id, initial_route, initial_path, tabs, placement, mount_policy, a11y,
                 );
             }
             Command::CreateDrawerNavigator {
@@ -610,10 +596,11 @@ where
                 drawer_width,
                 swipe_to_open,
                 mount_policy,
+                a11y,
             } => {
                 self.apply_create_drawer_navigator(
                     id, initial_route, initial_path, side, drawer_type,
-                    drawer_width, swipe_to_open, mount_policy,
+                    drawer_width, swipe_to_open, mount_policy, a11y,
                 );
             }
 
@@ -1167,6 +1154,22 @@ where
             Command::UnregisterTypeface { id } => {
                 self.backend.unregister_typeface(convert::wire_typeface_id(id));
             }
+
+            // --- Accessibility ---
+            Command::UpdateAccessibility {
+                id,
+                a11y,
+                inferred_role,
+            } => {
+                let n = self.lookup_node(id)?;
+                let props = convert::wire_a11y_to_props(a11y);
+                let role = inferred_role.and_then(convert::wire_role_to_role);
+                self.backend.update_accessibility(&n, &props, role);
+            }
+            Command::AnnounceForAccessibility { msg, priority } => {
+                let priority = convert::wire_live_region_to_priority(priority);
+                self.backend.announce_for_accessibility(&msg, priority);
+            }
         }
         Ok(())
     }
@@ -1227,7 +1230,13 @@ where
             .ok_or(ReplayError::UnknownStyle(id))
     }
 
-    fn apply_create_navigator(&mut self, id: NodeId, initial_route: String, initial_path: String) {
+    fn apply_create_navigator(
+        &mut self,
+        id: NodeId,
+        initial_route: String,
+        initial_path: String,
+        a11y: wire::WireAccessibilityProps,
+    ) {
         // Idempotency. If a navigator with this id is already
         // mounted (we kept state across a reconnect, or the wire
         // is re-applying its snapshot), don't build a second
@@ -1281,10 +1290,11 @@ where
 
         // Real backend create call. This installs the real backend's
         // dispatcher onto control.
+        let a11y_props = convert::wire_a11y_to_props(a11y);
         let nav_node = self.backend.create_navigator(
             callbacks,
             control.clone(),
-            &framework_core::accessibility::AccessibilityProps::default(),
+            &a11y_props,
         );
 
         // Reconstruct the state with the real node in place.
@@ -1313,6 +1323,7 @@ where
         tabs: Vec<WireTabRegistration>,
         placement: WireTabPlacement,
         mount_policy: WireMountPolicy,
+        a11y: wire::WireAccessibilityProps,
     ) {
         // Idempotent — see comment in `apply_create_navigator`.
         if let Some(state) = self.navigators.get(&id) {
@@ -1365,10 +1376,11 @@ where
             resolved_placement,
             resolved_mount_policy,
         );
+        let a11y_props = convert::wire_a11y_to_props(a11y);
         let nav_node = self.backend.create_tab_navigator(
             callbacks,
             control.clone(),
-            &framework_core::accessibility::AccessibilityProps::default(),
+            &a11y_props,
         );
 
         let final_state = Rc::new(navigators::NavigatorAppState {
@@ -1398,6 +1410,7 @@ where
         drawer_width: f32,
         swipe_to_open: bool,
         mount_policy: WireMountPolicy,
+        a11y: wire::WireAccessibilityProps,
     ) {
         // Idempotent — see comment in `apply_create_navigator`.
         if let Some(state) = self.navigators.get(&id) {
@@ -1450,10 +1463,11 @@ where
             swipe_to_open,
             resolved_mount_policy,
         );
+        let a11y_props = convert::wire_a11y_to_props(a11y);
         let nav_node = self.backend.create_drawer_navigator(
             callbacks,
             control.clone(),
-            &framework_core::accessibility::AccessibilityProps::default(),
+            &a11y_props,
         );
 
         let final_state = Rc::new(navigators::NavigatorAppState {
@@ -1480,6 +1494,7 @@ where
         _horizontal: bool,
         _initial_size: WireItemSize,
         _initial_keys: Vec<u64>,
+        _a11y: wire::WireAccessibilityProps,
     ) {
         // Virtualizer replay requires the same pending-mount-slot
         // pattern as navigators, applied to VirtualizerCallbacks's

@@ -17,6 +17,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
+use framework_core::accessibility::AccessibilityTraits;
 use framework_core::{render, Backend, Primitive, StyleRules, TextSource};
 use aas_shell_native::connect_and_run;
 use dev_client::WireBackend;
@@ -25,7 +26,8 @@ use dev_server::{serve, WireRecordingBackend};
 #[derive(Debug, Clone, PartialEq)]
 enum Trace {
     CreateView(u64),
-    CreateText(u64, String),
+    /// `(id, content, a11y_label, a11y_traits_bits)`
+    CreateText(u64, String, Option<String>, u16),
     Insert(u64, u64),
     Finish(u64),
 }
@@ -52,11 +54,16 @@ impl Backend for TraceBackend {
     fn create_text(
         &mut self,
         content: &str,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> u64 {
         self.next += 1;
         let id = self.next;
-        self.trace.push(Trace::CreateText(id, content.to_string()));
+        self.trace.push(Trace::CreateText(
+            id,
+            content.to_string(),
+            a11y.label.clone(),
+            a11y.traits.bits(),
+        ));
         id
     }
 
@@ -106,13 +113,23 @@ fn websocket_round_trip_basic_tree() {
     thread::spawn(move || {
         let recorder = WireRecordingBackend::new();
         let backend_rc = Rc::new(RefCell::new(recorder.clone()));
+        // The first Text carries an explicit accessibility label
+        // and a SELECTED trait bit so we can assert the wire faithfully
+        // carries non-default a11y across to the app side. The second
+        // Text leaves accessibility at default to verify both shapes
+        // survive the round-trip.
+        let hello_a11y = framework_core::accessibility::AccessibilityProps {
+            label: Some("hello-label".into()),
+            traits: AccessibilityTraits::SELECTED,
+            ..Default::default()
+        };
         let tree = Primitive::View {
             children: vec![
                 Primitive::Text {
                     source: TextSource::Static("hello".into()),
                     style: None,
                     ref_fill: None,
-                    accessibility: Default::default(),
+                    accessibility: hello_a11y,
                     test_id: None,
                 },
                 Primitive::Text {
@@ -166,7 +183,7 @@ fn websocket_round_trip_basic_tree() {
     let texts: Vec<String> = trace
         .iter()
         .filter_map(|t| match t {
-            Trace::CreateText(_, s) => Some(s.clone()),
+            Trace::CreateText(_, s, _, _) => Some(s.clone()),
             _ => None,
         })
         .collect();
@@ -175,6 +192,35 @@ fn websocket_round_trip_basic_tree() {
         vec!["hello".to_string(), "world".to_string()],
         "the two Text contents from the dev-side tree must arrive on the app side"
     );
+
+    // Accessibility round-trip: the first Text was authored with
+    // `label: Some("hello-label")` and `traits: SELECTED`; both must
+    // survive the wire and arrive at the TraceBackend.
+    let hello_a11y = trace
+        .iter()
+        .find_map(|t| match t {
+            Trace::CreateText(_, s, label, traits) if s == "hello" => {
+                Some((label.clone(), *traits))
+            }
+            _ => None,
+        })
+        .expect("the hello Text must surface in the trace");
+    assert_eq!(hello_a11y.0.as_deref(), Some("hello-label"));
+    assert_eq!(hello_a11y.1, AccessibilityTraits::SELECTED.bits());
+
+    // The default-a11y Text must arrive with default values intact —
+    // no leakage from the previous sibling's overrides.
+    let world_a11y = trace
+        .iter()
+        .find_map(|t| match t {
+            Trace::CreateText(_, s, label, traits) if s == "world" => {
+                Some((label.clone(), *traits))
+            }
+            _ => None,
+        })
+        .expect("the world Text must surface in the trace");
+    assert!(world_a11y.0.is_none(), "default label must remain None");
+    assert_eq!(world_a11y.1, 0, "default traits must remain empty");
 
     assert!(
         trace.iter().any(|t| matches!(t, Trace::CreateView(_))),

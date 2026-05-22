@@ -14,6 +14,10 @@ use std::rc::{Rc, Weak};
 // `web-time` for wasm32 compat — see `host.rs` for the rationale.
 use web_time::Instant;
 
+use framework_core::accessibility::{
+    default_role, AccessibilityNode, AccessibilityProps, AccessibilityRect, AccessibilityTree,
+    LiveRegionPriority, PrimitiveKind, Role,
+};
 use framework_core::primitives::activity_indicator::ActivityIndicatorSize;
 use framework_core::{Action, Backend, Color, ColorScheme, Easing, StateBits, StyleRules, Tokenized};
 use glyphon::FontSystem;
@@ -71,6 +75,26 @@ pub struct WgpuBackend {
     /// to insert / remove screens without re-entering the
     /// framework's build walker.
     pub(crate) self_weak: std::cell::OnceCell<std::rc::Weak<RefCell<WgpuBackend>>>,
+    /// One-shot live-region announcements queued by
+    /// [`Backend::announce_for_accessibility`]. The host shell
+    /// (winit shell on desktop, future AppKit / UIKit / AT-SPI
+    /// wgpu hosts) drains the queue via
+    /// [`WgpuBackend::drain_pending_announcements`] on its next
+    /// layout-commit pass and posts each entry to the platform's
+    /// announcement API (NSAccessibility, UIAccessibility,
+    /// `aria-live`).
+    ///
+    /// Not embedded in [`AccessibilityTree`] because that struct
+    /// is the persistent semantics tree (queryable any time for
+    /// AX-walker focus resolution); announcements are transient
+    /// fire-and-forget messages. The two have different drain
+    /// lifetimes, so they live on separate getters.
+    ///
+    /// **Host shell consumer**: no winit-side AX bridge crate
+    /// exists yet — this is GPU-backend prep work. See
+    /// `docs/accessibility-design.md` §5 for the projection
+    /// contract the future host shell must follow.
+    pub(crate) pending_announcements: Vec<(String, LiveRegionPriority)>,
 }
 
 impl WgpuBackend {
@@ -90,7 +114,31 @@ impl WgpuBackend {
             active_spinner_count: 0,
             skin,
             self_weak: std::cell::OnceCell::new(),
+            pending_announcements: Vec::new(),
         }
+    }
+
+    /// Drain the live-region announcement queue accumulated by
+    /// [`Backend::announce_for_accessibility`]. Returns the
+    /// announcements in insertion order and clears the internal
+    /// buffer.
+    ///
+    /// The host shell calls this after every layout-commit pass
+    /// (same point it calls
+    /// [`Backend::dump_accessibility_tree`]) and routes each entry
+    /// to the platform announcement API:
+    ///
+    /// - macOS host: `NSAccessibilityAnnouncementRequestedNotification`.
+    /// - iOS host:   `UIAccessibility.post(notification: .announcement, ...)`.
+    /// - Linux/AT-SPI host: `AtspiObject.Announcement` signal.
+    ///
+    /// Separate from
+    /// [`Backend::dump_accessibility_tree`] because announcements
+    /// are transient one-shots (each fires once and is gone), whereas
+    /// the semantics tree is a persistent snapshot the AX walker
+    /// can re-query at any time.
+    pub fn drain_pending_announcements(&mut self) -> Vec<(String, LiveRegionPriority)> {
+        std::mem::take(&mut self.pending_announcements)
     }
 
     /// Snapshot of the active root, or `None` if nothing has been
@@ -143,10 +191,11 @@ impl Backend for WgpuBackend {
 
     fn create_view(
         &mut self,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let layout = self.layout.new_node();
         let node = new_node(NodeKind::View, layout);
+        init_node_a11y(&node, a11y, PrimitiveKind::View);
         self.roots.push(node.clone());
         node
     }
@@ -154,7 +203,7 @@ impl Backend for WgpuBackend {
     fn create_text(
         &mut self,
         content: &str,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let layout = self.layout.new_node();
         {
@@ -167,6 +216,7 @@ impl Backend for WgpuBackend {
             NodeKind::Text { content: content.to_string() },
             layout,
         );
+        init_node_a11y(&node, a11y, PrimitiveKind::Text);
         self.roots.push(node.clone());
         node
     }
@@ -177,7 +227,7 @@ impl Backend for WgpuBackend {
         on_click: &Action,
         _leading_icon: Option<&framework_core::primitives::icon::IconData>,
         _trailing_icon: Option<&framework_core::primitives::icon::IconData>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let layout = self.layout.new_node();
         {
@@ -195,6 +245,7 @@ impl Backend for WgpuBackend {
             NodeKind::Button { label: label.to_string(), on_click: cb },
             layout,
         );
+        init_node_a11y(&node, a11y, PrimitiveKind::Button);
 
         // Stamp the skin's button defaults *at create time* so an
         // unstyled `button(...)` looks platform-native without
@@ -222,7 +273,7 @@ impl Backend for WgpuBackend {
     fn create_pressable(
         &mut self,
         on_click: Rc<dyn Fn()>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let layout = self.layout.new_node();
         // Wrap to request a redraw — the user's closure mutates
@@ -234,6 +285,7 @@ impl Backend for WgpuBackend {
             request_redraw();
         });
         let node = new_node(NodeKind::Pressable { on_click: cb }, layout);
+        init_node_a11y(&node, a11y, PrimitiveKind::Pressable);
         self.roots.push(node.clone());
         node
     }
@@ -258,7 +310,7 @@ impl Backend for WgpuBackend {
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         _on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let layout = self.layout.new_node();
         // The visible glyph buffer holds whichever of value /
@@ -288,6 +340,7 @@ impl Backend for WgpuBackend {
             },
             layout,
         );
+        init_node_a11y(&node, a11y, PrimitiveKind::TextInput);
         self.roots.push(node.clone());
         node
     }
@@ -320,7 +373,7 @@ impl Backend for WgpuBackend {
         &mut self,
         initial_value: bool,
         on_change: Rc<dyn Fn(bool)>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let layout = self.layout.new_node();
         self.layout
@@ -329,6 +382,7 @@ impl Backend for WgpuBackend {
             NodeKind::Toggle { value: initial_value, on_change },
             layout,
         );
+        init_node_a11y(&node, a11y, PrimitiveKind::Toggle);
         self.roots.push(node.clone());
         node
     }
@@ -371,7 +425,7 @@ impl Backend for WgpuBackend {
         max: f32,
         step: Option<f32>,
         on_change: Rc<dyn Fn(f32)>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let layout = self.layout.new_node();
         self.layout
@@ -386,6 +440,7 @@ impl Backend for WgpuBackend {
             },
             layout,
         );
+        init_node_a11y(&node, a11y, PrimitiveKind::Slider);
         self.roots.push(node.clone());
         node
     }
@@ -401,7 +456,7 @@ impl Backend for WgpuBackend {
         &mut self,
         size: ActivityIndicatorSize,
         color: Option<&Color>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let layout = self.layout.new_node();
         let diameter = match size {
@@ -419,6 +474,7 @@ impl Backend for WgpuBackend {
             },
             layout,
         );
+        init_node_a11y(&node, a11y, PrimitiveKind::ActivityIndicator);
         self.active_spinner_count = self.active_spinner_count.saturating_add(1);
         self.roots.push(node.clone());
         request_redraw();
@@ -428,7 +484,7 @@ impl Backend for WgpuBackend {
     fn create_scroll_view(
         &mut self,
         horizontal: bool,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let layout = self.layout.new_node();
         // Pin the scrollview's main-axis `min-size` to 0 so the
@@ -453,6 +509,7 @@ impl Backend for WgpuBackend {
             },
             layout,
         );
+        init_node_a11y(&node, a11y, PrimitiveKind::ScrollView);
         self.roots.push(node.clone());
         node
     }
@@ -460,6 +517,10 @@ impl Backend for WgpuBackend {
     fn create_reactive_anchor(&mut self) -> Self::Node {
         let layout = self.layout.new_node();
         let node = new_node(NodeKind::ReactiveAnchor, layout);
+        // ReactiveAnchor is a transparent control-flow container —
+        // it never carries author-supplied a11y props (the walker
+        // doesn't pass a primitive kind for it). Defaults on
+        // `NodeData` are correct (empty props, no inferred role).
         self.roots.push(node.clone());
         node
     }
@@ -473,7 +534,7 @@ impl Backend for WgpuBackend {
     fn create_link(
         &mut self,
         config: framework_core::primitives::link::LinkConfig,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let layout = self.layout.new_node();
         // Wrap the activate closure to also request a redraw so
@@ -484,6 +545,7 @@ impl Backend for WgpuBackend {
             request_redraw();
         });
         let node = new_node(NodeKind::Link { on_activate: cb }, layout);
+        init_node_a11y(&node, a11y, PrimitiveKind::Link);
         self.roots.push(node.clone());
         node
     }
@@ -498,7 +560,7 @@ impl Backend for WgpuBackend {
         &mut self,
         src: &str,
         alt: Option<&str>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let layout = self.layout.new_node();
         self.layout
@@ -510,6 +572,7 @@ impl Backend for WgpuBackend {
             },
             layout,
         );
+        init_node_a11y(&node, a11y, PrimitiveKind::Image);
         self.roots.push(node.clone());
         node
     }
@@ -530,7 +593,7 @@ impl Backend for WgpuBackend {
         &mut self,
         data: &framework_core::primitives::icon::IconData,
         color: Option<&Color>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let layout = self.layout.new_node();
         self.layout
@@ -547,6 +610,7 @@ impl Backend for WgpuBackend {
             },
             layout,
         );
+        init_node_a11y(&node, a11y, PrimitiveKind::Icon);
         self.roots.push(node.clone());
         node
     }
@@ -611,7 +675,7 @@ impl Backend for WgpuBackend {
         target: framework_core::primitives::portal::PortalTarget,
         on_dismiss: Option<Rc<dyn Fn()>>,
         _trap_focus: bool,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         if matches!(target, framework_core::primitives::portal::PortalTarget::Named(_)) {
             unimplemented!(
@@ -620,6 +684,7 @@ impl Backend for WgpuBackend {
         }
         let layout = self.layout.new_node();
         let node = new_node(NodeKind::Portal { target, on_dismiss }, layout);
+        init_node_a11y(&node, a11y, PrimitiveKind::Portal);
         self.roots.push(node.clone());
         node
     }
@@ -635,7 +700,7 @@ impl Backend for WgpuBackend {
         callbacks: framework_core::VirtualizerCallbacks<Self::Node>,
         _overscan: f32,
         horizontal: bool,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let layout = self.layout.new_node();
         // Stash the callbacks on the node so
@@ -656,6 +721,7 @@ impl Backend for WgpuBackend {
             },
             layout,
         );
+        init_node_a11y(&node, a11y, PrimitiveKind::Virtualizer);
         // Eagerly mount every item — no windowing yet. A real
         // windowed implementation would mount on demand based
         // on viewport intersection.
@@ -757,7 +823,7 @@ impl Backend for WgpuBackend {
         &mut self,
         callbacks: framework_core::primitives::navigator::NavigatorCallbacks<Self::Node>,
         control: Rc<framework_core::primitives::navigator::NavigatorControl>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let layout = self.layout.new_node();
         // The navigator's container fills whatever box its parent
@@ -788,6 +854,7 @@ impl Backend for WgpuBackend {
             },
             layout,
         );
+        init_node_a11y(&node, a11y, PrimitiveKind::Navigator);
         install_navigator_dispatcher(
             &node,
             callbacks,
@@ -879,7 +946,7 @@ impl Backend for WgpuBackend {
         &mut self,
         callbacks: framework_core::primitives::navigator::TabNavigatorCallbacks<Self::Node>,
         control: Rc<framework_core::primitives::navigator::NavigatorControl>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let layout = self.layout.new_node();
         // Seed `routes[0]` with the initial route's name and a
@@ -905,6 +972,7 @@ impl Backend for WgpuBackend {
             },
             layout,
         );
+        init_node_a11y(&node, a11y, PrimitiveKind::TabNavigator);
         install_tab_dispatcher(
             &node,
             callbacks,
@@ -948,7 +1016,7 @@ impl Backend for WgpuBackend {
         &mut self,
         callbacks: framework_core::primitives::navigator::DrawerNavigatorCallbacks<Self::Node>,
         control: Rc<framework_core::primitives::navigator::NavigatorControl>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let layout = self.layout.new_node();
         let initial_route = callbacks.navigator.initial_route;
@@ -968,6 +1036,7 @@ impl Backend for WgpuBackend {
             },
             layout,
         );
+        init_node_a11y(&node, a11y, PrimitiveKind::DrawerNavigator);
         install_drawer_dispatcher(
             &node,
             callbacks,
@@ -1045,7 +1114,7 @@ impl Backend for WgpuBackend {
         autoplay: bool,
         controls: bool,
         loop_playback: bool,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let decoder = std::rc::Rc::new(crate::video::VideoDecoder::spawn(
             src.to_string(),
@@ -1078,6 +1147,7 @@ impl Backend for WgpuBackend {
             },
             layout,
         );
+        init_node_a11y(&node, a11y, PrimitiveKind::Video);
         self.roots.push(node.clone());
         node
     }
@@ -1117,7 +1187,7 @@ impl Backend for WgpuBackend {
         _on_ready: framework_core::primitives::graphics::OnReady,
         _on_resize: framework_core::primitives::graphics::OnResize,
         _on_lost: framework_core::primitives::graphics::OnLost,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         // We can't satisfy the framework's `OnReady(GraphicsSurface)`
         // contract — `GraphicsSurface` is a real-window handle, and
@@ -1138,6 +1208,7 @@ impl Backend for WgpuBackend {
             },
             layout,
         );
+        init_node_a11y(&node, a11y, PrimitiveKind::Graphics);
         self.roots.push(node.clone());
         node
     }
@@ -1437,6 +1508,64 @@ impl Backend for WgpuBackend {
         })
     }
 
+    // -----------------------------------------------------------------
+    // Accessibility — wgpu is a GPU/canvas backend so there is no
+    // platform widget for the AX walker to find. The strategy is the
+    // **parallel semantics tree** described in
+    // `docs/accessibility-design.md` §5: every `create_*` stashes the
+    // author's `AccessibilityProps` onto the node, the layout pass
+    // updates each node's bounds, and the host shell pulls a snapshot
+    // via `dump_accessibility_tree` once per layout commit and
+    // projects it into the platform AX layer (NSAccessibility on
+    // macOS, UIAccessibilityElement[] on iOS, AT-SPI on Linux).
+    //
+    // No host shell consumer exists yet — this is GPU-backend prep
+    // work. The future winit / AppKit / iOS-shell wgpu hosts are the
+    // intended consumers; see `docs/accessibility-design.md` §5 for
+    // the projection contract those hosts must follow.
+    // -----------------------------------------------------------------
+
+    fn update_accessibility(
+        &mut self,
+        node: &Self::Node,
+        a11y: &AccessibilityProps,
+        inferred_role: Option<Role>,
+    ) {
+        // Replace the prop bag wholesale — the framework's reactive
+        // a11y Effect re-fires this on every change to any field. No
+        // caching: `dump_accessibility_tree` rebuilds from scratch
+        // each call (wgpu re-renders every frame anyway), so the new
+        // props are visible to the host on its next AX pull. We
+        // refresh `inferred_role` too in case the primitive's kind
+        // changed via a When/Switch swap — the walker passes the
+        // currently-mounted primitive's kind regardless of whether
+        // it differs from the original `create_*` call.
+        let mut data = node.borrow_mut();
+        data.accessibility = a11y.clone();
+        data.inferred_role = inferred_role;
+    }
+
+    fn announce_for_accessibility(&mut self, msg: &str, priority: LiveRegionPriority) {
+        // Append to the one-shot queue; the host shell drains via
+        // `drain_pending_announcements()` and posts each entry to
+        // the platform announcement API. We don't dedupe — two
+        // identical announcements queued in the same frame really
+        // are two announcements (matching the contract on
+        // UIAccessibility / NSAccessibilityAnnouncement requests).
+        self.pending_announcements.push((msg.to_string(), priority));
+    }
+
+    fn dump_accessibility_tree(&self) -> Option<AccessibilityTree> {
+        // Build the parallel semantics tree from the active root.
+        // Returns `None` if nothing has been mounted yet — matches
+        // the `roots` invariant ("`root()` is the last entry, or
+        // `None` if empty").
+        let root = self.roots.last()?;
+        Some(AccessibilityTree {
+            root: build_a11y_node(&self.layout, root),
+        })
+    }
+
     fn apply_safe_area_padding(
         &mut self,
         node: &Self::Node,
@@ -1718,6 +1847,72 @@ impl Backend for WgpuBackend {
             self.layout.mark_dirty(layout);
         }
         request_redraw();
+    }
+}
+
+// =========================================================================
+// Accessibility — node-side stash + semantics-tree construction.
+// =========================================================================
+
+/// Stash the framework's `AccessibilityProps` (and the primitive's
+/// inferred default role) on a freshly-created wgpu node. Called from
+/// every `Backend::create_*` immediately after the `new_node` ctor so
+/// the node carries its a11y state from the moment it enters the
+/// tree.
+///
+/// The wgpu backend has no platform widget to attach a11y to, so the
+/// data is kept verbatim on `NodeData` and surfaced via
+/// [`Backend::dump_accessibility_tree`] later. See
+/// `docs/accessibility-design.md` §5.
+pub(crate) fn init_node_a11y(node: &WgpuNode, a11y: &AccessibilityProps, kind: PrimitiveKind) {
+    let mut data = node.borrow_mut();
+    data.accessibility = a11y.clone();
+    data.inferred_role = default_role(kind);
+}
+
+/// Build an [`AccessibilityNode`] subtree rooted at `node`. Walks
+/// `NodeData.children` in insertion order — wgpu has no z-index
+/// reordering yet, so insertion order matches the visual top-to-
+/// bottom, left-to-right traversal a screen-reader expects. When
+/// z-ordering lands the walk should switch to a layout-coord
+/// traversal-order pass per the design doc.
+///
+/// Bounds are pulled fresh from Taffy on every call. `frame_of`
+/// returns the **parent-relative** rect; the host shell is
+/// responsible for accumulating origins (it owns the
+/// surface-to-platform coordinate transform). Returning local rects
+/// matches what `Backend::frame` already exposes.
+///
+/// Node id is the pointer address of the `Rc<RefCell<NodeData>>`. It
+/// is stable for the node's lifetime (the Rc is never reallocated
+/// once `create_*` returns) and unique across live nodes (no two
+/// distinct `Rc`s share an address). Drops + new allocations may
+/// reuse the address, but the host shell diffs per layout-commit
+/// against the **current** tree; an id collision can only happen
+/// when the old node is already gone from the tree.
+fn build_a11y_node(layout: &LayoutTree, node: &WgpuNode) -> AccessibilityNode {
+    let frame = layout.frame_of(node.borrow().layout);
+    let (props, role, children) = {
+        let data = node.borrow();
+        let role = data.accessibility.role.or(data.inferred_role).unwrap_or(Role::Group);
+        let children: Vec<WgpuNode> = data.children.clone();
+        (data.accessibility.clone(), role, children)
+    };
+    let id = Rc::as_ptr(node) as usize as u64;
+    AccessibilityNode {
+        id,
+        props,
+        role,
+        bounds: AccessibilityRect {
+            x: frame.x,
+            y: frame.y,
+            width: frame.width,
+            height: frame.height,
+        },
+        children: children
+            .iter()
+            .map(|child| build_a11y_node(layout, child))
+            .collect(),
     }
 }
 
@@ -3048,5 +3243,304 @@ fn collect_drawers(node: &WgpuNode, out: &mut Vec<WgpuNode>) {
     let children: Vec<WgpuNode> = node.borrow().children.clone();
     for child in children {
         collect_drawers(&child, out);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Accessibility tests — `docs/accessibility-design.md` §5.
+//
+// Exercise the parallel-semantics-tree contract end-to-end at the
+// backend layer:
+//
+// 1. `create_*` stashes `AccessibilityProps` + the inferred role on
+//    each node.
+// 2. `insert` keeps the parent→child relationship in sync.
+// 3. `dump_accessibility_tree` materialises an `AccessibilityTree`
+//    that matches the visual tree (root + children, roles, labels,
+//    bounds from Taffy).
+// 4. `update_accessibility` swaps a node's prop bag and the next
+//    dump reflects the change.
+// 5. `announce_for_accessibility` queues one-shot announcements that
+//    `drain_pending_announcements` returns in order, exactly once.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod a11y_tests {
+    use super::*;
+    use framework_core::accessibility::{
+        AccessibilityProps, AccessibilityTraits, LiveRegionPriority, Role,
+    };
+    use framework_core::ColorScheme;
+
+    /// Standalone `Skin` for headless accessibility tests. Implements
+    /// the full trait surface with no-op paints — the a11y tests
+    /// never enter the renderer, so the visual paths are dead code
+    /// at this scope. Kept local rather than pulled into a shared
+    /// helper because `host::tests` carries its own (stale) test-skin
+    /// and unifying them would entangle two unrelated changes.
+    struct TestSkin;
+    impl crate::skin::Skin for TestSkin {
+        fn paint_toggle(
+            &self,
+            _x: f32,
+            _y: f32,
+            _w: f32,
+            _h: f32,
+            _t: f32,
+            _tint: Option<[f32; 4]>,
+            _rects: &mut Vec<crate::pipeline::Instance>,
+        ) {
+        }
+        fn paint_slider(
+            &self,
+            _x: f32,
+            _y: f32,
+            _w: f32,
+            _h: f32,
+            _value: f32,
+            _min: f32,
+            _max: f32,
+            _tint: Option<[f32; 4]>,
+            _rects: &mut Vec<crate::pipeline::Instance>,
+        ) {
+        }
+        fn paint_text_input<'a>(
+            &self,
+            _x: f32,
+            _y: f32,
+            _w: f32,
+            _h: f32,
+            _is_focused: bool,
+            _draw_caret: bool,
+            _is_placeholder: bool,
+            _buffer: &'a glyphon::Buffer,
+            _caret_x_local: f32,
+            _text_color: [f32; 4],
+            _field_bg: Option<[f32; 4]>,
+            _rects: &mut Vec<crate::pipeline::Instance>,
+            _texts: &mut Vec<crate::text::StagedText<'a>>,
+        ) {
+        }
+        fn paint_activity_indicator(
+            &self,
+            _x: f32,
+            _y: f32,
+            _w: f32,
+            _h: f32,
+            _phase: f32,
+            _tint: Option<[f32; 4]>,
+            _rects: &mut Vec<crate::pipeline::Instance>,
+        ) {
+        }
+        fn keyboard_rows(&self) -> Vec<Vec<crate::keyboard::KeySpec>> {
+            Vec::new()
+        }
+        fn keyboard_layout_metrics(&self) -> crate::keyboard::LayoutMetrics {
+            crate::keyboard::LayoutMetrics {
+                key_gap: 0.0,
+                row_gap: 0.0,
+                side_margin: 0.0,
+                vert_margin: 0.0,
+            }
+        }
+        fn paint_keyboard<'a>(
+            &self,
+            _keyboard_rect: (f32, f32, f32, f32),
+            _laid_keys: &[crate::keyboard::LaidKey],
+            _pressed_label: Option<&'static str>,
+            _glyphs: &'a std::collections::HashMap<&'static str, glyphon::Buffer>,
+            _rects: &mut Vec<crate::pipeline::Instance>,
+            _texts: &mut Vec<crate::text::StagedText<'a>>,
+        ) {
+        }
+        fn paint_navigator_header<'a, 'b>(
+            &self,
+            _rect: (f32, f32, f32, f32),
+            _chrome: crate::skin::NavigatorHeaderChrome<'a, 'b>,
+            _rects: &mut Vec<crate::pipeline::Instance>,
+            _texts: &mut Vec<crate::text::StagedText<'a>>,
+            _hit_regions: &mut Vec<crate::skin::NavigatorHeaderHit>,
+        ) {
+        }
+    }
+
+    fn make_backend() -> WgpuBackend {
+        let text = Rc::new(RefCell::new(crate::text::TextStore::new()));
+        let fs = Rc::new(RefCell::new(glyphon::FontSystem::new()));
+        WgpuBackend::new(text, fs, ColorScheme::Light, Rc::new(TestSkin))
+    }
+
+    /// Build a small View(Text) tree directly through the Backend
+    /// trait, populate Taffy intrinsic sizes so layout produces
+    /// non-zero rects, and compute layout against a 200×100 box.
+    /// Returns (backend, root) — root is the View; root.children[0]
+    /// is the Text.
+    fn build_view_with_text() -> (WgpuBackend, WgpuNode) {
+        let mut b = make_backend();
+        let view_a11y = AccessibilityProps {
+            label: Some("greeting card".into()),
+            identifier: Some("greeting-card".into()),
+            ..Default::default()
+        };
+        let text_a11y = AccessibilityProps {
+            label: Some("Hello world".into()),
+            ..Default::default()
+        };
+        let mut root = b.create_view(&view_a11y);
+        let text = b.create_text("Hello world", &text_a11y);
+        b.insert(&mut root, text);
+        // Stamp intrinsic sizes so the layout pass produces
+        // non-degenerate rects — `frame_of` returns the zero rect
+        // when no compute has run. View fills, text takes 80×20.
+        let view_layout = root.borrow().layout;
+        let text_layout = root.borrow().children[0].borrow().layout;
+        b.layout.set_intrinsic_size(text_layout, 80.0, 20.0);
+        b.layout.compute(view_layout, 200.0, 100.0);
+        b.finish(root.clone());
+        (b, root)
+    }
+
+    #[test]
+    fn dump_tree_reflects_view_with_text_child() {
+        let (b, root) = build_view_with_text();
+        let tree = b.dump_accessibility_tree().expect("tree present after mount");
+
+        // Root: View carries the custom label / identifier and the
+        // walker's `default_role(View)` returns `None` → resolved
+        // role falls back to `Group` per `build_a11y_node`.
+        assert_eq!(tree.root.props.label.as_deref(), Some("greeting card"));
+        assert_eq!(tree.root.props.identifier.as_deref(), Some("greeting-card"));
+        assert_eq!(tree.root.role, Role::Group);
+        assert_eq!(tree.root.id, Rc::as_ptr(&root) as usize as u64);
+        // Root bounds match the 200×100 compute box.
+        assert_eq!(tree.root.bounds.width, 200.0);
+        assert_eq!(tree.root.bounds.height, 100.0);
+        // Origin is in the parent's coord space — root is its own
+        // parent, so (0, 0).
+        assert_eq!(tree.root.bounds.x, 0.0);
+        assert_eq!(tree.root.bounds.y, 0.0);
+
+        // Child: Text node carries its label + the inferred Text role.
+        assert_eq!(tree.root.children.len(), 1);
+        let text_node = &tree.root.children[0];
+        assert_eq!(text_node.props.label.as_deref(), Some("Hello world"));
+        assert_eq!(text_node.role, Role::Text);
+        // Bounds come straight from Taffy's computed frame. We don't
+        // pin exact dimensions — flex stretch interacts with
+        // `set_intrinsic_size`'s `min_size`-only effect in ways
+        // orthogonal to the a11y data path. What matters is:
+        //   - non-zero size (Taffy ran and the rect made it through),
+        //   - height respects the intrinsic minimum (>= 20),
+        //   - rect lives inside the parent's 200×100 box.
+        assert!(text_node.bounds.height >= 20.0);
+        assert!(text_node.bounds.width > 0.0);
+        assert!(text_node.bounds.x >= 0.0);
+        assert!(text_node.bounds.y >= 0.0);
+        assert!(text_node.bounds.x + text_node.bounds.width <= tree.root.bounds.width);
+        assert!(text_node.bounds.y + text_node.bounds.height <= tree.root.bounds.height);
+        // Distinct id from the parent — the pointer-address scheme
+        // guarantees this whenever the two nodes are alive together.
+        assert_ne!(text_node.id, tree.root.id);
+        // Text is a leaf in this tree.
+        assert!(text_node.children.is_empty());
+    }
+
+    #[test]
+    fn dump_tree_is_none_before_mount() {
+        let b = make_backend();
+        assert!(b.dump_accessibility_tree().is_none());
+    }
+
+    #[test]
+    fn announce_for_accessibility_drains_in_order() {
+        let (mut b, _root) = build_view_with_text();
+        // Drain before any announce — empty.
+        assert!(b.drain_pending_announcements().is_empty());
+
+        b.announce_for_accessibility("loading", LiveRegionPriority::Polite);
+        b.announce_for_accessibility("complete", LiveRegionPriority::Assertive);
+
+        let drained = b.drain_pending_announcements();
+        assert_eq!(drained.len(), 2);
+        assert_eq!(drained[0].0, "loading");
+        assert_eq!(drained[0].1, LiveRegionPriority::Polite);
+        assert_eq!(drained[1].0, "complete");
+        assert_eq!(drained[1].1, LiveRegionPriority::Assertive);
+
+        // Drain is one-shot — the queue is empty next call. This
+        // matches the contract documented on
+        // `drain_pending_announcements`: each entry fires once and
+        // is gone, mirroring how platform AX announcement APIs work.
+        let drained_again = b.drain_pending_announcements();
+        assert!(drained_again.is_empty());
+
+        // The semantics tree itself does NOT carry announcements —
+        // they're separate concerns (tree is persistent, announcements
+        // are transient one-shots). Sanity-check that announcing
+        // doesn't accidentally mutate the tree shape.
+        let tree = b.dump_accessibility_tree().expect("tree still present");
+        assert_eq!(tree.root.children.len(), 1);
+    }
+
+    #[test]
+    fn update_accessibility_replaces_prop_bag_on_next_dump() {
+        let (mut b, root) = build_view_with_text();
+        let text = root.borrow().children[0].clone();
+
+        // Before: text role inferred, label "Hello world".
+        {
+            let tree = b.dump_accessibility_tree().expect("tree");
+            let text_node = &tree.root.children[0];
+            assert_eq!(text_node.props.label.as_deref(), Some("Hello world"));
+            assert!(text_node.props.traits.is_empty());
+        }
+
+        // Patch via the Backend trait method that the framework's
+        // reactive a11y Effect would call. The walker would pass
+        // `PrimitiveKind::Text`'s default role here; we replicate
+        // that for the test.
+        let new_props = AccessibilityProps {
+            label: Some("Greetings, world".into()),
+            traits: AccessibilityTraits::SELECTED,
+            ..Default::default()
+        };
+        b.update_accessibility(&text, &new_props, Some(Role::Text));
+
+        // After: the next dump must reflect the swap.
+        let tree = b.dump_accessibility_tree().expect("tree");
+        let text_node = &tree.root.children[0];
+        assert_eq!(text_node.props.label.as_deref(), Some("Greetings, world"));
+        assert!(text_node.props.traits.contains(AccessibilityTraits::SELECTED));
+        assert_eq!(text_node.role, Role::Text);
+
+        // Re-dumping after a no-op call still produces the same
+        // tree — no caching means stale data can never lag.
+        let tree2 = b.dump_accessibility_tree().expect("tree");
+        assert_eq!(tree2.root.children[0].props.label.as_deref(), Some("Greetings, world"));
+    }
+
+    #[test]
+    fn role_falls_back_to_inferred_when_props_role_is_none() {
+        // A `Button` primitive with author label but no `role` override
+        // should resolve to `Role::Button` via `default_role`, not the
+        // `Group` ultimate-fallback.
+        let mut b = make_backend();
+        let a11y = AccessibilityProps {
+            label: Some("Submit".into()),
+            ..Default::default()
+        };
+        // Build an `Action` from a bare closure via `IntoAction`. The
+        // closure path produces an Action with empty `method` /
+        // `inputs` — fine for this test, which never fires the button.
+        let action = framework_core::IntoAction::into_action(|| {});
+        let btn = b.create_button("Submit", &action, None, None, &a11y);
+        let btn_layout = btn.borrow().layout;
+        b.layout.set_intrinsic_size(btn_layout, 100.0, 30.0);
+        b.layout.compute(btn_layout, 100.0, 30.0);
+        b.finish(btn);
+
+        let tree = b.dump_accessibility_tree().expect("tree");
+        assert_eq!(tree.root.role, Role::Button);
+        assert_eq!(tree.root.props.label.as_deref(), Some("Submit"));
     }
 }

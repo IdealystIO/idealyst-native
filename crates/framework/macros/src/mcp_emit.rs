@@ -15,6 +15,7 @@
 
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
+use syn::spanned::Spanned;
 use syn::visit::Visit;
 use syn::ItemFn;
 
@@ -23,11 +24,22 @@ use syn::ItemFn;
 /// an unparseable `ui!` body just produces an empty edge list rather
 /// than failing the user's build. The user's real `ui!` expansion
 /// surfaces any genuine syntax error.
-pub(crate) fn emit(item_fn: &ItemFn) -> TokenStream2 {
+///
+/// `methods` carries the parsed `methods!` block (or empty when the
+/// component declares none) — each method becomes one
+/// `MethodEntry` submission tagged with this component as parent.
+/// Animations declared via `animated!(...)` inside the body are
+/// captured by [`collect_animations`] and submitted as
+/// `AnimationEntry` records.
+pub(crate) fn emit(
+    item_fn: &ItemFn,
+    methods: &[crate::methods_block::MethodInfo],
+) -> TokenStream2 {
     let name_str = item_fn.sig.ident.to_string();
     let docs = collect_doc_comments(&item_fn.attrs);
     let composes = collect_composes(&item_fn.block);
     let params = collect_params(&item_fn.sig);
+    let animations = collect_animations(&item_fn.block);
 
     let edges = composes.iter().map(|(name, line)| {
         quote! {
@@ -48,6 +60,57 @@ pub(crate) fn emit(item_fn: &ItemFn) -> TokenStream2 {
         }
     });
 
+    let method_submissions = methods.iter().map(|m| {
+        let mname = &m.name;
+        let mdocs = &m.docs;
+        let param_specs = m.params.iter().map(|(pname, ptype)| {
+            // Derive `type_short_name` cheaply — last path segment of
+            // the pretty-printed type. We don't have an `&syn::Type`
+            // here (the body was rewritten before we ran), but the
+            // string we have is `quote!`-stringified so it follows the
+            // same conventions as `collect_params`. Pulling the short
+            // name from the string is fine for catalog purposes; ties
+            // through to `TypeEntry::short_name` for enums/structs.
+            let short = pretty_type_short(ptype);
+            quote! {
+                ::framework_core::__mcp::ParamSpec {
+                    name: #pname,
+                    type_str: #ptype,
+                    type_short_name: #short,
+                }
+            }
+        });
+        quote! {
+            ::framework_core::__mcp::inventory::submit! {
+                ::framework_core::__mcp::MethodEntry {
+                    parent_module_path: module_path!(),
+                    parent_name: #name_str,
+                    name: #mname,
+                    docs: #mdocs,
+                    params: &[ #(#param_specs),* ],
+                    return_type: "",
+                }
+            }
+        }
+    });
+
+    let animation_submissions = animations.iter().map(|a| {
+        let binding = &a.binding;
+        let initial = &a.initial;
+        let line = a.line;
+        quote! {
+            ::framework_core::__mcp::inventory::submit! {
+                ::framework_core::__mcp::AnimationEntry {
+                    parent_module_path: module_path!(),
+                    parent_name: #name_str,
+                    binding: #binding,
+                    initial: #initial,
+                    line: #line,
+                }
+            }
+        }
+    });
+
     quote! {
         ::framework_core::__mcp::inventory::submit! {
             ::framework_core::__mcp::ComponentEntry {
@@ -60,7 +123,45 @@ pub(crate) fn emit(item_fn: &ItemFn) -> TokenStream2 {
                 params: &[ #(#param_entries),* ],
             }
         }
+        #(#method_submissions)*
+        #(#animation_submissions)*
     }
+}
+
+/// Pull the last segment of a pretty-printed type string. `& 'a Foo<T>`
+/// → `"Foo"`; `Vec<u8>` → `"Vec"`. Empty when the string has no
+/// alphanumeric ident token (tuples, function types, …).
+fn pretty_type_short(s: &str) -> String {
+    // Trim refs/lifetimes/parens up to the first ident-starting char,
+    // then walk until the next non-ident character. Cheap and good
+    // enough for catalog purposes — full parsing isn't worth the
+    // extra `syn` round-trip.
+    let mut chars = s.chars().peekable();
+    // Skip leading ref/lifetime/whitespace.
+    while let Some(&c) = chars.peek() {
+        if c.is_alphabetic() || c == '_' { break; }
+        chars.next();
+    }
+    let mut ident = String::new();
+    let mut last_ident = String::new();
+    for c in chars {
+        if c.is_alphanumeric() || c == '_' {
+            ident.push(c);
+        } else {
+            if !ident.is_empty() {
+                last_ident = std::mem::take(&mut ident);
+            }
+            // After `::` we want the next segment, not the previous
+            // one. Reset on `::` boundary.
+            if c == ':' || c == '<' {
+                last_ident.clear();
+            }
+        }
+    }
+    if !ident.is_empty() {
+        last_ident = ident;
+    }
+    last_ident
 }
 
 /// Pull each parameter off the fn signature and produce a
@@ -163,6 +264,98 @@ impl<'ast> Visit<'ast> for ComposeCollector {
         capture_if_ui_or_jsx(&node.mac, &mut self.edges);
         syn::visit::visit_stmt_macro(self, node);
     }
+}
+
+/// One [`AnimationEntry`]-ready capture from the component body — a
+/// `let <name> = animated!(<initial>);` (or just an inline
+/// `animated!(...)` expression). Best-effort: anything that doesn't
+/// parse cleanly is silently skipped.
+pub(crate) struct AnimationCapture {
+    pub binding: String,
+    pub initial: String,
+    pub line: u32,
+}
+
+/// Walk the component body for `animated!(...)` macro invocations.
+/// Recognises two shapes:
+///
+/// 1. `let <name> = animated!(<initial>);` — captures `name` and the
+///    initial expression.
+/// 2. Bare `animated!(<initial>)` inside any expression — captured
+///    with empty `binding`.
+///
+/// In both cases we record the source line so editor jumps work.
+pub(crate) fn collect_animations(block: &syn::Block) -> Vec<AnimationCapture> {
+    let mut v = AnimationCollector { items: Vec::new() };
+    v.visit_block(block);
+    v.items
+}
+
+struct AnimationCollector {
+    items: Vec<AnimationCapture>,
+}
+
+impl<'ast> Visit<'ast> for AnimationCollector {
+    fn visit_local(&mut self, node: &'ast syn::Local) {
+        // `let <pat> = <init>;` — interested only when the init is a
+        // macro invocation of `animated!`.
+        if let Some(local_init) = &node.init {
+            if let syn::Expr::Macro(em) = local_init.expr.as_ref() {
+                if is_animated_macro(&em.mac) {
+                    let binding = match &node.pat {
+                        syn::Pat::Ident(pi) => pi.ident.to_string(),
+                        syn::Pat::Type(pt) => match pt.pat.as_ref() {
+                            syn::Pat::Ident(pi) => pi.ident.to_string(),
+                            _ => String::new(),
+                        },
+                        _ => String::new(),
+                    };
+                    let initial = em.mac.tokens.to_string();
+                    let line = em.mac.path.span().start().line as u32;
+                    self.items.push(AnimationCapture { binding, initial, line });
+                }
+            }
+        }
+        syn::visit::visit_local(self, node);
+    }
+
+    fn visit_expr_macro(&mut self, node: &'ast syn::ExprMacro) {
+        // Inline `animated!(...)` outside a `let` — record with empty
+        // binding so the catalog still reflects the animation.
+        if is_animated_macro(&node.mac) {
+            // Avoid double-counting: if the parent walker already
+            // captured this via `visit_local`, we'll have recorded it
+            // there. Detecting that is tricky in a visitor; instead,
+            // accept the rare double-count for now — consumers can
+            // dedupe on `(binding, line)`. In practice components use
+            // the `let` form.
+            let initial = node.mac.tokens.to_string();
+            let line = node.mac.path.span().start().line as u32;
+            // Skip if the binding is already empty AND we'd
+            // immediately follow a let-captured one on the same line.
+            let dup = self
+                .items
+                .last()
+                .map(|prev| prev.line == line && !prev.binding.is_empty())
+                .unwrap_or(false);
+            if !dup {
+                self.items.push(AnimationCapture {
+                    binding: String::new(),
+                    initial,
+                    line,
+                });
+            }
+        }
+        syn::visit::visit_expr_macro(self, node);
+    }
+}
+
+fn is_animated_macro(mac: &syn::Macro) -> bool {
+    mac.path
+        .segments
+        .last()
+        .map(|s| s.ident == "animated")
+        .unwrap_or(false)
 }
 
 /// If `mac` is a call to `ui!` or `jsx!`, parse its body via the

@@ -7,6 +7,7 @@
 //! resolved literal when sent on the wire. Tokens are resolved
 //! against the dev-side active theme before serialization.
 
+use framework_core::accessibility::{AccessibilityProps, LiveRegionPriority, Role};
 use framework_core::primitives;
 use framework_core::{
     AlignItems, AssetId, AssetSource, AssetTag, Color, Easing, FlexDirection, FontFamily,
@@ -14,10 +15,11 @@ use framework_core::{
     TextAlign, Tokenized, TypefaceFace, TypefaceId,
 };
 use wire::{
-    AssetId as WireAssetId, TypefaceId as WireTypefaceId, WireAlignItems, WireAssetSource,
-    WireAssetTag, WireColor, WireEasing, WireFillRule, WireFlexDirection, WireFontFamily,
-    WireFontStyle, WireFontWeight, WireIconData, WireJustifyContent, WireLength, WireStateBit,
-    WireStyleRules, WireSystemFallback, WireTextAlign, WireTypefaceFace,
+    AssetId as WireAssetId, TypefaceId as WireTypefaceId, WireAccessibilityProps, WireAlignItems,
+    WireAssetSource, WireAssetTag, WireColor, WireEasing, WireFillRule, WireFlexDirection,
+    WireFontFamily, WireFontStyle, WireFontWeight, WireIconData, WireJustifyContent, WireLength,
+    WireLiveRegionPriority, WireRole, WireStateBit, WireStyleRules, WireSystemFallback,
+    WireTextAlign, WireTypefaceFace,
 };
 
 pub fn icon_data_to_wire(d: &primitives::icon::IconData) -> WireIconData {
@@ -259,5 +261,80 @@ pub fn typeface_face_to_wire(f: &TypefaceFace) -> WireTypefaceFace {
         weight: font_weight_to_wire(f.weight),
         style: font_style_to_wire(f.style),
         asset: asset_id_to_wire(f.asset),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Accessibility: framework_core → wire.
+// ---------------------------------------------------------------------------
+
+/// Convert an `&AccessibilityProps` into its wire mirror. Carries
+/// label / hint / identifier / hidden / role / traits / live-region
+/// across faithfully. `actions`' function side does not survive — we
+/// emit only the action *names* (see `WireAccessibilityProps` docs).
+pub fn a11y_to_wire(p: &AccessibilityProps) -> WireAccessibilityProps {
+    WireAccessibilityProps {
+        label: p.label.clone(),
+        hint: p.hint.clone(),
+        identifier: p.identifier.clone(),
+        hidden: p.hidden,
+        role: p.role.map(role_to_wire),
+        traits: p.traits.bits(),
+        live_region: p.live_region.map(live_region_to_wire),
+        actions: p.actions.iter().map(|a| a.name.clone()).collect(),
+    }
+}
+
+pub fn role_to_wire(r: Role) -> WireRole {
+    match r {
+        Role::Button => WireRole::Button,
+        Role::Link => WireRole::Link,
+        Role::Image => WireRole::Image,
+        Role::Text => WireRole::Text,
+        Role::Header => WireRole::Header,
+        Role::List => WireRole::List,
+        Role::ListItem => WireRole::ListItem,
+        Role::Group => WireRole::Group,
+        Role::Separator => WireRole::Separator,
+        Role::TextField => WireRole::TextField,
+        Role::TextArea => WireRole::TextArea,
+        Role::Switch => WireRole::Switch,
+        Role::Slider => WireRole::Slider,
+        Role::Checkbox => WireRole::Checkbox,
+        Role::RadioButton => WireRole::RadioButton,
+        Role::RadioGroup => WireRole::RadioGroup,
+        Role::ComboBox => WireRole::ComboBox,
+        Role::SearchField => WireRole::SearchField,
+        Role::Tab => WireRole::Tab,
+        Role::TabList => WireRole::TabList,
+        Role::TabPanel => WireRole::TabPanel,
+        Role::NavigationLink => WireRole::NavigationLink,
+        Role::MenuItem => WireRole::MenuItem,
+        Role::Menu => WireRole::Menu,
+        Role::MenuBar => WireRole::MenuBar,
+        Role::Toolbar => WireRole::Toolbar,
+        Role::Alert => WireRole::Alert,
+        Role::Status => WireRole::Status,
+        Role::ProgressBar => WireRole::ProgressBar,
+        Role::Spinner => WireRole::Spinner,
+        Role::Dialog => WireRole::Dialog,
+        Role::AlertDialog => WireRole::AlertDialog,
+        Role::Drawer => WireRole::Drawer,
+        Role::Popover => WireRole::Popover,
+        Role::Tooltip => WireRole::Tooltip,
+        Role::Region => WireRole::Region,
+        // `Role` is `#[non_exhaustive]`; future framework-core variants
+        // that this conversion module hasn't been taught about decode
+        // as `Unknown` on the receiver. Acceptable because in dev-mode
+        // both sides ship from the same commit — the catch-all just
+        // keeps us forward-compatible against a future schema bump.
+        _ => WireRole::Unknown,
+    }
+}
+
+pub fn live_region_to_wire(p: LiveRegionPriority) -> WireLiveRegionPriority {
+    match p {
+        LiveRegionPriority::Polite => WireLiveRegionPriority::Polite,
+        LiveRegionPriority::Assertive => WireLiveRegionPriority::Assertive,
     }
 }

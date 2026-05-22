@@ -44,7 +44,19 @@ use serde::{Deserialize, Serialize};
 /// Bumped to 2 with the audit-driven additions: `CreateTextArea`,
 /// `UpdateTextAreaValue`, `CreateExternal`, `NavigatorSelect`, plus
 /// scene-model handling of theme tokens and drawer-open state.
-pub const PROTOCOL_VERSION: u32 = 2;
+///
+/// Bumped to 3 to carry accessibility props end-to-end: every `Create*`
+/// command grew an `a11y: WireAccessibilityProps` field, and two new
+/// variants — `UpdateAccessibility` and `AnnounceForAccessibility` —
+/// were added so the dev-server's `update_accessibility` /
+/// `announce_for_accessibility` Backend calls reach the app side
+/// instead of being dropped on the floor.
+pub const PROTOCOL_VERSION: u32 = 3;
+
+/// Alias retained for code/docs that reference `WIRE_VERSION` rather
+/// than the canonical [`PROTOCOL_VERSION`] name. Both point at the same
+/// integer.
+pub const WIRE_VERSION: u32 = PROTOCOL_VERSION;
 
 // ---------------------------------------------------------------------------
 // ID namespaces
@@ -207,12 +219,23 @@ pub enum EventArgs {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Command {
     // --- Create commands: every primitive's `create_*` ---
+    //
+    // Every Create* variant carries an `a11y: WireAccessibilityProps`
+    // so the app-side replayer can pass the matching
+    // `AccessibilityProps` into the wrapped backend's `create_*`.
+    // `#[serde(default)]` lets older recordings (which were emitted
+    // before WIRE_VERSION=3) deserialize as `Default::default()`. New
+    // emissions always carry the field.
     CreateView {
         id: NodeId,
+        #[serde(default)]
+        a11y: WireAccessibilityProps,
     },
     CreateText {
         id: NodeId,
         content: String,
+        #[serde(default)]
+        a11y: WireAccessibilityProps,
     },
     CreateButton {
         id: NodeId,
@@ -220,10 +243,14 @@ pub enum Command {
         on_click: HandlerId,
         leading_icon: Option<WireIconData>,
         trailing_icon: Option<WireIconData>,
+        #[serde(default)]
+        a11y: WireAccessibilityProps,
     },
     CreatePressable {
         id: NodeId,
         on_click: HandlerId,
+        #[serde(default)]
+        a11y: WireAccessibilityProps,
     },
     CreateReactiveAnchor {
         id: NodeId,
@@ -232,17 +259,23 @@ pub enum Command {
         id: NodeId,
         src: String,
         alt: Option<String>,
+        #[serde(default)]
+        a11y: WireAccessibilityProps,
     },
     CreateIcon {
         id: NodeId,
         data: WireIconData,
         color: Option<WireColor>,
+        #[serde(default)]
+        a11y: WireAccessibilityProps,
     },
     CreateTextInput {
         id: NodeId,
         initial_value: String,
         placeholder: Option<String>,
         on_change: HandlerId,
+        #[serde(default)]
+        a11y: WireAccessibilityProps,
     },
     /// Multi-line text-entry primitive — mirrors `CreateTextInput` but
     /// produces a backend node that renders newlines and (typically)
@@ -254,6 +287,8 @@ pub enum Command {
         initial_value: String,
         placeholder: Option<String>,
         on_change: HandlerId,
+        #[serde(default)]
+        a11y: WireAccessibilityProps,
     },
     /// Third-party `Primitive::External` node. Only `type_name` crosses
     /// the wire because the underlying `Rc<dyn Any>` props are arbitrary
@@ -264,11 +299,15 @@ pub enum Command {
     CreateExternal {
         id: NodeId,
         type_name: String,
+        #[serde(default)]
+        a11y: WireAccessibilityProps,
     },
     CreateToggle {
         id: NodeId,
         initial_value: bool,
         on_change: HandlerId,
+        #[serde(default)]
+        a11y: WireAccessibilityProps,
     },
     CreateSlider {
         id: NodeId,
@@ -277,10 +316,14 @@ pub enum Command {
         max: f32,
         step: Option<f32>,
         on_change: HandlerId,
+        #[serde(default)]
+        a11y: WireAccessibilityProps,
     },
     CreateScrollView {
         id: NodeId,
         horizontal: bool,
+        #[serde(default)]
+        a11y: WireAccessibilityProps,
     },
     CreateVideo {
         id: NodeId,
@@ -288,11 +331,15 @@ pub enum Command {
         autoplay: bool,
         controls: bool,
         loop_playback: bool,
+        #[serde(default)]
+        a11y: WireAccessibilityProps,
     },
     CreateActivityIndicator {
         id: NodeId,
         size: WireActivityIndicatorSize,
         color: Option<WireColor>,
+        #[serde(default)]
+        a11y: WireAccessibilityProps,
     },
     CreateLink {
         id: NodeId,
@@ -300,12 +347,16 @@ pub enum Command {
         url: String,
         kind: WireNavKind,
         on_activate: HandlerId,
+        #[serde(default)]
+        a11y: WireAccessibilityProps,
     },
     CreatePortal {
         id: NodeId,
         target: WirePortalTarget,
         on_dismiss: Option<HandlerId>,
         trap_focus: bool,
+        #[serde(default)]
+        a11y: WireAccessibilityProps,
     },
     /// GPU surface. The render closures are bound app-locally by
     /// name — the dev side carries no GPU code. This is the one
@@ -314,6 +365,8 @@ pub enum Command {
     CreateGraphics {
         id: NodeId,
         renderer: String,
+        #[serde(default)]
+        a11y: WireAccessibilityProps,
     },
     CreateVirtualizer {
         id: NodeId,
@@ -321,11 +374,15 @@ pub enum Command {
         horizontal: bool,
         initial_size: WireItemSize,
         initial_keys: Vec<u64>,
+        #[serde(default)]
+        a11y: WireAccessibilityProps,
     },
     CreateNavigator {
         id: NodeId,
         initial_route: String,
         initial_path: String,
+        #[serde(default)]
+        a11y: WireAccessibilityProps,
     },
     CreateTabNavigator {
         id: NodeId,
@@ -334,6 +391,8 @@ pub enum Command {
         tabs: Vec<WireTabRegistration>,
         placement: WireTabPlacement,
         mount_policy: WireMountPolicy,
+        #[serde(default)]
+        a11y: WireAccessibilityProps,
     },
     CreateDrawerNavigator {
         id: NodeId,
@@ -344,6 +403,8 @@ pub enum Command {
         drawer_width: f32,
         swipe_to_open: bool,
         mount_policy: WireMountPolicy,
+        #[serde(default)]
+        a11y: WireAccessibilityProps,
     },
 
     // --- Tree mutation ---
@@ -653,6 +714,32 @@ pub enum Command {
     UnregisterTypeface {
         id: TypefaceId,
     },
+
+    // --- Accessibility ---
+    /// Replace the accessibility prop bag on an existing node. Mirrors
+    /// `Backend::update_accessibility(&node, &props, inferred_role)` —
+    /// the walker's reactive a11y Effect emits this when any field of
+    /// the resolved [`AccessibilityProps`] changes for a mounted node.
+    ///
+    /// `inferred_role` is the primitive's default role (the same value
+    /// the walker computed via
+    /// `framework_core::accessibility::default_role`). Backends fall
+    /// back to it when `a11y.role.is_none()`.
+    ///
+    /// [`AccessibilityProps`]: WireAccessibilityProps
+    UpdateAccessibility {
+        id: NodeId,
+        a11y: WireAccessibilityProps,
+        inferred_role: Option<WireRole>,
+    },
+
+    /// Imperative live-region announcement. Mirrors
+    /// `Backend::announce_for_accessibility(msg, priority)` — no node
+    /// target, just a one-shot post into the platform's AX subsystem.
+    AnnounceForAccessibility {
+        msg: String,
+        priority: WireLiveRegionPriority,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -837,6 +924,111 @@ pub enum WireTokenValue {
     Number(f32),
     Length(WireLength),
     String(String),
+}
+
+// ---------------------------------------------------------------------------
+// Accessibility (a11y) wire mirror.
+// ---------------------------------------------------------------------------
+
+/// Wire mirror of `framework_core::accessibility::AccessibilityProps`.
+///
+/// Every `Create*` command carries one of these so the app side can
+/// pass the right `AccessibilityProps` into `Backend::create_*`. The
+/// dev-server's recorder serializes from `&AccessibilityProps`; the
+/// dev-client's replayer deserializes back into `AccessibilityProps`.
+///
+/// Actions are tricky. `AccessibilityAction` carries a `Rc<dyn Fn()>`
+/// handler — there's no general wire serialization contract for
+/// closures. For v1 we only carry the action *names* (the label
+/// authors give); the function side does not survive the wire. This
+/// matches how `HandlerId` trampolines work for `on_click` — but
+/// `AccessibilityAction` has no equivalent reverse-channel wired up,
+/// so app-side replay just reconstructs the names with no-op handlers.
+/// Author code that needs working a11y actions must run against a
+/// direct backend, not over AAS.
+#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WireAccessibilityProps {
+    pub label: Option<String>,
+    pub hint: Option<String>,
+    pub identifier: Option<String>,
+    pub hidden: bool,
+    pub role: Option<WireRole>,
+    /// Raw bits of `framework_core::accessibility::AccessibilityTraits`.
+    /// Reconstructed on the receiving side via
+    /// `AccessibilityTraits::from_bits_truncate`.
+    pub traits: u16,
+    pub live_region: Option<WireLiveRegionPriority>,
+    /// Action labels only. See module docs above.
+    pub actions: Vec<String>,
+}
+
+/// Wire mirror of `framework_core::accessibility::Role`. Source `Role`
+/// is `#[non_exhaustive]`; we mirror with a closed enum here, plus an
+/// `Unknown` fallback so a newer-version peer's unrecognized variants
+/// decode without aborting the batch. (Older peers that don't know a
+/// freshly-added variant simply see `Unknown` on this side.)
+#[derive(Copy, Clone, Hash, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum WireRole {
+    // Structural
+    Button,
+    Link,
+    Image,
+    Text,
+    Header,
+    List,
+    ListItem,
+    Group,
+    Separator,
+
+    // Input
+    TextField,
+    TextArea,
+    Switch,
+    Slider,
+    Checkbox,
+    RadioButton,
+    RadioGroup,
+    ComboBox,
+    SearchField,
+
+    // Disclosure / navigation
+    Tab,
+    TabList,
+    TabPanel,
+    NavigationLink,
+    MenuItem,
+    Menu,
+    MenuBar,
+    Toolbar,
+
+    // Feedback
+    Alert,
+    Status,
+    ProgressBar,
+    Spinner,
+
+    // Container / overlay
+    Dialog,
+    AlertDialog,
+    Drawer,
+    Popover,
+    Tooltip,
+    Region,
+
+    /// Catch-all for forward-compatibility — a newer-version dev side
+    /// shipped a role this side doesn't know about. Backends translate
+    /// `Unknown` as "no explicit role override; fall back to the
+    /// primitive's inferred default" (same observable behavior as
+    /// `role: None`).
+    #[serde(other)]
+    Unknown,
+}
+
+/// Wire mirror of `framework_core::accessibility::LiveRegionPriority`.
+#[derive(Copy, Clone, Hash, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum WireLiveRegionPriority {
+    Polite,
+    Assertive,
 }
 
 // ---------------------------------------------------------------------------

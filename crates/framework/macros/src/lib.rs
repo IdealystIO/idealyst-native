@@ -149,8 +149,8 @@ pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Look for a `methods!` block inside the body and lift it out into
     // a generated handle struct + Bindable wiring. The fn's body and
     // return type are rewritten in place when methods! is present.
-    let methods_extra = match methods_block::extract_and_rewrite(&mut item_fn) {
-        Ok(extra) => extra,
+    let (methods_extra, method_infos) = match methods_block::extract_and_rewrite(&mut item_fn) {
+        Ok((extra, infos)) => (extra, infos),
         Err(e) => return e.to_compile_error().into(),
     };
     reactivity::rewrite(&mut item_fn);
@@ -171,9 +171,12 @@ pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
     // magic in `inventory` works as expected. When the feature is off,
     // this expands to an empty token stream — zero overhead.
     #[cfg(feature = "mcp")]
-    let mcp_registration = mcp_emit::emit(&item_fn);
+    let mcp_registration = mcp_emit::emit(&item_fn, &method_infos);
     #[cfg(not(feature = "mcp"))]
-    let mcp_registration = proc_macro2::TokenStream::new();
+    let mcp_registration = {
+        let _ = &method_infos;
+        proc_macro2::TokenStream::new()
+    };
 
     // When the `hot-reload` feature is on, split the function into
     // an inner `__<Name>_hot_impl` containing the rewritten body and

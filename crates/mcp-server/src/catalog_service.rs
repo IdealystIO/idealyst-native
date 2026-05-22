@@ -305,6 +305,12 @@ pub struct SearchRequest {
     pub app: Option<String>,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SlugRequest {
+    /// Guide slug (e.g. `getting-started`).
+    pub slug: String,
+}
+
 #[tool_router]
 impl CatalogService {
     pub fn new() -> Self {
@@ -737,29 +743,414 @@ impl CatalogService {
         }
     }
 
-    #[tool(description = "Fulltext search over component names and doc comments. Returns matches as a JSON array of { fqn, name, docs_excerpt }.")]
+    // -------------------------------------------------------------
+    // Framework catalog tools — surface the locked-slice tables and
+    // open-author slices (methods, animations, types) so AI / idea-ui
+    // can discover the full authoring vocabulary, not just the
+    // user's components.
+
+    #[tool(description = "List every framework primitive — the leaf nodes of `ui!` (View, Text, Button, ScrollView, …). Returns a JSON array of { name, pascal_name, category, backends, docs } sorted by name.")]
+    async fn list_primitives(&self) -> Result<CallToolResult, McpError> {
+        let cat = self.catalog.read().await;
+        let json: Vec<serde_json::Value> = cat
+            .primitives()
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "name": p.name,
+                    "pascal_name": p.pascal_name,
+                    "category": p.category.as_str(),
+                    "backends": p.backends,
+                    "docs": p.docs,
+                })
+            })
+            .collect();
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&json).unwrap(),
+        )]))
+    }
+
+    #[tool(description = "Get the full record for one framework primitive: docs, every prop (name/type/doc/constraint), backend support, category. Accepts snake_case (`scroll_view`) or PascalCase (`ScrollView`).")]
+    async fn describe_primitive(
+        &self,
+        Parameters(req): Parameters<NameRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let cat = self.catalog.read().await;
+        let entry = cat
+            .primitives()
+            .iter()
+            .find(|p| p.name == req.name || p.pascal_name == req.name)
+            .ok_or_else(|| {
+                McpError::invalid_params(
+                    format!("primitive {:?} not found", req.name),
+                    None,
+                )
+            })?;
+        let props: Vec<serde_json::Value> = entry
+            .props
+            .iter()
+            .map(|f| {
+                serde_json::json!({
+                    "name": f.name,
+                    "type": f.type_str,
+                    "doc": f.doc,
+                    "constraint": f.constraint,
+                })
+            })
+            .collect();
+        let json = serde_json::json!({
+            "name": entry.name,
+            "pascal_name": entry.pascal_name,
+            "category": entry.category.as_str(),
+            "backends": entry.backends,
+            "docs": entry.docs,
+            "props": props,
+        });
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&json).unwrap(),
+        )]))
+    }
+
+    #[tool(description = "List every framework utility function — free helpers authors call from their own code (not inside `ui!`). Examples: `platform()`, `parse_color()`, `now_micros()`. Returns { name, fqn, category, return_type, docs } sorted by name.")]
+    async fn list_utilities(&self) -> Result<CallToolResult, McpError> {
+        let cat = self.catalog.read().await;
+        let json: Vec<serde_json::Value> = cat
+            .utilities()
+            .iter()
+            .map(|u| {
+                serde_json::json!({
+                    "name": u.name,
+                    "module_path": u.module_path,
+                    "fqn": format!("{}::{}", u.module_path, u.name),
+                    "category": u.category.as_str(),
+                    "return_type": u.return_type,
+                    "docs": u.docs,
+                })
+            })
+            .collect();
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&json).unwrap(),
+        )]))
+    }
+
+    #[tool(description = "Get the full record for one framework utility: docs, params, return type. Inlines the return type's `TypeEntry` (variants for enums, fields for structs) when known.")]
+    async fn describe_utility(
+        &self,
+        Parameters(req): Parameters<NameRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let cat = self.catalog.read().await;
+        let entry = cat
+            .utilities()
+            .iter()
+            .find(|u| u.name == req.name || format!("{}::{}", u.module_path, u.name) == req.name)
+            .ok_or_else(|| {
+                McpError::invalid_params(
+                    format!("utility {:?} not found", req.name),
+                    None,
+                )
+            })?;
+        let params: Vec<serde_json::Value> = entry
+            .params
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "name": p.name,
+                    "type": p.type_str,
+                    "type_short_name": p.type_short_name,
+                })
+            })
+            .collect();
+        let return_type_inline = if !entry.return_type_short.is_empty() {
+            cat.types()
+                .iter()
+                .find(|t| t.short_name == entry.return_type_short)
+                .map(|t| type_entry_json(t))
+        } else {
+            None
+        };
+        let mut obj = serde_json::Map::new();
+        obj.insert("name".into(), entry.name.into());
+        obj.insert("module_path".into(), entry.module_path.into());
+        obj.insert(
+            "fqn".into(),
+            format!("{}::{}", entry.module_path, entry.name).into(),
+        );
+        obj.insert("docs".into(), entry.docs.into());
+        obj.insert("params".into(), serde_json::json!(params));
+        obj.insert("return_type".into(), entry.return_type.into());
+        obj.insert("return_type_short".into(), entry.return_type_short.into());
+        obj.insert("category".into(), entry.category.as_str().into());
+        if let Some(ty) = return_type_inline {
+            obj.insert("return_type_entry".into(), ty);
+        }
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&serde_json::Value::Object(obj)).unwrap(),
+        )]))
+    }
+
+    #[tool(description = "List the four framework interaction states (`hovered`, `pressed`, `focused`, `disabled`) — the valid names for `state foo(theme) { … }` arms in `stylesheet!`. Returns { name, docs, backends }.")]
+    async fn list_states(&self) -> Result<CallToolResult, McpError> {
+        let cat = self.catalog.read().await;
+        let json: Vec<serde_json::Value> = cat
+            .states()
+            .iter()
+            .map(|s| {
+                serde_json::json!({
+                    "name": s.name,
+                    "docs": s.docs,
+                    "backends": s.backends,
+                })
+            })
+            .collect();
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&json).unwrap(),
+        )]))
+    }
+
+    #[tool(description = "List bundled framework usage guides — markdown documents covering getting started, concepts, reactivity, styling, navigation, backends. Returns { slug, title, order, tags } sorted by order.")]
+    async fn list_guides(&self) -> Result<CallToolResult, McpError> {
+        let cat = self.catalog.read().await;
+        let json: Vec<serde_json::Value> = cat
+            .guides()
+            .iter()
+            .map(|g| {
+                serde_json::json!({
+                    "slug": g.slug,
+                    "title": g.title,
+                    "order": g.order,
+                    "tags": g.tags,
+                })
+            })
+            .collect();
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&json).unwrap(),
+        )]))
+    }
+
+    #[tool(description = "Read the full markdown body of one framework guide by slug. Cross-references in the body use the `[[name]]` convention — resolve them via `describe_component`/`describe_primitive`/`describe_utility`/`describe_type`.")]
+    async fn read_guide(
+        &self,
+        Parameters(req): Parameters<SlugRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let cat = self.catalog.read().await;
+        let entry = cat
+            .guides()
+            .iter()
+            .find(|g| g.slug == req.slug)
+            .ok_or_else(|| {
+                McpError::invalid_params(format!("guide {:?} not found", req.slug), None)
+            })?;
+        let json = serde_json::json!({
+            "slug": entry.slug,
+            "title": entry.title,
+            "order": entry.order,
+            "tags": entry.tags,
+            "body": entry.body,
+        });
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&json).unwrap(),
+        )]))
+    }
+
+    #[tool(description = "List every imperative method declared via `methods! { fn foo(&self, …) { … } }` blocks. Returns one entry per method, tagged with its parent component. Filter by passing the parent component's name.")]
+    async fn list_methods(
+        &self,
+        Parameters(req): Parameters<NameRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let cat = self.catalog.read().await;
+        let needle = req.name.trim();
+        let json: Vec<serde_json::Value> = cat
+            .methods()
+            .iter()
+            .filter(|m| {
+                needle.is_empty()
+                    || m.parent_name == needle
+                    || format!("{}::{}", m.parent_module_path, m.parent_name) == needle
+            })
+            .map(|m| {
+                let params: Vec<serde_json::Value> = m
+                    .params
+                    .iter()
+                    .map(|p| {
+                        serde_json::json!({
+                            "name": p.name,
+                            "type": p.type_str,
+                            "type_short_name": p.type_short_name,
+                        })
+                    })
+                    .collect();
+                serde_json::json!({
+                    "parent_fqn": format!("{}::{}", m.parent_module_path, m.parent_name),
+                    "name": m.name,
+                    "docs": m.docs,
+                    "params": params,
+                    "return_type": m.return_type,
+                })
+            })
+            .collect();
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&json).unwrap(),
+        )]))
+    }
+
+    #[tool(description = "List every `AnimatedValue` declared inside a `#[component]` body (`let x = animated!(…)`). Filter by parent component name. Each entry is { parent_fqn, binding, initial, line }.")]
+    async fn list_animations(
+        &self,
+        Parameters(req): Parameters<NameRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let cat = self.catalog.read().await;
+        let needle = req.name.trim();
+        let json: Vec<serde_json::Value> = cat
+            .animations()
+            .iter()
+            .filter(|a| {
+                needle.is_empty()
+                    || a.parent_name == needle
+                    || format!("{}::{}", a.parent_module_path, a.parent_name) == needle
+            })
+            .map(|a| {
+                serde_json::json!({
+                    "parent_fqn": format!("{}::{}", a.parent_module_path, a.parent_name),
+                    "binding": a.binding,
+                    "initial": a.initial,
+                    "line": a.line,
+                })
+            })
+            .collect();
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&json).unwrap(),
+        )]))
+    }
+
+    #[tool(description = "List every type registered via `#[derive(IdealystSchema)]` (structs and enums). Returns { short_name, fqn, kind } sorted by FQN.")]
+    async fn list_types(&self) -> Result<CallToolResult, McpError> {
+        let cat = self.catalog.read().await;
+        let json: Vec<serde_json::Value> = cat
+            .types()
+            .iter()
+            .map(|t| {
+                let kind = match &t.shape {
+                    framework_mcp::TypeShape::Struct { .. } => "struct",
+                    framework_mcp::TypeShape::Enum { .. } => "enum",
+                };
+                serde_json::json!({
+                    "short_name": t.short_name,
+                    "module_path": t.module_path,
+                    "fqn": format!("{}::{}", t.module_path, t.short_name),
+                    "kind": kind,
+                })
+            })
+            .collect();
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&json).unwrap(),
+        )]))
+    }
+
+    #[tool(description = "Describe one type — struct fields (name, type, doc, constraint) or enum variants (name, docs, payload). Accepts a short-name or fully-qualified name.")]
+    async fn describe_type(
+        &self,
+        Parameters(req): Parameters<NameRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let cat = self.catalog.read().await;
+        let entry = cat
+            .types()
+            .iter()
+            .find(|t| {
+                t.short_name == req.name
+                    || format!("{}::{}", t.module_path, t.short_name) == req.name
+            })
+            .ok_or_else(|| {
+                McpError::invalid_params(format!("type {:?} not found", req.name), None)
+            })?;
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&type_entry_json(entry)).unwrap(),
+        )]))
+    }
+
+    #[tool(description = "Fulltext search over every catalog slice — components, primitives, utilities, guides, types, methods. Returns matches as a JSON array of { kind, name, fqn, docs_excerpt } tagged with the slice the match came from.")]
     async fn search(
         &self,
         Parameters(req): Parameters<SearchRequest>,
     ) -> Result<CallToolResult, McpError> {
         let needle = req.query.to_lowercase();
         let cat = self.catalog.read().await;
-        let hits: Vec<serde_json::Value> = cat
-            .entries()
-            .iter()
-            .filter(|e| {
-                e.name.to_lowercase().contains(&needle)
-                    || e.docs.to_lowercase().contains(&needle)
-            })
-            .map(|e| {
-                let excerpt = docs_excerpt_around(e.docs, &needle);
-                serde_json::json!({
-                    "fqn": format!("{}::{}", e.module_path, e.name),
+        let mut hits: Vec<serde_json::Value> = Vec::new();
+
+        for e in cat.entries() {
+            if e.name.to_lowercase().contains(&needle)
+                || e.docs.to_lowercase().contains(&needle)
+            {
+                hits.push(serde_json::json!({
+                    "kind": "component",
                     "name": e.name,
-                    "docs_excerpt": excerpt,
-                })
-            })
-            .collect();
+                    "fqn": format!("{}::{}", e.module_path, e.name),
+                    "docs_excerpt": docs_excerpt_around(e.docs, &needle),
+                }));
+            }
+        }
+        for p in cat.primitives() {
+            if p.name.to_lowercase().contains(&needle)
+                || p.pascal_name.to_lowercase().contains(&needle)
+                || p.docs.to_lowercase().contains(&needle)
+            {
+                hits.push(serde_json::json!({
+                    "kind": "primitive",
+                    "name": p.name,
+                    "fqn": p.name,
+                    "docs_excerpt": docs_excerpt_around(p.docs, &needle),
+                }));
+            }
+        }
+        for u in cat.utilities() {
+            if u.name.to_lowercase().contains(&needle)
+                || u.docs.to_lowercase().contains(&needle)
+            {
+                hits.push(serde_json::json!({
+                    "kind": "utility",
+                    "name": u.name,
+                    "fqn": format!("{}::{}", u.module_path, u.name),
+                    "docs_excerpt": docs_excerpt_around(u.docs, &needle),
+                }));
+            }
+        }
+        for g in cat.guides() {
+            if g.slug.to_lowercase().contains(&needle)
+                || g.title.to_lowercase().contains(&needle)
+                || g.body.to_lowercase().contains(&needle)
+            {
+                hits.push(serde_json::json!({
+                    "kind": "guide",
+                    "name": g.slug,
+                    "fqn": g.slug,
+                    "docs_excerpt": docs_excerpt_around(g.body, &needle),
+                }));
+            }
+        }
+        for t in cat.types() {
+            if t.short_name.to_lowercase().contains(&needle)
+                || t.docs.to_lowercase().contains(&needle)
+            {
+                hits.push(serde_json::json!({
+                    "kind": "type",
+                    "name": t.short_name,
+                    "fqn": format!("{}::{}", t.module_path, t.short_name),
+                    "docs_excerpt": docs_excerpt_around(t.docs, &needle),
+                }));
+            }
+        }
+        for m in cat.methods() {
+            if m.name.to_lowercase().contains(&needle)
+                || m.docs.to_lowercase().contains(&needle)
+            {
+                hits.push(serde_json::json!({
+                    "kind": "method",
+                    "name": m.name,
+                    "fqn": format!("{}::{}.{}", m.parent_module_path, m.parent_name, m.name),
+                    "docs_excerpt": docs_excerpt_around(m.docs, &needle),
+                }));
+            }
+        }
+
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string_pretty(&hits).unwrap(),
         )]))
@@ -848,6 +1239,58 @@ fn entry_to_json(entry: &ComponentEntry, edges: &[framework_mcp::ResolvedEdge]) 
     })
 }
 
+fn type_entry_json(t: &framework_mcp::TypeEntry) -> serde_json::Value {
+    let (kind, shape_body): (&str, serde_json::Value) = match &t.shape {
+        framework_mcp::TypeShape::Struct { fields } => {
+            let fs: Vec<serde_json::Value> = fields
+                .iter()
+                .map(|f| {
+                    serde_json::json!({
+                        "name": f.name,
+                        "type": f.type_str,
+                        "doc": f.doc,
+                        "constraint": f.constraint,
+                    })
+                })
+                .collect();
+            ("struct", serde_json::json!({ "fields": fs }))
+        }
+        framework_mcp::TypeShape::Enum { variants } => {
+            let vs: Vec<serde_json::Value> = variants
+                .iter()
+                .map(|v| {
+                    let payload: Vec<serde_json::Value> = v
+                        .payload
+                        .iter()
+                        .map(|f| {
+                            serde_json::json!({
+                                "name": f.name,
+                                "type": f.type_str,
+                                "doc": f.doc,
+                                "constraint": f.constraint,
+                            })
+                        })
+                        .collect();
+                    serde_json::json!({
+                        "name": v.name,
+                        "docs": v.docs,
+                        "payload": payload,
+                    })
+                })
+                .collect();
+            ("enum", serde_json::json!({ "variants": vs }))
+        }
+    };
+    serde_json::json!({
+        "short_name": t.short_name,
+        "module_path": t.module_path,
+        "fqn": format!("{}::{}", t.module_path, t.short_name),
+        "docs": t.docs,
+        "kind": kind,
+        "shape": shape_body,
+    })
+}
+
 /// Pull a ±80-char window around the first occurrence of `needle`
 /// inside `docs`. Returns the first 160 chars if no match (defensive
 /// — caller already filtered).
@@ -878,10 +1321,17 @@ impl ServerHandler for CatalogService {
                 " Robot tools present but disabled — start the server with a bridge address to enable them."
             };
             format!(
-                "Framework MCP catalog. Catalog tools: list_components, \
-                 describe_component, find_uses, find_dependencies, list_tools, \
-                 describe_tool, search. Resource: idealyst://catalog returns the \
-                 full denormalized catalog JSON.{}",
+                "Idealyst framework MCP catalog (schema v2). \
+                 Component tools: list_components, describe_component, find_uses, \
+                 find_dependencies, list_methods, list_animations. \
+                 Framework tools: list_primitives, describe_primitive, \
+                 list_utilities, describe_utility, list_states. \
+                 Types: list_types, describe_type. \
+                 Tools (#[idealyst_tool]): list_tools, describe_tool. \
+                 Guides: list_guides, read_guide (bundled framework docs). \
+                 Cross-slice: search. \
+                 Resource: idealyst://catalog returns the full denormalized \
+                 catalog JSON (every slice).{}",
                 robot_status
             )
         })
@@ -909,11 +1359,10 @@ impl ServerHandler for CatalogService {
     ) -> Result<ReadResourceResult, McpError> {
         match request.uri.as_str() {
             "idealyst://catalog" => {
-                // Serve from the in-memory catalog (which the watcher
-                // may have swapped) rather than calling
-                // `framework_mcp::catalog_json()` (which reads inventory
-                // every call). This way both the static and live-reload
-                // server paths share the same source of truth.
+                // Serve every catalog slice (v2 schema) from the
+                // in-memory `ResolvedCatalog`. The watcher may have
+                // swapped the catalog underneath us; reading through
+                // the lock guarantees a consistent snapshot.
                 let cat = self.catalog.read().await;
                 let mut entries: Vec<&ComponentEntry> = cat.entries().to_vec();
                 entries.sort_by_key(|e| (e.module_path, e.name));
@@ -924,9 +1373,175 @@ impl ServerHandler for CatalogService {
                         entry_to_json(e, edges)
                     })
                     .collect();
+
+                let primitives: Vec<serde_json::Value> = cat
+                    .primitives()
+                    .iter()
+                    .map(|p| {
+                        let props: Vec<serde_json::Value> = p
+                            .props
+                            .iter()
+                            .map(|f| {
+                                serde_json::json!({
+                                    "name": f.name,
+                                    "type": f.type_str,
+                                    "doc": f.doc,
+                                    "constraint": f.constraint,
+                                })
+                            })
+                            .collect();
+                        serde_json::json!({
+                            "name": p.name,
+                            "pascal_name": p.pascal_name,
+                            "docs": p.docs,
+                            "category": p.category.as_str(),
+                            "backends": p.backends,
+                            "props": props,
+                        })
+                    })
+                    .collect();
+
+                let utilities: Vec<serde_json::Value> = cat
+                    .utilities()
+                    .iter()
+                    .map(|u| {
+                        let params: Vec<serde_json::Value> = u
+                            .params
+                            .iter()
+                            .map(|p| {
+                                serde_json::json!({
+                                    "name": p.name,
+                                    "type": p.type_str,
+                                    "type_short_name": p.type_short_name,
+                                })
+                            })
+                            .collect();
+                        serde_json::json!({
+                            "name": u.name,
+                            "module_path": u.module_path,
+                            "fqn": format!("{}::{}", u.module_path, u.name),
+                            "docs": u.docs,
+                            "params": params,
+                            "return_type": u.return_type,
+                            "return_type_short": u.return_type_short,
+                            "category": u.category.as_str(),
+                        })
+                    })
+                    .collect();
+
+                let states: Vec<serde_json::Value> = cat
+                    .states()
+                    .iter()
+                    .map(|s| {
+                        serde_json::json!({
+                            "name": s.name,
+                            "docs": s.docs,
+                            "backends": s.backends,
+                        })
+                    })
+                    .collect();
+
+                let guides: Vec<serde_json::Value> = cat
+                    .guides()
+                    .iter()
+                    .map(|g| {
+                        serde_json::json!({
+                            "slug": g.slug,
+                            "title": g.title,
+                            "order": g.order,
+                            "tags": g.tags,
+                            "body": g.body,
+                        })
+                    })
+                    .collect();
+
+                let methods: Vec<serde_json::Value> = cat
+                    .methods()
+                    .iter()
+                    .map(|m| {
+                        let params: Vec<serde_json::Value> = m
+                            .params
+                            .iter()
+                            .map(|p| {
+                                serde_json::json!({
+                                    "name": p.name,
+                                    "type": p.type_str,
+                                    "type_short_name": p.type_short_name,
+                                })
+                            })
+                            .collect();
+                        serde_json::json!({
+                            "parent_module_path": m.parent_module_path,
+                            "parent_name": m.parent_name,
+                            "parent_fqn": format!("{}::{}", m.parent_module_path, m.parent_name),
+                            "name": m.name,
+                            "docs": m.docs,
+                            "params": params,
+                            "return_type": m.return_type,
+                        })
+                    })
+                    .collect();
+
+                let animations: Vec<serde_json::Value> = cat
+                    .animations()
+                    .iter()
+                    .map(|a| {
+                        serde_json::json!({
+                            "parent_module_path": a.parent_module_path,
+                            "parent_name": a.parent_name,
+                            "parent_fqn": format!("{}::{}", a.parent_module_path, a.parent_name),
+                            "binding": a.binding,
+                            "initial": a.initial,
+                            "line": a.line,
+                        })
+                    })
+                    .collect();
+
+                let types: Vec<serde_json::Value> = cat
+                    .types()
+                    .iter()
+                    .map(|t| type_entry_json(t))
+                    .collect();
+
+                let tools: Vec<serde_json::Value> = cat
+                    .tools()
+                    .iter()
+                    .map(|t| {
+                        let params: Vec<serde_json::Value> = t
+                            .params
+                            .iter()
+                            .map(|p| {
+                                serde_json::json!({
+                                    "name": p.name,
+                                    "type": p.type_str,
+                                    "type_short_name": p.type_short_name,
+                                })
+                            })
+                            .collect();
+                        serde_json::json!({
+                            "name": t.name,
+                            "module_path": t.module_path,
+                            "fqn": format!("{}::{}", t.module_path, t.name),
+                            "file": t.file,
+                            "line": t.line,
+                            "docs": t.docs,
+                            "params": params,
+                            "return_type": t.return_type,
+                        })
+                    })
+                    .collect();
+
                 let body = serde_json::json!({
-                    "catalog_version": 1,
+                    "catalog_version": 2,
                     "components": components,
+                    "primitives": primitives,
+                    "utilities": utilities,
+                    "states": states,
+                    "guides": guides,
+                    "methods": methods,
+                    "animations": animations,
+                    "types": types,
+                    "tools": tools,
                 });
                 let text = serde_json::to_string_pretty(&body).unwrap();
                 Ok(ReadResourceResult::new(vec![ResourceContents::text(

@@ -80,5 +80,14 @@ objc2-ui-kit = { version = "0.2", features = [
     "UICollectionViewFlowLayout",
     "UICollectionViewCell",
     "UICollectionViewLayout",
+    # UIAccessibility wiring used by `imp/a11y.rs`. `UIAccessibility`
+    # gates the `UIAccessibilityPostNotification` extern + the
+    # `setIs/AccessibilityElement` / `setAccessibilityViewIsModal:` /
+    # `setAccessibilityElementsHidden:` methods on UIView, while
+    # `UIAccessibilityConstants` gates the
+    # `UIAccessibilityAnnouncementNotification` notification ID
+    # static + `UIAccessibilityTraits` constants.
+    "UIAccessibility",
+    "UIAccessibilityConstants",
 ] }
 raw-window-handle = "0.6"

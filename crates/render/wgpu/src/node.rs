@@ -9,6 +9,7 @@
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
+use framework_core::accessibility::{AccessibilityProps, Role};
 use framework_core::{StateBits, StyleRules, TouchHandler};
 use native_layout::LayoutNode;
 
@@ -771,6 +772,31 @@ pub struct NodeData {
     /// 99% of nodes that aren't animated. See [`AnimatedOverrides`]
     /// for the per-property semantics.
     pub animated: Option<Box<AnimatedOverrides>>,
+    /// The framework's accessibility prop bag for this node. wgpu
+    /// has no real platform widget to attach a11y to, so the prop
+    /// bag is stashed here verbatim and surfaced via
+    /// [`framework_core::Backend::dump_accessibility_tree`] for the
+    /// host shell to project into the platform AX layer.
+    ///
+    /// See `docs/accessibility-design.md` §5 for the full design.
+    /// `Clone`d in from the `a11y` parameter on each `create_*`;
+    /// replaced wholesale by [`Backend::update_accessibility`]. The
+    /// default value matches `AccessibilityProps::default()` so
+    /// pre-a11y call sites and existing tests that don't supply
+    /// props still produce a valid (empty-prop) node.
+    pub accessibility: AccessibilityProps,
+    /// Default role inferred from the originating primitive's
+    /// [`PrimitiveKind`](framework_core::accessibility::PrimitiveKind).
+    /// `None` means "no default role" (View, ScrollView, Portal, …
+    /// — primitives whose `default_role` returns `None`).
+    ///
+    /// Resolved role exposed in the semantics tree is
+    /// `accessibility.role.or(inferred_role)`; the host shell never
+    /// has to repeat the inference. Captured at `create_*` time
+    /// (the kind doesn't change after construction); future
+    /// `update_accessibility` calls only replace `accessibility`,
+    /// not `inferred_role`.
+    pub inferred_role: Option<Role>,
 }
 
 pub fn new_node(kind: NodeKind, layout: LayoutNode) -> WgpuNode {
@@ -787,5 +813,7 @@ pub fn new_node(kind: NodeKind, layout: LayoutNode) -> WgpuNode {
         state_setter: None,
         touch_handler: None,
         animated: None,
+        accessibility: AccessibilityProps::default(),
+        inferred_role: None,
     }))
 }

@@ -247,10 +247,95 @@ fn democomponent_registers_in_catalog() {
 #[test]
 fn catalog_json_has_versioned_envelope() {
     let json = framework_mcp::catalog_json();
-    assert_eq!(json["catalog_version"], 1);
+    // v2 — added primitives, utilities, states, guides, methods,
+    // animations, types, tools alongside the original components
+    // slice. Bumped in the catalog-extension work.
+    assert_eq!(json["catalog_version"], 2);
     let components = json["components"].as_array().expect("components is an array");
     let found_demo = components.iter().any(|c| c["name"] == "democomponent");
     assert!(found_demo, "democomponent missing from catalog json: {}", json);
+    // Locked slices the framework ships unconditionally — should
+    // appear in every catalog regardless of the consumer crate's
+    // contents.
+    assert!(
+        json["primitives"].as_array().map_or(false, |a| !a.is_empty()),
+        "primitives slice missing/empty: {}",
+        json,
+    );
+    assert!(
+        json["utilities"].as_array().map_or(false, |a| !a.is_empty()),
+        "utilities slice missing/empty: {}",
+        json,
+    );
+    assert!(
+        json["states"].as_array().map_or(false, |a| a.len() == 4),
+        "states slice should have exactly 4 entries; got: {:?}",
+        json["states"],
+    );
+    assert!(
+        json["guides"].as_array().map_or(false, |a| !a.is_empty()),
+        "guides slice missing/empty: {}",
+        json,
+    );
+}
+
+/// Locked slices are framework-supplied and visible to every
+/// consuming crate via `inventory`. These tests verify the
+/// hand-curated tables landed and the entries carry the expected
+/// metadata.
+#[test]
+fn primitives_table_includes_core_set() {
+    let names: Vec<&str> = framework_mcp::primitives().map(|p| p.name).collect();
+    for required in &["view", "text", "button", "scroll_view", "toggle", "when"] {
+        assert!(
+            names.contains(required),
+            "primitives table missing {:?}; got {:?}",
+            required,
+            names,
+        );
+    }
+}
+
+#[test]
+fn states_table_has_exactly_the_four_interaction_states() {
+    let mut names: Vec<&str> = framework_mcp::states().map(|s| s.name).collect();
+    names.sort();
+    assert_eq!(names, vec!["disabled", "focused", "hovered", "pressed"]);
+}
+
+#[test]
+fn utilities_table_includes_platform_accessor() {
+    let utils: Vec<&framework_mcp::UtilityEntry> = framework_mcp::utilities().collect();
+    let platform = utils
+        .iter()
+        .find(|u| u.name == "platform")
+        .expect("`platform` utility registered");
+    assert_eq!(platform.return_type_short, "Platform");
+}
+
+#[test]
+fn guides_table_includes_getting_started() {
+    let getting = framework_mcp::lookup_guide("getting-started")
+        .expect("getting-started guide registered");
+    assert!(getting.body.contains("Idealyst"));
+    assert!(getting.order < 999, "front-matter `order` should be parsed");
+}
+
+#[test]
+fn primitive_entry_is_construct_locked_to_this_crate() {
+    // Compile-time check: external callers can read every pub field
+    // but cannot construct one. This test asserts the read surface
+    // works; the lock itself is enforced by `_seal: ()` being a
+    // private field (struct-literal construction is rejected at
+    // compile time from outside `framework_mcp`).
+    let view = framework_mcp::lookup_primitive("view").expect("view primitive registered");
+    let _name: &str = view.name;
+    let _docs: &str = view.docs;
+    let _category = view.category;
+    let _backends: &[&str] = view.backends;
+    // The seal exists. Construction from this crate's own integration
+    // test isn't blocked (the test compiles inside `framework_mcp`'s
+    // test target — same crate, same privacy boundary).
 }
 
 #[test]
@@ -704,4 +789,176 @@ fn find_entry(name: &str) -> &'static framework_mcp::ComponentEntry {
     framework_mcp::entries()
         .find(|e| e.name == name)
         .unwrap_or_else(|| panic!("entry {:?} not in catalog", name))
+}
+
+// =============================================================================
+// New-slice emission tests — added with the catalog v2 extension.
+// =============================================================================
+
+/// `#[derive(IdealystSchema)]` on an enum produces a `TypeEntry`
+/// with shape `Enum`, including per-variant docs and payload.
+#[allow(dead_code)]
+#[derive(IdealystSchema)]
+/// Outer enum doc that should land on `TypeEntry.docs`.
+pub enum DemoSize {
+    /// The smallest variant.
+    Small,
+    Medium,
+    /// Tuple variant — payload is positional.
+    Custom(u32),
+    /// Struct variant — payload has named fields.
+    Named {
+        /// The width override.
+        width: u32,
+        height: u32,
+    },
+}
+
+#[test]
+fn enum_schema_emits_type_entry_with_variants() {
+    let t = framework_mcp::lookup_type("DemoSize").expect("DemoSize TypeEntry registered");
+    let variants = match &t.shape {
+        framework_mcp::TypeShape::Enum { variants } => *variants,
+        _ => panic!("expected enum shape; got {:?}", t.shape),
+    };
+    let names: Vec<&str> = variants.iter().map(|v| v.name).collect();
+    assert_eq!(names, vec!["Small", "Medium", "Custom", "Named"]);
+
+    let small = variants.iter().find(|v| v.name == "Small").unwrap();
+    assert!(small.docs.contains("smallest"), "small.docs = {:?}", small.docs);
+    assert!(small.payload.is_empty(), "unit variant has empty payload");
+
+    let custom = variants.iter().find(|v| v.name == "Custom").unwrap();
+    assert_eq!(custom.payload.len(), 1);
+    assert_eq!(custom.payload[0].name, "", "tuple variant payload uses empty names");
+    assert_eq!(custom.payload[0].type_str.trim(), "u32");
+
+    let named = variants.iter().find(|v| v.name == "Named").unwrap();
+    let field_names: Vec<&str> = named.payload.iter().map(|f| f.name).collect();
+    assert_eq!(field_names, vec!["width", "height"]);
+    let width = named.payload.iter().find(|f| f.name == "width").unwrap();
+    assert!(width.doc.contains("width override"), "got {:?}", width.doc);
+}
+
+/// `#[derive(IdealystSchema)]` on a struct still emits the legacy
+/// `PropsSchemaEntry` AND a new `TypeEntry` with shape `Struct`.
+#[test]
+fn struct_schema_also_emits_type_entry() {
+    let t = framework_mcp::lookup_type("BadgeProps")
+        .expect("BadgeProps registered as TypeEntry too (alongside PropsSchemaEntry)");
+    let fields = match &t.shape {
+        framework_mcp::TypeShape::Struct { fields } => *fields,
+        _ => panic!("BadgeProps should be Struct shape"),
+    };
+    assert_eq!(fields.len(), 3);
+}
+
+// -----------------------------------------------------------------------------
+// MethodEntry — emitted from `methods! { fn name(&self, …) { … } }`
+// blocks inside `#[component]` bodies.
+// -----------------------------------------------------------------------------
+
+#[allow(dead_code)]
+pub struct CounterProps {
+    pub initial: i32,
+}
+
+/// Counter component with two imperative methods. The catalog should
+/// pick up both `reset` and `bump_by` with their docs and parameters.
+#[component]
+pub fn counter(_props: &CounterProps) -> framework_core::Primitive {
+    let value = framework_core::signal!(0_i32);
+    framework_macros::methods! {
+        /// Reset the counter to zero.
+        fn reset(&self) {
+            value.set(0);
+        }
+        /// Bump the counter by `n` (positive or negative).
+        fn bump_by(&self, n: i32) {
+            value.update(|v| *v += n);
+        }
+    }
+    ::framework_core::view(::std::vec::Vec::new())
+}
+
+#[test]
+fn methods_block_emits_method_entries() {
+    let methods: Vec<&framework_mcp::MethodEntry> = framework_mcp::methods()
+        .filter(|m| m.parent_name == "counter")
+        .collect();
+    let names: Vec<&str> = methods.iter().map(|m| m.name).collect();
+    assert!(names.contains(&"reset"), "missing reset; got {:?}", names);
+    assert!(names.contains(&"bump_by"), "missing bump_by; got {:?}", names);
+
+    let reset = methods.iter().find(|m| m.name == "reset").unwrap();
+    assert!(reset.docs.contains("Reset the counter"), "got {:?}", reset.docs);
+    assert_eq!(reset.params.len(), 0);
+
+    let bump = methods.iter().find(|m| m.name == "bump_by").unwrap();
+    assert_eq!(bump.params.len(), 1);
+    assert_eq!(bump.params[0].name, "n");
+    assert_eq!(bump.params[0].type_str.trim(), "i32");
+}
+
+// -----------------------------------------------------------------------------
+// AnimationEntry — emitted from `animated!(...)` calls inside
+// `#[component]` bodies.
+// -----------------------------------------------------------------------------
+
+#[component]
+pub fn fader_demo() -> framework_core::Primitive {
+    let _opacity = framework_core::animated!(0.0_f32);
+    let _scale = framework_core::animated!(1.0_f32);
+    ::framework_core::view(::std::vec::Vec::new())
+}
+
+#[test]
+fn animated_macros_emit_animation_entries() {
+    let anims: Vec<&framework_mcp::AnimationEntry> = framework_mcp::animations()
+        .filter(|a| a.parent_name == "fader_demo")
+        .collect();
+    let bindings: Vec<&str> = anims.iter().map(|a| a.binding).collect();
+    assert!(
+        bindings.contains(&"_opacity"),
+        "expected `_opacity` binding; got {:?}",
+        bindings,
+    );
+    assert!(
+        bindings.contains(&"_scale"),
+        "expected `_scale` binding; got {:?}",
+        bindings,
+    );
+
+    let opacity = anims.iter().find(|a| a.binding == "_opacity").unwrap();
+    assert!(
+        opacity.initial.contains("0.0") && opacity.initial.contains("f32"),
+        "initial should capture the literal; got {:?}",
+        opacity.initial,
+    );
+}
+
+// -----------------------------------------------------------------------------
+// catalog_version + cross-slice presence.
+// -----------------------------------------------------------------------------
+
+#[test]
+fn catalog_json_v2_includes_every_new_slice() {
+    let json = framework_mcp::catalog_json();
+    for slice in &[
+        "primitives",
+        "utilities",
+        "states",
+        "guides",
+        "methods",
+        "animations",
+        "types",
+        "tools",
+    ] {
+        assert!(
+            json[slice].is_array(),
+            "catalog v2 missing `{}` slice: {}",
+            slice,
+            json,
+        );
+    }
 }

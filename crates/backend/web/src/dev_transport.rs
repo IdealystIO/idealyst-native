@@ -283,7 +283,9 @@ fn command_kind(c: &wire::Command) -> &'static str {
         CreateVideo { .. } => "CreateVideo",
         CreateActivityIndicator { .. } => "CreateActivityIndicator",
         CreateLink { .. } => "CreateLink",
-        CreateOverlay { .. } => "CreateOverlay",
+        CreatePortal { .. } => "CreatePortal",
+        CreateExternal { .. } => "CreateExternal",
+        CreateTextArea { .. } => "CreateTextArea",
         CreateGraphics { .. } => "CreateGraphics",
         CreateVirtualizer { .. } => "CreateVirtualizer",
         CreateNavigator { .. } => "CreateNavigator",
@@ -299,6 +301,7 @@ fn command_kind(c: &wire::Command) -> &'static str {
         UpdateIconStroke { .. } => "UpdateIconStroke",
         AnimateIconStroke { .. } => "AnimateIconStroke",
         UpdateTextInputValue { .. } => "UpdateTextInputValue",
+        UpdateTextAreaValue { .. } => "UpdateTextAreaValue",
         UpdateToggleValue { .. } => "UpdateToggleValue",
         UpdateSliderValue { .. } => "UpdateSliderValue",
         UpdateVideoSrc { .. } => "UpdateVideoSrc",
@@ -332,7 +335,7 @@ fn command_kind(c: &wire::Command) -> &'static str {
         ApplyTabLabelStyle { .. } => "ApplyTabLabelStyle",
         VirtualizerDataChanged { .. } => "VirtualizerDataChanged",
         VirtualizerAttachItem { .. } => "VirtualizerAttachItem",
-        ApplyOverlayBackdropStyle { .. } => "ApplyOverlayBackdropStyle",
+        NavigatorSelect { .. } => "NavigatorSelect",
         Finish { .. } => "Finish",
         ReleaseNode { .. } => "ReleaseNode",
         InstallThemeVariables { .. } => "InstallThemeVariables",
@@ -340,14 +343,16 @@ fn command_kind(c: &wire::Command) -> &'static str {
         UnregisterAsset { .. } => "UnregisterAsset",
         RegisterTypeface { .. } => "RegisterTypeface",
         UnregisterTypeface { .. } => "UnregisterTypeface",
+        UpdateAccessibility { .. } => "UpdateAccessibility",
+        AnnounceForAccessibility { .. } => "AnnounceForAccessibility",
     }
 }
 
 fn format_command(c: &wire::Command) -> String {
     use wire::Command::*;
     match c {
-        CreateView { id } => format!("CreateView {}", id),
-        CreateText { id, content } => format!("CreateText {} {:?}", id, content),
+        CreateView { id, .. } => format!("CreateView {}", id),
+        CreateText { id, content, .. } => format!("CreateText {} {:?}", id, content),
         CreateButton { id, label, .. } => format!("CreateButton {} {:?}", id, label),
         Insert { parent, child } => format!("Insert {} → {}", child, parent),
         UpdateText { node, content } => format!("UpdateText {} {:?}", node, content),

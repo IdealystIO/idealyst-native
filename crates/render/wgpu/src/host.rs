@@ -2428,16 +2428,92 @@ mod tests {
     /// code at this scope.
     struct TestSkin;
     impl crate::skin::Skin for TestSkin {
-        fn paint_toggle(&self, _: f32, _: f32, _: f32, _: f32, _: f32, _: Option<[f32; 4]>, _: &mut Vec<crate::renderer::RectInstance>) {}
-        fn paint_slider(&self, _: f32, _: f32, _: f32, _: f32, _: f32, _: f32, _: f32, _: Option<[f32; 4]>, _: &mut Vec<crate::renderer::RectInstance>) {}
-        fn paint_text_input<'a>(&self, _: f32, _: f32, _: f32, _: f32, _: bool, _: &'a str, _: bool, _: Option<[f32; 4]>, _: &mut Vec<crate::renderer::RectInstance>, _: &mut Vec<crate::renderer::StagedText<'a>>, _: &'a crate::text::TextStore, _: native_layout::LayoutNode) {}
-        fn paint_activity_indicator(&self, _: f32, _: f32, _: f32, _: f32, _: f32, _: Option<[f32; 4]>, _: &mut Vec<crate::renderer::RectInstance>) {}
-        fn paint_keyboard<'a>(&self, _: (f32, f32), _: f32, _: Option<&'static str>, _: &mut Vec<crate::renderer::RectInstance>, _: &mut Vec<crate::renderer::StagedText<'a>>, _: &'a crate::text::TextStore) {}
-        fn paint_navigator_header<'a, 'b>(&self, _: crate::skin::NavigatorHeaderChrome<'a, 'b>) {}
-        fn paint_device_chrome<'a>(&self, _: crate::skin::DeviceChromeArgs<'a>) {}
-        fn safe_area_insets(&self) -> framework_core::SafeAreaInsets { framework_core::SafeAreaInsets::default() }
-        fn chrome_glyph_labels(&self) -> Vec<&'static str> { Vec::new() }
-        fn device_corner_radius(&self) -> f32 { 0.0 }
+        // No-op paint impls — these tests never enter the renderer.
+        // Signatures track `crate::skin::Skin`; refreshed when the
+        // trait surface changed (the prior shortened forms were
+        // pre-trait-update bit-rot).
+        fn paint_toggle(
+            &self,
+            _x: f32,
+            _y: f32,
+            _w: f32,
+            _h: f32,
+            _t: f32,
+            _tint: Option<[f32; 4]>,
+            _rects: &mut Vec<crate::pipeline::Instance>,
+        ) {
+        }
+        fn paint_slider(
+            &self,
+            _x: f32,
+            _y: f32,
+            _w: f32,
+            _h: f32,
+            _value: f32,
+            _min: f32,
+            _max: f32,
+            _tint: Option<[f32; 4]>,
+            _rects: &mut Vec<crate::pipeline::Instance>,
+        ) {
+        }
+        fn paint_text_input<'a>(
+            &self,
+            _x: f32,
+            _y: f32,
+            _w: f32,
+            _h: f32,
+            _is_focused: bool,
+            _draw_caret: bool,
+            _is_placeholder: bool,
+            _buffer: &'a glyphon::Buffer,
+            _caret_x_local: f32,
+            _text_color: [f32; 4],
+            _field_bg: Option<[f32; 4]>,
+            _rects: &mut Vec<crate::pipeline::Instance>,
+            _texts: &mut Vec<crate::text::StagedText<'a>>,
+        ) {
+        }
+        fn paint_activity_indicator(
+            &self,
+            _x: f32,
+            _y: f32,
+            _w: f32,
+            _h: f32,
+            _phase: f32,
+            _tint: Option<[f32; 4]>,
+            _rects: &mut Vec<crate::pipeline::Instance>,
+        ) {
+        }
+        fn keyboard_rows(&self) -> Vec<Vec<crate::keyboard::KeySpec>> {
+            Vec::new()
+        }
+        fn keyboard_layout_metrics(&self) -> crate::keyboard::LayoutMetrics {
+            crate::keyboard::LayoutMetrics {
+                key_gap: 0.0,
+                row_gap: 0.0,
+                side_margin: 0.0,
+                vert_margin: 0.0,
+            }
+        }
+        fn paint_keyboard<'a>(
+            &self,
+            _keyboard_rect: (f32, f32, f32, f32),
+            _laid_keys: &[crate::keyboard::LaidKey],
+            _pressed_label: Option<&'static str>,
+            _glyphs: &'a std::collections::HashMap<&'static str, glyphon::Buffer>,
+            _rects: &mut Vec<crate::pipeline::Instance>,
+            _texts: &mut Vec<crate::text::StagedText<'a>>,
+        ) {
+        }
+        fn paint_navigator_header<'a, 'b>(
+            &self,
+            _rect: (f32, f32, f32, f32),
+            _chrome: crate::skin::NavigatorHeaderChrome<'a, 'b>,
+            _rects: &mut Vec<crate::pipeline::Instance>,
+            _texts: &mut Vec<crate::text::StagedText<'a>>,
+            _hit_regions: &mut Vec<crate::skin::NavigatorHeaderHit>,
+        ) {
+        }
     }
 
     fn make_backend() -> Rc<RefCell<WgpuBackend>> {

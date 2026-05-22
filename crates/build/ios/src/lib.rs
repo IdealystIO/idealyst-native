@@ -39,7 +39,7 @@ use serde::Deserialize;
 
 pub mod source;
 
-pub use source::{FrameworkSource, GitDefaults, require_workspace_root};
+pub use source::{FrameworkSource, GitDefaults, GitRef, require_workspace_root};
 
 #[derive(Clone, Debug)]
 pub struct BuildOptions {

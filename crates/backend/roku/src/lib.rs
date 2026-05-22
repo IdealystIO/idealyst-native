@@ -66,6 +66,43 @@
 //!   initial pass. Portals are wired through `create_portal` — the
 //!   device-side runtime renders them as top-of-stack Groups; see
 //!   the `CreatePortal` wire op.
+//!
+//! # Accessibility
+//!
+//! Roku's SceneGraph has no public AT (assistive-technology) API.
+//! The platform's accessibility story — Audio Guide, closed-caption
+//! routing, etc. — is dictated by the Roku OS itself, not by the
+//! app, and there is no documented hook for an app to post live-
+//! region announcements, attach semantic labels/roles to a node, or
+//! enumerate a parallel accessibility tree the way UIKit / Android /
+//! ARIA expose.
+//!
+//! Consequently this backend accepts an `AccessibilityProps` on
+//! every `create_*` (for trait conformance with iOS / Android / web)
+//! but currently **drops it on the floor** — the `_a11y` underscore
+//! prefix marks the intentional no-op. The trait's no-op defaults
+//! for `update_accessibility` / `announce_for_accessibility` /
+//! `dump_accessibility_tree` apply unchanged; we do not override
+//! them because there is nothing meaningful to do.
+//!
+//! If a future Roku SDK exposes per-node semantic metadata (e.g. an
+//! `accessibilityLabel` field on SceneGraph nodes, or an Audio Guide
+//! announcement API), the plumbing point is here:
+//!
+//! 1. Rename each `_a11y` parameter in this `Backend` impl to
+//!    `a11y` (the `backend-roku-a11y` audit will flag the unused
+//!    `_a11y` to nudge you to this step).
+//! 2. Lower the relevant `AccessibilityProps` fields (label, hint,
+//!    role) onto a new wire op — likely an extension to each
+//!    `Create*` command or a separate `SetAccessibility { id, ... }`
+//!    op — so the BrightScript client can write them into the
+//!    SceneGraph node's `text` / `altText` (or whatever Roku names
+//!    its semantic field).
+//! 3. Override `update_accessibility` to emit the same wire op for
+//!    re-renders.
+//! 4. Override `announce_for_accessibility` to emit a new
+//!    `Announce { msg, priority }` wire op the client routes to
+//!    Audio Guide.
 
 #![deny(missing_debug_implementations)]
 

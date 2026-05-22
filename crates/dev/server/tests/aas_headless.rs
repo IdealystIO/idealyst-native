@@ -255,7 +255,7 @@ fn reset_log_and_scene_does_not_collide_minted_ids_with_cached_identities() {
 
     fn extract_create_id(cmd: &Command) -> Option<wire::NodeId> {
         match cmd {
-            Command::CreateView { id }
+            Command::CreateView { id, .. }
             | Command::CreateText { id, .. }
             | Command::CreateButton { id, .. }
             | Command::CreateImage { id, .. }

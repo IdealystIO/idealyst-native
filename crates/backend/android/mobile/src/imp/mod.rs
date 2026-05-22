@@ -4,6 +4,7 @@
 //! helper. The `Backend` impl at the bottom delegates each method to
 //! the matching submodule.
 
+mod a11y;
 mod animation;
 mod callbacks;
 mod font;
@@ -719,25 +720,52 @@ impl Backend for AndroidBackend {
         })
     }
 
-    fn create_view(&mut self, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
-        primitives::view::create(self)
+    fn create_view(&mut self, a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
+        let node = primitives::view::create(self);
+        a11y::apply(&node, a11y, None);
+        node
     }
 
     fn create_link(
         &mut self,
         config: framework_core::primitives::link::LinkConfig,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        primitives::link::create(self, config.on_activate)
+        let route = config.route;
+        let node = primitives::link::create(self, config.on_activate);
+        // Mirror iOS: default Link label = the route, if no author
+        // label was given. `a11y::apply` clears the label when
+        // `props.label.is_none()`; we re-set the route afterwards so
+        // reactive prop changes that explicitly clear the label fall
+        // back to the route rather than leaving the link unlabelled.
+        // Author overrides still win.
+        let resolved_label = a11y
+            .label
+            .clone()
+            .unwrap_or_else(|| route.to_string());
+        let effective_a11y = framework_core::accessibility::AccessibilityProps {
+            label: Some(resolved_label),
+            ..a11y.clone()
+        };
+        a11y::apply(
+            &node,
+            &effective_a11y,
+            Some(framework_core::accessibility::Role::Link),
+        );
+        node
     }
 
-    fn create_text(&mut self, content: &str, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
-        primitives::text::create(self, content)
+    fn create_text(&mut self, content: &str, a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
+        let node = primitives::text::create(self, content);
+        a11y::apply(&node, a11y, Some(framework_core::accessibility::Role::Text));
+        node
     }
 
-    fn create_button(&mut self, label: &str, on_click: &framework_core::Action, _leading_icon: Option<&framework_core::IconData>, _trailing_icon: Option<&framework_core::IconData>, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
+    fn create_button(&mut self, label: &str, on_click: &framework_core::Action, _leading_icon: Option<&framework_core::IconData>, _trailing_icon: Option<&framework_core::IconData>, a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
         // TODO: render icons as compound drawables on the button
-        primitives::button::create(self, label, on_click.fire.clone())
+        let node = primitives::button::create(self, label, on_click.fire.clone());
+        a11y::apply(&node, a11y, Some(framework_core::accessibility::Role::Button));
+        node
     }
 
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
@@ -770,17 +798,21 @@ impl Backend for AndroidBackend {
         primitives::text::update_text(node, content)
     }
 
-    fn create_image(&mut self, src: &str, alt: Option<&str>, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
-        primitives::image::create(self, src, alt)
+    fn create_image(&mut self, src: &str, alt: Option<&str>, a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
+        let node = primitives::image::create(self, src, alt);
+        a11y::apply(&node, a11y, Some(framework_core::accessibility::Role::Image));
+        node
     }
 
     fn create_icon(
         &mut self,
         data: &framework_core::primitives::icon::IconData,
         color: Option<&framework_core::Color>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        primitives::icon::create(self, data, color)
+        let node = primitives::icon::create(self, data, color);
+        a11y::apply(&node, a11y, Some(framework_core::accessibility::Role::Image));
+        node
     }
 
     fn update_icon_color(&mut self, node: &Self::Node, color: &framework_core::Color) {
@@ -810,9 +842,11 @@ impl Backend for AndroidBackend {
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        primitives::text_input::create(self, initial_value, placeholder, on_change, on_key_down)
+        let node = primitives::text_input::create(self, initial_value, placeholder, on_change, on_key_down);
+        a11y::apply(&node, a11y, Some(framework_core::accessibility::Role::TextField));
+        node
     }
 
     fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {
@@ -825,9 +859,11 @@ impl Backend for AndroidBackend {
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        primitives::text_input::create_multiline(self, initial_value, placeholder, on_change, on_key_down)
+        let node = primitives::text_input::create_multiline(self, initial_value, placeholder, on_change, on_key_down);
+        a11y::apply(&node, a11y, Some(framework_core::accessibility::Role::TextArea));
+        node
     }
 
     fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {
@@ -848,16 +884,23 @@ impl Backend for AndroidBackend {
         primitives::text_input::make_text_area_handle(node)
     }
 
-    fn create_toggle(&mut self, initial_value: bool, on_change: Rc<dyn Fn(bool)>, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
-        primitives::toggle::create(self, initial_value, on_change)
+    fn create_toggle(&mut self, initial_value: bool, on_change: Rc<dyn Fn(bool)>, a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
+        let node = primitives::toggle::create(self, initial_value, on_change);
+        a11y::apply(&node, a11y, Some(framework_core::accessibility::Role::Switch));
+        node
     }
 
     fn update_toggle_value(&mut self, node: &Self::Node, value: bool) {
         primitives::toggle::update_value(node, value)
     }
 
-    fn create_scroll_view(&mut self, horizontal: bool, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
-        primitives::scroll_view::create(self, horizontal)
+    fn create_scroll_view(&mut self, horizontal: bool, a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
+        let node = primitives::scroll_view::create(self, horizontal);
+        // ScrollView has no first-class role — Android handles scroll
+        // chrome itself. apply() still writes author-set label / hint
+        // / identifier when present.
+        a11y::apply(&node, a11y, None);
+        node
     }
 
     fn create_slider(
@@ -867,9 +910,11 @@ impl Backend for AndroidBackend {
         max: f32,
         step: Option<f32>,
         on_change: Rc<dyn Fn(f32)>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        primitives::slider::create(self, initial_value, min, max, step, on_change)
+        let node = primitives::slider::create(self, initial_value, min, max, step, on_change);
+        a11y::apply(&node, a11y, Some(framework_core::accessibility::Role::Slider));
+        node
     }
 
     fn update_slider_value(&mut self, node: &Self::Node, value: f32) {
@@ -882,9 +927,11 @@ impl Backend for AndroidBackend {
         autoplay: bool,
         controls: bool,
         loop_playback: bool,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        primitives::video::create(self, src, autoplay, controls, loop_playback)
+        let node = primitives::video::create(self, src, autoplay, controls, loop_playback);
+        a11y::apply(&node, a11y, Some(framework_core::accessibility::Role::Image));
+        node
     }
 
     fn update_video_src(&mut self, node: &Self::Node, src: &str) {
@@ -896,9 +943,11 @@ impl Backend for AndroidBackend {
         callbacks: framework_core::VirtualizerCallbacks<Self::Node>,
         overscan: f32,
         horizontal: bool,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        primitives::virtualizer::create(self, callbacks, overscan, horizontal)
+        let node = primitives::virtualizer::create(self, callbacks, overscan, horizontal);
+        a11y::apply(&node, a11y, Some(framework_core::accessibility::Role::List));
+        node
     }
 
     fn virtualizer_data_changed(&mut self, node: &Self::Node) {
@@ -909,9 +958,11 @@ impl Backend for AndroidBackend {
         &mut self,
         size: framework_core::primitives::activity_indicator::ActivityIndicatorSize,
         color: Option<&framework_core::Color>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        primitives::activity_indicator::create(self, size, color)
+        let node = primitives::activity_indicator::create(self, size, color);
+        a11y::apply(&node, a11y, Some(framework_core::accessibility::Role::Spinner));
+        node
     }
 
     fn make_video_handle(
@@ -925,9 +976,11 @@ impl Backend for AndroidBackend {
         &mut self,
         callbacks: framework_core::NavigatorCallbacks<Self::Node>,
         control: Rc<framework_core::NavigatorControl>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        primitives::navigator::create(self, callbacks, control)
+        let node = primitives::navigator::create(self, callbacks, control);
+        a11y::apply(&node, a11y, None);
+        node
     }
 
     fn navigator_attach_initial(
@@ -959,9 +1012,11 @@ impl Backend for AndroidBackend {
         &mut self,
         callbacks: framework_core::TabNavigatorCallbacks<Self::Node>,
         control: Rc<framework_core::NavigatorControl>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        primitives::tab_drawer::create_tab(self, callbacks, control)
+        let node = primitives::tab_drawer::create_tab(self, callbacks, control);
+        a11y::apply(&node, a11y, None);
+        node
     }
 
     fn tab_navigator_attach_initial(
@@ -989,9 +1044,11 @@ impl Backend for AndroidBackend {
         &mut self,
         callbacks: framework_core::DrawerNavigatorCallbacks<Self::Node>,
         control: Rc<framework_core::NavigatorControl>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        primitives::tab_drawer::create_drawer(self, callbacks, control)
+        let node = primitives::tab_drawer::create_drawer(self, callbacks, control);
+        a11y::apply(&node, a11y, None);
+        node
     }
 
     fn drawer_navigator_attach_initial(
@@ -1060,9 +1117,13 @@ impl Backend for AndroidBackend {
         on_ready: framework_core::primitives::graphics::OnReady,
         on_resize: framework_core::primitives::graphics::OnResize,
         on_lost: framework_core::primitives::graphics::OnLost,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        primitives::graphics::create(self, on_ready, on_resize, on_lost)
+        let node = primitives::graphics::create(self, on_ready, on_resize, on_lost);
+        // Graphics surfaces are GPU-rendered content with no inherent
+        // a11y role; authors opt in via props.role / props.label.
+        a11y::apply(&node, a11y, None);
+        node
     }
 
     fn release_graphics(&mut self, node: &Self::Node) {
@@ -1081,9 +1142,14 @@ impl Backend for AndroidBackend {
         target: framework_core::primitives::portal::PortalTarget,
         on_dismiss: Option<Rc<dyn Fn()>>,
         trap_focus: bool,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        primitives::overlay::create(self, target, on_dismiss, trap_focus)
+        let node = primitives::overlay::create(self, target, on_dismiss, trap_focus);
+        // Portal container is transparent — author sets role
+        // explicitly (Dialog / AlertDialog / Drawer / Popover) via
+        // props.role; we don't infer one here.
+        a11y::apply(&node, a11y, None);
+        node
     }
 
     fn release_portal(&mut self, node: &Self::Node) {
@@ -1095,19 +1161,25 @@ impl Backend for AndroidBackend {
         type_id: std::any::TypeId,
         type_name: &'static str,
         payload: &Rc<dyn std::any::Any>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         // Look up the handler; clone the Rc so we can drop the registry
         // borrow before calling the handler (which itself needs
         // `&mut self`).
-        if let Some(handler) = self.external_handlers.get(type_id) {
-            return handler(payload, self);
-        }
-        // No handler registered → render a placeholder TextView so the
-        // dev/user sees that an SDK binding is missing on Android
-        // rather than a silent hole. `has_external::<T>()` is the
-        // supported way to render custom degradation in user space.
-        external_placeholder_view(self, type_name)
+        let node = if let Some(handler) = self.external_handlers.get(type_id) {
+            handler(payload, self)
+        } else {
+            // No handler registered → render a placeholder TextView so
+            // the dev/user sees that an SDK binding is missing on
+            // Android rather than a silent hole.
+            // `has_external::<T>()` is the supported way to render
+            // custom degradation in user space.
+            external_placeholder_view(self, type_name)
+        };
+        // External primitives carry no inherent role — third-party
+        // SDK authors set the right one via props.role.
+        a11y::apply(&node, a11y, None);
+        node
     }
 
     fn release_external(&mut self, _node: &Self::Node) {
@@ -1439,6 +1511,43 @@ impl Backend for AndroidBackend {
         let key = Self::node_key(node);
         let entry = self.anim_state.entry(key).or_default();
         entry.state_callback_ptr = ptr;
+    }
+
+    // =================================================================
+    // Accessibility
+    // =================================================================
+    //
+    // `dump_accessibility_tree` is intentionally left at its default
+    // (returns `None`). TalkBack walks each `View`'s
+    // `contentDescription` / `setAccessibilityLiveRegion` /
+    // `AccessibilityNodeInfo` directly — there's no parallel
+    // semantics tree to dump.
+
+    fn update_accessibility(
+        &mut self,
+        node: &Self::Node,
+        a11y_props: &framework_core::accessibility::AccessibilityProps,
+        inferred_role: Option<framework_core::accessibility::Role>,
+    ) {
+        a11y::apply(node, a11y_props, inferred_role);
+    }
+
+    fn announce_for_accessibility(
+        &mut self,
+        msg: &str,
+        priority: framework_core::accessibility::LiveRegionPriority,
+    ) {
+        // Routed through the backend's host root view —
+        // `announceForAccessibility` exists on `View`, and the host
+        // root is the most reliable target (always attached, always
+        // visible to TalkBack). Polite vs Assertive both map to the
+        // same call on Android; the priority is observed for
+        // cross-backend parity but not first-class in the platform
+        // API.
+        let root = self.root.clone();
+        with_env(|env| {
+            a11y::announce(env, &root.as_obj(), msg, priority);
+        });
     }
 
     fn finish(&mut self, root: Self::Node) {

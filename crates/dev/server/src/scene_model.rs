@@ -23,7 +23,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use wire::{AssetId, Command, NodeId, ScopeId, StyleId, TypefaceId, WireScreenOptions, WireStyleRules};
+use wire::{
+    AssetId, Command, NodeId, ScopeId, StyleId, TypefaceId, WireAccessibilityProps, WireRole,
+    WireScreenOptions, WireStyleRules,
+};
 
 /// All scene state needed to regenerate the wire command stream for
 /// a fresh client.
@@ -93,6 +96,14 @@ pub struct SceneModel {
     /// Registered typefaces by id. Emitted after assets in the
     /// snapshot so per-face asset lookups resolve.
     typefaces: HashMap<TypefaceId, Command>,
+    /// Per-node latest `(a11y, inferred_role)` from
+    /// `Command::UpdateAccessibility`. Replayed as a fresh
+    /// `UpdateAccessibility` after the node's `Create*` lands so a
+    /// late-joining client sees the *current* a11y state, not the
+    /// initial value baked into the create command. See
+    /// `project_aas_state_snapshot` — fresh AAS clients receive a
+    /// `SceneModel` snapshot, NOT the command log.
+    node_a11y: HashMap<NodeId, (WireAccessibilityProps, Option<WireRole>)>,
 }
 
 /// One entry in a navigator's mounted-screen stack.
@@ -133,7 +144,7 @@ impl SceneModel {
         match cmd {
             // -- Create commands. Stored verbatim; later Update*
             //    commands mutate the stored copy's relevant field.
-            Command::CreateView { id } => {
+            Command::CreateView { id, .. } => {
                 self.node_create.insert(*id, cmd.clone());
             }
             Command::CreateText { id, .. }
@@ -469,6 +480,7 @@ impl SceneModel {
                 self.node_presence.remove(node);
                 self.node_icon_stroke.remove(node);
                 self.node_icon_anim.remove(node);
+                self.node_a11y.remove(node);
                 // Released drawer navigator: clear its open-state so a
                 // post-release snapshot doesn't replay `OpenDrawer` for
                 // a node the client side no longer has.
@@ -495,6 +507,22 @@ impl SceneModel {
             Command::UnregisterTypeface { id } => {
                 self.typefaces.remove(id);
             }
+
+            // -- Accessibility. Track latest per-node a11y so a fresh
+            //    client's snapshot replay sees the current state.
+            Command::UpdateAccessibility {
+                id,
+                a11y,
+                inferred_role,
+            } => {
+                self.node_a11y.insert(*id, (a11y.clone(), *inferred_role));
+            }
+            // Live-region announcements are transient — they fire once
+            // when posted and don't have a persistent identity to
+            // replay. Skip from the snapshot the same way virtualizer
+            // data-changed is skipped (a fresh client doesn't need to
+            // re-hear past announcements).
+            Command::AnnounceForAccessibility { .. } => {}
         }
     }
 
@@ -633,6 +661,21 @@ impl SceneModel {
             }
             if let Some(cmd) = self.node_icon_anim.get(id) {
                 out.push(cmd.clone());
+            }
+        }
+        // 4f. Live a11y override. The node's `Create*` already
+        // carries the *initial* a11y bag, but any subsequent
+        // reactive a11y update replaces it via
+        // `Command::UpdateAccessibility`. Replay the latest one so a
+        // late-joining client mirrors the current state, not the
+        // initial bag.
+        for id in &node_ids {
+            if let Some((a11y, inferred_role)) = self.node_a11y.get(id) {
+                out.push(Command::UpdateAccessibility {
+                    id: *id,
+                    a11y: a11y.clone(),
+                    inferred_role: *inferred_role,
+                });
             }
         }
         // 5. Navigators.

@@ -26,6 +26,37 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
+/// Which git refspec a git-sourced framework dep should pin to.
+/// Cargo lets us choose between three forms; we surface all three so
+/// the CLI and the user's `Cargo.toml` can agree on a stable name.
+#[derive(Clone, Debug)]
+pub enum GitRef {
+    /// `rev = "<sha>"` — exact commit. Maximum precision, but the
+    /// hash needs bumping every time the framework changes. The CLI
+    /// falls back to this when no tag covers HEAD.
+    Rev(String),
+    /// `tag = "<name>"` — annotated git tag (typically `v0.1.0`).
+    /// Stable, human-readable, immutable in practice. Preferred for
+    /// release-pinned consumers; the CLI uses this when `build.rs`
+    /// detected a tag at HEAD.
+    Tag(String),
+    /// `branch = "<name>"` — tracks a branch. Useful for "latest on
+    /// main" workflows but moves under you, so we don't scaffold
+    /// with it by default.
+    Branch(String),
+}
+
+impl GitRef {
+    /// `(key, value)` pair for emitting into a Cargo.toml dep table.
+    pub fn as_pair(&self) -> (&'static str, &str) {
+        match self {
+            Self::Rev(s) => ("rev", s.as_str()),
+            Self::Tag(s) => ("tag", s.as_str()),
+            Self::Branch(s) => ("branch", s.as_str()),
+        }
+    }
+}
+
 /// Where the generated wrapper Cargo.toml should source framework
 /// crates from.
 #[derive(Clone, Debug)]
@@ -37,7 +68,7 @@ pub enum FrameworkSource {
     /// External project — wrapper deps go through git. Used as the
     /// fallback when no framework workspace is found near the user's
     /// project.
-    Git { url: String, rev: String },
+    Git { url: String, refspec: GitRef },
 }
 
 /// Compile-time git defaults baked into the CLI binary.
@@ -47,10 +78,15 @@ pub enum FrameworkSource {
 /// against) and passes them to the build crates at runtime. The build
 /// crates can't reach those env consts directly because they're set
 /// during the CLI's compile, not theirs.
+///
+/// Prefer the most-recent annotated tag at HEAD over the raw commit
+/// — `tag = "v0.1.0"` reads better in scaffolded Cargo.tomls and is
+/// what release-tracking users actually want. `build.rs` does the
+/// detection; this struct just transports the result.
 #[derive(Clone, Debug)]
 pub struct GitDefaults {
     pub url: String,
-    pub rev: String,
+    pub refspec: GitRef,
 }
 
 impl FrameworkSource {
@@ -94,7 +130,7 @@ impl FrameworkSource {
         if let Some(from_project) = read_project_framework_dep(project_dir) {
             return Ok(from_project);
         }
-        Ok(Self::Git { url: git.url, rev: git.rev })
+        Ok(Self::Git { url: git.url, refspec: git.refspec })
     }
 
     /// True if this source is an in-tree workspace.
@@ -157,10 +193,13 @@ impl FrameworkSource {
                 root.join(subpath).display(),
                 features_clause,
             ),
-            Self::Git { url, rev } => format!(
-                "{{ git = \"{}\", rev = \"{}\"{} }}",
-                url, rev, features_clause,
-            ),
+            Self::Git { url, refspec } => {
+                let (key, value) = refspec.as_pair();
+                format!(
+                    "{{ git = \"{}\", {} = \"{}\"{} }}",
+                    url, key, value, features_clause,
+                )
+            }
         }
     }
 }
@@ -232,13 +271,19 @@ fn read_project_framework_dep(project_dir: &Path) -> Option<FrameworkSource> {
     }
 
     let url = table.get("git").and_then(|v| v.as_str())?.to_string();
-    let rev = table
-        .get("rev")
-        .or_else(|| table.get("branch"))
-        .or_else(|| table.get("tag"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())?;
-    Some(FrameworkSource::Git { url, rev })
+    // Preserve the user's choice of refspec — emitting `rev = "v0.1.0"`
+    // when the project specifies `tag = "v0.1.0"` would round-trip as
+    // an invalid commit hash. Order matches cargo's: rev > tag > branch.
+    let refspec = if let Some(s) = table.get("rev").and_then(|v| v.as_str()) {
+        GitRef::Rev(s.to_string())
+    } else if let Some(s) = table.get("tag").and_then(|v| v.as_str()) {
+        GitRef::Tag(s.to_string())
+    } else if let Some(s) = table.get("branch").and_then(|v| v.as_str()) {
+        GitRef::Branch(s.to_string())
+    } else {
+        return None;
+    };
+    Some(FrameworkSource::Git { url, refspec })
 }
 
 /// Back-compat thin wrapper around the legacy `find_workspace_root`

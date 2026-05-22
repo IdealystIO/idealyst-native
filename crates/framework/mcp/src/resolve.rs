@@ -28,7 +28,11 @@
 
 use std::collections::HashMap;
 
-use crate::{ComponentEntry, EdgeRef, ParamSpec};
+use crate::{
+    AnimationEntry, ComponentEntry, EdgeRef, GuideEntry, MethodEntry, ParamSpec,
+    PrimitiveCategory, PrimitiveEntry, PropFieldSpec, StateEntry, ToolEntry, TypeEntry,
+    TypeShape, UtilityCategory, UtilityEntry, VariantSpec,
+};
 
 /// A `(module_path, name)` pair, the canonical identity for a
 /// `ComponentEntry`. Two entries with the same pair would be a
@@ -80,18 +84,40 @@ pub enum EdgeStatus {
 /// the forward edges (host → resolved edges), and the reverse map
 /// (target → hosts that compose it). All three are populated in a
 /// single pass.
-#[derive(Debug)]
+///
+/// In v2 (catalog_version: 2), the model also carries the
+/// framework-shipped locked slices and the open-author slices
+/// (methods, animations, types) — populated from `inventory` in the
+/// [`build`] path and from JSON in [`build_from_json`].
+#[derive(Debug, Default)]
 pub struct ResolvedCatalog {
     entries: Vec<&'static ComponentEntry>,
     forward: HashMap<EntryRef, Vec<ResolvedEdge>>,
     reverse: HashMap<EntryRef, Vec<EntryRef>>,
+    primitives: Vec<&'static crate::PrimitiveEntry>,
+    utilities: Vec<&'static crate::UtilityEntry>,
+    states: Vec<&'static crate::StateEntry>,
+    guides: Vec<&'static crate::GuideEntry>,
+    methods: Vec<&'static crate::MethodEntry>,
+    animations: Vec<&'static crate::AnimationEntry>,
+    types: Vec<&'static crate::TypeEntry>,
+    tools: Vec<&'static crate::ToolEntry>,
 }
 
 impl ResolvedCatalog {
     /// Build over the global `inventory` slice.
     pub fn build() -> Self {
         let entries: Vec<&'static ComponentEntry> = crate::entries().collect();
-        Self::build_from(entries)
+        let mut cat = Self::build_from(entries);
+        cat.primitives = crate::primitives().collect();
+        cat.utilities = crate::utilities().collect();
+        cat.states = crate::states().collect();
+        cat.guides = crate::guides().collect();
+        cat.methods = crate::methods().collect();
+        cat.animations = crate::animations().collect();
+        cat.types = crate::types().collect();
+        cat.tools = crate::tools().collect();
+        cat
     }
 
     /// Build from a JSON document in the shape `catalog_json()`
@@ -119,7 +145,59 @@ impl ResolvedCatalog {
         for c in components {
             entries.push(leak_entry_from_json(c)?);
         }
-        Ok(Self::build_from(entries))
+        let mut cat = Self::build_from(entries);
+        // v2 slices — all optional. Missing entries are silently
+        // empty so v1 producers keep working unchanged.
+        if let Some(arr) = value["primitives"].as_array() {
+            cat.primitives = arr.iter().filter_map(leak_primitive_from_json).collect();
+        }
+        if let Some(arr) = value["utilities"].as_array() {
+            cat.utilities = arr.iter().filter_map(leak_utility_from_json).collect();
+        }
+        if let Some(arr) = value["states"].as_array() {
+            cat.states = arr.iter().filter_map(leak_state_from_json).collect();
+        }
+        if let Some(arr) = value["guides"].as_array() {
+            cat.guides = arr.iter().filter_map(leak_guide_from_json).collect();
+        }
+        if let Some(arr) = value["methods"].as_array() {
+            cat.methods = arr.iter().filter_map(leak_method_from_json).collect();
+        }
+        if let Some(arr) = value["animations"].as_array() {
+            cat.animations = arr.iter().filter_map(leak_animation_from_json).collect();
+        }
+        if let Some(arr) = value["types"].as_array() {
+            cat.types = arr.iter().filter_map(leak_type_from_json).collect();
+        }
+        if let Some(arr) = value["tools"].as_array() {
+            cat.tools = arr.iter().filter_map(leak_tool_from_json).collect();
+        }
+        Ok(cat)
+    }
+
+    pub fn primitives(&self) -> &[&'static crate::PrimitiveEntry] {
+        &self.primitives
+    }
+    pub fn utilities(&self) -> &[&'static crate::UtilityEntry] {
+        &self.utilities
+    }
+    pub fn states(&self) -> &[&'static crate::StateEntry] {
+        &self.states
+    }
+    pub fn guides(&self) -> &[&'static crate::GuideEntry] {
+        &self.guides
+    }
+    pub fn methods(&self) -> &[&'static crate::MethodEntry] {
+        &self.methods
+    }
+    pub fn animations(&self) -> &[&'static crate::AnimationEntry] {
+        &self.animations
+    }
+    pub fn types(&self) -> &[&'static crate::TypeEntry] {
+        &self.types
+    }
+    pub fn tools(&self) -> &[&'static crate::ToolEntry] {
+        &self.tools
     }
 
     /// Build from an explicit entry list — the path tests use to
@@ -171,7 +249,12 @@ impl ResolvedCatalog {
             v.dedup();
         }
 
-        ResolvedCatalog { entries, forward, reverse }
+        ResolvedCatalog {
+            entries,
+            forward,
+            reverse,
+            ..Default::default()
+        }
     }
 
     pub fn entries(&self) -> &[&'static ComponentEntry] {
@@ -354,6 +437,231 @@ fn leak_entry_from_json(c: &serde_json::Value) -> Result<&'static ComponentEntry
         params: params_leaked,
     };
     Ok(Box::leak(Box::new(entry)))
+}
+
+fn leak_param_specs(arr: &serde_json::Value) -> &'static [ParamSpec] {
+    let Some(arr) = arr.as_array() else { return &[] };
+    let v: Vec<ParamSpec> = arr
+        .iter()
+        .filter_map(|p| {
+            let name = p["name"].as_str()?.to_string();
+            let type_str = p["type"].as_str()?.to_string();
+            let short = p["type_short_name"].as_str().unwrap_or("").to_string();
+            Some(ParamSpec {
+                name: leak_str(name),
+                type_str: leak_str(type_str),
+                type_short_name: leak_str(short),
+            })
+        })
+        .collect();
+    Box::leak(v.into_boxed_slice())
+}
+
+fn leak_str_slice(arr: &serde_json::Value) -> &'static [&'static str] {
+    let Some(arr) = arr.as_array() else { return &[] };
+    let v: Vec<&'static str> = arr
+        .iter()
+        .filter_map(|x| x.as_str().map(|s| leak_str(s.to_string()) as &'static str))
+        .collect();
+    Box::leak(v.into_boxed_slice())
+}
+
+fn leak_prop_fields(arr: &serde_json::Value) -> &'static [PropFieldSpec] {
+    let Some(arr) = arr.as_array() else { return &[] };
+    let v: Vec<PropFieldSpec> = arr
+        .iter()
+        .filter_map(|p| {
+            let name = p["name"].as_str()?.to_string();
+            let type_str = p["type"].as_str()?.to_string();
+            let doc = p["doc"].as_str().unwrap_or("").to_string();
+            let constraint = p["constraint"].as_str().unwrap_or("").to_string();
+            Some(PropFieldSpec {
+                name: leak_str(name),
+                type_str: leak_str(type_str),
+                doc: leak_str(doc),
+                constraint: leak_str(constraint),
+            })
+        })
+        .collect();
+    Box::leak(v.into_boxed_slice())
+}
+
+fn primitive_category_from_str(s: &str) -> PrimitiveCategory {
+    match s {
+        "structural" => PrimitiveCategory::Structural,
+        "input" => PrimitiveCategory::Input,
+        "display" => PrimitiveCategory::Display,
+        "media" => PrimitiveCategory::Media,
+        "control-flow" => PrimitiveCategory::ControlFlow,
+        "composition" => PrimitiveCategory::Composition,
+        _ => PrimitiveCategory::Advanced,
+    }
+}
+
+fn utility_category_from_str(s: &str) -> UtilityCategory {
+    match s {
+        "color" => UtilityCategory::Color,
+        "time" => UtilityCategory::Time,
+        "theme" => UtilityCategory::Theme,
+        "layout" => UtilityCategory::Layout,
+        "math" => UtilityCategory::Math,
+        _ => UtilityCategory::Platform,
+    }
+}
+
+fn leak_primitive_from_json(v: &serde_json::Value) -> Option<&'static PrimitiveEntry> {
+    let name = v["name"].as_str()?.to_string();
+    let pascal_name = v["pascal_name"].as_str()?.to_string();
+    let docs = v["docs"].as_str().unwrap_or("").to_string();
+    let category =
+        primitive_category_from_str(v["category"].as_str().unwrap_or("advanced"));
+    let backends = leak_str_slice(&v["backends"]);
+    let props = leak_prop_fields(&v["props"]);
+    Some(Box::leak(Box::new(PrimitiveEntry {
+        name: leak_str(name),
+        pascal_name: leak_str(pascal_name),
+        docs: leak_str(docs),
+        props,
+        category,
+        backends,
+        _seal: (),
+    })))
+}
+
+fn leak_utility_from_json(v: &serde_json::Value) -> Option<&'static UtilityEntry> {
+    let name = v["name"].as_str()?.to_string();
+    let module_path = v["module_path"].as_str().unwrap_or("").to_string();
+    let docs = v["docs"].as_str().unwrap_or("").to_string();
+    let return_type = v["return_type"].as_str().unwrap_or("").to_string();
+    let return_type_short = v["return_type_short"].as_str().unwrap_or("").to_string();
+    let category =
+        utility_category_from_str(v["category"].as_str().unwrap_or("platform"));
+    let params = leak_param_specs(&v["params"]);
+    Some(Box::leak(Box::new(UtilityEntry {
+        name: leak_str(name),
+        module_path: leak_str(module_path),
+        docs: leak_str(docs),
+        params,
+        return_type: leak_str(return_type),
+        return_type_short: leak_str(return_type_short),
+        category,
+        _seal: (),
+    })))
+}
+
+fn leak_state_from_json(v: &serde_json::Value) -> Option<&'static StateEntry> {
+    let name = v["name"].as_str()?.to_string();
+    let docs = v["docs"].as_str().unwrap_or("").to_string();
+    let backends = leak_str_slice(&v["backends"]);
+    Some(Box::leak(Box::new(StateEntry {
+        name: leak_str(name),
+        docs: leak_str(docs),
+        backends,
+        _seal: (),
+    })))
+}
+
+fn leak_guide_from_json(v: &serde_json::Value) -> Option<&'static GuideEntry> {
+    let slug = v["slug"].as_str()?.to_string();
+    let title = v["title"].as_str().unwrap_or(&slug).to_string();
+    let order = v["order"].as_u64().unwrap_or(999) as u32;
+    let body = v["body"].as_str().unwrap_or("").to_string();
+    let tags = leak_str_slice(&v["tags"]);
+    Some(Box::leak(Box::new(GuideEntry {
+        slug: leak_str(slug),
+        title: leak_str(title),
+        order,
+        tags,
+        body: leak_str(body),
+        _seal: (),
+    })))
+}
+
+fn leak_method_from_json(v: &serde_json::Value) -> Option<&'static MethodEntry> {
+    let parent_module_path = v["parent_module_path"].as_str()?.to_string();
+    let parent_name = v["parent_name"].as_str()?.to_string();
+    let name = v["name"].as_str()?.to_string();
+    let docs = v["docs"].as_str().unwrap_or("").to_string();
+    let return_type = v["return_type"].as_str().unwrap_or("").to_string();
+    let params = leak_param_specs(&v["params"]);
+    Some(Box::leak(Box::new(MethodEntry {
+        parent_module_path: leak_str(parent_module_path),
+        parent_name: leak_str(parent_name),
+        name: leak_str(name),
+        docs: leak_str(docs),
+        params,
+        return_type: leak_str(return_type),
+    })))
+}
+
+fn leak_animation_from_json(v: &serde_json::Value) -> Option<&'static AnimationEntry> {
+    let parent_module_path = v["parent_module_path"].as_str()?.to_string();
+    let parent_name = v["parent_name"].as_str()?.to_string();
+    let binding = v["binding"].as_str().unwrap_or("").to_string();
+    let initial = v["initial"].as_str().unwrap_or("").to_string();
+    let line = v["line"].as_u64().unwrap_or(0) as u32;
+    Some(Box::leak(Box::new(AnimationEntry {
+        parent_module_path: leak_str(parent_module_path),
+        parent_name: leak_str(parent_name),
+        binding: leak_str(binding),
+        initial: leak_str(initial),
+        line,
+    })))
+}
+
+fn leak_type_from_json(v: &serde_json::Value) -> Option<&'static TypeEntry> {
+    let short_name = v["short_name"].as_str()?.to_string();
+    let module_path = v["module_path"].as_str()?.to_string();
+    let docs = v["docs"].as_str().unwrap_or("").to_string();
+    let kind = v["shape"]["kind"].as_str().unwrap_or("struct");
+    let shape = match kind {
+        "enum" => {
+            let variants_arr = v["shape"]["variants"].as_array().cloned().unwrap_or_default();
+            let variants: Vec<VariantSpec> = variants_arr
+                .iter()
+                .filter_map(|vv| {
+                    let name = vv["name"].as_str()?.to_string();
+                    let docs = vv["docs"].as_str().unwrap_or("").to_string();
+                    let payload = leak_prop_fields(&vv["payload"]);
+                    Some(VariantSpec {
+                        name: leak_str(name),
+                        docs: leak_str(docs),
+                        payload,
+                    })
+                })
+                .collect();
+            TypeShape::Enum { variants: Box::leak(variants.into_boxed_slice()) }
+        }
+        _ => {
+            let fields = leak_prop_fields(&v["shape"]["fields"]);
+            TypeShape::Struct { fields }
+        }
+    };
+    Some(Box::leak(Box::new(TypeEntry {
+        short_name: leak_str(short_name),
+        module_path: leak_str(module_path),
+        docs: leak_str(docs),
+        shape,
+    })))
+}
+
+fn leak_tool_from_json(v: &serde_json::Value) -> Option<&'static ToolEntry> {
+    let name = v["name"].as_str()?.to_string();
+    let module_path = v["module_path"].as_str().unwrap_or("").to_string();
+    let file = v["file"].as_str().unwrap_or("").to_string();
+    let line = v["line"].as_u64().unwrap_or(0) as u32;
+    let docs = v["docs"].as_str().unwrap_or("").to_string();
+    let return_type = v["return_type"].as_str().unwrap_or("").to_string();
+    let params = leak_param_specs(&v["params"]);
+    Some(Box::leak(Box::new(ToolEntry {
+        name: leak_str(name),
+        module_path: leak_str(module_path),
+        file: leak_str(file),
+        line,
+        docs: leak_str(docs),
+        params,
+        return_type: leak_str(return_type),
+    })))
 }
 
 fn is_ancestor_module(maybe_ancestor: &str, descendant: &str) -> bool {

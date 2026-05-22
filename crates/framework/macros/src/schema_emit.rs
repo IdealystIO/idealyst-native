@@ -1,15 +1,18 @@
 //! Phase 3b — `#[derive(IdealystSchema)]` emission.
 //!
-//! Walks the struct's named fields and registers a
-//! `framework_mcp::PropsSchemaEntry` per struct so the MCP runtime
-//! can expand a component's `&FooProps` parameter into its constituent
-//! fields. Per spec §4.3 the derive is purely opt-in — users only
-//! reach for it when they want richer prop info than `ParamSpec`
-//! provides on its own.
+//! For named structs: registers
+//! - one `framework_mcp::PropsSchemaEntry` (legacy/back-compat path
+//!   the existing MCP server reads when joining `ParamSpec` to the
+//!   prop schema), AND
+//! - one `framework_mcp::TypeEntry { shape: Struct }` (the unified
+//!   type catalog).
+//!
+//! For enums: registers
+//! - one `framework_mcp::TypeEntry { shape: Enum }` containing each
+//!   variant's name, docs, and payload (unit / tuple / struct).
 //!
 //! Recognised `#[schema(...)]` field attributes:
-//! - `constraint = "..."` — free-form constraint hint (e.g.
-//!   `"valid CSS color"`). Surfaces in the catalog as
+//! - `constraint = "..."` — free-form constraint hint. Surfaces as
 //!   `PropFieldSpec.constraint`. Empty when absent.
 //!
 //! Like `mcp_emit`, this is no-op'd at the macro level when the
@@ -22,42 +25,155 @@ use syn::{Data, DeriveInput, Fields};
 pub(crate) fn emit(input: DeriveInput) -> TokenStream2 {
     let struct_ident = &input.ident;
     let struct_name_str = struct_ident.to_string();
+    let type_docs = collect_field_docs(&input.attrs);
 
-    // Only named-struct fields make sense as props. Tuple structs and
-    // unit structs can't have prop names, so emit nothing — the
-    // derive is silently inert on those shapes rather than failing
-    // the user's build.
-    let fields = match &input.data {
+    match &input.data {
         Data::Struct(s) => match &s.fields {
-            Fields::Named(named) => &named.named,
-            _ => return TokenStream2::new(),
+            Fields::Named(named) => emit_named_struct(&struct_name_str, &type_docs, &named.named),
+            // Tuple structs and unit structs: emit an empty `TypeEntry`
+            // (shape `Struct` with no fields) so consumers know the
+            // type exists, but no `PropsSchemaEntry` since prop names
+            // don't apply.
+            _ => emit_empty_struct(&struct_name_str, &type_docs),
         },
-        _ => return TokenStream2::new(),
-    };
+        Data::Enum(e) => emit_enum(&struct_name_str, &type_docs, e),
+        // Unions: silently inert. The catalog has no use for them.
+        Data::Union(_) => TokenStream2::new(),
+    }
+}
 
-    let field_entries = fields.iter().filter_map(|f| {
-        let name_ident = f.ident.as_ref()?;
-        let name = name_ident.to_string();
-        let ty = &f.ty;
-        let type_str = quote! { #ty }.to_string();
-        let doc = collect_field_docs(&f.attrs);
-        let constraint = collect_constraint(&f.attrs);
-        Some(quote! {
-            ::framework_core::__mcp::PropFieldSpec {
-                name: #name,
-                type_str: #type_str,
-                doc: #doc,
-                constraint: #constraint,
-            }
+fn emit_named_struct(
+    struct_name_str: &str,
+    type_docs: &str,
+    fields: &syn::punctuated::Punctuated<syn::Field, syn::Token![,]>,
+) -> TokenStream2 {
+    let field_specs: Vec<TokenStream2> = fields
+        .iter()
+        .filter_map(|f| {
+            let name_ident = f.ident.as_ref()?;
+            let name = name_ident.to_string();
+            let ty = &f.ty;
+            let type_str = quote! { #ty }.to_string();
+            let doc = collect_field_docs(&f.attrs);
+            let constraint = collect_constraint(&f.attrs);
+            Some(quote! {
+                ::framework_core::__mcp::PropFieldSpec {
+                    name: #name,
+                    type_str: #type_str,
+                    doc: #doc,
+                    constraint: #constraint,
+                }
+            })
         })
-    });
+        .collect();
+    let field_specs_props = field_specs.clone();
+    let field_specs_type = field_specs;
 
     quote! {
         ::framework_core::__mcp::inventory::submit! {
             ::framework_core::__mcp::PropsSchemaEntry {
                 short_name: #struct_name_str,
                 module_path: module_path!(),
-                fields: &[ #(#field_entries),* ],
+                fields: &[ #(#field_specs_props),* ],
+            }
+        }
+        ::framework_core::__mcp::inventory::submit! {
+            ::framework_core::__mcp::TypeEntry {
+                short_name: #struct_name_str,
+                module_path: module_path!(),
+                docs: #type_docs,
+                shape: ::framework_core::__mcp::TypeShape::Struct {
+                    fields: &[ #(#field_specs_type),* ],
+                },
+            }
+        }
+    }
+}
+
+fn emit_empty_struct(struct_name_str: &str, type_docs: &str) -> TokenStream2 {
+    quote! {
+        ::framework_core::__mcp::inventory::submit! {
+            ::framework_core::__mcp::TypeEntry {
+                short_name: #struct_name_str,
+                module_path: module_path!(),
+                docs: #type_docs,
+                shape: ::framework_core::__mcp::TypeShape::Struct {
+                    fields: &[],
+                },
+            }
+        }
+    }
+}
+
+fn emit_enum(enum_name_str: &str, type_docs: &str, data: &syn::DataEnum) -> TokenStream2 {
+    let variants: Vec<TokenStream2> = data
+        .variants
+        .iter()
+        .map(|v| {
+            let name = v.ident.to_string();
+            let docs = collect_field_docs(&v.attrs);
+            let payload: Vec<TokenStream2> = match &v.fields {
+                Fields::Unit => Vec::new(),
+                Fields::Named(named) => named
+                    .named
+                    .iter()
+                    .filter_map(|f| {
+                        let name = f.ident.as_ref()?.to_string();
+                        let ty = &f.ty;
+                        let type_str = quote! { #ty }.to_string();
+                        let doc = collect_field_docs(&f.attrs);
+                        let constraint = collect_constraint(&f.attrs);
+                        Some(quote! {
+                            ::framework_core::__mcp::PropFieldSpec {
+                                name: #name,
+                                type_str: #type_str,
+                                doc: #doc,
+                                constraint: #constraint,
+                            }
+                        })
+                    })
+                    .collect(),
+                Fields::Unnamed(unnamed) => unnamed
+                    .unnamed
+                    .iter()
+                    .map(|f| {
+                        let ty = &f.ty;
+                        let type_str = quote! { #ty }.to_string();
+                        let doc = collect_field_docs(&f.attrs);
+                        let constraint = collect_constraint(&f.attrs);
+                        // Tuple variants have no field name — emit
+                        // empty string so consumers can detect the
+                        // positional shape.
+                        quote! {
+                            ::framework_core::__mcp::PropFieldSpec {
+                                name: "",
+                                type_str: #type_str,
+                                doc: #doc,
+                                constraint: #constraint,
+                            }
+                        }
+                    })
+                    .collect(),
+            };
+            quote! {
+                ::framework_core::__mcp::VariantSpec {
+                    name: #name,
+                    docs: #docs,
+                    payload: &[ #(#payload),* ],
+                }
+            }
+        })
+        .collect();
+
+    quote! {
+        ::framework_core::__mcp::inventory::submit! {
+            ::framework_core::__mcp::TypeEntry {
+                short_name: #enum_name_str,
+                module_path: module_path!(),
+                docs: #type_docs,
+                shape: ::framework_core::__mcp::TypeShape::Enum {
+                    variants: &[ #(#variants),* ],
+                },
             }
         }
     }

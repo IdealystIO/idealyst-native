@@ -6,6 +6,9 @@
 
 use std::rc::Rc;
 
+use framework_core::accessibility::{
+    AccessibilityProps, AccessibilityTraits, LiveRegionPriority, Role,
+};
 use framework_core::primitives;
 use framework_core::{
     AlignItems, AssetId as CoreAssetId, AssetSource, AssetTag, Color, Easing, FlexDirection,
@@ -13,11 +16,12 @@ use framework_core::{
     SystemFallback, TextAlign, Tokenized, TypefaceFace, TypefaceId as CoreTypefaceId,
 };
 use wire::{
-    AssetId as WireAssetId, HandlerId, TypefaceId as WireTypefaceId, WireAlignItems,
-    WireAssetSource, WireAssetTag, WireColor, WireEasing, WireFillRule, WireFlexDirection,
-    WireFontFamily, WireFontStyle, WireFontWeight, WireIconData, WireJustifyContent,
-    WireLength, WireMountPolicy, WirePresenceState, WireScreenOptions, WireStateBit,
-    WireStyleRules, WireSystemFallback, WireTextAlign, WireTypefaceFace,
+    AssetId as WireAssetId, HandlerId, TypefaceId as WireTypefaceId, WireAccessibilityProps,
+    WireAlignItems, WireAssetSource, WireAssetTag, WireColor, WireEasing, WireFillRule,
+    WireFlexDirection, WireFontFamily, WireFontStyle, WireFontWeight, WireIconData,
+    WireJustifyContent, WireLength, WireLiveRegionPriority, WireMountPolicy, WirePresenceState,
+    WireRole, WireScreenOptions, WireStateBit, WireStyleRules, WireSystemFallback, WireTextAlign,
+    WireTypefaceFace,
 };
 
 pub fn wire_color_to_color(c: WireColor) -> Color {
@@ -373,6 +377,90 @@ pub fn wire_asset_source(s: WireAssetSource) -> AssetSource {
             bytes: Box::leak(bytes.into_boxed_slice()),
             extension: Box::leak(extension.into_boxed_str()),
         },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Accessibility: wire → framework_core.
+// ---------------------------------------------------------------------------
+
+/// Reconstruct an `AccessibilityProps` from its wire mirror. Traits
+/// decode via `from_bits_truncate` so an unknown future bit silently
+/// drops on this side rather than failing the whole batch. `actions`
+/// are reconstructed from their names with no-op handlers — the
+/// function side does not survive the wire (see the `wire` crate's
+/// `WireAccessibilityProps` docs).
+pub fn wire_a11y_to_props(w: WireAccessibilityProps) -> AccessibilityProps {
+    AccessibilityProps {
+        label: w.label,
+        hint: w.hint,
+        identifier: w.identifier,
+        hidden: w.hidden,
+        role: w.role.and_then(wire_role_to_role),
+        traits: AccessibilityTraits::from_bits_truncate(w.traits),
+        live_region: w.live_region.map(wire_live_region_to_priority),
+        actions: w
+            .actions
+            .into_iter()
+            .map(|name| framework_core::accessibility::AccessibilityAction {
+                name,
+                // No reverse-channel HandlerId for a11y actions yet;
+                // dispatch goes nowhere. Matches the documented gap.
+                handler: Rc::new(|| {}),
+            })
+            .collect(),
+    }
+}
+
+/// Reverse of `WireRole`. `Unknown` decodes to `None` (caller treats
+/// it as "no override; let the primitive's inferred role stand"), per
+/// the design note on `WireRole::Unknown`.
+pub fn wire_role_to_role(r: WireRole) -> Option<Role> {
+    Some(match r {
+        WireRole::Button => Role::Button,
+        WireRole::Link => Role::Link,
+        WireRole::Image => Role::Image,
+        WireRole::Text => Role::Text,
+        WireRole::Header => Role::Header,
+        WireRole::List => Role::List,
+        WireRole::ListItem => Role::ListItem,
+        WireRole::Group => Role::Group,
+        WireRole::Separator => Role::Separator,
+        WireRole::TextField => Role::TextField,
+        WireRole::TextArea => Role::TextArea,
+        WireRole::Switch => Role::Switch,
+        WireRole::Slider => Role::Slider,
+        WireRole::Checkbox => Role::Checkbox,
+        WireRole::RadioButton => Role::RadioButton,
+        WireRole::RadioGroup => Role::RadioGroup,
+        WireRole::ComboBox => Role::ComboBox,
+        WireRole::SearchField => Role::SearchField,
+        WireRole::Tab => Role::Tab,
+        WireRole::TabList => Role::TabList,
+        WireRole::TabPanel => Role::TabPanel,
+        WireRole::NavigationLink => Role::NavigationLink,
+        WireRole::MenuItem => Role::MenuItem,
+        WireRole::Menu => Role::Menu,
+        WireRole::MenuBar => Role::MenuBar,
+        WireRole::Toolbar => Role::Toolbar,
+        WireRole::Alert => Role::Alert,
+        WireRole::Status => Role::Status,
+        WireRole::ProgressBar => Role::ProgressBar,
+        WireRole::Spinner => Role::Spinner,
+        WireRole::Dialog => Role::Dialog,
+        WireRole::AlertDialog => Role::AlertDialog,
+        WireRole::Drawer => Role::Drawer,
+        WireRole::Popover => Role::Popover,
+        WireRole::Tooltip => Role::Tooltip,
+        WireRole::Region => Role::Region,
+        WireRole::Unknown => return None,
+    })
+}
+
+pub fn wire_live_region_to_priority(p: WireLiveRegionPriority) -> LiveRegionPriority {
+    match p {
+        WireLiveRegionPriority::Polite => LiveRegionPriority::Polite,
+        WireLiveRegionPriority::Assertive => LiveRegionPriority::Assertive,
     }
 }
 

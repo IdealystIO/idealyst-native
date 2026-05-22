@@ -41,6 +41,7 @@ objc2-foundation = { version = "0.2", features = [
     "NSSet",
     "NSGeometry",
     "NSValue",
+    "NSDictionary",
 ] }
 objc2-app-kit = { version = "0.2", features = [
     "NSResponder",
@@ -67,5 +68,6 @@ objc2-app-kit = { version = "0.2", features = [
     "NSCursor",
     "NSFont",
     "NSAppearance",
+    "NSAccessibilityConstants",
 ] }
 raw-window-handle = "0.6"

@@ -7,6 +7,7 @@
 //!
 //! See `docs/macos-backend-plan.md` for the design.
 
+pub(crate) mod a11y;
 pub(crate) mod animated;
 pub(crate) mod gradient;
 pub(crate) mod handles;
@@ -387,14 +388,25 @@ impl Backend for MacosBackend {
         }
     }
 
-    fn create_view(&mut self, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
+    fn create_view(&mut self, a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
         let view = FlippedView::new(self.mtm);
         let view: Retained<NSView> = Retained::into_super(view);
         let _ = self.layout_for_view(&view);
-        MacosNode::View(view)
+        let node = MacosNode::View(view);
+        // View has no default a11y role (transparent container); pass
+        // None and let `a11y::apply` skip role writing entirely when
+        // author code hasn't supplied one.
+        a11y::apply(
+            &node,
+            a11y,
+            framework_core::accessibility::default_role(
+                framework_core::accessibility::PrimitiveKind::View,
+            ),
+        );
+        node
     }
 
-    fn create_text(&mut self, content: &str, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
+    fn create_text(&mut self, content: &str, a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
         // NSTextField in label mode is AppKit's UILabel equivalent.
         // `+[NSTextField labelWithString:]` configures it as
         // non-editable, non-selectable, no border, no background.
@@ -455,7 +467,15 @@ impl Backend for MacosBackend {
             }),
         );
 
-        MacosNode::Label(label)
+        let node = MacosNode::Label(label);
+        a11y::apply(
+            &node,
+            a11y,
+            framework_core::accessibility::default_role(
+                framework_core::accessibility::PrimitiveKind::Text,
+            ),
+        );
+        node
     }
 
     fn create_button(
@@ -464,14 +484,27 @@ impl Backend for MacosBackend {
         _on_click: &framework_core::Action,
         _leading_icon: Option<&framework_core::IconData>,
         _trailing_icon: Option<&framework_core::IconData>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         // Minimum-viable stub. Real NSButton wiring (bezel style,
         // target/action, icon images, intrinsic measure) lands in
         // a follow-up — gets us a placeholder so user code that
         // contains a Button still renders without panicking.
+        //
+        // We still wire a11y on the stub view so VoiceOver hits a
+        // labelled `Button`-role element even before the real NSButton
+        // lands; the later impl can keep this call site as-is and add
+        // its own NSButton-specific a11y in addition.
         let _ = label;
-        self.create_view(_a11y)
+        let node = self.create_view(&framework_core::accessibility::AccessibilityProps::default());
+        a11y::apply(
+            &node,
+            a11y,
+            framework_core::accessibility::default_role(
+                framework_core::accessibility::PrimitiveKind::Button,
+            ),
+        );
+        node
     }
 
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
@@ -619,6 +652,31 @@ impl Backend for MacosBackend {
             return;
         }
         animated::set_animated_color(node, prop, value);
+    }
+
+    // -----------------------------------------------------------------
+    // Accessibility
+    // -----------------------------------------------------------------
+    //
+    // `dump_accessibility_tree` stays at its default (returns `None`).
+    // AppKit walks each NSView's NSAccessibility attributes directly —
+    // there's no parallel semantics tree to dump.
+
+    fn update_accessibility(
+        &mut self,
+        node: &Self::Node,
+        a11y_props: &framework_core::accessibility::AccessibilityProps,
+        inferred_role: Option<framework_core::accessibility::Role>,
+    ) {
+        a11y::apply(node, a11y_props, inferred_role);
+    }
+
+    fn announce_for_accessibility(
+        &mut self,
+        msg: &str,
+        priority: framework_core::accessibility::LiveRegionPriority,
+    ) {
+        a11y::announce(msg, priority);
     }
 
     fn make_view_handle(&self, node: &Self::Node) -> framework_core::ViewHandle {
