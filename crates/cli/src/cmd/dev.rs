@@ -320,11 +320,23 @@ fn launch_web(dir: &Path, args: &Args) -> Result<()> {
         // ── Local-render mode: livereload-driven hot-reload. ───────
         let gen = Arc::new(std::sync::atomic::AtomicU64::new(0));
         if !args.no_build {
-            // `dev_reload::start` does the first build synchronously
-            // and then keeps a watcher thread alive in the returned
-            // handle. Forget the handle: it lives as long as the
-            // HTTP serve loop below.
-            let handle = dev_reload::start(dir, gen.clone(), source)?;
+            // `dev_reload::start_with` does the first build
+            // synchronously and then keeps a watcher thread alive in
+            // the returned handle. Forget the handle: it lives as
+            // long as the HTTP serve loop below.
+            //
+            // `framework-core/dev` is what activates the Robot
+            // bridge auto-start + the MCP catalog inventory. It's
+            // part of the dev configuration — not an opt-in — so
+            // the MCP server can attach without any user action.
+            let handle = dev_reload::start_with(
+                dir,
+                gen.clone(),
+                dev_reload::BuildOptions {
+                    source: source.clone(),
+                    features: vec!["framework-core/dev".to_string()],
+                },
+            )?;
             std::mem::forget(handle);
         }
         let ctx = ReloadContext { gen };

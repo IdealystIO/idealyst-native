@@ -178,6 +178,13 @@ where
     /// Button label currently rendered. Same role as `text_content`
     /// but for button label updates.
     button_labels: HashMap<NodeId, String>,
+    /// Per-node idempotency guard for `Command::AttachStates`. Snapshot
+    /// replay re-emits `AttachStates` for every styled node on every
+    /// reconnect; without this guard, the backend would stack a fresh
+    /// listener closure on top of the existing one and every state
+    /// transition would fire the wire callback twice (or N times after
+    /// N reconnects). Same shape as `drawer_sidebars_attached`.
+    attached_states: std::collections::HashSet<NodeId>,
 }
 
 impl<B: Backend> WireBackend<B>
@@ -200,6 +207,7 @@ where
             drawer_sidebars_attached: std::collections::HashSet::new(),
             text_content: HashMap::new(),
             button_labels: HashMap::new(),
+            attached_states: std::collections::HashSet::new(),
         }
     }
 
@@ -355,7 +363,32 @@ where
                 let cb = self.handler_string(on_change);
                 let node = self
                     .backend
-                    .create_text_input(&initial_value, placeholder.as_deref(), cb);
+                    .create_text_input(&initial_value, placeholder.as_deref(), cb, None);
+                self.nodes.insert(id, node);
+            }
+            Command::CreateTextArea {
+                id,
+                initial_value,
+                placeholder,
+                on_change,
+            } => {
+                if self.nodes.contains_key(&id) { return Ok(()); }
+                let cb = self.handler_string(on_change);
+                let node = self
+                    .backend
+                    .create_text_area(&initial_value, placeholder.as_deref(), cb, None);
+                self.nodes.insert(id, node);
+            }
+            Command::CreateExternal { id, type_name } => {
+                if self.nodes.contains_key(&id) { return Ok(()); }
+                // Payload couldn't cross the wire. Fall back to a plain
+                // View placeholder so the tree stays well-formed; the
+                // user gets a visible "External primitive: <name>" via
+                // the surrounding app code if they want a richer
+                // placeholder, this code path leaves room for client-
+                // side external-registry lookup as future work.
+                let _ = type_name;
+                let node = self.backend.create_view();
                 self.nodes.insert(id, node);
             }
             Command::CreateToggle {
@@ -625,6 +658,10 @@ where
                 let n = self.nodes.get(&node).ok_or(ReplayError::UnknownNode(node))?.clone();
                 self.backend.update_text_input_value(&n, &value);
             }
+            Command::UpdateTextAreaValue { node, value } => {
+                let n = self.nodes.get(&node).ok_or(ReplayError::UnknownNode(node))?.clone();
+                self.backend.update_text_area_value(&n, &value);
+            }
             Command::UpdateToggleValue { node, value } => {
                 let n = self.nodes.get(&node).ok_or(ReplayError::UnknownNode(node))?.clone();
                 self.backend.update_toggle_value(&n, value);
@@ -677,6 +714,16 @@ where
                 self.backend.apply_styled_states(&n, &b, &o);
             }
             Command::AttachStates { node } => {
+                // Idempotency: snapshot replay re-emits `AttachStates`
+                // for every styled node on every reconnect; without
+                // this guard the backend would stack a fresh listener
+                // closure on top of the existing one and every state
+                // transition would fire the wire callback twice (or N
+                // times after N reconnects). Same shape as
+                // `inserted_edges` / `drawer_sidebars_attached`.
+                if !self.attached_states.insert(node) {
+                    return Ok(());
+                }
                 let n = self.nodes.get(&node).ok_or(ReplayError::UnknownNode(node))?.clone();
                 let outbound = self.outbound.clone();
                 let node_id = node;
@@ -801,6 +848,24 @@ where
             } => {
                 self.dispatch_push_like(
                     navigator, screen, scope, options, NavOp::Reset, url, restore,
+                )?;
+            }
+            Command::NavigatorSelect {
+                navigator,
+                screen,
+                scope,
+                options,
+                url,
+            } => {
+                // Select is dispatched as `NavCommand::Select` to the
+                // tab/drawer navigator. Pre-fix this was conflated with
+                // `Reset`, which drained the snapshot model's per-screen
+                // state for tab navigators (a Reset means "discard
+                // stack and mount new root"; a Select means "switch
+                // active tab"). The dev-server now emits
+                // `NavigatorSelect` for the select-flavored push-like.
+                self.dispatch_push_like(
+                    navigator, screen, scope, options, NavOp::Select, url, false,
                 )?;
             }
             Command::NavigatorPop { navigator, count } => {
@@ -991,7 +1056,22 @@ where
                 self.backend.finish(n);
             }
             Command::ReleaseNode { node } => {
+                // Mirror `SceneModel::apply(Command::ReleaseNode)` — clear
+                // every per-node map so a hot-reload that releases and
+                // re-creates the same logical primitive doesn't leak the
+                // old node's bookkeeping. Pre-fix, only `self.nodes` was
+                // cleared, leaving `text_content` / `button_labels` /
+                // `inserted_edges` / `navigators` /
+                // `drawer_sidebars_attached` to accumulate forever.
                 self.nodes.remove(&node);
+                self.text_content.remove(&node);
+                self.button_labels.remove(&node);
+                self.navigators.remove(&node);
+                self.attached_states.remove(&node);
+                self.inserted_edges
+                    .retain(|(parent, child)| *parent != node && *child != node);
+                self.drawer_sidebars_attached
+                    .retain(|(nav, sidebar)| *nav != node && *sidebar != node);
             }
             Command::InstallThemeVariables { .. } => {
                 // Backends that care (web) implement this via

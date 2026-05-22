@@ -764,6 +764,12 @@ pub fn start(initial_rows: usize) {
     // Without this, every phase counter records duration 0 and the
     // profiling output is useless.
     backend_web::install_time_source();
+    // Route effect-closure + scope-guard drops through the web
+    // backend's rAF-sliced drain so wasm-bindgen Closure teardown
+    // cost lands outside the synchronous `apply` window. Without
+    // this, drops are synchronous (correct, but slower on big
+    // `set_rows(...)` transitions).
+    backend_web::install_drop_deferral();
     let rows = initial_rows.clamp(1, ROW_MAX);
     let backend = Rc::new(RefCell::new(WebBackend::new("#app")));
     backend_web::install_text_batcher(&backend);

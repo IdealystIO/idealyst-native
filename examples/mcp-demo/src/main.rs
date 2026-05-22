@@ -3,10 +3,12 @@
 //! Two run modes:
 //!
 //! ```text
-//! cargo run -p mcp-demo              # prints catalog (default)
-//! cargo run -p mcp-demo -- --serve   # launches stdio MCP server
-//! cargo run -p mcp-demo -- --watch   # MCP server + file-watch reload
-//! cargo run -p mcp-demo -- --check   # lint pass (phase 6)
+//! cargo run -p mcp-demo                        # prints catalog (default)
+//! cargo run -p mcp-demo -- --serve             # launches stdio MCP server
+//! cargo run -p mcp-demo -- --watch             # MCP server + in-process reload
+//! cargo run -p mcp-demo -- --watch-subprocess  # MCP server + subprocess reload (phase 5b)
+//! cargo run -p mcp-demo -- --emit-catalog      # print catalog JSON to stdout, exit
+//! cargo run -p mcp-demo -- --check             # lint pass (phase 6)
 //! ```
 //!
 //! The print mode (default) shows two views of the same catalog:
@@ -29,15 +31,37 @@ mod components;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--serve") {
-        return run_server(false);
+        return run_server(ServerMode::Static);
     }
     if args.iter().any(|a| a == "--watch") {
-        return run_server(true);
+        return run_server(ServerMode::WatchInProcess);
+    }
+    if args.iter().any(|a| a == "--watch-subprocess") {
+        return run_server(ServerMode::WatchSubprocess);
+    }
+    if args.iter().any(|a| a == "--emit-catalog") {
+        return emit_catalog();
     }
     if args.iter().any(|a| a == "--check") {
         return run_check();
     }
     print_catalog();
+}
+
+enum ServerMode {
+    Static,
+    WatchInProcess,
+    WatchSubprocess,
+}
+
+/// Print `framework_mcp::catalog_json()` to stdout and exit. This is
+/// the format `mcp_server::run_stdio_with_subprocess` expects from
+/// its extractor — the parent server runs `--emit-catalog` as a
+/// short-lived child on every file change and parses the result
+/// back into a `ResolvedCatalog`.
+fn emit_catalog() {
+    let json = framework_mcp::catalog_json();
+    println!("{}", serde_json::to_string_pretty(&json).unwrap());
 }
 
 /// Phase 6: run the lint pass and exit non-zero if anything fired.
@@ -61,20 +85,36 @@ fn run_check() {
 }
 
 /// Launch the MCP server on stdio. Blocks until the client
-/// disconnects. With `watch = true`, file changes under this
-/// crate's `src/` trigger an in-process catalog reload (see
-/// [`mcp_server::run_stdio_with_watch`] for the limitations).
-fn run_server(watch: bool) {
+/// disconnects. The three modes pick increasingly capable reload
+/// behaviors — see the module-level doc-comment for details.
+fn run_server(mode: ServerMode) {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .expect("tokio runtime");
     let result = rt.block_on(async move {
-        if watch {
-            let src = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
-            mcp_server::run_stdio_with_watch(vec![src]).await
-        } else {
-            mcp_server::run_stdio().await
+        let src = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+        match mode {
+            ServerMode::Static => mcp_server::run_stdio().await,
+            ServerMode::WatchInProcess => {
+                mcp_server::run_stdio_with_watch(vec![src]).await
+            }
+            ServerMode::WatchSubprocess => {
+                // The extractor IS this binary (re-invoked in
+                // `--emit-catalog` mode). For projects where the
+                // server lives in a different binary than the
+                // components, pass a different command here —
+                // e.g. `Command::new("cargo").args(["run", "-p",
+                // "their-crate", "--", "--emit-catalog"])`.
+                mcp_server::run_stdio_with_subprocess(vec![src], || {
+                    let mut c = std::process::Command::new(
+                        std::env::current_exe().expect("current_exe"),
+                    );
+                    c.arg("--emit-catalog");
+                    c
+                })
+                .await
+            }
         }
     });
     if let Err(e) = result {

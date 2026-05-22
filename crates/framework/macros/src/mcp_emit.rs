@@ -38,11 +38,12 @@ pub(crate) fn emit(item_fn: &ItemFn) -> TokenStream2 {
         }
     });
 
-    let param_entries = params.iter().map(|(name, ty)| {
+    let param_entries = params.iter().map(|(name, ty, short)| {
         quote! {
             ::framework_core::__mcp::ParamSpec {
                 name: #name,
                 type_str: #ty,
+                type_short_name: #short,
             }
         }
     });
@@ -70,7 +71,7 @@ pub(crate) fn emit(item_fn: &ItemFn) -> TokenStream2 {
 /// name it. The type is `quote!`-stringified for catalog
 /// consumption; spacing follows `quote!`'s defaults (e.g.
 /// `"& PlanetProps"` with a space between `&` and the type).
-fn collect_params(sig: &syn::Signature) -> Vec<(String, String)> {
+fn collect_params(sig: &syn::Signature) -> Vec<(String, String, String)> {
     let mut out = Vec::with_capacity(sig.inputs.len());
     for arg in &sig.inputs {
         let syn::FnArg::Typed(pat_type) = arg else {
@@ -86,9 +87,26 @@ fn collect_params(sig: &syn::Signature) -> Vec<(String, String)> {
         };
         let ty = &*pat_type.ty;
         let type_str = quote! { #ty }.to_string();
-        out.push((name, type_str));
+        let short = type_short_name(ty).unwrap_or_default();
+        out.push((name, type_str, short));
     }
     out
+}
+
+/// Unwrap `&T` / `&'a T` / `&mut T` / `Box<T>` / `Option<T>` /
+/// `Vec<T>` to find the underlying type's bare ident. Returns `None`
+/// for non-path types (tuples, function types, …) or when the
+/// outermost path has no segments. For a generic `Foo<T>` this
+/// returns `"Foo"`. Used to join `ParamSpec` to `PropsSchemaEntry`
+/// at MCP-runtime time.
+fn type_short_name(ty: &syn::Type) -> Option<String> {
+    match ty {
+        syn::Type::Reference(r) => type_short_name(&r.elem),
+        syn::Type::Paren(p) => type_short_name(&p.elem),
+        syn::Type::Group(g) => type_short_name(&g.elem),
+        syn::Type::Path(p) => p.path.segments.last().map(|s| s.ident.to_string()),
+        _ => None,
+    }
 }
 
 /// Pull every `#[doc = "..."]` attribute off the fn and concatenate

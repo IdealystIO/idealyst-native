@@ -358,8 +358,8 @@ docs! {
               on its ", code("variant intent"),
              " axis, so a button can be \"primary danger\" and pick \
               up the right palette without code per intent."],
-            ["Ships preset constructors (", code("IdeaTheme::light()"),
-             ", ", code("IdeaTheme::dark()"),
+            ["Ships preset constructors (", code("light_theme()"),
+             ", ", code("dark_theme()"),
              ") so most apps install one line and never touch the \
               individual fields."],
         ),

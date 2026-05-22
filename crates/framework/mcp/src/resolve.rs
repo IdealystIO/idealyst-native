@@ -28,7 +28,7 @@
 
 use std::collections::HashMap;
 
-use crate::ComponentEntry;
+use crate::{ComponentEntry, EdgeRef, ParamSpec};
 
 /// A `(module_path, name)` pair, the canonical identity for a
 /// `ComponentEntry`. Two entries with the same pair would be a
@@ -92,6 +92,34 @@ impl ResolvedCatalog {
     pub fn build() -> Self {
         let entries: Vec<&'static ComponentEntry> = crate::entries().collect();
         Self::build_from(entries)
+    }
+
+    /// Build from a JSON document in the shape `catalog_json()`
+    /// produces (see `crates/framework/mcp/src/lib.rs`). Used by
+    /// the MCP server's subprocess-reload pipeline: a child
+    /// process prints `catalog_json()` to stdout, the server pipes
+    /// it back, and this call leaks-and-builds the owned entries
+    /// into a new catalog.
+    ///
+    /// **Allocation model**: each parsed string is `Box::leak`ed
+    /// into `&'static str`, and each `composes` / `params` slice
+    /// into `&'static [_]`. The bytes persist for the server's
+    /// lifetime. For dev workflows reloading a handful of times
+    /// per minute the leak is on the order of KB per reload —
+    /// acceptable. A long-running deployment that reloads
+    /// thousands of times should batch reloads or graduate to a
+    /// per-reload arena.
+    pub fn build_from_json(json: &str) -> Result<Self, BuildFromJsonError> {
+        let value: serde_json::Value = serde_json::from_str(json)
+            .map_err(BuildFromJsonError::Parse)?;
+        let components = value["components"]
+            .as_array()
+            .ok_or(BuildFromJsonError::MissingComponents)?;
+        let mut entries: Vec<&'static ComponentEntry> = Vec::with_capacity(components.len());
+        for c in components {
+            entries.push(leak_entry_from_json(c)?);
+        }
+        Ok(Self::build_from(entries))
     }
 
     /// Build from an explicit entry list — the path tests use to
@@ -260,6 +288,74 @@ fn pascal_to_snake(s: &str) -> String {
     out
 }
 
+/// Error type for [`ResolvedCatalog::build_from_json`].
+#[derive(Debug)]
+pub enum BuildFromJsonError {
+    Parse(serde_json::Error),
+    MissingComponents,
+    MissingField(&'static str),
+}
+
+impl std::fmt::Display for BuildFromJsonError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Parse(e) => write!(f, "catalog JSON parse error: {}", e),
+            Self::MissingComponents => write!(f, "catalog JSON missing `components` array"),
+            Self::MissingField(name) => write!(f, "catalog entry missing required field {:?}", name),
+        }
+    }
+}
+
+impl std::error::Error for BuildFromJsonError {}
+
+fn leak_str(s: String) -> &'static str {
+    Box::leak(s.into_boxed_str())
+}
+
+fn leak_entry_from_json(c: &serde_json::Value) -> Result<&'static ComponentEntry, BuildFromJsonError> {
+    fn req_str<'a>(v: &'a serde_json::Value, field: &'static str) -> Result<&'a str, BuildFromJsonError> {
+        v[field].as_str().ok_or(BuildFromJsonError::MissingField(field))
+    }
+
+    let composes_raw = c["composes"].as_array().cloned().unwrap_or_default();
+    let composes: Vec<EdgeRef> = composes_raw
+        .iter()
+        .filter_map(|e| {
+            let name = e["name"].as_str()?.to_string();
+            let line = e["line"].as_u64().unwrap_or(0) as u32;
+            Some(EdgeRef { name: leak_str(name), line })
+        })
+        .collect();
+    let composes_leaked: &'static [EdgeRef] = Box::leak(composes.into_boxed_slice());
+
+    let params_raw = c["params"].as_array().cloned().unwrap_or_default();
+    let params: Vec<ParamSpec> = params_raw
+        .iter()
+        .filter_map(|p| {
+            let name = p["name"].as_str()?.to_string();
+            let type_str = p["type"].as_str()?.to_string();
+            let short = p["type_short_name"].as_str().unwrap_or("").to_string();
+            Some(ParamSpec {
+                name: leak_str(name),
+                type_str: leak_str(type_str),
+                type_short_name: leak_str(short),
+            })
+        })
+        .collect();
+    let params_leaked: &'static [ParamSpec] = Box::leak(params.into_boxed_slice());
+
+    let entry = ComponentEntry {
+        name: leak_str(req_str(c, "name")?.to_string()),
+        module_path: leak_str(req_str(c, "module_path")?.to_string()),
+        file: leak_str(req_str(c, "file")?.to_string()),
+        line: c["line"].as_u64().unwrap_or(0) as u32,
+        docs: leak_str(c["docs"].as_str().unwrap_or("").to_string()),
+        composes: composes_leaked,
+        params: params_leaked,
+    };
+    Ok(Box::leak(Box::new(entry)))
+}
+
 fn is_ancestor_module(maybe_ancestor: &str, descendant: &str) -> bool {
     if maybe_ancestor == descendant {
         return false;
@@ -277,6 +373,8 @@ mod tests {
     use super::*;
     use crate::EdgeRef;
 
+    // `params: &[]` is fine for the resolver tests — those care
+    // about composes/proximity, not the per-prop schema surface.
     fn leak_entry(
         module_path: &'static str,
         name: &'static str,

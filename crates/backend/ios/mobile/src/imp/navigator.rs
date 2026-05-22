@@ -270,10 +270,14 @@ pub(crate) fn create_navigator(
             | NavCommand::OpenDrawer
             | NavCommand::CloseDrawer
             | NavCommand::ToggleDrawer => {
-                panic!(
-                    "stack Navigator received a non-stack NavCommand -- \
-                     check that the dispatched command's shape matches \
-                     the navigator kind (stack: Push/Pop/Replace/Reset)"
+                // Pre-fix this panicked, which would unwind into
+                // UIKit's event loop (UB on the FFI boundary). A
+                // mismatched dispatch is an author/framework bug, not
+                // a fatal app condition — log and drop.
+                eprintln!(
+                    "[backend-ios::navigator] stack Navigator received a non-stack \
+                     NavCommand; ignoring. Check the dispatched command's shape \
+                     matches the navigator kind (stack: Push/Pop/Replace/Reset)."
                 );
             }
         }

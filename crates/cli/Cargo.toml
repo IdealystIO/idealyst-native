@@ -48,3 +48,13 @@ run-macos = { workspace = true }
 # concatenates their BrightScript output into a single `.brs` file.
 backend-roku-transpile = { workspace = true }
 syn = { version = "2", features = ["full"] }
+
+# `mcp` subcommand — uses the same server crate as `mcp-demo`. The
+# CLI is just the entry point that picks options and hands them off.
+# Note: the CLI itself has no `#[component]` definitions, so its
+# catalog is empty on its own — the value is being the wired-up
+# launcher rather than a different server. (The user's app, when
+# it depends on framework-core/mcp, populates the inventory.)
+mcp-server = { workspace = true }
+framework-mcp = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

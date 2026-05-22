@@ -63,6 +63,15 @@ mcp = ["framework-macros/mcp", "dep:framework-mcp"]
 # should leave this off.
 robot = []
 
+# `dev` umbrella feature — the one `idealyst dev` flips. Bundles
+# every feature that "the user is running locally for development"
+# implies. Today: `robot` (so the MCP server's runtime tools can
+# attach) + `mcp` (so the catalog is populated). When `dev` is on,
+# `framework_core::mount()` auto-starts the Robot bridge on the
+# default port — no user code needed. Production builds leave this
+# off; they never link `framework-mcp` or the bridge thread.
+dev = ["robot", "mcp"]
+
 # Platform-agnostic async + per-frame primitives:
 #
 # - `render_loop(|elapsed| ...)`  ticks a closure once per frame

@@ -75,7 +75,33 @@ fn start_inner(f: Box<dyn FnMut(f32) + 'static>) -> IosHandle {
     let state_for_block = state.clone();
     let block = StackBlock::new(move |_t: *const NSObject| {
         let elapsed = started.elapsed().as_secs_f32();
-        (state_for_block.borrow_mut())(elapsed);
+        // The NSTimer fire returns into Apple-side ObjC code that is
+        // not built with Rust unwind ABI. A panic propagating out of
+        // this block is undefined behavior on the FFI boundary.
+        // `catch_unwind` absorbs the panic and logs through NSLog so
+        // the failure surfaces without aborting the JVM/Apple runtime.
+        // `AssertUnwindSafe` is necessary because `RefCell` and
+        // closures aren't auto-UnwindSafe; we accept the borrow may
+        // be in an inconsistent state on panic, which is harmless here
+        // (next fire's borrow_mut() will succeed since the previous
+        // borrow guard is dropped during unwind).
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            (state_for_block.borrow_mut())(elapsed);
+        }));
+        if let Err(payload) = result {
+            let msg = if let Some(s) = payload.downcast_ref::<String>() {
+                s.clone()
+            } else if let Some(s) = payload.downcast_ref::<&'static str>() {
+                (*s).to_string()
+            } else {
+                "<non-string panic payload>".to_string()
+            };
+            // ios_log is not in scope here; eprintln is sufficient — the
+            // host's panic hook captures stderr in dev. In production
+            // the panic is still absorbed; the rest of the app keeps
+            // running.
+            eprintln!("[backend-ios-core] render-loop panic: {msg}");
+        }
     });
     let block = block.copy();
     let timer: Retained<NSObject> = unsafe {

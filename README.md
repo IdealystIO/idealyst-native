@@ -5,12 +5,42 @@ state, and client-side logic — and let a **backend** decide what "running on a
 platform" actually means.
 
 The ecosystem ships backends for **web** (WASM + DOM), **Android** (JNI + native
-View hierarchy), and **iOS** (UIKit via objc2). The `Backend` trait is the only
-seam: writing a new backend means implementing a handful of methods. You can
-target anything you can drive from Rust — a custom renderer, a TUI, an embedded
-display — without touching app code.
+View hierarchy), **iOS** (UIKit via objc2), **macOS** (AppKit via objc2), and
+**Roku** (BrightScript / SceneGraph transpile), plus an in-progress
+custom-renderer family on top of [wgpu](https://wgpu.rs/). The `Backend` trait
+is the only seam: writing a new backend means implementing a handful of
+methods. You can target anything you can drive from Rust — a custom renderer,
+a TUI, an embedded display — without touching app code.
 
-> **Status: under construction.** APIs are unstable; do not use in production.
+> **Status: under construction.** APIs are still under development and may change, use at your own risk.
+> See the [Roadmap](#roadmap) for what's implemented per backend.
+
+## What makes this different
+
+Cross-platform-Rust-UI is a crowded space. The thing this framework does that
+others don't:
+
+**First-class agentic + automation control.** Every mounted primitive
+registers with a shared introspection registry that exposes a stable handle,
+a `test_id`, a label, and a primitive kind. One registry, three consumers:
+
+- **E2E test harnesses** — query by `test_id`, click buttons, type into
+  inputs, read signals, snapshot the tree. The same `Robot` API works on
+  web, iOS, and Android — no separate platform runners per target.
+- **MCP server** — [`crates/robot-mcp-proxy`](crates/robot-mcp-proxy) speaks
+  stdio JSON-RPC and turns each registry capability into an MCP tool. Drop
+  it into a Claude Desktop config and an LLM can drive a running iOS /
+  Android / web app directly: fill out forms, navigate, assert state.
+- **`#[component]` methods** — a `methods! { ... }` block inside a
+  component is auto-registered as JSON-callable. External automation can
+  invoke component methods by name without per-app glue.
+
+The same model gets you Detox-style E2E, dev tools, and agentic control
+from one architectural seam. See
+[`crates/framework/core/src/robot/`](crates/framework/core/src/robot/) for
+the registry + bridge protocol, and
+[`crates/robot-mcp-proxy/`](crates/robot-mcp-proxy/) for the MCP entry
+point. Gated on the `robot` Cargo feature — production builds leave it off.
 
 ## Installing the CLI
 
@@ -83,10 +113,10 @@ idealyst run ios      # build + boot in the iOS simulator (requires Xcode)
 idealyst run android  # build + install on a running emulator / device
 ```
 
-`idealyst new` scaffolds the `examples/welcome` project verbatim — a complete
-three-act animated intro, full Inter typeface bundle, web + iOS + Android wiring
-already in place. Edit `src/app.rs` and the per-element files under
-`src/components/` to make it yours.
+`idealyst new` scaffolds the [`examples/welcome`](examples/welcome) project
+verbatim — a complete three-act animated intro, full Inter typeface bundle, web
++ iOS + Android wiring already in place. Edit `src/app.rs` and the per-element
+files under `src/components/` to make it yours.
 
 ## What is Idealyst?
 
@@ -102,32 +132,69 @@ Then I quit my job, and with this new free time, I started to tinker. AI became 
 
 ## Roadmap
 
+"Working" below means **available on at least one backend**, not "complete on
+all backends." Per-backend parity for the more involved primitives is summarised
+in the matrix further down.
+
+### Framework
+
 | Area | Status |
 | --- | --- |
 | `framework-core` — primitives, reactivity, render walker | Working |
-| `ui!` macro | Working |
-| `jsx!` macro | Working |
-| `#[component]` macro | Working |
+| `ui!` / `jsx!` / `#[component]` macros | Working |
 | `stylesheet!` macro — themes, variants, overrides | Working |
-| `Ref<H>` — primitive handles | Working |
-| `Ref<H>` — user-component handles via `methods!` | Working |
-| Reactive `if` / `when` | Working |
-| `for` loops in DSLs | Working |
-| Primitives — `Image`, `TextInput`, `ScrollView`, `Slider`, `Toggle`, `Icon`, `Video`, `WebView`, `Overlay`, `ActivityIndicator`, `Link`, `Presence`, `Graphics` | Working |
-| List virtualization — `FlatList` / `Virtualizer` | Working |
-| Navigation — stack / tabs / drawer navigators | Working |
+| `Ref<H>` — primitive handles + user-component handles via `methods!` | Working |
+| Reactive `if` / `when`, `for` loops in DSLs | Working |
 | `idea-ui` component library (Card, Modal, Popover, Select, Switch, Tabs, Field, Alert, …) | Working |
 | Icon registry (`icons-lucide`) | Working |
-| `backend-web` (WASM + DOM) | Working |
-| `backend-android` (JNI + View hierarchy) | Working |
-| `backend-ios` (UIKit via objc2) | Working |
-| `backend-roku` (BrightScript / SceneGraph transpile) | Working |
-| Hot reload — dev server + AAS shell + wire protocol | Working |
+| Robot automation + MCP server — introspection registry, `#[component] methods!`, agent control | Working |
+| Hot reload — dev server + AAS (Application-as-a-Service) shell + wire protocol | Working |
 | Server-driven UI — wire protocol + `SceneModel` snapshot | Working |
-| Custom rendering — `backend-wgpu` (core, phone, tablet, tv) | In progress |
+| Custom rendering — `render-wgpu` (core, phone, tablet, tv skins) | In progress |
 | Native backend — interactions / media / OS integration | In progress |
 | Async data / `Resource<T>` | Planned |
+| Accessibility — first-class `AccessibilityProps` on every primitive, per-backend `set_accessibility_*` hooks | Planned |
 | SSR + Hydration | Planned |
+
+### Backends
+
+| Backend | Status | Notes |
+| --- | --- | --- |
+| `backend-web` (WASM + DOM) | Working | Reference backend. Most complete primitive coverage. |
+| `backend-android-mobile` (JNI + Views) | Working | Phone form factor. `tv` variant is a stub. |
+| `backend-ios-mobile` (UIKit via objc2) | Working | Phone form factor. `tv` variant is a stub. |
+| `backend-macos` (AppKit via objc2) | Early | Window shell + basics. Many primitives unimplemented (see matrix). |
+| `backend-roku` (BrightScript / SceneGraph transpile) | Working | Theme switching temporarily disabled (token refactor); panics on theme update. |
+| `render-wgpu` (custom renderer, embeddable) | In progress | Drives the same `Backend` trait through a GPU pipeline; `host-winit` / `host-web` wire it to OS windows. |
+
+### Per-backend primitive coverage
+
+A blank cell means the trait default panics with `unimplemented!()` — author
+code that reaches for that primitive on that backend will crash, not silently
+no-op.
+
+| Primitive | web | iOS-mobile | Android-mobile | macOS | Roku | wgpu |
+|---|---|---|---|---|---|---|
+| View / Text / Button (core) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Image | ✓ | ✓ | ✓ |  | ✓ | ✓ |
+| TextInput | ✓ | ✓ | ✓ |  | ✓ | ✓ |
+| ScrollView | ✓ | ✓ | ✓ |  | ✓ | ✓ |
+| Slider | ✓ | ✓ | ✓ |  | ✓ | ✓ |
+| Toggle | ✓ | ✓ | ✓ |  | ✓ | ✓ |
+| Icon | ✓ | ✓ | ✓ |  | ✓ | ✓ |
+| ActivityIndicator | ✓ | ✓ | ✓ |  | ✓ | ✓ |
+| Graphics | ✓ | ✓ | ✓ |  | ✓ | ✓ |
+| Link | ✓ | ✓ | ✓ |  |  | ✓ |
+| Video | ✓ |  | ✓ |  |  | ✓ |
+| Virtualizer / FlatList | ✓ |  | ✓ |  |  | ✓ |
+| `Primitive::External` (third-party SDKs — Maps, WebView) | ✓ | ✓ | ✓ |  |  | partial |
+
+The honest read: web and Android-mobile are the most complete, iOS-mobile is
+catching up but missing `Video` + `Virtualizer`, macOS is a structural skeleton
+that needs the same UIKit-style primitive work iOS already has, and Roku is
+locked behind the theme-refactor regression noted above. The wgpu renderer is
+implemented at the `Backend` trait level but is still in active development on
+the rendering side.
 
 ## The shape of an app
 
@@ -155,230 +222,13 @@ pub fn app() -> Primitive {
 
 A **platform host** is a tiny separate crate per target — it wires the shared
 app to a backend and a mount point. The host is the only place that knows what
-platform it's running on.
+platform it's running on. The same `app()` is byte-for-byte identical on every
+platform.
 
-The shared `hello::app()` is byte-for-byte the same on every platform.
-
-## Writing UI: the `ui!` macro
-
-`ui!` is the framework's primary DSL for declaring the UI tree. It's designed to
-read like the structure of the rendered output, while desugaring cleanly into
-the underlying primitive constructors (`text(...)`, `button(...)`, `view(...)`,
-`when(...)`) and into the per-component invocation macros generated by
-`#[component]`.
-
-### Components
-
-A component invocation is an identifier followed by either parens, braces, or
-both:
-
-```rust
-ui! {
-    // Props only — no children.
-    Counter(label = "Score", value = score)
-
-    // Children only — no props.
-    Card {
-        Text { "Hi" }
-    }
-
-    // Both.
-    Card(title = "Outlined", kind = CardKind::Outlined) {
-        Counter(label = "Lives", value = lives)
-    }
-
-    // Self-contained: no parens, no brace — just a value.
-    Counter(label = "Empty")
-}
-```
-
-Capitalization is purely cosmetic; the parser doesn't look at it. `Counter(...)`
-and `counter(...)` parse identically. What matters is the *shape*: an
-identifier followed by `(` or `{` is a component invocation; everything else
-parses as a plain Rust expression and flows through the children list.
-
-### Built-in primitives
-
-Four names are special — `Text`, `Button`, `View`, `When`. They dispatch to free
-functions in `framework-core`:
-
-- `Text { "hi" }` or `Text(content = "hi")` → `text(...)`. The child can be any
-  Rust expression (including `format!(...)` or a closure for reactive content).
-- `Button(label = "Click", on_click = || ...)` → `button(...)`.
-- `View { ... }` → `view(...)`. A plain container.
-- `When` → the reactive conditional (though `if` inside `ui!` is the usual way
-  to invoke it; see below).
-
-### Styles
-
-The `style = ...` prop on a primitive is lifted out of the prop list and emitted
-as `.with_style(...)` on the constructed value:
-
-```rust
-ui! {
-    Text(style = banner_style()) { "Hello" }
-    View(style = row_style()) {
-        Card { Counter(label = "Score", value = score) }
-        Card(kind = CardKind::Outlined) { Counter(label = "Lives", value = lives) }
-    }
-}
-```
-
-Stylesheets themselves are declared with the `stylesheet!` macro elsewhere; the
-DSL only knows how to *attach* them.
-
-### Control flow
-
-`if` and `for` work inside `ui!` and read like normal Rust:
-
-```rust
-ui! {
-    if logged_in.get() {
-        Text { "Welcome back!" }
-    } else {
-        Button(label = "Login", on_click = move || logged_in.set(true))
-    }
-
-    for item in items {
-        Text { item.name.clone() }
-    }
-}
-```
-
-**Reactive `if`**: when the condition contains a `.get()` call, the macro
-rewrites the `if` into a `when(cond, then, otherwise)` so the active branch
-re-evaluates whenever the signals it reads change. A plain boolean condition
-(no `.get()`) emits a regular `if` expression — the branch is chosen once at
-construction.
-
-This rewrite is the macro's only "reactivity heuristic" and it's deliberately
-overt: `.get()` is the author's signal of intent.
-
-### Trailing method calls
-
-Anything after a component invocation, in dot-method form, is appended verbatim
-to the emitted expression. This is the escape hatch for builder-style methods
-the DSL doesn't model:
-
-```rust
-ui! {
-    Button(label = "Pad +4", on_click = move || pad.update(|p| *p += 4.0))
-        .bind(pad_plus_ref)
-}
-```
-
-`.bind(...)` here attaches the button to a `Ref<ButtonHandle>` so other code can
-trigger it programmatically.
-
-### Raw Rust expressions
-
-Anything that isn't a component invocation or a control-flow construct is
-parsed as a regular Rust expression and goes through the `ChildList` trait,
-which knows how to flatten a `Primitive`, an `Option<Primitive>`, a
-`Vec<Primitive>`, or a `Bound<H>` into the surrounding children slot:
-
-```rust
-ui! {
-    Card { existing_primitive }       // a value computed elsewhere
-}
-```
-
----
-
-## Advanced: swapping the front-end syntax
-
-Here's a property of `ui!` that's easy to miss on first reading: **the DSL is a
-front-end, not a structural commitment**. It parses tokens and emits calls into
-the framework's existing primitive functions and `#[component]`-generated
-invocation macros. Nothing about the underlying view tree depends on the
-surface syntax.
-
-This means you can implement a different front-end syntax — same emission
-backend, same primitive vocabulary, same components — and use it
-interchangeably with `ui!` in the same project, even in the same component.
-
-The framework ships one such alternative front-end: `jsx!`.
-
-### `jsx!` — the same DSL, JSX-flavored
-
-`jsx!` is structurally equivalent to `ui!`. It produces the same primitive
-calls, the same `when(...)` rewrites for reactive `if`, the same `.with_style`
-emission, the same `ChildList`-flattened children. Only the surface grammar
-changes.
-
-```rust
-jsx! {
-    <Text style={banner_style()}>"Hello from idealyst-native"</Text>
-
-    <Button
-        label="Toggle theme"
-        on_click={move || set_theme(if is_dark.get() { dark_theme() } else { light_theme() })}
-    />
-
-    <View style={row_style()}>
-        <Card title="Default card">
-            <Counter label="Score" value={score} />
-        </Card>
-        <Card title="Outlined" kind={CardKind::Outlined}>
-            <Counter label="Lives" value={lives} />
-        </Card>
-    </View>
-
-    if logged_in.get() {
-        <Text>"Welcome back!"</Text>
-    } else {
-        <Button label="Login" on_click={move || logged_in.set(true)} />
-    }
-}
-```
-
-The JSX-flavored conventions are conventional:
-
-- **String attrs are bare**, expression attrs are braced: `label="x"`,
-  `value={signal}`.
-- **`ref={r}` is special**: it's lifted out of the prop list and emitted as
-  `.bind(r)` on the constructed element — analogous to how `style={...}` is
-  lifted into `.with_style(...)`.
-- **Closing tags must match** (`<Card>...</Card>`); `</>` is not supported.
-- **Text content** goes through the `Text` wrapper:
-  `<Text>"hello"</Text>` or `<Text>{format!("score: {}", n)}</Text>`. Bare
-  strings between tags aren't allowed.
-
-That's the entire difference. Output is identical; the choice is purely
-ergonomic.
-
-### Why this matters
-
-The underlying primitive tree, the reactivity model, the styling system, the
-backend protocol — none of these care which macro you used. They see the same
-`Primitive::View { children, style, ref_fill }`, the same `text(...)` call,
-the same per-component `name!(...)` macro generated by `#[component]`.
-
-This is the leverage point: **familiarity is a frontend concern, not an
-architectural one**. A team coming from React reaches for `jsx!`. A team that
-prefers a more Rust-shaped DSL reaches for `ui!`. A team that wants
-something else entirely — Pug-style indentation, Slim-style angle brackets,
-something domain-specific to their product — can write their own macro that
-emits the same primitive calls, and it slots in alongside the others.
-
-The contract a UI front-end macro needs to satisfy is small enough to keep in
-your head:
-
-1. Emit calls to `framework_core::{text, button, view, when}` for the built-in
-   primitives.
-2. Emit calls to per-component `name!(...)` macros (generated by
-   `#[component]`) for user components, passing props as named arguments and
-   children as a `Vec<Primitive>` built through `ChildList::append_to`.
-3. For reactive conditionals, wrap the dependency closures with
-   `framework_core::when(cond, then, otherwise)`.
-4. Coerce the final expression with `IntoPrimitive::into_primitive(...)` so the
-   macro's caller (typically a `#[component]` function returning `Primitive`)
-   always sees the right type.
-
-Steps 1, 2, and 4 are what give a new front-end the same composability as
-`ui!` and `jsx!`. Step 3 is what lets it participate in fine-grained
-reactivity. Everything else — keywords, brackets, attribute syntax — is yours
-to design.
+The full surface of `ui!` / `jsx!` / `#[component]` / `stylesheet!` / `Ref<H>`
+is documented in **[`docs/ui-layer.md`](docs/ui-layer.md)** — read that for the
+authoring guide. The deep dives on reactivity, styling, primitives, and the
+backend contract live alongside it under [`docs/`](docs/).
 
 ## Architecture
 
@@ -392,98 +242,183 @@ to design.
 ┌──────────────────────────────────────────────────────────┐
 │                     framework-core                        │
 │  reactivity (signals, effects)  · primitives (View/Text/  │
-│  Button/When)  ·  styles + theming  ·  render walker      │
+│  Button/When/...)  ·  styles + theming  ·  render walker  │
 └──────────────────────────────────────────────────────────┘
                             │
                             ▼  (Backend trait)
-        ┌───────────────┬───────────────┬───────────────┐
-        ▼               ▼               ▼               ▼
-   backend-web     backend-android   backend-ios      (yours)
-   WASM + DOM      JNI + Views       UIKit / objc2
+        ┌───────┬───────┬───────┬───────┬───────┬───────┐
+        ▼       ▼       ▼       ▼       ▼       ▼       ▼
+       web   Android   iOS    macOS   Roku   wgpu     (yours)
+       DOM   JNI/View  UIKit  AppKit  BrS    GPU
 ```
 
-### What `framework-core` provides
+The framework controls **what** to render and **when** to update. The backend
+controls **how** that happens on the target platform. The seam is small enough
+that a new backend is on the order of "implement a trait" rather than "fork the
+framework."
 
-- **Primitives** — `View`, `Text`, `Button`, and a reactive `When` conditional.
-  Every primitive can carry an optional style.
-- **Reactivity** — `Signal<T>`, `Effect`, `Ref<H>`. Fine-grained: a signal
-  change re-runs only the effects that read it, not the whole tree. No virtual
-  DOM.
-- **Styles** — the `stylesheet!` macro defines themed stylesheets with discrete
-  variants (`size`, `kind`, …) and continuous overrides (`padding`). The theme
-  is generic; you define `struct Theme` however you like.
-- **Components** — `#[component]` rewrites a Rust function into a reusable
-  unit. A `methods!` block inside a component declares imperative methods the
-  parent can call through a `Ref<MyHandle>`.
-- **Front-end DSLs** — `ui!` (primary) and `jsx!` (JSX-flavored). Both lower to
-  the same primitive tree; see [Writing UI](#writing-ui-the-ui-macro) above.
+For the long version — the render walker, per-primitive lifecycle, the rules a
+backend must follow — see **[`docs/backend.md`](docs/backend.md)**.
 
-### What a backend implements
+## Subsystem status (the honest version)
 
-The `Backend` trait is roughly:
+Beyond per-primitive parity (the matrix above), a few cross-cutting subsystems
+are worth calling out explicitly:
 
-```rust
-pub trait Backend {
-    type Node: Clone;
-
-    fn create_view(&mut self) -> Self::Node;
-    fn create_text(&mut self, content: &str) -> Self::Node;
-    fn create_button(&mut self, label: &str, on_click: Rc<dyn Fn()>) -> Self::Node;
-    fn insert(&mut self, parent: &mut Self::Node, child: Self::Node);
-    fn update_text(&mut self, node: &Self::Node, content: &str);
-    fn clear_children(&mut self, node: &Self::Node);
-    fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>);
-    fn finish(&mut self, root: Self::Node);
-    // + optional hooks for stylesheet pre-generation, ref handles, etc.
-}
-```
-
-That's the contract. Everything else — DOM diffing, CSS class minting, View
-inflation, drawable construction — is the backend's concern.
+- **Animation.** The `Backend` trait already carries `set_animated_f32` /
+  `set_animated_color` / `animate_icon_stroke` hooks, and `framework-core`
+  exposes `AnimatedValue<T>` with spring + decay drivers and a per-thread
+  clock. The full author-facing model — value handles, animator factories,
+  declarative `Transition` on style props vs imperative interruptible motion
+  — is documented in **[`docs/animation.md`](docs/animation.md)**. Style
+  transitions and gesture-driven animations both flow through the same
+  per-frame write path.
+- **Accessibility.** **Currently minimal — this is a known gap.** Image
+  carries an `accessibilityLabel` that maps to `alt` / `accessibilityLabel`
+  / `contentDescription`; Link carries an accessibility role on native; the
+  identity layer exposes stable string IDs intended for `aria-labelledby` /
+  `aria-controls`. What's not yet in the trait: a generalised
+  `AccessibilityProps` struct on every primitive, `set_accessibility_label` /
+  `set_role` / `announce_for_accessibility`, focus-order plumbing. Production
+  apps will need this; it's on the roadmap above.
+- **Cross-backend test parity.** The reactive + walker test suite uses a
+  `MockBackend` that records every call into an event log — 98 tests
+  exercise diamond invalidation, fan-out ordering, dynamic-dependency drift,
+  ref minting, control flow, and rebuild scenarios. The web backend adds its
+  own suite. A **multi-backend conformance suite** that runs the same
+  scenarios against every backend (and against the three reactive-binding
+  paths — Rust `Effect`, native-side dispatcher, wire-serialized metadata)
+  is the natural next step for keeping "Working" mechanically defensible.
 
 ## Repository layout
 
+The workspace is grouped by concern. Within each group, each subdirectory is a
+Cargo crate.
+
 ```
 crates/
-  framework-core/      Primitives, reactivity, styles, render walker
-  framework-macros/    component, jsx, ui, stylesheet proc-macros
-  reactive-arena/      Arena allocator backing the reactive system
-  reactive-refs/       Ref<H> machinery
-  backend-web/         WASM + DOM backend
-  backend-android/     JNI + Android View backend
-  backend-ios/         UIKit backend (compile-only spike)
+  framework/            # The framework itself
+    core/               # Primitives, Backend trait, render walker, reactivity, styles
+    macros/             # #[component], ui!, jsx!, stylesheet! proc-macros
+    reactive/
+      arena/            # Arena allocator backing the reactive system
+      refs/             # Ref<H> machinery
+    wire/               # Dev-mode hot-reload + server-driven UI wire protocol
+    hot/                # Hot-reload runtime facade over subsecond
+    dev-client/         # App-side replay engine — wraps a real Backend and applies an incoming stream
+    native-layout/      # Taffy-based flex layout helper for native backends (iOS/Android/macOS)
+    mcp/                # Framework MCP component catalog (component metadata for tooling)
 
-examples/
-  hello/               Shared sample app (platform-agnostic)
-  hello-web/           Web host — bundles `hello` into a WASM module
-  hello-android/       Android host — bundles `hello` into a JNI library
+  backend/              # Backend implementations of the framework Backend trait
+    web/                # WASM + DOM backend
+    ios/
+      core/             # iOS shared layer (used by mobile + tv)
+      mobile/           # iOS UIKit backend — phone form factor
+      tv/               # iOS tvOS variant (stub)
+    ios-stack/          # Alternative iOS backend (research / experiment)
+    android/
+      core/             # Android shared layer
+      mobile/           # Android JNI + View backend — phone form factor
+      tv/               # Android TV variant (stub)
+    apple/core/         # AppKit/UIKit shared helpers (objc2)
+    macos/              # macOS AppKit backend
+    roku/               # Roku BrightScript / SceneGraph generator backend
+    aas-shell-native/   # Native AAS-shell (sync WebSocket transport, mDNS discovery)
+    posix-log-capture/  # Robot log-buffer LogCapture impl
+    [README.md per backend describes its quirks]
+
+  render/               # Custom rendering — implements Backend on top of a GPU pipeline
+    api/                # Platform-agnostic preview-backend API
+    wgpu/               # wgpu render backend
+
+  host/                 # Per-OS shells that host render-wgpu
+    appkit/             # AppKit host for macOS
+    winit/              # Winit host for cross-platform native windows
+    web/                # Browser host for the wgpu backend running on WebGPU
+
+  native/               # Pre-wired render-wgpu shells per form factor
+    phone/ tablet/ tv/  # Each crate just picks defaults + skin
+
+  skin/                 # Visual "skins" that fake a native look in the wgpu renderer
+    ios-sim/ android-sim/
+
+  ui/                   # User-facing component libraries
+    idea-ui/            # Cross-platform component library (Card, Modal, Popover, Field, …)
+    icons-lucide/       # Lucide icon pack — tree-shakeable, only referenced icons ship
+    idea-ui-docs-derive/# #[derive(DocControls)] proc macro powering the docs site
+
+  sdk/                  # Third-party-style extensions wired through Primitive::External
+    maps/ maps-core/ maps-web/   # MapView primitive
+    webview/            # WebView primitive (cfg-gated single-crate pattern)
+    idea-codeblock/     # Read-only colored-text panel primitive
+
+  cli/                  # idealyst CLI — scaffold, dev-serve, build, run, doctor
+  build/                # Per-target build orchestration (web, ios, android, macos, roku, aas, sim)
+  run/                  # Per-target run helpers (ios sim, android device, macos, roku)
+  dev/                  # Hot-reload dev server pieces
+    server/ http/ reload/ web-host/
+
+  port/                 # Source porters (React/Vue/Svelte/Solid → idealyst Rust) — see ./port/README.md
+  mcp-server/           # Stdio MCP server exposing the framework's component catalog
+  robot-mcp-proxy/      # Host-side MCP server for robots
 ```
+
+Where a crate has non-obvious wiring, runtime requirements, or behavioural
+quirks, it has its own `README.md`. The most useful entry points:
+
+- [`crates/framework/core/README.md`](crates/framework/core/README.md) —
+  the `Backend` trait, primitive vocabulary, render walker, reactivity
+  internals.
+- [`crates/framework/macros/README.md`](crates/framework/macros/README.md) —
+  `#[component]`, `ui!`, `jsx!`, `stylesheet!`. The author-facing macros.
+- [`crates/framework/wire/README.md`](crates/framework/wire/README.md) —
+  wire protocol shared by hot-reload + server-driven UI.
+- [`crates/framework/native-layout/README.md`](crates/framework/native-layout/README.md)
+  — how iOS/Android backends drive flex layout through Taffy.
+- [`crates/backend/web/README.md`](crates/backend/web/README.md) —
+  scheduler / time-source bootstrap requirements, animated-value capabilities.
+- [`crates/backend/ios/mobile/README.md`](crates/backend/ios/mobile/README.md) —
+  UIKit quirks the backend works around (scroll bounds, intrinsic sizing,
+  corner-radius clamping, etc.).
+- [`crates/backend/android/mobile/README.md`](crates/backend/android/mobile/README.md)
+  — Kotlin runtime requirements; JNI integration.
+- [`crates/backend/macos/README.md`](crates/backend/macos/README.md) —
+  what's implemented vs. still missing on the AppKit backend.
+- [`crates/backend/roku/README.md`](crates/backend/roku/README.md) —
+  theme-switching regression status, generator backend caveats.
+- [`crates/render/wgpu/README.md`](crates/render/wgpu/README.md) —
+  the GPU rendering pipeline, host requirements, debug-stats feature.
+- [`crates/port/README.md`](crates/port/README.md) — source-porter design
+  (compiler skeleton + AI hole-filling).
+
+For framework design docs — UI layer, reactivity, styling, animation, fonts,
+primitives, backend contract — see **[`docs/`](docs/)**.
 
 ## Running the examples
 
-### Web
+The examples under [`examples/`](examples/) all use the same CLI:
 
 ```bash
-cd examples/hello-web
-wasm-pack build --target web --release
-python3 serve.py 8080
+cd examples/welcome
+idealyst dev                # hot-reload web preview at http://localhost:8080
+idealyst run ios            # iOS simulator
+idealyst run android        # Android emulator / device
 ```
 
-Open `http://localhost:8080` and you should see the shared `hello::app()` tree
-rendered into the DOM.
+`idealyst new my-app` is shorthand for "copy `examples/welcome` to `my-app` and
+adjust crate names." Once you're in either, the workflow is the same.
 
-### Android
+Other examples worth knowing about:
 
-```bash
-cd examples/hello-android
-cargo ndk -t arm64-v8a build --release
-cd android && ./gradlew installDebug
-```
-
-The Kotlin host calls `NativeBridge.attach(context, rootLayout)`, which is the
-exported `Java_io_idealyst_hello_NativeBridge_attach` symbol in
-`examples/hello-android/src/lib.rs`. The Rust side builds an `AndroidBackend`
-and hands it to `framework_core::render` with the shared `hello::app()` tree.
+- [`examples/animation-test`](examples/animation-test) — exercises the
+  animation system (springs, decay, gestures).
+- [`examples/fiddle`](examples/fiddle) — sandbox for quick framework
+  experiments.
+- [`examples/idea-ui-docs`](examples/idea-ui-docs) — the live docs site for the
+  `idea-ui` component library, built with the framework itself.
+- [`examples/hello-roku`](examples/hello-roku) — minimal Roku target.
+- [`examples/mcp-demo`](examples/mcp-demo) — exercises the framework MCP
+  catalog.
 
 ## Build profile
 

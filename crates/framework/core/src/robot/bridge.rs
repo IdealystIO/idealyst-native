@@ -51,6 +51,69 @@ impl BridgeHandle {
     }
 }
 
+thread_local! {
+    /// Stashed bridge handle from [`start_auto_polling`]. Held so it
+    /// outlives `mount()` returning; dropped only when the process
+    /// exits. The TCP listener thread doesn't observe this drop, so
+    /// the bridge keeps accepting connections for the program's life.
+    static AUTO_POLLED_BRIDGE: std::cell::RefCell<Option<BridgeHandle>> =
+        const { std::cell::RefCell::new(None) };
+
+    /// The currently-scheduled poll task. Held to keep the
+    /// `after_ms` handle alive — dropping it would cancel the pending
+    /// callback before it fires. Replaced on each reschedule.
+    static POLL_TASK: std::cell::RefCell<Option<crate::scheduling::ScheduledTask>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Auto-polling variant of [`start`]: spawns the TCP listener AND
+/// schedules a periodic `poll()` on the UI thread via the framework
+/// scheduler. Caller doesn't need to thread a `BridgeHandle` through
+/// their own tick loop — the bridge self-drives until the process
+/// exits.
+///
+/// Requires the platform scheduler to be installed (typically done
+/// by the host before `mount()` — `backend_ios::install_scheduler`,
+/// `backend_web::install_scheduler`, etc.).
+///
+/// Calling twice is idempotent: subsequent calls bail out early
+/// rather than binding a second listener on the same port.
+pub fn start_auto_polling(port: u16) {
+    AUTO_POLLED_BRIDGE.with(|slot| {
+        if slot.borrow().is_some() {
+            return;
+        }
+        let handle = start(port);
+        *slot.borrow_mut() = Some(handle);
+    });
+    schedule_periodic_poll();
+}
+
+/// 16ms ≈ 60Hz — fast enough that interactive MCP calls feel
+/// snappy without burning CPU when the queue is empty.
+const POLL_INTERVAL_MS: i32 = 16;
+
+fn schedule_periodic_poll() {
+    let task = crate::scheduling::after_ms(POLL_INTERVAL_MS, || {
+        AUTO_POLLED_BRIDGE.with(|slot| {
+            if let Some(h) = slot.borrow().as_ref() {
+                h.poll();
+            }
+        });
+        // Re-arm. If the bridge slot got cleared (e.g. process is
+        // tearing down), the closure becomes a no-op but we still
+        // reschedule. Cheap.
+        schedule_periodic_poll();
+    });
+    // Hold the task so its `Drop` doesn't cancel before the
+    // callback fires. The previous task (if any) was already
+    // consumed by the running callback, so replacing the slot is
+    // safe — there's no pending-cancel race.
+    POLL_TASK.with(|slot| {
+        *slot.borrow_mut() = Some(task);
+    });
+}
+
 /// Start the robot bridge TCP listener on a background thread.
 /// Returns a `BridgeHandle` to poll on the UI thread.
 pub fn start(port: u16) -> BridgeHandle {

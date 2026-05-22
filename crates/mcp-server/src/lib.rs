@@ -10,29 +10,121 @@
 
 mod catalog_service;
 pub mod lint;
+mod robot_bridge;
 mod watch;
 
 pub use catalog_service::CatalogService;
 pub use lint::{run as lint_catalog, LintFinding, Severity};
+pub use robot_bridge::{RobotBridge, DEFAULT_BRIDGE};
 
 use anyhow::Result;
 use rmcp::ServiceExt;
 
-/// Start the MCP server on stdio and wait until the client
-/// disconnects. The catalog is loaded once from
-/// `framework_mcp::entries()` and stays static for the server's
-/// lifetime. For live reload use [`run_stdio_with_watch`].
-pub async fn run_stdio() -> Result<()> {
-    init_tracing();
-    tracing::info!("starting MCP catalog server (static catalog)");
+/// Optional knobs for the MCP server. Default constructor gives
+/// the catalog-only static-snapshot shape (same as the legacy
+/// [`run_stdio`]); builder methods opt into Robot tools, a
+/// subprocess catalog extractor, and source-directory watching.
+#[derive(Default)]
+pub struct ServerOptions {
+    robot_addr: Option<String>,
+    /// Command factory for the subprocess catalog extractor. When
+    /// set, the server invokes the command at startup (and on each
+    /// source change if `watch_paths` is also set) and parses its
+    /// stdout as catalog JSON to replace the in-process catalog.
+    /// This is how the CLI gives consumers a full catalog without
+    /// the user's components needing to be linked into the CLI
+    /// binary.
+    subprocess: Option<std::sync::Arc<dyn Fn() -> std::process::Command + Send + Sync>>,
+    watch_paths: Vec<std::path::PathBuf>,
+}
 
-    let service = CatalogService::new()
+impl ServerOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_robot(mut self, addr: impl Into<String>) -> Self {
+        self.robot_addr = Some(addr.into());
+        self
+    }
+
+    pub fn with_subprocess_catalog<F>(mut self, factory: F) -> Self
+    where
+        F: Fn() -> std::process::Command + Send + Sync + 'static,
+    {
+        self.subprocess = Some(std::sync::Arc::new(factory));
+        self
+    }
+
+    pub fn with_watch(mut self, paths: Vec<std::path::PathBuf>) -> Self {
+        self.watch_paths = paths;
+        self
+    }
+}
+
+/// Start the MCP server on stdio with the supplied options. Most
+/// consumers reach this through the CLI's `idealyst mcp` subcommand
+/// or one of the convenience wrappers ([`run_stdio`],
+/// [`run_stdio_with_options`]).
+pub async fn run_stdio_with_full_options(opts: ServerOptions) -> Result<()> {
+    init_tracing();
+    tracing::info!(
+        "starting MCP server (robot={}, subprocess={}, watch_paths={})",
+        opts.robot_addr.as_deref().unwrap_or("disabled"),
+        if opts.subprocess.is_some() { "yes" } else { "no" },
+        opts.watch_paths.len(),
+    );
+
+    let mut svc = CatalogService::new();
+    if let Some(addr) = &opts.robot_addr {
+        svc = svc.with_robot_bridge(std::sync::Arc::new(RobotBridge::new(addr)));
+    }
+
+    // Pre-serve subprocess load: do this BEFORE binding to stdio so
+    // the very first `tools/call list_components` sees the populated
+    // catalog rather than racing the extractor. Failures are
+    // warnings — the server still starts with an empty catalog.
+    if let Some(factory) = &opts.subprocess {
+        watch::preload_subprocess_catalog(&svc, factory.as_ref()).await;
+    }
+
+    let service = svc
+        .clone()
         .serve(rmcp::transport::stdio())
         .await
         .inspect_err(|e| tracing::error!("serving error: {:?}", e))?;
+    let peer = service.peer().clone();
+
+    // If a watcher was configured, spawn it. Whether it uses the
+    // subprocess flavor or the in-process flavor depends on
+    // `opts.subprocess`.
+    let _watcher = if !opts.watch_paths.is_empty() {
+        Some(if let Some(factory) = opts.subprocess.clone() {
+            watch::spawn_subprocess(svc.clone(), peer.clone(), opts.watch_paths.clone(), factory)?
+        } else {
+            watch::spawn(svc.clone(), peer.clone(), opts.watch_paths.clone())?
+        })
+    } else {
+        None
+    };
 
     service.waiting().await?;
     Ok(())
+}
+
+/// Convenience wrapper: catalog-only, optionally with the Robot bridge.
+pub async fn run_stdio_with_options(robot_addr: Option<&str>) -> Result<()> {
+    let mut opts = ServerOptions::new();
+    if let Some(addr) = robot_addr {
+        opts = opts.with_robot(addr);
+    }
+    run_stdio_with_full_options(opts).await
+}
+
+/// Catalog-only stdio server. Convenience wrapper around
+/// [`run_stdio_with_options`] for backwards compatibility.
+pub async fn run_stdio() -> Result<()> {
+    run_stdio_with_options(None).await
 }
 
 /// Start the MCP server on stdio AND watch the supplied source
@@ -47,17 +139,80 @@ pub async fn run_stdio() -> Result<()> {
 /// spawn a separate "catalog extractor" subprocess on each rebuild,
 /// pipe its catalog JSON back, and replace the in-memory catalog —
 /// see watcher details in `crates/mcp-server/src/watch.rs`.
+/// Start the MCP server on stdio AND on every source change spawn
+/// `subprocess_cmd` as a child, read its stdout as a catalog JSON
+/// document, and replace the live catalog with what the child
+/// produced. Pushes `notifications/resources/list_changed` after
+/// every successful swap.
+///
+/// This is the deployment shape spec §8.1 / phase 5b describes —
+/// the server stays up across catalog rebuilds; only the child
+/// process restarts.
+///
+/// The caller supplies a `Fn -> Command` factory rather than a
+/// concrete `Command` so the spawn can be repeated. A typical
+/// invocation points at the current binary in an `--emit-catalog`
+/// mode (which prints `framework_mcp::catalog_json()` then exits):
+///
+/// ```ignore
+/// mcp_server::run_stdio_with_subprocess(
+///     vec![std::path::PathBuf::from("src")],
+///     || {
+///         let mut c = std::process::Command::new(
+///             std::env::current_exe().unwrap(),
+///         );
+///         c.arg("--emit-catalog");
+///         c
+///     },
+/// ).await
+/// ```
+pub async fn run_stdio_with_subprocess(
+    paths: Vec<std::path::PathBuf>,
+    subprocess_cmd: impl Fn() -> std::process::Command + Send + Sync + 'static,
+) -> Result<()> {
+    init_tracing();
+    tracing::info!(
+        "starting MCP catalog server (subprocess reload watching {:?})",
+        paths
+    );
+
+    let service = CatalogService::new();
+    let running = service
+        .clone()
+        .serve(rmcp::transport::stdio())
+        .await
+        .inspect_err(|e| tracing::error!("serving error: {:?}", e))?;
+    let peer = running.peer().clone();
+
+    let watcher_handle = watch::spawn_subprocess(
+        service,
+        peer,
+        paths,
+        std::sync::Arc::new(subprocess_cmd),
+    )?;
+
+    running.waiting().await?;
+    drop(watcher_handle);
+    Ok(())
+}
+
 pub async fn run_stdio_with_watch(paths: Vec<std::path::PathBuf>) -> Result<()> {
     init_tracing();
     tracing::info!("starting MCP catalog server (live reload watching {:?})", paths);
 
     let service = CatalogService::new();
-    let watcher_handle = watch::spawn(service.clone(), paths)?;
-
+    // Bind the service to the stdio transport first so we have a
+    // peer handle to send `notifications/resources/list_changed`
+    // through. The watcher gets a clone of both the service (for
+    // `replace_catalog`) and the peer (for the notification).
     let running = service
+        .clone()
         .serve(rmcp::transport::stdio())
         .await
         .inspect_err(|e| tracing::error!("serving error: {:?}", e))?;
+    let peer = running.peer().clone();
+
+    let watcher_handle = watch::spawn(service, peer, paths)?;
 
     running.waiting().await?;
     drop(watcher_handle);

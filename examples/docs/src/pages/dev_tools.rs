@@ -243,7 +243,7 @@ docs! {
         p("The Architecture section of the Overview points at the supporting \
            crates: ", code("framework-wire"), " for the protocol, ",
           code("framework-dev-client"), " for the app-side replayer, ",
-          code("backend-aas-shell-native"), " for the desktop client side."),
+          code("aas-shell-native"), " for the desktop client side."),
     },
 
     section(heading = "The MCP server — Claude Desktop and Robot") {

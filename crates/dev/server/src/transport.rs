@@ -26,7 +26,16 @@ use std::time::Duration;
 
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use tungstenite::{Message, WebSocket};
+use framework_core::ColorScheme;
 use wire::{AppToDev, DevToApp, WireColorScheme, WireTheme, PROTOCOL_VERSION};
+
+fn wire_color_scheme_to_core(s: WireColorScheme) -> ColorScheme {
+    match s {
+        WireColorScheme::Light => ColorScheme::Light,
+        WireColorScheme::Dark => ColorScheme::Dark,
+        WireColorScheme::Auto => ColorScheme::Auto,
+    }
+}
 
 use crate::WireRecordingBackend;
 
@@ -550,7 +559,14 @@ fn handle_app_msg(
         AppToDev::StateChanged { node, bit, on } => {
             let _ = recorder.dispatch_state(node, bit, on);
         }
-        AppToDev::ColorSchemeChanged { scheme: _ } => {}
+        AppToDev::ColorSchemeChanged { scheme } => {
+            // Reflect the client's reported OS-level scheme into the
+            // recorder so author code reading `Backend::color_scheme()`
+            // sees the right value. Pre-fix this arm dropped the
+            // payload, leaving the framework stuck at `Auto` (the
+            // recorder's default) regardless of what the OS reported.
+            recorder.set_color_scheme(wire_color_scheme_to_core(scheme));
+        }
         AppToDev::ScreenReleased { scope } => {
             recorder.handle_screen_released(scope.0);
         }

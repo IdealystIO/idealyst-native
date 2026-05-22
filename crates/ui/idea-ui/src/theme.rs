@@ -326,34 +326,33 @@ fn tok(name: &'static str, fallback: &str) -> Tokenized<Color> {
     Tokenized::token(name, Color(fallback.into()))
 }
 
-/// Helper: build an `IntentColors` from the 6 fields, with token
-/// names auto-derived from the intent name (e.g. `"primary"` → tokens
-/// `intent-primary-solid-bg`, `intent-primary-solid-text`, …).
+/// Build an `IntentColors` with token names auto-derived from the
+/// intent name (e.g. `"primary"` → tokens `intent-primary-solid-bg`,
+/// `intent-primary-solid-text`, …) at **compile time** via `concat!`.
 ///
 /// Order: `solid_bg, solid_text, soft_bg, soft_text, fg, border`.
-fn intent_colors(
-    name: &'static str,
-    solid_bg: &'static str,
-    solid_text: &'static str,
-    soft_bg: &'static str,
-    soft_text: &'static str,
-    fg: &'static str,
-    border: &'static str,
-) -> IntentColors {
-    // Leak the token names as `'static str` — each theme function is
-    // called at most once per app lifetime, and the resulting tokens
-    // are referenced for the lifetime of the program anyway. Cheap.
-    fn tn(s: String) -> &'static str {
-        Box::leak(s.into_boxed_str())
-    }
-    IntentColors {
-        solid_bg: tok(tn(format!("intent-{}-solid-bg", name)), solid_bg),
-        solid_text: tok(tn(format!("intent-{}-solid-text", name)), solid_text),
-        soft_bg: tok(tn(format!("intent-{}-soft-bg", name)), soft_bg),
-        soft_text: tok(tn(format!("intent-{}-soft-text", name)), soft_text),
-        fg: tok(tn(format!("intent-{}-fg", name)), fg),
-        border: tok(tn(format!("intent-{}-border", name)), border),
-    }
+///
+/// Previously a `fn` that did `Box::leak(format!(...))` for each name,
+/// allocating 6 `&'static str`s on every call. Multiple constructions
+/// of the same theme (hot-reload, fixture teardown, tests) accumulated
+/// duplicate allocations; the compile-time form deduplicates by
+/// pointer.
+macro_rules! intent_colors {
+    (
+        $name:literal,
+        $solid_bg:expr, $solid_text:expr,
+        $soft_bg:expr, $soft_text:expr,
+        $fg:expr, $border:expr $(,)?
+    ) => {
+        IntentColors {
+            solid_bg: tok(concat!("intent-", $name, "-solid-bg"), $solid_bg),
+            solid_text: tok(concat!("intent-", $name, "-solid-text"), $solid_text),
+            soft_bg: tok(concat!("intent-", $name, "-soft-bg"), $soft_bg),
+            soft_text: tok(concat!("intent-", $name, "-soft-text"), $soft_text),
+            fg: tok(concat!("intent-", $name, "-fg"), $fg),
+            border: tok(concat!("intent-", $name, "-border"), $border),
+        }
+    };
 }
 
 pub fn light_theme() -> IdeaThemeDefaults {
@@ -376,14 +375,14 @@ pub fn light_theme() -> IdeaThemeDefaults {
         },
         intents: Intents {
             // primary: indigo
-            primary: intent_colors(
+            primary: intent_colors!(
                 "primary",
                 "#5b6cff", "#ffffff",
                 "rgba(91, 108, 255, 0.12)", "#3947d6",
                 "#3947d6", "#5b6cff",
             ),
             // secondary: slate gray
-            secondary: intent_colors(
+            secondary: intent_colors!(
                 "secondary",
                 "#475569", "#ffffff",
                 "rgba(71, 85, 105, 0.10)", "#334155",
@@ -391,32 +390,32 @@ pub fn light_theme() -> IdeaThemeDefaults {
             ),
             // neutral: solid is near-black (think "Cancel" buttons);
             // soft is the surface-alt wash.
-            neutral: intent_colors(
+            neutral: intent_colors!(
                 "neutral",
                 "#1a1a1f", "#ffffff",
                 "#eef0f7", "#1a1a1f",
                 "#1a1a1f", "#e4e6ef",
             ),
-            success: intent_colors(
+            success: intent_colors!(
                 "success",
                 "#3ba55d", "#ffffff",
                 "rgba(59, 165, 93, 0.12)", "#1f6e3a",
                 "#1f6e3a", "#3ba55d",
             ),
-            danger: intent_colors(
+            danger: intent_colors!(
                 "danger",
                 "#e5484d", "#ffffff",
                 "rgba(229, 72, 77, 0.12)", "#a82127",
                 "#a82127", "#e5484d",
             ),
-            warning: intent_colors(
+            warning: intent_colors!(
                 "warning",
                 "#e0a82e", "#1a1a1f",
                 "rgba(224, 168, 46, 0.16)", "#7a5810",
                 "#7a5810", "#e0a82e",
             ),
             // info: cyan — visually distinct from primary's indigo.
-            info: intent_colors(
+            info: intent_colors!(
                 "info",
                 "#0ea5e9", "#ffffff",
                 "rgba(14, 165, 233, 0.12)", "#065e85",
@@ -448,43 +447,43 @@ pub fn dark_theme() -> IdeaThemeDefaults {
             overlay: tok("color-overlay", "rgba(0, 0, 0, 0.55)"),
         },
         intents: Intents {
-            primary: intent_colors(
+            primary: intent_colors!(
                 "primary",
                 "#8b9aff", "#0f1115",
                 "rgba(139, 154, 255, 0.18)", "#b8c2ff",
                 "#b8c2ff", "#8b9aff",
             ),
-            secondary: intent_colors(
+            secondary: intent_colors!(
                 "secondary",
                 "#64748b", "#ffffff",
                 "rgba(148, 163, 184, 0.14)", "#cbd5e1",
                 "#cbd5e1", "#64748b",
             ),
-            neutral: intent_colors(
+            neutral: intent_colors!(
                 "neutral",
                 "#e8eaf0", "#0f1115",
                 "#262a35", "#e8eaf0",
                 "#e8eaf0", "#2a2e3a",
             ),
-            success: intent_colors(
+            success: intent_colors!(
                 "success",
                 "#4cc77c", "#0f1115",
                 "rgba(76, 199, 124, 0.16)", "#7fdfa1",
                 "#7fdfa1", "#4cc77c",
             ),
-            danger: intent_colors(
+            danger: intent_colors!(
                 "danger",
                 "#ff6369", "#ffffff",
                 "rgba(255, 99, 105, 0.18)", "#ff9ba0",
                 "#ff9ba0", "#ff6369",
             ),
-            warning: intent_colors(
+            warning: intent_colors!(
                 "warning",
                 "#f0b942", "#0f1115",
                 "rgba(240, 185, 66, 0.18)", "#f5cf7a",
                 "#f5cf7a", "#f0b942",
             ),
-            info: intent_colors(
+            info: intent_colors!(
                 "info",
                 "#38bdf8", "#0f1115",
                 "rgba(56, 189, 248, 0.16)", "#7dd0f5",
@@ -645,5 +644,39 @@ mod tests {
         // Typography.size_md changes shows up in `typography-size-md`.
         assert_eq!(px(find_length(&a_toks, "typography-size-md")), 14.0);
         assert_eq!(px(find_length(&b_toks, "typography-size-md")), 28.0);
+    }
+
+    /// Regression test for the `intent_colors` `Box::leak` audit finding.
+    /// Token names produced by `light_theme()` / `dark_theme()` must be
+    /// compile-time `&'static str`s — repeated calls hand back the same
+    /// pointer, not a freshly leaked allocation each time.
+    ///
+    /// 42 leaked strings per theme call × N theme constructions adds up
+    /// over hot-reload / fixture-driven runs; with `concat!` the names
+    /// are deduplicated by the compiler.
+    #[test]
+    fn intent_token_names_are_compile_time_constants() {
+        let a = light_theme();
+        let b = light_theme();
+        let a_name = a.intents.primary.solid_bg.name().expect("token");
+        let b_name = b.intents.primary.solid_bg.name().expect("token");
+        assert_eq!(a_name, "intent-primary-solid-bg");
+        assert_eq!(
+            a_name.as_ptr(),
+            b_name.as_ptr(),
+            "intent-primary-solid-bg name must be the same compile-time &'static str \
+             pointer across calls (Box::leak would produce different pointers)",
+        );
+
+        // Dark theme uses the same intent names — must share pointers
+        // with light theme.
+        let d = dark_theme();
+        let d_name = d.intents.primary.solid_bg.name().expect("token");
+        assert_eq!(
+            a_name.as_ptr(),
+            d_name.as_ptr(),
+            "light and dark themes must share the compile-time name for \
+             intent-primary-solid-bg",
+        );
     }
 }

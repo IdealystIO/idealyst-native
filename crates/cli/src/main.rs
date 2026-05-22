@@ -57,6 +57,10 @@ enum Command {
     Scaffold(cmd::scaffold::Args),
     /// Roku: transpile `#[method]`-tagged functions to BrightScript.
     Brs(cmd::brs::Args),
+    /// Launch the framework MCP catalog server (stdio). Use as the
+    /// `command` for an MCP client (Claude Desktop, claude.ai/code).
+    /// Robot tools are on by default — pass `--no-robot` to omit them.
+    Mcp(cmd::mcp::Args),
     // Hidden — cargo invokes this when the binary is used as a
     // RUSTC_WORKSPACE_WRAPPER for the AAS hot-patch fat build.
     // Users never call it directly.
@@ -93,6 +97,7 @@ fn main() -> anyhow::Result<()> {
         Command::Sync(args) => cmd::sync::run(args),
         Command::Scaffold(args) => cmd::scaffold::run(args),
         Command::Brs(args) => cmd::brs::run(args),
+        Command::Mcp(args) => cmd::mcp::run(args),
         Command::RustcCapture(args) => cmd::rustc_capture::run(args),
     }
 }

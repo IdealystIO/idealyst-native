@@ -101,9 +101,10 @@ pub use primitives::presence::{
     presence, PresenceAnim, PresenceHandle, PresenceOps, PresenceState,
 };
 pub use reactive::{
-    arena_stats, batch, inject, inject_or, memo, memo_with, on, on_cleanup, on_defer, provide,
-    reducer, register_signal_js_notifier, signal_has_js_notifier, unregister_signal_js_notifier,
-    untrack, with_inject, ArenaStats, Effect, Ref, Signal, Trackable,
+    arena_stats, batch, inject, inject_or, install_drop_deferral, memo, memo_with, on,
+    on_cleanup, on_defer, provide, reducer, register_signal_js_notifier, signal_has_js_notifier,
+    unregister_signal_js_notifier, untrack, with_inject, ArenaStats, Effect, Ref, Signal,
+    Trackable,
 };
 #[cfg(feature = "async-driver")]
 pub use resource::{resource, Resource, ResourceCancel, ResourceState};
@@ -126,6 +127,12 @@ pub use style::{
 pub use framework_macros::{
     component, jsx, stylesheet, text_fmt, ui,
 };
+
+/// MCP-only macros (`#[idealyst_tool]` + `#[derive(IdealystSchema)]`).
+/// Re-exported only when the `mcp` feature is on so they don't add
+/// dead `pub use`s to production builds.
+#[cfg(feature = "mcp")]
+pub use framework_macros::{idealyst_tool, IdealystSchema};
 
 /// Sentinel macro: marks a `text_fmt!` argument as a reactive
 /// signal (rather than a captured value). Has no behavior on its

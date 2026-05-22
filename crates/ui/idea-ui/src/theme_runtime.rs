@@ -64,7 +64,16 @@ thread_local! {
     /// binaries). In production this is unused — `install_themes`
     /// runs inside the user's `app()` which holds an active scope
     /// and the scope owns the slot.
-    static INSTALL_THEMES_KEEPALIVE: RefCell<Vec<Effect>> = const { RefCell::new(Vec::new()) };
+    ///
+    /// Single-slot: each [`install_themes`] call replaces the
+    /// previous keepalive, dropping its `Effect`. That way a hot-
+    /// reload or fixture teardown that re-installs the theme system
+    /// doesn't leak one `Effect` per call (and, when outside a scope,
+    /// doesn't leave a growing pile of `owns: true` handles for
+    /// thread-teardown to trip over). Two concurrent active-theme
+    /// signals never make sense — the new install supersedes the
+    /// old one.
+    static INSTALL_THEMES_KEEPALIVE: RefCell<Option<Effect>> = const { RefCell::new(None) };
 }
 
 /// Install the initial active theme. Call once at app startup
@@ -146,10 +155,15 @@ pub fn install_themes<T: ThemeTokens + Clone + 'static>(
         }
     });
     // If a render scope took ownership of the slot, `effect`'s drop
-    // is a no-op and this push just keeps an empty-handle in a vec.
+    // is a no-op and the keepalive just stores an empty handle.
     // Outside a scope (tests, top-level binaries), this is what
     // keeps the effect alive past the function return.
-    INSTALL_THEMES_KEEPALIVE.with(|k| k.borrow_mut().push(effect));
+    //
+    // Single-slot replacement: dropping the previous `Option`'s
+    // `Effect` here frees the prior install's slot (or no-ops if
+    // a scope owned it), preventing unbounded growth across
+    // repeated calls.
+    INSTALL_THEMES_KEEPALIVE.with(|k| *k.borrow_mut() = Some(effect));
 }
 
 /// Read the active theme. Subscribes the current effect (if any) to
@@ -166,4 +180,58 @@ pub fn active_theme() -> Rc<dyn Any> {
             .expect("no theme installed; call idea_ui::install_theme(...) before rendering")
             .get()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use framework_core::Signal;
+
+    #[derive(Clone)]
+    struct TestTheme {
+        name: &'static str,
+    }
+    impl ThemeTokens for TestTheme {
+        fn tokens(&self) -> Vec<TokenEntry> {
+            // Numeric token avoids requiring a Color/Length parser dep in tests.
+            let _ = self.name;
+            vec![TokenEntry {
+                name: "test.value",
+                value: TokenValue::Number(1.0),
+            }]
+        }
+    }
+
+    fn keepalive_len() -> usize {
+        INSTALL_THEMES_KEEPALIVE.with(|k| if k.borrow().is_some() { 1 } else { 0 })
+    }
+
+    /// Regression test for the `INSTALL_THEMES_KEEPALIVE` Vec growth audit
+    /// finding. Repeated calls to `install_themes` (hot-reload, fixture
+    /// teardown, tests) must not append to the keepalive indefinitely.
+    /// The keepalive should hold at most one current effect; older
+    /// installs are superseded and dropped cleanly.
+    #[test]
+    fn install_themes_keepalive_is_bounded_across_repeated_calls() {
+        let baseline = keepalive_len();
+        let variants: [(&'static str, TestTheme); 2] = [
+            ("light", TestTheme { name: "light" }),
+            ("dark", TestTheme { name: "dark" }),
+        ];
+        for _ in 0..16 {
+            let active = Signal::new("light".to_string());
+            install_themes(active, &variants);
+        }
+        let len_after = keepalive_len();
+        let leak = len_after.saturating_sub(baseline);
+        // Drop the keepalive before test return so the Effect's arena slot
+        // is freed while ARENA's thread-local is still alive (thread-teardown
+        // ordering would otherwise panic when dropping an `owns:true` effect).
+        INSTALL_THEMES_KEEPALIVE.with(|k| *k.borrow_mut() = None);
+        assert!(
+            leak <= 1,
+            "INSTALL_THEMES_KEEPALIVE grew by {leak} entries across 16 calls; \
+             expected at most 1 (each install supersedes the previous)",
+        );
+    }
 }

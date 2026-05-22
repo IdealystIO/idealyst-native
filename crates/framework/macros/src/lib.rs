@@ -25,6 +25,10 @@ mod invocation_macro;
 mod jsx;
 #[cfg(feature = "mcp")]
 mod mcp_emit;
+#[cfg(feature = "mcp")]
+mod schema_emit;
+#[cfg(feature = "mcp")]
+mod tool_emit;
 mod methods_block;
 mod path_analysis;
 mod reactivity;
@@ -36,6 +40,49 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::parse_macro_input;
 use syn::ItemFn;
+
+/// `#[derive(IdealystSchema)]` — registers a props struct's per-field
+/// information into the MCP catalog. Used alongside `#[component]`
+/// on the struct that the component takes as its props parameter.
+/// Recognises `#[schema(constraint = "...")]` field attributes for
+/// free-form constraint hints (spec §4.3).
+///
+/// When the `mcp` feature is off this derive expands to nothing.
+#[proc_macro_derive(IdealystSchema, attributes(schema))]
+pub fn derive_idealyst_schema(input: TokenStream) -> TokenStream {
+    #[cfg(not(feature = "mcp"))]
+    {
+        let _ = input;
+        proc_macro::TokenStream::new()
+    }
+    #[cfg(feature = "mcp")]
+    {
+        let parsed = parse_macro_input!(input as syn::DeriveInput);
+        schema_emit::emit(parsed).into()
+    }
+}
+
+/// `#[idealyst_tool]` — register a standalone function as an MCP
+/// tool (spec §4.2). The function body is left unchanged; the
+/// attribute only emits an `inventory::submit!` of a `ToolEntry`
+/// alongside it. When the `mcp` feature is off the attribute is a
+/// no-op (function emitted unchanged, no registration).
+#[proc_macro_attribute]
+pub fn idealyst_tool(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let item_fn = parse_macro_input!(item as ItemFn);
+    #[cfg(not(feature = "mcp"))]
+    {
+        return TokenStream::from(quote! { #item_fn });
+    }
+    #[cfg(feature = "mcp")]
+    {
+        let registration = tool_emit::emit(&item_fn);
+        TokenStream::from(quote! {
+            #item_fn
+            #registration
+        })
+    }
+}
 
 /// `ui! { ... }` — JSX-style DSL for component composition.
 ///

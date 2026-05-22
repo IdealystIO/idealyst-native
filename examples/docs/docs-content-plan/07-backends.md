@@ -21,7 +21,7 @@ Five backends come in the box:
 | `backend-ios` | iOS / iPadOS / tvOS (UIKit) | Production-ready |
 | `backend-android` | Android phones / tablets / TV (Views) | Production-ready |
 | `backend-roku` | Roku devices (SceneGraph + BrightScript) | Experimental |
-| `backend-aas-shell-native` | Dev-mode app-as-server client | Dev only |
+| `aas-shell-native` | Dev-mode app-as-server client | Dev only |
 
 Each one lives in `crates/backend/<name>` and gets pulled in by the
 CLI when you target the matching platform.
@@ -136,7 +136,7 @@ production TV app on.
 
 ## AAS — the dev-mode backend
 
-`backend-aas-shell-native` is the **app-as-server** client. It's
+`aas-shell-native` is the **app-as-server** client. It's
 unusual because it doesn't render anything itself — it forwards
 backend operations to whatever real backend is on the other end.
 

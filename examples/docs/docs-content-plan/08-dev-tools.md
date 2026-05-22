@@ -293,7 +293,7 @@ dev-host's arena, not in any client.
 The [Architecture](#architecture-in-more-depth) section of the
 Overview points at the supporting crates: `framework-wire` for
 the protocol, `framework-dev-client` for the app-side replayer,
-`backend-aas-shell-native` for the desktop client side.
+`aas-shell-native` for the desktop client side.
 
 ## The MCP server — Claude Desktop and Robot
 

@@ -40,17 +40,18 @@ pub fn page() -> Primitive {
             SectionWithCode(
                 title = "Build".to_string(),
                 body = "Build production artifacts for one or more platforms. Pass `--release` \
-                        for a release profile; pass `--platform <name>` to target a specific \
-                        host.".to_string(),
-                code = "idealyst build --release\n\
-                        idealyst build --release --platform ios".to_string(),
+                        for a release profile; pass per-target boolean flags (`--web`, `--ios`, \
+                        `--android`, `--macos`, `--roku`) to pick targets.".to_string(),
+                code = "idealyst build --release --web\n\
+                        idealyst build --release --ios".to_string(),
             )
 
             SectionWithCode(
                 title = "Run".to_string(),
-                body = "Build and launch on a connected device or simulator.".to_string(),
-                code = "idealyst run --platform ios\n\
-                        idealyst run --platform android".to_string(),
+                body = "Build and launch on a connected device or simulator. The target \
+                        platform is a positional argument.".to_string(),
+                code = "idealyst run ios\n\
+                        idealyst run android".to_string(),
             )
 
             SectionWithCode(

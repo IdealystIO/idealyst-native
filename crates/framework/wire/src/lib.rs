@@ -29,7 +29,22 @@ use serde::{Deserialize, Serialize};
 /// Protocol version. Bumped on any breaking wire change. Dev/app
 /// versions must match exactly — this is a dev-mode tool, so we don't
 /// pay for backward compatibility.
-pub const PROTOCOL_VERSION: u32 = 1;
+///
+/// Bump policy:
+/// - Adding a new `Command` / `DevToApp` / `AppToDev` variant: BUMP.
+///   serde uses external tagging, so an older peer would silently
+///   drop-on-decode the new variant. Every new variant breaks
+///   older-peer decode.
+/// - Adding a `#[serde(default)]` field to an existing variant: no
+///   bump required (defaulting fields ride through).
+/// - Removing/renaming a variant or field: BUMP.
+/// - Changing semantics of an existing variant (e.g. payload shape):
+///   BUMP.
+///
+/// Bumped to 2 with the audit-driven additions: `CreateTextArea`,
+/// `UpdateTextAreaValue`, `CreateExternal`, `NavigatorSelect`, plus
+/// scene-model handling of theme tokens and drawer-open state.
+pub const PROTOCOL_VERSION: u32 = 2;
 
 // ---------------------------------------------------------------------------
 // ID namespaces
@@ -229,6 +244,27 @@ pub enum Command {
         placeholder: Option<String>,
         on_change: HandlerId,
     },
+    /// Multi-line text-entry primitive — mirrors `CreateTextInput` but
+    /// produces a backend node that renders newlines and (typically)
+    /// resizes vertically. Key-intercept (`on_key_down`) plumbing isn't
+    /// yet on the wire; framework drops it on the recorder side until
+    /// the AAS protocol grows a key-event reverse channel.
+    CreateTextArea {
+        id: NodeId,
+        initial_value: String,
+        placeholder: Option<String>,
+        on_change: HandlerId,
+    },
+    /// Third-party `Primitive::External` node. Only `type_name` crosses
+    /// the wire because the underlying `Rc<dyn Any>` props are arbitrary
+    /// Rust types with no serialization contract. Clients that have
+    /// registered an external factory under `type_name` may consult it
+    /// to render a sensible default; clients that haven't render an
+    /// empty placeholder so the tree stays well-formed.
+    CreateExternal {
+        id: NodeId,
+        type_name: String,
+    },
     CreateToggle {
         id: NodeId,
         initial_value: bool,
@@ -357,6 +393,10 @@ pub enum Command {
         node: NodeId,
         value: String,
     },
+    UpdateTextAreaValue {
+        node: NodeId,
+        value: String,
+    },
     UpdateToggleValue {
         node: NodeId,
         value: bool,
@@ -460,6 +500,22 @@ pub enum Command {
         url: String,
         #[serde(default)]
         restore: bool,
+    },
+    /// Switch a tab/drawer navigator to a different mounted screen
+    /// without tearing down the rest of the stack. Mirrors a
+    /// stack-`Push` payload but the client side dispatches
+    /// `NavCommand::Select` instead. Pre-fix this was conflated with
+    /// `NavigatorReset`; SceneModel's snapshot would treat a tab swap
+    /// as a full stack reset, dropping any persisted state on the same
+    /// navigator. See the wire-protocol audit (`PushLikeKind::Select`
+    /// masquerade).
+    NavigatorSelect {
+        navigator: NodeId,
+        screen: NodeId,
+        scope: ScopeId,
+        options: WireScreenOptions,
+        #[serde(default)]
+        url: String,
     },
     /// Mount a lazy tab's content after the app reports activation.
     NavigatorMountTab {

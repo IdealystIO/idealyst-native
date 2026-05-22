@@ -75,6 +75,13 @@ pub struct SceneModel {
     /// `.layout(...)` subtree — root is inserted into the navigator
     /// container, outlet records where subsequent screens mount.
     nav_layouts: HashMap<NodeId, (NodeId, NodeId)>,
+    /// Per-drawer-navigator open state. Updated on every
+    /// `OpenDrawer`/`CloseDrawer`/`ToggleDrawer` command so a late-
+    /// joining client (or a post-rebuild resnap of an existing one)
+    /// can observe the live drawer state instead of always defaulting
+    /// to closed. Stored separately from `nav_layouts` because tab
+    /// navigators don't have a drawer.
+    drawer_open: HashMap<NodeId, bool>,
     /// Root node from `Backend::finish(root)`. Anchors reachability
     /// — anything not in this subtree (and not a navigator screen)
     /// gets pruned during snapshot.
@@ -136,6 +143,8 @@ impl SceneModel {
             | Command::CreateImage { id, .. }
             | Command::CreateIcon { id, .. }
             | Command::CreateTextInput { id, .. }
+            | Command::CreateTextArea { id, .. }
+            | Command::CreateExternal { id, .. }
             | Command::CreateToggle { id, .. }
             | Command::CreateSlider { id, .. }
             | Command::CreateScrollView { id, .. }
@@ -208,6 +217,13 @@ impl SceneModel {
             }
             Command::UpdateTextInputValue { node, value } => {
                 if let Some(Command::CreateTextInput { initial_value: v, .. }) =
+                    self.node_create.get_mut(node)
+                {
+                    *v = value.clone();
+                }
+            }
+            Command::UpdateTextAreaValue { node, value } => {
+                if let Some(Command::CreateTextArea { initial_value: v, .. }) =
                     self.node_create.get_mut(node)
                 {
                     *v = value.clone();
@@ -350,6 +366,32 @@ impl SceneModel {
                 stack.push(entry);
                 self.scope_to_navigator.insert(scope.0, *navigator);
             }
+            Command::NavigatorSelect {
+                navigator,
+                screen,
+                scope,
+                options,
+                url,
+            } => {
+                // Select replaces the navigator's single visible screen
+                // without draining a stack — semantically a single-slot
+                // swap for tab/drawer navigators. We model this the
+                // same as a one-entry reset: drop the previous active
+                // entry, push the new one. (Tab navigators don't carry
+                // a multi-entry stack in this model.)
+                let entry = ScreenEntry {
+                    screen: *screen,
+                    scope: *scope,
+                    options: options.clone(),
+                    url: url.clone(),
+                };
+                let stack = self.navigators.entry(*navigator).or_default();
+                for prev in stack.drain(..) {
+                    self.scope_to_navigator.remove(&prev.scope.0);
+                }
+                stack.push(entry);
+                self.scope_to_navigator.insert(scope.0, *navigator);
+            }
             Command::NavigatorMountTab { .. } => {
                 // Tab mounting is currently surfaced as a Push when
                 // replayed by the AAS client; the live broadcast
@@ -367,12 +409,15 @@ impl SceneModel {
             } => {
                 self.nav_layouts.insert(*navigator, (*root, *outlet));
             }
-            Command::OpenDrawer { .. }
-            | Command::CloseDrawer { .. }
-            | Command::ToggleDrawer { .. } => {
-                // Drawer open-state is broadcast live; not part of
-                // the persistent snapshot. The client's drawer
-                // defaults to closed on fresh mount.
+            Command::OpenDrawer { navigator } => {
+                self.drawer_open.insert(*navigator, true);
+            }
+            Command::CloseDrawer { navigator } => {
+                self.drawer_open.insert(*navigator, false);
+            }
+            Command::ToggleDrawer { navigator } => {
+                let entry = self.drawer_open.entry(*navigator).or_insert(false);
+                *entry = !*entry;
             }
             Command::ApplyNavigatorHeaderStyle { navigator, .. } => {
                 self.nav_style_slots.entry(*navigator).or_default().header = Some(cmd.clone());
@@ -424,6 +469,10 @@ impl SceneModel {
                 self.node_presence.remove(node);
                 self.node_icon_stroke.remove(node);
                 self.node_icon_anim.remove(node);
+                // Released drawer navigator: clear its open-state so a
+                // post-release snapshot doesn't replay `OpenDrawer` for
+                // a node the client side no longer has.
+                self.drawer_open.remove(node);
             }
             Command::InstallThemeVariables { .. } => {
                 // Theme variables are broadcast live; not modeled
@@ -653,6 +702,20 @@ impl SceneModel {
                     }
                 }
             }
+        }
+
+        // 5b. Replay live drawer-open state so a reconnecting client
+        // sees the same open drawer the producer side has — sidecar
+        // respawn or epoch-advance resnap otherwise resets every
+        // drawer to closed.
+        let mut drawer_navs: Vec<NodeId> = self
+            .drawer_open
+            .iter()
+            .filter_map(|(nav, open)| if *open { Some(*nav) } else { None })
+            .collect();
+        drawer_navs.sort_by_key(|n| n.0);
+        for nav in drawer_navs {
+            out.push(Command::OpenDrawer { navigator: nav });
         }
 
         // 6. Finish.

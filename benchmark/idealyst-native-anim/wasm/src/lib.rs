@@ -446,6 +446,7 @@ pub fn start() {
     // [[project_web_bootstrap_scheduler]]).
     backend_web::install_scheduler();
     backend_web::install_time_source();
+    backend_web::install_drop_deferral();
 
     let count_sig: Signal<u64> = signal!(0u64);
     STORE.with(|s| s.borrow_mut().count_sig = Some(count_sig));

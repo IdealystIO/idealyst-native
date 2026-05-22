@@ -491,7 +491,15 @@ impl WireRecordingBackend {
         let mut state = self.inner.borrow_mut();
         state.out.clear();
         state.scene = SceneModel::new();
-        state.next_node = 0;
+        // `next_node` is *not* reset for the same reason `next_style` and
+        // `handlers.next` aren't: `identity_to_node` survives the reset,
+        // and minting fresh ids from 0 would recycle ids that cached
+        // identities are still using — every emission with a new identity
+        // (a row added to a previously-rendered list, for example) would
+        // collide with whatever existing identity holds `NodeId(1)`,
+        // `NodeId(2)`, … The high-water mark is the only collision-safe
+        // start point. (Regression test: `reset_log_and_scene_does_not_
+        // collide_minted_ids_with_cached_identities` in `aas_headless`.)
         // `next_style` is *not* reset: the new walk's content-addressed
         // dedup (see [`Self::intern_style`]) reuses the previously-
         // assigned `StyleId` for any unchanged stylesheet. New
@@ -1002,6 +1010,63 @@ impl Backend for WireRecordingBackend {
         });
     }
 
+    fn create_text_area(
+        &mut self,
+        initial_value: &str,
+        placeholder: Option<&str>,
+        on_change: Rc<dyn Fn(String)>,
+        _on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
+    ) -> Self::Node {
+        // `_on_key_down` is dropped on the wire for the same reason as
+        // `create_text_input` above — AAS doesn't yet carry intercepted
+        // key events. Snapshot/replay clients still see the resulting
+        // Signal updates.
+        let mut state = self.inner.borrow_mut();
+        let identity = framework_core::current_identity();
+        let id = Self::mint_node(&mut state);
+        let handler = state
+            .handlers
+            .register_string_for_identity(identity, on_change);
+        state.emit(Command::CreateTextArea {
+            id,
+            initial_value: initial_value.to_string(),
+            placeholder: placeholder.map(str::to_string),
+            on_change: handler,
+        });
+        id
+    }
+
+    fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {
+        let mut state = self.inner.borrow_mut();
+        state.emit(Command::UpdateTextAreaValue {
+            node: *node,
+            value: value.to_string(),
+        });
+    }
+
+    /// External (third-party) primitive over the wire: only the
+    /// `type_name` travels. The `Rc<dyn Any>` props can't cross —
+    /// they're arbitrary Rust types with no serialization contract. The
+    /// client side may consult its own external registry by `type_name`
+    /// and render with default props, or render a placeholder if no
+    /// registration matches. Either way, this override stops the
+    /// framework's `unimplemented!()` default from aborting the
+    /// dev-server walker on every `Primitive::External` mount.
+    fn create_external(
+        &mut self,
+        _type_id: std::any::TypeId,
+        type_name: &'static str,
+        _payload: &Rc<dyn std::any::Any>,
+    ) -> Self::Node {
+        let mut state = self.inner.borrow_mut();
+        let id = Self::mint_node(&mut state);
+        state.emit(Command::CreateExternal {
+            id,
+            type_name: type_name.to_string(),
+        });
+        id
+    }
+
     fn create_toggle(
         &mut self,
         initial_value: bool,
@@ -1262,6 +1327,30 @@ impl Backend for WireRecordingBackend {
         state.emit(Command::Finish { root });
     }
 
+    /// Forward installed tokens onto the wire so client-side backends
+    /// with a runtime variable store (web's CSS custom properties)
+    /// receive them. Without this override, the trait default was a
+    /// no-op and any author-installed theme tokens never reached AAS
+    /// clients — token-keyed `Tokenized<T>` references silently fell
+    /// back to literals on every replay.
+    fn install_tokens(&mut self, tokens: &[framework_core::TokenEntry]) {
+        let mut state = self.inner.borrow_mut();
+        state.emit(Command::InstallThemeVariables {
+            tokens: tokens.iter().map(token_entry_to_wire).collect(),
+        });
+    }
+
+    /// Push updated token values onto the wire. Same shape as
+    /// [`install_tokens`]; mirrors `update_tokens` on the framework
+    /// side. Clients with a variable store update in place; clients
+    /// without one re-resolve via the framework's token-version signal.
+    fn update_tokens(&mut self, tokens: &[framework_core::TokenEntry]) {
+        let mut state = self.inner.borrow_mut();
+        state.emit(Command::InstallThemeVariables {
+            tokens: tokens.iter().map(token_entry_to_wire).collect(),
+        });
+    }
+
     fn create_portal(
         &mut self,
         target: primitives::portal::PortalTarget,
@@ -1311,29 +1400,25 @@ impl Backend for WireRecordingBackend {
         _on_resize: primitives::graphics::OnResize,
         _on_lost: primitives::graphics::OnLost,
     ) -> Self::Node {
-        // Graphics primitives don't work in AAS mode: the wgpu /
-        // raw-window-handle surface lives on the *client*, but the
-        // user's `on_ready` / `on_resize` / `on_lost` closures run
-        // on the *server* — there's no way to ship a window handle
-        // across the wire, and no AAS-side serialization for GPU
-        // call streams. (See `primitives/graphics.rs`'s "renderer
-        // name" indirection — that's the half-built bridge.)
+        // The author's `on_ready` / `on_resize` / `on_lost` closures
+        // can't travel over the wire (they capture renderer state
+        // tied to the dev-side process). Instead, ship the renderer
+        // *name* — the client-side `WireBackend::graphics_registry`
+        // looks it up against locally-registered renderer factories
+        // and stands up the surface on the client.
         //
-        // Render a visible placeholder instead so the user sees the
-        // limitation in-app rather than getting a silent black box.
-        // Emitting plain View + Text means every existing client
-        // backend handles it without changes.
+        // Without a renderer-name plumbing path on `OnReady` we
+        // currently emit `<unnamed>` and rely on the client falling
+        // back to no-op handlers when no renderer is registered.
+        // That's the documented gap captured in the wire-protocol
+        // audit (`project_aas_graphics_unsupported` originally
+        // described the placeholder-text workaround; this is the
+        // forward path that lets registered renderers actually run).
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
-        state.emit(Command::CreateView { id });
-        let text_id = Self::mint_node(&mut state);
-        state.emit(Command::CreateText {
-            id: text_id,
-            content: "[Graphics primitive not supported in AAS mode]".to_string(),
-        });
-        state.emit(Command::Insert {
-            parent: id,
-            child: text_id,
+        state.emit(Command::CreateGraphics {
+            id,
+            renderer: "<unnamed>".to_string(),
         });
         id
     }
@@ -1753,11 +1838,86 @@ impl Backend for WireRecordingBackend {
     // Handle constructors fall through to the trait's no-op defaults.
     // Imperative `handle.click()` from dev-side code is a v1 feature
     // (needs a synchronous round trip we don't implement yet).
+
+    // ---------------------------------------------------------------------
+    // Release hooks — emit `Command::ReleaseNode` so the client tears down
+    // the matching backend node and the dev-client's per-node bookkeeping
+    // is dropped instead of growing across hot-reload cycles.
+    //
+    // The framework's walker installs RAII cleanup guards per primitive
+    // that fire these on `Scope::drop`. Without the overrides below, every
+    // unmounted navigator / virtualizer / portal / graphics / external /
+    // overlay would leak its `NodeId` on the client side (see
+    // `SceneModel::apply` for the matching per-node map clears).
+    fn release_navigator(&mut self, node: &Self::Node) {
+        let mut state = self.inner.borrow_mut();
+        state.navigators.remove(node);
+        state.emit(Command::ReleaseNode { node: *node });
+    }
+
+    fn release_tab_navigator(&mut self, node: &Self::Node) {
+        let mut state = self.inner.borrow_mut();
+        state.navigators.remove(node);
+        state.emit(Command::ReleaseNode { node: *node });
+    }
+
+    fn release_drawer_navigator(&mut self, node: &Self::Node) {
+        let mut state = self.inner.borrow_mut();
+        state.navigators.remove(node);
+        state.emit(Command::ReleaseNode { node: *node });
+    }
+
+    fn release_virtualizer(&mut self, node: &Self::Node) {
+        let mut state = self.inner.borrow_mut();
+        state.emit(Command::ReleaseNode { node: *node });
+    }
+
+    fn release_graphics(&mut self, node: &Self::Node) {
+        let mut state = self.inner.borrow_mut();
+        state.emit(Command::ReleaseNode { node: *node });
+    }
+
+    fn release_portal(&mut self, node: &Self::Node) {
+        let mut state = self.inner.borrow_mut();
+        state.emit(Command::ReleaseNode { node: *node });
+    }
+
+    fn release_external(&mut self, node: &Self::Node) {
+        let mut state = self.inner.borrow_mut();
+        state.emit(Command::ReleaseNode { node: *node });
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Wire mappers for the new portal primitive's positioning enums.
 // ---------------------------------------------------------------------------
+
+fn token_entry_to_wire(entry: &framework_core::TokenEntry) -> wire::WireTokenEntry {
+    wire::WireTokenEntry {
+        name: entry.name.to_string(),
+        value: token_value_to_wire(&entry.value),
+    }
+}
+
+fn token_value_to_wire(value: &framework_core::TokenValue) -> wire::WireTokenValue {
+    match value {
+        framework_core::TokenValue::Color(c) => {
+            wire::WireTokenValue::Color(wire::WireColor(c.0.clone()))
+        }
+        framework_core::TokenValue::Number(n) => wire::WireTokenValue::Number(*n),
+        framework_core::TokenValue::Length(l) => {
+            wire::WireTokenValue::Length(length_to_wire_token(*l))
+        }
+    }
+}
+
+fn length_to_wire_token(l: framework_core::Length) -> wire::WireLength {
+    match l {
+        framework_core::Length::Px(v) => wire::WireLength::Px(v),
+        framework_core::Length::Percent(v) => wire::WireLength::Pct(v),
+        framework_core::Length::Auto => wire::WireLength::Auto,
+    }
+}
 
 fn wire_viewport_placement(
     p: primitives::portal::ViewportPlacement,
@@ -1872,23 +2032,22 @@ fn navigator_dispatcher_handle(
                     url: url.clone(),
                     restore,
                 },
-                // Select on a tab/drawer navigator is conceptually a
-                // single-screen "swap to this route." There's no
-                // `NavigatorSelect` wire variant; `NavigatorReset`
-                // carries identical payload and the dev-client
-                // dispatches it as `NavCommand::Reset`, which the
-                // tab/drawer dispatcher already handles (swap body
-                // + auto-close drawer). Emitting `NavigatorPush`
-                // here was wrong — the client's dispatch translated
-                // it into `NavCommand::Push`, which tab/drawer
-                // dispatchers reject by panic.
-                PushLikeKind::Select => Command::NavigatorReset {
+                // Select on a tab/drawer navigator is a single-screen
+                // "swap to this route" — semantically distinct from
+                // `Reset` (which drains the whole stack). Pre-fix we
+                // masqueraded as `NavigatorReset`, which caused
+                // `SceneModel::apply(NavigatorReset)` to drain the
+                // navigator's per-screen state. Emitting the new
+                // explicit `NavigatorSelect` keeps the snapshot model
+                // accurate and the dev-client dispatches `NavCommand::
+                // Select` directly without disambiguating by navigator
+                // kind.
+                PushLikeKind::Select => Command::NavigatorSelect {
                     navigator: nav_id,
                     screen: mount.node,
                     scope,
                     options: wire_options,
                     url: url.clone(),
-                    restore,
                 },
             });
             let mirror = state.nav_state_mirror.clone();

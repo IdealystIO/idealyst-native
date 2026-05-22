@@ -5,6 +5,7 @@ pub mod clean;
 pub mod dev;
 pub mod doctor;
 pub mod init;
+pub mod mcp;
 pub mod new;
 pub mod run;
 pub mod rustc_capture;

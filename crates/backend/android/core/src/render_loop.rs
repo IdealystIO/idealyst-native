@@ -66,7 +66,7 @@ impl RenderLoopHandle for AndroidHandle {
 fn start_inner(mut user_fn: Box<dyn FnMut(f32) + Send + 'static>) -> AndroidHandle {
     let (tx, rx) = channel::<()>();
     let started = Instant::now();
-    let join = thread::Builder::new()
+    let spawn_result = thread::Builder::new()
         .name("framework-render-loop".into())
         .spawn(move || {
             // Block on the cancel channel with a frame-length
@@ -85,10 +85,25 @@ fn start_inner(mut user_fn: Box<dyn FnMut(f32) + Send + 'static>) -> AndroidHand
                 let elapsed = started.elapsed().as_secs_f32();
                 user_fn(elapsed);
             }
-        })
-        .expect("framework: failed to spawn render loop thread");
-    AndroidHandle {
-        tx: Some(tx),
-        join: Some(join),
+        });
+    match spawn_result {
+        Ok(join) => AndroidHandle {
+            tx: Some(tx),
+            join: Some(join),
+        },
+        Err(e) => {
+            // Thread spawn failure is rare on Android but reachable
+            // (process FD exhaustion, ulimit). This function is called
+            // from a JNI-driven Backend::start path; panicking would
+            // unwind across the `extern "system"` boundary in the
+            // leaf crate. Return an inert handle instead so the host
+            // crash is a missing render loop, not an undefined-
+            // behavior abort.
+            log::error!(
+                "[backend-android-core] render-loop thread spawn failed: {e}; \
+                 returning inert handle (no frames will fire)"
+            );
+            AndroidHandle { tx: None, join: None }
+        }
     }
 }

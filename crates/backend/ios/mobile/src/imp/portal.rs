@@ -435,8 +435,28 @@ pub(crate) fn schedule_main<F: FnOnce() + 'static>(f: F) {
     let ctx = Box::into_raw(boxed) as *mut std::ffi::c_void;
 
     extern "C" fn trampoline(ctx: *mut std::ffi::c_void) {
+        // SAFETY (libdispatch handoff): ctx came from the matching
+        // `Box::into_raw` above; libdispatch promises to call this
+        // exactly once. The box reclaim transfers ownership back to
+        // Rust before the user closure runs.
         let boxed: Box<Box<dyn FnOnce()>> = unsafe { Box::from_raw(ctx as *mut _) };
-        boxed();
+        // Wrap the user closure in `catch_unwind` — libdispatch is C
+        // code and a panic propagating into it is undefined behavior.
+        // The closure is `FnOnce`; we take it out of the box explicitly
+        // so the closure body can move captures freely.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            boxed();
+        }));
+        if let Err(payload) = result {
+            let msg = if let Some(s) = payload.downcast_ref::<String>() {
+                s.clone()
+            } else if let Some(s) = payload.downcast_ref::<&'static str>() {
+                (*s).to_string()
+            } else {
+                "<non-string panic payload>".to_string()
+            };
+            eprintln!("[backend-ios::portal] schedule_main closure panicked: {msg}");
+        }
     }
 
     unsafe {

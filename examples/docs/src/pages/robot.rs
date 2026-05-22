@@ -28,15 +28,20 @@ docs! {
     },
 
     section(heading = "Enabling Robot") {
-        p("Robot is feature-gated. Build your app with ", code("--features robot"),
-          " to turn it on:"),
+        p("Robot is feature-gated on ", code("framework-core"),
+          ". Enable it from your app's ", code("Cargo.toml"),
+          " by forwarding the feature flag:"),
 
-        code(bash, r##"
-            idealyst dev --web -- --features robot
-            idealyst build --release -- --features robot
+        code(toml, r##"
+            [features]
+            default = ["robot"]
+            robot = ["framework-core/robot"]
         "##),
 
-        p("(The flags after ", code("--"), " are passed through to ", code("cargo"), ".)"),
+        p("Once the feature is on, the usual CLI commands pick it up — ",
+          code("idealyst dev"), ", ", code("idealyst build --release"),
+          ", and so on. No CLI flag is needed; the feature flows through Cargo \
+           the way any other workspace feature does."),
 
         p("The app then exposes a TCP bridge on port ", code("9718"), " by default. \
            Any process that speaks the bridge protocol can connect and start \

@@ -314,10 +314,6 @@ impl Backend for IosBackend {
         }
     }
 
-    fn is_simulator(&self) -> bool {
-        cfg!(all(target_os = "ios", target_abi = "sim"))
-    }
-
     fn color_scheme(&self) -> framework_core::ColorScheme {
         // UITraitCollection.currentTraitCollection.userInterfaceStyle
         // 0 = Unspecified, 1 = Light, 2 = Dark (UIUserInterfaceStyle).

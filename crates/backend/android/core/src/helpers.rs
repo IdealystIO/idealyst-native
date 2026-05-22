@@ -1,6 +1,14 @@
 //! Small JNI utilities used across primitives and the style path.
 //! Free functions (no inherent impl) — each takes the `JNIEnv` and
 //! whatever JVM object handle it operates on.
+//!
+//! Panic policy: every public helper here graceful-degrades on JNI
+//! failure (logs via `log::error!`, returns / no-ops). These functions
+//! are reachable from `extern "system"` JNI exports in
+//! `backend-android-mobile`; unwinding across that boundary is
+//! undefined behavior. Pre-fix the helpers used `.unwrap()` liberally,
+//! which would have aborted the JVM process on any pending JNI
+//! exception or class-load failure.
 
 use jni::objects::{JObject, JValue};
 use jni::JNIEnv;
@@ -14,6 +22,11 @@ use jni::JNIEnv;
 /// Explicit `width` / `height` from the stylesheet later overrides
 /// these defaults via the LayoutParams field mutation in the
 /// leaf crate's `imp::style::apply_rules`.
+///
+/// JNI failures (class not found, pending exception) are logged and
+/// the view is left with its constructor-default LayoutParams. The
+/// affected view will still mount; it may render at the wrong size
+/// until the layout pass corrects it.
 pub fn apply_default_layout_params(env: &mut JNIEnv, view: &JObject) {
     // `MarginLayoutParams`, not the bare `ViewGroup.LayoutParams`,
     // because `ScrollView.measureChildWithMargins` (and every other
@@ -21,15 +34,24 @@ pub fn apply_default_layout_params(env: &mut JNIEnv, view: &JObject) {
     // and throws `ClassCastException` otherwise. Margin-aware is a
     // strict superset of the bare LP shape, so this is safe to use
     // as the default for every view.
-    let lp_class = env
-        .find_class("android/view/ViewGroup$MarginLayoutParams")
-        .unwrap();
+    let lp_class = match env.find_class("android/view/ViewGroup$MarginLayoutParams") {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = env.exception_clear();
+            log::error!(
+                "[backend-android-core] apply_default_layout_params: \
+                 find_class(MarginLayoutParams) failed: {e}; leaving view with default LP"
+            );
+            return;
+        }
+    };
     // -1 = MATCH_PARENT, -2 = WRAP_CONTENT.
     let Ok(lp) = env.new_object(
         &lp_class,
         "(II)V",
         &[JValue::Int(-1), JValue::Int(-2)],
     ) else {
+        let _ = env.exception_clear();
         return;
     };
     let _ = env.call_method(
@@ -38,17 +60,35 @@ pub fn apply_default_layout_params(env: &mut JNIEnv, view: &JObject) {
         "(Landroid/view/ViewGroup$LayoutParams;)V",
         &[JValue::Object(&lp)],
     );
+    // call_method swallows the Result; clear any pending exception
+    // so the next JNI call from a caller doesn't trip on stale state.
+    let _ = env.exception_clear();
 }
 
+/// Set a `TextView`-shaped widget's text. JNI failures (pending
+/// exception, OOM allocating the Java String, Java-side method throw)
+/// are logged and the call is a no-op — the text widget stays at its
+/// previous content. Never panics across the JNI boundary.
 pub fn set_text(env: &mut JNIEnv, view: &JObject, content: &str) {
-    let java_str = env.new_string(content).unwrap();
-    env.call_method(
+    let java_str = match env.new_string(content) {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = env.exception_clear();
+            log::error!(
+                "[backend-android-core] set_text: new_string failed: {e}; skipping setText"
+            );
+            return;
+        }
+    };
+    if let Err(e) = env.call_method(
         view,
         "setText",
         "(Ljava/lang/CharSequence;)V",
         &[JValue::Object(&JObject::from(java_str))],
-    )
-    .unwrap();
+    ) {
+        let _ = env.exception_clear();
+        log::error!("[backend-android-core] set_text: setText threw: {e}");
+    }
 }
 
 /// Parse a CSS-style color string into the Android `int` form
@@ -77,23 +117,63 @@ pub fn px_or(value: Option<&framework_core::Tokenized<framework_core::Length>>, 
     }
 }
 
+/// Convert a `dp` value to device pixels by reading the view's
+/// display-metric density. JNI failures (detached view, missing
+/// Resources reference, mid-frame race) are logged and the function
+/// falls back to `dp.round()` — the unconverted value. The affected
+/// layout will be slightly off (1 dp = 1 px) until the next apply
+/// pass, but the app keeps running. Never panics across the JNI
+/// boundary.
 pub fn dp_to_px(env: &mut JNIEnv, view: &JObject, dp: f32) -> i32 {
     // density = view.getResources().getDisplayMetrics().density
-    let res = env
-        .call_method(view, "getResources", "()Landroid/content/res/Resources;", &[])
-        .unwrap()
-        .l()
-        .unwrap();
-    let metrics = env
-        .call_method(
-            &res,
-            "getDisplayMetrics",
-            "()Landroid/util/DisplayMetrics;",
-            &[],
-        )
-        .unwrap()
-        .l()
-        .unwrap();
-    let density = env.get_field(&metrics, "density", "F").unwrap().f().unwrap();
+    let fallback = dp.round() as i32;
+    macro_rules! fail {
+        ($what:expr, $err:expr) => {{
+            let _ = env.exception_clear();
+            log::error!(
+                "[backend-android-core] dp_to_px: {} failed: {}; \
+                 falling back to dp.round() = {}",
+                $what,
+                $err,
+                fallback,
+            );
+            return fallback;
+        }};
+    }
+
+    let res_jval = match env.call_method(
+        view,
+        "getResources",
+        "()Landroid/content/res/Resources;",
+        &[],
+    ) {
+        Ok(v) => v,
+        Err(e) => fail!("getResources()", e),
+    };
+    let res = match res_jval.l() {
+        Ok(o) => o,
+        Err(e) => fail!("getResources().l()", e),
+    };
+    let metrics_jval = match env.call_method(
+        &res,
+        "getDisplayMetrics",
+        "()Landroid/util/DisplayMetrics;",
+        &[],
+    ) {
+        Ok(v) => v,
+        Err(e) => fail!("getDisplayMetrics()", e),
+    };
+    let metrics = match metrics_jval.l() {
+        Ok(o) => o,
+        Err(e) => fail!("getDisplayMetrics().l()", e),
+    };
+    let density_jval = match env.get_field(&metrics, "density", "F") {
+        Ok(v) => v,
+        Err(e) => fail!("get_field(density)", e),
+    };
+    let density = match density_jval.f() {
+        Ok(d) => d,
+        Err(e) => fail!("density.f()", e),
+    };
     (dp * density).round() as i32
 }

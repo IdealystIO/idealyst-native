@@ -41,7 +41,7 @@ docs! {
              code("-mobile"), ", ", code("-tv"),
              ") — Android phones / tablets / TV (Views); production-ready"],
             [code("backend-roku"), " — Roku devices (SceneGraph + BrightScript); experimental"],
-            [code("backend-aas-shell-native"), " — Dev-mode app-as-server client; dev only"],
+            [code("aas-shell-native"), " — Dev-mode app-as-server client; dev only"],
         ),
         p("Each one lives in ", code("crates/backend/<name>"), " and gets \
            pulled in by the CLI when you target the matching platform."),
@@ -160,7 +160,7 @@ docs! {
     },
 
     section(heading = "AAS — the dev-mode backend") {
-        p(code("backend-aas-shell-native"), " is the app-as-server client. \
+        p(code("aas-shell-native"), " is the app-as-server client. \
            It's unusual because it doesn't render anything itself — it \
            forwards backend operations to whatever real backend is on the \
            other end."),

@@ -92,35 +92,54 @@ thread_local! {
     /// downstream subscribers during what should be a pure read.
     static MEMO_COMPUTE_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 
-    /// On wasm, `Scope::drop` parks its drained effect boxes here and
-    /// schedules a single microtask to drain them. The arena slots
-    /// are nulled synchronously (so the rebuild that follows can use
-    /// fresh slot ids without conflict), but the actual `Drop` of
-    /// each closure — which decrefs wasm-bindgen JS handles and runs
-    /// `on_node_unstyled` per styled node — is heavy enough to push
-    /// outside the apply window.
+    /// Backend-installable deferred-drop policy. When set, `Scope::drop`
+    /// hands its drained effect boxes (and per-scope guards) to this
+    /// function instead of dropping them synchronously. Backends that
+    /// need to amortize teardown across frames — the web backend uses
+    /// this to slice wasm-bindgen `Closure` drops over `requestAnimation
+    /// Frame` so the cost doesn't land inside the apply window — install
+    /// a policy at boot. Native backends leave it `None` and drops fall
+    /// through to a synchronous `drop(boxes)`.
     ///
-    /// Why a single microtask (not a sliced setTimeout chain): the
-    /// suite measures `apply` as the synchronous JS cost of
-    /// `set_rows(...)`. A microtask scheduled *during* the rebuild
-    /// runs immediately after the rebuild's awaiting Promise
-    /// resolves, so the drain runs in the same event-loop turn as
-    /// the rebuild but doesn't count against `apply`. A
-    /// `setTimeout(0)`-chained drain would yield to the suite's own
-    /// macrotasks between slices, letting the next iteration's
-    /// `set_rows(...)` queue more boxes faster than they drain —
-    /// PENDING_DROPS would grow unbounded across iterations and JS
-    /// heap pressure would slow subsequent builds. The single-
-    /// microtask shape eats jank inside the 250ms transition window
-    /// instead, which is the right trade.
-    #[cfg(target_arch = "wasm32")]
-    static PENDING_DROPS: RefCell<Vec<Box<dyn Any>>> = const { RefCell::new(Vec::new()) };
+    /// The signature is a bare `fn` (not `Box<dyn Fn>`) because the
+    /// policy is install-once and queue-state is the backend's job to
+    /// store (typically another backend-local thread-local). This keeps
+    /// the framework-core slot zero-sized.
+    static DROP_DEFERRAL: std::cell::Cell<Option<fn(Vec<Box<dyn Any>>)>> =
+        const { std::cell::Cell::new(None) };
+}
 
-    /// Has a drain microtask been scheduled this turn? Many nested
-    /// scopes can drop in quick succession; we want a single drain
-    /// at the end, not one per scope.
-    #[cfg(target_arch = "wasm32")]
-    static PENDING_DRAIN_SCHEDULED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+/// Install a backend-specific deferred-drop policy that `Scope::drop` will
+/// route effect/guard teardown through. The policy is a `fn` so it doesn't
+/// allocate; the backend owns its own queue + scheduler state in a sibling
+/// thread-local.
+///
+/// Designed for the web backend's rAF-sliced drain — wasm-bindgen `Closure`
+/// drops are expensive and pile up inside the apply window otherwise. Native
+/// backends never call this; their `Scope::drop` runs synchronously, which
+/// is the right choice when teardown is cheap.
+///
+/// Pre-refactor this whole machinery lived behind `#[cfg(target_arch =
+/// "wasm32")]` in framework-core, which violated the framework-purity rule
+/// (no platform-specific implementations in `framework/`). The cfg-gated
+/// storage and scheduler now lives in `backend-web`; this hook is the
+/// portable seam.
+pub fn install_drop_deferral(policy: fn(Vec<Box<dyn Any>>)) {
+    DROP_DEFERRAL.with(|c| c.set(Some(policy)));
+}
+
+/// Hand a batch of drained boxes to the installed deferral policy if one
+/// exists; otherwise drop them synchronously. Empty-vec calls are a no-op
+/// (no thread-local touch in the common case).
+fn defer_or_drop(boxes: Vec<Box<dyn Any>>) {
+    if boxes.is_empty() {
+        return;
+    }
+    if let Some(policy) = DROP_DEFERRAL.with(|c| c.get()) {
+        policy(boxes);
+    } else {
+        drop(boxes);
+    }
 }
 
 struct Arena {
@@ -855,6 +874,21 @@ pub fn untrack<R, F: FnOnce() -> R>(f: F) -> R {
     let prev = CURRENT.with(|c| c.borrow_mut().take());
     let result = f();
     CURRENT.with(|c| *c.borrow_mut() = prev);
+    result
+}
+
+/// Runs `f` with the active-scope stack temporarily emptied. Any
+/// `Signal::new` / `Effect::new` calls inside `f` will *not* be adopted
+/// by the surrounding render scope — they live until the thread exits.
+///
+/// Used by registry-style stores (e.g. `TOKEN_REGISTRY`) whose entries
+/// are thread-lifetime by contract: a render scope that happens to be
+/// the first one to touch a registry-managed signal must not become its
+/// owner, or the entry will dangle when the scope drops.
+pub(crate) fn unscope<R, F: FnOnce() -> R>(f: F) -> R {
+    let saved = ACTIVE_SCOPE.with(|s| std::mem::take(&mut *s.borrow_mut()));
+    let result = f();
+    ACTIVE_SCOPE.with(|s| *s.borrow_mut() = saved);
     result
 }
 
@@ -1824,120 +1858,27 @@ impl Drop for Scope {
         // own `data_changed` effect that captured `data` is
         // among the effects we just dropped — so the signal drop
         // is now harmless.
-        // On wasm: park the heavy boxes (effect closures) for a
-        // microtask drain so their teardown cost lands outside the
-        // synchronous `apply` window. Signals and refs stay
-        // synchronous — they don't hold JS-side closures and any
-        // queued microtask draining boxes might need them.
-        #[cfg(target_arch = "wasm32")]
-        {
-            if !taken_effects.is_empty() {
-                PENDING_DROPS.with(|q| q.borrow_mut().extend(taken_effects));
-                schedule_pending_drain();
-            }
-            // Same deferral applies to the scope's guards: they
-            // typically hold `StyleHandle`s that decref a JS-side
-            // Node on drop, which is the same kind of FFI-heavy
-            // work we're trying to keep out of the apply window.
-            if !guards.is_empty() {
-                PENDING_DROPS.with(|q| q.borrow_mut().extend(guards));
-                schedule_pending_drain();
-            }
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            drop(taken_effects);
-            drop(guards);
-        }
+        // Heavy boxes (effect closures, scope guards holding
+        // `StyleHandle`s) are routed through the backend-installable
+        // `DROP_DEFERRAL` policy. The web backend installs a policy
+        // that parks them on an rAF-sliced drain so teardown cost
+        // lands outside the synchronous `apply` window — the
+        // framework-purity refactor that removed the wasm-only
+        // `PENDING_DROPS` thread-local + scheduler from here. Native
+        // backends never install a policy; `defer_or_drop` falls
+        // through to a synchronous `drop`, which is the right choice
+        // when teardown is cheap.
+        //
+        // Signals and refs stay synchronous unconditionally — they
+        // don't hold JS-side closures, and any deferred drain
+        // touching effect closures may legitimately need to read
+        // them.
+        defer_or_drop(taken_effects);
+        defer_or_drop(guards);
 
         drop(taken_signals);
         drop(taken_refs);
     }
-}
-
-/// Schedule a sliced drain of `PENDING_DROPS` aligned to
-/// `requestAnimationFrame`. Each rAF callback drops a budgeted
-/// number of boxes (small enough to fit within a 16 ms frame
-/// budget) and re-schedules itself if more remain. Idempotent:
-/// repeated calls before the first slice fires coalesce into one
-/// scheduled rAF.
-///
-/// Why rAF and not `setTimeout(0)`:
-///
-/// - Microtask drain would be included in the `apply` timing the
-///   suite reads right after `await setRows(...)`. So that path
-///   was ruled out.
-/// - A single `setTimeout(0)` drain runs the whole queue in one
-///   blob — fast on `apply` but blows one frame inside the 250 ms
-///   transition window (the `worst frame: 200ms` we saw on 1k-
-///   after-10k iters).
-/// - Chained `setTimeout(0)` slices yield to the suite's own
-///   macrotasks between slices, so a fast iteration loop can
-///   queue drops faster than slices drain — backlog grows. This
-///   is the failure mode the earlier sliced attempt hit.
-/// - **rAF rate-limits naturally.** The browser fires it at most
-///   once per display refresh (16.7 ms at 60 Hz). Inside the
-///   250+50 ms transition window there are ~18 ticks, plenty to
-///   drain 10k boxes in batches of ~1000 each. Between iterations
-///   the browser pauses rAF until something paint-worthy happens,
-///   so PENDING_DROPS naturally empties before the next iteration
-///   starts.
-///
-/// The slice budget is intentionally large enough that an empty
-/// queue is one tick away from start to finish — we don't want to
-/// drag drops out over many frames if there's nothing to do.
-#[cfg(target_arch = "wasm32")]
-fn schedule_pending_drain() {
-    let already = PENDING_DRAIN_SCHEDULED.with(|c| c.replace(true));
-    if already {
-        return;
-    }
-    request_drain_frame();
-}
-
-/// Request one rAF tick to drain a slice of `PENDING_DROPS`. The
-/// callback re-arms itself via `request_drain_frame()` if the
-/// queue still has work; otherwise it clears the
-/// `PENDING_DRAIN_SCHEDULED` flag so the next scope drop can
-/// re-kick the loop.
-#[cfg(target_arch = "wasm32")]
-fn request_drain_frame() {
-    // Tunable. Larger = fewer rAFs needed to drain a big queue,
-    // but more work per frame. 2000 fits comfortably inside a
-    // 16 ms frame budget at our measured ~10 µs per box drop —
-    // worst case ~20 ms which is one stutter but won't compound.
-    const PER_FRAME_BUDGET: usize = 2000;
-    let task = crate::scheduling::after_animation_frame(|| {
-        // Take up to `PER_FRAME_BUDGET` boxes off the queue and
-        // drop them. We `split_off` rather than `drain` so the
-        // remaining boxes stay in their original allocation and
-        // ordering — no per-call reallocations.
-        let to_drop = PENDING_DROPS.with(|q| {
-            let mut q = q.borrow_mut();
-            let n = q.len().min(PER_FRAME_BUDGET);
-            // Drain the tail (most recently parked entries —
-            // typically the deepest-nested children) so each slice
-            // touches a contiguous block. `split_off` from the
-            // tail end is cheap (just truncate + return owned).
-            let split_at = q.len() - n;
-            q.split_off(split_at)
-        });
-        drop(to_drop);
-        // If anything's left, re-arm. Otherwise mark idle.
-        let remaining = PENDING_DROPS.with(|q| q.borrow().len());
-        if remaining > 0 {
-            request_drain_frame();
-        } else {
-            PENDING_DRAIN_SCHEDULED.with(|c| c.set(false));
-        }
-    });
-    // Fire-and-forget: leak the task handle so its Closure stays
-    // alive past the rAF dispatch. Dropping the task would cancel
-    // the pending frame; we want the opposite. The browser fires
-    // the callback once, then the task is unreachable garbage —
-    // bounded by the number of slices needed to drain (~18 per
-    // 250 ms transition window).
-    std::mem::forget(task);
 }
 
 // =============================================================================
@@ -2949,6 +2890,235 @@ mod tests {
         let (s, e) = arena_inuse_counts();
         assert_eq!(s, s0);
         assert_eq!(e, e0);
+    }
+
+    /// Regression test for the framework-purity refactor that moved the
+    /// wasm-only `PENDING_DROPS` / rAF-sliced drain out of framework-core
+    /// and behind `install_drop_deferral`. The seam must:
+    ///
+    /// 1. Default to synchronous drop when no policy is installed (the
+    ///    native-backend path).
+    /// 2. Route effect closures + scope guards through an installed
+    ///    policy when one exists (the web backend's rAF drain).
+    /// 3. Still drop signals/refs synchronously (they don't go through
+    ///    the policy — any deferred drain might need to read them).
+    #[test]
+    fn install_drop_deferral_routes_effects_and_guards_not_signals() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        // Capture every box the policy receives so we can introspect.
+        thread_local! {
+            static DEFERRED: RefCell<Vec<Box<dyn std::any::Any>>> =
+                RefCell::new(Vec::new());
+        }
+        fn capturing_policy(mut boxes: Vec<Box<dyn std::any::Any>>) {
+            DEFERRED.with(|q| q.borrow_mut().append(&mut boxes));
+        }
+
+        // Sentinel guard that marks `dropped` when its Drop fires. Clone
+        // is required by `Signal<T>` (T: Clone). The clone target isn't
+        // used in the test; we only care about the *last* Drop firing.
+        #[derive(Clone)]
+        struct Sentinel(Rc<RefCell<bool>>);
+        impl Drop for Sentinel {
+            fn drop(&mut self) {
+                *self.0.borrow_mut() = true;
+            }
+        }
+
+        // ----- 1) No policy installed (the default): everything drops
+        // synchronously, including effects and guards. ------------------
+        DROP_DEFERRAL.with(|c| c.set(None));
+        let guard_dropped = Rc::new(RefCell::new(false));
+        {
+            let mut scope = Scope::new();
+            with_scope(&mut scope, || {
+                let _e = Effect::new(|| {});
+                scope_adopt_guard_for_test(Sentinel(guard_dropped.clone()));
+            });
+            // scope drops here → synchronous drop path
+        }
+        assert!(
+            *guard_dropped.borrow(),
+            "without an installed policy, scope guards must drop synchronously"
+        );
+
+        // ----- 2) Install a capturing policy: effects + guards go to
+        // the policy, signals do NOT. -----------------------------------
+        DEFERRED.with(|q| q.borrow_mut().clear());
+        install_drop_deferral(capturing_policy);
+
+        let signal_value_drop_observed = Rc::new(RefCell::new(false));
+        let guard2_dropped = Rc::new(RefCell::new(false));
+        {
+            let mut scope = Scope::new();
+            with_scope(&mut scope, || {
+                // Signal holding a Sentinel — its Drop runs synchronously
+                // because signals don't go through the deferral policy.
+                let _s: Signal<Sentinel> = Signal::new(Sentinel(signal_value_drop_observed.clone()));
+                let _e = Effect::new(|| {});
+                scope_adopt_guard_for_test(Sentinel(guard2_dropped.clone()));
+            });
+        }
+
+        // Effect + guard are in the policy's queue, NOT dropped yet.
+        assert!(
+            !*guard2_dropped.borrow(),
+            "with an installed policy, the scope guard must be parked in the \
+             policy queue rather than dropping synchronously",
+        );
+        let queued = DEFERRED.with(|q| q.borrow().len());
+        assert!(
+            queued >= 2,
+            "policy should have received at least the effect box + the guard box (got {queued})",
+        );
+
+        // Signal-held Sentinel dropped synchronously (signals stay
+        // outside the deferral path).
+        assert!(
+            *signal_value_drop_observed.borrow(),
+            "signals are not routed through the deferral policy; their \
+             contained values must drop synchronously when the scope drops",
+        );
+
+        // Now manually drain the policy queue and observe the guard runs.
+        DEFERRED.with(|q| q.borrow_mut().clear());
+        assert!(
+            *guard2_dropped.borrow(),
+            "draining the policy queue must finally drop the guard"
+        );
+
+        // ----- 3) Reset to no-policy so we don't poison sibling tests. -
+        DROP_DEFERRAL.with(|c| c.set(None));
+    }
+
+    /// Helper that adopts a guard into the currently-active scope. The
+    /// production code calls `Scope::adopt_guard` directly through its
+    /// own crate-internal seams; for the test we just exercise the same
+    /// path.
+    fn scope_adopt_guard_for_test<G: 'static>(guard: G) {
+        assert!(
+            adopt_guard_into_active_scope(guard),
+            "test invariant: scope must be active when adopting a guard"
+        );
+    }
+
+    /// Regression test for the "memo / resource leak inside scope" audit
+    /// finding. `memo_with` and `resource` both end with `mem::forget(e)`
+    /// on their internal Effect. The audit claimed this caused arena
+    /// growth even inside an active render scope.
+    ///
+    /// Verify that when a memo is created INSIDE a `with_scope`, the
+    /// scope's drop frees both the memo's output Signal and its driving
+    /// Effect — the `forget` is harmless in that path because the local
+    /// handle's `owns` flag is already false (scope adopted the slot).
+    #[test]
+    fn memo_in_scope_releases_signal_and_effect_on_scope_drop() {
+        let source = Signal::new(0i32);
+        let (s0, e0) = arena_inuse_counts();
+
+        {
+            let mut scope = Scope::new();
+            with_scope(&mut scope, || {
+                for _ in 0..16 {
+                    let _m = memo(move || source.get() * 2);
+                }
+            });
+            let (s_active, e_active) = arena_inuse_counts();
+            // 16 memos × (1 output Signal + 1 driving Effect) inside the scope.
+            // The internal Signal `last` rc-cell isn't an arena allocation,
+            // so we only count one signal + one effect per memo.
+            assert_eq!(
+                s_active - s0,
+                16,
+                "expected 16 memo output signals in arena (was +{})",
+                s_active - s0
+            );
+            assert_eq!(
+                e_active - e0,
+                16,
+                "expected 16 memo driver effects in arena (was +{})",
+                e_active - e0
+            );
+            // scope drops here.
+        }
+
+        let (s_after, e_after) = arena_inuse_counts();
+        assert_eq!(
+            s_after, s0,
+            "memo output signals must be freed on scope drop \
+             (the mem::forget on the Effect must not pin the Signal)"
+        );
+        assert_eq!(
+            e_after, e0,
+            "memo driver effects must be freed on scope drop \
+             (mem::forget is harmless when scope owns the slot)"
+        );
+    }
+
+    /// Regression test for the ACTIVE_THEME-style accumulating-subscriber concern.
+    ///
+    /// A hot, thread-lifetime signal that many short-lived scopes read inside
+    /// effects must not accumulate dead `EffectId`s in its subscriber set across
+    /// mount/unmount cycles. The fix path (`take_effects_batched` → `retain`)
+    /// runs at every `Scope::drop`; this test asserts that property end-to-end.
+    #[test]
+    fn hot_signal_subscribers_pruned_on_scope_drop() {
+        // Thread-lifetime "active theme" analogue: a signal that outlives every
+        // render scope and that every component subscribes to.
+        let hot = Signal::new(0i32);
+
+        let base_subs = ARENA.with(|a| {
+            a.borrow()
+                .signal_subscribers
+                .get(hot.id.0 as usize)
+                .map(|s| s.len())
+                .unwrap_or(0)
+        });
+        assert_eq!(base_subs, 0, "fresh signal has no subscribers");
+
+        // Mount-and-drop many scopes, each running an effect that reads `hot`.
+        // Without subscriber pruning on Scope::drop, `hot`'s subscriber set
+        // would grow to ~ROUNDS * EFFECTS_PER_SCOPE.
+        const ROUNDS: usize = 32;
+        const EFFECTS_PER_SCOPE: usize = 16;
+        for _ in 0..ROUNDS {
+            let mut scope = Scope::new();
+            with_scope(&mut scope, || {
+                for _ in 0..EFFECTS_PER_SCOPE {
+                    let _e = Effect::new(move || {
+                        let _ = hot.get();
+                    });
+                }
+            });
+            // scope drops here → take_effects_batched must remove every
+            // effect's subscription from `hot`.
+        }
+
+        let subs_after = ARENA.with(|a| {
+            a.borrow()
+                .signal_subscribers
+                .get(hot.id.0 as usize)
+                .map(|s| s.len())
+                .unwrap_or(0)
+        });
+        assert_eq!(
+            subs_after, 0,
+            "hot signal must have zero subscribers after all reading scopes drop; \
+             accumulating dead EffectIds here is the LEAK_REPORT bug",
+        );
+
+        // And the framework must still deliver writes to a freshly-subscribed
+        // effect after all that churn — the prune must not have damaged the
+        // signal's internal state.
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let observed = Rc::new(Cell::new(-1));
+        let o = observed.clone();
+        let _e = Effect::new(move || o.set(hot.get()));
+        hot.set(42);
+        assert_eq!(observed.get(), 42);
     }
 
     fn arena_refs_inuse() -> usize {

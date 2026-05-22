@@ -1629,6 +1629,7 @@ pub fn start() {
     console_error_panic_hook::set_once();
     backend_web::install_scheduler();
     backend_web::install_time_source();
+    backend_web::install_drop_deferral();
 
     // One param signal per (suite, param) pair so switching
     // suites preserves whatever the user last entered. Each

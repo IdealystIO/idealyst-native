@@ -26,6 +26,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use dev_server::WireRecordingBackend;
+use framework_core::primitives::portal::{PortalTarget, ViewportPlacement};
 use framework_core::robot::{Query, Robot};
 use framework_core::{
     render, signal, Color, DrawerNavigator, IntoAction,
@@ -176,6 +177,149 @@ fn robot_finds_and_clicks_button_via_server_registry() {
     // A second click — same closure, same observation.
     robot.click(&btn).expect("second click dispatches");
     assert_eq!(click_count.get(), 2, "click handler is re-invocable");
+}
+
+/// **Regression test for the audit's wire-protocol `release_*` not-emitted
+/// finding.** When a primitive whose backend `release_*` is wired (Portal,
+/// Virtualizer, Navigator, …) unmounts on the dev side, the recorder must
+/// emit a `Command::ReleaseNode` so the client tears down its mirror.
+/// Without this, the dev-client's per-node bookkeeping leaks across every
+/// hot-reload cycle.
+#[test]
+fn release_node_emitted_for_portal_when_owner_drops() {
+    let portal = Primitive::Portal {
+        children: vec![Primitive::Text {
+            source: TextSource::Static("hello inside portal".into()),
+            style: None,
+            ref_fill: None,
+            test_id: None,
+        }],
+        target: PortalTarget::Viewport(ViewportPlacement::Center),
+        on_dismiss: None,
+        trap_focus: false,
+        style: None,
+        ref_fill: None,
+    };
+
+    let recorder = WireRecordingBackend::new();
+    let backend_rc = Rc::new(RefCell::new(recorder.clone()));
+    let owner = render(backend_rc, portal);
+
+    // Find the CreatePortal so we know which NodeId to expect on release.
+    let pre_drop = recorder.drain_commands();
+    let portal_id = pre_drop
+        .iter()
+        .find_map(|c| match c {
+            Command::CreatePortal { id, .. } => Some(*id),
+            _ => None,
+        })
+        .expect("CreatePortal must be emitted while the portal is mounted");
+
+    // Pre-drop: no ReleaseNode for the portal yet.
+    assert!(
+        !pre_drop.iter().any(|c| matches!(c, Command::ReleaseNode { node } if *node == portal_id)),
+        "ReleaseNode must not be emitted before the owner drops"
+    );
+
+    // Drop the owner — the framework's PortalHandleCleanup RAII guard fires
+    // backend.release_portal(node), which must emit Command::ReleaseNode.
+    drop(owner);
+
+    let post_drop = recorder.drain_commands();
+    assert!(
+        post_drop.iter().any(|c| matches!(c, Command::ReleaseNode { node } if *node == portal_id)),
+        "Command::ReleaseNode {{ node: {} }} must be emitted on Owner drop; \
+         got {:#?}",
+        portal_id,
+        post_drop,
+    );
+}
+
+/// Regression test for the audit's wire-protocol `reset_log_and_scene`
+/// `next_node = 0` identity-collision finding. After a hot-patch / sidecar
+/// respawn, the recorder resets `next_node` to 0 but keeps
+/// `identity_to_node` populated. A walker that emits any *new* identity
+/// after the reset would mint `NodeId(1)` — colliding with whatever
+/// identity was already cached at `NodeId(1)` from the first walk.
+///
+/// The fix preserves `next_node` past the high-water mark so freshly
+/// minted ids never overlap previously-cached identity ids.
+#[test]
+fn reset_log_and_scene_does_not_collide_minted_ids_with_cached_identities() {
+    use std::collections::HashMap;
+
+    fn extract_create_id(cmd: &Command) -> Option<wire::NodeId> {
+        match cmd {
+            Command::CreateView { id }
+            | Command::CreateText { id, .. }
+            | Command::CreateButton { id, .. }
+            | Command::CreateImage { id, .. }
+            | Command::CreateToggle { id, .. }
+            | Command::CreateSlider { id, .. } => Some(*id),
+            _ => None,
+        }
+    }
+
+    fn tree_with_n_text(n: usize) -> Primitive {
+        let mut children = Vec::with_capacity(n);
+        for i in 0..n {
+            let id_str: &'static str = match i {
+                0 => "a",
+                1 => "b",
+                2 => "c",
+                _ => panic!("extend test_ids array"),
+            };
+            children.push(Primitive::Text {
+                source: TextSource::Static(format!("row-{}", id_str).into()),
+                style: None,
+                ref_fill: None,
+                test_id: Some(id_str),
+            });
+        }
+        Primitive::View {
+            children,
+            style: None,
+            ref_fill: None,
+            safe_area_sides: SafeAreaSides::NONE,
+            on_touch: None,
+            test_id: Some("root"),
+        }
+    }
+
+    let recorder = WireRecordingBackend::new();
+    let backend_rc = Rc::new(RefCell::new(recorder.clone()));
+
+    // Walk 1: 2 text rows. Walker mints next_node past 0 for the View
+    // and the two Texts; `identity_to_node` caches those ids.
+    let owner1 = render(backend_rc.clone(), tree_with_n_text(2));
+    let _ = recorder.drain_commands();
+    drop(owner1);
+
+    // Sidecar respawn / hot patch.
+    recorder.reset_log_and_scene();
+
+    // Walk 2: the same View + first two texts (cached identities reuse
+    // their ids) PLUS one new text emission. The new emission must NOT
+    // collide with any previously-cached identity id.
+    let _owner2 = render(backend_rc.clone(), tree_with_n_text(3));
+    let walk2 = recorder.drain_commands();
+
+    // No two `Create*` commands in walk 2 should share a NodeId. Pre-fix,
+    // the third Text's emission lands on `NodeId(1)` — the cached View's id.
+    let mut seen: HashMap<wire::NodeId, String> = HashMap::new();
+    for cmd in &walk2 {
+        if let Some(id) = extract_create_id(cmd) {
+            let label = format!("{:?}", cmd);
+            if let Some(prev) = seen.insert(id, label.clone()) {
+                panic!(
+                    "NodeId collision after reset_log_and_scene: id {id:?} \
+                     emitted twice — first as `{prev}`, then as `{label}`. \
+                     `next_node = 0` reset is recycling ids that \
+                     `identity_to_node` already holds."
+                );
+            }
+        }
+    }
 }
 
 /// **Test 3: test_id queries work.** Locked-in semantics: `find` by

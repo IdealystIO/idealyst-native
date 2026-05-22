@@ -52,15 +52,26 @@ If you're new to the codebase, read the docs in this order:
 
 ## Crate map
 
-| Crate | Role |
-| --- | --- |
-| `framework-core` | `Primitive`, `Backend` trait, render walker, reactivity, styles |
-| `framework-macros` | `#[component]`, `ui!`, `jsx!`, `stylesheet!` proc-macros |
-| `reactive-arena` | Arena allocator used by the reactivity system |
-| `reactive-refs` | `Ref<H>` machinery |
-| `backend-web` | WASM + DOM backend |
-| `backend-android` | JNI + Android `View` hierarchy backend |
-| `backend-ios` | UIKit / objc2 backend (compile-only spike) |
+The repo is grouped by concern (`crates/framework/`, `crates/backend/`,
+`crates/render/`, …). The crates these design docs refer to:
+
+| Crate | Path | Role |
+| --- | --- | --- |
+| `framework-core` | `crates/framework/core` | `Primitive`, `Backend` trait, render walker, reactivity, styles |
+| `framework-macros` | `crates/framework/macros` | `#[component]`, `ui!`, `jsx!`, `stylesheet!` proc-macros |
+| `reactive-arena` | `crates/framework/reactive/arena` | Arena allocator used by the reactivity system |
+| `reactive-refs` | `crates/framework/reactive/refs` | `Ref<H>` machinery |
+| `native-layout` | `crates/framework/native-layout` | Taffy flex-layout helper used by native backends |
+| `wire` | `crates/framework/wire` | Hot-reload + server-driven UI wire protocol |
+| `backend-web` | `crates/backend/web` | WASM + DOM backend |
+| `backend-android-mobile` | `crates/backend/android/mobile` | JNI + Android `View` hierarchy backend |
+| `backend-ios-mobile` | `crates/backend/ios/mobile` | UIKit / objc2 backend |
+| `backend-macos` | `crates/backend/macos` | AppKit / objc2 backend |
+| `backend-roku` | `crates/backend/roku` | BrightScript / SceneGraph generator backend |
+| `render-wgpu` | `crates/render/wgpu` | wgpu-backed renderer that implements `Backend` on a GPU pipeline |
+
+Per-backend behaviour notes live in `README.md` files next to each backend
+crate — start there if you're investigating a platform-specific quirk.
 
 Application crates depend on `framework-core` and the macros. They do
 **not** depend on any backend — the platform host crate is the only

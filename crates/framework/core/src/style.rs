@@ -1828,11 +1828,20 @@ where
     if existing.is_some() {
         return existing;
     }
-    // Miss — create. `Signal::new` registers with the active `Owner`,
-    // so the slot's lifetime is tied to the surrounding scope. Outside
-    // a scope (tests, ad-hoc usage), the slot leaks until the thread
-    // exits, which is consistent with `Signal::new`'s contract.
-    let sig = crate::Signal::new(make_initial());
+    // Miss — create. Token signals are thread-lifetime by contract
+    // (`TOKEN_REGISTRY` is a process-wide thread-local), so the signal
+    // must NOT be adopted by whatever render scope happens to be
+    // active when the first read lands. `crate::reactive::unscope`
+    // temporarily empties the active-scope stack while we allocate,
+    // so the resulting slot has no owner and is freed only on thread
+    // exit — exactly the lifetime the registry needs.
+    //
+    // Regression: before this guard, the first scope to resolve an
+    // uninstalled token became its owner; when that scope dropped, the
+    // registry still pointed at a freed slot and subsequent resolves
+    // panicked ("signal used after its scope was dropped") or, after
+    // freelist recycling, silently hit unrelated signal data.
+    let sig = crate::reactive::unscope(|| crate::Signal::new(make_initial()));
     TOKEN_REGISTRY.with(|r| {
         r.borrow_mut().insert(name, sig);
     });
@@ -2667,6 +2676,75 @@ mod tests {
         // `update_tokens` for the same name can propagate.
         let c: Tokenized<Color> = Tokenized::token("tk_uninstalled", Color("#fall".into()));
         assert_eq!(c.resolve().0, "#fall");
+    }
+
+    /// Regression test for the `with_or_create_token_signal` scope-adoption
+    /// audit finding. Token signals stashed in the thread-local
+    /// `TOKEN_REGISTRY` must outlive any render scope — they're the
+    /// theme system's authoritative store and need thread lifetime to
+    /// survive re-mounts (hot reload, fixture teardown, page-rebuild
+    /// in dev tools).
+    ///
+    /// Bug before fix: `Signal::new` inside `with_or_create_token_signal`
+    /// gets registered with the currently-active `Scope`. When that
+    /// scope drops (e.g. app unmount), the slot is freed but
+    /// `TOKEN_REGISTRY` still holds a stale `Signal` handle. The next
+    /// resolve of the same token either panics with
+    /// "signal used after its scope was dropped" or — worse — silently
+    /// hits a recycled slot of an unrelated signal.
+    #[test]
+    fn token_signal_survives_creating_scope_drop() {
+        use crate::reactive::{with_scope, Scope};
+
+        // Use a unique token name so this test doesn't collide with the
+        // other registry-touching tests (registry is process-wide).
+        const NAME: &str = "tk_scope_survival_color";
+
+        // First read happens inside scope A. Resolves the token, which
+        // creates the registry signal lazily.
+        {
+            let mut scope_a = Scope::new();
+            with_scope(&mut scope_a, || {
+                let c: Tokenized<Color> = Tokenized::token(NAME, Color("#aaa".into()));
+                let v = c.resolve();
+                assert_eq!(v.0, "#aaa", "first resolve returns the fallback");
+            });
+            // scope_a drops here. With the bug, the token signal's
+            // arena slot is freed; the registry still holds the stale
+            // Signal handle.
+        }
+
+        // Second read happens inside an unrelated scope B. Must NOT
+        // panic — the token registry is supposed to be thread-lifetime.
+        let mut scope_b = Scope::new();
+        let observed = with_scope(&mut scope_b, || {
+            let c: Tokenized<Color> = Tokenized::token(NAME, Color("#bbb".into()));
+            c.resolve()
+        });
+        // We expect the fallback that was installed on the first
+        // resolve to still be returned (registry preserved its
+        // contents). What we don't expect is a panic.
+        assert_eq!(
+            observed.0, "#aaa",
+            "second resolve must return the originally-installed fallback, \
+             proving the token signal outlived its creating scope"
+        );
+
+        // `update_tokens` should also work after the creator scope dropped.
+        update_tokens(&[TokenEntry {
+            name: NAME,
+            value: TokenValue::Color(Color("#ccc".into())),
+        }]);
+        let mut scope_c = Scope::new();
+        let updated = with_scope(&mut scope_c, || {
+            let c: Tokenized<Color> = Tokenized::token(NAME, Color("#bbb".into()));
+            c.resolve()
+        });
+        assert_eq!(
+            updated.0, "#ccc",
+            "update_tokens through the registry-stashed signal must still work \
+             after the creating scope dropped"
+        );
     }
 
     /// `update_tokens(["a"])` must fire only the signal for `"a"` — the

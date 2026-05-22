@@ -10,7 +10,7 @@
 //! return an empty view; bodies are never invoked at runtime.
 
 use framework_core::Primitive;
-use framework_macros::{component, jsx, ui};
+use framework_macros::{component, idealyst_tool, jsx, ui, IdealystSchema};
 
 #[allow(dead_code)]
 pub struct DemoProps {}
@@ -422,6 +422,95 @@ fn positional_params_captured_in_order() {
         "type_str {:?}",
         entry.params[1].type_str
     );
+}
+
+/// Phase 3b: `IdealystSchema` derive should produce a
+/// `PropsSchemaEntry` whose fields carry per-field docs + the
+/// `#[schema(constraint = "...")]` hint.
+#[allow(dead_code)]
+#[derive(IdealystSchema)]
+pub struct BadgeProps {
+    /// Visible label text.
+    pub label: String,
+    pub count: u32,
+    #[schema(constraint = "valid CSS color")]
+    pub color: String,
+}
+
+#[test]
+fn props_schema_records_fields_with_docs_and_constraints() {
+    let s = framework_mcp::lookup_schema("BadgeProps")
+        .expect("BadgeProps schema registered");
+    assert_eq!(s.fields.len(), 3);
+
+    let label = s.fields.iter().find(|f| f.name == "label").unwrap();
+    assert!(
+        label.doc.contains("Visible label"),
+        "got {:?}",
+        label.doc
+    );
+
+    let color = s.fields.iter().find(|f| f.name == "color").unwrap();
+    assert_eq!(color.constraint, "valid CSS color");
+
+    let count = s.fields.iter().find(|f| f.name == "count").unwrap();
+    assert_eq!(count.doc, "", "no doc → empty string");
+    assert_eq!(count.constraint, "");
+}
+
+/// `ParamSpec.type_short_name` should give the bare ident of the
+/// parameter type so the catalog can join `&BadgeProps` →
+/// `BadgeProps` → its schema fields.
+#[allow(non_snake_case)]
+#[component]
+pub fn badge_host(_props: &BadgeProps) -> u32 {
+    0
+}
+
+#[test]
+fn param_records_type_short_name_for_join() {
+    let entry = find_entry("badge_host");
+    assert_eq!(entry.params.len(), 1);
+    assert_eq!(entry.params[0].type_short_name, "BadgeProps");
+}
+
+/// Phase 3c: a `#[idealyst_tool]` fn should land in the
+/// `ToolEntry` slice with its parameters captured the same way a
+/// `#[component]` records them.
+#[idealyst_tool]
+/// Returns a hex color darkened by `amount` (linear-light).
+pub fn darken(_hex: &str, _amount: f32) -> String {
+    String::new()
+}
+
+#[test]
+fn idealyst_tool_registers_with_params_and_return() {
+    let entry = framework_mcp::tools()
+        .find(|t| t.name == "darken")
+        .expect("darken tool registered");
+    assert!(entry.docs.contains("hex color darkened"));
+    assert_eq!(entry.params.len(), 2);
+    assert_eq!(entry.params[0].name, "_hex");
+    assert_eq!(entry.params[1].name, "_amount");
+    assert!(entry.return_type.contains("String"));
+}
+
+#[test]
+fn catalog_json_inlines_schema_for_param() {
+    let json = framework_mcp::catalog_json();
+    let components = json["components"].as_array().unwrap();
+    let host = components
+        .iter()
+        .find(|c| c["name"] == "badge_host")
+        .expect("badge_host in JSON");
+    let param = &host["params"][0];
+    assert_eq!(param["type_short_name"], "BadgeProps");
+    let schema = param["schema"].as_array().expect("schema inlined");
+    assert_eq!(schema.len(), 3);
+    let names: Vec<&str> = schema.iter().map(|f| f["name"].as_str().unwrap()).collect();
+    assert!(names.contains(&"label"));
+    assert!(names.contains(&"count"));
+    assert!(names.contains(&"color"));
 }
 
 #[test]

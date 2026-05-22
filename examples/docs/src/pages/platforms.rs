@@ -44,7 +44,7 @@ pub fn page() -> Primitive {
                                `UIView`s; navigators wrap `UINavigationController`; \
                                tabs wrap `UITabBarController`; the drawer is hand-rolled \
                                because UIKit doesn't ship a stock drawer. Build via the CLI \
-                               (`idealyst build --platform ios`) or open the materialized \
+                               (`idealyst build --ios`) or open the materialized \
                                Xcode project under `target/idealyst/ios/`.".to_string(),
                     tone = BodyTone::Muted,
                 )

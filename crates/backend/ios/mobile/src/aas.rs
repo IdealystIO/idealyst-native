@@ -46,42 +46,63 @@ pub unsafe extern "C" fn ios_main(
     root_view: *mut std::ffi::c_void,
     app_id_utf8: *const c_char,
 ) {
-    std::panic::set_hook(Box::new(|info| {
-        eprintln!("RUST PANIC: {}", info);
+    // Wrap the whole body in `catch_unwind` — this is an
+    // `extern "C"` boundary into Swift/UIKit code that is not built
+    // for Rust unwind ABI. A panic propagating out is undefined
+    // behavior. The set_hook below still runs for diagnostics; the
+    // catch_unwind absorbs the unwind so we return to Swift normally.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        std::panic::set_hook(Box::new(|info| {
+            eprintln!("RUST PANIC: {}", info);
+        }));
+
+        // SAFETY: contract requires main-thread invocation.
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+
+        if app_id_utf8.is_null() {
+            eprintln!("[backend-ios::aas] ios_main called with null app_id; aborting");
+            return;
+        }
+        let app_id = unsafe { CStr::from_ptr(app_id_utf8) }
+            .to_string_lossy()
+            .into_owned();
+        eprintln!(
+            "[backend-ios::aas] starting; discovering dev-server app_id={:?}",
+            app_id
+        );
+
+        // Take a strong reference to the host UIView so it can't be
+        // dropped while the AAS pipeline is wiring it up. Pre-fix this
+        // was `.expect("ios_main: root_view must be non-null")`; a
+        // Swift caller passing null would panic across the FFI
+        // boundary. Now we early-return.
+        let view: Retained<UIView> = match unsafe {
+            Retained::retain(root_view as *mut UIView)
+        } {
+            Some(v) => v,
+            None => {
+                eprintln!(
+                    "[backend-ios::aas] ios_main: root_view is null; aborting"
+                );
+                return;
+            }
+        };
+
+        let mut backend = IosBackend::new(mtm);
+        backend.set_host_root(view);
+
+        // The AAS shell owns the backend after spawn — main-thread
+        // access from here on goes through `shell.client.borrow_mut()
+        // .backend_mut()`.
+        let shell = Rc::new(AasShell::spawn(backend, app_id));
+        SHELL.with(|slot| *slot.borrow_mut() = Some(shell));
+
+        start_main_thread_drain_timer();
     }));
-
-    // SAFETY: contract requires main-thread invocation.
-    let mtm = unsafe { MainThreadMarker::new_unchecked() };
-
-    if app_id_utf8.is_null() {
-        eprintln!("[backend-ios::aas] ios_main called with null app_id; aborting");
-        return;
+    if let Err(payload) = result {
+        let msg = panic_payload_message(payload);
+        eprintln!("[backend-ios::aas] ios_main panicked: {msg}");
     }
-    let app_id = unsafe { CStr::from_ptr(app_id_utf8) }
-        .to_string_lossy()
-        .into_owned();
-    eprintln!(
-        "[backend-ios::aas] starting; discovering dev-server app_id={:?}",
-        app_id
-    );
-
-    // Take a strong reference to the host UIView so it can't be
-    // dropped while the AAS pipeline is wiring it up.
-    let view: Retained<UIView> = unsafe {
-        Retained::retain(root_view as *mut UIView)
-            .expect("ios_main: root_view must be non-null")
-    };
-
-    let mut backend = IosBackend::new(mtm);
-    backend.set_host_root(view);
-
-    // The AAS shell owns the backend after spawn — main-thread
-    // access from here on goes through `shell.client.borrow_mut()
-    // .backend_mut()`.
-    let shell = Rc::new(AasShell::spawn(backend, app_id));
-    SHELL.with(|slot| *slot.borrow_mut() = Some(shell));
-
-    start_main_thread_drain_timer();
 }
 
 /// Periodic main-thread drain. A background thread sleeps ~16 ms,
@@ -100,7 +121,17 @@ fn start_main_thread_drain_timer() {
         );
     }
     extern "C" fn do_drain(_ctx: *mut std::ffi::c_void) {
-        drain_on_main();
+        // libdispatch returns into Apple-side C code that doesn't
+        // expect Rust unwinding. Absorb any panic from drain_on_main
+        // (e.g. a user closure that panics during apply) so it never
+        // crosses the FFI boundary as undefined behavior.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            drain_on_main();
+        }));
+        if let Err(payload) = result {
+            let msg = panic_payload_message(payload);
+            eprintln!("[backend-ios::aas] drain panic absorbed: {msg}");
+        }
     }
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(16));
@@ -136,5 +167,21 @@ fn drain_on_main() {
 /// `applicationWillTerminate` or wherever the app shuts down.
 #[no_mangle]
 pub unsafe extern "C" fn ios_teardown() {
-    SHELL.with(|slot| slot.borrow_mut().take());
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        SHELL.with(|slot| slot.borrow_mut().take());
+    }));
+    if let Err(payload) = result {
+        let msg = panic_payload_message(payload);
+        eprintln!("[backend-ios::aas] ios_teardown panicked: {msg}");
+    }
+}
+
+fn panic_payload_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else if let Some(s) = payload.downcast_ref::<&'static str>() {
+        (*s).to_string()
+    } else {
+        "<non-string panic payload>".to_string()
+    }
 }

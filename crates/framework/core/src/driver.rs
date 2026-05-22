@@ -268,6 +268,15 @@ where
 /// `render_loop` closure. Resolves to `Send` on Android (where the
 /// driver runs on a worker thread) and to no extra bound on web /
 /// iOS / desktop (where the driver fires on the calling thread).
+///
+/// Known framework-purity gap: the cfg gate below is the only platform-
+/// target switch in framework-core. The audit-preferred fix is a pair
+/// of free functions — `render_loop` (same-thread, no `Send`) and
+/// `render_loop_on_worker` (`Send` required) — so the choice lives at
+/// the call site rather than the target. Implementing that is a
+/// breaking change for the web/iOS host callers (they use
+/// `Rc<RefCell<…>>` captures that aren't `Send`), so it's tracked
+/// separately rather than landing in the framework-purity sweep.
 #[cfg(target_os = "android")]
 pub trait RenderLoopClosureBounds: Send {}
 #[cfg(target_os = "android")]

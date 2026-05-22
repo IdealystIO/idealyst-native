@@ -236,15 +236,13 @@ docs! {
 
     section(heading = "Toggle") {
         p("A switch / checkbox bound to a ", code("Signal<bool>"),
-          ". The builder function is ", code("switch(...)"),
-          "; the primitive variant is ", code("Toggle"),
-          ". They're the same thing — the constructor is named for what you'd \
-           call the control on screen."),
+          ". The builder function is ", code("toggle(...)"),
+          "; the primitive variant is ", code("Toggle"), "."),
         code(rust, r##"
             let enabled = signal!(true);
 
             ui! {
-                Switch(
+                Toggle(
                     value = enabled,
                     on_change = move |v| enabled.set(v),
                 )
@@ -360,13 +358,14 @@ docs! {
 
     section(heading = "Virtualizer (via flat_list)") {
         p("A virtualized list that only realizes the visible rows. The typed \
-           entry point is ", code("flat_list<T>(items, render_item, …)"), "."),
+           entry point is ", code("flat_list(data, key, item_size, render_item)"), "."),
         code(rust, r##"
             ui! {
                 flat_list(
-                    items = signal_of_items,
-                    item_size = ItemSize::Fixed(72.0),
-                    render_item = |i, item| ui! { Card { Text { &item.title } } },
+                    data = signal_of_items,
+                    key = |_idx, item| item.id as u64,
+                    item_size = fixed_size(72.0),
+                    render_item = |_idx, item| ui! { Card { Text { &item.title } } },
                 )
             }
         "##),

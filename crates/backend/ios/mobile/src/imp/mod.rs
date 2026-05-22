@@ -254,17 +254,33 @@ pub(crate) fn schedule_layout_pass() {
     }
 
     extern "C" fn trampoline(_ctx: *mut std::ffi::c_void) {
-        let weak = IOS_BACKEND_SELF.with(|s| s.borrow().clone());
-        let Some(weak) = weak else { return };
-        let Some(rc) = weak.upgrade() else { return };
-        // By the time this fires the original `borrow_mut()` should
-        // have ended. If something else is mid-borrow we still bail
-        // rather than panic.
-        let mut backend = match rc.try_borrow_mut() {
-            Ok(b) => b,
-            Err(_) => return,
-        };
-        backend.run_layout_pass_global();
+        // Absorb panics — libdispatch is C and a Rust panic unwinding
+        // back into it is undefined behavior. The layout pass touches
+        // user reactive state via apply effects; if any of those
+        // panic, log + bail rather than abort the app.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let weak = IOS_BACKEND_SELF.with(|s| s.borrow().clone());
+            let Some(weak) = weak else { return };
+            let Some(rc) = weak.upgrade() else { return };
+            // By the time this fires the original `borrow_mut()` should
+            // have ended. If something else is mid-borrow we still bail
+            // rather than panic.
+            let mut backend = match rc.try_borrow_mut() {
+                Ok(b) => b,
+                Err(_) => return,
+            };
+            backend.run_layout_pass_global();
+        }));
+        if let Err(payload) = result {
+            let msg = if let Some(s) = payload.downcast_ref::<String>() {
+                s.clone()
+            } else if let Some(s) = payload.downcast_ref::<&'static str>() {
+                (*s).to_string()
+            } else {
+                "<non-string panic payload>".to_string()
+            };
+            eprintln!("[backend-ios] layout-pass trampoline panic absorbed: {msg}");
+        }
     }
 
     unsafe {

@@ -30,7 +30,7 @@
 #![allow(dead_code)]
 
 use framework_core::Primitive;
-use framework_core::{component, ui};
+use framework_core::{component, idealyst_tool, ui, IdealystSchema};
 
 /// A small icon-with-label widget. Leaf component — no `ui!` body,
 /// so it has no composes edges.
@@ -82,14 +82,18 @@ pub fn app_shell() -> Primitive {
     }
 }
 
-/// Props for [`labeled_badge`] — the demo's only component with a
-/// real props struct. Phase 3a records the function's *parameter*
-/// (`props: &LabeledBadgeProps`); the struct's fields stay opaque
-/// to the catalog until `#[derive(IdealystSchema)]` lands.
-#[derive(Debug)]
+/// Props for [`labeled_badge`]. With `#[derive(IdealystSchema)]`
+/// every field shows up in the catalog as a `PropFieldSpec` with
+/// docs + optional `#[schema(constraint = "...")]` hints.
+#[derive(Debug, IdealystSchema)]
 pub struct LabeledBadgeProps {
+    /// Visible label text.
     pub label: String,
+    /// Numeric badge value, capped at 99 in render.
     pub count: u32,
+    /// Background color.
+    #[schema(constraint = "valid CSS color")]
+    pub color: String,
 }
 
 /// A badge with a text label and a count. Demonstrates a single-
@@ -98,6 +102,15 @@ pub struct LabeledBadgeProps {
 #[component]
 pub fn labeled_badge(_props: &LabeledBadgeProps) -> Primitive {
     ::framework_core::view(::std::vec::Vec::new())
+}
+
+/// Returns a hex color darkened by `amount` (linear-light space).
+/// Standalone helper exposed through MCP via `#[idealyst_tool]` —
+/// shows up under `list_tools` and `describe_tool`.
+#[idealyst_tool]
+pub fn darken(_hex: &str, _amount: f32) -> String {
+    // Demo body — real impl would convert hex → linear → scale → hex.
+    String::new()
 }
 
 /// Submodule whose `form_root` host references a `Submit` button.

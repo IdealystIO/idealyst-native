@@ -16,7 +16,7 @@
 pub use inventory;
 
 pub mod resolve;
-pub use resolve::{EdgeStatus, EntryRef, ResolvedCatalog, ResolvedEdge};
+pub use resolve::{BuildFromJsonError, EdgeStatus, EntryRef, ResolvedCatalog, ResolvedEdge};
 
 /// A single composition edge emitted by `#[component]` when it walked
 /// the function body. `name` is the bare ident as written at the call
@@ -52,6 +52,37 @@ pub struct EdgeRef {
 pub struct ParamSpec {
     pub name: &'static str,
     pub type_str: &'static str,
+    /// Last path segment of the type, with reference / lifetime /
+    /// generic wrappers stripped. `&PlanetProps` → `"PlanetProps"`,
+    /// `&'a Foo<T>` → `"Foo"`. Empty when the type isn't a path
+    /// (tuples, primitives, function types, …). The MCP runtime
+    /// uses this to join against [`PropsSchemaEntry`] when
+    /// expanding a component's prop fields.
+    pub type_short_name: &'static str,
+}
+
+/// One field of a props struct, captured by
+/// `#[derive(IdealystSchema)]`. Each named field of the derived
+/// struct becomes one of these.
+#[derive(Debug)]
+pub struct PropFieldSpec {
+    pub name: &'static str,
+    pub type_str: &'static str,
+    /// Joined `///` doc comments on the field.
+    pub doc: &'static str,
+    /// Free-form constraint hint from `#[schema(constraint = "...")]`.
+    /// Empty when the attribute is absent.
+    pub constraint: &'static str,
+}
+
+/// A whole props struct's schema. `inventory::submit!`'d by the
+/// `#[derive(IdealystSchema)]` macro. `short_name` is the struct's
+/// bare ident; `module_path` is `module_path!()` at the derive site.
+#[derive(Debug)]
+pub struct PropsSchemaEntry {
+    pub short_name: &'static str,
+    pub module_path: &'static str,
+    pub fields: &'static [PropFieldSpec],
 }
 
 /// A component the `#[component]` proc-macro registered at compile time.
@@ -81,6 +112,46 @@ pub struct ComponentEntry {
 }
 
 inventory::collect!(ComponentEntry);
+inventory::collect!(PropsSchemaEntry);
+inventory::collect!(ToolEntry);
+
+/// A standalone function the developer tagged with
+/// `#[idealyst_tool]` to expose through MCP. Spec §4.2.
+///
+/// Unlike `ComponentEntry`, `ToolEntry` has no composes graph — tools
+/// are leaf nodes. `params` records the function's parameter list in
+/// the same shape as a `#[component]`'s params.
+#[derive(Debug)]
+pub struct ToolEntry {
+    pub name: &'static str,
+    pub module_path: &'static str,
+    pub file: &'static str,
+    pub line: u32,
+    pub docs: &'static str,
+    pub params: &'static [ParamSpec],
+    /// The function's return type, pretty-printed. Empty for `()`
+    /// / no-return functions.
+    pub return_type: &'static str,
+}
+
+/// Iterate every `#[idealyst_tool]`-registered function.
+pub fn tools() -> impl Iterator<Item = &'static ToolEntry> {
+    inventory::iter::<ToolEntry>()
+}
+
+/// Iterate every props schema the `#[derive(IdealystSchema)]` macro
+/// has registered. Empty if no struct in the build has the derive.
+pub fn schemas() -> impl Iterator<Item = &'static PropsSchemaEntry> {
+    inventory::iter::<PropsSchemaEntry>()
+}
+
+/// Look up a props schema by its struct's bare ident. Returns the
+/// first match — `(module_path, short_name)` is the canonical
+/// identity, but in practice projects don't reuse the name across
+/// modules. If no struct declared the derive, returns `None`.
+pub fn lookup_schema(short_name: &str) -> Option<&'static PropsSchemaEntry> {
+    schemas().find(|e| e.short_name == short_name)
+}
 
 /// Iterate every component the `#[component]` macro has registered. The
 /// order is link-order; callers wanting stable ordering should sort by
@@ -113,10 +184,35 @@ pub fn catalog_json() -> serde_json::Value {
                 .params
                 .iter()
                 .map(|p| {
-                    serde_json::json!({
-                        "name": p.name,
-                        "type": p.type_str,
-                    })
+                    // If the param's type resolves to a known props
+                    // schema, inline its fields. Otherwise the field
+                    // is just absent — consumers can fall back to
+                    // `type_str` alone.
+                    let schema = if p.type_short_name.is_empty() {
+                        None
+                    } else {
+                        lookup_schema(p.type_short_name)
+                    };
+                    let mut obj = serde_json::Map::new();
+                    obj.insert("name".into(), p.name.into());
+                    obj.insert("type".into(), p.type_str.into());
+                    obj.insert("type_short_name".into(), p.type_short_name.into());
+                    if let Some(s) = schema {
+                        let fields: Vec<serde_json::Value> = s
+                            .fields
+                            .iter()
+                            .map(|f| {
+                                serde_json::json!({
+                                    "name": f.name,
+                                    "type": f.type_str,
+                                    "doc": f.doc,
+                                    "constraint": f.constraint,
+                                })
+                            })
+                            .collect();
+                        obj.insert("schema".into(), serde_json::json!(fields));
+                    }
+                    serde_json::Value::Object(obj)
                 })
                 .collect();
             serde_json::json!({
