@@ -6,6 +6,7 @@
 
 mod animation;
 mod callbacks;
+mod font;
 mod jni_exports;
 mod primitives;
 pub(crate) mod scheduler;
@@ -210,6 +211,13 @@ pub struct AndroidBackend {
     /// TextView.
     pub(crate) external_handlers:
         framework_core::ExternalRegistry<AndroidBackend>,
+    /// Per-`Typeface` registry of custom fonts. Filled by
+    /// [`Backend::register_asset`] for `AssetTag::Font`
+    /// (bytes → Android `Typeface.createFromFile`) and
+    /// [`Backend::register_typeface`] (records the (weight, style) →
+    /// Typeface map per family). Consulted by the style applier to
+    /// drive `TextView.setTypeface`.
+    pub(crate) font_registry: font::FontRegistry,
 }
 
 /// Read the device's `density` (screen-pixels-per-dp) from the
@@ -332,6 +340,7 @@ impl AndroidBackend {
             layout: native_layout::LayoutTree::new(),
             view_to_layout: HashMap::new(),
             external_handlers: framework_core::ExternalRegistry::new(),
+            font_registry: font::FontRegistry::new(),
         }
     }
 
@@ -1016,12 +1025,55 @@ impl Backend for AndroidBackend {
         primitives::view::clear_children(self, node)
     }
 
+    fn register_asset(
+        &mut self,
+        id: framework_core::AssetId,
+        kind: framework_core::AssetTag,
+        source: &framework_core::AssetSource,
+    ) {
+        // Only the font branch needs JNI today; images on Android go
+        // through `create_image(src)` directly. Future image / video
+        // caches would chain here the same way the iOS backend does.
+        if kind != framework_core::AssetTag::Font {
+            return;
+        }
+        let context = self.context.clone();
+        let registry = &mut self.font_registry;
+        with_env(|env| {
+            registry.register_asset(env, &context, id, kind, source);
+        });
+    }
+
+    fn unregister_asset(
+        &mut self,
+        id: framework_core::AssetId,
+        kind: framework_core::AssetTag,
+    ) {
+        self.font_registry.unregister_asset(id, kind);
+    }
+
+    fn register_typeface(
+        &mut self,
+        id: framework_core::assets::TypefaceId,
+        family_name: &str,
+        faces: &[framework_core::assets::TypefaceFace],
+        fallback: framework_core::assets::SystemFallback,
+    ) {
+        self.font_registry
+            .register_typeface(id, family_name, faces, fallback);
+    }
+
+    fn unregister_typeface(&mut self, id: framework_core::assets::TypefaceId) {
+        self.font_registry.unregister_typeface(id);
+    }
+
     fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
         let key = Self::node_key(node);
         // Lazy-create per-node state on first apply.
         let state = self.anim_state.entry(key).or_default();
+        let font_registry = &self.font_registry;
         with_env(|env| {
-            style::apply_rules(env, node, state, style);
+            style::apply_rules(env, node, state, style, font_registry);
         });
         // Mirror the style into Taffy so flex direction, gaps,
         // `position: absolute`, percent widths, inset top/right/
@@ -1059,11 +1111,24 @@ impl Backend for AndroidBackend {
             }
         };
         with_env(|env| {
+            // `setTranslationX/Y` on Android takes DEVICE PIXELS,
+            // but framework animation values come in dp (same unit
+            // as Taffy frames). Convert via the view's density so
+            // a translate of "100 dp" actually moves the view 100
+            // dp on-screen regardless of display density. Mirrors
+            // the dp→px conversion `sync_transform_translate_percent`
+            // already does for static percent translates.
+            let out_value = if matches!(prop, P::TranslateX | P::TranslateY) {
+                backend_android_core::helpers::dp_to_px(env, node.as_obj(), value)
+                    as f32
+            } else {
+                value
+            };
             let _ = env.call_method(
                 node.as_obj(),
                 method,
                 sig,
-                &[jni::objects::JValue::Float(value)],
+                &[jni::objects::JValue::Float(out_value)],
             );
             // `Scale` is uniform — also write Y.
             if matches!(prop, P::Scale) {

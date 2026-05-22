@@ -9,6 +9,7 @@
 
 use super::animation::*;
 use backend_android_core::helpers::*;
+use super::font::{apply_resolved_font_to_textview, FontRegistry};
 use super::NodeAnim;
 use framework_core::StyleRules;
 use jni::objects::{GlobalRef, JObject, JValue};
@@ -19,6 +20,7 @@ pub(crate) fn apply_rules(
     node: &GlobalRef,
     state: &mut NodeAnim,
     rules: &StyleRules,
+    font_registry: &FontRegistry,
 ) {
     let view = node.as_obj();
 
@@ -180,6 +182,36 @@ pub(crate) fn apply_rules(
                 "setTextSize",
                 "(IF)V",
                 &[JValue::Int(1), JValue::Float(size)],
+            );
+        }
+        // Font family / weight / style — route through the registry
+        // so a `font_family: &INTER` style targets the right
+        // registered face, and `FontFamily::System("monospace")` /
+        // bare `font_weight: Bold` reach `Typeface.create` /
+        // `Typeface.defaultFromStyle`. Apply only when any typography
+        // slot is set; views without an explicit typography rule
+        // keep their platform default.
+        let has_typography_family = rules.font_family.is_some()
+            || rules.font_weight.is_some()
+            || rules.font_style.is_some();
+        if has_typography_family {
+            let weight = rules
+                .font_weight
+                .as_ref()
+                .copied()
+                .unwrap_or(framework_core::FontWeight::Normal);
+            let fstyle = rules
+                .font_style
+                .as_ref()
+                .copied()
+                .unwrap_or(framework_core::FontStyle::Normal);
+            apply_resolved_font_to_textview(
+                env,
+                &view,
+                font_registry,
+                rules.font_family.as_ref(),
+                weight,
+                fstyle,
             );
         }
         // text-align → TextView.setGravity. Without this multi-line
@@ -871,14 +903,12 @@ impl GradientKindCenter for framework_core::Gradient {
 /// Resolve a `framework_core::Color` to sRGB `[r, g, b, a]` floats.
 /// Used to seed `state.gradient_stops` so the per-frame
 /// `GradientStopColor` writer can mutate one entry and re-emit
-/// without re-parsing the stylesheet.
+/// without re-parsing the stylesheet. Falls back to fully
+/// transparent on unknown input — matches the legacy behavior of
+/// `parse_color(...).unwrap_or(0)` (Android's `0` int is fully
+/// transparent).
 pub(crate) fn color_to_srgb(c: &framework_core::Color) -> [f32; 4] {
-    let argb = parse_color(&c.0).unwrap_or(0);
-    let a = ((argb >> 24) & 0xff) as f32 / 255.0;
-    let r = ((argb >> 16) & 0xff) as f32 / 255.0;
-    let g = ((argb >> 8) & 0xff) as f32 / 255.0;
-    let b = (argb & 0xff) as f32 / 255.0;
-    [r, g, b, a]
+    framework_core::color::parse_or(&c.0, framework_core::color::Rgba::TRANSPARENT).to_srgb_f32()
 }
 
 /// Cached `Build.VERSION.SDK_INT` — read once from the JVM on the
@@ -965,11 +995,7 @@ fn push_gradient_colors_to_drawable(
 /// sRGB float `[r, g, b, a]` → packed ARGB `i32` (Android's color
 /// representation). Symmetric with `color_to_srgb`.
 pub(crate) fn srgb_to_argb_i32(c: [f32; 4]) -> i32 {
-    let a = (c[3].clamp(0.0, 1.0) * 255.0).round() as u32;
-    let r = (c[0].clamp(0.0, 1.0) * 255.0).round() as u32;
-    let g = (c[1].clamp(0.0, 1.0) * 255.0).round() as u32;
-    let b = (c[2].clamp(0.0, 1.0) * 255.0).round() as u32;
-    (((a & 0xff) << 24) | ((r & 0xff) << 16) | ((g & 0xff) << 8) | (b & 0xff)) as i32
+    framework_core::color::Rgba::from_srgb_f32(c).to_argb_u32() as i32
 }
 
 /// Per-frame writer for `AnimProp::GradientStopColor(idx)`. Mutates

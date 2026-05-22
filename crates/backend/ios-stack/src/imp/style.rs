@@ -18,63 +18,12 @@ unsafe impl Encode for CGColorRef {
 }
 
 /// Parse a CSS-style color string into (r, g, b, a) in 0.0..1.0.
+/// Parsing logic lives in `framework_core::color`; this wrapper
+/// applies opaque black as the fallback for unknown shapes.
 pub(crate) fn parse_color(s: &str) -> (CGFloat, CGFloat, CGFloat, CGFloat) {
-    let s = s.trim();
-    if let Some(hex) = s.strip_prefix('#') {
-        let hex = hex.trim();
-        let chars: Vec<char> = hex.chars().collect();
-        match chars.len() {
-            3 => {
-                let r = u8::from_str_radix(&format!("{}{}", chars[0], chars[0]), 16).unwrap_or(0);
-                let g = u8::from_str_radix(&format!("{}{}", chars[1], chars[1]), 16).unwrap_or(0);
-                let b = u8::from_str_radix(&format!("{}{}", chars[2], chars[2]), 16).unwrap_or(0);
-                (r as CGFloat / 255.0, g as CGFloat / 255.0, b as CGFloat / 255.0, 1.0)
-            }
-            6 => {
-                let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
-                let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
-                let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
-                (r as CGFloat / 255.0, g as CGFloat / 255.0, b as CGFloat / 255.0, 1.0)
-            }
-            8 => {
-                let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
-                let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
-                let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
-                let a = u8::from_str_radix(&hex[6..8], 16).unwrap_or(255);
-                (r as CGFloat / 255.0, g as CGFloat / 255.0, b as CGFloat / 255.0, a as CGFloat / 255.0)
-            }
-            _ => (0.0, 0.0, 0.0, 1.0),
-        }
-    } else if s.starts_with("rgba(") || s.starts_with("RGBA(") {
-        let inner = s.trim_start_matches(|c: char| !c.is_ascii_digit() && c != '.')
-            .trim_end_matches(')');
-        let parts: Vec<&str> = inner.split(',').collect();
-        if parts.len() >= 4 {
-            let r: f64 = parts[0].trim().parse().unwrap_or(0.0);
-            let g: f64 = parts[1].trim().parse().unwrap_or(0.0);
-            let b: f64 = parts[2].trim().parse().unwrap_or(0.0);
-            let a: f64 = parts[3].trim().parse().unwrap_or(1.0);
-            (r / 255.0, g / 255.0, b / 255.0, a)
-        } else {
-            (0.0, 0.0, 0.0, 1.0)
-        }
-    } else if s.starts_with("rgb(") || s.starts_with("RGB(") {
-        let inner = s.trim_start_matches(|c: char| !c.is_ascii_digit() && c != '.')
-            .trim_end_matches(')');
-        let parts: Vec<&str> = inner.split(',').collect();
-        if parts.len() >= 3 {
-            let r: f64 = parts[0].trim().parse().unwrap_or(0.0);
-            let g: f64 = parts[1].trim().parse().unwrap_or(0.0);
-            let b: f64 = parts[2].trim().parse().unwrap_or(0.0);
-            (r / 255.0, g / 255.0, b / 255.0, 1.0)
-        } else {
-            (0.0, 0.0, 0.0, 1.0)
-        }
-    } else if s == "transparent" {
-        (0.0, 0.0, 0.0, 0.0)
-    } else {
-        (0.0, 0.0, 0.0, 1.0)
-    }
+    let [r, g, b, a] = framework_core::color::parse_or(s, framework_core::color::Rgba::BLACK)
+        .to_srgb_f32();
+    (r as CGFloat, g as CGFloat, b as CGFloat, a as CGFloat)
 }
 
 pub(crate) fn color_to_uicolor(color: &Color) -> Retained<UIColor> {

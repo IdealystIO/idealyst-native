@@ -10,6 +10,7 @@
 
 mod app;
 mod gpu;
+mod scheduler;
 
 pub use app::{run, RunError};
 

@@ -4,9 +4,15 @@
 //! fonts, [`typeface!`] + [`face!`]). The macros mint a stable
 //! [`AssetId`] from the asset's logical path, hashed under the calling
 //! crate's name so paths can collide across crates without colliding
-//! ids. The bytes do *not* live in the framework — the build tool /
-//! per-backend resolver is responsible for getting them in front of
-//! the platform.
+//! ids.
+//!
+//! For images / audio / video / blobs, [`asset!`] records a
+//! `Bundled` path the build tool / per-backend resolver is
+//! responsible for getting in front of the platform.
+//! Fonts work differently: [`face!`] uses `include_bytes!` to embed
+//! the file at compile time, so a `Typeface` declaration is fully
+//! self-contained. URL-loaded fonts are intentionally not
+//! supported — only project-shipped font files are valid.
 //!
 //! At render time the framework calls [`Backend::register_asset`] /
 //! [`Backend::register_typeface`] the first time an asset id is
@@ -385,10 +391,24 @@ macro_rules! typeface {
 }
 
 /// Declare one face within a [`typeface!`] block. Takes a weight, a
-/// style, and a path literal — same hashing rules as [`asset!`].
+/// style, and a path literal.
+///
+/// The font file is **embedded into the binary** via `include_bytes!`
+/// — path resolution follows `include_bytes!` rules (relative to the
+/// calling source file). This makes a `face!` declaration fully
+/// self-contained: no build-tool step has to copy the file into the
+/// platform bundle and no runtime fetch happens. URL-loaded fonts
+/// are intentionally not supported; only fonts shipped as part of
+/// the project are valid.
+///
+/// The asset id is `const_hash(crate_name + "::" + path)`, the same
+/// scheme [`asset!`] uses, so two crates referencing the same path
+/// produce distinct ids.
 #[macro_export]
 macro_rules! face {
-    (weight: $w:expr, style: $s:expr, src: $path:literal $(,)?) => {
+    (weight: $w:expr, style: $s:expr, src: $path:literal $(,)?) => {{
+        const BYTES: &[u8] = include_bytes!($path);
+        const EXTENSION: &'static str = $crate::assets::extension_from_path($path);
         $crate::assets::TypefaceFace {
             weight: $w,
             style: $s,
@@ -397,9 +417,12 @@ macro_rules! face {
                     concat!(env!("CARGO_PKG_NAME"), "::", $path).as_bytes(),
                 ),
             ),
-            source: $crate::assets::AssetSource::Bundled { path: $path },
+            source: $crate::assets::AssetSource::Embedded {
+                bytes: BYTES,
+                extension: EXTENSION,
+            },
         }
-    };
+    }};
 }
 
 // ---------------------------------------------------------------------------
@@ -440,13 +463,17 @@ mod tests {
 
     #[test]
     fn typeface_macro_mints_face_ids_from_paths() {
+        // Tests use this file as the embed target — `face!` calls
+        // `include_bytes!`, which needs a real file at the literal
+        // path. The two `face!` calls use distinct paths (`assets.rs`
+        // and `lib.rs`) so the const-hash-derived asset ids differ.
         let tf: Typeface = typeface! {
             name: "Inter",
             faces: [
                 face!(weight: FontWeight::Normal, style: FontStyle::Normal,
-                      src: "fonts/Inter-Regular.ttf"),
+                      src: "assets.rs"),
                 face!(weight: FontWeight::Bold, style: FontStyle::Normal,
-                      src: "fonts/Inter-Bold.ttf"),
+                      src: "lib.rs"),
             ],
             fallback: SystemFallback::SansSerif,
         };
@@ -481,12 +508,16 @@ mod tests {
     }
 
     #[test]
-    fn typeface_face_carries_path_in_source() {
+    fn typeface_face_carries_embedded_bytes_in_source() {
+        // `face!` embeds via `include_bytes!`, so the source carries
+        // the file's raw bytes + its extension. Picking this very
+        // file as the embed target avoids depending on real fonts in
+        // the test tree.
         let tf: Typeface = typeface! {
             name: "Mono",
             faces: [
                 face!(weight: FontWeight::Normal, style: FontStyle::Italic,
-                      src: "fonts/Mono-Italic.woff2"),
+                      src: "assets.rs"),
             ],
             fallback: SystemFallback::Monospace,
         };
@@ -494,8 +525,11 @@ mod tests {
         assert_eq!(face.weight, FontWeight::Normal);
         assert_eq!(face.style, FontStyle::Italic);
         match face.source {
-            AssetSource::Bundled { path } => assert_eq!(path, "fonts/Mono-Italic.woff2"),
-            other => panic!("expected Bundled, got {:?}", other),
+            AssetSource::Embedded { bytes, extension } => {
+                assert!(!bytes.is_empty());
+                assert_eq!(extension, "rs");
+            }
+            other => panic!("expected Embedded, got {:?}", other),
         }
         assert_eq!(tf.fallback, SystemFallback::Monospace);
     }
@@ -543,16 +577,16 @@ mod tests {
             name: "FamilyA",
             faces: [
                 face!(weight: FontWeight::Normal, style: FontStyle::Normal,
-                      src: "fonts/a.ttf"),
+                      src: "assets.rs"),
             ],
             fallback: SystemFallback::None,
         };
         let b: Typeface = typeface! {
             name: "FamilyA",
             faces: [
-                // Different face path, same family name — same id.
+                // Different embed path, same family name — same id.
                 face!(weight: FontWeight::Bold, style: FontStyle::Normal,
-                      src: "fonts/different.ttf"),
+                      src: "lib.rs"),
             ],
             fallback: SystemFallback::None,
         };
@@ -560,7 +594,7 @@ mod tests {
             name: "FamilyB",
             faces: [
                 face!(weight: FontWeight::Normal, style: FontStyle::Normal,
-                      src: "fonts/a.ttf"),
+                      src: "assets.rs"),
             ],
             fallback: SystemFallback::None,
         };

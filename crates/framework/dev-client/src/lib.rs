@@ -353,13 +353,9 @@ where
             } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
                 let cb = self.handler_string(on_change);
-                // `on_key_down` isn't wire-encoded yet — dev-client
-                // replays a plain text input. AAS-rendered apps that
-                // rely on per-keystroke control should send the
-                // KeyEvent over a custom wire variant in a follow-up.
                 let node = self
                     .backend
-                    .create_text_input(&initial_value, placeholder.as_deref(), cb, None);
+                    .create_text_input(&initial_value, placeholder.as_deref(), cb);
                 self.nodes.insert(id, node);
             }
             Command::CreateToggle {

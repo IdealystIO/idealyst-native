@@ -592,3 +592,153 @@ fn signal_class_falls_back_to_reactive_effect_on_unsupporting_backend() {
         after_applies, after,
     );
 }
+
+// ---------------------------------------------------------------------------
+// Font registration end-to-end
+// ---------------------------------------------------------------------------
+
+/// Mount a view whose stylesheet references a real `Typeface` and
+/// assert that the framework drives the backend through the full
+/// font-registration contract:
+///
+/// 1. `register_asset` fires for every face with `kind: Font`, an
+///    `Embedded` source carrying the **actual font bytes**, and the
+///    expected file extension.
+/// 2. `register_typeface` fires once for the family with the right
+///    face count, AFTER all per-face `register_asset` calls land.
+///
+/// Pre-fix, `face!` emitted `Bundled { path }` (no bytes), so the
+/// `source_bytes_len` assertion would observe `None`. This test
+/// pins the corrected behavior: `face!` uses `include_bytes!` so
+/// the bytes ride along with the asset registration call and
+/// custom fonts actually reach the backend on iOS and Android.
+#[test]
+fn typeface_emits_register_asset_with_real_bytes_then_register_typeface() {
+    use framework_core::assets::{SystemFallback, Typeface};
+    use framework_core::{
+        face, typeface, view, FontFamily, FontStyle, FontWeight, IntoPrimitive,
+        StyleApplication, StyleSheet, VariantSet,
+    };
+    use std::rc::Rc;
+
+    use common::{Event, TestRuntime};
+
+    // Use a real .ttf that already lives in the repo so this test
+    // exercises the `include_bytes!` path on a genuine font binary,
+    // not a synthetic byte string. Path is relative to THIS test
+    // file — `crates/framework/core/tests/style.rs`.
+    static INTER: Typeface = typeface! {
+        name: "Inter",
+        faces: [
+            face!(weight: FontWeight::Normal, style: FontStyle::Normal,
+                  src: "../../../render/wgpu/assets/fonts/Inter-Regular.ttf"),
+        ],
+        fallback: SystemFallback::SansSerif,
+    };
+
+    let rt = TestRuntime::new();
+    let tree = view(vec![])
+        .with_style(|| {
+            let sheet = Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules {
+                font_family: Some(FontFamily::Typeface(INTER)),
+                ..Default::default()
+            }));
+            StyleApplication::new(sheet)
+        })
+        .into_primitive();
+    let _owner = rt.render(tree);
+
+    let events = rt.events();
+
+    // ---- 1. register_asset for the Inter-Regular face ----
+    let face_asset_id = INTER.faces[0].asset;
+    let asset_event = events
+        .iter()
+        .find_map(|e| match e {
+            Event::RegisterAsset {
+                id,
+                kind,
+                source_bytes_len,
+                source_extension,
+            } if *id == face_asset_id => Some((
+                *kind,
+                *source_bytes_len,
+                source_extension.clone(),
+            )),
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected RegisterAsset for the Inter face id {:?} — events: {:#?}",
+                face_asset_id, events
+            )
+        });
+    let (kind, bytes_len, extension) = asset_event;
+    assert_eq!(
+        kind,
+        framework_core::AssetTag::Font,
+        "register_asset should report AssetTag::Font for a typeface face"
+    );
+    assert_eq!(
+        extension.as_deref(),
+        Some("ttf"),
+        "embedded-source extension should come from the file path"
+    );
+    let len = bytes_len
+        .expect("Embedded source means we should see a byte length; got None (Bundled?)");
+    // Inter-Regular.ttf in this repo is ~407 KB. Assert "non-trivial
+    // size" without pinning an exact byte count — keeps the test
+    // resilient to a font upgrade.
+    assert!(
+        len > 10_000,
+        "expected at least 10 KB of font bytes to flow through, got {} bytes \
+         (did `face!` regress back to Bundled?)",
+        len,
+    );
+
+    // ---- 2. register_typeface for Inter, with one face ----
+    let typeface_event = events
+        .iter()
+        .find_map(|e| match e {
+            Event::RegisterTypeface { id, face_count } if *id == INTER.id => {
+                Some(*face_count)
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected RegisterTypeface for INTER id {:?} — events: {:#?}",
+                INTER.id, events
+            )
+        });
+    assert_eq!(
+        typeface_event, 1,
+        "INTER declares 1 face — register_typeface should report face_count = 1",
+    );
+
+    // ---- 3. ordering: every register_asset for an INTER face must
+    //          precede the typeface's register_typeface call. The
+    //          backend relies on this so its per-asset cache is
+    //          populated when register_typeface materializes each
+    //          face's per-platform handle.
+    let asset_idx = events
+        .iter()
+        .position(|e| matches!(
+            e,
+            Event::RegisterAsset { id, .. } if *id == face_asset_id,
+        ))
+        .expect("register_asset index");
+    let typeface_idx = events
+        .iter()
+        .position(|e| matches!(
+            e,
+            Event::RegisterTypeface { id, .. } if *id == INTER.id,
+        ))
+        .expect("register_typeface index");
+    assert!(
+        asset_idx < typeface_idx,
+        "register_asset (idx {}) must fire before register_typeface (idx {}) — \
+         backends rely on this ordering to materialize face handles. Events: {:#?}",
+        asset_idx, typeface_idx, events,
+    );
+}

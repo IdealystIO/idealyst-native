@@ -822,81 +822,15 @@ fn length_css(l: framework_core::Length) -> String {
     }
 }
 
-/// Render a tokenized color: literal as the raw color string, token as
-/// `var(--name, fallback)`. The fallback is what the browser uses if
-/// the variable hasn't been installed (theme not yet booted, SSR
-/// without a `:root` declaration, etc.) — we always emit it so first
-/// paint never shows an unstyled element.
 /// Resolve a `framework_core::Color` (a CSS-string wrapper) to a
-/// concrete sRGB `[r, g, b, a]` in `0..=1`. Same parser shape as
-/// the iOS / Android backends — accepts `#rgb`, `#rrggbb`,
-/// `#aarrggbb`, `rgb(...)`, `rgba(...)`, and `transparent`.
-/// Used to seed the per-node `gradient_stops` snapshot the
-/// animation path mutates.
+/// concrete sRGB `[r, g, b, a]` in `0..=1`, used to seed the per-node
+/// `gradient_stops` snapshot the animation path mutates. Parsing
+/// lives in `framework_core::color`; unknown shapes (named colors,
+/// `hsl(...)`) fall back to opaque black — the CSS class still
+/// renders them correctly; this is only the seed for the animation
+/// state machine.
 pub(crate) fn color_to_srgb(c: &framework_core::Color) -> [f32; 4] {
-    let s = c.0.trim();
-    if s.eq_ignore_ascii_case("transparent") {
-        return [0.0; 4];
-    }
-    let lower = s.to_ascii_lowercase();
-    if lower.starts_with("rgba(") || lower.starts_with("rgb(") {
-        let inner = s
-            .trim_start_matches(|ch: char| !ch.is_ascii_digit() && ch != '.' && ch != '-')
-            .trim_end_matches(')');
-        let parts: Vec<&str> = inner.split(',').collect();
-        if parts.len() < 3 {
-            return [0.0; 4];
-        }
-        let r: f32 = parts[0].trim().parse().unwrap_or(0.0);
-        let g: f32 = parts[1].trim().parse().unwrap_or(0.0);
-        let b: f32 = parts[2].trim().parse().unwrap_or(0.0);
-        let a: f32 = if parts.len() >= 4 {
-            parts[3].trim().parse().unwrap_or(1.0)
-        } else {
-            1.0
-        };
-        let a = if a > 1.0 { a / 255.0 } else { a };
-        return [
-            (r / 255.0).clamp(0.0, 1.0),
-            (g / 255.0).clamp(0.0, 1.0),
-            (b / 255.0).clamp(0.0, 1.0),
-            a.clamp(0.0, 1.0),
-        ];
-    }
-    if let Some(hex) = s.strip_prefix('#') {
-        let chars: Vec<char> = hex.chars().collect();
-        let (r, g, b, a) = match chars.len() {
-            3 => {
-                let r = u8::from_str_radix(&format!("{0}{0}", chars[0]), 16).unwrap_or(0);
-                let g = u8::from_str_radix(&format!("{0}{0}", chars[1]), 16).unwrap_or(0);
-                let b = u8::from_str_radix(&format!("{0}{0}", chars[2]), 16).unwrap_or(0);
-                (r as f32, g as f32, b as f32, 255.0)
-            }
-            6 => {
-                let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
-                let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
-                let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
-                (r as f32, g as f32, b as f32, 255.0)
-            }
-            8 => {
-                // CSS uses `#rrggbbaa`; CG / Android use `#aarrggbb`.
-                // We don't know which the author meant — both forms
-                // are CSS-valid. Default to `#rrggbbaa` (CSS spec).
-                let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
-                let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
-                let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
-                let a = u8::from_str_radix(&hex[6..8], 16).unwrap_or(255);
-                (r as f32, g as f32, b as f32, a as f32)
-            }
-            _ => (0.0, 0.0, 0.0, 255.0),
-        };
-        return [r / 255.0, g / 255.0, b / 255.0, a / 255.0];
-    }
-    // Unknown shape (named colors, hsl(...), etc.) — let the browser
-    // handle them via the CSS class. The animation seed defaults to
-    // opaque black so accidental writes don't turn the view fully
-    // transparent.
-    [0.0, 0.0, 0.0, 1.0]
+    framework_core::color::parse_or(&c.0, framework_core::color::Rgba::BLACK).to_srgb_f32()
 }
 
 fn tokenized_color_css(t: &framework_core::Tokenized<framework_core::Color>) -> String {

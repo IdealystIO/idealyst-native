@@ -38,6 +38,14 @@ backend-ios-core = { workspace = true }
 [target.'cfg(target_os = "android")'.dependencies]
 backend-android-mobile = { workspace = true }
 
+# Sim (macOS / Linux / Windows desktop preview) — the wgpu render
+# backend's `set_animated_f32` / `set_animated_color` route through
+# the same global self-handle as iOS / Android. Without this dep
+# the `drive_av` helpers' fallback `cfg` would compile to a no-op
+# and every author-driven animation would silently fail on the sim.
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))'.dependencies]
+render-wgpu = { workspace = true }
+
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = [
     "-Oz",

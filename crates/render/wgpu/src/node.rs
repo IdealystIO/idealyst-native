@@ -183,6 +183,57 @@ pub const KEY_PRESS_FLASH_MS: u32 = 120;
 /// Public alias used by the `Backend` impl's associated type.
 pub type WgpuNode = Rc<RefCell<NodeData>>;
 
+/// Per-frame overrides written by the framework's animation system
+/// via [`framework_core::Backend::set_animated_f32`] /
+/// [`framework_core::Backend::set_animated_color`]. The renderer
+/// composes these with the static `RenderStyle` each frame so an
+/// in-flight `AnimatedValue` always wins over the stylesheet's
+/// resting value without invalidating the underlying style.
+///
+/// `None` on every field means "no animated override active." The
+/// renderer interprets each `Some(_)` as the authoritative per-frame
+/// value for that property (translates / scales / opacity compose
+/// multiplicatively with ancestor transforms; colors replace the
+/// stylesheet color entirely).
+///
+/// Boxed on `NodeData` so non-animated nodes pay one pointer of
+/// overhead, not the full struct.
+#[derive(Default, Debug, Clone)]
+pub struct AnimatedOverrides {
+    /// Compositing opacity. `1.0` = identity (no effect on rendering).
+    pub opacity: Option<f32>,
+    /// Translate in device-independent pixels. Applied AFTER local
+    /// scale (CSS semantics) — i.e. translate is in the element's
+    /// own untransformed coord system but expressed in screen px.
+    pub translate_x: Option<f32>,
+    pub translate_y: Option<f32>,
+    /// Per-axis scale factor. The renderer composes with ancestor
+    /// scale multiplicatively; the local scale pivots around the
+    /// element's layout center.
+    pub scale_x: Option<f32>,
+    pub scale_y: Option<f32>,
+    /// Z-rotation in degrees, clockwise. Lands on the
+    /// `RectInstance.rotation` field for the node's own rect; child
+    /// rect inheritance of rotation is not threaded yet (matches
+    /// the welcome example's needs — no rotated parents with rect
+    /// descendants).
+    pub rotate_z: Option<f32>,
+    /// Background fill color (sRGB `[r, g, b, a]`), overriding the
+    /// stylesheet's `background`. Pre-empts any `BackgroundColor`
+    /// transition the wgpu animator is running for the same node.
+    pub background_color: Option<[f32; 4]>,
+    /// Text / icon color, overriding the stylesheet's `color`.
+    pub foreground_color: Option<[f32; 4]>,
+    /// Per-stop overrides for `background_gradient`. Each entry is
+    /// `(stop_index, rgba)`. The gradient itself isn't rendered by
+    /// the wgpu backend yet (gradient pipeline TODO), so these
+    /// writes are stored for future use; the field exists today so
+    /// the welcome page's sun-pulse + vignette-pulse driver doesn't
+    /// crash and the data is available the moment the gradient
+    /// pipeline lands.
+    pub gradient_stops: Vec<(u8, [f32; 4])>,
+}
+
 /// One mounted route in a tab or drawer navigator. The
 /// dispatcher uses `name` to match `NavCommand::Select`
 /// targets; `scope_id` is the framework scope created when
@@ -707,6 +758,12 @@ pub struct NodeData {
     /// can fetch the pre-shaped glyph buffer each frame without
     /// reshaping.
     pub screen_title_layout: Option<LayoutNode>,
+    /// Animated overrides for the framework's
+    /// [`AnimatedValue`](framework_core::animation::AnimatedValue)
+    /// system. Allocated lazily on first write — `None` for the
+    /// 99% of nodes that aren't animated. See [`AnimatedOverrides`]
+    /// for the per-property semantics.
+    pub animated: Option<Box<AnimatedOverrides>>,
 }
 
 pub fn new_node(kind: NodeKind, layout: LayoutNode) -> WgpuNode {
@@ -722,5 +779,6 @@ pub fn new_node(kind: NodeKind, layout: LayoutNode) -> WgpuNode {
         render: RenderStyle::default(),
         state_setter: None,
         touch_handler: None,
+        animated: None,
     }))
 }

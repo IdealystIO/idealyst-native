@@ -1208,6 +1208,88 @@ impl Backend for WgpuBackend {
         node.borrow_mut().state_setter = Some(setter);
     }
 
+    fn make_view_handle(&self, node: &Self::Node) -> framework_core::ViewHandle {
+        framework_core::ViewHandle::new(Rc::new(node.clone()), &crate::handles::WGPU_VIEW_OPS)
+    }
+
+    fn make_text_handle(&self, node: &Self::Node) -> framework_core::TextHandle {
+        framework_core::TextHandle::new(Rc::new(node.clone()), &crate::handles::WGPU_TEXT_OPS)
+    }
+
+    fn set_animated_f32(
+        &mut self,
+        node: &Self::Node,
+        prop: framework_core::animation::AnimProp,
+        value: f32,
+    ) {
+        use framework_core::animation::AnimProp;
+        {
+            let mut data = node.borrow_mut();
+            let ov = data
+                .animated
+                .get_or_insert_with(|| Box::new(crate::node::AnimatedOverrides::default()));
+            match prop {
+                AnimProp::Opacity => ov.opacity = Some(value),
+                AnimProp::TranslateX => ov.translate_x = Some(value),
+                AnimProp::TranslateY => ov.translate_y = Some(value),
+                AnimProp::Scale => {
+                    ov.scale_x = Some(value);
+                    ov.scale_y = Some(value);
+                }
+                AnimProp::ScaleX => ov.scale_x = Some(value),
+                AnimProp::ScaleY => ov.scale_y = Some(value),
+                AnimProp::RotateZ => ov.rotate_z = Some(value),
+                // Wrong family. Same posture as the iOS / web f32
+                // path — silently ignored; misrouting is a
+                // diagnostic concern, not a runtime crash.
+                AnimProp::BackgroundColor
+                | AnimProp::ForegroundColor
+                | AnimProp::GradientStopColor(_) => {}
+            }
+        }
+        request_redraw();
+    }
+
+    fn set_animated_color(
+        &mut self,
+        node: &Self::Node,
+        prop: framework_core::animation::AnimProp,
+        value: [f32; 4],
+    ) {
+        use framework_core::animation::AnimProp;
+        {
+            let mut data = node.borrow_mut();
+            let ov = data
+                .animated
+                .get_or_insert_with(|| Box::new(crate::node::AnimatedOverrides::default()));
+            match prop {
+                AnimProp::BackgroundColor => ov.background_color = Some(value),
+                AnimProp::ForegroundColor => ov.foreground_color = Some(value),
+                AnimProp::GradientStopColor(idx) => {
+                    // Per-stop override: replace if the stop is already
+                    // tracked, else append. Linear scan is fine — a
+                    // gradient typically has < 8 stops.
+                    if let Some(slot) =
+                        ov.gradient_stops.iter_mut().find(|(i, _)| *i == idx)
+                    {
+                        slot.1 = value;
+                    } else {
+                        ov.gradient_stops.push((idx, value));
+                    }
+                }
+                // Wrong family — silently ignored.
+                AnimProp::Opacity
+                | AnimProp::TranslateX
+                | AnimProp::TranslateY
+                | AnimProp::Scale
+                | AnimProp::ScaleX
+                | AnimProp::ScaleY
+                | AnimProp::RotateZ => {}
+            }
+        }
+        request_redraw();
+    }
+
     fn release_navigator(&mut self, node: &Self::Node) {
         // Drop every mounted screen's Taffy state + animator
         // tweens + text store entries. The per-screen framework
@@ -1548,6 +1630,73 @@ impl Backend for WgpuBackend {
         }
         request_redraw();
     }
+}
+
+// =========================================================================
+// Global self-handle — lets the framework's animation subscribers
+// (welcome's `drive_av`, etc.) reach the backend from outside the
+// `Backend` borrow window. Same shape as iOS's `IOS_BACKEND_SELF`:
+// thread-local Weak to the outer `Rc<RefCell<WgpuBackend>>` set once
+// at backend construction.
+// =========================================================================
+
+thread_local! {
+    static WGPU_BACKEND_SELF: std::cell::RefCell<Option<std::rc::Weak<RefCell<WgpuBackend>>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Install the backend's self-reference. The wgpu host (`Host::new`)
+/// calls this once after wrapping the backend in `Rc<RefCell<>>`.
+/// Subsequent calls overwrite the previous install — the most recent
+/// host wins, which matches the single-active-host assumption the
+/// renderer already makes (one global scheduler hook, one global skin).
+pub fn install_global_self(weak: std::rc::Weak<RefCell<WgpuBackend>>) {
+    WGPU_BACKEND_SELF.with(|s| {
+        *s.borrow_mut() = Some(weak);
+    });
+}
+
+/// Clone-out the currently-installed Weak, if any. Used internally by
+/// the `*Ops` handles to reach the backend's Taffy state from the
+/// type-erased side.
+pub(crate) fn global_self() -> Option<std::rc::Weak<RefCell<WgpuBackend>>> {
+    WGPU_BACKEND_SELF.with(|s| s.borrow().clone())
+}
+
+/// Push a scalar animation property update to `node` through the
+/// installed global backend. Cross-platform animation subscribers
+/// call this when they detect a wgpu node handle. Same shape as
+/// `backend_ios::set_animated_f32`.
+///
+/// Quietly no-ops if no backend has been installed (pre-render), the
+/// install has been dropped (post-teardown), or the backend is
+/// already borrowed (an in-flight Rust call will see the new value
+/// at its next frame — no harm done).
+pub fn set_animated_f32(
+    node: &crate::node::WgpuNode,
+    prop: framework_core::animation::AnimProp,
+    value: f32,
+) {
+    let Some(weak) = global_self() else { return };
+    let Some(rc) = weak.upgrade() else { return };
+    if let Ok(mut b) = rc.try_borrow_mut() {
+        use framework_core::Backend;
+        b.set_animated_f32(node, prop, value);
+    };
+}
+
+/// Color-family counterpart of [`set_animated_f32`].
+pub fn set_animated_color(
+    node: &crate::node::WgpuNode,
+    prop: framework_core::animation::AnimProp,
+    value: [f32; 4],
+) {
+    let Some(weak) = global_self() else { return };
+    let Some(rc) = weak.upgrade() else { return };
+    if let Ok(mut b) = rc.try_borrow_mut() {
+        use framework_core::Backend;
+        b.set_animated_color(node, prop, value);
+    };
 }
 
 /// `NavigatorOps` impl for wgpu. All callbacks are default no-ops

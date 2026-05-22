@@ -353,6 +353,13 @@ impl Host {
             .borrow()
             .self_weak
             .set(std::rc::Rc::downgrade(&backend));
+        // ALSO publish the weak via a thread-local handle so the
+        // framework's animation subscribers (which reach the backend
+        // from outside any current `Backend` borrow) can route
+        // per-frame writes through `set_animated_f32` /
+        // `set_animated_color`. Same shape as iOS's
+        // `install_global_self`.
+        crate::backend_impl::install_global_self(std::rc::Rc::downgrade(&backend));
         Self {
             backend,
             text,

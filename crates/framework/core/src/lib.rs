@@ -3,6 +3,7 @@
 pub mod animation;
 pub mod assets;
 mod backend;
+pub mod color;
 mod batch;
 mod builder;
 mod derive;

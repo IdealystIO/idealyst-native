@@ -253,8 +253,14 @@ impl std::error::Error for RunError {}
 
 /// Custom event the redraw hook posts to wake the winit loop.
 #[derive(Debug, Clone, Copy)]
-enum AppEvent {
+pub(crate) enum AppEvent {
     Redraw,
+    /// Posted by the scheduler worker thread whenever a registered
+    /// `after_ms` deadline has expired or a 60 Hz raf pulse is due.
+    /// The `user_event` handler calls
+    /// [`crate::scheduler::drain_due`] to fire the matching
+    /// closures on the main thread.
+    SchedTick,
 }
 
 /// Run the preview window until the user closes it. `skin`
@@ -274,9 +280,20 @@ where
     // Any `render_wgpu::request_redraw()` call from inside
     // `apply_style`, the animator, etc. now wakes us up.
     let proxy = event_loop.create_proxy();
-    install_redraw_hook(Box::new(move || {
-        let _ = proxy.send_event(AppEvent::Redraw);
+    install_redraw_hook(Box::new({
+        let proxy = proxy.clone();
+        move || {
+            let _ = proxy.send_event(AppEvent::Redraw);
+        }
     }));
+    // Install the native scheduler BEFORE we start running the
+    // event loop (and therefore before `resumed` mounts the user
+    // tree). The welcome page — and most non-trivial apps — fire
+    // `framework_core::after_ms` / `raf_loop` during their
+    // `effect!` block; if the scheduler isn't installed by then,
+    // those calls fall into the inert / synchronous fallbacks and
+    // every author-driven animation freezes.
+    crate::scheduler::install(proxy);
     event_loop.set_control_flow(ControlFlow::Wait);
 
     let mut app = App::new(profile, skin, Box::new(build_ui));
@@ -655,6 +672,19 @@ impl ApplicationHandler<AppEvent> for App {
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
             AppEvent::Redraw => {
+                if let Some(gpu) = self.gpu.as_ref() {
+                    gpu.window.request_redraw();
+                }
+            }
+            AppEvent::SchedTick => {
+                // Fire any due `after_ms` closures + tick every
+                // active `raf_loop` client. Drains run on the main
+                // thread (closures aren't `Send`), so this must
+                // stay inside the winit event handler.
+                crate::scheduler::drain_due();
+                // The drain almost certainly touched
+                // `AnimatedValue`s or queued more work — wake the
+                // renderer so it picks up the new values.
                 if let Some(gpu) = self.gpu.as_ref() {
                     gpu.window.request_redraw();
                 }

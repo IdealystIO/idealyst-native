@@ -487,6 +487,9 @@ impl Renderer {
                 root,
                 0.0,
                 0.0,
+                1.0,
+                1.0,
+                1.0,
                 &mut rects,
                 &mut texts,
                 &mut deferred_overlays,
@@ -547,6 +550,9 @@ impl Renderer {
                 &top.node,
                 top.origin_x,
                 top.origin_y,
+                1.0,
+                1.0,
+                1.0,
                 &mut nav_top_rects,
                 &mut nav_top_texts,
                 &mut sub_deferred_overlays,
@@ -1435,6 +1441,7 @@ fn video_volume_for_overlay(_decoder: &crate::video::VideoDecoder) -> f32 {
 ///   `TextBounds`; rects are frustum-culled if entirely outside.
 ///   Per-fragment partial rect clipping is a shader follow-up.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn walk<'a>(
     backend: &WgpuBackend,
     text_store: &'a TextStore,
@@ -1447,6 +1454,14 @@ fn walk<'a>(
     node: &WgpuNode,
     parent_x: f32,
     parent_y: f32,
+    // Accumulated multiplicative transform from animated ancestors.
+    // `1.0` at the root call (no ancestor) and at every entry point
+    // that re-starts a walk (overlay pass, nav-top pass, drawer
+    // pass) — those have their own coord systems anchored to the
+    // viewport, not to an in-flow chain of animated parents.
+    acc_scale_x: f32,
+    acc_scale_y: f32,
+    acc_opacity: f32,
     rects: &mut Vec<RectInstance>,
     texts: &mut Vec<StagedText<'a>>,
     deferred_overlays: &mut Vec<(WgpuNode, (f32, f32))>,
@@ -1459,10 +1474,63 @@ fn walk<'a>(
 ) {
     let data = node.borrow();
     let frame = backend.layout.frame_of(data.layout);
-    let x = parent_x + frame.x;
-    let y = parent_y + frame.y;
-    let w = frame.width;
-    let h = frame.height;
+    // ---- Animated overrides ------------------------------------------
+    //
+    // The framework's animation system writes per-frame values into
+    // `NodeData.animated` via `Backend::set_animated_*`. We read those
+    // here and apply them on top of the static Taffy frame:
+    //   1. Scale the layout-space rect by the accumulated ancestor
+    //      scale (so a child of a scaled parent fits inside the
+    //      parent's visible box).
+    //   2. Apply this node's own (scale around center, then translate)
+    //      transform — matches CSS `transform: translate() scale()`
+    //      semantics with `transform-origin: 50% 50%`.
+    //   3. Multiply opacity through the ancestor chain so a parent's
+    //      animated fade dims the whole subtree.
+    //
+    // No animated overrides ⇒ all locals default to identity and the
+    // math reduces to `x = parent_x + frame.x` (the pre-animation
+    // behavior).
+    let (local_tx, local_ty, local_sx, local_sy, local_opacity, local_rot, local_bg, local_fg) = {
+        let av = data.animated.as_deref();
+        (
+            av.and_then(|a| a.translate_x).unwrap_or(0.0),
+            av.and_then(|a| a.translate_y).unwrap_or(0.0),
+            av.and_then(|a| a.scale_x).unwrap_or(1.0),
+            av.and_then(|a| a.scale_y).unwrap_or(1.0),
+            av.and_then(|a| a.opacity),
+            av.and_then(|a| a.rotate_z).unwrap_or(0.0),
+            av.and_then(|a| a.background_color),
+            av.and_then(|a| a.foreground_color),
+        )
+    };
+    let base_w = frame.width * acc_scale_x;
+    let base_h = frame.height * acc_scale_y;
+    let base_x = parent_x + frame.x * acc_scale_x;
+    let base_y = parent_y + frame.y * acc_scale_y;
+    let cx = base_x + base_w * 0.5;
+    let cy = base_y + base_h * 0.5;
+    let w = base_w * local_sx;
+    let h = base_h * local_sy;
+    let x = cx - w * 0.5 + local_tx;
+    let y = cy - h * 0.5 + local_ty;
+    // Effective per-node opacity. When the animation system has
+    // written an `Opacity` value, it takes over from the static
+    // stylesheet `r.opacity` (matches iOS / web semantics: the
+    // animation supersedes the resting value). When unwritten,
+    // fall back to the static opacity.
+    let r_opacity_static = data.render.opacity;
+    let local_opacity_eff = local_opacity.unwrap_or(r_opacity_static);
+    let node_opacity = acc_opacity * local_opacity_eff;
+    // Pre-compute child propagation values so we don't recompute
+    // them in every recursion site. Local scale + opacity multiply
+    // through to the subtree; local translate does NOT (it shifts
+    // the rect once, not each descendant a second time — the
+    // child's `parent_x` is already at `x`, this node's animated
+    // origin).
+    let child_acc_scale_x = acc_scale_x * local_sx;
+    let child_acc_scale_y = acc_scale_y * local_sy;
+    let child_acc_opacity = node_opacity;
 
     // Form inputs paint their own background/border via the
     // platform-skinned widget renderer; skip the generic background
@@ -1496,7 +1564,7 @@ fn walk<'a>(
         || y + h < clip.1
         || y > clip.1 + clip.3);
     if !is_native_widget && in_clip {
-        let has_bg = r.background.is_some();
+        let has_bg = r.background.is_some() || local_bg.is_some();
         let any_border = r.border_width.iter().any(|w| *w > 0.0);
         // Skin-driven press feedback may add a background even
         // when the author's style didn't — M3's filled-button
@@ -1528,7 +1596,7 @@ fn walk<'a>(
             if let Some(sh) = r.shadow.as_ref() {
                 let bw = sh.blur.max(0.0);
                 let shadow_color =
-                    srgb_rgba_to_linear([sh.color[0], sh.color[1], sh.color[2], sh.color[3] * r.opacity]);
+                    srgb_rgba_to_linear([sh.color[0], sh.color[1], sh.color[2], sh.color[3] * node_opacity]);
                 rects.push(RectInstance {
                     rect: [
                         x + sh.offset[0] - bw,
@@ -1544,17 +1612,24 @@ fn walk<'a>(
                     corner_radius: r.corner_radius,
                     border_color: [0.0; 4],
                     border_width: 0.0,
-                    rotation: 0.0,
+                    rotation: local_rot,
                     shadow_blur: bw,
                     _pad: 0.0,
                 });
             }
-            let bg_rest = r.background.unwrap_or([0.0; 4]);
-            let bg = backend.animator.sample_color(
-                TweenKey::new(data.layout, AnimProperty::BackgroundColor),
-                bg_rest,
-                now,
-            );
+            // Animated `BackgroundColor` (from `set_animated_color`)
+            // takes precedence over both the animator-tween and the
+            // static stylesheet value — same posture as iOS / web.
+            let bg = if let Some(av_bg) = local_bg {
+                av_bg
+            } else {
+                let bg_rest = r.background.unwrap_or([0.0; 4]);
+                backend.animator.sample_color(
+                    TweenKey::new(data.layout, AnimProperty::BackgroundColor),
+                    bg_rest,
+                    now,
+                )
+            };
             // Composite the skin's press overlay on top of the
             // resolved (possibly-tweening) background using
             // standard source-over alpha. The overlay's alpha is
@@ -1570,7 +1645,7 @@ fn walk<'a>(
                 r.border_color[0],
                 now,
             );
-            let bg_lin = srgb_rgba_to_linear([bg[0], bg[1], bg[2], bg[3] * r.opacity]);
+            let bg_lin = srgb_rgba_to_linear([bg[0], bg[1], bg[2], bg[3] * node_opacity]);
             let bc_lin = srgb_rgba_to_linear(bc);
             rects.push(RectInstance {
                 rect: [x, y, w, h],
@@ -1578,7 +1653,7 @@ fn walk<'a>(
                 corner_radius: r.corner_radius,
                 border_color: bc_lin,
                 border_width: bw,
-                rotation: 0.0,
+                rotation: local_rot,
                 shadow_blur: 0.0,
                 _pad: 0.0,
             });
@@ -1589,11 +1664,23 @@ fn walk<'a>(
         match &data.kind {
             NodeKind::Text { .. } | NodeKind::Button { .. } => {
                 if let Some(entry) = text_store.buffers.get(&data.layout) {
-                    let mut color = backend.animator.sample_color(
-                        TweenKey::new(data.layout, AnimProperty::TextColor),
-                        r.color,
-                        now,
-                    );
+                    // Author-driven `ForegroundColor` override wins
+                    // over the animator's `TextColor` tween, matching
+                    // the bg branch above.
+                    let mut color = if let Some(av_fg) = local_fg {
+                        av_fg
+                    } else {
+                        backend.animator.sample_color(
+                            TweenKey::new(data.layout, AnimProperty::TextColor),
+                            r.color,
+                            now,
+                        )
+                    };
+                    // Inherit ancestor + own opacity into the
+                    // glyph alpha. The shaped buffer is reused across
+                    // frames, so we modulate alpha at stage time
+                    // instead of re-shaping with a different color.
+                    color[3] *= node_opacity;
                     // Skin-driven press feedback for Buttons:
                     // sample the press-progress tween and let the
                     // active skin convert it into a text-alpha
@@ -2049,6 +2136,9 @@ fn walk<'a>(
             child,
             child_origin_x + xform.translate_x,
             child_origin_y + xform.translate_y,
+            child_acc_scale_x,
+            child_acc_scale_y,
+            child_acc_opacity,
             rects,
             texts,
             deferred_overlays,
@@ -2463,6 +2553,9 @@ fn paint_drawer_overlay<'a>(
         &drawer.sidebar,
         nx + slide_x,
         ny,
+        1.0,
+        1.0,
+        1.0,
         rects,
         texts,
         &mut sub_overlays,
@@ -2711,6 +2804,9 @@ fn walk_overlay<'a>(
             child,
             content_x,
             content_y,
+            1.0,
+            1.0,
+            1.0,
             rects,
             texts,
             &mut nested_overlays,

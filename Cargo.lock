@@ -4943,6 +4943,7 @@ dependencies = [
  "framework-core",
  "idea-ui",
  "lol_alloc",
+ "render-wgpu",
  "wasm-bindgen",
  "web-sys",
 ]

@@ -135,107 +135,16 @@ fn px(t: Option<&Tokenized<Length>>) -> f32 {
     }
 }
 
-/// Best-effort CSS color parse. Accepts `#rgb`, `#rrggbb`, `#rrggbbaa`,
-/// `rgb(r,g,b)`, `rgba(r,g,b,a)`. Unknown strings → opaque magenta as
-/// a visible "you forgot to set a color" signal.
+/// Best-effort CSS color parse. Delegates to `framework_core::color`;
+/// unknown strings render as opaque magenta so missing-color bugs are
+/// visible at a glance (vs. silently rendering black like the
+/// platform backends, where the surrounding CSS class still
+/// produces correct output).
 pub fn parse_color(c: &Color) -> [f32; 4] {
-    let s = c.0.trim();
-    if let Some(hex) = s.strip_prefix('#') {
-        return parse_hex(hex);
-    }
-    if let Some(inner) = s.strip_prefix("rgba(").and_then(|x| x.strip_suffix(')')) {
-        return parse_rgba_components(inner, true);
-    }
-    if let Some(inner) = s.strip_prefix("rgb(").and_then(|x| x.strip_suffix(')')) {
-        return parse_rgba_components(inner, false);
-    }
-    // Visible fallback so missing-color bugs are obvious.
-    [1.0, 0.0, 1.0, 1.0]
+    const MAGENTA: [f32; 4] = [1.0, 0.0, 1.0, 1.0];
+    framework_core::color::parse(&c.0)
+        .map(|c| c.to_srgb_f32())
+        .unwrap_or(MAGENTA)
 }
 
-fn parse_hex(hex: &str) -> [f32; 4] {
-    let bytes = hex.as_bytes();
-    let (r, g, b, a) = match bytes.len() {
-        3 => (
-            dup(bytes[0]),
-            dup(bytes[1]),
-            dup(bytes[2]),
-            0xff,
-        ),
-        4 => (
-            dup(bytes[0]),
-            dup(bytes[1]),
-            dup(bytes[2]),
-            dup(bytes[3]),
-        ),
-        6 => (
-            byte(&bytes[0..2]),
-            byte(&bytes[2..4]),
-            byte(&bytes[4..6]),
-            0xff,
-        ),
-        8 => (
-            byte(&bytes[0..2]),
-            byte(&bytes[2..4]),
-            byte(&bytes[4..6]),
-            byte(&bytes[6..8]),
-        ),
-        _ => return [1.0, 0.0, 1.0, 1.0],
-    };
-    [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, a as f32 / 255.0]
-}
-
-fn dup(c: u8) -> u8 {
-    let v = hex_digit(c);
-    v * 16 + v
-}
-
-fn byte(pair: &[u8]) -> u8 {
-    hex_digit(pair[0]) * 16 + hex_digit(pair[1])
-}
-
-fn hex_digit(c: u8) -> u8 {
-    match c {
-        b'0'..=b'9' => c - b'0',
-        b'a'..=b'f' => 10 + c - b'a',
-        b'A'..=b'F' => 10 + c - b'A',
-        _ => 0,
-    }
-}
-
-/// sRGB → linear conversion for a single 0..1 channel. The wgpu
-/// surface format we select is sRGB-encoded, so the hardware
-/// gamma-encodes whatever the fragment shader outputs. To get the
-/// CSS-style sRGB color the author wrote, we need to ship a linear
-/// value that the hardware will *then* re-encode back to sRGB on
-/// write. Alpha is not gamma-encoded — only RGB needs conversion.
-pub fn srgb_channel_to_linear(c: f32) -> f32 {
-    if c <= 0.04045 {
-        c / 12.92
-    } else {
-        ((c + 0.055) / 1.055).powf(2.4)
-    }
-}
-
-/// Apply [`srgb_channel_to_linear`] to RGB, leave alpha untouched.
-pub fn srgb_rgba_to_linear(c: [f32; 4]) -> [f32; 4] {
-    [
-        srgb_channel_to_linear(c[0]),
-        srgb_channel_to_linear(c[1]),
-        srgb_channel_to_linear(c[2]),
-        c[3],
-    ]
-}
-
-fn parse_rgba_components(inner: &str, has_alpha: bool) -> [f32; 4] {
-    let parts: Vec<&str> = inner.split(',').map(str::trim).collect();
-    let need = if has_alpha { 4 } else { 3 };
-    if parts.len() < need {
-        return [1.0, 0.0, 1.0, 1.0];
-    }
-    let r = parts[0].parse::<f32>().unwrap_or(0.0) / 255.0;
-    let g = parts[1].parse::<f32>().unwrap_or(0.0) / 255.0;
-    let b = parts[2].parse::<f32>().unwrap_or(0.0) / 255.0;
-    let a = if has_alpha { parts[3].parse::<f32>().unwrap_or(1.0) } else { 1.0 };
-    [r, g, b, a]
-}
+pub use framework_core::color::{srgb_channel_to_linear, srgb_rgba_to_linear};

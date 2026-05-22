@@ -14,6 +14,9 @@
 #[cfg(any(target_os = "ios", target_os = "tvos"))]
 pub mod style;
 
+#[cfg(any(target_os = "ios", target_os = "tvos"))]
+pub mod font;
+
 #[cfg(all(any(target_os = "ios", target_os = "tvos"), feature = "async-driver"))]
 pub mod render_loop;
 

@@ -31,6 +31,7 @@
 mod animation;
 mod backend_impl;
 mod device_frame_pipeline;
+mod handles;
 mod host;
 mod image_pipeline;
 pub mod keyboard;
@@ -68,7 +69,10 @@ pub use render_api::{
 };
 
 pub use animation::{AnimProperty, Animator, TweenKey, lerp_color};
-pub use backend_impl::{graphics_with_drawer, register_graphics_drawer, WgpuBackend};
+pub use backend_impl::{
+    graphics_with_drawer, install_global_self, register_graphics_drawer, set_animated_color,
+    set_animated_f32, WgpuBackend,
+};
 pub use dom_overlay::{DomOverlay, DomOverlayKey, DomVideoSpec};
 pub use host::Host;
 pub use nav_anim::{

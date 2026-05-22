@@ -2817,14 +2817,19 @@ mod tests {
     // FontFamily + typeface registration
     // -----------------------------------------------------------------
 
+    // `face!` embeds via `include_bytes!`, so its src paths must
+    // point at real files. We use sibling `framework-core` sources
+    // as test-only embed targets — the bytes are irrelevant; the
+    // tests only exercise `Typeface`/`FontFamily` identity + struct
+    // shape.
     fn sample_typeface() -> crate::assets::Typeface {
         crate::typeface! {
             name: "TestSans",
             faces: [
                 crate::face!(weight: FontWeight::Normal, style: FontStyle::Normal,
-                             src: "fonts/test-regular.ttf"),
+                             src: "assets.rs"),
                 crate::face!(weight: FontWeight::Bold, style: FontStyle::Normal,
-                             src: "fonts/test-bold.ttf"),
+                             src: "lib.rs"),
             ],
             fallback: crate::assets::SystemFallback::SansSerif,
         }
@@ -2835,7 +2840,7 @@ mod tests {
             name: "TestMono",
             faces: [
                 crate::face!(weight: FontWeight::Normal, style: FontStyle::Normal,
-                             src: "fonts/mono-regular.ttf"),
+                             src: "reactive.rs"),
             ],
             fallback: crate::assets::SystemFallback::Monospace,
         }

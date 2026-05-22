@@ -42,8 +42,7 @@ use callbacks::{
 };
 use navigator::NavigatorEntry;
 use backend_ios_core::style::{
-    animate, apply_style_to_view, apply_text_style, color_to_uicolor, font_weight_to_uikit,
-    length_to_px,
+    animate, apply_style_to_view, apply_text_style, color_to_uicolor,
 };
 use tab_drawer::TabDrawerEntry;
 
@@ -89,6 +88,12 @@ pub struct IosBackend {
     /// [`Backend::create_image`] when the `src` is the
     /// `asset://{id}` sentinel.
     pub(crate) image_cache: image::ImageCache,
+    /// Process-registered custom fonts + per-`Typeface` lookup table.
+    /// Filled by [`Backend::register_asset`] for `AssetTag::Font`
+    /// (CGFont → CTFontManager) and [`Backend::register_typeface`]
+    /// (records PostScript name per (weight, style) face). Read by
+    /// `apply_text_style` to build `UIFont(name:size:)`.
+    pub(crate) font_registry: backend_ios_core::font::FontRegistry,
     /// Active portals keyed by container view pointer. Holds both
     /// viewport-placed and anchor-positioned portals — `PortalEntry`
     /// discriminates via its `anchor: Option<...>` field, and the
@@ -286,6 +291,7 @@ impl IosBackend {
             scroll_views: std::collections::HashSet::new(),
             icon_image_cache: HashMap::new(),
             image_cache: HashMap::new(),
+            font_registry: backend_ios_core::font::FontRegistry::new(),
             portal_instances: HashMap::new(),
             layout: native_layout::LayoutTree::new(),
             view_to_layout: HashMap::new(),
@@ -1131,15 +1137,40 @@ impl Backend for IosBackend {
         kind: framework_core::AssetTag,
         source: &framework_core::AssetSource,
     ) {
-        image::register_asset(&mut self.image_cache, id, kind, source);
+        // Font branch routes into the CoreText-backed registry first;
+        // when the asset isn't a font, the call falls through to the
+        // image cache. `register_asset` returns `true` once it has
+        // handled the font tag so the image branch can be skipped.
+        let handled = self.font_registry.register_asset(id, kind, source);
+        if !handled {
+            image::register_asset(&mut self.image_cache, id, kind, source);
+        }
     }
 
     fn unregister_asset(
         &mut self,
         id: framework_core::AssetId,
-        _kind: framework_core::AssetTag,
+        kind: framework_core::AssetTag,
     ) {
-        self.image_cache.remove(&id);
+        self.font_registry.unregister_asset(id, kind);
+        if kind == framework_core::AssetTag::Image {
+            self.image_cache.remove(&id);
+        }
+    }
+
+    fn register_typeface(
+        &mut self,
+        id: framework_core::assets::TypefaceId,
+        family_name: &str,
+        faces: &[framework_core::assets::TypefaceFace],
+        fallback: framework_core::assets::SystemFallback,
+    ) {
+        self.font_registry
+            .register_typeface(id, family_name, faces, fallback);
+    }
+
+    fn unregister_typeface(&mut self, id: framework_core::assets::TypefaceId) {
+        self.font_registry.unregister_typeface(id);
     }
 
     fn create_image(&mut self, src: &str, alt: Option<&str>) -> Self::Node {
@@ -1528,7 +1559,7 @@ impl Backend for IosBackend {
         self.layout.set_style(layout_node, style);
 
         match node {
-            IosNode::Label(_) => apply_text_style(view, style, true),
+            IosNode::Label(_) => apply_text_style(view, style, true, &self.font_registry),
             IosNode::Button(button) => {
                 if let Some(color) = &style.color {
                     let color_val = color.resolve();
@@ -1543,28 +1574,23 @@ impl Backend for IosBackend {
                         let _: () = unsafe { msg_send![button, setTitleColor: &*c, forState: 0u64] };
                     }
                 }
-                if let Some(fs) = &style.font_size {
-                    let fs_val = fs.resolve();
-                    let size = length_to_px(&fs_val);
-                    if size > 0.0 {
-                        let weight = style.font_weight.as_ref().copied().unwrap_or(framework_core::FontWeight::Normal);
-                        let ui_weight = font_weight_to_uikit(weight);
-                        let font: Retained<NSObject> = unsafe {
-                            msg_send_id![
-                                objc2::class!(UIFont),
-                                systemFontOfSize: size,
-                                weight: ui_weight
-                            ]
-                        };
-                        let title_label: Option<Retained<UILabel>> = unsafe { msg_send_id![button, titleLabel] };
-                        if let Some(tl) = title_label {
-                            let _: () = unsafe { msg_send![&tl, setFont: &*font] };
-                        }
+                // Buttons mirror Label typography: route through the
+                // font registry so a custom typeface on a button-style
+                // rule actually changes the title font.
+                let has_typography = style.font_family.is_some()
+                    || style.font_size.is_some()
+                    || style.font_weight.is_some()
+                    || style.font_style.is_some();
+                if has_typography {
+                    let title_label: Option<Retained<UILabel>> =
+                        unsafe { msg_send_id![button, titleLabel] };
+                    if let Some(tl) = title_label {
+                        apply_text_style(&tl, style, true, &self.font_registry);
                     }
                 }
             }
             IosNode::TextField(field) => {
-                apply_text_style(view, style, false);
+                apply_text_style(view, style, false, &self.font_registry);
                 // Caret color → UIKit `tintColor`. On a UITextField the
                 // caret + selection handles both follow tintColor, so a
                 // single setter covers them. Mirrors the web `caret-color`
@@ -1588,7 +1614,7 @@ impl Backend for IosBackend {
                 // styling path applies (font, color, font-size); we
                 // pass `is_label = false` because UITextView is an
                 // editable widget, not a label.
-                apply_text_style(view, style, false);
+                apply_text_style(view, style, false, &self.font_registry);
                 if let Some(caret) = &style.caret_color {
                     let c = color_to_uicolor(&caret.resolve());
                     if let Some(trans) = &style.caret_color_transition {

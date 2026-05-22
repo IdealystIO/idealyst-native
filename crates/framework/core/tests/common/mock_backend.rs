@@ -122,7 +122,18 @@ pub enum Event {
     ReleaseExternal { node: NodeId },
 
     // --- Assets / typefaces ---
-    RegisterAsset { id: AssetId, kind: AssetTag },
+    /// `register_asset(id, kind, source)`. `source_bytes_len` is
+    /// `Some(n)` when the source is `Embedded` (the only branch
+    /// `face!` produces today, after the macro switched to
+    /// `include_bytes!`) and `None` for `Bundled` / `Remote`. The
+    /// extension comes from the same source variant. Tests use these
+    /// to assert real font bytes flowed through to the backend.
+    RegisterAsset {
+        id: AssetId,
+        kind: AssetTag,
+        source_bytes_len: Option<usize>,
+        source_extension: Option<String>,
+    },
     UnregisterAsset { id: AssetId, kind: AssetTag },
     RegisterTypeface { id: TypefaceId, face_count: usize },
     UnregisterTypeface { id: TypefaceId },
@@ -729,8 +740,19 @@ impl Backend for MockBackend {
         self.core.record(Event::UnregisterStylesheet { rules: rules.len() });
     }
 
-    fn register_asset(&mut self, id: AssetId, kind: AssetTag, _source: &AssetSource) {
-        self.core.record(Event::RegisterAsset { id, kind });
+    fn register_asset(&mut self, id: AssetId, kind: AssetTag, source: &AssetSource) {
+        let (source_bytes_len, source_extension) = match source {
+            AssetSource::Embedded { bytes, extension } => {
+                (Some(bytes.len()), Some((*extension).to_string()))
+            }
+            AssetSource::Bundled { .. } | AssetSource::Remote { .. } => (None, None),
+        };
+        self.core.record(Event::RegisterAsset {
+            id,
+            kind,
+            source_bytes_len,
+            source_extension,
+        });
     }
 
     fn unregister_asset(&mut self, id: AssetId, kind: AssetTag) {

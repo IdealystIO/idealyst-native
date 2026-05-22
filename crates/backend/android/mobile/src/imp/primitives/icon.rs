@@ -321,24 +321,11 @@ fn get_density(env: &mut jni::JNIEnv, context: &GlobalRef) -> f32 {
         .unwrap_or(2.0)
 }
 
-/// Parse a CSS color string to ARGB int.
+/// Parse a CSS color string to Android's `0xAARRGGBB` packed int.
+/// Routes through the canonical parser; falls back to opaque black
+/// on unknown input. Previously this had a divergent 8-digit hex
+/// interpretation (read `#rrggbbaa` as `#aarrggbb`) that produced
+/// the wrong color for any icon styled with CSS-spec 8-digit hex.
 fn parse_color_to_argb(color: &str) -> i32 {
-    let s = color.trim();
-    if s.starts_with('#') {
-        let hex = &s[1..];
-        let val = u32::from_str_radix(hex, 16).unwrap_or(0);
-        match hex.len() {
-            6 => (0xFF000000 | val) as i32,
-            8 => val as i32,
-            3 => {
-                let r = (val >> 8) & 0xF;
-                let g = (val >> 4) & 0xF;
-                let b = val & 0xF;
-                (0xFF000000 | (r * 0x11) << 16 | (g * 0x11) << 8 | (b * 0x11)) as i32
-            }
-            _ => 0xFF000000u32 as i32,
-        }
-    } else {
-        0xFF000000u32 as i32 // Fallback to black.
-    }
+    framework_core::color::parse_or(color, framework_core::color::Rgba::BLACK).to_argb_u32() as i32
 }

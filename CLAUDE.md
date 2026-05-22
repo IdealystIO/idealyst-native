@@ -2,6 +2,12 @@
 
 These rules apply to all work in this repo. Follow them unless the user explicitly overrides one in the current conversation.
 
+## 0. Never `git stash`
+
+Do not run `git stash`, `git stash push`, `git stash pop`, or any variant — not for "saving work", not for "checking if a failure is pre-existing", not ever. Multiple agents may share this repo and a stash silently buries someone else's in-progress work. To check whether a failure is pre-existing, inspect the diff of the relevant files or read git history; don't stash to bisect.
+
+If you genuinely think stashing is the only option, stop and ask the user first.
+
 ## 1. Test changes — especially in framework core
 
 Run the test suite when you make changes. Architectural changes to framework core (anything in `crates/framework/core/`, the Backend trait, reactive system, wire protocol, scene model) MUST be accompanied by tests that cover the new behavior. Framework stability is non-negotiable — a change without test coverage is incomplete.
