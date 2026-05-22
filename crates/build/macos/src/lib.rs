@@ -165,15 +165,15 @@ fn main() {{
 
     // Register the project's identity for the Robot bridge's mDNS
     // advertisement. Tells the MCP server's browser which project
-    // this app belongs to without env-var plumbing. No-op when the
-    // `dev` feature is off (bridge not built).
+    // this app belongs to. No-op when the `dev` feature is off
+    // (bridge not built).
     #[cfg(feature = "dev")]
     {{
         ::framework_core::robot::bridge::set_app_identity(
             ::framework_core::robot::bridge::AppIdentity {{
                 name: "{app_name}".to_string(),
                 bundle_id: Some("{bundle_id}".to_string()),
-                project_root: std::env::var("IDEALYST_PROJECT_ROOT").ok(),
+                project_root: ::std::option::Option::None,
             }},
         );
     }}

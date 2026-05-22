@@ -49,56 +49,21 @@ fn dev_user_features_other() -> Vec<String> {
 }
 
 /// Compute the env vars the dev launcher sets on the spawned app.
-/// These flow through `Command::env` and become available to the
-/// running app's `framework_core::robot::bridge::start_auto_polling`,
-/// which uses them to (a) bind the right port, (b) write the legacy
-/// per-project port file, and (c) register an `AppEntry` in the
-/// user-level registry so `idealyst mcp` can route to this app.
-///
-/// `catalog_bin` is optional — passed as `Some(path)` after a
-/// successful native build so the registry entry points at the
-/// catalog extractor. Web / iOS / Android currently pass `None`.
+/// mDNS discovery handles app→server routing now, so the only thing
+/// we still pass is the optional pinned bridge port (rare — most
+/// users let the bridge pick ephemeral).
 fn dev_env_vars(
     project_dir: &Path,
     args: &Args,
-    app_name: &str,
-    catalog_bin: Option<&Path>,
+    _app_name: &str,
+    _catalog_bin: Option<&Path>,
 ) -> Vec<(String, String)> {
     let mut out = Vec::new();
-
-    let port_file = project_dir.join(".idealyst").join("bridge.port");
-    if let Some(parent) = port_file.parent() {
-        // Best-effort — bridge code also creates the dir.
-        let _ = std::fs::create_dir_all(parent);
-    }
-    out.push((
-        "IDEALYST_BRIDGE_PORT_FILE".to_string(),
-        port_file.to_string_lossy().into_owned(),
-    ));
-
-    let canon_root = std::fs::canonicalize(project_dir)
-        .unwrap_or_else(|_| project_dir.to_path_buf());
-    out.push((
-        "IDEALYST_PROJECT_ROOT".to_string(),
-        canon_root.to_string_lossy().into_owned(),
-    ));
-
-    out.push(("IDEALYST_APP_NAME".to_string(), app_name.to_string()));
-
-    if let Some(bin) = catalog_bin {
-        let canon = std::fs::canonicalize(bin).unwrap_or_else(|_| bin.to_path_buf());
-        out.push((
-            "IDEALYST_CATALOG_BIN".to_string(),
-            canon.to_string_lossy().into_owned(),
-        ));
-    }
-
     let dev_cfg = crate::dev_config::DevConfig::load(project_dir).unwrap_or_default();
     let pinned = args.bridge_port.or(dev_cfg.bridge_port);
     if let Some(p) = pinned {
         out.push(("IDEALYST_BRIDGE_PORT".to_string(), p.to_string()));
     }
-
     out
 }
 
@@ -124,18 +89,11 @@ fn project_app_name(project_dir: &Path) -> String {
         .unwrap_or_else(|| "app".to_string())
 }
 
-/// Best-effort cleanup of any stale registry entry for this
-/// project_root before launching. Catches "previous `idealyst dev`
-/// crashed mid-session" — the bridge would have registered, but its
-/// deregister path didn't run, so the entry's `bridge_addr` points
-/// at a defunct port.
-fn pre_launch_clear_registry(project_dir: &Path) {
-    let canon = std::fs::canonicalize(project_dir)
-        .unwrap_or_else(|_| project_dir.to_path_buf());
-    let _ = framework_mcp::registry::update_with(|reg| {
-        reg.deregister_project(&canon);
-    });
-}
+/// Registry-cleanup hook from the pre-mDNS era — no-op now that
+/// discovery runs through Bonjour. Kept as a function (rather than
+/// deleting at all call sites) so the diff stays focused; can be
+/// inlined / removed in a follow-up.
+fn pre_launch_clear_registry(_project_dir: &Path) {}
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
@@ -819,17 +777,8 @@ fn spawn_aas_browser(app_id: String, out: Arc<Mutex<Option<String>>>) {
 fn install_ctrlc_handler(children: Arc<Mutex<Vec<Child>>>) -> Result<()> {
     ctrlc::set_handler(move || {
         eprintln!("\n[dev] received Ctrl-C — stopping…");
-        // Drop registry entries for the dirs the dev launcher
-        // recorded. Best-effort — failures are silent.
-        let mut tracked = TRACKED_PROJECT_ROOTS.lock().unwrap_or_else(|e| e.into_inner());
-        if !tracked.is_empty() {
-            let _ = framework_mcp::registry::update_with(|reg| {
-                for root in tracked.iter() {
-                    reg.deregister_project(root);
-                }
-            });
-            tracked.clear();
-        }
+        // mDNS service-removed events fire when each child exits;
+        // no registry-cleanup pass needed.
         if let Ok(mut guard) = children.lock() {
             for mut child in guard.drain(..) {
                 let _ = child.kill();
@@ -842,20 +791,10 @@ fn install_ctrlc_handler(children: Arc<Mutex<Vec<Child>>>) -> Result<()> {
     Ok(())
 }
 
-/// Project roots the dev launcher has registered into
-/// `~/.idealyst/registry.json`. The Ctrl-C handler drains this list
-/// to deregister on graceful exit. Each `launch_*` call appends
-/// after a successful build+launch.
-static TRACKED_PROJECT_ROOTS: std::sync::Mutex<Vec<std::path::PathBuf>> =
-    std::sync::Mutex::new(Vec::new());
-
-fn track_project_root(dir: &Path) {
-    let canon = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
-    if let Ok(mut tracked) = TRACKED_PROJECT_ROOTS.lock() {
-        if !tracked.iter().any(|p| p == &canon) {
-            tracked.push(canon);
-        }
-    }
+fn track_project_root(_dir: &Path) {
+    // No-op now that mDNS replaces the registry — there's nothing
+    // to clean up on Ctrl-C. Kept as a function so the call sites
+    // don't all need to disappear in this diff.
 }
 
 impl Args {

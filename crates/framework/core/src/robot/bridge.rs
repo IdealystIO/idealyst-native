@@ -134,16 +134,11 @@ pub fn set_app_identity(identity: AppIdentity) {
 /// itself.
 fn current_identity() -> AppIdentity {
     APP_IDENTITY.with(|slot| {
-        slot.borrow()
-            .clone()
-            .unwrap_or_else(|| AppIdentity {
-                name: std::env::var("IDEALYST_APP_NAME")
-                    .ok()
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or_else(|| "app".to_string()),
-                bundle_id: std::env::var("IDEALYST_BUNDLE_ID").ok().filter(|s| !s.is_empty()),
-                project_root: std::env::var("IDEALYST_PROJECT_ROOT").ok().filter(|s| !s.is_empty()),
-            })
+        slot.borrow().clone().unwrap_or_else(|| AppIdentity {
+            name: "app".to_string(),
+            bundle_id: None,
+            project_root: None,
+        })
     })
 }
 
@@ -178,17 +173,14 @@ fn advertise_mdns(port: u16, identity: &AppIdentity) {
     let hostname = format!("idealyst-{}-{}.local.", name_label, pid);
 
     let pid_s = pid.to_string();
-    let port_s = port.to_string();
     let proto = "1".to_string();
     let bundle_id_s = identity.bundle_id.clone().unwrap_or_default();
     let project_root_s = identity.project_root.clone().unwrap_or_default();
-    let catalog_bin_s = std::env::var("IDEALYST_CATALOG_BIN").unwrap_or_default();
 
-    let txt: [(&str, &str); 6] = [
+    let txt: [(&str, &str); 5] = [
         ("app", identity.name.as_str()),
         ("bundle_id", bundle_id_s.as_str()),
         ("project_root", project_root_s.as_str()),
-        ("catalog_bin", catalog_bin_s.as_str()),
         ("pid", pid_s.as_str()),
         ("proto", proto.as_str()),
     ];
@@ -201,7 +193,12 @@ fn advertise_mdns(port: u16, identity: &AppIdentity) {
     let daemon = match mdns_sd::ServiceDaemon::new() {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("[robot-bridge] mDNS daemon init failed: {} — discovery limited to registry fallback", e);
+            eprintln!(
+                "[robot-bridge] mDNS daemon init failed: {} — \
+                 discovery unavailable; direct TCP still works \
+                 if the caller knows the port",
+                e
+            );
             return;
         }
     };
@@ -225,8 +222,8 @@ fn advertise_mdns(port: u16, identity: &AppIdentity) {
         return;
     }
     eprintln!(
-        "[robot-bridge] advertised via mDNS as {} (port {}, app={}, port_s={})",
-        fullname, port, identity.name, port_s
+        "[robot-bridge] advertised via mDNS as {} (port {}, app={})",
+        fullname, port, identity.name,
     );
     MDNS_ADVERTISER.with(|slot| {
         *slot.borrow_mut() = Some(MdnsAdvertiser { daemon, fullname });
@@ -290,10 +287,10 @@ pub fn start_auto_polling(default_port: u16) {
                 return;
             }
         };
-        write_port_file(bound_port);
         // mDNS advertisement — non-wasm only. Failure here is
-        // non-fatal (logged inside `advertise_mdns`); the registry
-        // file fallback still wires up discovery for the MCP server.
+        // non-fatal (logged inside `advertise_mdns`); the bridge
+        // still serves direct TCP requests if the caller already
+        // knows the port.
         #[cfg(not(target_arch = "wasm32"))]
         {
             let identity = current_identity();
@@ -310,123 +307,6 @@ fn resolve_requested_port(default_port: u16) -> u16 {
         .and_then(|s| s.parse::<u16>().ok())
         .filter(|p| *p != 0)
         .unwrap_or(default_port)
-}
-
-/// Publish the bound port. Two channels, used in different ways:
-///
-/// 1. **`IDEALYST_BRIDGE_PORT_FILE`** (legacy / debug): writes
-///    `{port, project_root, pid}` to that path. Per-project. Useful
-///    when poking the bridge directly from a shell without going
-///    through the MCP server.
-/// 2. **User-level registry** (`~/.idealyst/registry.json`): adds a
-///    full `AppEntry` so `idealyst mcp` (a single instance per
-///    Claude Code session) can route Robot calls across multiple
-///    simultaneously-running apps.
-///
-/// Both happen on every bind. Both are best-effort — write failures
-/// are logged but never panic, since the running app is the source
-/// of truth for the bridge regardless.
-fn write_port_file(port: u16) {
-    write_legacy_per_project_file(port);
-    write_registry_entry(port);
-}
-
-fn write_legacy_per_project_file(port: u16) {
-    let Ok(path_str) = std::env::var("IDEALYST_BRIDGE_PORT_FILE") else {
-        return;
-    };
-    let path = std::path::PathBuf::from(&path_str);
-    let project_root = path
-        .parent()
-        .and_then(|p| p.parent())
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let pid = std::process::id();
-    let body = format!(
-        "{{\n  \"port\": {},\n  \"project_root\": {},\n  \"pid\": {}\n}}\n",
-        port,
-        serde_json::to_string(&project_root).unwrap_or_else(|_| "\"\"".into()),
-        pid,
-    );
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Err(e) = std::fs::write(&path, body) {
-        eprintln!(
-            "[robot-bridge] could not write port file {}: {}",
-            path.display(),
-            e
-        );
-    }
-}
-
-/// Register this app in the user-level `~/.idealyst/registry.json`
-/// so the MCP server can find it. Requires the `mcp` feature
-/// (already on when `dev` is — `dev = ["robot", "mcp"]`).
-#[cfg(feature = "mcp")]
-fn write_registry_entry(port: u16) {
-    use crate::__mcp::registry::{now_secs, update_with, AppEntry};
-
-    let identity = current_identity();
-    let project_root = identity
-        .project_root
-        .clone()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(resolve_project_root);
-    let name = if !identity.name.is_empty() {
-        identity.name.clone()
-    } else {
-        std::path::PathBuf::from(&project_root)
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "app".to_string())
-    };
-    let catalog_bin = std::env::var("IDEALYST_CATALOG_BIN")
-        .ok()
-        .filter(|s| !s.is_empty());
-
-    let entry = AppEntry {
-        name,
-        project_root: project_root.clone(),
-        bridge_addr: format!("127.0.0.1:{}", port),
-        catalog_bin,
-        pid: std::process::id(),
-        registered_at: now_secs(),
-    };
-    if let Err(e) = update_with(|reg| reg.register(entry)) {
-        eprintln!(
-            "[robot-bridge] could not write registry: {}",
-            e
-        );
-    }
-}
-
-#[cfg(not(feature = "mcp"))]
-fn write_registry_entry(_port: u16) {
-    // No MCP — single-app mode. Per-project port file
-    // (`write_legacy_per_project_file`) is the only discovery path.
-}
-
-/// Best-effort recovery of the project root. Prefer the explicit
-/// `IDEALYST_PROJECT_ROOT` env var the dev launcher sets; fall back
-/// to the legacy port-file location (its grandparent is the project
-/// root); finally cwd as last resort.
-#[cfg(feature = "mcp")]
-fn resolve_project_root() -> String {
-    if let Ok(r) = std::env::var("IDEALYST_PROJECT_ROOT") {
-        if !r.is_empty() {
-            return r;
-        }
-    }
-    if let Ok(p) = std::env::var("IDEALYST_BRIDGE_PORT_FILE") {
-        let path = std::path::PathBuf::from(&p);
-        if let Some(root) = path.parent().and_then(|p| p.parent()) {
-            return root.to_string_lossy().into_owned();
-        }
-    }
-    std::env::current_dir()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_default()
 }
 
 /// 16ms ≈ 60Hz — fast enough that interactive MCP calls feel

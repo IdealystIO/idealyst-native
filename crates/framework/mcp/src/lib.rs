@@ -15,7 +15,6 @@
 
 pub use inventory;
 
-pub mod registry;
 pub mod resolve;
 pub use resolve::{BuildFromJsonError, EdgeStatus, EntryRef, ResolvedCatalog, ResolvedEdge};
 

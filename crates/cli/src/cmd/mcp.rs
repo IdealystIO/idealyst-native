@@ -5,21 +5,23 @@
 //! exposes:
 //!
 //! - The **static catalog** of `#[component]` / `#[idealyst_tool]`
-//!   functions discovered via `inventory::submit!` in this binary's
-//!   link image. The component graph (composes / uses), per-prop
-//!   schema fields, etc.
-//! - The **Robot tools** when `--robot` is on: `find_element`,
-//!   `click`, `type_text`, `get_snapshot`, and so on. These proxy
-//!   to the running app's Robot bridge over TCP.
+//!   functions, plus framework primitives / utilities / guides.
+//!   Sourced live from running apps over their Robot bridge's
+//!   `get_catalog` command (discovered via mDNS), or from a project's
+//!   catalog binary at startup when no app is running.
+//! - The **Robot tools**: `find_element`, `click`, `type_text`,
+//!   `get_snapshot`, and so on. These proxy to the running app's
+//!   Robot bridge over TCP, discovered via mDNS
+//!   (`_idealyst-robot._tcp.local.`).
 //!
-//! Either side degrades gracefully — the catalog is always served;
-//! Robot tools return "is the app running?" when the bridge is
-//! unreachable.
+//! Either side degrades gracefully — when no app is running the
+//! catalog falls back to the in-process catalog (or `--project-root`
+//! extracted catalog), and Robot tools return "no app running."
 //!
 //! ```text
-//! idealyst mcp                      # catalog + Robot (Robot on by default)
-//! idealyst mcp --no-robot           # catalog-only (e.g. for CI doc-gen)
-//! idealyst mcp --bridge HOST:PORT   # custom bridge address
+//! idealyst mcp                      # catalog + Robot
+//! idealyst mcp --no-robot           # catalog-only (e.g. CI doc-gen)
+//! idealyst mcp --project-root DIR   # extract catalog from DIR's catalog binary at startup
 //! idealyst mcp --check              # lint pass, exit non-zero on findings
 //! ```
 
@@ -31,42 +33,37 @@ pub struct Args {
     #[command(subcommand)]
     pub command: Option<Command>,
 
-    /// Skip the Robot tools, leaving only the static catalog. Robot
-    /// is on by default — it's part of the dev configuration, not
-    /// an opt-in. Pass this when you specifically want a
-    /// catalog-only server (CI doc-gen, etc.).
+    /// Skip the Robot tools, leaving only the catalog. Pass this when
+    /// you specifically want a catalog-only server (CI doc-gen, etc.).
     #[arg(long)]
     pub no_robot: bool,
-
-    /// Robot bridge address (host:port). Default 127.0.0.1:9718,
-    /// matching `framework_core::robot::bridge::DEFAULT_PORT`.
-    #[arg(long, default_value = mcp_server::DEFAULT_BRIDGE)]
-    pub bridge: String,
 
     /// Lint the catalog and exit non-zero on findings instead of
     /// starting the server. Useful as a CI gate.
     #[arg(long)]
     pub check: bool,
 
-    /// Path to a binary that, when invoked with `--emit-catalog`,
-    /// prints the project's catalog JSON to stdout. The CLI's own
-    /// inventory is empty (no `#[component]`s are defined here), so
-    /// without this flag the catalog tools return no results.
-    /// Typical usage:
-    ///
-    ///   idealyst mcp --from-bin target/debug/my-app
-    ///
-    /// The CLI spawns this binary at startup (and again on file
-    /// change if `--watch` is set) and pipes the JSON back into the
-    /// live catalog. The user's binary needs to support
-    /// `--emit-catalog` mode (one line: print
-    /// `framework_mcp::catalog_json()` and exit).
+    /// Path to a project directory whose catalog binary should populate
+    /// the server's catalog at startup. The CLI looks for
+    /// `<dir>/target/debug/catalog` (then `target/release/catalog`),
+    /// invokes it with `--emit-catalog`, and pipes the JSON into the
+    /// live catalog. Use this when running the MCP server against a
+    /// project that isn't currently running — when an app IS running,
+    /// the catalog flows automatically over its Robot bridge.
+    /// Defaults to cwd when no apps are live and no explicit value
+    /// is given.
+    #[arg(long, value_name = "DIR")]
+    pub project_root: Option<std::path::PathBuf>,
+
+    /// Path to an explicit catalog binary. Bypasses the
+    /// `--project-root` lookup. Same emit contract: invoked with
+    /// `--emit-catalog`, stdout parsed as the catalog JSON.
     #[arg(long)]
     pub from_bin: Option<std::path::PathBuf>,
 
     /// Watch source directories and refresh the catalog on change.
-    /// Requires `--from-bin` to do anything useful — the watcher
-    /// re-runs the extractor on every save. Pass once per dir.
+    /// Requires `--from-bin` or `--project-root` to be useful — the
+    /// watcher re-runs the extractor on every save. Pass once per dir.
     #[arg(long = "watch", value_name = "DIR")]
     pub watch_dirs: Vec<std::path::PathBuf>,
 }
@@ -117,30 +114,24 @@ pub fn run(args: Args) -> Result<()> {
     }
 
     let mut opts = mcp_server::ServerOptions::new();
+    // Robot routing is mDNS-only now — no explicit `--bridge` flag.
+    // The CatalogService's discovery thread maintains a live table
+    // of `_idealyst-robot._tcp` advertisements; the resolver picks
+    // the unique live app, or by `app` arg when multiple are
+    // running. Off when `--no-robot` is set.
     if !args.no_robot {
-        // Auto-discover the bridge from `.idealyst/bridge.port` in
-        // cwd (or any ancestor). When no port file is found we fall
-        // back to the user-supplied (or default) `--bridge` value;
-        // when the file's project_root doesn't match cwd we get
-        // `None` back and the Robot tools stay disabled — a
-        // safeguard so an MCP session in project A can't drive
-        // project B's app.
-        if let Some(addr) = mcp_server::resolve_bridge_addr(&args.bridge) {
-            opts = opts.with_robot(addr);
-        } else {
-            eprintln!(
-                "[idealyst mcp] Robot tools disabled — bridge port file points at a different project. \
-                 Check `.idealyst/bridge.port` in your project root; it should reference {:?}.",
-                std::env::current_dir().ok().map(|p| p.display().to_string()).unwrap_or_default(),
-            );
-        }
+        opts = opts.with_robot_mdns();
     }
-    // Catalog binary: explicit `--from-bin` wins; otherwise
-    // auto-discover via `.idealyst/catalog.path` (written by
-    // `idealyst dev` after a successful build). The extractor is
-    // invoked with `--emit-catalog` and its stdout parsed as the
-    // catalog JSON.
-    let catalog_bin = args.from_bin.or_else(mcp_server::resolve_catalog_bin);
+
+    // Catalog binary resolution:
+    // 1. Explicit `--from-bin` wins.
+    // 2. `--project-root <dir>` looks for `<dir>/target/{debug,release}/catalog`.
+    // 3. Neither flag: skip — the catalog is whatever the mDNS-discovered
+    //    apps surface live, falling back to the in-process catalog.
+    let catalog_bin = args.from_bin.or_else(|| {
+        let root = args.project_root.as_ref()?;
+        find_catalog_binary(root)
+    });
     if let Some(bin) = catalog_bin {
         let bin = std::sync::Arc::new(bin);
         opts = opts.with_subprocess_catalog(move || {
@@ -162,6 +153,20 @@ pub fn run(args: Args) -> Result<()> {
         mcp_server::run_stdio_with_full_options(opts).await
     })
     .map_err(|e| anyhow::anyhow!("mcp server exited: {:?}", e))
+}
+
+/// Resolve a project's catalog binary by looking at the scaffolded
+/// `[[bin]] name = "catalog"` output path. Prefers `target/debug` over
+/// `target/release` since dev is the typical flow; release is checked
+/// as a fallback in case the user pre-built for production.
+fn find_catalog_binary(project_root: &std::path::Path) -> Option<std::path::PathBuf> {
+    for profile in ["debug", "release"] {
+        let candidate = project_root.join("target").join(profile).join("catalog");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 fn run_install(args: InstallArgs) -> Result<()> {

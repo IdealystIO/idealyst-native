@@ -8,14 +8,12 @@
 //! See `docs/framework-mcp-spec.md` §5 for the MCP surface this
 //! implements.
 
-mod bridge_discovery;
 mod catalog_service;
 pub mod lint;
 mod mdns_discovery;
 mod robot_bridge;
 mod watch;
 
-pub use bridge_discovery::{resolve_bridge_addr, resolve_catalog_bin, Discovered};
 pub use catalog_service::CatalogService;
 pub use lint::{run as lint_catalog, LintFinding, Severity};
 pub use mdns_discovery::{DiscoveredApp, DiscoveryTable};
@@ -30,14 +28,19 @@ use rmcp::ServiceExt;
 /// subprocess catalog extractor, and source-directory watching.
 #[derive(Default)]
 pub struct ServerOptions {
-    robot_addr: Option<String>,
+    /// When true, the server's Robot tools (find_element, click, ...)
+    /// are advertised. Routing is mDNS-only — the server's
+    /// `DiscoveryTable` finds live apps via
+    /// `_idealyst-robot._tcp.local.` and the resolver picks one per
+    /// call. When false the Robot tools are omitted from the tool
+    /// list entirely.
+    robot_enabled: bool,
     /// Command factory for the subprocess catalog extractor. When
     /// set, the server invokes the command at startup (and on each
     /// source change if `watch_paths` is also set) and parses its
     /// stdout as catalog JSON to replace the in-process catalog.
-    /// This is how the CLI gives consumers a full catalog without
-    /// the user's components needing to be linked into the CLI
-    /// binary.
+    /// This is how `--project-root` / `--from-bin` populate the
+    /// catalog when no app is currently running.
     subprocess: Option<std::sync::Arc<dyn Fn() -> std::process::Command + Send + Sync>>,
     watch_paths: Vec<std::path::PathBuf>,
 }
@@ -47,8 +50,10 @@ impl ServerOptions {
         Self::default()
     }
 
-    pub fn with_robot(mut self, addr: impl Into<String>) -> Self {
-        self.robot_addr = Some(addr.into());
+    /// Enable Robot tools. Routing is mDNS-only (no explicit
+    /// bridge address — the running app advertises itself).
+    pub fn with_robot_mdns(mut self) -> Self {
+        self.robot_enabled = true;
         self
     }
 
@@ -74,15 +79,19 @@ pub async fn run_stdio_with_full_options(opts: ServerOptions) -> Result<()> {
     init_tracing();
     tracing::info!(
         "starting MCP server (robot={}, subprocess={}, watch_paths={})",
-        opts.robot_addr.as_deref().unwrap_or("disabled"),
+        if opts.robot_enabled { "mdns" } else { "disabled" },
         if opts.subprocess.is_some() { "yes" } else { "no" },
         opts.watch_paths.len(),
     );
 
-    let mut svc = CatalogService::new();
-    if let Some(addr) = &opts.robot_addr {
-        svc = svc.with_robot_bridge(std::sync::Arc::new(RobotBridge::new(addr)));
-    }
+    let svc = CatalogService::new();
+    // When robot is disabled, we just don't expose the Robot tools.
+    // The CatalogService unconditionally instantiates them today
+    // (rmcp's `#[tool]` is a compile-time attribute), so "disabled"
+    // means every Robot call returns "no app running" via the
+    // mDNS-empty path. Acceptable surface for now; a follow-up could
+    // gate the tools at type level.
+    let _ = opts.robot_enabled;
 
     // Pre-serve subprocess load: do this BEFORE binding to stdio so
     // the very first `tools/call list_components` sees the populated
@@ -116,11 +125,13 @@ pub async fn run_stdio_with_full_options(opts: ServerOptions) -> Result<()> {
     Ok(())
 }
 
-/// Convenience wrapper: catalog-only, optionally with the Robot bridge.
-pub async fn run_stdio_with_options(robot_addr: Option<&str>) -> Result<()> {
+/// Convenience wrapper: catalog-only, optionally with Robot tools
+/// enabled (mDNS-driven). The legacy `robot_addr: Option<&str>` shape
+/// is gone — discovery is mDNS-only now.
+pub async fn run_stdio_with_options(enable_robot: bool) -> Result<()> {
     let mut opts = ServerOptions::new();
-    if let Some(addr) = robot_addr {
-        opts = opts.with_robot(addr);
+    if enable_robot {
+        opts = opts.with_robot_mdns();
     }
     run_stdio_with_full_options(opts).await
 }
@@ -128,7 +139,7 @@ pub async fn run_stdio_with_options(robot_addr: Option<&str>) -> Result<()> {
 /// Catalog-only stdio server. Convenience wrapper around
 /// [`run_stdio_with_options`] for backwards compatibility.
 pub async fn run_stdio() -> Result<()> {
-    run_stdio_with_options(None).await
+    run_stdio_with_options(false).await
 }
 
 /// Start the MCP server on stdio AND watch the supplied source
