@@ -18,16 +18,116 @@
 
 use std::collections::HashMap;
 
+use framework_core::{FontStyle, FontWeight, TextAlign};
 use glyphon::{
-    Attrs, Buffer, Cache, Color as GColor, Family, FontSystem, Metrics, Resolution, Shaping,
-    SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer as GRenderer, Viewport,
+    cosmic_text::Align as GAlign, Attrs, Buffer, Cache, Color as GColor, Family, FontSystem,
+    Metrics, Resolution, Shaping, Stretch as GStretch, Style as GStyle, SwashCache, TextArea,
+    TextAtlas, TextBounds, TextRenderer as GRenderer, Viewport, Weight as GWeight,
 };
 use native_layout::LayoutNode;
 
 /// Per-text-node state held in [`TextStore`].
+///
+/// `content` + `attrs` are duplicated alongside the shaped `buffer`
+/// so style updates (font_size, font_family, font_weight,
+/// font_style) can re-shape against the most recent text without
+/// the backend having to hand us the content + attrs every time —
+/// `apply_style` doesn't otherwise need the text content, and
+/// stylesheets-only changes (theme swap, animated state overlay)
+/// would have to re-route the buffer's text through the API
+/// otherwise.
 pub struct BufferEntry {
     pub buffer: Buffer,
     pub font_size: f32,
+    pub content: String,
+    pub attrs: TextAttrs,
+}
+
+/// Render-side projection of font attributes derived from the
+/// stylesheet's `font_family` / `font_weight` / `font_style`. Cached
+/// per-node so we can re-shape the buffer when font_size changes
+/// without losing the family/weight/style picked at the previous
+/// `apply_style`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TextAttrs {
+    /// Family name. `None` falls back to cosmic-text's
+    /// `Family::SansSerif` — used when the author hasn't set
+    /// `font_family` on the stylesheet. `Some(name)` matches by
+    /// the family baked into the loaded font file (via
+    /// `register_asset`).
+    pub family: Option<String>,
+    pub weight: FontWeight,
+    pub style: FontStyle,
+    /// Per-line text alignment. Stored here (rather than as a
+    /// per-fragment x-offset at stage time) because cosmic-text
+    /// aligns each `BufferLine` independently — multi-line text
+    /// gets per-line centering within the buffer's width, which
+    /// can't be reproduced by a single staging-side offset on
+    /// the buffer as a whole.
+    pub align: TextAlign,
+}
+
+impl TextAttrs {
+    /// Construct a glyphon `Attrs` for shaping. The family slot is
+    /// either `Family::Name(...)` (when an explicit family was
+    /// resolved) or the generic `Family::SansSerif` fallback.
+    pub fn to_glyphon<'a>(&'a self) -> Attrs<'a> {
+        let family = match &self.family {
+            Some(name) => Family::Name(name.as_str()),
+            None => Family::SansSerif,
+        };
+        Attrs::new()
+            .family(family)
+            .weight(font_weight_to_glyphon(self.weight))
+            .style(font_style_to_glyphon(self.style))
+            .stretch(GStretch::Normal)
+    }
+}
+
+fn font_weight_to_glyphon(w: FontWeight) -> GWeight {
+    match w {
+        FontWeight::Thin => GWeight::THIN,
+        FontWeight::ExtraLight => GWeight::EXTRA_LIGHT,
+        FontWeight::Light => GWeight::LIGHT,
+        FontWeight::Normal => GWeight::NORMAL,
+        FontWeight::Medium => GWeight::MEDIUM,
+        FontWeight::SemiBold => GWeight::SEMIBOLD,
+        FontWeight::Bold => GWeight::BOLD,
+        FontWeight::ExtraBold => GWeight::EXTRA_BOLD,
+        FontWeight::Black => GWeight::BLACK,
+    }
+}
+
+fn font_style_to_glyphon(s: FontStyle) -> GStyle {
+    match s {
+        FontStyle::Normal => GStyle::Normal,
+        FontStyle::Italic => GStyle::Italic,
+    }
+}
+
+/// Translate the framework's `TextAlign` into cosmic-text's
+/// per-line `Align`. `Left` returns `None` so cosmic-text picks
+/// LTR-aware defaults (left for LTR, right for RTL); the other
+/// variants pin to a specific direction.
+fn text_align_to_glyphon(a: TextAlign) -> Option<GAlign> {
+    match a {
+        TextAlign::Left => None,
+        TextAlign::Right => Some(GAlign::Right),
+        TextAlign::Center => Some(GAlign::Center),
+        TextAlign::Justify => Some(GAlign::Justified),
+    }
+}
+
+/// Push the current `attrs.align` to every `BufferLine` so each
+/// line aligns within the buffer's width. Cosmic-text aligns per
+/// line, so multi-line text gets the right look without a
+/// staging-side fudge. Called from every TextStore path that
+/// changes either the text or the alignment.
+fn apply_buffer_align(buffer: &mut Buffer, align: TextAlign) {
+    let g = text_align_to_glyphon(align);
+    for line in buffer.lines.iter_mut() {
+        line.set_align(g);
+    }
 }
 
 /// Shared text-buffer store. Both the `Backend` impl (writer) and
@@ -44,6 +144,9 @@ impl TextStore {
 
     /// Build a new buffer for `id` with `content` at `font_size`,
     /// shaped against `font_system`. Replaces any existing entry.
+    /// Initial attrs are the default fallback (SansSerif, Normal,
+    /// Normal); `apply_style` calls `set_attrs` immediately after
+    /// to swap in the resolved family/weight/style.
     pub fn create(
         &mut self,
         font_system: &mut FontSystem,
@@ -51,30 +154,45 @@ impl TextStore {
         content: &str,
         font_size: f32,
     ) {
+        let attrs = TextAttrs::default();
         let mut buffer = Buffer::new(font_system, Metrics::new(font_size, font_size * 1.3));
         buffer.set_size(font_system, None, None);
         buffer.set_text(
             font_system,
             content,
-            &Attrs::new().family(Family::SansSerif),
+            &attrs.to_glyphon(),
             Shaping::Advanced,
             None,
         );
+        apply_buffer_align(&mut buffer, attrs.align);
         buffer.shape_until_scroll(font_system, false);
-        self.buffers.insert(id, BufferEntry { buffer, font_size });
+        self.buffers.insert(
+            id,
+            BufferEntry {
+                buffer,
+                font_size,
+                content: content.to_string(),
+                attrs,
+            },
+        );
     }
 
     /// Replace the text of `id`'s buffer. No-op if `id` isn't in
     /// the store (the node was dropped before this update fired).
     pub fn set_text(&mut self, font_system: &mut FontSystem, id: LayoutNode, content: &str) {
         if let Some(entry) = self.buffers.get_mut(&id) {
+            entry.content = content.to_string();
             entry.buffer.set_text(
                 font_system,
                 content,
-                &Attrs::new().family(Family::SansSerif),
+                &entry.attrs.to_glyphon(),
                 Shaping::Advanced,
                 None,
             );
+            // set_text resets the lines' alignment to None, so
+            // re-stamp it here. Otherwise a text update would
+            // silently revert centered headlines to left-aligned.
+            apply_buffer_align(&mut entry.buffer, entry.attrs.align);
             entry.buffer.shape_until_scroll(font_system, false);
         }
     }
@@ -93,6 +211,46 @@ impl TextStore {
                 Metrics::new(font_size, font_size * 1.3),
             );
             entry.font_size = font_size;
+        }
+    }
+
+    /// Re-shape `id`'s buffer with new font attributes (family /
+    /// weight / style). The text content + size are preserved.
+    /// Called from `apply_style` after the stylesheet resolves —
+    /// stylesheet-only changes (theme swap, state overlay flip)
+    /// re-shape through this without needing to re-issue the
+    /// `create_text` content payload.
+    pub fn set_attrs(
+        &mut self,
+        font_system: &mut FontSystem,
+        id: LayoutNode,
+        attrs: TextAttrs,
+    ) {
+        if let Some(entry) = self.buffers.get_mut(&id) {
+            if entry.attrs == attrs {
+                return;
+            }
+            let family_or_style_changed = entry.attrs.family != attrs.family
+                || entry.attrs.weight != attrs.weight
+                || entry.attrs.style != attrs.style;
+            entry.attrs = attrs;
+            if family_or_style_changed {
+                // Font family / weight / style affect glyph
+                // selection — re-shape the text against the new
+                // attrs. Re-stamp alignment afterwards (set_text
+                // resets it).
+                entry.buffer.set_text(
+                    font_system,
+                    &entry.content,
+                    &entry.attrs.to_glyphon(),
+                    Shaping::Advanced,
+                    None,
+                );
+            }
+            // Alignment is a per-line property — re-stamp it
+            // whether or not the text was re-shaped above.
+            apply_buffer_align(&mut entry.buffer, entry.attrs.align);
+            entry.buffer.shape_until_scroll(font_system, false);
         }
     }
 

@@ -27,4 +27,10 @@ public class NativeBridge {
     /// Tear down the AAS client. Stops the drain channel; the
     /// worker thread exits on its next send attempt.
     public static native void detach();
+
+    /// Called from `MainActivity.onConfigurationChanged` (rotation,
+    /// multi-window resize, dark-mode toggle, density change, etc.).
+    /// Triggers a framework layout pass against the host root's new
+    /// dimensions on the AAS side's locally-mounted view tree.
+    public static native void notifyConfigChanged();
 }

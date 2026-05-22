@@ -1250,6 +1250,38 @@ impl Backend for WgpuBackend {
         request_redraw();
     }
 
+    fn register_asset(
+        &mut self,
+        _id: framework_core::AssetId,
+        kind: framework_core::AssetTag,
+        source: &framework_core::AssetSource,
+    ) {
+        // Only Font assets concern the wgpu backend's text path. Other
+        // asset kinds (Image, Audio, Video, Blob) flow through their
+        // own pipelines or aren't supported yet — silently ignored.
+        if !matches!(kind, framework_core::AssetTag::Font) {
+            return;
+        }
+        if let framework_core::AssetSource::Embedded { bytes, .. } = source {
+            // Push the bytes into cosmic-text's font database. Once
+            // loaded, the family name baked into the font file is
+            // resolvable by `Attrs::family(Family::Name(...))` —
+            // which the text shaper picks up via the `font_family`
+            // resolved on `RenderStyle`. `to_vec()` because
+            // `load_font_data` takes ownership; the underlying
+            // bytes are `'static` so the clone is cheap to amortize
+            // (one-time per app font, not per shape).
+            self.font_system
+                .borrow_mut()
+                .db_mut()
+                .load_font_data(bytes.to_vec());
+        }
+        // Bundled / Remote sources aren't supported here — the
+        // build-tool resolves Bundled into a per-platform path that
+        // the wgpu sim has no asset loader for, and Remote would
+        // require an async fetch the renderer can't issue.
+    }
+
     fn set_animated_color(
         &mut self,
         node: &Self::Node,
@@ -1624,6 +1656,18 @@ impl Backend for WgpuBackend {
             let mut text = self.text.borrow_mut();
             let mut fs = self.font_system.borrow_mut();
             text.set_font_size(&mut fs, layout, font_size);
+            // Re-shape with the resolved font attributes. Cheap when
+            // attrs haven't changed (the store's set_attrs returns
+            // early on equal-attrs); the welcome's stylesheet picks
+            // up `INTER` here so the headline / subtitle stop falling
+            // back to cosmic-text's SansSerif.
+            let attrs = crate::text::TextAttrs {
+                family: new_render.font_family.clone(),
+                weight: new_render.font_weight,
+                style: new_render.font_style,
+                align: new_render.text_align,
+            };
+            text.set_attrs(&mut fs, layout, attrs);
             drop(text);
             drop(fs);
             self.layout.mark_dirty(layout);

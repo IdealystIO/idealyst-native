@@ -434,8 +434,15 @@ impl AndroidBackend {
     pub(crate) fn run_layout_pass(&mut self) {
         let (vw, vh) = self.viewport_size();
         if vw <= 0.0 || vh <= 0.0 {
+            log::info!("[layout] ABORT: viewport is zero ({}, {})", vw, vh);
             return;
         }
+        log::info!(
+            "[layout] run_layout_pass viewport=({:.1}, {:.1}) registered_views={}",
+            vw,
+            vh,
+            self.view_to_layout.len()
+        );
         let roots: Vec<native_layout::LayoutNode> = self
             .view_to_layout
             .values()
@@ -517,7 +524,56 @@ impl AndroidBackend {
 // ---------------------------------------------------------------------------
 
 pub(crate) struct AndroidViewOps;
-impl framework_core::ViewOps for AndroidViewOps {}
+impl framework_core::ViewOps for AndroidViewOps {
+    /// Node's rect in its parent's coordinate system, in dp. Mirrors
+    /// `IosViewOps::frame` so author-level code reading
+    /// `Ref<ViewHandle>::frame()` gets equivalent behavior on both
+    /// native platforms. The welcome example's planet-orbit driver
+    /// depends on this — without an override the trait default returns
+    /// `None` and the orbit falls back to a hard-coded portrait
+    /// viewport even after rotation.
+    ///
+    /// `View.getX/getY` return device pixels (float); `getWidth/
+    /// getHeight` return device pixels (int). Divide by display
+    /// density to land in the same dp units Taffy / `StyleRules`
+    /// reason in. Returns `None` when the view hasn't been measured
+    /// yet (width/height == 0).
+    fn frame(
+        &self,
+        node: &dyn std::any::Any,
+    ) -> Option<framework_core::primitives::portal::ViewportRect> {
+        let view = node.downcast_ref::<GlobalRef>()?;
+        with_env(|env| {
+            let obj = view.as_obj();
+            let w_px = env
+                .call_method(&obj, "getWidth", "()I", &[])
+                .and_then(|v| v.i())
+                .unwrap_or(0);
+            let h_px = env
+                .call_method(&obj, "getHeight", "()I", &[])
+                .and_then(|v| v.i())
+                .unwrap_or(0);
+            if w_px <= 0 || h_px <= 0 {
+                return None;
+            }
+            let x_px = env
+                .call_method(&obj, "getX", "()F", &[])
+                .and_then(|v| v.f())
+                .unwrap_or(0.0);
+            let y_px = env
+                .call_method(&obj, "getY", "()F", &[])
+                .and_then(|v| v.f())
+                .unwrap_or(0.0);
+            let density = density_of(env, &obj).unwrap_or(1.0);
+            Some(framework_core::primitives::portal::ViewportRect {
+                x: x_px / density,
+                y: y_px / density,
+                width: w_px as f32 / density,
+                height: h_px as f32 / density,
+            })
+        })
+    }
+}
 pub(crate) static ANDROID_VIEW_OPS: AndroidViewOps = AndroidViewOps;
 
 pub(crate) struct AndroidTextOps;
@@ -1208,6 +1264,17 @@ impl Backend for AndroidBackend {
             | P::ScaleY
             | P::RotateZ => {}
         }
+    }
+
+    fn frame(&self, node: &Self::Node) -> Option<framework_core::primitives::portal::ViewportRect> {
+        // Parent-relative rect in dp — matches iOS's `Backend::frame`
+        // impl. Framework portal / anchoring code consults this; the
+        // ViewHandle-side analog used by author code lives on
+        // `AndroidViewOps::frame` (same body, different trait).
+        <AndroidViewOps as framework_core::ViewOps>::frame(
+            &ANDROID_VIEW_OPS,
+            node as &dyn std::any::Any,
+        )
     }
 
     fn on_node_unstyled(&mut self, node: &Self::Node) {

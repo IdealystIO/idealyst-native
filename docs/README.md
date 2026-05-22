@@ -37,7 +37,14 @@ If you're new to the codebase, read the docs in this order:
    carries per-frame writes to native widgets. Complements styling's
    `Transition` (declarative) with imperative, interruptible motion.
 
-6. [`backend.md`](./backend.md) — the `Backend` trait, the render walker,
+6. [`fonts.md`](./fonts.md) — bundling custom typefaces with the
+   `typeface!` + `face!` macros, and how each backend turns that
+   declaration into a native font registration (CoreText on iOS,
+   `Typeface.createFromFile` on Android, `@font-face` on web).
+   Read this when you're adding a custom font or debugging why one
+   isn't rendering the weight you expected.
+
+7. [`backend.md`](./backend.md) — the `Backend` trait, the render walker,
    per-primitive lifecycle hooks, the rules a backend must follow.
    Read this last — it's where the seam between framework and platform
    lives, and it makes more sense after you've seen what gets handed

@@ -443,6 +443,20 @@ pub extern "system" fn Java_{jni}_NativeBridge_detach<'local>(
 ) {{
     OWNER.with(|slot| slot.borrow_mut().take());
 }}
+
+/// MainActivity.onConfigurationChanged trampoline. Triggers a
+/// framework layout pass so rotation / multi-window / density
+/// changes reflow against the host root's new dimensions. The
+/// manifest's `android:configChanges` declaration keeps the Activity
+/// alive across these events; this notify is how the framework
+/// hears about them.
+#[no_mangle]
+pub extern "system" fn Java_{jni}_NativeBridge_notifyConfigChanged<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) {{
+    backend_android::notify_config_changed();
+}}
 "#,
             lib = manifest.lib_name,
             jni = jni_package,
@@ -542,6 +556,17 @@ pub extern "system" fn Java_{jni}_NativeBridge_detach<'local>(
     _class: JClass<'local>,
 ) {{
     backend_android::aas::detach();
+}}
+
+/// MainActivity.onConfigurationChanged trampoline. Triggers a
+/// framework layout pass so rotation / multi-window / density
+/// changes reflow against the host root's new dimensions.
+#[no_mangle]
+pub extern "system" fn Java_{jni}_NativeBridge_notifyConfigChanged<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) {{
+    backend_android::notify_config_changed();
 }}
 "#,
             jni = jni_package,

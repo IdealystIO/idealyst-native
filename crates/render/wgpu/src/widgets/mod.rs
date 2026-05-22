@@ -67,7 +67,7 @@ pub fn rect_inst_rotated(
         border_width,
         rotation,
         shadow_blur: 0.0,
-        _pad: 0.0,
+        ..bytemuck::Zeroable::zeroed()
     }
 }
 
@@ -102,7 +102,7 @@ pub fn shadow_inst(
         border_width: 0.0,
         rotation: 0.0,
         shadow_blur: b,
-        _pad: 0.0,
+        ..bytemuck::Zeroable::zeroed()
     }
 }
 

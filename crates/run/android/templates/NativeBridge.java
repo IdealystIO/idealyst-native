@@ -10,4 +10,12 @@ import android.view.ViewGroup;
 public class NativeBridge {
     public static native void attach(Context context, ViewGroup root);
     public static native void detach();
+
+    /// Called from `MainActivity.onConfigurationChanged` (rotation,
+    /// multi-window resize, dark-mode toggle, density change, etc.).
+    /// Triggers a framework layout pass against the host root's new
+    /// dimensions. The host FrameLayout is `MATCH_PARENT` so Android
+    /// has already resized it by the time this fires; the framework
+    /// just needs to re-run Taffy and reapply the resulting frames.
+    public static native void notifyConfigChanged();
 }

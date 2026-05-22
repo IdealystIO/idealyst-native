@@ -70,13 +70,28 @@ impl Gpu {
 
         let size = window.inner_size();
         let caps = surface.get_capabilities(&adapter);
-        // Prefer an sRGB-encoded format so colors from CSS-style
-        // sRGB hex values render correctly without manual encoding.
+        // Prefer a NON-sRGB swapchain format so the GPU's alpha
+        // blending happens in raw sRGB numbers (matching CSS / iOS
+        // CAGradientLayer / UIView alpha behavior). On an sRGB
+        // swapchain the blend hardware decodes dst to linear,
+        // blends in linear, and re-encodes to sRGB — physically
+        // correct, but visually MUCH brighter for low-alpha
+        // overlays than every conventional UI toolkit produces.
+        // The welcome vignette (4-band 0..0.06 alpha gradient)
+        // was the symptom that flagged this: the warm haze
+        // extended halfway to the screen centre on wgpu while
+        // hugging the edge on iOS. With a non-sRGB swapchain,
+        // sRGB-space numbers are blended directly and the result
+        // matches iOS within a perceptual hair.
+        //
+        // Color values throughout the renderer stay in sRGB —
+        // see [`crate::style_convert::srgb_rgba_to_linear`],
+        // which is now an identity for the same reason.
         let format = caps
             .formats
             .iter()
             .copied()
-            .find(|f| f.is_srgb())
+            .find(|f| !f.is_srgb())
             .unwrap_or(caps.formats[0]);
         log::debug!(
             "wgpu: adapter={:?} format={:?} (sRGB={}) size={}x{}",

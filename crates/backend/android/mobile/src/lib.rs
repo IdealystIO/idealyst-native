@@ -77,6 +77,22 @@ pub use backend_android_core::render_loop::install_render_loop;
 #[cfg(target_os = "android")]
 pub use imp::scheduler::install_scheduler;
 
+/// Notify the backend that the host configuration changed (rotation,
+/// multi-window resize, density change, etc.). Schedules a layout
+/// pass against the host root's current dimensions; the existing
+/// retry loop covers the brief window where `getWidth/getHeight`
+/// still report the pre-change values. Call from the JNI bridge's
+/// `notifyConfigChanged` symbol (the generated wrapper crate routes
+/// MainActivity.onConfigurationChanged → here).
+#[cfg(target_os = "android")]
+pub fn notify_config_changed() {
+    log::info!("[layout] notify_config_changed → scheduling layout pass");
+    imp::scheduler::schedule_layout_pass_retry(0);
+}
+
+#[cfg(not(target_os = "android"))]
+pub fn notify_config_changed() {}
+
 #[cfg(not(target_os = "android"))]
 pub use stub::AndroidBackend;
 

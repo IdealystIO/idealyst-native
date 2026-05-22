@@ -34,7 +34,49 @@ pub struct Instance {
     /// rounded-rect SDF instead of the hard rect fill. `== 0`
     /// renders as a normal rect (legacy path, no perf hit).
     pub shadow_blur: f32,
+    /// Legacy filler kept so existing `RectInstance { .., _pad: 0.0 }`
+    /// literals scattered through `renderer.rs` keep compiling
+    /// after the gradient fields were added below — the new
+    /// `gradient_*` fields use the spread-with-zeroed pattern
+    /// (`..bytemuck::Zeroable::zeroed()`) so call sites only need
+    /// to learn about gradients when they're actually setting one.
     pub _pad: f32,
+    /// Gradient mode discriminant. `0.0` = no gradient (use `bg`
+    /// as a solid fill, legacy path). `1.0` = linear. `2.0` =
+    /// radial. f32 instead of u32 so the vertex layout stays
+    /// floats-only — keeps the format declaration uniform and
+    /// dodges the few-driver-versions-old quirk where mixing
+    /// `Sint32` / `Uint32` attributes between `Float32` ones
+    /// triggers a re-layout cost in the GPU's vertex fetcher.
+    pub gradient_kind: f32,
+    /// Gradient axis parameters in rect-fraction space (`0..=1`
+    /// across the box):
+    /// - Linear: `(dir.x, dir.y, _, _)` — unit vector pointing the
+    ///   way stops INCREASE (so `t = dot(p - 0.5, dir) + 0.5`).
+    /// - Radial: `(cx, cy, rx, ry)` — center + elliptical radii
+    ///   in rect-frac (matches CSS's default elliptical radial on
+    ///   non-square boxes; square boxes degenerate to a circle).
+    pub gradient_params: [f32; 4],
+    /// Stop offsets in `0..=1`, ascending. Trailing slots
+    /// (unused stops) carry `1.0` so the bracket ladder lands on
+    /// the last real stop for all `t > last_offset`.
+    ///
+    /// Offsets 0-3 ride in `gradient_offsets` (vec4); offset 4
+    /// rides in `gradient_offset_4` (scalar). The five-stop cap
+    /// covers the welcome's sun glare exactly — bumping past five
+    /// is a storage-buffer refactor (vertex attribute count is at
+    /// WebGPU's portable minimum here).
+    pub gradient_offsets: [f32; 4],
+    pub gradient_offset_4: f32,
+    pub _pad_g: [f32; 3],
+    /// Per-stop colors. Trailing slots carry the last real stop's
+    /// color so the mix degenerates to a constant past the last
+    /// offset — see [`crate::style_convert::resolve_gradient`].
+    pub gradient_stop0: [f32; 4],
+    pub gradient_stop1: [f32; 4],
+    pub gradient_stop2: [f32; 4],
+    pub gradient_stop3: [f32; 4],
+    pub gradient_stop4: [f32; 4],
 }
 
 #[repr(C)]
@@ -154,13 +196,29 @@ impl RectPipeline {
             array_stride: STRIDE,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &[
-                wgpu::VertexAttribute { offset: 0,  shader_location: 0, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 16, shader_location: 1, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 32, shader_location: 2, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 48, shader_location: 3, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 64, shader_location: 4, format: wgpu::VertexFormat::Float32 },
-                wgpu::VertexAttribute { offset: 68, shader_location: 5, format: wgpu::VertexFormat::Float32 },
-                wgpu::VertexAttribute { offset: 72, shader_location: 6, format: wgpu::VertexFormat::Float32 },
+                wgpu::VertexAttribute { offset: 0,   shader_location: 0,  format: wgpu::VertexFormat::Float32x4 },
+                wgpu::VertexAttribute { offset: 16,  shader_location: 1,  format: wgpu::VertexFormat::Float32x4 },
+                wgpu::VertexAttribute { offset: 32,  shader_location: 2,  format: wgpu::VertexFormat::Float32x4 },
+                wgpu::VertexAttribute { offset: 48,  shader_location: 3,  format: wgpu::VertexFormat::Float32x4 },
+                wgpu::VertexAttribute { offset: 64,  shader_location: 4,  format: wgpu::VertexFormat::Float32 },
+                wgpu::VertexAttribute { offset: 68,  shader_location: 5,  format: wgpu::VertexFormat::Float32 },
+                wgpu::VertexAttribute { offset: 72,  shader_location: 6,  format: wgpu::VertexFormat::Float32 },
+                // _pad (offset 76) — declared in the struct so
+                // existing call sites keep compiling, but the
+                // shader doesn't bind it. No vertex attribute here.
+                wgpu::VertexAttribute { offset: 80,  shader_location: 7,  format: wgpu::VertexFormat::Float32 },
+                wgpu::VertexAttribute { offset: 84,  shader_location: 8,  format: wgpu::VertexFormat::Float32x4 },
+                wgpu::VertexAttribute { offset: 100, shader_location: 9,  format: wgpu::VertexFormat::Float32x4 },
+                // gradient_offset_4 (scalar) — offset 116, then 12
+                // bytes of `_pad_g` padding before the stop-4 vec4
+                // (vec4 alignment isn't required for vertex
+                // attributes but keeps the struct's offsets readable).
+                wgpu::VertexAttribute { offset: 116, shader_location: 10, format: wgpu::VertexFormat::Float32 },
+                wgpu::VertexAttribute { offset: 132, shader_location: 11, format: wgpu::VertexFormat::Float32x4 },
+                wgpu::VertexAttribute { offset: 148, shader_location: 12, format: wgpu::VertexFormat::Float32x4 },
+                wgpu::VertexAttribute { offset: 164, shader_location: 13, format: wgpu::VertexFormat::Float32x4 },
+                wgpu::VertexAttribute { offset: 180, shader_location: 14, format: wgpu::VertexFormat::Float32x4 },
+                wgpu::VertexAttribute { offset: 196, shader_location: 15, format: wgpu::VertexFormat::Float32x4 },
             ],
         }
     }

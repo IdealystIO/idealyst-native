@@ -12,6 +12,7 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.net.wifi.WifiManager;
 import android.os.Bundle;
 import android.os.Handler;
@@ -111,6 +112,20 @@ public class MainActivity extends Activity {
             return true;
         }
         return super.onOptionsItemSelected(item);
+    }
+
+    /**
+     * Fired when the device rotates, multi-window resizes, the
+     * keyboard shows/hides, dark mode toggles, density changes, etc.
+     * — any of the axes listed under `configChanges` in the manifest.
+     * Because of that manifest declaration the Activity is *not*
+     * recreated, so we just nudge the framework to re-run its layout
+     * pass against the host root's new dimensions.
+     */
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        NativeBridge.notifyConfigChanged();
     }
 
     @Override

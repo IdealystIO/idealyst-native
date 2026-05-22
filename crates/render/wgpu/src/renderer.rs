@@ -30,13 +30,111 @@ use crate::backend_impl::WgpuBackend;
 use crate::host::{scrollview_content_extent, Host};
 use crate::keyboard;
 use crate::node::{
-    NodeKind, WgpuNode, ACTIVITY_INDICATOR_SPIN_PERIOD_SEC, CARET_BLINK_PERIOD_SEC,
-    SCROLLBAR_INSET, SCROLLBAR_MIN_THUMB, SCROLLBAR_WIDTH,
+    AnimatedOverrides, NodeKind, WgpuNode, ACTIVITY_INDICATOR_SPIN_PERIOD_SEC,
+    CARET_BLINK_PERIOD_SEC, SCROLLBAR_INSET, SCROLLBAR_MIN_THUMB, SCROLLBAR_WIDTH,
 };
 use crate::pipeline::{Instance as RectInstance, RectPipeline};
-use crate::style_convert::srgb_rgba_to_linear;
+use crate::style_convert::{
+    srgb_rgba_to_linear, ResolvedGradient, ResolvedGradientKind,
+};
 use crate::image_pipeline::{ImageDraw, ImageInstance, ImagePipeline};
 use crate::text::{render_text, StagedText, TextCtx, TextStore};
+
+/// Zeroed `RectInstance` for the spread-syntax base in struct
+/// literals that don't paint a gradient. Lets call sites omit
+/// every gradient field instead of repeating the no-gradient
+/// boilerplate at 16+ sites.
+///
+/// `RectInstance: Pod + Zeroable` (see [`crate::pipeline::Instance`]),
+/// so `bytemuck::Zeroable::zeroed()` is safe. The result has
+/// `gradient_kind = 0.0`, which is the shader's "skip the gradient
+/// branch, fall back to `bg`" signal — exactly the right default.
+fn no_gradient_fields() -> RectInstance {
+    bytemuck::Zeroable::zeroed()
+}
+
+/// Project a resolved gradient + this node's animated stop overrides
+/// onto the 7 gradient fields of `RectInstance`. Returns a tuple in
+/// the same order as the struct fields for ergonomic spread at the
+/// staging site.
+///
+/// `animated.gradient_stops` is `Vec<(stop_idx, sRGB rgba)>` — the
+/// per-frame writes from the framework's animation system. When a
+/// stop has an override, it replaces the resolved stop's color
+/// before the sRGB → linear conversion; everything else flows through
+/// the static `ResolvedGradient`.
+///
+/// `node_opacity` is NOT folded into stop alphas here. The shader
+/// receives the gradient's authored alphas verbatim and multiplies
+/// once by `in.bg.a` — which the staging site sets to
+/// `node_opacity` for gradient instances. Multiplying in both
+/// places squares the opacity (`0.06 * 0.5 → 0.015` instead of
+/// `0.03`) and visibly dims the gradient during fade-in and the
+/// pulse driver's steady-state writes.
+/// Five-stop gradient staging. Returns the instance fields in
+/// struct order so the call site can spread them ergonomically.
+fn stage_gradient(
+    resolved: Option<&ResolvedGradient>,
+    animated: Option<&AnimatedOverrides>,
+) -> StagedGradient {
+    let Some(g) = resolved else {
+        return StagedGradient::default();
+    };
+    let kind = match g.kind {
+        ResolvedGradientKind::Linear { .. } => 1.0,
+        ResolvedGradientKind::Radial { .. } => 2.0,
+    };
+    let params = match g.kind {
+        ResolvedGradientKind::Linear { direction } => {
+            [direction[0], direction[1], 0.0, 0.0]
+        }
+        ResolvedGradientKind::Radial { center, radii } => {
+            [center[0], center[1], radii[0], radii[1]]
+        }
+    };
+    let stop_for = |idx: usize| -> [f32; 4] {
+        // Per-frame override wins over the static stop. Linear
+        // scan is fine — gradients have <= 5 stops.
+        let av_override = animated.and_then(|av| {
+            av.gradient_stops
+                .iter()
+                .find(|(i, _)| *i as usize == idx)
+                .map(|(_, c)| *c)
+        });
+        let srgb = av_override.unwrap_or(g.stops[idx]);
+        srgb_rgba_to_linear(srgb)
+    };
+    StagedGradient {
+        kind,
+        params,
+        offsets_03: [
+            g.stop_offsets[0],
+            g.stop_offsets[1],
+            g.stop_offsets[2],
+            g.stop_offsets[3],
+        ],
+        offset_4: g.stop_offsets[4],
+        stops: [
+            stop_for(0),
+            stop_for(1),
+            stop_for(2),
+            stop_for(3),
+            stop_for(4),
+        ],
+    }
+}
+
+/// Output of [`stage_gradient`]. Field names match
+/// [`crate::pipeline::Instance`]'s gradient-related fields so the
+/// call site can spread them by name.
+#[derive(Default)]
+struct StagedGradient {
+    kind: f32,
+    params: [f32; 4],
+    offsets_03: [f32; 4],
+    offset_4: f32,
+    stops: [[f32; 4]; 5],
+}
 
 /// GPU-side rendering bundle. Holds the rect pipeline + the
 /// glyphon text context + the textured-quad pipeline + per-src
@@ -413,6 +511,11 @@ impl Renderer {
         let focused_layout = host.focused_input_layout();
         let mut rects: Vec<RectInstance> = Vec::new();
         let mut texts: Vec<StagedText<'_>> = Vec::new();
+        // Per-text rect-count barrier: `text_barriers[i]` is
+        // `rects.len()` at the moment `texts[i]` was staged. Used
+        // by the main pass to split the rect batch around each
+        // text so DOM-order layering (planet front/back) survives.
+        let mut text_barriers: Vec<usize> = Vec::new();
         let now = Instant::now();
         // Sample the keyboard's slide value once per frame.
         // While the keyboard is visible (even partially), narrow
@@ -492,6 +595,7 @@ impl Renderer {
                 1.0,
                 &mut rects,
                 &mut texts,
+                &mut text_barriers,
                 &mut deferred_overlays,
                 &mut deferred_nav_tops,
                 &mut deferred_drawers,
@@ -537,6 +641,10 @@ impl Renderer {
         let mut sub_deferred_overlays: Vec<(WgpuNode, (f32, f32))> = Vec::new();
         let mut sub_deferred_nav_tops: Vec<DeferredNavTop> = Vec::new();
         let mut sub_deferred_drawers: Vec<DeferredDrawer> = Vec::new();
+        // Nav-top barriers go to a local sink — the nav-top
+        // pass currently doesn't split rects around text (only
+        // the main pass does), but the walk signature is shared.
+        let mut nav_top_text_barriers: Vec<usize> = Vec::new();
         for top in &deferred_nav_tops {
             walk(
                 &backend,
@@ -555,6 +663,7 @@ impl Renderer {
                 1.0,
                 &mut nav_top_rects,
                 &mut nav_top_texts,
+                &mut nav_top_text_barriers,
                 &mut sub_deferred_overlays,
                 &mut sub_deferred_nav_tops,
                 &mut sub_deferred_drawers,
@@ -1021,70 +1130,130 @@ impl Renderer {
                         .expect("video spec referenced an unknown layout id"),
                 }
             }));
-            let mut encoder1 =
-                device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("idealyst-main"),
-                });
+            // Build a draw plan that interleaves rects and texts in
+            // DOM order. `text_barriers[i]` is `rects.len()` at the
+            // moment `texts[i]` was staged, so the plan is:
+            //
+            //   rects[0..B0]  → texts[group_0]
+            //   rects[B0..B1] → texts[group_1]
+            //   ...
+            //   rects[B_last..rects.len()]   (final tail, no text)
+            //
+            // Each entry runs as its own queue submit because the
+            // rect pipeline shares one instance buffer across calls
+            // — multiple `rect.render(...)` invocations in a single
+            // submit would all draw the LATEST write, smearing
+            // batches together (see the video-controls comment
+            // below for the same hazard).
+            let mut phases: Vec<(usize, usize, usize, usize)> = Vec::new();
             {
-                let mut pass = encoder1.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("idealyst-main-pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: target_view,
-                        resolve_target: None,
-                        depth_slice: None,
-                        ops: wgpu::Operations {
-                            // Clear to white. The display region
-                            // shows this when the app's root has no
-                            // explicit background, which makes
-                            // default text + idea-ui chrome read
-                            // naturally instead of being lost on
-                            // black. The device silhouette (bezel
-                            // + notch + rounded corners) is painted
-                            // *opaque black on top* by the skin and
-                            // the `device_frame` inverse-SDF pass —
-                            // so the bezel still looks bezel-like,
-                            // we just don't bleed black into the
-                            // app's drawing surface.
-                            load: wgpu::LoadOp::Clear(wgpu::Color {
-                                r: 1.0,
-                                g: 1.0,
-                                b: 1.0,
-                                a: 1.0,
-                            }),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
-                pass.set_viewport(vx, vy, vw.max(1.0), vh.max(1.0), 0.0, 1.0);
-                self.rect.render(device, queue, &mut pass, viewport, &rects);
-                // Textured-quad batch sits *between* rects and
-                // text in the main pass so a text label drawn
-                // over an image (e.g. a caption) renders on top.
-                if !main_image_draws.is_empty() {
-                    self.image.render(
-                        device,
-                        queue,
-                        &mut pass,
-                        viewport,
-                        &main_image_draws,
-                    );
+                let mut last_rect = 0usize;
+                let mut i = 0usize;
+                while i < text_barriers.len() {
+                    let barrier = text_barriers[i];
+                    let mut group_end = i + 1;
+                    while group_end < text_barriers.len()
+                        && text_barriers[group_end] == barrier
+                    {
+                        group_end += 1;
+                    }
+                    phases.push((last_rect, barrier, i, group_end));
+                    last_rect = barrier;
+                    i = group_end;
                 }
-                let mut fs = host.font_system().borrow_mut();
-                let _ = render_text(
-                    &mut self.text,
-                    &mut fs,
-                    device,
-                    queue,
-                    &mut pass,
-                    viewport_px,
-                    &texts,
-                );
+                // Tail rects with no following text.
+                if last_rect < rects.len() {
+                    phases.push((last_rect, rects.len(), texts.len(), texts.len()));
+                }
+                // Edge case: nothing to draw → single empty phase
+                // so the clear still fires.
+                if phases.is_empty() {
+                    phases.push((0, 0, 0, 0));
+                }
             }
-            queue.submit(std::iter::once(encoder1.finish()));
+
+            let mut first_phase = true;
+            for (phase_idx, &(rect_lo, rect_hi, text_lo, text_hi)) in phases.iter().enumerate() {
+                let last_phase = phase_idx == phases.len() - 1;
+                let mut encoder =
+                    device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("idealyst-main-phase"),
+                    });
+                {
+                    let load = if first_phase {
+                        // Clear to white. The display region shows
+                        // this when the app's root has no explicit
+                        // background, which makes default text +
+                        // idea-ui chrome read naturally instead of
+                        // being lost on black. The device silhouette
+                        // (bezel + notch + rounded corners) is painted
+                        // *opaque black on top* by the skin and the
+                        // `device_frame` inverse-SDF pass — so the
+                        // bezel still looks bezel-like, we just don't
+                        // bleed black into the app's drawing surface.
+                        wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 1.0,
+                            g: 1.0,
+                            b: 1.0,
+                            a: 1.0,
+                        })
+                    } else {
+                        wgpu::LoadOp::Load
+                    };
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("idealyst-main-pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: target_view,
+                            resolve_target: None,
+                            depth_slice: None,
+                            ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+                    pass.set_viewport(vx, vy, vw.max(1.0), vh.max(1.0), 0.0, 1.0);
+                    if rect_hi > rect_lo {
+                        self.rect.render(
+                            device,
+                            queue,
+                            &mut pass,
+                            viewport,
+                            &rects[rect_lo..rect_hi],
+                        );
+                    }
+                    // Images render in the LAST phase so they
+                    // composite above the rect base AND below any
+                    // text that wants to sit on top. The welcome
+                    // doesn't use images; production apps that do
+                    // can revisit this if they need finer
+                    // image/text interleaving.
+                    if last_phase && !main_image_draws.is_empty() {
+                        self.image.render(
+                            device,
+                            queue,
+                            &mut pass,
+                            viewport,
+                            &main_image_draws,
+                        );
+                    }
+                    if text_hi > text_lo {
+                        let mut fs = host.font_system().borrow_mut();
+                        let _ = render_text(
+                            &mut self.text,
+                            &mut fs,
+                            device,
+                            queue,
+                            &mut pass,
+                            viewport_px,
+                            &texts[text_lo..text_hi],
+                        );
+                    }
+                }
+                queue.submit(std::iter::once(encoder.finish()));
+                first_phase = false;
+            }
 
             // Video-controls overlay — staged by the walk into a
             // thread-local, drained here. This MUST go in its
@@ -1464,6 +1633,14 @@ fn walk<'a>(
     acc_opacity: f32,
     rects: &mut Vec<RectInstance>,
     texts: &mut Vec<StagedText<'a>>,
+    // Parallel to `texts`: `text_barriers[i]` records
+    // `rects.len()` at the moment `texts[i]` was staged. The
+    // renderer uses this to split the rect batch around each
+    // text so DOM-order layering survives the pass-per-batch
+    // submission model (welcome's planet front/back relies on
+    // it — a planet view declared AFTER the text needs to
+    // render ABOVE the text, not below).
+    text_barriers: &mut Vec<usize>,
     deferred_overlays: &mut Vec<(WgpuNode, (f32, f32))>,
     deferred_nav_tops: &mut Vec<DeferredNavTop>,
     deferred_drawers: &mut Vec<DeferredDrawer>,
@@ -1508,12 +1685,33 @@ fn walk<'a>(
     let base_h = frame.height * acc_scale_y;
     let base_x = parent_x + frame.x * acc_scale_x;
     let base_y = parent_y + frame.y * acc_scale_y;
+    // Static transform from stylesheet `transform: [...]`. Translate
+    // and scale only; percent translates resolve against the node's
+    // pre-scale pixel size (`frame.width` / `frame.height`), matching
+    // CSS's `transform: translateX(50%)` semantics. Static and
+    // animated transforms compose multiplicatively (scale) /
+    // additively (translate) — static first, then animated, mirroring
+    // iOS's CGAffineTransform baking order.
+    let static_tx = {
+        let t = data.render.static_translate[0];
+        if t.is_percent { t.value * frame.width } else { t.value }
+    };
+    let static_ty = {
+        let t = data.render.static_translate[1];
+        if t.is_percent { t.value * frame.height } else { t.value }
+    };
+    let static_sx = data.render.static_scale[0];
+    let static_sy = data.render.static_scale[1];
+    let combined_sx = static_sx * local_sx;
+    let combined_sy = static_sy * local_sy;
+    let combined_tx = static_tx + local_tx;
+    let combined_ty = static_ty + local_ty;
     let cx = base_x + base_w * 0.5;
     let cy = base_y + base_h * 0.5;
-    let w = base_w * local_sx;
-    let h = base_h * local_sy;
-    let x = cx - w * 0.5 + local_tx;
-    let y = cy - h * 0.5 + local_ty;
+    let w = base_w * combined_sx;
+    let h = base_h * combined_sy;
+    let x = cx - w * 0.5 + combined_tx;
+    let y = cy - h * 0.5 + combined_ty;
     // Effective per-node opacity. When the animation system has
     // written an `Opacity` value, it takes over from the static
     // stylesheet `r.opacity` (matches iOS / web semantics: the
@@ -1528,8 +1726,8 @@ fn walk<'a>(
     // the rect once, not each descendant a second time — the
     // child's `parent_x` is already at `x`, this node's animated
     // origin).
-    let child_acc_scale_x = acc_scale_x * local_sx;
-    let child_acc_scale_y = acc_scale_y * local_sy;
+    let child_acc_scale_x = acc_scale_x * combined_sx;
+    let child_acc_scale_y = acc_scale_y * combined_sy;
     let child_acc_opacity = node_opacity;
 
     // Form inputs paint their own background/border via the
@@ -1565,6 +1763,7 @@ fn walk<'a>(
         || y > clip.1 + clip.3);
     if !is_native_widget && in_clip {
         let has_bg = r.background.is_some() || local_bg.is_some();
+        let has_gradient = r.gradient.is_some();
         let any_border = r.border_width.iter().any(|w| *w > 0.0);
         // Skin-driven press feedback may add a background even
         // when the author's style didn't — M3's filled-button
@@ -1586,7 +1785,7 @@ fn walk<'a>(
         } else {
             None
         };
-        if has_bg || any_border || press_overlay.is_some() {
+        if has_bg || has_gradient || any_border || press_overlay.is_some() {
             // Drop shadow gets staged *first* so it paints
             // underneath the main rect. The shadow quad covers
             // the visual rect shifted by `(offset.x, offset.y)`
@@ -1614,7 +1813,7 @@ fn walk<'a>(
                     border_width: 0.0,
                     rotation: local_rot,
                     shadow_blur: bw,
-                    _pad: 0.0,
+                    ..no_gradient_fields()
                 });
             }
             // Animated `BackgroundColor` (from `set_animated_color`)
@@ -1647,15 +1846,42 @@ fn walk<'a>(
             );
             let bg_lin = srgb_rgba_to_linear([bg[0], bg[1], bg[2], bg[3] * node_opacity]);
             let bc_lin = srgb_rgba_to_linear(bc);
+            // Gradient takes over the fill when present. The
+            // gradient's per-stop alpha already encodes the
+            // author's intent; we still multiply by `node_opacity`
+            // through `bg.a` (passed to the shader as the gradient
+            // post-mix multiplier), so an animated `Opacity` on a
+            // gradient view fades the whole gradient correctly.
+            let sg = stage_gradient(r.gradient.as_ref(), data.animated.as_deref());
+            // For the gradient path, the shader reads `bg.a` as the
+            // gradient's post-mix alpha multiplier (the rgb of `bg`
+            // is ignored). Bake `node_opacity` in once so both
+            // solid and gradient paths share the same staging
+            // contract.
+            let main_bg = if sg.kind > 0.5 {
+                [1.0, 1.0, 1.0, node_opacity]
+            } else {
+                bg_lin
+            };
             rects.push(RectInstance {
                 rect: [x, y, w, h],
-                bg: bg_lin,
+                bg: main_bg,
                 corner_radius: r.corner_radius,
                 border_color: bc_lin,
                 border_width: bw,
                 rotation: local_rot,
                 shadow_blur: 0.0,
                 _pad: 0.0,
+                gradient_kind: sg.kind,
+                gradient_params: sg.params,
+                gradient_offsets: sg.offsets_03,
+                gradient_offset_4: sg.offset_4,
+                _pad_g: [0.0; 3],
+                gradient_stop0: sg.stops[0],
+                gradient_stop1: sg.stops[1],
+                gradient_stop2: sg.stops[2],
+                gradient_stop3: sg.stops[3],
+                gradient_stop4: sg.stops[4],
             });
         }
     }
@@ -1713,9 +1939,32 @@ fn walk<'a>(
                         let (tw, th) = measured_buffer_size(&entry.buffer);
                         (x + ((w - tw) * 0.5).max(0.0), y + ((h - th) * 0.5).max(0.0))
                     } else {
-                        (x, y)
+                        // Apply `text_align` from the resolved
+                        // stylesheet. The buffer was shaped to its
+                        // intrinsic width (no wrap), so centering
+                        // means offsetting the buffer by half the
+                        // slack between the frame width and the
+                        // measured text width. `Justify` falls back
+                        // to `Left` — glyphon doesn't expose a
+                        // straightforward justify axis.
+                        use framework_core::TextAlign;
+                        match r.text_align {
+                            TextAlign::Left | TextAlign::Justify => (x, y),
+                            TextAlign::Center => {
+                                let (tw, _) = measured_buffer_size(&entry.buffer);
+                                (x + ((w - tw) * 0.5).max(0.0), y)
+                            }
+                            TextAlign::Right => {
+                                let (tw, _) = measured_buffer_size(&entry.buffer);
+                                (x + (w - tw).max(0.0), y)
+                            }
+                        }
                     };
                     let tb = intersect_rect((x, y, w, h), clip);
+                    // Record the rect count BEFORE this text — the
+                    // renderer uses this to draw rects[0..barrier]
+                    // beneath the text and rects[barrier..] above.
+                    text_barriers.push(rects.len());
                     texts.push(StagedText {
                         buffer: &entry.buffer,
                         x: text_x,
@@ -2141,6 +2390,7 @@ fn walk<'a>(
             child_acc_opacity,
             rects,
             texts,
+            text_barriers,
             deferred_overlays,
             deferred_nav_tops,
             deferred_drawers,
@@ -2218,7 +2468,8 @@ fn paint_scrollbar(
             border_color: [0.0; 4],
             border_width: 0.0,
             rotation: 0.0,
-            shadow_blur: 0.0, _pad: 0.0,
+            shadow_blur: 0.0,
+            ..no_gradient_fields()
         });
     } else {
         let viewport = h;
@@ -2243,7 +2494,8 @@ fn paint_scrollbar(
             border_color: [0.0; 4],
             border_width: 0.0,
             rotation: 0.0,
-            shadow_blur: 0.0, _pad: 0.0,
+            shadow_blur: 0.0,
+            ..no_gradient_fields()
         });
     }
 }
@@ -2541,6 +2793,10 @@ fn paint_drawer_overlay<'a>(
     let mut sub_nav_tops = Vec::new();
     let mut sub_drawers = Vec::new();
     let mut sub_header_hits = Vec::new();
+    // Drawer-pass barriers go to a local sink — the drawer pass
+    // currently doesn't split rects around text; the walk
+    // signature is shared with the main-pass case.
+    let mut sub_text_barriers = Vec::new();
     walk(
         backend,
         text_store,
@@ -2558,6 +2814,7 @@ fn paint_drawer_overlay<'a>(
         1.0,
         rects,
         texts,
+        &mut sub_text_barriers,
         &mut sub_overlays,
         &mut sub_nav_tops,
         &mut sub_drawers,
@@ -2791,6 +3048,9 @@ fn walk_overlay<'a>(
     // recursion type-checks.
     let mut nested_drawers = Vec::new();
     let mut nested_header_hits = Vec::new();
+    // Overlay-pass barriers go to a local sink — see the drawer
+    // and nav-top sites above for the rationale.
+    let mut nested_text_barriers = Vec::new();
     for child in &children {
         walk(
             backend,
@@ -2809,6 +3069,7 @@ fn walk_overlay<'a>(
             1.0,
             rects,
             texts,
+            &mut nested_text_barriers,
             &mut nested_overlays,
             &mut nested_nav_tops,
             &mut nested_drawers,
@@ -2943,7 +3204,8 @@ fn paint_image_placeholder(
         border_color: srgb_rgba_to_linear(PLACEHOLDER_BORDER),
         border_width: 1.0,
         rotation: 0.0,
-        shadow_blur: 0.0, _pad: 0.0,
+        shadow_blur: 0.0,
+        ..no_gradient_fields()
     });
     // Diagonal "missing-image" stripe across the box.
     let stripe_w = w.hypot(h);
@@ -2957,7 +3219,8 @@ fn paint_image_placeholder(
         border_color: [0.0; 4],
         border_width: 0.0,
         rotation: (h / w).atan(),
-        shadow_blur: 0.0, _pad: 0.0,
+        shadow_blur: 0.0,
+        ..no_gradient_fields()
     });
 }
 
@@ -3097,7 +3360,8 @@ fn stroke_segment(
             border_color: [0.0; 4],
             border_width: 0.0,
             rotation: 0.0,
-            shadow_blur: 0.0, _pad: 0.0,
+            shadow_blur: 0.0,
+            ..no_gradient_fields()
         });
         return;
     }
@@ -3116,7 +3380,8 @@ fn stroke_segment(
         border_color: [0.0; 4],
         border_width: 0.0,
         rotation: angle,
-        shadow_blur: 0.0, _pad: 0.0,
+        shadow_blur: 0.0,
+        ..no_gradient_fields()
     });
 }
 
@@ -3669,7 +3934,7 @@ fn paint_video_controls_into(
         border_width: 0.0,
         rotation: 0.0,
         shadow_blur: 0.0,
-        _pad: 0.0,
+        ..no_gradient_fields()
     });
 
     // 2) Play / pause button — a 28×28 hit zone left-aligned in
@@ -3769,7 +4034,7 @@ fn paint_video_controls_into(
             border_width: 0.0,
             rotation: 0.0,
             shadow_blur: 0.0,
-            _pad: 0.0,
+            ..no_gradient_fields()
         });
         // Elapsed fill — proportional to current_time / duration.
         let progress = if dur_micros > 0 {
@@ -3792,7 +4057,7 @@ fn paint_video_controls_into(
                 border_width: 0.0,
                 rotation: 0.0,
                 shadow_blur: 0.0,
-                _pad: 0.0,
+                ..no_gradient_fields()
             });
             // Playhead — a small circle at the end of the fill.
             let head_d = CONTROLS_SCRUB_H * 2.5;
@@ -3806,7 +4071,7 @@ fn paint_video_controls_into(
                 border_width: 0.0,
                 rotation: 0.0,
                 shadow_blur: 0.0,
-                _pad: 0.0,
+                ..no_gradient_fields()
             });
         }
     } else {
@@ -3841,7 +4106,8 @@ fn paint_tab_bar(
         border_color: srgb_rgba_to_linear([0.86, 0.86, 0.88, 1.0]),
         border_width: 1.0,
         rotation: 0.0,
-        shadow_blur: 0.0, _pad: 0.0,
+        shadow_blur: 0.0,
+        ..no_gradient_fields()
     });
     if tab_count == 0 {
         return;
@@ -3858,7 +4124,8 @@ fn paint_tab_bar(
         border_color: [0.0; 4],
         border_width: 0.0,
         rotation: 0.0,
-        shadow_blur: 0.0, _pad: 0.0,
+        shadow_blur: 0.0,
+        ..no_gradient_fields()
     });
 }
 
@@ -3881,7 +4148,8 @@ fn paint_unsupported(
         border_color: srgb_rgba_to_linear([0.88, 0.78, 0.45, 1.0]),
         border_width: 1.0,
         rotation: 0.0,
-        shadow_blur: 0.0, _pad: 0.0,
+        shadow_blur: 0.0,
+        ..no_gradient_fields()
     });
     // Horizontal accent stripe.
     let stripe_h = 3.0_f32;
@@ -3892,7 +4160,8 @@ fn paint_unsupported(
         border_color: [0.0; 4],
         border_width: 0.0,
         rotation: 0.0,
-        shadow_blur: 0.0, _pad: 0.0,
+        shadow_blur: 0.0,
+        ..no_gradient_fields()
     });
 }
 

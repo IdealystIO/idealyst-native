@@ -8,8 +8,17 @@
     <application
         android:label="{{APP_NAME}}"
         android:hasCode="true">
+        <!-- `configChanges` keeps the Activity alive across rotation,
+             multi-window resize, keyboard show/hide, dark-mode toggle,
+             density change, etc. Without it Android tears the Activity
+             down and recreates it, which restarts the framework mount
+             (animations replay, signal state is lost) and computes
+             layout for the wrong viewport. The framework reacts to
+             these events by re-running its layout pass; see
+             `onConfigurationChanged` in MainActivity. -->
         <activity android:name="{{PACKAGE}}.MainActivity"
                   android:exported="true"
+                  android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|uiMode|density|navigation|fontScale|layoutDirection"
                   android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

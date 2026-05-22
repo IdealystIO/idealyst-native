@@ -28,9 +28,15 @@ use std::rc::Rc;
 // one type across the call boundary.
 use web_time::{Duration, Instant};
 
+// `render` stays in scope because the #[cfg(test)] pointer-routing
+// tests at the bottom of this file build throw-away trees through
+// it. The non-test `Host::mount` routes through `fw_mount` so
+// author-side `effect!`s land inside the framework's reactive scope
+// (see the comment on `Host::mount`).
+#[allow(unused_imports)]
 use framework_core::{
-    render, ColorScheme, Easing, Owner, Primitive, StateBits, TouchEvent, TouchHandler, TouchId,
-    TouchPhase, TouchPoint,
+    mount as fw_mount, render, ColorScheme, Easing, Owner, Primitive, StateBits, TouchEvent,
+    TouchHandler, TouchId, TouchPhase, TouchPoint,
 };
 use glyphon::FontSystem;
 use native_layout::LayoutNode;
@@ -518,15 +524,27 @@ impl Host {
     /// Build and mount the framework tree against the backend. The
     /// returned `Owner` is held internally so reactive scopes live
     /// until the host is dropped.
+    ///
+    /// We route through `framework_core::mount`, not `render(backend,
+    /// tree)`, because the author's `build_ui` closure typically
+    /// declares `effect!` blocks + animation timelines whose
+    /// `on_cleanup` callbacks own scheduled tasks. `mount` runs the
+    /// closure INSIDE the framework's root reactive scope, so those
+    /// effects register with the scope and survive past the closure's
+    /// return. The `render(backend, tree)` shortcut builds the tree
+    /// before opening the scope; effects created inside the closure
+    /// are then owned by the local `_effect` binding, drop at the
+    /// end of `build_ui`, and cancel every scheduled task with them —
+    /// which is exactly what was masking the welcome example's
+    /// animations on the wgpu sim.
     pub fn mount<F>(&mut self, build_ui: F)
     where
-        F: FnOnce() -> Primitive,
+        F: FnOnce() -> Primitive + 'static,
     {
         if self._owner.is_some() {
             return;
         }
-        let tree = build_ui();
-        self._owner = Some(render(self.backend.clone(), tree));
+        self._owner = Some(fw_mount(self.backend.clone(), build_ui));
     }
 
     // ---------------- Read-only accessors used by the renderer ---

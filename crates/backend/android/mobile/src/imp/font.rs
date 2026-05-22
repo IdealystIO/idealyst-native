@@ -93,10 +93,28 @@ impl FontRegistry {
         // fallthrough is defense-in-depth for anyone hand-constructing
         // a `TypefaceFace` outside the macro.
         let AssetSource::Embedded { bytes, extension } = source else {
+            log::info!(
+                "[font] register_asset id={:?} skipped — non-Embedded source (URL fonts are unsupported)",
+                id
+            );
             return true;
         };
+        log::info!(
+            "[font] register_asset id={:?} bytes={} ext={}",
+            id,
+            bytes.len(),
+            extension
+        );
         if let Some(tf) = write_font_to_cache_and_load(env, context, id, bytes, extension) {
+            log::info!("[font] register_asset id={:?} → Typeface OK", id);
             self.asset_typefaces.insert(id, tf);
+        } else {
+            log::warn!(
+                "[font] register_asset id={:?} FAILED — Typeface.createFromFile returned null \
+                 (cacheDir unavailable, write_font_to_cache_and_load IO error, or font \
+                 format unsupported)",
+                id
+            );
         }
         true
     }
@@ -109,6 +127,7 @@ impl FontRegistry {
         _fallback: SystemFallback,
     ) {
         let mut registered = Vec::with_capacity(faces.len());
+        let mut missing = 0usize;
         for f in faces {
             if let Some(tf) = self.asset_typefaces.get(&f.asset).cloned() {
                 registered.push(RegisteredFace {
@@ -116,8 +135,26 @@ impl FontRegistry {
                     style: f.style,
                     typeface: tf,
                 });
+            } else {
+                missing += 1;
+                log::warn!(
+                    "[font] register_typeface family={:?}: face {:?}/{:?} asset_id={:?} \
+                     not found in asset_typefaces — register_asset failed for this face",
+                    family_name,
+                    f.weight,
+                    f.style,
+                    f.asset
+                );
             }
         }
+        log::info!(
+            "[font] register_typeface family={:?} id={:?} faces_resolved={}/{}{}",
+            family_name,
+            id,
+            registered.len(),
+            faces.len(),
+            if missing > 0 { " (some faces missing — see warnings above)" } else { "" }
+        );
         self.typefaces.insert(
             id,
             RegisteredTypeface {
@@ -138,16 +175,20 @@ impl FontRegistry {
     }
 
     /// Look up the Android `Typeface` GlobalRef to set on a TextView
-    /// for the given style request. Returns `None` when no custom
-    /// typeface applies — the caller is then expected to fall through
-    /// to the platform default (or `Typeface.create(name, style)` for
+    /// for the given style request. Returns the resolved typeface
+    /// **and the face's actual (weight, style)** — the caller needs
+    /// the actual metadata to compute the `setTypeface(tf, int style)`
+    /// synthesis flags correctly (see [`apply_resolved_font_to_textview`]
+    /// for the math). Returns `None` when no custom typeface applies —
+    /// the caller is then expected to fall through to the platform
+    /// default (or `Typeface.create(name, style)` for
     /// `FontFamily::System`, which doesn't need the registry).
     pub(crate) fn resolve_typeface_ref(
         &self,
         family: Option<&FontFamily>,
         weight: FontWeight,
         style: FontStyle,
-    ) -> Option<&GlobalRef> {
+    ) -> Option<(&GlobalRef, FontWeight, FontStyle)> {
         let FontFamily::Typeface(t) = family? else {
             return None;
         };
@@ -159,10 +200,10 @@ impl FontRegistry {
         t: &Typeface,
         weight: FontWeight,
         style: FontStyle,
-    ) -> Option<&GlobalRef> {
+    ) -> Option<(&GlobalRef, FontWeight, FontStyle)> {
         let entry = self.typefaces.get(&t.id)?;
         let face = pick_face(&entry.faces, weight, style)?;
-        Some(&face.typeface)
+        Some((&face.typeface, face.weight, face.style))
     }
 }
 
@@ -289,15 +330,44 @@ const TYPEFACE_STYLE_BOLD: i32 = 1;
 const TYPEFACE_STYLE_ITALIC: i32 = 2;
 const TYPEFACE_STYLE_BOLD_ITALIC: i32 = 3;
 
-fn typeface_style(weight: FontWeight, style: FontStyle) -> i32 {
-    let bold = matches!(
-        weight,
+fn is_bold_weight(w: FontWeight) -> bool {
+    matches!(
+        w,
         FontWeight::SemiBold
             | FontWeight::Bold
             | FontWeight::ExtraBold
             | FontWeight::Black
-    );
-    match (bold, style == FontStyle::Italic) {
+    )
+}
+
+fn typeface_style(weight: FontWeight, style: FontStyle) -> i32 {
+    match (is_bold_weight(weight), style == FontStyle::Italic) {
+        (true, true) => TYPEFACE_STYLE_BOLD_ITALIC,
+        (true, false) => TYPEFACE_STYLE_BOLD,
+        (false, true) => TYPEFACE_STYLE_ITALIC,
+        (false, false) => TYPEFACE_STYLE_NORMAL,
+    }
+}
+
+/// Bits the picked face's *own* weight/style don't already satisfy.
+/// Hand this to `setTypeface(Typeface, int)` so Android only fake-
+/// bolds / fake-italicizes the axes that the file genuinely doesn't
+/// cover — keeps a real `Inter-Bold` from rendering as
+/// fake-bold-on-top-of-bold.
+///
+/// "Bold" here means semantic-bold (SemiBold+), matching
+/// [`typeface_style`]. So requesting `Bold` against a `SemiBold`
+/// face produces no synthesis (close enough, leave it alone);
+/// requesting `Bold` against a `Regular`-only family does synthesize.
+fn synthesis_style(
+    req_weight: FontWeight,
+    req_style: FontStyle,
+    face_weight: FontWeight,
+    face_style: FontStyle,
+) -> i32 {
+    let need_bold = is_bold_weight(req_weight) && !is_bold_weight(face_weight);
+    let need_italic = req_style == FontStyle::Italic && face_style != FontStyle::Italic;
+    match (need_bold, need_italic) {
         (true, true) => TYPEFACE_STYLE_BOLD_ITALIC,
         (true, false) => TYPEFACE_STYLE_BOLD,
         (false, true) => TYPEFACE_STYLE_ITALIC,
@@ -312,6 +382,26 @@ fn typeface_style(weight: FontWeight, style: FontStyle) -> i32 {
 /// 1. `FontFamily::Typeface` resolved from the registry → exact face.
 /// 2. `FontFamily::System(name)` → `Typeface.create(name, style)`.
 /// 3. Just `font_weight`/`font_style` → `Typeface.defaultFromStyle(...)`.
+///
+/// ## Synthesis flag math for path 1
+///
+/// `Typeface.createFromFile` returns a typeface whose `getStyle()` is
+/// always `NORMAL` regardless of what weight is actually inside the
+/// file — Android doesn't read the OS/2 metadata on the load path.
+/// So if we hand `setTypeface(inter_bold_typeface, BOLD)` to a
+/// TextView, Android sees "typeface is NORMAL, request is BOLD" and
+/// turns on fake-bold via `Paint.setFakeBoldText(true)` — fake-bold
+/// applied **on top of** real bold, which renders too thick (or
+/// substitutes a system font entirely on some Android versions).
+///
+/// The fix: only request synthesis for bits the picked face doesn't
+/// already satisfy. Pass `Typeface.NORMAL` when the picked face's
+/// own weight/style already matches the request; pass `BOLD` or
+/// `ITALIC` only for the axes that need faking. The face picker has
+/// already selected the closest-matching registered face, so this
+/// only kicks in when the registered family genuinely lacks the
+/// requested weight/style (e.g. asking for italic when only upright
+/// is bundled).
 pub(crate) fn apply_resolved_font_to_textview(
     env: &mut JNIEnv,
     text_view: &JObject,
@@ -320,18 +410,21 @@ pub(crate) fn apply_resolved_font_to_textview(
     weight: FontWeight,
     style: FontStyle,
 ) -> bool {
-    let combined_style = typeface_style(weight, style);
-
     // 1. Registry-backed typeface.
-    if let Some(tf) = registry.resolve_typeface_ref(family, weight, style) {
+    if let Some((tf, face_weight, face_style)) =
+        registry.resolve_typeface_ref(family, weight, style)
+    {
+        let synthesis = synthesis_style(weight, style, face_weight, face_style);
         let _ = env.call_method(
             text_view,
             "setTypeface",
             "(Landroid/graphics/Typeface;I)V",
-            &[JValue::Object(tf.as_obj()), JValue::Int(combined_style)],
+            &[JValue::Object(tf.as_obj()), JValue::Int(synthesis)],
         );
         return true;
     }
+
+    let combined_style = typeface_style(weight, style);
 
     // 2. `FontFamily::System(name)` — hand the name to
     //    `Typeface.create(String, int)`. Build + call in the same

@@ -38,9 +38,10 @@
 //! from `MAIN_QUEUE`; the worker discovers the absence on the
 //! next wake and skips it.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::Mutex;
 use std::thread;
@@ -77,10 +78,17 @@ struct PendingTimer {
     deadline: Instant,
 }
 
-/// One active raf-loop client.
+/// One active raf-loop client. `alive` is shared with the matching
+/// [`RafHandle`] so cancellation can flip the entry off without
+/// touching `MAIN_QUEUE.rafs` directly — which matters because
+/// [`drain_due`] temporarily `mem::take`s that Vec while ticking,
+/// so a cancel that fires mid-tick (the AV clock's `raf_handle =
+/// None` on settle) would otherwise find an empty MAIN_QUEUE and
+/// silently lose its retain.
 struct RafEntry {
     id: u64,
     f: Box<dyn FnMut() + 'static>,
+    alive: Rc<Cell<bool>>,
 }
 
 /// Per-thread state. Closures live here so they don't have to be
@@ -106,6 +114,17 @@ static CMD_TX: Mutex<Option<Sender<WorkerCmd>>> = Mutex::new(None);
 
 /// Monotonic id allocator for both timer and raf entries.
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Live raf-client count. The worker keeps emitting 60 Hz pulses
+/// while this is > 0; on `0 → 1` we send `EnableRaf`, on `1 → 0`
+/// we send `DisableRaf`. Tracking this separately from
+/// `MAIN_QUEUE.rafs.len()` avoids the bug where a `RafHandle`'s
+/// `Drop` fires mid-`drain_due` (when `MAIN_QUEUE.rafs` has been
+/// `mem::take`-d into a local) and would otherwise observe an
+/// empty Vec, send a spurious `DisableRaf`, and stall any other
+/// raf clients still running — notably the welcome page's
+/// forever-pulse driver, which is what tipped this over.
+static RAF_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 /// Install the winit-host scheduler. Called once from `run()`
 /// BEFORE the user's `build_ui` mounts and starts dispatching
@@ -285,16 +304,28 @@ pub(crate) fn drain_due() {
     // every closure would prevent the closure from registering new
     // rafs. We swap-out the Vec, tick the locals, then swap back
     // any survivors.
+    //
+    // Mid-tick cancellation is reported via `entry.alive` (set to
+    // `false` by `RafHandle::cancel`). We skip dead entries in the
+    // tick loop AND drop them during the merge — without that
+    // filter, the AV clock's `c.raf_handle = None` (which fires
+    // when an animation settles, AND can fire mid-`drain_due`)
+    // would re-introduce the just-cancelled entry into
+    // `MAIN_QUEUE.rafs`, leaving zombie tick closures that
+    // accumulate every animation cycle.
     let mut taken: Vec<RafEntry> =
         MAIN_QUEUE.with(|q| std::mem::take(&mut q.borrow_mut().rafs));
     for entry in taken.iter_mut() {
-        (entry.f)();
+        if entry.alive.get() {
+            (entry.f)();
+        }
     }
     MAIN_QUEUE.with(|q| {
         let mut q = q.borrow_mut();
-        // Merge: any rafs registered during the tick land in `q.rafs`;
-        // splice the original survivors back at the front so order is
-        // preserved.
+        // Drop dead entries before merging; any entries that
+        // (re-)registered during the tick are already in
+        // `q.rafs` and stay there.
+        taken.retain(|e| e.alive.get());
         let mut merged = taken;
         merged.append(&mut q.rafs);
         q.rafs = merged;
@@ -319,7 +350,14 @@ impl Scheduler for WinitScheduler {
         // unwinds, on the same thread. Implementing it as a 0 ms
         // `after_ms` lands the closure in the next event-loop
         // iteration — same shape as iOS's NSTimer-based scheduler.
-        let _ = self.after_ms(0, f);
+        //
+        // `forget` the returned handle because microtasks are
+        // fire-and-forget by contract: dropping the handle here
+        // would cancel the timer before the worker ever wakes
+        // (the framework discards the return value, so we'd
+        // otherwise be cancelling a microtask scheduled milli-
+        // seconds ago).
+        std::mem::forget(self.after_ms(0, f));
     }
 
     fn after_animation_frame(
@@ -354,13 +392,27 @@ impl Scheduler for WinitScheduler {
 
     fn raf_loop(&self, f: Box<dyn FnMut() + 'static>) -> Box<dyn ScheduleHandle> {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let alive = Rc::new(Cell::new(true));
         MAIN_QUEUE.with(|q| {
-            q.borrow_mut().rafs.push(RafEntry { id, f });
+            q.borrow_mut().rafs.push(RafEntry {
+                id,
+                f,
+                alive: alive.clone(),
+            });
         });
-        if let Some(tx) = CMD_TX.lock().unwrap().clone() {
-            let _ = tx.send(WorkerCmd::EnableRaf);
+        // Bump the live-raf count first; if we were the first client,
+        // signal the worker to start pulsing. The strict ordering
+        // matters when two clients register in quick succession —
+        // a fetch_add ≥ 1 by another thread before our send would
+        // also have signalled, but Worker treats EnableRaf as
+        // idempotent so double-signal is fine.
+        let prev = RAF_COUNT.fetch_add(1, Ordering::SeqCst);
+        if prev == 0 {
+            if let Some(tx) = CMD_TX.lock().unwrap().clone() {
+                let _ = tx.send(WorkerCmd::EnableRaf);
+            }
         }
-        Box::new(RafHandle { id })
+        Box::new(RafHandle { id, alive })
     }
 }
 
@@ -387,25 +439,40 @@ impl Drop for TimerHandle {
     }
 }
 
-/// Handle returned from `raf_loop`. `Drop` removes the entry from
-/// the raf list; the worker stops pulsing once it sees the list is
-/// empty (via the `DisableRaf` hint, sent below).
+/// Handle returned from `raf_loop`. `Drop` flips the shared
+/// `alive` flag to `false` so the matching `RafEntry` (which may
+/// currently live in `drain_due`'s local `taken` Vec rather than
+/// in `MAIN_QUEUE.rafs`) is skipped on the next tick and dropped
+/// during the merge. Worker pulses are gated on `RAF_COUNT`
+/// reaching zero, not on `MAIN_QUEUE.rafs` being empty — the
+/// latter is unreliable mid-drain.
 struct RafHandle {
     id: u64,
+    alive: Rc<Cell<bool>>,
 }
 
 impl ScheduleHandle for RafHandle {
     fn cancel(&mut self) {
-        let now_empty = MAIN_QUEUE.with(|q| {
-            let mut q = q.borrow_mut();
-            q.rafs.retain(|e| e.id != self.id);
-            q.rafs.is_empty()
-        });
-        if now_empty {
+        // Idempotent: subsequent `cancel` calls (cancel-then-drop,
+        // double drop) shouldn't decrement the count twice.
+        if !self.alive.get() {
+            return;
+        }
+        self.alive.set(false);
+        let prev = RAF_COUNT.fetch_sub(1, Ordering::SeqCst);
+        if prev == 1 {
             if let Some(tx) = CMD_TX.lock().unwrap().clone() {
                 let _ = tx.send(WorkerCmd::DisableRaf);
             }
         }
+        // Best-effort eager cleanup. If we're mid-`drain_due`, the
+        // entry is in `taken` not `MAIN_QUEUE.rafs`; the retain is a
+        // no-op then, but the merge step below filters by `alive`
+        // so the entry won't come back.
+        let id = self.id;
+        MAIN_QUEUE.with(|q| {
+            q.borrow_mut().rafs.retain(|e| e.id != id);
+        });
     }
 }
 
