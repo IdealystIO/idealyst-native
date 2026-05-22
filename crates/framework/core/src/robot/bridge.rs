@@ -51,7 +51,31 @@ impl BridgeHandle {
     }
 }
 
+/// Project-identifying metadata captured by [`set_app_identity`].
+/// The bridge writes these into the mDNS TXT record so the MCP
+/// server can route Robot calls by app — without env-var plumbing.
+#[derive(Debug, Clone, Default)]
+pub struct AppIdentity {
+    /// Short package name (e.g. `mcp_test_app`). Falls back to
+    /// `env!("CARGO_PKG_NAME")` of the framework when unset, which
+    /// is wrong — callers should always set this explicitly.
+    pub name: String,
+    /// Reverse-DNS bundle id (e.g. `com.example.mcp_test_app`).
+    /// Optional; only the iOS / Android backends need this for
+    /// platform-side identification.
+    pub bundle_id: Option<String>,
+    /// Absolute project root path. Lets the MCP server cross-reference
+    /// with the user-level registry / catalog binary path.
+    pub project_root: Option<String>,
+}
+
 thread_local! {
+    /// Per-process project identity for the bridge advertisement.
+    /// Set via [`set_app_identity`] before `mount()`; the bridge
+    /// reads from here when binding + advertising.
+    static APP_IDENTITY: std::cell::RefCell<Option<AppIdentity>> =
+        const { std::cell::RefCell::new(None) };
+
     /// Stashed bridge handle from [`start_auto_polling`]. Held so it
     /// outlives `mount()` returning; dropped only when the process
     /// exits. The TCP listener thread doesn't observe this drop, so
@@ -59,11 +83,154 @@ thread_local! {
     static AUTO_POLLED_BRIDGE: std::cell::RefCell<Option<BridgeHandle>> =
         const { std::cell::RefCell::new(None) };
 
+    /// mDNS advertiser kept alive for the process lifetime. Dropping
+    /// it unregisters the service from the local-network browse.
+    #[cfg(not(target_arch = "wasm32"))]
+    static MDNS_ADVERTISER: std::cell::RefCell<Option<MdnsAdvertiser>> =
+        const { std::cell::RefCell::new(None) };
+
     /// The currently-scheduled poll task. Held to keep the
     /// `after_ms` handle alive — dropping it would cancel the pending
     /// callback before it fires. Replaced on each reschedule.
     static POLL_TASK: std::cell::RefCell<Option<crate::scheduling::ScheduledTask>> =
         const { std::cell::RefCell::new(None) };
+}
+
+/// Register this app's identity for the bridge advertisement.
+/// Idiomatic call site: a wrapper template's entry point (web's
+/// `#[wasm_bindgen(start)]`, iOS's `ios_main`, Android's
+/// `Java_..._attach`, macOS's `main`) calls this BEFORE invoking
+/// `framework_core::mount(...)`.
+///
+/// The bridge reads `(name, bundle_id, project_root)` from here to
+/// populate the mDNS service instance name and TXT record. Setting
+/// the identity is cheap — a clone into a `thread_local`. Calling
+/// twice replaces the previous value; subsequent `mount()` calls
+/// pick up the new identity. For the bridge specifically, only the
+/// value at the time of `start_auto_polling` matters.
+///
+/// Authors writing their own `app()` without going through the CLI
+/// can call this directly:
+///
+/// ```ignore
+/// framework_core::robot::bridge::set_app_identity(
+///     framework_core::robot::bridge::AppIdentity {
+///         name: "my-app".to_string(),
+///         bundle_id: Some("com.example.my_app".to_string()),
+///         project_root: None,
+///     },
+/// );
+/// ```
+pub fn set_app_identity(identity: AppIdentity) {
+    APP_IDENTITY.with(|slot| {
+        *slot.borrow_mut() = Some(identity);
+    });
+}
+
+/// Read the currently-registered identity. Returns a default
+/// `AppIdentity { name: "app", bundle_id: None, project_root: None }`
+/// when none has been registered — keeps the bridge advertisement
+/// running with a generic name rather than silently disabling
+/// itself.
+fn current_identity() -> AppIdentity {
+    APP_IDENTITY.with(|slot| {
+        slot.borrow()
+            .clone()
+            .unwrap_or_else(|| AppIdentity {
+                name: std::env::var("IDEALYST_APP_NAME")
+                    .ok()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "app".to_string()),
+                bundle_id: std::env::var("IDEALYST_BUNDLE_ID").ok().filter(|s| !s.is_empty()),
+                project_root: std::env::var("IDEALYST_PROJECT_ROOT").ok().filter(|s| !s.is_empty()),
+            })
+    })
+}
+
+/// mDNS advertiser handle — held in a thread-local so the daemon
+/// outlives `mount()`. Dropping it unregisters the service.
+#[cfg(not(target_arch = "wasm32"))]
+struct MdnsAdvertiser {
+    #[allow(dead_code)]
+    daemon: mdns_sd::ServiceDaemon,
+    #[allow(dead_code)]
+    fullname: String,
+}
+
+/// Service type for the Robot bridge mDNS advertisement.
+/// `_idealyst-robot._tcp.local.` — generic so the MCP server browses
+/// one thing; per-app routing is via the TXT record's `app` key.
+#[cfg(not(target_arch = "wasm32"))]
+pub const MDNS_SERVICE_TYPE: &str = "_idealyst-robot._tcp.local.";
+
+/// Advertise the bound bridge port via mDNS. Best-effort: any
+/// failure (daemon init, registration error) is logged and the
+/// bridge keeps running — the registry-file fallback still works
+/// on hosts where mDNS is unavailable (corporate VPN, etc.).
+#[cfg(not(target_arch = "wasm32"))]
+fn advertise_mdns(port: u16, identity: &AppIdentity) {
+    let pid = std::process::id();
+    // DNS-SD labels can't contain `.` or whitespace. The bundle id is
+    // reverse-DNS so we strip it to hyphens; the package name is
+    // already snake_case (CARGO_PKG_NAME conventions).
+    let name_label = identity.name.replace('.', "-").replace(' ', "-");
+    let instance_name = format!("{}-{}", name_label, pid);
+    let hostname = format!("idealyst-{}-{}.local.", name_label, pid);
+
+    let pid_s = pid.to_string();
+    let port_s = port.to_string();
+    let proto = "1".to_string();
+    let bundle_id_s = identity.bundle_id.clone().unwrap_or_default();
+    let project_root_s = identity.project_root.clone().unwrap_or_default();
+    let catalog_bin_s = std::env::var("IDEALYST_CATALOG_BIN").unwrap_or_default();
+
+    let txt: [(&str, &str); 6] = [
+        ("app", identity.name.as_str()),
+        ("bundle_id", bundle_id_s.as_str()),
+        ("project_root", project_root_s.as_str()),
+        ("catalog_bin", catalog_bin_s.as_str()),
+        ("pid", pid_s.as_str()),
+        ("proto", proto.as_str()),
+    ];
+    // Note: TXT records have a per-record size cap (~255 bytes is
+    // safe). Long `project_root` paths on iOS/Android sandboxes
+    // could overshoot; if that becomes a problem in the wild, drop
+    // `project_root` from the record and have the MCP server ask
+    // the bridge via the `get_identity` command instead.
+
+    let daemon = match mdns_sd::ServiceDaemon::new() {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("[robot-bridge] mDNS daemon init failed: {} — discovery limited to registry fallback", e);
+            return;
+        }
+    };
+    let info = match mdns_sd::ServiceInfo::new(
+        MDNS_SERVICE_TYPE,
+        &instance_name,
+        &hostname,
+        "",
+        port,
+        &txt[..],
+    ) {
+        Ok(i) => i.enable_addr_auto(),
+        Err(e) => {
+            eprintln!("[robot-bridge] mDNS ServiceInfo build failed: {}", e);
+            return;
+        }
+    };
+    let fullname = info.get_fullname().to_string();
+    if let Err(e) = daemon.register(info) {
+        eprintln!("[robot-bridge] mDNS register failed: {}", e);
+        return;
+    }
+    eprintln!(
+        "[robot-bridge] advertised via mDNS as {} (port {}, app={}, port_s={})",
+        fullname, port, identity.name, port_s
+    );
+    MDNS_ADVERTISER.with(|slot| {
+        *slot.borrow_mut() = Some(MdnsAdvertiser { daemon, fullname });
+    });
 }
 
 /// Auto-polling variant of [`start`]: spawns the TCP listener AND
@@ -124,6 +291,14 @@ pub fn start_auto_polling(default_port: u16) {
             }
         };
         write_port_file(bound_port);
+        // mDNS advertisement — non-wasm only. Failure here is
+        // non-fatal (logged inside `advertise_mdns`); the registry
+        // file fallback still wires up discovery for the MCP server.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let identity = current_identity();
+            advertise_mdns(bound_port, &identity);
+        }
         *slot.borrow_mut() = Some(handle);
     });
     schedule_periodic_poll();
@@ -192,16 +367,20 @@ fn write_legacy_per_project_file(port: u16) {
 fn write_registry_entry(port: u16) {
     use crate::__mcp::registry::{now_secs, update_with, AppEntry};
 
-    let project_root = resolve_project_root();
-    let name = std::env::var("IDEALYST_APP_NAME")
-        .ok()
+    let identity = current_identity();
+    let project_root = identity
+        .project_root
+        .clone()
         .filter(|s| !s.is_empty())
-        .or_else(|| {
-            std::path::PathBuf::from(&project_root)
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-        })
-        .unwrap_or_else(|| "app".to_string());
+        .unwrap_or_else(resolve_project_root);
+    let name = if !identity.name.is_empty() {
+        identity.name.clone()
+    } else {
+        std::path::PathBuf::from(&project_root)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "app".to_string())
+    };
     let catalog_bin = std::env::var("IDEALYST_CATALOG_BIN")
         .ok()
         .filter(|s| !s.is_empty());
@@ -401,6 +580,37 @@ fn handle_connection(stream: TcpStream, tx: mpsc::Sender<BridgeCommand>) {
 fn dispatch(robot: &Robot, cmd: &str, args: &serde_json::Value) -> Result<String, String> {
     match cmd {
         "ping" => Ok("\"pong\"".into()),
+        "get_identity" => {
+            // Hand back what the app advertised via mDNS so the MCP
+            // server can verify it's talking to the right project.
+            let id = current_identity();
+            let bundle = id
+                .bundle_id
+                .as_deref()
+                .and_then(|s| serde_json::to_string(s).ok())
+                .unwrap_or_else(|| "null".into());
+            let root = id
+                .project_root
+                .as_deref()
+                .and_then(|s| serde_json::to_string(s).ok())
+                .unwrap_or_else(|| "null".into());
+            Ok(format!(
+                "{{\"name\":{},\"bundle_id\":{},\"project_root\":{},\"pid\":{}}}",
+                serde_json::to_string(&id.name).unwrap_or_else(|_| "\"app\"".into()),
+                bundle,
+                root,
+                std::process::id(),
+            ))
+        }
+        #[cfg(feature = "mcp")]
+        "get_catalog" => {
+            // Serve the in-process catalog JSON over the bridge.
+            // Removes the need for the MCP server to spawn a
+            // separate `--emit-catalog` extractor binary in the
+            // common case where the app is already running.
+            let json = crate::__mcp::catalog_json();
+            Ok(json.to_string())
+        }
         "find_element" => {
             let query = parse_query(args)?;
             match robot.find(query) {

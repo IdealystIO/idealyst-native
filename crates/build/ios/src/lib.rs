@@ -526,6 +526,21 @@ pub unsafe extern "C" fn ios_main(root_view: *mut std::ffi::c_void) {{
 
     OWNER.with(|slot| slot.borrow_mut().take());
 
+    // Register the project's identity for the Robot bridge mDNS
+    // advertisement. Done before `mount()` so the bridge thread
+    // started inside the framework's walker sees the populated
+    // identity. No-op when `dev` feature is off (bridge isn't built).
+    #[cfg(feature = "dev")]
+    {{
+        ::framework_core::robot::bridge::set_app_identity(
+            ::framework_core::robot::bridge::AppIdentity {{
+                name: "{app_name}".to_string(),
+                bundle_id: Some("{bundle_id}".to_string()),
+                project_root: ::std::option::Option::None,
+            }},
+        );
+    }}
+
     let mut backend = IosBackend::new(mtm);
     backend.set_host_root(view);
     let backend = Rc::new(RefCell::new(backend));
@@ -556,6 +571,12 @@ pub unsafe extern "C" fn ios_teardown() {{
 }}
 "#,
         lib = manifest.lib_name,
+        app_name = manifest.name,
+        bundle_id = manifest
+            .app
+            .bundle_id
+            .clone()
+            .unwrap_or_else(|| format!("com.example.{}", manifest.name)),
     );
 
     fs::write(wrapper_dir.join("Cargo.toml"), cargo_toml)?;

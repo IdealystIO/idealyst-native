@@ -30,6 +30,11 @@ serde_json = "1"
 # file-watch implementation in the tree.
 notify-debouncer-mini = { version = "0.4", default-features = false }
 
+# mDNS browser — discovers `_idealyst-robot._tcp` advertisements so
+# the server can route Robot tool calls (and catalog fetches) to
+# the live app without env-var plumbing or port files.
+mdns-sd = { version = "0.10", default-features = false }
+
 # stderr logging (rmcp examples use it; not strictly required).
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

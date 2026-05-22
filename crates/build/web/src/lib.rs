@@ -280,24 +280,32 @@ fn wasm_pack_build(
     Ok(())
 }
 
-/// Render the wrapper's `[features]` block. Each requested
-/// `user_features` entry becomes `<feat> = ["<user>/<feat>"]` so a
+/// Render the wrapper's `[features]` block. Each *wrapper-local*
+/// feature entry becomes `<feat> = ["<user>/<feat>"]` so a
 /// `wasm-pack build -- --features <feat>` against the wrapper turns
-/// that feature on in the user crate. Returns the empty string when
-/// no features are requested so the resulting Cargo.toml doesn't
-/// gain an empty `[features]` block.
+/// that feature on in the user crate.
+///
+/// Cross-crate feature activations of the form `<dep>/<feat>` (e.g.
+/// `framework-core/dev`) are **skipped** here — those are valid
+/// cargo command-line arguments to `--features`, but they aren't
+/// valid feature *names*, and trying to emit them as keys produces
+/// invalid TOML. The build command passes them through to cargo as
+/// `--features <dep>/<feat>` directly and cargo activates the
+/// underlying feature on the named dep.
+///
+/// Returns the empty string when no wrapper-local features remain
+/// so the resulting Cargo.toml doesn't gain an empty `[features]`
+/// block.
 fn features_section(user_name: &str, user_features: &[String]) -> String {
-    if user_features.is_empty() {
+    let local: Vec<&String> = user_features
+        .iter()
+        .filter(|f| !f.is_empty() && !f.contains('/'))
+        .collect();
+    if local.is_empty() {
         return String::new();
     }
     let mut out = String::from("\n[features]\n");
-    for feat in user_features {
-        // Skip empties — defensive; callers shouldn't pass them but
-        // a stray comma in a user-supplied list shouldn't blow up
-        // the wrapper Cargo.toml parser.
-        if feat.is_empty() {
-            continue;
-        }
+    for feat in local {
         out.push_str(&format!(
             "{feat} = [\"{user_name}/{feat}\"]\n",
             feat = feat,

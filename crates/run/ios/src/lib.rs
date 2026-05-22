@@ -337,23 +337,43 @@ fn xcrun_sdk_path(sdk: &str) -> Result<PathBuf> {
 // ---------------------------------------------------------------------------
 
 fn render_info_plist(manifest: &Manifest, executable_name: &str, mode: &RunMode) -> Result<String> {
-    // In AAS mode we inject the Bonjour service type and a usage
-    // string (both required by iOS 14+ before NWBrowser will return
-    // any results) plus an `IdealystAppId` key that matches the
-    // dev-server's mDNS TXT record. The bundle id is the natural
-    // shared key: stable across rebuilds, unique per project, and
-    // the user already configures it in `idealyst.toml`.
+    // The Robot bridge advertises `_idealyst-robot._tcp` so the MCP
+    // server can discover this app via Bonjour. iOS 14+ requires the
+    // service type be listed in `NSBonjourServices` AND a
+    // `NSLocalNetworkUsageDescription` string be present, otherwise
+    // the OS silently drops the advertisement and prompts the user
+    // for permission on first network use. Both go into every dev
+    // build (Local + AAS modes); release builds get nothing extra.
+    //
+    // AAS mode additionally advertises `_idealyst-dev._tcp` for the
+    // dev-server discovery flow + the `IdealystAppId` key for the
+    // dev-server's TXT-record match.
+    let robot_bonjour = "<string>_idealyst-robot._tcp</string>";
+    let local_network_usage =
+        "<key>NSLocalNetworkUsageDescription</key>\n    \
+         <string>Allows this Idealyst dev build to be discovered by Claude / IDE tooling on your local network for live inspection and hot-reload.</string>";
+
     let extra_entries = match mode {
-        RunMode::Local => String::new(),
+        RunMode::Local => format!(
+            "<key>NSBonjourServices</key>\n    \
+             <array>\n        \
+                 {robot}\n    \
+             </array>\n    \
+             {usage}",
+            robot = robot_bonjour,
+            usage = local_network_usage,
+        ),
         RunMode::Aas => format!(
             "<key>NSBonjourServices</key>\n    \
              <array>\n        \
-                 <string>_idealyst-dev._tcp</string>\n    \
+                 <string>_idealyst-dev._tcp</string>\n        \
+                 {robot}\n    \
              </array>\n    \
-             <key>NSLocalNetworkUsageDescription</key>\n    \
-             <string>Finds the Idealyst dev-server on your network so the app can hot-reload its UI from your dev machine.</string>\n    \
-             <key>IdealystAppId</key>\n    <string>{}</string>",
-            xml_escape(manifest.app.require_bundle_id()?),
+             {usage}\n    \
+             <key>IdealystAppId</key>\n    <string>{app_id}</string>",
+            robot = robot_bonjour,
+            usage = local_network_usage,
+            app_id = xml_escape(manifest.app.require_bundle_id()?),
         ),
     };
     Ok(INFO_PLIST_TMPL

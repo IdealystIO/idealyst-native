@@ -1569,6 +1569,7 @@ dependencies = [
  "framework-macros",
  "framework-mcp",
  "log",
+ "mdns-sd",
  "pollster",
  "raw-window-handle",
  "serde",
@@ -2635,6 +2636,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "framework-mcp",
+ "mdns-sd",
  "notify-debouncer-mini",
  "rmcp",
  "serde",

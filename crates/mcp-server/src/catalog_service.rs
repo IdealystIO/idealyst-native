@@ -50,6 +50,11 @@ pub struct CatalogService {
     /// catalog tools fan out across every registered app without
     /// re-spawning the extractor on every call.
     catalog_cache: Arc<CatalogCache>,
+    /// Live mDNS-discovered app table. Background thread maintains
+    /// this; tools consult it before falling back to the on-disk
+    /// registry. Empty (and harmlessly so) when mDNS is unavailable
+    /// — every catalog tool still works via the legacy path.
+    mdns: crate::mdns_discovery::DiscoveryTable,
     // `#[tool_handler]` reads this through the trait impl, not via
     // a direct field access — the dead-code analyzer can't see it.
     #[allow(dead_code)]
@@ -70,9 +75,29 @@ struct CachedCatalog {
 }
 
 impl CatalogCache {
-    /// Fetch the catalog for `app`. Cache hit when the binary
-    /// hasn't been rebuilt since last call; otherwise spawn the
-    /// extractor, parse stdout, store.
+    /// Fetch a catalog over an already-running app's Robot bridge
+    /// (the `get_catalog` command). Preferred path: zero subprocess
+    /// spawn, decoupled from `catalog_bin` paths, and the live
+    /// app's inventory is the most up-to-date source. No caching —
+    /// the live app is always authoritative.
+    pub async fn get_via_bridge(
+        &self,
+        bridge: &crate::robot_bridge::RobotBridge,
+    ) -> Result<Arc<ResolvedCatalog>, String> {
+        let value = bridge
+            .call("get_catalog", serde_json::Value::Null)
+            .await
+            .map_err(|e| e.to_string())?;
+        let json = serde_json::to_string(&value).map_err(|e| e.to_string())?;
+        let cat =
+            ResolvedCatalog::build_from_json(&json).map_err(|e| e.to_string())?;
+        Ok(Arc::new(cat))
+    }
+
+    /// Fetch the catalog by spawning the `catalog_bin` extractor.
+    /// Cache hit when the binary hasn't been rebuilt since last call;
+    /// otherwise spawn, parse stdout, store. Used as fallback when
+    /// `get_via_bridge` isn't available (e.g. older app versions).
     async fn get(
         &self,
         app: &framework_mcp::registry::AppEntry,
@@ -132,45 +157,86 @@ pub(crate) struct RobotResolver {
 }
 
 impl RobotResolver {
-    pub async fn resolve(&self, app: Option<&str>) -> Result<Arc<RobotBridge>, McpError> {
+    /// Resolve a Robot bridge for the named app (or the only-registered
+    /// app when `app` is omitted). Consults mDNS-discovered services
+    /// first, then falls back to the on-disk registry. Caches the
+    /// resulting `RobotBridge` so subsequent calls reuse the same TCP
+    /// connection state.
+    pub async fn resolve(
+        &self,
+        app: Option<&str>,
+        mdns: &crate::mdns_discovery::DiscoveryTable,
+    ) -> Result<Arc<RobotBridge>, McpError> {
+        let (name, addr) = self.resolve_addr(app, mdns)?;
+        let mut bridges = self.bridges.lock().await;
+        let bridge = bridges
+            .entry(name)
+            .or_insert_with(|| Arc::new(RobotBridge::new(addr)))
+            .clone();
+        Ok(bridge)
+    }
+
+    /// Same routing logic as `resolve`, but returns the resolved
+    /// `(name, bridge_addr)` without going through the bridge cache.
+    /// Used by `list_apps` to merge mDNS + registry entries.
+    fn resolve_addr(
+        &self,
+        app: Option<&str>,
+        mdns: &crate::mdns_discovery::DiscoveryTable,
+    ) -> Result<(String, String), McpError> {
+        let live = mdns.snapshot();
         let reg = Registry::load();
-        let entry = match (app, reg.apps.len()) {
-            (Some(name), _) => reg.find(name).cloned().ok_or_else(|| {
-                let known: Vec<&str> = reg.apps.iter().map(|a| a.name.as_str()).collect();
-                McpError::invalid_params(
-                    format!(
-                        "app {:?} not in registry. Currently registered: {:?}. \
-                         Run `idealyst dev` in the target project.",
-                        name, known
-                    ),
-                    None,
-                )
-            })?,
-            (None, 1) => reg.apps[0].clone(),
-            (None, 0) => {
-                return Err(McpError::invalid_params(
-                    "no apps registered — run `idealyst dev` in a project first".to_string(),
-                    None,
-                ));
+        // Merge: live mDNS wins over registry on name conflicts (it's
+        // the more authoritative source — the app is actually running).
+        let mut merged: Vec<(String, String)> = Vec::new();
+        let mut seen: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        for a in &live {
+            seen.insert(a.name.clone());
+            merged.push((a.name.clone(), a.bridge_addr.clone()));
+        }
+        for e in &reg.apps {
+            if !seen.contains(&e.name) {
+                merged.push((e.name.clone(), e.bridge_addr.clone()));
             }
+        }
+
+        match (app, merged.len()) {
+            (Some(name), _) => merged
+                .into_iter()
+                .find(|(n, _)| n == name)
+                .ok_or_else(|| {
+                    let known: Vec<&str> = live
+                        .iter()
+                        .map(|a| a.name.as_str())
+                        .chain(reg.apps.iter().map(|a| a.name.as_str()))
+                        .collect();
+                    McpError::invalid_params(
+                        format!(
+                            "app {:?} not running. Live + registered apps: {:?}. \
+                             Run `idealyst dev` in the target project.",
+                            name, known
+                        ),
+                        None,
+                    )
+                }),
+            (None, 1) => Ok(merged.into_iter().next().unwrap()),
+            (None, 0) => Err(McpError::invalid_params(
+                "no apps discovered — run `idealyst dev` in a project first".to_string(),
+                None,
+            )),
             (None, _) => {
-                let known: Vec<&str> = reg.apps.iter().map(|a| a.name.as_str()).collect();
-                return Err(McpError::invalid_params(
+                let known: Vec<&str> = merged.iter().map(|(n, _)| n.as_str()).collect();
+                Err(McpError::invalid_params(
                     format!(
-                        "{} apps registered; specify `app` (one of: {:?})",
-                        reg.apps.len(),
+                        "{} apps available; specify `app` (one of: {:?})",
+                        merged.len(),
                         known
                     ),
                     None,
-                ));
+                ))
             }
-        };
-        let mut bridges = self.bridges.lock().await;
-        let bridge = bridges
-            .entry(entry.name.clone())
-            .or_insert_with(|| Arc::new(RobotBridge::new(entry.bridge_addr.clone())))
-            .clone();
-        Ok(bridge)
+        }
     }
 }
 
@@ -319,6 +385,7 @@ impl CatalogService {
             robot: None,
             resolver: Arc::new(RobotResolver::default()),
             catalog_cache: Arc::new(CatalogCache::default()),
+            mdns: crate::mdns_discovery::start(),
             tool_router: Self::tool_router(),
         }
     }
@@ -349,13 +416,81 @@ impl CatalogService {
         self.replace_catalog(ResolvedCatalog::build()).await;
     }
 
-    #[tool(description = "List every component across registered apps. With multiple apps, each entry is tagged with `app`. Returns a JSON array of { app, name, module_path, fqn, file, line } sorted by (app, fqn). If no apps are in the registry, falls back to the in-process catalog (legacy mode).")]
+    #[tool(description = "List every component across live + registered apps. Live apps (discovered via mDNS) are queried over their Robot bridge for fresh catalogs; registered-only apps fall back to the `catalog_bin` extractor. Each entry is tagged with `app`. If neither source yields any apps, falls back to the in-process catalog. Returns a JSON array of { app, name, module_path, fqn, file, line } sorted by (app, fqn).")]
     async fn list_components(&self) -> Result<CallToolResult, McpError> {
-        let reg = Registry::load();
         let mut json: Vec<serde_json::Value> = Vec::new();
 
-        if reg.apps.is_empty() {
-            // Legacy / no-registry path: serve the in-memory catalog.
+        // Build the merged app list. mDNS-discovered services are
+        // preferred (most authoritative); registry entries fill in
+        // any apps the browser hasn't seen yet.
+        let live = self.mdns.snapshot();
+        let reg = Registry::load();
+        let mut seen: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+
+        for app in &live {
+            seen.insert(app.name.clone());
+            // Live path: hit the Robot bridge's `get_catalog`.
+            let bridge = RobotBridge::new(app.bridge_addr.clone());
+            let cat_result = self.catalog_cache.get_via_bridge(&bridge).await;
+            let cat = match cat_result {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(
+                        "live catalog fetch for {:?} failed ({}); skipping",
+                        app.name,
+                        e
+                    );
+                    continue;
+                }
+            };
+            let mut sorted: Vec<&ComponentEntry> = cat.entries().to_vec();
+            sorted.sort_by_key(|e| (e.module_path, e.name));
+            for e in sorted {
+                json.push(serde_json::json!({
+                    "app": app.name,
+                    "name": e.name,
+                    "module_path": e.module_path,
+                    "fqn": format!("{}::{}::{}", app.name, e.module_path, e.name),
+                    "file": e.file,
+                    "line": e.line,
+                }));
+            }
+        }
+
+        for app in &reg.apps {
+            if seen.contains(&app.name) {
+                continue;
+            }
+            // Registry-only path: spawn the `catalog_bin` extractor.
+            let cat = match self.catalog_cache.get(app).await {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(
+                        "catalog_bin fetch for {:?} failed ({}); skipping",
+                        app.name,
+                        e
+                    );
+                    continue;
+                }
+            };
+            let mut sorted: Vec<&ComponentEntry> = cat.entries().to_vec();
+            sorted.sort_by_key(|e| (e.module_path, e.name));
+            for e in sorted {
+                json.push(serde_json::json!({
+                    "app": app.name,
+                    "name": e.name,
+                    "module_path": e.module_path,
+                    "fqn": format!("{}::{}::{}", app.name, e.module_path, e.name),
+                    "file": e.file,
+                    "line": e.line,
+                }));
+            }
+        }
+
+        if json.is_empty() {
+            // No live or registered apps — fall back to the in-process
+            // catalog (the catalog the MCP server itself was built with).
             let cat = self.catalog.read().await;
             let mut sorted: Vec<&ComponentEntry> = cat.entries().to_vec();
             sorted.sort_by_key(|e| (e.module_path, e.name));
@@ -370,27 +505,6 @@ impl CatalogService {
                 }));
             }
         } else {
-            for app in &reg.apps {
-                let cat = match self.catalog_cache.get(app).await {
-                    Ok(c) => c,
-                    Err(e) => {
-                        tracing::warn!("catalog fetch for {:?} failed: {}", app.name, e);
-                        continue;
-                    }
-                };
-                let mut sorted: Vec<&ComponentEntry> = cat.entries().to_vec();
-                sorted.sort_by_key(|e| (e.module_path, e.name));
-                for e in sorted {
-                    json.push(serde_json::json!({
-                        "app": app.name,
-                        "name": e.name,
-                        "module_path": e.module_path,
-                        "fqn": format!("{}::{}::{}", app.name, e.module_path, e.name),
-                        "file": e.file,
-                        "line": e.line,
-                    }));
-                }
-            }
             json.sort_by(|a, b| {
                 let ka = (a["app"].as_str().unwrap_or(""), a["fqn"].as_str().unwrap_or(""));
                 let kb = (b["app"].as_str().unwrap_or(""), b["fqn"].as_str().unwrap_or(""));
@@ -692,23 +806,40 @@ impl CatalogService {
         self.robot_call("invoke_method", app.as_deref(), body).await
     }
 
-    #[tool(description = "List every running idealyst app currently registered (via `idealyst dev`). Returns name, project_root, bridge address, catalog binary path, and PID for each.")]
+    #[tool(description = "List every running idealyst app — merged from live mDNS discovery + the user-level registry. Each entry is tagged with `source: \"mdns\" | \"registry\"`. Live mDNS wins on name conflicts (it's the more authoritative source). Returns name, bundle_id, project_root, bridge_addr, catalog_bin, pid, and source.")]
     async fn list_apps(&self) -> Result<CallToolResult, McpError> {
+        let live = self.mdns.snapshot();
         let reg = Registry::load();
-        let json: Vec<serde_json::Value> = reg
-            .apps
-            .iter()
-            .map(|e| {
-                serde_json::json!({
-                    "name": e.name,
-                    "project_root": e.project_root,
-                    "bridge_addr": e.bridge_addr,
-                    "catalog_bin": e.catalog_bin,
-                    "pid": e.pid,
-                    "registered_at": e.registered_at,
-                })
-            })
-            .collect();
+        let mut seen: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        let mut json: Vec<serde_json::Value> = Vec::new();
+        for a in &live {
+            seen.insert(a.name.clone());
+            json.push(serde_json::json!({
+                "source": "mdns",
+                "name": a.name,
+                "bundle_id": a.bundle_id,
+                "project_root": a.project_root,
+                "bridge_addr": a.bridge_addr,
+                "catalog_bin": a.catalog_bin,
+                "pid": a.pid,
+            }));
+        }
+        for e in &reg.apps {
+            if seen.contains(&e.name) {
+                continue;
+            }
+            json.push(serde_json::json!({
+                "source": "registry",
+                "name": e.name,
+                "bundle_id": serde_json::Value::Null,
+                "project_root": e.project_root,
+                "bridge_addr": e.bridge_addr,
+                "catalog_bin": e.catalog_bin,
+                "pid": e.pid,
+                "registered_at": e.registered_at,
+            }));
+        }
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string_pretty(&json).unwrap(),
         )]))
@@ -730,7 +861,7 @@ impl CatalogService {
             // back-compat with `with_robot_bridge(...)` callers.
             b.clone()
         } else {
-            match self.resolver.resolve(app).await {
+            match self.resolver.resolve(app, &self.mdns).await {
                 Ok(b) => b,
                 Err(e) => return Err(e),
             }
