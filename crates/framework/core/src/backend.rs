@@ -1354,16 +1354,24 @@ pub trait Backend {
     /// by the walker's reactive a11y Effect when any field of the
     /// node's [`AccessibilityProps`] changes.
     ///
+    /// `inferred_role` is the primitive's default role (the same value
+    /// the walker computed via [`accessibility::default_role`] at
+    /// `create_*` time). Backends use it as the fallback when
+    /// `a11y.role.is_none()`, so the update path produces the same
+    /// resolved role as the create path.
+    ///
     /// Backends translate to per-attribute setter calls
     /// (`accessibilityLabel = ...`, `setAttribute('aria-label', ...)`,
     /// `setContentDescription(...)`).
     ///
     /// [`AccessibilityProps`]: crate::accessibility::AccessibilityProps
+    /// [`accessibility::default_role`]: crate::accessibility::default_role
     #[allow(unused_variables)]
     fn update_accessibility(
         &mut self,
         node: &Self::Node,
         a11y: &crate::accessibility::AccessibilityProps,
+        inferred_role: Option<crate::accessibility::Role>,
     ) {
         // default: no-op (backend doesn't implement a11y yet, the
         // node still renders; assistive technology sees an unlabelled

@@ -1521,7 +1521,7 @@ impl Backend for WebBackend {
     fn create_text_with_id(
         &mut self,
         content: &str,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Option<(Self::Node, u32)> {
         let _t = crate::phase_timer::PhaseTimer::start("text_create_with_id");
         // Without an installed self-handle in `WEB_BACKEND_HANDLE`,
@@ -1566,6 +1566,10 @@ impl Backend for WebBackend {
                 inner_text.as_ref(),
             )
             .expect("__idealystRegisterText call failed");
+        // Apply ARIA to the outer span (the inner Text node has no
+        // attributes of its own). No inferred role on text spans —
+        // screen readers already announce text content directly.
+        a11y::apply(&span, a11y, None);
         Some((span, id))
     }
 
@@ -1678,9 +1682,14 @@ impl Backend for WebBackend {
         &mut self,
         data: &framework_core::primitives::icon::IconData,
         color: Option<&framework_core::Color>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        primitives::icon::create(self, data, color)
+        let node = primitives::icon::create(self, data, color);
+        // SVG icons get explicit `role="img"` since `<svg>` doesn't
+        // have an implicit role by default; the helper writes it when
+        // the inferred role is supplied.
+        a11y::apply(&node, a11y, Some(framework_core::accessibility::Role::Image));
+        node
     }
 
     fn update_icon_color(&mut self, node: &Self::Node, color: &framework_core::Color) {
@@ -1710,9 +1719,13 @@ impl Backend for WebBackend {
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        primitives::text_input::create(self, initial_value, placeholder, on_change, on_key_down)
+        let node =
+            primitives::text_input::create(self, initial_value, placeholder, on_change, on_key_down);
+        // `<input>` has implicit textbox role; no inference needed.
+        a11y::apply(&node, a11y, None);
+        node
     }
 
     fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {
@@ -1725,9 +1738,13 @@ impl Backend for WebBackend {
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        primitives::text_area::create(self, initial_value, placeholder, on_change, on_key_down)
+        let node =
+            primitives::text_area::create(self, initial_value, placeholder, on_change, on_key_down);
+        // `<textarea>` is implicitly a multiline textbox; no inference.
+        a11y::apply(&node, a11y, None);
+        node
     }
 
     fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {
@@ -1745,9 +1762,11 @@ impl Backend for WebBackend {
         &mut self,
         initial_value: bool,
         on_change: Rc<dyn Fn(bool)>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        primitives::toggle::create(self, initial_value, on_change)
+        let node = primitives::toggle::create(self, initial_value, on_change);
+        a11y::apply(&node, a11y, Some(framework_core::accessibility::Role::Switch));
+        node
     }
 
     fn update_toggle_value(&mut self, node: &Self::Node, value: bool) {
@@ -1757,9 +1776,14 @@ impl Backend for WebBackend {
     fn create_scroll_view(
         &mut self,
         horizontal: bool,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        primitives::scroll_view::create(self, horizontal)
+        let node = primitives::scroll_view::create(self, horizontal);
+        // ScrollView has no first-class ARIA role — it's a generic
+        // container; the platform handles scroll affordances. Author
+        // can override.
+        a11y::apply(&node, a11y, None);
+        node
     }
 
     fn create_slider(
@@ -1769,9 +1793,12 @@ impl Backend for WebBackend {
         max: f32,
         step: Option<f32>,
         on_change: Rc<dyn Fn(f32)>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        primitives::slider::create(self, initial_value, min, max, step, on_change)
+        let node = primitives::slider::create(self, initial_value, min, max, step, on_change);
+        // `<input type=range>` is implicitly `role=slider`; skip inference.
+        a11y::apply(&node, a11y, None);
+        node
     }
 
     fn update_slider_value(&mut self, node: &Self::Node, value: f32) {
@@ -1784,9 +1811,11 @@ impl Backend for WebBackend {
         autoplay: bool,
         controls: bool,
         loop_playback: bool,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        primitives::video::create(self, src, autoplay, controls, loop_playback)
+        let node = primitives::video::create(self, src, autoplay, controls, loop_playback);
+        a11y::apply(&node, a11y, None);
+        node
     }
 
     fn update_video_src(&mut self, node: &Self::Node, src: &str) {
@@ -1797,9 +1826,11 @@ impl Backend for WebBackend {
         &mut self,
         size: framework_core::primitives::activity_indicator::ActivityIndicatorSize,
         color: Option<&framework_core::Color>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        primitives::activity_indicator::create(self, size, color)
+        let node = primitives::activity_indicator::create(self, size, color);
+        a11y::apply(&node, a11y, Some(framework_core::accessibility::Role::Spinner));
+        node
     }
 
     fn create_virtualizer(
@@ -1807,9 +1838,11 @@ impl Backend for WebBackend {
         callbacks: framework_core::VirtualizerCallbacks<Self::Node>,
         overscan: f32,
         horizontal: bool,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        primitives::virtualizer::create(self, callbacks, overscan, horizontal)
+        let node = primitives::virtualizer::create(self, callbacks, overscan, horizontal);
+        a11y::apply(&node, a11y, Some(framework_core::accessibility::Role::List));
+        node
     }
 
     fn virtualizer_data_changed(&mut self, node: &Self::Node) {
@@ -1825,9 +1858,16 @@ impl Backend for WebBackend {
         on_ready: framework_core::primitives::graphics::OnReady,
         on_resize: framework_core::primitives::graphics::OnResize,
         on_lost: framework_core::primitives::graphics::OnLost,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        primitives::graphics::create(self, on_ready, on_resize, on_lost)
+        let node = primitives::graphics::create(self, on_ready, on_resize, on_lost);
+        // `<canvas>` has no implicit ARIA role; author code MUST set
+        // `props.label` for screen-reader users to know what's
+        // rendered. We don't infer a role here — let author decide
+        // (canvas + label is enough; explicit role="img" is also
+        // common).
+        a11y::apply(&node, a11y, None);
+        node
     }
 
     fn release_graphics(&mut self, node: &Self::Node) {
@@ -1845,9 +1885,14 @@ impl Backend for WebBackend {
         &mut self,
         callbacks: framework_core::NavigatorCallbacks<Self::Node>,
         control: Rc<framework_core::NavigatorControl>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        primitives::navigator::create(self, callbacks, control)
+        let node = primitives::navigator::create(self, callbacks, control);
+        // Navigator containers are transparent in the AX tree by
+        // default — `accessibility::default_role(Navigator)` returns
+        // None. Author overrides still apply.
+        a11y::apply(&node, a11y, None);
+        node
     }
 
     fn navigator_attach_initial(
@@ -1888,9 +1933,11 @@ impl Backend for WebBackend {
         &mut self,
         callbacks: framework_core::TabNavigatorCallbacks<Self::Node>,
         control: Rc<framework_core::NavigatorControl>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        primitives::navigator::create_tab(self, callbacks, control)
+        let node = primitives::navigator::create_tab(self, callbacks, control);
+        a11y::apply(&node, a11y, None);
+        node
     }
 
     fn release_tab_navigator(&mut self, node: &Self::Node) {
@@ -1923,9 +1970,11 @@ impl Backend for WebBackend {
         &mut self,
         callbacks: framework_core::DrawerNavigatorCallbacks<Self::Node>,
         control: Rc<framework_core::NavigatorControl>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        primitives::navigator::create_drawer(self, callbacks, control)
+        let node = primitives::navigator::create_drawer(self, callbacks, control);
+        a11y::apply(&node, a11y, None);
+        node
     }
 
     fn release_drawer_navigator(&mut self, node: &Self::Node) {
@@ -1966,9 +2015,12 @@ impl Backend for WebBackend {
     fn create_link(
         &mut self,
         config: framework_core::primitives::link::LinkConfig,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        primitives::link::create(self, config)
+        let node = primitives::link::create(self, config);
+        // `<a>` has implicit role="link"; skip inference.
+        a11y::apply(&node, a11y, None);
+        node
     }
 
     fn make_link_handle(
@@ -1983,9 +2035,14 @@ impl Backend for WebBackend {
         target: framework_core::primitives::portal::PortalTarget,
         on_dismiss: Option<Rc<dyn Fn()>>,
         trap_focus: bool,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        primitives::portal::create(self, target, on_dismiss, trap_focus)
+        let node = primitives::portal::create(self, target, on_dismiss, trap_focus);
+        // Portal containers are transparent (the mounted content
+        // carries its own role); pass None for inferred role and let
+        // author opt into `Dialog`/`AlertDialog` via props.role.
+        a11y::apply(&node, a11y, None);
+        node
     }
 
     fn release_portal(&mut self, node: &Self::Node) {
@@ -2004,18 +2061,23 @@ impl Backend for WebBackend {
         type_id: std::any::TypeId,
         type_name: &'static str,
         payload: &Rc<dyn std::any::Any>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         // Look up the handler; clone the Rc so we can drop the
         // registry borrow before calling the handler (which needs
         // `&mut self`).
-        if let Some(handler) = self.external_handlers.get(type_id) {
-            return handler(payload, self);
-        }
-        // No handler registered → render a "not supported" placeholder
-        // so the dev/user sees that something is missing rather than
-        // a silent hole in the UI.
-        external_placeholder_element(&self.doc, type_name).into()
+        let node = if let Some(handler) = self.external_handlers.get(type_id) {
+            handler(payload, self)
+        } else {
+            // No handler registered → render a "not supported" placeholder
+            // so the dev/user sees that something is missing rather than
+            // a silent hole in the UI.
+            external_placeholder_element(&self.doc, type_name).into()
+        };
+        // External handlers don't know their semantic role; the author
+        // supplies it via props.role. No inferred role here.
+        a11y::apply(&node, a11y, None);
+        node
     }
 
     fn release_external(&mut self, _node: &Self::Node) {
@@ -2311,6 +2373,31 @@ impl Backend for WebBackend {
             .append_child(&root)
             .expect("mount append failed");
     }
+
+    fn update_accessibility(
+        &mut self,
+        node: &Self::Node,
+        a11y: &framework_core::accessibility::AccessibilityProps,
+        inferred_role: Option<framework_core::accessibility::Role>,
+    ) {
+        // Reactive prop updates funnel through here. `a11y::apply` is
+        // idempotent and clears attributes that drop to None, so the
+        // same code path that builds the DOM also reconciles it.
+        a11y::apply(node, a11y, inferred_role);
+    }
+
+    fn announce_for_accessibility(
+        &mut self,
+        msg: &str,
+        priority: framework_core::accessibility::LiveRegionPriority,
+    ) {
+        a11y::announce(msg, priority);
+    }
+
+    // dump_accessibility_tree: not implemented on web. Browsers walk
+    // the live DOM + ARIA attributes themselves, so a parallel
+    // semantics tree would be redundant. The trait default (None) is
+    // correct here — no override needed.
 }
 
 /// Marker ops for `ViewHandle`. Views don't have methods yet (no

@@ -114,6 +114,10 @@ fn role_to_aria(role: Role) -> &'static str {
         Role::Popover => "dialog",
         Role::Tooltip => "tooltip",
         Role::Region => "region",
+        // `Role` is `#[non_exhaustive]` — future roles default to no
+        // ARIA mapping until we choose one explicitly. Returning ""
+        // (which set_or_remove drops) is safer than guessing.
+        _ => "",
     }
 }
 
