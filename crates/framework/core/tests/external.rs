@@ -67,7 +67,7 @@ mod tests {
 
         r.register::<MapViewProps, _>(move |props, backend| {
             saw_lat_for_handler.set(props.lat);
-            backend.create_view()
+            backend.create_view(&Default::default())
         });
 
         let payload: Rc<dyn std::any::Any> =
@@ -84,10 +84,10 @@ mod tests {
     #[test]
     fn re_registering_returns_prior_handler() {
         let mut r: ExternalRegistry<MockBackend> = ExternalRegistry::new();
-        let first = r.register::<MapViewProps, _>(|_props, b| b.create_view());
+        let first = r.register::<MapViewProps, _>(|_props, b| b.create_view(&Default::default()));
         assert!(first.is_none(), "first registration: no prior handler");
 
-        let second = r.register::<MapViewProps, _>(|_props, b| b.create_view());
+        let second = r.register::<MapViewProps, _>(|_props, b| b.create_view(&Default::default()));
         assert!(second.is_some(), "second registration: prior handler returned");
     }
 

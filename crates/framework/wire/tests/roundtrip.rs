@@ -43,14 +43,21 @@ struct TraceBackend {
 impl Backend for TraceBackend {
     type Node = u64;
 
-    fn create_view(&mut self) -> u64 {
+    fn create_view(
+        &mut self,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
+    ) -> u64 {
         self.next += 1;
         let id = self.next;
         self.trace.push(Trace::CreateView(id));
         id
     }
 
-    fn create_text(&mut self, content: &str) -> u64 {
+    fn create_text(
+        &mut self,
+        content: &str,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
+    ) -> u64 {
         self.next += 1;
         let id = self.next;
         self.trace.push(Trace::CreateText(id, content.to_string()));
@@ -63,6 +70,7 @@ impl Backend for TraceBackend {
         _on_click: &framework_core::Action,
         _leading_icon: Option<&framework_core::primitives::icon::IconData>,
         _trailing_icon: Option<&framework_core::primitives::icon::IconData>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> u64 {
         self.next += 1;
         let id = self.next;
@@ -91,6 +99,7 @@ impl Backend for TraceBackend {
     fn create_link(
         &mut self,
         _config: framework_core::primitives::link::LinkConfig,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> u64 {
         self.next += 1;
         self.next
@@ -101,6 +110,7 @@ impl Backend for TraceBackend {
         _target: framework_core::primitives::portal::PortalTarget,
         _on_dismiss: Option<Rc<dyn Fn()>>,
         _trap_focus: bool,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> u64 {
         self.next += 1;
         self.next
@@ -111,6 +121,7 @@ impl Backend for TraceBackend {
         _on_ready: framework_core::primitives::graphics::OnReady,
         _on_resize: framework_core::primitives::graphics::OnResize,
         _on_lost: framework_core::primitives::graphics::OnLost,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> u64 {
         self.next += 1;
         self.next
@@ -126,7 +137,7 @@ fn build_demo_tree(backend: &mut WireRecordingBackend) {
     // emits these as it processes a `Primitive` tree; here we
     // synthesize them directly so the test stays self-contained.
 
-    let mut root = backend.create_view();
+    let mut root = backend.create_view(&Default::default());
 
     // Header style: a flex row with background color.
     let header_style: Rc<StyleRules> = Rc::new({
@@ -138,11 +149,11 @@ fn build_demo_tree(backend: &mut WireRecordingBackend) {
         s
     });
 
-    let header = backend.create_view();
+    let header = backend.create_view(&Default::default());
     backend.apply_style(&header, &header_style);
     backend.insert(&mut root, header);
 
-    let title = backend.create_text("Hot Reload!");
+    let title = backend.create_text("Hot Reload!", &Default::default());
     backend.insert(&mut { header }, title);
 
     // A button that, when fired, prints to stdout. The closure is
@@ -151,7 +162,7 @@ fn build_demo_tree(backend: &mut WireRecordingBackend) {
         // No-op in test; in real use this would mutate a signal.
     })
     .into_action();
-    let button = backend.create_button("Click me", &on_click, None, None);
+    let button = backend.create_button("Click me", &on_click, None, None, &Default::default());
     backend.insert(&mut root, button);
 
     // Reactive update: simulate the walker firing a label effect.
@@ -267,7 +278,7 @@ fn event_round_trip_through_handler_table() {
     use std::cell::Cell;
 
     let mut recorder = WireRecordingBackend::new();
-    let mut root = recorder.create_view();
+    let mut root = recorder.create_view(&Default::default());
 
     let fired = Rc::new(Cell::new(0u32));
     let on_click: Action = {
@@ -277,7 +288,7 @@ fn event_round_trip_through_handler_table() {
         })
         .into_action()
     };
-    let button = recorder.create_button("go", &on_click, None, None);
+    let button = recorder.create_button("go", &on_click, None, None, &Default::default());
     recorder.insert(&mut root, button);
     recorder.finish(root);
 
@@ -337,12 +348,14 @@ fn real_walker_drives_recorder() {
             source: framework_core::TextSource::Static("hello, wire".into()),
             style: None,
             ref_fill: None,
+            accessibility: Default::default(),
             test_id: None,
         }],
         style: None,
         ref_fill: None,
         safe_area_sides: Default::default(),
         on_touch: None,
+        accessibility: Default::default(),
         test_id: None,
     };
 
@@ -408,7 +421,7 @@ fn link_round_trip() {
         url: "/profile/123".to_string(),
         on_activate: on_activate.clone(),
     };
-    let _link = recorder.create_link(config);
+    let _link = recorder.create_link(config, &Default::default());
     recorder.finish(wire::NodeId(1));
 
     let commands = recorder.drain_commands();
@@ -444,6 +457,7 @@ fn portal_round_trip() {
         PortalTarget::Viewport(ViewportPlacement::Bottom),
         on_dismiss,
         false,
+        &Default::default(),
     );
 
     let commands = recorder.drain_commands();
@@ -483,7 +497,7 @@ fn graphics_round_trip_unnamed() {
     let on_ready: framework_core::primitives::graphics::OnReady = Box::new(|_evt| {});
     let on_resize: framework_core::primitives::graphics::OnResize = Box::new(|_evt| {});
     let on_lost: framework_core::primitives::graphics::OnLost = Box::new(|| {});
-    let _node = recorder.create_graphics(on_ready, on_resize, on_lost);
+    let _node = recorder.create_graphics(on_ready, on_resize, on_lost, &Default::default());
 
     let commands = recorder.drain_commands();
     let renderer_name = commands
@@ -550,7 +564,7 @@ fn screen_released_reverse_channel() {
     };
 
     let control = Rc::new(NavigatorControl::new());
-    let nav_id = recorder.create_navigator(callbacks, control);
+    let nav_id = recorder.create_navigator(callbacks, control, &Default::default());
 
     // Attach an initial screen via the framework path. Note this
     // mirrors what `navigator_attach_initial` would normally do.
@@ -592,6 +606,7 @@ fn stack_navigator_initial_mount_round_trip() {
             source: TextSource::Static("Home".into()),
             style: None,
             ref_fill: None,
+            accessibility: Default::default(),
             test_id: None,
         });
 

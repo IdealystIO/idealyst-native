@@ -42,6 +42,7 @@ pub fn toggle<F: Fn(bool) + 'static>(
         on_change: Rc::new(on_change),
         style: None,
         ref_fill: None,
+        accessibility: crate::accessibility::AccessibilityProps::default(),
         #[cfg(feature = "robot")]
         test_id: None,
     })

@@ -387,14 +387,14 @@ impl Backend for MacosBackend {
         }
     }
 
-    fn create_view(&mut self) -> Self::Node {
+    fn create_view(&mut self, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
         let view = FlippedView::new(self.mtm);
         let view: Retained<NSView> = Retained::into_super(view);
         let _ = self.layout_for_view(&view);
         MacosNode::View(view)
     }
 
-    fn create_text(&mut self, content: &str) -> Self::Node {
+    fn create_text(&mut self, content: &str, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
         // NSTextField in label mode is AppKit's UILabel equivalent.
         // `+[NSTextField labelWithString:]` configures it as
         // non-editable, non-selectable, no border, no background.
@@ -464,13 +464,14 @@ impl Backend for MacosBackend {
         _on_click: &framework_core::Action,
         _leading_icon: Option<&framework_core::IconData>,
         _trailing_icon: Option<&framework_core::IconData>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         // Minimum-viable stub. Real NSButton wiring (bezel style,
         // target/action, icon images, intrinsic measure) lands in
         // a follow-up — gets us a placeholder so user code that
         // contains a Button still renders without panicking.
         let _ = label;
-        self.create_view()
+        self.create_view(_a11y)
     }
 
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {

@@ -6,6 +6,7 @@
 
 use super::debug::time_backend_create;
 use super::style::attach_style;
+use crate::accessibility::AccessibilityProps;
 use crate::backend::Backend;
 use crate::handles::RefFill;
 use crate::primitives::key::{KeyEvent, KeyOutcome};
@@ -22,6 +23,7 @@ pub(super) fn build_text_input<B: Backend + 'static>(
     placeholder: Option<String>,
     style: Option<StyleSource>,
     ref_fill: Option<RefFill>,
+    a11y: AccessibilityProps,
 ) -> B::Node {
     let initial = value.get();
     let n = time_backend_create(pkind!(TextInput), || {
@@ -30,6 +32,7 @@ pub(super) fn build_text_input<B: Backend + 'static>(
             placeholder.as_deref(),
             on_change,
             on_key_down,
+            &a11y,
         )
     });
     if let Some(s) = style {
@@ -62,6 +65,7 @@ pub(super) fn build_text_area<B: Backend + 'static>(
     placeholder: Option<String>,
     style: Option<StyleSource>,
     ref_fill: Option<RefFill>,
+    a11y: AccessibilityProps,
 ) -> B::Node {
     let initial = value.get();
     let n = time_backend_create(pkind!(TextArea), || {
@@ -70,6 +74,7 @@ pub(super) fn build_text_area<B: Backend + 'static>(
             placeholder.as_deref(),
             on_change,
             on_key_down,
+            &a11y,
         )
     });
     if let Some(s) = style {

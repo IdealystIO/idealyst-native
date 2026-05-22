@@ -81,6 +81,15 @@ pub fn install_scheduler(scheduler: Box<dyn Scheduler>) {
     let _ = SCHEDULER.set(scheduler);
 }
 
+/// Returns `true` if a backend has installed a real scheduler. Useful
+/// for self-rescheduling helpers (`schedule_periodic_poll`, animation
+/// loops) that would otherwise infinite-recurse via the synchronous
+/// native fallback when no scheduler is installed — they can bail
+/// instead.
+pub fn is_scheduler_installed() -> bool {
+    SCHEDULER.get().is_some()
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------

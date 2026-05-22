@@ -208,6 +208,7 @@ where
         enter: None,
         exit: None,
         ref_fill: None,
+        accessibility: crate::accessibility::AccessibilityProps::default(),
     })
 }
 

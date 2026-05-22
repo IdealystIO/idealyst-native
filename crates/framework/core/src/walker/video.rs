@@ -3,6 +3,7 @@
 
 use super::debug::time_backend_create;
 use super::style::attach_style;
+use crate::accessibility::AccessibilityProps;
 use crate::backend::Backend;
 use crate::handles::RefFill;
 use crate::reactive::Effect;
@@ -18,10 +19,11 @@ pub(super) fn build<B: Backend + 'static>(
     loop_playback: bool,
     style: Option<StyleSource>,
     ref_fill: Option<RefFill>,
+    a11y: AccessibilityProps,
 ) -> B::Node {
     let initial = src();
     let n = time_backend_create(pkind!(Video), || {
-        backend.borrow_mut().create_video(&initial, autoplay, controls, loop_playback)
+        backend.borrow_mut().create_video(&initial, autoplay, controls, loop_playback, &a11y)
     });
     if let Some(s) = style {
         attach_style(backend, &n, s);

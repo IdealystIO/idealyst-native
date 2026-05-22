@@ -6,6 +6,7 @@
 use super::debug::time_backend_create;
 use super::style::attach_style;
 use super::view::insert_children;
+use crate::accessibility::AccessibilityProps;
 use crate::backend::Backend;
 use crate::handles::RefFill;
 use crate::primitive::Primitive;
@@ -25,6 +26,7 @@ pub(super) fn build<B: Backend + 'static>(
     target: Option<Rc<primitives::navigator::NavigatorControl>>,
     style: Option<StyleSource>,
     ref_fill: Option<RefFill>,
+    a11y: AccessibilityProps,
 ) -> B::Node {
     let on_activate = primitives::link::make_on_activate(
         target,
@@ -39,7 +41,7 @@ pub(super) fn build<B: Backend + 'static>(
         on_activate,
     };
     let mut n = time_backend_create(pkind!(Link), || {
-        backend.borrow_mut().create_link(config)
+        backend.borrow_mut().create_link(config, &a11y)
     });
     // Children are built recursively (same shape as View)
     // and inserted into the link's native container. The

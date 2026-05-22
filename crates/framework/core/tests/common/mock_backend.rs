@@ -395,13 +395,20 @@ impl Backend for MockBackend {
 
     // --- Required ---
 
-    fn create_view(&mut self) -> Self::Node {
+    fn create_view(
+        &mut self,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
         let id = self.core.mint();
         self.core.record(Event::CreateView);
         id
     }
 
-    fn create_text(&mut self, content: &str) -> Self::Node {
+    fn create_text(
+        &mut self,
+        content: &str,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
         let id = self.core.mint();
         self.core.record(Event::CreateText { content: content.to_string() });
         id
@@ -413,6 +420,7 @@ impl Backend for MockBackend {
         _on_click: &framework_core::Action,
         _leading_icon: Option<&primitives::icon::IconData>,
         _trailing_icon: Option<&primitives::icon::IconData>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let id = self.core.mint();
         self.core.record(Event::CreateButton { label: label.to_string() });
@@ -437,7 +445,11 @@ impl Backend for MockBackend {
 
     // --- Optional but explicitly recorded ---
 
-    fn create_pressable(&mut self, _on_click: Rc<dyn Fn()>) -> Self::Node {
+    fn create_pressable(
+        &mut self,
+        _on_click: Rc<dyn Fn()>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
         let id = self.core.mint();
         self.core.record(Event::CreatePressable);
         id
@@ -515,7 +527,12 @@ impl Backend for MockBackend {
         nodes
     }
 
-    fn create_image(&mut self, src: &str, alt: Option<&str>) -> Self::Node {
+    fn create_image(
+        &mut self,
+        src: &str,
+        alt: Option<&str>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
         let id = self.core.mint();
         self.core.record(Event::CreateImage {
             src: src.to_string(),
@@ -532,6 +549,7 @@ impl Backend for MockBackend {
         &mut self,
         _data: &primitives::icon::IconData,
         _color: Option<&Color>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let id = self.core.mint();
         self.core.record(Event::CreateIcon);
@@ -574,6 +592,7 @@ impl Backend for MockBackend {
         placeholder: Option<&str>,
         _on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let id = self.core.mint();
         self.core.record(Event::CreateTextInput {
@@ -592,6 +611,7 @@ impl Backend for MockBackend {
         placeholder: Option<&str>,
         _on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let id = self.core.mint();
         self.core.record(Event::CreateTextArea {
@@ -612,6 +632,7 @@ impl Backend for MockBackend {
         &mut self,
         value: bool,
         _on_change: Rc<dyn Fn(bool)>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let id = self.core.mint();
         self.core.record(Event::CreateToggle { value });
@@ -622,7 +643,11 @@ impl Backend for MockBackend {
         self.core.record(Event::UpdateToggleValue { node: *node, value });
     }
 
-    fn create_scroll_view(&mut self, horizontal: bool) -> Self::Node {
+    fn create_scroll_view(
+        &mut self,
+        horizontal: bool,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
         let id = self.core.mint();
         self.core.record(Event::CreateScrollView { horizontal });
         id
@@ -635,6 +660,7 @@ impl Backend for MockBackend {
         max: f32,
         step: Option<f32>,
         _on_change: Rc<dyn Fn(f32)>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let id = self.core.mint();
         self.core.record(Event::CreateSlider {
@@ -656,6 +682,7 @@ impl Backend for MockBackend {
         autoplay: bool,
         controls: bool,
         loop_playback: bool,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let id = self.core.mint();
         self.core.record(Event::CreateVideo {
@@ -675,6 +702,7 @@ impl Backend for MockBackend {
         &mut self,
         _size: primitives::activity_indicator::ActivityIndicatorSize,
         _color: Option<&Color>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let id = self.core.mint();
         self.core.record(Event::CreateActivityIndicator);
@@ -686,6 +714,7 @@ impl Backend for MockBackend {
         _callbacks: framework_core::VirtualizerCallbacks<Self::Node>,
         overscan: f32,
         horizontal: bool,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let id = self.core.mint();
         self.core.record(Event::CreateVirtualizer { overscan, horizontal });
@@ -705,6 +734,7 @@ impl Backend for MockBackend {
         _on_ready: primitives::graphics::OnReady,
         _on_resize: primitives::graphics::OnResize,
         _on_lost: primitives::graphics::OnLost,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let id = self.core.mint();
         self.core.record(Event::CreateGraphics);
@@ -797,7 +827,11 @@ impl Backend for MockBackend {
         self.core.record(Event::Finish { root });
     }
 
-    fn create_link(&mut self, config: primitives::link::LinkConfig) -> Self::Node {
+    fn create_link(
+        &mut self,
+        config: primitives::link::LinkConfig,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
         let id = self.core.mint();
         self.core.record(Event::CreateLink {
             url: config.url.to_string(),
@@ -811,6 +845,7 @@ impl Backend for MockBackend {
         _target: primitives::portal::PortalTarget,
         _on_dismiss: Option<Rc<dyn Fn()>>,
         _trap_focus: bool,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let id = self.core.mint();
         self.core.record(Event::CreatePortal);
@@ -826,6 +861,7 @@ impl Backend for MockBackend {
         _type_id: std::any::TypeId,
         type_name: &'static str,
         _payload: &Rc<dyn Any>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let id = self.core.mint();
         self.core.record(Event::CreateExternal { type_name });

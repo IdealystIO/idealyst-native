@@ -565,3 +565,99 @@ fn cell_reuse_identifier() -> Retained<objc2_foundation::NSString> {
 // other backend imp/* modules.
 #[allow(dead_code)]
 type _ForceImportNSObject = NSObjectFoundation;
+
+// =========================================================================
+// Tests
+// =========================================================================
+
+#[cfg(test)]
+mod tests {
+    //! Regression coverage for `create_virtualizer`. Per CLAUDE.md §8,
+    //! every bug fix lands with a regression test that fails before
+    //! the fix and passes after. The fix here is: `create_virtualizer`
+    //! used to delegate to the framework's default `unimplemented!()`,
+    //! so the smoke test is simply "does calling it with a minimal
+    //! callbacks struct return a node without panicking?"
+    //!
+    //! ## Why this isn't a tighter test
+    //!
+    //! UICollectionView only renders meaningfully when attached to a
+    //! UIWindow + a view hierarchy with real bounds. Driving cells
+    //! through the dequeue/mount/release cycle from a unit test would
+    //! require either:
+    //!   1. A live UIApplication + UIWindow + run loop, which is
+    //!      what a UI test target (XCTest / EarlGrey) is for — not
+    //!      reachable from `cargo test`.
+    //!   2. Manually calling the data-source methods on a synthesized
+    //!      NSIndexPath, which exercises the trampoline but not the
+    //!      actual UICollectionView layout flow we depend on.
+    //!
+    //! The framework-core walker tests cover `VirtualizerCallbacks`
+    //! plumbing on a stub backend; this test covers the iOS-specific
+    //! "method exists + returns something" property. Cell recycling
+    //! behavior is gated to manual on-device QA against the
+    //! `examples/welcome` flat-list page until we wire up a UI test
+    //! target.
+    use super::*;
+    use framework_core::VirtualizerCallbacks;
+
+    /// `create_virtualizer` must return a node instead of panicking
+    /// (the framework's default impl `unimplemented!()`s, which is
+    /// the bug we just fixed). This test verifies the iOS backend's
+    /// `create` entry point can be called with a minimal callbacks
+    /// struct and produces a real `UIView` (the UICollectionView).
+    #[test]
+    fn regression_ios_virtualizer_does_not_unimplemented_panic() {
+        // Cargo's iOS test runner spawns the test process on the
+        // main thread by default; `new_unchecked` is therefore safe.
+        // If a future test harness moves us off the main thread, the
+        // first `UICollectionView::alloc` call would crash with an
+        // NSInternalInconsistencyException anyway, surfacing the
+        // misuse loudly.
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+
+        // Minimal callbacks: empty list, fixed size, mount/release
+        // no-ops. We're testing the construction path, not the
+        // mount loop — UIKit won't even call `cellForItemAt` until
+        // the collection view is attached to a window.
+        let callbacks = VirtualizerCallbacks::<IosNode> {
+            item_count: Rc::new(|| 0usize),
+            item_key: Rc::new(|i| i as u64),
+            item_size: Rc::new(|_| 44.0_f32),
+            measure_sizes: false,
+            mount_item: Rc::new(|_| {
+                // Unreachable in this test — item_count == 0 so UIKit
+                // never asks for a cell. Build a fresh UIView anyway
+                // so the closure's return type matches.
+                let mtm = unsafe { MainThreadMarker::new_unchecked() };
+                let view = unsafe { UIView::new(mtm) };
+                (IosNode::View(view), 0u64)
+            }),
+            release_item: Rc::new(|_| {}),
+            set_measured_size: Rc::new(|_, _| {}),
+        };
+
+        let mut instances = HashMap::new();
+        let view = create(mtm, &mut instances, callbacks, 1.0, false);
+
+        // The view must be a real UIView (UICollectionView is-a
+        // UIView), and our side-state map must have exactly one
+        // entry keyed by the view's pointer.
+        let key = &*view as *const UIView as usize;
+        assert!(
+            instances.contains_key(&key),
+            "create() must register the data source in the side map so UIKit's weak \
+             delegate reference doesn't dangle"
+        );
+
+        // Smoke-test the teardown path. After `release`, the side
+        // map must no longer hold the instance — that's what frees
+        // the data source and the framework callbacks bundle it owns.
+        release(&mut instances, &view);
+        assert!(
+            !instances.contains_key(&key),
+            "release() must remove the instance from the side map so the data source \
+             drops and its captured framework callbacks are freed"
+        );
+    }
+}

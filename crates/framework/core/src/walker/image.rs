@@ -6,6 +6,7 @@
 
 use super::debug::time_backend_create;
 use super::style::attach_style;
+use crate::accessibility::AccessibilityProps;
 use crate::assets::{kinds, Asset};
 use crate::backend::Backend;
 use crate::handles::RefFill;
@@ -21,6 +22,7 @@ pub(super) fn build<B: Backend + 'static>(
     style: Option<StyleSource>,
     ref_fill: Option<RefFill>,
     asset: Option<Asset<kinds::Image>>,
+    a11y: AccessibilityProps,
 ) -> B::Node {
     // Asset-backed images register the asset with the backend
     // *before* `create_image` so the sentinel `"asset://{id}"`
@@ -34,7 +36,7 @@ pub(super) fn build<B: Backend + 'static>(
     }
     let initial = src();
     let n = time_backend_create(pkind!(Image), || {
-        backend.borrow_mut().create_image(&initial, alt.as_deref())
+        backend.borrow_mut().create_image(&initial, alt.as_deref(), &a11y)
     });
     if let Some(s) = style {
         attach_style(backend, &n, s);

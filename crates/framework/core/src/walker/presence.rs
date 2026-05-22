@@ -29,6 +29,7 @@
 //! cancelling any in-flight timer.
 
 use super::debug::time_backend_create;
+use crate::accessibility::AccessibilityProps;
 use crate::backend::Backend;
 use crate::handles::RefFill;
 use crate::primitive::Primitive;
@@ -44,8 +45,9 @@ pub(super) fn build<B: Backend + 'static>(
     enter: Option<primitives::presence::PresenceAnim>,
     exit: Option<primitives::presence::PresenceAnim>,
     ref_fill: Option<RefFill>,
+    a11y: AccessibilityProps,
 ) -> B::Node {
-    let n = build_presence(backend, child, present, enter, exit);
+    let n = build_presence(backend, child, present, enter, exit, &a11y);
     if let Some(RefFill::Presence(fill)) = ref_fill {
         let handle = backend.borrow().make_presence_handle(&n);
         fill(handle);
@@ -59,11 +61,12 @@ fn build_presence<B: Backend + 'static>(
     present: Box<dyn Fn() -> bool>,
     enter: Option<primitives::presence::PresenceAnim>,
     exit: Option<primitives::presence::PresenceAnim>,
+    a11y: &AccessibilityProps,
 ) -> B::Node {
     use primitives::presence::PresenceState;
 
     let placeholder =
-        time_backend_create(pkind!(Presence), || backend.borrow_mut().create_view());
+        time_backend_create(pkind!(Presence), || backend.borrow_mut().create_view(a11y));
 
     // Shared state across the effect + scheduled tasks. `Rc<RefCell>`
     // so the outer Effect and the timer closures all reach the same

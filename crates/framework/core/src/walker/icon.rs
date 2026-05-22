@@ -5,6 +5,7 @@
 
 use super::debug::time_backend_create;
 use super::style::attach_style;
+use crate::accessibility::AccessibilityProps;
 use crate::backend::Backend;
 use crate::handles::RefFill;
 use crate::primitives;
@@ -22,10 +23,11 @@ pub(super) fn build<B: Backend + 'static>(
     draw_in: Option<primitives::icon::StrokeAnimation>,
     style: Option<StyleSource>,
     ref_fill: Option<RefFill>,
+    a11y: AccessibilityProps,
 ) -> B::Node {
     let initial_color = color.as_ref().map(|f| f());
     let n = time_backend_create(pkind!(Icon), || {
-        backend.borrow_mut().create_icon(&data, initial_color.as_ref())
+        backend.borrow_mut().create_icon(&data, initial_color.as_ref(), &a11y)
     });
     if let Some(s) = style {
         attach_style(backend, &n, s);

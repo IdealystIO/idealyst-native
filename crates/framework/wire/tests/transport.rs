@@ -39,14 +39,21 @@ struct TraceBackend {
 impl Backend for TraceBackend {
     type Node = u64;
 
-    fn create_view(&mut self) -> u64 {
+    fn create_view(
+        &mut self,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
+    ) -> u64 {
         self.next += 1;
         let id = self.next;
         self.trace.push(Trace::CreateView(id));
         id
     }
 
-    fn create_text(&mut self, content: &str) -> u64 {
+    fn create_text(
+        &mut self,
+        content: &str,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
+    ) -> u64 {
         self.next += 1;
         let id = self.next;
         self.trace.push(Trace::CreateText(id, content.to_string()));
@@ -59,6 +66,7 @@ impl Backend for TraceBackend {
         _on_click: &framework_core::Action,
         _leading: Option<&framework_core::primitives::icon::IconData>,
         _trailing: Option<&framework_core::primitives::icon::IconData>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> u64 {
         self.next += 1;
         self.next
@@ -104,12 +112,14 @@ fn websocket_round_trip_basic_tree() {
                     source: TextSource::Static("hello".into()),
                     style: None,
                     ref_fill: None,
+                    accessibility: Default::default(),
                     test_id: None,
                 },
                 Primitive::Text {
                     source: TextSource::Static("world".into()),
                     style: None,
                     ref_fill: None,
+                    accessibility: Default::default(),
                     test_id: None,
                 },
             ],
@@ -117,6 +127,7 @@ fn websocket_round_trip_basic_tree() {
             ref_fill: None,
             safe_area_sides: Default::default(),
             on_touch: None,
+            accessibility: Default::default(),
             test_id: None,
         };
         let owner = render(backend_rc, tree);

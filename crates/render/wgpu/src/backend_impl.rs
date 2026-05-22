@@ -141,14 +141,21 @@ impl Backend for WgpuBackend {
         self.color_scheme
     }
 
-    fn create_view(&mut self) -> Self::Node {
+    fn create_view(
+        &mut self,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
         let layout = self.layout.new_node();
         let node = new_node(NodeKind::View, layout);
         self.roots.push(node.clone());
         node
     }
 
-    fn create_text(&mut self, content: &str) -> Self::Node {
+    fn create_text(
+        &mut self,
+        content: &str,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
         let layout = self.layout.new_node();
         {
             let mut text = self.text.borrow_mut();
@@ -170,6 +177,7 @@ impl Backend for WgpuBackend {
         on_click: &Action,
         _leading_icon: Option<&framework_core::primitives::icon::IconData>,
         _trailing_icon: Option<&framework_core::primitives::icon::IconData>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let layout = self.layout.new_node();
         {
@@ -211,7 +219,11 @@ impl Backend for WgpuBackend {
         node
     }
 
-    fn create_pressable(&mut self, on_click: Rc<dyn Fn()>) -> Self::Node {
+    fn create_pressable(
+        &mut self,
+        on_click: Rc<dyn Fn()>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
         let layout = self.layout.new_node();
         // Wrap to request a redraw — the user's closure mutates
         // app state, but the framework doesn't drive a redraw on
@@ -246,6 +258,7 @@ impl Backend for WgpuBackend {
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         _on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let layout = self.layout.new_node();
         // The visible glyph buffer holds whichever of value /
@@ -307,6 +320,7 @@ impl Backend for WgpuBackend {
         &mut self,
         initial_value: bool,
         on_change: Rc<dyn Fn(bool)>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let layout = self.layout.new_node();
         self.layout
@@ -357,6 +371,7 @@ impl Backend for WgpuBackend {
         max: f32,
         step: Option<f32>,
         on_change: Rc<dyn Fn(f32)>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let layout = self.layout.new_node();
         self.layout
@@ -386,6 +401,7 @@ impl Backend for WgpuBackend {
         &mut self,
         size: ActivityIndicatorSize,
         color: Option<&Color>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let layout = self.layout.new_node();
         let diameter = match size {
@@ -409,7 +425,11 @@ impl Backend for WgpuBackend {
         node
     }
 
-    fn create_scroll_view(&mut self, horizontal: bool) -> Self::Node {
+    fn create_scroll_view(
+        &mut self,
+        horizontal: bool,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
         let layout = self.layout.new_node();
         // Pin the scrollview's main-axis `min-size` to 0 so the
         // parent's flex layout can shrink it below its children's
@@ -453,6 +473,7 @@ impl Backend for WgpuBackend {
     fn create_link(
         &mut self,
         config: framework_core::primitives::link::LinkConfig,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let layout = self.layout.new_node();
         // Wrap the activate closure to also request a redraw so
@@ -473,7 +494,12 @@ impl Backend for WgpuBackend {
     // textured-quad pipeline is future work.
     // -----------------------------------------------------------
 
-    fn create_image(&mut self, src: &str, alt: Option<&str>) -> Self::Node {
+    fn create_image(
+        &mut self,
+        src: &str,
+        alt: Option<&str>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
         let layout = self.layout.new_node();
         self.layout
             .set_intrinsic_size(layout, IMAGE_DEFAULT_SIZE, IMAGE_DEFAULT_SIZE);
@@ -504,6 +530,7 @@ impl Backend for WgpuBackend {
         &mut self,
         data: &framework_core::primitives::icon::IconData,
         color: Option<&Color>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let layout = self.layout.new_node();
         self.layout
@@ -584,6 +611,7 @@ impl Backend for WgpuBackend {
         target: framework_core::primitives::portal::PortalTarget,
         on_dismiss: Option<Rc<dyn Fn()>>,
         _trap_focus: bool,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         if matches!(target, framework_core::primitives::portal::PortalTarget::Named(_)) {
             unimplemented!(
@@ -607,6 +635,7 @@ impl Backend for WgpuBackend {
         callbacks: framework_core::VirtualizerCallbacks<Self::Node>,
         _overscan: f32,
         horizontal: bool,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let layout = self.layout.new_node();
         // Stash the callbacks on the node so
@@ -728,6 +757,7 @@ impl Backend for WgpuBackend {
         &mut self,
         callbacks: framework_core::primitives::navigator::NavigatorCallbacks<Self::Node>,
         control: Rc<framework_core::primitives::navigator::NavigatorControl>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let layout = self.layout.new_node();
         // The navigator's container fills whatever box its parent
@@ -849,6 +879,7 @@ impl Backend for WgpuBackend {
         &mut self,
         callbacks: framework_core::primitives::navigator::TabNavigatorCallbacks<Self::Node>,
         control: Rc<framework_core::primitives::navigator::NavigatorControl>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let layout = self.layout.new_node();
         // Seed `routes[0]` with the initial route's name and a
@@ -917,6 +948,7 @@ impl Backend for WgpuBackend {
         &mut self,
         callbacks: framework_core::primitives::navigator::DrawerNavigatorCallbacks<Self::Node>,
         control: Rc<framework_core::primitives::navigator::NavigatorControl>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let layout = self.layout.new_node();
         let initial_route = callbacks.navigator.initial_route;
@@ -1013,6 +1045,7 @@ impl Backend for WgpuBackend {
         autoplay: bool,
         controls: bool,
         loop_playback: bool,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let decoder = std::rc::Rc::new(crate::video::VideoDecoder::spawn(
             src.to_string(),
@@ -1084,6 +1117,7 @@ impl Backend for WgpuBackend {
         _on_ready: framework_core::primitives::graphics::OnReady,
         _on_resize: framework_core::primitives::graphics::OnResize,
         _on_lost: framework_core::primitives::graphics::OnLost,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         // We can't satisfy the framework's `OnReady(GraphicsSurface)`
         // contract — `GraphicsSurface` is a real-window handle, and

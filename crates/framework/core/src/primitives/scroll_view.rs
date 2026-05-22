@@ -46,6 +46,7 @@ pub fn scroll_view(children: Vec<Primitive>) -> Bound<ScrollViewHandle> {
         style: None,
         ref_fill: None,
         safe_area_sides: crate::SafeAreaSides::NONE,
+        accessibility: crate::accessibility::AccessibilityProps::default(),
     })
 }
 

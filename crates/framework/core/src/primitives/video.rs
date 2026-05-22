@@ -82,6 +82,7 @@ pub fn video<S: IntoVideoSrc>(src: S) -> Bound<VideoHandle> {
         loop_playback: false,
         style: None,
         ref_fill: None,
+        accessibility: crate::accessibility::AccessibilityProps::default(),
     })
 }
 

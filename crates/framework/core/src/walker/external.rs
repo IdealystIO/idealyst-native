@@ -8,6 +8,7 @@
 use super::cleanup::ExternalHandleCleanup;
 use super::debug::time_backend_create;
 use super::style::attach_style;
+use crate::accessibility::AccessibilityProps;
 use crate::backend::Backend;
 use crate::handles::RefFill;
 use crate::reactive::Effect;
@@ -23,11 +24,12 @@ pub(super) fn build<B: Backend + 'static>(
     payload: Rc<dyn Any>,
     style: Option<StyleSource>,
     ref_fill: Option<RefFill>,
+    a11y: AccessibilityProps,
 ) -> B::Node {
     let n = time_backend_create(pkind!(External), || {
         backend
             .borrow_mut()
-            .create_external(type_id, type_name, &payload)
+            .create_external(type_id, type_name, &payload, &a11y)
     });
 
     if let Some(s) = style {

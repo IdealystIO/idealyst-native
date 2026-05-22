@@ -81,6 +81,7 @@ pub fn image<S: IntoImageSource>(src: S) -> Bound<ImageHandle> {
         style: None,
         ref_fill: None,
         asset: None,
+        accessibility: crate::accessibility::AccessibilityProps::default(),
         #[cfg(feature = "robot")]
         test_id: None,
     })
@@ -111,6 +112,7 @@ pub fn image_asset(asset: Asset<kinds::Image>) -> Bound<ImageHandle> {
         style: None,
         ref_fill: None,
         asset: Some(asset),
+        accessibility: crate::accessibility::AccessibilityProps::default(),
         #[cfg(feature = "robot")]
         test_id: None,
     })

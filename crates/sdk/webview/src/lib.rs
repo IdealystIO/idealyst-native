@@ -230,6 +230,7 @@ pub fn WebView(props: WebViewProps) -> Bound<WebViewHandle> {
         payload: Rc::new(props) as Rc<dyn Any>,
         style: None,
         ref_fill: None,
+        accessibility: framework_core::accessibility::AccessibilityProps::default(),
     })
 }
 

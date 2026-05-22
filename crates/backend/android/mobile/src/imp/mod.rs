@@ -719,22 +719,23 @@ impl Backend for AndroidBackend {
         })
     }
 
-    fn create_view(&mut self) -> Self::Node {
+    fn create_view(&mut self, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
         primitives::view::create(self)
     }
 
     fn create_link(
         &mut self,
         config: framework_core::primitives::link::LinkConfig,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         primitives::link::create(self, config.on_activate)
     }
 
-    fn create_text(&mut self, content: &str) -> Self::Node {
+    fn create_text(&mut self, content: &str, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
         primitives::text::create(self, content)
     }
 
-    fn create_button(&mut self, label: &str, on_click: &framework_core::Action, _leading_icon: Option<&framework_core::IconData>, _trailing_icon: Option<&framework_core::IconData>) -> Self::Node {
+    fn create_button(&mut self, label: &str, on_click: &framework_core::Action, _leading_icon: Option<&framework_core::IconData>, _trailing_icon: Option<&framework_core::IconData>, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
         // TODO: render icons as compound drawables on the button
         primitives::button::create(self, label, on_click.fire.clone())
     }
@@ -769,7 +770,7 @@ impl Backend for AndroidBackend {
         primitives::text::update_text(node, content)
     }
 
-    fn create_image(&mut self, src: &str, alt: Option<&str>) -> Self::Node {
+    fn create_image(&mut self, src: &str, alt: Option<&str>, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
         primitives::image::create(self, src, alt)
     }
 
@@ -777,6 +778,7 @@ impl Backend for AndroidBackend {
         &mut self,
         data: &framework_core::primitives::icon::IconData,
         color: Option<&framework_core::Color>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         primitives::icon::create(self, data, color)
     }
@@ -808,6 +810,7 @@ impl Backend for AndroidBackend {
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         primitives::text_input::create(self, initial_value, placeholder, on_change, on_key_down)
     }
@@ -822,6 +825,7 @@ impl Backend for AndroidBackend {
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         primitives::text_input::create_multiline(self, initial_value, placeholder, on_change, on_key_down)
     }
@@ -844,7 +848,7 @@ impl Backend for AndroidBackend {
         primitives::text_input::make_text_area_handle(node)
     }
 
-    fn create_toggle(&mut self, initial_value: bool, on_change: Rc<dyn Fn(bool)>) -> Self::Node {
+    fn create_toggle(&mut self, initial_value: bool, on_change: Rc<dyn Fn(bool)>, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
         primitives::toggle::create(self, initial_value, on_change)
     }
 
@@ -852,7 +856,7 @@ impl Backend for AndroidBackend {
         primitives::toggle::update_value(node, value)
     }
 
-    fn create_scroll_view(&mut self, horizontal: bool) -> Self::Node {
+    fn create_scroll_view(&mut self, horizontal: bool, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
         primitives::scroll_view::create(self, horizontal)
     }
 
@@ -863,6 +867,7 @@ impl Backend for AndroidBackend {
         max: f32,
         step: Option<f32>,
         on_change: Rc<dyn Fn(f32)>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         primitives::slider::create(self, initial_value, min, max, step, on_change)
     }
@@ -877,6 +882,7 @@ impl Backend for AndroidBackend {
         autoplay: bool,
         controls: bool,
         loop_playback: bool,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         primitives::video::create(self, src, autoplay, controls, loop_playback)
     }
@@ -890,6 +896,7 @@ impl Backend for AndroidBackend {
         callbacks: framework_core::VirtualizerCallbacks<Self::Node>,
         overscan: f32,
         horizontal: bool,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         primitives::virtualizer::create(self, callbacks, overscan, horizontal)
     }
@@ -902,6 +909,7 @@ impl Backend for AndroidBackend {
         &mut self,
         size: framework_core::primitives::activity_indicator::ActivityIndicatorSize,
         color: Option<&framework_core::Color>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         primitives::activity_indicator::create(self, size, color)
     }
@@ -917,6 +925,7 @@ impl Backend for AndroidBackend {
         &mut self,
         callbacks: framework_core::NavigatorCallbacks<Self::Node>,
         control: Rc<framework_core::NavigatorControl>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         primitives::navigator::create(self, callbacks, control)
     }
@@ -950,6 +959,7 @@ impl Backend for AndroidBackend {
         &mut self,
         callbacks: framework_core::TabNavigatorCallbacks<Self::Node>,
         control: Rc<framework_core::NavigatorControl>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         primitives::tab_drawer::create_tab(self, callbacks, control)
     }
@@ -979,6 +989,7 @@ impl Backend for AndroidBackend {
         &mut self,
         callbacks: framework_core::DrawerNavigatorCallbacks<Self::Node>,
         control: Rc<framework_core::NavigatorControl>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         primitives::tab_drawer::create_drawer(self, callbacks, control)
     }
@@ -1049,6 +1060,7 @@ impl Backend for AndroidBackend {
         on_ready: framework_core::primitives::graphics::OnReady,
         on_resize: framework_core::primitives::graphics::OnResize,
         on_lost: framework_core::primitives::graphics::OnLost,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         primitives::graphics::create(self, on_ready, on_resize, on_lost)
     }
@@ -1069,6 +1081,7 @@ impl Backend for AndroidBackend {
         target: framework_core::primitives::portal::PortalTarget,
         on_dismiss: Option<Rc<dyn Fn()>>,
         trap_focus: bool,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         primitives::overlay::create(self, target, on_dismiss, trap_focus)
     }
@@ -1082,6 +1095,7 @@ impl Backend for AndroidBackend {
         type_id: std::any::TypeId,
         type_name: &'static str,
         payload: &Rc<dyn std::any::Any>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         // Look up the handler; clone the Rc so we can drop the registry
         // borrow before calling the handler (which itself needs

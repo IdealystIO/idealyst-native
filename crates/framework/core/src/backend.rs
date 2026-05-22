@@ -242,14 +242,19 @@ pub trait Backend {
         Platform::Custom("")
     }
 
-    fn create_view(&mut self) -> Self::Node;
-    fn create_text(&mut self, content: &str) -> Self::Node;
+    fn create_view(&mut self, a11y: &crate::accessibility::AccessibilityProps) -> Self::Node;
+    fn create_text(
+        &mut self,
+        content: &str,
+        a11y: &crate::accessibility::AccessibilityProps,
+    ) -> Self::Node;
     fn create_button(
         &mut self,
         label: &str,
         on_click: &crate::derive::Action,
         leading_icon: Option<&primitives::icon::IconData>,
         trailing_icon: Option<&primitives::icon::IconData>,
+        a11y: &crate::accessibility::AccessibilityProps,
     ) -> Self::Node;
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node);
 
@@ -262,8 +267,12 @@ pub trait Backend {
     /// fire, but the subtree still renders). Web overrides with a
     /// `<div>` that has `cursor: pointer` and an `onclick` handler.
     #[allow(unused_variables)]
-    fn create_pressable(&mut self, on_click: Rc<dyn Fn()>) -> Self::Node {
-        self.create_view()
+    fn create_pressable(
+        &mut self,
+        on_click: Rc<dyn Fn()>,
+        a11y: &crate::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        self.create_view(a11y)
     }
 
     /// Install a raw touch handler on `node`. The framework calls this
@@ -317,7 +326,7 @@ pub trait Backend {
     /// 100%` on full-width children. Native backends have no such
     /// problem; the default `create_view` is fine.
     fn create_reactive_anchor(&mut self) -> Self::Node {
-        self.create_view()
+        self.create_view(&crate::accessibility::AccessibilityProps::default())
     }
 
     /// Batched insertion of many siblings into `parent`. Default
@@ -438,7 +447,11 @@ pub trait Backend {
     /// should arrange for the buffered updates to flush before the
     /// next paint (microtask, rAF, end of `run_effects`, etc.) so
     /// the bench's `apply` window still observes the DOM change.
-    fn create_text_with_id(&mut self, _content: &str) -> Option<(Self::Node, u32)> {
+    fn create_text_with_id(
+        &mut self,
+        _content: &str,
+        _a11y: &crate::accessibility::AccessibilityProps,
+    ) -> Option<(Self::Node, u32)> {
         None
     }
 
@@ -734,7 +747,12 @@ pub trait Backend {
     /// wraps the user's `src` source in an effect that calls
     /// `update_image_src` whenever the source changes.
     #[allow(unused_variables)]
-    fn create_image(&mut self, src: &str, alt: Option<&str>) -> Self::Node {
+    fn create_image(
+        &mut self,
+        src: &str,
+        alt: Option<&str>,
+        a11y: &crate::accessibility::AccessibilityProps,
+    ) -> Self::Node {
         unimplemented!("create_image not implemented for this backend")
     }
     #[allow(unused_variables)]
@@ -756,6 +774,7 @@ pub trait Backend {
         &mut self,
         data: &primitives::icon::IconData,
         color: Option<&Color>,
+        a11y: &crate::accessibility::AccessibilityProps,
     ) -> Self::Node {
         unimplemented!("create_icon not implemented for this backend")
     }
@@ -870,6 +889,7 @@ pub trait Backend {
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<primitives::key::KeyDownHandler>,
+        a11y: &crate::accessibility::AccessibilityProps,
     ) -> Self::Node {
         unimplemented!("create_text_input not implemented for this backend")
     }
@@ -887,6 +907,7 @@ pub trait Backend {
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<primitives::key::KeyDownHandler>,
+        a11y: &crate::accessibility::AccessibilityProps,
     ) -> Self::Node {
         unimplemented!("create_text_area not implemented for this backend")
     }
@@ -901,6 +922,7 @@ pub trait Backend {
         &mut self,
         initial_value: bool,
         on_change: Rc<dyn Fn(bool)>,
+        a11y: &crate::accessibility::AccessibilityProps,
     ) -> Self::Node {
         unimplemented!("create_toggle not implemented for this backend")
     }
@@ -910,7 +932,11 @@ pub trait Backend {
     /// Create a scrolling container. `horizontal` selects the
     /// scrolling axis (false = vertical, the default; true = horizontal).
     #[allow(unused_variables)]
-    fn create_scroll_view(&mut self, horizontal: bool) -> Self::Node {
+    fn create_scroll_view(
+        &mut self,
+        horizontal: bool,
+        a11y: &crate::accessibility::AccessibilityProps,
+    ) -> Self::Node {
         unimplemented!("create_scroll_view not implemented for this backend")
     }
 
@@ -925,6 +951,7 @@ pub trait Backend {
         max: f32,
         step: Option<f32>,
         on_change: Rc<dyn Fn(f32)>,
+        a11y: &crate::accessibility::AccessibilityProps,
     ) -> Self::Node {
         unimplemented!("create_slider not implemented for this backend")
     }
@@ -941,6 +968,7 @@ pub trait Backend {
         autoplay: bool,
         controls: bool,
         loop_playback: bool,
+        a11y: &crate::accessibility::AccessibilityProps,
     ) -> Self::Node {
         unimplemented!("create_video not implemented for this backend")
     }
@@ -953,6 +981,7 @@ pub trait Backend {
         &mut self,
         size: primitives::activity_indicator::ActivityIndicatorSize,
         color: Option<&Color>,
+        a11y: &crate::accessibility::AccessibilityProps,
     ) -> Self::Node {
         unimplemented!("create_activity_indicator not implemented for this backend")
     }
@@ -975,6 +1004,7 @@ pub trait Backend {
         callbacks: VirtualizerCallbacks<Self::Node>,
         overscan: f32,
         horizontal: bool,
+        a11y: &crate::accessibility::AccessibilityProps,
     ) -> Self::Node {
         unimplemented!("create_virtualizer not implemented for this backend")
     }
@@ -1024,6 +1054,7 @@ pub trait Backend {
         on_ready: primitives::graphics::OnReady,
         on_resize: primitives::graphics::OnResize,
         on_lost: primitives::graphics::OnLost,
+        a11y: &crate::accessibility::AccessibilityProps,
     ) -> Self::Node {
         unimplemented!("create_graphics not implemented for this backend")
     }
@@ -1296,6 +1327,85 @@ pub trait Backend {
         // default: no-op
     }
 
+    // -----------------------------------------------------------------
+    // Accessibility surface — see `framework_core::accessibility` and
+    // `docs/accessibility-design.md` for the full design.
+    //
+    // Every `create_*` will grow an `a11y: &AccessibilityProps`
+    // parameter in phase 5 of the a11y rollout (a separate commit that
+    // touches every backend's signature at once). The three methods
+    // here are the parts that DON'T live on `create_*`:
+    //
+    //   - `update_accessibility`: replace the prop bag on an existing
+    //     node when reactive a11y state changes.
+    //   - `announce_for_accessibility`: imperative live-region post
+    //     ("Form submitted", "Loading complete") with no stable focus
+    //     target.
+    //   - `dump_accessibility_tree`: GPU/canvas backends produce a
+    //     parallel semantics tree the host shell projects into the
+    //     platform AX layer. Native widget backends return None
+    //     (their AX data lives on the widget already).
+    //
+    // All three have no-op defaults so this trait change lands without
+    // touching any existing backend impl.
+    // -----------------------------------------------------------------
+
+    /// Replace the accessibility prop bag attached to `node`. Called
+    /// by the walker's reactive a11y Effect when any field of the
+    /// node's [`AccessibilityProps`] changes.
+    ///
+    /// Backends translate to per-attribute setter calls
+    /// (`accessibilityLabel = ...`, `setAttribute('aria-label', ...)`,
+    /// `setContentDescription(...)`).
+    ///
+    /// [`AccessibilityProps`]: crate::accessibility::AccessibilityProps
+    #[allow(unused_variables)]
+    fn update_accessibility(
+        &mut self,
+        node: &Self::Node,
+        a11y: &crate::accessibility::AccessibilityProps,
+    ) {
+        // default: no-op (backend doesn't implement a11y yet, the
+        // node still renders; assistive technology sees an unlabelled
+        // element until the backend is updated)
+    }
+
+    /// Post a one-shot live-region announcement to the platform's AX
+    /// subsystem. Independent of any node — used for transient
+    /// feedback that doesn't have a focus target ("Form submitted",
+    /// "Loading complete").
+    ///
+    /// - iOS: `UIAccessibility.post(notification: .announcement, …)`.
+    /// - Android: `View.announceForAccessibility(msg)` or hidden
+    ///   live-region path for `Assertive`.
+    /// - Web: write `msg` into a hidden `aria-live` region.
+    /// - macOS: post `NSAccessibilityAnnouncementRequestedNotification`.
+    /// - Roku / no-AX backends: no-op (log once at debug level).
+    #[allow(unused_variables)]
+    fn announce_for_accessibility(
+        &mut self,
+        msg: &str,
+        priority: crate::accessibility::LiveRegionPriority,
+    ) {
+        // default: no-op
+    }
+
+    /// GPU-backend hook: return a snapshot of the parallel semantics
+    /// tree. Native widget backends return `None` (their a11y data
+    /// lives on the widget; the platform AX walker traverses the
+    /// widget tree directly).
+    ///
+    /// The wgpu / future canvas backends override to return their
+    /// internal [`AccessibilityTree`]. The host shell crate (winit
+    /// app delegate, the iOS shell crate, AT-SPI bridge on Linux)
+    /// reads the tree after every layout commit and projects it into
+    /// the host platform's AX layer.
+    ///
+    /// [`AccessibilityTree`]: crate::accessibility::AccessibilityTree
+    fn dump_accessibility_tree(&self) -> Option<crate::accessibility::AccessibilityTree> {
+        None
+    }
+
     /// Node's rect in its **parent's** coordinate system.
     /// Returns `None` if the node isn't mounted in a layout yet (e.g.
     /// queried before the first frame) or if the backend can't report
@@ -1489,6 +1599,7 @@ pub trait Backend {
         &mut self,
         callbacks: primitives::navigator::NavigatorCallbacks<Self::Node>,
         control: Rc<primitives::navigator::NavigatorControl>,
+        a11y: &crate::accessibility::AccessibilityProps,
     ) -> Self::Node {
         unimplemented!("create_navigator not implemented for this backend")
     }
@@ -1594,6 +1705,7 @@ pub trait Backend {
         &mut self,
         callbacks: primitives::navigator::TabNavigatorCallbacks<Self::Node>,
         control: Rc<primitives::navigator::NavigatorControl>,
+        a11y: &crate::accessibility::AccessibilityProps,
     ) -> Self::Node {
         unimplemented!("create_tab_navigator not implemented for this backend")
     }
@@ -1654,6 +1766,7 @@ pub trait Backend {
         &mut self,
         callbacks: primitives::navigator::DrawerNavigatorCallbacks<Self::Node>,
         control: Rc<primitives::navigator::NavigatorControl>,
+        a11y: &crate::accessibility::AccessibilityProps,
     ) -> Self::Node {
         unimplemented!("create_drawer_navigator not implemented for this backend")
     }
@@ -1746,6 +1859,7 @@ pub trait Backend {
         type_id: std::any::TypeId,
         type_name: &'static str,
         payload: &Rc<dyn Any>,
+        a11y: &crate::accessibility::AccessibilityProps,
     ) -> Self::Node {
         unimplemented!(
             "create_external not implemented for this backend (external primitive: {})",
@@ -1794,6 +1908,7 @@ pub trait Backend {
         target: primitives::portal::PortalTarget,
         on_dismiss: Option<Rc<dyn Fn()>>,
         trap_focus: bool,
+        a11y: &crate::accessibility::AccessibilityProps,
     ) -> Self::Node {
         unimplemented!("create_portal not implemented for this backend")
     }
@@ -1885,8 +2000,12 @@ pub trait Backend {
     /// of every other optional handle method (return a no-op rather
     /// than refuse). Backends that want real activation override.
     #[allow(unused_variables)]
-    fn create_link(&mut self, config: primitives::link::LinkConfig) -> Self::Node {
-        self.create_view()
+    fn create_link(
+        &mut self,
+        config: primitives::link::LinkConfig,
+        a11y: &crate::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        self.create_view(a11y)
     }
 
     /// Apply safe-area-aware padding to `node`. Called by the walker
@@ -2109,10 +2228,14 @@ mod tests {
     impl Backend for StubBackend {
         type Node = u32;
 
-        fn create_view(&mut self) -> Self::Node {
+        fn create_view(&mut self, _a11y: &crate::accessibility::AccessibilityProps) -> Self::Node {
             self.mint()
         }
-        fn create_text(&mut self, _content: &str) -> Self::Node {
+        fn create_text(
+            &mut self,
+            _content: &str,
+            _a11y: &crate::accessibility::AccessibilityProps,
+        ) -> Self::Node {
             self.mint()
         }
         fn create_button(
@@ -2121,6 +2244,7 @@ mod tests {
             _on_click: &crate::Action,
             _leading: Option<&primitives::icon::IconData>,
             _trailing: Option<&primitives::icon::IconData>,
+            _a11y: &crate::accessibility::AccessibilityProps,
         ) -> Self::Node {
             self.mint()
         }

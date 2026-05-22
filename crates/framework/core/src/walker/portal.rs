@@ -9,6 +9,7 @@ use super::cleanup::PortalHandleCleanup;
 use super::debug::time_backend_create;
 use super::style::attach_style;
 use super::view::insert_children;
+use crate::accessibility::AccessibilityProps;
 use crate::backend::Backend;
 use crate::handles::RefFill;
 use crate::primitive::Primitive;
@@ -26,6 +27,7 @@ pub(super) fn build<B: Backend + 'static>(
     trap_focus: bool,
     style: Option<StyleSource>,
     ref_fill: Option<RefFill>,
+    a11y: AccessibilityProps,
 ) -> B::Node {
     let dismiss_for_backend = on_dismiss.clone();
     let mut n = time_backend_create(pkind!(Portal), || {
@@ -33,6 +35,7 @@ pub(super) fn build<B: Backend + 'static>(
             target,
             dismiss_for_backend,
             trap_focus,
+            &a11y,
         )
     });
 

@@ -1881,6 +1881,7 @@ fn try_emit_for_virtualizer(
                         ref_fill: ::std::option::Option::None,
                         safe_area_sides: ::framework_core::SafeAreaSides::NONE,
                         on_touch: ::std::option::Option::None,
+                        accessibility: ::framework_core::accessibility::AccessibilityProps::default(),
                         #[cfg(feature = "robot")]
                         test_id: ::std::option::Option::None,
                     }

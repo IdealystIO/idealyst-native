@@ -152,6 +152,8 @@ fn write_project(
     fs::write(dir.join("Cargo.toml"), project_cargo_toml(name, &app_title, &bundle_id, source))?;
     fs::write(dir.join("index.html"), project_index_html(&app_title, lib_name))?;
     fs::write(dir.join(".gitignore"), GITIGNORE)?;
+    fs::write(dir.join(".mcp.json"), MCP_JSON)?;
+    fs::write(dir.join("dev.toml"), DEV_TOML)?;
 
     // Source tree — copied verbatim from `examples/welcome/src/`.
     // The welcome source has no self-name references so it compiles
@@ -490,7 +492,46 @@ pub fn register<B>(_backend: &mut B) {{
 // Shared bits
 // =============================================================================
 
-const GITIGNORE: &str = "/target\n/pkg\nCargo.lock\n";
+const GITIGNORE: &str = "/target\n/pkg\nCargo.lock\n/.idealyst/\n";
+
+/// Project-local MCP server config — Claude Code auto-loads this when
+/// the user opens the scaffolded project. Points at the system-
+/// installed `idealyst` binary (assumed on PATH after
+/// `cargo install idealyst-cli` or similar). The server defaults to
+/// Robot tools on, lazy-connecting to the local app's bridge on
+/// 127.0.0.1:9718 — works the moment the user runs `idealyst dev`.
+///
+/// Catalog tools return empty results until the project has a
+/// binary that supports `--emit-catalog` (the generated platform
+/// wrappers don't expose one today). When that's wired, this file
+/// will gain `"--from-bin", "<wrapper-binary>"` to populate the
+/// catalog half.
+const MCP_JSON: &str = r#"{
+  "mcpServers": {
+    "idealyst": {
+      "command": "idealyst",
+      "args": ["mcp"]
+    }
+  }
+}
+"#;
+
+/// Per-project dev-mode config. Optional — every field has a
+/// default; absence is fine. The CLI's `idealyst dev` reads this
+/// file at startup and falls back to defaults for unset fields.
+const DEV_TOML: &str = r#"# Per-project dev-mode configuration. Read by `idealyst dev`.
+# All fields are optional — delete this file or any individual field
+# to fall back to defaults.
+
+# Pin the Robot bridge to a specific port. Default: ephemeral (the
+# bridge picks an unused port and writes it to
+# `.idealyst/bridge.port` for the MCP server to discover).
+#
+# Pin a port here only if an external tool needs a stable target —
+# normal Claude workflows use the discovery file. CLI flag
+# `--bridge-port <PORT>` overrides this setting per-run.
+# bridge_port = 9718
+"#;
 
 fn default_bundle_id(name: &str) -> String {
     // Underscores not hyphens — Android JNI symbol mangler doesn't

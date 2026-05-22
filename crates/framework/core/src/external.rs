@@ -179,6 +179,7 @@ pub fn external<T: 'static>(props: T) -> Bound<ExternalHandle<T>> {
         payload: Rc::new(props) as Rc<dyn Any>,
         style: None,
         ref_fill: None,
+        accessibility: crate::accessibility::AccessibilityProps::default(),
     })
 }
 

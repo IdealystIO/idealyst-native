@@ -192,6 +192,7 @@ pub fn link<P: RouteParams + Clone>(
         target: ambient,
         style: None,
         ref_fill: None,
+        accessibility: crate::accessibility::AccessibilityProps::default(),
     })
 }
 

@@ -239,6 +239,7 @@ pub fn portal(target: PortalTarget, children: Vec<Primitive>) -> Bound<PortalHan
         trap_focus: false,
         style: None,
         ref_fill: None,
+        accessibility: crate::accessibility::AccessibilityProps::default(),
     })
 }
 

@@ -72,21 +72,182 @@ thread_local! {
 /// their own tick loop — the bridge self-drives until the process
 /// exits.
 ///
+/// Port-selection rules (in order of precedence):
+/// 1. `IDEALYST_BRIDGE_PORT` env var if set and non-zero → bind that
+///    explicit port. Conflict (already in use) → log a warning and
+///    fall back to ephemeral.
+/// 2. `default_port` arg if non-zero → bind it. Conflict → ephemeral.
+/// 3. Else → ephemeral (bind port 0; OS picks).
+///
+/// When `IDEALYST_BRIDGE_PORT_FILE` is set, the bridge writes a JSON
+/// document `{port, project_root, pid}` to that path after binding.
+/// `mcp-server` reads this file to discover the bridge and verifies
+/// `project_root` matches its own cwd — so a Claude session in
+/// project A can't accidentally drive project B's app.
+///
 /// Requires the platform scheduler to be installed (typically done
 /// by the host before `mount()` — `backend_ios::install_scheduler`,
 /// `backend_web::install_scheduler`, etc.).
 ///
 /// Calling twice is idempotent: subsequent calls bail out early
-/// rather than binding a second listener on the same port.
-pub fn start_auto_polling(port: u16) {
+/// rather than binding a second listener.
+pub fn start_auto_polling(default_port: u16) {
     AUTO_POLLED_BRIDGE.with(|slot| {
         if slot.borrow().is_some() {
             return;
         }
-        let handle = start(port);
+        let chosen_port = resolve_requested_port(default_port);
+        let (handle, bound_port) = match start_on_port(chosen_port) {
+            Ok(pair) => pair,
+            Err(e) if chosen_port != 0 => {
+                // Specific port wanted but unavailable. Surface a
+                // clear warning so simultaneous-app collisions are
+                // diagnosable, then fall back to ephemeral so the
+                // app still gets a bridge.
+                eprintln!(
+                    "[robot-bridge] WARN: requested port {} unavailable ({}); \
+                     falling back to ephemeral. Another idealyst app is likely \
+                     already running on that port.",
+                    chosen_port, e
+                );
+                match start_on_port(0) {
+                    Ok(pair) => pair,
+                    Err(e2) => {
+                        eprintln!("[robot-bridge] could not bind any port: {}", e2);
+                        return;
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("[robot-bridge] could not bind any port: {}", e);
+                return;
+            }
+        };
+        write_port_file(bound_port);
         *slot.borrow_mut() = Some(handle);
     });
     schedule_periodic_poll();
+}
+
+fn resolve_requested_port(default_port: u16) -> u16 {
+    std::env::var("IDEALYST_BRIDGE_PORT")
+        .ok()
+        .and_then(|s| s.parse::<u16>().ok())
+        .filter(|p| *p != 0)
+        .unwrap_or(default_port)
+}
+
+/// Publish the bound port. Two channels, used in different ways:
+///
+/// 1. **`IDEALYST_BRIDGE_PORT_FILE`** (legacy / debug): writes
+///    `{port, project_root, pid}` to that path. Per-project. Useful
+///    when poking the bridge directly from a shell without going
+///    through the MCP server.
+/// 2. **User-level registry** (`~/.idealyst/registry.json`): adds a
+///    full `AppEntry` so `idealyst mcp` (a single instance per
+///    Claude Code session) can route Robot calls across multiple
+///    simultaneously-running apps.
+///
+/// Both happen on every bind. Both are best-effort — write failures
+/// are logged but never panic, since the running app is the source
+/// of truth for the bridge regardless.
+fn write_port_file(port: u16) {
+    write_legacy_per_project_file(port);
+    write_registry_entry(port);
+}
+
+fn write_legacy_per_project_file(port: u16) {
+    let Ok(path_str) = std::env::var("IDEALYST_BRIDGE_PORT_FILE") else {
+        return;
+    };
+    let path = std::path::PathBuf::from(&path_str);
+    let project_root = path
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let pid = std::process::id();
+    let body = format!(
+        "{{\n  \"port\": {},\n  \"project_root\": {},\n  \"pid\": {}\n}}\n",
+        port,
+        serde_json::to_string(&project_root).unwrap_or_else(|_| "\"\"".into()),
+        pid,
+    );
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Err(e) = std::fs::write(&path, body) {
+        eprintln!(
+            "[robot-bridge] could not write port file {}: {}",
+            path.display(),
+            e
+        );
+    }
+}
+
+/// Register this app in the user-level `~/.idealyst/registry.json`
+/// so the MCP server can find it. Requires the `mcp` feature
+/// (already on when `dev` is — `dev = ["robot", "mcp"]`).
+#[cfg(feature = "mcp")]
+fn write_registry_entry(port: u16) {
+    use crate::__mcp::registry::{now_secs, update_with, AppEntry};
+
+    let project_root = resolve_project_root();
+    let name = std::env::var("IDEALYST_APP_NAME")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            std::path::PathBuf::from(&project_root)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+        })
+        .unwrap_or_else(|| "app".to_string());
+    let catalog_bin = std::env::var("IDEALYST_CATALOG_BIN")
+        .ok()
+        .filter(|s| !s.is_empty());
+
+    let entry = AppEntry {
+        name,
+        project_root: project_root.clone(),
+        bridge_addr: format!("127.0.0.1:{}", port),
+        catalog_bin,
+        pid: std::process::id(),
+        registered_at: now_secs(),
+    };
+    if let Err(e) = update_with(|reg| reg.register(entry)) {
+        eprintln!(
+            "[robot-bridge] could not write registry: {}",
+            e
+        );
+    }
+}
+
+#[cfg(not(feature = "mcp"))]
+fn write_registry_entry(_port: u16) {
+    // No MCP — single-app mode. Per-project port file
+    // (`write_legacy_per_project_file`) is the only discovery path.
+}
+
+/// Best-effort recovery of the project root. Prefer the explicit
+/// `IDEALYST_PROJECT_ROOT` env var the dev launcher sets; fall back
+/// to the legacy port-file location (its grandparent is the project
+/// root); finally cwd as last resort.
+#[cfg(feature = "mcp")]
+fn resolve_project_root() -> String {
+    if let Ok(r) = std::env::var("IDEALYST_PROJECT_ROOT") {
+        if !r.is_empty() {
+            return r;
+        }
+    }
+    if let Ok(p) = std::env::var("IDEALYST_BRIDGE_PORT_FILE") {
+        let path = std::path::PathBuf::from(&p);
+        if let Some(root) = path.parent().and_then(|p| p.parent()) {
+            return root.to_string_lossy().into_owned();
+        }
+    }
+    std::env::current_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 /// 16ms ≈ 60Hz — fast enough that interactive MCP calls feel
@@ -94,6 +255,15 @@ pub fn start_auto_polling(port: u16) {
 const POLL_INTERVAL_MS: i32 = 16;
 
 fn schedule_periodic_poll() {
+    // Without an installed scheduler `after_ms` runs the closure
+    // synchronously on native (test-host fallback path), which would
+    // re-enter `schedule_periodic_poll()` immediately and overflow the
+    // stack. Bail when there's no real scheduler — tests don't need
+    // the bridge to poll, and a properly-hosted app installs one
+    // before reaching this point.
+    if !crate::scheduling::is_scheduler_installed() {
+        return;
+    }
     let task = crate::scheduling::after_ms(POLL_INTERVAL_MS, || {
         AUTO_POLLED_BRIDGE.with(|slot| {
             if let Some(h) = slot.borrow().as_ref() {
@@ -115,20 +285,37 @@ fn schedule_periodic_poll() {
 }
 
 /// Start the robot bridge TCP listener on a background thread.
-/// Returns a `BridgeHandle` to poll on the UI thread.
+/// Returns a `BridgeHandle` to poll on the UI thread. Bind failures
+/// are logged but don't panic — the returned handle just never sees
+/// commands, so calling `poll()` is a no-op.
+///
+/// Kept for back-compat (`dev-server::transport::serve_with_robot_bridge`
+/// is a caller). New code wanting to know the actually-bound port —
+/// notably the ephemeral case — should use [`start_on_port`].
 pub fn start(port: u16) -> BridgeHandle {
+    match start_on_port(port) {
+        Ok((handle, _bound)) => handle,
+        Err(e) => {
+            eprintln!("[robot-bridge] failed to bind port {}: {}", port, e);
+            // Return a dead handle whose `poll()` immediately drains
+            // an empty channel — caller code is undisturbed.
+            let (_tx, rx) = mpsc::channel::<BridgeCommand>();
+            BridgeHandle { rx }
+        }
+    }
+}
+
+/// Bind a TCP listener on `port` (use `0` for ephemeral), spawn the
+/// accept loop, and return the handle + the *actually-bound* port.
+/// Differs from [`start`] only in error handling: caller gets the
+/// `io::Error` to react to (e.g. fall back to ephemeral on conflict).
+pub fn start_on_port(port: u16) -> std::io::Result<(BridgeHandle, u16)> {
+    let listener = TcpListener::bind(("0.0.0.0", port))?;
+    let bound_port = listener.local_addr()?.port();
     let (tx, rx) = mpsc::channel();
 
     std::thread::spawn(move || {
-        let listener = match TcpListener::bind(("0.0.0.0", port)) {
-            Ok(l) => l,
-            Err(e) => {
-                eprintln!("[robot-bridge] failed to bind port {}: {}", port, e);
-                return;
-            }
-        };
-        eprintln!("[robot-bridge] listening on port {}", port);
-
+        eprintln!("[robot-bridge] listening on port {}", bound_port);
         for stream in listener.incoming() {
             let stream = match stream {
                 Ok(s) => s,
@@ -141,7 +328,7 @@ pub fn start(port: u16) -> BridgeHandle {
         }
     });
 
-    BridgeHandle { rx }
+    Ok((BridgeHandle { rx }, bound_port))
 }
 
 fn handle_connection(stream: TcpStream, tx: mpsc::Sender<BridgeCommand>) {

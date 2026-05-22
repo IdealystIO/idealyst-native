@@ -24,6 +24,12 @@ pub struct RunOptions {
     /// Cargo features to enable on the build. `idealyst dev` passes
     /// `framework-core/dev` here so the Robot bridge auto-starts.
     pub user_features: Vec<String>,
+    /// Environment variables to set on the spawned binary.
+    /// `idealyst dev` uses this to plumb `IDEALYST_BRIDGE_PORT_FILE`
+    /// (and optionally `IDEALYST_BRIDGE_PORT`) so the running app's
+    /// Robot bridge writes its port discovery file to a project-local
+    /// `.idealyst/bridge.port`.
+    pub env_vars: Vec<(String, String)>,
 }
 
 #[derive(Debug)]
@@ -61,16 +67,24 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
         // daemonisation (setsid) would survive close but isn't
         // what's wanted: the user wants the dev session and the
         // app to die together at the end.
-        let _ = Command::new(&built.binary)
-            .stdin(Stdio::null())
+        let mut cmd = Command::new(&built.binary);
+        cmd.stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::null());
+        for (k, v) in &opts.env_vars {
+            cmd.env(k, v);
+        }
+        let _ = cmd
             .spawn()
             .with_context(|| {
                 format!("spawn macOS binary {}", built.binary.display())
             })?;
     } else {
-        let status = Command::new(&built.binary)
+        let mut cmd = Command::new(&built.binary);
+        for (k, v) in &opts.env_vars {
+            cmd.env(k, v);
+        }
+        let status = cmd
             .status()
             .with_context(|| {
                 format!("spawn macOS binary {}", built.binary.display())

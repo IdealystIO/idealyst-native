@@ -6,6 +6,7 @@
 use super::debug::time_backend_create;
 use super::style::{attach_scroll_view_safe_area_inset, attach_style};
 use super::view::insert_children;
+use crate::accessibility::AccessibilityProps;
 use crate::backend::Backend;
 use crate::handles::RefFill;
 use crate::primitive::Primitive;
@@ -20,9 +21,10 @@ pub(super) fn build<B: Backend + 'static>(
     style: Option<StyleSource>,
     ref_fill: Option<RefFill>,
     safe_area_sides: crate::SafeAreaSides,
+    a11y: AccessibilityProps,
 ) -> B::Node {
     let mut n = time_backend_create(pkind!(ScrollView), || {
-        backend.borrow_mut().create_scroll_view(horizontal)
+        backend.borrow_mut().create_scroll_view(horizontal, &a11y)
     });
     insert_children(backend, &mut n, children);
     if let Some(s) = style {

@@ -765,7 +765,7 @@ impl Backend for IosBackend {
         }
     }
 
-    fn create_view(&mut self) -> Self::Node {
+    fn create_view(&mut self, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
         // IdealystTouchView is a UIView subclass that overrides the
         // four `touchesBegan:/Moved:/Ended:/Cancelled:` entry points
         // so a later `install_touch_handler` can attach a raw-touch
@@ -789,7 +789,7 @@ impl Backend for IosBackend {
         IosNode::View(view)
     }
 
-    fn create_text(&mut self, content: &str) -> Self::Node {
+    fn create_text(&mut self, content: &str, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
         let label = unsafe { UILabel::new(self.mtm) };
         let ns_text = NSString::from_str(content);
         unsafe { label.setText(Some(&ns_text)) };
@@ -870,6 +870,7 @@ impl Backend for IosBackend {
         on_click: &framework_core::Action,
         leading_icon: Option<&framework_core::IconData>,
         _trailing_icon: Option<&framework_core::IconData>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let button = unsafe {
             UIButton::buttonWithType(UIButtonType::System, self.mtm)
@@ -955,6 +956,7 @@ impl Backend for IosBackend {
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let field = unsafe { UITextField::new(self.mtm) };
         let ns_val = NSString::from_str(initial_value);
@@ -1005,6 +1007,7 @@ impl Backend for IosBackend {
         _placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         // UITextView is the multi-line equivalent of UITextField. It
         // ships with `editable: true` already, so we don't need to
@@ -1043,6 +1046,7 @@ impl Backend for IosBackend {
         &mut self,
         initial_value: bool,
         on_change: Rc<dyn Fn(bool)>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let switch = unsafe { UISwitch::new(self.mtm) };
         unsafe { switch.setOn_animated(initial_value, false) };
@@ -1086,7 +1090,7 @@ impl Backend for IosBackend {
         }
     }
 
-    fn create_scroll_view(&mut self, horizontal: bool) -> Self::Node {
+    fn create_scroll_view(&mut self, horizontal: bool, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
         // Plain UIScrollView, frame-based. Children are added
         // directly as subviews (no inner UIStackView). Their frames
         // come from Taffy via `apply_frames`. We sync the scroll
@@ -1118,6 +1122,7 @@ impl Backend for IosBackend {
         max: f32,
         _step: Option<f32>,
         on_change: Rc<dyn Fn(f32)>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let slider = unsafe { UISlider::new(self.mtm) };
         unsafe {
@@ -1164,6 +1169,7 @@ impl Backend for IosBackend {
         &mut self,
         size: ActivityIndicatorSize,
         color: Option<&Color>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let style = match size {
             ActivityIndicatorSize::Small => UIActivityIndicatorViewStyle::Medium,
@@ -1188,6 +1194,7 @@ impl Backend for IosBackend {
         &mut self,
         data: &framework_core::primitives::icon::IconData,
         color: Option<&Color>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         icon::create_icon(self.mtm, data, color)
     }
@@ -1234,7 +1241,7 @@ impl Backend for IosBackend {
         self.font_registry.unregister_typeface(id);
     }
 
-    fn create_image(&mut self, src: &str, alt: Option<&str>) -> Self::Node {
+    fn create_image(&mut self, src: &str, alt: Option<&str>, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
         let node = image::create_image(self.mtm, &self.image_cache, src, alt);
         // Register with the layout tree so Taffy gives it a frame.
         // Image views need an intrinsic-size measurer so they don't
@@ -1262,6 +1269,7 @@ impl Backend for IosBackend {
         autoplay: bool,
         controls: bool,
         loop_playback: bool,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = video::create_video(
             self.mtm,
@@ -1301,6 +1309,7 @@ impl Backend for IosBackend {
         callbacks: framework_core::VirtualizerCallbacks<Self::Node>,
         overscan: f32,
         horizontal: bool,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         // Build the UICollectionView + flow layout + data source.
         // Phase-1 MVP: vertical-scrolling, single-column, Known sizing.
@@ -1391,11 +1400,12 @@ impl Backend for IosBackend {
         on_ready: OnReady,
         on_resize: OnResize,
         on_lost: OnLost,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         graphics::create_graphics(self.mtm, &mut self.callback_targets, on_ready, on_resize, on_lost)
     }
 
-    fn create_link(&mut self, config: LinkConfig) -> Self::Node {
+    fn create_link(&mut self, config: LinkConfig, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
         // Plain UIView (was UIStackView). UIStackView injected internal
         // UISV-canvas-connection constraints that fought Taffy's
         // frame-based positioning — manifested as sibling links in the
@@ -1425,7 +1435,7 @@ impl Backend for IosBackend {
         IosNode::View(view)
     }
 
-    fn create_pressable(&mut self, on_click: Rc<dyn Fn()>) -> Self::Node {
+    fn create_pressable(&mut self, on_click: Rc<dyn Fn()>, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
         // Mirror `create_link`'s tap-gesture wiring so `Pressable`
         // children actually fire their click handlers. The default
         // `Backend::create_pressable` (see
@@ -1878,6 +1888,7 @@ impl Backend for IosBackend {
         &mut self,
         callbacks: NavigatorCallbacks<Self::Node>,
         control: Rc<NavigatorControl>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         navigator::create_navigator(self.mtm, &mut self.navigator_instances, callbacks, control)
     }
@@ -1942,6 +1953,7 @@ impl Backend for IosBackend {
         target: framework_core::primitives::portal::PortalTarget,
         _on_dismiss: Option<Rc<dyn Fn()>>,
         trap_focus: bool,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         // On iOS-mobile we don't use `presentViewController:` for
         // portals — they're window-level `UIView` subviews. There's
@@ -2013,6 +2025,7 @@ impl Backend for IosBackend {
         type_id: std::any::TypeId,
         type_name: &'static str,
         payload: &std::rc::Rc<dyn std::any::Any>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         if let Some(handler) = self.external_handlers.get(type_id) {
             return handler(payload, self);
@@ -2176,6 +2189,7 @@ impl Backend for IosBackend {
         &mut self,
         callbacks: TabNavigatorCallbacks<Self::Node>,
         control: Rc<NavigatorControl>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         tab_drawer::create_tab_navigator(self.mtm, &mut self.tab_drawer_instances, callbacks, control)
     }
@@ -2206,6 +2220,7 @@ impl Backend for IosBackend {
         &mut self,
         callbacks: DrawerNavigatorCallbacks<Self::Node>,
         control: Rc<NavigatorControl>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         tab_drawer::create_drawer_navigator(self.mtm, &mut self.tab_drawer_instances, callbacks, control)
     }

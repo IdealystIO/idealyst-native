@@ -139,6 +139,7 @@ pub fn virtualizer(
         horizontal: false,
         style: None,
         ref_fill: None,
+        accessibility: crate::accessibility::AccessibilityProps::default(),
     })
 }
 

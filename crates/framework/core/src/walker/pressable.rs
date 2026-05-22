@@ -10,6 +10,7 @@
 use super::debug::time_backend_create;
 use super::style::{attach_disabled, attach_style};
 use super::view::insert_children;
+use crate::accessibility::AccessibilityProps;
 use crate::backend::Backend;
 use crate::handles::RefFill;
 use crate::primitive::Primitive;
@@ -24,9 +25,10 @@ pub(super) fn build<B: Backend + 'static>(
     style: Option<StyleSource>,
     ref_fill: Option<RefFill>,
     disabled: Option<Box<dyn Fn() -> bool>>,
+    a11y: AccessibilityProps,
 ) -> B::Node {
     let mut n = time_backend_create(pkind!(Pressable), || {
-        backend.borrow_mut().create_pressable(on_click)
+        backend.borrow_mut().create_pressable(on_click, &a11y)
     });
     insert_children(backend, &mut n, children);
     let state_setter = style.map(|s| attach_style(backend, &n, s));

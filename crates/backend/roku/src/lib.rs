@@ -404,13 +404,20 @@ impl Backend for RokuBackend {
         framework_core::Platform::Roku
     }
 
-    fn create_view(&mut self) -> Self::Node {
+    fn create_view(
+        &mut self,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
         let id = self.mint_node();
         self.push(RokuCommand::CreateView { id });
         id
     }
 
-    fn create_text(&mut self, content: &str) -> Self::Node {
+    fn create_text(
+        &mut self,
+        content: &str,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
         let id = self.mint_node();
         self.push(RokuCommand::CreateText {
             id,
@@ -425,6 +432,7 @@ impl Backend for RokuBackend {
         on_click: &framework_core::Action,
         leading_icon: Option<&IconData>,
         trailing_icon: Option<&IconData>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let id = self.mint_node();
         let handler = self.mint_handler();
@@ -468,7 +476,11 @@ impl Backend for RokuBackend {
         id
     }
 
-    fn create_pressable(&mut self, on_click: Rc<dyn Fn()>) -> Self::Node {
+    fn create_pressable(
+        &mut self,
+        on_click: Rc<dyn Fn()>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
         let id = self.mint_node();
         let handler = self.mint_handler();
         self.handlers.borrow_mut().unit.push((handler, on_click));
@@ -505,6 +517,7 @@ impl Backend for RokuBackend {
         target: framework_core::primitives::portal::PortalTarget,
         on_dismiss: Option<Rc<dyn Fn()>>,
         trap_focus: bool,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         use framework_core::primitives::portal as p;
         let id = self.mint_node();
@@ -562,7 +575,12 @@ impl Backend for RokuBackend {
         id
     }
 
-    fn create_image(&mut self, src: &str, alt: Option<&str>) -> Self::Node {
+    fn create_image(
+        &mut self,
+        src: &str,
+        alt: Option<&str>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
         let id = self.mint_node();
         self.push(RokuCommand::CreateImage {
             id,
@@ -579,7 +597,12 @@ impl Backend for RokuBackend {
         });
     }
 
-    fn create_icon(&mut self, data: &IconData, color: Option<&Color>) -> Self::Node {
+    fn create_icon(
+        &mut self,
+        data: &IconData,
+        color: Option<&Color>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
         let id = self.mint_node();
         let wire = self.lower_icon(data);
         self.push(RokuCommand::CreateIcon {
@@ -603,6 +626,7 @@ impl Backend for RokuBackend {
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         _on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         // `_on_key_down` is unused on Roku — the SceneGraph keyboard
         // surface doesn't expose pre-default key interception in the
@@ -631,6 +655,7 @@ impl Backend for RokuBackend {
         &mut self,
         initial_value: bool,
         on_change: Rc<dyn Fn(bool)>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let id = self.mint_node();
         let handler = self.mint_handler();
@@ -654,6 +679,7 @@ impl Backend for RokuBackend {
         max: f32,
         step: Option<f32>,
         on_change: Rc<dyn Fn(f32)>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let id = self.mint_node();
         let handler = self.mint_handler();
@@ -673,7 +699,11 @@ impl Backend for RokuBackend {
         self.push(RokuCommand::UpdateSliderValue { id: *node, value });
     }
 
-    fn create_scroll_view(&mut self, horizontal: bool) -> Self::Node {
+    fn create_scroll_view(
+        &mut self,
+        horizontal: bool,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
         let id = self.mint_node();
         self.push(RokuCommand::CreateScrollView { id, horizontal });
         id
@@ -683,6 +713,7 @@ impl Backend for RokuBackend {
         &mut self,
         size: ActivityIndicatorSize,
         color: Option<&Color>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let id = self.mint_node();
         let wire_size = match size {
@@ -708,6 +739,7 @@ impl Backend for RokuBackend {
         _on_ready: OnReady,
         _on_resize: OnResize,
         _on_lost: OnLost,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let id = self.mint_node();
         self.push(RokuCommand::CreateView { id });
@@ -1041,7 +1073,7 @@ mod tests {
     #[test]
     fn create_view_emits_create_view() {
         let mut be = RokuBackend::new();
-        let _ = be.create_view();
+        let _ = be.create_view(&Default::default());
         let cmds = be.drain();
         assert_eq!(cmds.len(), 1);
         assert!(matches!(cmds[0], RokuCommand::CreateView { .. }));
@@ -1050,8 +1082,8 @@ mod tests {
     #[test]
     fn insert_records_parent_child() {
         let mut be = RokuBackend::new();
-        let mut parent = be.create_view();
-        let child = be.create_text("hi");
+        let mut parent = be.create_view(&Default::default());
+        let child = be.create_text("hi", &Default::default());
         be.insert(&mut parent, child);
         let cmds = be.drain();
         // create_view, create_text, insert
@@ -1072,7 +1104,7 @@ mod tests {
         let counter = Rc::new(std::cell::Cell::new(0u32));
         let counter2 = counter.clone();
         let on_click = (move || counter2.set(counter2.get() + 1)).into_action();
-        let _ = be.create_button("ok", &on_click, None, None);
+        let _ = be.create_button("ok", &on_click, None, None, &Default::default());
 
         let cmds = be.drain();
         let handler_id = match &cmds[0] {
@@ -1138,8 +1170,8 @@ mod tests {
     #[test]
     fn commands_serialize_to_json() {
         let mut be = RokuBackend::new();
-        let mut parent = be.create_view();
-        let child = be.create_text("hello");
+        let mut parent = be.create_view(&Default::default());
+        let child = be.create_text("hello", &Default::default());
         be.insert(&mut parent, child);
         be.finish(parent);
         let cmds = be.drain();

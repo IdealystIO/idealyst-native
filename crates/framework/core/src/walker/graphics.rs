@@ -7,6 +7,7 @@
 use super::cleanup::GraphicsHandleCleanup;
 use super::debug::time_backend_create;
 use super::style::attach_style;
+use crate::accessibility::AccessibilityProps;
 use crate::backend::Backend;
 use crate::handles::RefFill;
 use crate::primitives;
@@ -22,9 +23,10 @@ pub(super) fn build<B: Backend + 'static>(
     on_lost: primitives::graphics::OnLost,
     style: Option<StyleSource>,
     ref_fill: Option<RefFill>,
+    a11y: AccessibilityProps,
 ) -> B::Node {
     let n = time_backend_create(pkind!(Graphics), || {
-        backend.borrow_mut().create_graphics(on_ready, on_resize, on_lost)
+        backend.borrow_mut().create_graphics(on_ready, on_resize, on_lost, &a11y)
     });
     if let Some(s) = style {
         attach_style(backend, &n, s);

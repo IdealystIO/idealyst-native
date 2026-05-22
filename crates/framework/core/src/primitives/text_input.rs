@@ -92,6 +92,7 @@ pub fn text_input<F: Fn(String) + 'static>(
         placeholder: None,
         style: None,
         ref_fill: None,
+        accessibility: crate::accessibility::AccessibilityProps::default(),
         #[cfg(feature = "robot")]
         test_id: None,
     })

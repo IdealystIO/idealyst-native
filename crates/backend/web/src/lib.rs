@@ -36,6 +36,7 @@
 //! contention for per-instance values and keeps dynamic-class lifecycle
 //! simple (one class per node, replaced atomically).
 
+mod a11y;
 mod animated;
 mod batch_queue;
 #[cfg(test)]
@@ -1433,16 +1434,29 @@ impl Backend for WebBackend {
         }
     }
 
-    fn create_view(&mut self) -> Self::Node {
-        primitives::view::create(self)
+    fn create_view(
+        &mut self,
+        a11y: &framework_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        let node = primitives::view::create(self);
+        a11y::apply(&node, a11y, None);
+        node
     }
 
     fn create_reactive_anchor(&mut self) -> Self::Node {
         primitives::view::create_reactive_anchor(self)
     }
 
-    fn create_text(&mut self, content: &str) -> Self::Node {
-        primitives::text::create(self, content)
+    fn create_text(
+        &mut self,
+        content: &str,
+        a11y: &framework_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        let node = primitives::text::create(self, content);
+        // Text role has no first-class ARIA equivalent — the helper
+        // emits nothing for it. Hint/identifier/live_region still apply.
+        a11y::apply(&node, a11y, None);
+        node
     }
 
     fn create_button(
@@ -1451,12 +1465,31 @@ impl Backend for WebBackend {
         on_click: &framework_core::Action,
         leading_icon: Option<&framework_core::IconData>,
         trailing_icon: Option<&framework_core::IconData>,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        primitives::button::create(self, label, on_click.fire.clone(), leading_icon, trailing_icon)
+        let node =
+            primitives::button::create(self, label, on_click.fire.clone(), leading_icon, trailing_icon);
+        // `<button>` has implicit ARIA role; skip inferring one so we
+        // don't write `role="button"` redundantly. Author overrides
+        // via `props.role` still apply.
+        a11y::apply(&node, a11y, None);
+        node
     }
 
-    fn create_pressable(&mut self, on_click: Rc<dyn Fn()>) -> Self::Node {
-        primitives::pressable::create(self, on_click)
+    fn create_pressable(
+        &mut self,
+        on_click: Rc<dyn Fn()>,
+        a11y: &framework_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        let node = primitives::pressable::create(self, on_click);
+        // Pressable is a `<div>` with click — explicit `role="button"`
+        // is what tells the AX walker it's interactive.
+        a11y::apply(
+            &node,
+            a11y,
+            Some(framework_core::accessibility::Role::Button),
+        );
+        node
     }
 
     fn install_touch_handler(
@@ -1485,7 +1518,11 @@ impl Backend for WebBackend {
         primitives::text::update_text(node, content)
     }
 
-    fn create_text_with_id(&mut self, content: &str) -> Option<(Self::Node, u32)> {
+    fn create_text_with_id(
+        &mut self,
+        content: &str,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
+    ) -> Option<(Self::Node, u32)> {
         let _t = crate::phase_timer::PhaseTimer::start("text_create_with_id");
         // Without an installed self-handle in `WEB_BACKEND_HANDLE`,
         // the microtask flush has no way back to `&mut self`. Bail
@@ -1619,8 +1656,18 @@ impl Backend for WebBackend {
         Some(self.impl_mint_class_for_app(app))
     }
 
-    fn create_image(&mut self, src: &str, alt: Option<&str>) -> Self::Node {
-        primitives::image::create(self, src, alt)
+    fn create_image(
+        &mut self,
+        src: &str,
+        alt: Option<&str>,
+        a11y: &framework_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        let node = primitives::image::create(self, src, alt);
+        // `<img>` carries implicit `role="img"` — don't infer.
+        // `alt` and `a11y.label` both target accessibility text; the
+        // helper's aria-label takes precedence when both are set.
+        a11y::apply(&node, a11y, None);
+        node
     }
 
     fn update_image_src(&mut self, node: &Self::Node, src: &str) {
@@ -1631,6 +1678,7 @@ impl Backend for WebBackend {
         &mut self,
         data: &framework_core::primitives::icon::IconData,
         color: Option<&framework_core::Color>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         primitives::icon::create(self, data, color)
     }
@@ -1662,6 +1710,7 @@ impl Backend for WebBackend {
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         primitives::text_input::create(self, initial_value, placeholder, on_change, on_key_down)
     }
@@ -1676,6 +1725,7 @@ impl Backend for WebBackend {
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         primitives::text_area::create(self, initial_value, placeholder, on_change, on_key_down)
     }
@@ -1691,7 +1741,12 @@ impl Backend for WebBackend {
         primitives::text_area::make_handle(node)
     }
 
-    fn create_toggle(&mut self, initial_value: bool, on_change: Rc<dyn Fn(bool)>) -> Self::Node {
+    fn create_toggle(
+        &mut self,
+        initial_value: bool,
+        on_change: Rc<dyn Fn(bool)>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
         primitives::toggle::create(self, initial_value, on_change)
     }
 
@@ -1699,7 +1754,11 @@ impl Backend for WebBackend {
         primitives::toggle::update_value(node, value)
     }
 
-    fn create_scroll_view(&mut self, horizontal: bool) -> Self::Node {
+    fn create_scroll_view(
+        &mut self,
+        horizontal: bool,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
         primitives::scroll_view::create(self, horizontal)
     }
 
@@ -1710,6 +1769,7 @@ impl Backend for WebBackend {
         max: f32,
         step: Option<f32>,
         on_change: Rc<dyn Fn(f32)>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         primitives::slider::create(self, initial_value, min, max, step, on_change)
     }
@@ -1724,6 +1784,7 @@ impl Backend for WebBackend {
         autoplay: bool,
         controls: bool,
         loop_playback: bool,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         primitives::video::create(self, src, autoplay, controls, loop_playback)
     }
@@ -1736,6 +1797,7 @@ impl Backend for WebBackend {
         &mut self,
         size: framework_core::primitives::activity_indicator::ActivityIndicatorSize,
         color: Option<&framework_core::Color>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         primitives::activity_indicator::create(self, size, color)
     }
@@ -1745,6 +1807,7 @@ impl Backend for WebBackend {
         callbacks: framework_core::VirtualizerCallbacks<Self::Node>,
         overscan: f32,
         horizontal: bool,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         primitives::virtualizer::create(self, callbacks, overscan, horizontal)
     }
@@ -1762,6 +1825,7 @@ impl Backend for WebBackend {
         on_ready: framework_core::primitives::graphics::OnReady,
         on_resize: framework_core::primitives::graphics::OnResize,
         on_lost: framework_core::primitives::graphics::OnLost,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         primitives::graphics::create(self, on_ready, on_resize, on_lost)
     }
@@ -1781,6 +1845,7 @@ impl Backend for WebBackend {
         &mut self,
         callbacks: framework_core::NavigatorCallbacks<Self::Node>,
         control: Rc<framework_core::NavigatorControl>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         primitives::navigator::create(self, callbacks, control)
     }
@@ -1823,6 +1888,7 @@ impl Backend for WebBackend {
         &mut self,
         callbacks: framework_core::TabNavigatorCallbacks<Self::Node>,
         control: Rc<framework_core::NavigatorControl>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         primitives::navigator::create_tab(self, callbacks, control)
     }
@@ -1857,6 +1923,7 @@ impl Backend for WebBackend {
         &mut self,
         callbacks: framework_core::DrawerNavigatorCallbacks<Self::Node>,
         control: Rc<framework_core::NavigatorControl>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         primitives::navigator::create_drawer(self, callbacks, control)
     }
@@ -1899,6 +1966,7 @@ impl Backend for WebBackend {
     fn create_link(
         &mut self,
         config: framework_core::primitives::link::LinkConfig,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         primitives::link::create(self, config)
     }
@@ -1915,6 +1983,7 @@ impl Backend for WebBackend {
         target: framework_core::primitives::portal::PortalTarget,
         on_dismiss: Option<Rc<dyn Fn()>>,
         trap_focus: bool,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         primitives::portal::create(self, target, on_dismiss, trap_focus)
     }
@@ -1935,6 +2004,7 @@ impl Backend for WebBackend {
         type_id: std::any::TypeId,
         type_name: &'static str,
         payload: &Rc<dyn std::any::Any>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         // Look up the handler; clone the Rc so we can drop the
         // registry borrow before calling the handler (which needs

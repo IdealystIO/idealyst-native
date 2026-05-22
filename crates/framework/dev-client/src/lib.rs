@@ -269,7 +269,9 @@ where
         match cmd {
             Command::CreateView { id } => {
                 if !self.nodes.contains_key(&id) {
-                    let node = self.backend.create_view();
+                    let node = self
+                        .backend
+                        .create_view(&framework_core::accessibility::AccessibilityProps::default());
                     self.nodes.insert(id, node);
                 }
             }
@@ -283,7 +285,10 @@ where
                         self.text_content.insert(id, content);
                     }
                 } else {
-                    let node = self.backend.create_text(&content);
+                    let node = self.backend.create_text(
+                        &content,
+                        &framework_core::accessibility::AccessibilityProps::default(),
+                    );
                     self.nodes.insert(id, node);
                     self.text_content.insert(id, content);
                 }
@@ -327,13 +332,17 @@ where
                     &action,
                     leading.as_ref(),
                     trailing.as_ref(),
+                    &framework_core::accessibility::AccessibilityProps::default(),
                 );
                 self.nodes.insert(id, node);
             }
             Command::CreatePressable { id, on_click } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
                 let cb = self.handler_unit(on_click);
-                let node = self.backend.create_pressable(cb);
+                let node = self.backend.create_pressable(
+                    cb,
+                    &framework_core::accessibility::AccessibilityProps::default(),
+                );
                 self.nodes.insert(id, node);
             }
             Command::CreateReactiveAnchor { id } => {
@@ -343,14 +352,22 @@ where
             }
             Command::CreateImage { id, src, alt } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
-                let node = self.backend.create_image(&src, alt.as_deref());
+                let node = self.backend.create_image(
+                    &src,
+                    alt.as_deref(),
+                    &framework_core::accessibility::AccessibilityProps::default(),
+                );
                 self.nodes.insert(id, node);
             }
             Command::CreateIcon { id, data, color } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
                 let icon = convert::wire_icon_to_static(data);
                 let color = color.map(convert::wire_color_to_color);
-                let node = self.backend.create_icon(&icon, color.as_ref());
+                let node = self.backend.create_icon(
+                    &icon,
+                    color.as_ref(),
+                    &framework_core::accessibility::AccessibilityProps::default(),
+                );
                 self.nodes.insert(id, node);
             }
             Command::CreateTextInput {
@@ -361,9 +378,13 @@ where
             } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
                 let cb = self.handler_string(on_change);
-                let node = self
-                    .backend
-                    .create_text_input(&initial_value, placeholder.as_deref(), cb, None);
+                let node = self.backend.create_text_input(
+                    &initial_value,
+                    placeholder.as_deref(),
+                    cb,
+                    None,
+                    &framework_core::accessibility::AccessibilityProps::default(),
+                );
                 self.nodes.insert(id, node);
             }
             Command::CreateTextArea {
@@ -374,9 +395,13 @@ where
             } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
                 let cb = self.handler_string(on_change);
-                let node = self
-                    .backend
-                    .create_text_area(&initial_value, placeholder.as_deref(), cb, None);
+                let node = self.backend.create_text_area(
+                    &initial_value,
+                    placeholder.as_deref(),
+                    cb,
+                    None,
+                    &framework_core::accessibility::AccessibilityProps::default(),
+                );
                 self.nodes.insert(id, node);
             }
             Command::CreateExternal { id, type_name } => {
@@ -388,7 +413,9 @@ where
                 // placeholder, this code path leaves room for client-
                 // side external-registry lookup as future work.
                 let _ = type_name;
-                let node = self.backend.create_view();
+                let node = self
+                    .backend
+                    .create_view(&framework_core::accessibility::AccessibilityProps::default());
                 self.nodes.insert(id, node);
             }
             Command::CreateToggle {
@@ -398,7 +425,11 @@ where
             } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
                 let cb = self.handler_bool(on_change);
-                let node = self.backend.create_toggle(initial_value, cb);
+                let node = self.backend.create_toggle(
+                    initial_value,
+                    cb,
+                    &framework_core::accessibility::AccessibilityProps::default(),
+                );
                 self.nodes.insert(id, node);
             }
             Command::CreateSlider {
@@ -411,14 +442,22 @@ where
             } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
                 let cb = self.handler_float(on_change);
-                let node = self
-                    .backend
-                    .create_slider(initial_value, min, max, step, cb);
+                let node = self.backend.create_slider(
+                    initial_value,
+                    min,
+                    max,
+                    step,
+                    cb,
+                    &framework_core::accessibility::AccessibilityProps::default(),
+                );
                 self.nodes.insert(id, node);
             }
             Command::CreateScrollView { id, horizontal } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
-                let node = self.backend.create_scroll_view(horizontal);
+                let node = self.backend.create_scroll_view(
+                    horizontal,
+                    &framework_core::accessibility::AccessibilityProps::default(),
+                );
                 self.nodes.insert(id, node);
             }
             Command::CreateVideo {
@@ -429,16 +468,24 @@ where
                 loop_playback,
             } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
-                let node = self
-                    .backend
-                    .create_video(&src, autoplay, controls, loop_playback);
+                let node = self.backend.create_video(
+                    &src,
+                    autoplay,
+                    controls,
+                    loop_playback,
+                    &framework_core::accessibility::AccessibilityProps::default(),
+                );
                 self.nodes.insert(id, node);
             }
             Command::CreateActivityIndicator { id, size, color } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
                 let size = convert::wire_activity_size(size);
                 let color = color.map(convert::wire_color_to_color);
-                let node = self.backend.create_activity_indicator(size, color.as_ref());
+                let node = self.backend.create_activity_indicator(
+                    size,
+                    color.as_ref(),
+                    &framework_core::accessibility::AccessibilityProps::default(),
+                );
                 self.nodes.insert(id, node);
             }
             Command::CreateLink {
@@ -456,7 +503,10 @@ where
                     url,
                     on_activate: cb,
                 };
-                let node = self.backend.create_link(config);
+                let node = self.backend.create_link(
+                    config,
+                    &framework_core::accessibility::AccessibilityProps::default(),
+                );
                 self.nodes.insert(id, node);
             }
             Command::CreatePortal {
@@ -505,6 +555,7 @@ where
                     portal_target,
                     dismiss_cb,
                     trap_focus,
+                    &framework_core::accessibility::AccessibilityProps::default(),
                 );
                 self.nodes.insert(id, node);
             }
@@ -518,7 +569,12 @@ where
                     Some(triple) => triple,
                     None => no_op_graphics_handlers(),
                 };
-                let node = self.backend.create_graphics(on_ready, on_resize, on_lost);
+                let node = self.backend.create_graphics(
+                    on_ready,
+                    on_resize,
+                    on_lost,
+                    &framework_core::accessibility::AccessibilityProps::default(),
+                );
                 self.nodes.insert(id, node);
             }
             Command::CreateVirtualizer {
@@ -1207,7 +1263,9 @@ where
             // We can't yet fill `node`; placeholder via uninit is
             // unsafe. Instead we defer state construction until we
             // have the node.
-            node: self.backend.create_view(), // temporary placeholder
+            node: self
+                .backend
+                .create_view(&framework_core::accessibility::AccessibilityProps::default()), // temporary placeholder
             control: control.clone(),
             pending_mount: Rc::new(RefCell::new(None)),
             suppress_release: Rc::new(RefCell::new(false)),
@@ -1223,7 +1281,11 @@ where
 
         // Real backend create call. This installs the real backend's
         // dispatcher onto control.
-        let nav_node = self.backend.create_navigator(callbacks, control.clone());
+        let nav_node = self.backend.create_navigator(
+            callbacks,
+            control.clone(),
+            &framework_core::accessibility::AccessibilityProps::default(),
+        );
 
         // Reconstruct the state with the real node in place.
         let final_state = Rc::new(navigators::NavigatorAppState {
@@ -1283,7 +1345,9 @@ where
         let replay_pos = Rc::new(RefCell::new(0usize));
         let state = Rc::new(navigators::NavigatorAppState {
             kind: navigators::NavigatorKind::Tab,
-            node: self.backend.create_view(),
+            node: self
+                .backend
+                .create_view(&framework_core::accessibility::AccessibilityProps::default()),
             control: control.clone(),
             pending_mount: Rc::new(RefCell::new(None)),
             suppress_release: Rc::new(RefCell::new(false)),
@@ -1301,7 +1365,11 @@ where
             resolved_placement,
             resolved_mount_policy,
         );
-        let nav_node = self.backend.create_tab_navigator(callbacks, control.clone());
+        let nav_node = self.backend.create_tab_navigator(
+            callbacks,
+            control.clone(),
+            &framework_core::accessibility::AccessibilityProps::default(),
+        );
 
         let final_state = Rc::new(navigators::NavigatorAppState {
             kind: navigators::NavigatorKind::Tab,
@@ -1360,7 +1428,9 @@ where
         let replay_pos = Rc::new(RefCell::new(0usize));
         let state = Rc::new(navigators::NavigatorAppState {
             kind: navigators::NavigatorKind::Drawer,
-            node: self.backend.create_view(),
+            node: self
+                .backend
+                .create_view(&framework_core::accessibility::AccessibilityProps::default()),
             control: control.clone(),
             pending_mount: Rc::new(RefCell::new(None)),
             suppress_release: Rc::new(RefCell::new(false)),
@@ -1380,7 +1450,11 @@ where
             swipe_to_open,
             resolved_mount_policy,
         );
-        let nav_node = self.backend.create_drawer_navigator(callbacks, control.clone());
+        let nav_node = self.backend.create_drawer_navigator(
+            callbacks,
+            control.clone(),
+            &framework_core::accessibility::AccessibilityProps::default(),
+        );
 
         let final_state = Rc::new(navigators::NavigatorAppState {
             kind: navigators::NavigatorKind::Drawer,

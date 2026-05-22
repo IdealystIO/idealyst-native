@@ -327,7 +327,7 @@ impl Backend for IosBackend {
         }
     }
 
-    fn create_view(&mut self) -> Self::Node {
+    fn create_view(&mut self, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
         let stack = unsafe { UIStackView::new(self.mtm) };
         let _: () = unsafe { msg_send![&stack, setAxis: 1isize] };
         let _: () = unsafe { msg_send![&stack, setAlignment: 0isize] };
@@ -335,7 +335,7 @@ impl Backend for IosBackend {
         IosNode::View(Retained::into_super(stack))
     }
 
-    fn create_text(&mut self, content: &str) -> Self::Node {
+    fn create_text(&mut self, content: &str, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
         let label = unsafe { UILabel::new(self.mtm) };
         let ns_text = NSString::from_str(content);
         unsafe { label.setText(Some(&ns_text)) };
@@ -349,6 +349,7 @@ impl Backend for IosBackend {
         on_click: &framework_core::Action,
         leading_icon: Option<&framework_core::IconData>,
         _trailing_icon: Option<&framework_core::IconData>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let button = unsafe {
             UIButton::buttonWithType(UIButtonType::System, self.mtm)
@@ -387,6 +388,7 @@ impl Backend for IosBackend {
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         _on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let field = unsafe { UITextField::new(self.mtm) };
         let ns_val = NSString::from_str(initial_value);
@@ -424,6 +426,7 @@ impl Backend for IosBackend {
         &mut self,
         initial_value: bool,
         on_change: Rc<dyn Fn(bool)>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let switch = unsafe { UISwitch::new(self.mtm) };
         unsafe { switch.setOn_animated(initial_value, false) };
@@ -447,7 +450,7 @@ impl Backend for IosBackend {
         }
     }
 
-    fn create_scroll_view(&mut self, horizontal: bool) -> Self::Node {
+    fn create_scroll_view(&mut self, horizontal: bool, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
         let scroll = unsafe { UIScrollView::new(self.mtm) };
 
         // UIScrollView has zero intrinsic content size, so a parent
@@ -515,6 +518,7 @@ impl Backend for IosBackend {
         max: f32,
         _step: Option<f32>,
         on_change: Rc<dyn Fn(f32)>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let slider = unsafe { UISlider::new(self.mtm) };
         unsafe {
@@ -543,6 +547,7 @@ impl Backend for IosBackend {
         &mut self,
         size: ActivityIndicatorSize,
         color: Option<&Color>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let style = match size {
             ActivityIndicatorSize::Small => UIActivityIndicatorViewStyle::Medium,
@@ -567,6 +572,7 @@ impl Backend for IosBackend {
         &mut self,
         data: &framework_core::primitives::icon::IconData,
         color: Option<&Color>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         icon::create_icon(self.mtm, data, color)
     }
@@ -601,11 +607,12 @@ impl Backend for IosBackend {
         on_ready: OnReady,
         on_resize: OnResize,
         on_lost: OnLost,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         graphics::create_graphics(self.mtm, &mut self.callback_targets, on_ready, on_resize, on_lost)
     }
 
-    fn create_link(&mut self, config: LinkConfig) -> Self::Node {
+    fn create_link(&mut self, config: LinkConfig, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
         // Use a UIStackView (vertical) as a tappable container so
         // child primitives (Text, etc.) render inside it. A UIButton
         // would swallow children into its internal title label layout.
@@ -771,6 +778,7 @@ impl Backend for IosBackend {
         &mut self,
         callbacks: NavigatorCallbacks<Self::Node>,
         control: Rc<NavigatorControl>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         navigator::create_navigator(self.mtm, &mut self.navigator_instances, callbacks, control)
     }
@@ -835,6 +843,7 @@ impl Backend for IosBackend {
         target: framework_core::primitives::portal::PortalTarget,
         _on_dismiss: Option<Rc<dyn Fn()>>,
         trap_focus: bool,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         // On the iOS stack backend we mount portals as plain
         // window-level UIViews — not `presentViewController:` sheets.
@@ -888,6 +897,7 @@ impl Backend for IosBackend {
         &mut self,
         callbacks: TabNavigatorCallbacks<Self::Node>,
         control: Rc<NavigatorControl>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         tab_drawer::create_tab_navigator(self.mtm, &mut self.tab_drawer_instances, callbacks, control)
     }
@@ -918,6 +928,7 @@ impl Backend for IosBackend {
         &mut self,
         callbacks: DrawerNavigatorCallbacks<Self::Node>,
         control: Rc<NavigatorControl>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         tab_drawer::create_drawer_navigator(self.mtm, &mut self.tab_drawer_instances, callbacks, control)
     }

@@ -9,6 +9,7 @@
 
 use super::debug::time_backend_create;
 use super::style::attach_style;
+use crate::accessibility::AccessibilityProps;
 use crate::backend::Backend;
 use crate::handles::RefFill;
 use crate::reactive::Effect;
@@ -21,8 +22,9 @@ pub(super) fn build<B: Backend + 'static>(
     source: TextSource,
     style: Option<StyleSource>,
     ref_fill: Option<RefFill>,
+    a11y: AccessibilityProps,
 ) -> B::Node {
-    let n = build_text(backend, source);
+    let n = build_text(backend, source, &a11y);
     if let Some(s) = style {
         attach_style(backend, &n, s);
     }
@@ -39,10 +41,11 @@ pub(super) fn build<B: Backend + 'static>(
 fn build_text<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
     source: TextSource,
+    a11y: &AccessibilityProps,
 ) -> B::Node {
     match source {
         TextSource::Static(content) => {
-            time_backend_create(pkind!(Text), || backend.borrow_mut().create_text(&content))
+            time_backend_create(pkind!(Text), || backend.borrow_mut().create_text(&content, a11y))
         }
         TextSource::Bound(d) => {
             // Fast path: backends that return `Some(id)` from
@@ -57,12 +60,12 @@ fn build_text<B: Backend + 'static>(
             // returns `None`, so non-web/non-batching backends
             // see the legacy behavior unchanged.
             let batched = time_backend_create(pkind!(Text), || {
-                backend.borrow_mut().create_text_with_id("")
+                backend.borrow_mut().create_text_with_id("", a11y)
             });
             let (node, text_id) = match batched {
                 Some((n, id)) => (n, Some(id)),
                 None => (
-                    time_backend_create(pkind!(Text), || backend.borrow_mut().create_text("")),
+                    time_backend_create(pkind!(Text), || backend.borrow_mut().create_text("", a11y)),
                     None,
                 ),
             };
@@ -145,7 +148,7 @@ fn build_text<B: Backend + 'static>(
             // `compute_fallback` in a `Derived<String>` and re-enter
             // the Bound arm's logic via a tail call below.
             let batched = time_backend_create(pkind!(Text), || {
-                backend.borrow_mut().create_text_with_id("")
+                backend.borrow_mut().create_text_with_id("", a11y)
             });
             let supports_js = backend.borrow().supports_js_text_bindings();
             match (batched, supports_js) {
@@ -182,7 +185,7 @@ fn build_text<B: Backend + 'static>(
                         Some((n, id)) => (n, Some(id)),
                         None => (
                             time_backend_create(pkind!(Text), || {
-                                backend.borrow_mut().create_text("")
+                                backend.borrow_mut().create_text("", a11y)
                             }),
                             None,
                         ),

@@ -10,6 +10,7 @@
 use super::cleanup::VirtualizerHandleCleanup;
 use super::debug::time_backend_create;
 use super::style::attach_style;
+use crate::accessibility::AccessibilityProps;
 use crate::backend::{Backend, VirtualizerCallbacks};
 use crate::handles::RefFill;
 use crate::primitive::Primitive;
@@ -36,6 +37,7 @@ pub(super) fn build<B: Backend + 'static>(
     horizontal: bool,
     style: Option<StyleSource>,
     ref_fill: Option<RefFill>,
+    a11y: AccessibilityProps,
 ) -> B::Node {
     // Dispatch on whether the backend opts into the
     // structured / slot-capture path AND whether the
@@ -63,6 +65,7 @@ pub(super) fn build<B: Backend + 'static>(
             row_index_signal_id,
             overscan,
             horizontal,
+            &a11y,
         )
     };
     if let Some(s) = style {
@@ -109,6 +112,7 @@ fn build_virtualizer<B: Backend + 'static>(
     _row_index_signal_id: Option<u64>,
     overscan: f32,
     horizontal: bool,
+    a11y: &AccessibilityProps,
 ) -> B::Node {
     // Per-item scope registry, owned by an Rc so the mount/release
     // closures (which live in the backend) share it. The framework
@@ -267,7 +271,7 @@ fn build_virtualizer<B: Backend + 'static>(
     };
 
     let node = time_backend_create(pkind!(Virtualizer), || {
-        backend.borrow_mut().create_virtualizer(callbacks, overscan, horizontal)
+        backend.borrow_mut().create_virtualizer(callbacks, overscan, horizontal, a11y)
     });
 
     // Effect: re-fires whenever the data signal changes (any reads

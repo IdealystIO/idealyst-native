@@ -120,6 +120,14 @@ edition = "2021"
 host-appkit = {host_dep}
 framework-core = {fcore_dep}
 {user_name} = {user_dep}
+
+# `dev` activates everything `idealyst dev` needs: Robot bridge
+# (auto-starts on mount), MCP catalog inventory, and the
+# `--emit-catalog` arg handler in this wrapper's main. Production
+# builds via `idealyst build` / `idealyst run` don't enable `dev`
+# and carry none of that overhead.
+[features]
+dev = ["framework-core/dev"]
 "#,
         bin_name = bin_name,
         host_dep = host_dep,
@@ -135,6 +143,21 @@ framework-core = {fcore_dep}
 use {user_lib}::app;
 
 fn main() {{
+    // `--emit-catalog`: dump the MCP catalog JSON to stdout and exit
+    // without launching the AppKit host. This is what `idealyst mcp`
+    // (with `--from-bin <this-binary>`) spawns to extract the
+    // project's catalog. Only available in `dev` builds — the
+    // `mcp` feature on `framework-core` (transitively on via `dev`)
+    // is what makes `__mcp::catalog_json()` reachable.
+    #[cfg(feature = "dev")]
+    {{
+        if std::env::args().any(|a| a == "--emit-catalog") {{
+            let json = ::framework_core::__mcp::catalog_json();
+            println!("{{}}", ::framework_core::__serde_json::to_string_pretty(&json).unwrap());
+            return;
+        }}
+    }}
+
     let opts = host_appkit::RunOptions {{
         title: "{title}".to_string(),
         width: 1024.0,

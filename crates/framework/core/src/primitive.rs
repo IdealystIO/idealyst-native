@@ -7,6 +7,7 @@
 //! content signal change doesn't re-fire the style effect and vice
 //! versa.
 
+use crate::accessibility::AccessibilityProps;
 use crate::handles::RefFill;
 use crate::primitives;
 use crate::sources::{IntoStyleSource, StyleSource, TextSource};
@@ -40,6 +41,11 @@ pub enum Primitive {
         /// [`crate::touch`] for the event model and the claim
         /// protocol.
         on_touch: Option<crate::TouchHandler>,
+        /// Accessibility prop bag — label, role override, traits,
+        /// hint, etc. Default is `AccessibilityProps::default()` which
+        /// tells the backend "infer everything from the primitive type."
+        /// See [`crate::accessibility`] for the model.
+        accessibility: AccessibilityProps,
         #[cfg(feature = "robot")]
         test_id: Option<&'static str>,
     },
@@ -47,6 +53,7 @@ pub enum Primitive {
         source: TextSource,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
+        accessibility: AccessibilityProps,
         #[cfg(feature = "robot")]
         test_id: Option<&'static str>,
     },
@@ -78,6 +85,7 @@ pub enum Primitive {
         /// native). The closure is wrapped in an `Effect` so changes
         /// propagate automatically.
         disabled: Option<Box<dyn Fn() -> bool>>,
+        accessibility: AccessibilityProps,
         #[cfg(feature = "robot")]
         test_id: Option<&'static str>,
     },
@@ -104,6 +112,7 @@ pub enum Primitive {
         ref_fill: Option<RefFill>,
         /// Same semantics as [`Primitive::Button::disabled`].
         disabled: Option<Box<dyn Fn() -> bool>>,
+        accessibility: AccessibilityProps,
         #[cfg(feature = "robot")]
         test_id: Option<&'static str>,
     },
@@ -120,6 +129,13 @@ pub enum Primitive {
         src: Box<dyn Fn() -> String>,
         /// Optional accessibility label. Maps to `alt` on web,
         /// `accessibilityLabel` on iOS, `contentDescription` on Android.
+        ///
+        /// **Note**: this field predates the cross-primitive
+        /// `accessibility` prop bag. Backend impls read `alt` as a
+        /// shortcut for the a11y label; if `accessibility.label` is
+        /// also set, the explicit `accessibility.label` wins. New code
+        /// should prefer `accessibility.label` for consistency with
+        /// other primitives.
         alt: Option<String>,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
@@ -127,6 +143,7 @@ pub enum Primitive {
         /// rather than a free-form URL. Drives `Backend::register_asset`
         /// just before `Backend::create_image`.
         asset: Option<crate::assets::Asset<crate::assets::kinds::Image>>,
+        accessibility: AccessibilityProps,
         #[cfg(feature = "robot")]
         test_id: Option<&'static str>,
     },
@@ -152,6 +169,7 @@ pub enum Primitive {
         draw_in: Option<primitives::icon::StrokeAnimation>,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
+        accessibility: AccessibilityProps,
     },
     /// Controlled text input. The parent owns the value as a
     /// `Signal<String>`; on every native input event the framework
@@ -173,6 +191,7 @@ pub enum Primitive {
         placeholder: Option<String>,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
+        accessibility: AccessibilityProps,
         #[cfg(feature = "robot")]
         test_id: Option<&'static str>,
     },
@@ -192,6 +211,7 @@ pub enum Primitive {
         placeholder: Option<String>,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
+        accessibility: AccessibilityProps,
         #[cfg(feature = "robot")]
         test_id: Option<&'static str>,
     },
@@ -203,6 +223,7 @@ pub enum Primitive {
         on_change: Rc<dyn Fn(bool)>,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
+        accessibility: AccessibilityProps,
         #[cfg(feature = "robot")]
         test_id: Option<&'static str>,
     },
@@ -221,6 +242,7 @@ pub enum Primitive {
         /// scrolling content can pass under the status bar / home
         /// indicator while header/footer rows respect the inset.
         safe_area_sides: crate::SafeAreaSides,
+        accessibility: AccessibilityProps,
     },
     /// Controlled numeric slider. Like `TextInput`/`Toggle`, the parent
     /// owns the value signal. If `step` is set, the framework snaps
@@ -235,6 +257,7 @@ pub enum Primitive {
         step: Option<f32>,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
+        accessibility: AccessibilityProps,
         #[cfg(feature = "robot")]
         test_id: Option<&'static str>,
     },
@@ -248,6 +271,7 @@ pub enum Primitive {
         loop_playback: bool,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
+        accessibility: AccessibilityProps,
     },
     /// Indeterminate loading spinner. No methods — passive widget.
     ActivityIndicator {
@@ -255,6 +279,7 @@ pub enum Primitive {
         color: Option<Color>,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
+        accessibility: AccessibilityProps,
     },
     /// Virtualized list. Runtime backends consume the closures
     /// (`render_item` / `item_count.compute` / `item_key`) and
@@ -296,6 +321,7 @@ pub enum Primitive {
         horizontal: bool,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
+        accessibility: AccessibilityProps,
     },
     /// GPU canvas. The author owns rendering: `on_init` runs once
     /// after the backend has a `wgpu` device ready and produces the
@@ -313,6 +339,7 @@ pub enum Primitive {
         on_lost: primitives::graphics::OnLost,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
+        accessibility: AccessibilityProps,
     },
     /// Stack-based navigator. Holds a route table built up via
     /// `.screen(...)` declarations and an initial route to mount as
@@ -433,6 +460,7 @@ pub enum Primitive {
         target: Option<Rc<primitives::navigator::NavigatorControl>>,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
+        accessibility: AccessibilityProps,
     },
     /// External — third-party primitive. The framework itself knows
     /// nothing about the specific kind; backends consult their own
@@ -454,6 +482,7 @@ pub enum Primitive {
         payload: Rc<dyn Any>,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
+        accessibility: AccessibilityProps,
     },
     /// Portal — render `children` at `target` (viewport root, an
     /// anchored element, or a named container) escaping the parent's
@@ -477,6 +506,7 @@ pub enum Primitive {
         trap_focus: bool,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,
+        accessibility: AccessibilityProps,
     },
     /// Presence — mount/unmount with enter and exit animations. See
     /// [`primitives::presence`] for the model. The host's
@@ -489,6 +519,7 @@ pub enum Primitive {
         enter: Option<primitives::presence::PresenceAnim>,
         exit: Option<primitives::presence::PresenceAnim>,
         ref_fill: Option<RefFill>,
+        accessibility: AccessibilityProps,
     },
 }
 

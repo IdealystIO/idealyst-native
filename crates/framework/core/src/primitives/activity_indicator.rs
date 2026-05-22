@@ -52,6 +52,7 @@ pub fn activity_indicator() -> Bound<ActivityIndicatorHandle> {
         color: None,
         style: None,
         ref_fill: None,
+        accessibility: crate::accessibility::AccessibilityProps::default(),
     })
 }
 

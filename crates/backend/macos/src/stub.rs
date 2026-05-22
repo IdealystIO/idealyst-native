@@ -18,10 +18,14 @@ impl Backend for MacosBackend {
         framework_core::Platform::MacOs
     }
 
-    fn create_view(&mut self) -> Self::Node {
+    fn create_view(&mut self, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
         unreachable!("backend-macos stub: AppKit calls only on macOS target")
     }
-    fn create_text(&mut self, _content: &str) -> Self::Node {
+    fn create_text(
+        &mut self,
+        _content: &str,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
         unreachable!()
     }
     fn create_button(
@@ -30,6 +34,7 @@ impl Backend for MacosBackend {
         _on_click: &framework_core::Action,
         _leading_icon: Option<&framework_core::IconData>,
         _trailing_icon: Option<&framework_core::IconData>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         unreachable!()
     }

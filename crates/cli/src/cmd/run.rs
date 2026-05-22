@@ -267,6 +267,7 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
                     // terminal still tears it down cleanly.
                     background: false,
                     user_features: Vec::new(),
+                    env_vars: Vec::new(),
                 },
             )?;
             eprintln!();

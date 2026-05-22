@@ -387,6 +387,7 @@ pub fn view(children: Vec<Primitive>) -> Bound<ViewHandle> {
         ref_fill: None,
         safe_area_sides: crate::SafeAreaSides::NONE,
         on_touch: None,
+        accessibility: crate::accessibility::AccessibilityProps::default(),
         #[cfg(feature = "robot")]
         test_id: None,
     })
@@ -397,6 +398,7 @@ pub fn text<T: IntoTextSource>(source: T) -> Bound<TextHandle> {
         source: source.into_text_source(),
         style: None,
         ref_fill: None,
+        accessibility: crate::accessibility::AccessibilityProps::default(),
         #[cfg(feature = "robot")]
         test_id: None,
     })
@@ -415,6 +417,7 @@ where
         style: None,
         ref_fill: None,
         disabled: None,
+        accessibility: crate::accessibility::AccessibilityProps::default(),
         #[cfg(feature = "robot")]
         test_id: None,
     })
@@ -433,6 +436,7 @@ pub fn pressable<F: Fn() + 'static>(
         style: None,
         ref_fill: None,
         disabled: None,
+        accessibility: crate::accessibility::AccessibilityProps::default(),
         #[cfg(feature = "robot")]
         test_id: None,
     })

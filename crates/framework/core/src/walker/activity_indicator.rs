@@ -3,6 +3,7 @@
 
 use super::debug::time_backend_create;
 use super::style::attach_style;
+use crate::accessibility::AccessibilityProps;
 use crate::backend::Backend;
 use crate::handles::RefFill;
 use crate::primitives;
@@ -16,9 +17,10 @@ pub(super) fn build<B: Backend + 'static>(
     color: Option<crate::style::Color>,
     style: Option<StyleSource>,
     ref_fill: Option<RefFill>,
+    a11y: AccessibilityProps,
 ) -> B::Node {
     let n = time_backend_create(pkind!(ActivityIndicator), || {
-        backend.borrow_mut().create_activity_indicator(size, color.as_ref())
+        backend.borrow_mut().create_activity_indicator(size, color.as_ref(), &a11y)
     });
     if let Some(s) = style {
         attach_style(backend, &n, s);

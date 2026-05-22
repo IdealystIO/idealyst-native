@@ -1526,6 +1526,7 @@ dependencies = [
  "framework-core",
  "framework-macros",
  "inventory",
+ "serde",
  "serde_json",
 ]
 

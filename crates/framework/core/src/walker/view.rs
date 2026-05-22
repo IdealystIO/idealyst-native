@@ -13,6 +13,7 @@
 
 use super::debug::time_backend_create;
 use super::style::{attach_safe_area, attach_style, register_static_cohort_batch};
+use crate::accessibility::AccessibilityProps;
 use crate::backend::Backend;
 use crate::batch::{BackendBatch, BatchOp};
 use crate::handles::RefFill;
@@ -29,8 +30,9 @@ pub(super) fn build<B: Backend + 'static>(
     ref_fill: Option<RefFill>,
     safe_area_sides: crate::SafeAreaSides,
     on_touch: Option<crate::TouchHandler>,
+    a11y: AccessibilityProps,
 ) -> B::Node {
-    let n = build_view(backend, children);
+    let n = build_view(backend, children, &a11y);
     if let Some(s) = style {
         attach_style(backend, &n, s);
     }
@@ -50,8 +52,9 @@ pub(super) fn build<B: Backend + 'static>(
 fn build_view<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
     children: Vec<Primitive>,
+    a11y: &AccessibilityProps,
 ) -> B::Node {
-    let mut parent = time_backend_create(pkind!(View), || backend.borrow_mut().create_view());
+    let mut parent = time_backend_create(pkind!(View), || backend.borrow_mut().create_view(a11y));
     insert_children(backend, &mut parent, children);
     parent
 }

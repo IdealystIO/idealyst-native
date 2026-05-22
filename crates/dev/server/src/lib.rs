@@ -803,14 +803,21 @@ impl Backend for WireRecordingBackend {
         ViewHandle::new(Rc::new(*node), &RecordingViewOps)
     }
 
-    fn create_view(&mut self) -> Self::Node {
+    fn create_view(
+        &mut self,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
         state.emit(Command::CreateView { id });
         id
     }
 
-    fn create_text(&mut self, content: &str) -> Self::Node {
+    fn create_text(
+        &mut self,
+        content: &str,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
         state.emit(Command::CreateText {
@@ -826,6 +833,7 @@ impl Backend for WireRecordingBackend {
         on_click: &framework_core::Action,
         leading_icon: Option<&primitives::icon::IconData>,
         trailing_icon: Option<&primitives::icon::IconData>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let identity = framework_core::current_identity();
@@ -845,7 +853,11 @@ impl Backend for WireRecordingBackend {
         id
     }
 
-    fn create_pressable(&mut self, on_click: Rc<dyn Fn()>) -> Self::Node {
+    fn create_pressable(
+        &mut self,
+        on_click: Rc<dyn Fn()>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let identity = framework_core::current_identity();
         let id = Self::mint_node(&mut state);
@@ -895,7 +907,12 @@ impl Backend for WireRecordingBackend {
         });
     }
 
-    fn create_image(&mut self, src: &str, alt: Option<&str>) -> Self::Node {
+    fn create_image(
+        &mut self,
+        src: &str,
+        alt: Option<&str>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
         state.emit(Command::CreateImage {
@@ -918,6 +935,7 @@ impl Backend for WireRecordingBackend {
         &mut self,
         data: &primitives::icon::IconData,
         color: Option<&Color>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
@@ -982,6 +1000,7 @@ impl Backend for WireRecordingBackend {
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         _on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         // `_on_key_down` is not yet wired across the AAS protocol
         // (would require a new wire op + per-frame key event
@@ -1016,6 +1035,7 @@ impl Backend for WireRecordingBackend {
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
         _on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         // `_on_key_down` is dropped on the wire for the same reason as
         // `create_text_input` above — AAS doesn't yet carry intercepted
@@ -1057,6 +1077,7 @@ impl Backend for WireRecordingBackend {
         _type_id: std::any::TypeId,
         type_name: &'static str,
         _payload: &Rc<dyn std::any::Any>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
@@ -1071,6 +1092,7 @@ impl Backend for WireRecordingBackend {
         &mut self,
         initial_value: bool,
         on_change: Rc<dyn Fn(bool)>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let identity = framework_core::current_identity();
@@ -1094,7 +1116,11 @@ impl Backend for WireRecordingBackend {
         });
     }
 
-    fn create_scroll_view(&mut self, horizontal: bool) -> Self::Node {
+    fn create_scroll_view(
+        &mut self,
+        horizontal: bool,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
         state.emit(Command::CreateScrollView { id, horizontal });
@@ -1108,6 +1134,7 @@ impl Backend for WireRecordingBackend {
         max: f32,
         step: Option<f32>,
         on_change: Rc<dyn Fn(f32)>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let identity = framework_core::current_identity();
@@ -1140,6 +1167,7 @@ impl Backend for WireRecordingBackend {
         autoplay: bool,
         controls: bool,
         loop_playback: bool,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
@@ -1165,6 +1193,7 @@ impl Backend for WireRecordingBackend {
         &mut self,
         size: primitives::activity_indicator::ActivityIndicatorSize,
         color: Option<&Color>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
@@ -1356,6 +1385,7 @@ impl Backend for WireRecordingBackend {
         target: primitives::portal::PortalTarget,
         on_dismiss: Option<Rc<dyn Fn()>>,
         trap_focus: bool,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let identity = framework_core::current_identity();
@@ -1399,6 +1429,7 @@ impl Backend for WireRecordingBackend {
         _on_ready: primitives::graphics::OnReady,
         _on_resize: primitives::graphics::OnResize,
         _on_lost: primitives::graphics::OnLost,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         // The author's `on_ready` / `on_resize` / `on_lost` closures
         // can't travel over the wire (they capture renderer state
@@ -1427,6 +1458,7 @@ impl Backend for WireRecordingBackend {
         &mut self,
         callbacks: framework_core::primitives::navigator::NavigatorCallbacks<Self::Node>,
         control: Rc<framework_core::primitives::navigator::NavigatorControl>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let nav_id;
         let initial_route = callbacks.initial_route;
@@ -1502,6 +1534,7 @@ impl Backend for WireRecordingBackend {
         &mut self,
         callbacks: framework_core::primitives::navigator::TabNavigatorCallbacks<Self::Node>,
         control: Rc<framework_core::primitives::navigator::NavigatorControl>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let nav_id;
         let initial_route = callbacks.navigator.initial_route;
@@ -1584,6 +1617,7 @@ impl Backend for WireRecordingBackend {
         &mut self,
         callbacks: framework_core::primitives::navigator::DrawerNavigatorCallbacks<Self::Node>,
         control: Rc<framework_core::primitives::navigator::NavigatorControl>,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let nav_id;
         let initial_route = callbacks.navigator.initial_route;
@@ -1689,6 +1723,7 @@ impl Backend for WireRecordingBackend {
         callbacks: framework_core::VirtualizerCallbacks<Self::Node>,
         overscan: f32,
         horizontal: bool,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         // Eagerly snapshot the current data set: count + keys +
         // initial sizes. The wire ships these so the app's
@@ -1814,7 +1849,11 @@ impl Backend for WireRecordingBackend {
         });
     }
 
-    fn create_link(&mut self, config: primitives::link::LinkConfig) -> Self::Node {
+    fn create_link(
+        &mut self,
+        config: primitives::link::LinkConfig,
+        _a11y: &framework_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let identity = framework_core::current_identity();
         let id = Self::mint_node(&mut state);

@@ -10,13 +10,13 @@ impl Backend for IosBackend {
         framework_core::Platform::Ios
     }
 
-    fn create_view(&mut self) -> Self::Node {
+    fn create_view(&mut self, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
         unreachable!("backend-ios stub: UIKit calls only on iOS target")
     }
-    fn create_text(&mut self, _content: &str) -> Self::Node {
+    fn create_text(&mut self, _content: &str, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
         unreachable!()
     }
-    fn create_button(&mut self, _label: &str, _on_click: &framework_core::Action, _leading_icon: Option<&framework_core::IconData>, _trailing_icon: Option<&framework_core::IconData>) -> Self::Node {
+    fn create_button(&mut self, _label: &str, _on_click: &framework_core::Action, _leading_icon: Option<&framework_core::IconData>, _trailing_icon: Option<&framework_core::IconData>, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
         unreachable!()
     }
     fn insert(&mut self, _parent: &mut Self::Node, _child: Self::Node) {

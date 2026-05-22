@@ -160,7 +160,14 @@ where
     // wiring `bridge::start(...)` themselves. The call is
     // idempotent (subsequent mounts won't bind a second listener)
     // and a no-op without the feature.
-    #[cfg(feature = "robot")]
+    //
+    // Gated to non-wasm targets — the bridge uses `std::net::TcpListener`
+    // + `std::thread::spawn`, neither of which is available on
+    // `wasm32-unknown-unknown`. Web dev gets the catalog via the
+    // server-side path (CLI's `--from-bin` + the user's app's
+    // emitted JSON); runtime control of the wasm app is a separate
+    // transport (out of scope here).
+    #[cfg(all(feature = "robot", not(target_arch = "wasm32")))]
     {
         crate::robot::bridge::start_auto_polling(
             crate::robot::bridge::DEFAULT_PORT,
@@ -245,50 +252,50 @@ pub(super) fn build_inner<B: Backend + 'static>(
     };
 
     let result = match node {
-        Primitive::Text { source, style, ref_fill, .. } => {
-            text::build(backend, source, style, ref_fill)
+        Primitive::Text { source, style, ref_fill, accessibility, .. } => {
+            text::build(backend, source, style, ref_fill, accessibility)
         }
-        Primitive::View { children, style, ref_fill, safe_area_sides, on_touch, .. } => {
-            view::build(backend, children, style, ref_fill, safe_area_sides, on_touch)
+        Primitive::View { children, style, ref_fill, safe_area_sides, on_touch, accessibility, .. } => {
+            view::build(backend, children, style, ref_fill, safe_area_sides, on_touch, accessibility)
         }
-        Primitive::Pressable { children, on_click, style, ref_fill, disabled, .. } => {
-            pressable::build(backend, children, on_click, style, ref_fill, disabled)
+        Primitive::Pressable { children, on_click, style, ref_fill, disabled, accessibility, .. } => {
+            pressable::build(backend, children, on_click, style, ref_fill, disabled, accessibility)
         }
-        Primitive::Button { label, on_click, leading_icon, trailing_icon, style, ref_fill, disabled, .. } => {
+        Primitive::Button { label, on_click, leading_icon, trailing_icon, style, ref_fill, disabled, accessibility, .. } => {
             button::build(
-                backend, label, on_click, leading_icon, trailing_icon, style, ref_fill, disabled,
+                backend, label, on_click, leading_icon, trailing_icon, style, ref_fill, disabled, accessibility,
             )
         }
-        Primitive::Image { src, alt, style, ref_fill, asset, .. } => {
-            image::build(backend, src, alt, style, ref_fill, asset)
+        Primitive::Image { src, alt, style, ref_fill, asset, accessibility, .. } => {
+            image::build(backend, src, alt, style, ref_fill, asset, accessibility)
         }
-        Primitive::Icon { data, color, stroke, draw_in, style, ref_fill } => {
-            icon::build(backend, data, color, stroke, draw_in, style, ref_fill)
+        Primitive::Icon { data, color, stroke, draw_in, style, ref_fill, accessibility, .. } => {
+            icon::build(backend, data, color, stroke, draw_in, style, ref_fill, accessibility)
         }
-        Primitive::TextInput { value, on_change, on_key_down, placeholder, style, ref_fill, .. } => {
+        Primitive::TextInput { value, on_change, on_key_down, placeholder, style, ref_fill, accessibility, .. } => {
             text_input::build_text_input(
-                backend, value, on_change, on_key_down, placeholder, style, ref_fill,
+                backend, value, on_change, on_key_down, placeholder, style, ref_fill, accessibility,
             )
         }
-        Primitive::TextArea { value, on_change, on_key_down, placeholder, style, ref_fill, .. } => {
+        Primitive::TextArea { value, on_change, on_key_down, placeholder, style, ref_fill, accessibility, .. } => {
             text_input::build_text_area(
-                backend, value, on_change, on_key_down, placeholder, style, ref_fill,
+                backend, value, on_change, on_key_down, placeholder, style, ref_fill, accessibility,
             )
         }
-        Primitive::Toggle { value, on_change, style, ref_fill, .. } => {
-            toggle::build(backend, value, on_change, style, ref_fill)
+        Primitive::Toggle { value, on_change, style, ref_fill, accessibility, .. } => {
+            toggle::build(backend, value, on_change, style, ref_fill, accessibility)
         }
-        Primitive::ScrollView { children, horizontal, style, ref_fill, safe_area_sides } => {
-            scroll_view::build(backend, children, horizontal, style, ref_fill, safe_area_sides)
+        Primitive::ScrollView { children, horizontal, style, ref_fill, safe_area_sides, accessibility, .. } => {
+            scroll_view::build(backend, children, horizontal, style, ref_fill, safe_area_sides, accessibility)
         }
-        Primitive::Slider { value, on_change, min, max, step, style, ref_fill, .. } => {
-            slider::build(backend, value, on_change, min, max, step, style, ref_fill)
+        Primitive::Slider { value, on_change, min, max, step, style, ref_fill, accessibility, .. } => {
+            slider::build(backend, value, on_change, min, max, step, style, ref_fill, accessibility)
         }
-        Primitive::Video { src, autoplay, controls, loop_playback, style, ref_fill } => {
-            video::build(backend, src, autoplay, controls, loop_playback, style, ref_fill)
+        Primitive::Video { src, autoplay, controls, loop_playback, style, ref_fill, accessibility, .. } => {
+            video::build(backend, src, autoplay, controls, loop_playback, style, ref_fill, accessibility)
         }
-        Primitive::ActivityIndicator { size, color, style, ref_fill } => {
-            activity_indicator::build(backend, size, color, style, ref_fill)
+        Primitive::ActivityIndicator { size, color, style, ref_fill, accessibility, .. } => {
+            activity_indicator::build(backend, size, color, style, ref_fill, accessibility)
         }
         Primitive::Virtualizer {
             item_count,
@@ -301,6 +308,8 @@ pub(super) fn build_inner<B: Backend + 'static>(
             horizontal,
             style,
             ref_fill,
+            accessibility,
+            ..
         } => virtualizer::build(
             backend,
             item_count,
@@ -313,9 +322,10 @@ pub(super) fn build_inner<B: Backend + 'static>(
             horizontal,
             style,
             ref_fill,
+            accessibility,
         ),
-        Primitive::Graphics { on_ready, on_resize, on_lost, style, ref_fill } => {
-            graphics::build(backend, on_ready, on_resize, on_lost, style, ref_fill)
+        Primitive::Graphics { on_ready, on_resize, on_lost, style, ref_fill, accessibility, .. } => {
+            graphics::build(backend, on_ready, on_resize, on_lost, style, ref_fill, accessibility)
         }
         Primitive::Navigator(nav) => navigator::build_navigator_dispatch(backend, nav),
         Primitive::TabNavigator(nav) => navigator::build_tab_navigator_dispatch(backend, nav),
@@ -335,14 +345,18 @@ pub(super) fn build_inner<B: Backend + 'static>(
             target,
             style,
             ref_fill,
-        } => link::build(backend, children, route, url, make_params, kind, target, style, ref_fill),
+            accessibility,
+            ..
+        } => link::build(backend, children, route, url, make_params, kind, target, style, ref_fill, accessibility),
         Primitive::External {
             type_id,
             type_name,
             payload,
             style,
             ref_fill,
-        } => external::build(backend, type_id, type_name, payload, style, ref_fill),
+            accessibility,
+            ..
+        } => external::build(backend, type_id, type_name, payload, style, ref_fill, accessibility),
         Primitive::Portal {
             children,
             target,
@@ -350,9 +364,11 @@ pub(super) fn build_inner<B: Backend + 'static>(
             trap_focus,
             style,
             ref_fill,
-        } => portal::build(backend, children, target, on_dismiss, trap_focus, style, ref_fill),
-        Primitive::Presence { child, present, enter, exit, ref_fill } => {
-            presence::build(backend, child, present, enter, exit, ref_fill)
+            accessibility,
+            ..
+        } => portal::build(backend, children, target, on_dismiss, trap_focus, style, ref_fill, accessibility),
+        Primitive::Presence { child, present, enter, exit, ref_fill, accessibility, .. } => {
+            presence::build(backend, child, present, enter, exit, ref_fill, accessibility)
         }
         Primitive::Repeat { .. } => {
             // `Repeat` represents N sibling nodes, not a single

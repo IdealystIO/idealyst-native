@@ -23,11 +23,14 @@
 //! idealyst mcp --check              # lint pass, exit non-zero on findings
 //! ```
 
-use anyhow::Result;
-use clap::Args as ClapArgs;
+use anyhow::{Context, Result};
+use clap::{Args as ClapArgs, Subcommand};
 
 #[derive(ClapArgs, Debug)]
 pub struct Args {
+    #[command(subcommand)]
+    pub command: Option<Command>,
+
     /// Skip the Robot tools, leaving only the static catalog. Robot
     /// is on by default — it's part of the dev configuration, not
     /// an opt-in. Pass this when you specifically want a
@@ -68,21 +71,77 @@ pub struct Args {
     pub watch_dirs: Vec<std::path::PathBuf>,
 }
 
+#[derive(Subcommand, Debug)]
+pub enum Command {
+    /// Write a `.mcp.json` file at the current directory pointing at
+    /// `idealyst mcp`. Claude Code auto-loads `.mcp.json` from the
+    /// project root, so this is what hooks an existing project into
+    /// the framework's MCP server. Idempotent — overwrites any
+    /// existing `.mcp.json` with the canonical default contents.
+    Install(InstallArgs),
+}
+
+#[derive(ClapArgs, Debug)]
+pub struct InstallArgs {
+    /// Project directory. Defaults to the current directory.
+    #[arg(default_value = ".")]
+    pub dir: std::path::PathBuf,
+
+    /// Server name in `.mcp.json`. Defaults to `idealyst`. Change
+    /// only if you already have another server registered under
+    /// that name in the same project.
+    #[arg(long, default_value = "idealyst")]
+    pub name: String,
+
+    /// Path to the `idealyst` binary the MCP client should spawn.
+    /// Defaults to bare `idealyst` (resolved from `$PATH` at launch
+    /// time — works after `cargo install idealyst-cli`).
+    #[arg(long, default_value = "idealyst")]
+    pub command: String,
+
+    /// Overwrite an existing `.mcp.json` without prompting.
+    /// Without `--force`, the command refuses if the file already
+    /// exists.
+    #[arg(long)]
+    pub force: bool,
+}
+
 pub fn run(args: Args) -> Result<()> {
+    if let Some(cmd) = args.command {
+        return match cmd {
+            Command::Install(install_args) => run_install(install_args),
+        };
+    }
     if args.check {
         return run_check();
     }
 
     let mut opts = mcp_server::ServerOptions::new();
     if !args.no_robot {
-        opts = opts.with_robot(args.bridge);
+        // Auto-discover the bridge from `.idealyst/bridge.port` in
+        // cwd (or any ancestor). When no port file is found we fall
+        // back to the user-supplied (or default) `--bridge` value;
+        // when the file's project_root doesn't match cwd we get
+        // `None` back and the Robot tools stay disabled — a
+        // safeguard so an MCP session in project A can't drive
+        // project B's app.
+        if let Some(addr) = mcp_server::resolve_bridge_addr(&args.bridge) {
+            opts = opts.with_robot(addr);
+        } else {
+            eprintln!(
+                "[idealyst mcp] Robot tools disabled — bridge port file points at a different project. \
+                 Check `.idealyst/bridge.port` in your project root; it should reference {:?}.",
+                std::env::current_dir().ok().map(|p| p.display().to_string()).unwrap_or_default(),
+            );
+        }
     }
-    if let Some(bin) = args.from_bin {
-        // The extractor is a one-shot — invoke the user's binary
-        // with `--emit-catalog` and parse its stdout. The CLI does
-        // NOT cargo-build first; pre-built binaries make the reload
-        // fast. Wire up `cargo build` upstream if you want
-        // automatic rebuilds.
+    // Catalog binary: explicit `--from-bin` wins; otherwise
+    // auto-discover via `.idealyst/catalog.path` (written by
+    // `idealyst dev` after a successful build). The extractor is
+    // invoked with `--emit-catalog` and its stdout parsed as the
+    // catalog JSON.
+    let catalog_bin = args.from_bin.or_else(mcp_server::resolve_catalog_bin);
+    if let Some(bin) = catalog_bin {
         let bin = std::sync::Arc::new(bin);
         opts = opts.with_subprocess_catalog(move || {
             let mut c = std::process::Command::new(bin.as_path());
@@ -103,6 +162,40 @@ pub fn run(args: Args) -> Result<()> {
         mcp_server::run_stdio_with_full_options(opts).await
     })
     .map_err(|e| anyhow::anyhow!("mcp server exited: {:?}", e))
+}
+
+fn run_install(args: InstallArgs) -> Result<()> {
+    let target = args.dir.join(".mcp.json");
+    if target.exists() && !args.force {
+        anyhow::bail!(
+            "{} already exists. Pass --force to overwrite.",
+            target.display()
+        );
+    }
+
+    let body = serde_json::json!({
+        "mcpServers": {
+            args.name.clone(): {
+                "command": args.command,
+                "args": ["mcp"],
+            }
+        }
+    });
+    let pretty = serde_json::to_string_pretty(&body)? + "\n";
+    std::fs::write(&target, pretty)
+        .with_context(|| format!("write {}", target.display()))?;
+
+    eprintln!("[idealyst mcp install] wrote {}", target.display());
+    eprintln!(
+        "[idealyst mcp install] Server name: {}, command: {}",
+        args.name, args.command
+    );
+    eprintln!(
+        "[idealyst mcp install] Run `idealyst dev` to launch the app; the bridge \
+         port is written to .idealyst/bridge.port and the MCP server discovers \
+         it from cwd."
+    );
+    Ok(())
 }
 
 fn run_check() -> Result<()> {

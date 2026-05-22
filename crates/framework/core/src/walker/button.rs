@@ -8,6 +8,7 @@
 
 use super::debug::time_backend_create;
 use super::style::{attach_disabled, attach_style};
+use crate::accessibility::AccessibilityProps;
 use crate::backend::Backend;
 use crate::derive::Action;
 use crate::handles::RefFill;
@@ -26,6 +27,7 @@ pub(super) fn build<B: Backend + 'static>(
     style: Option<StyleSource>,
     ref_fill: Option<RefFill>,
     disabled: Option<Box<dyn Fn() -> bool>>,
+    a11y: AccessibilityProps,
 ) -> B::Node {
     // Pull the initial label from the source and create the
     // native widget with it. For reactive labels we install
@@ -57,6 +59,7 @@ pub(super) fn build<B: Backend + 'static>(
             &on_click,
             leading_icon.as_ref(),
             trailing_icon.as_ref(),
+            &a11y,
         )
     });
     // attach_style returns the state setter so we can drive

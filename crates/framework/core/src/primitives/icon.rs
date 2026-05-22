@@ -214,6 +214,7 @@ pub fn icon(data: IconData) -> Bound<IconHandle> {
         draw_in: None,
         style: None,
         ref_fill: None,
+        accessibility: crate::accessibility::AccessibilityProps::default(),
     })
 }
 

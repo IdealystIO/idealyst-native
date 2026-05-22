@@ -56,6 +56,7 @@ fn sample_tree() -> (Primitive, framework_core::Signal<i32>) {
                 source: TextSource::Static("Hello, AAS".into()),
                 style: None,
                 ref_fill: None,
+                accessibility: Default::default(),
                 test_id: Some("greeting"),
             },
             Primitive::Button {
@@ -66,6 +67,7 @@ fn sample_tree() -> (Primitive, framework_core::Signal<i32>) {
                 style: None,
                 ref_fill: None,
                 disabled: None,
+                accessibility: Default::default(),
                 test_id: Some("tap-btn"),
             },
         ],
@@ -73,6 +75,7 @@ fn sample_tree() -> (Primitive, framework_core::Signal<i32>) {
         ref_fill: None,
         safe_area_sides: SafeAreaSides::NONE,
         on_touch: None,
+        accessibility: Default::default(),
         test_id: None,
     };
 
@@ -192,6 +195,7 @@ fn release_node_emitted_for_portal_when_owner_drops() {
             source: TextSource::Static("hello inside portal".into()),
             style: None,
             ref_fill: None,
+            accessibility: Default::default(),
             test_id: None,
         }],
         target: PortalTarget::Viewport(ViewportPlacement::Center),
@@ -199,6 +203,7 @@ fn release_node_emitted_for_portal_when_owner_drops() {
         trap_focus: false,
         style: None,
         ref_fill: None,
+        accessibility: Default::default(),
     };
 
     let recorder = WireRecordingBackend::new();
@@ -273,6 +278,7 @@ fn reset_log_and_scene_does_not_collide_minted_ids_with_cached_identities() {
                 source: TextSource::Static(format!("row-{}", id_str).into()),
                 style: None,
                 ref_fill: None,
+                accessibility: Default::default(),
                 test_id: Some(id_str),
             });
         }
@@ -282,6 +288,7 @@ fn reset_log_and_scene_does_not_collide_minted_ids_with_cached_identities() {
             ref_fill: None,
             safe_area_sides: SafeAreaSides::NONE,
             on_touch: None,
+            accessibility: Default::default(),
             test_id: Some("root"),
         }
     }
@@ -403,6 +410,7 @@ fn aas_theme_toggle_re_emits_navigator_style_commands() {
                     ref_fill: None,
                     safe_area_sides: SafeAreaSides::NONE,
                     on_touch: None,
+                    accessibility: Default::default(),
                     test_id: None,
                 }
             })
@@ -512,6 +520,7 @@ fn aas_set_theme_re_emits_navigator_style_commands() {
                     ref_fill: None,
                     safe_area_sides: SafeAreaSides::NONE,
                     on_touch: None,
+                    accessibility: Default::default(),
                     test_id: None,
                 }
             })
@@ -623,6 +632,7 @@ fn aas_hot_patch_preserves_header_handler_id() {
                     ref_fill: None,
                     safe_area_sides: SafeAreaSides::NONE,
                     on_touch: None,
+                    accessibility: Default::default(),
                     test_id: None,
                 })
                 .header_left(framework_core::primitives::navigator::HeaderButton::new(
@@ -710,6 +720,7 @@ fn aas_hot_patch_preserves_button_handler_id() {
         style: None,
         ref_fill: None,
         disabled: None,
+        accessibility: Default::default(),
         test_id: Some("btn"),
     };
 
@@ -740,3 +751,4 @@ fn aas_hot_patch_preserves_button_handler_id() {
          client-side click listeners go stale on every hot-patch."
     );
 }
+

@@ -33,14 +33,108 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 use build_ios::{parse_manifest, Target};
 
-/// Cargo features always passed to dev-mode builds across every
-/// target. `framework-core/dev` activates the `dev` umbrella feature
-/// (which bundles `robot` + `mcp`), so the Robot bridge auto-starts
-/// in the user's app without any user-side wiring. Production
-/// builds via `idealyst build` / `idealyst run` don't go through
-/// this helper and don't get the feature.
-fn dev_user_features() -> Vec<String> {
+/// Cargo features for dev-mode builds. The macOS wrapper template
+/// declares its own `dev = ["framework-core/dev"]` feature that
+/// gates `--emit-catalog` mode in main; passing the wrapper's
+/// own feature is what we want there. iOS / Android / Web wrappers
+/// don't (yet) have a wrapper-side `dev` feature, so we activate
+/// `framework-core/dev` directly across the dep boundary — same
+/// effect on the framework, just no per-wrapper feature gates.
+fn dev_user_features_macos() -> Vec<String> {
+    vec!["dev".to_string()]
+}
+
+fn dev_user_features_other() -> Vec<String> {
     vec!["framework-core/dev".to_string()]
+}
+
+/// Compute the env vars the dev launcher sets on the spawned app.
+/// These flow through `Command::env` and become available to the
+/// running app's `framework_core::robot::bridge::start_auto_polling`,
+/// which uses them to (a) bind the right port, (b) write the legacy
+/// per-project port file, and (c) register an `AppEntry` in the
+/// user-level registry so `idealyst mcp` can route to this app.
+///
+/// `catalog_bin` is optional — passed as `Some(path)` after a
+/// successful native build so the registry entry points at the
+/// catalog extractor. Web / iOS / Android currently pass `None`.
+fn dev_env_vars(
+    project_dir: &Path,
+    args: &Args,
+    app_name: &str,
+    catalog_bin: Option<&Path>,
+) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+
+    let port_file = project_dir.join(".idealyst").join("bridge.port");
+    if let Some(parent) = port_file.parent() {
+        // Best-effort — bridge code also creates the dir.
+        let _ = std::fs::create_dir_all(parent);
+    }
+    out.push((
+        "IDEALYST_BRIDGE_PORT_FILE".to_string(),
+        port_file.to_string_lossy().into_owned(),
+    ));
+
+    let canon_root = std::fs::canonicalize(project_dir)
+        .unwrap_or_else(|_| project_dir.to_path_buf());
+    out.push((
+        "IDEALYST_PROJECT_ROOT".to_string(),
+        canon_root.to_string_lossy().into_owned(),
+    ));
+
+    out.push(("IDEALYST_APP_NAME".to_string(), app_name.to_string()));
+
+    if let Some(bin) = catalog_bin {
+        let canon = std::fs::canonicalize(bin).unwrap_or_else(|_| bin.to_path_buf());
+        out.push((
+            "IDEALYST_CATALOG_BIN".to_string(),
+            canon.to_string_lossy().into_owned(),
+        ));
+    }
+
+    let dev_cfg = crate::dev_config::DevConfig::load(project_dir).unwrap_or_default();
+    let pinned = args.bridge_port.or(dev_cfg.bridge_port);
+    if let Some(p) = pinned {
+        out.push(("IDEALYST_BRIDGE_PORT".to_string(), p.to_string()));
+    }
+
+    out
+}
+
+/// Project name = `[package].name` from the user's Cargo.toml. Used
+/// as the `name` field on the registry's `AppEntry`. Falls back to
+/// the project directory's basename if Cargo.toml parsing fails.
+fn project_app_name(project_dir: &Path) -> String {
+    let cargo = project_dir.join("Cargo.toml");
+    if let Ok(raw) = std::fs::read_to_string(&cargo) {
+        if let Ok(value) = toml::from_str::<toml::Value>(&raw) {
+            if let Some(name) = value
+                .get("package")
+                .and_then(|p| p.get("name"))
+                .and_then(|n| n.as_str())
+            {
+                return name.to_string();
+            }
+        }
+    }
+    project_dir
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "app".to_string())
+}
+
+/// Best-effort cleanup of any stale registry entry for this
+/// project_root before launching. Catches "previous `idealyst dev`
+/// crashed mid-session" — the bridge would have registered, but its
+/// deregister path didn't run, so the entry's `bridge_addr` points
+/// at a defunct port.
+fn pre_launch_clear_registry(project_dir: &Path) {
+    let canon = std::fs::canonicalize(project_dir)
+        .unwrap_or_else(|_| project_dir.to_path_buf());
+    let _ = framework_mcp::registry::update_with(|reg| {
+        reg.deregister_project(&canon);
+    });
 }
 
 #[derive(clap::Args, Debug)]
@@ -87,6 +181,14 @@ pub struct Args {
     /// `0.0.0.0` to expose to the LAN.
     #[arg(long, default_value = "0.0.0.0")]
     pub host: String,
+
+    /// Pin the Robot bridge to a specific port on the launched app.
+    /// Overrides `dev.toml` and the default (ephemeral). Use when an
+    /// external tool needs a stable target; otherwise omit and let
+    /// the bridge pick a free port (its address is written to
+    /// `.idealyst/bridge.port` for the MCP server to read).
+    #[arg(long, value_name = "PORT")]
+    pub bridge_port: Option<u16>,
 
     /// Web only: skip the initial build and just start the static
     /// server. Use when `pkg/` is already up to date.
@@ -444,7 +546,7 @@ fn launch_ios(dir: &Path, args: &Args) -> Result<()> {
             release: false,
             mode,
             source,
-            user_features: dev_user_features(),
+            user_features: dev_user_features_other(),
         },
     )
     .context("iOS dev launch failed")?;
@@ -510,7 +612,7 @@ fn launch_android(dir: &Path, args: &Args) -> Result<()> {
             mode,
             aas_port,
             source,
-            user_features: dev_user_features(),
+            user_features: dev_user_features_other(),
         },
     )
     .context("Android dev launch failed")?;
@@ -535,20 +637,67 @@ fn launch_macos(dir: &Path, args: &Args) -> Result<()> {
     }
     eprintln!("[dev macos] building + launching native AppKit app…");
     let source = crate::framework_source::resolve(dir)?;
+
+    // Build first so we have the wrapper binary path to pass to the
+    // launcher as `IDEALYST_CATALOG_BIN`. The build crate's
+    // `build` returns the artifact without running it.
+    let built = build_macos::build(
+        dir,
+        build_macos::BuildOptions {
+            release: false,
+            source: source.clone(),
+            user_features: dev_user_features_macos(),
+        },
+    )
+    .context("macOS dev build failed")?;
+
+    let app_name = project_app_name(dir);
+    pre_launch_clear_registry(dir);
+
+    // Now launch. The launcher pipes `IDEALYST_CATALOG_BIN` etc. to
+    // the spawned app so its bridge auto-start can register the
+    // catalog binary in the registry alongside the bridge address.
     let artifact = run_macos::run(
         dir,
         run_macos::RunOptions {
             release: false,
             source,
-            // Dev orchestrator runs other targets in parallel; we
-            // can't block the worker on the macOS app's lifetime.
             background: true,
-            user_features: dev_user_features(),
+            user_features: dev_user_features_macos(),
+            env_vars: dev_env_vars(dir, args, &app_name, Some(&built.binary)),
         },
     )
     .context("macOS dev launch failed")?;
     eprintln!("[dev macos] running detached ({})", artifact.binary.display());
+
+    // Legacy: write `.idealyst/catalog.path` too. Kept for back-
+    // compat with `bridge_discovery` path-walking callers; the
+    // registry is now the canonical source.
+    write_catalog_path(dir, &artifact.binary);
+    // Record so the Ctrl-C handler can deregister.
+    track_project_root(dir);
     Ok(())
+}
+
+/// Write `<project>/.idealyst/catalog.path` containing the absolute
+/// path to a binary that supports `--emit-catalog`. The MCP server
+/// discovers this file via `bridge_discovery` and auto-applies it as
+/// `--from-bin`. Best-effort — write failures are logged but don't
+/// fail the dev launch (the catalog tools will just return empty).
+fn write_catalog_path(project_dir: &Path, binary: &Path) {
+    let target = project_dir.join(".idealyst").join("catalog.path");
+    if let Some(parent) = target.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            eprintln!("[dev] could not create {}: {}", parent.display(), e);
+            return;
+        }
+    }
+    // Canonicalize the binary path so the MCP server doesn't have to
+    // resolve relative paths from a different cwd.
+    let canon = std::fs::canonicalize(binary).unwrap_or_else(|_| binary.to_path_buf());
+    if let Err(e) = std::fs::write(&target, canon.to_string_lossy().as_bytes()) {
+        eprintln!("[dev] could not write {}: {}", target.display(), e);
+    }
 }
 
 /// Path the AAS host writes its bound port to. Lives next to the
@@ -661,10 +810,26 @@ fn spawn_aas_browser(app_id: String, out: Arc<Mutex<Option<String>>>) {
 }
 
 /// Install the global Ctrl-C handler. Walks the shared `children`
-/// list and kills each child before exiting.
+/// list and kills each child before exiting. Also drops the launched
+/// project's registry entry so the MCP server doesn't see ghost
+/// apps after the dev session ends. macOS detached-spawn case isn't
+/// tracked in `children` (the dev process forgot about it), so the
+/// registry deregistration uses `project_root` as the key — the
+/// dev launcher records that here on registration.
 fn install_ctrlc_handler(children: Arc<Mutex<Vec<Child>>>) -> Result<()> {
     ctrlc::set_handler(move || {
         eprintln!("\n[dev] received Ctrl-C — stopping…");
+        // Drop registry entries for the dirs the dev launcher
+        // recorded. Best-effort — failures are silent.
+        let mut tracked = TRACKED_PROJECT_ROOTS.lock().unwrap_or_else(|e| e.into_inner());
+        if !tracked.is_empty() {
+            let _ = framework_mcp::registry::update_with(|reg| {
+                for root in tracked.iter() {
+                    reg.deregister_project(root);
+                }
+            });
+            tracked.clear();
+        }
         if let Ok(mut guard) = children.lock() {
             for mut child in guard.drain(..) {
                 let _ = child.kill();
@@ -675,6 +840,22 @@ fn install_ctrlc_handler(children: Arc<Mutex<Vec<Child>>>) -> Result<()> {
     })
     .context("install Ctrl-C handler")?;
     Ok(())
+}
+
+/// Project roots the dev launcher has registered into
+/// `~/.idealyst/registry.json`. The Ctrl-C handler drains this list
+/// to deregister on graceful exit. Each `launch_*` call appends
+/// after a successful build+launch.
+static TRACKED_PROJECT_ROOTS: std::sync::Mutex<Vec<std::path::PathBuf>> =
+    std::sync::Mutex::new(Vec::new());
+
+fn track_project_root(dir: &Path) {
+    let canon = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    if let Ok(mut tracked) = TRACKED_PROJECT_ROOTS.lock() {
+        if !tracked.iter().any(|p| p == &canon) {
+            tracked.push(canon);
+        }
+    }
 }
 
 impl Args {
@@ -695,6 +876,7 @@ impl Args {
             port: self.port,
             host: self.host.clone(),
             no_build: self.no_build,
+            bridge_port: self.bridge_port,
         }
     }
 }

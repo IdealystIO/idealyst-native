@@ -8,11 +8,13 @@
 //! See `docs/framework-mcp-spec.md` §5 for the MCP surface this
 //! implements.
 
+mod bridge_discovery;
 mod catalog_service;
 pub mod lint;
 mod robot_bridge;
 mod watch;
 
+pub use bridge_discovery::{resolve_bridge_addr, resolve_catalog_bin, Discovered};
 pub use catalog_service::CatalogService;
 pub use lint::{run as lint_catalog, LintFinding, Severity};
 pub use robot_bridge::{RobotBridge, DEFAULT_BRIDGE};

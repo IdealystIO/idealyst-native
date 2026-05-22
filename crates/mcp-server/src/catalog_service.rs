@@ -13,10 +13,11 @@
 //! Resource: `idealyst://catalog` returns the full denormalized
 //! catalog as JSON.
 
+use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
-use framework_mcp::{ComponentEntry, EdgeStatus, EntryRef, ResolvedCatalog};
+use framework_mcp::{registry::Registry, ComponentEntry, EdgeStatus, EntryRef, ResolvedCatalog};
 
 use crate::robot_bridge::RobotBridge;
 use rmcp::{
@@ -36,16 +37,141 @@ use serde_json::json;
 #[derive(Clone)]
 pub struct CatalogService {
     catalog: Arc<RwLock<ResolvedCatalog>>,
-    /// Optional handle to the running app's Robot bridge. When
-    /// present, the Robot tools below are usable; when `None` they
-    /// return "robot tools disabled — start the server with a
-    /// bridge address." The bridge connection is lazy — `None` means
-    /// "Robot disabled," not "not yet connected."
+    /// Legacy single-bridge mode — used when the server was
+    /// constructed with `with_robot_bridge(...)`. The registry-aware
+    /// mode (default) ignores this and looks up bridges per-call.
     robot: Option<Arc<RobotBridge>>,
+    /// Registry-driven resolver: looks up bridges by app name from
+    /// `~/.idealyst/registry.json` on each Robot tool call. Bridges
+    /// are cached per `(name, addr)` so we don't TCP-handshake on
+    /// every call.
+    resolver: Arc<RobotResolver>,
+    /// Per-app catalog cache (catalog_bin → ResolvedCatalog). Lets
+    /// catalog tools fan out across every registered app without
+    /// re-spawning the extractor on every call.
+    catalog_cache: Arc<CatalogCache>,
     // `#[tool_handler]` reads this through the trait impl, not via
     // a direct field access — the dead-code analyzer can't see it.
     #[allow(dead_code)]
     tool_router: ToolRouter<CatalogService>,
+}
+
+/// Per-app catalog cache. Keyed by the absolute path to the
+/// catalog binary; entries are invalidated when the binary's
+/// mtime changes (so rebuilds get picked up automatically).
+#[derive(Default)]
+pub(crate) struct CatalogCache {
+    by_bin: Mutex<HashMap<std::path::PathBuf, CachedCatalog>>,
+}
+
+struct CachedCatalog {
+    mtime: std::time::SystemTime,
+    catalog: Arc<ResolvedCatalog>,
+}
+
+impl CatalogCache {
+    /// Fetch the catalog for `app`. Cache hit when the binary
+    /// hasn't been rebuilt since last call; otherwise spawn the
+    /// extractor, parse stdout, store.
+    async fn get(
+        &self,
+        app: &framework_mcp::registry::AppEntry,
+    ) -> Result<Arc<ResolvedCatalog>, String> {
+        let Some(bin_str) = &app.catalog_bin else {
+            return Err(format!("app {:?} has no catalog binary", app.name));
+        };
+        let path = std::path::PathBuf::from(bin_str);
+        let mtime = std::fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .map_err(|e| format!("could not stat {}: {}", path.display(), e))?;
+
+        {
+            let cache = self.by_bin.lock().await;
+            if let Some(cached) = cache.get(&path) {
+                if cached.mtime == mtime {
+                    return Ok(cached.catalog.clone());
+                }
+            }
+        }
+
+        // Cache miss or stale — re-extract.
+        let path_clone = path.clone();
+        let output = tokio::task::spawn_blocking(move || {
+            std::process::Command::new(&path_clone)
+                .arg("--emit-catalog")
+                .output()
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+        if !output.status.success() {
+            return Err(format!(
+                "extractor {} exited {}; stderr: {}",
+                path.display(),
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        let json = String::from_utf8_lossy(&output.stdout);
+        let catalog =
+            ResolvedCatalog::build_from_json(&json).map_err(|e| e.to_string())?;
+        let arc = Arc::new(catalog);
+        let mut cache = self.by_bin.lock().await;
+        cache.insert(path, CachedCatalog { mtime, catalog: arc.clone() });
+        Ok(arc)
+    }
+}
+
+/// Per-app Robot bridge cache. Looks up the app in the user-level
+/// registry, builds a [`RobotBridge`] for its address, and reuses
+/// it across calls. Reloads the registry on every miss so newly-
+/// launched apps appear without restarting the MCP server.
+#[derive(Default)]
+pub(crate) struct RobotResolver {
+    bridges: Mutex<HashMap<String, Arc<RobotBridge>>>,
+}
+
+impl RobotResolver {
+    pub async fn resolve(&self, app: Option<&str>) -> Result<Arc<RobotBridge>, McpError> {
+        let reg = Registry::load();
+        let entry = match (app, reg.apps.len()) {
+            (Some(name), _) => reg.find(name).cloned().ok_or_else(|| {
+                let known: Vec<&str> = reg.apps.iter().map(|a| a.name.as_str()).collect();
+                McpError::invalid_params(
+                    format!(
+                        "app {:?} not in registry. Currently registered: {:?}. \
+                         Run `idealyst dev` in the target project.",
+                        name, known
+                    ),
+                    None,
+                )
+            })?,
+            (None, 1) => reg.apps[0].clone(),
+            (None, 0) => {
+                return Err(McpError::invalid_params(
+                    "no apps registered — run `idealyst dev` in a project first".to_string(),
+                    None,
+                ));
+            }
+            (None, _) => {
+                let known: Vec<&str> = reg.apps.iter().map(|a| a.name.as_str()).collect();
+                return Err(McpError::invalid_params(
+                    format!(
+                        "{} apps registered; specify `app` (one of: {:?})",
+                        reg.apps.len(),
+                        known
+                    ),
+                    None,
+                ));
+            }
+        };
+        let mut bridges = self.bridges.lock().await;
+        let bridge = bridges
+            .entry(entry.name.clone())
+            .or_insert_with(|| Arc::new(RobotBridge::new(entry.bridge_addr.clone())))
+            .clone();
+        Ok(bridge)
+    }
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -54,6 +180,14 @@ pub struct NameRequest {
     /// (e.g. `mcp_demo::components::card`). Short-name lookups are
     /// resolved via spec §6 proximity rules.
     pub name: String,
+    /// Optional app filter (from `list_apps`). Surface-level today —
+    /// the field exists so callers can pre-tag the request; the
+    /// per-app catalog routing for describe/search/find_uses lands
+    /// in a follow-up. For now the lookup is against the in-memory
+    /// catalog.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[allow(dead_code)]
+    pub app: Option<String>,
 }
 
 /// Find-by criteria for `find_element` / `find_all_elements` /
@@ -61,8 +195,23 @@ pub struct NameRequest {
 /// nothing on the bridge side. `serde(skip_serializing_if = "Option::is_none")`
 /// keeps the wire payload tight so the bridge sees only the criteria
 /// the caller actually set.
+/// Common preamble on every Robot args struct: the optional app
+/// selector. Use a flat field so MCP clients see a uniform "app"
+/// arg in tool schemas. When the registry has exactly one app the
+/// arg is optional (inferred); when multiple apps are registered
+/// it's required.
+///
+/// Kept as a top-level helper here so each args struct stays
+/// independent (rmcp's `#[derive(JsonSchema)]` doesn't flatten
+/// nested-struct shapes the way humans expect).
+const APP_ARG_DOC: &str = "Target app name (from `list_apps`). Optional when only one app is registered; required otherwise.";
+
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct RobotFindArgs {
+    /// Target app name (from `list_apps`). Optional when only one
+    /// app is registered; required otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
     /// Find by test ID (exact match).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub test_id: Option<String>,
@@ -82,24 +231,32 @@ pub struct RobotFindArgs {
 pub struct RobotElementId {
     /// Element ID returned by `find_element` / `find_all_elements`.
     pub element_id: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct RobotTypeText {
     pub element_id: u64,
     pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct RobotSetToggle {
     pub element_id: u64,
     pub value: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct RobotSetSlider {
     pub element_id: u64,
     pub value: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -110,6 +267,31 @@ pub struct RobotInvokeMethod {
     /// no-arg methods.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub args: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct RobotAppOnly {
+    /// Target app name (from `list_apps`). Optional when only one
+    /// app is registered; required otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+}
+
+#[allow(dead_code)]
+fn _doc_marker() -> &'static str {
+    APP_ARG_DOC
+}
+
+/// Drop the `app` field from a JSON object so the bridge command
+/// payload is exactly what the wire protocol expects (the bridge
+/// doesn't know about app routing — that's MCP-server concern).
+fn strip_app(mut v: serde_json::Value) -> serde_json::Value {
+    if let Some(obj) = v.as_object_mut() {
+        obj.remove("app");
+    }
+    v
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -117,6 +299,10 @@ pub struct SearchRequest {
     /// Free-form query. Matched case-insensitively against component
     /// names + doc comments.
     pub query: String,
+    /// Optional app filter. Forward-compatible — see `NameRequest::app`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[allow(dead_code)]
+    pub app: Option<String>,
 }
 
 #[tool_router]
@@ -125,15 +311,16 @@ impl CatalogService {
         Self {
             catalog: Arc::new(RwLock::new(ResolvedCatalog::build())),
             robot: None,
+            resolver: Arc::new(RobotResolver::default()),
+            catalog_cache: Arc::new(CatalogCache::default()),
             tool_router: Self::tool_router(),
         }
     }
 
-    /// Enable the Robot tools by attaching a bridge handle. The
-    /// bridge is contacted lazily — passing an address that's not
-    /// yet listening is fine; the first Robot tool call connects
-    /// (or returns a "is the app running?" error and the catalog
-    /// tools keep working).
+    /// Pin a single Robot bridge (legacy mode). Pre-registry usage:
+    /// the server uses this bridge for every Robot tool call,
+    /// ignoring the `app` arg. New code should leave this unset
+    /// and let the registry route per call.
     pub fn with_robot_bridge(mut self, bridge: Arc<RobotBridge>) -> Self {
         self.robot = Some(bridge);
         self
@@ -156,23 +343,55 @@ impl CatalogService {
         self.replace_catalog(ResolvedCatalog::build()).await;
     }
 
-    #[tool(description = "List every component in the catalog. Returns a JSON array of { name, module_path, fqn, file, line } sorted by FQN.")]
+    #[tool(description = "List every component across registered apps. With multiple apps, each entry is tagged with `app`. Returns a JSON array of { app, name, module_path, fqn, file, line } sorted by (app, fqn). If no apps are in the registry, falls back to the in-process catalog (legacy mode).")]
     async fn list_components(&self) -> Result<CallToolResult, McpError> {
-        let cat = self.catalog.read().await;
-        let mut sorted: Vec<&ComponentEntry> = cat.entries().to_vec();
-        sorted.sort_by_key(|e| (e.module_path, e.name));
-        let json: Vec<serde_json::Value> = sorted
-            .iter()
-            .map(|e| {
-                serde_json::json!({
+        let reg = Registry::load();
+        let mut json: Vec<serde_json::Value> = Vec::new();
+
+        if reg.apps.is_empty() {
+            // Legacy / no-registry path: serve the in-memory catalog.
+            let cat = self.catalog.read().await;
+            let mut sorted: Vec<&ComponentEntry> = cat.entries().to_vec();
+            sorted.sort_by_key(|e| (e.module_path, e.name));
+            for e in sorted {
+                json.push(serde_json::json!({
+                    "app": null,
                     "name": e.name,
                     "module_path": e.module_path,
                     "fqn": format!("{}::{}", e.module_path, e.name),
                     "file": e.file,
                     "line": e.line,
-                })
-            })
-            .collect();
+                }));
+            }
+        } else {
+            for app in &reg.apps {
+                let cat = match self.catalog_cache.get(app).await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::warn!("catalog fetch for {:?} failed: {}", app.name, e);
+                        continue;
+                    }
+                };
+                let mut sorted: Vec<&ComponentEntry> = cat.entries().to_vec();
+                sorted.sort_by_key(|e| (e.module_path, e.name));
+                for e in sorted {
+                    json.push(serde_json::json!({
+                        "app": app.name,
+                        "name": e.name,
+                        "module_path": e.module_path,
+                        "fqn": format!("{}::{}::{}", app.name, e.module_path, e.name),
+                        "file": e.file,
+                        "line": e.line,
+                    }));
+                }
+            }
+            json.sort_by(|a, b| {
+                let ka = (a["app"].as_str().unwrap_or(""), a["fqn"].as_str().unwrap_or(""));
+                let kb = (b["app"].as_str().unwrap_or(""), b["fqn"].as_str().unwrap_or(""));
+                ka.cmp(&kb)
+            });
+        }
+
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string_pretty(&json).unwrap(),
         )]))
@@ -303,12 +522,14 @@ impl CatalogService {
     // returns "robot tools disabled" and the catalog tools keep
     // working.
 
-    #[tool(description = "Find a UI element in the running app by test_id, label, label_contains, or kind. Returns the first match. Requires the app to be running with `--features robot`.")]
+    #[tool(description = "Find a UI element in the running app by test_id, label, label_contains, or kind. Returns the first match. With multiple apps registered, pass `app` to select. Requires the app to be running with `--features robot`.")]
     async fn find_element(
         &self,
         Parameters(args): Parameters<RobotFindArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.robot_call("find_element", serde_json::to_value(args).unwrap_or_default()).await
+        let app = args.app.clone();
+        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
+        self.robot_call("find_element", app.as_deref(), body).await
     }
 
     #[tool(description = "Find all UI elements in the running app matching the given criteria.")]
@@ -316,7 +537,9 @@ impl CatalogService {
         &self,
         Parameters(args): Parameters<RobotFindArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.robot_call("find_all_elements", serde_json::to_value(args).unwrap_or_default()).await
+        let app = args.app.clone();
+        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
+        self.robot_call("find_all_elements", app.as_deref(), body).await
     }
 
     #[tool(description = "Click/press a Button or Pressable element in the running app. `element_id` comes from a prior find_element call.")]
@@ -324,7 +547,9 @@ impl CatalogService {
         &self,
         Parameters(args): Parameters<RobotElementId>,
     ) -> Result<CallToolResult, McpError> {
-        self.robot_call("click", serde_json::to_value(args).unwrap_or_default()).await
+        let app = args.app.clone();
+        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
+        self.robot_call("click", app.as_deref(), body).await
     }
 
     #[tool(description = "Type text into a TextInput (replaces current value).")]
@@ -332,7 +557,9 @@ impl CatalogService {
         &self,
         Parameters(args): Parameters<RobotTypeText>,
     ) -> Result<CallToolResult, McpError> {
-        self.robot_call("type_text", serde_json::to_value(args).unwrap_or_default()).await
+        let app = args.app.clone();
+        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
+        self.robot_call("type_text", app.as_deref(), body).await
     }
 
     #[tool(description = "Set a Toggle's value (true/false).")]
@@ -340,7 +567,9 @@ impl CatalogService {
         &self,
         Parameters(args): Parameters<RobotSetToggle>,
     ) -> Result<CallToolResult, McpError> {
-        self.robot_call("set_toggle", serde_json::to_value(args).unwrap_or_default()).await
+        let app = args.app.clone();
+        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
+        self.robot_call("set_toggle", app.as_deref(), body).await
     }
 
     #[tool(description = "Set a Slider's value.")]
@@ -348,7 +577,9 @@ impl CatalogService {
         &self,
         Parameters(args): Parameters<RobotSetSlider>,
     ) -> Result<CallToolResult, McpError> {
-        self.robot_call("set_slider", serde_json::to_value(args).unwrap_or_default()).await
+        let app = args.app.clone();
+        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
+        self.robot_call("set_slider", app.as_deref(), body).await
     }
 
     #[tool(description = "Focus an element (TextInput typically).")]
@@ -356,7 +587,9 @@ impl CatalogService {
         &self,
         Parameters(args): Parameters<RobotElementId>,
     ) -> Result<CallToolResult, McpError> {
-        self.robot_call("focus", serde_json::to_value(args).unwrap_or_default()).await
+        let app = args.app.clone();
+        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
+        self.robot_call("focus", app.as_deref(), body).await
     }
 
     #[tool(description = "Blur an element.")]
@@ -364,12 +597,17 @@ impl CatalogService {
         &self,
         Parameters(args): Parameters<RobotElementId>,
     ) -> Result<CallToolResult, McpError> {
-        self.robot_call("blur", serde_json::to_value(args).unwrap_or_default()).await
+        let app = args.app.clone();
+        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
+        self.robot_call("blur", app.as_deref(), body).await
     }
 
     #[tool(description = "Get a snapshot of the running app's whole element tree.")]
-    async fn get_snapshot(&self) -> Result<CallToolResult, McpError> {
-        self.robot_call("get_snapshot", json!({})).await
+    async fn get_snapshot(
+        &self,
+        Parameters(args): Parameters<RobotAppOnly>,
+    ) -> Result<CallToolResult, McpError> {
+        self.robot_call("get_snapshot", args.app.as_deref(), json!({})).await
     }
 
     #[tool(description = "Get child elements of a node.")]
@@ -377,7 +615,9 @@ impl CatalogService {
         &self,
         Parameters(args): Parameters<RobotElementId>,
     ) -> Result<CallToolResult, McpError> {
-        self.robot_call("get_children", serde_json::to_value(args).unwrap_or_default()).await
+        let app = args.app.clone();
+        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
+        self.robot_call("get_children", app.as_deref(), body).await
     }
 
     #[tool(description = "Get an element's parent in the running app.")]
@@ -385,7 +625,9 @@ impl CatalogService {
         &self,
         Parameters(args): Parameters<RobotElementId>,
     ) -> Result<CallToolResult, McpError> {
-        self.robot_call("get_parent", serde_json::to_value(args).unwrap_or_default()).await
+        let app = args.app.clone();
+        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
+        self.robot_call("get_parent", app.as_deref(), body).await
     }
 
     #[tool(description = "Count elements matching the criteria.")]
@@ -393,17 +635,25 @@ impl CatalogService {
         &self,
         Parameters(args): Parameters<RobotFindArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.robot_call("count_elements", serde_json::to_value(args).unwrap_or_default()).await
+        let app = args.app.clone();
+        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
+        self.robot_call("count_elements", app.as_deref(), body).await
     }
 
     #[tool(description = "Get the running app's captured logs.")]
-    async fn get_logs(&self) -> Result<CallToolResult, McpError> {
-        self.robot_call("get_logs", json!({})).await
+    async fn get_logs(
+        &self,
+        Parameters(args): Parameters<RobotAppOnly>,
+    ) -> Result<CallToolResult, McpError> {
+        self.robot_call("get_logs", args.app.as_deref(), json!({})).await
     }
 
     #[tool(description = "Clear the running app's captured logs.")]
-    async fn clear_logs(&self) -> Result<CallToolResult, McpError> {
-        self.robot_call("clear_logs", json!({})).await
+    async fn clear_logs(
+        &self,
+        Parameters(args): Parameters<RobotAppOnly>,
+    ) -> Result<CallToolResult, McpError> {
+        self.robot_call("clear_logs", args.app.as_deref(), json!({})).await
     }
 
     #[tool(description = "Get an element's layout frame relative to its parent.")]
@@ -411,7 +661,9 @@ impl CatalogService {
         &self,
         Parameters(args): Parameters<RobotElementId>,
     ) -> Result<CallToolResult, McpError> {
-        self.robot_call("get_frame", serde_json::to_value(args).unwrap_or_default()).await
+        let app = args.app.clone();
+        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
+        self.robot_call("get_frame", app.as_deref(), body).await
     }
 
     #[tool(description = "Get an element's absolute layout frame (window coords).")]
@@ -419,7 +671,9 @@ impl CatalogService {
         &self,
         Parameters(args): Parameters<RobotElementId>,
     ) -> Result<CallToolResult, McpError> {
-        self.robot_call("get_absolute_frame", serde_json::to_value(args).unwrap_or_default()).await
+        let app = args.app.clone();
+        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
+        self.robot_call("get_absolute_frame", app.as_deref(), body).await
     }
 
     #[tool(description = "Invoke a `#[method]`-tagged method on an element's instance (Robot's component-level escape hatch).")]
@@ -427,20 +681,53 @@ impl CatalogService {
         &self,
         Parameters(args): Parameters<RobotInvokeMethod>,
     ) -> Result<CallToolResult, McpError> {
-        self.robot_call("invoke_method", serde_json::to_value(args).unwrap_or_default()).await
+        let app = args.app.clone();
+        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
+        self.robot_call("invoke_method", app.as_deref(), body).await
     }
 
-    /// Shared helper for every Robot tool. Dispatches to the bridge
-    /// (or returns the "disabled" error when no bridge was attached).
+    #[tool(description = "List every running idealyst app currently registered (via `idealyst dev`). Returns name, project_root, bridge address, catalog binary path, and PID for each.")]
+    async fn list_apps(&self) -> Result<CallToolResult, McpError> {
+        let reg = Registry::load();
+        let json: Vec<serde_json::Value> = reg
+            .apps
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "name": e.name,
+                    "project_root": e.project_root,
+                    "bridge_addr": e.bridge_addr,
+                    "catalog_bin": e.catalog_bin,
+                    "pid": e.pid,
+                    "registered_at": e.registered_at,
+                })
+            })
+            .collect();
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&json).unwrap(),
+        )]))
+    }
+
+    /// Shared helper for every Robot tool. Resolves the target
+    /// bridge via the registry (if no legacy single bridge is
+    /// pinned), then proxies the command. `app` is the optional
+    /// selector — required when more than one app is registered,
+    /// inferred when only one is.
     async fn robot_call(
         &self,
         cmd: &str,
+        app: Option<&str>,
         args: serde_json::Value,
     ) -> Result<CallToolResult, McpError> {
-        let Some(bridge) = &self.robot else {
-            return Ok(CallToolResult::error(vec![Content::text(
-                "robot tools disabled — start the server with `--bridge <addr>` or `idealyst mcp --robot`",
-            )]));
+        let bridge: Arc<RobotBridge> = if let Some(b) = &self.robot {
+            // Legacy pinned-bridge mode: ignore `app`. Kept for
+            // back-compat with `with_robot_bridge(...)` callers.
+            b.clone()
+        } else {
+            match self.resolver.resolve(app).await {
+                Ok(b) => b,
+                Err(e) => return Err(e),
+            }
         };
         match bridge.call(cmd, args).await {
             Ok(value) => Ok(CallToolResult::success(vec![Content::text(

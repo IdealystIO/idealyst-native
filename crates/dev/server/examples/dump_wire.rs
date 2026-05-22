@@ -24,6 +24,7 @@ fn main() {
                 source: TextSource::Static("Hot reload demo".into()),
                 style: None,
                 ref_fill: None,
+                accessibility: Default::default(),
                 test_id: None,
             },
             Primitive::View {
@@ -31,12 +32,14 @@ fn main() {
                     source: TextSource::Static("v0.1".into()),
                     style: None,
                     ref_fill: None,
+                    accessibility: Default::default(),
                     test_id: None,
                 }],
                 style: None,
                 ref_fill: None,
                 safe_area_sides: framework_core::SafeAreaSides::NONE,
                 on_touch: None,
+                accessibility: Default::default(),
                 test_id: None,
             },
             Primitive::Button {
@@ -50,6 +53,7 @@ fn main() {
                 style: None,
                 ref_fill: None,
                 disabled: None,
+                accessibility: Default::default(),
                 test_id: None,
             },
         ],
@@ -57,6 +61,7 @@ fn main() {
         ref_fill: None,
         safe_area_sides: framework_core::SafeAreaSides::NONE,
         on_touch: None,
+        accessibility: Default::default(),
         test_id: None,
     };
 

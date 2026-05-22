@@ -2550,7 +2550,7 @@ mod tests {
         let root;
         {
             let mut b = backend.borrow_mut();
-            root = b.create_view();
+            root = b.create_view(&Default::default());
             b.install_touch_handler(&root, always_consume());
         }
         force_layout(&backend, &root, 100.0, 100.0);
@@ -2566,7 +2566,7 @@ mod tests {
         let root;
         {
             let mut b = backend.borrow_mut();
-            root = b.create_view();
+            root = b.create_view(&Default::default());
             b.install_touch_handler(&root, always_consume());
         }
         force_layout(&backend, &root, 100.0, 100.0);
@@ -2582,7 +2582,7 @@ mod tests {
         let root;
         {
             let mut b = backend.borrow_mut();
-            root = b.create_view();
+            root = b.create_view(&Default::default());
             // No install_touch_handler call.
         }
         force_layout(&backend, &root, 100.0, 100.0);
@@ -2598,8 +2598,8 @@ mod tests {
         let child;
         {
             let mut b = backend.borrow_mut();
-            parent = b.create_view();
-            child = b.create_view();
+            parent = b.create_view(&Default::default());
+            child = b.create_view(&Default::default());
             // Tag child first so it's a leaf, then the insert
             // moves it under parent.
             b.install_touch_handler(&parent, always_consume());
@@ -2624,8 +2624,8 @@ mod tests {
         let child;
         {
             let mut b = backend.borrow_mut();
-            parent = b.create_view();
-            child = b.create_view();
+            parent = b.create_view(&Default::default());
+            child = b.create_view(&Default::default());
             b.install_touch_handler(&child, always_consume());
             let mut parent_for_insert = parent.clone();
             b.insert(&mut parent_for_insert, child.clone());
@@ -2644,8 +2644,8 @@ mod tests {
         let child;
         {
             let mut b = backend.borrow_mut();
-            parent = b.create_view();
-            child = b.create_view();
+            parent = b.create_view(&Default::default());
+            child = b.create_view(&Default::default());
             b.install_touch_handler(&parent, always_consume());
             let mut parent_for_insert = parent.clone();
             b.insert(&mut parent_for_insert, child.clone());
@@ -2667,7 +2667,7 @@ mod tests {
         let root;
         {
             let mut b = backend.borrow_mut();
-            root = b.create_view();
+            root = b.create_view(&Default::default());
             b.install_touch_handler(&root, always_consume());
         }
         force_layout(&backend, &root, 100.0, 100.0);
@@ -2691,7 +2691,7 @@ mod tests {
         let backend = make_backend();
         let node = {
             let mut b = backend.borrow_mut();
-            let n = b.create_view();
+            let n = b.create_view(&Default::default());
             // Steal it out of `roots` to simulate an orphaned node.
             b.roots.retain(|x| !Rc::ptr_eq(x, &n));
             n

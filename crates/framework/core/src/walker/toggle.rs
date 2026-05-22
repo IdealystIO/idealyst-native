@@ -5,6 +5,7 @@
 
 use super::debug::time_backend_create;
 use super::style::attach_style;
+use crate::accessibility::AccessibilityProps;
 use crate::backend::Backend;
 use crate::handles::RefFill;
 use crate::reactive::{Effect, Signal};
@@ -18,10 +19,11 @@ pub(super) fn build<B: Backend + 'static>(
     on_change: Rc<dyn Fn(bool)>,
     style: Option<StyleSource>,
     ref_fill: Option<RefFill>,
+    a11y: AccessibilityProps,
 ) -> B::Node {
     let initial = value.get();
     let n = time_backend_create(pkind!(Toggle), || {
-        backend.borrow_mut().create_toggle(initial, on_change)
+        backend.borrow_mut().create_toggle(initial, on_change, &a11y)
     });
     if let Some(s) = style {
         attach_style(backend, &n, s);

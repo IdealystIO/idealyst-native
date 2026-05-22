@@ -207,6 +207,7 @@ where
         on_lost: Box::new(|| {}),
         style: None,
         ref_fill: None,
+        accessibility: crate::accessibility::AccessibilityProps::default(),
     })
 }
 

@@ -1,5 +1,6 @@
 //! Framework core: primitives, Backend trait, render walker, reactivity.
 
+pub mod accessibility;
 pub mod animation;
 pub mod assets;
 mod backend;

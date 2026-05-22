@@ -32,6 +32,7 @@ use super::style::attach_style;
 use super::theme_cohort::{
     install_theme_cohort_driver, theme_cohort_register, theme_cohort_unregister,
 };
+use crate::accessibility::AccessibilityProps;
 use crate::backend::Backend;
 use crate::handles::RefFill;
 use crate::primitive::Primitive;
@@ -793,7 +794,11 @@ fn build_navigator<B: Backend + 'static>(
     let mount_screen_for_initial = callbacks.mount_screen.clone();
     let build_layout_after_create = callbacks.build_layout.clone();
     let node = time_backend_create(pkind!(Navigator), || {
-        backend.borrow_mut().create_navigator(callbacks, control.clone())
+        backend.borrow_mut().create_navigator(
+            callbacks,
+            control.clone(),
+            &AccessibilityProps::default(),
+        )
     });
 
     invoke_layout_and_attach(backend, &node, build_layout_after_create);
@@ -1050,7 +1055,11 @@ fn build_tab_navigator<B: Backend + 'static>(
     let mount_screen_for_initial = callbacks.navigator.mount_screen.clone();
     let build_layout_after_create = callbacks.navigator.build_layout.clone();
     let node = time_backend_create(pkind!(TabNavigator), || {
-        backend.borrow_mut().create_tab_navigator(callbacks, control.clone())
+        backend.borrow_mut().create_tab_navigator(
+            callbacks,
+            control.clone(),
+            &AccessibilityProps::default(),
+        )
     });
 
     invoke_layout_and_attach(backend, &node, build_layout_after_create);
@@ -1441,7 +1450,11 @@ fn build_drawer_navigator<B: Backend + 'static>(
     let build_content_after_create = callbacks.build_content.clone();
     let build_layout_after_create = callbacks.navigator.build_layout.clone();
     let node = time_backend_create(pkind!(DrawerNavigator), || {
-        backend.borrow_mut().create_drawer_navigator(callbacks, control.clone())
+        backend.borrow_mut().create_drawer_navigator(
+            callbacks,
+            control.clone(),
+            &AccessibilityProps::default(),
+        )
     });
 
     // Build the layout subtree (if registered) and hand the resulting

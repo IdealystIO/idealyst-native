@@ -4,6 +4,7 @@
 
 use super::debug::time_backend_create;
 use super::style::attach_style;
+use crate::accessibility::AccessibilityProps;
 use crate::backend::Backend;
 use crate::handles::RefFill;
 use crate::reactive::{Effect, Signal};
@@ -20,6 +21,7 @@ pub(super) fn build<B: Backend + 'static>(
     step: Option<f32>,
     style: Option<StyleSource>,
     ref_fill: Option<RefFill>,
+    a11y: AccessibilityProps,
 ) -> B::Node {
     let initial = value.get();
     // Wrap the user's on_change to snap to `step` first, so all
@@ -36,7 +38,7 @@ pub(super) fn build<B: Backend + 'static>(
         on_change.clone()
     };
     let n = time_backend_create(pkind!(Slider), || {
-        backend.borrow_mut().create_slider(initial, min, max, step, on_change_snap)
+        backend.borrow_mut().create_slider(initial, min, max, step, on_change_snap, &a11y)
     });
     if let Some(s) = style {
         attach_style(backend, &n, s);
