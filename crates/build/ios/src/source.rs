@@ -62,7 +62,20 @@ impl FrameworkSource {
     ///    test the CLI against an unrelated working directory.
     /// 2. Walk up from `project_dir`; if an idealyst framework
     ///    workspace root is found, use it.
-    /// 3. Fall back to git, using the supplied defaults.
+    /// 3. **Read the project's `Cargo.toml`** and reuse whatever
+    ///    `framework-core = { git, rev }` (or `path`) spec it
+    ///    already has. This is the most important branch in
+    ///    practice — it makes the user's Cargo.toml authoritative,
+    ///    so the generated wrapper picks up the same `framework-core`
+    ///    revision the user crate uses and cargo can unify them.
+    ///    Without this, a CLI re-installed against a different commit
+    ///    than the project was scaffolded against would generate a
+    ///    wrapper pointing at a different rev → cargo treats them as
+    ///    two `framework-core` instances → `Primitive` type
+    ///    mismatch at link.
+    /// 4. Fall back to git, using the supplied defaults (only used
+    ///    for fresh `idealyst new` scaffolding where there isn't a
+    ///    project `Cargo.toml` yet).
     pub fn detect(project_dir: &Path, git: GitDefaults) -> Result<Self> {
         if let Ok(p) = std::env::var("IDEALYST_FRAMEWORK_PATH") {
             let root = PathBuf::from(&p);
@@ -77,6 +90,9 @@ impl FrameworkSource {
         }
         if let Some(root) = find_framework_workspace(project_dir) {
             return Ok(Self::Workspace { root });
+        }
+        if let Some(from_project) = read_project_framework_dep(project_dir) {
+            return Ok(from_project);
         }
         Ok(Self::Git { url: git.url, rev: git.rev })
     }
@@ -176,6 +192,53 @@ fn is_framework_root(root: &Path) -> bool {
     }
     let content = fs::read_to_string(&cargo).unwrap_or_default();
     content.contains("[workspace]")
+}
+
+/// Parse `<project>/Cargo.toml` and extract the `framework-core` dep
+/// as a `FrameworkSource`. Supports the three common forms:
+///
+/// - `framework-core = { git = "<url>", rev = "<sha>" }` → `Git`.
+/// - `framework-core = { git = "<url>", branch = "<b>" }` → `Git`
+///   with rev set to the branch name (cargo accepts branches).
+/// - `framework-core = { path = "/p/to/framework/core" }` → strip
+///   `/crates/framework/core` to get the workspace root and emit
+///   `Workspace`. (Falls through to git defaults if the path
+///   doesn't end with the expected suffix.)
+///
+/// Returns `None` if the project has no `framework-core` dep, or
+/// the dep is in a form we can't interpret (e.g. plain version
+/// string, custom registries). Callers fall back to the git
+/// defaults in those cases.
+fn read_project_framework_dep(project_dir: &Path) -> Option<FrameworkSource> {
+    let raw = fs::read_to_string(project_dir.join("Cargo.toml")).ok()?;
+    let parsed: toml::Value = toml::from_str(&raw).ok()?;
+    let dep = parsed.get("dependencies")?.get("framework-core")?;
+    let table = dep.as_table()?;
+
+    if let Some(path_str) = table.get("path").and_then(|v| v.as_str()) {
+        let core_path = PathBuf::from(path_str);
+        // Expect the path to end in `crates/framework/core`. Strip
+        // those segments to recover the workspace root.
+        let trimmed = core_path
+            .ancestors()
+            .nth(3)
+            .map(|p| p.to_path_buf());
+        if let Some(root) = trimmed {
+            if is_framework_root(&root) {
+                return Some(FrameworkSource::Workspace { root });
+            }
+        }
+        return None;
+    }
+
+    let url = table.get("git").and_then(|v| v.as_str())?.to_string();
+    let rev = table
+        .get("rev")
+        .or_else(|| table.get("branch"))
+        .or_else(|| table.get("tag"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())?;
+    Some(FrameworkSource::Git { url, rev })
 }
 
 /// Back-compat thin wrapper around the legacy `find_workspace_root`
