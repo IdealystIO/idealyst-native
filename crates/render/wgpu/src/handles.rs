@@ -56,9 +56,44 @@ impl ViewOps for WgpuViewOps {
     fn absolute_frame(&self, node: &dyn Any) -> Option<ViewportRect> {
         absolute_frame_of(node)
     }
+    // Without these the trait's default no-op runs, so every
+    // `AnimatedValue::bind` write silently drops on the floor —
+    // the welcome example's planets/vignette/glare all stay at
+    // their stylesheet (opacity 0) values forever.
+    fn set_animated_f32(
+        &self,
+        node: &dyn Any,
+        prop: framework_core::animation::AnimProp,
+        value: f32,
+    ) {
+        if let Some(n) = node.downcast_ref::<WgpuNode>() {
+            crate::backend_impl::set_animated_f32(n, prop, value);
+        }
+    }
+    fn set_animated_color(
+        &self,
+        node: &dyn Any,
+        prop: framework_core::animation::AnimProp,
+        value: [f32; 4],
+    ) {
+        if let Some(n) = node.downcast_ref::<WgpuNode>() {
+            crate::backend_impl::set_animated_color(n, prop, value);
+        }
+    }
 }
 
 pub(crate) struct WgpuTextOps;
 pub(crate) static WGPU_TEXT_OPS: WgpuTextOps = WgpuTextOps;
 
-impl TextOps for WgpuTextOps {}
+impl TextOps for WgpuTextOps {
+    fn set_animated_color(
+        &self,
+        node: &dyn Any,
+        prop: framework_core::animation::AnimProp,
+        value: [f32; 4],
+    ) {
+        if let Some(n) = node.downcast_ref::<WgpuNode>() {
+            crate::backend_impl::set_animated_color(n, prop, value);
+        }
+    }
+}

@@ -8,6 +8,7 @@ use framework_core::{Overflow, Position, StyleRules, StyleSheet};
 use crate::style_helpers::{col, pct, static_sheet};
 
 pub const COLOR_LIGHT_BG: &str = "#f7f5ef";
+pub const COLOR_DARK_BG: &str = "#0a0c11";
 
 pub fn page_sheet() -> Rc<StyleSheet> {
     static_sheet(StyleRules {
@@ -15,10 +16,7 @@ pub fn page_sheet() -> Rc<StyleSheet> {
         width: Some(pct(100.0)),
         height: Some(pct(100.0)),
         background: Some(col(COLOR_LIGHT_BG)),
-        // Clip children that extend past the viewport — the
-        // sun-glare anchor is offset negatively so it pokes past
-        // the top-right corner, and we want the page edge (not the
-        // anchor's bounding box) to be the visible boundary.
+        // Clip the sun glare's offscreen overhang to the viewport.
         overflow: Some(Overflow::Hidden),
         ..Default::default()
     })

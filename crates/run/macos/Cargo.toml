@@ -1,0 +1,16 @@
+[package]
+name = "run-macos"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# macOS launcher for `idealyst run --macos` / `idealyst dev --macos`.
+#
+# Calls `build-macos` to produce the binary, then spawns it as a
+# foreground child (stdio inherited so framework logs surface
+# alongside the CLI's). Exits when the user quits the app.
+
+[dependencies]
+anyhow = "1"
+build-macos = { workspace = true }
+build-ios = { workspace = true }

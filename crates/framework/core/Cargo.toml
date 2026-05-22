@@ -40,6 +40,16 @@ debug-stats = ["framework-macros/debug-stats"]
 # patch dylibs over the wire.
 hot-reload = ["framework-macros/hot-reload", "dep:framework-hot", "framework-hot/hot"]
 
+# Framework MCP catalog. When enabled, `#[component]` emits an
+# `inventory::submit!` registering each component into
+# `framework-mcp`'s distributed slice; the catalog surfaces via
+# `framework_core::__mcp` (a hidden re-export of `framework-mcp`).
+# Off by default — production builds carry zero MCP code. The
+# feature forwards to `framework-macros/mcp` (the emission gate)
+# and pulls `framework-mcp` in as an optional dep so user crates
+# never have to declare it directly. See `docs/framework-mcp-spec.md`.
+mcp = ["framework-macros/mcp", "dep:framework-mcp"]
+
 # Programmatic introspection and control of the running UI. When
 # enabled, the render walker registers every mounted primitive into a
 # thread-local registry that can be queried and controlled via the
@@ -82,6 +92,12 @@ framework-macros = { workspace = true }
 # feature is on (typically by the AAS dylib-mode host wrapper). Off
 # by default — production builds don't compile it.
 framework-hot = { workspace = true, optional = true }
+# `framework-mcp` is only linked in when the `mcp` cargo feature is
+# on. Same pattern as `framework-hot`: hidden re-export via
+# `framework_core::__mcp` so consumer crates' `#[component]`
+# expansions can reach the catalog crate without declaring it as a
+# direct dep.
+framework-mcp = { workspace = true, optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # The `Graphics` primitive exposes its surface as a standard

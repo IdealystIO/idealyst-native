@@ -264,9 +264,6 @@ fn dispatch<T: Animatable>(
 /// Returns `true` while the animator still has work to do, `false`
 /// once it's settled (and the tick can be unregistered).
 fn drive<T: Animatable>(inner: Rc<RefCell<Inner<T>>>, dt: std::time::Duration) -> bool {
-    // Sample under a brief mutable borrow, then drop the borrow
-    // before notifying so listeners that *read* the value (via
-    // `.get()`) don't trip the RefCell.
     let (value, velocity, finished) = {
         let mut i = inner.borrow_mut();
         let Some(animator) = i.animator.as_mut() else {

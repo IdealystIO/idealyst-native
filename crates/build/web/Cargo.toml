@@ -1,0 +1,10 @@
+[package]
+name = "build-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Web build orchestration: generates an ephemeral cdylib wrapper around a user's app crate and drives wasm-pack to produce a .wasm + JS shim. Same pattern as build-ios / build-android."
+
+[dependencies]
+anyhow = "1"
+build-ios = { workspace = true }

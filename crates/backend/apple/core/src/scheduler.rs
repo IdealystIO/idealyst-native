@@ -1,5 +1,9 @@
-//! iOS `Scheduler`: NSTimer for `after_ms`, DispatchQueue.main.async
+//! Apple scheduler: NSTimer for `after_ms`, DispatchQueue.main.async
 //! for microtasks, NSTimer at 60Hz for `raf_loop`.
+//!
+//! Pure Foundation — works the same on iOS, tvOS, and macOS. The
+//! UIKit-flavored leaf crates and the AppKit-flavored macOS backend
+//! both consume this through [`install_scheduler`].
 //!
 //! `framework_core::scheduling` falls back to synchronous execution
 //! on native when no scheduler is installed — fine for
@@ -21,25 +25,25 @@ use objc2::msg_send_id;
 use objc2::rc::Retained;
 use objc2_foundation::NSObject;
 
-/// Register this backend's scheduler with `framework-core`.
-/// Idempotent — first install wins.
+/// Register this scheduler with `framework-core`. Idempotent — first
+/// install wins. Safe to call from any Apple host (iOS / tvOS / macOS).
 pub fn install_scheduler() {
-    install(Box::new(IosScheduler));
+    install(Box::new(AppleScheduler));
 }
 
-struct IosScheduler;
+struct AppleScheduler;
 
-// SAFETY: `IosScheduler` is a unit struct with no fields. The
+// SAFETY: `AppleScheduler` is a unit struct with no fields. The
 // `Scheduler: Send + Sync` bound is satisfied trivially because we
 // hold no shared state on the struct itself — every per-timer state
 // is local to the closure scope. The wrapped closures themselves
 // aren't `Send`, but the trait doesn't require them to be — and we
 // only ever invoke them from the main thread anyway (NSTimer's
 // scheduling targets the main run loop).
-unsafe impl Send for IosScheduler {}
-unsafe impl Sync for IosScheduler {}
+unsafe impl Send for AppleScheduler {}
+unsafe impl Sync for AppleScheduler {}
 
-impl Scheduler for IosScheduler {
+impl Scheduler for AppleScheduler {
     fn schedule_microtask(&self, f: Box<dyn FnOnce() + 'static>) {
         // DispatchQueue.main.async equivalent — schedule for the
         // next main-thread iteration without waiting on a duration.
@@ -57,9 +61,8 @@ impl Scheduler for IosScheduler {
     ) -> Box<dyn ScheduleHandle> {
         // 1/60s timer ≈ next animation frame. Not as precise as
         // CADisplayLink but matches the render-loop driver's
-        // approach in the same crate (see `render_loop.rs`); good
-        // enough for the framework's frame-aligned scheduling
-        // needs.
+        // approach in the leaf crates; good enough for the
+        // framework's frame-aligned scheduling needs.
         Box::new(after_ms_inner(16, f))
     }
 
@@ -71,11 +74,11 @@ impl Scheduler for IosScheduler {
         Box::new(after_ms_inner(delay_ms, f))
     }
 
-    fn raf_loop(&self, mut f: Box<dyn FnMut() + 'static>) -> Box<dyn ScheduleHandle> {
+    fn raf_loop(&self, f: Box<dyn FnMut() + 'static>) -> Box<dyn ScheduleHandle> {
         // Recurring 60Hz timer. CADisplayLink would be more accurate
         // but requires a custom ObjC class with a target/action
-        // pair — same trade-off the render-loop driver in this
-        // crate makes.
+        // pair — same trade-off the render-loop drivers in the leaf
+        // crates make.
         let state: Rc<RefCell<Box<dyn FnMut() + 'static>>> = Rc::new(RefCell::new(f.take_inner()));
         let state_for_block = state.clone();
         let block = StackBlock::new(move |_t: *const NSObject| {

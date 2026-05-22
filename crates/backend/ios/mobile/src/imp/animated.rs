@@ -294,6 +294,21 @@ impl IosBackend {
                     let _: () = unsafe { msg_send![&*view, setTransform: matrix] };
                 }
             }
+            AnimProp::ZIndex => {
+                // `layer.zPosition` reorders sibling CALayers within
+                // their superlayer — Core Animation's analog of
+                // `style.zIndex` on web and `View.setTranslationZ`
+                // on Android. Only the relative ordering vs siblings
+                // matters; the absolute value is unbounded. The
+                // layer pointer is owned by the view, so we don't
+                // retain it — just dispatch to its setter and let
+                // the borrow end at the end of this arm.
+                let layer: *mut NSObject = unsafe { msg_send![&*view, layer] };
+                if !layer.is_null() {
+                    let _: () =
+                        unsafe { msg_send![layer, setZPosition: value as CGFloat] };
+                }
+            }
             AnimProp::BackgroundColor
             | AnimProp::ForegroundColor
             | AnimProp::GradientStopColor(_) => {
@@ -382,7 +397,8 @@ impl IosBackend {
             | AnimProp::Scale
             | AnimProp::ScaleX
             | AnimProp::ScaleY
-            | AnimProp::RotateZ => {}
+            | AnimProp::RotateZ
+            | AnimProp::ZIndex => {}
         }
     }
 

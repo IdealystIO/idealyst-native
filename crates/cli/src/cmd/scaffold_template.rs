@@ -63,7 +63,8 @@ pub fn write(
 
 const WELCOME_LIB_RS: &str = include_str!("../../../../examples/welcome/src/lib.rs");
 const WELCOME_APP_RS: &str = include_str!("../../../../examples/welcome/src/app.rs");
-const WELCOME_WEB_RS: &str = include_str!("../../../../examples/welcome/src/web.rs");
+const WELCOME_COORDINATOR_RS: &str =
+    include_str!("../../../../examples/welcome/src/coordinator.rs");
 const WELCOME_CONSTANTS_RS: &str =
     include_str!("../../../../examples/welcome/src/constants.rs");
 const WELCOME_TYPEFACE_RS: &str =
@@ -71,14 +72,10 @@ const WELCOME_TYPEFACE_RS: &str =
 const WELCOME_COLOR_RS: &str = include_str!("../../../../examples/welcome/src/color.rs");
 const WELCOME_STYLE_HELPERS_RS: &str =
     include_str!("../../../../examples/welcome/src/style_helpers.rs");
-const WELCOME_ANIMATION_BRIDGE_RS: &str =
-    include_str!("../../../../examples/welcome/src/animation_bridge.rs");
 const WELCOME_COMPONENTS_RS: &str =
     include_str!("../../../../examples/welcome/src/components.rs");
 const WELCOME_COMPONENT_PAGE: &str =
     include_str!("../../../../examples/welcome/src/components/page.rs");
-const WELCOME_COMPONENT_DARK_LAYER: &str =
-    include_str!("../../../../examples/welcome/src/components/dark_layer.rs");
 const WELCOME_COMPONENT_VIGNETTE: &str =
     include_str!("../../../../examples/welcome/src/components/vignette.rs");
 const WELCOME_COMPONENT_SUN_GLARE: &str =
@@ -161,15 +158,13 @@ fn write_project(
     // under any crate name.
     fs::write(dir.join("src/lib.rs"), WELCOME_LIB_RS)?;
     fs::write(dir.join("src/app.rs"), WELCOME_APP_RS)?;
-    fs::write(dir.join("src/web.rs"), WELCOME_WEB_RS)?;
+    fs::write(dir.join("src/coordinator.rs"), WELCOME_COORDINATOR_RS)?;
     fs::write(dir.join("src/constants.rs"), WELCOME_CONSTANTS_RS)?;
     fs::write(dir.join("src/typeface.rs"), WELCOME_TYPEFACE_RS)?;
     fs::write(dir.join("src/color.rs"), WELCOME_COLOR_RS)?;
     fs::write(dir.join("src/style_helpers.rs"), WELCOME_STYLE_HELPERS_RS)?;
-    fs::write(dir.join("src/animation_bridge.rs"), WELCOME_ANIMATION_BRIDGE_RS)?;
     fs::write(dir.join("src/components.rs"), WELCOME_COMPONENTS_RS)?;
     fs::write(dir.join("src/components/page.rs"), WELCOME_COMPONENT_PAGE)?;
-    fs::write(dir.join("src/components/dark_layer.rs"), WELCOME_COMPONENT_DARK_LAYER)?;
     fs::write(dir.join("src/components/vignette.rs"), WELCOME_COMPONENT_VIGNETTE)?;
     fs::write(dir.join("src/components/sun_glare.rs"), WELCOME_COMPONENT_SUN_GLARE)?;
     fs::write(dir.join("src/components/planet.rs"), WELCOME_COMPONENT_PLANET)?;
@@ -198,9 +193,6 @@ fn project_cargo_toml(
     source: &FrameworkSource,
 ) -> String {
     let fcore_dep = source.dep("crates/framework/core", &[]);
-    let bweb_dep = source.dep("crates/backend/web", &[]);
-    let bios_dep = source.dep("crates/backend/ios/mobile", &[]);
-    let bandroid_dep = source.dep("crates/backend/android/mobile", &[]);
 
     format!(
         r##"[package]
@@ -209,41 +201,20 @@ version = "0.0.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 
-# `cdylib` for the web build (wasm-bindgen's `--target web` consumes
-# the produced `.wasm`); `rlib` so the CLI's per-platform wrappers
-# (iOS / Android) can depend on this crate as a library.
+# Pure `rlib`. The per-platform wrappers the CLI generates at build
+# time (`target/idealyst/{name}/{{web,ios,android}}/wrapper/`) carry
+# the platform-specific crate-type (cdylib for web/Android, staticlib
+# for iOS) and the platform entry-point boilerplate
+# (`#[wasm_bindgen(start)]`, `ios_main`, `Java_..._attach`). This
+# crate stays platform-agnostic — no `web.rs` / `ios.rs` /
+# `android.rs`, no `#[cfg(target_os = "...")]` blocks, no
+# `wasm-bindgen` / `backend-*` direct deps. Same source ships to
+# every backend.
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["rlib"]
 
 [dependencies]
 framework-core = {fcore_dep}
-
-# Web build of the backend + the wasm-bindgen glue.
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-backend-web = {bweb_dep}
-wasm-bindgen = "0.2"
-web-sys = {{ version = "0.3", features = ["Node", "Element", "HtmlElement"] }}
-console_error_panic_hook = "0.1"
-# Smaller WASM allocator — slightly higher per-alloc cost in exchange
-# for a few KB shaved off the bundle.
-lol_alloc = "0.4"
-
-# iOS leaf: the per-frame AnimatedValue → UIView bridge in
-# `animation_bridge.rs` downcasts to `IosNode` and calls
-# `backend_ios::set_animated_*`.
-[target.'cfg(target_os = "ios")'.dependencies]
-backend-ios-mobile = {bios_dep}
-
-# Android leaf: same shape as iOS — `animation_bridge.rs` reaches the
-# backend via `set_animated_*` after downcasting to `AndroidNode`.
-[target.'cfg(target_os = "android")'.dependencies]
-backend-android-mobile = {bandroid_dep}
-
-# wasm-opt's bundled binaryen rejects bulk-memory ops emitted by recent
-# rustc; pass the enable flags explicitly. `-Oz` prioritizes size like
-# `opt-level = "z"` does for rustc.
-[package.metadata.wasm-pack.profile.release]
-wasm-opt = ["-Oz", "--strip-debug", "--strip-producers", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]
 
 # Idealyst project config. The CLI reads this on `idealyst build`,
 # `idealyst run`, `idealyst dev`, etc.

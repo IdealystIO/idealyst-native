@@ -39,6 +39,12 @@ pub struct Args {
     #[arg(long)]
     pub roku: bool,
 
+    /// Build for native macOS (AppKit `.app` via `host-appkit` +
+    /// `backend-macos`). Different from `--sim` — that's the wgpu
+    /// phone-shaped preview; `--macos` is the desktop-native target.
+    #[arg(long)]
+    pub macos: bool,
+
     /// Build the AAS dev-host binary on its own. Not a deploy
     /// target — useful for running the host outside of
     /// `idealyst dev --aas`.
@@ -111,6 +117,9 @@ fn collect_targets(args: &Args, manifest_targets: &[Target]) -> Vec<Target> {
     if args.roku {
         out.push(Target::Roku);
     }
+    if args.macos {
+        out.push(Target::Macos);
+    }
     if out.is_empty() {
         out.extend(manifest_targets.iter().copied());
     }
@@ -123,28 +132,29 @@ fn build_target(target: Target, dir: &std::path::Path, args: &Args) -> Result<()
         Target::Ios => build_ios_target(dir, args),
         Target::Android => build_android_target(dir, args),
         Target::Roku => build_roku_target(dir, args),
+        Target::Macos => build_macos_target(dir, args),
     }
 }
 
 fn build_web(dir: &std::path::Path, args: &Args) -> Result<()> {
-    // wasm-pack is the canonical web build tool. Release adds
-    // `--release` + the wasm-opt flags declared in the user's
-    // Cargo.toml under `[package.metadata.wasm-pack.profile.release]`.
-    eprintln!("[build web] running wasm-pack…");
-    let mut cmd = std::process::Command::new("wasm-pack");
-    cmd.current_dir(dir).arg("build").args(["--target", "web"]);
-    if args.release {
-        cmd.arg("--release");
-    } else {
-        cmd.arg("--dev");
-    }
-    let status = cmd
-        .status()
-        .with_context(|| "exec wasm-pack — is it on PATH? (cargo install wasm-pack)")?;
-    if !status.success() {
-        anyhow::bail!("wasm-pack exited with {status}");
-    }
-    eprintln!("[build web] success → {}", dir.join("pkg").display());
+    // Web builds go through a generated wrapper crate, same shape as
+    // iOS / Android: the user's app crate stays platform-agnostic
+    // (no `web.rs`, no `[lib] crate-type = ["cdylib"]`, no
+    // `wasm-bindgen` dep) and the wrapper carries the
+    // `#[wasm_bindgen(start)]` entry point + cdylib output. The
+    // wrapper is regenerated on every build; wasm-pack runs against
+    // it, and the resulting `pkg/` is copied into the user project
+    // so existing `index.html` references keep working.
+    let source = crate::framework_source::resolve(dir)?;
+    let artifact = build_web::build(
+        dir,
+        build_web::BuildOptions {
+            release: args.release,
+            source,
+            user_features: Vec::new(),
+        },
+    )?;
+    eprintln!("[build web] success → {}", artifact.pkg_dir.display());
     Ok(())
 }
 
@@ -207,6 +217,22 @@ fn build_roku_target(dir: &std::path::Path, _args: &Args) -> Result<()> {
             "  ⚠ no `dist/ui.json` found — the package will install but render an empty scene"
         );
     }
+    Ok(())
+}
+
+fn build_macos_target(dir: &std::path::Path, args: &Args) -> Result<()> {
+    let source = crate::framework_source::resolve(dir)?;
+    let artifact = build_macos::build(
+        dir,
+        build_macos::BuildOptions {
+            release: args.release,
+            source,
+        },
+    )?;
+    eprintln!(
+        "[build macos] success → {}",
+        artifact.binary.display(),
+    );
     Ok(())
 }
 

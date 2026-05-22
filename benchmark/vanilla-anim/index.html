@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Benchmark · vanilla-anim</title>
+<style>
+  /*
+   * Static chrome. The variant body is the #stage div the script
+   * populates with N ball <div>s. Style here covers the page
+   * background + the stage's positioning context; ball styling is
+   * inline so we can `style.transform = ...` per-frame without
+   * fighting class-based CSS layout.
+   */
+  html, body { margin: 0; padding: 0; font-family: system-ui, sans-serif; }
+  body { background: #0f1115; color: #e8eaf0; }
+  .controls {
+    display: flex; gap: 12px; align-items: center;
+    padding: 10px 14px; background: #1a1d24; border-bottom: 1px solid #2a2e3a;
+    font-size: 13px;
+  }
+  .controls button {
+    padding: 4px 10px; border-radius: 4px; border: 0;
+    background: #5b6cff; color: white; font-weight: 600; cursor: pointer;
+  }
+  .controls input { width: 80px; padding: 2px 6px;
+    background: #262a35; color: #e8eaf0; border: 1px solid #2a2e3a; border-radius: 4px; }
+  .controls .stat { color: #9099a8; font-variant-numeric: tabular-nums; }
+
+  /*
+   * The stage is the bouncing-balls viewport. Fixed size matches
+   * BOUNCE_VIEWPORT in harness.js — keep the two in sync. Positioned
+   * context for the absolutely-positioned ball divs.
+   */
+  #stage {
+    position: relative;
+    width: 800px;
+    height: 600px;
+    margin: 16px;
+    background: #14171c;
+    border: 1px solid #2a2e3a;
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .ball {
+    position: absolute;
+    top: 0; left: 0;
+    width: 8px; height: 8px;          /* 2 * BOUNCE_BALL_RADIUS */
+    margin-left: -4px; margin-top: -4px;
+    border-radius: 50%;
+    background: #5b6cff;
+    /* Hint the compositor that transform will change frequently.
+       This isn't a perf trick exclusive to vanilla — every framework
+       benefits identically and we want comparable numbers, not a
+       vanilla-only advantage. */
+    will-change: transform;
+  }
+</style>
+</head>
+<body>
+  <div class="controls" id="controls" style="display:none">
+    <span>N</span>
+    <input id="n-input" type="number" value="1000" min="1" max="100000" />
+    <button id="setup-btn">Setup</button>
+    <button id="start-btn">Start</button>
+    <button id="stop-btn">Stop</button>
+    <span class="stat" id="stat"></span>
+  </div>
+  <div id="stage"></div>
+
+  <script type="module">
+    import { autoRunIfRequested } from '../instrument.js';
+    import {
+      bounceInitial,
+      bounceStep,
+      nbodyInitial,
+      nbodyStep,
+      mulberry32,
+      BOUNCE_VIEWPORT,
+      BOUNCE_BALL_RADIUS,
+      NBODY_BALL_RADIUS,
+      FIXED_DT_SEC,
+    } from '../anim/harness.js';
+
+    // ─────────────────────────────────────────────────────────────────
+    // State. Two test modes share the per-frame plumbing:
+    //
+    //   - 'bounce':    state is Float32Array [x,y,vx,vy] per ball.
+    //                  Per-frame: bounceStep + applyTransforms.
+    //   - 'springstorm': state is N spring records {y, vy, target}.
+    //                  Per-frame: integrate each spring + write
+    //                  transform + re-kick targets every ~500ms.
+    //
+    // currentTest controls which path runs in the rAF tick. Both
+    // modes write to the same `balls[]` element array.
+
+    const stage = document.getElementById('stage');
+    let currentTest = 'bounce';
+    let state = new Float32Array(0);        // bounce only
+    let springs = [];                       // springstorm only: {y, vy, target}
+    let springRng = null;                   // springstorm RNG for re-kicks
+    let lastRekickMs = 0;                   // springstorm re-kick clock
+    let balls = [];                         // array of <div class="ball">
+
+    // Spring constants — matched to idealyst's DEFAULT_SPRING_STIFFNESS /
+    // DEFAULT_SPRING_DAMPING / DEFAULT_SPRING_MASS (170 / 26 / 1.0).
+    // Same integrator: semi-implicit Euler. Cross-variant numerical
+    // determinism isn't required for springstorm (see suite docs)
+    // but matching the defaults keeps both variants on the same
+    // settling-time curve.
+    const SPRING_STIFFNESS = 170;
+    const SPRING_DAMPING = 26;
+    const SPRING_MASS = 1.0;
+    const SPRING_REKICK_MS = 500;
+
+    /** Tear down + rebuild the stage for N balls in the given test
+     *  mode. Resets per-mode state to seeded initial conditions. */
+    function setupAnim(test, n, seed) {
+      if (test !== 'bounce' && test !== 'springstorm' && test !== 'nbody') {
+        throw new Error(`vanilla-anim: unknown test ${test}`);
+      }
+
+      stopAnim();  // belt-and-suspenders: cancel any leftover rAF
+      currentTest = test;
+
+      if (test === 'bounce') {
+        state = bounceInitial(n, seed);
+        springs = [];
+      } else if (test === 'nbody') {
+        state = nbodyInitial(n, seed);
+        springs = [];
+      } else {
+        // springstorm: each ball gets a fresh {y, vy, target} from a
+        // seeded RNG so iter-to-iter runs are reproducible.
+        state = new Float32Array(0);
+        const rng = mulberry32(seed);
+        springs = new Array(n);
+        for (let i = 0; i < n; i++) {
+          springs[i] = {
+            y: rng.uniform(50, BOUNCE_VIEWPORT.height - 50),
+            vy: 0,
+            target: rng.uniform(50, BOUNCE_VIEWPORT.height - 50),
+          };
+        }
+        springRng = rng;  // re-used by re-kicks
+      }
+
+      // Rebuild the ball DOM. Delete-and-recreate rather than reusing —
+      // a real app's count change would do the same; pooling is an
+      // optimization we don't want baked into the baseline.
+      stage.replaceChildren();
+      balls = new Array(n);
+      const frag = document.createDocumentFragment();
+      for (let i = 0; i < n; i++) {
+        const el = document.createElement('div');
+        el.className = 'ball';
+        balls[i] = el;
+        frag.appendChild(el);
+      }
+      stage.appendChild(frag);
+
+      applyTransforms();
+    }
+
+    /** Drive the sim deterministically forward by `frameN` fixed-dt
+     *  steps. Used by the cross-variant determinism check — no rAF
+     *  involvement, just a tight loop over the harness's authoritative
+     *  step function for the current mode. */
+    function stepTo(frameN) {
+      const step = currentTest === 'nbody' ? nbodyStep : bounceStep;
+      for (let i = 0; i < frameN; i++) {
+        step(state, FIXED_DT_SEC);
+      }
+    }
+
+    /** Return the current sim state. Returns a *copy* — the suite
+     *  diffs this and we don't want a perf-mode tick to mutate the
+     *  reference after the diff. */
+    function getState() {
+      return new Float32Array(state);
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // Perf mode: real rAF, real wall-clock dt. Per-frame work timed
+    // into preallocated ring buffers (Array, not Float32Array, so
+    // they trivially serialize through postMessage as JSON numbers).
+
+    let rafId = 0;
+    let lastFrameMs = 0;
+    let jsLog = [];    // ms spent in the variant's update fn each frame
+    let frameLog = []; // ms between consecutive rAF callbacks
+    let running = false;
+
+    function startAnim() {
+      jsLog = [];
+      frameLog = [];
+      running = true;
+      lastFrameMs = performance.now();
+      lastRekickMs = lastFrameMs;
+      const tick = (now) => {
+        if (!running) return;
+        // frameDt: wall-clock between rAF callbacks. Captured BEFORE
+        // the work so a hitch *in* the work is attributed to the
+        // NEXT frame's frameDt — same convention as the rebuild
+        // suite uses, and matches what a user would perceive.
+        const dt = now - lastFrameMs;
+        if (dt > 0) frameLog.push(dt);
+        lastFrameMs = now;
+
+        const t0 = performance.now();
+        // Branch on test mode. All modes use fixed dt so the
+        // integrator math is comparable across slow/fast variants —
+        // a slow variant integrating more per frame would skew the
+        // perceived motion, not the framework's per-frame cost.
+        if (currentTest === 'bounce') {
+          bounceStep(state, FIXED_DT_SEC);
+        } else if (currentTest === 'nbody') {
+          nbodyStep(state, FIXED_DT_SEC);
+        } else {
+          springstormStep(now);
+        }
+        applyTransforms();
+        const t1 = performance.now();
+        jsLog.push(t1 - t0);
+
+        rafId = requestAnimationFrame(tick);
+      };
+      rafId = requestAnimationFrame(tick);
+    }
+
+    /** Integrate every spring by one fixed timestep using semi-implicit
+     *  Euler. Re-kicks each spring's target every SPRING_REKICK_MS so
+     *  the storm stays continuously running instead of settling.
+     *  Matches idealyst's spring math (DEFAULT_SPRING_STIFFNESS /
+     *  _DAMPING / _MASS). */
+    function springstormStep(nowMs) {
+      // Re-kick targets first so the integration sees the new target
+      // immediately. Using a single RNG advanced across iters means
+      // the re-kick sequence is reproducible from the original seed.
+      if (nowMs - lastRekickMs >= SPRING_REKICK_MS) {
+        for (let i = 0; i < springs.length; i++) {
+          springs[i].target =
+            springRng.uniform(50, BOUNCE_VIEWPORT.height - 50);
+        }
+        lastRekickMs = nowMs;
+      }
+      const dt = FIXED_DT_SEC;
+      const k = SPRING_STIFFNESS;
+      const c = SPRING_DAMPING;
+      const invM = 1.0 / SPRING_MASS;
+      for (let i = 0; i < springs.length; i++) {
+        const s = springs[i];
+        const accel = (-k * (s.y - s.target) - c * s.vy) * invM;
+        s.vy += accel * dt;
+        s.y += s.vy * dt;
+      }
+    }
+
+    /** Stop rAF + return the per-frame logs. Returns the arrays even
+     *  when called with no rAF in flight (in which case both are
+     *  empty) so the suite's "got log, parse it" path is uniform. */
+    function stopAnim() {
+      running = false;
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = 0;
+      return { jsPerFrame: jsLog, frameDt: frameLog };
+    }
+
+    /** Push every ball's current position to its div via transform.
+     *  Mode-aware: bounce/nbody read from the Float32Array layout
+     *  (bounce stride 4, nbody stride 5); springstorm reads from each
+     *  spring record. Inline `style.transform =` is the honest vanilla
+     *  path — CSS-variable-based positioning would be a different
+     *  variant. */
+    function applyTransforms() {
+      const len = balls.length;
+      if (currentTest === 'bounce') {
+        for (let i = 0; i < len; i++) {
+          const x = state[4*i + 0];
+          const y = state[4*i + 1];
+          balls[i].style.transform = `translate3d(${x}px, ${y}px, 0)`;
+        }
+      } else if (currentTest === 'nbody') {
+        // nbody: stride-5 layout, [x, y, vx, vy, mass].
+        for (let i = 0; i < len; i++) {
+          const x = state[5*i + 0];
+          const y = state[5*i + 1];
+          balls[i].style.transform = `translate3d(${x}px, ${y}px, 0)`;
+        }
+      } else {
+        // springstorm: x is fixed per ball (grid layout), y comes from
+        // the spring. Use a deterministic x derived from index so the
+        // visual reads as N columns of bouncing dots.
+        for (let i = 0; i < len; i++) {
+          const x = ((i * 7) % BOUNCE_VIEWPORT.width) | 0;
+          const y = springs[i].y;
+          balls[i].style.transform = `translate3d(${x}px, ${y}px, 0)`;
+        }
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // Standalone controls — only when not in an iframe AND no suite
+    // param. Lets you eyeball the sim and grab a quick profile run
+    // from devtools without the harness wrapping.
+
+    const url = new URL(window.location.href);
+    const inIframe = window.self !== window.top;
+    if (!inIframe && !url.searchParams.get('suite')) {
+      const controls = document.getElementById('controls');
+      controls.style.display = 'flex';
+      const nInput = document.getElementById('n-input');
+      const stat = document.getElementById('stat');
+      document.getElementById('setup-btn').onclick = () => {
+        setupAnim('bounce', Math.max(1, +nInput.value), 1);
+        stat.textContent = `n=${balls.length}`;
+      };
+      document.getElementById('start-btn').onclick = () => { startAnim(); };
+      document.getElementById('stop-btn').onclick = () => {
+        const { jsPerFrame, frameDt } = stopAnim();
+        const med = (a) => { const s = [...a].sort((x,y)=>x-y); return s[Math.floor(s.length/2)] ?? 0; };
+        stat.textContent = `n=${balls.length}  js_med=${med(jsPerFrame).toFixed(2)}ms  frame_med=${med(frameDt).toFixed(2)}ms  samples=${frameDt.length}`;
+      };
+      // Auto-setup so opening the page shows something moving
+      // immediately when you click Start.
+      setupAnim('bounce', 1000, 1);
+      stat.textContent = `n=${balls.length} (ready)`;
+    }
+
+    // Expose to devtools for debugging.
+    window.setupAnim = setupAnim;
+    window.startAnim = startAnim;
+    window.stopAnim = stopAnim;
+    window.stepTo = stepTo;
+    window.getState = getState;
+
+    // Iframe-runner mode: wire the hooks into the shared instrument.
+    await autoRunIfRequested({
+      setupAnim: async (test, n, seed) => { setupAnim(test, n, seed); },
+      stepTo:    (frameN) => { stepTo(frameN); },
+      getState:  () => getState(),
+      startAnim: async () => { startAnim(); },
+      stopAnim:  async () => stopAnim(),
+    });
+  </script>
+</body>
+</html>

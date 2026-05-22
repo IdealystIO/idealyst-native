@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Benchmark · idealyst-native-anim</title>
+<style>
+  html, body { margin: 0; padding: 0; font-family: system-ui, sans-serif; }
+  body { background: #0f1115; color: #e8eaf0; }
+  .controls {
+    display: flex; gap: 12px; align-items: center;
+    padding: 10px 14px; background: #1a1d24; border-bottom: 1px solid #2a2e3a;
+    font-size: 13px;
+  }
+  .controls button {
+    padding: 4px 10px; border-radius: 4px; border: 0;
+    background: #5b6cff; color: white; font-weight: 600; cursor: pointer;
+  }
+  .controls input { width: 80px; padding: 2px 6px;
+    background: #262a35; color: #e8eaf0; border: 1px solid #2a2e3a; border-radius: 4px; }
+  .controls .stat { color: #9099a8; font-variant-numeric: tabular-nums; }
+  /* Framework owns #app. Wrap it so the standalone controls render
+     above the framework's mount point in dev. */
+  #app { padding: 16px; }
+</style>
+</head>
+<body>
+  <div class="controls" id="controls" style="display:none">
+    <span>N</span>
+    <input id="n-input" type="number" value="1000" min="1" max="100000" />
+    <button id="setup-btn">Setup</button>
+    <button id="start-btn">Start</button>
+    <button id="stop-btn">Stop</button>
+    <span class="stat" id="stat"></span>
+  </div>
+  <div id="app"></div>
+
+  <script type="module">
+    // ?v=N is a cache-buster for the wasm js shim — bump when you
+    // need to force-fetch a freshly-built wasm without relying on a
+    // browser hard-refresh.
+    import init, {
+      start, setup_anim, step_to, get_state, start_anim, stop_anim,
+    } from './wasm/pkg/benchmark_idealyst_native_anim.js?v=5';
+    import { autoRunIfRequested } from '../instrument.js';
+
+    // Pass an explicit cache-busted URL for the wasm binary. Without
+    // this, the shim resolves the binary path off `import.meta.url`
+    // and the ?v=2 on the shim import doesn't propagate — so a
+    // stale `_bg.wasm` would still be served from disk cache even
+    // after rebuilding.
+    await init({ module_or_path: './wasm/pkg/benchmark_idealyst_native_anim_bg.wasm?v=5' });
+    start();
+
+    // ─────────────────────────────────────────────────────────────────
+    // Hook bridging
+    //
+    // wasm exports use snake_case (Rust convention) and the suite
+    // contract uses camelCase. The bridge functions also keep the
+    // suite isolated from wasm-bindgen specifics — get_state() returns
+    // a Float32Array directly thanks to wasm-bindgen's `Vec<f32>`
+    // marshaling, but if we ever swap for a manual SharedArrayBuffer
+    // path the suite stays unchanged.
+
+    const setupAnim = async (test, n, seed) => { setup_anim(test, n, seed); };
+    const stepTo    = (frameN) => { step_to(frameN); };
+    const getState  = () => get_state();
+    const startAnim = async () => { start_anim(); };
+    const stopAnim  = async () => {
+      // wasm side returns a JSON string — parse here so the suite
+      // gets the same { jsPerFrame, frameDt } object shape every
+      // variant produces.
+      const raw = stop_anim();
+      try {
+        return JSON.parse(raw);
+      } catch (err) {
+        throw new Error(`idealyst-native-anim: stop_anim returned non-JSON (${err.message}): ${raw.slice(0, 200)}`);
+      }
+    };
+
+    // Expose to devtools for manual profiling.
+    window.setupAnim = setupAnim;
+    window.stepTo = stepTo;
+    window.getState = getState;
+    window.startAnim = startAnim;
+    window.stopAnim = stopAnim;
+
+    // ─────────────────────────────────────────────────────────────────
+    // Standalone controls — only when not inside an iframe AND no
+    // ?suite=... param. Matches the same convention every other
+    // variant follows.
+
+    const url = new URL(window.location.href);
+    const inIframe = window.self !== window.top;
+    if (!inIframe && !url.searchParams.get('suite')) {
+      const controls = document.getElementById('controls');
+      controls.style.display = 'flex';
+      const nInput = document.getElementById('n-input');
+      const stat = document.getElementById('stat');
+      document.getElementById('setup-btn').onclick = async () => {
+        await setupAnim('bounce', Math.max(1, +nInput.value), 1);
+        stat.textContent = `n=${+nInput.value}`;
+      };
+      document.getElementById('start-btn').onclick = async () => { await startAnim(); };
+      document.getElementById('stop-btn').onclick = async () => {
+        const { jsPerFrame, frameDt } = await stopAnim();
+        const med = (a) => { const s = [...a].sort((x,y)=>x-y); return s[Math.floor(s.length/2)] ?? 0; };
+        stat.textContent = `js_med=${med(jsPerFrame).toFixed(2)}ms  frame_med=${med(frameDt).toFixed(2)}ms  samples=${frameDt.length}`;
+      };
+      // Auto-setup so the visual appears immediately on load.
+      await setupAnim('bounce', 1000, 1);
+      stat.textContent = `n=1000 (ready)`;
+    }
+
+    // Iframe-runner mode: the suite drives via these hooks.
+    await autoRunIfRequested({
+      setupAnim,
+      stepTo,
+      getState,
+      startAnim,
+      stopAnim,
+    });
+  </script>
+</body>
+</html>

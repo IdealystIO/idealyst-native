@@ -1,0 +1,37 @@
+[package]
+name = "mcp-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Walk-through of the framework-mcp catalog. Defines a handful of components — including a cross-module duplicate and one doc-less entry — then prints both the flat catalog (raw bare-ident composes) and the resolved adjacency graph (proximity-disambiguated FQNs + reverse uses)."
+
+[[bin]]
+name = "mcp-demo"
+path = "src/main.rs"
+
+[dependencies]
+# Enabling the `mcp` feature on `framework-core` flips on the
+# emission gate in `framework-macros` AND pulls `framework-mcp` in
+# as a transitive dep — so every `#[component]` expansion across
+# the dep graph (including idea-ui's, when it's used) emits a
+# catalog entry. Consumers don't need to depend on `framework-mcp`
+# or `framework-macros` directly.
+framework-core = { workspace = true, features = ["mcp"] }
+# This demo's `main.rs` reads the catalog programmatically, so it
+# does need `framework-mcp` directly. A pure-consumer crate that
+# just registers components would only need `framework-core/mcp`.
+framework-mcp = { workspace = true }
+serde_json = "1"
+
+# NOTE on third-party catalog flow (e.g. pulling in idea-ui):
+# Adding `idea-ui = { workspace = true }` to this crate compiles
+# fine — the feature-forward chain (framework-core/mcp →
+# framework-macros/mcp + dep:framework-mcp) does its job — but
+# `inventory`'s linker-section magic only fires for rlib symbols
+# that the linker actually pulls in. Adding the dep alone doesn't
+# guarantee idea-ui's `inventory::submit!` ctors get linked; the
+# binary has to reference each component's symbol (or each rlib
+# has to expose a `#[used] static` that pins its submissions).
+# Spec §9.3 flags this as "needs validation" — see that section
+# for the path forward (most likely a `#[used]` marker emitted by
+# the proc-macro alongside the inventory::submit!).

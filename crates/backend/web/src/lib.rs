@@ -63,6 +63,75 @@ pub use render_loop::install_render_loop;
 pub use scheduler::install_scheduler;
 pub use time_source::install_time_source;
 
+/// Install a `Weak` self-handle for the active `WebBackend`. Required
+/// by any code path that needs `&mut WebBackend` from outside the
+/// build walker:
+///  - [`AnimatedValue::bind`](framework_core::animation::AnimatedValue::bind)
+///    and friends (per-frame animation writes from author closures).
+///  - The batched text-update microtask flush
+///    ([`Backend::create_text_with_id`] / [`Backend::update_text_by_id`]).
+///  - Future per-frame writers that fire outside a backend borrow.
+///
+/// Call once after constructing the backend `Rc<RefCell<>>`. Idempotent
+/// — re-installing overwrites the previous handle.
+///
+/// The handle is held as a `Weak` so the backend `Rc` still drops
+/// cleanly on app teardown; queued callbacks upgrade to `None` and
+/// become silent no-ops once the backend is gone.
+///
+/// Same shape as `backend_ios_mobile::install_global_self` /
+/// `backend_android_mobile::install_global_self` — keeps the wrapper
+/// boilerplate uniform across platforms.
+pub fn install_global_self(backend: &std::rc::Rc<std::cell::RefCell<WebBackend>>) {
+    WEB_BACKEND_HANDLE.with(|s| *s.borrow_mut() = Some(std::rc::Rc::downgrade(backend)));
+}
+
+/// Push a scalar animation property update to `node` on the installed
+/// global backend. Same shape as `backend_ios_mobile::set_animated_f32`
+/// / `backend_android_mobile::set_animated_f32`; the framework's
+/// `ViewOps::set_animated_f32` dispatch routes here for the web
+/// backend so author code never needs to call it directly.
+///
+/// No-ops cleanly if [`install_global_self`] hasn't been called yet,
+/// the install has been dropped, or the backend is currently
+/// borrowed (an in-flight call will pick the new value up on its
+/// next frame).
+pub fn set_animated_f32(
+    node: &web_sys::Node,
+    prop: framework_core::animation::AnimProp,
+    value: f32,
+) {
+    // Clone the `Weak` inside the closure so the thread-local borrow
+    // drops before we upgrade — same pattern as
+    // `backend_ios::set_animated_f32`. Holding the borrow across the
+    // upgrade would extend the Ref's lifetime past the `with` block
+    // and trip a borrow-checker error.
+    let weak = WEB_BACKEND_HANDLE.with(|s| s.borrow().clone());
+    let Some(weak) = weak else { return };
+    let Some(rc) = weak.upgrade() else { return };
+    if let Ok(mut b) = rc.try_borrow_mut() {
+        use framework_core::Backend;
+        b.set_animated_f32(node, prop, value);
+    };
+}
+
+/// Color-family counterpart of [`set_animated_f32`]. Routes through
+/// the global backend's `set_animated_color`. `value` is sRGB
+/// `[r, g, b, a]` with channels in `0..=1`.
+pub fn set_animated_color(
+    node: &web_sys::Node,
+    prop: framework_core::animation::AnimProp,
+    value: [f32; 4],
+) {
+    let weak = WEB_BACKEND_HANDLE.with(|s| s.borrow().clone());
+    let Some(weak) = weak else { return };
+    let Some(rc) = weak.upgrade() else { return };
+    if let Ok(mut b) = rc.try_borrow_mut() {
+        use framework_core::Backend;
+        b.set_animated_color(node, prop, value);
+    };
+}
+
 /// Install a self-handle so the batched text-update path
 /// ([`Backend::create_text_with_id`] / [`Backend::update_text_by_id`])
 /// can schedule its microtask flush. Must be called once after the
@@ -70,11 +139,12 @@ pub use time_source::install_time_source;
 /// called, `create_text_with_id` returns `None` and the framework
 /// falls back to the unbatched `update_text` path automatically.
 ///
-/// The handle is held as a `Weak` so the backend Rc still drops
-/// cleanly on app teardown — once it drops, queued microtasks
-/// upgrade to `None` and become no-ops.
+/// Superset of [`install_global_self`] — installs the same handle
+/// plus pre-injects the JS-side text/class binding shims. Apps that
+/// only need animation routing (no reactive text bindings) can call
+/// `install_global_self` alone and skip the shim injection cost.
 pub fn install_text_batcher(backend: &std::rc::Rc<std::cell::RefCell<WebBackend>>) {
-    WEB_BACKEND_HANDLE.with(|s| *s.borrow_mut() = Some(std::rc::Rc::downgrade(backend)));
+    install_global_self(backend);
     // Pre-inject the JS-side reactive-binding shim so it's
     // available for console-driven smoke tests (`__idealystBindingsSmokeTest()`)
     // before any text binding is actually registered through the
@@ -1331,6 +1401,10 @@ impl WebBackend {
 impl Backend for WebBackend {
     type Node = Node;
 
+    fn platform(&self) -> framework_core::Platform {
+        framework_core::Platform::Web
+    }
+
     fn color_scheme(&self) -> framework_core::ColorScheme {
         let window = match self.doc.default_view() {
             Some(w) => w,
@@ -2235,6 +2309,34 @@ impl framework_core::ViewOps for WebViewOps {
             height: r.height() as f32,
         })
     }
+
+    /// Route `AnimatedValue::bind` writes through the crate-level
+    /// [`set_animated_f32`] free function so author code doesn't
+    /// need a `cfg(target_arch = "wasm32")` block to dispatch to
+    /// the right backend. Downcasts `node` to `web_sys::Node`;
+    /// silently no-ops if the cast fails.
+    fn set_animated_f32(
+        &self,
+        node: &dyn std::any::Any,
+        prop: framework_core::animation::AnimProp,
+        value: f32,
+    ) {
+        if let Some(n) = node.downcast_ref::<web_sys::Node>() {
+            crate::set_animated_f32(n, prop, value);
+        }
+    }
+
+    /// Color-family analog of [`Self::set_animated_f32`].
+    fn set_animated_color(
+        &self,
+        node: &dyn std::any::Any,
+        prop: framework_core::animation::AnimProp,
+        value: [f32; 4],
+    ) {
+        if let Some(n) = node.downcast_ref::<web_sys::Node>() {
+            crate::set_animated_color(n, prop, value);
+        }
+    }
 }
 
 fn element_from_any(node: &dyn std::any::Any) -> Option<web_sys::Element> {
@@ -2242,13 +2344,24 @@ fn element_from_any(node: &dyn std::any::Any) -> Option<web_sys::Element> {
     n.clone().dyn_into::<web_sys::Element>().ok()
 }
 
-/// Marker `TextOps` impl. The trait has no required methods today;
-/// the impl exists so [`WebBackend::make_text_handle`] can store
-/// the underlying `web_sys::Node` instead of the default
-/// `Rc<()>`. Author-level animation drivers downcast
-/// `text_ref.as_any()` to the node to write inline `color`.
+/// `TextOps` impl. The framework's animated-color binding routes
+/// here so author code can write
+/// `welcome_color.bind_text_color(text_ref, AnimProp::ForegroundColor)`
+/// without a per-platform downcast block — same shape as
+/// [`WebViewOps::set_animated_color`].
 struct WebTextOps;
-impl framework_core::TextOps for WebTextOps {}
+impl framework_core::TextOps for WebTextOps {
+    fn set_animated_color(
+        &self,
+        node: &dyn std::any::Any,
+        prop: framework_core::animation::AnimProp,
+        value: [f32; 4],
+    ) {
+        if let Some(n) = node.downcast_ref::<web_sys::Node>() {
+            crate::set_animated_color(n, prop, value);
+        }
+    }
+}
 
 fn view_rect_from_node(node: &dyn std::any::Any) -> Option<framework_core::ViewportRect> {
     let el = element_from_any(node)?;

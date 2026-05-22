@@ -1,0 +1,23 @@
+[package]
+name = "build-macos"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# macOS build orchestration for `idealyst build --macos`.
+#
+# Same shape as `build-sim`: generate a tiny binary wrapper under
+# `<wrapper_root>/<project>/macos/`, depend on `host-appkit` +
+# `backend-macos` + the user crate, `cargo build` it, return the
+# produced binary's path.
+#
+# Eventually this will also produce a real `.app` bundle (Info.plist,
+# icon, code-sign hooks). v0 stops at the raw binary; the user can
+# launch it directly with `idealyst run --macos`.
+
+[dependencies]
+anyhow = "1"
+# Re-uses `build-ios`'s manifest parser + framework-source helper
+# for the same reason `build-sim` does — same wrapper layout
+# conventions, same workspace-vs-git source resolution.
+build-ios = { workspace = true }

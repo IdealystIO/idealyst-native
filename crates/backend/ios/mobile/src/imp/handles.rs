@@ -123,16 +123,56 @@ impl ViewOps for IosViewOps {
             height: frame_in_window.size.height as f32,
         })
     }
+
+    /// Route `AnimatedValue::bind` writes through the existing
+    /// `backend_ios_mobile::set_animated_f32` free function so the
+    /// framework's animation-binding helper doesn't have to know
+    /// about `IosNode`. Downcasts to `IosNode` (the handle's
+    /// concrete node type); silently no-ops if the cast fails
+    /// (which would mean the framework handed us a node from a
+    /// different backend).
+    fn set_animated_f32(
+        &self,
+        node: &dyn Any,
+        prop: framework_core::animation::AnimProp,
+        value: f32,
+    ) {
+        if let Some(n) = node.downcast_ref::<IosNode>() {
+            crate::imp::set_animated_f32(n, prop, value);
+        }
+    }
+
+    /// Color-family analog of [`Self::set_animated_f32`].
+    fn set_animated_color(
+        &self,
+        node: &dyn Any,
+        prop: framework_core::animation::AnimProp,
+        value: [f32; 4],
+    ) {
+        if let Some(n) = node.downcast_ref::<IosNode>() {
+            crate::imp::set_animated_color(n, prop, value);
+        }
+    }
 }
 pub(crate) static IOS_VIEW_OPS: IosViewOps = IosViewOps;
 
-// `TextOps` is a marker trait with no methods today — the framework's
-// `TextHandle` ships with a `NoopTextOps` default. The iOS backend
-// supplies its own static instance so the framework's
-// `make_text_handle` override can hand out handles whose `as_any()`
-// returns the underlying `IosNode::Label` for animation routing.
+// `IosTextOps` provides the same animated-color dispatch as
+// `IosViewOps` but on a text-bearing widget — `set_animated_color`
+// routes to `set_animated_color` on the backend, which (in turn)
+// dispatches to `UILabel.textColor` for label nodes.
 pub(crate) struct IosTextOps;
-impl framework_core::TextOps for IosTextOps {}
+impl framework_core::TextOps for IosTextOps {
+    fn set_animated_color(
+        &self,
+        node: &dyn Any,
+        prop: framework_core::animation::AnimProp,
+        value: [f32; 4],
+    ) {
+        if let Some(n) = node.downcast_ref::<IosNode>() {
+            crate::imp::set_animated_color(n, prop, value);
+        }
+    }
+}
 pub(crate) static IOS_TEXT_OPS: IosTextOps = IosTextOps;
 
 /// UITextField-backed implementation of the framework's

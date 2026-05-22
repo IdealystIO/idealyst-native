@@ -1,16 +1,25 @@
-//! Per-element visual building blocks of the welcome scene. Each
-//! submodule owns the stylesheet(s) for one layer plus any
-//! constants that are purely about its appearance.
+//! Visual elements that make up the welcome scene. Each module
+//! exports a `#[component]`-annotated function the `ui!` tree in
+//! [`crate::app`] invokes by its PascalCase tag. `#[macro_use]`
+//! lifts each component's generated invocation macro into the
+//! parent scope so the chain reaches [`crate::app`].
 //!
-//! The act-by-act animation (timeline, refs, AVs, raf-driven pulse)
-//! lives in [`crate::app`]; this module is intentionally inert —
-//! the only thing it produces is `Rc<StyleSheet>` values.
+//! Declaration order matters: `#[macro_use]` only brings macros
+//! into scope *after* the declaration, so leaves with no internal
+//! component references can sit anywhere, but `content_layer`
+//! (which embeds `WelcomePhrase` + `Subtitle`) must come after
+//! those declarations.
 
-pub mod content_layer;
-pub mod dark_layer;
 pub mod page;
+#[macro_use]
 pub mod planet;
+#[macro_use]
 pub mod subtitle;
+#[macro_use]
 pub mod sun_glare;
+#[macro_use]
 pub mod vignette;
+#[macro_use]
 pub mod welcome_phrase;
+#[macro_use]
+pub mod content_layer;

@@ -27,6 +27,7 @@
 
 pub mod animatable;
 pub mod animator;
+pub mod binding;
 pub mod clock;
 pub mod combinators;
 pub mod curve;

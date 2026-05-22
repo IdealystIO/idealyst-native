@@ -1,0 +1,21 @@
+[package]
+name = "framework-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+inventory = "0.3"
+serde_json = "1"
+
+[dev-dependencies]
+# Integration tests define `#[component]` functions to verify the
+# distributed-slice registration round-trips. The `mcp` feature on
+# framework-core forwards to `framework-macros/mcp` (the emission
+# gate) and re-exports this crate as `framework_core::__mcp`, which
+# is what `#[component]`'s emission references.
+framework-core = { workspace = true, features = ["mcp"] }
+framework-macros = { workspace = true, features = ["mcp"] }

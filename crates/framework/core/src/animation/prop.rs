@@ -57,6 +57,21 @@ pub enum AnimProp {
     ScaleY,
     /// Rotation around the Z axis, in degrees, clockwise.
     RotateZ,
+    /// Z-order within the node's stacking context (i.e. against its
+    /// sibling views). Higher values render in front of lower
+    /// values. Lets a single view's z-position change at frame rate
+    /// without re-mounting / re-ordering the tree — the use case is
+    /// e.g. orbiting planets that pass in front of and behind a
+    /// foreground element.
+    ///
+    /// Units: backend-defined ordering scalar. Within one backend
+    /// the comparison is just `<`, so the absolute value doesn't
+    /// matter — only the relative ordering. Web rounds to integer
+    /// for `style.zIndex`; iOS writes a CGFloat to
+    /// `layer.zPosition`; Android writes a float to
+    /// `View.setTranslationZ` (in dp, converted to device px). All
+    /// three are sibling-relative.
+    ZIndex,
 
     // --- Color ([f32; 4]) ---
     /// Background fill color. sRGB `[r, g, b, a]`.
@@ -97,6 +112,7 @@ impl AnimProp {
                 | AnimProp::ScaleX
                 | AnimProp::ScaleY
                 | AnimProp::RotateZ
+                | AnimProp::ZIndex
         )
     }
 
@@ -121,6 +137,7 @@ mod tests {
             AnimProp::ScaleX,
             AnimProp::ScaleY,
             AnimProp::RotateZ,
+            AnimProp::ZIndex,
             AnimProp::BackgroundColor,
             AnimProp::ForegroundColor,
             AnimProp::GradientStopColor(0),

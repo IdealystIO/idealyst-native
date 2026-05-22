@@ -400,6 +400,10 @@ fn inspect_simple_text_row(
 impl Backend for RokuBackend {
     type Node = NodeId;
 
+    fn platform(&self) -> framework_core::Platform {
+        framework_core::Platform::Roku
+    }
+
     fn create_view(&mut self) -> Self::Node {
         let id = self.mint_node();
         self.push(RokuCommand::CreateView { id });

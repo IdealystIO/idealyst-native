@@ -52,6 +52,11 @@ pub struct Args {
     #[arg(long)]
     pub android: bool,
 
+    /// Build and run as a native macOS app (AppKit-backed via
+    /// `host-appkit` + `backend-macos`).
+    #[arg(long)]
+    pub macos: bool,
+
     /// HTTP port for the web target's static-file server.
     #[arg(long, default_value_t = 8080)]
     pub port: u16,
@@ -174,6 +179,9 @@ fn resolve_targets(args: &Args, manifest_targets: &[Target]) -> Result<Vec<Targe
     if args.android {
         from_flags.push(Target::Android);
     }
+    if args.macos {
+        from_flags.push(Target::Macos);
+    }
 
     if !from_flags.is_empty() {
         return Ok(dedup_preserve_order(from_flags));
@@ -182,7 +190,7 @@ fn resolve_targets(args: &Args, manifest_targets: &[Target]) -> Result<Vec<Targe
         return Ok(dedup_preserve_order(manifest_targets.to_vec()));
     }
     anyhow::bail!(
-        "no targets to run: pass `--web` / `--ios` / `--android`, or add \
+        "no targets to run: pass `--web` / `--ios` / `--android` / `--macos`, or add \
          `targets = [\"web\", ...]` to `[package.metadata.idealyst.app]`"
     )
 }
@@ -221,6 +229,7 @@ fn launch_target(target: Target, dir: &Path, args: &Args) -> Result<()> {
         Target::Roku => anyhow::bail!(
             "Roku has no dev-mode story yet; use `idealyst build roku` for the package"
         ),
+        Target::Macos => launch_macos(dir, args),
     }
 }
 
@@ -237,6 +246,8 @@ fn launch_target(target: Target, dir: &Path, args: &Args) -> Result<()> {
 fn launch_web(dir: &Path, args: &Args) -> Result<()> {
     use dev_http::{serve_static, AasContext, ReloadContext};
 
+    let source = crate::framework_source::resolve(dir)?;
+
     if args.aas {
         // ── 1. wasm shim that connects to the AAS host ────────────
         if !args.no_build {
@@ -244,10 +255,11 @@ fn launch_web(dir: &Path, args: &Args) -> Result<()> {
             dev_reload::build_once(
                 dir,
                 &dev_reload::BuildOptions {
+                    source: source.clone(),
                     features: vec!["dev-hot-reload".to_string()],
                 },
             )
-            .context("wasm-pack build failed (dev-hot-reload feature)")?;
+            .context("web build failed (dev-hot-reload feature)")?;
         }
 
         // ── 2. mDNS browser thread fills `AasContext.aas_url` so
@@ -272,7 +284,7 @@ fn launch_web(dir: &Path, args: &Args) -> Result<()> {
             // and then keeps a watcher thread alive in the returned
             // handle. Forget the handle: it lives as long as the
             // HTTP serve loop below.
-            let handle = dev_reload::start(dir, gen.clone())?;
+            let handle = dev_reload::start(dir, gen.clone(), source)?;
             std::mem::forget(handle);
         }
         let ctx = ReloadContext { gen };
@@ -381,6 +393,31 @@ fn launch_android(dir: &Path, args: &Args) -> Result<()> {
         artifact.serial,
         artifact.apk.display(),
     );
+    Ok(())
+}
+
+/// macOS launcher — build the AppKit-backed binary via
+/// `build-macos`, then `run-macos` spawns it. No simulator step
+/// (we're already on macOS) and no AAS shell yet — the macOS
+/// backend's first iteration is local-render only (see
+/// `docs/macos-backend-plan.md`).
+fn launch_macos(dir: &Path, args: &Args) -> Result<()> {
+    if args.aas {
+        anyhow::bail!(
+            "macOS AAS mode is not implemented yet; run without --aas for local-render"
+        );
+    }
+    eprintln!("[dev macos] building + launching native AppKit app…");
+    let source = crate::framework_source::resolve(dir)?;
+    let artifact = run_macos::run(
+        dir,
+        run_macos::RunOptions {
+            release: false,
+            source,
+        },
+    )
+    .context("macOS dev launch failed")?;
+    eprintln!("[dev macos] running ({})", artifact.binary.display());
     Ok(())
 }
 
@@ -523,6 +560,7 @@ impl Args {
             web: self.web,
             ios: self.ios,
             android: self.android,
+            macos: self.macos,
             port: self.port,
             host: self.host.clone(),
             no_build: self.no_build,

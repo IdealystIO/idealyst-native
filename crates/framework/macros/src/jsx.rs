@@ -317,6 +317,47 @@ fn parse_for(input: ParseStream) -> syn::Result<JsxNode> {
 }
 
 // =============================================================================
+// MCP catalog: composes-edge extraction
+// =============================================================================
+
+/// Walk a parsed `jsx! { ... }` and append every element-name ident
+/// (`<Name ...>`) into `out`. Fragments (`<>...</>`) have no name and
+/// are skipped — only their children are walked. Recurses into nested
+/// element children, for/if bodies. Braced-expression children
+/// (`{expr}`) are NOT captured.
+///
+/// Mirrors `ui::collect_component_refs`; see that doc-comment for why
+/// we only capture JSX-position idents.
+#[cfg(feature = "mcp")]
+pub(crate) fn collect_component_refs(jsx: &Jsx, out: &mut Vec<(String, u32)>) {
+    collect_from_nodes(&jsx.elements, out);
+}
+
+#[cfg(feature = "mcp")]
+fn collect_from_nodes(nodes: &[JsxNode], out: &mut Vec<(String, u32)>) {
+    for node in nodes {
+        match node {
+            JsxNode::Element { name, children, .. } => {
+                let line = name.span().start().line as u32;
+                out.push((name.to_string(), line));
+                if let Some(c) = children {
+                    collect_from_nodes(c, out);
+                }
+            }
+            JsxNode::Fragment { children } => collect_from_nodes(children, out),
+            JsxNode::For { body, .. } => collect_from_nodes(body, out),
+            JsxNode::If { then_body, else_body, .. } => {
+                collect_from_nodes(then_body, out);
+                if let Some(e) = else_body {
+                    collect_from_nodes(e, out);
+                }
+            }
+            JsxNode::Expr(_) => {}
+        }
+    }
+}
+
+// =============================================================================
 // Emit
 // =============================================================================
 
@@ -416,7 +457,9 @@ fn emit_element(
     ref_expr: Option<&Expr>,
     children: Option<&[JsxNode]>,
 ) -> TokenStream2 {
-    let lower = name.to_string().to_ascii_lowercase();
+    let lower = crate::case::pascal_to_snake(&name.to_string());
+    // Primitives here are all single-word, so snake-conversion is a
+    // no-op on them — kept for parity with `ui!`'s expanded set.
     let is_primitive = matches!(lower.as_str(), "text" | "button" | "view" | "when");
 
     // Same trick as `ui!`: pull `style` out of the prop list for primitives
@@ -533,7 +576,10 @@ fn emit_when(props: &[&Prop], _children: Option<&[JsxNode]>) -> TokenStream2 {
 }
 
 fn emit_user(name: &Ident, props: &[Prop], children: Option<&[JsxNode]>) -> TokenStream2 {
-    let lower = Ident::new(&name.to_string().to_ascii_lowercase(), name.span());
+    let lower = Ident::new(
+        &crate::case::pascal_to_snake(&name.to_string()),
+        name.span(),
+    );
     let prop_assignments = props.iter().map(|p| {
         let n = &p.name;
         let v = emit_attr_value(&p.value);

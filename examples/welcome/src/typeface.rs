@@ -1,28 +1,6 @@
-//! Inter typeface — all nine upright weights bundled into the
-//! binary via the framework's `typeface!` + `face!` macros.
-//!
-//! The macros wrap `include_bytes!` for the font data, derive a
-//! stable `AssetId` / `TypefaceId` from a `const_hash` of the crate
-//! name + path, and produce the `Typeface` / `TypefaceFace` literals
-//! the backends consume. This is the single supported interface for
-//! declaring a typeface anywhere in the workspace — keep it the
-//! same in every project so backend cache keys, registry ids, and
-//! font-face matching all stay consistent.
-//!
-//! Each backend registers the bytes through its native font API at
-//! first style-apply: web wraps them in a `Blob` URL + `@font-face`
-//! rule, iOS hands them to CoreText (`CGFontCreateWithDataProvider`
-//! → `CTFontManagerRegisterGraphicsFont`), Android writes them to
-//! `cacheDir/idealyst-fonts/<id>.ttf` + `Typeface.createFromFile`.
-//! No network fetch on any platform — the typeface ships with the
-//! app.
-//!
-//! Only upright (non-italic) faces are bundled. If italic copy
-//! shows up later, add the matching `face!(... style: FontStyle::Italic ...)`
-//! entries below.
-
 use framework_core::{face, typeface, FontStyle, FontWeight, SystemFallback, Typeface};
 
+// Typeface bundle for the Inter famil]y. Add your own fonts here
 pub static INTER: Typeface = typeface! {
     name: "Inter",
     faces: [

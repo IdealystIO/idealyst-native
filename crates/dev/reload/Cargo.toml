@@ -10,3 +10,9 @@ anyhow = "1"
 # File-watch + debounce. Same crate `dev-server` uses for its AAS
 # rebuild loop — keeps the workspace from carrying two debouncers.
 notify-debouncer-mini = { version = "0.4", default-features = false }
+# Web builds delegate to `build-web`, which generates a wrapper
+# cdylib around the user crate and drives wasm-pack against it.
+# That way the user crate stays a plain `rlib` — no `web.rs`, no
+# `cdylib` crate-type, no `wasm-bindgen` dep.
+build-web = { workspace = true }
+build-ios = { workspace = true }

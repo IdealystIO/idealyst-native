@@ -232,6 +232,13 @@ pub struct AnimatedOverrides {
     /// crash and the data is available the moment the gradient
     /// pipeline lands.
     pub gradient_stops: Vec<(u8, [f32; 4])>,
+    /// Animated z-index. Same "store but don't yet render" posture
+    /// as `gradient_stops`: the wgpu compositor currently paints in
+    /// document order, so authors animating `ZIndex` get the value
+    /// recorded for any future depth-sort pass and the welcome
+    /// page's raf-driver doesn't panic on the matching `AnimProp`
+    /// arm.
+    pub z_index: Option<f32>,
 }
 
 /// One mounted route in a tab or drawer navigator. The

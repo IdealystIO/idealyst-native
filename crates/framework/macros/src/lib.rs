@@ -19,9 +19,12 @@
 //! - `vec![...]` and `children![...]` are special-cased; other list-shaped
 //!   macros are opaque to the reactivity rewriter.
 
+mod case;
 mod component_attr;
 mod invocation_macro;
 mod jsx;
+#[cfg(feature = "mcp")]
+mod mcp_emit;
 mod methods_block;
 mod path_analysis;
 mod reactivity;
@@ -115,6 +118,16 @@ pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let invocation = invocation_macro::generate_invocation_macro(&item_fn, &attr);
 
+    // When the `mcp` feature is on, emit an inventory submission so the
+    // component is discoverable through `framework-mcp`'s catalog. The
+    // submission is a sibling of the function so the linker-section
+    // magic in `inventory` works as expected. When the feature is off,
+    // this expands to an empty token stream — zero overhead.
+    #[cfg(feature = "mcp")]
+    let mcp_registration = mcp_emit::emit(&item_fn);
+    #[cfg(not(feature = "mcp"))]
+    let mcp_registration = proc_macro2::TokenStream::new();
+
     // When the `hot-reload` feature is on, split the function into
     // an inner `__<Name>_hot_impl` containing the rewritten body and
     // an outer `<Name>` that dispatches through
@@ -133,6 +146,7 @@ pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
         #methods_extra
         #item_fn
         #invocation
+        #mcp_registration
     })
 }
 

@@ -306,6 +306,18 @@ pub(crate) fn apply_header_options(
 impl Backend for IosBackend {
     type Node = IosNode;
 
+    fn platform(&self) -> framework_core::Platform {
+        if cfg!(all(target_os = "ios", target_abi = "sim")) {
+            framework_core::Platform::Custom("Sim")
+        } else {
+            framework_core::Platform::Ios
+        }
+    }
+
+    fn is_simulator(&self) -> bool {
+        cfg!(all(target_os = "ios", target_abi = "sim"))
+    }
+
     fn color_scheme(&self) -> framework_core::ColorScheme {
         // UITraitCollection.currentTraitCollection.userInterfaceStyle
         // 0 = Unspecified, 1 = Light, 2 = Dark (UIUserInterfaceStyle).

@@ -1,15 +1,35 @@
-//! Absolutely-positioned column that holds the welcome phrase and
-//! the subtitle. Flex-centered so the pair sits in the middle of
-//! the page; the welcome ends up slightly above center, subtitle
-//! slightly below.
+//! Absolute, viewport-filling, flex-centered column holding the
+//! welcome phrase + subtitle.
 
 use std::rc::Rc;
 
-use framework_core::{AlignItems, FlexDirection, JustifyContent, Position, StyleRules, StyleSheet};
+use framework_core::{
+    component, ui, AlignItems, FlexDirection, JustifyContent, Position, Primitive, StyleRules,
+    StyleSheet,
+};
 
+use crate::components::subtitle::{subtitle, SubtitleProps};
+use crate::components::welcome_phrase::{welcome_phrase, WelcomePhraseProps};
+use crate::coordinator::WelcomeRefs;
 use crate::style_helpers::{px, static_sheet};
 
-pub fn content_layer_sheet() -> Rc<StyleSheet> {
+pub struct ContentLayerProps {
+    pub refs: WelcomeRefs,
+}
+
+#[component]
+pub fn content_layer(props: &ContentLayerProps) -> Primitive {
+    let refs = props.refs;
+    let sheet = sheet();
+    ui! {
+        View(style = sheet) {
+            WelcomePhrase(refs = refs)
+            Subtitle(refs = refs)
+        }
+    }
+}
+
+fn sheet() -> Rc<StyleSheet> {
     static_sheet(StyleRules {
         position: Some(Position::Absolute),
         top: Some(px(0.0)),
@@ -19,9 +39,6 @@ pub fn content_layer_sheet() -> Rc<StyleSheet> {
         flex_direction: Some(FlexDirection::Column),
         align_items: Some(AlignItems::Center),
         justify_content: Some(JustifyContent::Center),
-        // Modest gap between the headline and where the subtitle
-        // lands. The welcome's Act 3 shuffle-up adds visual breathing
-        // room on top of this.
         gap: Some(px(14.0)),
         ..Default::default()
     })

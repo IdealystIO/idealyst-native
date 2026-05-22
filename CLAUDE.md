@@ -82,3 +82,27 @@ The `debug-stats` feature is **OFF by default** in the bench variants because th
 - Validating that a "should be faster" change actually is — if the counters say the targeted phase didn't shrink, the change didn't work, regardless of what wall-clock says.
 
 Do NOT add `PhaseTimer` calls without `#[cfg]` gating — the gate already lives in the struct itself, so plain `PhaseTimer::start(...)` at call sites is correct. The optimizer strips it when the feature is off.
+
+## 7. Backend determines how things render — implementations are uniform, not patched per platform
+
+Cross-platform ubiquity is the framework's reason to exist. One author tree, every backend, native output that looks and behaves the same. The Backend trait absorbs the toolkit differences (UIKit vs AppKit vs DOM vs wgpu); the *observable behavior* is identical.
+
+That means **no per-platform hacks in framework/backend code** to make a feature work on platform Y. Animations should not have a 0.95 scale on iOS and a 0.93 scale on Android because "the renders differ." If a primitive looks or animates differently across backends, the backend that's wrong needs to be fixed at its root — not patched at the call site.
+
+Concretely:
+
+- **Backend implementations diverge in mechanism but converge in output.** UIKit uses `UIView.transform`, AppKit uses CALayer + frame offset, web uses CSS `transform`. The visual result is the same.
+- **Don't add framework-side `if platform == X` workarounds** to compensate for a backend bug. Fix the bug. If a primitive cannot work on a backend without hacks, that's a sign the primitive's design is wrong for that backend — redesign or escalate to `Primitive::External`, don't compromise the others.
+- **`is_simulator()` does not belong in the public API.** "Simulator vs device" is a dev-time concept that has no consistent meaning across backends (iOS Simulator, wgpu sim, web in DevTools, …) and any author code branching on it is necessarily fragile. The `Platform` enum + `Backend::platform()` exist for *legitimate* runtime variance (different keyboard shortcuts on `MacOs`, different copy on `Web`, etc.) — that branching is fine. A sim/device predicate is not.
+- **Dev-only markers** ("am I in the dev build?") belong behind `#[cfg(debug_assertions)]`, not behind a runtime predicate. They should not survive into release builds.
+
+When reviewing PRs / audits: a per-platform hack inside a backend (e.g., "subtract 2px on iOS only" to fix alignment) is a smell. The cause is almost always upstream — wrong default in the trait surface, wrong style translation, wrong intrinsic measurement. Fix the upstream cause so every backend benefits.
+
+## 8. Every bug fix lands with a regression test
+
+When you fix a bug or regression, add a test that fails before the fix and passes after. No exceptions for "small" or "obvious" fixes — those are exactly the ones that come back. The test belongs in the same change as the fix, not a follow-up.
+
+- The test must actually exercise the broken path. A test that passes against the buggy code is not a regression test.
+- If the bug is in a layer that's hard to unit-test (platform-specific UIKit/Android behavior, GPU output, real device input), add the closest reachable test — an integration test against the backend trait, a snapshot of the relevant state, or a scripted example that reproduces the scenario — and document in a comment why a tighter test isn't possible.
+- Name the test after the bug, not the function. `regression_ios_scrollview_resets_on_layout` beats `test_apply_frames_3`.
+- If you can't write a failing test first, you don't yet understand the bug. Keep digging until you can reproduce it deterministically.

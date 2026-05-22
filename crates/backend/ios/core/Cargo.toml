@@ -23,6 +23,11 @@ async-driver = ["framework-core/async-driver"]
 [dependencies]
 framework-core = { workspace = true }
 native-layout = { workspace = true }
+# Cross-Apple substrate (NSLog, scheduler, CoreText font registry,
+# color parsing). The UIKit-flavored shims in this crate (font.rs's
+# UIFont construction, style.rs's color_to_uicolor) sit on top of
+# the apple-core primitives.
+backend-apple-core = { workspace = true }
 
 [target.'cfg(any(target_os = "ios", target_os = "tvos"))'.dependencies]
 block2 = "0.5"

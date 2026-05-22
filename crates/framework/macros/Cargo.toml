@@ -22,7 +22,22 @@ debug-stats = []
 # wrapper, no indirection, zero production overhead.
 hot-reload = []
 
+# Framework MCP — when on, `#[component]` additionally emits an
+# `inventory::submit!` call that registers the component into
+# `framework-mcp`'s distributed slice. Consuming crates that want a
+# catalog enable this through `framework-mcp/mcp` or by depending on
+# `framework-macros` with this feature on directly. When off, the
+# macro emits zero MCP code — no inventory entry, no dependency on
+# `framework-mcp`. See `docs/framework-mcp-spec.md`.
+mcp = []
+
 [dependencies]
 syn = { version = "2", features = ["full", "visit", "visit-mut", "extra-traits"] }
 quote = "1"
-proc-macro2 = "1"
+# `span-locations` gives us `Span::start()` so the `mcp` feature can
+# capture per-edge source lines when walking `ui!`/`jsx!` bodies. On
+# stable Rust inside a real proc-macro context, the line is `0` (the
+# proc_macro crate doesn't expose source locations on stable); the
+# field is still emitted so a future stable Rust will light it up
+# automatically. See mcp_emit.rs / framework_mcp::EdgeRef.
+proc-macro2 = { version = "1", features = ["span-locations"] }

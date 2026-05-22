@@ -3,57 +3,20 @@ name = "welcome"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Animated welcome demo — drives `Presence` and the scheduler to sequence three phases (Welcome → to Idealyst → Hello World). Doubles as a smoke test for the presence primitive's enter/exit timing under real signal toggles."
+description = "Animated welcome demo — three-act cinematic intro driven by the framework's animation system (springs + tweens + a raf-driven sun/vignette/planet pulse). Also the source of truth for the `idealyst new` scaffold; the CLI copies this project verbatim."
 
-# `cdylib` for the wasm target; `rlib` so the CLI's per-platform
-# wrappers can depend on this crate as a library if someone wants to
-# build it for iOS / Android.
+# Pure `rlib`. The per-platform wrappers the CLI generates
+# (`target/idealyst/welcome/{web,ios,android}/wrapper/`) carry the
+# platform-specific crate-type (cdylib for web/Android, staticlib for
+# iOS) and entry-point boilerplate; this crate depends on nothing
+# platform-specific, has no `#[cfg(target_os = "...")]` blocks, no
+# `web.rs`/`ios.rs`/`android.rs`, and ships the same bytes to every
+# backend.
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["rlib"]
 
 [dependencies]
 framework-core = { workspace = true }
-idea-ui = { workspace = true }
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-backend-web = { workspace = true }
-wasm-bindgen = "0.2"
-web-sys = { version = "0.3", features = ["Node", "Element", "HtmlElement"] }
-console_error_panic_hook = "0.1"
-lol_alloc = "0.4"
-
-# iOS: needed for the per-frame AnimatedValue → UIView bridge in the
-# `drive_av` / `drive_color_av` helpers. The bridge downcasts to
-# `IosNode` and calls `backend_ios::set_animated_*` (which route via
-# the global self-handle the iOS wrapper installs at startup).
-[target.'cfg(target_os = "ios")'.dependencies]
-backend-ios-mobile = { workspace = true }
-backend-ios-core = { workspace = true }
-
-# Android: same shape as the iOS bridge above — the welcome's
-# `drive_av` / `drive_color_text_av` helpers downcast to
-# `AndroidNode` (a `GlobalRef`) and call
-# `backend_android::set_animated_*`, which route through the
-# Android backend's `install_global_self` `Weak` handle.
-[target.'cfg(target_os = "android")'.dependencies]
-backend-android-mobile = { workspace = true }
-
-# Sim (macOS / Linux / Windows desktop preview) — the wgpu render
-# backend's `set_animated_f32` / `set_animated_color` route through
-# the same global self-handle as iOS / Android. Without this dep
-# the `drive_av` helpers' fallback `cfg` would compile to a no-op
-# and every author-driven animation would silently fail on the sim.
-[target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))'.dependencies]
-render-wgpu = { workspace = true }
-
-[package.metadata.wasm-pack.profile.release]
-wasm-opt = [
-    "-Oz",
-    "--strip-debug",
-    "--strip-producers",
-    "--enable-bulk-memory",
-    "--enable-nontrapping-float-to-int",
-]
 
 [package.metadata.idealyst.app]
 name      = "Welcome"

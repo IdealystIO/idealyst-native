@@ -17,15 +17,10 @@ unsafe impl Encode for CGColorRef {
     const ENCODING: Encoding = Encoding::Pointer(&Encoding::Struct("CGColor", &[]));
 }
 
-/// Parse a CSS-style color string into (r, g, b, a) in 0.0..1.0.
-/// Parsing logic lives in `framework_core::color`; this wrapper
-/// applies opaque black as the fallback for unknown shapes
-/// (matching the legacy iOS behavior before centralization).
-pub fn parse_color(s: &str) -> (CGFloat, CGFloat, CGFloat, CGFloat) {
-    let [r, g, b, a] = framework_core::color::parse_or(s, framework_core::color::Rgba::BLACK)
-        .to_srgb_f32();
-    (r as CGFloat, g as CGFloat, b as CGFloat, a as CGFloat)
-}
+// `parse_color` lives in `backend_apple_core::color` now — same
+// signature, same semantics. Re-exported here so the iOS-core
+// public surface stays unchanged for downstream callers.
+pub use backend_apple_core::color::parse_color;
 
 pub fn color_to_uicolor(color: &Color) -> Retained<UIColor> {
     let (r, g, b, a) = parse_color(&color.0);

@@ -346,9 +346,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "backend-apple-core"
+version = "0.0.1"
+dependencies = [
+ "block2 0.5.1",
+ "framework-core",
+ "objc2 0.5.2",
+ "objc2-foundation 0.2.2",
+]
+
+[[package]]
 name = "backend-ios-core"
 version = "0.0.1"
 dependencies = [
+ "backend-apple-core",
  "block2 0.5.1",
  "framework-core",
  "native-layout",
@@ -397,6 +408,20 @@ dependencies = [
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "objc2-ui-kit",
+ "raw-window-handle",
+]
+
+[[package]]
+name = "backend-macos"
+version = "0.0.1"
+dependencies = [
+ "backend-apple-core",
+ "block2 0.5.1",
+ "framework-core",
+ "native-layout",
+ "objc2 0.5.2",
+ "objc2-app-kit",
+ "objc2-foundation 0.2.2",
  "raw-window-handle",
 ]
 
@@ -466,6 +491,18 @@ dependencies = [
  "framework-core",
  "idea-ui",
  "lol_alloc",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
+name = "benchmark-idealyst-native-anim"
+version = "0.0.1"
+dependencies = [
+ "backend-web",
+ "console_error_panic_hook",
+ "framework-core",
+ "idea-ui",
  "wasm-bindgen",
  "web-sys",
 ]
@@ -581,6 +618,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "build-macos"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "build-ios",
+]
+
+[[package]]
 name = "build-roku"
 version = "0.0.1"
 dependencies = [
@@ -596,6 +641,14 @@ dependencies = [
 
 [[package]]
 name = "build-sim"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "build-ios",
+]
+
+[[package]]
+name = "build-web"
 version = "0.0.1"
 dependencies = [
  "anyhow",
@@ -1057,6 +1110,8 @@ name = "dev-reload"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "build-ios",
+ "build-web",
  "notify-debouncer-mini",
 ]
 
@@ -1378,6 +1433,7 @@ version = "0.0.1"
 dependencies = [
  "framework-hot",
  "framework-macros",
+ "framework-mcp",
  "log",
  "pollster",
  "raw-window-handle",
@@ -1402,6 +1458,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "framework-mcp"
+version = "0.0.1"
+dependencies = [
+ "framework-core",
+ "framework-macros",
+ "inventory",
+ "serde_json",
 ]
 
 [[package]]
@@ -1673,6 +1739,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
 
 [[package]]
+name = "host-appkit"
+version = "0.0.1"
+dependencies = [
+ "backend-apple-core",
+ "backend-macos",
+ "framework-core",
+ "objc2 0.5.2",
+ "objc2-app-kit",
+ "objc2-foundation 0.2.2",
+]
+
+[[package]]
 name = "host-web"
 version = "0.0.1"
 dependencies = [
@@ -1878,8 +1956,10 @@ dependencies = [
  "build-aas",
  "build-android",
  "build-ios",
+ "build-macos",
  "build-roku",
  "build-sim",
+ "build-web",
  "clap",
  "ctrlc",
  "dev-http",
@@ -1887,6 +1967,7 @@ dependencies = [
  "mdns-sd",
  "run-android",
  "run-ios",
+ "run-macos",
  "run-roku",
  "serde",
  "serde_json",
@@ -1967,6 +2048,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e05c02b5e89bff3b946cedeca278abc628fe811e604f027c45a8aa3cf793d0eb"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "inventory"
+version = "0.3.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4f0c30c76f2f4ccee3fe55a2435f691ca00c0e4bd87abe4f4a851b1d4dac39b"
+dependencies = [
+ "rustversion",
 ]
 
 [[package]]
@@ -2274,6 +2364,15 @@ dependencies = [
  "backend-web",
  "maps-core",
  "web-sys",
+]
+
+[[package]]
+name = "mcp-demo"
+version = "0.0.1"
+dependencies = [
+ "framework-core",
+ "framework-mcp",
+ "serde_json",
 ]
 
 [[package]]
@@ -3523,6 +3622,15 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "build-ios",
+]
+
+[[package]]
+name = "run-macos"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "build-ios",
+ "build-macos",
 ]
 
 [[package]]
@@ -4858,17 +4966,7 @@ dependencies = [
 name = "welcome"
 version = "0.0.1"
 dependencies = [
- "backend-android-mobile",
- "backend-ios-core",
- "backend-ios-mobile",
- "backend-web",
- "console_error_panic_hook",
  "framework-core",
- "idea-ui",
- "lol_alloc",
- "render-wgpu",
- "wasm-bindgen",
- "web-sys",
 ]
 
 [[package]]

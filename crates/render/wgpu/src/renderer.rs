@@ -2244,7 +2244,7 @@ fn walk<'a>(
     // (frame_x_translate, frame_y_translate) per visible child.
     // Filled per match arm; the loop below converts each into
     // an origin offset before recursing.
-    let (visible_children, nav_in_transition): (Vec<(WgpuNode, ScreenXform)>, bool) =
+    let (mut visible_children, nav_in_transition): (Vec<(WgpuNode, ScreenXform)>, bool) =
         match kind_ref {
             NodeKind::Navigator { transition, transition_anim, .. } => {
                 let frame = nav_transition_frame(transition, transition_anim, w, h, now);
@@ -2329,6 +2329,28 @@ fn walk<'a>(
             false,
         ),
     };
+    // Z-index ordering. Sibling paint order = document order by
+    // default; an animated `AnimProp::ZIndex` (welcome's planets
+    // use this to swap above/below the content layer) overrides
+    // the tie. Stable sort so equal z preserves document order,
+    // matching CSS / iOS `layer.zPosition` / Android
+    // `setTranslationZ` semantics. The compare touches each
+    // child's `RefCell` once for read; safe because children are
+    // distinct nodes (no aliasing with `data`, still borrowed).
+    if visible_children.len() > 1 {
+        visible_children.sort_by(|a, b| {
+            let za = a.0.borrow()
+                .animated.as_ref()
+                .and_then(|av| av.z_index)
+                .unwrap_or(0.0);
+            let zb = b.0.borrow()
+                .animated.as_ref()
+                .and_then(|av| av.z_index)
+                .unwrap_or(0.0);
+            za.partial_cmp(&zb).unwrap_or(std::cmp::Ordering::Equal)
+        });
+    }
+
     // While a navigator transition is in flight, narrow the
     // children's clip to the navigator's own rect so neither
     // the under-screen's parallax slide nor the top screen's

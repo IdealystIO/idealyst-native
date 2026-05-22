@@ -1,8 +1,5 @@
-//! Tiny constructors used by the per-component stylesheet builders.
-//! They wrap the framework's `StyleSheet::static`, `Length::Px`,
-//! `Length::Percent`, and `Color` types in shorter call sites so the
-//! component files read as a list of property assignments rather
-//! than a wall of `Some(Tokenized::Literal(...))`.
+//! Short constructors so component files read as property lists,
+//! not walls of `Some(Tokenized::Literal(...))`.
 
 use std::rc::Rc;
 

@@ -1,0 +1,24 @@
+[package]
+name = "benchmark-idealyst-native-anim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+framework-core = { workspace = true }
+idea-ui = { workspace = true }
+backend-web = { workspace = true }
+wasm-bindgen = "0.2"
+console_error_panic_hook = "0.1"
+
+[dependencies.web-sys]
+version = "0.3"
+features = ["console", "Window", "Performance"]
+
+# Same wasm-opt config as the other benchmark variant so per-instruction
+# perf is comparable.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-Oz", "--strip-debug", "--strip-producers", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]

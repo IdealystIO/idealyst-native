@@ -22,6 +22,10 @@ echo "[bench] building idealyst-native variant wasm..."
 (cd "$BENCH_DIR/idealyst-native/wasm" && wasm-pack build --target web --release)
 
 echo
+echo "[bench] building idealyst-native-anim variant wasm..."
+(cd "$BENCH_DIR/idealyst-native-anim/wasm" && wasm-pack build --target web --release)
+
+echo
 echo "[bench] building svelte variant..."
 (
   cd "$BENCH_DIR/svelte"

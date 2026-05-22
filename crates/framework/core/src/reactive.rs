@@ -2008,6 +2008,56 @@ fn register_ref(id: RefId) -> bool {
     })
 }
 
+/// Snapshot of the reactive registration context — active-scope
+/// stack plus current Effect. Used by the deferred-scheduling helpers
+/// ([`crate::after_ms_scoped`], [`crate::raf_loop_scoped`]) so a
+/// callback that fires later can re-enter the scope/effect it was
+/// registered under — otherwise nested `*_scoped` calls inside the
+/// callback see an empty stack with no CURRENT effect, their
+/// `on_cleanup`-anchored handles drop instantly, and the inner
+/// timer/loop is cancelled before it can fire even once.
+///
+/// Pair with [`with_reactive_ctx`] to re-enter + auto-restore.
+///
+/// Safety: the returned scope pointers are only valid for as long as
+/// the originating `with_scope` / Effect frame keeps the Scope alive.
+/// The scope-anchored helpers register an `on_cleanup` against that
+/// same context, which guarantees the deferred callback is cancelled
+/// before the Scope/Effect drops — so by the time the callback fires,
+/// the pointers are still pointing at live storage.
+pub(crate) struct ReactiveCtx {
+    owning_stack: Vec<*mut Scope>,
+    current_eid: Option<EffectId>,
+}
+
+pub(crate) fn capture_reactive_ctx() -> ReactiveCtx {
+    ReactiveCtx {
+        owning_stack: ACTIVE_SCOPE.with(|s| s.borrow().clone()),
+        current_eid: CURRENT.with(|c| *c.borrow()),
+    }
+}
+
+/// Re-enter a captured reactive context for the duration of `f`.
+/// Mirrors the way [`Effect`] re-runs restore their `owning_stack` +
+/// CURRENT pointer.
+pub(crate) fn with_reactive_ctx<R>(ctx: &ReactiveCtx, f: impl FnOnce() -> R) -> R {
+    let pushed = ctx.owning_stack.len();
+    if pushed > 0 {
+        ACTIVE_SCOPE.with(|s| s.borrow_mut().extend_from_slice(&ctx.owning_stack));
+    }
+    let prev_eid = CURRENT.with(|c| c.replace(ctx.current_eid));
+    let result = f();
+    CURRENT.with(|c| *c.borrow_mut() = prev_eid);
+    if pushed > 0 {
+        ACTIVE_SCOPE.with(|s| {
+            let mut s = s.borrow_mut();
+            let new_len = s.len() - pushed;
+            s.truncate(new_len);
+        });
+    }
+    result
+}
+
 /// Hands a guard to the topmost active scope. Used by the
 /// static-style path so a styled node can attach its
 /// `on_node_unstyled` + cohort-unregister cleanup without burning

@@ -82,6 +82,139 @@ pub enum ColorScheme {
 }
 
 // ---------------------------------------------------------------------------
+// Platform
+// ---------------------------------------------------------------------------
+
+/// Identifies the host platform a backend is rendering to. Author
+/// code reads this via [`Backend::platform`] to branch on host —
+/// e.g. show iOS-style chrome only on `Ios`, rely on
+/// `position: fixed` only on `Web`, swap keyboard shortcuts for
+/// menu-bar items on `MacOs`.
+///
+/// Whether the backend is a simulator/emulator rather than a real
+/// device is orthogonal — query [`Backend::is_simulator`] for that.
+///
+/// `Custom("")` is the trait default — "backend hasn't declared an
+/// identity at all" (test mocks, early stubs). Author code should
+/// treat `Custom(_)` as "make no UI-affordance assumptions"
+/// regardless of the inner string; the string is for diagnostics,
+/// telemetry, or the rare custom embedder that wants its own opt-in
+/// code path (e.g. `Custom("aas-shell")`, `Custom("linux-desktop")`,
+/// `Custom("my-tv-box")`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Platform {
+    /// Browser / wasm-in-web-page host.
+    Web,
+    /// iPhone / iPad (UIKit, `target_os = "ios"`).
+    Ios,
+    /// Phones and tablets running Android.
+    Android,
+    /// macOS desktop (AppKit shell).
+    MacOs,
+    /// Apple TV (tvOS).
+    TvOs,
+    /// Android TV — distinct from `Android` because input
+    /// (D-pad, no touch) and form factor differ.
+    AndroidTv,
+    /// Roku set-top boxes.
+    Roku,
+    /// Backend that doesn't fit any of the named variants. The
+    /// `&'static str` is a self-reported identifier — empty string
+    /// means "no identity declared" (the trait default), otherwise
+    /// the backend has chosen its own name (`"aas-shell"`,
+    /// `"linux-desktop"`, `"my-tv-box"`, …). Author code that
+    /// branches on `Custom(_)` should treat the string as opaque
+    /// metadata, not a stable UI-shape signal.
+    Custom(&'static str),
+}
+
+impl Platform {
+    /// `Ios | MacOs | TvOs` — UIKit/AppKit/tvOS family.
+    pub fn is_apple(self) -> bool {
+        matches!(self, Self::Ios | Self::MacOs | Self::TvOs)
+    }
+
+    /// `Ios | Android` — touch-first phone/tablet form factor.
+    pub fn is_mobile(self) -> bool {
+        matches!(self, Self::Ios | Self::Android)
+    }
+
+    /// `TvOs | AndroidTv | Roku` — TV form factor, remote-driven input.
+    pub fn is_tv(self) -> bool {
+        matches!(self, Self::TvOs | Self::AndroidTv | Self::Roku)
+    }
+
+    /// Web / browser hosts.
+    pub fn is_web(self) -> bool {
+        matches!(self, Self::Web)
+    }
+
+    /// Desktop form factor (currently just `MacOs`).
+    pub fn is_desktop(self) -> bool {
+        matches!(self, Self::MacOs)
+    }
+
+    /// Canonical human-facing name for this platform — the form
+    /// authors would write in prose ("iOS", "macOS", "Android TV",
+    /// not "ios" / "macos" / "androidtv"). Stable spelling, safe to
+    /// slot into UI strings, diagnostic dumps, or log lines.
+    ///
+    /// `Custom(name)` renders as `"Custom(<name>)"` so the wrapping
+    /// is visible at the call site — author code (and the welcome
+    /// example) can tell at a glance that the backend self-reported
+    /// rather than declaring a named variant. Empty `Custom("")`
+    /// (the trait default) is special-cased to the empty string so
+    /// undeclared backends don't leak a placeholder into the UI.
+    pub fn canonical(self) -> String {
+        match self {
+            Self::Web => "web".to_string(),
+            Self::Ios => "iOS".to_string(),
+            Self::Android => "Android".to_string(),
+            Self::MacOs => "macOS".to_string(),
+            Self::TvOs => "tvOS".to_string(),
+            Self::AndroidTv => "Android TV".to_string(),
+            Self::Roku => "Roku".to_string(),
+            Self::Custom("") => String::new(),
+            Self::Custom(name) => format!("Custom({name})"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Global platform accessor
+// ---------------------------------------------------------------------------
+//
+// `mount(...)` reads the backend's `platform()` once at startup and
+// stashes the value in this thread-local so author code (component
+// bodies, effects, free functions) can branch on host platform
+// without needing a `Backend` reference. Sim/emulator status isn't
+// a separate signal — the backend folds it into the `Platform`
+// value it returns (e.g. `Custom("Sim")`), so there's just one
+// thing for authors to read.
+
+thread_local! {
+    static CURRENT_PLATFORM: std::cell::Cell<Platform> =
+        const { std::cell::Cell::new(Platform::Custom("")) };
+}
+
+/// The host platform currently being rendered to. Set by the
+/// framework during `mount(...)` from `backend.platform()`. Returns
+/// `Platform::Custom("")` before any mount has happened on this
+/// thread.
+pub fn platform() -> Platform {
+    CURRENT_PLATFORM.with(|c| c.get())
+}
+
+/// Internal: invoked by `mount(...)` to stash the active backend's
+/// identity in the thread-local accessor above. Not part of the
+/// public API surface; backends should override [`Backend::platform`]
+/// instead.
+#[doc(hidden)]
+pub fn install_current_platform(platform: Platform) {
+    CURRENT_PLATFORM.with(|c| c.set(platform));
+}
+
+// ---------------------------------------------------------------------------
 // Backend trait
 // ---------------------------------------------------------------------------
 
@@ -93,6 +226,24 @@ pub trait Backend {
     /// Defaults to `ColorScheme::Auto` (no preference).
     fn color_scheme(&self) -> ColorScheme {
         ColorScheme::Auto
+    }
+
+    /// Identifies the host platform this backend renders to. Author
+    /// code reads this when it needs to branch on host — different
+    /// keyboard shortcuts on `MacOs`, no `position: fixed` analog
+    /// outside `Web`, etc.
+    ///
+    /// Defaults to `Platform::Custom("")` (no identity declared) so
+    /// test mocks and early stubs compile without scaffolding; each
+    /// first-party backend overrides to return its concrete identity,
+    /// and custom embedders can override with `Custom("their-name")`.
+    ///
+    /// Sim/emulator vs. real-device is not a separate signal — each
+    /// backend folds it into the `Platform` value it returns
+    /// (e.g. the iOS-simulator build of the iOS backend returns
+    /// `Custom("Sim")`). Author code reads one thing.
+    fn platform(&self) -> Platform {
+        Platform::Custom("")
     }
 
     fn create_view(&mut self) -> Self::Node;
@@ -2090,6 +2241,103 @@ mod tests {
             calls,
         );
         assert!(matches!(calls[0], Call::ExecuteBatch { .. }));
+    }
+
+    /// `Platform` helper predicates must agree on every variant —
+    /// they're the public API author code branches on, and a missed
+    /// arm would silently put a platform in the wrong category.
+    #[test]
+    fn platform_helpers_classify_every_variant() {
+        use Platform::*;
+        let all = [Web, Ios, Android, MacOs, TvOs, AndroidTv, Roku, Custom("")];
+
+        // is_apple: Ios, MacOs, TvOs
+        for p in all {
+            assert_eq!(p.is_apple(), matches!(p, Ios | MacOs | TvOs), "is_apple({:?})", p);
+        }
+        // is_mobile: Ios, Android
+        for p in all {
+            assert_eq!(p.is_mobile(), matches!(p, Ios | Android), "is_mobile({:?})", p);
+        }
+        // is_tv: TvOs, AndroidTv, Roku
+        for p in all {
+            assert_eq!(p.is_tv(), matches!(p, TvOs | AndroidTv | Roku), "is_tv({:?})", p);
+        }
+        // is_web: only Web
+        for p in all {
+            assert_eq!(p.is_web(), matches!(p, Web), "is_web({:?})", p);
+        }
+        // is_desktop: only MacOs (for now)
+        for p in all {
+            assert_eq!(p.is_desktop(), matches!(p, MacOs), "is_desktop({:?})", p);
+        }
+        // `Custom(_)` is in no category regardless of inner string —
+        // the string is opaque metadata, not a UI-shape signal.
+        for sample in [Custom(""), Custom("aas-shell"), Custom("linux-desktop")] {
+            assert!(!sample.is_apple(), "is_apple({:?})", sample);
+            assert!(!sample.is_mobile(), "is_mobile({:?})", sample);
+            assert!(!sample.is_tv(), "is_tv({:?})", sample);
+            assert!(!sample.is_web(), "is_web({:?})", sample);
+            assert!(!sample.is_desktop(), "is_desktop({:?})", sample);
+        }
+    }
+
+    /// Default `Backend::platform()` must match the documented
+    /// default — overrides land in each backend crate, but a backend
+    /// that forgets to override should get a safe "no assumptions"
+    /// identity, not a wrong one.
+    #[test]
+    fn default_platform() {
+        let backend = StubBackend::new();
+        assert_eq!(backend.platform(), Platform::Custom(""));
+    }
+
+    /// `Platform::canonical` is the documented display form authors
+    /// slot into prose. Downstream code (UI strings, log lines, this
+    /// repo's own `welcome` example) depends on the exact spelling.
+    /// Lock it in, including the `Custom`-variant wrapping
+    /// (`"Custom(<name>)"`) and the empty-string special case.
+    #[test]
+    fn platform_canonical_returns_display_form() {
+        assert_eq!(Platform::Web.canonical(), "web");
+        assert_eq!(Platform::Ios.canonical(), "iOS");
+        assert_eq!(Platform::Android.canonical(), "Android");
+        assert_eq!(Platform::MacOs.canonical(), "macOS");
+        assert_eq!(Platform::TvOs.canonical(), "tvOS");
+        assert_eq!(Platform::AndroidTv.canonical(), "Android TV");
+        assert_eq!(Platform::Roku.canonical(), "Roku");
+        // Empty `Custom` slots in as empty so an undeclared backend
+        // doesn't leak `Custom()` into the UI.
+        assert_eq!(Platform::Custom("").canonical(), "");
+        // Self-reported names are wrapped so the call site shows the
+        // backend opted into the `Custom` escape hatch.
+        assert_eq!(Platform::Custom("Sim").canonical(), "Custom(Sim)");
+        assert_eq!(Platform::Custom("aas-shell").canonical(), "Custom(aas-shell)");
+    }
+
+    /// `install_current_platform` must round-trip through the global
+    /// accessor. Verified inside the test (not from `mount`) so the
+    /// storage layer is exercised even on host targets that don't
+    /// have a real Backend.
+    #[test]
+    fn install_current_platform_round_trips() {
+        // Reset to known state in case a prior test in this thread
+        // installed a value.
+        install_current_platform(Platform::Custom(""));
+        assert_eq!(platform(), Platform::Custom(""));
+
+        install_current_platform(Platform::Ios);
+        assert_eq!(platform(), Platform::Ios);
+
+        install_current_platform(Platform::Custom("Sim"));
+        assert_eq!(platform(), Platform::Custom("Sim"));
+
+        install_current_platform(Platform::Web);
+        assert_eq!(platform(), Platform::Web);
+
+        // Restore default so other tests on the same thread aren't
+        // surprised by leftover state.
+        install_current_platform(Platform::Custom(""));
     }
 
     /// `attach_locals` ordering must be preserved into `insert_many`

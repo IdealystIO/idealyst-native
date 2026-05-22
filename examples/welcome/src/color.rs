@@ -1,17 +1,13 @@
-//! Tiny color helpers for the animation pipeline. The framework's
-//! per-stop / per-text color animators consume `(r, g, b, a)` tuples
-//! with all four channels in `0..=1` sRGB space.
+//! `(r, g, b, a)` tuple helpers. Framework color AVs consume sRGB
+//! tuples with all four channels in `0..=1`.
 
-/// Convert four `0..=255` channel values (CSS-style) into the
-/// `(r, g, b, a)` tuple the color AVs consume. Alpha is in
-/// `0..=1` — match the framework's gradient stop convention.
+/// CSS-style `0..=255` channels → `(r, g, b, a)`. Alpha stays in
+/// `0..=1`, matching the gradient-stop convention.
 pub fn srgba_tuple(r: f32, g: f32, b: f32, a: f32) -> (f32, f32, f32, f32) {
     (r / 255.0, g / 255.0, b / 255.0, a)
 }
 
-/// Linear interpolate two `(r, g, b, a)` colors at `t` in `0..=1`.
-/// Used by the welcome's raf-driven pulse to compute the per-frame
-/// sun + vignette colors from a sine-driven `t`.
+/// Linear interpolate two RGBA tuples at `t` in `0..=1`.
 pub fn lerp_color(
     a: (f32, f32, f32, f32),
     b: (f32, f32, f32, f32),
@@ -25,11 +21,7 @@ pub fn lerp_color(
     )
 }
 
-/// Convert a `#rrggbb` (or `#rgb`) hex color to the
-/// `(r, g, b, a)` tuple the color AVs use. Channels in `0..=1`,
-/// alpha always 1.0 (the welcome phrase doesn't fade alpha — it
-/// fades the bulk through the wrapper's opacity, which is a
-/// separate property).
+/// `#rrggbb` or `#rgb` → `(r, g, b, 1.0)`.
 pub fn srgb_tuple(hex: &str) -> (f32, f32, f32, f32) {
     let h = hex.trim_start_matches('#');
     let parse = |s: &str| u8::from_str_radix(s, 16).unwrap_or(0) as f32 / 255.0;

@@ -157,6 +157,16 @@ impl WebBackend {
                 state.rotate_z = Some(value);
                 let _ = element.style().set_property("rotate", &format!("{}deg", value));
             }
+            AnimProp::ZIndex => {
+                // CSS `z-index` is an integer; round to nearest.
+                // Sibling-relative — only the comparison against
+                // other z-index'd siblings matters, not the absolute
+                // value. Round-tripping through `f32 → i32` is fine
+                // because the value is always small (typically
+                // `-N..N` for some small N).
+                let z = value.round() as i32;
+                let _ = element.style().set_property("z-index", &z.to_string());
+            }
             // Color variants are silently ignored on the scalar path
             // — they belong on `impl_set_animated_color`. We don't
             // panic because animator code mis-routing a color prop
@@ -216,7 +226,8 @@ impl WebBackend {
             | AnimProp::Scale
             | AnimProp::ScaleX
             | AnimProp::ScaleY
-            | AnimProp::RotateZ => {}
+            | AnimProp::RotateZ
+            | AnimProp::ZIndex => {}
         }
     }
 

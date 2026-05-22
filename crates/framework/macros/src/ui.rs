@@ -349,6 +349,49 @@ impl Parse for Prop {
 // Emit
 // =============================================================================
 
+/// Walk a parsed `ui! { ... }` and append every component-position
+/// ident — i.e. every `UiNode::Component { name }` — into `out` along
+/// with its source line. Recurses into nested children, for/if/match
+/// bodies. Arbitrary expression-position calls (`UiNode::Expr`) are
+/// NOT captured: per the MCP spec (§6.3) a "component" is something
+/// that appears as a child in JSX position, not any function call.
+///
+/// Used by `mcp_emit` (under `feature = "mcp"`) to build the
+/// `composes` edge list for each `#[component]` entry. Kept here so
+/// the AST stays encapsulated in this module.
+#[cfg(feature = "mcp")]
+pub(crate) fn collect_component_refs(ui: &Ui, out: &mut Vec<(String, u32)>) {
+    collect_from_nodes(&ui.elements, out);
+}
+
+#[cfg(feature = "mcp")]
+fn collect_from_nodes(nodes: &[UiNode], out: &mut Vec<(String, u32)>) {
+    for node in nodes {
+        match node {
+            UiNode::Component { name, children, .. } => {
+                let line = name.span().start().line as u32;
+                out.push((name.to_string(), line));
+                if let Some(c) = children {
+                    collect_from_nodes(c, out);
+                }
+            }
+            UiNode::For { body, .. } => collect_from_nodes(body, out),
+            UiNode::If { then_body, else_body, .. } => {
+                collect_from_nodes(then_body, out);
+                if let Some(e) = else_body {
+                    collect_from_nodes(e, out);
+                }
+            }
+            UiNode::Match { arms, .. } => {
+                for arm in arms {
+                    collect_from_nodes(&arm.body, out);
+                }
+            }
+            UiNode::Expr(_) => {}
+        }
+    }
+}
+
 /// Top-level emit: produce a single expression that yields a `Primitive`.
 /// If the `ui!` body has exactly one element, emit it directly. Otherwise
 /// wrap in `view(children![...])`. The whole expression is coerced via
@@ -409,7 +452,7 @@ fn emit_component(
     children: Option<&[UiNode]>,
     chain: &[TokenStream2],
 ) -> TokenStream2 {
-    let lower = name.to_string().to_ascii_lowercase();
+    let lower = crate::case::pascal_to_snake(&name.to_string());
     // For primitives, special-case two props that attach as method
     // calls rather than constructor arguments:
     //   - `style = ...` → `.with_style(...)`
@@ -420,12 +463,16 @@ fn emit_component(
     // idea-ui's styled component (which wraps the framework's
     // `pressable` primitive internally). User code that wants the
     // bare primitive calls `framework_core::pressable(...)`.
+    //
+    // Primitive names are snake_case to match `pascal_to_snake`'s
+    // output — `TextInput` → `text_input`, `ScrollView` → `scroll_view`,
+    // and so on.
     let is_primitive = matches!(
         lower.as_str(),
         "text" | "button" | "view" | "when"
-        | "image" | "icon" | "textinput" | "toggle" | "scrollview"
-        | "slider" | "webview" | "video" | "activityindicator"
-        | "flatlist" | "link" | "overlay" | "anchoredoverlay" | "presence"
+        | "image" | "icon" | "text_input" | "toggle" | "scroll_view"
+        | "slider" | "web_view" | "video" | "activity_indicator"
+        | "flat_list" | "link" | "overlay" | "anchored_overlay" | "presence"
     );
     let supports_disabled = lower.as_str() == "button";
 
@@ -467,20 +514,20 @@ fn emit_component(
         "when" => emit_when(&other_props, children),
         "icon" => emit_icon(&other_props, children),
         "image" => emit_image(&other_props, children),
-        "textinput" => emit_text_input(&other_props, children),
+        "text_input" => emit_text_input(&other_props, children),
         "toggle" => emit_toggle(&other_props, children),
-        "scrollview" => emit_scroll_view(&other_props, children),
+        "scroll_view" => emit_scroll_view(&other_props, children),
         "slider" => emit_slider(&other_props, children),
         "video" => emit_video(&other_props, children),
-        "activityindicator" => emit_activity_indicator(&other_props, children),
-        "flatlist" => emit_flat_list(&other_props, children),
+        "activity_indicator" => emit_activity_indicator(&other_props, children),
+        "flat_list" => emit_flat_list(&other_props, children),
         "graphics" => emit_graphics(&other_props, children),
         "link" => emit_link(&other_props, children),
         "overlay" => emit_overlay(&other_props, children),
-        "anchoredoverlay" => emit_anchored_overlay(&other_props, children),
+        "anchored_overlay" => emit_anchored_overlay(&other_props, children),
         "presence" => emit_presence(&other_props, children),
-        "drawernavigator" => emit_drawer_navigator(&other_props, children),
-        "cardtabs" => emit_card_tabs(&other_props, children),
+        "drawer_navigator" => emit_drawer_navigator(&other_props, children),
+        "card_tabs" => emit_card_tabs(&other_props, children),
         _ => emit_user(name, props, children),
     };
 
@@ -1380,7 +1427,10 @@ fn emit_flat_list(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 
 /// the per-component macro generated by `#[component]`. Children block (if
 /// present) becomes the `children` prop, wrapped in `children![...]`.
 fn emit_user(name: &Ident, props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
-    let lower = Ident::new(&name.to_string().to_ascii_lowercase(), name.span());
+    let lower = Ident::new(
+        &crate::case::pascal_to_snake(&name.to_string()),
+        name.span(),
+    );
     let prop_assignments = props.iter().map(|p| {
         let n = &p.name;
         let v = emit_attr_value(&p.value);

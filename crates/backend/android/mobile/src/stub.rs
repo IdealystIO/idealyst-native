@@ -20,6 +20,10 @@ impl AndroidBackend {
 impl Backend for AndroidBackend {
     type Node = ();
 
+    fn platform(&self) -> framework_core::Platform {
+        framework_core::Platform::Android
+    }
+
     fn create_view(&mut self) -> Self::Node {
         unreachable!("backend-android stub: only available on android target")
     }

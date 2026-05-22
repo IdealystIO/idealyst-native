@@ -223,6 +223,39 @@ pub trait ViewOps {
     fn absolute_frame(&self, node: &dyn Any) -> Option<primitives::portal::ViewportRect> {
         None
     }
+
+    /// Write a per-frame scalar animation property (opacity, scale,
+    /// translateX/Y, rotateZ) onto the backend's native node. This is
+    /// what `AnimatedValue::bind` dispatches through — author code
+    /// holds an `AnimatedValue<f32>` and a `Ref<ViewHandle>`, the
+    /// framework routes per-frame writes through here so no
+    /// per-platform plumbing leaks into app code.
+    ///
+    /// Backends downcast `node` to their concrete `Node` type and
+    /// call their existing `set_animated_f32` writer. Default is a
+    /// silent no-op so backends without animated-prop support don't
+    /// have to override.
+    #[allow(unused_variables)]
+    fn set_animated_f32(
+        &self,
+        node: &dyn Any,
+        prop: crate::animation::AnimProp,
+        value: f32,
+    ) {
+    }
+
+    /// Color-family counterpart of [`ViewOps::set_animated_f32`].
+    /// Handles `BackgroundColor`, `ForegroundColor`, and per-stop
+    /// `GradientStopColor(idx)`. `value` is sRGB `[r, g, b, a]` with
+    /// all channels in `0..=1`.
+    #[allow(unused_variables)]
+    fn set_animated_color(
+        &self,
+        node: &dyn Any,
+        prop: crate::animation::AnimProp,
+        value: [f32; 4],
+    ) {
+    }
 }
 
 impl ViewHandle {
@@ -236,6 +269,23 @@ impl ViewHandle {
     /// isn't mounted in a window yet.
     pub fn absolute_frame(&self) -> Option<primitives::portal::ViewportRect> {
         self.ops.absolute_frame(&*self.node)
+    }
+
+    /// Write a scalar animation property onto the underlying node.
+    /// Thin wrapper around [`ViewOps::set_animated_f32`]; the framework's
+    /// [`AnimatedValue::bind`](crate::animation::AnimatedValue::bind)
+    /// helper calls this from inside its subscriber so authors don't
+    /// have to write per-platform downcast code.
+    pub fn set_animated_f32(&self, prop: crate::animation::AnimProp, value: f32) {
+        self.ops.set_animated_f32(&*self.node, prop, value);
+    }
+
+    /// Write a color animation property onto the underlying node.
+    /// Mirror of [`Self::set_animated_f32`]; called from
+    /// [`AnimatedValue::bind_color`](crate::animation::AnimatedValue::bind_color)
+    /// and [`AnimatedValue::bind_gradient_stop`](crate::animation::AnimatedValue::bind_gradient_stop).
+    pub fn set_animated_color(&self, prop: crate::animation::AnimProp, value: [f32; 4]) {
+        self.ops.set_animated_color(&*self.node, prop, value);
     }
 }
 
@@ -269,7 +319,28 @@ impl TextHandle {
 }
 
 pub trait TextOps {
-    // Reserved for future text-specific operations.
+    /// Write a color animation property onto the text node — almost
+    /// always `AnimProp::ForegroundColor`, which maps to
+    /// `UILabel.textColor` on iOS, `TextView.setTextColor` on Android,
+    /// and inline `style.color` on web. Bound from author code via
+    /// [`AnimatedValue::bind_text_color`](crate::animation::AnimatedValue::bind_text_color).
+    /// Default is a silent no-op.
+    #[allow(unused_variables)]
+    fn set_animated_color(
+        &self,
+        node: &dyn Any,
+        prop: crate::animation::AnimProp,
+        value: [f32; 4],
+    ) {
+    }
+}
+
+impl TextHandle {
+    /// Write a color animation property onto the underlying text
+    /// node. Thin wrapper around [`TextOps::set_animated_color`].
+    pub fn set_animated_color(&self, prop: crate::animation::AnimProp, value: [f32; 4]) {
+        self.ops.set_animated_color(&*self.node, prop, value);
+    }
 }
 
 // =============================================================================

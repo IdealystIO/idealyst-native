@@ -101,6 +101,12 @@ export async function autoRunIfRequested({
   setPointColor,
   // signal-class suite — JS-side reactive class binding
   setupSignalClassRows,
+  // anim-* suites (see benchmark/anim/spec.md for the contract)
+  setupAnim,
+  stepTo,
+  getState,
+  startAnim,
+  stopAnim,
   suitesBase,
 } = {}) {
   const url = new URL(window.location.href);
@@ -151,14 +157,25 @@ export async function autoRunIfRequested({
       setSharedColor,
       setPointColor,
       setupSignalClassRows,
+      setupAnim,
+      stepTo,
+      getState,
+      startAnim,
+      stopAnim,
       params,
       onProgress: (progress) => {
         postBack({ type: 'bench-progress', suite: suiteName, runs: progress });
       },
     });
     postBack({ type: 'bench-result', suite: suiteName, runs });
+    // Also stash on window for headless drivers (chrome --remote-debugging
+    // + Runtime.evaluate). The postMessage path serves the iframe-runner
+    // case; this serves the "load variant directly, poll for result"
+    // case used by the Node CDP driver in benchmark/anim/run-headless.mjs.
+    window.__benchResult = { suite: suiteName, runs };
   } catch (err) {
     postBack({ type: 'bench-error', error: `suite ${suiteName} threw: ${err?.message ?? err}` });
+    window.__benchError = `suite ${suiteName} threw: ${err?.message ?? err}`;
   }
 }
 

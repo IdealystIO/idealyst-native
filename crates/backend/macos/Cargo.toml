@@ -1,0 +1,71 @@
+[package]
+name = "backend-macos"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Native macOS backend via AppKit. Implements `framework_core::Backend`
+# using real NSView / NSButton / NSScrollView / NSTextField / NSImageView
+# widgets with a Taffy-backed flex layout pass.
+#
+# Compiles to an empty stub on non-macOS hosts so workspace-wide
+# `cargo check` works from any platform. The real implementation
+# lives under `cfg(target_os = "macos")` in `src/imp/`.
+#
+# See `docs/macos-backend-plan.md` for the design and scope.
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+default = []
+# Forward `framework-core/debug-stats` so PhaseTimer counters exist
+# in this crate's hot paths (apply-style, layout, batched insert).
+debug-stats = ["framework-core/debug-stats"]
+
+[dependencies]
+framework-core = { workspace = true }
+native-layout = { workspace = true }
+# Cross-Apple substrate (NSLog, scheduler, CoreText font registry,
+# color parsing). Shared with backend-ios-core; same Phase 0 lift.
+backend-apple-core = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.5"
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = [
+    "NSString",
+    "NSArray",
+    "NSEnumerator",
+    "NSObject",
+    "NSSet",
+    "NSGeometry",
+    "NSValue",
+] }
+objc2-app-kit = { version = "0.2", features = [
+    "NSResponder",
+    "NSView",
+    "NSWindow",
+    "NSApplication",
+    "NSColor",
+    "NSButton",
+    "NSControl",
+    "NSCell",
+    "NSTextField",
+    "NSTextFieldCell",
+    "NSTextView",
+    "NSText",
+    "NSScrollView",
+    "NSImageView",
+    "NSImage",
+    "NSEvent",
+    "NSSlider",
+    "NSSwitch",
+    "NSProgressIndicator",
+    "NSGraphicsContext",
+    "NSTrackingArea",
+    "NSCursor",
+    "NSFont",
+    "NSAppearance",
+] }
+raw-window-handle = "0.6"

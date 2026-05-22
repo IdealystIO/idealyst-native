@@ -1,41 +1,44 @@
 //! Shared iOS/tvOS substrate.
 //!
 //! Houses the bits that both `backend-ios-mobile` (touch) and
-//! `backend-ios-tv` (focus engine) reuse unchanged: style/color/flex
-//! application and the NSTimer-based render loop driver. Higher
-//! pieces — the `IosBackend` struct, primitive construction,
+//! `backend-ios-tv` (focus engine) reuse unchanged: UIKit style
+//! application, UIFont resolution, and the render loop driver.
+//! Higher pieces — the `IosBackend` struct, primitive construction,
 //! navigator/tab-drawer chrome — stay in the leaf crates because
 //! they bake in input semantics that differ between mobile and TV.
 //!
+//! Cross-Apple bits (CoreText font registration, color parsing,
+//! NSLog, NSTimer scheduler) live one level deeper in
+//! [`backend_apple_core`]; this crate re-exports them so existing
+//! `backend_ios_core::{font, scheduler, ios_log}` callers stay
+//! source-compatible.
+//!
 //! Modules are gated on `cfg(any(target_os = "ios", target_os =
-//! "tvos"))`; on the host target the crate compiles as an empty rlib
-//! so workspace-wide `cargo check` keeps working.
-
-#[cfg(any(target_os = "ios", target_os = "tvos"))]
-pub mod style;
+//! "tvos"))`; on the host target the crate compiles as an empty
+//! rlib so workspace-wide `cargo check` keeps working.
 
 #[cfg(any(target_os = "ios", target_os = "tvos"))]
 pub mod font;
 
+#[cfg(any(target_os = "ios", target_os = "tvos"))]
+pub mod style;
+
 #[cfg(all(any(target_os = "ios", target_os = "tvos"), feature = "async-driver"))]
 pub mod render_loop;
 
+// The scheduler is now cross-Apple. Re-export under the same path so
+// `backend_ios_core::scheduler::install_scheduler()` keeps working.
 #[cfg(any(target_os = "ios", target_os = "tvos"))]
-pub mod scheduler;
+pub use backend_apple_core::scheduler;
 
 /// Platform log via NSLog. Always visible in Xcode console.
 ///
-/// Lives here (not in the leaf crates) so `style.rs` and any future
-/// shared module can log without reaching back into the mobile or
-/// TV crate it's hosted by.
+/// Forwards to [`backend_apple_core::log::apple_log`] — the same
+/// shim now backs the macOS backend too. Kept under
+/// `backend_ios_core::ios_log` for source compatibility with the
+/// existing `ios_log!` macro in `backend-ios-mobile`.
 #[cfg(any(target_os = "ios", target_os = "tvos"))]
 #[allow(dead_code)]
 pub fn ios_log(msg: &str) {
-    let ns = objc2_foundation::NSString::from_str(msg);
-    // NSLog(@"%@", msg) — the %@ format avoids treating msg as a format string.
-    extern "C" {
-        fn NSLog(fmt: *const objc2_foundation::NSString, ...);
-    }
-    let fmt = objc2_foundation::NSString::from_str("%@");
-    unsafe { NSLog(&*fmt, &*ns) };
+    backend_apple_core::log::apple_log(msg)
 }

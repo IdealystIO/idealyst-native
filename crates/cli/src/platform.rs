@@ -18,10 +18,14 @@ pub enum Platform {
     /// Wgpu-backed desktop preview ("simulator"). Not a real
     /// device target — opens a winit window on the host machine
     /// and renders the user's tree through `render-wgpu` with a
-    /// phone / tablet / TV skin. Distinct from a future native
-    /// macOS / Windows / Linux backend, which would use OS widget
-    /// toolkits rather than custom-drawn wgpu chrome.
+    /// phone / tablet / TV skin. Distinct from the [`Platform::Macos`]
+    /// native backend below, which uses AppKit widgets rather than
+    /// custom-drawn wgpu chrome.
     Sim,
+    /// Native macOS via `backend-macos` + `host-appkit`. Uses real
+    /// AppKit widgets (NSWindow, NSToolbar, NSView, NSButton, …).
+    /// See `docs/macos-backend-plan.md`.
+    Macos,
 }
 
 impl Platform {
@@ -33,6 +37,7 @@ impl Platform {
             Platform::Aas => "aas",
             Platform::Roku => "roku",
             Platform::Sim => "sim",
+            Platform::Macos => "macos",
         }
     }
 }

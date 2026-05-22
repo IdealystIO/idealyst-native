@@ -573,11 +573,54 @@ impl framework_core::ViewOps for AndroidViewOps {
             })
         })
     }
+
+    /// Route `AnimatedValue::bind` writes through the existing
+    /// `backend_android_mobile::set_animated_f32` free function so
+    /// the framework's animation-binding helper doesn't have to
+    /// know about `GlobalRef`. Mirrors `IosViewOps::set_animated_f32`.
+    fn set_animated_f32(
+        &self,
+        node: &dyn std::any::Any,
+        prop: framework_core::animation::AnimProp,
+        value: f32,
+    ) {
+        if let Some(n) = node.downcast_ref::<GlobalRef>() {
+            crate::set_animated_f32(n, prop, value);
+        }
+    }
+
+    /// Color-family analog of [`Self::set_animated_f32`].
+    fn set_animated_color(
+        &self,
+        node: &dyn std::any::Any,
+        prop: framework_core::animation::AnimProp,
+        value: [f32; 4],
+    ) {
+        if let Some(n) = node.downcast_ref::<GlobalRef>() {
+            crate::set_animated_color(n, prop, value);
+        }
+    }
 }
 pub(crate) static ANDROID_VIEW_OPS: AndroidViewOps = AndroidViewOps;
 
 pub(crate) struct AndroidTextOps;
-impl framework_core::TextOps for AndroidTextOps {}
+impl framework_core::TextOps for AndroidTextOps {
+    /// Route text-color animations through the backend's
+    /// `set_animated_color` — Android's `ForegroundColor` branch
+    /// dispatches to `TextView.setTextColor`, which is what makes
+    /// the welcome headline's dark→light transition visible on
+    /// label nodes.
+    fn set_animated_color(
+        &self,
+        node: &dyn std::any::Any,
+        prop: framework_core::animation::AnimProp,
+        value: [f32; 4],
+    ) {
+        if let Some(n) = node.downcast_ref::<GlobalRef>() {
+            crate::set_animated_color(n, prop, value);
+        }
+    }
+}
 pub(crate) static ANDROID_TEXT_OPS: AndroidTextOps = AndroidTextOps;
 
 // ---------------------------------------------------------------------------
@@ -645,6 +688,10 @@ pub fn set_animated_color(
 
 impl Backend for AndroidBackend {
     type Node = GlobalRef;
+
+    fn platform(&self) -> framework_core::Platform {
+        framework_core::Platform::Android
+    }
 
     fn color_scheme(&self) -> framework_core::ColorScheme {
         // context.getResources().getConfiguration().uiMode & UI_MODE_NIGHT_MASK
@@ -1161,6 +1208,11 @@ impl Backend for AndroidBackend {
             P::Scale | P::ScaleX => ("setScaleX", "(F)V"),
             P::ScaleY => ("setScaleY", "(F)V"),
             P::RotateZ => ("setRotation", "(F)V"),
+            // `setTranslationZ` lifts the view above its siblings in
+            // the parent's draw order — same role as `style.zIndex`
+            // on web / `layer.zPosition` on iOS. Takes device pixels;
+            // the dp-to-px conversion below handles the unit.
+            P::ZIndex => ("setTranslationZ", "(F)V"),
             // Wrong family; silently ignored.
             P::BackgroundColor | P::ForegroundColor | P::GradientStopColor(_) => {
                 return
@@ -1174,7 +1226,13 @@ impl Backend for AndroidBackend {
             // dp on-screen regardless of display density. Mirrors
             // the dp→px conversion `sync_transform_translate_percent`
             // already does for static percent translates.
-            let out_value = if matches!(prop, P::TranslateX | P::TranslateY) {
+            let out_value = if matches!(prop, P::TranslateX | P::TranslateY | P::ZIndex) {
+                // Translates land in device px (so the visual offset
+                // matches what `style.transform: translate(<dp>px)`
+                // would have produced on web). `setTranslationZ`
+                // takes device pixels too — same conversion keeps
+                // the relative ordering scale-stable across
+                // densities.
                 backend_android_core::helpers::dp_to_px(env, node.as_obj(), value)
                     as f32
             } else {
@@ -1262,7 +1320,8 @@ impl Backend for AndroidBackend {
             | P::Scale
             | P::ScaleX
             | P::ScaleY
-            | P::RotateZ => {}
+            | P::RotateZ
+            | P::ZIndex => {}
         }
     }
 

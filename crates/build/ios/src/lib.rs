@@ -144,10 +144,14 @@ pub enum Target {
     Ios,
     Android,
     Roku,
+    /// Native macOS app via `backend-macos` + `host-appkit`. Builds a
+    /// real `.app` bundle (eventually) — for now produces a binary
+    /// the user can launch directly.
+    Macos,
 }
 
 impl Target {
-    /// Parse one of `web | ios | android | roku` (case-insensitive)
+    /// Parse one of `web | ios | android | roku | macos` (case-insensitive)
     /// from the `targets = [...]` array. Anything else is an error
     /// rather than a silent skip — typos in the manifest should be
     /// noisy.
@@ -157,8 +161,9 @@ impl Target {
             "ios" => Ok(Target::Ios),
             "android" => Ok(Target::Android),
             "roku" => Ok(Target::Roku),
+            "macos" => Ok(Target::Macos),
             other => anyhow::bail!(
-                "unknown target {:?}; expected one of: web, ios, android, roku",
+                "unknown target {:?}; expected one of: web, ios, android, roku, macos",
                 other
             ),
         }
@@ -172,6 +177,7 @@ impl Target {
             Target::Ios => "ios",
             Target::Android => "android",
             Target::Roku => "roku",
+            Target::Macos => "macos",
         }
     }
 }

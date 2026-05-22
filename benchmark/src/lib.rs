@@ -444,12 +444,77 @@ const VARIANTS: &[VariantInfo] = &[
         id: "idealyst-native",      label: "idealyst-native",        url: "./idealyst-native/",
         supports: &["rebuild", "toggle", "hierarchy", "granular", "reactive-style", "signal-class"],
     },
+    // Animation variants — see benchmark/anim/spec.md. The contract
+    // is different (start/stop/stepTo/getState, not setRows/setTheme),
+    // so these variants only show up under animation suites. Other
+    // variants don't implement the anim hooks so they're filtered
+    // out of those suites' variant pickers — same mechanism that
+    // hides vanilla from the hierarchy suite.
+    VariantInfo {
+        id: "vanilla-anim",         label: "vanilla · anim",         url: "./vanilla-anim/",
+        supports: &["anim-bounce", "anim-springstorm"],
+    },
+    VariantInfo {
+        id: "idealyst-native-anim", label: "idealyst-native · anim", url: "./idealyst-native-anim/",
+        supports: &["anim-bounce", "anim-springstorm"],
+    },
 ];
 
 struct ParamInfo {
     name: &'static str,
     label: &'static str,
     default: f64,
+}
+
+/// String-valued defaults for suites whose params aren't naturally
+/// numeric (e.g. anim-bounce's `nValues` is a CSV like
+/// `"0,100,1000,5000,10000"`). Lookup by `(suite_name, param_name)` —
+/// when present, wins over the `ParamInfo.default` number. Lives as
+/// a side table so existing numeric-default ParamInfo literals don't
+/// have to spell out `default_str: None`.
+const PARAM_STRING_DEFAULTS: &[(&str, &str, &str)] = &[
+    ("anim-bounce",       "nValues", "0,100,1000,5000,10000"),
+    ("anim-springstorm",  "nValues", "0,100,1000,5000,10000"),
+];
+
+/// Per-suite override for the APPLY / PAINT / WORST column headers.
+/// Lookup by suite_name; when present, the table header builder uses
+/// these labels instead of the rebuild-suite defaults. Empty string
+/// means "drop this column entirely" — anim suites would set this if
+/// they didn't have a meaningful WORST measurement, for instance.
+///
+/// Tuple shape: `(suite_name, apply_label, paint_label, worst_label)`.
+const SUITE_COLUMN_LABELS: &[(&str, &str, &str, &str)] = &[
+    // anim-bounce reports:
+    //   APPLY → mean per-frame variant work, µs
+    //   PAINT → mean frames per second
+    //   WORST → worst single frame interval, ms
+    // See benchmark/anim/spec.md for the contract.
+    ("anim-bounce",      "µs/FRAME", "FPS", "MAX ms"),
+    // anim-springstorm reports the same shape, BUT µs/FRAME is
+    // asymmetric across variants — vanilla's brackets full per-frame
+    // work, idealyst's brackets only the re-kick logic (framework
+    // owns the spring tick). Use FPS / MAX ms as the headline; see
+    // spec.md "Asymmetric apply measurement".
+    ("anim-springstorm", "µs/FRAME", "FPS", "MAX ms"),
+];
+
+fn suite_column_labels(suite: &str) -> (&'static str, &'static str, &'static str) {
+    for (s, a, p, w) in SUITE_COLUMN_LABELS {
+        if *s == suite {
+            return (*a, *p, *w);
+        }
+    }
+    ("APPLY", "PAINT", "WORST")
+}
+
+fn param_initial_value(suite: &str, p: &ParamInfo) -> String {
+    for (s, n, v) in PARAM_STRING_DEFAULTS {
+        if *s == suite && *n == p.name {
+            return (*v).to_string();
+        }
+    }
+    format_param(p.default)
 }
 
 /// How a suite wants the TOTAL column computed. PAINT clusters
@@ -616,6 +681,54 @@ const SUITES: &[SuiteInfo] = &[
         // around the CSS-transition window every variant pays
         // for; framework differences (Rust-side vs JS-side
         // fan-out) live entirely in APPLY.
+        total: TotalMetric::ApplySum,
+    },
+    SuiteInfo {
+        name: "anim-bounce",
+        title: "Animation · bouncing balls",
+        params: &[
+            // Comma-separated N values — drives the column buckets
+            // below. Keep `bucket_labels` aligned with this default;
+            // editing the form rebuilds the table on each Run.
+            ParamInfo { name: "nValues",      label: "N values (CSV)",  default: 0.0 },
+            ParamInfo { name: "iterations",   label: "Iterations per N", default: 3.0 },
+            ParamInfo { name: "windowMs",     label: "Sample window (ms)", default: 3000.0 },
+            ParamInfo { name: "seed",         label: "Seed",            default: 1.0 },
+        ],
+        // Column labels for the N sweep. Hardcoded to match the
+        // suite's default `nValues` ("0,100,1000,5000,10000");
+        // N=0 is the idle-rAF floor (framework overhead with no
+        // per-write work). A user who edits the param to a different
+        // N set will see numbers grouped under the wrong header
+        // until these labels are updated too — documented in
+        // anim/spec.md as a v1 limitation.
+        bucket_labels: &["0", "100", "1K", "5K", "10K"],
+        // Column meanings shift for anim suites — see anim/spec.md
+        // "How animation results map onto the runner table". APPLY
+        // here is js_p95 (per-frame variant work), PAINT is
+        // frame_p95, WORST is frame_max. TOTAL summing APPLY across
+        // N tiers gives a rough cumulative-complexity number; not
+        // physically meaningful but stable enough to compare.
+        total: TotalMetric::ApplySum,
+    },
+    SuiteInfo {
+        name: "anim-springstorm",
+        title: "Animation · spring storm",
+        params: &[
+            ParamInfo { name: "nValues",      label: "N values (CSV)",  default: 0.0 },
+            ParamInfo { name: "iterations",   label: "Iterations per N", default: 3.0 },
+            ParamInfo { name: "windowMs",     label: "Sample window (ms)", default: 3000.0 },
+            ParamInfo { name: "seed",         label: "Seed",            default: 1.0 },
+        ],
+        // Same N-sweep buckets as anim-bounce — N=0 is each variant's
+        // idle-rAF floor (no springs running); larger N tiers tax the
+        // framework's per-AV scheduler + interpolator.
+        bucket_labels: &["0", "100", "1K", "5K", "10K"],
+        // Note: µs/FRAME is asymmetric here (see anim/spec.md).
+        // FPS + MAX ms are the cross-variant comparison; TOTAL
+        // (sum of µs/FRAME) is meaningful for vanilla but not
+        // idealyst — both are reported anyway since the runner's
+        // shape doesn't allow per-variant column omission.
         total: TotalMetric::ApplySum,
     },
 ];
@@ -823,17 +936,18 @@ fn column_medians(entry: &VariantEntry, suite: &SuiteInfo) -> Vec<Option<f64>> {
 /// Table header labels, derived from suite metadata. Same order
 /// as `column_medians`. The first two are fixed (VARIANT, STATUS).
 fn table_headers(suite: &SuiteInfo) -> Vec<String> {
+    let (apply_label, paint_label, worst_label) = suite_column_labels(suite.name);
     let mut h = vec![
         "VARIANT".to_string(),
         "STATUS".to_string(),
         "TOTAL".to_string(),
     ];
     for label in suite.bucket_labels {
-        h.push(format!("{} APPLY", label));
-        h.push(format!("{} PAINT", label));
+        h.push(format!("{} {}", label, apply_label));
+        h.push(format!("{} {}", label, paint_label));
     }
     for label in suite.bucket_labels {
-        h.push(format!("{} WORST", label));
+        h.push(format!("{} {}", label, worst_label));
     }
     h
 }
@@ -1502,7 +1616,7 @@ pub fn start() {
     let mut params: HashMap<(&'static str, &'static str), Signal<String>> = HashMap::new();
     for suite in SUITES {
         for p in suite.params {
-            params.insert((suite.name, p.name), signal!(format_param(p.default)));
+            params.insert((suite.name, p.name), signal!(param_initial_value(suite.name, p)));
         }
     }
     let all_selected: HashSet<&'static str> = VARIANTS.iter().map(|v| v.id).collect();

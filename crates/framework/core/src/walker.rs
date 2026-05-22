@@ -127,6 +127,12 @@ where
         c.set(backend.borrow().token_updates_propagate_via_cascade());
     });
 
+    // Stash the backend's platform identity so author code can
+    // branch on host via `framework_core::platform()` without
+    // holding a Backend reference. Same one-shot read as above —
+    // Backend impls return a constant per instance.
+    crate::backend::install_current_platform(backend.borrow().platform());
+
     let mut scope = Box::new(reactive::Scope::new());
     let root = reactive::with_scope(&mut scope, || {
         // Both the tree constructor and the build walk run inside the

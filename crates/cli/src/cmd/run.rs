@@ -248,8 +248,27 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
             }
             Ok(())
         }
+        Platform::Macos => {
+            if args.aas {
+                anyhow::bail!(
+                    "macOS AAS mode is not implemented yet; run without --aas for local-render"
+                );
+            }
+            let source = crate::framework_source::resolve(&args.dir)?;
+            let artifact = run_macos::run(
+                &args.dir,
+                run_macos::RunOptions {
+                    release: args.release,
+                    source,
+                },
+            )?;
+            eprintln!();
+            eprintln!("[idealyst run macos] launched");
+            eprintln!("  binary: {}", artifact.binary.display());
+            Ok(())
+        }
         _ => anyhow::bail!(
-            "run for {} is not implemented yet — only ios, android, roku, and sim are wired today",
+            "run for {} is not implemented yet — only ios, android, roku, sim, and macos are wired today",
             args.platform,
         ),
     }

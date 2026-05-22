@@ -237,6 +237,78 @@ pub fn raf_loop<F: FnMut() + 'static>(f: F) -> RafLoop {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Scope-anchored variants
+// ---------------------------------------------------------------------------
+//
+// The plain helpers ([`after_ms`], [`raf_loop`]) return a handle whose
+// `Drop` cancels the underlying timer. Callers are expected to keep
+// the handle alive for as long as they want the callback firing —
+// the most common way is `std::mem::forget(handle)` for page-
+// lifetime use, or stashing it in a `Vec` plus
+// `on_cleanup(move || drop(vec))` for scope-lifetime use.
+//
+// The scoped variants below absorb that boilerplate: they install
+// the same cleanup automatically against the current reactive scope.
+// Use them inside `effect!` / inside a component body / under a
+// mounted `Owner` when the animation's natural lifetime is the
+// scope's. Outside any scope they degrade to the plain helpers
+// (the on_cleanup no-ops, the handle is leaked) — which matches
+// `on_cleanup`'s standard behavior.
+
+/// Schedule `f` to fire after `delay_ms`, with the underlying timer
+/// anchored to the current reactive scope. When the scope cleans up
+/// (the surrounding `effect!` re-runs, or the `Owner` drops) the
+/// timer is cancelled — if the callback hasn't fired yet, it never
+/// will.
+///
+/// Use this instead of [`after_ms`] when the timer is part of an
+/// animation that should die with the surrounding scope. Use plain
+/// [`after_ms`] when you need manual control over the handle's
+/// lifetime (e.g., to cancel ahead of scope teardown, or to outlive
+/// the scope by `mem::forget`'ing the handle).
+///
+/// The deferred callback re-enters the registering scope when it
+/// fires, so a nested `*_scoped` helper inside `f` attaches to the
+/// same scope as the outer call — otherwise the inner cleanup would
+/// see an empty active stack and silently cancel itself before
+/// firing.
+///
+/// **Outside any reactive scope this is a no-op** — the captured
+/// task is dropped immediately, mirroring how [`crate::on_cleanup`]
+/// silently drops its callback outside a scope. If you need a
+/// timer that fires regardless of whether you're in a scope, use
+/// plain [`after_ms`] and manage the handle yourself.
+pub fn after_ms_scoped<F: FnOnce() + 'static>(delay_ms: i32, f: F) {
+    let ctx = crate::reactive::capture_reactive_ctx();
+    let task = after_ms(delay_ms, move || {
+        crate::reactive::with_reactive_ctx(&ctx, f);
+    });
+    crate::reactive::on_cleanup(move || drop(task));
+}
+
+/// Recurring animation-frame loop, anchored to the current reactive
+/// scope. When the scope cleans up the loop stops; further frames
+/// never fire.
+///
+/// Companion to [`raf_loop`] that doesn't make the caller choose
+/// between `mem::forget`'ing the handle (silent page-lifetime leak)
+/// and manually wiring `on_cleanup(move || drop(handle))`.
+///
+/// Per-frame invocations re-enter the registering scope so nested
+/// `*_scoped` calls keep their cleanup attachment (see
+/// [`after_ms_scoped`] for the rationale).
+///
+/// **Outside any reactive scope this is a no-op** — see
+/// [`after_ms_scoped`] for the rationale.
+pub fn raf_loop_scoped<F: FnMut() + 'static>(mut f: F) {
+    let ctx = crate::reactive::capture_reactive_ctx();
+    let loop_handle = raf_loop(move || {
+        crate::reactive::with_reactive_ctx(&ctx, || f());
+    });
+    crate::reactive::on_cleanup(move || drop(loop_handle));
+}
+
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod tests {

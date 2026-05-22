@@ -691,6 +691,20 @@ pub(crate) fn apply_header_options_with_nav(
 impl Backend for IosBackend {
     type Node = IosNode;
 
+    fn platform(&self) -> framework_core::Platform {
+        // `target_abi = "sim"` is set for `aarch64-apple-ios-sim` and
+        // `x86_64-apple-ios` simulator targets; absent on real devices.
+        // The sim self-reports via `Custom("Sim")` so author code
+        // (and the welcome example) can distinguish it from a real
+        // device — there's no separate `is_simulator` signal, just
+        // the `Platform` value the backend returns.
+        if cfg!(all(target_os = "ios", target_abi = "sim")) {
+            framework_core::Platform::Custom("Sim")
+        } else {
+            framework_core::Platform::Ios
+        }
+    }
+
     fn color_scheme(&self) -> framework_core::ColorScheme {
         // UITraitCollection.currentTraitCollection.userInterfaceStyle
         // 0 = Unspecified, 1 = Light, 2 = Dark (UIUserInterfaceStyle).

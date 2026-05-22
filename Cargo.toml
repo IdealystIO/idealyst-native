@@ -4,11 +4,14 @@ members = [
     "crates/framework/core",
     "crates/framework/hot",
     "crates/framework/macros",
+    "crates/framework/mcp",
     "crates/framework/native-layout",
     "crates/framework/wire",
     "crates/framework/dev-client",
     "crates/framework/reactive/arena",
     "crates/framework/reactive/refs",
+    "crates/backend/apple/core",
+    "crates/backend/macos",
     "crates/backend/ios/core",
     "crates/backend/ios/mobile",
     "crates/backend/ios/tv",
@@ -26,6 +29,7 @@ members = [
     "crates/skin/android-sim",
     "crates/host/winit",
     "crates/host/web",
+    "crates/host/appkit",
     "crates/native/phone",
     "crates/native/tablet",
     "crates/native/tv",
@@ -45,9 +49,12 @@ members = [
     "crates/build/ios",
     "crates/build/roku",
     "crates/build/sim",
+    "crates/build/web",
+    "crates/build/macos",
     "crates/run/android",
     "crates/run/ios",
     "crates/run/roku",
+    "crates/run/macos",
     "crates/dev/server",
     "crates/dev/http",
     "crates/dev/reload",
@@ -67,9 +74,11 @@ members = [
     "examples/docs-macro",
     "examples/animation-test",
     "examples/welcome",
+    "examples/mcp-demo",
     "examples/fiddle",
     "benchmark",
     "benchmark/idealyst-native/wasm",
+    "benchmark/idealyst-native-anim/wasm",
 ]
 
 # Sub-crates under `examples/fiddle/` that have their own `[workspace]`
@@ -90,6 +99,7 @@ license = "MIT OR Apache-2.0"
 framework-core = { path = "crates/framework/core" }
 framework-hot = { path = "crates/framework/hot" }
 framework-macros = { path = "crates/framework/macros" }
+framework-mcp = { path = "crates/framework/mcp" }
 docs-macro = { path = "examples/docs-macro" }
 native-layout = { path = "crates/framework/native-layout" }
 wire = { path = "crates/framework/wire" }
@@ -106,6 +116,11 @@ run-android = { path = "crates/run/android" }
 build-roku = { path = "crates/build/roku" }
 run-roku = { path = "crates/run/roku" }
 build-sim = { path = "crates/build/sim" }
+build-web = { path = "crates/build/web" }
+build-macos = { path = "crates/build/macos" }
+run-macos = { path = "crates/run/macos" }
+backend-apple-core = { path = "crates/backend/apple/core" }
+backend-macos = { path = "crates/backend/macos" }
 backend-ios-core = { path = "crates/backend/ios/core" }
 backend-ios-mobile = { path = "crates/backend/ios/mobile" }
 backend-ios-tv = { path = "crates/backend/ios/tv" }
@@ -123,6 +138,7 @@ ios-sim = { path = "crates/skin/ios-sim" }
 android-sim = { path = "crates/skin/android-sim" }
 host-winit = { path = "crates/host/winit" }
 host-web = { path = "crates/host/web" }
+host-appkit = { path = "crates/host/appkit" }
 native-phone = { path = "crates/native/phone" }
 native-tablet = { path = "crates/native/tablet" }
 native-tv = { path = "crates/native/tv" }

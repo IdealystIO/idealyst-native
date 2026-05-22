@@ -6,6 +6,10 @@ pub struct IosBackend;
 impl Backend for IosBackend {
     type Node = ();
 
+    fn platform(&self) -> framework_core::Platform {
+        framework_core::Platform::Ios
+    }
+
     fn create_view(&mut self) -> Self::Node {
         unreachable!("backend-ios stub: UIKit calls only on iOS target")
     }

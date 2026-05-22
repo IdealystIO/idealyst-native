@@ -1239,6 +1239,7 @@ impl Backend for WgpuBackend {
                 AnimProp::ScaleX => ov.scale_x = Some(value),
                 AnimProp::ScaleY => ov.scale_y = Some(value),
                 AnimProp::RotateZ => ov.rotate_z = Some(value),
+                AnimProp::ZIndex => ov.z_index = Some(value),
                 // Wrong family. Same posture as the iOS / web f32
                 // path — silently ignored; misrouting is a
                 // diagnostic concern, not a runtime crash.
@@ -1316,7 +1317,8 @@ impl Backend for WgpuBackend {
                 | AnimProp::Scale
                 | AnimProp::ScaleX
                 | AnimProp::ScaleY
-                | AnimProp::RotateZ => {}
+                | AnimProp::RotateZ
+                | AnimProp::ZIndex => {}
             }
         }
         request_redraw();

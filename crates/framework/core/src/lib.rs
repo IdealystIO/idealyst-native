@@ -48,7 +48,7 @@ pub use assets::{
     Asset, AssetId, AssetKind, AssetSource, AssetTag, SystemFallback, Typeface, TypefaceFace,
     TypefaceId,
 };
-pub use backend::{Backend, ColorScheme, VirtualizerCallbacks};
+pub use backend::{platform, Backend, ColorScheme, Platform, VirtualizerCallbacks};
 pub use batch::{BackendBatch, BatchOp};
 pub use handles::{
     ButtonHandle, ButtonOps, PressableHandle, PressableOps, RefFill, RefOps, StateBits, TextHandle,
@@ -109,7 +109,8 @@ pub use reactive::{
 pub use resource::{resource, Resource, ResourceCancel, ResourceState};
 pub use safe_area::{safe_area_insets, set_safe_area_insets, EdgeInsets, SafeAreaSides};
 pub use scheduling::{
-    after_animation_frame, after_ms, raf_loop, schedule_microtask, RafLoop, ScheduledTask,
+    after_animation_frame, after_ms, after_ms_scoped, raf_loop, raf_loop_scoped,
+    schedule_microtask, RafLoop, ScheduledTask,
 };
 
 pub use style::{
@@ -154,6 +155,17 @@ macro_rules! bind {
 #[cfg(feature = "hot-reload")]
 #[doc(hidden)]
 pub use framework_hot as __hot;
+
+// Re-export of `framework_mcp` so the `#[component]` macro can emit
+// `::framework_core::__mcp::inventory::submit!` and have it resolve
+// in any crate that depends on `framework-core` with the `mcp`
+// feature on — idea-ui, the welcome example, user apps. Without
+// this re-export, every consumer crate would need to declare a
+// direct dep on `framework-mcp`. Hidden from rustdoc; not part of
+// the author-facing surface. See `docs/framework-mcp-spec.md`.
+#[cfg(feature = "mcp")]
+#[doc(hidden)]
+pub use framework_mcp as __mcp;
 
 // This crate root used to be ~3200 lines containing everything below.
 // Each major concern now lives in its own private submodule and the
@@ -314,33 +326,40 @@ macro_rules! animate_at {
     }};
 }
 
-/// Builds a `Vec<ScheduledTask>` from a declarative multi-phase
-/// animation timeline. Each `at => { ... }` clause fires one or
-/// more `av.animate(animator)` calls at that moment; AnimatedValue
-/// handles are cloned into per-task closures automatically.
+/// Declarative multi-phase animation timeline. Each `at => { ... }`
+/// clause fires one or more `av.animate(animator)` calls at that
+/// moment; `AnimatedValue` handles are cloned into per-task
+/// closures automatically.
 ///
-/// Hold the returned Vec alive (typically via `on_cleanup(move ||
-/// drop(tasks))` inside an `effect!`) for the duration you want
-/// the timers to fire — dropping it cancels every pending
-/// dispatch.
+/// The scheduled tasks are **anchored to the current reactive
+/// scope** — when the surrounding `effect!` re-runs or the `Owner`
+/// drops, every pending dispatch is cancelled. No explicit
+/// `on_cleanup(move || drop(tasks))` boilerplate; the macro
+/// expands to one internally.
 ///
 /// ```ignore
-/// let tasks = timeline! {
-///     400 => {
-///         opacity: TweenTo::new(1.0, Duration::from_millis(700)).ease_out(),
-///         scale: SpringTo::new(1.0).stiffness(170.0).damping(22.0),
-///     },
-///     2_400 => {
-///         opacity: TweenTo::new(0.0, Duration::from_millis(500)).ease_in_out(),
-///     },
-/// };
-/// on_cleanup(move || drop(tasks));
+/// effect!({
+///     timeline! {
+///         400 => {
+///             opacity: TweenTo::new(1.0, Duration::from_millis(700)).ease_out(),
+///             scale: SpringTo::new(1.0).stiffness(170.0).damping(22.0),
+///         },
+///         2_400 => {
+///             opacity: TweenTo::new(0.0, Duration::from_millis(500)).ease_in_out(),
+///         },
+///     };
+/// });
 /// ```
 ///
 /// AV slot must be a bare identifier (`opacity`, `welcome_color`)
 /// because the macro clones the handle by writing `$av.clone()`.
 /// For more complex sources (`self.av`, `foo.bar.av`), use
-/// [`animate_at!`] directly.
+/// [`animate_at!`] directly. To keep the tasks alive past the
+/// surrounding scope (rare), build the `Vec<ScheduledTask>` by
+/// hand from `animate_at!` calls.
+///
+/// Outside any reactive scope the auto-anchor is a no-op and the
+/// tasks fire freely — same posture as [`crate::on_cleanup`].
 #[macro_export]
 macro_rules! timeline {
     ( $( $at:expr => { $( $av:ident : $animator:expr ),* $(,)? } ),* $(,)? ) => {{
@@ -358,7 +377,11 @@ macro_rules! timeline {
                 )*
             }
         )*
-        __tasks
+        // Anchor every pending task to the current reactive scope.
+        // When the scope cleans up the `Vec`'s `Drop` runs each
+        // `ScheduledTask`'s `Drop`, cancelling any timer that
+        // hasn't fired yet. Tasks that already fired are no-ops.
+        $crate::on_cleanup(move || drop(__tasks));
     }};
 }
 

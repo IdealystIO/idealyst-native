@@ -1,8 +1,12 @@
-//! Watch + wasm-pack rebuild loop for `idealyst dev` reload mode.
+//! Watch + rebuild loop for `idealyst dev` reload mode.
 //!
 //! On a source change under the project's `src/` (or its `Cargo.toml`):
 //!
-//! 1. Run `wasm-pack build --target web --dev` in the project dir.
+//! 1. Delegate to [`build_web::build`], which regenerates the
+//!    `target/idealyst/<name>/web/wrapper/` crate, runs `wasm-pack`
+//!    against the wrapper, and copies the resulting `pkg/` into the
+//!    user project. The user crate stays a plain `rlib` — no
+//!    `web.rs`, no `cdylib` crate-type, no `wasm-bindgen` dep.
 //! 2. Bump a shared generation counter on success.
 //!
 //! That counter is the contract with `dev-http`: every connected
@@ -11,24 +15,13 @@
 //! counter alone — the page keeps running the last good wasm until
 //! the user fixes the error.
 //!
-//! Why this lives in its own crate: rebuild orchestration is a
-//! discrete concern. The CLI assembles it next to [`dev-http`]; tests
-//! and tools can drive it directly without pulling in HTTP.
-//!
-//! The same `build_wasm` invocation is reused by [`build_once`] for
-//! callers that want a single build with feature flags but no watch
-//! loop — `idealyst dev --mode aas` uses it to produce the wasm shim
-//! (with `dev-hot-reload` on) that connects to the AAS host.
-//!
-//! Future: when AAS mode is wired up, the cargo-build+exec loop in
-//! `dev-server::watch` and this wasm-pack loop should share a common
-//! "watch then run a command, bump a signal" core — likely a small
-//! `dev-watch` crate that both depend on. Holding off until both
-//! consumers exist so the API doesn't get shaped by one of them
-//! alone.
+//! AAS mode reuses this path with `user_features =
+//! vec!["dev-hot-reload"]`; `build-web`'s wrapper grows a matching
+//! `[features]` block that forwards the flag to the user-crate dep,
+//! so the resulting wasm connects to the host's WebSocket instead
+//! of rendering the local `app()` tree.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -36,32 +29,36 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use build_ios::FrameworkSource;
 use notify_debouncer_mini::new_debouncer;
 use notify_debouncer_mini::notify::RecursiveMode;
 
-const WASM_PACK: &str = "wasm-pack";
 const DEBOUNCE_MS: u64 = 150;
 
-/// Options passed to every wasm-pack invocation. Defaults are
-/// equivalent to plain `wasm-pack build --target web --dev`. AAS
-/// mode passes `features = vec!["dev-hot-reload".into()]` so the
-/// resulting wasm connects to the host's WebSocket instead of
-/// rendering the local `app()` tree.
-#[derive(Clone, Debug, Default)]
+/// Options for each rebuild. `source` is required because the
+/// generated wrapper Cargo.toml needs to know whether to pull
+/// framework crates by workspace path or by git rev (the CLI's
+/// `framework_source::resolve` produces this for both web and
+/// native paths).
+#[derive(Clone, Debug)]
 pub struct BuildOptions {
-    /// Cargo features to enable. Passed through to cargo via
-    /// `wasm-pack build … -- --features <…>`.
+    /// Framework-source resolution result. Passed through to
+    /// [`build_web::BuildOptions`] verbatim.
+    pub source: FrameworkSource,
+    /// Cargo features to enable on the user crate. AAS mode passes
+    /// `["dev-hot-reload"]` so the user crate compiles its
+    /// hot-reload integration. Empty == default features.
     pub features: Vec<String>,
 }
 
-/// Run a single wasm-pack build. Useful for callers that want one
-/// build with specific features but don't need the watch loop.
+/// Run a single rebuild. Useful for callers that want one build
+/// with specific features but don't need the watch loop.
 pub fn build_once(dir: &Path, opts: &BuildOptions) -> Result<()> {
     build_wasm(dir, opts)
 }
 
-/// Run an initial `wasm-pack` build, then spawn a background thread
-/// that watches the project's `src/` and `Cargo.toml`, rebuilds on
+/// Run an initial build, then spawn a background thread that
+/// watches the project's `src/` and `Cargo.toml`, rebuilds on
 /// change, and bumps `gen` on success.
 ///
 /// The returned `JoinHandle` owns the watch thread. Callers usually
@@ -69,8 +66,15 @@ pub fn build_once(dir: &Path, opts: &BuildOptions) -> Result<()> {
 /// then ends watching. Build/watch errors are logged to stderr but
 /// never propagate — a failing build shouldn't tear the dev server
 /// down; the user fixes the code and the next change re-triggers.
-pub fn start(dir: &Path, gen: Arc<AtomicU64>) -> Result<JoinHandle<()>> {
-    start_with(dir, gen, BuildOptions::default())
+pub fn start(dir: &Path, gen: Arc<AtomicU64>, source: FrameworkSource) -> Result<JoinHandle<()>> {
+    start_with(
+        dir,
+        gen,
+        BuildOptions {
+            source,
+            features: Vec::new(),
+        },
+    )
 }
 
 /// Same as [`start`], with explicit build options. Used by callers
@@ -81,7 +85,7 @@ pub fn start_with(
     opts: BuildOptions,
 ) -> Result<JoinHandle<()>> {
     eprintln!("[dev-reload] initial build…");
-    build_wasm(dir, &opts).context("initial wasm-pack build failed")?;
+    build_wasm(dir, &opts).context("initial web build failed")?;
     gen.store(1, Ordering::Relaxed);
 
     let dir_owned = dir.to_path_buf();
@@ -151,22 +155,17 @@ fn drain<T>(rx: &mpsc::Receiver<T>) {
 }
 
 fn build_wasm(dir: &Path, opts: &BuildOptions) -> Result<()> {
-    let mut cmd = Command::new(WASM_PACK);
-    cmd.args(["build", "--target", "web", "--dev", "--out-dir", "pkg"]);
-    // `--` separates wasm-pack flags from cargo flags it passes
-    // through. Features go on the cargo side.
-    if !opts.features.is_empty() {
-        cmd.arg("--").arg("--features").arg(opts.features.join(","));
-    }
-    cmd.current_dir(dir);
-
-    let status = cmd.status().with_context(|| {
-        format!(
-            "failed to spawn `{WASM_PACK}` — install with `cargo install wasm-pack`"
-        )
-    })?;
-    if !status.success() {
-        anyhow::bail!("`wasm-pack build` exited with {status}");
-    }
-    Ok(())
+    // Delegate to `build_web::build` — it generates the wrapper,
+    // runs wasm-pack against it, and copies `pkg/` into `dir`.
+    // Same path `idealyst build web` uses; the dev loop is just
+    // "do that, but on debounced file changes".
+    build_web::build(
+        dir,
+        build_web::BuildOptions {
+            release: false,
+            source: opts.source.clone(),
+            user_features: opts.features.clone(),
+        },
+    )
+    .map(|_| ())
 }
