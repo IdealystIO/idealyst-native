@@ -15,12 +15,14 @@ use framework_core::{
     TextAlign, Tokenized, TypefaceFace, TypefaceId,
 };
 use wire::{
-    AssetId as WireAssetId, TypefaceId as WireTypefaceId, WireAccessibilityProps, WireAlignItems,
-    WireAssetSource, WireAssetTag, WireColor, WireEasing, WireFillRule, WireFlexDirection,
-    WireFontFamily, WireFontStyle, WireFontWeight, WireIconData, WireJustifyContent, WireLength,
-    WireLiveRegionPriority, WireRole, WireStateBit, WireStyleRules, WireSystemFallback,
-    WireTextAlign, WireTypefaceFace,
+    AssetId as WireAssetId, TypefaceId as WireTypefaceId, WireAccessibilityAction,
+    WireAccessibilityProps, WireAlignItems, WireAssetSource, WireAssetTag, WireColor, WireEasing,
+    WireFillRule, WireFlexDirection, WireFontFamily, WireFontStyle, WireFontWeight, WireIconData,
+    WireJustifyContent, WireLength, WireLiveRegionPriority, WireRole, WireStateBit,
+    WireStyleRules, WireSystemFallback, WireTextAlign, WireTypefaceFace,
 };
+
+use crate::HandlerTable;
 
 pub fn icon_data_to_wire(d: &primitives::icon::IconData) -> WireIconData {
     WireIconData {
@@ -270,9 +272,13 @@ pub fn typeface_face_to_wire(f: &TypefaceFace) -> WireTypefaceFace {
 
 /// Convert an `&AccessibilityProps` into its wire mirror. Carries
 /// label / hint / identifier / hidden / role / traits / live-region
-/// across faithfully. `actions`' function side does not survive — we
-/// emit only the action *names* (see `WireAccessibilityProps` docs).
-pub fn a11y_to_wire(p: &AccessibilityProps) -> WireAccessibilityProps {
+/// across faithfully. For each [`framework_core::accessibility::AccessibilityAction`]
+/// the recorder allocates a fresh [`wire::HandlerId`] in `handlers`
+/// (registering the action's `Rc<dyn Fn()>` so the reverse-channel
+/// `AppToDev::Event { handler, args: Unit }` dispatches it). The shape
+/// matches how `on_click` / `on_change` cross the wire — see the
+/// `WireAccessibilityAction` docs.
+pub fn a11y_to_wire(p: &AccessibilityProps, handlers: &mut HandlerTable) -> WireAccessibilityProps {
     WireAccessibilityProps {
         label: p.label.clone(),
         hint: p.hint.clone(),
@@ -281,7 +287,21 @@ pub fn a11y_to_wire(p: &AccessibilityProps) -> WireAccessibilityProps {
         role: p.role.map(role_to_wire),
         traits: p.traits.bits(),
         live_region: p.live_region.map(live_region_to_wire),
-        actions: p.actions.iter().map(|a| a.name.clone()).collect(),
+        actions: p
+            .actions
+            .iter()
+            .map(|a| WireAccessibilityAction {
+                name: a.name.clone(),
+                // Mirror the `on_click` pattern: register the closure
+                // into the recorder's `HandlerTable` and put the
+                // resulting `HandlerId` on the wire. The replayer
+                // synthesizes a trampoline that posts
+                // `AppToDev::Event { handler: id, args: Unit }` so
+                // AT-triggered AX actions on the app side reach the
+                // dev-side closure.
+                handler: handlers.register_unit(a.handler.clone()),
+            })
+            .collect(),
     }
 }
 

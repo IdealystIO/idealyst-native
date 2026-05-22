@@ -48,6 +48,11 @@ struct TraceBackend {
     /// without changing `Trace::CreateText`'s shape.
     last_text_a11y_label: Option<(u64, String)>,
     last_text_a11y_traits_bits: u16,
+    /// AX action handlers captured from the last `create_view` call.
+    /// The app-side backend would normally invoke these when AT
+    /// triggers the rotor / context-menu action; we expose them on
+    /// the side so the end-to-end test can drive that path directly.
+    last_view_action_handlers: Vec<(String, Rc<dyn Fn()>)>,
 }
 
 impl Backend for TraceBackend {
@@ -55,10 +60,19 @@ impl Backend for TraceBackend {
 
     fn create_view(
         &mut self,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &framework_core::accessibility::AccessibilityProps,
     ) -> u64 {
         self.next += 1;
         let id = self.next;
+        // Capture every AX action's handler so the end-to-end test
+        // can drive AT-side invocation. The real backends do the
+        // same via `accessibilityCustomActions` / `addAction` / ARIA
+        // dispatch — here we just stash the closures for the test.
+        self.last_view_action_handlers = a11y
+            .actions
+            .iter()
+            .map(|a| (a.name.clone(), a.handler.clone()))
+            .collect();
         self.trace.push(Trace::CreateView(id));
         id
     }
@@ -676,7 +690,10 @@ fn stack_navigator_initial_mount_round_trip() {
 #[test]
 fn wire_accessibility_props_serde_round_trip() {
     use framework_core::accessibility::AccessibilityTraits;
-    use wire::{WireAccessibilityProps, WireLiveRegionPriority, WireRole};
+    use wire::{
+        HandlerId, WireAccessibilityAction, WireAccessibilityProps, WireLiveRegionPriority,
+        WireRole,
+    };
 
     let original = WireAccessibilityProps {
         label: Some("Submit form".into()),
@@ -686,15 +703,45 @@ fn wire_accessibility_props_serde_round_trip() {
         role: Some(WireRole::Button),
         traits: (AccessibilityTraits::SELECTED | AccessibilityTraits::REQUIRED).bits(),
         live_region: Some(WireLiveRegionPriority::Polite),
-        actions: vec!["Delete".into(), "Archive".into()],
+        actions: vec![
+            WireAccessibilityAction {
+                name: "Delete".into(),
+                handler: HandlerId(11),
+            },
+            WireAccessibilityAction {
+                name: "Archive".into(),
+                handler: HandlerId(12),
+            },
+        ],
     };
     let bytes = wire::codec::encode(&original).expect("encode");
     let decoded: WireAccessibilityProps = wire::codec::decode(&bytes).expect("decode");
     assert_eq!(decoded, original);
 }
 
+/// `WireAccessibilityAction` is the wire mirror of
+/// `AccessibilityAction`. The action's `Rc<dyn Fn()>` handler resolves
+/// to a `HandlerId` on the wire (mirroring `on_click`'s trampoline);
+/// this test pins the serde shape so a future field change there gets
+/// caught loudly.
+#[test]
+fn wire_accessibility_action_serde_round_trip() {
+    use wire::{HandlerId, WireAccessibilityAction};
+
+    let original = WireAccessibilityAction {
+        name: "Archive".into(),
+        handler: HandlerId(42),
+    };
+    let bytes = wire::codec::encode(&original).expect("encode");
+    let decoded: WireAccessibilityAction = wire::codec::decode(&bytes).expect("decode");
+    assert_eq!(decoded, original);
+    assert_eq!(decoded.name, "Archive");
+    assert_eq!(decoded.handler, HandlerId(42));
+}
+
 #[test]
 fn a11y_from_then_back_is_identity_modulo_actions() {
+    use dev_server::HandlerTable;
     use framework_core::accessibility::{
         AccessibilityAction, AccessibilityProps, AccessibilityTraits, LiveRegionPriority, Role,
     };
@@ -720,11 +767,15 @@ fn a11y_from_then_back_is_identity_modulo_actions() {
     };
     // Encode through the dev-server convert_out helpers; decode through
     // the dev-client convert helpers. Identity holds for every field
-    // except `actions` — the handler closures can't cross the wire,
-    // so the decoded actions carry no-op handlers. We compare the
-    // *names* only on that field.
-    let wire = dev_server::convert_out::a11y_to_wire(&original);
-    let decoded = dev_client::convert::wire_a11y_to_props(wire);
+    // except `actions` — the handler `Rc<dyn Fn()>` doesn't survive
+    // serialization; it's replaced with a reverse-channel trampoline
+    // keyed by `HandlerId`. We compare only the *names* on that field.
+    let mut handlers = HandlerTable::default();
+    let wire = dev_server::convert_out::a11y_to_wire(&original, &mut handlers);
+    // No-op trampoline factory — the round-trip is just shape-checking
+    // here; the dispatch path is exercised by
+    // `end_to_end_accessibility_action_handler_fires` below.
+    let decoded = dev_client::convert::wire_a11y_to_props(wire, |_id| std::rc::Rc::new(|| {}));
     assert_eq!(decoded.label, original.label);
     assert_eq!(decoded.hint, original.hint);
     assert_eq!(decoded.identifier, original.identifier);
@@ -893,6 +944,109 @@ fn end_to_end_create_carries_a11y_through_to_trace_backend() {
         backend.last_text_a11y_traits_bits,
         AccessibilityTraits::SELECTED.bits(),
         "a11y traits bits must round-trip"
+    );
+}
+
+/// End-to-end regression for the v4 `AccessibilityAction` wire path:
+/// dev-side creates a node carrying an `AccessibilityAction` whose
+/// handler increments a counter; the wire ships a `CreateView`
+/// command with a `WireAccessibilityAction { name, handler: HandlerId }`
+/// in its `a11y` field; the app-side `TraceBackend` captures the
+/// trampoline closure on `last_view_action_handlers`; firing that
+/// trampoline posts `AppToDev::Event { handler, args: Unit }` on the
+/// outbound channel; we then feed that event back through
+/// `recorder.dispatch_event(...)` (the same path AT triggers go
+/// through in real use) and assert the original counter was bumped.
+///
+/// Locks in the same `HandlerId`-trampoline mechanism `on_click` uses.
+/// A regression that drops AX action handlers anywhere along the wire
+/// path (recorder skipping `register_unit`, replayer skipping the
+/// trampoline factory, etc.) fails this test loudly.
+#[test]
+fn end_to_end_accessibility_action_handler_fires() {
+    use framework_core::accessibility::{
+        AccessibilityAction, AccessibilityProps,
+    };
+    use framework_core::Backend as _;
+    use std::cell::Cell;
+
+    let mut recorder = WireRecordingBackend::new();
+    let fired = Rc::new(Cell::new(0u32));
+    let action_handler: Rc<dyn Fn()> = {
+        let fired = fired.clone();
+        Rc::new(move || {
+            fired.set(fired.get() + 1);
+        })
+    };
+    let a11y = AccessibilityProps {
+        actions: vec![AccessibilityAction {
+            name: "Delete".into(),
+            handler: action_handler,
+        }],
+        ..Default::default()
+    };
+    let _view = recorder.create_view(&a11y);
+
+    let commands = recorder.drain_commands();
+
+    // Verify the wire shape: the CreateView a11y carries one
+    // `WireAccessibilityAction { name: "Delete", handler: HandlerId(..) }`.
+    let wire_handler_id = commands
+        .iter()
+        .find_map(|c| match c {
+            Command::CreateView { a11y, .. } => Some(a11y.actions.clone()),
+            _ => None,
+        })
+        .expect("CreateView must be emitted");
+    assert_eq!(wire_handler_id.len(), 1);
+    assert_eq!(wire_handler_id[0].name, "Delete");
+    let handler_id = wire_handler_id[0].handler;
+
+    // Replay through `WireBackend<TraceBackend>` so the trampoline is
+    // built and stored on the TraceBackend. `outbound` is the channel
+    // the trampoline posts AT-events on; capture both halves so we
+    // can read the event back.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut wire_app = WireBackend::new(TraceBackend::default(), tx);
+    wire_app.apply_batch(commands).expect("replay must succeed");
+    let captured_action = {
+        let backend = wire_app.backend();
+        assert_eq!(backend.last_view_action_handlers.len(), 1);
+        assert_eq!(backend.last_view_action_handlers[0].0, "Delete");
+        backend.last_view_action_handlers[0].1.clone()
+    };
+
+    // Simulate AT firing the action on the app side. The real backend
+    // would call this from `accessibilityCustomActions`, ARIA dispatch,
+    // etc.
+    assert_eq!(fired.get(), 0, "handler must not have fired yet");
+    captured_action();
+
+    // The trampoline posts `AppToDev::Event { handler, args: Unit }`
+    // onto the outbound channel. In production that envelope is
+    // routed to `recorder.dispatch_event(...)` by the dev-server's
+    // transport loop; we do the same here directly.
+    let envelope = rx
+        .recv()
+        .expect("trampoline must post an AppToDev::Event");
+    match envelope {
+        wire::AppToDev::Event { handler, args } => {
+            assert_eq!(handler, handler_id, "trampoline targets the action's HandlerId");
+            assert!(matches!(args, wire::EventArgs::Unit));
+            assert!(
+                recorder.dispatch_event(handler, args),
+                "recorder must resolve the HandlerId"
+            );
+        }
+        other => panic!("expected Event envelope, got {:?}", other),
+    }
+
+    // The original `action_handler` closure (captured by the dev-side
+    // `AccessibilityAction`) ran exactly once.
+    assert_eq!(
+        fired.get(),
+        1,
+        "the dev-side action handler must have fired once via the reverse channel",
     );
 }
 

@@ -868,7 +868,7 @@ pub struct CounterProps {
 #[component]
 pub fn counter(_props: &CounterProps) -> framework_core::Primitive {
     let value = framework_core::signal!(0_i32);
-    framework_macros::methods! {
+    methods! {
         /// Reset the counter to zero.
         fn reset(&self) {
             value.set(0);

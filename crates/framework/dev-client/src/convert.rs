@@ -386,11 +386,22 @@ pub fn wire_asset_source(s: WireAssetSource) -> AssetSource {
 
 /// Reconstruct an `AccessibilityProps` from its wire mirror. Traits
 /// decode via `from_bits_truncate` so an unknown future bit silently
-/// drops on this side rather than failing the whole batch. `actions`
-/// are reconstructed from their names with no-op handlers — the
-/// function side does not survive the wire (see the `wire` crate's
-/// `WireAccessibilityProps` docs).
-pub fn wire_a11y_to_props(w: WireAccessibilityProps) -> AccessibilityProps {
+/// drops on this side rather than failing the whole batch. Each
+/// [`wire::WireAccessibilityAction`] becomes an
+/// [`framework_core::accessibility::AccessibilityAction`] whose
+/// `handler` is built via `handler_factory(id)` — the standard
+/// trampoline that posts `AppToDev::Event { handler, args: Unit }`
+/// over the reverse channel, matching how `on_click` / `on_change`
+/// resolve.
+///
+/// `handler_factory` mirrors the signature used by
+/// [`wire_screen_options`]: callers pass a closure that captures the
+/// app-side `WireBackend`'s outbound channel sender. See
+/// `dev-client/src/lib.rs` for the canonical call sites.
+pub fn wire_a11y_to_props(
+    w: WireAccessibilityProps,
+    mut handler_factory: impl FnMut(HandlerId) -> Rc<dyn Fn()>,
+) -> AccessibilityProps {
     AccessibilityProps {
         label: w.label,
         hint: w.hint,
@@ -402,11 +413,9 @@ pub fn wire_a11y_to_props(w: WireAccessibilityProps) -> AccessibilityProps {
         actions: w
             .actions
             .into_iter()
-            .map(|name| framework_core::accessibility::AccessibilityAction {
-                name,
-                // No reverse-channel HandlerId for a11y actions yet;
-                // dispatch goes nowhere. Matches the documented gap.
-                handler: Rc::new(|| {}),
+            .map(|a| framework_core::accessibility::AccessibilityAction {
+                name: a.name,
+                handler: handler_factory(a.handler),
             })
             .collect(),
     }

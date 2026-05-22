@@ -269,7 +269,7 @@ where
         match cmd {
             Command::CreateView { id, a11y } => {
                 if !self.nodes.contains_key(&id) {
-                    let a11y = convert::wire_a11y_to_props(a11y);
+                    let a11y = self.a11y_props(a11y);
                     let node = self.backend.create_view(&a11y);
                     self.nodes.insert(id, node);
                 }
@@ -285,7 +285,7 @@ where
                     }
                     let _ = a11y;
                 } else {
-                    let a11y = convert::wire_a11y_to_props(a11y);
+                    let a11y = self.a11y_props(a11y);
                     let node = self.backend.create_text(&content, &a11y);
                     self.nodes.insert(id, node);
                     self.text_content.insert(id, content);
@@ -326,7 +326,7 @@ where
                 // the closure as an opaque Action and let the
                 // backend's runtime path use `.fire`.
                 let action = framework_core::IntoAction::into_action(move || cb());
-                let a11y = convert::wire_a11y_to_props(a11y);
+                let a11y = self.a11y_props(a11y);
                 let node = self.backend.create_button(
                     &label,
                     &action,
@@ -339,7 +339,7 @@ where
             Command::CreatePressable { id, on_click, a11y } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
                 let cb = self.handler_unit(on_click);
-                let a11y = convert::wire_a11y_to_props(a11y);
+                let a11y = self.a11y_props(a11y);
                 let node = self.backend.create_pressable(cb, &a11y);
                 self.nodes.insert(id, node);
             }
@@ -350,7 +350,7 @@ where
             }
             Command::CreateImage { id, src, alt, a11y } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
-                let a11y = convert::wire_a11y_to_props(a11y);
+                let a11y = self.a11y_props(a11y);
                 let node = self.backend.create_image(&src, alt.as_deref(), &a11y);
                 self.nodes.insert(id, node);
             }
@@ -358,7 +358,7 @@ where
                 if self.nodes.contains_key(&id) { return Ok(()); }
                 let icon = convert::wire_icon_to_static(data);
                 let color = color.map(convert::wire_color_to_color);
-                let a11y = convert::wire_a11y_to_props(a11y);
+                let a11y = self.a11y_props(a11y);
                 let node = self.backend.create_icon(&icon, color.as_ref(), &a11y);
                 self.nodes.insert(id, node);
             }
@@ -371,7 +371,7 @@ where
             } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
                 let cb = self.handler_string(on_change);
-                let a11y = convert::wire_a11y_to_props(a11y);
+                let a11y = self.a11y_props(a11y);
                 let node = self.backend.create_text_input(
                     &initial_value,
                     placeholder.as_deref(),
@@ -390,7 +390,7 @@ where
             } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
                 let cb = self.handler_string(on_change);
-                let a11y = convert::wire_a11y_to_props(a11y);
+                let a11y = self.a11y_props(a11y);
                 let node = self.backend.create_text_area(
                     &initial_value,
                     placeholder.as_deref(),
@@ -409,7 +409,7 @@ where
                 // placeholder, this code path leaves room for client-
                 // side external-registry lookup as future work.
                 let _ = type_name;
-                let a11y = convert::wire_a11y_to_props(a11y);
+                let a11y = self.a11y_props(a11y);
                 let node = self.backend.create_view(&a11y);
                 self.nodes.insert(id, node);
             }
@@ -421,7 +421,7 @@ where
             } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
                 let cb = self.handler_bool(on_change);
-                let a11y = convert::wire_a11y_to_props(a11y);
+                let a11y = self.a11y_props(a11y);
                 let node = self.backend.create_toggle(initial_value, cb, &a11y);
                 self.nodes.insert(id, node);
             }
@@ -436,13 +436,13 @@ where
             } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
                 let cb = self.handler_float(on_change);
-                let a11y = convert::wire_a11y_to_props(a11y);
+                let a11y = self.a11y_props(a11y);
                 let node = self.backend.create_slider(initial_value, min, max, step, cb, &a11y);
                 self.nodes.insert(id, node);
             }
             Command::CreateScrollView { id, horizontal, a11y } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
-                let a11y = convert::wire_a11y_to_props(a11y);
+                let a11y = self.a11y_props(a11y);
                 let node = self.backend.create_scroll_view(horizontal, &a11y);
                 self.nodes.insert(id, node);
             }
@@ -455,7 +455,7 @@ where
                 a11y,
             } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
-                let a11y = convert::wire_a11y_to_props(a11y);
+                let a11y = self.a11y_props(a11y);
                 let node = self.backend.create_video(
                     &src,
                     autoplay,
@@ -469,7 +469,7 @@ where
                 if self.nodes.contains_key(&id) { return Ok(()); }
                 let size = convert::wire_activity_size(size);
                 let color = color.map(convert::wire_color_to_color);
-                let a11y = convert::wire_a11y_to_props(a11y);
+                let a11y = self.a11y_props(a11y);
                 let node = self.backend.create_activity_indicator(size, color.as_ref(), &a11y);
                 self.nodes.insert(id, node);
             }
@@ -489,7 +489,7 @@ where
                     url,
                     on_activate: cb,
                 };
-                let a11y = convert::wire_a11y_to_props(a11y);
+                let a11y = self.a11y_props(a11y);
                 let node = self.backend.create_link(config, &a11y);
                 self.nodes.insert(id, node);
             }
@@ -536,7 +536,7 @@ where
                 let dismiss_cb: Option<Rc<dyn Fn()>> =
                     on_dismiss.map(|h| self.handler_unit(h));
                 if self.nodes.contains_key(&id) { return Ok(()); }
-                let a11y = convert::wire_a11y_to_props(a11y);
+                let a11y = self.a11y_props(a11y);
                 let node = self.backend.create_portal(
                     portal_target,
                     dismiss_cb,
@@ -555,7 +555,7 @@ where
                     Some(triple) => triple,
                     None => no_op_graphics_handlers(),
                 };
-                let a11y = convert::wire_a11y_to_props(a11y);
+                let a11y = self.a11y_props(a11y);
                 let node = self.backend.create_graphics(on_ready, on_resize, on_lost, &a11y);
                 self.nodes.insert(id, node);
             }
@@ -1162,7 +1162,7 @@ where
                 inferred_role,
             } => {
                 let n = self.lookup_node(id)?;
-                let props = convert::wire_a11y_to_props(a11y);
+                let props = self.a11y_props(a11y);
                 let role = inferred_role.and_then(convert::wire_role_to_role);
                 self.backend.update_accessibility(&n, &props, role);
             }
@@ -1183,6 +1183,29 @@ where
                 handler: id,
                 args: EventArgs::Unit,
             });
+        })
+    }
+
+    /// Reconstruct an in-memory `AccessibilityProps` from its wire
+    /// form. Action handlers go through the same trampoline factory
+    /// as `on_click` — each `WireAccessibilityAction.handler` becomes
+    /// a closure that posts `AppToDev::Event { handler, args: Unit }`
+    /// over the reverse channel, so AT-triggered rotor / TalkBack
+    /// actions on the app side dispatch the dev-side closure that was
+    /// registered when the primitive was built.
+    fn a11y_props(
+        &self,
+        a11y: wire::WireAccessibilityProps,
+    ) -> framework_core::accessibility::AccessibilityProps {
+        let outbound = self.outbound.clone();
+        convert::wire_a11y_to_props(a11y, move |id| {
+            let outbound = outbound.clone();
+            Rc::new(move || {
+                let _ = outbound.send(AppToDev::Event {
+                    handler: id,
+                    args: EventArgs::Unit,
+                });
+            })
         })
     }
 
@@ -1290,7 +1313,7 @@ where
 
         // Real backend create call. This installs the real backend's
         // dispatcher onto control.
-        let a11y_props = convert::wire_a11y_to_props(a11y);
+        let a11y_props = self.a11y_props(a11y);
         let nav_node = self.backend.create_navigator(
             callbacks,
             control.clone(),
@@ -1376,7 +1399,7 @@ where
             resolved_placement,
             resolved_mount_policy,
         );
-        let a11y_props = convert::wire_a11y_to_props(a11y);
+        let a11y_props = self.a11y_props(a11y);
         let nav_node = self.backend.create_tab_navigator(
             callbacks,
             control.clone(),
@@ -1463,7 +1486,7 @@ where
             swipe_to_open,
             resolved_mount_policy,
         );
-        let a11y_props = convert::wire_a11y_to_props(a11y);
+        let a11y_props = self.a11y_props(a11y);
         let nav_node = self.backend.create_drawer_navigator(
             callbacks,
             control.clone(),

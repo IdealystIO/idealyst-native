@@ -261,29 +261,140 @@ fn derive_accessibility_value(traits: AccessibilityTraits) -> Option<&'static st
 /// notification channel.
 ///
 /// VoiceOver reads `msg` aloud immediately if no other speech is in
-/// flight; otherwise it queues behind the current utterance. iOS 17+
-/// supports a per-announcement priority attribute
-/// (`UIAccessibilitySpeechAttributeAnnouncementPriority`) we'd need
-/// to attach via `NSAttributedString` — the dependency on
-/// `NSAttributedString` isn't wired into this crate's feature set
-/// yet, so for now `Polite` and `Assertive` both go through the same
-/// default notification path. The framework still distinguishes them
-/// in the signal so future iOS-17+ wiring can pick the priority up.
-pub(crate) fn announce(msg: &str, _priority: LiveRegionPriority) {
+/// flight; otherwise it queues behind the current utterance.
+///
+/// **iOS 17+**: attach
+/// `UIAccessibilitySpeechAttributeAnnouncementPriority` (an
+/// `NSAttributedStringKey` whose values are the
+/// `UIAccessibilityPriorityHigh` / `UIAccessibilityPriorityDefault` /
+/// `UIAccessibilityPriorityLow` strings) to an `NSAttributedString`
+/// argument, mapping:
+///   - `Polite`    → `UIAccessibilityPriorityDefault`
+///   - `Assertive` → `UIAccessibilityPriorityHigh`
+/// This matches AppKit's `NSAccessibilityPriorityKey` (Polite→Medium,
+/// Assertive→High) on macOS — both backends converge on the same
+/// observable VoiceOver behavior per Rule 7 of CLAUDE.md.
+///
+/// **iOS < 17**: fall back to posting a plain `NSString`. iOS ignores
+/// any priority attribute we'd attach, so we keep the legacy code
+/// path bit-for-bit identical and `Polite` / `Assertive` collapse to
+/// the same announcement (which is what older releases already did).
+///
+/// ### Runtime version check
+///
+/// We use `NSProcessInfo.isOperatingSystemAtLeastVersion:` instead of
+/// a compile-time `#[cfg(...)]`. The deployment target's `iphoneos`
+/// SDK version is **not** the OS version of the device the build runs
+/// on (Mac Catalyst, App Store distribution to older devices, etc.),
+/// so a static cfg would either lock us out of the iOS-17 API or
+/// promise it to OS releases that don't have it. The runtime check is
+/// also what Apple recommends for `@available` parity in Swift.
+pub(crate) fn announce(msg: &str, priority: LiveRegionPriority) {
+    use objc2_foundation::{NSProcessInfo, NSRange};
     use objc2_ui_kit::{UIAccessibilityAnnouncementNotification, UIAccessibilityPostNotification};
 
-    // NSString carries the announcement text. The underlying
-    // notification copies the argument string immediately; we don't
-    // need to retain it across the call.
-    let ns = NSString::from_str(msg);
-    // SAFETY: extern C call into UIKit. `UIAccessibilityAnnouncementNotification`
-    // is a static loaded once by the dynamic linker; `&*ns` is a
-    // borrowed NSObject pointer valid for the call's lifetime.
-    unsafe {
-        UIAccessibilityPostNotification(
-            UIAccessibilityAnnouncementNotification,
-            Some(&*ns as &objc2::runtime::AnyObject),
+    let ns_msg = NSString::from_str(msg);
+
+    // iOS 17.0 introduced UIAccessibilitySpeechAttributeAnnouncementPriority.
+    // `isOperatingSystemAtLeastVersion:` is on NSProcessInfo since
+    // iOS 8 — safe to call unconditionally.
+    let version = objc2_foundation::NSOperatingSystemVersion {
+        majorVersion: 17,
+        minorVersion: 0,
+        patchVersion: 0,
+    };
+    // SAFETY: NSProcessInfo singleton is documented thread-safe; the
+    // version-compare selector has been stable since iOS 8.
+    let is_ios_17_plus = unsafe {
+        NSProcessInfo::processInfo().isOperatingSystemAtLeastVersion(version)
+    };
+
+    if is_ios_17_plus {
+        // iOS 17+ path: build an NSMutableAttributedString with the
+        // priority attribute over the full range. UIKit looks for the
+        // attribute on the announcement argument and routes the
+        // utterance through VoiceOver's priority queue.
+        use objc2_foundation::NSMutableAttributedString;
+        use objc2_ui_kit::{
+            UIAccessibilityPriorityDefault, UIAccessibilityPriorityHigh,
+            UIAccessibilitySpeechAttributeAnnouncementPriority,
+        };
+
+        // alloc + init on a concrete subclass; result is a
+        // freshly-retained NSMutableAttributedString we own.
+        // `ClassType::alloc` is the objc2 trait method that returns
+        // a typed `Allocated<Self>` for the subsequent init call.
+        // `initWithString:` is safe-bridge'd by objc2, so no unsafe
+        // block is needed at this call site.
+        use objc2::ClassType;
+        let mut attr = NSMutableAttributedString::initWithString(
+            NSMutableAttributedString::alloc(),
+            &ns_msg,
         );
+
+        // The priority value is itself an NSString constant exported
+        // by UIKit (`UIAccessibilityPriority` is an
+        // `NS_TYPED_ENUM(NSString *)` typedef — alias for NSString).
+        // The extern static deref yields `&'static NSString`; NSString
+        // IS-A NSObject IS-A AnyObject, so we just take a borrow of
+        // the underlying object for the `addAttribute:value:range:` call.
+        //
+        // We don't reach this branch on pre-iOS-17 where the symbols
+        // might be absent — UIKit added these statics in iOS 17.
+        // SAFETY: dynamic-linker-resolved NSString singletons; on iOS
+        // 17+ both are guaranteed non-null and live for the process
+        // lifetime. The version gate above keeps us out on releases
+        // where the symbols haven't been defined.
+        let priority_str: &NSString = unsafe {
+            match priority {
+                LiveRegionPriority::Polite => UIAccessibilityPriorityDefault,
+                LiveRegionPriority::Assertive => UIAccessibilityPriorityHigh,
+            }
+        };
+        let priority_value: &objc2::runtime::AnyObject = &*priority_str;
+
+        // Apply across the full string. `NSMutableAttributedString`
+        // measures length in UTF-16 code units (matching `NSString.length`).
+        let len = attr.length();
+        let range = NSRange { location: 0, length: len };
+
+        // SAFETY: `key` is the UIKit-exported NSString constant (valid
+        // for process lifetime). `priority_value` is the same.
+        // `range` covers exactly `[0, len)` of the mutable string we
+        // just built; no other thread holds a reference.
+        unsafe {
+            attr.addAttribute_value_range(
+                UIAccessibilitySpeechAttributeAnnouncementPriority,
+                priority_value,
+                range,
+            );
+        }
+
+        // SAFETY: extern C call into UIKit. The notification static
+        // is loaded by the dynamic linker; `&*attr` is a borrowed
+        // NSObject pointer (NSAttributedString IS-A NSObject) valid
+        // for the call's lifetime. UIKit copies the argument.
+        unsafe {
+            UIAccessibilityPostNotification(
+                UIAccessibilityAnnouncementNotification,
+                Some(&*attr as &objc2::runtime::AnyObject),
+            );
+        }
+    } else {
+        // iOS < 17 path: plain NSString argument. The notification
+        // copies the argument string immediately; we don't need to
+        // retain it across the call. Priority is ignored by UIKit on
+        // these releases, matching the historical behavior.
+        let _ = priority;
+        // SAFETY: extern C call into UIKit. `UIAccessibilityAnnouncementNotification`
+        // is a static loaded once by the dynamic linker; `&*ns_msg`
+        // is a borrowed NSObject pointer valid for the call's lifetime.
+        unsafe {
+            UIAccessibilityPostNotification(
+                UIAccessibilityAnnouncementNotification,
+                Some(&*ns_msg as &objc2::runtime::AnyObject),
+            );
+        }
     }
 }
 

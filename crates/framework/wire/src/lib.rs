@@ -51,7 +51,18 @@ use serde::{Deserialize, Serialize};
 /// were added so the dev-server's `update_accessibility` /
 /// `announce_for_accessibility` Backend calls reach the app side
 /// instead of being dropped on the floor.
-pub const PROTOCOL_VERSION: u32 = 3;
+///
+/// Bumped to 4 to carry `AccessibilityAction` handlers across the wire.
+/// Previously `WireAccessibilityProps::actions` was `Vec<String>` —
+/// only the names survived, and the replayer reconstructed actions with
+/// no-op handlers. v4 changes the shape to
+/// `Vec<WireAccessibilityAction { name, handler: HandlerId }>`, mirroring
+/// the `on_click` / `on_change` trampoline pattern: the recorder mints a
+/// `HandlerId` for each action and the replayer builds a closure that
+/// posts `AppToDev::Event { handler, args: Unit }` back over the reverse
+/// channel. Removes the documented gap in
+/// `docs/accessibility-design.md`.
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Alias retained for code/docs that reference `WIRE_VERSION` rather
 /// than the canonical [`PROTOCOL_VERSION`] name. Both point at the same
@@ -937,16 +948,16 @@ pub enum WireTokenValue {
 /// dev-server's recorder serializes from `&AccessibilityProps`; the
 /// dev-client's replayer deserializes back into `AccessibilityProps`.
 ///
-/// Actions are tricky. `AccessibilityAction` carries a `Rc<dyn Fn()>`
-/// handler — there's no general wire serialization contract for
-/// closures. For v1 we only carry the action *names* (the label
-/// authors give); the function side does not survive the wire. This
-/// matches how `HandlerId` trampolines work for `on_click` — but
-/// `AccessibilityAction` has no equivalent reverse-channel wired up,
-/// so app-side replay just reconstructs the names with no-op handlers.
-/// Author code that needs working a11y actions must run against a
-/// direct backend, not over AAS.
-#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// Actions ride the wire as [`WireAccessibilityAction`] entries — each
+/// carries a `name` and a [`HandlerId`] trampoline. The recorder mints
+/// a fresh `HandlerId` for every action and registers the in-memory
+/// closure into its `HandlerTable`; the replayer reconstructs a
+/// `Rc<dyn Fn()>` that posts `AppToDev::Event { handler, args: Unit }`
+/// over the reverse channel exactly like an `on_click` handler. The
+/// dispatch path is the same trampoline used by every other primitive
+/// callback — assistive-technology triggers on the app side reach the
+/// dev-side closure that was attached when the primitive was built.
+#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WireAccessibilityProps {
     pub label: Option<String>,
     pub hint: Option<String>,
@@ -958,8 +969,28 @@ pub struct WireAccessibilityProps {
     /// `AccessibilityTraits::from_bits_truncate`.
     pub traits: u16,
     pub live_region: Option<WireLiveRegionPriority>,
-    /// Action labels only. See module docs above.
-    pub actions: Vec<String>,
+    /// Custom AX actions exposed to assistive technology. Each entry
+    /// carries the action's localized `name` plus a [`HandlerId`]
+    /// trampoline; see [`WireAccessibilityAction`].
+    pub actions: Vec<WireAccessibilityAction>,
+}
+
+/// Wire mirror of `framework_core::accessibility::AccessibilityAction`.
+/// Mirrors how `on_click` / `on_change` cross the wire: the recorder
+/// allocates a [`HandlerId`] for the action's `Rc<dyn Fn()>` and the
+/// replayer hands the backend a closure that posts
+/// `AppToDev::Event { handler, args: Unit }` over the reverse channel.
+/// When AT fires the action, that closure invocation dispatches
+/// through the dev-side `HandlerTable` to the originally-captured
+/// `Rc<dyn Fn()>`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WireAccessibilityAction {
+    /// Localized name shown in the rotor / context menu
+    /// ("Delete", "Archive", "Show details").
+    pub name: String,
+    /// Trampoline id; resolves back to the dev-side closure via
+    /// `AppToDev::Event { handler, args: Unit }`.
+    pub handler: HandlerId,
 }
 
 /// Wire mirror of `framework_core::accessibility::Role`. Source `Role`

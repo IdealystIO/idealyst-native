@@ -180,6 +180,12 @@ fn write_project(
         WELCOME_COMPONENT_CONTENT_LAYER,
     )?;
 
+    // MCP catalog emitter binary — built with the `mcp` feature
+    // (`cargo run --bin catalog --features mcp -- --emit-catalog`).
+    fs::create_dir_all(dir.join("src/bin"))
+        .with_context(|| format!("create {}", dir.join("src/bin").display()))?;
+    fs::write(dir.join("src/bin/catalog.rs"), catalog_bin_rs(lib_name))?;
+
     for (rel_path, bytes) in INTER_FONTS {
         fs::write(dir.join(rel_path), bytes)
             .with_context(|| format!("write {}", dir.join(rel_path).display()))?;
@@ -214,6 +220,26 @@ license = "MIT OR Apache-2.0"
 # every backend.
 [lib]
 crate-type = ["rlib"]
+
+# Catalog emitter — `cargo run --bin catalog --features mcp -- --emit-catalog`
+# prints this project's MCP catalog (every component, method,
+# animation, type, plus all the framework's built-in primitives /
+# utilities / guides) as JSON to stdout. The MCP server spawns this
+# binary on file changes to refresh its in-memory catalog without
+# restarting. `required-features = ["mcp"]` keeps the bin out of
+# normal builds — only present when the consumer opts in.
+[[bin]]
+name = "catalog"
+path = "src/bin/catalog.rs"
+required-features = ["mcp"]
+
+[features]
+default = []
+# Turns on `framework-mcp` registration in the `#[component]` /
+# `#[derive(IdealystSchema)]` / `#[idealyst_tool]` macros. The
+# catalog binary calls `framework_core::__mcp::catalog_json()` (a
+# hidden re-export of `framework-mcp`) so no direct dep is needed.
+mcp = ["framework-core/mcp"]
 
 [dependencies]
 framework-core = {fcore_dep}
@@ -485,6 +511,34 @@ pub fn register<B>(_backend: &mut B) {{
     // that produces a `View` from `{props_type}`.
 }}
 "##
+    )
+}
+
+fn catalog_bin_rs(lib_name: &str) -> String {
+    format!(
+        r##"//! MCP catalog emitter.
+//!
+//! Run with `cargo run --bin catalog --features mcp -- --emit-catalog`
+//! to print this project's MCP catalog as JSON on stdout. The
+//! Idealyst MCP server (`idealyst mcp`) spawns this binary on file
+//! changes to refresh its in-memory catalog without process restart.
+//!
+//! Linking the user's library here is what populates the
+//! distributed `inventory` slices for components/methods/animations
+//! /types. Without the `use {lib_name} as _;` below, those entries
+//! would not appear in the catalog (the macro emission only lands
+//! in the binary if the linker pulls the user crate in).
+
+use {lib_name} as _;
+
+fn main() {{
+    // `dump_catalog_json` does the serialize + println — keeps this
+    // binary free of a direct `serde_json` dep. The default
+    // (no-arg) path is also the catalog dump, so the MCP server can
+    // spawn it without arguments.
+    framework_core::__mcp::dump_catalog_json();
+}}
+"##,
     )
 }
 

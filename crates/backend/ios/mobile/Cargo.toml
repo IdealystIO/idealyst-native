@@ -47,6 +47,15 @@ objc2-foundation = { version = "0.2", features = [
     "NSEnumerator",
     "NSObject",
     "NSSet",
+    # iOS 17+ `announce_for_accessibility` builds an
+    # `NSMutableAttributedString` with the
+    # `UIAccessibilitySpeechAttributeAnnouncementPriority` attribute
+    # so VoiceOver honors Polite vs Assertive. The attribute setter is
+    # `addAttribute:value:range:`, which pulls in `NSRange`. The
+    # iOS-version gate uses `NSProcessInfo.isOperatingSystemAtLeastVersion:`.
+    "NSAttributedString",
+    "NSRange",
+    "NSProcessInfo",
 ] }
 objc2-ui-kit = { version = "0.2", features = [
     "UIResponder",

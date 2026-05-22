@@ -354,6 +354,20 @@ impl RecorderState {
         self.scene.apply(&cmd);
         self.out.push(cmd);
     }
+
+    /// Build a `WireAccessibilityProps` from an in-memory
+    /// `AccessibilityProps`, registering each action's handler into
+    /// `self.handlers` so the reverse channel can dispatch it. Equivalent
+    /// to calling `convert_out::a11y_to_wire(p, &mut self.handlers)` but
+    /// borrows `self` once — call this and bind the result before any
+    /// `self.emit(...)` to avoid double mutable-borrow conflicts on
+    /// `state`.
+    fn wire_a11y(
+        &mut self,
+        p: &framework_core::accessibility::AccessibilityProps,
+    ) -> wire::WireAccessibilityProps {
+        convert_out::a11y_to_wire(p, &mut self.handlers)
+    }
 }
 
 /// Per-navigator dev-side state used by the recording backend's
@@ -809,9 +823,10 @@ impl Backend for WireRecordingBackend {
     ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
+        let wire_a11y = state.wire_a11y(a11y);
         state.emit(Command::CreateView {
             id,
-            a11y: convert_out::a11y_to_wire(a11y),
+            a11y: wire_a11y,
         });
         id
     }
@@ -823,10 +838,11 @@ impl Backend for WireRecordingBackend {
     ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
+        let wire_a11y = state.wire_a11y(a11y);
         state.emit(Command::CreateText {
             id,
             content: content.to_string(),
-            a11y: convert_out::a11y_to_wire(a11y),
+            a11y: wire_a11y,
         });
         id
     }
@@ -847,13 +863,14 @@ impl Backend for WireRecordingBackend {
             .register_unit_for_identity(identity, on_click.fire.clone());
         let leading = leading_icon.map(convert_out::icon_data_to_wire);
         let trailing = trailing_icon.map(convert_out::icon_data_to_wire);
+        let wire_a11y = state.wire_a11y(a11y);
         state.emit(Command::CreateButton {
             id,
             label: label.to_string(),
             on_click: handler,
             leading_icon: leading,
             trailing_icon: trailing,
-            a11y: convert_out::a11y_to_wire(a11y),
+            a11y: wire_a11y,
         });
         id
     }
@@ -869,10 +886,11 @@ impl Backend for WireRecordingBackend {
         let handler = state
             .handlers
             .register_unit_for_identity(identity, on_click);
+        let wire_a11y = state.wire_a11y(a11y);
         state.emit(Command::CreatePressable {
             id,
             on_click: handler,
-            a11y: convert_out::a11y_to_wire(a11y),
+            a11y: wire_a11y,
         });
         id
     }
@@ -921,11 +939,12 @@ impl Backend for WireRecordingBackend {
     ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
+        let wire_a11y = state.wire_a11y(a11y);
         state.emit(Command::CreateImage {
             id,
             src: src.to_string(),
             alt: alt.map(str::to_string),
-            a11y: convert_out::a11y_to_wire(a11y),
+            a11y: wire_a11y,
         });
         id
     }
@@ -947,11 +966,12 @@ impl Backend for WireRecordingBackend {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
         let wire_data = convert_out::icon_data_to_wire(data);
+        let wire_a11y = state.wire_a11y(a11y);
         state.emit(Command::CreateIcon {
             id,
             data: wire_data,
             color: color.map(|c| WireColor(c.0.clone())),
-            a11y: convert_out::a11y_to_wire(a11y),
+            a11y: wire_a11y,
         });
         id
     }
@@ -1020,12 +1040,13 @@ impl Backend for WireRecordingBackend {
         let handler = state
             .handlers
             .register_string_for_identity(identity, on_change);
+        let wire_a11y = state.wire_a11y(a11y);
         state.emit(Command::CreateTextInput {
             id,
             initial_value: initial_value.to_string(),
             placeholder: placeholder.map(str::to_string),
             on_change: handler,
-            a11y: convert_out::a11y_to_wire(a11y),
+            a11y: wire_a11y,
         });
         id
     }
@@ -1056,12 +1077,13 @@ impl Backend for WireRecordingBackend {
         let handler = state
             .handlers
             .register_string_for_identity(identity, on_change);
+        let wire_a11y = state.wire_a11y(a11y);
         state.emit(Command::CreateTextArea {
             id,
             initial_value: initial_value.to_string(),
             placeholder: placeholder.map(str::to_string),
             on_change: handler,
-            a11y: convert_out::a11y_to_wire(a11y),
+            a11y: wire_a11y,
         });
         id
     }
@@ -1091,10 +1113,11 @@ impl Backend for WireRecordingBackend {
     ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
+        let wire_a11y = state.wire_a11y(a11y);
         state.emit(Command::CreateExternal {
             id,
             type_name: type_name.to_string(),
-            a11y: convert_out::a11y_to_wire(a11y),
+            a11y: wire_a11y,
         });
         id
     }
@@ -1111,11 +1134,12 @@ impl Backend for WireRecordingBackend {
         let handler = state
             .handlers
             .register_bool_for_identity(identity, on_change);
+        let wire_a11y = state.wire_a11y(a11y);
         state.emit(Command::CreateToggle {
             id,
             initial_value,
             on_change: handler,
-            a11y: convert_out::a11y_to_wire(a11y),
+            a11y: wire_a11y,
         });
         id
     }
@@ -1135,10 +1159,11 @@ impl Backend for WireRecordingBackend {
     ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
+        let wire_a11y = state.wire_a11y(a11y);
         state.emit(Command::CreateScrollView {
             id,
             horizontal,
-            a11y: convert_out::a11y_to_wire(a11y),
+            a11y: wire_a11y,
         });
         id
     }
@@ -1158,6 +1183,7 @@ impl Backend for WireRecordingBackend {
         let handler = state
             .handlers
             .register_float_for_identity(identity, on_change);
+        let wire_a11y = state.wire_a11y(a11y);
         state.emit(Command::CreateSlider {
             id,
             initial_value,
@@ -1165,7 +1191,7 @@ impl Backend for WireRecordingBackend {
             max,
             step,
             on_change: handler,
-            a11y: convert_out::a11y_to_wire(a11y),
+            a11y: wire_a11y,
         });
         id
     }
@@ -1188,13 +1214,14 @@ impl Backend for WireRecordingBackend {
     ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
+        let wire_a11y = state.wire_a11y(a11y);
         state.emit(Command::CreateVideo {
             id,
             src: src.to_string(),
             autoplay,
             controls,
             loop_playback,
-            a11y: convert_out::a11y_to_wire(a11y),
+            a11y: wire_a11y,
         });
         id
     }
@@ -1223,11 +1250,12 @@ impl Backend for WireRecordingBackend {
                 wire::WireActivityIndicatorSize::Large
             }
         };
+        let wire_a11y = state.wire_a11y(a11y);
         state.emit(Command::CreateActivityIndicator {
             id,
             size: wire_size,
             color: color.map(|c| WireColor(c.0.clone())),
-            a11y: convert_out::a11y_to_wire(a11y),
+            a11y: wire_a11y,
         });
         id
     }
@@ -1382,9 +1410,10 @@ impl Backend for WireRecordingBackend {
         inferred_role: Option<framework_core::accessibility::Role>,
     ) {
         let mut state = self.inner.borrow_mut();
+        let wire_a11y = state.wire_a11y(a11y);
         state.emit(Command::UpdateAccessibility {
             id: *node,
-            a11y: convert_out::a11y_to_wire(a11y),
+            a11y: wire_a11y,
             inferred_role: inferred_role.map(convert_out::role_to_wire),
         });
     }
@@ -1460,12 +1489,13 @@ impl Backend for WireRecordingBackend {
                 wire::WirePortalTarget::Named(name.to_string())
             }
         };
+        let wire_a11y = state.wire_a11y(a11y);
         state.emit(Command::CreatePortal {
             id,
             target: wire_target,
             on_dismiss: handler,
             trap_focus,
-            a11y: convert_out::a11y_to_wire(a11y),
+            a11y: wire_a11y,
         });
         id
     }
@@ -1493,10 +1523,11 @@ impl Backend for WireRecordingBackend {
         // forward path that lets registered renderers actually run).
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
+        let wire_a11y = state.wire_a11y(a11y);
         state.emit(Command::CreateGraphics {
             id,
             renderer: "<unnamed>".to_string(),
-            a11y: convert_out::a11y_to_wire(a11y),
+            a11y: wire_a11y,
         });
         id
     }
@@ -1514,11 +1545,12 @@ impl Backend for WireRecordingBackend {
         {
             let mut state = self.inner.borrow_mut();
             nav_id = Self::mint_node(&mut state);
+            let wire_a11y = state.wire_a11y(a11y);
             state.emit(Command::CreateNavigator {
                 id: nav_id,
                 initial_route: initial_route.to_string(),
                 initial_path: initial_path.to_string(),
-                a11y: convert_out::a11y_to_wire(a11y),
+                a11y: wire_a11y,
             });
             state.navigators.insert(
                 nav_id,
@@ -1621,6 +1653,7 @@ impl Backend for WireRecordingBackend {
         {
             let mut state = self.inner.borrow_mut();
             nav_id = Self::mint_node(&mut state);
+            let wire_a11y = state.wire_a11y(a11y);
             state.emit(Command::CreateTabNavigator {
                 id: nav_id,
                 initial_route: initial_route.to_string(),
@@ -1628,7 +1661,7 @@ impl Backend for WireRecordingBackend {
                 tabs: tabs_wire,
                 placement,
                 mount_policy,
-                a11y: convert_out::a11y_to_wire(a11y),
+                a11y: wire_a11y,
             });
             state.navigators.insert(
                 nav_id,
@@ -1704,6 +1737,7 @@ impl Backend for WireRecordingBackend {
         {
             let mut state = self.inner.borrow_mut();
             nav_id = Self::mint_node(&mut state);
+            let wire_a11y = state.wire_a11y(a11y);
             state.emit(Command::CreateDrawerNavigator {
                 id: nav_id,
                 initial_route: initial_route.to_string(),
@@ -1713,7 +1747,7 @@ impl Backend for WireRecordingBackend {
                 drawer_width,
                 swipe_to_open,
                 mount_policy,
-                a11y: convert_out::a11y_to_wire(a11y),
+                a11y: wire_a11y,
             });
             state.navigators.insert(
                 nav_id,
@@ -1787,13 +1821,14 @@ impl Backend for WireRecordingBackend {
 
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
+        let wire_a11y = state.wire_a11y(a11y);
         state.emit(Command::CreateVirtualizer {
             id,
             overscan,
             horizontal,
             initial_size: wire::WireItemSize { measured, sizes },
             initial_keys: keys,
-            a11y: convert_out::a11y_to_wire(a11y),
+            a11y: wire_a11y,
         });
         // Note: callbacks aren't stored on the recorder side yet.
         // Lazy mount-on-demand is the natural next step:
@@ -1911,6 +1946,7 @@ impl Backend for WireRecordingBackend {
         let handler = state
             .handlers
             .register_unit_for_identity(identity, config.on_activate);
+        let wire_a11y = state.wire_a11y(a11y);
         // NavKind isn't carried in LinkConfig (the closure already
         // encodes which command to dispatch); the wire stores a
         // placeholder so a future renderer can target the right
@@ -1921,7 +1957,7 @@ impl Backend for WireRecordingBackend {
             url: config.url,
             kind: wire::WireNavKind::Push,
             on_activate: handler,
-            a11y: convert_out::a11y_to_wire(a11y),
+            a11y: wire_a11y,
         });
         id
     }

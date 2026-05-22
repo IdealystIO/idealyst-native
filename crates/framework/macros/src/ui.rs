@@ -2252,10 +2252,29 @@ mod tests {
     }
 
     #[test]
-    fn lowercase_component_name_is_recognized_too() {
-        // Capitalization is cosmetic; shape is what matters.
+    fn lowercase_call_falls_through_to_expression() {
+        // Capitalization is the disambiguator: an uppercase-first ident
+        // followed by `(` / `{` is a component invocation; a
+        // lowercase-first ident is a Rust function call that goes
+        // through expression parsing (see
+        // `next_is_component_invocation`). This is what lets reactive
+        // helper calls like `count_label(count)` work inside
+        // `Text { ... }` without the parser trying to grab `count` as
+        // a prop name.
         let out = parse_and_emit(quote! { mycomp(x = 1) });
-        assert!(out.contains("mycomp !"));
+        // Should be wrapped via IntoPrimitive::into_primitive (the
+        // expression-passthrough path), NOT dispatched to a
+        // `mycomp!` invocation macro.
+        assert!(
+            !out.contains("mycomp !"),
+            "lowercase ident should not dispatch to `mycomp!`; got: {}",
+            out,
+        );
+        assert!(
+            out.contains("into_primitive") && out.contains("mycomp"),
+            "expected expression-passthrough; got: {}",
+            out,
+        );
     }
 
     #[test]

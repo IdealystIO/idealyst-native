@@ -1,15 +1,37 @@
 # Accessibility Design — idealyst-native
 
-Status: **draft for team review** — no implementation has started.
+Status: **shipped** — phases 1-6 + wire-protocol plumbing landed.
 Owner: framework team. Reviewers: every backend maintainer + idea-ui.
 
-This document defines the cross-platform accessibility (a11y) surface for
-idealyst-native. The framework today exposes only `Image.accessibilityLabel`
-and `Link`'s native role; every other primitive ships with **no a11y**.
-That blocks production use. Retrofitting after more primitives ship is
-exponentially more expensive — every new `create_*` adds another retrofit
-point across every backend — so the right time to land the surface is
-now, before the primitive count grows further.
+This document defined (and now records) the cross-platform accessibility
+(a11y) surface for idealyst-native. Before this work the framework
+exposed only `Image.accessibilityLabel` and `Link`'s native role; every
+other primitive shipped with **no a11y**. Retrofitting after more
+primitives ship would have been exponentially more expensive — every new
+`create_*` adds another retrofit point across every backend — so the
+surface landed before the primitive count grew further.
+
+## Implementation status
+
+| Component | Status | Notes |
+|---|---|---|
+| `framework_core::accessibility` module | ✅ | `Role`, `AccessibilityProps`, `AccessibilityTraits`, `LiveRegionPriority`, `AccessibilityAction`, `AccessibilityTree`, `AccessibilityNode`, `AccessibilityRect`, `PrimitiveKind`, `default_role()` — 7 unit tests |
+| `Backend` trait: `update_accessibility`, `announce_for_accessibility`, `dump_accessibility_tree` | ✅ | No-op defaults; every `create_*` takes `&AccessibilityProps` |
+| `Primitive` variants carry `accessibility: AccessibilityProps` | ✅ | 19 variants (control-flow `When`/`Switch`/`Repeat` excluded) |
+| Walker plumbs a11y through every primitive build | ✅ | |
+| **Web backend** | ✅ | ARIA attributes, `aria-live` announcer, `update_accessibility` reapplies idempotently |
+| **iOS-mobile backend** | ✅ | `UIAccessibility*` setters + `UIAccessibility.post(.announcement)`. State flags without UIKit traits (CHECKED, EXPANDED, MIXED) ride `accessibilityValue`. iOS 17+ uses `UIAccessibilitySpeechAttributeAnnouncementPriority` on an `NSAttributedString` (Polite→Default, Assertive→High); older iOS falls back to a plain `NSString`. Runtime-gated via `NSProcessInfo.isOperatingSystemAtLeastVersion:`. |
+| **Android backend** | ✅ | `setContentDescription` / `setTooltipText` / `setAccessibilityLiveRegion` + `announceForAccessibility`. State flags without direct API ride a `contentDescription` tail (TalkBack still announces). |
+| **macOS backend** | ✅ | `NSAccessibility*` setters + `postNotificationWithUserInfo` (Polite→Medium, Assertive→High). `BUSY` trait unmapped (no AppKit equivalent). |
+| **Roku backend** | ✅ no-op | Roku SceneGraph has no AT API; props dropped at the `_a11y` boundary. Audit rule `backend-roku-a11y.md` nudges plumbing when an SDK exposes it. |
+| **wgpu backend** | ✅ | Per-node `accessibility` storage; `dump_accessibility_tree` builds the parallel semantics tree; `pending_announcements` queue drained by the host shell. 5 dedicated tests. |
+| **Wire protocol** | ✅ | `WireAccessibilityProps` + `WireRole` (`#[serde(other)] Unknown` for forward-compat) + `WireLiveRegionPriority` + `WireAccessibilityAction` (name + `HandlerId` trampoline). Every `Create*` carries a11y; new `UpdateAccessibility` + `AnnounceForAccessibility` commands; `WIRE_VERSION=4`. SceneModel snapshot replays per-node a11y so late-joining AAS clients see current state. AX action handlers cross the wire as reverse-channel `HandlerId`s — same trampoline mechanism as `on_click` / `on_change`. |
+
+Documented gaps (intentional):
+- Future `Role` variants surface as `WireRole::Unknown` on older replayers → `None` (no role override).
+- wgpu's host-shell consumer crate that projects `AccessibilityTree` into the platform AX layer (winit / AT-SPI / shell-iOS) doesn't exist yet — design contract is recorded; the consumer is the next chunk of work.
+
+See `.claude/audits/accessibility-completeness.md` for the audit that keeps the surface in lockstep across backends.
 
 The design follows the framework's two governing rules:
 
@@ -575,7 +597,7 @@ Per-backend translation:
 
 | Backend | Call                                                                                       | Notes |
 |---------|--------------------------------------------------------------------------------------------|-------|
-| iOS     | `UIAccessibility.post(notification: .announcement, argument: msg)`                         | iOS 17+ allows `AttributedString` with priority key; we'll use the modern API. ([source](https://developer.apple.com/documentation/uikit/uiaccessibility/notification)) |
+| iOS     | `UIAccessibility.post(notification: .announcement, argument: msg)`                         | iOS 17+ posts an `NSAttributedString` carrying `UIAccessibilitySpeechAttributeAnnouncementPriority` (Polite→`UIAccessibilityPriorityDefault`, Assertive→`UIAccessibilityPriorityHigh`); older iOS falls back to a plain `NSString`. Runtime-gated via `NSProcessInfo.isOperatingSystemAtLeastVersion:` so a single binary serves both. ([source](https://developer.apple.com/documentation/uikit/uiaccessibility/notification)) |
 | Android | `rootView.announceForAccessibility(msg)` for `Polite`. `Assertive` uses a hidden live-region view with `setLiveRegion(LIVE_REGION_ASSERTIVE)` + `sendAccessibilityEvent(TYPE_ANNOUNCEMENT)`. ([source](https://developer.android.com/reference/android/view/View#announceForAccessibility(java.lang.CharSequence))) |
 | Web     | Write `msg` into a hidden `<div role="status" aria-live="polite">` (or `aria-live="assertive"`) appended to `<body>`. Clear after a short delay so re-announcements of the same string work. |
 | macOS   | `NSAccessibility.post(element: window, notification: .announcementRequested, userInfo: [.announcement: msg, .priority: priority])` |

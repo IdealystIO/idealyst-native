@@ -31,6 +31,7 @@ members = [
     "crates/host/winit",
     "crates/host/web",
     "crates/host/appkit",
+    "crates/host/wgpu-accesskit",
     "crates/native/phone",
     "crates/native/tablet",
     "crates/native/tv",
