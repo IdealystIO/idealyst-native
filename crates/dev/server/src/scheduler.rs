@@ -30,7 +30,7 @@
 //!   time. Same as `framework_core::scheduling::schedule_microtask`'s
 //!   built-in fallback on non-wasm targets.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -43,14 +43,12 @@ pub struct SidecarScheduler;
 
 thread_local! {
     /// Recurring per-frame closures. Driven by [`drive_pending`].
-    /// `Rc<RefCell<…>>` rather than the bare closure so a closure
-    /// can `cancel` itself mid-tick without invalidating the iterator
-    /// — [`drive_pending`] snapshots the Rc list, releases the outer
-    /// borrow, then fires each callback. Inner `Option` lets `cancel`
-    /// drop the closure eagerly (frees captured state) without
-    /// disturbing the slot's address (so the eq-by-Rc-ptr removal
-    /// stays valid).
-    static RAF_LOOPS: RefCell<Vec<Rc<RefCell<Option<RafFn>>>>> =
+    /// `Rc<RafSlot>` so a closure can re-enter the scheduler (cancel
+    /// itself, register another raf, etc.) without invalidating the
+    /// iterator — [`drive_pending`] snapshots the Rc list and releases
+    /// the outer borrow before firing each callback. See [`RafSlot`]
+    /// for why the closure isn't stored under a plain `RefCell`.
+    static RAF_LOOPS: RefCell<Vec<Rc<RafSlot>>> =
         RefCell::new(Vec::new());
 
     /// One-shot deadlined closures (`after_ms`, `after_animation_frame`).
@@ -62,6 +60,33 @@ thread_local! {
 }
 
 type RafFn = Box<dyn FnMut() + 'static>;
+
+/// Storage for one raf-loop registration.
+///
+/// `closure` lives in a `Cell` rather than a `RefCell` because
+/// [`drive_pending`] must execute the closure *without* holding any
+/// borrow on this slot — the closure body almost always re-enters
+/// the scheduler:
+///
+/// - `AV.set(...)` inside the body can fire a reactive cleanup that
+///   drops this raf's handle ([`RafHandle::Drop`] → `cancel` →
+///   touches the same slot).
+/// - The closure may call `raf_loop_scoped(...)` itself to spawn a
+///   follow-up loop.
+///
+/// With `RefCell` either of those re-entries would hit
+/// `BorrowMutError`. With `Cell` + `take` + put-back, the slot is
+/// physically empty during execution — re-entry sees `None` and
+/// does nothing, which is exactly right.
+///
+/// `cancelled` distinguishes "we took the closure out for execution"
+/// from "the handle was cancelled while running": after `f()`
+/// returns, the put-back path checks the flag and drops `f` rather
+/// than re-installing it if cancel won the race.
+struct RafSlot {
+    closure: Cell<Option<RafFn>>,
+    cancelled: Cell<bool>,
+}
 
 struct DeadlineEntry {
     deadline: Instant,
@@ -106,23 +131,34 @@ impl Scheduler for SidecarScheduler {
     }
 
     fn raf_loop(&self, f: Box<dyn FnMut() + 'static>) -> Box<dyn ScheduleHandle> {
-        let cell: Rc<RefCell<Option<RafFn>>> = Rc::new(RefCell::new(Some(f)));
-        RAF_LOOPS.with(|r| {
-            r.borrow_mut().push(cell.clone());
+        let slot = Rc::new(RafSlot {
+            closure: Cell::new(Some(f)),
+            cancelled: Cell::new(false),
         });
-        Box::new(RafHandle { cell })
+        RAF_LOOPS.with(|r| {
+            r.borrow_mut().push(slot.clone());
+        });
+        Box::new(RafHandle { slot })
     }
 }
 
 struct RafHandle {
-    cell: Rc<RefCell<Option<RafFn>>>,
+    slot: Rc<RafSlot>,
 }
 
 impl ScheduleHandle for RafHandle {
     fn cancel(&mut self) {
-        // Drop the closure (frees its captures). The empty slot
-        // gets pruned on the next [`drive_pending`].
-        *self.cell.borrow_mut() = None;
+        // Mark the slot dead BEFORE clearing the closure. drive_pending
+        // checks `cancelled` after f() returns to decide whether to
+        // re-install the FnMut it took out for execution — if cancel
+        // raced the running closure, the flag tells the driver to
+        // drop the FnMut instead of putting it back.
+        self.slot.cancelled.set(true);
+        // `Cell::set(None)` drops the previous contents (the FnMut,
+        // freeing captures) without ever borrowing — safe to call
+        // even if drive_pending is mid-execution of this same slot
+        // (the slot is empty during execution; this is a no-op then).
+        self.slot.closure.set(None);
     }
 }
 
@@ -194,24 +230,40 @@ pub fn drive_pending() {
         }
     }
 
-    // 2. Recurring raf_loops. Snapshot the Rc list so the borrow is
-    //    released before we fire the closures — a closure that
-    //    registers a new raf_loop (rare but legal) won't trip
-    //    BorrowMutError. Prune any slots whose closure was cancelled
-    //    while we weren't holding the borrow.
-    let raf_snapshot: Vec<Rc<RefCell<Option<RafFn>>>> =
-        RAF_LOOPS.with(|r| r.borrow().clone());
-    for cell in &raf_snapshot {
-        // Re-check `is_none` against drop-while-iterating; cell may
-        // have been cancelled by a previous callback in this pass.
-        let mut slot = cell.borrow_mut();
-        if let Some(f) = slot.as_mut() {
-            f();
+    // 2. Recurring raf_loops. Snapshot the Rc list so RAF_LOOPS
+    //    itself isn't borrowed across user code — a closure that
+    //    registers a new raf_loop must be able to push onto RAF_LOOPS.
+    //
+    //    Take the FnMut out of its slot (Cell::take, no borrow held)
+    //    before calling it. The closure runs with no live borrow on
+    //    the slot, so RAF_LOOP_HANDLE re-entries (handle cancels
+    //    triggered by reactive cleanups inside the closure — see
+    //    [`RafSlot`]) are safe. After the call: if `cancelled` was
+    //    flipped during execution, drop the FnMut. Otherwise put it
+    //    back for the next tick.
+    let raf_snapshot: Vec<Rc<RafSlot>> = RAF_LOOPS.with(|r| r.borrow().clone());
+    for slot in &raf_snapshot {
+        if slot.cancelled.get() {
+            continue;
+        }
+        let Some(mut f) = slot.closure.take() else {
+            // Either pre-cancelled (handle dropped before drive arrived)
+            // or another tick is somehow re-entering this slot; either
+            // way, skip — Cell::take left None which is the right state.
+            continue;
+        };
+        f();
+        if slot.cancelled.get() {
+            // Handle was cancelled during execution. Drop `f` (frees
+            // its captures); the slot is already `None` from the take.
+            drop(f);
+        } else {
+            slot.closure.set(Some(f));
         }
     }
     // Drop any cancelled entries from the live list. Cheap because
     // the common case is "no cancellations this tick."
     RAF_LOOPS.with(|r| {
-        r.borrow_mut().retain(|c| c.borrow().is_some());
+        r.borrow_mut().retain(|s| !s.cancelled.get());
     });
 }

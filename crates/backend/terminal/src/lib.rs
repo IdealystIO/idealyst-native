@@ -78,6 +78,16 @@ pub struct TerminalBackend {
     /// [`dispatch_click`] on a TextInput hit and cleared on
     /// clicks elsewhere or on `Escape` / `Tab` / `Enter`.
     pub(crate) focused_id: Option<u32>,
+    /// Conversion factor between layout px (what Taffy + author
+    /// stylesheets speak) and terminal cells (what we paint to).
+    /// Default `(1.0, 1.0)` — author px values land in cells 1:1
+    /// (works for terminal-native UIs like `hello-terminal`).
+    /// For layouts targeting mobile/desktop pixel densities (the
+    /// `welcome` example uses ~390pt-wide mobile viewports), the
+    /// host sets it via [`set_cell_size`] to something like
+    /// `(8.0, 16.0)` so `width: px(14)` lands at a sane ~2 cells
+    /// instead of overflowing the viewport.
+    pub(crate) cell_size: (f32, f32),
 }
 
 impl Default for TerminalBackend {
@@ -95,7 +105,19 @@ impl TerminalBackend {
             layout_to_id: HashMap::new(),
             viewport: (80, 24),
             focused_id: None,
+            cell_size: (1.0, 1.0),
         }
+    }
+
+    /// Configure the layout-px-per-cell factor. Default is
+    /// `(1.0, 1.0)`. Call BEFORE mounting if the author tree's
+    /// stylesheet uses px values calibrated for a higher-DPI
+    /// viewport (mobile / desktop). The backend tells Taffy that
+    /// the viewport is `(cols * w, rows * h)` layout-px and
+    /// divides every rendered frame by this factor on the way out
+    /// to cells.
+    pub fn set_cell_size(&mut self, w: f32, h: f32) {
+        self.cell_size = (w.max(0.001), h.max(0.001));
     }
 
     /// Update the viewport size in cells. Next `render_to_grid` call
@@ -125,6 +147,7 @@ impl TerminalBackend {
                 children: Vec::new(),
                 fg: None,
                 bg: None,
+                gradient: None,
                 opacity: 1.0,
                 translate_x: 0.0,
                 translate_y: 0.0,
@@ -204,10 +227,14 @@ impl TerminalBackend {
     ) {
         let Some(data) = self.nodes.get(&id) else { return };
         let frame = self.layout.frame_of(data.layout);
-        let x = parent_x + frame.x;
-        let y = parent_y + frame.y;
-        let inside =
-            col >= x && col < x + frame.width && row >= y && row < y + frame.height;
+        let (cw, ch) = self.cell_size;
+        // Convert frame from layout px to cell space (parent_x/y are
+        // already in cells, click coords are in cells).
+        let x = parent_x + (frame.x + data.translate_x) / cw;
+        let y = parent_y + (frame.y + data.translate_y) / ch;
+        let w = frame.width / cw;
+        let h = frame.height / ch;
+        let inside = col >= x && col < x + w && row >= y && row < y + h;
         if !inside {
             return;
         }
@@ -420,8 +447,8 @@ impl Backend for TerminalBackend {
         };
         self.layout.set_style(layout_node, style);
 
-        // Cache the resolved fg/bg so the renderer doesn't have to
-        // re-parse on every cell write.
+        // Cache the resolved fg/bg + gradient so the renderer's hot
+        // path doesn't re-parse on every cell write.
         let fg = style
             .color
             .as_ref()
@@ -430,11 +457,22 @@ impl Backend for TerminalBackend {
             .background
             .as_ref()
             .map(|t| parse_or(&t.resolve().0, Rgba::TRANSPARENT));
+        let gradient = style.background_gradient.as_ref().map(|g| {
+            node::ResolvedGradient {
+                kind: g.kind.clone(),
+                stops: g
+                    .stops
+                    .iter()
+                    .map(|s| (s.offset, parse_or(&s.color.0, Rgba::TRANSPARENT)))
+                    .collect(),
+            }
+        });
 
         if let Some(d) = self.nodes.get_mut(&node.id) {
             d.style = Some(style.clone());
             d.fg = fg;
             d.bg = bg;
+            d.gradient = gradient;
         }
     }
 
@@ -469,7 +507,8 @@ impl Backend for TerminalBackend {
                 terminal_toggle_press(id, &oc);
             }));
             // Cells: "[ x ]" — 5 cells wide for breathing room.
-            self.layout.set_intrinsic_size(d.layout, 5.0, 1.0);
+            let (cw, ch) = self.cell_size;
+            self.layout.set_intrinsic_size(d.layout, 5.0 * cw, 1.0 * ch);
         }
         node
     }
@@ -495,14 +534,16 @@ impl Backend for TerminalBackend {
             // empty inputs aren't 0-wide) plus 2 cells of breathing
             // room. Authors can override with explicit `width` in
             // the stylesheet.
-            let intrinsic_w = placeholder_owned
+            let intrinsic_cells = placeholder_owned
                 .as_ref()
                 .map(|s| s.chars().count() as f32)
                 .unwrap_or(0.0)
                 .max(initial_value.chars().count() as f32)
                 .max(8.0)
                 + 2.0;
-            self.layout.set_intrinsic_size(d.layout, intrinsic_w, 1.0);
+            let (cw, ch) = self.cell_size;
+            self.layout
+                .set_intrinsic_size(d.layout, intrinsic_cells * cw, 1.0 * ch);
             d.input = Some(Box::new(node::InputState {
                 value: initial_value.to_string(),
                 cursor: initial_value.chars().count(),
@@ -544,11 +585,12 @@ impl Backend for TerminalBackend {
             // Small = 1 cell tall, Large = 1 cell tall too — we
             // can't actually grow a single braille glyph. Width: 3
             // cells either way to give the spinner some space.
-            let w = match size {
+            let w_cells = match size {
                 ActivityIndicatorSize::Small => 3.0,
                 ActivityIndicatorSize::Large => 5.0,
             };
-            self.layout.set_intrinsic_size(d.layout, w, 1.0);
+            let (cw, ch) = self.cell_size;
+            self.layout.set_intrinsic_size(d.layout, w_cells * cw, 1.0 * ch);
         }
         // The walker fires no per-frame effect for this primitive,
         // so we install our own `raf_loop` to advance the phase.
@@ -670,32 +712,19 @@ impl TerminalBackend {
             Some(d) => d.layout,
             None => return,
         };
-        // We re-fetch content + style from the nodes map on every
-        // measure call so text edits don't require re-installing the
-        // measure_fn. Read through a `Weak`-shaped snapshot — we
-        // can't borrow `&mut self` inside the closure, so we
-        // capture the id and read from a thread-local… actually,
-        // simpler: capture the current content by reading the field
-        // each time via a small accessor on a clone of the data.
-        //
-        // Trick: we capture the content string by cloning it now,
-        // but `update_text` swaps it AND calls `mark_dirty` which
-        // forces a fresh measure that re-reads via the closure's
-        // captured snapshot — broken.
-        //
-        // Instead, give the closure a clone of the nodes' Rc-shared
-        // content cell. Cheapest path: store content in an
-        // Rc<RefCell<String>>. But that ripples through NodeData.
-        //
-        // Pragmatic alternative: re-install the measure_fn on every
-        // update_text. Cheap (one Rc clone) and avoids restructuring.
         let content = self
             .nodes
             .get(&id)
             .map(|d| d.content.clone())
             .unwrap_or_default();
+        // Capture the current cell_size by value. If the host
+        // changes scale mid-session, existing measure_fns won't
+        // update — fine, our convention is "set cell_size BEFORE
+        // mount" (matches the viewport contract every other
+        // backend ships).
+        let (cw, ch) = self.cell_size;
         let f: native_layout::MeasureFn = Rc::new(move |known, avail| {
-            measure_text(&content, known, avail)
+            measure_text(&content, known, avail, cw, ch)
         });
         self.layout.set_measure_fn(layout, f);
     }
@@ -813,16 +842,24 @@ impl TerminalBackend {
 /// Measure a text string at the given width/height constraints. Wraps
 /// on whitespace; counts each character as one terminal cell. Honors
 /// `\n` as a hard line break.
+///
+/// All constraints and the returned size are in **layout px**, not
+/// cells — Taffy operates in px throughout. `(cw, ch)` is the
+/// active px-per-cell factor; we convert px constraints to cell
+/// counts internally, then convert the cell-based result back to px
+/// on return.
 fn measure_text(
     content: &str,
     known: TaffySize<Option<f32>>,
     avail: TaffySize<AvailableSpace>,
+    cw: f32,
+    ch: f32,
 ) -> TaffySize<f32> {
-    // Resolve the width constraint we'll wrap against.
+    // Wrap-width constraint, converted from layout px to cell count.
     let max_w = match known.width {
-        Some(w) => w,
+        Some(w) => w / cw,
         None => match avail.width {
-            AvailableSpace::Definite(w) => w,
+            AvailableSpace::Definite(w) => w / cw,
             AvailableSpace::MaxContent => f32::INFINITY,
             AvailableSpace::MinContent => 0.0,
         },
@@ -868,8 +905,9 @@ fn measure_text(
     if lines == 0 {
         lines = 1;
     }
+    // Convert the cell-count result back to layout px.
     TaffySize {
-        width: known.width.unwrap_or(longest as f32),
-        height: known.height.unwrap_or(lines as f32),
+        width: known.width.unwrap_or(longest as f32 * cw),
+        height: known.height.unwrap_or(lines as f32 * ch),
     }
 }

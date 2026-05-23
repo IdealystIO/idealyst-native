@@ -3,8 +3,9 @@
 //! escaped bytes and dumps it to stdout.
 
 use framework_core::color::Rgba;
+use framework_core::{GradientKind, RadialExtent};
 
-use crate::node::{NodeData, NodeKind};
+use crate::node::{NodeData, NodeKind, ResolvedGradient};
 use crate::TerminalBackend;
 
 /// One terminal cell. `glyph` is the visible char; `fg` / `bg` are
@@ -64,6 +65,7 @@ impl TerminalBackend {
     /// [`Grid`]. Called by the host once per frame.
     pub fn render_to_grid(&mut self) -> Grid {
         let (cols, rows) = self.viewport;
+        let (cw, ch) = self.cell_size;
         let mut grid = Grid::new(cols, rows);
 
         let Some(root_id) = self.find_root() else { return grid };
@@ -71,7 +73,11 @@ impl TerminalBackend {
             Some(d) => d.layout,
             None => return grid,
         };
-        self.layout.compute(root_layout, cols as f32, rows as f32);
+        // Taffy operates in layout px. Tell it the viewport is the
+        // cell count multiplied by the per-cell px factor, then we'll
+        // divide frame coords by the same factor at paint time to
+        // land back in cells.
+        self.layout.compute(root_layout, cols as f32 * cw, rows as f32 * ch);
 
         self.paint_node(root_id, 0.0, 0.0, &mut grid);
         grid
@@ -86,11 +92,20 @@ impl TerminalBackend {
             return;
         }
         let frame = self.layout.frame_of(data.layout);
-        // Animation-time translates ride on top of the laid-out frame.
-        let x = parent_x + frame.x + data.translate_x;
-        let y = parent_y + frame.y + data.translate_y;
-        let w = frame.width;
-        let h = frame.height;
+        let (cw, ch) = self.cell_size;
+        // Convert frame + translate from layout px to cell space.
+        // `parent_x` / `parent_y` are already in cells (paint recurses
+        // through `paint_node` with cell-space coords).
+        let x = parent_x + (frame.x + data.translate_x) / cw;
+        let y = parent_y + (frame.y + data.translate_y) / ch;
+        let w = frame.width / cw;
+        let h = frame.height / ch;
+        // Inline `cell_size` into a local alias the rest of the
+        // method can keep referencing — used for gradient sampling
+        // which has to operate in layout-px space to keep radial
+        // shapes round despite the cell aspect ratio.
+        let _ = cw;
+        let _ = ch;
         if w <= 0.0 || h <= 0.0 {
             return;
         }
@@ -99,12 +114,14 @@ impl TerminalBackend {
         let effective_bg = data.animated_bg.or(data.bg);
         let effective_fg = data.animated_fg.or(data.fg);
 
-        // 1. Paint the background fill across this node's frame.
-        if let Some(mut bg) = effective_bg {
-            // Multiply the bg's alpha by opacity. Since terminal
-            // cells can't actually composite transparent colors, we
-            // skip the paint entirely when alpha drops to zero and
-            // let whatever was painted underneath show through.
+        // 1. Paint the background. A `background_gradient` wins over
+        //    `background` — same precedence as iOS / web. Gradient
+        //    sampling reads in layout-px space so radial shapes
+        //    stay circular even when the cell aspect ratio (~2:1
+        //    height-to-width) would otherwise squash them.
+        if let Some(gradient) = data.gradient.as_ref() {
+            paint_gradient(grid, x, y, w, h, data.opacity, gradient, (cw, ch));
+        } else if let Some(mut bg) = effective_bg {
             bg.a = ((bg.a as f32) * data.opacity).round() as u8;
             if bg.a > 0 {
                 paint_rect_bg(grid, x, y, w, h, bg);

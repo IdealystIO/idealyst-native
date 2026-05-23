@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use framework_core::color::Rgba;
 use framework_core::primitives::key::KeyDownHandler;
-use framework_core::StyleRules;
+use framework_core::{Gradient, StyleRules};
 use native_layout::LayoutNode;
 
 /// Public handle the framework holds in its `Self::Node` slot. Just
@@ -54,6 +54,12 @@ pub(crate) struct NodeData {
     /// Background color parsed from `style.background`. None means
     /// "transparent" — children's bg shows through.
     pub bg: Option<Rgba>,
+    /// Cached gradient pulled from `style.background_gradient`.
+    /// When present, the renderer samples per-cell instead of
+    /// painting a solid fill. The framework gives us `Color` strings
+    /// for stops; we parse them up-front so the per-cell hot path
+    /// only does arithmetic.
+    pub gradient: Option<ResolvedGradient>,
     // -----------------------------------------------------------------
     // Per-frame animation overrides. Driven by `set_animated_f32` /
     // `set_animated_color`; consulted by the renderer on every paint.
@@ -80,6 +86,15 @@ pub(crate) struct NodeData {
     /// kinds. Held boxed so `NodeData` stays slim for the common
     /// (non-input) case.
     pub input: Option<Box<InputState>>,
+}
+
+/// Backend-flavoured gradient: stops resolved to `Rgba` so the
+/// per-cell sampler in the renderer doesn't reparse strings on
+/// every paint.
+#[derive(Clone)]
+pub(crate) struct ResolvedGradient {
+    pub kind: framework_core::GradientKind,
+    pub stops: Vec<(f32, Rgba)>,
 }
 
 /// Mutable runtime state for a `TextInput` node.

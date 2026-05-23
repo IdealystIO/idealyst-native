@@ -15,3 +15,4 @@ host-terminal = { workspace = true }
 
 [dev-dependencies]
 backend-terminal = { workspace = true }
+welcome = { path = "../welcome" }
