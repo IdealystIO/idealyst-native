@@ -855,6 +855,13 @@ fn handle_app_msg(
         AppToDev::VirtualizerMountItem { .. }
         | AppToDev::VirtualizerReleaseItem { .. }
         | AppToDev::VirtualizerMeasuredSize { .. } => {}
+        AppToDev::RequestFrame { .. } => {
+            // Single-process mode has no sidecar to forward to and
+            // no per-thread animation clock to drive — local-render
+            // mode doesn't use the client-driven raf path. Drop
+            // silently. (The sidecar branch above this fn forwards
+            // RequestFrame through to the session thread.)
+        }
         AppToDev::Error { message } => {
             eprintln!("[dev-server] app reported error: {}", message);
         }

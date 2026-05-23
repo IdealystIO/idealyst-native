@@ -48,6 +48,26 @@ pub fn easing_to_wire(e: Easing) -> WireEasing {
     }
 }
 
+/// Bridge `framework_core::animation::AnimProp` to its wire mirror.
+/// One-to-one map; `GradientStopColor(idx)` carries the same `u8`
+/// stop index inline.
+pub fn anim_prop_to_wire(p: framework_core::animation::AnimProp) -> wire::WireAnimProp {
+    use framework_core::animation::AnimProp;
+    match p {
+        AnimProp::Opacity => wire::WireAnimProp::Opacity,
+        AnimProp::TranslateX => wire::WireAnimProp::TranslateX,
+        AnimProp::TranslateY => wire::WireAnimProp::TranslateY,
+        AnimProp::Scale => wire::WireAnimProp::Scale,
+        AnimProp::ScaleX => wire::WireAnimProp::ScaleX,
+        AnimProp::ScaleY => wire::WireAnimProp::ScaleY,
+        AnimProp::RotateZ => wire::WireAnimProp::RotateZ,
+        AnimProp::ZIndex => wire::WireAnimProp::ZIndex,
+        AnimProp::BackgroundColor => wire::WireAnimProp::BackgroundColor,
+        AnimProp::ForegroundColor => wire::WireAnimProp::ForegroundColor,
+        AnimProp::GradientStopColor(idx) => wire::WireAnimProp::GradientStopColor(idx),
+    }
+}
+
 pub fn wire_state_bit_to_bits(b: WireStateBit) -> StateBits {
     match b {
         WireStateBit::Hovered => StateBits::HOVERED,

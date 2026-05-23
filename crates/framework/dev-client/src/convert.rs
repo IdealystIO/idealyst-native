@@ -99,6 +99,28 @@ pub fn wire_easing(e: WireEasing) -> Easing {
     }
 }
 
+/// Wire-to-framework reverse of `dev_server::convert_out::anim_prop_to_wire`.
+/// Returns `None` for the forward-compat `Unknown` variant — caller
+/// drops the animation tick rather than aborting the batch (the next
+/// tick supersedes anyway).
+pub fn wire_anim_prop(w: wire::WireAnimProp) -> Option<framework_core::animation::AnimProp> {
+    use framework_core::animation::AnimProp;
+    Some(match w {
+        wire::WireAnimProp::Opacity => AnimProp::Opacity,
+        wire::WireAnimProp::TranslateX => AnimProp::TranslateX,
+        wire::WireAnimProp::TranslateY => AnimProp::TranslateY,
+        wire::WireAnimProp::Scale => AnimProp::Scale,
+        wire::WireAnimProp::ScaleX => AnimProp::ScaleX,
+        wire::WireAnimProp::ScaleY => AnimProp::ScaleY,
+        wire::WireAnimProp::RotateZ => AnimProp::RotateZ,
+        wire::WireAnimProp::ZIndex => AnimProp::ZIndex,
+        wire::WireAnimProp::BackgroundColor => AnimProp::BackgroundColor,
+        wire::WireAnimProp::ForegroundColor => AnimProp::ForegroundColor,
+        wire::WireAnimProp::GradientStopColor(idx) => AnimProp::GradientStopColor(idx),
+        wire::WireAnimProp::Unknown => return None,
+    })
+}
+
 pub fn wire_state_bit(b: WireStateBit) -> StateBits {
     match b {
         WireStateBit::Hovered => StateBits::HOVERED,

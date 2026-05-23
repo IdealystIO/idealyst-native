@@ -1,0 +1,22 @@
+[package]
+name = "backend-terminal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# ASCII / terminal backend for `framework_core::Backend`. Renders the
+# UI tree into a character grid that the `host-terminal` crate paints
+# to stdout with ANSI colors via crossterm. Mouse + keyboard input
+# are forwarded back into the framework through `Action`/`on_click`
+# callbacks and the per-primitive key handlers.
+#
+# It is a flex (the joke kind, not the layout kind) — but also a
+# legit testbed: no GPU, no native widgets, no window system. Just
+# `cargo run`.
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+framework-core = { workspace = true }
+native-layout = { workspace = true }

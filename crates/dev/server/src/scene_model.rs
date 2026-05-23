@@ -265,6 +265,14 @@ impl SceneModel {
                 self.node_disabled.insert(*node, *disabled);
             }
 
+            // Per-frame animation ticks intentionally don't update the
+            // scene model. They're transient writes whose only role is
+            // to drive the next frame's render. Reconnecting clients
+            // get the snapshot's static state plus whatever live ticks
+            // fire after they attach — no value in catching them up to
+            // a frozen mid-animation frame from before they connected.
+            Command::SetAnimatedF32 { .. } | Command::SetAnimatedColor { .. } => {}
+
             // -- Styles.
             Command::RegisterStyle { id, rules } => {
                 self.styles.insert(*id, rules.clone());

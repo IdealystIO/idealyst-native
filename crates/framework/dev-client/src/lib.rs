@@ -722,6 +722,31 @@ where
                 self.backend.set_disabled(&n, disabled);
             }
 
+            // --- Animation ticks (per-frame, high-frequency) ---
+            //
+            // The dev side resolves the animation curve and ships a
+            // value per tick; the client just dispatches to the
+            // wrapped backend's per-platform `set_animated_*` impl.
+            // Unknown nodes get logged + dropped rather than aborting
+            // the batch — animation deltas are idempotent (next tick
+            // supersedes), so a one-frame skip on a transient race
+            // (e.g. a node was just released but the in-flight tick
+            // hadn't been canceled yet on the sidecar) is invisible.
+            Command::SetAnimatedF32 { node, prop, value } => {
+                if let Some(n) = self.nodes.get(&node).cloned() {
+                    if let Some(p) = convert::wire_anim_prop(prop) {
+                        self.backend.set_animated_f32(&n, p, value);
+                    }
+                }
+            }
+            Command::SetAnimatedColor { node, prop, value } => {
+                if let Some(n) = self.nodes.get(&node).cloned() {
+                    if let Some(p) = convert::wire_anim_prop(prop) {
+                        self.backend.set_animated_color(&n, p, value);
+                    }
+                }
+            }
+
             // --- Styles ---
             Command::RegisterStyle { id, rules } => {
                 let resolved: Rc<StyleRules> = Rc::new(convert::wire_style_to_rules(rules));

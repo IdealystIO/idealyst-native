@@ -75,7 +75,29 @@ use serde::{Deserialize, Serialize};
 /// preference: in the default *per-client* mode every connection gets
 /// a fresh isolated session; in *shared* mode all connections land on
 /// one common scene (the legacy collaborative-devices mode).
-pub const PROTOCOL_VERSION: u32 = 5;
+///
+/// Bumped to 6 to carry per-frame animation writes. `AnimatedValue::bind`
+/// subscribes a callback to the animation clock that calls
+/// `backend.set_animated_f32`/`set_animated_color` each tick. In AAS
+/// mode the sidecar runs that callback; without a wire path the
+/// server-side `WireRecordingBackend` would fall through to the
+/// trait-default no-op and the client would render the initial
+/// (often `opacity: 0`) state forever. `SetAnimatedF32` and
+/// `SetAnimatedColor` (plus their `WireAnimProp` discriminator)
+/// shuttle each tick's value to the client, where the client's
+/// `WireBackend::apply` dispatches to the wrapped backend's
+/// `set_animated_f32`/`set_animated_color` — those have working
+/// per-platform impls (DOM inline `style.transform` on web, CALayer
+/// on iOS, etc.).
+///
+/// Bumped to 7 to flip the animation tick cadence from sidecar-self-
+/// paced to **client-driven** via `AppToDev::RequestFrame { dt_ms }`.
+/// Each client fires `RequestFrame` from its native raf; the dev side
+/// runs one animation clock tick per request and ships the resulting
+/// `SetAnimated*` commands back. Animations now stop when the tab is
+/// backgrounded (browser throttles raf) and adapt to client framerate
+/// — no wasted dev-host CPU on a quiet client.
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// Alias retained for code/docs that reference `WIRE_VERSION` rather
 /// than the canonical [`PROTOCOL_VERSION`] name. Both point at the same
@@ -231,6 +253,29 @@ pub enum AppToDev {
 
     /// An item's measured size changed (Measured mode).
     VirtualizerMeasuredSize { scope: ScopeId, size: f32 },
+
+    /// Request that the dev side advance its animation clock by
+    /// `dt_ms` milliseconds and ship any resulting per-frame writes
+    /// (`Command::SetAnimatedF32` / `SetAnimatedColor`) back. Cadence
+    /// is **client-driven**: each browser/native client fires this
+    /// from its own `requestAnimationFrame`-equivalent, supplying
+    /// the wall-clock elapsed since its last frame. The dev side
+    /// runs one `framework_core::animation::clock` tick per request
+    /// and emits the produced commands through the normal broadcast
+    /// path.
+    ///
+    /// Client-driven (vs. sidecar-self-paced) buys two things:
+    /// 1. The dev side stops ticking when the client's tab is
+    ///    backgrounded or throttled — no wasted CPU on the dev host.
+    /// 2. Frame production matches frame paint 1:1 — no drift from
+    ///    independent clocks producing visible double-frames or
+    ///    skipped frames.
+    ///
+    /// In shared-session mode multiple clients drive the same
+    /// session's clock; the server dedups (only the first
+    /// `RequestFrame` per ~16ms window actually ticks). In per-client
+    /// mode every session has its own client, so no dedup needed.
+    RequestFrame { dt_ms: u32 },
 
     /// App-side error. Lets dev surface backend panics.
     Error { message: String },
@@ -530,6 +575,35 @@ pub enum Command {
         easing: WireEasing,
         infinite: bool,
         autoreverses: bool,
+    },
+
+    /// Per-frame animation tick — scalar family. Mirrors
+    /// `Backend::set_animated_f32`. Emitted by the dev-side
+    /// `WireRecordingBackend` every time the sidecar's animation
+    /// clock fires an `AnimatedValue::bind` callback that writes a
+    /// scalar (`Opacity`, `TranslateX`, `RotateZ`, `ZIndex`, …).
+    /// Apply on the client by dispatching to the wrapped backend's
+    /// `set_animated_f32(node, prop, value)`.
+    ///
+    /// High-frequency: 60fps × N animated props per scene. The wire
+    /// can batch (multiple per `DevToApp::Commands` frame) but each
+    /// individual tick still ships one variant — there's no
+    /// further-coalescing within a single frame, since the prop +
+    /// value tuple is already the minimum representable update.
+    SetAnimatedF32 {
+        node: NodeId,
+        prop: WireAnimProp,
+        value: f32,
+    },
+
+    /// Per-frame animation tick — color family. Mirrors
+    /// `Backend::set_animated_color`. `value` is sRGB
+    /// `[r, g, b, a]` with channels in `0..=1`. See
+    /// [`Command::SetAnimatedF32`] for the surrounding contract.
+    SetAnimatedColor {
+        node: NodeId,
+        prop: WireAnimProp,
+        value: [f32; 4],
     },
     UpdateTextInputValue {
         node: NodeId,
@@ -968,6 +1042,41 @@ pub enum WireEasing {
     EaseOut,
     EaseInOut,
     Cubic(f32, f32, f32, f32),
+}
+
+/// Wire mirror of `framework_core::animation::AnimProp`. Variants
+/// carrying a payload (the `GradientStopColor(u8)` stop index) embed
+/// it inline. Scalar vs color split is implicit on the receiving end
+/// via the carrying command — `SetAnimatedF32` always pairs with a
+/// scalar variant, `SetAnimatedColor` always pairs with a color
+/// variant. The client's `WireBackend` reconstructs the framework's
+/// `AnimProp` from this and dispatches to the wrapped backend's
+/// `set_animated_*` method.
+///
+/// New variants here track new entries in
+/// `framework_core::animation::AnimProp`. The `#[serde(other)]` arm
+/// on `Unknown` keeps older peers tolerant of newer enumerants —
+/// they'll drop the tick rather than abort the batch (the next tick's
+/// value supersedes anyway, so a one-frame skip is invisible).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum WireAnimProp {
+    // --- Scalar (f32) family ---
+    Opacity,
+    TranslateX,
+    TranslateY,
+    Scale,
+    ScaleX,
+    ScaleY,
+    RotateZ,
+    ZIndex,
+    // --- Color ([f32; 4]) family ---
+    BackgroundColor,
+    ForegroundColor,
+    /// Per-stop gradient color; stop index inline.
+    GradientStopColor(u8),
+    /// Catch-all for forward-compat — see type-level docs.
+    #[serde(other)]
+    Unknown,
 }
 
 /// Maps to `framework_core::StateBits` flags.

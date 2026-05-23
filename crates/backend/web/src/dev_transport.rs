@@ -107,6 +107,12 @@ where
     // working — they hold the same `OutboundSender` wrapper whose
     // inner sender we just swapped.
     let (tx, outbound_rx) = mpsc::channel::<AppToDev>();
+    // Hand one sender to the wire (used by event handlers, etc.);
+    // keep a clone for the raf pump's per-frame `RequestFrame`
+    // injection. mpsc::Sender is `Clone`; both sides drop
+    // independently, with the channel staying open until the last
+    // sender drops.
+    let raf_tx = tx.clone();
     wire.borrow().outbound().set(tx);
 
     let socket = WebSocket::new(url)?;
@@ -200,13 +206,43 @@ where
     }) as Box<dyn FnMut(CloseEvent)>);
     socket.set_onclose(Some(on_close.as_ref().unchecked_ref()));
 
-    // --- outbound pump --------------------------------------------
-    // requestAnimationFrame-driven drain of the outbound channel.
-    // Web doesn't have a thread to block on `outbound_rx.recv()`, so
-    // we poll once per frame. Sub-16ms latency for event delivery is
-    // fine for dev-mode UX.
+    // --- outbound pump + animation tick driver --------------------
+    // requestAnimationFrame-driven. Two jobs per tick:
+    //
+    // 1. Inject one `AppToDev::RequestFrame { dt_ms }` so the dev
+    //    side advances its animation clock by exactly the wall-clock
+    //    elapsed between browser-paint frames. The client is the
+    //    source of truth for animation cadence — when the browser
+    //    backgrounds the tab and throttles raf, dev-side ticks stop
+    //    automatically.
+    //
+    // 2. Drain anything queued on the outbound channel (user-fired
+    //    events, the `RequestFrame` we just queued, …) and ship over
+    //    the WebSocket.
+    //
+    // Order matters: queue `RequestFrame` BEFORE draining so it goes
+    // out in the same WebSocket send burst — minimizes the
+    // "client→server→client" loop latency to one tick.
     let socket_for_pump = socket.clone();
+    let mut last_raf_ms = now_ms();
     let outbound_pump = framework_core::raf_loop(move || {
+        // Skip the entire tick while the socket is still mid-handshake
+        // — `send_with_u8_array` would throw `InvalidStateError` and
+        // the raf would spam console errors until `onopen` fires.
+        // `readyState` 1 = OPEN per the WHATWG spec.
+        if socket_for_pump.ready_state() != web_sys::WebSocket::OPEN {
+            return;
+        }
+        let now = now_ms();
+        let dt_ms = now.saturating_sub(last_raf_ms) as u32;
+        last_raf_ms = now;
+        // Clamp the first frame's reported dt (which would otherwise
+        // be the full elapsed wall-clock since connect) to one frame
+        // budget. Without this the first server tick after connect
+        // jumps every animation forward by seconds — visible as
+        // animations "skipping the intro" on a slow page load.
+        let dt_ms = if dt_ms > 100 { 16 } else { dt_ms };
+        let _ = raf_tx.send(AppToDev::RequestFrame { dt_ms });
         // Drain everything currently queued.
         loop {
             match outbound_rx.try_recv() {
@@ -369,6 +405,8 @@ fn command_kind(c: &wire::Command) -> &'static str {
         UnregisterTypeface { .. } => "UnregisterTypeface",
         UpdateAccessibility { .. } => "UpdateAccessibility",
         AnnounceForAccessibility { .. } => "AnnounceForAccessibility",
+        SetAnimatedF32 { .. } => "SetAnimatedF32",
+        SetAnimatedColor { .. } => "SetAnimatedColor",
     }
 }
 

@@ -486,7 +486,7 @@ pub use runtime::run;
 mod runtime {
     use super::{is_eof, read_frame, write_frame, SidecarIn, SidecarOut};
     use crate::WireRecordingBackend;
-    use framework_core::{render, Owner, Primitive};
+    use framework_core::{mount, Owner, Primitive};
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::io::{stdin, stdout, BufReader, Write};
@@ -529,6 +529,15 @@ mod runtime {
     /// refactor. Passed as a function pointer so it's `Send + Sync +
     /// Copy + 'static` without any user-side adaptation.
     pub fn run(app: fn() -> Primitive) -> std::io::Result<()> {
+        // Install the sidecar's `framework_core::scheduling::Scheduler`
+        // impl so author code using `raf_loop_scoped` / `after_ms` /
+        // `after_animation_frame` actually fires. Without this, the
+        // welcome example's planet orbits (and any other raf-driven
+        // custom math) silently no-op because `raf_loop` returns an
+        // inert handle. Process-global install; each session thread
+        // stashes its registered closures in its own thread-local.
+        crate::scheduler::install();
+
         // Report our `main` runtime address before anything else. The
         // host uses this to compute the ASLR slide for the symbol-
         // table diff in hot-patch builds. Doing it first keeps the
@@ -684,7 +693,7 @@ mod runtime {
     ) {
         let recorder = WireRecordingBackend::new();
         let backend_rc = Rc::new(RefCell::new(recorder.clone()));
-        let mut owner: Option<Owner> = Some(render(backend_rc.clone(), app()));
+        let mut owner: Option<Owner> = Some(mount(backend_rc.clone(), app));
         let mut cursor = recorder.command_count();
 
         // Ship the initial render's snapshot up to the host.
@@ -702,6 +711,13 @@ mod runtime {
             }
         }
 
+        // Animation cadence is **client-driven**: the client's native
+        // raf fires `AppToDev::RequestFrame { dt_ms }`, which arrives
+        // as a `SessionMsg::Event(AppToDev::RequestFrame ...)` and
+        // routes through `dispatch_app_to_dev` → `recorder.tick_animations`.
+        // No sidecar-self-paced timer is needed; the session thread
+        // blocks on `recv()` between client requests, idling at zero
+        // CPU when no client is asking for frames.
         while let Ok(msg) = rx.recv() {
             match msg {
                 SessionMsg::Event(app_to_dev) => {
@@ -716,7 +732,7 @@ mod runtime {
                     // touch the recorder's scene state.
                     drop(owner.take());
                     recorder.reset_log_and_scene();
-                    owner = Some(render(backend_rc.clone(), app()));
+                    owner = Some(mount(backend_rc.clone(), app));
                     cursor = 0;
                     if let Ok(mut o) = out.lock() {
                         let _ = write_frame(
@@ -783,6 +799,17 @@ mod runtime {
             VirtualizerMountItem { .. }
             | VirtualizerReleaseItem { .. }
             | VirtualizerMeasuredSize { .. } => {}
+            RequestFrame { dt_ms } => {
+                // Client-driven animation tick. Convert ms → Duration
+                // and ask the recorder to advance its thread-local
+                // animation clock. Any registered `AnimatedValue`
+                // tick closures fire and produce `SetAnimated*`
+                // commands on the recorder, which flush back to the
+                // client via the session's normal command-drain at
+                // the end of this iteration.
+                let dt = std::time::Duration::from_millis(dt_ms as u64);
+                recorder.tick_animations(dt);
+            }
             Error { message } => {
                 eprintln!("[aas-app] client reported error: {message}");
             }

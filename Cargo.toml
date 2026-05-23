@@ -23,6 +23,7 @@ members = [
     "crates/backend/roku",
     "crates/backend/roku/macros",
     "crates/backend/roku/transpile",
+    "crates/backend/terminal",
     "crates/backend/web",
     "crates/render/api",
     "crates/render/wgpu",
@@ -31,6 +32,7 @@ members = [
     "crates/host/winit",
     "crates/host/web",
     "crates/host/appkit",
+    "crates/host/terminal",
     "crates/host/wgpu-accesskit",
     "crates/native/phone",
     "crates/native/tablet",
@@ -71,6 +73,7 @@ members = [
     "crates/port/project",
     "crates/port/preview",
     "examples/hello-roku",
+    "examples/hello-terminal",
     "examples/idea-ui-docs",
     "examples/docs",
     "examples/docs-macro",
@@ -134,6 +137,7 @@ backend-android-tv = { path = "crates/backend/android/tv" }
 backend-roku = { path = "crates/backend/roku" }
 backend-roku-macros = { path = "crates/backend/roku/macros" }
 backend-roku-transpile = { path = "crates/backend/roku/transpile" }
+backend-terminal = { path = "crates/backend/terminal" }
 backend-web = { path = "crates/backend/web" }
 render-api = { path = "crates/render/api" }
 render-wgpu = { path = "crates/render/wgpu" }
@@ -142,6 +146,7 @@ android-sim = { path = "crates/skin/android-sim" }
 host-winit = { path = "crates/host/winit" }
 host-web = { path = "crates/host/web" }
 host-appkit = { path = "crates/host/appkit" }
+host-terminal = { path = "crates/host/terminal" }
 native-phone = { path = "crates/native/phone" }
 native-tablet = { path = "crates/native/tablet" }
 native-tv = { path = "crates/native/tv" }

@@ -19,7 +19,9 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use framework_core::primitives;
-use framework_core::{Backend, Color, ColorScheme, StateBits, StyleRules, ViewHandle, ViewOps};
+use framework_core::{
+    Backend, Color, ColorScheme, StateBits, StyleRules, TextHandle, TextOps, ViewHandle, ViewOps,
+};
 use wire::{
     Command, EventArgs, HandlerId, NodeId, StyleId, WireColor, WireStateBit,
 };
@@ -33,6 +35,12 @@ pub mod convert_out;
 #[cfg(feature = "aas-runtime")]
 pub mod host;
 mod scene_model;
+// Sidecar `framework_core::scheduling::Scheduler` impl — installed
+// once at sidecar startup so `raf_loop_scoped`, `after_ms`, etc.
+// fire on the dev side. Otherwise the framework's animation clock
+// gets an inert handle and any author code using raf-driven custom
+// math (welcome's planets) does nothing.
+pub mod scheduler;
 pub mod sidecar;
 // Always compiled — the test-support module is small and its only
 // non-trivial cost is the `tungstenite` symbols, which the crate
@@ -407,23 +415,32 @@ pub struct NavigatorRecState {
 impl WireRecordingBackend {
     pub fn new() -> Self {
         let nav_state_mirror = Arc::new(Mutex::new(NavStateSnapshot::new()));
+        let inner = Rc::new(RefCell::new(RecorderState {
+            next_node: 0,
+            next_style: 0,
+            identity_to_node: HashMap::new(),
+            styles_by_content: HashMap::new(),
+            epoch: 0,
+            handlers: HandlerTable::default(),
+            styles_by_ptr: HashMap::new(),
+            out: Vec::new(),
+            color_scheme: ColorScheme::Auto,
+            state_handlers: HashMap::new(),
+            navigators: HashMap::new(),
+            scope_to_navigator: HashMap::new(),
+            nav_state_mirror: nav_state_mirror.clone(),
+            scene: SceneModel::new(),
+        }));
+        // Install a per-thread weak handle so `RecordingViewOps`
+        // (called from `AnimatedValue::bind` -> `ViewHandle::set_animated_*`)
+        // can reach this recorder to emit `SetAnimated*` wire commands.
+        // The AAS sidecar runs one session per thread, so per-thread
+        // is the right scope — host process for the dev server.
+        RECORDER_HANDLE.with(|slot| {
+            *slot.borrow_mut() = Some(Rc::downgrade(&inner));
+        });
         Self {
-            inner: Rc::new(RefCell::new(RecorderState {
-                next_node: 0,
-                next_style: 0,
-                identity_to_node: HashMap::new(),
-                styles_by_content: HashMap::new(),
-                epoch: 0,
-                handlers: HandlerTable::default(),
-                styles_by_ptr: HashMap::new(),
-                out: Vec::new(),
-                color_scheme: ColorScheme::Auto,
-                state_handlers: HashMap::new(),
-                navigators: HashMap::new(),
-                scope_to_navigator: HashMap::new(),
-                nav_state_mirror: nav_state_mirror.clone(),
-                scene: SceneModel::new(),
-            })),
+            inner,
             nav_state_mirror,
         }
     }
@@ -501,6 +518,36 @@ impl WireRecordingBackend {
     /// and is purely a transport hook.
     pub fn push_external_command(&self, cmd: Command) {
         self.inner.borrow_mut().emit(cmd);
+    }
+
+    /// Advance the per-thread animation clock by `dt` and fire any
+    /// registered tick closures + scheduler-stored raf-loop closures
+    /// + expired `after_ms` deadlines. This is the explicit
+    /// equivalent of a platform `raf_loop` callback firing — used by
+    /// the AAS sidecar when a client sends
+    /// `AppToDev::RequestFrame { dt_ms }` to drive the next frame.
+    ///
+    /// Order: scheduler-stored closures first (raf_loop callbacks
+    /// that write to AVs via `av.set(...)`), then the animation clock
+    /// (drives declarative animators — tweens/springs registered via
+    /// `av.animate(...)`). This way author code that imperatively
+    /// updates AV inside `raf_loop_scoped` sees its value land
+    /// *before* the declarative tween for that frame's tick — same
+    /// ordering the browser uses (raf callbacks before
+    /// CSS-transition advancing).
+    ///
+    /// Returns the number of declarative tick closures that survived
+    /// this tick (zero = no active animators on this thread; idle
+    /// sessions don't need further RequestFrames if no
+    /// raf_loop_scoped callbacks are registered either).
+    ///
+    /// Must run on the same thread that owns this recorder — the
+    /// animation clock and scheduler closures are both `thread_local!`,
+    /// so calling from a different thread would drive an empty/wrong
+    /// registry.
+    pub fn tick_animations(&self, dt: std::time::Duration) -> usize {
+        scheduler::drive_pending();
+        framework_core::animation::clock::tick_for_test(dt)
     }
 
     /// Drop every command from the log and reset the scene to empty.
@@ -812,7 +859,121 @@ enum HandlerSnapshot {
 /// `ViewOps` falls back to the trait default; what matters is that
 /// the static-dyn ops pointer exists so `ViewHandle::new` accepts it.
 struct RecordingViewOps;
-impl ViewOps for RecordingViewOps {}
+
+impl ViewOps for RecordingViewOps {
+    /// Route animated scalar writes to the per-thread recorder's
+    /// `set_animated_f32`. Mirrors the pattern in `backend-web`'s
+    /// `WebViewOps`, but routes through a thread-local Weak handle
+    /// instead of a process-global one — the AAS sidecar runs one
+    /// reactive runtime per session thread, so the handle must be
+    /// per-thread.
+    ///
+    /// Silently no-ops if the recorder hasn't been installed
+    /// (e.g., tests using `RecordingViewOps` without going through
+    /// `WireRecordingBackend::new`).
+    fn set_animated_f32(
+        &self,
+        node: &dyn std::any::Any,
+        prop: framework_core::animation::AnimProp,
+        value: f32,
+    ) {
+        let Some(node_id) = node.downcast_ref::<NodeId>() else { return };
+        let rc = match RECORDER_HANDLE
+            .with(|slot| slot.borrow().as_ref().cloned())
+            .and_then(|w| w.upgrade())
+        {
+            Some(rc) => rc,
+            None => return,
+        };
+        let mut state = match rc.try_borrow_mut() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        state.emit(Command::SetAnimatedF32 {
+            node: *node_id,
+            prop: convert_out::anim_prop_to_wire(prop),
+            value,
+        });
+    }
+
+    fn set_animated_color(
+        &self,
+        node: &dyn std::any::Any,
+        prop: framework_core::animation::AnimProp,
+        value: [f32; 4],
+    ) {
+        let Some(node_id) = node.downcast_ref::<NodeId>() else { return };
+        let rc = match RECORDER_HANDLE
+            .with(|slot| slot.borrow().as_ref().cloned())
+            .and_then(|w| w.upgrade())
+        {
+            Some(rc) => rc,
+            None => return,
+        };
+        let mut state = match rc.try_borrow_mut() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        state.emit(Command::SetAnimatedColor {
+            node: *node_id,
+            prop: convert_out::anim_prop_to_wire(prop),
+            value,
+        });
+    }
+}
+
+thread_local! {
+    /// Per-thread handle to the live `WireRecordingBackend` for the
+    /// session running on this thread. Set by
+    /// `WireRecordingBackend::new` and used by
+    /// [`RecordingViewOps::set_animated_f32`] / `set_animated_color`
+    /// and [`RecordingTextOps::set_animated_color`] to route per-frame
+    /// animation writes — these calls reach the ops impls through
+    /// `ViewHandle`/`TextHandle::set_animated_*`, which receive only
+    /// `&self` (so we can't pass the recorder directly) and the
+    /// `Node` downcast target. A thread-local Weak is the standard
+    /// cross-platform pattern; see `backend_web::WEB_BACKEND_HANDLE`
+    /// for the same shape on a process-global thread (there's only
+    /// one renderer there).
+    static RECORDER_HANDLE: RefCell<Option<std::rc::Weak<RefCell<RecorderState>>>> =
+        const { RefCell::new(None) };
+}
+
+/// `TextOps` mirror of [`RecordingViewOps`]. The framework's
+/// `AnimatedValue::bind_text_color` routes through
+/// `TextHandle::set_animated_color` → here, *not* through
+/// `ViewHandle`. Without this override the welcome example's headline
+/// text never gets its color animated in (stays at whatever the static
+/// style declared) — same dead-letter behavior the trait-default
+/// `Backend::set_animated_color` has for the view path.
+struct RecordingTextOps;
+
+impl TextOps for RecordingTextOps {
+    fn set_animated_color(
+        &self,
+        node: &dyn std::any::Any,
+        prop: framework_core::animation::AnimProp,
+        value: [f32; 4],
+    ) {
+        let Some(node_id) = node.downcast_ref::<NodeId>() else { return };
+        let rc = match RECORDER_HANDLE
+            .with(|slot| slot.borrow().as_ref().cloned())
+            .and_then(|w| w.upgrade())
+        {
+            Some(rc) => rc,
+            None => return,
+        };
+        let mut state = match rc.try_borrow_mut() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        state.emit(Command::SetAnimatedColor {
+            node: *node_id,
+            prop: convert_out::anim_prop_to_wire(prop),
+            value,
+        });
+    }
+}
 
 impl Backend for WireRecordingBackend {
     type Node = NodeId;
@@ -829,6 +990,16 @@ impl Backend for WireRecordingBackend {
     /// resolution impossible.
     fn make_view_handle(&self, node: &Self::Node) -> ViewHandle {
         ViewHandle::new(Rc::new(*node), &RecordingViewOps)
+    }
+
+    /// Symmetric to [`Self::make_view_handle`] but for text nodes.
+    /// Author code that calls `AnimatedValue::bind_text_color` (the
+    /// welcome example's headline color fade) reaches `TextOps` via
+    /// `TextHandle::set_animated_color`; without this override the
+    /// default [`framework_core::Backend::make_text_handle`] returns
+    /// `NoopTextOps` and every animation tick is silently dropped.
+    fn make_text_handle(&self, node: &Self::Node) -> TextHandle {
+        TextHandle::new(Rc::new(*node), &RecordingTextOps)
     }
 
     fn create_view(
@@ -1370,6 +1541,19 @@ impl Backend for WireRecordingBackend {
             id: convert_out::typeface_id_to_wire(id),
         });
     }
+
+    // Per-frame animation writes (`set_animated_f32` /
+    // `set_animated_color` on the `Backend` trait) are *not*
+    // overridden here. The framework's `AnimatedValue::bind` routes
+    // its per-tick writes through `ViewHandle::set_animated_*`
+    // (which calls into `ViewOps`), not through the backend's
+    // `Backend::set_animated_*` directly. The actual emit point is
+    // [`RecordingViewOps`] above — it resolves the per-thread
+    // recorder via `RECORDER_HANDLE` and emits `Command::SetAnimated*`
+    // wire commands. Adding a `Backend::set_animated_*` override
+    // here would be dead code (the trait method on `Backend` is only
+    // hit by code paths that have a `&mut Backend` handle, which the
+    // animation tick path never does — it has only a `&ViewHandle`).
 
     fn attach_states(&mut self, node: &Self::Node, setter: Rc<dyn Fn(StateBits, bool)>) {
         let mut state = self.inner.borrow_mut();
