@@ -47,6 +47,11 @@ where
         color_scheme: dev_client::color_scheme_to_wire(wire.color_scheme()),
         // Native transport — no URL bar to read from.
         initial_url: None,
+        // This legacy transport doesn't know anything about the host
+        // platform; identify as Other. Real iOS / Android / macOS
+        // shells in `aas_shell.rs` populate this with the correct
+        // platform constant.
+        identity: wire::ClientIdentity::default(),
     };
     send(&mut ws, &hello)?;
 

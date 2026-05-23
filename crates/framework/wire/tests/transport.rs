@@ -277,6 +277,7 @@ fn run_with_budget(
         app_name: "transport-test".to_string(),
         color_scheme: wire::WireColorScheme::Auto,
         initial_url: None,
+        identity: wire::ClientIdentity::default(),
     };
     let bytes = serde_json::to_vec(&hello).unwrap();
     ws.send(Message::Binary(bytes.into())).ok();
@@ -315,4 +316,90 @@ fn run_with_budget(
 #[allow(dead_code)]
 fn _force_uses() {
     let _ = connect_and_run::<TraceBackend>;
+}
+
+/// In single-process mode (no sidecar — the recorder *is* the
+/// runtime) every connection lands on the well-known "primary"
+/// session. Single-process mode predates per-client sessions; there's
+/// only ever one logical scene to share.
+#[test]
+fn server_hello_carries_primary_session_in_single_process_mode() {
+    use tungstenite::Message;
+    use wire::DevToApp;
+
+    let port = pick_free_port();
+    let server_addr = format!("127.0.0.1:{}", port);
+    let url = format!("ws://{}", &server_addr);
+
+    let server_addr_clone = server_addr.clone();
+    thread::spawn(move || {
+        let recorder = WireRecordingBackend::new();
+        // Don't bother with an Owner — we only care about the Hello
+        // exchange.
+        let _ = serve(server_addr_clone, recorder, "session-test");
+    });
+    wait_for_port(&server_addr, Duration::from_secs(3));
+
+    // Client A: send a populated identity for log fidelity.
+    // Single-process mode pins the assigned session to "primary"
+    // regardless of what the client sends.
+    let (mut ws_a, _) = tungstenite::connect(&url).expect("connect");
+    let hello_a = wire::AppToDev::Hello {
+        app_name: "client-a".into(),
+        color_scheme: wire::WireColorScheme::Auto,
+        initial_url: None,
+        identity: wire::ClientIdentity {
+            platform: wire::WirePlatform::Web,
+            device_label: Some("client-a".into()),
+        },
+    };
+    ws_a.send(Message::Binary(serde_json::to_vec(&hello_a).unwrap().into()))
+        .unwrap();
+    let frame = read_one_msg(&mut ws_a);
+    match frame {
+        DevToApp::Hello { session, .. } => {
+            assert_eq!(
+                session, "primary",
+                "single-process mode pins every connection to the primary session"
+            );
+        }
+        other => panic!("expected DevToApp::Hello, got {:?}", other),
+    }
+
+    // Client B: default identity. Same outcome.
+    let (mut ws_b, _) = tungstenite::connect(&url).expect("connect");
+    let hello_b = wire::AppToDev::Hello {
+        app_name: "client-b".into(),
+        color_scheme: wire::WireColorScheme::Auto,
+        initial_url: None,
+        identity: wire::ClientIdentity::default(),
+    };
+    ws_b.send(Message::Binary(serde_json::to_vec(&hello_b).unwrap().into()))
+        .unwrap();
+    let frame = read_one_msg(&mut ws_b);
+    match frame {
+        DevToApp::Hello { session, .. } => {
+            assert_eq!(session, "primary");
+        }
+        other => panic!("expected DevToApp::Hello, got {:?}", other),
+    }
+}
+
+fn read_one_msg(
+    ws: &mut tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>,
+) -> wire::DevToApp {
+    use tungstenite::Message;
+    if let tungstenite::stream::MaybeTlsStream::Plain(s) = ws.get_ref() {
+        let _ = s.set_read_timeout(Some(Duration::from_secs(3)));
+    }
+    loop {
+        match ws.read().expect("read") {
+            Message::Binary(b) => return serde_json::from_slice(&b).expect("decode"),
+            Message::Text(t) => return serde_json::from_str(&t).expect("decode"),
+            Message::Ping(p) => {
+                let _ = ws.send(Message::Pong(p));
+            }
+            _ => continue,
+        }
+    }
 }

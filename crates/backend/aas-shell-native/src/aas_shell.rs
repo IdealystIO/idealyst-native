@@ -50,6 +50,25 @@ pub struct AasShell<B: Backend + 'static> {
     inbound: mpsc::Receiver<DevToApp>,
 }
 
+/// Optional knobs for [`AasShell::spawn_with_options`] /
+/// [`AasShell::spawn_with_url_and_options`]. Session assignment is
+/// entirely server-side — these options are about how the client
+/// describes *itself* to the server (used by logs and the future
+/// session-picker dev tool).
+#[derive(Default, Clone, Debug)]
+pub struct AasShellOptions {
+    /// Platform this client runs on. Sent in `AppToDev::Hello.identity`
+    /// so the server's logs and the future session-picker dev tool can
+    /// distinguish "iPhone" from "Pixel". The native shell defaults to
+    /// [`wire::WirePlatform::Other`] — concrete iOS / Android wrappers
+    /// override this with the real platform constant.
+    pub platform: wire::WirePlatform,
+    /// Free-form device label for display ("iPhone 15 Pro Simulator",
+    /// "Pixel 8", "MacBook Air (M2)"). Server falls back to the
+    /// platform name when this is `None`.
+    pub device_label: Option<String>,
+}
+
 impl<B: Backend + 'static> AasShell<B> {
     /// Build the shell, install an outbound channel that survives
     /// reconnects, and spawn the background WebSocket worker that
@@ -61,7 +80,18 @@ impl<B: Backend + 'static> AasShell<B> {
     /// main thread. The worker thread runs the blocking transport
     /// and communicates only over channels.
     pub fn spawn(backend: B, app_id: String) -> Self {
-        Self::spawn_inner(backend, Target::Discover(app_id))
+        Self::spawn_inner(backend, Target::Discover(app_id), AasShellOptions::default())
+    }
+
+    /// Same as [`spawn`] but lets the caller opt into a shared session
+    /// (or pass other future options). For per-device isolated sessions
+    /// (the default), use [`Self::spawn`].
+    pub fn spawn_with_options(
+        backend: B,
+        app_id: String,
+        options: AasShellOptions,
+    ) -> Self {
+        Self::spawn_inner(backend, Target::Discover(app_id), options)
     }
 
     /// Same as [`spawn`] but skips Bonjour discovery and connects
@@ -77,10 +107,19 @@ impl<B: Backend + 'static> AasShell<B> {
     /// configuration mismatch the caller has to detect and re-spawn
     /// the shell with the updated URL.
     pub fn spawn_with_url(backend: B, url: String) -> Self {
-        Self::spawn_inner(backend, Target::Url(url))
+        Self::spawn_inner(backend, Target::Url(url), AasShellOptions::default())
     }
 
-    fn spawn_inner(backend: B, target: Target) -> Self {
+    /// As [`spawn_with_url`] but accepting [`AasShellOptions`].
+    pub fn spawn_with_url_and_options(
+        backend: B,
+        url: String,
+        options: AasShellOptions,
+    ) -> Self {
+        Self::spawn_inner(backend, Target::Url(url), options)
+    }
+
+    fn spawn_inner(backend: B, target: Target, options: AasShellOptions) -> Self {
         let outbound = OutboundSender::new();
         let (inbound_tx, inbound_rx) = mpsc::channel::<DevToApp>();
         let (outbound_tx, outbound_rx) = mpsc::channel::<AppToDev>();
@@ -88,8 +127,9 @@ impl<B: Backend + 'static> AasShell<B> {
 
         let client = Rc::new(RefCell::new(AasClient::new(backend, outbound.clone())));
 
+        let options_for_worker = options;
         std::thread::spawn(move || {
-            ws_worker_loop(target, inbound_tx, outbound_rx);
+            ws_worker_loop(target, inbound_tx, outbound_rx, options_for_worker);
         });
 
         Self { client, inbound: inbound_rx }
@@ -122,7 +162,11 @@ impl<B: Backend + 'static> AasShell<B> {
 /// of [`AasShell::drain`] so per-message handling stays trivial.
 fn apply_dev_msg<B: Backend>(client: &mut AasClient<B>, msg: DevToApp) {
     match msg {
-        DevToApp::Hello { .. } => {}
+        DevToApp::Hello { session, .. } => {
+            if !session.is_empty() {
+                eprintln!("[aas-shell] connected to session: {}", session);
+            }
+        }
         DevToApp::Commands(cmds) => {
             if let Err(e) = client.apply_batch(cmds) {
                 eprintln!("[aas-shell] replay error: {:?}", e);
@@ -153,6 +197,7 @@ fn ws_worker_loop(
     target: Target,
     inbound_tx: mpsc::Sender<DevToApp>,
     outbound_rx: mpsc::Receiver<AppToDev>,
+    options: AasShellOptions,
 ) {
     match &target {
         Target::Discover(app_id) => {
@@ -188,6 +233,10 @@ fn ws_worker_loop(
             app_name: "aas-client".into(),
             color_scheme: wire::WireColorScheme::Auto,
             initial_url: None,
+            identity: wire::ClientIdentity {
+                platform: options.platform,
+                device_label: options.device_label.clone(),
+            },
         };
         let _ = ws_send(&mut ws, &hello);
         eprintln!("[aas-shell] connected");

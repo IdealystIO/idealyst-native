@@ -16,7 +16,7 @@ use std::ffi::{c_char, CStr};
 use std::rc::Rc;
 use std::time::Duration;
 
-use aas_shell_native::AasShell;
+use aas_shell_native::{AasShell, AasShellOptions, WirePlatform};
 use objc2::rc::Retained;
 use objc2_foundation::MainThreadMarker;
 use objc2_ui_kit::UIView;
@@ -94,7 +94,18 @@ pub unsafe extern "C" fn ios_main(
         // The AAS shell owns the backend after spawn — main-thread
         // access from here on goes through `shell.client.borrow_mut()
         // .backend_mut()`.
-        let shell = Rc::new(AasShell::spawn(backend, app_id));
+        let shell = Rc::new(AasShell::spawn_with_options(
+            backend,
+            app_id,
+            AasShellOptions {
+                platform: WirePlatform::Ios,
+                // No reliable "human label" available from this entry
+                // point. Swift could pass one in a future revision;
+                // for now leave it to the server to render
+                // `format!("{:?}", platform)`.
+                device_label: None,
+            },
+        ));
         SHELL.with(|slot| *slot.borrow_mut() = Some(shell));
 
         start_main_thread_drain_timer();

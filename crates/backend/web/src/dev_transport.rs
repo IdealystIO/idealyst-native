@@ -31,6 +31,23 @@ thread_local! {
     /// (cleared) by the first `Commands` apply after Hello, where
     /// we log the end-to-end "change → apply" latency.
     static REBUILT_AT_MS: Cell<Option<u64>> = const { Cell::new(None) };
+
+    /// Session id the server assigned to *this* WebSocket connection.
+    /// Set on every Hello so the user can read it from devtools. The
+    /// client never picks a session — assignment is server-side
+    /// driven by `SessionMode`. Empty string until the first Hello
+    /// arrives (or if the server is older than v5).
+    static SESSION_ID: RefCell<String> = const { RefCell::new(String::new()) };
+}
+
+/// Best-effort human-readable device label for the future
+/// session-picker dev tool. Pulls `navigator.userAgent` since web
+/// has no equivalent of "iPhone 15 Pro Sim". Falls back to `None`
+/// when no window is reachable (worker context, etc.).
+fn browser_device_label() -> Option<String> {
+    let win = web_sys::window()?;
+    let nav = win.navigator();
+    nav.user_agent().ok().filter(|s| !s.is_empty())
 }
 
 use dev_client::WireBackend;
@@ -106,6 +123,13 @@ where
             // browser preserved across reload.
             initial_url: web_sys::window()
                 .and_then(|w| w.location().pathname().ok()),
+            // Self-description for the server's logs and the future
+            // session-picker dev tool. Session assignment itself is
+            // entirely server-side (see SessionMode on the host).
+            identity: wire::ClientIdentity {
+                platform: wire::WirePlatform::Web,
+                device_label: browser_device_label(),
+            },
         };
         if let Ok(bytes) = serde_json::to_vec(&hello) {
             // Send as binary to match the dev server's send format.
@@ -388,6 +412,7 @@ where
         DevToApp::Hello {
             protocol_version,
             rebuilt_at_ms,
+            session,
             ..
         } => {
             if protocol_version != wire::PROTOCOL_VERSION {
@@ -403,6 +428,15 @@ where
             // Stash the rebuild timestamp so the next Commands
             // apply can log the end-to-end latency.
             REBUILT_AT_MS.with(|slot| slot.set(rebuilt_at_ms));
+            // Log + remember the session id the server assigned. Lets
+            // the user verify in devtools that two tabs ended up on
+            // the same / different sessions as intended.
+            if !session.is_empty() {
+                web_sys::console::log_1(
+                    &format!("[dev-client] session: {}", session).into(),
+                );
+            }
+            SESSION_ID.with(|s| *s.borrow_mut() = session);
         }
         DevToApp::Commands(cmds) => {
             log_command_batch(&cmds);

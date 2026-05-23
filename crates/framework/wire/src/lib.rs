@@ -62,7 +62,20 @@ use serde::{Deserialize, Serialize};
 /// posts `AppToDev::Event { handler, args: Unit }` back over the reverse
 /// channel. Removes the documented gap in
 /// `docs/accessibility-design.md`.
-pub const PROTOCOL_VERSION: u32 = 4;
+///
+/// Bumped to 5 to carry per-client AAS sessions across the Hello
+/// exchange. Sessions are entirely server-assigned — the client never
+/// names one. Instead the client sends an `identity: ClientIdentity`
+/// (platform + optional human-readable device label) that the server
+/// uses for log lines and the future session-picker dev tool. The
+/// server's `DevToApp::Hello.session: String` reports back the
+/// server-minted id so the client can show it in dev tools.
+///
+/// "Multi vs. single session" is a server-side knob, not a client
+/// preference: in the default *per-client* mode every connection gets
+/// a fresh isolated session; in *shared* mode all connections land on
+/// one common scene (the legacy collaborative-devices mode).
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Alias retained for code/docs that reference `WIRE_VERSION` rather
 /// than the canonical [`PROTOCOL_VERSION`] name. Both point at the same
@@ -122,6 +135,16 @@ pub enum DevToApp {
         /// latency. `None` on a cold start.
         #[serde(default)]
         rebuilt_at_ms: Option<u64>,
+        /// Session id this client has been attached to. Echoes back
+        /// the value the client passed in [`AppToDev::Hello::session`]
+        /// (or the server-minted id when the client sent `None`). Same
+        /// id passed by a second client puts both on a synced scene.
+        /// Empty string is a sentinel for "this server build doesn't
+        /// support sessions" — older sidecars/hosts that haven't grown
+        /// session support yet send `""` here and the client should
+        /// treat the connection as the legacy shared-state behavior.
+        #[serde(default)]
+        session: String,
     },
 
     /// A batch of backend commands to apply atomically. Batching
@@ -159,6 +182,14 @@ pub enum AppToDev {
         /// send `None`.
         #[serde(default)]
         initial_url: Option<String>,
+        /// Self-description for the server's logs and the future
+        /// session-picker dev tool. Never affects session assignment
+        /// — that's purely a server-side decision (per-client vs
+        /// shared, plus the assigned id). Clients should fill in as
+        /// much as they reasonably know; the server tolerates default
+        /// values for any field.
+        #[serde(default)]
+        identity: ClientIdentity,
     },
 
     /// A user-driven event fired against a registered handler.
@@ -203,6 +234,45 @@ pub enum AppToDev {
 
     /// App-side error. Lets dev surface backend panics.
     Error { message: String },
+}
+
+/// Self-description a client sends in [`AppToDev::Hello`]. The server
+/// uses it to attach human-readable context to log lines and to
+/// surface in a future session-picker dev tool. Session assignment
+/// itself doesn't consult this struct — it's metadata, not protocol.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ClientIdentity {
+    /// Platform the client is running on. Defaults to
+    /// [`WirePlatform::Other`] when the client doesn't know or hasn't
+    /// been updated to populate this.
+    #[serde(default)]
+    pub platform: WirePlatform,
+    /// Free-form device label for display: "iPhone 15 Pro
+    /// Simulator", "Pixel 9", "MacBook Air (M2)", "Chrome 132 on
+    /// Linux". `None` is fine; the server falls back to
+    /// `format!("{:?}", platform)` for log lines.
+    #[serde(default)]
+    pub device_label: Option<String>,
+}
+
+/// Closed enum mirror of the platforms that can host an AAS client.
+/// Used for log/display only — never affects server logic. New
+/// variants land here as new platforms get an AAS client; the
+/// `#[serde(other)]` catch-all keeps older servers tolerant of newer
+/// clients that name an unknown platform.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WirePlatform {
+    Web,
+    Ios,
+    Android,
+    MacOs,
+    Linux,
+    Windows,
+    /// Catch-all for an unknown platform. Default for old clients
+    /// that don't fill the field in.
+    #[default]
+    #[serde(other)]
+    Other,
 }
 
 /// Argument bundle for a fired handler. Keeps the wire types small
@@ -1430,6 +1500,109 @@ mod tests {
             _ => panic!("expected Typeface variant"),
         }
         assert!(matches!(decoded.font_weight, Some(WireFontWeight::Bold)));
+    }
+
+    #[test]
+    fn app_hello_identity_roundtrips() {
+        // Default identity — old clients that don't populate the
+        // field decode cleanly via `#[serde(default)]`.
+        let h = AppToDev::Hello {
+            app_name: "x".into(),
+            color_scheme: WireColorScheme::Auto,
+            initial_url: None,
+            identity: ClientIdentity::default(),
+        };
+        let bytes = codec::encode(&h).unwrap();
+        match codec::decode::<AppToDev>(&bytes).unwrap() {
+            AppToDev::Hello { identity, .. } => {
+                assert_eq!(identity.platform, WirePlatform::Other);
+                assert!(identity.device_label.is_none());
+            }
+            _ => panic!("expected Hello"),
+        }
+
+        // Populated identity.
+        let h = AppToDev::Hello {
+            app_name: "x".into(),
+            color_scheme: WireColorScheme::Auto,
+            initial_url: None,
+            identity: ClientIdentity {
+                platform: WirePlatform::Ios,
+                device_label: Some("iPhone 15 Pro Sim".into()),
+            },
+        };
+        let bytes = codec::encode(&h).unwrap();
+        match codec::decode::<AppToDev>(&bytes).unwrap() {
+            AppToDev::Hello { identity, .. } => {
+                assert_eq!(identity.platform, WirePlatform::Ios);
+                assert_eq!(identity.device_label.as_deref(), Some("iPhone 15 Pro Sim"));
+            }
+            _ => panic!("expected Hello"),
+        }
+    }
+
+    #[test]
+    fn app_hello_legacy_decode_identity_defaults() {
+        // Pre-v5 clients sent no `identity` field — must decode
+        // as default.
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "Hello": {
+                "app_name": "x",
+                "color_scheme": "Auto"
+            }
+        }))
+        .unwrap();
+        match codec::decode::<AppToDev>(&bytes).unwrap() {
+            AppToDev::Hello { identity, .. } => {
+                assert_eq!(identity.platform, WirePlatform::Other);
+            }
+            _ => panic!("expected Hello"),
+        }
+    }
+
+    #[test]
+    fn wire_platform_unknown_decodes_as_other() {
+        // Future clients may name platforms we don't know — should
+        // decode as Other rather than fail the whole batch.
+        let bytes = b"\"WeirdPlatformFromTheFuture\"";
+        let p: WirePlatform = codec::decode(bytes).unwrap();
+        assert_eq!(p, WirePlatform::Other);
+    }
+
+    #[test]
+    fn dev_hello_session_field_roundtrips() {
+        let h = DevToApp::Hello {
+            protocol_version: PROTOCOL_VERSION,
+            theme: WireTheme {
+                name: "t".into(),
+                color_scheme: WireColorScheme::Auto,
+                tokens: Vec::new(),
+            },
+            rebuilt_at_ms: None,
+            session: "s_abc123".into(),
+        };
+        let bytes = codec::encode(&h).unwrap();
+        match codec::decode::<DevToApp>(&bytes).unwrap() {
+            DevToApp::Hello { session, .. } => assert_eq!(session, "s_abc123"),
+            _ => panic!("expected Hello"),
+        }
+    }
+
+    #[test]
+    fn dev_hello_legacy_decode_session_defaults_empty() {
+        // Older sidecar (pre-v5) emitted no `session` field. The
+        // `#[serde(default)]` should fill it with "".
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "Hello": {
+                "protocol_version": PROTOCOL_VERSION,
+                "theme": { "name": "t", "color_scheme": "Auto", "tokens": [] },
+            }
+        }))
+        .unwrap();
+        match codec::decode::<DevToApp>(&bytes).unwrap() {
+            DevToApp::Hello { session, .. } => assert_eq!(session, ""),
+            _ => panic!("expected Hello"),
+        }
     }
 
     #[test]

@@ -62,37 +62,82 @@ use wire::{AppToDev, Command};
 pub enum SidecarOut {
     /// First frame the sidecar sends after spawn. Reports the
     /// sidecar's `dlsym("main")` runtime address so the host's
-    /// hot-patch builder knows the ASLR slide. Sent before
-    /// `Commands` so the host always has a valid value cached
-    /// before any file-change-triggered patch build kicks off.
+    /// hot-patch builder knows the ASLR slide. Sent before any
+    /// session-scoped frame so the host always has a valid value
+    /// cached before any file-change-triggered patch build kicks off.
     Hello {
         /// Result of `dlsym(RTLD_DEFAULT, "main")` inside the
         /// freshly-spawned sidecar process.
         aslr_reference: u64,
     },
-    /// A batch of newly-produced wire commands. The host appends each
-    /// to its `WireRecordingBackend` via `push_external_command` and
-    /// broadcasts to connected clients.
-    Commands(Vec<Command>),
+    /// A batch of newly-produced wire commands for `session`. The host
+    /// looks up that session's mirror recorder, appends each command
+    /// via `push_external_command`, and broadcasts to connected
+    /// clients attached to *that session only*.
+    ///
+    /// The session id always corresponds to a prior
+    /// [`SidecarIn::CreateSession`] from the host. If the sidecar
+    /// emits a `Commands` for an id the host never created, the host
+    /// drops the batch and logs (likely a race during teardown).
+    Commands {
+        session: String,
+        cmds: Vec<Command>,
+    },
+    /// Sidecar acknowledges that the session thread has spawned and
+    /// finished its initial render. Mostly diagnostic — the host
+    /// doesn't block on it.
+    SessionReady { session: String },
+    /// The session's scene was torn down (typically after a hot-patch
+    /// rerender). Host drops the matching mirror's command log + scene
+    /// before applying the following `Commands` frame, and broadcasts
+    /// a fresh snapshot to every attached client. Always paired with a
+    /// `Commands` frame holding the post-rerender state — emitted
+    /// strictly *before* those commands so the host knows the next
+    /// batch isn't a delta on the old log.
+    SessionReset { session: String },
+    /// Sidecar reports a session thread has exited (panic / orderly
+    /// shutdown). Host removes the session's mirror and disconnects
+    /// the clients attached to it (they'll typically reconnect and
+    /// land on a fresh session).
+    SessionEnded { session: String },
 }
 
-/// Frames going *from* the host *to* the sidecar. Today this is just
-/// event forwarding — when an app sends `AppToDev::EventOccurred` over
-/// the WebSocket, the host needs to deliver that to the sidecar so
-/// the registered closure fires and signals update.
+/// Frames going *from* the host *to* the sidecar. Carries the
+/// per-session lifecycle plus the legacy event/patch payloads.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "payload")]
 pub enum SidecarIn {
-    /// Forward a client→app event. The sidecar dispatches it through
-    /// its local `WireRecordingBackend::dispatch_event` (or the
-    /// equivalent for `ScreenReleased`, etc.).
-    Event(AppToDev),
+    /// Tell the sidecar to spin up a new author runtime thread under
+    /// `session`. The sidecar spawns a thread, runs `render(app())`
+    /// against a per-session `WireRecordingBackend`, and starts
+    /// streaming back [`SidecarOut::Commands`] tagged with this
+    /// session id. If the sidecar already has a thread under the
+    /// same id it drops the message — host-side dedup is the
+    /// authoritative gate so this is just a safety net.
+    CreateSession { session: String },
+    /// Tell the sidecar to shut down the named session's thread. The
+    /// thread drops its `Owner` (firing teardown effects) and exits.
+    /// The sidecar emits [`SidecarOut::SessionEnded`] once the thread
+    /// is joined.
+    CloseSession { session: String },
+    /// Forward a client→app event to the named session's thread. The
+    /// session thread dispatches through its local
+    /// `WireRecordingBackend::dispatch_event` (or the equivalent for
+    /// `ScreenReleased`, etc.). Events for an unknown session are
+    /// dropped + logged.
+    Event {
+        session: String,
+        event: AppToDev,
+    },
     /// Install a hot-patch jump table. The host built this from a
     /// freshly-linked patch dylib; the sidecar dlopens it via
     /// `framework_hot::apply_patch` and any subsequent component
-    /// dispatch lands in the patched body. JumpTable's PathBuf
-    /// must be readable from the sidecar's filesystem (typically
-    /// somewhere under `target/idealyst/.../patches/`).
+    /// dispatch lands in the patched body. The dylib is loaded once
+    /// process-wide; every running session thread is then told to
+    /// tear down its `Owner` and re-render so it picks up the new
+    /// component bodies. JumpTable's PathBuf must be readable from
+    /// the sidecar's filesystem (typically somewhere under
+    /// `target/idealyst/.../patches/`).
     ApplyPatch {
         /// Serialized as JSON so the IPC frame stays a single
         /// `serde_json::to_vec` round-trip. The sidecar parses
@@ -112,7 +157,11 @@ pub enum SidecarIn {
 /// `WireRecordingBackend::push_external_command`. The split-process
 /// server's main tick loop does exactly that.
 pub struct Sidecar {
-    child: Child,
+    /// `None` for test sidecars constructed via
+    /// [`Self::for_test_with_channels`] — these don't own a real
+    /// subprocess, just a pair of mpsc channels the test drives
+    /// directly. The Drop / kill path branches on this.
+    child: Option<Child>,
     /// Outbound channel: host pushes `SidecarIn`, writer thread
     /// drains it onto the child's stdin. Held as `Option` so
     /// [`Self::kill`] can `take()` and drop it — the writer thread
@@ -153,13 +202,44 @@ impl Sidecar {
         let writer_thread = spawn_writer_thread(stdin, outbound_rx);
 
         Ok(Self {
-            child,
+            child: Some(child),
             outbound_tx: Some(outbound_tx),
             inbound_rx: Mutex::new(inbound_rx),
             aslr_reference: AtomicU64::new(0),
             reader_thread: Some(reader_thread),
             writer_thread: Some(writer_thread),
         })
+    }
+
+    /// Test-only constructor: build a `Sidecar` whose IPC is plain
+    /// mpsc channels instead of a real child process's stdin/stdout.
+    /// The returned `(sidecar, fake_in_rx, fake_out_tx)` lets a test
+    /// drive both directions:
+    ///
+    /// - `fake_in_rx` receives every `SidecarIn` the host sends.
+    /// - `fake_out_tx` is what the test uses to emit `SidecarOut`
+    ///   frames *as if* they came from the real sidecar.
+    ///
+    /// Used in dev-server integration tests to verify per-session
+    /// routing without compiling and spawning the generated sidecar
+    /// binary.
+    #[doc(hidden)]
+    pub fn for_test_with_channels() -> (
+        Self,
+        mpsc::Receiver<SidecarIn>,
+        mpsc::Sender<SidecarOut>,
+    ) {
+        let (outbound_tx, fake_in_rx) = mpsc::channel::<SidecarIn>();
+        let (fake_out_tx, inbound_rx) = mpsc::channel::<SidecarOut>();
+        let sidecar = Self {
+            child: None,
+            outbound_tx: Some(outbound_tx),
+            inbound_rx: Mutex::new(inbound_rx),
+            aslr_reference: AtomicU64::new(0),
+            reader_thread: None,
+            writer_thread: None,
+        };
+        (sidecar, fake_in_rx, fake_out_tx)
     }
 
     /// Cached ASLR reference reported by the sidecar's `Hello`
@@ -204,9 +284,12 @@ impl Sidecar {
     /// senders drop). Safe to call once.
     pub fn kill(&mut self) {
         // `kill` is idempotent on the child handle but errors if the
-        // process already exited — ignore that case.
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        // process already exited — ignore that case. Test-mode
+        // sidecars have no child, so skip the signal.
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
         // Drop the outbound `Sender` *before* joining the writer
         // thread: the writer thread is parked in `recv()`, and the
         // mpsc receiver only returns `Err` (i.e. the recv loop
@@ -224,6 +307,19 @@ impl Sidecar {
             let _ = t.join();
         }
     }
+
+    /// Best-effort: synchronously dispatch every pending outbound
+    /// `SidecarIn` to whichever channel the writer thread is draining
+    /// onto, used in tests to wait for a `send()` to be visible on the
+    /// fake receiver before asserting on it. For real sidecars this is
+    /// a no-op (the writer thread does the work).
+    #[cfg(test)]
+    pub fn flush_for_test(&self) {
+        // mpsc sends are already synchronous to the bounded queue; the
+        // test side reads off the fake receiver directly. No work
+        // needed — this is here as a hook in case we move to a buffered
+        // transport later.
+    }
 }
 
 impl Drop for Sidecar {
@@ -237,6 +333,49 @@ impl Drop for Sidecar {
 /// share access. `None` while a swap is in progress or before the
 /// first spawn.
 pub type SidecarSlot = Arc<Mutex<Option<Sidecar>>>;
+
+/// Send + Sync mirror of the live session-id set. The serve loop
+/// (single-threaded, owns the per-session
+/// `WireRecordingBackend` mirrors) inserts on `accept_new` and
+/// removes on `SessionEnded`. The watcher/respawn thread reads this
+/// after spawning a fresh sidecar so it can replay `CreateSession`
+/// for every active session — keeping the new sidecar in sync with
+/// what the host believes is live.
+///
+/// Without this, a hot-patch fallback that takes the respawn ladder
+/// would leave every existing session orphaned on the host (mirror
+/// alive, but no author runtime emitting commands).
+#[derive(Clone, Default)]
+pub struct SessionTracker {
+    inner: Arc<Mutex<std::collections::HashSet<String>>>,
+}
+
+impl SessionTracker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn insert(&self, id: &str) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.insert(id.to_string());
+        }
+    }
+
+    pub fn remove(&self, id: &str) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.remove(id);
+        }
+    }
+
+    /// Snapshot of the current session set. Used after sidecar
+    /// respawn to replay `CreateSession` for each known session.
+    pub fn snapshot(&self) -> Vec<String> {
+        self.inner
+            .lock()
+            .map(|g| g.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+}
 
 // ---------------------------------------------------------------------------
 // I/O threads

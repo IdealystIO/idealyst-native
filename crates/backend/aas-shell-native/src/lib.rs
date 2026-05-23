@@ -19,6 +19,11 @@ pub mod aas_shell;
 pub mod discover;
 pub mod transport;
 
-pub use aas_shell::AasShell;
+pub use aas_shell::{AasShell, AasShellOptions};
 pub use discover::{discover, discover_blocking, SERVICE_TYPE};
 pub use transport::{connect_and_run, ClientError};
+
+// Re-export the wire identity types so platform shells (backend-ios,
+// backend-android) don't need a direct `wire` dependency to populate
+// their Hello identity.
+pub use wire::{ClientIdentity, WirePlatform};

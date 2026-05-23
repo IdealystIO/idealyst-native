@@ -32,10 +32,10 @@ pub mod watch;
 
 use scene_model::SceneModel;
 
-pub use sidecar::{Sidecar, SidecarIn, SidecarOut, SidecarSlot};
+pub use sidecar::{Sidecar, SessionTracker, SidecarIn, SidecarOut, SidecarSlot};
 pub use transport::{
-    serve, serve_with_port_mirror, serve_with_sidecar, serve_with_tick,
-    serve_with_tick_and_port,
+    serve, serve_with_port_mirror, serve_with_sidecar, serve_with_sidecar_and_tracker,
+    serve_with_tick, serve_with_tick_and_port, serve_with_tick_and_port_and_mode, SessionMode,
 };
 #[cfg(feature = "robot")]
 pub use transport::serve_with_robot_bridge;

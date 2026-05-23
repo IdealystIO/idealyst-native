@@ -22,7 +22,7 @@
 
 use std::cell::RefCell;
 
-use aas_shell_native::AasShell;
+use aas_shell_native::{AasShell, AasShellOptions, WirePlatform};
 use jni::objects::JObject;
 use jni::JNIEnv;
 
@@ -92,12 +92,21 @@ pub fn attach<'l>(
         SHELL.with(|slot| slot.borrow_mut().take());
 
         let backend = AndroidBackend::new(context_global, root_global);
-        let shell = AasShell::spawn(backend, app_id.to_string());
+        let shell = AasShell::spawn_with_options(
+            backend,
+            app_id.to_string(),
+            AasShellOptions {
+                platform: WirePlatform::Android,
+                // Future: surface `Build.MODEL` from the Kotlin side
+                // through the JNI bridge and forward here.
+                device_label: None,
+            },
+        );
         SHELL.with(|slot| *slot.borrow_mut() = Some(shell));
 
         log::info!(
             "[aas-shell-android] attach complete, browsing for app_id={:?}",
-            app_id
+            app_id,
         );
     }));
 }
@@ -129,12 +138,19 @@ pub fn attach_with_url<'l>(
         SHELL.with(|slot| slot.borrow_mut().take());
 
         let backend = AndroidBackend::new(context_global, root_global);
-        let shell = AasShell::spawn_with_url(backend, url.to_string());
+        let shell = AasShell::spawn_with_url_and_options(
+            backend,
+            url.to_string(),
+            AasShellOptions {
+                platform: WirePlatform::Android,
+                device_label: None,
+            },
+        );
         SHELL.with(|slot| *slot.borrow_mut() = Some(shell));
 
         log::info!(
             "[aas-shell-android] attach_with_url complete, connecting to {:?}",
-            url
+            url,
         );
     }));
 }
