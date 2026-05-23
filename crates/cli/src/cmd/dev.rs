@@ -316,9 +316,13 @@ fn dedup_preserve_order(xs: Vec<Target>) -> Vec<Target> {
 /// rest of this session.
 fn build_aas_host(dir: &Path) -> Result<PathBuf> {
     eprintln!("[dev] building AAS host…");
+    let source = crate::framework_source::resolve(dir)?;
     let artifact = build_aas::build(
         dir,
-        build_aas::BuildOptions { release: false },
+        build_aas::BuildOptions {
+            release: false,
+            source,
+        },
     )?;
     Ok(artifact.host_binary)
 }

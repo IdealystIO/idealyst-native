@@ -240,10 +240,12 @@ fn build_macos_target(dir: &std::path::Path, args: &Args) -> Result<()> {
 }
 
 fn build_aas_host(dir: &std::path::Path, args: &Args) -> Result<()> {
+    let source = crate::framework_source::resolve(dir)?;
     let artifact = build_aas::build(
         dir,
         build_aas::BuildOptions {
             release: args.release,
+            source,
         },
     )?;
     eprintln!(

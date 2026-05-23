@@ -51,16 +51,24 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
-use build_ios::{parse_manifest, require_workspace_root, Manifest};
+use build_ios::{parse_manifest, FrameworkSource, Manifest};
 
 pub mod hotpatch;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct BuildOptions {
     /// Compile with `--release`. Default: debug. The host and sidecar
     /// both run locally — release is almost never worth the slower
     /// rebuild cycle here.
     pub release: bool,
+    /// Where the generated wrapper crates should source framework
+    /// deps from. The CLI constructs this via
+    /// `FrameworkSource::detect(project_dir, git_defaults)` so a
+    /// project using `framework-core = { git = "…", rev = "…" }`
+    /// gets a wrapper that uses the same git ref, and a project
+    /// with a path-dep gets a wrapper that uses the same path — no
+    /// local-checkout-alongside-the-project assumption.
+    pub source: FrameworkSource,
 }
 
 #[derive(Debug)]
@@ -86,38 +94,30 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     let project_dir = fs::canonicalize(project_dir)
         .with_context(|| format!("resolve project dir {}", project_dir.display()))?;
     let manifest = parse_manifest(&project_dir)?;
-    // AAS mode reaches into `<workspace>/target/` for the host's
-    // hot-patch builder + sidecar binary lookups, and statically
-    // links the in-workspace `build-aas` crate into the generated
-    // host. None of that is reachable through git, so AAS strictly
-    // requires the framework workspace on disk.
-    let workspace_root = require_workspace_root(&project_dir)?;
-
-    build_sidecar_mode(&project_dir, &workspace_root, &manifest, &opts)
+    build_sidecar_mode(&project_dir, &manifest, &opts)
 }
 
 fn build_sidecar_mode(
     project_dir: &Path,
-    workspace_root: &Path,
     manifest: &Manifest,
     opts: &BuildOptions,
 ) -> Result<BuildArtifact> {
-    let wrapper_dir = workspace_root
-        .join("target/idealyst")
-        .join(&manifest.name)
-        .join("aas/host");
-    let sidecar_dir = workspace_root
-        .join("target/idealyst")
-        .join(&manifest.name)
-        .join("aas/app");
-    let workspace_target = workspace_root.join("target");
+    // Wrapper crates + their cargo target dir come from the
+    // `FrameworkSource`. In-tree workspace mode shares the framework
+    // workspace's `target/` so common deps stay warm across rebuilds;
+    // external (git-deps) projects use their own `<project>/target/`.
+    let wrapper_root = opts.source.wrapper_root(project_dir).join(&manifest.name);
+    let wrapper_dir = wrapper_root.join("aas/host");
+    let sidecar_dir = wrapper_root.join("aas/app");
+    let cargo_target = opts.source.cargo_target_dir(project_dir);
 
-    generate_sidecar_wrapper(&sidecar_dir, project_dir, workspace_root, manifest)?;
+    generate_sidecar_wrapper(&sidecar_dir, project_dir, &opts.source, &cargo_target, manifest)?;
     generate_host_wrapper(
         &wrapper_dir,
         &sidecar_dir,
         project_dir,
-        workspace_root,
+        &opts.source,
+        &cargo_target,
         manifest,
     )?;
 
@@ -166,8 +166,11 @@ fn build_sidecar_mode(
     let host_bin_name = host_binary_name(&manifest.name);
     let sidecar_bin_name = sidecar_binary_name(&manifest.name);
 
-    let host_binary = workspace_target.join(profile).join(&host_bin_name);
-    let sidecar_binary = workspace_target.join(profile).join(&sidecar_bin_name);
+    // Wrapper crate's `.cargo/config.toml` directs all build output
+    // to `cargo_target`; cargo writes the binaries under
+    // `<cargo_target>/<profile>/<binary-name>`.
+    let host_binary = cargo_target.join(profile).join(&host_bin_name);
+    let sidecar_binary = cargo_target.join(profile).join(&sidecar_bin_name);
 
     for (label, path) in [
         ("host", &host_binary),
@@ -232,17 +235,18 @@ fn sidecar_binary_name(project_name: &str) -> String {
 fn generate_sidecar_wrapper(
     sidecar_dir: &Path,
     project_dir: &Path,
-    workspace_root: &Path,
+    source: &FrameworkSource,
+    cargo_target: &Path,
     manifest: &Manifest,
 ) -> Result<()> {
     fs::create_dir_all(sidecar_dir.join("src"))
         .with_context(|| format!("create {}", sidecar_dir.display()))?;
 
     let sidecar_name = sidecar_binary_name(&manifest.name);
-    let fcore = workspace_root.join("crates/framework/core");
-    let fhot = workspace_root.join("crates/framework/hot");
-    let dev_server = workspace_root.join("crates/dev/server");
-    let wire = workspace_root.join("crates/framework/wire");
+    let fcore_dep = source.dep("crates/framework/core", &["hot-reload"]);
+    let fhot_dep = source.dep("crates/framework/hot", &["hot", "diff"]);
+    let dev_server_dep = source.dep("crates/dev/server", &[]);
+    let wire_dep = source.dep("crates/framework/wire", &[]);
 
     let cargo_toml = format!(
         r#"# GENERATED by `idealyst build aas`. Do not edit — rewritten
@@ -266,12 +270,12 @@ edition = "2021"
 # `hot-reload` is what flips the `#[component]` macro into its split
 # form (__<Name>_hot_impl + outer dispatch via framework_hot::call).
 # Without this feature, subsecond's jump table never gets consulted.
-framework-core = {{ path = "{fcore}", features = ["hot-reload"] }}
+framework-core = {fcore_dep}
 # `hot` is subsecond's runtime; `diff` pulls in the symbol-diff
 # generator the sidecar uses to verify patches before applying.
-framework-hot = {{ path = "{fhot}", features = ["hot", "diff"] }}
-dev-server = {{ path = "{dev_server}" }}
-wire = {{ path = "{wire}" }}
+framework-hot = {fhot_dep}
+dev-server = {dev_server_dep}
+wire = {wire_dep}
 {user_name} = {{ path = "{user_path}" }}
 # JumpTable + AddressMap, deserialized from ApplyPatch frames sent
 # by the host. The host owns construction; the sidecar just
@@ -290,13 +294,14 @@ debug = 0
 strip = "debuginfo"
 "#,
         sidecar_name = sidecar_name,
-        fcore = fcore.display(),
-        fhot = fhot.display(),
-        dev_server = dev_server.display(),
-        wire = wire.display(),
+        fcore_dep = fcore_dep,
+        fhot_dep = fhot_dep,
+        dev_server_dep = dev_server_dep,
+        wire_dep = wire_dep,
         user_name = manifest.name,
         user_path = project_dir.display(),
     );
+
 
     let main_rs = format!(
         r#"//! GENERATED by `idealyst build aas`. Sidecar binary for the
@@ -608,7 +613,7 @@ fn dispatch_app_to_dev(recorder: &WireRecordingBackend, msg: wire::AppToDev) {{
         lib = manifest.lib_name,
     );
 
-    write_shared_target_config(sidecar_dir, workspace_root)?;
+    write_shared_target_config(sidecar_dir, cargo_target)?;
     fs::write(sidecar_dir.join("Cargo.toml"), cargo_toml)?;
     fs::write(sidecar_dir.join("src/main.rs"), main_rs)?;
     Ok(())
@@ -622,15 +627,16 @@ fn generate_host_wrapper(
     wrapper_dir: &Path,
     sidecar_dir: &Path,
     project_dir: &Path,
-    workspace_root: &Path,
+    source: &FrameworkSource,
+    cargo_target: &Path,
     manifest: &Manifest,
 ) -> Result<()> {
     fs::create_dir_all(wrapper_dir.join("src"))
         .with_context(|| format!("create {}", wrapper_dir.display()))?;
 
     let wrapper_name = host_binary_name(&manifest.name);
-    let dev_server = workspace_root.join("crates/dev/server");
-    let build_aas = workspace_root.join("crates/build/aas");
+    let dev_server_dep = source.dep("crates/dev/server", &[]);
+    let build_aas_dep = source.dep("crates/build/aas", &[]);
 
     let cargo_toml = format!(
         r#"# GENERATED by `idealyst build aas`. Do not edit — rewritten
@@ -650,11 +656,11 @@ version = "0.0.1"
 edition = "2021"
 
 [dependencies]
-dev-server = {{ path = "{dev_server}" }}
+dev-server = {dev_server_dep}
 # Owns the hot-patch builder: captured-rustc replay, stub-object
 # synthesis, dylib link, jump-table construction. The host owns
 # this work because the sidecar shouldn't take a build-tools dep.
-build-aas = {{ path = "{build_aas}" }}
+build-aas = {build_aas_dep}
 # Used by the host's try_hotpatch / respawn fallback ladder for
 # ergonomic error contexts. The hotpatch builder itself returns
 # anyhow::Error.
@@ -662,19 +668,17 @@ anyhow = "1"
 serde_json = "1"
 "#,
         wrapper_name = wrapper_name,
-        dev_server = dev_server.display(),
-        build_aas = build_aas.display(),
+        dev_server_dep = dev_server_dep,
+        build_aas_dep = build_aas_dep,
     );
 
     let profile_dir = "debug"; // Mirror what the sidecar lands in. The
                                // host doesn't currently support
                                // release mode through this template.
-    let sidecar_bin = workspace_root
-        .join("target")
+    let sidecar_bin = cargo_target
         .join(profile_dir)
         .join(sidecar_binary_name(&manifest.name));
     let sidecar_manifest = sidecar_dir.join("Cargo.toml");
-    let workspace_target = workspace_root.join("target");
     let user_src = project_dir.join("src");
 
     let main_rs = format!(
@@ -921,7 +925,7 @@ fn try_hotpatch(
 /// alive so connected clients pick up where they left off.
 fn respawn_sidecar(sidecar_slot: &SidecarSlot, tracker: &SessionTracker) {{
     let manifest = "{sidecar_manifest}";
-    let target_dir = "{workspace_target}";
+    let target_dir = "{cargo_target}";
     let status = std::process::Command::new("cargo")
         .args([
             "build",
@@ -965,7 +969,7 @@ fn respawn_sidecar(sidecar_slot: &SidecarSlot, tracker: &SessionTracker) {{
         sidecar_bin = sidecar_bin.display(),
         sidecar_manifest = sidecar_manifest.display(),
         user_src = user_src.display(),
-        workspace_target = workspace_target.display(),
+        cargo_target = cargo_target.display(),
         captures_dir = sidecar_dir
             .parent()
             .map(|p| p.join("captures"))
@@ -981,7 +985,7 @@ fn respawn_sidecar(sidecar_slot: &SidecarSlot, tracker: &SessionTracker) {{
             .to_string(),
     );
 
-    write_shared_target_config(wrapper_dir, workspace_root)?;
+    write_shared_target_config(wrapper_dir, cargo_target)?;
     fs::write(wrapper_dir.join("Cargo.toml"), cargo_toml)?;
     fs::write(wrapper_dir.join("src/main.rs"), main_rs)?;
     Ok(())
@@ -991,15 +995,17 @@ fn respawn_sidecar(sidecar_slot: &SidecarSlot, tracker: &SessionTracker) {{
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-/// Write a `.cargo/config.toml` that redirects builds into the
-/// workspace's shared `target/` directory. Used by both wrappers so
-/// `framework-core`, `dev-server`, etc. compile once across the
-/// host, sidecar, and any workspace builds.
-fn write_shared_target_config(dir: &Path, workspace_root: &Path) -> Result<()> {
-    let target_dir = workspace_root.join("target");
+/// Write a `.cargo/config.toml` that redirects the wrapper crate's
+/// builds into `target_dir`. For in-tree (workspace) projects this is
+/// the framework workspace's shared `target/` so common deps stay
+/// warm; for external (git-deps) projects it's the user project's
+/// own `target/` so AAS output lives alongside the rest of the
+/// project's build artifacts.
+fn write_shared_target_config(dir: &Path, target_dir: &Path) -> Result<()> {
     let config = format!(
-        "# GENERATED. Share the workspace's `target/` so common\n\
-         # dependencies aren't recompiled per-wrapper.\n\
+        "# GENERATED. Redirect this wrapper's build output to the\n\
+         # shared target dir so subsequent builds reuse the cache and\n\
+         # the resulting binary lives at a predictable path.\n\
          \n\
          [build]\n\
          target-dir = \"{}\"\n",
