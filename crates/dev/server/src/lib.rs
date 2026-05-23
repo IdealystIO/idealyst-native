@@ -27,6 +27,13 @@ use wire::{
 pub mod convert_out;
 mod scene_model;
 pub mod sidecar;
+// Always compiled — the test-support module is small and its only
+// non-trivial cost is the `tungstenite` symbols, which the crate
+// already pulls in for the production server. Keeping it
+// unconditionally available means integration tests, examples, and
+// downstream consumers all see the same surface without juggling a
+// feature flag through cargo invocations.
+pub mod test_support;
 pub mod transport;
 pub mod watch;
 

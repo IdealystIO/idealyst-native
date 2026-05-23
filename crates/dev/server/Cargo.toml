@@ -27,6 +27,13 @@ license.workspace = true
 # platform-agnostic; this server can drive any of them.
 robot = ["framework-core/robot"]
 
+# Enables `dev_server::test_support` — a `MockClient` plus helpers for
+# driving the fake-sidecar IPC. Off by default; integration tests in
+# *this* crate get it automatically through `cfg(test)`. Downstream
+# crates that want to assemble their own end-to-end tests against the
+# dev-server transport pull this feature in via dev-deps.
+test-support = []
+
 [dependencies]
 framework-core = { workspace = true }
 wire = { workspace = true }

@@ -890,19 +890,37 @@ fn broadcast_new_commands(clients: &mut Vec<ClientConn>, sessions: &SessionTable
                 mirror_epoch,
                 snapshot.len(),
             );
-            if send(&mut client.ws, &DevToApp::Commands(snapshot)).is_err() {
-                eprintln!("[dev-server] {} send failed; dropping", client.peer);
-                continue;
+            match send(&mut client.ws, &DevToApp::Commands(snapshot)) {
+                Ok(()) | Err(TransportError::WouldBlockBuffered) => {
+                    // Either fully written, or buffered inside
+                    // tungstenite — a future `flush()` (next tick)
+                    // pushes the rest. Either way the message is
+                    // committed; advance bookkeeping.
+                    client.cursor = new_count;
+                    client.epoch = mirror_epoch;
+                }
+                Err(e) => {
+                    eprintln!("[dev-server] {} send failed: {} ; dropping", client.peer, e);
+                    continue;
+                }
             }
-            client.cursor = new_count;
-            client.epoch = mirror_epoch;
         } else if new_count > client.cursor {
             let cmds = mirror.commands_since(client.cursor);
-            if send(&mut client.ws, &DevToApp::Commands(cmds)).is_err() {
-                eprintln!("[dev-server] {} send failed; dropping", client.peer);
-                continue;
+            match send(&mut client.ws, &DevToApp::Commands(cmds)) {
+                Ok(()) | Err(TransportError::WouldBlockBuffered) => {
+                    client.cursor = new_count;
+                }
+                Err(e) => {
+                    eprintln!("[dev-server] {} send failed: {} ; dropping", client.peer, e);
+                    continue;
+                }
             }
-            client.cursor = new_count;
+        } else {
+            // No new data this tick. Try to push out anything
+            // tungstenite has buffered from a prior WouldBlock —
+            // otherwise it'd sit there indefinitely on a quiet
+            // socket. WouldBlock from flush is benign.
+            let _ = flush_best_effort(&mut client.ws);
         }
         keep.push(client);
     }
@@ -934,9 +952,38 @@ where
     S: std::io::Read + std::io::Write,
 {
     let bytes = serde_json::to_vec(msg).map_err(|e| TransportError::Encode(e.to_string()))?;
-    ws.send(Message::Binary(bytes.into()))
-        .map_err(TransportError::Tungstenite)?;
-    Ok(())
+    match ws.send(Message::Binary(bytes.into())) {
+        Ok(()) => Ok(()),
+        // `send()` internally calls `write()` (buffers the frame
+        // into tungstenite's outgoing queue) followed by `flush()`
+        // (drains the queue onto the underlying socket). On a
+        // non-blocking socket, flush returns WouldBlock when the
+        // kernel send buffer can't take the whole frame in one go —
+        // e.g. a big initial render of a complex scene. The frame is
+        // safely buffered inside tungstenite; the next tick's
+        // [`flush_best_effort`] drains it. Treat this as a deferred
+        // success rather than a fatal send error.
+        Err(tungstenite::Error::Io(e)) if e.kind() == ErrorKind::WouldBlock => {
+            Err(TransportError::WouldBlockBuffered)
+        }
+        Err(e) => Err(TransportError::Tungstenite(e)),
+    }
+}
+
+/// Drain any bytes tungstenite has buffered internally from a prior
+/// WouldBlock send. WouldBlock from `flush` itself is benign — the
+/// kernel still can't take more right now; we'll try again next tick.
+/// Any non-WouldBlock error is propagated so the caller can decide
+/// whether to drop the client.
+fn flush_best_effort<S>(ws: &mut WebSocket<S>) -> Result<(), TransportError>
+where
+    S: std::io::Read + std::io::Write,
+{
+    match ws.flush() {
+        Ok(()) => Ok(()),
+        Err(tungstenite::Error::Io(e)) if e.kind() == ErrorKind::WouldBlock => Ok(()),
+        Err(e) => Err(TransportError::Tungstenite(e)),
+    }
 }
 
 /// Like [`serve`] but also drives a Robot bridge handle once per
@@ -998,6 +1045,12 @@ pub enum TransportError {
     Tungstenite(tungstenite::Error),
     Encode(String),
     Decode(String),
+    /// `send()` accepted the message into tungstenite's outgoing
+    /// queue but the underlying non-blocking socket couldn't take it
+    /// all this tick. Callers should treat this as a deferred
+    /// success: advance bookkeeping (the message *is* committed) and
+    /// let the next tick's `flush_best_effort` finish the I/O.
+    WouldBlockBuffered,
 }
 
 impl From<std::io::Error> for TransportError {
@@ -1014,6 +1067,9 @@ impl std::fmt::Display for TransportError {
             TransportError::Tungstenite(e) => write!(f, "websocket: {}", e),
             TransportError::Encode(s) => write!(f, "encode: {}", s),
             TransportError::Decode(s) => write!(f, "decode: {}", s),
+            TransportError::WouldBlockBuffered => {
+                write!(f, "send buffered (would block, will flush next tick)")
+            }
         }
     }
 }
