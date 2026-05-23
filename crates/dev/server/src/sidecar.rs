@@ -114,7 +114,21 @@ pub enum SidecarIn {
     /// session id. If the sidecar already has a thread under the
     /// same id it drops the message — host-side dedup is the
     /// authoritative gate so this is just a safety net.
-    CreateSession { session: String },
+    ///
+    /// `viewport` carries the client's initial size, extracted from
+    /// the client's `AppToDev::Hello`. It's bundled here (rather
+    /// than sent as a separate `ViewportChanged` event afterwards)
+    /// so the session thread can apply it BEFORE `mount(app)` runs
+    /// — that way the user's `app()` (and any `effect!` it
+    /// schedules with viewport-dependent math) sees the right size
+    /// from frame zero. `None` means the client didn't report one;
+    /// the recorder's `frame()` falls back to `None` and author
+    /// code uses its hardcoded default.
+    CreateSession {
+        session: String,
+        #[serde(default)]
+        viewport: Option<wire::WireViewport>,
+    },
     /// Tell the sidecar to shut down the named session's thread. The
     /// thread drops its `Owner` (firing teardown effects) and exits.
     /// The sidecar emits [`SidecarOut::SessionEnded`] once the thread
@@ -266,6 +280,7 @@ impl Sidecar {
         }
     }
 
+
     /// Pull every `SidecarOut` frame that's arrived since the last
     /// call. Non-blocking; returns an empty vec if nothing is
     /// pending.
@@ -347,7 +362,13 @@ pub type SidecarSlot = Arc<Mutex<Option<Sidecar>>>;
 /// alive, but no author runtime emitting commands).
 #[derive(Clone, Default)]
 pub struct SessionTracker {
-    inner: Arc<Mutex<std::collections::HashSet<String>>>,
+    /// `String → last-known viewport`. The viewport is updated
+    /// whenever the host sees an `AppToDev::Hello` or `ViewportChanged`
+    /// for that session; `replay_sessions_to_sidecar` reads it so a
+    /// hot-patch respawn replays `CreateSession { viewport }` with
+    /// the correct size, instead of falling back to None and making
+    /// the next raf tick anchor at the welcome's hardcoded 393×800.
+    inner: Arc<Mutex<std::collections::HashMap<String, Option<wire::WireViewport>>>>,
 }
 
 impl SessionTracker {
@@ -357,7 +378,7 @@ impl SessionTracker {
 
     pub fn insert(&self, id: &str) {
         if let Ok(mut g) = self.inner.lock() {
-            g.insert(id.to_string());
+            g.entry(id.to_string()).or_insert(None);
         }
     }
 
@@ -367,12 +388,21 @@ impl SessionTracker {
         }
     }
 
-    /// Snapshot of the current session set. Used after sidecar
-    /// respawn to replay `CreateSession` for each known session.
-    pub fn snapshot(&self) -> Vec<String> {
+    /// Record / update the last-known viewport for `id`. Idempotent
+    /// when called repeatedly with the same value.
+    pub fn set_viewport(&self, id: &str, viewport: Option<wire::WireViewport>) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.insert(id.to_string(), viewport);
+        }
+    }
+
+    /// Snapshot of the current session set as `(id, viewport)` pairs.
+    /// Used after sidecar respawn to replay `CreateSession` for each
+    /// known session, with the viewport the client last reported.
+    pub fn snapshot(&self) -> Vec<(String, Option<wire::WireViewport>)> {
         self.inner
             .lock()
-            .map(|g| g.iter().cloned().collect())
+            .map(|g| g.iter().map(|(k, v)| (k.clone(), *v)).collect())
             .unwrap_or_default()
     }
 }
@@ -529,6 +559,13 @@ mod runtime {
     /// refactor. Passed as a function pointer so it's `Send + Sync +
     /// Copy + 'static` without any user-side adaptation.
     pub fn run(app: fn() -> Primitive) -> std::io::Result<()> {
+        // Install a SIGSEGV/SIGBUS handler so silent dylib-call
+        // crashes (from a hot-patched function jumping to a bad
+        // address) print the faulting address before the process
+        // dies. Without this the AAS log just stops mid-flow and
+        // the user can't tell what blew up.
+        crate::crash_handler::install();
+
         // Install the sidecar's `framework_core::scheduling::Scheduler`
         // impl so author code using `raf_loop_scoped` / `after_ms` /
         // `after_animation_frame` actually fires. Without this, the
@@ -582,7 +619,7 @@ mod runtime {
             };
 
             match msg {
-                SidecarIn::CreateSession { session } => {
+                SidecarIn::CreateSession { session, viewport } => {
                     if sessions.contains_key(&session) {
                         eprintln!(
                             "[aas-app] CreateSession({session}): already exists; ignoring"
@@ -592,10 +629,30 @@ mod runtime {
                     let (tx, rx) = mpsc::channel::<SessionMsg>();
                     let out_clone = out.clone();
                     let session_for_thread = session.clone();
+                    // 16 MB stack. The default 2 MB is too small for
+                    // hot-patched welcome: the patched component bodies
+                    // include large compiler-generated stack frames
+                    // (welcome's `vignette` alone allocates ~38 KB),
+                    // and `mount` → `app()` → component-via-subsecond-
+                    // dispatch chains nest deep enough that the
+                    // default stack overflows on the first re-render
+                    // after a patch lands. Symptom is a SIGBUS at
+                    // the *first instruction* of a small leaf
+                    // function (typically `Cloned::next_unchecked`'s
+                    // `stp x29, x30, [sp, #-0x10]!`) with sp pointing
+                    // outside the mapped stack region — classic
+                    // stack-overflow signature on macOS aarch64.
                     let join = std::thread::Builder::new()
                         .name(format!("aas-session-{session}"))
+                        .stack_size(16 * 1024 * 1024)
                         .spawn(move || {
-                            run_session_thread(session_for_thread, rx, out_clone, app);
+                            run_session_thread(
+                                session_for_thread,
+                                rx,
+                                out_clone,
+                                app,
+                                viewport,
+                            );
                         })
                         .expect("spawn session thread");
                     sessions.insert(session.clone(), SessionHandle { tx, join });
@@ -690,10 +747,45 @@ mod runtime {
         rx: mpsc::Receiver<SessionMsg>,
         out: Arc<Mutex<std::io::Stdout>>,
         app: fn() -> Primitive,
+        initial_viewport: Option<wire::WireViewport>,
     ) {
         let recorder = WireRecordingBackend::new();
         let backend_rc = Rc::new(RefCell::new(recorder.clone()));
-        let mut owner: Option<Owner> = Some(mount(backend_rc.clone(), app));
+        // Plant the viewport BEFORE `mount` runs. The user's `app()`
+        // executes inside `mount`'s root scope and may immediately
+        // schedule effects/timers that read `page_ref.with(|h|
+        // h.frame())`; without setting the viewport first those
+        // first reads see `None` and fall through to the welcome's
+        // hardcoded 393×800 fallback. The matching `ViewportChanged`
+        // event still updates it on subsequent resizes — see
+        // `dispatch_app_to_dev`.
+        if let Some(v) = initial_viewport {
+            crate::set_session_viewport(v.width, v.height);
+        }
+        // `framework_hot::with_retry` wraps the mount in subsecond's
+        // catch-unwind / auto-retry loop. This is the idiomatic
+        // Dioxus pattern: when patched code reached via
+        // `framework_hot::call(__Component_hot_impl, ...)` makes a
+        // call against a stale function pointer, subsecond raises
+        // `HotFnPanic`; without this outer `with_retry` boundary,
+        // that panic kills the session thread, the host's IPC
+        // channel never sees a clean error, and the user sees a
+        // silently-frozen UI after the first hot-patch. With the
+        // boundary, the call retries against the fresh jump table.
+        // `framework_hot::with_retry` wraps the mount in subsecond's
+        // catch-unwind / auto-retry loop. This is the idiomatic
+        // Dioxus pattern: when patched code reached via
+        // `framework_hot::call(__Component_hot_impl, ...)` makes a
+        // call against a stale function pointer, subsecond raises
+        // `HotFnPanic`; without this outer `with_retry` boundary,
+        // that panic kills the session thread, the host's IPC
+        // channel never sees a clean error, and the user sees a
+        // silently-frozen UI after the first hot-patch. With the
+        // boundary, the call retries against the fresh jump table.
+        let backend_for_mount = backend_rc.clone();
+        let mut owner: Option<Owner> = Some(framework_hot::with_retry(|| {
+            mount(backend_for_mount.clone(), app)
+        }));
         let mut cursor = recorder.command_count();
 
         // Ship the initial render's snapshot up to the host.
@@ -730,10 +822,47 @@ mod runtime {
                     // `reset_log_and_scene` runs, because Drop fires
                     // signal-cleanup effects that may still try to
                     // touch the recorder's scene state.
-                    drop(owner.take());
+                    eprintln!("[aas-app] {session}: rerender step 1/4 — dropping old owner");
+                    let drop_result = std::panic::catch_unwind(
+                        std::panic::AssertUnwindSafe(|| drop(owner.take())),
+                    );
+                    if let Err(e) = drop_result {
+                        let msg = panic_payload_to_string(&e);
+                        eprintln!(
+                            "[aas-app] {session}: PANIC during old-owner drop: {msg} — \
+                             session is now in a degraded state; sidecar will respawn shortly"
+                        );
+                        return;
+                    }
+                    eprintln!("[aas-app] {session}: rerender step 2/4 — resetting recorder");
                     recorder.reset_log_and_scene();
-                    owner = Some(mount(backend_rc.clone(), app));
+                    eprintln!("[aas-app] {session}: rerender step 3/4 — calling patched app()");
+                    let backend_for_mount = backend_rc.clone();
+                    let mount_result = std::panic::catch_unwind(
+                        std::panic::AssertUnwindSafe(|| {
+                            framework_hot::with_retry(|| {
+                                mount(backend_for_mount.clone(), app)
+                            })
+                        }),
+                    );
+                    let new_owner = match mount_result {
+                        Ok(o) => o,
+                        Err(e) => {
+                            let msg = panic_payload_to_string(&e);
+                            eprintln!(
+                                "[aas-app] {session}: PANIC during patched mount(app): {msg} — \
+                                 session is now stuck on the old code"
+                            );
+                            return;
+                        }
+                    };
+                    owner = Some(new_owner);
                     cursor = 0;
+                    eprintln!(
+                        "[aas-app] {session}: rerender step 4/4 — sending SessionReset to host \
+                         ({} commands queued)",
+                        recorder.command_count()
+                    );
                     if let Ok(mut o) = out.lock() {
                         let _ = write_frame(
                             &mut *o,
@@ -775,10 +904,35 @@ mod runtime {
     /// sidecar because the recorder here is the one with registered
     /// handler closures — the host's recorder is purely a transport
     /// mirror.
+    /// Extract a printable message from a `catch_unwind` payload.
+    /// Most Rust panics carry a `&'static str` or `String`; anything
+    /// else gets a generic placeholder.
+    fn panic_payload_to_string(e: &Box<dyn std::any::Any + Send>) -> String {
+        if let Some(s) = e.downcast_ref::<&'static str>() {
+            (*s).to_string()
+        } else if let Some(s) = e.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "<non-string panic payload>".to_string()
+        }
+    }
+
     fn dispatch_app_to_dev(recorder: &WireRecordingBackend, msg: wire::AppToDev) {
         use wire::AppToDev::*;
         match msg {
-            Hello { .. } => {}
+            Hello { viewport, .. } => {
+                // Capture the client's initial viewport so the first
+                // raf tick's planet-orbit math sees the right size.
+                // Without this, welcome's `page_ref.with(|h| h.frame())`
+                // returns None and the orbits anchor at the
+                // hardcoded 393×800 fallback.
+                if let Some(v) = viewport {
+                    crate::set_session_viewport(v.width, v.height);
+                }
+            }
+            ViewportChanged { width, height } => {
+                crate::set_session_viewport(width, height);
+            }
             Event { handler, args } => {
                 let _ = recorder.dispatch_event(handler, args);
             }
@@ -807,8 +961,30 @@ mod runtime {
                 // commands on the recorder, which flush back to the
                 // client via the session's normal command-drain at
                 // the end of this iteration.
+                //
+                // Wrap in `catch_unwind` because a patched raf closure
+                // (welcome's `coordinator::use_welcome` is the canonical
+                // example) can carry a stale `HotFnPanic` from a child
+                // `subsecond::call` against a pre-patch symbol. Without
+                // the catch, the panic unwinds the whole session
+                // thread, channel closes, host can't recover the
+                // session — see subsecond's docs: "stale call sites
+                // emit a safe panic that is automatically caught and
+                // retried by the next call instance up the callstack."
+                // We're that "next call up" here.
                 let dt = std::time::Duration::from_millis(dt_ms as u64);
-                recorder.tick_animations(dt);
+                if let Err(e) = std::panic::catch_unwind(
+                    std::panic::AssertUnwindSafe(|| {
+                        framework_hot::with_retry(|| recorder.tick_animations(dt))
+                    }),
+                ) {
+                    let msg = panic_payload_to_string(&e);
+                    eprintln!(
+                        "[aas-app] tick_animations panicked: {msg} — likely a stale \
+                         hot-patch call site that didn't get caught by the inner \
+                         `with_retry`; will retry on next RequestFrame"
+                    );
+                }
             }
             Error { message } => {
                 eprintln!("[aas-app] client reported error: {message}");

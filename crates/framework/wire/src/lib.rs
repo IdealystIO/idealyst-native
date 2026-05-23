@@ -97,7 +97,7 @@ use serde::{Deserialize, Serialize};
 /// `SetAnimated*` commands back. Animations now stop when the tab is
 /// backgrounded (browser throttles raf) and adapt to client framerate
 /// — no wasted dev-host CPU on a quiet client.
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// Alias retained for code/docs that reference `WIRE_VERSION` rather
 /// than the canonical [`PROTOCOL_VERSION`] name. Both point at the same
@@ -212,6 +212,17 @@ pub enum AppToDev {
         /// values for any field.
         #[serde(default)]
         identity: ClientIdentity,
+        /// Initial viewport in CSS pixels (web: `window.innerWidth`
+        /// / `innerHeight`; native: the root window's content size).
+        /// The sidecar feeds this to `RecordingViewOps::frame(...)`
+        /// so author code reading `page_ref.with(|h| h.frame())`
+        /// gets a sensible answer per-session — without it, the
+        /// recorder returns `None` and welcome's planet orbits fall
+        /// back to a hardcoded 393×800 (wrong for any other
+        /// browser size). `None` from older clients means "use the
+        /// fallback".
+        #[serde(default)]
+        viewport: Option<WireViewport>,
     },
 
     /// A user-driven event fired against a registered handler.
@@ -277,8 +288,28 @@ pub enum AppToDev {
     /// mode every session has its own client, so no dedup needed.
     RequestFrame { dt_ms: u32 },
 
+    /// Viewport changed (resize, orientation change, devtools toggle).
+    /// Sidecar updates its per-session viewport so subsequent
+    /// `RecordingViewOps::frame(...)` calls return the new size and
+    /// raf-driven positioning math re-centres correctly. Web sends
+    /// from a `resize` event listener; native sends on window /
+    /// trait collection changes.
+    ViewportChanged { width: f32, height: f32 },
+
     /// App-side error. Lets dev surface backend panics.
     Error { message: String },
+}
+
+/// Initial viewport in CSS pixels, attached to [`AppToDev::Hello`].
+/// Same shape as a [`ViewportChanged`](AppToDev::ViewportChanged) but
+/// inside the connection handshake so the sidecar has a sane viewport
+/// from frame zero — without this, the first raf tick would compute
+/// positions against the 393×800 fallback before the resize listener
+/// has a chance to send a corrective `ViewportChanged`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct WireViewport {
+    pub width: f32,
+    pub height: f32,
 }
 
 /// Self-description a client sends in [`AppToDev::Hello`]. The server
@@ -948,6 +979,109 @@ pub struct WireStyleRules {
     pub font_weight: Option<WireFontWeight>,
     pub font_family: Option<WireFontFamily>,
     pub text_align: Option<WireTextAlign>,
+
+    // --- Position (added in PROTOCOL_VERSION 8). `#[serde(default)]`
+    // so v7 sidecars/clients that omit these fields still decode. ---
+    #[serde(default)]
+    pub position: Option<WirePosition>,
+    #[serde(default)]
+    pub top: Option<WireLength>,
+    #[serde(default)]
+    pub right: Option<WireLength>,
+    #[serde(default)]
+    pub bottom: Option<WireLength>,
+    #[serde(default)]
+    pub left: Option<WireLength>,
+
+    // --- Visual extras the welcome example (and most apps) need to
+    // render correctly. Pre-v8 sidecars dropped these on the floor,
+    // which is why AAS-hosted welcome showed only the headline text:
+    // sun glare / vignette / planets all relied on background_gradient
+    // + position:absolute + transform + overflow:hidden, none of which
+    // crossed the wire. ---
+    #[serde(default)]
+    pub overflow: Option<WireOverflow>,
+    #[serde(default)]
+    pub transform: Option<Vec<WireTransform>>,
+    #[serde(default)]
+    pub background_gradient: Option<WireGradient>,
+}
+
+/// Wire mirror of `framework_core::Position`. The mobile-flavored
+/// subset — only the two positioning models that have consistent
+/// semantics across UIKit, Android view system, and CSS.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum WirePosition {
+    Relative,
+    Absolute,
+}
+
+/// Wire mirror of `framework_core::Overflow`. Currently `Visible` /
+/// `Hidden` only — matches the local enum.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum WireOverflow {
+    Visible,
+    Hidden,
+}
+
+/// Wire mirror of `framework_core::Transform`. The stack of transform
+/// operations applied to a view's layer/element in order — same
+/// shape as React Native's `transform: [...]`. Each variant carries
+/// only the parameters specific to that operation.
+///
+/// Translates carry [`WireLength`] (rather than raw f32) so the dev
+/// side can emit `px` or `%` and the client picks the right CSS /
+/// CALayer translation form.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum WireTransform {
+    TranslateX(WireLength),
+    TranslateY(WireLength),
+    Scale(f32),
+    ScaleXY { x: f32, y: f32 },
+    Rotate(f32),
+    SkewX(f32),
+    SkewY(f32),
+}
+
+/// Wire mirror of `framework_core::Gradient`. See the local type for
+/// per-backend mapping; on the wire we just ship the kind + the
+/// pre-resolved color stops. The dev side has already run token
+/// resolution against the active theme by the time this serializes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireGradient {
+    pub kind: WireGradientKind,
+    pub stops: Vec<WireGradientStop>,
+}
+
+/// Wire mirror of `framework_core::GradientStop`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireGradientStop {
+    pub offset: f32,
+    pub color: WireColor,
+}
+
+/// Wire mirror of `framework_core::GradientKind`. Linear gradients
+/// carry an axis angle (CSS conventions: 0 = bottom→top, 90 =
+/// left→right). Radials carry a normalized center, a radius
+/// multiplier, and a reference-distance keyword.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum WireGradientKind {
+    Linear {
+        angle_deg: f32,
+    },
+    Radial {
+        center: (f32, f32),
+        radius: f32,
+        extent: WireRadialExtent,
+    },
+}
+
+/// Wire mirror of `framework_core::RadialExtent`. Mirrors CSS's
+/// `radial-gradient` extent keywords.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum WireRadialExtent {
+    ClosestSide,
+    FarthestCorner,
 }
 
 /// Wire mirror of `framework_core::FontFamily`. The `Typeface`

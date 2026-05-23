@@ -109,7 +109,7 @@ fn recv_n_create_sessions(
     let mut found = Vec::new();
     while found.len() < n && Instant::now() < deadline {
         match rx.recv_timeout(Duration::from_millis(50)) {
-            Ok(SidecarIn::CreateSession { session }) => found.push(session),
+            Ok(SidecarIn::CreateSession { session, .. }) => found.push(session),
             Ok(_) => continue,
             Err(_) => continue,
         }
@@ -199,7 +199,7 @@ fn shared_mode_all_clients_land_on_one_session() {
     let mut creates = 0;
     let deadline = Instant::now() + Duration::from_secs(1);
     while Instant::now() < deadline {
-        if let Ok(SidecarIn::CreateSession { session }) =
+        if let Ok(SidecarIn::CreateSession { session, .. }) =
             fake_in_rx.recv_timeout(Duration::from_millis(100))
         {
             assert_eq!(session, "shared");

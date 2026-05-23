@@ -11,15 +11,17 @@ use framework_core::accessibility::{AccessibilityProps, LiveRegionPriority, Role
 use framework_core::primitives;
 use framework_core::{
     AlignItems, AssetId, AssetSource, AssetTag, Color, Easing, FlexDirection, FontFamily,
-    FontStyle, FontWeight, JustifyContent, Length, StateBits, StyleRules, SystemFallback,
-    TextAlign, Tokenized, TypefaceFace, TypefaceId,
+    FontStyle, FontWeight, Gradient, GradientKind, GradientStop, JustifyContent, Length, Overflow,
+    Position, RadialExtent, StateBits, StyleRules, SystemFallback, TextAlign, Tokenized,
+    Transform, TypefaceFace, TypefaceId,
 };
 use wire::{
     AssetId as WireAssetId, TypefaceId as WireTypefaceId, WireAccessibilityAction,
     WireAccessibilityProps, WireAlignItems, WireAssetSource, WireAssetTag, WireColor, WireEasing,
-    WireFillRule, WireFlexDirection, WireFontFamily, WireFontStyle, WireFontWeight, WireIconData,
-    WireJustifyContent, WireLength, WireLiveRegionPriority, WireRole, WireStateBit,
-    WireStyleRules, WireSystemFallback, WireTextAlign, WireTypefaceFace,
+    WireFillRule, WireFlexDirection, WireFontFamily, WireFontStyle, WireFontWeight, WireGradient,
+    WireGradientKind, WireGradientStop, WireIconData, WireJustifyContent, WireLength,
+    WireLiveRegionPriority, WireOverflow, WirePosition, WireRadialExtent, WireRole, WireStateBit,
+    WireStyleRules, WireSystemFallback, WireTextAlign, WireTransform, WireTypefaceFace,
 };
 
 use crate::HandlerTable;
@@ -216,6 +218,78 @@ pub fn style_rules_to_wire(r: &StyleRules) -> WireStyleRules {
         font_weight: r.font_weight.map(font_weight_to_wire),
         font_family: r.font_family.as_ref().map(font_family_to_wire),
         text_align: r.text_align.map(text_align_to_wire),
+
+        position: r.position.map(position_to_wire),
+        top: r.top.as_ref().map(tokenized_length),
+        right: r.right.as_ref().map(tokenized_length),
+        bottom: r.bottom.as_ref().map(tokenized_length),
+        left: r.left.as_ref().map(tokenized_length),
+
+        overflow: r.overflow.map(overflow_to_wire),
+        transform: r.transform.as_ref().map(|t| {
+            t.iter().map(transform_to_wire).collect()
+        }),
+        background_gradient: r.background_gradient.as_ref().map(gradient_to_wire),
+    }
+}
+
+pub fn position_to_wire(p: Position) -> WirePosition {
+    match p {
+        Position::Relative => WirePosition::Relative,
+        Position::Absolute => WirePosition::Absolute,
+    }
+}
+
+pub fn overflow_to_wire(o: Overflow) -> WireOverflow {
+    match o {
+        Overflow::Visible => WireOverflow::Visible,
+        Overflow::Hidden => WireOverflow::Hidden,
+    }
+}
+
+pub fn transform_to_wire(t: &Transform) -> WireTransform {
+    match t {
+        Transform::TranslateX(l) => WireTransform::TranslateX(length_to_wire(*l)),
+        Transform::TranslateY(l) => WireTransform::TranslateY(length_to_wire(*l)),
+        Transform::Scale(s) => WireTransform::Scale(*s),
+        Transform::ScaleXY { x, y } => WireTransform::ScaleXY { x: *x, y: *y },
+        Transform::Rotate(deg) => WireTransform::Rotate(*deg),
+        Transform::SkewX(deg) => WireTransform::SkewX(*deg),
+        Transform::SkewY(deg) => WireTransform::SkewY(*deg),
+    }
+}
+
+pub fn gradient_to_wire(g: &Gradient) -> WireGradient {
+    WireGradient {
+        kind: gradient_kind_to_wire(&g.kind),
+        stops: g.stops.iter().map(gradient_stop_to_wire).collect(),
+    }
+}
+
+pub fn gradient_kind_to_wire(k: &GradientKind) -> WireGradientKind {
+    match k {
+        GradientKind::Linear { angle_deg } => WireGradientKind::Linear {
+            angle_deg: *angle_deg,
+        },
+        GradientKind::Radial { center, radius, extent } => WireGradientKind::Radial {
+            center: *center,
+            radius: *radius,
+            extent: radial_extent_to_wire(*extent),
+        },
+    }
+}
+
+pub fn gradient_stop_to_wire(s: &GradientStop) -> WireGradientStop {
+    WireGradientStop {
+        offset: s.offset,
+        color: color_to_wire(&s.color),
+    }
+}
+
+pub fn radial_extent_to_wire(e: RadialExtent) -> WireRadialExtent {
+    match e {
+        RadialExtent::ClosestSide => WireRadialExtent::ClosestSide,
+        RadialExtent::FarthestCorner => WireRadialExtent::FarthestCorner,
     }
 }
 

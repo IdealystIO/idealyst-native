@@ -243,6 +243,31 @@ pub fn run(
 
     replay_sessions_to_sidecar(&sidecar_slot, &session_tracker);
 
+    // NOTE: an earlier version of this file also spawned a 500ms
+    // `try_wait` liveness watcher that auto-respawned on silent
+    // sidecar crashes. It got reverted because respawn doesn't
+    // resynchronize the host's per-session mirror with the fresh
+    // sidecar's fresh-mount commands — existing client tabs ended up
+    // seeing a frozen-but-stale UI (the mirror double-up-ed: old
+    // CreateView/Insert + new CreateView/Insert for the same NodeIds).
+    //
+    // The clean fix needs: on detected sidecar death, force-close
+    // every attached client WS so they reconnect from scratch (new
+    // session id, fresh mirror, fresh mount). That's plumbing that
+    // crosses host.rs ↔ transport.rs and warrants a focused design
+    // pass. Until then: the fail-fast in
+    // `crates/build/aas/src/hotpatch/stub.rs` catches the most
+    // common crash class (Rust-internal monomorphization deferrals)
+    // up-front, routing through the existing `try_hotpatch` →
+    // `respawn_sidecar` fallback — which DOES coordinate mirror
+    // state because it runs synchronously through the watch loop.
+    //
+    // For other crash modes (e.g. `_sin`/`_cos`-only deferrals that
+    // still SIGSEGV the rerender path on some incremental-build
+    // states), the recovery is currently: Ctrl-C + restart
+    // `idealyst dev --aas`. Or set `IDEALYST_AAS_NO_HOTPATCH=1` to
+    // force every edit through the respawn path.
+
     let session_mode = SessionMode::from_env();
     eprintln!(
         "[aas-host] starting (advertising app_id={} via mDNS, session mode = {:?})",
@@ -277,8 +302,8 @@ fn replay_sessions_to_sidecar(slot: &SidecarSlot, tracker: &SessionTracker) {
         "[aas-host] replaying {} session(s) to fresh sidecar",
         sessions.len(),
     );
-    for s in sessions {
-        sidecar.send(SidecarIn::CreateSession { session: s });
+    for (s, viewport) in sessions {
+        sidecar.send(SidecarIn::CreateSession { session: s, viewport });
     }
 }
 

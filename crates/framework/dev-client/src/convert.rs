@@ -12,16 +12,18 @@ use framework_core::accessibility::{
 use framework_core::primitives;
 use framework_core::{
     AlignItems, AssetId as CoreAssetId, AssetSource, AssetTag, Color, Easing, FlexDirection,
-    FontFamily, FontStyle, FontWeight, JustifyContent, Length, StateBits, StyleRules,
-    SystemFallback, TextAlign, Tokenized, TypefaceFace, TypefaceId as CoreTypefaceId,
+    FontFamily, FontStyle, FontWeight, Gradient, GradientKind, GradientStop, JustifyContent,
+    Length, Overflow, Position, RadialExtent, StateBits, StyleRules, SystemFallback, TextAlign,
+    Tokenized, Transform, TypefaceFace, TypefaceId as CoreTypefaceId,
 };
 use wire::{
     AssetId as WireAssetId, HandlerId, TypefaceId as WireTypefaceId, WireAccessibilityProps,
     WireAlignItems, WireAssetSource, WireAssetTag, WireColor, WireEasing, WireFillRule,
-    WireFlexDirection, WireFontFamily, WireFontStyle, WireFontWeight, WireIconData,
-    WireJustifyContent, WireLength, WireLiveRegionPriority, WireMountPolicy, WirePresenceState,
-    WireRole, WireScreenOptions, WireStateBit, WireStyleRules, WireSystemFallback, WireTextAlign,
-    WireTypefaceFace,
+    WireFlexDirection, WireFontFamily, WireFontStyle, WireFontWeight, WireGradient,
+    WireGradientKind, WireGradientStop, WireIconData, WireJustifyContent, WireLength,
+    WireLiveRegionPriority, WireMountPolicy, WireOverflow, WirePosition, WirePresenceState,
+    WireRadialExtent, WireRole, WireScreenOptions, WireStateBit, WireStyleRules, WireSystemFallback,
+    WireTextAlign, WireTransform, WireTypefaceFace,
 };
 
 pub fn wire_color_to_color(c: WireColor) -> Color {
@@ -301,7 +303,79 @@ pub fn wire_style_to_rules(w: WireStyleRules) -> StyleRules {
     s.font_family = w.font_family.map(wire_font_family);
     s.text_align = w.text_align.map(wire_text_align);
 
+    // PROTOCOL_VERSION 8 additions. These are what made the AAS-hosted
+    // welcome example show only the headline text — sun glare / vignette
+    // / planets all depend on position:absolute + transform +
+    // background_gradient + overflow:hidden, none of which crossed the
+    // wire in v7.
+    s.position = w.position.map(wire_position);
+    s.top = w.top.map(|l| Tokenized::Literal(wire_length(l)));
+    s.right = w.right.map(|l| Tokenized::Literal(wire_length(l)));
+    s.bottom = w.bottom.map(|l| Tokenized::Literal(wire_length(l)));
+    s.left = w.left.map(|l| Tokenized::Literal(wire_length(l)));
+    s.overflow = w.overflow.map(wire_overflow);
+    s.transform = w.transform.map(|t| t.into_iter().map(wire_transform).collect());
+    s.background_gradient = w.background_gradient.map(wire_gradient);
+
     s
+}
+
+pub fn wire_position(p: WirePosition) -> Position {
+    match p {
+        WirePosition::Relative => Position::Relative,
+        WirePosition::Absolute => Position::Absolute,
+    }
+}
+
+pub fn wire_overflow(o: WireOverflow) -> Overflow {
+    match o {
+        WireOverflow::Visible => Overflow::Visible,
+        WireOverflow::Hidden => Overflow::Hidden,
+    }
+}
+
+pub fn wire_transform(t: WireTransform) -> Transform {
+    match t {
+        WireTransform::TranslateX(l) => Transform::TranslateX(wire_length(l)),
+        WireTransform::TranslateY(l) => Transform::TranslateY(wire_length(l)),
+        WireTransform::Scale(s) => Transform::Scale(s),
+        WireTransform::ScaleXY { x, y } => Transform::ScaleXY { x, y },
+        WireTransform::Rotate(deg) => Transform::Rotate(deg),
+        WireTransform::SkewX(deg) => Transform::SkewX(deg),
+        WireTransform::SkewY(deg) => Transform::SkewY(deg),
+    }
+}
+
+pub fn wire_gradient(g: WireGradient) -> Gradient {
+    Gradient {
+        kind: wire_gradient_kind(g.kind),
+        stops: g.stops.into_iter().map(wire_gradient_stop).collect(),
+    }
+}
+
+pub fn wire_gradient_kind(k: WireGradientKind) -> GradientKind {
+    match k {
+        WireGradientKind::Linear { angle_deg } => GradientKind::Linear { angle_deg },
+        WireGradientKind::Radial { center, radius, extent } => GradientKind::Radial {
+            center,
+            radius,
+            extent: wire_radial_extent(extent),
+        },
+    }
+}
+
+pub fn wire_gradient_stop(s: WireGradientStop) -> GradientStop {
+    GradientStop {
+        offset: s.offset,
+        color: wire_color_to_color(s.color),
+    }
+}
+
+pub fn wire_radial_extent(e: WireRadialExtent) -> RadialExtent {
+    match e {
+        WireRadialExtent::ClosestSide => RadialExtent::ClosestSide,
+        WireRadialExtent::FarthestCorner => RadialExtent::FarthestCorner,
+    }
 }
 
 /// `WireFontFamily::Typeface` only carries an id — the dev side

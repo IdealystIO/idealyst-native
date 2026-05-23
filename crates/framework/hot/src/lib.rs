@@ -58,6 +58,30 @@
 #[cfg(feature = "hot")]
 pub use subsecond::{HotFn, HotFnPanic, JumpTable, PatchError};
 
+/// Wrap `f` in subsecond's auto-retry catch-unwind boundary. This
+/// is the idiomatic top-level hot-patch entry point — host glue
+/// that mounts user code should call into the user's `app` through
+/// here so stale [`HotFnPanic`]s from nested `framework_hot::call`
+/// dispatches get caught + retried with the freshly-patched code
+/// path. Without this boundary, a stale call from inside the
+/// patched code's children unwinds straight through `mount` and
+/// kills the calling thread, manifesting as a silently-frozen UI
+/// after the patch lands.
+///
+/// In feature-off mode this is a direct call — no panic handling,
+/// no jump-table dispatch.
+#[cfg(feature = "hot")]
+#[inline]
+pub fn with_retry<O>(f: impl FnMut() -> O) -> O {
+    subsecond::call(f)
+}
+
+#[cfg(not(feature = "hot"))]
+#[inline(always)]
+pub fn with_retry<O>(mut f: impl FnMut() -> O) -> O {
+    f()
+}
+
 /// Dispatch `f(args)` through the global hot-reload jump table when
 /// the `hot` feature is on; otherwise call `f(args)` directly. The
 /// generic constraint matches subsecond's `HotFunction` trait so the

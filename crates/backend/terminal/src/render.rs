@@ -3,10 +3,22 @@
 //! escaped bytes and dumps it to stdout.
 
 use framework_core::color::Rgba;
-use framework_core::{GradientKind, RadialExtent};
+use framework_core::{GradientKind, Length, RadialExtent};
 
 use crate::node::{NodeData, NodeKind, ResolvedGradient};
 use crate::TerminalBackend;
+
+/// Resolve `Length::Px` / `Length::Percent` / `Length::Auto` against
+/// `basis` (the node's laid-out size on the matching axis). Used to
+/// realise static `transform: [translate(...)]` whose percent values
+/// reference the node's OWN size.
+pub(crate) fn resolve_length_against(l: &Length, basis: f32) -> f32 {
+    match l {
+        Length::Px(v) => *v,
+        Length::Percent(v) => basis * v / 100.0,
+        Length::Auto => 0.0,
+    }
+}
 
 /// One terminal cell. `glyph` is the visible char; `fg` / `bg` are
 /// optional foreground / background colors (None = terminal default).
@@ -79,25 +91,48 @@ impl TerminalBackend {
         // land back in cells.
         self.layout.compute(root_layout, cols as f32 * cw, rows as f32 * ch);
 
-        self.paint_node(root_id, 0.0, 0.0, &mut grid);
+        self.paint_node(root_id, 0.0, 0.0, 1.0, &mut grid);
         grid
     }
 
-    fn paint_node(&self, id: u32, parent_x: f32, parent_y: f32, grid: &mut Grid) {
+    fn paint_node(
+        &self,
+        id: u32,
+        parent_x: f32,
+        parent_y: f32,
+        parent_opacity: f32,
+        grid: &mut Grid,
+    ) {
         let Some(data) = self.nodes.get(&id) else { return };
-        if data.opacity <= 0.0 {
-            // Fully transparent — skip the subtree entirely. Children
-            // inherit opacity multiplicatively, so 0 here = 0 everywhere
-            // below.
+        // Effective opacity composes multiplicatively down the tree —
+        // a vignette wrapper at `opacity: 0.0` hides every band
+        // beneath it without each band needing its own zero.
+        let effective_opacity = parent_opacity * data.opacity;
+        if effective_opacity <= 0.0 {
             return;
         }
         let frame = self.layout.frame_of(data.layout);
         let (cw, ch) = self.cell_size;
+        // Static `transform: [translate(...)]` resolves against the
+        // node's own laid-out size (`Length::Percent` semantics).
+        // The animation-driven translate composes additively on top.
+        let static_tx = data
+            .static_translate_x
+            .as_ref()
+            .map(|l| resolve_length_against(l, frame.width))
+            .unwrap_or(0.0);
+        let static_ty = data
+            .static_translate_y
+            .as_ref()
+            .map(|l| resolve_length_against(l, frame.height))
+            .unwrap_or(0.0);
+        let total_tx = data.translate_x + static_tx;
+        let total_ty = data.translate_y + static_ty;
         // Convert frame + translate from layout px to cell space.
         // `parent_x` / `parent_y` are already in cells (paint recurses
         // through `paint_node` with cell-space coords).
-        let x = parent_x + (frame.x + data.translate_x) / cw;
-        let y = parent_y + (frame.y + data.translate_y) / ch;
+        let x = parent_x + (frame.x + total_tx) / cw;
+        let y = parent_y + (frame.y + total_ty) / ch;
         let w = frame.width / cw;
         let h = frame.height / ch;
         // Inline `cell_size` into a local alias the rest of the
@@ -120,9 +155,9 @@ impl TerminalBackend {
         //    stay circular even when the cell aspect ratio (~2:1
         //    height-to-width) would otherwise squash them.
         if let Some(gradient) = data.gradient.as_ref() {
-            paint_gradient(grid, x, y, w, h, data.opacity, gradient, (cw, ch));
+            paint_gradient(grid, x, y, w, h, effective_opacity, gradient, (cw, ch));
         } else if let Some(mut bg) = effective_bg {
-            bg.a = ((bg.a as f32) * data.opacity).round() as u8;
+            bg.a = ((bg.a as f32) * effective_opacity).round() as u8;
             if bg.a > 0 {
                 paint_rect_bg(grid, x, y, w, h, bg);
             }
@@ -134,7 +169,7 @@ impl TerminalBackend {
         // control isn't useful at character resolution.
         if border_requested(data) {
             let mut color = effective_fg.unwrap_or(Rgba::new(180, 180, 180, 255));
-            color.a = ((color.a as f32) * data.opacity).round() as u8;
+            color.a = ((color.a as f32) * effective_opacity).round() as u8;
             paint_border(grid, x, y, w, h, color, effective_bg);
         }
 
@@ -143,7 +178,7 @@ impl TerminalBackend {
         match data.kind {
             NodeKind::Text | NodeKind::Button => {
                 let mut fg = effective_fg.unwrap_or(default_fg(data));
-                fg.a = ((fg.a as f32) * data.opacity).round() as u8;
+                fg.a = ((fg.a as f32) * effective_opacity).round() as u8;
                 paint_text(grid, &data.content, x, y, w, h, fg, effective_bg);
             }
             NodeKind::Toggle => {
@@ -222,10 +257,34 @@ impl TerminalBackend {
         }
 
         // 4. Recurse into children. Children paint OVER the parent's
-        // background, so order matters.
-        for &cid in &data.children {
-            self.paint_node(cid, x, y, grid);
+        // background; siblings with higher `z_index` paint over
+        // siblings with lower. Tree-insertion order is the
+        // tiebreaker (matches every other backend's "siblings later
+        // in the tree win when z-index is equal" posture).
+        for cid in self.children_in_z_order(&data.children) {
+            self.paint_node(cid, x, y, effective_opacity, grid);
         }
+    }
+}
+
+impl TerminalBackend {
+    /// Order a list of child ids by `(z_index ASC, original_index ASC)`.
+    /// Stable sort over `original_index` keeps siblings with equal
+    /// z in their tree order. Used by both the paint walker and the
+    /// hit-tester — clicks should land on whatever paints visually
+    /// on top.
+    pub(crate) fn children_in_z_order(&self, children: &[u32]) -> Vec<u32> {
+        let mut paired: Vec<(usize, u32, f32)> = children
+            .iter()
+            .enumerate()
+            .map(|(idx, &id)| {
+                let z = self.nodes.get(&id).map(|d| d.z_index).unwrap_or(0.0);
+                (idx, id, z)
+            })
+            .collect();
+        // Sort by z ascending — lowest paints first (back).
+        paired.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
+        paired.into_iter().map(|(_, id, _)| id).collect()
     }
 }
 
@@ -250,6 +309,200 @@ fn border_requested(data: &NodeData) -> bool {
         || read(&style.border_left_width) > 0.0
 }
 
+/// Per-cell gradient sampler. Reads the node's frame in cells and
+/// the active `cell_size` (px-per-cell, per-axis) so radial math
+/// runs in layout-px space — that keeps a `Radial { ClosestSide }`
+/// disc circular even though the terminal's cells are roughly 2:1
+/// taller than wide.
+fn paint_gradient(
+    grid: &mut Grid,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    opacity: f32,
+    gradient: &ResolvedGradient,
+    cell_size: (f32, f32),
+) {
+    let (cw, ch) = cell_size;
+    // Frame in layout-px space (matches GradientKind::Radial's
+    // `center` and `extent` conventions, which the framework speaks).
+    let frame_w_px = w * cw;
+    let frame_h_px = h * ch;
+    if frame_w_px <= 0.0 || frame_h_px <= 0.0 || gradient.stops.is_empty() {
+        return;
+    }
+
+    // Build an effective stop array applying any animated overrides.
+    // We materialise once before the per-cell loop so the inner loop
+    // stays branch-free on the override path.
+    let effective_stops: Vec<(f32, Rgba)> = gradient
+        .stops
+        .iter()
+        .zip(gradient.animated_stops.iter())
+        .map(|((off, base), ov)| (*off, ov.unwrap_or(*base)))
+        .collect();
+
+    let x0 = x.max(0.0).floor() as i32;
+    let y0 = y.max(0.0).floor() as i32;
+    let x1 = (x + w).ceil() as i32;
+    let y1 = (y + h).ceil() as i32;
+
+    match &gradient.kind {
+        GradientKind::Radial {
+            center,
+            radius,
+            extent,
+        } => {
+            let cx_px = center.0 * frame_w_px;
+            let cy_px = center.1 * frame_h_px;
+            let ref_dist = match extent {
+                RadialExtent::ClosestSide => 0.5 * frame_w_px.min(frame_h_px),
+                RadialExtent::FarthestCorner => {
+                    let dx = cx_px.max(frame_w_px - cx_px);
+                    let dy = cy_px.max(frame_h_px - cy_px);
+                    (dx * dx + dy * dy).sqrt()
+                }
+            };
+            let max_r = (ref_dist * radius).max(0.001);
+            for row in y0..y1 {
+                for col in x0..x1 {
+                    // Cell center in layout-px, relative to the node's frame.
+                    let local_x_px = (col as f32 + 0.5 - x) * cw - cx_px;
+                    let local_y_px = (row as f32 + 0.5 - y) * ch - cy_px;
+                    let d = (local_x_px * local_x_px + local_y_px * local_y_px).sqrt();
+                    let t = (d / max_r).clamp(0.0, 1.0);
+                    let color = sample_stops(&effective_stops, t, opacity);
+                    write_cell_bg(grid, col, row, color);
+                }
+            }
+        }
+        GradientKind::Linear { angle_deg } => {
+            // CSS convention: 0° = bottom→top, 90° = left→right,
+            // 180° = top→bottom, 270° = right→left.
+            let rad = angle_deg.to_radians();
+            let dir_x = rad.sin();
+            let dir_y = -rad.cos();
+            // Project the frame's corners onto the gradient axis to
+            // get the axis range (in layout-px).
+            let corners_px = [
+                (0.0, 0.0),
+                (frame_w_px, 0.0),
+                (0.0, frame_h_px),
+                (frame_w_px, frame_h_px),
+            ];
+            let projected: Vec<f32> = corners_px
+                .iter()
+                .map(|(px, py)| px * dir_x + py * dir_y)
+                .collect();
+            let min_p = projected.iter().copied().fold(f32::INFINITY, f32::min);
+            let max_p = projected
+                .iter()
+                .copied()
+                .fold(f32::NEG_INFINITY, f32::max);
+            let range = (max_p - min_p).max(0.001);
+            for row in y0..y1 {
+                for col in x0..x1 {
+                    let local_x_px = (col as f32 + 0.5 - x) * cw;
+                    let local_y_px = (row as f32 + 0.5 - y) * ch;
+                    let p = local_x_px * dir_x + local_y_px * dir_y;
+                    let t = ((p - min_p) / range).clamp(0.0, 1.0);
+                    let color = sample_stops(&effective_stops, t, opacity);
+                    write_cell_bg(grid, col, row, color);
+                }
+            }
+        }
+    }
+}
+
+/// Lerp two adjacent stops at parameter `t`. Multiplies the result's
+/// alpha by `opacity` so the node-level opacity composes through
+/// gradient stops as well as solid fills.
+fn sample_stops(stops: &[(f32, Rgba)], t: f32, opacity: f32) -> Rgba {
+    // Stops are author-ordered ascending by offset (the framework's
+    // contract). Find the bracket.
+    let last = stops.len() - 1;
+    if t <= stops[0].0 {
+        return apply_opacity(stops[0].1, opacity);
+    }
+    if t >= stops[last].0 {
+        return apply_opacity(stops[last].1, opacity);
+    }
+    for win in stops.windows(2) {
+        let (a_off, a_col) = win[0];
+        let (b_off, b_col) = win[1];
+        if t >= a_off && t <= b_off {
+            let span = (b_off - a_off).max(0.0001);
+            let u = (t - a_off) / span;
+            let blended = Rgba {
+                r: lerp_u8(a_col.r, b_col.r, u),
+                g: lerp_u8(a_col.g, b_col.g, u),
+                b: lerp_u8(a_col.b, b_col.b, u),
+                a: lerp_u8(a_col.a, b_col.a, u),
+            };
+            return apply_opacity(blended, opacity);
+        }
+    }
+    apply_opacity(stops[last].1, opacity)
+}
+
+fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
+    let a = a as f32;
+    let b = b as f32;
+    (a + (b - a) * t).round().clamp(0.0, 255.0) as u8
+}
+
+fn apply_opacity(c: Rgba, opacity: f32) -> Rgba {
+    Rgba {
+        r: c.r,
+        g: c.g,
+        b: c.b,
+        a: ((c.a as f32) * opacity).round().clamp(0.0, 255.0) as u8,
+    }
+}
+
+/// Write a gradient cell's bg. Skips fully-transparent samples so
+/// the underlying paint shows through (vignettes, planet halos).
+///
+/// When the sample is sufficiently opaque (≥ ~50% alpha), also
+/// blank the cell's glyph + fg. This is what makes an "in front"
+/// planet actually hide text underneath it — without it, the
+/// planet's bg would render but the text glyph would still poke
+/// through as a colored character. Below the threshold the glyph
+/// stays (halo regions, vignette edges where text should remain
+/// legible).
+fn write_cell_bg(grid: &mut Grid, col: i32, row: i32, color: Rgba) {
+    if color.a == 0 {
+        return;
+    }
+    if let (Ok(c), Ok(r)) = (u16::try_from(col), u16::try_from(row)) {
+        if let Some(cell) = grid.cell_mut(c, r) {
+            // Alpha-composite against whatever's underneath. Cheap
+            // sRGB-space blend — perceptually fine for ASCII.
+            let prev = cell.bg.unwrap_or(Rgba::BLACK);
+            let a = color.a as f32 / 255.0;
+            let inv = 1.0 - a;
+            cell.bg = Some(Rgba {
+                r: (color.r as f32 * a + prev.r as f32 * inv).round() as u8,
+                g: (color.g as f32 * a + prev.g as f32 * inv).round() as u8,
+                b: (color.b as f32 * a + prev.b as f32 * inv).round() as u8,
+                a: 255,
+            });
+            if color.a >= GLYPH_HIDE_ALPHA {
+                cell.glyph = ' ';
+                cell.fg = None;
+            }
+        }
+    }
+}
+
+/// Alpha threshold above which a solid bg / gradient sample clears
+/// the underlying glyph. This is what makes an "in front" sibling
+/// (higher z-index) hide text behind it; below the threshold the
+/// glyph survives so halos / vignettes / soft overlays remain
+/// readable.
+const GLYPH_HIDE_ALPHA: u8 = 128;
+
 fn paint_rect_bg(grid: &mut Grid, x: f32, y: f32, w: f32, h: f32, bg: Rgba) {
     let x0 = x.max(0.0).floor() as i32;
     let y0 = y.max(0.0).floor() as i32;
@@ -260,6 +513,10 @@ fn paint_rect_bg(grid: &mut Grid, x: f32, y: f32, w: f32, h: f32, bg: Rgba) {
             if let (Ok(c), Ok(r)) = (u16::try_from(col), u16::try_from(row)) {
                 if let Some(cell) = grid.cell_mut(c, r) {
                     cell.bg = Some(bg);
+                    if bg.a >= GLYPH_HIDE_ALPHA {
+                        cell.glyph = ' ';
+                        cell.fg = None;
+                    }
                 }
             }
         }

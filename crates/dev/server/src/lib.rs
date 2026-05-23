@@ -41,6 +41,8 @@ mod scene_model;
 // gets an inert handle and any author code using raf-driven custom
 // math (welcome's planets) does nothing.
 pub mod scheduler;
+#[cfg(feature = "aas-runtime")]
+pub mod crash_handler;
 pub mod sidecar;
 // Always compiled — the test-support module is small and its only
 // non-trivial cost is the `tungstenite` symbols, which the crate
@@ -861,6 +863,33 @@ enum HandlerSnapshot {
 struct RecordingViewOps;
 
 impl ViewOps for RecordingViewOps {
+    /// Report the per-session viewport for every view on the
+    /// recording backend. Welcome's `coordinator::use_welcome`
+    /// reads `page_ref.with(|h| h.frame())` once per raf tick to
+    /// recentre the planet orbit ellipse; without this override the
+    /// trait default returns `None`, the welcome code falls back to
+    /// a hardcoded `(393.0, 800.0)`, and the orbits anchor at
+    /// (~196, ~400) regardless of the client's actual viewport.
+    ///
+    /// Returning the viewport for every view (not just the root) is
+    /// intentional — the recording backend has no real layout, so
+    /// "per-view rect" is undefined here. The viewport is the only
+    /// honest answer the sidecar can give. Author code that
+    /// genuinely needs sub-view frames (overlay anchoring, etc.) has
+    /// to query the rendering backend, not the recorder.
+    fn frame(
+        &self,
+        _node: &dyn std::any::Any,
+    ) -> Option<framework_core::primitives::portal::ViewportRect> {
+        let (w, h) = SESSION_VIEWPORT.with(|c| c.get())?;
+        Some(framework_core::primitives::portal::ViewportRect {
+            x: 0.0,
+            y: 0.0,
+            width: w,
+            height: h,
+        })
+    }
+
     /// Route animated scalar writes to the per-thread recorder's
     /// `set_animated_f32`. Mirrors the pattern in `backend-web`'s
     /// `WebViewOps`, but routes through a thread-local Weak handle
@@ -937,6 +966,27 @@ thread_local! {
     /// one renderer there).
     static RECORDER_HANDLE: RefCell<Option<std::rc::Weak<RefCell<RecorderState>>>> =
         const { RefCell::new(None) };
+
+    /// Per-session-thread viewport (CSS pixels). Set by the session
+    /// thread when it receives an `AppToDev::Hello { viewport }` or
+    /// `AppToDev::ViewportChanged { width, height }`. Read by
+    /// [`RecordingViewOps::frame`] so author code reading
+    /// `page_ref.with(|h| h.frame())` gets the *client's* viewport
+    /// (not a sidecar-side hardcoded fallback).
+    ///
+    /// `None` before the client's first Hello — `frame()` returns
+    /// `None` in that window and author code falls back to its own
+    /// default (welcome uses 393×800). Once Hello lands the value
+    /// flips on for the rest of the session.
+    static SESSION_VIEWPORT: std::cell::Cell<Option<(f32, f32)>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Update the calling session-thread's viewport. Called from
+/// `dispatch_app_to_dev` on Hello / ViewportChanged. Must run on
+/// the session thread (the thread-local is per-thread).
+pub fn set_session_viewport(width: f32, height: f32) {
+    SESSION_VIEWPORT.with(|c| c.set(Some((width, height))));
 }
 
 /// `TextOps` mirror of [`RecordingViewOps`]. The framework's

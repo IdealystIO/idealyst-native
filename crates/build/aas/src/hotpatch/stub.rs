@@ -99,16 +99,64 @@ pub fn synthesize(
     // forcing the user to manually classify every new libc/libm
     // reference their app picks up.
     let slide: i64 = runtime_main as i64 - cache.main_addr as i64;
-    let mut resolved: Vec<(String, u64)> = Vec::with_capacity(undefs.len());
+    let mut resolved: Vec<(String, u64, super::cache::CachedSymbol)> =
+        Vec::with_capacity(undefs.len());
     let mut deferred: Vec<String> = Vec::new();
     for u in &undefs {
-        if let Some(runtime_addr) = cache.resolve_runtime(u, slide) {
-            resolved.push((u.clone(), runtime_addr));
+        if let Some((runtime_addr, meta)) = cache.resolve_runtime_with_meta(u, slide) {
+            resolved.push((u.clone(), runtime_addr, meta));
         } else {
             deferred.push(u.clone());
         }
     }
     if !deferred.is_empty() {
+        // Partition: system symbols can safely defer to dyld (libSystem
+        // etc.), but Rust-mangled symbols starting with `__ZN` are
+        // monomorphizations internal to the host bin. The host bin
+        // doesn't *export* them — they're private to its link unit —
+        // so dyld can't find them at patch-dlopen time. The dylib
+        // links cleanly (dyld_dynamic_lookup is permissive at link
+        // time) but the first call to that symbol in the patched code
+        // jumps to a null/garbage address → SIGSEGV → sidecar dies →
+        // the user sees "hot-update didn't apply changes" because the
+        // process died mid-rerender.
+        //
+        // This is the failure mode behind the welcome-example hot-
+        // patch crash: a constant change perturbed codegen enough to
+        // introduce a new `Rc<T>::deref` monomorphization that didn't
+        // exist in the host bin's monomorphization set. Hash-stripped
+        // fallback in `HostBinCache::resolve_runtime` covers
+        // suffix-mismatches for the *same* logical instance — but if
+        // the host bin never instantiated this specific type, there's
+        // nothing to strip to.
+        //
+        // Bail loudly with the offending names so the host's
+        // `try_hotpatch` → `respawn_sidecar` fallback ladder kicks in.
+        // Respawn is slow (1-2s vs. ~1s for a hot-patch) but correct;
+        // a silent SIGSEGV is the worst possible outcome.
+        let rust_internal: Vec<&String> = deferred
+            .iter()
+            .filter(|n| n.starts_with("__ZN") || n.starts_with("_$LT"))
+            .collect();
+        if !rust_internal.is_empty() {
+            anyhow::bail!(
+                "hot-patch would defer {} Rust-internal monomorphization(s) to dyld \
+                 that the host bin doesn't export — patched code would SIGSEGV on \
+                 first call. Falling back to full sidecar respawn. Examples: {}{}",
+                rust_internal.len(),
+                rust_internal
+                    .iter()
+                    .take(3)
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                if rust_internal.len() > 3 {
+                    format!(", … +{} more", rust_internal.len() - 3)
+                } else {
+                    String::new()
+                },
+            );
+        }
         eprintln!(
             "[hotpatch] {} undefined refs deferred to dyld (system / dynamic): {}{}",
             deferred.len(),
@@ -142,15 +190,124 @@ pub fn synthesize(
     // verbatim.
     obj.set_mangling(Mangling::None);
     let text_id = obj.section_id(StandardSection::Text);
+    let data_id = obj.section_id(StandardSection::Data);
+    let tls_id = obj.section_id(StandardSection::Tls);
 
     // Each trampoline's instruction sequence aligned to 4 bytes.
     if !has_main_in_tip {
         // _main: ret  →  0xD65F03C0  (RET, lr in x30)
         emit_symbol(&mut obj, text_id, "_main", &encode_ret());
     }
-    for (name, addr) in &resolved {
-        let bytes = encode_trampoline(*addr);
-        emit_symbol(&mut obj, text_id, name, &bytes);
+
+    // Dispatch on symbol kind. Mirrors dx's
+    // `create_undefined_symbol_stub` decision tree
+    // (cli/src/build/patch.rs, commit 33159f3). Pre-this-change we
+    // routed *every* resolved symbol through `encode_trampoline` —
+    // correct for Text symbols, broken for Tls and Data:
+    //
+    // * Text: jump trampolines work because the dylib's `bl` to the
+    //   undefined ref lands on the trampoline, the trampoline jumps to
+    //   the host's runtime address, host code runs, returns through
+    //   the trampoline's `br x16` (tail-jump pattern, lr preserved).
+    //
+    // * Tls (this is the bug we're fixing): the dylib accesses a
+    //   thread-local via `ldr x16, [tlv_descriptor]; blr x16` — it
+    //   expects to LOAD 8 bytes from the symbol's address and call
+    //   them as a function pointer (the TLV thunk). A code trampoline
+    //   at the symbol's address means those 8 bytes are `movz x16,
+    //   #lo16; movk x16, #hi16, lsl #16` instructions. Loaded as a
+    //   u64 + blr → branches to a wild address (some encoding of the
+    //   thunk-pointer-shaped instructions) → corrupts callee-saved
+    //   regs (including sp) → SIGBUS at the next function entry's
+    //   `stp [sp, #-N]!`. This is THE crash pattern we localized.
+    //
+    //   Fix: emit as `SymbolKind::Tls` with the host's `__thread_data`
+    //   init bytes. The `object` crate's Mach-O writer then auto-
+    //   synthesizes a proper `__thread_vars` TLV descriptor (whose
+    //   first 8 bytes are libsystem's `_tlv_bootstrap` thunk, set up
+    //   at dlopen time). The dylib's TLV access lands on a real
+    //   descriptor and works.
+    //
+    // * Data (statics, globals): the dylib does
+    //   `adrp x0, _STATIC; add x0, x0, :lo12:_STATIC` to materialize
+    //   the symbol's address. A code trampoline at that address would
+    //   make the dylib's code "address" be a function-pointer-shaped
+    //   value — readable but wrong: writes to it would corrupt the
+    //   trampoline's instruction bytes. Fix: emit as
+    //   `SymbolSection::Absolute` with `value = abs_addr` so the
+    //   linker resolves the symbol-reference directly to the runtime
+    //   address (no indirection, no trampoline).
+    for (name, abs_addr, sym) in &resolved {
+        use object::write::SymbolSection as WS;
+        use object::{SymbolKind as K, SymbolScope};
+
+        match sym.kind {
+            K::Text => {
+                let bytes = encode_trampoline(*abs_addr);
+                emit_symbol(&mut obj, text_id, name, &bytes);
+            }
+            K::Tls => {
+                // Look up the matching `$tlv$init` symbol to find the
+                // init bytes inside `__thread_data`. Mach-O TLS layout:
+                // a TLV symbol (e.g. `_FOO`) is a 3-word descriptor in
+                // `__thread_vars`; `_FOO$tlv$init` is the matching
+                // 8-byte (or larger) data slot in `__thread_data`. Our
+                // cache pre-computed the offset+size pair.
+                let init_key = format!("{}$tlv$init", name);
+                let (off, size) = if let Some(&pair) = cache.tls_init_sizes.get(&init_key) {
+                    pair
+                } else if !cache.tls_init_data.is_empty() {
+                    // Fallback: whole tdata. dx does the same when the
+                    // $tlv$init symbol is missing (binary stripped, etc.)
+                    (0, cache.tls_init_data.len() as u64)
+                } else {
+                    // No tdata at all: synthesize pointer-sized zero
+                    // init. The TLV slot will be zero on first access;
+                    // most reasonable defaults for Cell<Option<T>> etc.
+                    (0, 8)
+                };
+                let align = size.min(8).next_power_of_two();
+                let start = off as usize;
+                let end = start + size as usize;
+                let init: Vec<u8> = if end <= cache.tls_init_data.len() {
+                    cache.tls_init_data[start..end].to_vec()
+                } else {
+                    // Past `__thread_data` bounds → it's a tbss slot
+                    // (zero-init by ABI). Just zero the right size.
+                    vec![0u8; size as usize]
+                };
+                let sym_id = obj.add_symbol(WriteSymbol {
+                    name: name.as_bytes().to_vec(),
+                    value: 0,
+                    size: 0,
+                    scope: SymbolScope::Linkage,
+                    kind: K::Tls,
+                    weak: sym.is_weak,
+                    section: WS::Undefined,
+                    flags: SymbolFlags::None,
+                });
+                obj.add_symbol_data(sym_id, tls_id, &init, align);
+                let _ = data_id; // suppress unused warning when only Tls branch fires
+            }
+            other => {
+                // Data, Unknown (darwin reports many statics as Unknown),
+                // or anything else: emit as an absolute-address symbol so
+                // PC-relative references in the dylib materialize the host's
+                // runtime address directly.
+                let kind = if matches!(other, K::Unknown) { K::Data } else { other };
+                obj.add_symbol(WriteSymbol {
+                    name: name.as_bytes().to_vec(),
+                    value: *abs_addr,
+                    size: 0,
+                    scope: SymbolScope::Linkage,
+                    kind,
+                    weak: sym.is_weak,
+                    section: WS::Absolute,
+                    flags: SymbolFlags::None,
+                });
+                let _ = data_id;
+            }
+        }
     }
 
     let bytes = obj.write().context("serialize stub Mach-O")?;

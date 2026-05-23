@@ -153,8 +153,11 @@ impl TerminalBackend {
                 translate_y: 0.0,
                 animated_bg: None,
                 animated_fg: None,
+                static_translate_x: None,
+                static_translate_y: None,
                 toggle_value: false,
                 anim_phase: 0.0,
+                z_index: 0.0,
                 input: None,
             },
         );
@@ -228,20 +231,39 @@ impl TerminalBackend {
         let Some(data) = self.nodes.get(&id) else { return };
         let frame = self.layout.frame_of(data.layout);
         let (cw, ch) = self.cell_size;
+        // Static + animated translate compose the same way at hit-
+        // test as at paint, otherwise click rects drift away from
+        // what the user can see.
+        let static_tx = data
+            .static_translate_x
+            .as_ref()
+            .map(|l| render::resolve_length_against(l, frame.width))
+            .unwrap_or(0.0);
+        let static_ty = data
+            .static_translate_y
+            .as_ref()
+            .map(|l| render::resolve_length_against(l, frame.height))
+            .unwrap_or(0.0);
         // Convert frame from layout px to cell space (parent_x/y are
         // already in cells, click coords are in cells).
-        let x = parent_x + (frame.x + data.translate_x) / cw;
-        let y = parent_y + (frame.y + data.translate_y) / ch;
+        let x = parent_x + (frame.x + data.translate_x + static_tx) / cw;
+        let y = parent_y + (frame.y + data.translate_y + static_ty) / ch;
         let w = frame.width / cw;
         let h = frame.height / ch;
         let inside = col >= x && col < x + w && row >= y && row < y + h;
         if !inside {
             return;
         }
-        // Children paint on top; visit them deepest-first so the
-        // child layer wins the hit.
-        for &child in &data.children {
+        // Children paint on top of the parent; visually-topmost wins
+        // the hit. Walk siblings highest-z first so a planet-in-front
+        // captures the click instead of a button behind it.
+        let mut ordered = self.children_in_z_order(&data.children);
+        ordered.reverse();
+        for child in ordered {
             self.hit_test_walk(child, x, y, col, row, out);
+            if out.is_some() {
+                return;
+            }
         }
         if out.is_some() {
             return;
@@ -458,21 +480,80 @@ impl Backend for TerminalBackend {
             .as_ref()
             .map(|t| parse_or(&t.resolve().0, Rgba::TRANSPARENT));
         let gradient = style.background_gradient.as_ref().map(|g| {
+            let stops: Vec<(f32, Rgba)> = g
+                .stops
+                .iter()
+                .map(|s| (s.offset, parse_or(&s.color.0, Rgba::TRANSPARENT)))
+                .collect();
+            let animated_stops = vec![None; stops.len()];
             node::ResolvedGradient {
                 kind: g.kind.clone(),
-                stops: g
-                    .stops
-                    .iter()
-                    .map(|s| (s.offset, parse_or(&s.color.0, Rgba::TRANSPARENT)))
-                    .collect(),
+                stops,
+                animated_stops,
             }
         });
+
+        // Extract static translate from `style.transform: [...]`.
+        // We only support TranslateX/Y on this backend — Scale /
+        // Rotate / Skew don't translate to cell semantics. Last-write
+        // wins per axis (matches the RN/web "matrix multiply" feel
+        // for the translates-only subset).
+        let mut static_tx: Option<framework_core::Length> = None;
+        let mut static_ty: Option<framework_core::Length> = None;
+        if let Some(transforms) = style.transform.as_ref() {
+            for t in transforms {
+                match t {
+                    framework_core::Transform::TranslateX(l) => static_tx = Some(*l),
+                    framework_core::Transform::TranslateY(l) => static_ty = Some(*l),
+                    _ => {}
+                }
+            }
+        }
+
+        // Static opacity from the stylesheet. Without this, an
+        // element declared with `opacity: 0.0` (welcome's sun, the
+        // vignette wrapper, planets pre-Act-2) starts fully visible
+        // because `NodeData.opacity` defaults to 1.0 — only the
+        // animation path (`set_animated_f32(Opacity, …)`) ever
+        // touched it. Read the resolved value and seed `data.opacity`
+        // up front; the animation Effect later overwrites at every
+        // frame.
+        let static_opacity = style
+            .opacity
+            .as_ref()
+            .map(|t| t.resolve().clamp(0.0, 1.0));
 
         if let Some(d) = self.nodes.get_mut(&node.id) {
             d.style = Some(style.clone());
             d.fg = fg;
             d.bg = bg;
-            d.gradient = gradient;
+            d.static_translate_x = static_tx;
+            d.static_translate_y = static_ty;
+            if let Some(o) = static_opacity {
+                d.opacity = o;
+            }
+            // Preserve any already-animated stop overrides if the
+            // gradient's shape didn't change — re-applying a static
+            // stylesheet (state overlays, theme refresh) shouldn't
+            // reset per-frame animation state. Conservative: only
+            // preserve when the new gradient has the same stop
+            // count as the old one. Anything more aggressive risks
+            // mismatched indices.
+            let preserved = d
+                .gradient
+                .as_ref()
+                .and_then(|old| {
+                    gradient
+                        .as_ref()
+                        .filter(|new| new.stops.len() == old.stops.len())
+                        .map(|_| old.animated_stops.clone())
+                });
+            d.gradient = gradient.map(|mut g| {
+                if let Some(p) = preserved {
+                    g.animated_stops = p;
+                }
+                g
+            });
         }
     }
 
@@ -627,7 +708,12 @@ impl Backend for TerminalBackend {
             AnimProp::Opacity => d.opacity = value.clamp(0.0, 1.0),
             AnimProp::TranslateX => d.translate_x = value,
             AnimProp::TranslateY => d.translate_y = value,
-            // Scale/Rotate/ZIndex don't map cleanly to a cell grid —
+            // Sibling-relative ordering. Higher value renders on top
+            // of lower. Welcome's planets sweep through positive and
+            // negative values as they orbit so they pass in front of
+            // and behind the headline.
+            AnimProp::ZIndex => d.z_index = value,
+            // Scale / Rotate don't map cleanly to a cell grid —
             // documented no-ops so author code stays portable.
             _ => {}
         }
@@ -644,8 +730,14 @@ impl Backend for TerminalBackend {
         match prop {
             AnimProp::BackgroundColor => d.animated_bg = Some(rgba),
             AnimProp::ForegroundColor => d.animated_fg = Some(rgba),
-            // No gradients in ASCII — see [[project_aas_graphics_unsupported]]
-            // for the equivalent posture on the AAS backend.
+            AnimProp::GradientStopColor(idx) => {
+                if let Some(g) = d.gradient.as_mut() {
+                    let i = idx as usize;
+                    if i < g.animated_stops.len() {
+                        g.animated_stops[i] = Some(rgba);
+                    }
+                }
+            }
             _ => {}
         }
     }

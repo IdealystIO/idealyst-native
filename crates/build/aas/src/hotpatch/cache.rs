@@ -27,13 +27,35 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use object::{Object, ObjectSection, ObjectSymbol};
+use object::{Object, ObjectSection, ObjectSymbol, SymbolKind};
+
+/// Per-symbol metadata cached from the host bin. The `kind` field is
+/// load-bearing: the stub generator dispatches on it to decide
+/// whether a symbol gets a code trampoline (Text), a TLS init-data
+/// stub (Tls), or an absolute-address data symbol (everything else).
+///
+/// Pre-v2, the cache only stored the address and the stub blindly
+/// generated code trampolines for every resolved symbol. That broke
+/// TLS access in patched code — the dylib's `ldr x16, [tlv_desc];
+/// blr x16` would read the first 8 bytes of the trampoline (which is
+/// `movz x16 / movk x16, lsl #16`) as a function pointer, branch to
+/// that garbage address, and SIGBUS-crash the sidecar partway through
+/// the patched component's body. The Text/Tls/Data dispatch in the
+/// stub generator (mirroring dx's `create_undefined_symbol_stub`)
+/// fixes that, but it needs the kind from here to make the decision.
+#[derive(Clone)]
+pub struct CachedSymbol {
+    pub address: u64,
+    pub kind: SymbolKind,
+    pub size: u64,
+    pub is_weak: bool,
+}
 
 #[derive(Default)]
 pub struct HostBinCache {
-    /// `symbol_name → link-time address`. Exact-name lookups are the
+    /// `symbol_name → cached metadata`. Exact-name lookups are the
     /// fast path used by [`Self::resolve_runtime`].
-    pub symbols: HashMap<String, u64>,
+    pub symbols: HashMap<String, CachedSymbol>,
     /// `hash-stripped_name → exact_name_in_symbols`. Rust's legacy
     /// mangler appends a `17h<16hex>E` content-hash suffix that
     /// varies per incremental compilation snapshot — the same logical
@@ -61,7 +83,7 @@ impl HostBinCache {
         let obj = object::File::parse(&*data)
             .with_context(|| format!("parse {}", host_bin.display()))?;
 
-        let mut symbols: HashMap<String, u64> = HashMap::new();
+        let mut symbols: HashMap<String, CachedSymbol> = HashMap::new();
         let mut stripped_to_full: HashMap<String, String> = HashMap::new();
         let mut main_addr: u64 = 0;
         for sym in obj.symbols() {
@@ -69,7 +91,15 @@ impl HostBinCache {
             if name.is_empty() || sym.address() == 0 {
                 continue;
             }
-            symbols.insert(name.to_string(), sym.address());
+            symbols.insert(
+                name.to_string(),
+                CachedSymbol {
+                    address: sym.address(),
+                    kind: sym.kind(),
+                    size: sym.size(),
+                    is_weak: sym.is_weak(),
+                },
+            );
             // Mirror the hash-stripped key for the fallback lookup
             // in `resolve_runtime`. If two symbols hash-strip to the
             // same key (different generics with the same name?), the
@@ -85,6 +115,11 @@ impl HostBinCache {
                 main_addr = sym.address();
             }
         }
+        // Re-check via the cached map (cheap clone; symbols map already
+        // built). The address-based lookup above bailed on
+        // `sym.address() == 0` so undefined symbols never entered the
+        // map — this avoids leaking import-table placeholders into the
+        // stub generator's `resolve_runtime` results.
         if main_addr == 0 {
             anyhow::bail!(
                 "host bin {} has no `_main`/`main` symbol — was it linked as a bin crate \
@@ -166,16 +201,30 @@ impl HostBinCache {
     ///    dlopen would then fail because it's not in any system
     ///    dylib either.
     pub fn resolve_runtime(&self, name: &str, slide: i64) -> Option<u64> {
-        if let Some(&link) = self.symbols.get(name) {
-            return Some((link as i64 + slide) as u64);
+        Some(self.resolve_runtime_with_meta(name, slide)?.0)
+    }
+
+    /// Variant of [`Self::resolve_runtime`] that also returns the
+    /// cached symbol metadata (kind, size, weakness). The stub
+    /// generator needs `kind` so it can route Text → trampoline,
+    /// Tls → TLV stub, Data → absolute symbol; without that
+    /// dispatch, TLS references blow up at runtime (see
+    /// [`CachedSymbol`] doc).
+    pub fn resolve_runtime_with_meta(
+        &self,
+        name: &str,
+        slide: i64,
+    ) -> Option<(u64, CachedSymbol)> {
+        if let Some(sym) = self.symbols.get(name) {
+            return Some(((sym.address as i64 + slide) as u64, sym.clone()));
         }
         let stripped = strip_mangle_hash(name);
         if stripped == name {
-            return None; // not a hash-suffixed Rust symbol
+            return None;
         }
         let full = self.stripped_to_full.get(stripped)?;
-        let &link = self.symbols.get(full)?;
-        Some((link as i64 + slide) as u64)
+        let sym = self.symbols.get(full)?;
+        Some(((sym.address as i64 + slide) as u64, sym.clone()))
     }
 }
 

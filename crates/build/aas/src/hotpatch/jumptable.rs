@@ -69,8 +69,8 @@ pub fn build(
         if !is_hot_impl_symbol(name) {
             continue;
         }
-        if let Some(&host_addr) = host_cache.symbols.get(name) {
-            map.insert(host_addr, patch_addr);
+        if let Some(host_sym) = host_cache.symbols.get(name) {
+            map.insert(host_sym.address, patch_addr);
         }
     }
 

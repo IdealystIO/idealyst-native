@@ -61,6 +61,13 @@ pub struct RunOptions {
     /// (including quit-on-q). Useful for demos that want the full
     /// keyboard.
     pub on_key: Option<Rc<dyn Fn(&KeyEvent) -> bool>>,
+    /// Optional layout-px-per-cell scaling factor `(w, h)`. None
+    /// keeps the default `(1.0, 1.0)` (1 px = 1 cell, suits
+    /// terminal-native UIs). Mobile/desktop layouts whose stylesheet
+    /// uses larger px values should set this so author values don't
+    /// overflow the cell viewport — `(8.0, 16.0)` is a reasonable
+    /// starting point.
+    pub cell_size: Option<(f32, f32)>,
 }
 
 impl Default for RunOptions {
@@ -68,6 +75,7 @@ impl Default for RunOptions {
         Self {
             target_fps: 30,
             on_key: None,
+            cell_size: None,
         }
     }
 }
@@ -121,6 +129,13 @@ where
     // backend without capturing it directly. Mirrors the
     // `install_global_self` pattern in `backend-macos`.
     backend_terminal::install_global_self(Rc::downgrade(&backend));
+
+    // Apply the host's chosen cell_size BEFORE the first mount —
+    // measure_fns capture the value at install time, so changing
+    // it mid-session wouldn't apply to already-mounted text.
+    if let Some((w, h)) = opts.cell_size {
+        backend.borrow_mut().set_cell_size(w, h);
+    }
 
     // Initial viewport snapshot.
     let (cols, rows) = crossterm::terminal::size()?;

@@ -102,4 +102,9 @@ features = [
     "ResizeObserver",
     "WebSocket",
     "Window",
+    # `Navigator` powers `browser_device_label()`'s `userAgent` read;
+    # `EventTarget` is what the AAS resize listener attaches to
+    # (Window implements EventTarget).
+    "Navigator",
+    "EventTarget",
 ]

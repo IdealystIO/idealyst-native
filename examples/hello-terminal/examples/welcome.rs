@@ -23,6 +23,15 @@ fn main() {
     let opts = host_terminal::RunOptions {
         target_fps: 30,
         on_key: None,
+        // Welcome's stylesheet uses mobile-px values (planets are
+        // `width: px(14..22)`, translates are 50+ px, etc.). At the
+        // default cell_size of (1.0, 1.0), a 14-px-wide planet
+        // would occupy 14 cells and translate animations would
+        // launch text fully off-screen. We tell the backend
+        // "1 cell ≈ 8 layout px horizontally, 16 px vertically" —
+        // matches typical glyph aspect ratios in terminals and
+        // gives welcome's layout a reasonable viewport.
+        cell_size: Some((8.0, 16.0)),
     };
     if let Err(e) = host_terminal::run(welcome::app, opts) {
         eprintln!("welcome (terminal) exited with error: {e}");

@@ -429,7 +429,13 @@ where
             pinned_session_id.as_deref(),
             session_tracker.as_ref(),
         );
-        poll_reads(&mut clients, sidecar_slot.as_ref(), single_process_mode, &sessions);
+        poll_reads(
+            &mut clients,
+            sidecar_slot.as_ref(),
+            single_process_mode,
+            &sessions,
+            session_tracker.as_ref(),
+        );
         drain_sidecar_inbound(
             &mut sessions,
             &mut clients,
@@ -557,7 +563,7 @@ fn accept_new(
                         continue;
                     }
                 };
-                let (app_name, color_scheme, _initial_url, identity) = hello;
+                let (app_name, color_scheme, _initial_url, identity, viewport) = hello;
                 let label = identity
                     .device_label
                     .as_deref()
@@ -591,6 +597,11 @@ fn accept_new(
                     );
                     if let Some(t) = tracker {
                         t.insert(&session_id);
+                        // Stash the client's reported viewport so
+                        // `replay_sessions_to_sidecar` can re-emit it
+                        // when a sidecar respawn (hot-patch fallback)
+                        // forces session re-creation.
+                        t.set_viewport(&session_id, viewport);
                     }
                     if !single_process_mode {
                         if let Some(slot) = sidecar_slot {
@@ -598,6 +609,7 @@ fn accept_new(
                                 if let Some(sidecar) = guard.as_ref() {
                                     sidecar.send(crate::SidecarIn::CreateSession {
                                         session: session_id.clone(),
+                                        viewport,
                                     });
                                 }
                             }
@@ -676,10 +688,20 @@ fn accept_new(
 
 /// Wait synchronously for the first `AppToDev::Hello` frame on a
 /// newly-accepted socket. Returns the parsed Hello fields as a tuple
-/// keyed positionally (app_name, color_scheme, initial_url, identity).
+/// keyed positionally (app_name, color_scheme, initial_url, identity,
+/// viewport).
 fn read_hello(
     ws: &mut WebSocket<TcpStream>,
-) -> Result<(String, WireColorScheme, Option<String>, ClientIdentity), TransportError> {
+) -> Result<
+    (
+        String,
+        WireColorScheme,
+        Option<String>,
+        ClientIdentity,
+        Option<wire::WireViewport>,
+    ),
+    TransportError,
+> {
     loop {
         match ws.read() {
             Ok(Message::Text(t)) => {
@@ -714,14 +736,24 @@ fn read_hello(
 
 fn extract_hello(
     msg: AppToDev,
-) -> Result<(String, WireColorScheme, Option<String>, ClientIdentity), TransportError> {
+) -> Result<
+    (
+        String,
+        WireColorScheme,
+        Option<String>,
+        ClientIdentity,
+        Option<wire::WireViewport>,
+    ),
+    TransportError,
+> {
     match msg {
         AppToDev::Hello {
             app_name,
             color_scheme,
             initial_url,
             identity,
-        } => Ok((app_name, color_scheme, initial_url, identity)),
+            viewport,
+        } => Ok((app_name, color_scheme, initial_url, identity, viewport)),
         other => Err(TransportError::Decode(format!(
             "expected AppToDev::Hello, got {:?}",
             other
@@ -736,6 +768,7 @@ fn poll_reads(
     sidecar_slot: Option<&crate::SidecarSlot>,
     single_process_mode: bool,
     sessions: &SessionTable,
+    tracker: Option<&crate::SessionTracker>,
 ) {
     let mut keep = Vec::with_capacity(clients.len());
     for mut client in clients.drain(..) {
@@ -749,6 +782,7 @@ fn poll_reads(
                         sidecar_slot,
                         single_process_mode,
                         sessions,
+                        tracker,
                     ),
                     Err(e) => eprintln!("[dev-server] decode error: {}", e),
                 },
@@ -759,6 +793,7 @@ fn poll_reads(
                         sidecar_slot,
                         single_process_mode,
                         sessions,
+                        tracker,
                     ),
                     Err(e) => eprintln!("[dev-server] decode error: {}", e),
                 },
@@ -797,12 +832,26 @@ fn handle_app_msg(
     sidecar_slot: Option<&crate::SidecarSlot>,
     single_process_mode: bool,
     sessions: &SessionTable,
+    tracker: Option<&crate::SessionTracker>,
 ) {
     // Hello can arrive again only if a client mis-uses the protocol;
     // log + drop.
     if matches!(msg, AppToDev::Hello { .. }) {
         eprintln!("[dev-server] late Hello on session {}; ignoring", client_session);
         return;
+    }
+
+    // Snapshot viewport from ViewportChanged so the SessionTracker
+    // can replay it after a sidecar respawn. Forwarding the event
+    // to the sidecar still happens below — this is a peek, not a
+    // consume.
+    if let AppToDev::ViewportChanged { width, height } = &msg {
+        if let Some(t) = tracker {
+            t.set_viewport(client_session, Some(wire::WireViewport {
+                width: *width,
+                height: *height,
+            }));
+        }
     }
 
     if !single_process_mode {
@@ -861,6 +910,13 @@ fn handle_app_msg(
             // mode doesn't use the client-driven raf path. Drop
             // silently. (The sidecar branch above this fn forwards
             // RequestFrame through to the session thread.)
+        }
+        AppToDev::ViewportChanged { .. } => {
+            // Single-process mode: the host process IS the renderer,
+            // so the browser's resize events don't need to flow to
+            // the sidecar (there isn't one). Drop silently. The
+            // sidecar branch above forwards ViewportChanged through
+            // to the session thread.
         }
         AppToDev::Error { message } => {
             eprintln!("[dev-server] app reported error: {}", message);

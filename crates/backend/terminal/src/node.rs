@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use framework_core::color::Rgba;
 use framework_core::primitives::key::KeyDownHandler;
-use framework_core::{Gradient, StyleRules};
+use framework_core::{Length, StyleRules};
 use native_layout::LayoutNode;
 
 /// Public handle the framework holds in its `Self::Node` slot. Just
@@ -76,12 +76,25 @@ pub(crate) struct NodeData {
     pub animated_bg: Option<Rgba>,
     /// Animated foreground override. When `Some`, wins over `fg`.
     pub animated_fg: Option<Rgba>,
+    /// Static translate from `style.transform: [translate(...)]`.
+    /// Resolved at paint time because `Length::Percent` is relative
+    /// to the node's own laid-out size (which we only know post-
+    /// compute). The animation-driven translate (`translate_x` /
+    /// `translate_y`) composes additively on top.
+    pub static_translate_x: Option<Length>,
+    pub static_translate_y: Option<Length>,
     /// Toggle value (only meaningful when kind == Toggle).
     pub toggle_value: bool,
     /// Backend-allocated id used by ActivityIndicator's animation
     /// loop to look itself up. The trait's required `Self::Node` is
     /// `Copy`, so we route per-instance state through this id.
     pub anim_phase: f32,
+    /// Sibling-relative z-order. Higher values paint later (in
+    /// front). Driven by `set_animated_f32(AnimProp::ZIndex, …)`
+    /// — welcome's planets sweep through positive and negative
+    /// values per orbit to pass in front of and behind the
+    /// headline. Default 0.0.
+    pub z_index: f32,
     /// Per-instance state for `NodeKind::TextInput`. None for other
     /// kinds. Held boxed so `NodeData` stays slim for the common
     /// (non-input) case.
@@ -95,6 +108,14 @@ pub(crate) struct NodeData {
 pub(crate) struct ResolvedGradient {
     pub kind: framework_core::GradientKind,
     pub stops: Vec<(f32, Rgba)>,
+    /// Per-stop animated color overrides written by
+    /// `set_animated_color(GradientStopColor(idx))`. `None` means
+    /// "use the stop's base color". The vector is initialised to
+    /// `stops.len()` entries when the gradient is first cached.
+    /// Welcome's vignette + sun-glare raf-driver writes through
+    /// this — without it, stops stay at their static (often
+    /// transparent) starting color.
+    pub animated_stops: Vec<Option<Rgba>>,
 }
 
 /// Mutable runtime state for a `TextInput` node.

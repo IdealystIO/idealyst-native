@@ -70,6 +70,7 @@ impl MockClient {
             color_scheme: wire::WireColorScheme::Auto,
             initial_url: None,
             identity,
+            viewport: None,
         };
         ws.send(Message::Binary(
             serde_json::to_vec(&hello).expect("encode AppToDev::Hello").into(),

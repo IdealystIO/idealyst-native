@@ -50,6 +50,23 @@ fn browser_device_label() -> Option<String> {
     nav.user_agent().ok().filter(|s| !s.is_empty())
 }
 
+/// Current `window.innerWidth` / `innerHeight` in CSS pixels. The
+/// sidecar caches this per session and serves it through
+/// `RecordingViewOps::frame(...)` so author code (welcome's planet
+/// orbit math, anything reading `page_ref.with(|h| h.frame())`)
+/// gets the *client's* viewport instead of None. `None` only when
+/// there's no window (worker context) or `innerWidth/Height`
+/// reflection failed.
+fn browser_viewport() -> Option<wire::WireViewport> {
+    let win = web_sys::window()?;
+    let w = win.inner_width().ok()?.as_f64()? as f32;
+    let h = win.inner_height().ok()?.as_f64()? as f32;
+    if w <= 0.0 || h <= 0.0 {
+        return None;
+    }
+    Some(wire::WireViewport { width: w, height: h })
+}
+
 use dev_client::WireBackend;
 use framework_core::{Backend, RafLoop};
 use js_sys::{ArrayBuffer, Uint8Array};
@@ -136,6 +153,13 @@ where
                 platform: wire::WirePlatform::Web,
                 device_label: browser_device_label(),
             },
+            // Capture the current window size so the sidecar's
+            // per-session viewport is correct from frame zero —
+            // welcome's planet-orbit math reads this to recentre.
+            // Without it the recorder defaults to the welcome's
+            // hardcoded fallback (393×800) and planets anchor at
+            // the wrong x on any other browser width.
+            viewport: browser_viewport(),
         };
         if let Ok(bytes) = serde_json::to_vec(&hello) {
             // Send as binary to match the dev server's send format.
@@ -144,6 +168,31 @@ where
         }
     }) as Box<dyn FnMut(JsValue)>);
     socket.set_onopen(Some(on_open.as_ref().unchecked_ref()));
+
+    // --- resize listener ------------------------------------------
+    // Web only — push a `ViewportChanged` whenever the browser
+    // window resizes (devtools toggle, orientation change, dragged
+    // edge). The sidecar updates its per-session viewport and the
+    // next raf tick's planet/orbit math sees the new size.
+    let viewport_tx = raf_tx.clone();
+    let on_resize = Closure::wrap(Box::new(move |_evt: web_sys::Event| {
+        let Some(v) = browser_viewport() else { return };
+        let _ = viewport_tx.send(AppToDev::ViewportChanged {
+            width: v.width,
+            height: v.height,
+        });
+    }) as Box<dyn FnMut(web_sys::Event)>);
+    if let Some(win) = web_sys::window() {
+        let _ = win.add_event_listener_with_callback(
+            "resize",
+            on_resize.as_ref().unchecked_ref(),
+        );
+    }
+    // Forget the closure so it stays alive for the page lifetime.
+    // The connection handle keeps the WS alive; the resize listener
+    // outlives one reconnect attempt cycle by design — re-attaching
+    // on every connect would leak listeners.
+    on_resize.forget();
 
     // --- on_message -----------------------------------------------
     let wire_for_msg = wire.clone();
