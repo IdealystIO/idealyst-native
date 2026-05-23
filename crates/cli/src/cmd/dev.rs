@@ -361,27 +361,41 @@ fn launch_web(dir: &Path, args: &Args) -> Result<()> {
         // ── 1. wasm shim that connects to the AAS host ────────────
         if !args.no_build {
             eprintln!(
-                "[dev web] building wasm shim with framework-core/hot-reload…"
+                "[dev web] building wasm shim with aas + framework-core/hot-reload…"
             );
             dev_reload::build_once(
                 dir,
                 &dev_reload::BuildOptions {
                     source: source.clone(),
-                    // Cross-crate activation: `<dep>/<feat>` makes
-                    // cargo flip `hot-reload` on `framework-core` in
-                    // the build graph without anyone having to add a
-                    // pass-through feature to the user crate. Earlier
-                    // code passed `dev-hot-reload`, which assumed a
-                    // user-crate feature of that name forwarded to
-                    // `framework-core/hot-reload` — that broke as
-                    // soon as a project scaffolded without that
-                    // forwarder (or, for that matter, with a
-                    // different name for it). The user crate stays
-                    // unmodified now.
-                    features: vec!["framework-core/hot-reload".to_string()],
+                    // Two features flipped on for the wasm build:
+                    //
+                    // 1. `aas` (bare feature) — wrapper-local;
+                    //    switches the generated `start()` from local
+                    //    `mount(app)` to a `WireBackend` +
+                    //    `connect_web` against `window.IDEALYST_AAS_URL`.
+                    //    Without this the browser would render
+                    //    locally and never open the WebSocket, so
+                    //    the AAS sidecar would log
+                    //    `notifying 0 session(s) to re-render` on
+                    //    every hot-patch.
+                    //
+                    // 2. `framework-core/hot-reload` (cross-crate) —
+                    //    flips the `#[component]` macro into its
+                    //    split form (`__<Name>_hot_impl` + outer
+                    //    dispatch via `framework_hot::call`) on the
+                    //    USER crate's compilation. Even though the
+                    //    browser doesn't apply patches, the wire
+                    //    protocol carries `HandlerId`s minted against
+                    //    the hot-reload-aware handler table, so the
+                    //    user crate must compile with the same
+                    //    flavor as the AAS sidecar.
+                    features: vec![
+                        "aas".to_string(),
+                        "framework-core/hot-reload".to_string(),
+                    ],
                 },
             )
-            .context("web build failed (framework-core/hot-reload)")?;
+            .context("web build failed (aas + framework-core/hot-reload)")?;
         }
 
         // ── 2. mDNS browser thread fills `AasContext.aas_url` so

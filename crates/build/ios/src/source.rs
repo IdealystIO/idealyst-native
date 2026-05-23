@@ -169,6 +169,47 @@ impl FrameworkSource {
         }
     }
 
+    /// Render a `[patch."<git-url>"]` block redirecting every
+    /// framework crate to its local path. Required in the generated
+    /// wrapper crates so the user's git-pinned `framework-core`
+    /// (and transitive deps) resolves to the **same physical crate**
+    /// the wrapper itself uses — without it, cargo treats the
+    /// wrapper's path-dep and the user's git-dep as two separate
+    /// `framework_core` instances, producing inscrutable "expected
+    /// `Primitive` but found `Primitive`" type errors at the
+    /// wrapper-→-user-crate boundary.
+    ///
+    /// Returns an empty string in `Git` mode (wrapper and user
+    /// already use the same git rev — no redirect needed).
+    pub fn patch_block(&self) -> String {
+        let Self::Workspace { root } = self else {
+            return String::new();
+        };
+        // Default git URL the scaffold uses. Anyone running with a
+        // forked / mirrored URL via `IDEALYST_FRAMEWORK_GIT_URL`
+        // would need a custom patch block; we'll wire that through
+        // when someone actually hits the case.
+        let url = "https://github.com/IdealystIO/idealyst-native";
+        let mut out = format!("\n[patch.\"{}\"]\n", url);
+        for (name, sub) in [
+            ("framework-core", "crates/framework/core"),
+            ("framework-hot", "crates/framework/hot"),
+            ("framework-macros", "crates/framework/macros"),
+            ("framework-mcp", "crates/framework/mcp"),
+            ("wire", "crates/framework/wire"),
+            ("dev-client", "crates/framework/dev-client"),
+            ("dev-server", "crates/dev/server"),
+            ("backend-web", "crates/backend/web"),
+            ("idea-ui", "crates/ui/idea-ui"),
+        ] {
+            out.push_str(&format!(
+                "{name} = {{ path = \"{}\" }}\n",
+                root.join(sub).display(),
+            ));
+        }
+        out
+    }
+
     /// Render a single dependency line for a framework crate.
     ///
     /// `subpath` is the directory under the workspace root (e.g.

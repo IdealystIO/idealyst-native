@@ -284,12 +284,14 @@ dev-server = {dev_server_dep}
 [profile.dev]
 debug = 0
 strip = "debuginfo"
+{patch_block}
 "#,
         sidecar_name = sidecar_name,
         fcore_dep = fcore_dep,
         dev_server_dep = dev_server_dep,
         user_name = manifest.name,
         user_path = project_dir.display(),
+        patch_block = source.patch_block(),
     );
 
 
@@ -365,10 +367,12 @@ build-aas = {build_aas_dep}
 # can `?` through without conversion. Tiny dep; not worth re-exporting
 # through dev-server.
 anyhow = "1"
+{patch_block}
 "#,
         wrapper_name = wrapper_name,
         dev_server_dep = dev_server_dep,
         build_aas_dep = build_aas_dep,
+        patch_block = source.patch_block(),
     );
 
     let profile_dir = "debug"; // Mirror what the sidecar lands in. The
