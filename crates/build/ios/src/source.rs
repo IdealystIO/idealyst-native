@@ -300,3 +300,201 @@ pub fn require_workspace_root(start: &Path) -> Result<PathBuf> {
         )
     })
 }
+
+#[cfg(test)]
+mod tests {
+    //! Regression coverage for the out-of-tree AAS / build path.
+    //!
+    //! The original failure mode: a user CLI installed via
+    //! `cargo install idealyst-cli` was running `idealyst dev --aas`
+    //! against a project that lived nowhere near an `idealyst-native/`
+    //! checkout. The legacy wrappers walked up looking for a framework
+    //! workspace and bailed with "could not find the idealyst framework
+    //! workspace…". The current behavior is that `FrameworkSource::detect`
+    //! falls back to reading the project's own `framework-core` git dep,
+    //! and finally to compile-time git defaults — never to a workspace
+    //! requirement.
+    //!
+    //! These tests pin that flow so the regression can't slip back in.
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Tempdir under `std::env::temp_dir()` that cleans itself up on
+    /// drop. Avoids adding a `tempfile` dev-dependency for two tests.
+    struct TempProject {
+        path: PathBuf,
+    }
+
+    impl TempProject {
+        fn new(label: &str) -> Self {
+            static SEQ: AtomicU64 = AtomicU64::new(0);
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir()
+                .join(format!("idealyst-source-test-{label}-{nanos}-{seq}"));
+            fs::create_dir_all(&path).expect("create tempdir");
+            // Canonicalize so the path returned matches what `detect`
+            // sees after its own canonicalize calls — macOS routes
+            // `/var/folders/...` through `/private/var/folders/...`.
+            let canon = fs::canonicalize(&path).expect("canonicalize tempdir");
+            Self { path: canon }
+        }
+
+        fn write_cargo(&self, body: &str) {
+            fs::write(self.path.join("Cargo.toml"), body).expect("write Cargo.toml");
+        }
+    }
+
+    impl Drop for TempProject {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn git_defaults() -> GitDefaults {
+        GitDefaults {
+            url: "https://example.invalid/framework.git".to_string(),
+            refspec: GitRef::Tag("v0.0.1".to_string()),
+        }
+    }
+
+    /// Out-of-tree project pinning the framework with `git = ".." rev = ".."`
+    /// must resolve to `Git`, NOT bail with the workspace error. This is
+    /// the exact scenario `idealyst new` scaffolds and that AAS dev
+    /// previously broke on.
+    #[test]
+    fn detect_out_of_tree_git_rev_yields_git_source() {
+        let proj = TempProject::new("git-rev");
+        proj.write_cargo(
+            r#"
+[package]
+name = "demo"
+version = "0.0.1"
+edition = "2021"
+
+[dependencies]
+framework-core = { git = "https://github.com/IdealystIO/idealyst-native", rev = "deadbeef" }
+"#,
+        );
+
+        let src = FrameworkSource::detect(&proj.path, git_defaults())
+            .expect("detect must succeed on out-of-tree projects");
+
+        match &src {
+            FrameworkSource::Git { url, refspec } => {
+                assert_eq!(url, "https://github.com/IdealystIO/idealyst-native");
+                assert!(matches!(refspec, GitRef::Rev(s) if s == "deadbeef"));
+            }
+            FrameworkSource::Workspace { root } => panic!(
+                "expected Git source, got Workspace {{ root: {} }} — \
+                 the out-of-tree path is regressing back to workspace-required",
+                root.display()
+            ),
+        }
+        assert!(src.workspace_root().is_none());
+    }
+
+    /// Tag-pinned scaffolds (what `idealyst new` emits when HEAD has a
+    /// release tag) must round-trip as `Tag`, not be re-emitted as `rev`.
+    #[test]
+    fn detect_out_of_tree_git_tag_preserves_tag_refspec() {
+        let proj = TempProject::new("git-tag");
+        proj.write_cargo(
+            r#"
+[package]
+name = "demo"
+version = "0.0.1"
+edition = "2021"
+
+[dependencies]
+framework-core = { git = "https://github.com/IdealystIO/idealyst-native", tag = "v0.1.0" }
+"#,
+        );
+
+        let src = FrameworkSource::detect(&proj.path, git_defaults()).expect("detect");
+        match src {
+            FrameworkSource::Git { refspec: GitRef::Tag(t), .. } => assert_eq!(t, "v0.1.0"),
+            other => panic!("expected Git/Tag, got {other:?}"),
+        }
+    }
+
+    /// Project with no `framework-core` dep at all → fall back to the
+    /// CLI's compile-time git defaults. Covers the very-first
+    /// `idealyst new` step before the scaffold's Cargo.toml is written.
+    #[test]
+    fn detect_falls_back_to_git_defaults_when_project_has_no_framework_dep() {
+        let proj = TempProject::new("nodep");
+        proj.write_cargo(
+            r#"
+[package]
+name = "demo"
+version = "0.0.1"
+edition = "2021"
+
+[dependencies]
+"#,
+        );
+
+        let src = FrameworkSource::detect(&proj.path, git_defaults()).expect("detect");
+        match src {
+            FrameworkSource::Git { url, refspec: GitRef::Tag(t) } => {
+                assert_eq!(url, "https://example.invalid/framework.git");
+                assert_eq!(t, "v0.0.1");
+            }
+            other => panic!("expected Git defaults fallback, got {other:?}"),
+        }
+    }
+
+    /// In Git mode the wrapper and target dirs must be project-local —
+    /// AAS wrappers under `<project>/target/idealyst/...` is what makes
+    /// the out-of-tree CLI work; any path leaking back to a workspace
+    /// root re-introduces the in-tree requirement.
+    #[test]
+    fn git_mode_wrapper_and_target_dirs_are_project_local() {
+        let proj = TempProject::new("paths");
+        let src = FrameworkSource::Git {
+            url: "https://example.invalid/framework.git".into(),
+            refspec: GitRef::Rev("abc".into()),
+        };
+        assert_eq!(src.wrapper_root(&proj.path), proj.path.join("target/idealyst"));
+        assert_eq!(src.cargo_target_dir(&proj.path), proj.path.join("target"));
+        assert!(src.workspace_root().is_none());
+    }
+
+    /// `FrameworkSource::dep` for Git mode must emit a usable cargo
+    /// dep table. The wrappers paste this directly into the generated
+    /// `Cargo.toml`, so a malformed string would surface as a cargo
+    /// parse error at first build.
+    #[test]
+    fn git_mode_dep_emits_cargo_table_with_refspec_and_features() {
+        let src = FrameworkSource::Git {
+            url: "https://example.invalid/framework.git".into(),
+            refspec: GitRef::Rev("c77425a".into()),
+        };
+        let line = src.dep("crates/framework/core", &["hot-reload"]);
+        assert!(line.contains("git = \"https://example.invalid/framework.git\""));
+        assert!(line.contains("rev = \"c77425a\""));
+        assert!(line.contains("features = [\"hot-reload\"]"));
+        assert!(!line.contains("path ="));
+    }
+
+    /// `require_workspace_root` is the legacy fail-clear helper. The
+    /// CLI's only remaining caller wraps it in `unwrap_or_else`; if a
+    /// new caller adds it back as a hard requirement we want them to
+    /// have to acknowledge this test's existence.
+    #[test]
+    fn require_workspace_root_errors_with_actionable_message_when_out_of_tree() {
+        let proj = TempProject::new("require");
+        let err = require_workspace_root(&proj.path)
+            .expect_err("out-of-tree project must not resolve a framework workspace");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("idealyst framework workspace"),
+            "error message should explain what was missing: {msg}"
+        );
+    }
+}
