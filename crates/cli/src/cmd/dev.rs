@@ -360,15 +360,28 @@ fn launch_web(dir: &Path, args: &Args) -> Result<()> {
     if args.aas {
         // ── 1. wasm shim that connects to the AAS host ────────────
         if !args.no_build {
-            eprintln!("[dev web] building wasm shim with dev-hot-reload…");
+            eprintln!(
+                "[dev web] building wasm shim with framework-core/hot-reload…"
+            );
             dev_reload::build_once(
                 dir,
                 &dev_reload::BuildOptions {
                     source: source.clone(),
-                    features: vec!["dev-hot-reload".to_string()],
+                    // Cross-crate activation: `<dep>/<feat>` makes
+                    // cargo flip `hot-reload` on `framework-core` in
+                    // the build graph without anyone having to add a
+                    // pass-through feature to the user crate. Earlier
+                    // code passed `dev-hot-reload`, which assumed a
+                    // user-crate feature of that name forwarded to
+                    // `framework-core/hot-reload` — that broke as
+                    // soon as a project scaffolded without that
+                    // forwarder (or, for that matter, with a
+                    // different name for it). The user crate stays
+                    // unmodified now.
+                    features: vec!["framework-core/hot-reload".to_string()],
                 },
             )
-            .context("web build failed (dev-hot-reload feature)")?;
+            .context("web build failed (framework-core/hot-reload)")?;
         }
 
         // ── 2. mDNS browser thread fills `AasContext.aas_url` so
