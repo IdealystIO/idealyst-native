@@ -26,8 +26,16 @@ use std::process::Command;
 const DEFAULT_URL: &str = "https://github.com/IdealystIO/idealyst-native";
 
 fn main() {
+    // Watch the reflog — it appends on every HEAD movement (commit,
+    // amend, reset, checkout, merge, rebase, …). The previous list
+    // — `HEAD`, `index`, `refs/tags` — never updated on a regular
+    // commit (commits move `refs/heads/<branch>`, not `HEAD`
+    // itself), so build.rs's baked SHA went stale until a
+    // `cargo install --force` blew the cache. Watching the reflog
+    // fixes that: every `git commit` mutates `logs/HEAD`, cargo
+    // re-runs build.rs, the new SHA gets baked.
     println!("cargo:rerun-if-changed=../../.git/HEAD");
-    println!("cargo:rerun-if-changed=../../.git/index");
+    println!("cargo:rerun-if-changed=../../.git/logs/HEAD");
     println!("cargo:rerun-if-changed=../../.git/refs/tags");
     println!("cargo:rerun-if-env-changed=IDEALYST_FRAMEWORK_GIT_URL");
     println!("cargo:rerun-if-env-changed=IDEALYST_FRAMEWORK_GIT_REV");
