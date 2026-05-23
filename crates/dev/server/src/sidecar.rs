@@ -463,3 +463,332 @@ pub fn is_eof(e: &std::io::Error) -> bool {
         std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::BrokenPipe
     )
 }
+
+// ---------------------------------------------------------------------------
+// In-process sidecar runtime
+// ---------------------------------------------------------------------------
+//
+// Compiled into the AAS *sidecar* binary — the worker that statically
+// links the user's crate and runs N independent author runtimes
+// (one per dev-host session) on dedicated threads. Pre-refactor this
+// code was inlined into the build-orchestrator's `format!` template
+// as ~310 lines of generated Rust; that meant every internal change
+// to `SidecarIn`/`SidecarOut` shape immediately broke any project
+// whose pinned framework rev predated the template change.
+//
+// Now the sidecar wrapper is a 4-line `fn main() { run(my_crate::app) }`.
+// Internal refactors stop at this crate's boundary.
+
+#[cfg(feature = "aas-runtime")]
+pub use runtime::run;
+
+#[cfg(feature = "aas-runtime")]
+mod runtime {
+    use super::{is_eof, read_frame, write_frame, SidecarIn, SidecarOut};
+    use crate::WireRecordingBackend;
+    use framework_core::{render, Owner, Primitive};
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::io::{stdin, stdout, BufReader, Write};
+    use std::rc::Rc;
+    use std::sync::mpsc;
+    use std::sync::{Arc, Mutex};
+    use std::thread::JoinHandle;
+
+    /// Per-session control message dispatched from the sidecar's
+    /// main thread into the session's owned thread. Each thread
+    /// blocks on `recv()`; the main thread routes by session id.
+    enum SessionMsg {
+        /// Forward an app→dev event into this session's recorder.
+        Event(wire::AppToDev),
+        /// Hot-patch has been applied process-wide. Tear down this
+        /// session's `Owner`, reset its scene log, and re-render to
+        /// pick up patched component bodies.
+        Rerender,
+        /// Graceful shutdown — the host has closed the session. The
+        /// thread drops its `Owner` (firing any teardown effects)
+        /// and exits.
+        Shutdown,
+    }
+
+    struct SessionHandle {
+        tx: mpsc::Sender<SessionMsg>,
+        join: JoinHandle<()>,
+    }
+
+    /// Entry point for the AAS sidecar process.
+    ///
+    /// Blocks until the host closes the stdin pipe (typically when the
+    /// host process exits or SIGKILLs the sidecar). Spawns and joins
+    /// one author-runtime thread per `SidecarIn::CreateSession` frame;
+    /// fans `ApplyPatch` frames out to every live session so each one
+    /// re-renders against the freshly-patched component bodies.
+    ///
+    /// `app` is the user crate's root constructor — exactly what the
+    /// generated wrapper's `use {lib}::app;` referred to before this
+    /// refactor. Passed as a function pointer so it's `Send + Sync +
+    /// Copy + 'static` without any user-side adaptation.
+    pub fn run(app: fn() -> Primitive) -> std::io::Result<()> {
+        // Report our `main` runtime address before anything else. The
+        // host uses this to compute the ASLR slide for the symbol-
+        // table diff in hot-patch builds. Doing it first keeps the
+        // host's hot-patch builder usable from the very first
+        // file-change event.
+        let main_addr: u64 = unsafe {
+            libc::dlsym(libc::RTLD_DEFAULT, b"main\0".as_ptr() as *const _) as u64
+        };
+
+        // Outbound stdout is shared across all session threads. A
+        // `Mutex` is the simplest way to serialize length-prefixed
+        // JSON frames without a dedicated writer thread — frame
+        // writes are infrequent (per-event or per-tick) so contention
+        // is minimal.
+        let out = Arc::new(Mutex::new(stdout()));
+
+        {
+            let mut o = out.lock().expect("stdout lock");
+            write_frame(
+                &mut *o,
+                &SidecarOut::Hello {
+                    aslr_reference: main_addr,
+                },
+            )?;
+            let _ = o.flush();
+        }
+
+        let mut sessions: HashMap<String, SessionHandle> = HashMap::new();
+
+        let mut input = BufReader::new(stdin());
+        loop {
+            let msg: SidecarIn = match read_frame(&mut input) {
+                Ok(f) => f,
+                Err(e) if is_eof(&e) => {
+                    eprintln!("[aas-app] host pipe closed; exiting");
+                    break;
+                }
+                Err(e) => {
+                    eprintln!("[aas-app] frame read error: {e} — exiting");
+                    return Err(e);
+                }
+            };
+
+            match msg {
+                SidecarIn::CreateSession { session } => {
+                    if sessions.contains_key(&session) {
+                        eprintln!(
+                            "[aas-app] CreateSession({session}): already exists; ignoring"
+                        );
+                        continue;
+                    }
+                    let (tx, rx) = mpsc::channel::<SessionMsg>();
+                    let out_clone = out.clone();
+                    let session_for_thread = session.clone();
+                    let join = std::thread::Builder::new()
+                        .name(format!("aas-session-{session}"))
+                        .spawn(move || {
+                            run_session_thread(session_for_thread, rx, out_clone, app);
+                        })
+                        .expect("spawn session thread");
+                    sessions.insert(session.clone(), SessionHandle { tx, join });
+                    let mut o = out.lock().expect("stdout lock");
+                    write_frame(
+                        &mut *o,
+                        &SidecarOut::SessionReady {
+                            session: session.clone(),
+                        },
+                    )?;
+                    let _ = o.flush();
+                }
+                SidecarIn::CloseSession { session } => {
+                    let Some(handle) = sessions.remove(&session) else {
+                        eprintln!("[aas-app] CloseSession({session}): no such session");
+                        continue;
+                    };
+                    let _ = handle.tx.send(SessionMsg::Shutdown);
+                    drop(handle.tx);
+                    if let Err(e) = handle.join.join() {
+                        eprintln!("[aas-app] session thread panicked: {:?}", e);
+                    }
+                    let mut o = out.lock().expect("stdout lock");
+                    write_frame(&mut *o, &SidecarOut::SessionEnded { session })?;
+                    let _ = o.flush();
+                }
+                SidecarIn::Event { session, event } => {
+                    let Some(handle) = sessions.get(&session) else {
+                        eprintln!(
+                            "[aas-app] Event for unknown session {session:?}; dropping"
+                        );
+                        continue;
+                    };
+                    if handle.tx.send(SessionMsg::Event(event)).is_err() {
+                        eprintln!(
+                            "[aas-app] session {session:?} channel closed; pruning"
+                        );
+                        sessions.remove(&session);
+                    }
+                }
+                SidecarIn::ApplyPatch { table_json } => {
+                    match serde_json::from_str::<subsecond_types::JumpTable>(&table_json) {
+                        Ok(table) => {
+                            eprintln!(
+                                "[aas-app] applying patch ({} jump-table entries)",
+                                table.map.len(),
+                            );
+                            match unsafe { framework_hot::apply_patch(table) } {
+                                Ok(()) => {
+                                    eprintln!(
+                                        "[aas-app] patch applied; notifying {} session(s) to re-render",
+                                        sessions.len(),
+                                    );
+                                    for (id, handle) in &sessions {
+                                        if handle.tx.send(SessionMsg::Rerender).is_err() {
+                                            eprintln!(
+                                                "[aas-app] session {id} unreachable during rerender fan-out"
+                                            );
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("[aas-app] apply_patch failed: {e:?}");
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("[aas-app] failed to parse JumpTable JSON: {e}");
+                        }
+                    }
+                }
+            }
+        }
+
+        // Best-effort shutdown of any sessions still running when the
+        // host closes its pipe.
+        for (_, handle) in sessions.drain() {
+            let _ = handle.tx.send(SessionMsg::Shutdown);
+            drop(handle.tx);
+            let _ = handle.join.join();
+        }
+
+        Ok(())
+    }
+
+    /// Per-session worker. Owns its own `WireRecordingBackend` +
+    /// `Owner`; drains `SessionMsg`s from the main thread's router.
+    /// Every emitted command goes onto stdout tagged with this
+    /// session's id.
+    fn run_session_thread(
+        session: String,
+        rx: mpsc::Receiver<SessionMsg>,
+        out: Arc<Mutex<std::io::Stdout>>,
+        app: fn() -> Primitive,
+    ) {
+        let recorder = WireRecordingBackend::new();
+        let backend_rc = Rc::new(RefCell::new(recorder.clone()));
+        let mut owner: Option<Owner> = Some(render(backend_rc.clone(), app()));
+        let mut cursor = recorder.command_count();
+
+        // Ship the initial render's snapshot up to the host.
+        let initial = recorder.snapshot();
+        if !initial.is_empty() {
+            if let Ok(mut o) = out.lock() {
+                let _ = write_frame(
+                    &mut *o,
+                    &SidecarOut::Commands {
+                        session: session.clone(),
+                        cmds: initial,
+                    },
+                );
+                let _ = o.flush();
+            }
+        }
+
+        while let Ok(msg) = rx.recv() {
+            match msg {
+                SessionMsg::Event(app_to_dev) => {
+                    dispatch_app_to_dev(&recorder, app_to_dev);
+                }
+                SessionMsg::Rerender => {
+                    // Hot-patch landed. Tear down + re-render so
+                    // structural changes propagate. Order matters:
+                    // the old `Owner` must drop *before*
+                    // `reset_log_and_scene` runs, because Drop fires
+                    // signal-cleanup effects that may still try to
+                    // touch the recorder's scene state. Take + drop
+                    // explicitly instead of `owner = None` so the
+                    // ordering is visible (and the compiler stops
+                    // warning about the "unused" assignment).
+                    drop(owner.take());
+                    recorder.reset_log_and_scene();
+                    owner = Some(render(backend_rc.clone(), app()));
+                    cursor = 0;
+                    if let Ok(mut o) = out.lock() {
+                        let _ = write_frame(
+                            &mut *o,
+                            &SidecarOut::SessionReset {
+                                session: session.clone(),
+                            },
+                        );
+                        let _ = o.flush();
+                    }
+                }
+                SessionMsg::Shutdown => {
+                    eprintln!("[aas-app] session {session} shutting down");
+                    drop(owner);
+                    return;
+                }
+            }
+
+            let count_now = recorder.command_count();
+            if count_now > cursor {
+                let new_cmds = recorder.commands_since(cursor);
+                cursor = count_now;
+                if let Ok(mut o) = out.lock() {
+                    let _ = write_frame(
+                        &mut *o,
+                        &SidecarOut::Commands {
+                            session: session.clone(),
+                            cmds: new_cmds,
+                        },
+                    );
+                    let _ = o.flush();
+                }
+            }
+        }
+        drop(owner);
+    }
+
+    /// Mirror of the legacy `handle_app_msg` in
+    /// `dev-server::transport`. The split moves this logic into the
+    /// sidecar because the recorder here is the one with registered
+    /// handler closures — the host's recorder is purely a transport
+    /// mirror.
+    fn dispatch_app_to_dev(recorder: &WireRecordingBackend, msg: wire::AppToDev) {
+        use wire::AppToDev::*;
+        match msg {
+            Hello { .. } => {}
+            Event { handler, args } => {
+                let _ = recorder.dispatch_event(handler, args);
+            }
+            StateChanged { node, bit, on } => {
+                let _ = recorder.dispatch_state(node, bit, on);
+            }
+            ColorSchemeChanged { scheme: _ } => {}
+            ScreenReleased { scope } => {
+                recorder.handle_screen_released(scope.0);
+            }
+            NavigatorDepthChanged { .. } => {}
+            DrawerStateChanged { navigator, is_open } => {
+                recorder.handle_drawer_state_changed(navigator, is_open);
+            }
+            TabSelected { navigator, index } => {
+                recorder.handle_tab_selected(navigator, index);
+            }
+            VirtualizerMountItem { .. }
+            | VirtualizerReleaseItem { .. }
+            | VirtualizerMeasuredSize { .. } => {}
+            Error { message } => {
+                eprintln!("[aas-app] client reported error: {message}");
+            }
+        }
+    }
+}

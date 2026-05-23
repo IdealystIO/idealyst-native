@@ -25,6 +25,13 @@ use wire::{
 };
 
 pub mod convert_out;
+// AAS dev-host driver. Pulled in only when the consumer activates
+// the `aas-runtime` feature — `host::run` and `HotPatchAdapter`
+// depend on `anyhow` + `subsecond_types`, which are optional deps.
+// Recorder-only consumers (tests, `examples/welcome`) don't pay
+// the cost.
+#[cfg(feature = "aas-runtime")]
+pub mod host;
 mod scene_model;
 pub mod sidecar;
 // Always compiled — the test-support module is small and its only

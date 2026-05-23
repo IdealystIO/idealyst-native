@@ -34,11 +34,39 @@ robot = ["framework-core/robot"]
 # dev-server transport pull this feature in via dev-deps.
 test-support = []
 
+# Pulls in the AAS dev runtimes — `host::run` (long-lived dev-host
+# process) and `sidecar::run` (per-project worker that links the user
+# crate). Enables both because both modules share most deps
+# (`subsecond-types`, `anyhow`, `serde_json`-only-tighter-binding), and
+# splitting them just so the host wrapper can skip `framework-hot` /
+# `libc` saves single-digit KB of link time. Off for any consumer
+# that only wants the dev-side recorder / transport — those callers
+# stay anyhow-free + don't drag subsecond through their build.
+aas-runtime = ["dep:framework-hot", "dep:subsecond-types", "dep:libc", "dep:anyhow"]
+
 [dependencies]
 framework-core = { workspace = true }
 wire = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# Activated by the `sidecar-runtime` feature. `framework-hot` is the
+# subsecond facade — exposes `apply_patch(JumpTable)`. We pick up the
+# `hot` and `diff` features so the sidecar can both install patches
+# and validate them against its own symbol table before applying.
+framework-hot = { workspace = true, features = ["hot", "diff"], optional = true }
+# JumpTable type carried in `SidecarIn::ApplyPatch.table_json`. The
+# host produces it (in `build-aas::hotpatch`); the sidecar
+# deserializes + hands it to `framework-hot`.
+subsecond-types = { version = "0.7", optional = true }
+# `libc::dlsym(RTLD_DEFAULT, "main")` — the sidecar reports its own
+# `main` runtime address to the host so the host can compute the
+# ASLR slide for symbol-table diffs.
+libc = { version = "0.2", optional = true }
+# Used by `dev_server::host` for the hot-patch fallback path (Err
+# triggers SIGKILL-and-respawn). Optional so the recorder/transport
+# consumers stay anyhow-free.
+anyhow = { version = "1", optional = true }
 # Sync WebSocket server. `default-features = false` drops the rustls
 # stack — dev mode is loopback or LAN, no TLS needed.
 tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }

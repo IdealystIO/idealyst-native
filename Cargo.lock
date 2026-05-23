@@ -1246,12 +1246,16 @@ dependencies = [
 name = "dev-server"
 version = "0.0.1"
 dependencies = [
+ "anyhow",
  "framework-core",
+ "framework-hot",
  "idea-ui",
+ "libc",
  "mdns-sd",
  "notify-debouncer-mini",
  "serde",
  "serde_json",
+ "subsecond-types",
  "tungstenite",
  "wire",
 ]
