@@ -713,10 +713,7 @@ mod runtime {
                     // the old `Owner` must drop *before*
                     // `reset_log_and_scene` runs, because Drop fires
                     // signal-cleanup effects that may still try to
-                    // touch the recorder's scene state. Take + drop
-                    // explicitly instead of `owner = None` so the
-                    // ordering is visible (and the compiler stops
-                    // warning about the "unused" assignment).
+                    // touch the recorder's scene state.
                     drop(owner.take());
                     recorder.reset_log_and_scene();
                     owner = Some(render(backend_rc.clone(), app()));
