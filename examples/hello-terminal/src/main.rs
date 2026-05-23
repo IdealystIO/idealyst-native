@@ -26,6 +26,7 @@ use std::time::Duration;
 
 use framework_core::animation::{AnimProp, TweenTo};
 use framework_core::primitives::activity_indicator::activity_indicator;
+use framework_core::primitives::text_input::text_input;
 use framework_core::primitives::toggle::toggle;
 use framework_core::{
     animated, button, children, effect, on_cleanup, pressable, raf_loop_scoped, signal,
@@ -62,6 +63,7 @@ struct Shared {
 fn app(shared: Shared) -> Primitive {
     let count = signal!(0i32);
     let show_spinner = signal!(false);
+    let input_value = signal!(String::new());
     shared.count.set(Some(count));
     shared.show_spinner.set(Some(show_spinner));
 
@@ -191,6 +193,28 @@ fn app(shared: Shared) -> Primitive {
         ..Default::default()
     });
 
+    let input_row = sheet(StyleRules {
+        flex_direction: Some(FlexDirection::Row),
+        gap: Some(px(2.0)),
+        align_items: Some(AlignItems::Center),
+        margin_top: Some(px(1.0)),
+        ..Default::default()
+    });
+
+    let input_style = sheet(StyleRules {
+        background: Some(cval("#1a1f2e")),
+        color: Some(cval("#dde2ee")),
+        width: Some(px(28.0)),
+        padding_left: Some(px(1.0)),
+        padding_right: Some(px(1.0)),
+        ..Default::default()
+    });
+
+    let echo_style = sheet(StyleRules {
+        color: Some(cval("#7fe8d6")),
+        ..Default::default()
+    });
+
     let toggle_row = sheet(StyleRules {
         flex_direction: Some(FlexDirection::Row),
         gap: Some(px(2.0)),
@@ -271,6 +295,22 @@ fn app(shared: Shared) -> Primitive {
         )
         .with_style(reset_button),
         view(children![
+            text("name:").with_style(spinner_label_style.clone()),
+            text_input(input_value, move |new| input_value.set(new))
+                .placeholder("click and type…".to_string())
+                .with_style(input_style),
+            text(move || {
+                let v = input_value.get();
+                if v.is_empty() {
+                    "(empty)".to_string()
+                } else {
+                    format!("hi, {v}!")
+                }
+            })
+            .with_style(echo_style),
+        ])
+        .with_style(input_row),
+        view(children![
             toggle(show_spinner, move |new| spinner_for_toggle.set(new)),
             text("show spinner").with_style(spinner_label_style.clone()),
             when(
@@ -281,9 +321,10 @@ fn app(shared: Shared) -> Primitive {
             text(spinner_status_label).with_style(spinner_label_style),
         ])
         .with_style(toggle_row),
-        text("click buttons / toggle, or use  +  -  r  to drive the counter")
+        text("click buttons / toggle / input — keys  +  -  r  drive the counter")
             .with_style(help_style.clone()),
-        text("press  q  or  Esc  to quit").with_style(help_style),
+        text("click the box and type to greet yourself; Esc blurs;  q  to quit")
+            .with_style(help_style),
     ])
     .with_style(page)
     .into()

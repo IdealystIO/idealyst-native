@@ -137,6 +137,55 @@ impl TerminalBackend {
                 let color = if data.toggle_value { on_color } else { fg };
                 paint_text(grid, &label, x, y, w, h, color, effective_bg);
             }
+            NodeKind::TextInput => {
+                let focused = self.focused_id == Some(id);
+                let fg = effective_fg.unwrap_or(Rgba::new(220, 220, 220, 255));
+                let placeholder_fg = Rgba::new(110, 116, 134, 255);
+                let cursor_color = Rgba::new(255, 210, 139, 255);
+                if let Some(input) = data.input.as_ref() {
+                    // Choose what to display.
+                    let (display, color, is_placeholder) = if input.value.is_empty()
+                    {
+                        (
+                            input.placeholder.clone().unwrap_or_default(),
+                            placeholder_fg,
+                            true,
+                        )
+                    } else {
+                        (input.value.clone(), fg, false)
+                    };
+                    paint_text(grid, &display, x, y, w, h, color, effective_bg);
+                    // Cursor. Only draw when focused. We always paint
+                    // it at `cursor` cells from the left edge — for
+                    // inputs longer than the visible width this is a
+                    // simplification: a real implementation would
+                    // scroll. The intrinsic-size we set on creation
+                    // means most demo cases stay on-screen.
+                    if focused {
+                        let cursor_col = (x + input.cursor as f32).floor() as i32;
+                        let cursor_row = y.floor() as i32;
+                        if let (Ok(c), Ok(r)) =
+                            (u16::try_from(cursor_col), u16::try_from(cursor_row))
+                        {
+                            if let Some(cell) = grid.cell_mut(c, r) {
+                                // Cursor cell: swap bg for cursor color
+                                // and recolor the glyph on top.
+                                cell.bg = Some(cursor_color);
+                                // If we drew over a placeholder, blank
+                                // the glyph so the cursor sits on an
+                                // empty cell. Otherwise keep the glyph
+                                // visible (caret-on-char style).
+                                if is_placeholder {
+                                    cell.glyph = ' ';
+                                }
+                                // Force the glyph's fg to readable
+                                // contrast against the warm cursor.
+                                cell.fg = Some(Rgba::new(10, 12, 17, 255));
+                            }
+                        }
+                    }
+                }
+            }
             NodeKind::ActivityIndicator => {
                 // Braille spinner — 10-step cycle. `anim_phase` is
                 // bumped once per rAF tick, so the loop advances at

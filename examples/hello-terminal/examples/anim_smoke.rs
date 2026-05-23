@@ -92,10 +92,8 @@ fn main() {
         }
         // After frame 5 click the button so the flash tween fires.
         if frame == 5 {
-            if let Some(handler) = backend.borrow().hit_test(25, 7) {
-                handler();
-                println!("       ^ click [ + ]");
-            }
+            let outcome = backend.borrow_mut().dispatch_click(25, 7);
+            println!("       ^ click [ + ] → {:?}", outcome);
         }
         std::thread::sleep(Duration::from_millis(33));
     }

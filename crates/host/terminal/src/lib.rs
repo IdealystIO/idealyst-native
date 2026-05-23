@@ -33,7 +33,7 @@ pub fn tick_scheduler_for_testing() {
     scheduler::tick();
 }
 
-use backend_terminal::{Grid, TerminalBackend};
+use backend_terminal::{Grid, TerminalBackend, TerminalKey};
 use crossterm::{
     cursor,
     event::{
@@ -167,26 +167,43 @@ where
                         row,
                         ..
                     }) => {
-                        // Hit-test against the most recent layout. The
-                        // backend exposes a tree walk that returns the
-                        // deepest `on_click` handler whose frame
-                        // contains the cell.
-                        let handler = backend.borrow().hit_test(column, row);
-                        if let Some(h) = handler {
+                        // Backend walks the tree deepest-first and
+                        // *returns* the handler instead of firing it
+                        // — the click closure typically calls
+                        // `Signal::set`, which re-enters the backend
+                        // via the framework's reactive effect chain.
+                        // Releasing the borrow before invoking it is
+                        // the only way to avoid a "RefCell already
+                        // borrowed" panic. Same pattern the original
+                        // `hit_test` shape used.
+                        let outcome = backend.borrow_mut().dispatch_click(column, row);
+                        if let backend_terminal::ClickOutcome::HandlerFired(h) = outcome {
                             h();
                         }
                     }
                     Event::Key(key) => {
-                        if let Some(cb) = opts.on_key.as_ref() {
-                            if cb(&key) {
-                                continue;
-                            }
-                        }
                         if key.kind != KeyEventKind::Press
                             && key.kind != KeyEventKind::Repeat
                         {
                             continue;
                         }
+                        // 1. Focused TextInput gets first crack. If
+                        //    it consumes the key, suppress everything
+                        //    downstream (global on_key, quit
+                        //    detection) so typing 'q' into an input
+                        //    doesn't kill the app.
+                        if let Some(tk) = to_terminal_key(&key) {
+                            if backend.borrow_mut().dispatch_key(&tk) {
+                                continue;
+                            }
+                        }
+                        // 2. Author's global handler.
+                        if let Some(cb) = opts.on_key.as_ref() {
+                            if cb(&key) {
+                                continue;
+                            }
+                        }
+                        // 3. Built-in quit shortcuts.
                         if is_quit_key(&key) {
                             quit = true;
                             break;
@@ -318,6 +335,38 @@ fn paint_grid(
         }
     }
     Ok(())
+}
+
+/// Convert a crossterm `KeyEvent` to the backend's portable
+/// [`TerminalKey`]. The string vocabulary matches the framework's
+/// `KeyEvent::key` contract (web's `KeyboardEvent.key`): single chars
+/// are their literal value, named keys are `"Enter"`, `"Backspace"`,
+/// `"ArrowLeft"`, etc.
+fn to_terminal_key(k: &KeyEvent) -> Option<TerminalKey> {
+    let key = match k.code {
+        KeyCode::Char(c) => c.to_string(),
+        KeyCode::Enter => "Enter".to_string(),
+        KeyCode::Backspace => "Backspace".to_string(),
+        KeyCode::Delete => "Delete".to_string(),
+        KeyCode::Tab => "Tab".to_string(),
+        KeyCode::Esc => "Escape".to_string(),
+        KeyCode::Left => "ArrowLeft".to_string(),
+        KeyCode::Right => "ArrowRight".to_string(),
+        KeyCode::Up => "ArrowUp".to_string(),
+        KeyCode::Down => "ArrowDown".to_string(),
+        KeyCode::Home => "Home".to_string(),
+        KeyCode::End => "End".to_string(),
+        KeyCode::PageUp => "PageUp".to_string(),
+        KeyCode::PageDown => "PageDown".to_string(),
+        _ => return None,
+    };
+    Some(TerminalKey {
+        key,
+        shift: k.modifiers.contains(KeyModifiers::SHIFT),
+        ctrl: k.modifiers.contains(KeyModifiers::CONTROL),
+        alt: k.modifiers.contains(KeyModifiers::ALT),
+        meta: k.modifiers.contains(KeyModifiers::META),
+    })
 }
 
 fn to_ct(c: Rgba) -> CtColor {

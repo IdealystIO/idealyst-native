@@ -19,18 +19,31 @@ mod render;
 pub use node::{NodeKind, TermNode};
 pub use render::{Cell, Grid};
 
-/// Outcome of dispatching a mouse click through
-/// [`TerminalBackend::dispatch_click`]. Lets the host know whether
-/// the click was consumed (so the global handler doesn't double-fire).
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+/// Outcome of [`TerminalBackend::dispatch_click`]. The host pattern-
+/// matches this and is responsible for invoking `HandlerFired`'s
+/// closure *after* it releases its `&mut self` borrow on the
+/// backend — otherwise the closure's `Signal::set` → effect →
+/// `update_text` chain re-enters and panics with "RefCell already
+/// borrowed".
 pub enum ClickOutcome {
-    /// Click landed on a clickable node and the handler fired.
-    HandlerFired,
-    /// Click landed on a TextInput and focus was set.
+    /// Click landed on a clickable node. The handler is returned so
+    /// the host can fire it once it's released its backend borrow.
+    HandlerFired(Rc<dyn Fn()>),
+    /// Click landed on a TextInput; focus is now set on it.
     FocusedInput,
     /// Click landed somewhere with no handler / no input. Focus
-    /// (if any) was cleared.
+    /// (if any) has been cleared.
     Unhandled,
+}
+
+impl std::fmt::Debug for ClickOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ClickOutcome::HandlerFired(_) => f.write_str("HandlerFired"),
+            ClickOutcome::FocusedInput => f.write_str("FocusedInput"),
+            ClickOutcome::Unhandled => f.write_str("Unhandled"),
+        }
+    }
 }
 
 use std::collections::HashMap;
@@ -61,6 +74,10 @@ pub struct TerminalBackend {
     /// Last-known terminal viewport size in cells. The host updates
     /// this whenever it observes a resize.
     pub(crate) viewport: (u16, u16),
+    /// Node id of the currently focused input, if any. Set by
+    /// [`dispatch_click`] on a TextInput hit and cleared on
+    /// clicks elsewhere or on `Escape` / `Tab` / `Enter`.
+    pub(crate) focused_id: Option<u32>,
 }
 
 impl Default for TerminalBackend {
@@ -77,6 +94,7 @@ impl TerminalBackend {
             next_id: 1,
             layout_to_id: HashMap::new(),
             viewport: (80, 24),
+            focused_id: None,
         }
     }
 
@@ -114,6 +132,7 @@ impl TerminalBackend {
                 animated_fg: None,
                 toggle_value: false,
                 anim_phase: 0.0,
+                input: None,
             },
         );
         TermNode { id }
@@ -131,18 +150,47 @@ impl TerminalBackend {
         None
     }
 
-    /// Hit-test the rendered tree at terminal-cell coordinates
-    /// `(col, row)`. Returns the deepest `on_click` handler whose
-    /// frame contains the point. Called by the host on mouse-down /
-    /// click events.
+    /// Dispatch a mouse-left click at terminal-cell coordinates
+    /// `(col, row)`. Walks the laid-out tree deepest-first; the first
+    /// hit (a) fires its `on_click` if it has one, OR (b) sets focus
+    /// if it's a TextInput. A click that lands somewhere with no
+    /// handler clears any active focus (the "click outside to blur"
+    /// posture every desktop UI ships).
     ///
-    /// Must be called after a `render_to_grid` (or other compute)
-    /// call so frames are populated.
-    pub fn hit_test(&self, col: u16, row: u16) -> Option<Rc<dyn Fn()>> {
-        let root = self.find_root()?;
-        let mut found: Option<Rc<dyn Fn()>> = None;
-        self.hit_test_walk(root, 0.0, 0.0, col as f32, row as f32, &mut found);
-        found
+    /// Must be called after `render_to_grid` so the frame cache is
+    /// populated.
+    pub fn dispatch_click(&mut self, col: u16, row: u16) -> ClickOutcome {
+        let Some(root) = self.find_root() else { return ClickOutcome::Unhandled };
+        let mut hit: Option<HitTarget> = None;
+        self.hit_test_walk(root, 0.0, 0.0, col as f32, row as f32, &mut hit);
+        match hit {
+            Some(HitTarget::Handler(h)) => {
+                // Clicking a button blurs any focused input — same
+                // posture as a browser focus-blur on outside-click.
+                self.focused_id = None;
+                // Hand the handler back to the host instead of
+                // firing it here: the host holds an `&mut` borrow on
+                // the backend across this call, and the handler's
+                // `Signal::set` → reactive effect → `update_text`
+                // chain would re-enter the same borrow and panic.
+                ClickOutcome::HandlerFired(h)
+            }
+            Some(HitTarget::FocusInput(id)) => {
+                self.focused_id = Some(id);
+                // Place the cursor at the end of the value on click
+                // — best terminal-app default for short text inputs.
+                if let Some(d) = self.nodes.get_mut(&id) {
+                    if let Some(input) = d.input.as_mut() {
+                        input.cursor = input.value.chars().count();
+                    }
+                }
+                ClickOutcome::FocusedInput
+            }
+            None => {
+                self.focused_id = None;
+                ClickOutcome::Unhandled
+            }
+        }
     }
 
     fn hit_test_walk(
@@ -152,7 +200,7 @@ impl TerminalBackend {
         parent_y: f32,
         col: f32,
         row: f32,
-        out: &mut Option<Rc<dyn Fn()>>,
+        out: &mut Option<HitTarget>,
     ) {
         let Some(data) = self.nodes.get(&id) else { return };
         let frame = self.layout.frame_of(data.layout);
@@ -163,17 +211,87 @@ impl TerminalBackend {
         if !inside {
             return;
         }
-        // Visit children first so the deepest hit wins (children
-        // paint on top).
+        // Children paint on top; visit them deepest-first so the
+        // child layer wins the hit.
         for &child in &data.children {
             self.hit_test_walk(child, x, y, col, row, out);
         }
-        if out.is_none() {
-            if let Some(handler) = &data.on_click {
-                *out = Some(handler.clone());
-            }
+        if out.is_some() {
+            return;
+        }
+        if let Some(handler) = &data.on_click {
+            *out = Some(HitTarget::Handler(handler.clone()));
+        } else if matches!(data.kind, NodeKind::TextInput) {
+            *out = Some(HitTarget::FocusInput(id));
         }
     }
+
+    /// Dispatch a key event to the focused TextInput, if any.
+    /// Returns `true` if the key was consumed by an input — the host
+    /// should suppress its `on_key` callback in that case.
+    pub fn dispatch_key(&mut self, key: &TerminalKey) -> bool {
+        let Some(id) = self.focused_id else { return false };
+        let Some(data) = self.nodes.get(&id) else { return false };
+        if !matches!(data.kind, NodeKind::TextInput) {
+            return false;
+        }
+        // Compute the proposed mutation against a local copy first
+        // so the `on_key_down` callback (which may read backend
+        // state) doesn't see partially-updated text.
+        let (key_name, ev) = make_key_event(key, data);
+        let on_key_down = data.input.as_ref().and_then(|i| i.on_key_down.clone());
+
+        if let Some(handler) = on_key_down {
+            if matches!(handler(&ev), framework_core::KeyOutcome::PreventDefault) {
+                return true;
+            }
+        }
+        self.apply_key_default(id, &key_name);
+        true
+    }
+}
+
+#[derive(Clone)]
+enum HitTarget {
+    Handler(Rc<dyn Fn()>),
+    FocusInput(u32),
+}
+
+/// Host-side key event. Re-defined here so the backend doesn't pull
+/// in `crossterm` as a dep. The host converts.
+#[derive(Clone, Debug)]
+pub struct TerminalKey {
+    pub key: String,
+    pub shift: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub meta: bool,
+}
+
+fn make_key_event(
+    key: &TerminalKey,
+    data: &node::NodeData,
+) -> (String, framework_core::primitives::key::KeyEvent) {
+    let cursor = data
+        .input
+        .as_ref()
+        .map(|i| i.cursor)
+        .unwrap_or(0);
+    let ev = framework_core::primitives::key::KeyEvent {
+        key: key.key.clone(),
+        shift: key.shift,
+        ctrl: key.ctrl,
+        alt: key.alt,
+        meta: key.meta,
+        // Single-line, no selection range — selection_start and
+        // selection_end both report the caret. Char-indexed; the
+        // framework docs say UTF-16 code units, but author code
+        // that doesn't index into the string won't observe the
+        // difference. Inputs > BMP are rare in terminal use.
+        selection_start: cursor,
+        selection_end: cursor,
+    };
+    (key.key.clone(), ev)
 }
 
 // =========================================================================
@@ -362,6 +480,55 @@ impl Backend for TerminalBackend {
         }
     }
 
+    fn create_text_input(
+        &mut self,
+        initial_value: &str,
+        placeholder: Option<&str>,
+        on_change: Rc<dyn Fn(String)>,
+        on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
+        _a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        let node = self.alloc_node(NodeKind::TextInput, String::new());
+        if let Some(d) = self.nodes.get_mut(&node.id) {
+            let placeholder_owned = placeholder.map(|s| s.to_string());
+            // Seed an intrinsic width that fits the placeholder (so
+            // empty inputs aren't 0-wide) plus 2 cells of breathing
+            // room. Authors can override with explicit `width` in
+            // the stylesheet.
+            let intrinsic_w = placeholder_owned
+                .as_ref()
+                .map(|s| s.chars().count() as f32)
+                .unwrap_or(0.0)
+                .max(initial_value.chars().count() as f32)
+                .max(8.0)
+                + 2.0;
+            self.layout.set_intrinsic_size(d.layout, intrinsic_w, 1.0);
+            d.input = Some(Box::new(node::InputState {
+                value: initial_value.to_string(),
+                cursor: initial_value.chars().count(),
+                placeholder: placeholder_owned,
+                on_change,
+                on_key_down,
+            }));
+        }
+        node
+    }
+
+    fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {
+        let Some(d) = self.nodes.get_mut(&node.id) else { return };
+        let Some(input) = d.input.as_mut() else { return };
+        if input.value == value {
+            return;
+        }
+        input.value = value.to_string();
+        // Clamp the cursor in case the controlled value got
+        // truncated below the previous cursor position.
+        let max = input.value.chars().count();
+        if input.cursor > max {
+            input.cursor = max;
+        }
+    }
+
     fn create_activity_indicator(
         &mut self,
         size: ActivityIndicatorSize,
@@ -531,6 +698,105 @@ impl TerminalBackend {
             measure_text(&content, known, avail)
         });
         self.layout.set_measure_fn(layout, f);
+    }
+
+    /// Apply the platform-default behaviour for a key event hitting
+    /// the focused TextInput. Mutates `input.value`, fires
+    /// `on_change` with the new string, and (for some keys) clears
+    /// focus.
+    fn apply_key_default(&mut self, id: u32, key_name: &str) {
+        // Take the on_change handler out so we can release the
+        // borrow before invoking it (the user's closure may call
+        // back into the backend — `Signal::set` mutates the arena,
+        // which is fine, but holding a `&mut self` borrow would
+        // panic on re-entry through another backend method).
+        let (mut value, mut cursor, on_change) = {
+            let Some(d) = self.nodes.get(&id) else { return };
+            let Some(input) = d.input.as_ref() else { return };
+            (input.value.clone(), input.cursor, input.on_change.clone())
+        };
+
+        let mut fire_change = false;
+        let mut blur = false;
+
+        match key_name {
+            "Backspace" => {
+                if cursor > 0 {
+                    let mut chars: Vec<char> = value.chars().collect();
+                    chars.remove(cursor - 1);
+                    cursor -= 1;
+                    value = chars.into_iter().collect();
+                    fire_change = true;
+                }
+            }
+            "Delete" => {
+                let chars: Vec<char> = value.chars().collect();
+                if cursor < chars.len() {
+                    let mut chars = chars;
+                    chars.remove(cursor);
+                    value = chars.into_iter().collect();
+                    fire_change = true;
+                }
+            }
+            "ArrowLeft" => {
+                cursor = cursor.saturating_sub(1);
+            }
+            "ArrowRight" => {
+                let n = value.chars().count();
+                if cursor < n {
+                    cursor += 1;
+                }
+            }
+            "Home" => cursor = 0,
+            "End" => cursor = value.chars().count(),
+            "Enter" | "Tab" | "Escape" => {
+                blur = true;
+            }
+            other => {
+                // Printable single character → insert at cursor.
+                // We treat any single-char `key` value as printable,
+                // including space (`" "`) and unicode letters.
+                if other.chars().count() == 1 {
+                    let ch = other.chars().next().unwrap();
+                    if !ch.is_control() {
+                        let mut chars: Vec<char> = value.chars().collect();
+                        chars.insert(cursor, ch);
+                        cursor += 1;
+                        value = chars.into_iter().collect();
+                        fire_change = true;
+                    }
+                }
+                // Unknown named keys are quietly ignored — the
+                // framework's other-backend posture (web: passes
+                // through; iOS: best-effort).
+            }
+        }
+
+        // Write the local mutation back before firing on_change. The
+        // framework's controlled-value Effect will call
+        // `update_text_input_value` after the parent's signal
+        // changes — that path is a no-op when the value matches.
+        if let Some(d) = self.nodes.get_mut(&id) {
+            if let Some(input) = d.input.as_mut() {
+                input.value = value.clone();
+                input.cursor = cursor;
+            }
+        }
+        if blur {
+            self.focused_id = None;
+        }
+        if fire_change {
+            // Defer the on_change fire to a microtask so we're not
+            // still holding the `RefCell<TerminalBackend>` borrow
+            // when the framework's controlled-value effect
+            // re-enters the backend through
+            // `update_text_input_value`. The host's per-frame
+            // `scheduler::tick()` drains microtasks before
+            // re-rendering, so the value lands the same frame.
+            framework_core::scheduling::schedule_microtask(move || {
+                on_change(value);
+            });
+        }
     }
 
     fn drop_subtree(&mut self, ids: &[u32]) {
