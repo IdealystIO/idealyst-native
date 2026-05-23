@@ -82,33 +82,42 @@ pub fn synthesize(
         }
     }
 
-    // 2. Resolve each against the host cache.
+    // 2. Resolve each against the host cache. Symbols we can pin to
+    // the host get a trampoline so the patch dylib jumps to the
+    // already-loaded host code. Anything we can't pin we leave as
+    // an undefined external — `link::link_dylib` passes
+    // `-Wl,-undefined,dynamic_lookup` so dyld resolves them at
+    // dlopen time. This covers anything in a system dylib
+    // (libsystem_m for `_sin`/`_cos`, libsystem_c for the dozens of
+    // libc fns not enumerated in `is_system_symbol`, CoreFoundation,
+    // etc.) without us needing a complete allow-list.
+    //
+    // Genuinely-missing symbols (not in host, not in any system
+    // dylib) still fail — but they fail later, at
+    // `apply_patch`-time dlopen, with a precise "Symbol not found"
+    // diagnostic. Better than aborting the patch up front and
+    // forcing the user to manually classify every new libc/libm
+    // reference their app picks up.
     let slide: i64 = runtime_main as i64 - cache.main_addr as i64;
     let mut resolved: Vec<(String, u64)> = Vec::with_capacity(undefs.len());
-    let mut unresolved: Vec<String> = Vec::new();
+    let mut deferred: Vec<String> = Vec::new();
     for u in &undefs {
         if let Some(runtime_addr) = cache.resolve_runtime(u, slide) {
             resolved.push((u.clone(), runtime_addr));
         } else {
-            unresolved.push(u.clone());
+            deferred.push(u.clone());
         }
     }
-    if !unresolved.is_empty() {
+    if !deferred.is_empty() {
         eprintln!(
-            "[hotpatch] {} undefined refs cannot be resolved against host bin:",
-            unresolved.len()
-        );
-        for u in unresolved.iter().take(20) {
-            eprintln!("  unresolved: {u}");
-        }
-        if unresolved.len() > 20 {
-            eprintln!("  ... and {} more", unresolved.len() - 20);
-        }
-        anyhow::bail!(
-            "patch link aborted: {} undefined refs without host targets — \
-             the host bin may have been stripped, or the fat build skipped \
-             `-Clink-dead-code`",
-            unresolved.len()
+            "[hotpatch] {} undefined refs deferred to dyld (system / dynamic): {}{}",
+            deferred.len(),
+            deferred.iter().take(8).cloned().collect::<Vec<_>>().join(", "),
+            if deferred.len() > 8 {
+                format!(", … +{} more", deferred.len() - 8)
+            } else {
+                String::new()
+            },
         );
     }
 
