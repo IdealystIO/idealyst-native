@@ -306,7 +306,7 @@ pub enum AppToDev {
 /// from frame zero — without this, the first raf tick would compute
 /// positions against the 393×800 fallback before the resize listener
 /// has a chance to send a corrective `ViewportChanged`.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct WireViewport {
     pub width: f32,
     pub height: f32,

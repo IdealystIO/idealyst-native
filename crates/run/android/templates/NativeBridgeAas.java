@@ -24,6 +24,17 @@ public class NativeBridge {
     /// the AasClient<AndroidBackend>. Call from a UI-thread tick.
     public static native void drainAas();
 
+    /// Report the host root view's current size to the sidecar. The
+    /// AAS shell forwards an `AppToDev::ViewportChanged` only when
+    /// the value actually differs from the last report (cheap when
+    /// nothing changed). Called from the layout-change listener in
+    /// MainActivityAas so the sidecar's viewport-relative math
+    /// (welcome's planet orbit, page layout, etc.) tracks rotations,
+    /// multi-window resizes, and the initial post-attach layout
+    /// pass that's needed because `View.getWidth()` is zero in
+    /// `onCreate`.
+    public static native void reportViewport(int widthPx, int heightPx, float density);
+
     /// Tear down the AAS client. Stops the drain channel; the
     /// worker thread exits on its next send attempt.
     public static native void detach();

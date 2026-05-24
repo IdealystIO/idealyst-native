@@ -16,7 +16,7 @@ use std::ffi::{c_char, CStr};
 use std::rc::Rc;
 use std::time::Duration;
 
-use aas_shell_native::{AasShell, AasShellOptions, WirePlatform};
+use aas_shell_native::{AasShell, AasShellOptions, WirePlatform, WireViewport};
 use objc2::rc::Retained;
 use objc2_foundation::MainThreadMarker;
 use objc2_ui_kit::UIView;
@@ -88,6 +88,28 @@ pub unsafe extern "C" fn ios_main(
             }
         };
 
+        // Sample the root view's bounds for the AAS Hello viewport.
+        // By `viewDidLoad` / `viewDidAppear` (when Swift typically
+        // calls `ios_main`) the UIView is sized to the screen, so
+        // `bounds.size` is the real CSS-px viewport the sidecar
+        // should target. If the Swift caller wires this in before
+        // layout the size will be 0×0; in that case we ship `None`
+        // and the sidecar falls back to its mobile default. A
+        // follow-up could observe `layoutSubviews` and emit
+        // `AppToDev::ViewportChanged` to track resizes (rotations,
+        // split-screen) — for now we just ship the initial size.
+        let viewport: Option<WireViewport> = {
+            let bounds = view.bounds();
+            if bounds.size.width > 0.0 && bounds.size.height > 0.0 {
+                Some(WireViewport {
+                    width: bounds.size.width as f32,
+                    height: bounds.size.height as f32,
+                })
+            } else {
+                None
+            }
+        };
+
         let mut backend = IosBackend::new(mtm);
         backend.set_host_root(view);
 
@@ -104,6 +126,7 @@ pub unsafe extern "C" fn ios_main(
                 // for now leave it to the server to render
                 // `format!("{:?}", platform)`.
                 device_label: None,
+                viewport,
             },
         ));
         SHELL.with(|slot| *slot.borrow_mut() = Some(shell));

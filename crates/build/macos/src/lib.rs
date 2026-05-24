@@ -22,11 +22,32 @@ use std::process::Command;
 use anyhow::{Context, Result};
 use build_ios::{parse_manifest, FrameworkSource, Manifest};
 
+/// Which wrapper to generate. `Local` builds a binary that depends
+/// on the user crate and mounts `app()` in-process via
+/// `host_appkit::run`. `Aas` builds a binary that does NOT depend on
+/// the user crate — `host_appkit::run_aas` connects to a dev-server
+/// over WebSocket and applies the sidecar's command stream. The two
+/// modes land in distinct wrapper dirs (`macos/` vs `macos-aas/`)
+/// and produce distinct binary names so they coexist on disk.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BuildMode {
+    Local,
+    Aas,
+}
+
+impl BuildMode {
+    pub fn is_aas(self) -> bool {
+        matches!(self, BuildMode::Aas)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct BuildOptions {
     /// Compile with `--release`. Default: debug. Native macOS builds
     /// are usually for dev iteration; release matters for shipping.
     pub release: bool,
+    /// Which wrapper template to generate (local-mount vs AAS).
+    pub mode: BuildMode,
     /// Cargo features to enable on the cargo invocation. Forwarded
     /// as `--features <list>`. Used by `idealyst dev` to pass
     /// `framework-core/dev` so the Robot bridge auto-starts.
@@ -54,14 +75,24 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     let manifest = parse_manifest(&project_dir)?;
 
     let wrapper_root = opts.source.wrapper_root(&project_dir);
-    let wrapper_dir = wrapper_root.join(&manifest.name).join("macos");
+    let subdir = if opts.mode.is_aas() { "macos-aas" } else { "macos" };
+    let wrapper_dir = wrapper_root.join(&manifest.name).join(subdir);
     let cargo_target_dir = opts.source.cargo_target_dir(&project_dir);
 
     generate_wrapper(&wrapper_dir, &cargo_target_dir, &project_dir, &manifest, &opts)?;
-    cargo_build(&wrapper_dir, opts.release, &opts.user_features)?;
+    let extra_features: &[&str] = if opts.mode.is_aas() {
+        // Activate the wrapper crate's `aas` feature, which forwards
+        // to `host-appkit/aas-shell` → `backend-macos/aas-shell`.
+        // Without this, the wrapper's `main()` calls `run_aas` which
+        // doesn't exist in the local-render build.
+        &["aas"]
+    } else {
+        &[]
+    };
+    cargo_build(&wrapper_dir, opts.release, &opts.user_features, extra_features)?;
 
     let profile = if opts.release { "release" } else { "debug" };
-    let bin_name = binary_name(&manifest.name);
+    let bin_name = binary_name(&manifest.name, opts.mode);
     let binary = cargo_target_dir.join(profile).join(&bin_name);
     if !binary.is_file() {
         anyhow::bail!(
@@ -75,10 +106,14 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     })
 }
 
-/// Produced-binary name. Suffixed with `-macos` so it doesn't
-/// collide with the user crate's lib/bin name OR the sim wrapper.
-fn binary_name(project_name: &str) -> String {
-    format!("{project_name}-macos")
+/// Produced-binary name. Suffixed with `-macos` (local-mount) or
+/// `-macos-aas` (AAS-client) so the two coexist on disk without
+/// colliding with each other or the user crate's lib/bin name.
+fn binary_name(project_name: &str, mode: BuildMode) -> String {
+    match mode {
+        BuildMode::Local => format!("{project_name}-macos"),
+        BuildMode::Aas => format!("{project_name}-macos-aas"),
+    }
 }
 
 fn generate_wrapper(
@@ -91,8 +126,11 @@ fn generate_wrapper(
     fs::create_dir_all(wrapper_dir.join("src"))
         .with_context(|| format!("create {}", wrapper_dir.display()))?;
 
-    let bin_name = binary_name(&manifest.name);
+    let bin_name = binary_name(&manifest.name, opts.mode);
 
+    // `host-appkit` is the only required dep in both modes. AAS mode
+    // additionally needs the `aas-shell` feature forwarded; we
+    // declare a wrapper-local `aas` feature that turns it on.
     let host_dep = opts.source.dep("crates/host/appkit", &[]);
     // `framework-core` as a direct dep of the wrapper so the dev
     // command can pass `--features framework-core/dev` from cargo
@@ -100,14 +138,61 @@ fn generate_wrapper(
     // rejects the spec because framework-core is only reachable
     // transitively through host-appkit / the user crate.
     let fcore_dep = opts.source.dep("crates/framework/core", &[]);
-    let user_dep = format!("{{ path = \"{}\" }}", project_dir.display());
+
+    let bundle_id = manifest
+        .app
+        .bundle_id
+        .clone()
+        .unwrap_or_else(|| format!("com.example.{}", manifest.name));
+
+    let (deps_block, features_block, main_rs) = match opts.mode {
+        BuildMode::Local => {
+            let user_dep = format!("{{ path = \"{}\" }}", project_dir.display());
+            let deps = format!(
+                "host-appkit = {host_dep}\n\
+                 framework-core = {fcore_dep}\n\
+                 {user_name} = {user_dep}\n",
+                host_dep = host_dep,
+                fcore_dep = fcore_dep,
+                user_name = manifest.name,
+                user_dep = user_dep,
+            );
+            let features =
+                "[features]\ndev = [\"framework-core/dev\"]\n".to_string();
+            let main = local_main_rs(
+                &manifest.lib_name,
+                &manifest.name,
+                &bundle_id,
+                &bin_name,
+            );
+            (deps, features, main)
+        }
+        BuildMode::Aas => {
+            // No dep on the user crate — the sidecar owns it. The
+            // wrapper just connects to the dev-server via `app_id`
+            // (bundle id) and applies whatever stream arrives.
+            let deps = format!(
+                "host-appkit = {host_dep}\n\
+                 framework-core = {fcore_dep}\n",
+                host_dep = host_dep,
+                fcore_dep = fcore_dep,
+            );
+            // `aas` toggles the host-appkit AAS variant; `dev`
+            // additionally enables Robot bridge + MCP catalog.
+            let features = "[features]\n\
+                aas = [\"host-appkit/aas-shell\"]\n\
+                dev = [\"framework-core/dev\"]\n"
+                .to_string();
+            let main = aas_main_rs(&bundle_id, &manifest.name, &bin_name);
+            (deps, features, main)
+        }
+    };
 
     let cargo_toml = format!(
-        r#"# GENERATED by `idealyst build --macos`. Do not edit — rewritten every build.
+        r#"# GENERATED by `idealyst build --macos` ({mode}). Do not edit — rewritten every build.
 #
-# AppKit wrapper: depends on `host-appkit` + the user crate, exposes
-# a `main()` that calls `host_appkit::run(app, ...)`. Produces a
-# desktop binary at `<target>/<profile>/{bin_name}`.
+# AppKit wrapper. {mode_desc}
+# Produces a desktop binary at `<target>/<profile>/{bin_name}`.
 
 [workspace]
 
@@ -117,33 +202,35 @@ version = "0.0.1"
 edition = "2021"
 
 [dependencies]
-host-appkit = {host_dep}
-framework-core = {fcore_dep}
-{user_name} = {user_dep}
-
-# `dev` activates everything `idealyst dev` needs: Robot bridge
-# (auto-starts on mount), MCP catalog inventory, and the
-# `--emit-catalog` arg handler in this wrapper's main. Production
-# builds via `idealyst build` / `idealyst run` don't enable `dev`
-# and carry none of that overhead.
-[features]
-dev = ["framework-core/dev"]
-"#,
+{deps_block}
+{features_block}"#,
+        mode = if opts.mode.is_aas() { "AAS" } else { "local" },
+        mode_desc = if opts.mode.is_aas() {
+            "Connects to the dev-server and renders commands from the sidecar; \
+             does NOT depend on the user crate."
+        } else {
+            "Depends on `host-appkit` + the user crate, mounts `app()` in-process."
+        },
         bin_name = bin_name,
-        host_dep = host_dep,
-        fcore_dep = fcore_dep,
-        user_name = manifest.name,
-        user_dep = user_dep,
+        deps_block = deps_block,
+        features_block = features_block,
     );
 
-    let bundle_id = manifest
-        .app
-        .bundle_id
-        .clone()
-        .unwrap_or_else(|| format!("com.example.{}", manifest.name));
-    let main_rs = format!(
-        r#"//! GENERATED by `idealyst build --macos`. Wrapper binary for the
-//! AppKit-backed native macOS runtime.
+    write_shared_target_config(wrapper_dir, cargo_target_dir)?;
+    fs::write(wrapper_dir.join("Cargo.toml"), cargo_toml)?;
+    fs::write(wrapper_dir.join("src/main.rs"), main_rs)?;
+    Ok(())
+}
+
+fn local_main_rs(
+    user_lib: &str,
+    app_name: &str,
+    bundle_id: &str,
+    bin_name: &str,
+) -> String {
+    format!(
+        r#"//! GENERATED by `idealyst build --macos` (local-mount). Wrapper
+//! binary for the AppKit-backed native macOS runtime.
 
 use {user_lib}::app;
 
@@ -179,7 +266,7 @@ fn main() {{
     }}
 
     let opts = host_appkit::RunOptions {{
-        title: "{title}".to_string(),
+        title: "{app_name}".to_string(),
         width: 1024.0,
         height: 768.0,
     }};
@@ -189,17 +276,39 @@ fn main() {{
     }}
 }}
 "#,
-        user_lib = manifest.lib_name,
-        app_name = manifest.name,
+        user_lib = user_lib,
+        app_name = app_name,
         bundle_id = bundle_id,
-        title = manifest.name,
         bin_name = bin_name,
-    );
+    )
+}
 
-    write_shared_target_config(wrapper_dir, cargo_target_dir)?;
-    fs::write(wrapper_dir.join("Cargo.toml"), cargo_toml)?;
-    fs::write(wrapper_dir.join("src/main.rs"), main_rs)?;
-    Ok(())
+fn aas_main_rs(bundle_id: &str, app_name: &str, bin_name: &str) -> String {
+    // AAS wrapper. No user-crate dep — the sidecar runs `app()`
+    // remotely and ships commands over WebSocket. The `app_id`
+    // passed to `run_aas` is the bundle id; the dev-server's mDNS
+    // record advertises the same id so discovery is automatic.
+    format!(
+        r#"//! GENERATED by `idealyst build --macos --aas` (AAS-client).
+//! Wrapper binary that runs as a thin client of an AAS dev-server;
+//! does NOT depend on the user crate.
+
+fn main() {{
+    let opts = host_appkit::RunOptions {{
+        title: "{app_name}".to_string(),
+        width: 1024.0,
+        height: 768.0,
+    }};
+    if let Err(e) = host_appkit::run_aas("{bundle_id}", opts) {{
+        eprintln!("[{bin_name}] runtime error: {{e}}");
+        std::process::exit(1);
+    }}
+}}
+"#,
+        bundle_id = bundle_id,
+        app_name = app_name,
+        bin_name = bin_name,
+    )
 }
 
 /// Redirect the wrapper crate's build output back into the project's
@@ -223,22 +332,25 @@ fn cargo_build(
     wrapper_dir: &Path,
     release: bool,
     user_features: &[String],
+    extra_features: &[&str],
 ) -> Result<()> {
     let mut cmd = Command::new("cargo");
     cmd.args(["build"]).current_dir(wrapper_dir);
     if release {
         cmd.arg("--release");
     }
-    if !user_features.is_empty() {
-        cmd.arg("--features").arg(user_features.join(","));
+    let mut combined: Vec<String> = user_features.to_vec();
+    combined.extend(extra_features.iter().map(|s| (*s).to_string()));
+    if !combined.is_empty() {
+        cmd.arg("--features").arg(combined.join(","));
     }
     eprintln!(
         "[build-macos] cargo build{}{} (in {})",
         if release { " --release" } else { "" },
-        if user_features.is_empty() {
+        if combined.is_empty() {
             String::new()
         } else {
-            format!(" --features {}", user_features.join(","))
+            format!(" --features {}", combined.join(","))
         },
         wrapper_dir.display(),
     );

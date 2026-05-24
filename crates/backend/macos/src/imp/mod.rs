@@ -255,9 +255,21 @@ fn apply_style_to_view(view: &NSView, style: &StyleRules) {
     // because the returned `GradientState` lives in the backend's
     // per-view cache — `apply_style_to_view` doesn't have access.
 
-    // Opacity
+    // Opacity. Use `NSView.setAlphaValue:` (matches iOS's
+    // `UIView.setAlpha:`), NOT `CALayer.setOpacity:`. The two
+    // multiply in AppKit's rendering pipeline, so routing static
+    // opacity through the layer while animated opacity goes through
+    // the view (`AnimProp::Opacity` → `setAlphaValue:`) would make
+    // any author who set both static AND animated opacity get
+    // (static * animated) — visibly broken whenever the static
+    // value is < 1. Welcome's planets hit this case exactly: the
+    // sheet declares `opacity: 0.0` as the resting state and the
+    // raf body animates `setAlphaValue:` up to `fade_in`. Pre-fix
+    // the planets stayed invisible because the layer opacity
+    // stayed at 0 regardless of `setAlphaValue:`. Both backends
+    // now route static + animated through the same field.
     if let Some(opacity) = style.opacity.as_ref().map(|t| t.resolve()) {
-        let _: () = unsafe { msg_send![&layer, setOpacity: opacity as f32] };
+        let _: () = unsafe { msg_send![view, setAlphaValue: opacity as f64] };
     }
 
     // Corner radius. Same caveat as iOS: AppKit's `cornerRadius`

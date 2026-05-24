@@ -22,11 +22,64 @@
 
 use std::cell::RefCell;
 
-use aas_shell_native::{AasShell, AasShellOptions, WirePlatform};
+use aas_shell_native::{AasShell, AasShellOptions, WirePlatform, WireViewport};
 use jni::objects::JObject;
 use jni::JNIEnv;
 
 use crate::AndroidBackend;
+
+/// Sample the parent `ViewGroup`'s `getWidth()` / `getHeight()` and
+/// convert to CSS pixels. Both return `int` in device pixels post-
+/// layout. We divide by `Resources.getSystem().getDisplayMetrics()
+/// .density` so the value the sidecar sees matches the dp/css-px
+/// space the wire protocol uses (web/iOS already report css px).
+///
+/// Returns `None` when called pre-layout (both dimensions are 0)
+/// or if any JNI call fails — the sidecar will fall back to its
+/// hardcoded 393×800 mobile-portrait default, which on a typical
+/// phone is close enough that visual misalignment isn't dramatic.
+/// A future revision can hook the ViewGroup's `OnLayoutChangeListener`
+/// and emit `AppToDev::ViewportChanged` for accurate live sizing.
+fn sample_viewport<'l>(
+    env: &mut JNIEnv<'l>,
+    root: &JObject<'l>,
+) -> Option<WireViewport> {
+    let width_px = env.call_method(root, "getWidth", "()I", &[]).ok()?.i().ok()?;
+    let height_px = env.call_method(root, "getHeight", "()I", &[]).ok()?.i().ok()?;
+    if width_px <= 0 || height_px <= 0 {
+        return None;
+    }
+    // Density via `Resources.getSystem().getDisplayMetrics().density`.
+    let resources_cls = env.find_class("android/content/res/Resources").ok()?;
+    let system_resources = env
+        .call_static_method(
+            &resources_cls,
+            "getSystem",
+            "()Landroid/content/res/Resources;",
+            &[],
+        )
+        .ok()?
+        .l()
+        .ok()?;
+    let metrics = env
+        .call_method(
+            &system_resources,
+            "getDisplayMetrics",
+            "()Landroid/util/DisplayMetrics;",
+            &[],
+        )
+        .ok()?
+        .l()
+        .ok()?;
+    let density = env.get_field(&metrics, "density", "F").ok()?.f().ok()?;
+    if density <= 0.0 {
+        return None;
+    }
+    Some(WireViewport {
+        width: width_px as f32 / density,
+        height: height_px as f32 / density,
+    })
+}
 
 thread_local! {
     /// The AAS shell lives on the UI thread for the lifetime of the
@@ -91,6 +144,7 @@ pub fn attach<'l>(
         // and exits when it next tries to send.
         SHELL.with(|slot| slot.borrow_mut().take());
 
+        let viewport = sample_viewport(env, &root);
         let backend = AndroidBackend::new(context_global, root_global);
         let shell = AasShell::spawn_with_options(
             backend,
@@ -100,6 +154,7 @@ pub fn attach<'l>(
                 // Future: surface `Build.MODEL` from the Kotlin side
                 // through the JNI bridge and forward here.
                 device_label: None,
+                viewport,
             },
         );
         SHELL.with(|slot| *slot.borrow_mut() = Some(shell));
@@ -137,6 +192,7 @@ pub fn attach_with_url<'l>(
 
         SHELL.with(|slot| slot.borrow_mut().take());
 
+        let viewport = sample_viewport(env, &root);
         let backend = AndroidBackend::new(context_global, root_global);
         let shell = AasShell::spawn_with_url_and_options(
             backend,
@@ -144,6 +200,7 @@ pub fn attach_with_url<'l>(
             AasShellOptions {
                 platform: WirePlatform::Android,
                 device_label: None,
+                viewport,
             },
         );
         SHELL.with(|slot| *slot.borrow_mut() = Some(shell));
@@ -177,7 +234,26 @@ pub fn drain() {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         SHELL.with(|slot| {
             if let Some(shell) = slot.borrow().as_ref() {
-                shell.drain();
+                let had_inbound = shell.drain();
+                if had_inbound {
+                    // Mirror the iOS AAS shell: Android's normal
+                    // `finish()` path defers the layout pass via
+                    // `schedule_layout_pass_retry` →
+                    // `ANDROID_BACKEND_SELF.upgrade()`. In AAS mode
+                    // that global is never set (the backend lives
+                    // by-value inside `AasClient`, not behind an
+                    // `Rc<RefCell<>>`), so the deferred path bails
+                    // and frames computed by Taffy never get
+                    // applied to native views. Without this,
+                    // welcome's text renders at the top of the
+                    // screen (FrameLayout default) instead of
+                    // centered, planets are at 0×0, sun + vignette
+                    // are invisible. Driving layout synchronously
+                    // here whenever new commands arrived gives the
+                    // same result as the global-self path uses in
+                    // local-mount mode.
+                    shell.client.borrow_mut().backend_mut().run_layout();
+                }
             }
         });
     }));
@@ -188,4 +264,30 @@ pub fn drain() {
 /// from the Activity's `onDestroy`.
 pub fn detach() {
     SHELL.with(|slot| slot.borrow_mut().take());
+}
+
+/// Report the host FrameLayout's current size to the sidecar.
+/// Called from MainActivityAas's `OnLayoutChangeListener` via the
+/// generated `Java_<pkg>_NativeBridge_reportViewport` JNI entry —
+/// the device-pixel width/height + the current density are passed
+/// straight from the Java side. We divide by density to convert
+/// to dp (== CSS px, the unit the wire protocol uses) so the
+/// sidecar's `RecordingViewOps::frame()` returns the same kind of
+/// number the iOS/web/macOS clients ship.
+///
+/// No-op if the shell hasn't been attached yet, density is
+/// non-positive, or dimensions are zero (pre-layout call).
+pub fn report_viewport(width_px: jni::sys::jint, height_px: jni::sys::jint, density: jni::sys::jfloat) {
+    if width_px <= 0 || height_px <= 0 || density <= 0.0 {
+        return;
+    }
+    let viewport = aas_shell_native::WireViewport {
+        width: width_px as f32 / density,
+        height: height_px as f32 / density,
+    };
+    SHELL.with(|slot| {
+        if let Some(shell) = slot.borrow().as_ref() {
+            shell.report_viewport(viewport);
+        }
+    });
 }

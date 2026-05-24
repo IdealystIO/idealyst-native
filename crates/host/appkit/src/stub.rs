@@ -40,3 +40,8 @@ impl std::error::Error for RunError {}
 pub fn run<F: FnOnce() -> Primitive>(_app: F, _opts: RunOptions) -> Result<(), RunError> {
     Err(RunError::NotMacos)
 }
+
+#[cfg(feature = "aas-shell")]
+pub fn run_aas(_app_id: &str, _opts: RunOptions) -> Result<(), RunError> {
+    Err(RunError::NotMacos)
+}

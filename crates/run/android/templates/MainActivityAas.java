@@ -63,11 +63,41 @@ public class MainActivity extends Activity {
             multicastLock.acquire();
         }
 
-        FrameLayout root = new FrameLayout(this);
+        final FrameLayout root = new FrameLayout(this);
         root.setLayoutParams(new ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.MATCH_PARENT));
         setContentView(root);
+
+        // Report the root view's size to the sidecar whenever it
+        // changes. The Rust side dedupes redundant calls, so it's
+        // safe to fire on every layout pass.
+        //
+        // This is the only path the sidecar has to learn the real
+        // canvas size on Android. `View.getWidth()` is zero in
+        // `onCreate` (no layout pass has run yet), so the initial
+        // Hello ships `viewport=None` and the sidecar's
+        // `RecordingViewOps::frame()` falls back to its hardcoded
+        // 393×800 mobile-portrait default. Welcome's planet orbit
+        // math (and any other `page_ref.frame()` reader) would
+        // then compute against the wrong canvas — visible as
+        // text at the top of the screen instead of vertically
+        // centered, missing planets, missing sun, etc. The first
+        // OnLayoutChangeListener callback (immediately after
+        // onCreate returns) lands the real dimensions; subsequent
+        // calls catch rotations + multi-window resizes.
+        final float density = getResources().getDisplayMetrics().density;
+        root.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
+            @Override
+            public void onLayoutChange(View v, int l, int t, int r, int b,
+                                       int ol, int ot, int or_, int ob) {
+                int width = r - l;
+                int height = b - t;
+                if (width > 0 && height > 0) {
+                    NativeBridge.reportViewport(width, height, density);
+                }
+            }
+        });
 
         // If the CLI baked in an explicit URL (emulator path via
         // `adb reverse`), use it directly; otherwise fall through to

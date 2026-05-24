@@ -409,14 +409,25 @@ pub(crate) fn announce(msg: &str, priority: LiveRegionPriority) {
 /// makes reactive prop updates that clear a previously-set field
 /// actually drop the value.
 fn set_string_or_clear(view: &NSView, sel: objc2::runtime::Sel, value: Option<&str>) {
+    // `performSelector:withObject:` is declared as returning `id`
+    // ('@') on NSObject regardless of the underlying target's
+    // return type, so the Rust receiver type has to be a pointer
+    // — even though the actual selectors we send (the
+    // `setAccessibility*:` family) are void-returning. Pre-fix
+    // this used `let _: () = ...`, which made objc2's debug-mode
+    // signature verifier panic ("expected return to have type
+    // code '@', but found 'v'") the first time the AAS-mode walk
+    // hit an a11y label. The returned pointer is meaningless for
+    // these setters; we ignore it.
+    type Id = *mut objc2_foundation::NSObject;
     match value {
         Some(v) => {
             let ns = NSString::from_str(v);
-            let _: () = unsafe { msg_send![view, performSelector: sel, withObject: &*ns] };
+            let _: Id = unsafe { msg_send![view, performSelector: sel, withObject: &*ns] };
         }
         None => {
             let nil: *const objc2_foundation::NSObject = std::ptr::null();
-            let _: () = unsafe { msg_send![view, performSelector: sel, withObject: nil] };
+            let _: Id = unsafe { msg_send![view, performSelector: sel, withObject: nil] };
         }
     }
 }

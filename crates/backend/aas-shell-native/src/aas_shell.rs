@@ -48,6 +48,12 @@ use crate::discover_blocking;
 pub struct AasShell<B: Backend + 'static> {
     pub client: Rc<RefCell<AasClient<B>>>,
     inbound: mpsc::Receiver<DevToApp>,
+    /// Last viewport reported via [`Self::report_viewport`] (or the
+    /// initial Hello value). Used to skip redundant `ViewportChanged`
+    /// sends when the platform shell calls `report_viewport` on every
+    /// drain tick — common when the shell doesn't have a layout-change
+    /// listener and instead just samples on each frame.
+    last_reported_viewport: RefCell<Option<wire::WireViewport>>,
 }
 
 /// Optional knobs for [`AasShell::spawn_with_options`] /
@@ -67,6 +73,19 @@ pub struct AasShellOptions {
     /// "Pixel 8", "MacBook Air (M2)"). Server falls back to the
     /// platform name when this is `None`.
     pub device_label: Option<String>,
+    /// Initial viewport in CSS pixels the client is rendering into.
+    /// Shipped in `AppToDev::Hello.viewport`; the sidecar plugs it
+    /// into `RecordingViewOps::frame()` so author code reading
+    /// `page_ref.with(|h| h.frame())` sees the *real* native window
+    /// size instead of the hardcoded `393×800` fallback. Pre-fix
+    /// every native AAS shell shipped `None`, so welcome's planet-
+    /// orbit math (and any other code that reads the viewport)
+    /// rendered for a phantom 393×800 mobile canvas — visible as
+    /// off-aligned content on any client whose window isn't that
+    /// exact size. iOS / Android wrappers should fill this from
+    /// `UIView.bounds` / the root `View`'s size after layout; the
+    /// macOS wrapper supplies the `NSWindow.contentView.bounds`.
+    pub viewport: Option<wire::WireViewport>,
 }
 
 impl<B: Backend + 'static> AasShell<B> {
@@ -127,34 +146,100 @@ impl<B: Backend + 'static> AasShell<B> {
 
         let client = Rc::new(RefCell::new(AasClient::new(backend, outbound.clone())));
 
+        // Seed the viewport-change tracker with whatever shipped in
+        // the Hello so the first `report_viewport` call only emits
+        // a `ViewportChanged` if the platform shell discovered a
+        // different size post-layout. Without seeding, every
+        // first-call would emit a redundant message.
+        let initial_viewport = options.viewport.clone();
         let options_for_worker = options;
         std::thread::spawn(move || {
             ws_worker_loop(target, inbound_tx, outbound_rx, options_for_worker);
         });
 
-        Self { client, inbound: inbound_rx }
+        Self {
+            client,
+            inbound: inbound_rx,
+            last_reported_viewport: RefCell::new(initial_viewport),
+        }
     }
 
     /// Drain any pending dev→app messages and apply them through
-    /// the [`AasClient`]. Returns `true` if at least one message
-    /// was processed — callers use that to gate per-batch follow-up
+    /// the [`AasClient`], then push an `AppToDev::RequestFrame` so
+    /// the sidecar advances its animation clock + scheduler one
+    /// tick. Returns `true` if at least one inbound message was
+    /// processed — callers use that to gate per-batch follow-up
     /// work like an iOS layout pass.
+    ///
+    /// **Why the `RequestFrame`:** animation cadence is
+    /// **client-driven** on the sidecar side. `tick_animations` only
+    /// runs in response to an inbound `RequestFrame`; without one,
+    /// timeline tweens (welcome's intro fade-in, page-bg dark wash)
+    /// never start and the AV.bind subscriptions never emit
+    /// `SetAnimated*` commands. Pre-fix every native AAS shell
+    /// (iOS / Android / macOS) had its session sitting at "ready"
+    /// while the user saw a blank initial frame — only the web
+    /// shell sent `RequestFrame` (from its raf pump in
+    /// `backend-web::dev_transport`). Pushing one here on every
+    /// drain tick pairs the inbound + outbound rates 1:1, mirrors
+    /// the web behavior, and costs ~16 bytes per tick over the WS.
+    ///
+    /// `dt_ms` defaults to 16 — the typical 60fps cadence the
+    /// drain timer is scheduled at. If a caller drives the drain
+    /// at a different rate it can use [`Self::drain_with_dt_ms`].
     ///
     /// Safe to call from a periodic timer; cheap when the channel
     /// is empty.
     pub fn drain(&self) -> bool {
+        self.drain_with_dt_ms(16)
+    }
+
+    /// As [`Self::drain`] but lets the caller specify the
+    /// `dt_ms` value used in the trailing `RequestFrame`. Useful
+    /// for callers whose drain cadence isn't ~16ms.
+    /// Report the host view's current viewport to the sidecar. If
+    /// `viewport` differs from whatever was last reported (including
+    /// the initial Hello), emits `AppToDev::ViewportChanged` so the
+    /// sidecar's `RecordingViewOps::frame()` reflects the live size.
+    /// Cheap when nothing changed (no message sent).
+    ///
+    /// Platform shells whose host view doesn't have valid bounds at
+    /// `attach()` time (the Android case — `View.getWidth()` returns
+    /// 0 until the first layout pass) should call this on each drain
+    /// tick with the freshly-sampled `view.bounds`. The sidecar's
+    /// 393×800 fallback only persists until this call lands.
+    pub fn report_viewport(&self, viewport: wire::WireViewport) {
+        let mut last = self.last_reported_viewport.borrow_mut();
+        if last.as_ref() == Some(&viewport) {
+            return;
+        }
+        let _ = self
+            .client
+            .borrow()
+            .outbound()
+            .send(wire::AppToDev::ViewportChanged {
+                width: viewport.width,
+                height: viewport.height,
+            });
+        *last = Some(viewport);
+    }
+
+    pub fn drain_with_dt_ms(&self, dt_ms: u32) -> bool {
         let mut msgs: Vec<DevToApp> = Vec::new();
         while let Ok(msg) = self.inbound.try_recv() {
             msgs.push(msg);
         }
-        if msgs.is_empty() {
-            return false;
-        }
+        let had_inbound = !msgs.is_empty();
         let mut client = self.client.borrow_mut();
         for msg in msgs {
             apply_dev_msg(&mut client, msg);
         }
-        true
+        // Always send RequestFrame, even when the inbound queue
+        // was empty — the sidecar may be mid-animation with no
+        // new commands to deliver this exact tick. Skipping the
+        // RequestFrame would stall the clock for that frame.
+        let _ = client.outbound().send(wire::AppToDev::RequestFrame { dt_ms });
+        had_inbound
     }
 }
 
@@ -168,8 +253,35 @@ fn apply_dev_msg<B: Backend>(client: &mut AasClient<B>, msg: DevToApp) {
             }
         }
         DevToApp::Commands(cmds) => {
-            if let Err(e) = client.apply_batch(cmds) {
-                eprintln!("[aas-shell] replay error: {:?}", e);
+            let count = cmds.len();
+            // Catch panics from inside apply_batch so a single bad
+            // command (e.g. a backend-side objc msg-send type
+            // mismatch) doesn't abort the drain loop silently.
+            // Without this, AppKit-side panics absorbed by the
+            // outer dispatch_async_f catch left "[backend-macos::
+            // aas] drain panic absorbed" as the only signal —
+            // which made it hard to tell whether *replay* was
+            // failing or just the trampoline catch was working.
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                client.apply_batch(cmds)
+            }));
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    eprintln!("[aas-shell] replay error after {count} cmds: {:?}", e);
+                }
+                Err(payload) => {
+                    let msg = if let Some(s) = payload.downcast_ref::<&'static str>() {
+                        (*s).to_string()
+                    } else if let Some(s) = payload.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "<non-string panic payload>".to_string()
+                    };
+                    eprintln!(
+                        "[aas-shell] PANIC during apply_batch ({count} cmds): {msg}"
+                    );
+                }
             }
         }
         DevToApp::Rebuilding => eprintln!("[aas-shell] dev rebuilding…"),
@@ -237,6 +349,7 @@ fn ws_worker_loop(
                 platform: options.platform,
                 device_label: options.device_label.clone(),
             },
+            viewport: options.viewport.clone(),
         };
         let _ = ws_send(&mut ws, &hello);
         eprintln!("[aas-shell] connected");

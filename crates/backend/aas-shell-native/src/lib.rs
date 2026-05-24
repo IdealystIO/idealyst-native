@@ -26,4 +26,4 @@ pub use transport::{connect_and_run, ClientError};
 // Re-export the wire identity types so platform shells (backend-ios,
 // backend-android) don't need a direct `wire` dependency to populate
 // their Hello identity.
-pub use wire::{ClientIdentity, WirePlatform};
+pub use wire::{ClientIdentity, WirePlatform, WireViewport};

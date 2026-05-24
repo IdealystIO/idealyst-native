@@ -251,16 +251,17 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
             Ok(())
         }
         Platform::Macos => {
-            if args.aas {
-                anyhow::bail!(
-                    "macOS AAS mode is not implemented yet; run without --aas for local-render"
-                );
-            }
+            let mode = if args.aas {
+                run_macos::RunMode::Aas
+            } else {
+                run_macos::RunMode::Local
+            };
             let source = crate::framework_source::resolve(&args.dir)?;
             let artifact = run_macos::run(
                 &args.dir,
                 run_macos::RunOptions {
                     release: args.release,
+                    mode,
                     source,
                     // One-shot `idealyst run macos` is a foreground
                     // session — block on the app so Ctrl-C in the

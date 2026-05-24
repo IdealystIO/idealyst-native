@@ -428,6 +428,17 @@ impl AndroidBackend {
         })
     }
 
+    /// Public wrapper around [`Self::run_layout_pass`]. Used by the
+    /// AAS shell — in AAS mode the backend lives by-value inside an
+    /// `AasClient`, so `install_global_self` is never called and the
+    /// `schedule_layout_pass_retry` path bails on the missing
+    /// `ANDROID_BACKEND_SELF.upgrade()`. The shell calls this
+    /// synchronously after each `apply_batch` instead. Mirrors the
+    /// iOS shell's `backend_mut().run_layout()` shape.
+    pub fn run_layout(&mut self) {
+        self.run_layout_pass();
+    }
+
     /// Run the layout pass: for every Taffy root (the framework's
     /// app root plus any disconnected sub-roots), compute, then
     /// iterate every registered view and write its frame onto the

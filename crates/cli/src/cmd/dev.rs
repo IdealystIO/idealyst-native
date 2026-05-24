@@ -222,8 +222,9 @@ pub fn run(args: Args) -> Result<()> {
         let dir = dir.clone();
         let args_clone = args.shallow_clone();
         let target = *target;
+        let children_for_worker = children.clone();
         let worker = std::thread::spawn(move || {
-            if let Err(e) = launch_target(target, &dir, &args_clone) {
+            if let Err(e) = launch_target(target, &dir, &args_clone, children_for_worker) {
                 eprintln!("[dev {}] launch failed: {e:#}", target);
             }
         });
@@ -330,7 +331,17 @@ fn build_aas_host(dir: &Path) -> Result<PathBuf> {
 /// Per-target launcher. Each variant handles its own AAS-vs-local
 /// branching internally, then either blocks (web's static server) or
 /// returns (iOS / Android, which fire-and-forget the device launch).
-fn launch_target(target: Target, dir: &Path, args: &Args) -> Result<()> {
+///
+/// `children` is the shared Vec the Ctrl-C handler walks on
+/// SIGINT — launchers that produce a `Child` (currently macOS in
+/// background mode) push it here so the binary gets killed when
+/// the dev session ends.
+fn launch_target(
+    target: Target,
+    dir: &Path,
+    args: &Args,
+    children: Arc<Mutex<Vec<Child>>>,
+) -> Result<()> {
     match target {
         Target::Web => launch_web(dir, args),
         Target::Ios => launch_ios(dir, args),
@@ -338,7 +349,7 @@ fn launch_target(target: Target, dir: &Path, args: &Args) -> Result<()> {
         Target::Roku => anyhow::bail!(
             "Roku has no dev-mode story yet; use `idealyst build roku` for the package"
         ),
-        Target::Macos => launch_macos(dir, args),
+        Target::Macos => launch_macos(dir, args, children),
     }
 }
 
@@ -618,22 +629,33 @@ fn launch_android(dir: &Path, args: &Args) -> Result<()> {
 /// (we're already on macOS) and no AAS shell yet — the macOS
 /// backend's first iteration is local-render only (see
 /// `docs/macos-backend-plan.md`).
-fn launch_macos(dir: &Path, args: &Args) -> Result<()> {
-    if args.aas {
-        anyhow::bail!(
-            "macOS AAS mode is not implemented yet; run without --aas for local-render"
-        );
-    }
-    eprintln!("[dev macos] building + launching native AppKit app…");
+fn launch_macos(dir: &Path, args: &Args, children: Arc<Mutex<Vec<Child>>>) -> Result<()> {
+    let mode = if args.aas {
+        run_macos::RunMode::Aas
+    } else {
+        run_macos::RunMode::Local
+    };
+    let build_mode = if args.aas {
+        build_macos::BuildMode::Aas
+    } else {
+        build_macos::BuildMode::Local
+    };
+    eprintln!(
+        "[dev macos] building + launching native AppKit app (mode: {:?})…",
+        mode
+    );
     let source = crate::framework_source::resolve(dir)?;
 
     // Build first so we have the wrapper binary path to pass to the
     // launcher as `IDEALYST_CATALOG_BIN`. The build crate's
-    // `build` returns the artifact without running it.
+    // `build` returns the artifact without running it. AAS mode
+    // builds the AAS wrapper (no user-crate dep); local mode builds
+    // the standard mount wrapper.
     let built = build_macos::build(
         dir,
         build_macos::BuildOptions {
             release: false,
+            mode: build_mode,
             source: source.clone(),
             user_features: dev_user_features_macos(),
         },
@@ -650,6 +672,7 @@ fn launch_macos(dir: &Path, args: &Args) -> Result<()> {
         dir,
         run_macos::RunOptions {
             release: false,
+            mode,
             source,
             background: true,
             user_features: dev_user_features_macos(),
@@ -658,6 +681,16 @@ fn launch_macos(dir: &Path, args: &Args) -> Result<()> {
     )
     .context("macOS dev launch failed")?;
     eprintln!("[dev macos] running detached ({})", artifact.binary.display());
+
+    // Track the spawned macOS Child so the Ctrl-C handler can kill
+    // it on exit. Pre-fix, `cmd.spawn()` returned a `Child` that
+    // was immediately dropped, leaving the binary orphaned to
+    // `init` (PID 1) — every `idealyst dev --macos` session piled
+    // up one zombie `<project>-macos[-aas]` process per
+    // invocation, with no way to reach them short of `killall -9`.
+    if let Some(child) = artifact.child {
+        children.lock().unwrap().push(child);
+    }
 
     // Legacy: write `.idealyst/catalog.path` too. Kept for back-
     // compat with `bridge_discovery` path-walking callers; the

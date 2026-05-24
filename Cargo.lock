@@ -490,6 +490,7 @@ dependencies = [
 name = "backend-macos"
 version = "0.0.1"
 dependencies = [
+ "aas-shell-native",
  "backend-apple-core",
  "block2 0.5.1",
  "framework-core",
@@ -1280,6 +1281,7 @@ name = "dev-server"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "ctrlc",
  "framework-core",
  "framework-hot",
  "idea-ui",

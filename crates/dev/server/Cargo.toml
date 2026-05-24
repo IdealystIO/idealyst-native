@@ -42,7 +42,7 @@ test-support = []
 # `libc` saves single-digit KB of link time. Off for any consumer
 # that only wants the dev-side recorder / transport — those callers
 # stay anyhow-free + don't drag subsecond through their build.
-aas-runtime = ["dep:framework-hot", "dep:subsecond-types", "dep:libc", "dep:anyhow"]
+aas-runtime = ["dep:framework-hot", "dep:subsecond-types", "dep:libc", "dep:anyhow", "dep:ctrlc"]
 
 [dependencies]
 framework-core = { workspace = true }
@@ -63,6 +63,12 @@ subsecond-types = { version = "0.7", optional = true }
 # `main` runtime address to the host so the host can compute the
 # ASLR slide for symbol-table diffs.
 libc = { version = "0.2", optional = true }
+# Signal handling on the AAS host: SIGINT (Ctrl-C), SIGTERM (the
+# dev orchestrator's `child.kill()`), and SIGHUP (terminal close)
+# all need to trigger sidecar teardown before the host exits, or
+# the sidecar reparents to PID 1 and orphans. Default ctrlc only
+# catches SIGINT; the `termination` feature adds TERM+HUP.
+ctrlc = { version = "3", features = ["termination"], optional = true }
 # Used by `dev_server::host` for the hot-patch fallback path (Err
 # triggers SIGKILL-and-respawn). Optional so the recorder/transport
 # consumers stay anyhow-free.

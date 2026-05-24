@@ -18,6 +18,16 @@ license.workspace = true
 [lib]
 crate-type = ["rlib"]
 
+[features]
+default = []
+# Compile in `host_appkit::run_aas` — the AAS-client variant that
+# connects to a dev-server (instead of mounting the user's tree
+# locally) and drains commands onto the AppKit run loop. Forwarded
+# to `backend-macos/aas-shell` so the backend's `aas` module is
+# available. Off by default so the local-render build path pulls
+# zero transport code.
+aas-shell = ["backend-macos/aas-shell"]
+
 [dependencies]
 framework-core = { workspace = true }
 backend-macos = { workspace = true }

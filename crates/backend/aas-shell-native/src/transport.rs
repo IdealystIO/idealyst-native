@@ -52,6 +52,12 @@ where
         // shells in `aas_shell.rs` populate this with the correct
         // platform constant.
         identity: wire::ClientIdentity::default(),
+        // Native transport doesn't currently surface a real viewport
+        // here — the sidecar's `RecordingViewOps::frame()` will fall
+        // back to its hardcoded default when this is `None`. A future
+        // pass can plumb `WireBackend::viewport()` through if/when
+        // backends expose one.
+        viewport: None,
     };
     send(&mut ws, &hello)?;
 

@@ -22,6 +22,13 @@ default = []
 # Forward `framework-core/debug-stats` so PhaseTimer counters exist
 # in this crate's hot paths (apply-style, layout, batched insert).
 debug-stats = ["framework-core/debug-stats"]
+# Optional: compile in the AAS-client entry point + main-thread
+# drain helper so the macOS app can run as a thin client of an AAS
+# dev-server (instead of mounting the user's tree locally). When
+# off, the crate is a pure native backend with no transport code.
+# Mirrors `backend-ios-mobile`'s `aas-shell` feature; pulls in the
+# shared `aas-shell-native` worker.
+aas-shell = ["dep:aas-shell-native", "aas-shell-native/aas-shell"]
 
 [dependencies]
 framework-core = { workspace = true }
@@ -29,6 +36,10 @@ native-layout = { workspace = true }
 # Cross-Apple substrate (NSLog, scheduler, CoreText font registry,
 # color parsing). Shared with backend-ios-core; same Phase 0 lift.
 backend-apple-core = { workspace = true }
+# Only used when `aas-shell` is on. Pulls tungstenite + mdns-sd +
+# the worker-thread `AasShell` from the shared native-shell crate
+# (also consumed by iOS, Android).
+aas-shell-native = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.5"

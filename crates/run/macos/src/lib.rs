@@ -4,15 +4,35 @@
 //! lifecycle would tie up the orchestrator's other targets).
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 
 use anyhow::{Context, Result};
 use build_ios::FrameworkSource;
+
+/// Which build path to spawn. `Local` mounts the user's `app()`
+/// in-process via `host_appkit::run`; `Aas` connects to a dev-server
+/// via `host_appkit::run_aas` and streams the sidecar's commands.
+/// AAS produces a wrapper that does NOT depend on the user's crate
+/// (the sidecar process owns it), so changes to user code don't
+/// require recompiling the wrapper — only the sidecar.
+#[derive(Clone, Debug)]
+pub enum RunMode {
+    Local,
+    Aas,
+}
+
+impl RunMode {
+    pub fn is_aas(&self) -> bool {
+        matches!(self, RunMode::Aas)
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct RunOptions {
     /// Compile with `--release`. Default: debug.
     pub release: bool,
+    /// Selects between local-mount (default) and AAS-client paths.
+    pub mode: RunMode,
     /// Framework-source resolution for the wrapper crate's deps.
     pub source: FrameworkSource,
     /// If true, spawn the binary detached (stdio nulled, parent
@@ -36,16 +56,30 @@ pub struct RunOptions {
 pub struct RunArtifact {
     /// Path to the binary that was launched.
     pub binary: PathBuf,
+    /// `Some` in background mode — the still-running spawned
+    /// [`Child`]. Foreground mode waits-and-drops, leaving `None`.
+    /// Pre-fix the caller never got a handle to the detached binary
+    /// and the dev orchestrator's Ctrl-C handler couldn't kill it,
+    /// so every `idealyst dev --macos` session leaked one
+    /// `nicho-portfolio-macos[-aas]` process per invocation. The
+    /// caller (`cli/cmd/dev.rs::launch_macos`) now pushes this into
+    /// the shared `children` Vec so the SIGINT handler reaches it.
+    pub child: Option<Child>,
 }
 
 /// Build (or rebuild) the macOS wrapper for `project_dir` and launch
 /// it. Foreground mode blocks until the app exits; background mode
 /// returns once the binary has been spawned.
 pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
+    let build_mode = match opts.mode {
+        RunMode::Local => build_macos::BuildMode::Local,
+        RunMode::Aas => build_macos::BuildMode::Aas,
+    };
     let built = build_macos::build(
         project_dir,
         build_macos::BuildOptions {
             release: opts.release,
+            mode: build_mode,
             source: opts.source,
             user_features: opts.user_features.clone(),
         },
@@ -58,27 +92,28 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
         opts.background,
     );
 
-    if opts.background {
-        // Detach: null stdio so the app doesn't fight the dev
-        // orchestrator's terminal output, and leave the child
-        // unwaited so we can return. If the user closes the
-        // terminal the app will receive SIGHUP — that's fine here;
-        // dev sessions are tied to the terminal anyway. A full
-        // daemonisation (setsid) would survive close but isn't
-        // what's wanted: the user wants the dev session and the
-        // app to die together at the end.
+    let child = if opts.background {
+        // Detach: null stdin so the app doesn't fight the dev
+        // orchestrator's terminal input, but pipe stdout/stderr
+        // through to the orchestrator so AAS-mode connection logs +
+        // any apply-time panic from the macOS binary actually
+        // surface (pre-fix both were `Stdio::null()`, which made
+        // "nothing renders" debugging impossible — the binary
+        // would crash or log silently). Leave the child unwaited
+        // so we can return; the returned `Child` handle goes into
+        // the dev orchestrator's `children` Vec so Ctrl-C reaches
+        // it.
         let mut cmd = Command::new(&built.binary);
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+        cmd.stdin(Stdio::null());
         for (k, v) in &opts.env_vars {
             cmd.env(k, v);
         }
-        let _ = cmd
+        let child = cmd
             .spawn()
             .with_context(|| {
                 format!("spawn macOS binary {}", built.binary.display())
             })?;
+        Some(child)
     } else {
         let mut cmd = Command::new(&built.binary);
         for (k, v) in &opts.env_vars {
@@ -92,9 +127,11 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
         if !status.success() {
             anyhow::bail!("macOS binary exited with {status}");
         }
-    }
+        None
+    };
 
     Ok(RunArtifact {
         binary: built.binary,
+        child,
     })
 }

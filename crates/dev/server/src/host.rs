@@ -138,6 +138,33 @@ pub fn run(
     let sidecar_slot: SidecarSlot = Arc::new(Mutex::new(None));
     let session_tracker = SessionTracker::new();
 
+    // Install signal handlers BEFORE spawning the sidecar so a
+    // ctrl-C / SIGTERM / SIGHUP between spawn and the main loop
+    // still gets the sidecar killed cleanly. Without this, the
+    // host would exit and the sidecar would reparent to PID 1 —
+    // every dev session that ended via the orchestrator's
+    // `child.kill()` (or a terminal close) leaked one
+    // `nicho-portfolio-aas-app` process. ctrlc's `termination`
+    // feature catches SIGINT + SIGTERM + SIGHUP on Unix.
+    //
+    // The handler is install-once-per-process; calling it twice
+    // returns `Error::MultipleHandlers`. We ignore that — the host
+    // binary only ever calls `host::run` once, and a duplicate
+    // install just means a previous installer (e.g. the orchestrator
+    // for in-process tests) still owns the signal.
+    {
+        let sidecar_for_signal = sidecar_slot.clone();
+        let _ = ctrlc::set_handler(move || {
+            eprintln!("[aas-host] received signal — killing sidecar before exit");
+            if let Ok(mut guard) = sidecar_for_signal.lock() {
+                if let Some(mut sidecar) = guard.take() {
+                    sidecar.kill();
+                }
+            }
+            std::process::exit(0);
+        });
+    }
+
     match Sidecar::spawn(&sidecar_path) {
         Ok(s) => {
             *sidecar_slot.lock().unwrap() = Some(s);
@@ -219,6 +246,23 @@ pub fn run(
     if let Ok(path) = std::env::var("IDEALYST_AAS_PORT_FILE") {
         let port_for_file = port_mirror.clone();
         std::thread::spawn(move || {
+            // Ensure the sentinel's parent dir exists before the
+            // write loop starts. Pre-fix every fresh project printed
+            // `could not write port sentinel … No such file or
+            // directory (os error 2)` on first launch because the
+            // path lives under `target/idealyst/<project>/aas/` —
+            // a dir build-aas creates only when the host wrapper
+            // itself is compiled, not when the orchestrator points
+            // a pre-built host at the path. mkdir_p is idempotent.
+            if let Some(parent) = std::path::Path::new(&path).parent() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    eprintln!(
+                        "[aas-host] could not create port-sentinel parent {}: {}",
+                        parent.display(),
+                        e
+                    );
+                }
+            }
             for _ in 0..200 {
                 if let Ok(g) = port_for_file.lock() {
                     if let Some(p) = *g {

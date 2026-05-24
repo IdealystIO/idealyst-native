@@ -25,12 +25,14 @@
 //!
 //! The Kotlin side defines `package <bundle_id>; object NativeBridge`
 //! and expects native methods named
-//! `Java_<bundle_id_with_dots_to_underscores>_NativeBridge_attach`
-//! and `..._detach`. We bake the bundle-id-derived prefix into the
-//! generated wrapper. (Underscores in the bundle id would need
-//! `_1` escaping per the JNI spec, but reverse-DNS app ids almost
-//! never have underscores; we error out if they do rather than
-//! silently producing a mismatched symbol.)
+//! `Java_<bundle_id_mangled>_NativeBridge_attach` (and `..._detach`).
+//! We bake the bundle-id-derived prefix into the generated wrapper
+//! by running it through [`bundle_id_to_jni_package`], which applies
+//! the JNI Native Method Naming spec: `.` → `_` (segment separator),
+//! `_` → `_1` (underscore in a segment), `$` → `_00024` (inner-class
+//! marker). So `com.example.nicho_portfolio` becomes
+//! `com_example_nicho_1portfolio`, matching what the Kotlin runtime
+//! mangler produces for `NativeBridge.attach` in that package.
 //!
 //! What's still TODO before this produces a runnable Android app:
 //!
@@ -247,26 +249,40 @@ fn ndk_toolchain_bin(ndk_home: &Path) -> Result<PathBuf> {
 // JNI package derivation
 // ---------------------------------------------------------------------------
 
-/// Translate a reverse-DNS bundle id (`ai.truday.idealyst.docs`)
-/// into the JNI symbol prefix (`ai_truday_idealyst_docs`). The JNI
-/// mangling spec also escapes embedded underscores as `_1` and `$`
-/// as `_00024`; we reject bundle ids that would need that escaping
-/// because we have no good way to communicate the mismatch back to
-/// the Kotlin side, and reverse-DNS app ids practically never
-/// contain those characters.
+/// Translate a reverse-DNS bundle id (`com.example.nicho_portfolio`)
+/// into the JNI symbol prefix (`com_example_nicho_1portfolio`),
+/// honoring the JNI Native Method Naming spec:
+///
+/// - `_` → `_1`   (so a Java package segment `nicho_portfolio`
+///   doesn't collide with the package-separator we emit for `.`).
+/// - `$` → `_00024`  (inner-class separator; never appears in a
+///   package name in practice, included for spec completeness).
+/// - `.` → `_`   (package separator).
+///
+/// Escapes are applied BEFORE the dot→underscore pass so the
+/// emitted `_` for a `.` stays a bare `_` (the segment separator),
+/// while `_` characters that came from the bundle id itself end
+/// up as `_1`. Without this both look the same on the Rust side
+/// and `Java_com_example_nicho_portfolio_NativeBridge_attachAas`
+/// fails to dlsym because the Kotlin runtime mangles the same
+/// method as `Java_com_example_nicho_1portfolio_NativeBridge_…`.
+///
+/// Pre-fix this function rejected `_`/`$` outright and asked the
+/// author to rename their bundle id — fine for greenfield projects
+/// but not viable for established packages.
 fn bundle_id_to_jni_package(bundle_id: &str) -> Result<String> {
-    if bundle_id.contains('_') || bundle_id.contains('$') {
-        anyhow::bail!(
-            "bundle id {:?} contains characters JNI requires escaping ('_' or '$'); \
-             rename in `[package.metadata.idealyst.app].bundle_id` or extend \
-             this builder to emit the JNI-escaped form",
-            bundle_id,
-        );
-    }
     if bundle_id.is_empty() {
         anyhow::bail!("bundle id is empty");
     }
-    Ok(bundle_id.replace('.', "_"))
+    let escaped: String = bundle_id
+        .chars()
+        .flat_map(|c| match c {
+            '_' => "_1".chars().collect::<Vec<_>>(),
+            '$' => "_00024".chars().collect::<Vec<_>>(),
+            other => vec![other],
+        })
+        .collect();
+    Ok(escaped.replace('.', "_"))
 }
 
 // ---------------------------------------------------------------------------
@@ -588,6 +604,27 @@ pub extern "system" fn Java_{jni}_NativeBridge_notifyConfigChanged<'local>(
 ) {{
     backend_android::notify_config_changed();
 }}
+
+/// MainActivity's OnLayoutChangeListener trampoline. The Kotlin
+/// side reports the root FrameLayout's pixel dimensions + the
+/// current display density on every layout pass; the AAS shell
+/// dedupes consecutive identical reports and emits an
+/// `AppToDev::ViewportChanged` only on real changes.
+///
+/// Pre-fix the Android shell shipped `viewport: None` in its
+/// Hello (since `View.getWidth()` is zero in `onCreate`) and
+/// never recovered, leaving the sidecar's `RecordingViewOps::
+/// frame()` reads stuck on the 393×800 mobile fallback.
+#[no_mangle]
+pub extern "system" fn Java_{jni}_NativeBridge_reportViewport<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    width_px: jni::sys::jint,
+    height_px: jni::sys::jint,
+    density: jni::sys::jfloat,
+) {{
+    backend_android::aas::report_viewport(width_px, height_px, density);
+}}
 "#,
             jni = jni_package,
         ),
@@ -678,4 +715,58 @@ fn cargo_build(
         anyhow::bail!("cargo build exited with {status}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    //! Regression coverage for the JNI bundle-id mangler.
+    //!
+    //! Pre-fix the function rejected `_` and `$` outright — usable
+    //! reverse-DNS bundle ids like `com.example.nicho_portfolio`
+    //! were unbuildable. Fix maps these per the JNI Native Method
+    //! Naming spec so the emitted `Java_<pkg>_NativeBridge_…`
+    //! symbols match what Kotlin/Java's runtime mangler produces.
+    use super::bundle_id_to_jni_package;
+
+    #[test]
+    fn plain_bundle_id_dots_to_underscores() {
+        assert_eq!(
+            bundle_id_to_jni_package("com.example.app").unwrap(),
+            "com_example_app",
+        );
+    }
+
+    #[test]
+    fn underscores_escape_as_underscore_one() {
+        // Real-world case from the nicho-portfolio scaffolding —
+        // the user has `_` in their bundle id and (pre-fix) the
+        // Android build refused to proceed.
+        assert_eq!(
+            bundle_id_to_jni_package("com.example.nicho_portfolio").unwrap(),
+            "com_example_nicho_1portfolio",
+        );
+    }
+
+    #[test]
+    fn dollar_signs_escape_as_underscore_zero_zero_zero_two_four() {
+        assert_eq!(
+            bundle_id_to_jni_package("com.example.foo$bar").unwrap(),
+            "com_example_foo_00024bar",
+        );
+    }
+
+    #[test]
+    fn mixed_underscore_and_dollar_compose_independently() {
+        // Underscore escape, dollar escape, AND dot separator all
+        // in the same id — must not interfere with one another.
+        assert_eq!(
+            bundle_id_to_jni_package("com.x_y.a$b").unwrap(),
+            "com_x_1y_a_00024b",
+        );
+    }
+
+    #[test]
+    fn empty_bundle_id_errors() {
+        assert!(bundle_id_to_jni_package("").is_err());
+    }
 }

@@ -228,6 +228,10 @@ fn build_macos_target(dir: &std::path::Path, args: &Args) -> Result<()> {
         dir,
         build_macos::BuildOptions {
             release: args.release,
+            // `idealyst build --macos` always produces the local-mount
+            // wrapper. The AAS variant is dev-only (no shipping use
+            // case for a binary that requires a dev-server at runtime).
+            mode: build_macos::BuildMode::Local,
             source,
             user_features: Vec::new(),
         },
