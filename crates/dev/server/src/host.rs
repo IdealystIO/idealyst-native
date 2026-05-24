@@ -165,6 +165,47 @@ pub fn run(
         });
     }
 
+    // Parent-PID watchdog. If the CLI orchestrator dies in a way
+    // the signal handler can't catch — SIGKILL, force-quit from
+    // Activity Monitor, panic-induced abort, system reboot mid-
+    // session — we reparent to launchd (pid 1) and would otherwise
+    // run forever, squatting on our WebSocket port and answering
+    // mDNS browses for the project's bundle id. Future
+    // `idealyst dev` runs then have their terminal client connect
+    // to *us* (stale captures, no longer watching files) instead
+    // of the live host, manifesting as "hot-reload silently does
+    // nothing."
+    //
+    // Poll `getppid()` every 500ms; if it ever returns 1 (or 0 on
+    // weird kernels), the parent is gone — kill the sidecar and
+    // exit ourselves. Cheap (one syscall), no extra deps. Unix-
+    // only because Windows doesn't have an equivalent simple
+    // parent-died signal (`JobObject` would be the proper port).
+    #[cfg(unix)]
+    {
+        let sidecar_for_watchdog = sidecar_slot.clone();
+        std::thread::spawn(move || {
+            let original_parent = unsafe { libc::getppid() };
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                let now_parent = unsafe { libc::getppid() };
+                if now_parent != original_parent {
+                    eprintln!(
+                        "[runtime-server-host] parent pid changed ({} → {}); orchestrator \
+                         is gone, killing sidecar + exiting",
+                        original_parent, now_parent,
+                    );
+                    if let Ok(mut guard) = sidecar_for_watchdog.lock() {
+                        if let Some(mut sidecar) = guard.take() {
+                            sidecar.kill();
+                        }
+                    }
+                    std::process::exit(0);
+                }
+            }
+        });
+    }
+
     match Sidecar::spawn(&sidecar_path) {
         Ok(s) => {
             *sidecar_slot.lock().unwrap() = Some(s);
