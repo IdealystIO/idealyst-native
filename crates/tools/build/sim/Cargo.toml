@@ -1,0 +1,13 @@
+[package]
+name = "build-sim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Templates and builds the wgpu sim wrapper for `idealyst run sim` / `idealyst build sim`."
+
+[dependencies]
+anyhow = "1"
+# Re-uses the iOS build crate's manifest parser + framework-source
+# resolver. Same crates that build-ios / build-android / build-runtime-server
+# depend on for the same reason.
+build-ios = { workspace = true }

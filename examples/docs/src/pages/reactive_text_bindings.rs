@@ -7,7 +7,7 @@
 
 use docs_macro::docs;
 #[allow(unused_imports)]
-use crate::shell::{codeblock, pageheader, CodeBlockProps, PageHeaderProps};
+use crate::shell::{code_block, page_header, CodeBlockProps, PageHeaderProps};
 #[allow(unused_imports)]
 use idea_ui::{body, card, heading, stack};
 
@@ -46,7 +46,7 @@ docs! {
            value — not a primitive — so it drops into any component \
            slot that accepts a text source:"),
         code(rust, r##"
-            use framework_core::{bind, text_fmt, signal, Signal};
+            use runtime_core::{bind, text_fmt, signal, Signal};
 
             let id: u32 = 42;
             let global: Signal<u32> = signal!(0);
@@ -99,7 +99,7 @@ docs! {
         p("You can construct the spec by hand if you have a reason \
            to skip the macro:"),
         code(rust, r##"
-            use framework_core::{text, JsBindingSpec, TextSource};
+            use runtime_core::{text, JsBindingSpec, TextSource};
             use std::rc::Rc;
 
             text(TextSource::JsBinding(JsBindingSpec {
@@ -129,7 +129,7 @@ docs! {
                 if let Some(backend_rc) = s.borrow().as_ref() {
                     let mut b = backend_rc.borrow_mut();
                     b.register_signal_for_js(global.id(), move || {
-                        framework_core::untrack(|| global.get()).to_string()
+                        runtime_core::untrack(|| global.get()).to_string()
                     });
                 }
             });
@@ -209,7 +209,7 @@ docs! {
           " be source-portable. A binding written once with ",
           code("text_fmt!"),
           " behaves correctly on web (fast), iOS / Android / wgpu \
-           (correct, regular Effect), and the wire/AAS generator \
+           (correct, regular Effect), and the wire/runtime-server generator \
            backends (still emits the same primitive metadata)."),
     },
 

@@ -8,14 +8,14 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use framework_core::scheduling::{ScheduleHandle, Scheduler};
+use runtime_core::scheduling::{ScheduleHandle, Scheduler};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 
-/// Register this backend's scheduler with `framework-core`. Idempotent —
+/// Register this backend's scheduler with `runtime-core`. Idempotent —
 /// first install wins.
 pub fn install_scheduler() {
-    framework_core::scheduling::install_scheduler(Box::new(WebScheduler));
+    runtime_core::scheduling::install_scheduler(Box::new(WebScheduler));
 }
 
 struct WebScheduler;

@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 # Dev-side runtime for the hot-reload wire protocol. Provides a
-# `WireRecordingBackend` that implements `framework_core::Backend`
+# `WireRecordingBackend` that implements `runtime_core::Backend`
 # with `Node = NodeId`, recording each walker call as a `Command`
 # for transport to the app.
 #
@@ -18,14 +18,14 @@ license.workspace = true
 # `BridgeHandle` once per tick on the same thread that owns the
 # walker's reactive scope, so click / find / invoke_method commands
 # from an external MCP proxy hit the *server's* registry (which is
-# where the walker registered the elements in AAS mode). Forwards
-# to `framework-core/robot` so the registry actually populates.
+# where the walker registered the elements in runtime-server mode). Forwards
+# to `runtime-core/robot` so the registry actually populates.
 #
 # Native app builds run their bridge in-process on the device, not
-# here — server-side is for AAS-shell mode where the device has no
-# walker and therefore no registry of its own. AAS clients are
+# here — server-side is for runtime-server-shell mode where the device has no
+# walker and therefore no registry of its own. runtime-server clients are
 # platform-agnostic; this server can drive any of them.
-robot = ["framework-core/robot"]
+robot = ["runtime-core/robot"]
 
 # Enables `dev_server::test_support` — a `MockClient` plus helpers for
 # driving the fake-sidecar IPC. Off by default; integration tests in
@@ -34,36 +34,36 @@ robot = ["framework-core/robot"]
 # dev-server transport pull this feature in via dev-deps.
 test-support = []
 
-# Pulls in the AAS dev runtimes — `host::run` (long-lived dev-host
+# Pulls in the runtime-server dev runtimes — `host::run` (long-lived dev-host
 # process) and `sidecar::run` (per-project worker that links the user
 # crate). Enables both because both modules share most deps
 # (`subsecond-types`, `anyhow`, `serde_json`-only-tighter-binding), and
-# splitting them just so the host wrapper can skip `framework-hot` /
+# splitting them just so the host wrapper can skip `dev-hot` /
 # `libc` saves single-digit KB of link time. Off for any consumer
 # that only wants the dev-side recorder / transport — those callers
 # stay anyhow-free + don't drag subsecond through their build.
-aas-runtime = ["dep:framework-hot", "dep:subsecond-types", "dep:libc", "dep:anyhow", "dep:ctrlc"]
+runtime-server = ["dep:dev-hot", "dep:subsecond-types", "dep:libc", "dep:anyhow", "dep:ctrlc"]
 
 [dependencies]
-framework-core = { workspace = true }
+runtime-core = { workspace = true }
 wire = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# Activated by the `sidecar-runtime` feature. `framework-hot` is the
+# Activated by the `sidecar-runtime` feature. `dev-hot` is the
 # subsecond facade — exposes `apply_patch(JumpTable)`. We pick up the
 # `hot` and `diff` features so the sidecar can both install patches
 # and validate them against its own symbol table before applying.
-framework-hot = { workspace = true, features = ["hot", "diff"], optional = true }
+dev-hot = { workspace = true, features = ["hot", "diff"], optional = true }
 # JumpTable type carried in `SidecarIn::ApplyPatch.table_json`. The
-# host produces it (in `build-aas::hotpatch`); the sidecar
-# deserializes + hands it to `framework-hot`.
+# host produces it (in `build-runtime-server::hotpatch`); the sidecar
+# deserializes + hands it to `dev-hot`.
 subsecond-types = { version = "0.7", optional = true }
 # `libc::dlsym(RTLD_DEFAULT, "main")` — the sidecar reports its own
 # `main` runtime address to the host so the host can compute the
 # ASLR slide for symbol-table diffs.
 libc = { version = "0.2", optional = true }
-# Signal handling on the AAS host: SIGINT (Ctrl-C), SIGTERM (the
+# Signal handling on the runtime-server host: SIGINT (Ctrl-C), SIGTERM (the
 # dev orchestrator's `child.kill()`), and SIGHUP (terminal close)
 # all need to trigger sidecar teardown before the host exits, or
 # the sidecar reparents to PID 1 and orphans. Default ctrlc only
@@ -93,8 +93,8 @@ mdns-sd = { version = "0.10", default-features = false }
 serde_json = "1"
 # The integration tests under `tests/aas_headless.rs` need the
 # framework's Robot registry populated by the walker. Enabling
-# `framework-core/robot` as a dev-dep activates that codepath only
+# `runtime-core/robot` as a dev-dep activates that codepath only
 # for `cargo test` — the production builds of dev-server still
 # choose to enable `robot` via *our* feature, see `[features]` above.
-framework-core = { workspace = true, features = ["robot"] }
+runtime-core = { workspace = true, features = ["robot"] }
 idea-ui = { workspace = true }

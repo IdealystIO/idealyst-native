@@ -1,0 +1,18 @@
+[package]
+name = "run-terminal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Terminal launcher for `idealyst dev --terminal` (and a future
+# `idealyst run terminal`).
+#
+# Calls `build-terminal` to produce the TTY binary, then spawns it as
+# a foreground child with stdio inherited — the terminal app NEEDS
+# the real TTY (crossterm raw mode, alternate screen, mouse capture),
+# so it cannot run detached/background like the macOS GUI path.
+
+[dependencies]
+anyhow = "1"
+build-terminal = { workspace = true }
+build-ios = { workspace = true }

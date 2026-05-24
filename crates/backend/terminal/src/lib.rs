@@ -1,4 +1,4 @@
-//! ASCII / terminal backend for `framework_core::Backend`.
+//! ASCII / terminal backend for `runtime_core::Backend`.
 //!
 //! Renders the framework's primitive tree into a character grid. The
 //! companion `host-terminal` crate paints the grid to stdout (ANSI
@@ -6,7 +6,7 @@
 //! the backend's hit-tester so `Pressable` / `Button` `on_click`
 //! callbacks fire.
 //!
-//! Layout is delegated to `native-layout` (Taffy), same as iOS /
+//! Layout is delegated to `runtime-layout` (Taffy), same as iOS /
 //! Android / macOS — flex containers, gap, padding, width/height,
 //! `position: absolute` all work. The unit on this backend is
 //! **terminal cell** (1 col x 1 row), not pixel — author stylesheets
@@ -49,12 +49,12 @@ impl std::fmt::Debug for ClickOutcome {
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use framework_core::accessibility::AccessibilityProps;
-use framework_core::animation::AnimProp;
-use framework_core::color::{parse_or, Rgba};
-use framework_core::primitives::activity_indicator::ActivityIndicatorSize;
-use framework_core::{Action, Backend, Color as FwColor, ColorScheme, Platform, StyleRules};
-use native_layout::{AvailableSpace, LayoutNode, LayoutTree, Size as TaffySize};
+use runtime_core::accessibility::AccessibilityProps;
+use runtime_core::animation::AnimProp;
+use runtime_core::color::{parse_or, Rgba};
+use runtime_core::primitives::activity_indicator::ActivityIndicatorSize;
+use runtime_core::{Action, Backend, Color as FwColor, ColorScheme, Platform, StyleRules};
+use runtime_layout::{AvailableSpace, LayoutNode, LayoutTree, Size as TaffySize};
 
 use node::NodeData;
 
@@ -149,6 +149,7 @@ impl TerminalBackend {
                 bg: None,
                 gradient: None,
                 opacity: 1.0,
+                animated_opacity: None,
                 translate_x: 0.0,
                 translate_y: 0.0,
                 animated_bg: None,
@@ -291,7 +292,7 @@ impl TerminalBackend {
         let on_key_down = data.input.as_ref().and_then(|i| i.on_key_down.clone());
 
         if let Some(handler) = on_key_down {
-            if matches!(handler(&ev), framework_core::KeyOutcome::PreventDefault) {
+            if matches!(handler(&ev), runtime_core::KeyOutcome::PreventDefault) {
                 return true;
             }
         }
@@ -320,13 +321,13 @@ pub struct TerminalKey {
 fn make_key_event(
     key: &TerminalKey,
     data: &node::NodeData,
-) -> (String, framework_core::primitives::key::KeyEvent) {
+) -> (String, runtime_core::primitives::key::KeyEvent) {
     let cursor = data
         .input
         .as_ref()
         .map(|i| i.cursor)
         .unwrap_or(0);
-    let ev = framework_core::primitives::key::KeyEvent {
+    let ev = runtime_core::primitives::key::KeyEvent {
         key: key.key.clone(),
         shift: key.shift,
         ctrl: key.ctrl,
@@ -375,8 +376,8 @@ impl Backend for TerminalBackend {
         &mut self,
         label: &str,
         on_click: &Action,
-        _leading_icon: Option<&framework_core::primitives::icon::IconData>,
-        _trailing_icon: Option<&framework_core::primitives::icon::IconData>,
+        _leading_icon: Option<&runtime_core::primitives::icon::IconData>,
+        _trailing_icon: Option<&runtime_core::primitives::icon::IconData>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
         let node = self.alloc_node(NodeKind::Button, label.to_string());
@@ -498,13 +499,13 @@ impl Backend for TerminalBackend {
         // Rotate / Skew don't translate to cell semantics. Last-write
         // wins per axis (matches the RN/web "matrix multiply" feel
         // for the translates-only subset).
-        let mut static_tx: Option<framework_core::Length> = None;
-        let mut static_ty: Option<framework_core::Length> = None;
+        let mut static_tx: Option<runtime_core::Length> = None;
+        let mut static_ty: Option<runtime_core::Length> = None;
         if let Some(transforms) = style.transform.as_ref() {
             for t in transforms {
                 match t {
-                    framework_core::Transform::TranslateX(l) => static_tx = Some(*l),
-                    framework_core::Transform::TranslateY(l) => static_ty = Some(*l),
+                    runtime_core::Transform::TranslateX(l) => static_tx = Some(*l),
+                    runtime_core::Transform::TranslateY(l) => static_ty = Some(*l),
                     _ => {}
                 }
             }
@@ -605,7 +606,7 @@ impl Backend for TerminalBackend {
         initial_value: &str,
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
-        on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
+        on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
         let node = self.alloc_node(NodeKind::TextInput, String::new());
@@ -679,21 +680,21 @@ impl Backend for TerminalBackend {
         // 10-step braille cycle. The render path samples
         // `anim_phase` to pick the current glyph.
         let id = node.id;
-        let task = framework_core::raf_loop(move || {
+        let task = runtime_core::raf_loop(move || {
             terminal_advance_spinner(id);
         });
         // Anchor to the current reactive scope so unmount cancels
         // the loop. `on_cleanup` is a no-op outside a scope, which
         // is fine — top-level binaries leak the handle until exit.
-        framework_core::on_cleanup(move || drop(task));
+        runtime_core::on_cleanup(move || drop(task));
         node
     }
 
-    fn make_view_handle(&self, node: &Self::Node) -> framework_core::ViewHandle {
+    fn make_view_handle(&self, node: &Self::Node) -> runtime_core::ViewHandle {
         handles::make_view_handle(node)
     }
 
-    fn make_text_handle(&self, node: &Self::Node) -> framework_core::TextHandle {
+    fn make_text_handle(&self, node: &Self::Node) -> runtime_core::TextHandle {
         handles::make_text_handle(node)
     }
 
@@ -705,7 +706,11 @@ impl Backend for TerminalBackend {
     ) {
         let Some(d) = self.nodes.get_mut(&node.id) else { return };
         match prop {
-            AnimProp::Opacity => d.opacity = value.clamp(0.0, 1.0),
+            // Route to the animated slot — apply_style replays
+            // (hot-patch path) would otherwise clobber the in-
+            // flight value with the stylesheet's static starting
+            // opacity. See [`NodeData::animated_opacity`].
+            AnimProp::Opacity => d.animated_opacity = Some(value.clamp(0.0, 1.0)),
             AnimProp::TranslateX => d.translate_x = value,
             AnimProp::TranslateY => d.translate_y = value,
             // Sibling-relative ordering. Higher value renders on top
@@ -748,6 +753,48 @@ impl Backend for TerminalBackend {
     /// current viewport size. `finish` would compute against stale
     /// dimensions if the terminal got resized between builds.
     fn finish(&mut self, _root: Self::Node) {}
+}
+
+#[cfg(test)]
+mod regression_tests {
+    use super::*;
+    use runtime_core::{
+        accessibility::AccessibilityProps, animation::AnimProp, Backend, StyleRules, Tokenized,
+    };
+    use std::rc::Rc;
+
+    /// `apply_style` replay must not clobber an in-flight animated
+    /// opacity. Reproduces the hot-patch-on-terminal bug where the
+    /// welcome wrapper's static `opacity: 0.0` (re-emitted by the
+    /// dev-server's snapshot) overwrote the animation-driven
+    /// `opacity: 1.0`, making every save flash the scene back to
+    /// invisible until the next animation tick arrived.
+    #[test]
+    fn apply_style_does_not_overwrite_animated_opacity() {
+        let mut be = TerminalBackend::new();
+        let node = be.create_view(&AccessibilityProps::default());
+
+        // Animation drives opacity up to 1.0.
+        be.set_animated_f32(&node, AnimProp::Opacity, 1.0);
+
+        // Now the dev-server replays the static stylesheet, which
+        // declares `opacity: 0.0`. Pre-fix this overwrote the
+        // animation-driven value; post-fix, the animated slot
+        // wins.
+        let style = Rc::new(StyleRules {
+            opacity: Some(Tokenized::Literal(0.0)),
+            ..Default::default()
+        });
+        be.apply_style(&node, &style);
+
+        let data = be.nodes.get(&node.id).expect("node still present");
+        assert_eq!(data.opacity, 0.0, "static slot must reflect stylesheet");
+        assert_eq!(
+            data.animated_opacity,
+            Some(1.0),
+            "animated slot must survive apply_style replay"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -815,7 +862,7 @@ impl TerminalBackend {
         // mount" (matches the viewport contract every other
         // backend ships).
         let (cw, ch) = self.cell_size;
-        let f: native_layout::MeasureFn = Rc::new(move |known, avail| {
+        let f: runtime_layout::MeasureFn = Rc::new(move |known, avail| {
             measure_text(&content, known, avail, cw, ch)
         });
         self.layout.set_measure_fn(layout, f);
@@ -914,7 +961,7 @@ impl TerminalBackend {
             // `update_text_input_value`. The host's per-frame
             // `scheduler::tick()` drains microtasks before
             // re-rendering, so the value lands the same frame.
-            framework_core::scheduling::schedule_microtask(move || {
+            runtime_core::scheduling::schedule_microtask(move || {
                 on_change(value);
             });
         }

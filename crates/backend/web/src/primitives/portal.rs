@@ -27,7 +27,7 @@
 //! call.
 
 use crate::WebBackend;
-use framework_core::primitives::portal::{
+use runtime_core::primitives::portal::{
     AnchorTarget, ElementAlign, ElementSide, PortalHandle, PortalOps, PortalTarget,
     ViewportPlacement, ViewportRect,
 };
@@ -80,7 +80,7 @@ pub(crate) struct PortalInstance {
     /// `requestAnimationFrame` here that fires once the children
     /// have mounted and a paint has measured them.
     #[allow(dead_code)]
-    initial_measure_task: Option<framework_core::ScheduledTask>,
+    initial_measure_task: Option<runtime_core::ScheduledTask>,
     /// Focus-trap `focusin` handler attached to the window. Only
     /// populated when `trap_focus = true`. Routes focus back to the
     /// first focusable child of the portal when it tries to leave
@@ -424,7 +424,7 @@ fn install_anchor_reposition(
 ) -> (
     Option<Closure<dyn FnMut(web_sys::Event)>>,
     Option<Closure<dyn FnMut(web_sys::Event)>>,
-    Option<framework_core::ScheduledTask>,
+    Option<runtime_core::ScheduledTask>,
 ) {
     let window = match web_sys::window() {
         Some(w) => w,
@@ -481,7 +481,7 @@ fn install_anchor_reposition(
     // `insert_children` call completes and the browser has laid the
     // children out.
     let reposition_initial = reposition.clone();
-    let initial_measure_task = framework_core::after_animation_frame(move || {
+    let initial_measure_task = runtime_core::after_animation_frame(move || {
         (reposition_initial)();
     });
 

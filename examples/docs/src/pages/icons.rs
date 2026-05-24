@@ -2,7 +2,7 @@
 
 use docs_macro::docs;
 #[allow(unused_imports)]
-use crate::shell::{codeblock, pageheader, CodeBlockProps, PageHeaderProps};
+use crate::shell::{code_block, page_header, CodeBlockProps, PageHeaderProps};
 #[allow(unused_imports)]
 use idea_ui::{body, card, heading, stack};
 
@@ -29,7 +29,7 @@ docs! {
 
     section(heading = "Using an icon") {
         code(rust, r##"
-            use framework_core::icon;
+            use runtime_core::icon;
             use icons_lucide::{SEARCH, MENU};
 
             ui! {
@@ -165,7 +165,7 @@ docs! {
     section(heading = "Animate-in on mount") {
         p("For a one-shot draw-on when the icon first appears:"),
         code(rust, r##"
-            use framework_core::{StrokeAnimation, Easing};
+            use runtime_core::{StrokeAnimation, Easing};
 
             ui! {
                 icon(LOGO).draw_in(StrokeAnimation::new(600, Easing::EaseOut))
@@ -194,7 +194,7 @@ docs! {
           " constants:"),
         code(rust, r##"
             // my_icons/src/lib.rs
-            use framework_core::{FillRule, IconData};
+            use runtime_core::{FillRule, IconData};
 
             pub const STAR: IconData = IconData {
                 view_box: (24, 24),
@@ -214,7 +214,7 @@ docs! {
         p("That's it. Copy path data from any SVG, drop it into a constant, use it \
            like any other icon:"),
         code(rust, r##"
-            use framework_core::icon;
+            use runtime_core::icon;
             use my_icons::{STAR, LOGO};
 
             ui! {
@@ -265,11 +265,11 @@ docs! {
                     let (vb, paths) = parse_svg(&path);
 
                     out.push_str(&format!(
-                        "pub const {name}: ::framework_core::IconData = \
-                         ::framework_core::IconData {{ \
+                        "pub const {name}: ::runtime_core::IconData = \
+                         ::runtime_core::IconData {{ \
                             view_box: ({}, {}), \
                             paths: &[{}], \
-                            fill_rule: ::framework_core::FillRule::NonZero, \
+                            fill_rule: ::runtime_core::FillRule::NonZero, \
                          }};\n",
                         vb.0, vb.1,
                         paths.iter().map(|p| format!("{p:?}")).collect::<Vec<_>>().join(",")
@@ -294,7 +294,7 @@ docs! {
         p("Multiple icon packs coexist without ceremony. They're just Rust modules \
            of constants:"),
         code(rust, r##"
-            use framework_core::icon;
+            use runtime_core::icon;
             use icons_lucide::SEARCH;       // first-party pack
             use my_icons::LOGO;             // custom pack
             use heroicons::CHECK;           // third-party pack (hypothetical)

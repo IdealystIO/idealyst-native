@@ -11,16 +11,16 @@ license.workspace = true
 crate-type = ["rlib"]
 
 [features]
-# `robot` mirrors `framework-core/robot` — when the workspace test
+# `robot` mirrors `runtime-core/robot` — when the workspace test
 # build activates the framework's `robot` feature transitively (via
 # `dev-server`'s dev-deps), the `ui!` macro's `#[cfg(feature =
 # "robot")]` gate evaluated in this crate's context needs to see
 # `robot` enabled too, otherwise the lowered struct-literal omits
 # `Primitive::View.test_id` while the struct definition includes it.
 default = ["robot"]
-robot = ["framework-core/robot"]
+robot = ["runtime-core/robot"]
 
 [dependencies]
-framework-core = { workspace = true }
+runtime-core = { workspace = true }
 idea-ui = { workspace = true }
 backend-roku = { workspace = true }

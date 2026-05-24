@@ -209,8 +209,8 @@ pub(crate) fn sync_video_sublayer(instances: &VideoInstances, view: &UIView) {
 pub(crate) fn make_handle(
     instances: &VideoInstances,
     node: &IosNode,
-) -> framework_core::primitives::video::VideoHandle {
-    use framework_core::primitives::video::VideoHandle;
+) -> runtime_core::primitives::video::VideoHandle {
+    use runtime_core::primitives::video::VideoHandle;
 
     let IosNode::View(view) = node else {
         return VideoHandle::new(std::rc::Rc::new(()), &IOS_VIDEO_OPS);
@@ -310,7 +310,7 @@ fn install_loop_observer(player: &Retained<NSObject>) -> Retained<NSObject> {
 // =============================================================================
 
 pub(crate) struct IosVideoOps;
-impl framework_core::primitives::video::VideoOps for IosVideoOps {
+impl runtime_core::primitives::video::VideoOps for IosVideoOps {
     fn play(&self, node: &dyn std::any::Any) {
         if let Some(player) = node.downcast_ref::<Retained<NSObject>>() {
             let _: () = unsafe { msg_send![&**player, play] };
@@ -389,6 +389,6 @@ mod tests {
         // Compile-time: the static must be addressable as
         // `&'static dyn VideoOps` — i.e. `make_handle` can hand it
         // to `VideoHandle::new` without a lifetime error.
-        let _: &'static dyn framework_core::primitives::video::VideoOps = &IOS_VIDEO_OPS;
+        let _: &'static dyn runtime_core::primitives::video::VideoOps = &IOS_VIDEO_OPS;
     }
 }

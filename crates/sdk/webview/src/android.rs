@@ -15,7 +15,7 @@ use crate::{WebViewOps, WebViewProps};
 // `[lib].name` is `backend_android` (preserved historically so the
 // JNI `System.loadLibrary("backend_android")` call keeps working).
 use backend_android::{with_jni_env, AndroidBackend};
-use framework_core::Effect;
+use runtime_core::Effect;
 use jni::objects::{GlobalRef, JObject, JValue};
 use std::any::Any;
 use std::rc::Rc;

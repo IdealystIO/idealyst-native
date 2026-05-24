@@ -15,7 +15,7 @@ layer on top — the API you'll actually use from app code.
 ## The shape
 
 ```rust
-use framework_core::{flat_list, fixed_size, signal, ui, Signal};
+use runtime_core::{flat_list, fixed_size, signal, ui, Signal};
 
 #[derive(Clone)]
 pub struct Message {

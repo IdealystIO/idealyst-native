@@ -19,7 +19,7 @@ license.workspace = true
 # runtime.
 
 [dependencies]
-framework-core = { workspace = true }
+runtime-core = { workspace = true }
 maps-core = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

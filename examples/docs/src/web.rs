@@ -23,14 +23,14 @@ static ALLOCATOR: lol_alloc::AssumeSingleThreaded<lol_alloc::FreeListAllocator> 
 thread_local! {
     /// `render` returns an `Owner` that must outlive the page. Stash
     /// it in a thread-local so it survives `start()` returning.
-    static OWNER: RefCell<Option<framework_core::Owner>> = const { RefCell::new(None) };
+    static OWNER: RefCell<Option<runtime_core::Owner>> = const { RefCell::new(None) };
 }
 
 #[wasm_bindgen(start)]
 pub fn start() {
     console_error_panic_hook::set_once();
 
-    // Register the web scheduler so framework_core::scheduling
+    // Register the web scheduler so runtime_core::scheduling
     // (microtasks, after_animation_frame, etc.) has a backend.
     // Navigator/Drawer/Tab primitives invoke schedule_microtask
     // during mount; without this the framework panics on first
@@ -39,7 +39,7 @@ pub fn start() {
 
     // The `Simulator` component drives wgpu init through
     // `spawn_async` and the per-frame render through `render_loop`.
-    // Both look up backend-supplied drivers from framework_core;
+    // Both look up backend-supplied drivers from runtime_core;
     // without installing them here the embedded preview never wakes.
     backend_web::install_async_executor();
     backend_web::install_render_loop();
@@ -53,7 +53,7 @@ pub fn start() {
     #[cfg(not(feature = "dev-hot-reload"))]
     {
         let backend = Rc::new(RefCell::new(WebBackend::new("#app")));
-        let owner = framework_core::render(backend, super::app());
+        let owner = runtime_core::render(backend, super::app());
         OWNER.with(|slot| *slot.borrow_mut() = Some(owner));
     }
 }
@@ -95,14 +95,14 @@ mod dev_hot_reload {
         connect_attempt();
     }
 
-    /// Read `window.IDEALYST_AAS_URL` — the dev HTTP server injects
-    /// this into served HTML once mDNS discovery resolves the AAS
+    /// Read `window.IDEALYST_RUNTIME_SERVER_URL` — the dev HTTP server injects
+    /// this into served HTML once mDNS discovery resolves the runtime-server
     /// host's randomly-bound port. Returns `None` while the value is
     /// still `null` / `undefined` (page loaded before discovery
     /// completed); caller polls.
     fn aas_url() -> Option<String> {
         let window = web_sys::window()?;
-        let key = JsValue::from_str("IDEALYST_AAS_URL");
+        let key = JsValue::from_str("IDEALYST_RUNTIME_SERVER_URL");
         let v = js_sys::Reflect::get(&window, &key).ok()?;
         v.as_string()
     }
@@ -119,7 +119,7 @@ mod dev_hot_reload {
 
         let Some(url) = aas_url() else {
             web_sys::console::log_1(
-                &"[docs] waiting for window.IDEALYST_AAS_URL (mDNS discovery in progress)…"
+                &"[docs] waiting for window.IDEALYST_RUNTIME_SERVER_URL (mDNS discovery in progress)…"
                     .into(),
             );
             schedule_retry();

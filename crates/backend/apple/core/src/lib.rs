@@ -8,7 +8,7 @@
 //! - [`font`] — CoreText/CoreGraphics font registration + face
 //!   matching. Returns PostScript names; UIFont/NSFont construction
 //!   stays in the leaf crates.
-//! - [`color`] — `framework_core::Color` → `(CGFloat, CGFloat,
+//! - [`color`] — `runtime_core::Color` → `(CGFloat, CGFloat,
 //!   CGFloat, CGFloat)` parsing wrapper. UIColor/NSColor adapters
 //!   stay in the leaf crates.
 //!

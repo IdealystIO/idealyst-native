@@ -2,7 +2,7 @@
 //! controls, and loop attributes.
 
 use crate::WebBackend;
-use framework_core::primitives::video::{VideoHandle, VideoOps};
+use runtime_core::primitives::video::{VideoHandle, VideoOps};
 use std::any::Any;
 use std::rc::Rc;
 use wasm_bindgen::JsCast;

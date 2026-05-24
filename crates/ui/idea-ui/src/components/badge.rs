@@ -7,7 +7,7 @@
 //! ui! { Badge(label = "New", intent = IntentTag::Success, kind = BadgeKind::Soft) }
 //! ```
 
-use framework_core::{ui, Primitive, StyleApplication};
+use runtime_core::{ui, Primitive, StyleApplication};
 
 use crate::components::button::IntentTag;
 use crate::stylesheets::Badge;
@@ -36,7 +36,7 @@ impl BadgeKind {
     }
 }
 
-impl framework_core::VariantEnum for BadgeKind {
+impl runtime_core::VariantEnum for BadgeKind {
     fn as_variant_str(self) -> &'static str {
         self.as_str()
     }

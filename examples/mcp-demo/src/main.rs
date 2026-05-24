@@ -1,4 +1,4 @@
-//! Walk-through of the framework-mcp catalog.
+//! Walk-through of the mcp-catalog catalog.
 //!
 //! Two run modes:
 //!
@@ -13,7 +13,7 @@
 //!
 //! The print mode (default) shows two views of the same catalog:
 //!
-//! 1. **Flat catalog** — exactly what `framework_mcp::catalog_json()`
+//! 1. **Flat catalog** — exactly what `mcp_catalog::catalog_json()`
 //!    emits. Each component carries its bare composes idents, not
 //!    yet resolved to other entries. This is the wire shape `cargo
 //!    idealyst mcp --json-catalog` is destined to produce.
@@ -24,7 +24,7 @@
 //!    Also includes the reverse adjacency ("used by") because that's
 //!    what an MCP `find_uses(name)` tool would call into.
 
-use framework_mcp::{catalog_json, ComponentEntry, EdgeStatus, EntryRef, ResolvedCatalog};
+use mcp_catalog::{catalog_json, ComponentEntry, EdgeStatus, EntryRef, ResolvedCatalog};
 
 mod components;
 
@@ -54,20 +54,20 @@ enum ServerMode {
     WatchSubprocess,
 }
 
-/// Print `framework_mcp::catalog_json()` to stdout and exit. This is
+/// Print `mcp_catalog::catalog_json()` to stdout and exit. This is
 /// the format `mcp_server::run_stdio_with_subprocess` expects from
 /// its extractor — the parent server runs `--emit-catalog` as a
 /// short-lived child on every file change and parses the result
 /// back into a `ResolvedCatalog`.
 fn emit_catalog() {
-    let json = framework_mcp::catalog_json();
+    let json = mcp_catalog::catalog_json();
     println!("{}", serde_json::to_string_pretty(&json).unwrap());
 }
 
 /// Phase 6: run the lint pass and exit non-zero if anything fired.
 /// Output is one line per finding, sorted by FQN.
 fn run_check() {
-    let cat = framework_mcp::ResolvedCatalog::build();
+    let cat = mcp_catalog::ResolvedCatalog::build();
     let findings = mcp_server::lint_catalog(&cat);
     if findings.is_empty() {
         println!("OK — {} components, no catalog-integrity issues", cat.entries().len());

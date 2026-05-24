@@ -9,7 +9,7 @@ ergonomics. This page covers all of that.
 ## The shape
 
 ```rust
-use framework_core::{component, signal, ui, Primitive};
+use runtime_core::{component, signal, ui, Primitive};
 
 pub struct CounterProps {
     pub initial: i32,
@@ -103,7 +103,7 @@ Five macros come with the framework. Each does one thing:
 | --- | --- | --- |
 | `#[component]` | Wraps a function as a component. Generates the invocation macro, handles reactivity rewriting and hot reload. | This page. |
 | `signal!(value)` | Shorthand for `Signal::new(value)`. | [Reactivity](#). |
-| `ui! { … }` | The primary UI DSL. Lowers to plain framework-core calls. | Below + the [UI DSL](#) page. |
+| `ui! { … }` | The primary UI DSL. Lowers to plain runtime-core calls. | Below + the [UI DSL](#) page. |
 | `jsx! { … }` | A JSX-flavored variant of `ui!` with identical output. | Below. |
 | `stylesheet! { … }` | Declares a themed stylesheet. | [Styles](#). |
 | `methods! { … }` | (Inside a component body) declares imperative methods exposed through a handle. | Below. |
@@ -121,7 +121,7 @@ now"; an imperative handle is.
 You declare methods inside the component's body:
 
 ```rust
-use framework_core::{component, signal, ui, Bindable, Primitive};
+use runtime_core::{component, signal, ui, Bindable, Primitive};
 
 #[derive(Default)]
 pub struct CounterProps {
@@ -156,7 +156,7 @@ instead of `Primitive`.
 The parent captures the handle via a `Ref`:
 
 ```rust
-use framework_core::Ref;
+use runtime_core::Ref;
 
 #[component]
 pub fn parent_app() -> Primitive {
@@ -251,7 +251,7 @@ Pick whichever reads better to you.
 ## What `ui!` actually emits
 
 This is where it gets fun. `ui!` is **syntax sugar** — the macro
-parses tokens and emits ordinary Rust calls into framework-core's
+parses tokens and emits ordinary Rust calls into runtime-core's
 primitive constructors. You can write the same component without
 the macro, and the framework can't tell the difference.
 
@@ -298,7 +298,7 @@ pub fn counter(props: &CounterProps) -> Primitive {
 ### With no macro at all
 
 ```rust
-use framework_core::{button, component, signal, text, view, IntoPrimitive, Primitive};
+use runtime_core::{button, component, signal, text, view, IntoPrimitive, Primitive};
 
 #[component]
 pub fn counter(props: &CounterProps) -> Primitive {
@@ -384,7 +384,7 @@ macro takes care of the dispatch.
 
 ## Bringing your own front-end
 
-`ui!` and `jsx!` are sugar over the same set of framework-core
+`ui!` and `jsx!` are sugar over the same set of runtime-core
 calls. Nothing about the framework privileges either one: a third
 macro that emits the same calls would slot in alongside them.
 
@@ -407,7 +407,7 @@ references.
 Tying everything together:
 
 ```rust
-use framework_core::{component, signal, ui, Bindable, Primitive};
+use runtime_core::{component, signal, ui, Bindable, Primitive};
 
 #[derive(Default)]
 pub struct CounterProps {
@@ -440,7 +440,7 @@ What's happening here:
 - `methods!` declares `reset` and `bump_by` as imperative
   operations. The macro generates `CounterHandle` and rewrites the
   return type from `Primitive` to `Bindable<CounterHandle>`.
-- `ui!` lowers to plain framework-core calls, with the reactive
+- `ui!` lowers to plain runtime-core calls, with the reactive
   text being wrapped in an Effect and the trailing value coerced
   to `Primitive`.
 

@@ -2,7 +2,7 @@
 //!
 //! Parses one structured documentation page declaration and emits:
 //!
-//! 1. `pub fn page() -> framework_core::Primitive` — the renderable
+//! 1. `pub fn page() -> runtime_core::Primitive` — the renderable
 //!    screen.
 //! 2. `pub static PAGE_META: docs::PageMeta` — the structured
 //!    metadata, consumable by MCP servers, search indexers, and

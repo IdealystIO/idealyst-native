@@ -6,8 +6,8 @@ license.workspace = true
 
 # tvOS backend. Adds the focus-engine + TVUIKit layer on top of the
 # shared `backend-ios-core` substrate. Mirrors `backend-ios-mobile`
-# in shape: a staticlib + rlib pair, with optional `aas-shell` for
-# running as a thin client of an AAS dev-server.
+# in shape: a staticlib + rlib pair, with optional `runtime-server` for
+# running as a thin client of an runtime-server dev-server.
 #
 # Skeleton — TV-specific component variants, focus glue, and remote
 # input land here as they're built out.
@@ -19,15 +19,15 @@ name = "backend_ios_tv"
 crate-type = ["staticlib", "rlib"]
 
 [features]
-debug-stats = ["framework-core/debug-stats"]
-aas-shell = ["dep:aas-shell-native", "aas-shell-native/aas-shell"]
-async-driver = ["framework-core/async-driver"]
+debug-stats = ["runtime-core/debug-stats"]
+runtime-server = ["dep:runtime-server-shell-native", "runtime-server-shell-native/runtime-server"]
+async-driver = ["runtime-core/async-driver"]
 
 [dependencies]
-framework-core = { workspace = true }
-native-layout = { workspace = true }
+runtime-core = { workspace = true }
+runtime-layout = { workspace = true }
 backend-ios-core = { workspace = true }
-aas-shell-native = { workspace = true, optional = true }
+runtime-server-shell-native = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "tvos")'.dependencies]
 block2 = "0.5"

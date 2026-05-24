@@ -5,14 +5,14 @@
 //! function takes a node + resolved props and writes (or clears) every
 //! relevant accessibility property. `create_*` paths call it after
 //! constructing the view; the dynamic
-//! [`update_accessibility`](framework_core::Backend::update_accessibility)
+//! [`update_accessibility`](runtime_core::Backend::update_accessibility)
 //! path reuses it identically. Clearing on `None` is intentional —
 //! reactive a11y prop changes must not leak stale labels onto a view.
 //!
 //! TalkBack walks the platform `View` tree directly via
 //! `AccessibilityNodeInfo`, so the Android backend doesn't maintain a
 //! parallel semantics tree;
-//! [`dump_accessibility_tree`](framework_core::Backend::dump_accessibility_tree)
+//! [`dump_accessibility_tree`](runtime_core::Backend::dump_accessibility_tree)
 //! stays `None` for this backend.
 //!
 //! ### API-level gating
@@ -51,7 +51,7 @@
 //! TalkBack engine observes the mutation and announces with the
 //! configured priority.
 
-use framework_core::accessibility::{
+use runtime_core::accessibility::{
     AccessibilityProps, AccessibilityTraits, LiveRegionPriority, Role,
 };
 use jni::objects::{GlobalRef, JObject, JValue};
@@ -93,7 +93,7 @@ const LIVE_REGION_ASSERTIVE: i32 = 2;
 /// Apply / refresh every accessibility property on `view` from `props`.
 ///
 /// `inferred_role` is the primitive's default role (see
-/// [`framework_core::accessibility::default_role`]). If
+/// [`runtime_core::accessibility::default_role`]). If
 /// `props.role.is_none()` and `inferred_role.is_some()`, the inferred
 /// role drives the heading / role-description fallback; if both are
 /// `None`, no role-derived bits are added (the caller's trait flags

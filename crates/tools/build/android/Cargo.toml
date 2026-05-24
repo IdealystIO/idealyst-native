@@ -1,0 +1,13 @@
+[package]
+name = "build-android"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Android build orchestration: generates an ephemeral cdylib wrapper around a user's app crate, points cargo at the NDK toolchain, and produces a libnatve.so suitable for packaging into an APK."
+
+[dependencies]
+anyhow = "1"
+# Reuses manifest parsing + workspace-root discovery from build-ios
+# so we don't reimplement them. The Manifest schema is the shared
+# contract between iOS/runtime-server/Android builders.
+build-ios = { workspace = true }

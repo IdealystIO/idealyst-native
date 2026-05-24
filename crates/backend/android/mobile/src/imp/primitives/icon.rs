@@ -12,8 +12,8 @@
 
 use backend_android_core::helpers::apply_default_layout_params;
 use crate::imp::{with_env, AndroidBackend};
-use framework_core::primitives::icon::IconData;
-use framework_core::Color;
+use runtime_core::primitives::icon::IconData;
+use runtime_core::Color;
 use jni::objects::{GlobalRef, JObject, JValue};
 
 /// Create an ImageView displaying the icon paths as a stroked drawable.
@@ -112,7 +112,7 @@ pub(crate) fn animate_stroke(
     from: f32,
     to: f32,
     duration_ms: u32,
-    _easing: framework_core::Easing,
+    _easing: runtime_core::Easing,
     infinite: bool,
     autoreverses: bool,
 ) {
@@ -327,5 +327,5 @@ fn get_density(env: &mut jni::JNIEnv, context: &GlobalRef) -> f32 {
 /// interpretation (read `#rrggbbaa` as `#aarrggbb`) that produced
 /// the wrong color for any icon styled with CSS-spec 8-digit hex.
 fn parse_color_to_argb(color: &str) -> i32 {
-    framework_core::color::parse_or(color, framework_core::color::Rgba::BLACK).to_argb_u32() as i32
+    runtime_core::color::parse_or(color, runtime_core::color::Rgba::BLACK).to_argb_u32() as i32
 }

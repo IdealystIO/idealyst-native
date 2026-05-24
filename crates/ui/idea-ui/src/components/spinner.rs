@@ -2,10 +2,10 @@
 //!
 //! The framework primitive already handles platform-native spinner
 //! animation; this wrapper just adds size tokens so call sites don't
-//! reach into framework-core for the underlying enum.
+//! reach into runtime-core for the underlying enum.
 
-use framework_core::primitives::activity_indicator::ActivityIndicatorSize;
-use framework_core::{ui, Primitive, VariantEnum};
+use runtime_core::primitives::activity_indicator::ActivityIndicatorSize;
+use runtime_core::{ui, Primitive, VariantEnum};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum SpinnerSize {

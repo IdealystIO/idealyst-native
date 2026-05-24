@@ -2,7 +2,7 @@
 
 use docs_macro::docs;
 #[allow(unused_imports)]
-use crate::shell::{codeblock, pageheader, CodeBlockProps, PageHeaderProps};
+use crate::shell::{code_block, page_header, CodeBlockProps, PageHeaderProps};
 #[allow(unused_imports)]
 use idea_ui::{body, card, heading, stack};
 
@@ -29,7 +29,7 @@ docs! {
 
     section(heading = "The shape") {
         code(rust, r##"
-            use framework_core::{flat_list, fixed_size, signal, ui, Signal};
+            use runtime_core::{flat_list, fixed_size, signal, ui, Signal};
 
             #[derive(Clone)]
             pub struct Message {

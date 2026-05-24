@@ -1,4 +1,4 @@
-use framework_core::{Backend, StyleRules};
+use runtime_core::{Backend, StyleRules};
 use std::rc::Rc;
 
 pub struct IosBackend;
@@ -6,17 +6,17 @@ pub struct IosBackend;
 impl Backend for IosBackend {
     type Node = ();
 
-    fn platform(&self) -> framework_core::Platform {
-        framework_core::Platform::Ios
+    fn platform(&self) -> runtime_core::Platform {
+        runtime_core::Platform::Ios
     }
 
-    fn create_view(&mut self, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
+    fn create_view(&mut self, _a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
         unreachable!("backend-ios stub: UIKit calls only on iOS target")
     }
-    fn create_text(&mut self, _content: &str, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
+    fn create_text(&mut self, _content: &str, _a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
         unreachable!()
     }
-    fn create_button(&mut self, _label: &str, _on_click: &framework_core::Action, _leading_icon: Option<&framework_core::IconData>, _trailing_icon: Option<&framework_core::IconData>, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
+    fn create_button(&mut self, _label: &str, _on_click: &runtime_core::Action, _leading_icon: Option<&runtime_core::IconData>, _trailing_icon: Option<&runtime_core::IconData>, _a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
         unreachable!()
     }
     fn insert(&mut self, _parent: &mut Self::Node, _child: Self::Node) {

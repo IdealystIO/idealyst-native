@@ -21,10 +21,10 @@ crate-type = ["cdylib", "rlib"]
 # index.html dumps a `console.table` of them after each suite run.
 # Procedure: see CLAUDE.md §6 ("Profiling the framework").
 default = []
-debug-stats = ["framework-core/debug-stats", "backend-web/debug-stats"]
+debug-stats = ["runtime-core/debug-stats", "backend-web/debug-stats"]
 
 [dependencies]
-framework-core = { workspace = true }
+runtime-core = { workspace = true }
 idea-ui = { workspace = true }
 backend-web = { workspace = true }
 wasm-bindgen = "0.2"

@@ -21,7 +21,7 @@
 //! - Left / Right  → full-height drawer at edge
 //! - FullScreen    → fills the viewport
 //!
-//! The framework-core composition layers a backdrop primitive INSIDE
+//! The runtime-core composition layers a backdrop primitive INSIDE
 //! the portal (it becomes the first child of the content holder); the
 //! backend does not configure a scrim. We always clear
 //! `FLAG_DIM_BEHIND` and zero the window background so author-supplied
@@ -51,7 +51,7 @@
 
 use crate::imp::callbacks::{leak, OverlayDismissCallback};
 use crate::imp::{with_env, AndroidBackend};
-use framework_core::primitives::portal::{
+use runtime_core::primitives::portal::{
     AnchorTarget, ElementAlign, ElementSide, PortalTarget, ViewportPlacement, ViewportRect,
 };
 use jni::objects::{GlobalRef, JObject, JValue};

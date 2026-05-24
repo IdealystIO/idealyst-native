@@ -12,10 +12,10 @@ use objc2_foundation::{CGRect, NSObject, NSString};
 use objc2_ui_kit::{UITextField, UITextView, UIView};
 use std::any::Any;
 
-use framework_core::primitives::portal::ViewportRect;
-use framework_core::primitives::text_area::TextAreaOps;
-use framework_core::primitives::text_input::TextInputOps;
-use framework_core::{ButtonOps, PressableOps, ViewOps};
+use runtime_core::primitives::portal::ViewportRect;
+use runtime_core::primitives::text_area::TextAreaOps;
+use runtime_core::primitives::text_input::TextInputOps;
+use runtime_core::{ButtonOps, PressableOps, ViewOps};
 
 use crate::imp::IosNode;
 
@@ -134,7 +134,7 @@ impl ViewOps for IosViewOps {
     fn set_animated_f32(
         &self,
         node: &dyn Any,
-        prop: framework_core::animation::AnimProp,
+        prop: runtime_core::animation::AnimProp,
         value: f32,
     ) {
         if let Some(n) = node.downcast_ref::<IosNode>() {
@@ -146,7 +146,7 @@ impl ViewOps for IosViewOps {
     fn set_animated_color(
         &self,
         node: &dyn Any,
-        prop: framework_core::animation::AnimProp,
+        prop: runtime_core::animation::AnimProp,
         value: [f32; 4],
     ) {
         if let Some(n) = node.downcast_ref::<IosNode>() {
@@ -161,11 +161,11 @@ pub(crate) static IOS_VIEW_OPS: IosViewOps = IosViewOps;
 // routes to `set_animated_color` on the backend, which (in turn)
 // dispatches to `UILabel.textColor` for label nodes.
 pub(crate) struct IosTextOps;
-impl framework_core::TextOps for IosTextOps {
+impl runtime_core::TextOps for IosTextOps {
     fn set_animated_color(
         &self,
         node: &dyn Any,
-        prop: framework_core::animation::AnimProp,
+        prop: runtime_core::animation::AnimProp,
         value: [f32; 4],
     ) {
         if let Some(n) = node.downcast_ref::<IosNode>() {

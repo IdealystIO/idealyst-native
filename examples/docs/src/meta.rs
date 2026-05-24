@@ -69,6 +69,11 @@ pub struct PageMeta {
 pub enum PageCategory {
     /// The Overview page. Always first in the sidebar.
     Overview,
+    /// Architectural introduction. Sits ahead of the onboarding
+    /// path for readers who want the "why it was built this way"
+    /// treatment before opening the framework. Optional for users
+    /// who only want to ship.
+    Introduction,
     /// Foundational concepts (Primitives, Reactivity, Styles,
     /// Components). Order within the category matches declaration
     /// order in the registry.
@@ -246,7 +251,7 @@ pub enum DocConcept {
     Signal,
     Effect,
     Scope,
-    /// `framework_core::mount(backend, app_fn)` — the framework's
+    /// `runtime_core::mount(backend, app_fn)` — the framework's
     /// entry point. Opens the root reactive scope, runs the user's
     /// tree constructor inside it, hands the result to the build
     /// walker. The lifetime boundary that turns `effect!` /
@@ -339,7 +344,7 @@ pub enum DocConcept {
     // ---- Styling ----
     Stylesheet,
     /// A user-space pattern of bundling tokens for app-wide swap.
-    /// NOT a framework primitive — `framework-core` only ships
+    /// NOT a framework primitive — `runtime-core` only ships
     /// `Tokenized<T>` + the token registry. The authoritative
     /// explainer is `building-a-theme-system` (Advanced).
     Theme,
@@ -443,7 +448,7 @@ pub enum DocConcept {
     Cli,
     HotReload,
     /// App-as-server.
-    Aas,
+    RuntimeServer,
     WireProtocol,
     McpServer,
 
@@ -454,6 +459,33 @@ pub enum DocConcept {
     // ---- Architecture / cross-cutting ----
     /// The "you write one crate; backends render it" split.
     AppBackendSplit,
+    /// The upper half of the framework — primitives, the reactive
+    /// graph, the Walker, macros. Platform-agnostic, sits above
+    /// the Backend Interface. Authoritative explainer:
+    /// `introduction` page.
+    Runtime,
+    /// The traversal pass that turns a primitive tree into Backend
+    /// Interface calls and wraps reactive expressions in Effects.
+    /// Lives in `runtime_core::walker`. Authoritative explainer:
+    /// `introduction` page.
+    Walker,
+    /// GPUBackend's platform integration layer — owns window,
+    /// drawing surface, and event source; translates platform
+    /// events into the GPU Backend's internal vocabulary. Distinct
+    /// from native Backends, which inherit their substrate from
+    /// the platform toolkit. Authoritative explainer:
+    /// `introduction` page.
+    Host,
+    /// GPUBackend's primitive renderer — knows what each primitive
+    /// looks like and emits geometry for the Engine to draw. Lives
+    /// under `crates/gpu-backend/painter/`. Authoritative explainer:
+    /// `introduction` page.
+    Painter,
+    /// GPUBackend's rendering engine — owns the wgpu surface and
+    /// pipeline, frame management, text shaping, input dispatch.
+    /// Knows nothing about primitives; the Painter does.
+    /// Authoritative explainer: `introduction` page.
+    Engine,
     BuildCache,
     SafeArea,
     /// This very macro.
@@ -557,7 +589,7 @@ impl DocConcept {
 
             DocConcept::Cli => "CLI",
             DocConcept::HotReload => "Hot reload",
-            DocConcept::Aas => "AAS (app-as-server)",
+            DocConcept::RuntimeServer => "Runtime server",
             DocConcept::WireProtocol => "Wire protocol",
             DocConcept::McpServer => "MCP server",
 
@@ -565,6 +597,11 @@ impl DocConcept {
             DocConcept::TestId => "test_id",
 
             DocConcept::AppBackendSplit => "App ↔ Backend split",
+            DocConcept::Runtime => "Runtime",
+            DocConcept::Walker => "Walker",
+            DocConcept::Host => "Host (GPUBackend)",
+            DocConcept::Painter => "Painter (GPUBackend)",
+            DocConcept::Engine => "Engine (GPUBackend)",
             DocConcept::BuildCache => "Build cache",
             DocConcept::SafeArea => "Safe area",
             DocConcept::DocsMacro => "docs! macro",
@@ -666,7 +703,7 @@ impl DocConcept {
 
             DocConcept::Cli => "cli",
             DocConcept::HotReload => "hot-reload",
-            DocConcept::Aas => "aas",
+            DocConcept::RuntimeServer => "runtime-server",
             DocConcept::WireProtocol => "wire-protocol",
             DocConcept::McpServer => "mcp-server",
 
@@ -674,6 +711,11 @@ impl DocConcept {
             DocConcept::TestId => "test-id",
 
             DocConcept::AppBackendSplit => "app-backend-split",
+            DocConcept::Runtime => "runtime",
+            DocConcept::Walker => "walker",
+            DocConcept::Host => "host",
+            DocConcept::Painter => "painter",
+            DocConcept::Engine => "engine",
             DocConcept::BuildCache => "build-cache",
             DocConcept::SafeArea => "safe-area",
             DocConcept::DocsMacro => "docs-macro",

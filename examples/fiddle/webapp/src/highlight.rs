@@ -1,7 +1,7 @@
 //! Tiny hand-rolled Rust tokenizer for the fiddle's editor pane.
 //!
 //! Not a real parser — just enough to produce colored runs we can
-//! feed to the [`framework_core::code_block`] primitive. Recognizes:
+//! feed to the [`runtime_core::code_block`] primitive. Recognizes:
 //!
 //! - Line comments (`// …`) and block comments (`/* … */`, nested).
 //! - Strings (`"…"`, with `\…` escapes) and chars (`'…'`).
@@ -14,11 +14,11 @@
 //!
 //! Output is a flat `Vec<(String, Color)>` — consecutive runs of
 //! the same color stay separate so the consumer can decide whether
-//! to coalesce. The render side ([`framework_core::CodeBlock`])
+//! to coalesce. The render side ([`runtime_core::CodeBlock`])
 //! emits one `<span>` per tuple, which is fine for thousand-token
 //! files; if it becomes a bottleneck the coalescing pass goes here.
 
-use framework_core::Color;
+use runtime_core::Color;
 
 /// Subdued three-accent palette. Most code reads as default-ink
 /// black; only the categories whose color actually helps you scan

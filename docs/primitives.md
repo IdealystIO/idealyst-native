@@ -20,7 +20,7 @@ right one when building.
 
 ## What is a primitive?
 
-Concretely, a primitive is a variant of the `framework_core::Primitive`
+Concretely, a primitive is a variant of the `runtime_core::Primitive`
 enum. Three views on what that means:
 
 **Data view.** A `Primitive` is an inert tree node — a description of
@@ -54,7 +54,7 @@ This is the most important distinction in the framework.
 
 | | **Primitive** | **Component** |
 | --- | --- | --- |
-| Defined in | `framework-core` | Your code |
+| Defined in | `runtime-core` | Your code |
 | Backend impl required | Yes | No |
 | Cross-platform implementation | One per backend | Shared (compiles for every target) |
 | Set is | Small, stable, fixed | Unbounded |
@@ -504,7 +504,7 @@ Most authors don't call these directly — the DSLs lower
 These are primitives because they shape the *render walk itself* —
 they own a per-branch `Scope` and manage rebuild ordering. They
 don't have a backend method; the walker handles them entirely
-inside framework-core.
+inside runtime-core.
 
 ---
 

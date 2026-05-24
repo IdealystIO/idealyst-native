@@ -10,9 +10,9 @@
 use std::any::Any;
 use std::rc::Rc;
 
-use framework_core::animation::AnimProp;
-use framework_core::primitives::portal::ViewportRect;
-use framework_core::{TextHandle, TextOps, ViewHandle, ViewOps};
+use runtime_core::animation::AnimProp;
+use runtime_core::primitives::portal::ViewportRect;
+use runtime_core::{TextHandle, TextOps, ViewHandle, ViewOps};
 
 use crate::node::TermNode;
 use crate::GLOBAL_BACKEND;
@@ -43,7 +43,7 @@ impl ViewOps for TermViewOps {
     fn set_animated_f32(&self, node: &dyn Any, prop: AnimProp, value: f32) {
         let Some(n) = node.downcast_ref::<TermNode>() else { return };
         with_backend(|b| {
-            use framework_core::Backend;
+            use runtime_core::Backend;
             b.set_animated_f32(n, prop, value);
         });
     }
@@ -51,7 +51,7 @@ impl ViewOps for TermViewOps {
     fn set_animated_color(&self, node: &dyn Any, prop: AnimProp, value: [f32; 4]) {
         let Some(n) = node.downcast_ref::<TermNode>() else { return };
         with_backend(|b| {
-            use framework_core::Backend;
+            use runtime_core::Backend;
             b.set_animated_color(n, prop, value);
         });
     }
@@ -63,7 +63,7 @@ impl TextOps for TermTextOps {
     fn set_animated_color(&self, node: &dyn Any, prop: AnimProp, value: [f32; 4]) {
         let Some(n) = node.downcast_ref::<TermNode>() else { return };
         with_backend(|b| {
-            use framework_core::Backend;
+            use runtime_core::Backend;
             b.set_animated_color(n, prop, value);
         });
     }

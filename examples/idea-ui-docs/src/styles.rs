@@ -7,8 +7,8 @@
 //! All sheets close over `IdeaThemeRef` so the docs follow the
 //! installed theme (dark/light) without re-declaring tokens.
 
-use framework_core::stylesheet;
-use framework_core::{AlignItems, Color, FlexDirection, JustifyContent, Length, Tokenized};
+use runtime_core::stylesheet;
+use runtime_core::{AlignItems, Color, FlexDirection, JustifyContent, Length, Tokenized};
 use idea_ui::{IdeaTheme, IdeaThemeRef};
 
 stylesheet! {
@@ -110,7 +110,7 @@ stylesheet! {
             flex_direction: FlexDirection::Row,
             gap: Tokenized::token("spacing-xl", Length::Px(24.0)),
             align_items: AlignItems::FlexStart,
-            flex_wrap: framework_core::FlexWrap::Wrap,
+            flex_wrap: runtime_core::FlexWrap::Wrap,
         }
     }
 }
@@ -189,7 +189,7 @@ stylesheet! {
             background: Color("transparent".into()),
             color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
             font_size: Tokenized::token("typography-size-md", Length::Px(14.0)),
-            text_align: framework_core::TextAlign::Left,
+            text_align: runtime_core::TextAlign::Left,
         }
         variant active {
             #[default]

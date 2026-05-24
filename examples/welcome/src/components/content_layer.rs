@@ -3,7 +3,7 @@
 
 use std::rc::Rc;
 
-use framework_core::{
+use runtime_core::{
     component, ui, AlignItems, FlexDirection, JustifyContent, Position, Primitive, StyleRules,
     StyleSheet,
 };

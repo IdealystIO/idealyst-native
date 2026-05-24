@@ -20,7 +20,7 @@
 
 use std::collections::HashMap;
 
-use framework_core::{AssetId, AssetSource, AssetTag};
+use runtime_core::{AssetId, AssetSource, AssetTag};
 use objc2::msg_send;
 use objc2::msg_send_id;
 use objc2::rc::Retained;

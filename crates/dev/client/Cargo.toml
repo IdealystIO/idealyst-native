@@ -1,0 +1,38 @@
+[package]
+name = "dev-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+# App-side replay engine for the dev-mode hot-reload wire protocol.
+# Generic over a platform `Backend` so each backend (iOS, Android,
+# web, …) can host hot-reload without changes to its native code.
+#
+# Everything in this crate is gated by the `dev-hot-reload` feature.
+# When the feature is off, the crate compiles to nothing (no types,
+# no items reachable) so a host binary that mentions it transitively
+# pays exactly zero binary cost.
+
+[features]
+# Default: nothing. When a dependent host opts into hot-reload, they
+# select the appropriate transport feature (either `native` for
+# tungstenite over plain TCP, or `web` for browser WebSockets via
+# web-sys).
+default = []
+# Master switch. Without this, *every* item in this crate's public
+# API is gated out — see `lib.rs`. The two transport features below
+# both imply this.
+dev-hot-reload = []
+# The native transport (`tungstenite` + `mdns-sd` + worker-thread
+# `RuntimeServerShell`) lives in `runtime-server-shell-native` under its `runtime-server`
+# feature. The browser transport lives in `backend-web` under its
+# `runtime-server` feature. This crate is platform-pure: protocol +
+# replay engine only.
+
+[dependencies]
+runtime-core = { workspace = true }
+wire = { workspace = true }
+serde_json = { version = "1", optional = false }

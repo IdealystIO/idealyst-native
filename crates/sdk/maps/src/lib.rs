@@ -29,7 +29,7 @@
 //! the framework renders a "not supported" placeholder when the
 //! primitive mounts.
 
-use framework_core::{external, Bound, ExternalHandle};
+use runtime_core::{external, Bound, ExternalHandle};
 
 pub use maps_core::MapViewProps;
 

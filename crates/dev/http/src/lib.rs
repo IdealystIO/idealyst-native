@@ -57,7 +57,7 @@ pub const AAS_URL_URL: &str = "/__idealyst/aas_url";
 /// Plumbed in by callers (typically `web-dev-host`) that have a
 /// live mDNS browser running. The HTTP server reads `aas_url` for
 /// each request, returns it via [`AAS_URL_URL`], and inlines a tiny
-/// `<script>window.IDEALYST_AAS_URL = "..."</script>` into served
+/// `<script>window.IDEALYST_RUNTIME_SERVER_URL = "..."</script>` into served
 /// HTML so wasm bundles can pick the URL up synchronously on boot.
 ///
 /// `Arc<Mutex<Option<String>>>` keeps the producer thread (mDNS
@@ -163,7 +163,7 @@ fn handle(
             .map_err(Into::into);
     }
 
-    // AAS-URL endpoint. JSON body `{"url": "<ws://...>"}` or
+    // runtime-server-URL endpoint. JSON body `{"url": "<ws://...>"}` or
     // `{"url": null}` while discovery hasn't found a match. The
     // wasm side reads this on disconnect to pick up a server that
     // restarted on a different port. Even when no AasContext is
@@ -241,7 +241,7 @@ fn respond_with_file(
     let ct = content_type(path);
     let is_html = matches!(ct, "text/html; charset=utf-8");
 
-    // HTML responses get script tags injected (livereload + AAS
+    // HTML responses get script tags injected (livereload + runtime-server
     // URL). Everything else streams straight from disk — wasm
     // bundles can be large (hello-web's release wasm is ~13 MB),
     // and `Response::from_file` sets up chunked transfer for us.
@@ -275,7 +275,7 @@ fn respond_with_file(
     }
 }
 
-/// Insert `<script>window.IDEALYST_AAS_URL = "..."</script>` right
+/// Insert `<script>window.IDEALYST_RUNTIME_SERVER_URL = "..."</script>` right
 /// inside the `<head>` so it executes before any wasm init. wasm
 /// reads the global synchronously on boot — no async fetch round
 /// trip. When discovery hasn't found a server yet, the value is
@@ -287,7 +287,7 @@ fn inject_aas_url(html: String, ctx: &AasContext) -> String {
         None => "null".to_string(),
     };
     let snippet = format!(
-        "<script>window.IDEALYST_AAS_URL = {};</script>\n",
+        "<script>window.IDEALYST_RUNTIME_SERVER_URL = {};</script>\n",
         value
     );
     if let Some(idx) = html.find("</head>") {

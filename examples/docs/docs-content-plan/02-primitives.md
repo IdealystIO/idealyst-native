@@ -48,7 +48,7 @@ ui! {
 ```
 
 Children are a flat list of primitives, laid out by the platform's
-flex engine (via [framework-native-layout](#) on native backends, via
+flex engine (via [framework-runtime-layout](#) on native backends, via
 the browser on web). A View has no behavior of its own — no press
 target, no scrolling, no clipping unless its style says so.
 
@@ -162,7 +162,7 @@ ui! {
 
 ### `WebView` (third-party SDK)
 
-Embedded web content moved out of framework-core into the standalone
+Embedded web content moved out of runtime-core into the standalone
 `webview` SDK crate. A sandboxed iframe on web, `WKWebView` on iOS,
 `android.webkit.WebView` on Android. Register once at bootstrap, then
 mount via expression interpolation (third-party primitives don't get
@@ -495,11 +495,11 @@ state; `on_resize` and (implicitly) per-frame callbacks let you
 update.
 
 The framework does not interpret any of it. The GPU context is
-type-erased, so framework-core stays wgpu-free even though backends
+type-erased, so runtime-core stays wgpu-free even though backends
 that support graphics carry the dependency.
 
-Not supported in AAS dev mode — the wire protocol can't ship GPU
-work, so an AAS host renders a placeholder. Local-render mode is
+Not supported in runtime-server dev mode — the wire protocol can't ship GPU
+work, so an runtime-server host renders a placeholder. Local-render mode is
 required.
 
 See [Graphics](#) for the lifecycle, surface configuration, and the

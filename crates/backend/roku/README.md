@@ -4,9 +4,9 @@ Generator backend for Roku.
 
 ## Theme switching: temporarily unimplemented
 
-The theme/tokenization refactor split `framework-core`'s theme APIs into:
+The theme/tokenization refactor split `runtime-core`'s theme APIs into:
 
-- **framework-core**: token primitives (`install_tokens` / `update_tokens` /
+- **runtime-core**: token primitives (`install_tokens` / `update_tokens` /
   `Tokenized<T>` / `tokens_version_signal`).
 - **framework-theme**: the optional theme-as-struct pattern + `install_themes`
   multi-variant helper.

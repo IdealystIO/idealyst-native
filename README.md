@@ -149,7 +149,7 @@ summarised in the matrix further down.
 | `idea-ui` component library (Card, Modal, Popover, Select, Switch, Tabs, Field, Alert, …) | Working |
 | Icon registry (`icons-lucide`) | Working |
 | Robot automation + MCP server: introspection registry, `#[component] methods!`, agent control | Working |
-| Hot reload: dev server + AAS (Application-as-a-Service) shell + wire protocol | Working |
+| Hot reload: dev server + runtime-server (Application-as-a-Service) shell + wire protocol | Working |
 | Server-driven UI: wire protocol + `SceneModel` snapshot | Working |
 | Custom rendering: `render-wgpu` (core, phone, tablet, tv skins) | In progress |
 | Native backend: interactions / media / OS integration | In progress |
@@ -324,7 +324,7 @@ crates/
     apple/core/         # AppKit/UIKit shared helpers (objc2)
     macos/              # macOS AppKit backend
     roku/               # Roku BrightScript / SceneGraph generator backend
-    aas-shell-native/   # Native AAS-shell (sync WebSocket transport, mDNS discovery)
+    aas-shell-native/   # Native runtime-server-shell (sync WebSocket transport, mDNS discovery)
     posix-log-capture/  # Robot log-buffer LogCapture impl
     [README.md per backend describes its quirks]
 

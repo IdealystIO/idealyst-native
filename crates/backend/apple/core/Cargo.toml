@@ -22,7 +22,7 @@ crate-type = ["rlib"]
 default = []
 
 [dependencies]
-framework-core = { workspace = true }
+runtime-core = { workspace = true }
 
 [target.'cfg(any(target_os = "ios", target_os = "tvos", target_os = "macos"))'.dependencies]
 objc2 = "0.5"

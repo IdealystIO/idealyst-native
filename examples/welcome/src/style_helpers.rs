@@ -3,7 +3,7 @@
 
 use std::rc::Rc;
 
-use framework_core::{Color, Length, StyleRules, StyleSheet, Tokenized};
+use runtime_core::{Color, Length, StyleRules, StyleSheet, Tokenized};
 
 pub fn static_sheet(rules: StyleRules) -> Rc<StyleSheet> {
     Rc::new(StyleSheet::r#static(rules))

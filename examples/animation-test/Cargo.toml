@@ -14,10 +14,10 @@ crate-type = ["cdylib", "rlib"]
 [features]
 # Connect to a running `idealyst dev` server instead of rendering the
 # local `app()` tree. Off by default.
-dev-hot-reload = ["dep:dev-client", "backend-web/aas-shell"]
+dev-hot-reload = ["dep:dev-client", "backend-web/runtime-server"]
 
 [dependencies]
-framework-core = { workspace = true, features = ["async-driver"] }
+runtime-core = { workspace = true, features = ["async-driver"] }
 idea-ui = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

@@ -11,7 +11,7 @@ import android.widget.CompoundButton
  * `setChecked(...)` without re-firing back into Rust. Android's
  * `setChecked` invokes the listener for any value change regardless
  * of who initiated it, so without this guard a programmatic update
- * (e.g. an AAS wire-replay landing a fresh `value`) would race
+ * (e.g. an runtime-server wire-replay landing a fresh `value`) would race
  * against the user's most recent tap: server emits an out-of-date
  * value → client `setChecked` triggers the listener → client sends
  * the value back to server as an event → server re-emits → repeat.

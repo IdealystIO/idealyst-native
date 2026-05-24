@@ -6,7 +6,7 @@
 
 use backend_android_core::helpers::apply_default_layout_params;
 use crate::imp::{with_env, AndroidBackend};
-use framework_core::primitives::video::{VideoHandle, VideoOps};
+use runtime_core::primitives::video::{VideoHandle, VideoOps};
 use jni::objects::{GlobalRef, JObject, JValue};
 use std::any::Any;
 use std::rc::Rc;

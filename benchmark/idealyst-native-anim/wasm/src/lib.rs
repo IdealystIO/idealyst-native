@@ -22,8 +22,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use backend_web::WebBackend;
-use framework_core::animation::{AnimProp, AnimatedValue, SpringTo};
-use framework_core::{
+use runtime_core::animation::{AnimProp, AnimatedValue, SpringTo};
+use runtime_core::{
     node_ref, render, signal, ui, Color, Length, Owner, Position, Primitive, RafLoop, Ref, Signal,
     StyleRules, StyleSheet, TokenEntry, Tokenized, ViewHandle,
 };
@@ -643,7 +643,7 @@ pub fn start_anim() {
     }
 
     let p = perf();
-    let raf = framework_core::raf_loop(move || {
+    let raf = runtime_core::raf_loop(move || {
         let now = p.now();
         STORE.with(|s| {
             let mut store = s.borrow_mut();

@@ -2,7 +2,7 @@
 //! for `after_ms`, `Handler.post` for microtasks, `Choreographer`
 //! (via `postFrameCallback`) for `after_animation_frame` / `raf_loop`.
 //!
-//! `framework_core::scheduling` falls back to synchronous execution
+//! `runtime_core::scheduling` falls back to synchronous execution
 //! on native when no scheduler is installed — fine for
 //! `schedule_microtask` (immediate dispatch is correct semantics on
 //! a single-threaded native target), but **wrong for `after_ms`**:
@@ -11,13 +11,13 @@
 //! and any other timer-driven feature follow.
 //!
 //! Hosts call [`install_scheduler`] once at startup, before the
-//! first `framework_core::render(...)`.
+//! first `runtime_core::render(...)`.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use framework_core::scheduling::{
+use runtime_core::scheduling::{
     install_scheduler as install, ScheduleHandle, Scheduler,
 };
 use jni::objects::{GlobalRef, JObject, JValue};
@@ -44,7 +44,7 @@ thread_local! {
     static NEXT_ID: Cell<i64> = const { Cell::new(1) };
 }
 
-/// Register this backend's scheduler with `framework-core`.
+/// Register this backend's scheduler with `runtime-core`.
 /// Idempotent — first install wins.
 pub fn install_scheduler() {
     install(Box::new(AndroidScheduler));

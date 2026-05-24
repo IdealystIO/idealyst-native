@@ -101,7 +101,7 @@ pub struct SceneModel {
     /// `UpdateAccessibility` after the node's `Create*` lands so a
     /// late-joining client sees the *current* a11y state, not the
     /// initial value baked into the create command. See
-    /// `project_aas_state_snapshot` — fresh AAS clients receive a
+    /// `project_aas_state_snapshot` — fresh runtime-server clients receive a
     /// `SceneModel` snapshot, NOT the command log.
     node_a11y: HashMap<NodeId, (WireAccessibilityProps, Option<WireRole>)>,
 }
@@ -413,7 +413,7 @@ impl SceneModel {
             }
             Command::NavigatorMountTab { .. } => {
                 // Tab mounting is currently surfaced as a Push when
-                // replayed by the AAS client; the live broadcast
+                // replayed by the runtime-server client; the live broadcast
                 // handles the mount itself. No model state to track
                 // for the demo, and tab navigators don't appear in
                 // the current example. Revisit when adding tabs.

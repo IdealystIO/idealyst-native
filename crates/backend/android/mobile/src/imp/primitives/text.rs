@@ -32,9 +32,9 @@ pub(crate) fn create(b: &mut AndroidBackend, content: &str) -> GlobalRef {
             let avail_w = known_dimensions
                 .width
                 .unwrap_or(match available_space.width {
-                    native_layout::AvailableSpace::Definite(w) => w,
-                    native_layout::AvailableSpace::MaxContent => f32::INFINITY,
-                    native_layout::AvailableSpace::MinContent => 0.0,
+                    runtime_layout::AvailableSpace::Definite(w) => w,
+                    runtime_layout::AvailableSpace::MaxContent => f32::INFINITY,
+                    runtime_layout::AvailableSpace::MinContent => 0.0,
                 });
             measure_textview(&view_for_measure, avail_w, known_dimensions)
         }),
@@ -50,8 +50,8 @@ pub(crate) fn create(b: &mut AndroidBackend, content: &str) -> GlobalRef {
 fn measure_textview(
     view: &GlobalRef,
     avail_w_dp: f32,
-    known_dimensions: native_layout::Size<Option<f32>>,
-) -> native_layout::Size<f32> {
+    known_dimensions: runtime_layout::Size<Option<f32>>,
+) -> runtime_layout::Size<f32> {
     with_env(|env| {
         let view_obj = view.as_obj();
         // dp → px for the MeasureSpec.
@@ -94,7 +94,7 @@ fn measure_textview(
             .unwrap_or(0);
         let w_dp = measured_w_px as f32 / density;
         let h_dp = measured_h_px as f32 / density;
-        native_layout::Size {
+        runtime_layout::Size {
             width: known_dimensions.width.unwrap_or(w_dp.ceil()),
             height: known_dimensions.height.unwrap_or(h_dp.ceil()),
         }

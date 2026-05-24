@@ -11,8 +11,8 @@
 //! custom theme implementation see their values flow into every
 //! stylesheet automatically.
 
-use framework_core::stylesheet;
-use framework_core::{
+use runtime_core::stylesheet;
+use runtime_core::{
     AlignItems, Color, FlexDirection, FontWeight, JustifyContent, Length, TextAlign, TextTransform,
     Tokenized,
 };
@@ -403,7 +403,7 @@ stylesheet! {
             }
             elevated(t) {
                 background: Tokenized::token("color-surface", Color("#ffffff".into())),
-                shadow: framework_core::Shadow {
+                shadow: runtime_core::Shadow {
                     x: 0.0,
                     y: 4.0,
                     blur: 16.0,
@@ -550,7 +550,7 @@ stylesheet! {
                 width: 1.0,
                 height: Length::pct(100.0),
                 min_height: 24.0,
-                align_self: framework_core::AlignSelf::Stretch,
+                align_self: runtime_core::AlignSelf::Stretch,
             }
         }
         transitions {
@@ -785,11 +785,11 @@ stylesheet! {
             gap: Length::Px(2.0),
             flex_direction: FlexDirection::Column,
             min_width: 200.0,
-            shadow: framework_core::Shadow {
+            shadow: runtime_core::Shadow {
                 x: 0.0,
                 y: 8.0,
                 blur: 24.0,
-                color: framework_core::Color("rgba(15, 17, 21, 0.18)".into()),
+                color: runtime_core::Color("rgba(15, 17, 21, 0.18)".into()),
             },
         }
         transitions {
@@ -1073,7 +1073,7 @@ stylesheet! {
             border_radius: Tokenized::token("radius-pill", Length::Px(999.0)),
             align_items: AlignItems::Center,
             justify_content: JustifyContent::Center,
-            overflow: framework_core::Overflow::Hidden,
+            overflow: runtime_core::Overflow::Hidden,
             // Default to neutral wash so a no-prop Avatar reads as a
             // generic placeholder rather than a colored chip.
             background: Tokenized::token("intent-neutral-soft-bg", Color("#eef0f7".into())),
@@ -1571,7 +1571,7 @@ stylesheet! {
             flex_direction: FlexDirection::Column,
             min_width: 320.0,
             max_width: 560.0,
-            shadow: framework_core::Shadow {
+            shadow: runtime_core::Shadow {
                 x: 0.0,
                 y: 12.0,
                 blur: 32.0,
@@ -1596,7 +1596,7 @@ stylesheet! {
             gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
             flex_direction: FlexDirection::Column,
             min_width: 180.0,
-            shadow: framework_core::Shadow {
+            shadow: runtime_core::Shadow {
                 x: 0.0,
                 y: 6.0,
                 blur: 18.0,

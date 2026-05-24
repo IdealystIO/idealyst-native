@@ -5,13 +5,13 @@
 
 use backend_android_core::helpers::apply_default_layout_params;
 use crate::imp::{with_env, AndroidBackend};
-use framework_core::primitives::activity_indicator::ActivityIndicatorSize;
+use runtime_core::primitives::activity_indicator::ActivityIndicatorSize;
 use jni::objects::{GlobalRef, JValue};
 
 pub(crate) fn create(
     b: &AndroidBackend,
     _size: ActivityIndicatorSize,
-    _color: Option<&framework_core::Color>,
+    _color: Option<&runtime_core::Color>,
 ) -> GlobalRef {
     with_env(|env| {
         let class = env.find_class("android/widget/ProgressBar").unwrap();

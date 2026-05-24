@@ -15,14 +15,14 @@ hover/focus chrome. Use the animation system for gestures, springs,
 custom motion, and anything that needs interruption with velocity
 preservation.
 
-Implementation: [`framework_core::animation`](../crates/framework/core/src/animation/).
+Implementation: [`runtime_core::animation`](../crates/framework/core/src/animation/).
 
 ---
 
 ## The end-to-end shape
 
 ```rust
-use framework_core::animation::*;
+use runtime_core::animation::*;
 use std::time::Duration;
 
 let scale = AnimatedValue::new(1.0_f32);

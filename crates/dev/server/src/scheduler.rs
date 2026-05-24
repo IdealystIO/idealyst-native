@@ -1,8 +1,8 @@
-//! Sidecar-side `framework_core::scheduling::Scheduler` impl.
+//! Sidecar-side `runtime_core::scheduling::Scheduler` impl.
 //!
 //! The sidecar is a plain Rust process with no platform run loop
 //! (no NSRunLoop, no browser raf, no Choreographer). Without an
-//! installed `Scheduler`, `framework_core::scheduling::raf_loop`
+//! installed `Scheduler`, `runtime_core::scheduling::raf_loop`
 //! returns an inert handle and any author code using
 //! `raf_loop_scoped` / `after_ms` / animation infrastructure silently
 //! does nothing. That's how the welcome example's planets sat at
@@ -11,13 +11,13 @@
 //! Design choices:
 //!
 //! - **Process-global install, per-thread storage.** Schedulers in
-//!   `framework_core` live in a single `OnceLock<Box<dyn Scheduler>>`
+//!   `runtime_core` live in a single `OnceLock<Box<dyn Scheduler>>`
 //!   — first-install wins, all threads share. But the closures
 //!   handed to `raf_loop` / `after_ms` aren't `Send` (they capture
 //!   `!Send` user state — `Rc`s, recorder handles, …). So we install
 //!   one [`SidecarScheduler`] unit struct, and each thread that calls
 //!   `raf_loop` / `after_ms` stores its closure in a thread-local
-//!   slot. The AAS sidecar runs one session per thread; closures
+//!   slot. The runtime-server sidecar runs one session per thread; closures
 //!   stay local to the session that registered them.
 //!
 //! - **Client drives the cadence.** Each session thread's
@@ -27,14 +27,14 @@
 //!
 //! - **Microtask = synchronous.** Native scheduler convention: no
 //!   event loop to defer to, so microtasks just run inline at queue
-//!   time. Same as `framework_core::scheduling::schedule_microtask`'s
+//!   time. Same as `runtime_core::scheduling::schedule_microtask`'s
 //!   built-in fallback on non-wasm targets.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use framework_core::scheduling::{ScheduleHandle, Scheduler};
+use runtime_core::scheduling::{ScheduleHandle, Scheduler};
 
 /// Unit struct because all per-callback state lives in thread-locals;
 /// the struct itself carries nothing. `Send + Sync` falls out
@@ -189,12 +189,12 @@ impl Drop for DeadlineHandle {
 /// once per process at sidecar startup. Subsequent session-thread
 /// spawns reuse the same install.
 pub fn install() {
-    framework_core::scheduling::install_scheduler(Box::new(SidecarScheduler));
+    runtime_core::scheduling::install_scheduler(Box::new(SidecarScheduler));
 }
 
 /// Drive everything the scheduler stashed on the **calling thread**:
 /// fire expired deadlines, run every active raf-loop closure once.
-/// The AAS sidecar's session thread calls this from
+/// The runtime-server sidecar's session thread calls this from
 /// `WireRecordingBackend::tick_animations` on each `RequestFrame`.
 ///
 /// Ordering matches browser convention: deadlines (timeouts) first,
@@ -284,12 +284,12 @@ mod tests {
     //! investigation: in the live welcome scene, timeline-driven
     //! tweens flow after rerender but the raf_loop body never fires.
     use super::*;
-    use framework_core::scheduling::{after_ms_scoped, raf_loop_scoped};
+    use runtime_core::scheduling::{after_ms_scoped, raf_loop_scoped};
     use std::cell::Cell;
     use std::rc::Rc;
 
     /// Install the sidecar scheduler exactly once across the whole
-    /// test binary. `framework_core::scheduling::install_scheduler`
+    /// test binary. `runtime_core::scheduling::install_scheduler`
     /// uses a `OnceLock`, so calling install repeatedly is harmless
     /// — but starting from a clean state per test isn't possible
     /// either. All scheduling tests therefore have to live with the
@@ -317,10 +317,10 @@ mod tests {
 
         // Helper: build one "lifetime" of the welcome pattern,
         // return an owning Effect + a per-lifetime call counter.
-        fn build_lifetime() -> (framework_core::Effect, Rc<Cell<u32>>) {
+        fn build_lifetime() -> (runtime_core::Effect, Rc<Cell<u32>>) {
             let calls = Rc::new(Cell::new(0u32));
             let calls_for_body = calls.clone();
-            let effect = framework_core::Effect::new(move || {
+            let effect = runtime_core::Effect::new(move || {
                 let counter = calls_for_body.clone();
                 // delay=0 matches `session::after_ms(at, ...)` after
                 // the session epoch has already passed `at`.
@@ -373,7 +373,7 @@ mod tests {
 
         let raf_calls = Rc::new(Cell::new(0u32));
         let raf_calls_for_body = raf_calls.clone();
-        let _effect = framework_core::Effect::new(move || {
+        let _effect = runtime_core::Effect::new(move || {
             let raf_calls_inner = raf_calls_for_body.clone();
             after_ms_scoped(0, move || {
                 let counter = raf_calls_inner.clone();

@@ -8,22 +8,22 @@ license.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [features]
-# Forwards to framework-core's `debug-stats`. When on, the web
+# Forwards to runtime-core's `debug-stats`. When on, the web
 # backend reports per-phase timings (`set_attribute`, `insert_rule`,
 # etc.) into the framework's phase-counter aggregator so apply-style
 # hot paths can be profiled from JS via `dump_debug_events`.
-debug-stats = ["framework-core/debug-stats"]
+debug-stats = ["runtime-core/debug-stats"]
 # Compile in this backend's `requestAnimationFrame`-based
 # `RenderLoopDriver` and `wasm_bindgen_futures`-based `AsyncExecutor`.
-# Forwards to `framework-core/async-driver` so `render_loop` /
+# Forwards to `runtime-core/async-driver` so `render_loop` /
 # `spawn_async` resolve. Host calls `install_render_loop()` and
 # `install_async_executor()` once at init.
-async-driver = ["framework-core/async-driver", "dep:wasm-bindgen-futures"]
-# Compile in the AAS-client browser transport (`connect_web` +
+async-driver = ["runtime-core/async-driver", "dep:wasm-bindgen-futures"]
+# Compile in the runtime-server-client browser transport (`connect_web` +
 # `WebClientHandle`). Forwards to `dev-client/dev-hot-reload` so the
 # `WireBackend` replay engine is available. Off by default — the
 # native-rendering build path pays no cost.
-aas-shell = ["dep:dev-client", "dep:wire", "dev-client/dev-hot-reload"]
+runtime-server = ["dep:dev-client", "dep:wire", "dev-client/dev-hot-reload"]
 # Stamp a `data-idealyst-id="N"` attribute on every Element the
 # framework has minted a node id for. Pure developer ergonomic —
 # makes the per-node id visible in browser devtools and e2e
@@ -34,15 +34,15 @@ aas-shell = ["dep:dev-client", "dep:wire", "dev-client/dev-hot-reload"]
 debug-node-ids = []
 
 [dependencies]
-framework-core = { workspace = true }
+runtime-core = { workspace = true }
 wasm-bindgen = "0.2"
 js-sys = "0.3"
 serde_json = "1"
-# Drives `framework_core::driver::spawn_async` on web. Only required
+# Drives `runtime_core::driver::spawn_async` on web. Only required
 # when this backend's `async-driver` feature is on (the host opts in).
 wasm-bindgen-futures = { version = "0.4", optional = true }
-# AAS dev-client replay engine + wire protocol. Only pulled in when
-# the `aas-shell` feature is on; the WebSocket transport itself
+# runtime-server dev-client replay engine + wire protocol. Only pulled in when
+# the `runtime-server` feature is on; the WebSocket transport itself
 # lives in this crate's `dev_transport` module.
 dev-client = { workspace = true, optional = true }
 wire = { workspace = true, optional = true }
@@ -103,7 +103,7 @@ features = [
     "WebSocket",
     "Window",
     # `Navigator` powers `browser_device_label()`'s `userAgent` read;
-    # `EventTarget` is what the AAS resize listener attaches to
+    # `EventTarget` is what the runtime-server resize listener attaches to
     # (Window implements EventTarget).
     "Navigator",
     "EventTarget",

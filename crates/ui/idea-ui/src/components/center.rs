@@ -5,7 +5,7 @@
 //! (centering a loading spinner, an empty-state illustration, etc.)
 //! doesn't need a one-off stylesheet.
 
-use framework_core::{ui, ChildList, Primitive};
+use runtime_core::{ui, ChildList, Primitive};
 
 use crate::stylesheets::Center;
 

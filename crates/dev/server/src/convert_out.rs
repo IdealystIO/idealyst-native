@@ -7,9 +7,9 @@
 //! resolved literal when sent on the wire. Tokens are resolved
 //! against the dev-side active theme before serialization.
 
-use framework_core::accessibility::{AccessibilityProps, LiveRegionPriority, Role};
-use framework_core::primitives;
-use framework_core::{
+use runtime_core::accessibility::{AccessibilityProps, LiveRegionPriority, Role};
+use runtime_core::primitives;
+use runtime_core::{
     AlignItems, AssetId, AssetSource, AssetTag, Color, Easing, FlexDirection, FontFamily,
     FontStyle, FontWeight, Gradient, GradientKind, GradientStop, JustifyContent, Length, Overflow,
     Position, RadialExtent, StateBits, StyleRules, SystemFallback, TextAlign, Tokenized,
@@ -50,11 +50,11 @@ pub fn easing_to_wire(e: Easing) -> WireEasing {
     }
 }
 
-/// Bridge `framework_core::animation::AnimProp` to its wire mirror.
+/// Bridge `runtime_core::animation::AnimProp` to its wire mirror.
 /// One-to-one map; `GradientStopColor(idx)` carries the same `u8`
 /// stop index inline.
-pub fn anim_prop_to_wire(p: framework_core::animation::AnimProp) -> wire::WireAnimProp {
-    use framework_core::animation::AnimProp;
+pub fn anim_prop_to_wire(p: runtime_core::animation::AnimProp) -> wire::WireAnimProp {
+    use runtime_core::animation::AnimProp;
     match p {
         AnimProp::Opacity => wire::WireAnimProp::Opacity,
         AnimProp::TranslateX => wire::WireAnimProp::TranslateX,
@@ -361,12 +361,12 @@ pub fn typeface_face_to_wire(f: &TypefaceFace) -> WireTypefaceFace {
 }
 
 // ---------------------------------------------------------------------------
-// Accessibility: framework_core → wire.
+// Accessibility: runtime_core → wire.
 // ---------------------------------------------------------------------------
 
 /// Convert an `&AccessibilityProps` into its wire mirror. Carries
 /// label / hint / identifier / hidden / role / traits / live-region
-/// across faithfully. For each [`framework_core::accessibility::AccessibilityAction`]
+/// across faithfully. For each [`runtime_core::accessibility::AccessibilityAction`]
 /// the recorder allocates a fresh [`wire::HandlerId`] in `handlers`
 /// (registering the action's `Rc<dyn Fn()>` so the reverse-channel
 /// `AppToDev::Event { handler, args: Unit }` dispatches it). The shape
@@ -437,7 +437,7 @@ pub fn role_to_wire(r: Role) -> WireRole {
         Role::Popover => WireRole::Popover,
         Role::Tooltip => WireRole::Tooltip,
         Role::Region => WireRole::Region,
-        // `Role` is `#[non_exhaustive]`; future framework-core variants
+        // `Role` is `#[non_exhaustive]`; future runtime-core variants
         // that this conversion module hasn't been taught about decode
         // as `Unknown` on the receiver. Acceptable because in dev-mode
         // both sides ship from the same commit — the catch-all just

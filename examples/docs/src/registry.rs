@@ -18,6 +18,7 @@ use crate::meta::{DocConcept, PageCategory, PageMeta};
 /// so the same registry powers both the regular page index and the
 /// cookbook surface.
 pub static PAGES: &[&'static PageMeta] = &[
+    &crate::pages::introduction::PAGE_META,
     &crate::pages::overview::PAGE_META,
     &crate::pages::quickstart::PAGE_META,
     &crate::pages::primitives::PAGE_META,

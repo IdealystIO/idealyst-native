@@ -47,7 +47,7 @@ use std::time::Duration;
 
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use tungstenite::{Message, WebSocket};
-use framework_core::ColorScheme;
+use runtime_core::ColorScheme;
 use wire::{AppToDev, ClientIdentity, DevToApp, WireColorScheme, WireTheme, PROTOCOL_VERSION};
 
 /// How the host assigns sessions to incoming clients. Controls the
@@ -227,9 +227,9 @@ const LEGACY_DEFAULT_MODE: SessionMode = SessionMode::PerClient;
 
 /// Same as [`serve`] but writes the bound port into the supplied
 /// `Arc<Mutex<Option<u16>>>` right after `TcpListener::bind`. Used by
-/// the AAS host wrapper to thread the port through the rebuild
+/// the runtime-server host wrapper to thread the port through the rebuild
 /// loop's `before_exec` hook — that way the next process image
-/// rebinds the same port via `IDEALYST_AAS_BIND_PORT`, so any
+/// rebinds the same port via `IDEALYST_RUNTIME_SERVER_BIND_PORT`, so any
 /// `adb reverse` tunnels (and any hard-coded URLs) stay valid
 /// across a hot reload.
 pub fn serve_with_port_mirror(
@@ -244,7 +244,7 @@ pub fn serve_with_port_mirror(
 /// Same as [`serve_with_port_mirror`] but also forwards every
 /// inbound `AppToDev` event to the sidecar held in `sidecar_slot`
 /// — tagged with the connecting client's session id. Used by the
-/// split-process AAS host where the user's reactive runtime lives
+/// split-process runtime-server host where the user's reactive runtime lives
 /// in the sidecar.
 pub fn serve_with_sidecar(
     addr: impl ToSocketAddrs,
@@ -1056,7 +1056,7 @@ pub fn serve_with_robot_bridge(
     addr: impl ToSocketAddrs,
     recorder: WireRecordingBackend,
     app_id: &str,
-    bridge: framework_core::robot::bridge::BridgeHandle,
+    bridge: runtime_core::robot::bridge::BridgeHandle,
 ) -> std::io::Result<()> {
     serve_with_tick(addr, recorder, app_id, move || bridge.poll())
 }

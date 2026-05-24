@@ -1,5 +1,5 @@
-//! Regression: the AAS sidecar's session thread MUST use
-//! `framework_core::mount(backend, app_fn)` rather than
+//! Regression: the runtime-server sidecar's session thread MUST use
+//! `runtime_core::mount(backend, app_fn)` rather than
 //! `render(backend, app_fn())`.
 //!
 //! The bug this guards against: when the welcome example's
@@ -23,7 +23,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use dev_server::{scheduler, WireRecordingBackend};
-use framework_core::{
+use runtime_core::{
     after_ms_scoped, mount, render, Primitive, SafeAreaSides,
 };
 

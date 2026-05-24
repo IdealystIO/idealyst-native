@@ -27,7 +27,7 @@
 
 use std::rc::Rc;
 
-use framework_core::{component, signal, switch, ui, view, Primitive, Signal};
+use runtime_core::{component, signal, switch, ui, view, Primitive, Signal};
 use idea_ui::{card, tabs, Tab, TabPanel, TabsProps};
 
 /// Props delivered by the `cardtabs!` invocation macro. Each entry

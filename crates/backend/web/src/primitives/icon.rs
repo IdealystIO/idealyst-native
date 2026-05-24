@@ -11,8 +11,8 @@
 //! length (nothing visible) to 0 (fully drawn). CSS transitions
 //! handle the interpolation — smooth, hardware-accelerated, zero JS.
 
-use framework_core::primitives::icon::{FillRule, IconData};
-use framework_core::{Color, Easing};
+use runtime_core::primitives::icon::{FillRule, IconData};
+use runtime_core::{Color, Easing};
 use wasm_bindgen::JsCast;
 use web_sys::Node;
 

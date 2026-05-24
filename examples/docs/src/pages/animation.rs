@@ -6,7 +6,7 @@
 
 use docs_macro::docs;
 #[allow(unused_imports)]
-use crate::shell::{codeblock, pageheader, CodeBlockProps, PageHeaderProps};
+use crate::shell::{code_block, page_header, CodeBlockProps, PageHeaderProps};
 #[allow(unused_imports)]
 use idea_ui::{body, card, heading, stack};
 
@@ -53,7 +53,7 @@ docs! {
         p("Build a value, subscribe it to a backend property, and animate it:"),
 
         code(rust, r##"
-            use framework_core::animation::*;
+            use runtime_core::animation::*;
             use std::time::Duration;
 
             let scale = AnimatedValue::new(1.0_f32);
@@ -469,7 +469,7 @@ docs! {
            handles:"),
 
         code(rust, r##"
-            use framework_core::animated;
+            use runtime_core::animated;
 
             let opacity = animated!(0.0_f32);                // AnimatedValue<f32>
             let scale   = animated!(1.0_f32);
@@ -488,8 +488,8 @@ docs! {
            keep alive:"),
 
         code(rust, r##"
-            use framework_core::{animated, effect, on_cleanup, timeline};
-            use framework_core::animation::{SpringTo, TweenTo};
+            use runtime_core::{animated, effect, on_cleanup, timeline};
+            use runtime_core::animation::{SpringTo, TweenTo};
             use std::time::Duration;
 
             let opacity = animated!(0.0_f32);
@@ -547,8 +547,8 @@ docs! {
            animation but not a full multi-phase block:"),
 
         code(rust, r##"
-            use framework_core::{animate_at, on_cleanup};
-            use framework_core::animation::SpringTo;
+            use runtime_core::{animate_at, on_cleanup};
+            use runtime_core::animation::SpringTo;
 
             effect!({
                 let task = animate_at!(
@@ -629,7 +629,7 @@ docs! {
     },
 
     section(heading = "Module map") {
-        p("Everything lives under ", code("framework_core::animation"),
+        p("Everything lives under ", code("runtime_core::animation"),
           ". The pieces split as:"),
 
         list(

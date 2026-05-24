@@ -1,7 +1,7 @@
 //! Raw touch delivery for the web backend.
 //!
-//! Implements [`framework_core::Backend::install_touch_handler`] and
-//! [`framework_core::Backend::claim_touch`] using the Pointer Events
+//! Implements [`runtime_core::Backend::install_touch_handler`] and
+//! [`runtime_core::Backend::claim_touch`] using the Pointer Events
 //! API. One DOM element receives four listeners — `pointerdown`,
 //! `pointermove`, `pointerup`, `pointercancel` — and translates each
 //! into a [`TouchEvent`] for the framework's handler.
@@ -18,7 +18,7 @@
 //! the web-side implementation of the claim protocol.
 
 use crate::WebBackend;
-use framework_core::{TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint};
+use runtime_core::{TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -191,7 +191,7 @@ pub(crate) fn install(b: &mut WebBackend, node: &Node, handler: TouchHandler) {
     }
 }
 
-/// Implementation of [`framework_core::Backend::claim_touch`] —
+/// Implementation of [`runtime_core::Backend::claim_touch`] —
 /// external claim invoked when a handler returned `claim: true` via
 /// any route other than the local `pointerdown` / `pointermove`
 /// callback we wired above (today there's no such route on web, but

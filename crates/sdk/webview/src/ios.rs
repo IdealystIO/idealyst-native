@@ -16,7 +16,7 @@ use crate::{WebViewOps, WebViewProps};
 // `backend-ios-mobile`'s `[lib].name` is `backend_ios` — historical
 // staticlib filename preserved across the package rename.
 use backend_ios::{IosBackend, IosNode};
-use framework_core::Effect;
+use runtime_core::Effect;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject};
 use objc2::msg_send;

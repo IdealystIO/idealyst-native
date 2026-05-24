@@ -18,7 +18,7 @@
 //! `#[macro_use]` lifts those to crate-root scope so page modules
 //! can invoke them via the `ui!` DSL.
 
-use framework_core::{
+use runtime_core::{
     component, signal, ui, DrawerHandle, DrawerNavigator, HeaderStyle, Primitive, Ref, Screen,
     Signal,
 };
@@ -49,11 +49,11 @@ mod web;
 
 use routes::{
     ANIMATION_ROUTE, BACKENDS_ROUTE, CLI_ROUTE, COMPONENTS_ROUTE, DEV_TOOLS_ROUTE, ICONS_ROUTE,
-    LISTS_ROUTE, MACROS_ROUTE, NAVIGATION_ROUTE, OVERVIEW_ROUTE, PLATFORMS_ROUTE, PRIMITIVES_ROUTE,
-    QUICKSTART_ROUTE, REACTIVITY_ROUTE, REFS_ROUTE, ROBOT_ROUTE, SIMULATOR_ROUTE, STYLES_ROUTE,
-    BUILDING_A_THEME_SYSTEM_ROUTE, PORTAL_ROUTE, REACTIVE_TEXT_BINDINGS_ROUTE,
-    THIRD_PARTY_PRIMITIVES_ROUTE, UI_DSL_ROUTE, WGPU_NATIVE_API_ROUTE,
-    WRITING_A_BACKEND_ROUTE,
+    INTRODUCTION_ROUTE, LISTS_ROUTE, MACROS_ROUTE, NAVIGATION_ROUTE, OVERVIEW_ROUTE,
+    PLATFORMS_ROUTE, PRIMITIVES_ROUTE, QUICKSTART_ROUTE, REACTIVITY_ROUTE, REFS_ROUTE,
+    ROBOT_ROUTE, SIMULATOR_ROUTE, STYLES_ROUTE, BUILDING_A_THEME_SYSTEM_ROUTE, PORTAL_ROUTE,
+    REACTIVE_TEXT_BINDINGS_ROUTE, THIRD_PARTY_PRIMITIVES_ROUTE, UI_DSL_ROUTE,
+    WGPU_NATIVE_API_ROUTE, WRITING_A_BACKEND_ROUTE,
 };
 use shell::{content_builder, web_layout};
 
@@ -70,7 +70,7 @@ pub fn app() -> Primitive {
     // through and we can call `.layout(web_layout())` without losing
     // the type after `IntoPrimitive` coercion. The layout closure
     // applies on both the local-render path (wasm in-browser) and
-    // the AAS-replay path (recording backend serializes the layout
+    // the runtime-server-replay path (recording backend serializes the layout
     // subtree + ships `AttachNavigatorLayout` over the wire).
     let builder = DrawerNavigator::new(&OVERVIEW_ROUTE)
         .header(idea_header(|t| HeaderStyle {
@@ -79,6 +79,9 @@ pub fn app() -> Primitive {
             tint: Some(t.colors().text.value().clone()),
             body_background: Some(t.colors().background.value().clone()),
         }))
+        .screen(INTRODUCTION_ROUTE, |_| {
+            Screen::new(pages::introduction::page()).title("Introduction")
+        })
         .screen(OVERVIEW_ROUTE, |_| Screen::new(pages::overview::page()).title("Overview"))
         .screen(QUICKSTART_ROUTE, |_| {
             Screen::new(pages::quickstart::page()).title("Getting Started")

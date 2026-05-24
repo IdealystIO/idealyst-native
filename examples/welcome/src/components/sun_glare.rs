@@ -9,7 +9,7 @@
 
 use std::rc::Rc;
 
-use framework_core::{
+use runtime_core::{
     component, ui, Color, Gradient, GradientKind, GradientStop, Length, Overflow, Position,
     Primitive, RadialExtent, StyleRules, StyleSheet, Tokenized, Transform,
 };

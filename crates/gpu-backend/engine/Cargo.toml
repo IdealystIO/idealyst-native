@@ -1,0 +1,94 @@
+[package]
+name = "render-wgpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+# Retained stub — see `build.rs`. No custom cfgs surfaced today.
+build = "build.rs"
+
+# Wgpu renderer + interaction host. The platform-agnostic half of
+# the desktop-preview stack.
+#
+# Implements `runtime_core::Backend` for `WgpuBackend`, owns the
+# tween engine, the interaction `Host`, and a wgpu-bound
+# `Renderer`. **No winit, no event-loop, no browser deps** — those
+# live in the host shells (`host-winit`, future `host-web`).
+
+[features]
+# Heavy primitives are feature-gated. Each gate is on by default
+# so apps that don't opt out get the full simulator; binary-size-
+# conscious downstreams can drop any combination via
+# `default-features = false, features = ["…"]`. Follow-up:
+# `video` and `audio` are still always-on (no `dep:`-style
+# wiring yet) — retrofit as a small dedicated pass.
+default = []
+async-driver = ["runtime-core/async-driver"]
+
+[dependencies]
+render-api = { workspace = true }
+runtime-core = { workspace = true }
+runtime-layout = { workspace = true }
+
+# Wgpu pipelines + glyph atlas. No platform deps come along.
+# `wgpu 29` is required for Blitz's vello renderer; bumping
+# `glyphon` to 0.11 keeps it on the same wgpu major.
+wgpu = "29"
+glyphon = "0.11"
+
+# Vertex / uniform buffer POD encoding.
+bytemuck = { version = "1.18", features = ["derive"] }
+
+# Logging — lightweight; the shell wires up an env_logger or similar.
+log = "0.4"
+
+# `Instant` / `Duration` shim. Identical to `std::time` on native;
+# falls back to `performance.now()` on wasm32 (where `std::time::
+# Instant::now()` panics). Used in `Host`, `Renderer`, animator, etc.
+web-time = "1"
+
+# Raster image decode for the `Image` primitive's textured-quad
+# pipeline. Default features pull in 12+ formats; we trim to PNG
+# + JPEG to keep the binary small. Add `webp`, `gif`, etc. when
+# an app's content needs them.
+image = { version = "0.25", default-features = false, features = [
+    "png",
+    "jpeg",
+] }
+
+# Native-only deps. The video pipeline (`openh264` C++ source, the
+# `re_mp4` demuxer) and the audio mixer (`cpal` + `symphonia`)
+# link against either bundled C/C++ or system audio stacks that
+# don't exist on wasm32. On the web target the `video.rs` /
+# `audio.rs` modules fall back to no-op stubs (see `video.rs` for
+# the wasm-only `VideoDecoder` placeholder), and apps that mount a
+# Video primitive on wasm get the same "unsupported" rendering as
+# any other unimplemented primitive.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Video primitive backing. `openh264` bundles Cisco's C++ source
+# via build.rs (no system FFmpeg dep at runtime); `re_mp4` is a
+# pure-Rust MP4 container demuxer. Together they let us play
+# H.264 mp4 files in the wgpu preview — the native targets (iOS,
+# Android, Web) keep using their OS-level players for parity.
+# Phase 1 covers H.264 only; HEVC / AV1 mp4 files surface a
+# "codec not supported" placeholder until we ship more decoders.
+openh264 = "0.9"
+re_mp4 = "0.5"
+
+# Audio subsystem. `cpal` opens a cross-platform output stream
+# (CoreAudio / WASAPI / ALSA / AAudio / WebAudio) with no extra
+# system deps beyond what the OS ships. `symphonia` is the
+# pure-Rust media decoder — its `aac` codec handles the audio
+# track of an H.264 mp4, and the format readers cover `mp3`,
+# `wav`, `flac`, `ogg`, `aac` for the standalone `audio(src)`
+# primitive. We only enable the codecs / formats we ship.
+cpal = "0.15"
+symphonia = { version = "0.5", default-features = false, features = [
+    "aac",
+    "mp3",
+    "flac",
+    "vorbis",
+    "ogg",
+    "wav",
+    "isomp4",
+] }
+

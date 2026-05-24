@@ -30,7 +30,7 @@ use objc2::{msg_send, msg_send_id};
 use objc2_foundation::{MainThreadMarker, NSObject};
 use objc2_ui_kit::UIView;
 
-use framework_core::primitives::portal::{
+use runtime_core::primitives::portal::{
     AnchorTarget, ElementAlign, ElementSide, PortalTarget, ViewportPlacement,
 };
 

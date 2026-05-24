@@ -2,7 +2,7 @@
 
 use docs_macro::docs;
 #[allow(unused_imports)]
-use crate::shell::{codeblock, pageheader, CodeBlockProps, PageHeaderProps};
+use crate::shell::{code_block, page_header, CodeBlockProps, PageHeaderProps};
 #[allow(unused_imports)]
 use idea_ui::{body, card, heading, stack};
 
@@ -10,15 +10,15 @@ docs! {
     slug = "dev-tools",
     title = "Dev tools",
     category = Tools,
-    description = "How the CLI builds your app, how hot reload patches it, what AAS is, and how MCP exposes Robot to external tools.",
+    description = "How the CLI builds your app, how hot reload patches it, what runtime-server is, and how MCP exposes Robot to external tools.",
     related = ["backends", "robot", "getting-started", "writing-a-backend"],
-    concepts = [Cli, HotReload, Aas, WireProtocol, McpServer, BuildCache],
+    concepts = [Cli, HotReload, RuntimeServer, WireProtocol, McpServer, BuildCache],
 
     section(heading = "Overview") {
         p("This page covers the moving parts behind day-to-day development: \
            how the CLI turns your one-crate app into running platform builds, \
            how hot reload patches a running app without losing its state, what \
-           app-as-server (AAS) is and when to use it, and how the MCP server \
+           app-as-server (runtime-server) is and when to use it, and how the MCP server \
            hooks Robot up to an external tool like Claude Desktop."),
         p("Most of what's here lives below the surface of the user-facing \
            commands. You can ship apps without reading any of it. But if you \
@@ -83,7 +83,7 @@ docs! {
             ["iOS — ", code("cargo build"), " for the static lib, then ", code("xcodebuild"), " on the generated Xcode project, then a simulator launch."],
             ["Android — ", code("cargo build"), " for the ", code("cdylib"), ", then ", code("gradle assembleDebug"), ", then ", code("adb install"), " to an emulator or device."],
             ["Roku — Rust build for the host process, BrightScript packaging for the device side, push over the developer-mode HTTP interface."],
-            ["AAS — ", code("cargo build"), " for the dev-host binary, then run."],
+            ["runtime-server — ", code("cargo build"), " for the dev-host binary, then run."],
         ),
         p("You can run any of these by hand if you need to debug the \
            pipeline. The CLI is orchestration; the underlying tools are \
@@ -113,7 +113,7 @@ docs! {
         p(code("#[component]"), " splits every component function into two \
            parts at compile time:"),
         list(
-            ["The outer function keeps the public name (", code("counter"), "). Its body is ", code("framework_hot::call(__counter_hot_impl, args)"), " — a dispatch through a runtime jump table."],
+            ["The outer function keeps the public name (", code("counter"), "). Its body is ", code("dev_hot::call(__counter_hot_impl, args)"), " — a dispatch through a runtime jump table."],
             ["The inner function (", code("__counter_hot_impl"), ") holds the real body."],
         ),
         p("When you change a component's source and the rebuild produces a \
@@ -122,7 +122,7 @@ docs! {
            runs, it runs the new code. The outer function — and everything \
            that holds a function pointer to it — never has to be updated."),
         p("This is the same mechanism the subsecond crate from the Dioxus \
-           project uses. Idealyst's ", code("framework-hot"), " sits on top, \
+           project uses. Idealyst's ", code("dev-hot"), " sits on top, \
            integrating the dispatch with the reactive substrate."),
     },
 
@@ -132,7 +132,7 @@ docs! {
            might return a primitive tree that's structurally identical to the \
            old one — just with different values. The framework needs to \
            figure out what changed and what to update on the backend."),
-        p("That's ", code("framework-hot"), "'s other job. When a component \
+        p("That's ", code("dev-hot"), "'s other job. When a component \
            re-renders after a hot patch, the framework:"),
         list(
             ["Hashes each primitive in the new tree by its identity (position in the tree + relevant content). Identical identities map to the same backend node."],
@@ -161,7 +161,7 @@ docs! {
            change is structural enough that I'm starting over.\""),
     },
 
-    section(heading = "AAS — app-as-server") {
+    section(heading = "runtime-server — app-as-server") {
         p("This is the part that's worth understanding even if you never use \
            it for anything fancy: it changes what \"running the app\" means."),
     },
@@ -175,7 +175,7 @@ docs! {
         p("This is fine and fast. It's what most development looks like."),
     },
 
-    section(heading = "AAS mode") {
+    section(heading = "runtime-server mode") {
         p(code("idealyst dev --aas"), " is different. The CLI builds one \
            dev-host binary that runs the user's reactive runtime. It starts a \
            WebSocket server. It advertises itself over the local network \
@@ -186,7 +186,7 @@ docs! {
         p("Then clients connect:"),
         code(text, r##"
             ┌─────────────────────────────┐
-            │   AAS dev-host (your Mac)   │
+            │   runtime-server dev-host (your Mac)   │
             │   - app()'s reactive state  │
             │   - signals, effects, scopes│
             │   - the primitive tree      │
@@ -217,7 +217,7 @@ docs! {
            the dev-host's arena, not in any client."),
     },
 
-    section(heading = "What AAS is good for") {
+    section(heading = "What runtime-server is good for") {
         list(
             ["Cross-platform comparison. Run web, iOS, and Android clients side by side, navigate on one, watch the others follow. Useful for spotting platform-specific rendering differences in real time."],
             ["State that survives source edits. Navigation, scroll positions, complex form state — all of it lives in the dev-host's reactive arena and persists across rebuilds. Useful when you're 6 screens deep into testing and don't want to re-navigate after every change."],
@@ -226,11 +226,11 @@ docs! {
         ),
     },
 
-    section(heading = "What AAS isn't good for") {
+    section(heading = "What runtime-server isn't good for") {
         list(
-            ["GPU work. ", code("Graphics"), " primitives don't ship over the wire. They emit a placeholder when the dev-host is in AAS mode. If you're building anything with a ", code("wgpu"), " canvas, run in local-render mode."],
-            ["Performance testing. Every interaction pays a WebSocket round-trip. AAS is for development, not perf measurement."],
-            ["Production. AAS is a development tool. Shipping an app-as-server architecture has security implications that the current implementation doesn't address."],
+            ["GPU work. ", code("Graphics"), " primitives don't ship over the wire. They emit a placeholder when the dev-host is in runtime-server mode. If you're building anything with a ", code("wgpu"), " canvas, run in local-render mode."],
+            ["Performance testing. Every interaction pays a WebSocket round-trip. runtime-server is for development, not perf measurement."],
+            ["Production. runtime-server is a development tool. Shipping an app-as-server architecture has security implications that the current implementation doesn't address."],
         ),
     },
 
@@ -243,7 +243,7 @@ docs! {
         p("The Architecture section of the Overview points at the supporting \
            crates: ", code("framework-wire"), " for the protocol, ",
           code("framework-dev-client"), " for the app-side replayer, ",
-          code("aas-shell-native"), " for the desktop client side."),
+          code("runtime-server-shell-native"), " for the desktop client side."),
     },
 
     section(heading = "The MCP server — Claude Desktop and Robot") {
@@ -311,7 +311,7 @@ docs! {
         list(
             ["The CLI turns your one-crate project into platform builds. Per-platform wrappers live in a build cache, generated on demand."],
             ["Hot reload patches a running app without restarting it. Component bodies update through a function-pointer dispatcher; primitive trees update through identity-keyed diffs."],
-            ["AAS is a dev mode where the framework runs once on your machine and thin clients connect over WebSocket. State lives in one place; every client sees it."],
+            ["runtime-server is a dev mode where the framework runs once on your machine and thin clients connect over WebSocket. State lives in one place; every client sees it."],
             ["Robot is the introspection layer that lets external processes drive a running app."],
             ["The MCP proxy is the bridge from MCP-speaking tools (Claude Desktop, etc.) to Robot."],
         ),
@@ -325,8 +325,8 @@ docs! {
     section(heading = "Where to read more") {
         list(
             ["Robot — the tools the bridge exposes, in detail."],
-            ["Backends — what the AAS thin clients are doing on each platform."],
-            ["Architecture in more depth (on the Overview) — where ", code("framework-hot"), ", ", code("framework-wire"), ", and ", code("framework-dev-client"), " sit."],
+            ["Backends — what the runtime-server thin clients are doing on each platform."],
+            ["Architecture in more depth (on the Overview) — where ", code("dev-hot"), ", ", code("framework-wire"), ", and ", code("framework-dev-client"), " sit."],
             ["Hot reload internals — identity hashing, diff strategy, what survives a patch in detail."],
             ["The wire protocol — the ", code("Command"), " enum and id namespaces, for anyone building their own wire consumer."],
         ),

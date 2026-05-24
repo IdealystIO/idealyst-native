@@ -1,0 +1,344 @@
+//! Tween engine for native-widget rendering.
+//!
+//! Widgets in this backend (`Toggle`, `Slider`, future `Button`
+//! press scale, focus rings, presence transitions, …) often want
+//! smooth value transitions that the framework's style-driven
+//! transition system can't drive — because those widgets paint
+//! themselves rather than expose every visual property as a
+//! styleable rule.
+//!
+//! [`Animator`] is a small per-backend side-table of active
+//! tweens keyed by `(LayoutNode, AnimProperty)`. The widget paint
+//! code samples it on every frame; the backend ticks it forward
+//! before each frame and reports whether anything is still
+//! animating so the event loop knows to schedule another redraw.
+//!
+//! # Lifecycle
+//!
+//! 1. Some backend event (`update_toggle_value`, press state flip,
+//!    …) calls [`Animator::animate`] to start a tween. If a tween
+//!    for the same key already exists, the new tween starts from
+//!    the current interpolated value — flipping the toggle
+//!    mid-slide is smooth.
+//! 2. On every render, the renderer calls
+//!    [`Animator::sample`] to get the current value, falling back
+//!    to a static value if no tween exists.
+//! 3. After rendering, the event loop calls [`Animator::tick`] to
+//!    purge completed tweens. If it returns `true`, the loop
+//!    requests another redraw.
+//! 4. When a node drops (via `clear_children`), call
+//!    [`Animator::drop_node`] to clear any tweens against that
+//!    node so they don't keep firing redraws for dead nodes.
+
+use std::collections::HashMap;
+// `web-time` for wasm32 compat — see `host.rs` for the rationale.
+use web_time::{Duration, Instant};
+
+use runtime_core::animation::{apply_easing, Animatable};
+use runtime_core::Easing;
+use runtime_layout::LayoutNode;
+
+/// Which property of a node a tween targets.
+///
+/// Variants split into two families by storage backing inside
+/// [`Animator`]:
+/// - **Scalar (`f32`)** — widget animations driven by a single
+///   normalized parameter. Toggle thumb, slider thumb, press
+///   scale. Stored in `Animator::scalars`.
+/// - **Color (`[f32; 4]`)** — style-driven color transitions
+///   (background, text, per-side borders). Stored in
+///   `Animator::colors`.
+///
+/// The animator routes via the variant. Callers reach for the
+/// matching `animate_f32` / `animate_color` (and `sample_f32` /
+/// `sample_color`) method; passing the wrong variant to the
+/// wrong method is a no-op (sample returns fallback, animate
+/// silently does the wrong thing). Keeping one enum across both
+/// families simplifies the `drop_node` cleanup path.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum AnimProperty {
+    // --- Scalar (f32) ---
+    /// Toggle thumb position. `0.0` = OFF (thumb at left), `1.0` =
+    /// ON (thumb at right). Track color interpolates with the
+    /// same `t`.
+    ToggleThumb,
+    /// Slider thumb position. Reserved for future programmatic
+    /// value changes.
+    SliderThumb,
+    /// Button press progress. `0.0` = at rest, `1.0` = fully
+    /// pressed. The renderer hands the sampled value to the
+    /// active skin's `button_press_visual(t)`, which decides
+    /// what that means visually (iOS dims the label's alpha,
+    /// M3 paints a state-layer overlay on the background).
+    /// Driven by the host's `set_state(PRESSED, …)` path.
+    PressProgress,
+    /// Icon stroke-reveal progress (0.0 = no stroke shown,
+    /// 1.0 = fully drawn). Drives the Lottie-style draw-in
+    /// animation when authors call `IconHandle::animate_stroke`
+    /// or pass an `Icon::draw_in(...)` builder.
+    IconStroke,
+
+    // --- Color ([f32; 4]) — style transitions ---
+    /// `background` color crossfade.
+    BackgroundColor,
+    /// `color` (text) crossfade.
+    TextColor,
+    /// Per-side border colors. Even though only the top side is
+    /// drawn in the current shader, all four are tweenable so the
+    /// transition specs the author wrote keep working when we
+    /// add per-side rendering later.
+    BorderTopColor,
+    BorderRightColor,
+    BorderBottomColor,
+    BorderLeftColor,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct TweenKey {
+    pub node: LayoutNode,
+    pub property: AnimProperty,
+}
+
+impl TweenKey {
+    pub fn new(node: LayoutNode, property: AnimProperty) -> Self {
+        Self { node, property }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+struct Tween {
+    from: f32,
+    to: f32,
+    started: Instant,
+    duration: Duration,
+    easing: Easing,
+}
+
+impl Tween {
+    fn sample(&self, now: Instant) -> f32 {
+        let elapsed = now.saturating_duration_since(self.started);
+        if self.duration.is_zero() || elapsed >= self.duration {
+            return self.to;
+        }
+        let t = elapsed.as_secs_f32() / self.duration.as_secs_f32();
+        let eased = apply_easing(t, self.easing);
+        self.from + (self.to - self.from) * eased
+    }
+
+    fn done(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.started) >= self.duration
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+struct ColorTween {
+    from: [f32; 4],
+    to: [f32; 4],
+    started: Instant,
+    duration: Duration,
+    easing: Easing,
+}
+
+impl ColorTween {
+    fn sample(&self, now: Instant) -> [f32; 4] {
+        let elapsed = now.saturating_duration_since(self.started);
+        if self.duration.is_zero() || elapsed >= self.duration {
+            return self.to;
+        }
+        let t = elapsed.as_secs_f32() / self.duration.as_secs_f32();
+        let eased = apply_easing(t, self.easing);
+        lerp_color(self.from, self.to, eased)
+    }
+
+    fn done(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.started) >= self.duration
+    }
+}
+
+pub struct Animator {
+    scalars: HashMap<TweenKey, Tween>,
+    colors: HashMap<TweenKey, ColorTween>,
+}
+
+impl Animator {
+    pub fn new() -> Self {
+        Self {
+            scalars: HashMap::new(),
+            colors: HashMap::new(),
+        }
+    }
+
+    /// Start or restart a scalar tween to `target`.
+    ///
+    /// - If a tween already exists for `key`, its current sampled
+    ///   value becomes the new tween's `from` — preserving visual
+    ///   continuity when the target flips mid-animation.
+    /// - If no tween exists, `fallback_from` is used as the
+    ///   starting value. This is the caller's responsibility
+    ///   because the engine doesn't know the widget's "rest"
+    ///   value.
+    ///
+    /// Self-tweens (`from == to`) clear any existing tween and
+    /// otherwise no-op.
+    pub fn animate(
+        &mut self,
+        key: TweenKey,
+        target: f32,
+        fallback_from: f32,
+        duration_ms: u32,
+        easing: Easing,
+        now: Instant,
+    ) {
+        let from = self
+            .scalars
+            .get(&key)
+            .map(|t| t.sample(now))
+            .unwrap_or(fallback_from);
+        if (from - target).abs() < f32::EPSILON {
+            // Already at the target — record a zero-duration
+            // tween so `sample()` returns `target` forever
+            // (vs. falling through to the caller's `fallback`,
+            // which loses the post-animation value).
+            self.scalars.insert(
+                key,
+                Tween {
+                    from: target,
+                    to: target,
+                    started: now,
+                    duration: Duration::from_millis(0),
+                    easing,
+                },
+            );
+            return;
+        }
+        self.scalars.insert(
+            key,
+            Tween {
+                from,
+                to: target,
+                started: now,
+                duration: Duration::from_millis(duration_ms.max(1) as u64),
+                easing,
+            },
+        );
+    }
+
+    /// Color counterpart to [`Animator::animate`]. Same shape and
+    /// contract; sRGB linear-RGB-friendly component-wise lerp via
+    /// [`lerp_color`] inside the tween.
+    pub fn animate_color(
+        &mut self,
+        key: TweenKey,
+        target: [f32; 4],
+        fallback_from: [f32; 4],
+        duration_ms: u32,
+        easing: Easing,
+        now: Instant,
+    ) {
+        let from = self
+            .colors
+            .get(&key)
+            .map(|t| t.sample(now))
+            .unwrap_or(fallback_from);
+        if color_close(from, target) {
+            // Settle at `target` without animating — see the
+            // matching note in `animate()` about why we record
+            // a zero-duration tween instead of removing.
+            self.colors.insert(
+                key,
+                ColorTween {
+                    from: target,
+                    to: target,
+                    started: now,
+                    duration: Duration::from_millis(0),
+                    easing,
+                },
+            );
+            return;
+        }
+        self.colors.insert(
+            key,
+            ColorTween {
+                from,
+                to: target,
+                started: now,
+                duration: Duration::from_millis(duration_ms.max(1) as u64),
+                easing,
+            },
+        );
+    }
+
+    /// Sample the current scalar value for `key`, or `fallback`.
+    pub fn sample(&self, key: TweenKey, fallback: f32, now: Instant) -> f32 {
+        self.scalars
+            .get(&key)
+            .map(|t| t.sample(now))
+            .unwrap_or(fallback)
+    }
+
+    /// Sample the current color value for `key`, or `fallback`.
+    pub fn sample_color(&self, key: TweenKey, fallback: [f32; 4], now: Instant) -> [f32; 4] {
+        self.colors
+            .get(&key)
+            .map(|t| t.sample(now))
+            .unwrap_or(fallback)
+    }
+
+    /// Report whether any tween is still in flight. Returns
+    /// `true` if at least one tween hasn't elapsed yet — the
+    /// caller `request_redraw`s so the next frame samples the
+    /// next step.
+    ///
+    /// Tweens that have *settled* (elapsed past their duration)
+    /// are deliberately retained: `sample()` reads them and
+    /// returns their final value indefinitely. Pruning them
+    /// here would mean a sample-after-settle falls back to the
+    /// caller's supplied `fallback`, which loses the
+    /// post-animation state — e.g. a button's press-progress
+    /// would snap back to 0 the instant the press-down tween
+    /// completed, even while the user is still holding. Stale
+    /// entries get evicted by `drop_node` and overwritten by
+    /// the next `animate()` for the same key, so the maps stay
+    /// bounded by live `(node, property)` pairs.
+    pub fn tick(&mut self, now: Instant) -> bool {
+        let any_scalars_in_flight = self.scalars.values().any(|t| !t.done(now));
+        let any_colors_in_flight = self.colors.values().any(|t| !t.done(now));
+        any_scalars_in_flight || any_colors_in_flight
+    }
+
+    /// Drop every tween targeting `node` from both maps.
+    pub fn drop_node(&mut self, node: LayoutNode) {
+        self.scalars.retain(|k, _| k.node != node);
+        self.colors.retain(|k, _| k.node != node);
+    }
+}
+
+fn color_close(a: [f32; 4], b: [f32; 4]) -> bool {
+    (a[0] - b[0]).abs() < f32::EPSILON
+        && (a[1] - b[1]).abs() < f32::EPSILON
+        && (a[2] - b[2]).abs() < f32::EPSILON
+        && (a[3] - b[3]).abs() < f32::EPSILON
+}
+
+impl Default for Animator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Component-wise linear interpolation for color blending.
+/// Inputs are sRGB-space `[r, g, b, a]`; we lerp in sRGB which
+/// matches CSS / UIKit's `tintColor` transitions (strictly less
+/// "physically correct" than linear-space lerp, but visually
+/// indistinguishable for short transitions between similar
+/// colors).
+///
+/// Thin wrapper over the core [`Animatable`] impl for `[f32; 4]`
+/// — kept as a function (rather than calling `<[f32; 4] as
+/// Animatable>::lerp` at every call site) because the
+/// `lerp_color` symbol is part of this crate's published surface
+/// and is consumed by skin crates downstream.
+pub fn lerp_color(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
+    let t = t.clamp(0.0, 1.0);
+    <[f32; 4] as Animatable>::lerp(&a, &b, t)
+}

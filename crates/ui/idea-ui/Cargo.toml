@@ -18,5 +18,5 @@ crate-type = ["rlib"]
 docs = ["dep:idea-ui-docs-derive"]
 
 [dependencies]
-framework-core = { workspace = true }
+runtime-core = { workspace = true }
 idea-ui-docs-derive = { workspace = true, optional = true }

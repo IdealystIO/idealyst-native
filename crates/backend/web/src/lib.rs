@@ -45,7 +45,7 @@ mod tests;
 pub mod async_executor;
 mod assets;
 mod defaults;
-#[cfg(feature = "aas-shell")]
+#[cfg(feature = "runtime-server")]
 pub mod dev_transport;
 pub mod drop_deferral;
 mod phase_timer;
@@ -58,7 +58,7 @@ pub mod time_source;
 
 #[cfg(feature = "async-driver")]
 pub use async_executor::install_async_executor;
-#[cfg(feature = "aas-shell")]
+#[cfg(feature = "runtime-server")]
 pub use dev_transport::{connect_web, WebClientHandle};
 pub use drop_deferral::install_drop_deferral;
 #[cfg(feature = "async-driver")]
@@ -69,7 +69,7 @@ pub use time_source::install_time_source;
 /// Install a `Weak` self-handle for the active `WebBackend`. Required
 /// by any code path that needs `&mut WebBackend` from outside the
 /// build walker:
-///  - [`AnimatedValue::bind`](framework_core::animation::AnimatedValue::bind)
+///  - [`AnimatedValue::bind`](runtime_core::animation::AnimatedValue::bind)
 ///    and friends (per-frame animation writes from author closures).
 ///  - The batched text-update microtask flush
 ///    ([`Backend::create_text_with_id`] / [`Backend::update_text_by_id`]).
@@ -101,7 +101,7 @@ pub fn install_global_self(backend: &std::rc::Rc<std::cell::RefCell<WebBackend>>
 /// next frame).
 pub fn set_animated_f32(
     node: &web_sys::Node,
-    prop: framework_core::animation::AnimProp,
+    prop: runtime_core::animation::AnimProp,
     value: f32,
 ) {
     // Clone the `Weak` inside the closure so the thread-local borrow
@@ -113,7 +113,7 @@ pub fn set_animated_f32(
     let Some(weak) = weak else { return };
     let Some(rc) = weak.upgrade() else { return };
     if let Ok(mut b) = rc.try_borrow_mut() {
-        use framework_core::Backend;
+        use runtime_core::Backend;
         b.set_animated_f32(node, prop, value);
     };
 }
@@ -123,14 +123,14 @@ pub fn set_animated_f32(
 /// `[r, g, b, a]` with channels in `0..=1`.
 pub fn set_animated_color(
     node: &web_sys::Node,
-    prop: framework_core::animation::AnimProp,
+    prop: runtime_core::animation::AnimProp,
     value: [f32; 4],
 ) {
     let weak = WEB_BACKEND_HANDLE.with(|s| s.borrow().clone());
     let Some(weak) = weak else { return };
     let Some(rc) = weak.upgrade() else { return };
     if let Ok(mut b) = rc.try_borrow_mut() {
-        use framework_core::Backend;
+        use runtime_core::Backend;
         b.set_animated_color(node, prop, value);
     };
 }
@@ -182,7 +182,7 @@ std::thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-use framework_core::{
+use runtime_core::{
     AssetId, AssetSource, AssetTag, Backend, ButtonHandle, StyleRules, SystemFallback,
     TypefaceFace, TypefaceId,
 };
@@ -391,7 +391,7 @@ pub struct WebBackend {
     /// Populated by `register_stylesheet` alongside the content-keyed
     /// `pregen` map. Cleared on `unregister_stylesheet` /
     /// theme change.
-    pub(crate) pregen_by_ptr: HashMap<*const framework_core::StyleRules, String>,
+    pub(crate) pregen_by_ptr: HashMap<*const runtime_core::StyleRules, String>,
     /// Per-node dynamic class slot — `node_id -> (class_name, content_key)`.
     /// At most one dynamic class per node. Replaced atomically when
     /// the node's resolved style changes.
@@ -426,7 +426,7 @@ pub struct WebBackend {
     /// dereference; (b) the `RESOLUTION_CACHE` keeps the Rc alive
     /// for as long as its content is reachable, which is at least
     /// as long as we hold any `DynamicSlot` referencing it.
-    pub(crate) dynamic_by_ptr: HashMap<*const framework_core::StyleRules, std::rc::Rc<DynamicPtrEntry>>,
+    pub(crate) dynamic_by_ptr: HashMap<*const runtime_core::StyleRules, std::rc::Rc<DynamicPtrEntry>>,
     /// Indices in the shared `<style>` sheet that previously held a
     /// dynamic rule and are now available for re-use. See
     /// `insert_rule` / `delete_rule` in [`crate::style`] — instead
@@ -477,7 +477,7 @@ pub struct WebBackend {
     /// `create_external` looks the handler up by payload TypeId;
     /// unregistered kinds fall through to a "not supported" placeholder.
     pub(crate) external_handlers:
-        framework_core::ExternalRegistry<WebBackend>,
+        runtime_core::ExternalRegistry<WebBackend>,
     /// Per-node animated-property state. Tracks the most recent
     /// values written via `Backend::set_animated_f32` /
     /// `set_animated_color` so compound properties like CSS
@@ -626,7 +626,7 @@ impl WebBackend {
             asset_urls: HashMap::new(),
             blob_asset_urls: std::collections::HashSet::new(),
             font_face_rule_indices: HashMap::new(),
-            external_handlers: framework_core::ExternalRegistry::new(),
+            external_handlers: runtime_core::ExternalRegistry::new(),
             animated_states: HashMap::new(),
         }
     }
@@ -685,7 +685,7 @@ impl WebBackend {
                  to use register_signal_for_js",
             );
         let stringifier = std::rc::Rc::new(stringifier);
-        framework_core::register_signal_js_notifier(sid_raw, move || {
+        runtime_core::register_signal_js_notifier(sid_raw, move || {
             let value = stringifier();
             if let Some(rc) = weak.upgrade() {
                 rc.borrow_mut().ship_signal_change_to_js(sid_raw, &value);
@@ -733,7 +733,7 @@ impl WebBackend {
     /// Effect, no per-leaf wasm crossing on fan-out.
     ///
     /// - `text_id`         : the id returned by
-    ///                       [`Backend::create_text_with_id`](framework_core::Backend::create_text_with_id).
+    ///                       [`Backend::create_text_with_id`](runtime_core::Backend::create_text_with_id).
     /// - `signal_ids`      : signal raw ids (`Signal::id()`) the
     ///                       binding interpolates, in template-slot
     ///                       order.
@@ -907,7 +907,7 @@ impl WebBackend {
             .with(|s| s.borrow().clone())
             .expect("WEB_BACKEND_HANDLE must be set when class-binding path is active");
         let reader = value_reader.clone();
-        framework_core::register_signal_js_notifier(signal_id, move || {
+        runtime_core::register_signal_js_notifier(signal_id, move || {
             let value = reader();
             if let Some(rc) = weak.upgrade() {
                 rc.borrow_mut()
@@ -1034,7 +1034,7 @@ impl WebBackend {
             .with(|s| s.borrow().clone())
             .expect("WEB_BACKEND_HANDLE must be set when batched text path is active");
         let flag = self.text_queue.flush_flag();
-        framework_core::schedule_microtask(move || {
+        runtime_core::schedule_microtask(move || {
             flag.set(false);
             if let Some(rc) = weak.upgrade() {
                 rc.borrow_mut().flush_pending_text();
@@ -1139,7 +1139,7 @@ impl WebBackend {
             .with(|s| s.borrow().clone())
             .expect("WEB_BACKEND_HANDLE must be set when batched class path is active");
         let flag = self.class_queue.flush_flag();
-        framework_core::schedule_microtask(move || {
+        runtime_core::schedule_microtask(move || {
             // Clear the flag BEFORE flushing so updates produced
             // during the flush (re-entrant signal writes) re-schedule
             // a fresh microtask rather than being dropped.
@@ -1274,7 +1274,7 @@ impl WebBackend {
     /// list differs (3 args vs 5).
     pub(crate) fn execute_batch_inner(
         &mut self,
-        batch: framework_core::BackendBatch,
+        batch: runtime_core::BackendBatch,
         attach: Option<(&mut web_sys::Node, &[u32])>,
     ) -> Vec<web_sys::Node> {
         use js_sys::Array;
@@ -1318,10 +1318,10 @@ impl WebBackend {
         let mut string_count: u32 = 0;
         for op in batch.ops.iter() {
             match op {
-                framework_core::BatchOp::CreateView { local_id } => {
+                runtime_core::BatchOp::CreateView { local_id } => {
                     u32s.extend_from_slice(&[0, *local_id, 0, 0]);
                 }
-                framework_core::BatchOp::CreateText { local_id, content } => {
+                runtime_core::BatchOp::CreateText { local_id, content } => {
                     if string_count > 0 {
                         strings.push('\0');
                     }
@@ -1329,7 +1329,7 @@ impl WebBackend {
                     u32s.extend_from_slice(&[1, *local_id, 0, string_count]);
                     string_count += 1;
                 }
-                framework_core::BatchOp::ApplyStyleStatic {
+                runtime_core::BatchOp::ApplyStyleStatic {
                     node,
                     class_name,
                     rules: _,
@@ -1341,7 +1341,7 @@ impl WebBackend {
                     u32s.extend_from_slice(&[2, *node, 0, string_count]);
                     string_count += 1;
                 }
-                framework_core::BatchOp::Insert { parent, child } => {
+                runtime_core::BatchOp::Insert { parent, child } => {
                     u32s.extend_from_slice(&[3, *parent, *child, 0]);
                 }
             }
@@ -1404,14 +1404,14 @@ impl WebBackend {
 impl Backend for WebBackend {
     type Node = Node;
 
-    fn platform(&self) -> framework_core::Platform {
-        framework_core::Platform::Web
+    fn platform(&self) -> runtime_core::Platform {
+        runtime_core::Platform::Web
     }
 
-    fn color_scheme(&self) -> framework_core::ColorScheme {
+    fn color_scheme(&self) -> runtime_core::ColorScheme {
         let window = match self.doc.default_view() {
             Some(w) => w,
-            None => return framework_core::ColorScheme::Auto,
+            None => return runtime_core::ColorScheme::Auto,
         };
         let prefers_dark = window
             .match_media("(prefers-color-scheme: dark)")
@@ -1426,17 +1426,17 @@ impl Backend for WebBackend {
             .map(|mql| mql.matches())
             .unwrap_or(false);
         if prefers_dark {
-            framework_core::ColorScheme::Dark
+            runtime_core::ColorScheme::Dark
         } else if prefers_light {
-            framework_core::ColorScheme::Light
+            runtime_core::ColorScheme::Light
         } else {
-            framework_core::ColorScheme::Auto
+            runtime_core::ColorScheme::Auto
         }
     }
 
     fn create_view(
         &mut self,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = primitives::view::create(self);
         a11y::apply(&node, a11y, None);
@@ -1450,7 +1450,7 @@ impl Backend for WebBackend {
     fn create_text(
         &mut self,
         content: &str,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = primitives::text::create(self, content);
         // Text role has no first-class ARIA equivalent — the helper
@@ -1462,10 +1462,10 @@ impl Backend for WebBackend {
     fn create_button(
         &mut self,
         label: &str,
-        on_click: &framework_core::Action,
-        leading_icon: Option<&framework_core::IconData>,
-        trailing_icon: Option<&framework_core::IconData>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        on_click: &runtime_core::Action,
+        leading_icon: Option<&runtime_core::IconData>,
+        trailing_icon: Option<&runtime_core::IconData>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node =
             primitives::button::create(self, label, on_click.fire.clone(), leading_icon, trailing_icon);
@@ -1479,7 +1479,7 @@ impl Backend for WebBackend {
     fn create_pressable(
         &mut self,
         on_click: Rc<dyn Fn()>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = primitives::pressable::create(self, on_click);
         // Pressable is a `<div>` with click — explicit `role="button"`
@@ -1487,7 +1487,7 @@ impl Backend for WebBackend {
         a11y::apply(
             &node,
             a11y,
-            Some(framework_core::accessibility::Role::Button),
+            Some(runtime_core::accessibility::Role::Button),
         );
         node
     }
@@ -1495,7 +1495,7 @@ impl Backend for WebBackend {
     fn install_touch_handler(
         &mut self,
         node: &Self::Node,
-        handler: framework_core::TouchHandler,
+        handler: runtime_core::TouchHandler,
     ) {
         primitives::touch::install(self, node, handler);
     }
@@ -1521,7 +1521,7 @@ impl Backend for WebBackend {
     fn create_text_with_id(
         &mut self,
         content: &str,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Option<(Self::Node, u32)> {
         let _t = crate::phase_timer::PhaseTimer::start("text_create_with_id");
         // Without an installed self-handle in `WEB_BACKEND_HANDLE`,
@@ -1655,7 +1655,7 @@ impl Backend for WebBackend {
 
     fn mint_class_for_app(
         &mut self,
-        app: &framework_core::StyleApplication,
+        app: &runtime_core::StyleApplication,
     ) -> Option<String> {
         Some(self.impl_mint_class_for_app(app))
     }
@@ -1664,7 +1664,7 @@ impl Backend for WebBackend {
         &mut self,
         src: &str,
         alt: Option<&str>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = primitives::image::create(self, src, alt);
         // `<img>` carries implicit `role="img"` — don't infer.
@@ -1680,19 +1680,19 @@ impl Backend for WebBackend {
 
     fn create_icon(
         &mut self,
-        data: &framework_core::primitives::icon::IconData,
-        color: Option<&framework_core::Color>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        data: &runtime_core::primitives::icon::IconData,
+        color: Option<&runtime_core::Color>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = primitives::icon::create(self, data, color);
         // SVG icons get explicit `role="img"` since `<svg>` doesn't
         // have an implicit role by default; the helper writes it when
         // the inferred role is supplied.
-        a11y::apply(&node, a11y, Some(framework_core::accessibility::Role::Image));
+        a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::Image));
         node
     }
 
-    fn update_icon_color(&mut self, node: &Self::Node, color: &framework_core::Color) {
+    fn update_icon_color(&mut self, node: &Self::Node, color: &runtime_core::Color) {
         primitives::icon::update_color(node, color)
     }
 
@@ -1706,7 +1706,7 @@ impl Backend for WebBackend {
         from: f32,
         to: f32,
         duration_ms: u32,
-        easing: framework_core::Easing,
+        easing: runtime_core::Easing,
         infinite: bool,
         _autoreverses: bool,
     ) {
@@ -1718,8 +1718,8 @@ impl Backend for WebBackend {
         initial_value: &str,
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
-        on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node =
             primitives::text_input::create(self, initial_value, placeholder, on_change, on_key_down);
@@ -1737,8 +1737,8 @@ impl Backend for WebBackend {
         initial_value: &str,
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
-        on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node =
             primitives::text_area::create(self, initial_value, placeholder, on_change, on_key_down);
@@ -1754,7 +1754,7 @@ impl Backend for WebBackend {
     fn make_text_area_handle(
         &self,
         node: &Self::Node,
-    ) -> framework_core::primitives::text_area::TextAreaHandle {
+    ) -> runtime_core::primitives::text_area::TextAreaHandle {
         primitives::text_area::make_handle(node)
     }
 
@@ -1762,10 +1762,10 @@ impl Backend for WebBackend {
         &mut self,
         initial_value: bool,
         on_change: Rc<dyn Fn(bool)>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = primitives::toggle::create(self, initial_value, on_change);
-        a11y::apply(&node, a11y, Some(framework_core::accessibility::Role::Switch));
+        a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::Switch));
         node
     }
 
@@ -1776,7 +1776,7 @@ impl Backend for WebBackend {
     fn create_scroll_view(
         &mut self,
         horizontal: bool,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = primitives::scroll_view::create(self, horizontal);
         // ScrollView has no first-class ARIA role — it's a generic
@@ -1793,7 +1793,7 @@ impl Backend for WebBackend {
         max: f32,
         step: Option<f32>,
         on_change: Rc<dyn Fn(f32)>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = primitives::slider::create(self, initial_value, min, max, step, on_change);
         // `<input type=range>` is implicitly `role=slider`; skip inference.
@@ -1811,7 +1811,7 @@ impl Backend for WebBackend {
         autoplay: bool,
         controls: bool,
         loop_playback: bool,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = primitives::video::create(self, src, autoplay, controls, loop_playback);
         a11y::apply(&node, a11y, None);
@@ -1824,24 +1824,24 @@ impl Backend for WebBackend {
 
     fn create_activity_indicator(
         &mut self,
-        size: framework_core::primitives::activity_indicator::ActivityIndicatorSize,
-        color: Option<&framework_core::Color>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        size: runtime_core::primitives::activity_indicator::ActivityIndicatorSize,
+        color: Option<&runtime_core::Color>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = primitives::activity_indicator::create(self, size, color);
-        a11y::apply(&node, a11y, Some(framework_core::accessibility::Role::Spinner));
+        a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::Spinner));
         node
     }
 
     fn create_virtualizer(
         &mut self,
-        callbacks: framework_core::VirtualizerCallbacks<Self::Node>,
+        callbacks: runtime_core::VirtualizerCallbacks<Self::Node>,
         overscan: f32,
         horizontal: bool,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = primitives::virtualizer::create(self, callbacks, overscan, horizontal);
-        a11y::apply(&node, a11y, Some(framework_core::accessibility::Role::List));
+        a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::List));
         node
     }
 
@@ -1855,10 +1855,10 @@ impl Backend for WebBackend {
 
     fn create_graphics(
         &mut self,
-        on_ready: framework_core::primitives::graphics::OnReady,
-        on_resize: framework_core::primitives::graphics::OnResize,
-        on_lost: framework_core::primitives::graphics::OnLost,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        on_ready: runtime_core::primitives::graphics::OnReady,
+        on_resize: runtime_core::primitives::graphics::OnResize,
+        on_lost: runtime_core::primitives::graphics::OnLost,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = primitives::graphics::create(self, on_ready, on_resize, on_lost);
         // `<canvas>` has no implicit ARIA role; author code MUST set
@@ -1877,15 +1877,15 @@ impl Backend for WebBackend {
     fn make_graphics_handle(
         &self,
         node: &Self::Node,
-    ) -> framework_core::primitives::graphics::GraphicsHandle {
+    ) -> runtime_core::primitives::graphics::GraphicsHandle {
         primitives::graphics::make_handle(self, node)
     }
 
     fn create_navigator(
         &mut self,
-        callbacks: framework_core::NavigatorCallbacks<Self::Node>,
-        control: Rc<framework_core::NavigatorControl>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        callbacks: runtime_core::NavigatorCallbacks<Self::Node>,
+        control: Rc<runtime_core::NavigatorControl>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = primitives::navigator::create(self, callbacks, control);
         // Navigator containers are transparent in the AX tree by
@@ -1900,12 +1900,12 @@ impl Backend for WebBackend {
         navigator: &Self::Node,
         screen: Self::Node,
         scope_id: u64,
-        _options: framework_core::primitives::navigator::ScreenOptions,
+        _options: runtime_core::primitives::navigator::ScreenOptions,
     ) {
         // The framework's local-mode path runs the initial mount
         // via the microtask in `create_navigator` and never calls
         // this method directly (the trait default is a no-op).
-        // AAS mode is the opposite: the create-time microtask
+        // runtime-server mode is the opposite: the create-time microtask
         // bails early on `defer_initial_mount = true`, and this
         // method is the one that actually mounts the screen,
         // using the wire-supplied DOM subtree + scope id.
@@ -1919,7 +1919,7 @@ impl Backend for WebBackend {
     fn make_navigator_handle(
         &self,
         node: &Self::Node,
-    ) -> framework_core::NavigatorHandle {
+    ) -> runtime_core::NavigatorHandle {
         primitives::navigator::make_handle(self, node)
     }
 
@@ -1931,9 +1931,9 @@ impl Backend for WebBackend {
     // `release` because the entry shape is identical.
     fn create_tab_navigator(
         &mut self,
-        callbacks: framework_core::TabNavigatorCallbacks<Self::Node>,
-        control: Rc<framework_core::NavigatorControl>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        callbacks: runtime_core::TabNavigatorCallbacks<Self::Node>,
+        control: Rc<runtime_core::NavigatorControl>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = primitives::navigator::create_tab(self, callbacks, control);
         a11y::apply(&node, a11y, None);
@@ -1947,7 +1947,7 @@ impl Backend for WebBackend {
     fn make_tab_navigator_handle(
         &self,
         node: &Self::Node,
-    ) -> framework_core::TabsHandle {
+    ) -> runtime_core::TabsHandle {
         primitives::navigator::make_tab_handle(self, node)
     }
 
@@ -1956,7 +1956,7 @@ impl Backend for WebBackend {
         navigator: &Self::Node,
         screen: Self::Node,
         scope_id: u64,
-        _options: framework_core::primitives::navigator::ScreenOptions,
+        _options: runtime_core::primitives::navigator::ScreenOptions,
     ) {
         // Same wire-driven mount story as `navigator_attach_initial`,
         // and on web the three navigator kinds share one
@@ -1968,9 +1968,9 @@ impl Backend for WebBackend {
 
     fn create_drawer_navigator(
         &mut self,
-        callbacks: framework_core::DrawerNavigatorCallbacks<Self::Node>,
-        control: Rc<framework_core::NavigatorControl>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        callbacks: runtime_core::DrawerNavigatorCallbacks<Self::Node>,
+        control: Rc<runtime_core::NavigatorControl>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = primitives::navigator::create_drawer(self, callbacks, control);
         a11y::apply(&node, a11y, None);
@@ -1984,7 +1984,7 @@ impl Backend for WebBackend {
     fn make_drawer_navigator_handle(
         &self,
         node: &Self::Node,
-    ) -> framework_core::DrawerHandle {
+    ) -> runtime_core::DrawerHandle {
         primitives::navigator::make_drawer_handle(self, node)
     }
 
@@ -1993,10 +1993,10 @@ impl Backend for WebBackend {
         navigator: &Self::Node,
         screen: Self::Node,
         scope_id: u64,
-        _options: framework_core::primitives::navigator::ScreenOptions,
+        _options: runtime_core::primitives::navigator::ScreenOptions,
     ) {
         // See `tab_navigator_attach_initial`. The trait default is a
-        // no-op, which is why AAS-driven drawer apps were rendering a
+        // no-op, which is why runtime-server-driven drawer apps were rendering a
         // fully empty `.ui-nav-root` — `Command::NavigatorAttachInitial`
         // dispatched to drawer_navigator_attach_initial, the default
         // ate it, and the home screen never reached the DOM.
@@ -2014,8 +2014,8 @@ impl Backend for WebBackend {
 
     fn create_link(
         &mut self,
-        config: framework_core::primitives::link::LinkConfig,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        config: runtime_core::primitives::link::LinkConfig,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = primitives::link::create(self, config);
         // `<a>` has implicit role="link"; skip inference.
@@ -2026,16 +2026,16 @@ impl Backend for WebBackend {
     fn make_link_handle(
         &self,
         node: &Self::Node,
-    ) -> framework_core::primitives::link::LinkHandle {
+    ) -> runtime_core::primitives::link::LinkHandle {
         primitives::link::make_handle(node)
     }
 
     fn create_portal(
         &mut self,
-        target: framework_core::primitives::portal::PortalTarget,
+        target: runtime_core::primitives::portal::PortalTarget,
         on_dismiss: Option<Rc<dyn Fn()>>,
         trap_focus: bool,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = primitives::portal::create(self, target, on_dismiss, trap_focus);
         // Portal containers are transparent (the mounted content
@@ -2052,7 +2052,7 @@ impl Backend for WebBackend {
     fn make_portal_handle(
         &self,
         node: &Self::Node,
-    ) -> framework_core::primitives::portal::PortalHandle {
+    ) -> runtime_core::primitives::portal::PortalHandle {
         primitives::portal::make_handle(node)
     }
 
@@ -2061,7 +2061,7 @@ impl Backend for WebBackend {
         type_id: std::any::TypeId,
         type_name: &'static str,
         payload: &Rc<dyn std::any::Any>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         // Look up the handler; clone the Rc so we can drop the
         // registry borrow before calling the handler (which needs
@@ -2090,8 +2090,8 @@ impl Backend for WebBackend {
     fn apply_presence(
         &mut self,
         node: &Self::Node,
-        state: framework_core::PresenceState,
-        transition: Option<(u32, framework_core::Easing)>,
+        state: runtime_core::PresenceState,
+        transition: Option<(u32, runtime_core::Easing)>,
     ) {
         primitives::presence::apply(self, node, state, transition)
     }
@@ -2108,11 +2108,11 @@ impl Backend for WebBackend {
         self.impl_unregister_stylesheet(rules)
     }
 
-    fn install_tokens(&mut self, tokens: &[framework_core::TokenEntry]) {
+    fn install_tokens(&mut self, tokens: &[runtime_core::TokenEntry]) {
         self.impl_install_theme_variables(tokens)
     }
 
-    fn update_tokens(&mut self, tokens: &[framework_core::TokenEntry]) {
+    fn update_tokens(&mut self, tokens: &[runtime_core::TokenEntry]) {
         // Same machinery handles both — the impl detects whether
         // the :root rule already exists and either inserts or
         // setProperty's.
@@ -2148,7 +2148,7 @@ impl Backend for WebBackend {
     fn set_animated_f32(
         &mut self,
         node: &Self::Node,
-        prop: framework_core::animation::AnimProp,
+        prop: runtime_core::animation::AnimProp,
         value: f32,
     ) {
         self.impl_set_animated_f32(node, prop, value);
@@ -2157,7 +2157,7 @@ impl Backend for WebBackend {
     fn set_animated_color(
         &mut self,
         node: &Self::Node,
-        prop: framework_core::animation::AnimProp,
+        prop: runtime_core::animation::AnimProp,
         value: [f32; 4],
     ) {
         self.impl_set_animated_color(node, prop, value);
@@ -2225,7 +2225,7 @@ impl Backend for WebBackend {
     /// First call lazily injects the JS shim (`runtime/js/batch.js`)
     /// and caches the function handle so subsequent calls skip the
     /// `Reflect::get` lookup.
-    fn execute_batch(&mut self, batch: framework_core::BackendBatch) -> Vec<Self::Node> {
+    fn execute_batch(&mut self, batch: runtime_core::BackendBatch) -> Vec<Self::Node> {
         self.execute_batch_inner(batch, None)
     }
 
@@ -2246,7 +2246,7 @@ impl Backend for WebBackend {
     /// `local_id`s from `batch`.
     fn execute_batch_with_attach(
         &mut self,
-        batch: framework_core::BackendBatch,
+        batch: runtime_core::BackendBatch,
         parent: &mut Self::Node,
         attach_locals: &[u32],
     ) -> Vec<Self::Node> {
@@ -2275,7 +2275,7 @@ impl Backend for WebBackend {
         &mut self,
         node: &Self::Node,
         base: &Rc<StyleRules>,
-        overlays: &[(framework_core::StateBits, Rc<StyleRules>)],
+        overlays: &[(runtime_core::StateBits, Rc<StyleRules>)],
     ) {
         self.impl_apply_styled_states(node, base, overlays)
     }
@@ -2314,7 +2314,7 @@ impl Backend for WebBackend {
     fn attach_states(
         &mut self,
         _node: &Self::Node,
-        _setter: Rc<dyn Fn(framework_core::StateBits, bool)>,
+        _setter: Rc<dyn Fn(runtime_core::StateBits, bool)>,
     ) {
         // intentional no-op on web; CSS pseudo-classes drive states.
     }
@@ -2326,45 +2326,45 @@ impl Backend for WebBackend {
     fn make_pressable_handle(
         &self,
         node: &Self::Node,
-    ) -> framework_core::PressableHandle {
+    ) -> runtime_core::PressableHandle {
         primitives::pressable::make_handle(node)
     }
 
-    fn make_view_handle(&self, node: &Self::Node) -> framework_core::ViewHandle {
+    fn make_view_handle(&self, node: &Self::Node) -> runtime_core::ViewHandle {
         // Wrap the actual `web_sys::Node` (not the trait-default
         // `Rc<()>`), so framework helpers like `LayoutPlan` can
         // downcast back to the concrete node and operate on it.
-        framework_core::ViewHandle::new(Rc::new(node.clone()), &WebViewOps)
+        runtime_core::ViewHandle::new(Rc::new(node.clone()), &WebViewOps)
     }
 
-    fn make_text_handle(&self, node: &Self::Node) -> framework_core::TextHandle {
+    fn make_text_handle(&self, node: &Self::Node) -> runtime_core::TextHandle {
         // Same plumbing as `make_view_handle` for the text element so
         // author-level animation drivers (welcome's `drive_color_text_av`)
         // can downcast `text_ref.as_any()` to `web_sys::Node` and write
         // `style.color` directly. Without this the typed handle stores
         // the trait-default `Rc<()>` and the downcast silently fails,
         // leaving text color frozen at its stylesheet value.
-        framework_core::TextHandle::new(Rc::new(node.clone()), &WebTextOps)
+        runtime_core::TextHandle::new(Rc::new(node.clone()), &WebTextOps)
     }
 
     fn make_text_input_handle(
         &self,
         node: &Self::Node,
-    ) -> framework_core::primitives::text_input::TextInputHandle {
+    ) -> runtime_core::primitives::text_input::TextInputHandle {
         primitives::text_input::make_handle(node)
     }
 
     fn make_scroll_view_handle(
         &self,
         node: &Self::Node,
-    ) -> framework_core::primitives::scroll_view::ScrollViewHandle {
+    ) -> runtime_core::primitives::scroll_view::ScrollViewHandle {
         primitives::scroll_view::make_handle(node)
     }
 
     fn make_video_handle(
         &self,
         node: &Self::Node,
-    ) -> framework_core::primitives::video::VideoHandle {
+    ) -> runtime_core::primitives::video::VideoHandle {
         primitives::video::make_handle(node)
     }
 
@@ -2377,8 +2377,8 @@ impl Backend for WebBackend {
     fn update_accessibility(
         &mut self,
         node: &Self::Node,
-        a11y: &framework_core::accessibility::AccessibilityProps,
-        inferred_role: Option<framework_core::accessibility::Role>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+        inferred_role: Option<runtime_core::accessibility::Role>,
     ) {
         // Reactive prop updates funnel through here. `a11y::apply` is
         // idempotent and clears attributes that drop to None, so the
@@ -2389,7 +2389,7 @@ impl Backend for WebBackend {
     fn announce_for_accessibility(
         &mut self,
         msg: &str,
-        priority: framework_core::accessibility::LiveRegionPriority,
+        priority: runtime_core::accessibility::LiveRegionPriority,
     ) {
         a11y::announce(msg, priority);
     }
@@ -2405,11 +2405,11 @@ impl Backend for WebBackend {
 /// additions. We still need an instance to satisfy
 /// `ViewHandle::new`'s `&'static dyn ViewOps` parameter.
 struct WebViewOps;
-impl framework_core::ViewOps for WebViewOps {
-    fn rect(&self, node: &dyn std::any::Any) -> framework_core::ViewportRect {
+impl runtime_core::ViewOps for WebViewOps {
+    fn rect(&self, node: &dyn std::any::Any) -> runtime_core::ViewportRect {
         match view_rect_from_node(node) {
             Some(r) => r,
-            None => framework_core::ViewportRect::default(),
+            None => runtime_core::ViewportRect::default(),
         }
     }
 
@@ -2425,7 +2425,7 @@ impl framework_core::ViewOps for WebViewOps {
     fn frame(
         &self,
         node: &dyn std::any::Any,
-    ) -> Option<framework_core::primitives::portal::ViewportRect> {
+    ) -> Option<runtime_core::primitives::portal::ViewportRect> {
         let el = element_from_any(node)?;
         if !el.is_connected() {
             return None;
@@ -2440,7 +2440,7 @@ impl framework_core::ViewOps for WebViewOps {
             // overlays already opt into that trade-off via the
             // primitives that emit them.
             .unwrap_or((r.x() as f32, r.y() as f32));
-        Some(framework_core::primitives::portal::ViewportRect {
+        Some(runtime_core::primitives::portal::ViewportRect {
             x: ox,
             y: oy,
             width: r.width() as f32,
@@ -2455,13 +2455,13 @@ impl framework_core::ViewOps for WebViewOps {
     fn absolute_frame(
         &self,
         node: &dyn std::any::Any,
-    ) -> Option<framework_core::primitives::portal::ViewportRect> {
+    ) -> Option<runtime_core::primitives::portal::ViewportRect> {
         let el = element_from_any(node)?;
         if !el.is_connected() {
             return None;
         }
         let r = el.get_bounding_client_rect();
-        Some(framework_core::primitives::portal::ViewportRect {
+        Some(runtime_core::primitives::portal::ViewportRect {
             x: r.x() as f32,
             y: r.y() as f32,
             width: r.width() as f32,
@@ -2477,7 +2477,7 @@ impl framework_core::ViewOps for WebViewOps {
     fn set_animated_f32(
         &self,
         node: &dyn std::any::Any,
-        prop: framework_core::animation::AnimProp,
+        prop: runtime_core::animation::AnimProp,
         value: f32,
     ) {
         if let Some(n) = node.downcast_ref::<web_sys::Node>() {
@@ -2489,7 +2489,7 @@ impl framework_core::ViewOps for WebViewOps {
     fn set_animated_color(
         &self,
         node: &dyn std::any::Any,
-        prop: framework_core::animation::AnimProp,
+        prop: runtime_core::animation::AnimProp,
         value: [f32; 4],
     ) {
         if let Some(n) = node.downcast_ref::<web_sys::Node>() {
@@ -2509,11 +2509,11 @@ fn element_from_any(node: &dyn std::any::Any) -> Option<web_sys::Element> {
 /// without a per-platform downcast block — same shape as
 /// [`WebViewOps::set_animated_color`].
 struct WebTextOps;
-impl framework_core::TextOps for WebTextOps {
+impl runtime_core::TextOps for WebTextOps {
     fn set_animated_color(
         &self,
         node: &dyn std::any::Any,
-        prop: framework_core::animation::AnimProp,
+        prop: runtime_core::animation::AnimProp,
         value: [f32; 4],
     ) {
         if let Some(n) = node.downcast_ref::<web_sys::Node>() {
@@ -2522,10 +2522,10 @@ impl framework_core::TextOps for WebTextOps {
     }
 }
 
-fn view_rect_from_node(node: &dyn std::any::Any) -> Option<framework_core::ViewportRect> {
+fn view_rect_from_node(node: &dyn std::any::Any) -> Option<runtime_core::ViewportRect> {
     let el = element_from_any(node)?;
     let r = el.get_bounding_client_rect();
-    Some(framework_core::ViewportRect {
+    Some(runtime_core::ViewportRect {
         x: r.x() as f32,
         y: r.y() as f32,
         width: r.width() as f32,

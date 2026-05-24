@@ -1,4 +1,4 @@
-//! Browser WebSocket transport for the AAS dev-client.
+//! Browser WebSocket transport for the runtime-server dev-client.
 //!
 //! Lives here, not in `dev-client`, because every wire-level piece
 //! it touches is a web platform implementation: `web_sys::WebSocket`,
@@ -68,7 +68,7 @@ fn browser_viewport() -> Option<wire::WireViewport> {
 }
 
 use dev_client::WireBackend;
-use framework_core::{Backend, RafLoop};
+use runtime_core::{Backend, RafLoop};
 use js_sys::{ArrayBuffer, Uint8Array};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
@@ -274,7 +274,7 @@ where
     // "client→server→client" loop latency to one tick.
     let socket_for_pump = socket.clone();
     let mut last_raf_ms = now_ms();
-    let outbound_pump = framework_core::raf_loop(move || {
+    let outbound_pump = runtime_core::raf_loop(move || {
         // Skip the entire tick while the socket is still mid-handshake
         // — `send_with_u8_array` would throw `InvalidStateError` and
         // the raf would spam console errors until `onopen` fires.
@@ -326,7 +326,7 @@ fn now_ms() -> u64 {
     js_sys::Date::now() as u64
 }
 
-/// Print a one-line summary of an incoming AAS command batch into
+/// Print a one-line summary of an incoming runtime-server command batch into
 /// the browser console, then a collapsed group with each command's
 /// kind + the most useful payload bits (text content, node ids,
 /// handler ids). Lets you see at a glance what the server emitted

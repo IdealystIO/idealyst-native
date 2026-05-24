@@ -32,7 +32,7 @@ Two specific failure modes have already bitten us:
    `idealyst-wire` or `idealyst-dev-client` are wrong on sight.
 2. Behavioral claims like "every backend implements X" must be checked
    against the actual `Backend` trait and its impls — backends can
-   diverge, and AAS in particular is a placeholder for some primitives
+   diverge, and runtime-server in particular is a placeholder for some primitives
    (auto-memory `project_aas_graphics_unsupported`).
 
 ## Out of scope — do not flag
@@ -83,7 +83,7 @@ at the doc location, not the framework location.
       …", "the framework always …", "every primitive accepts …" must
       be checked against the `Backend` trait and its impls in
       `crates/backend/*`. Flag claims that hold for one backend but not
-      all (e.g. AAS placeholder primitives, web-only escape hatches).
+      all (e.g. runtime-server placeholder primitives, web-only escape hatches).
 - [ ] **CLI command surface** — pages that document `idealyst <cmd>`
       (e.g. `build`, `dev`) must match the actual subcommands in
       `crates/cli/src/cmd/`. Flag removed commands (e.g. `link_patch`,

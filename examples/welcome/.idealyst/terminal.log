@@ -1,0 +1,5 @@
+[runtime-server-shell] worker starting; browsing for app_id="ai.truday.idealyst.welcome"
+[discover] mDNS returned only IPv6 link-local addresses; falling back to 127.0.0.1:65022 (assumes dev-server is on the same machine)
+[runtime-server-shell] connecting to ws://127.0.0.1:65022
+[runtime-server-shell] connected
+[runtime-server-shell] connected to session: client_00000001

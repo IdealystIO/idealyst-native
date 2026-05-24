@@ -218,16 +218,16 @@ default = []
 ```toml
 # user app Cargo.toml
 [features]
-mcp = ["idealyst-mcp-runtime", "framework-core/mcp"]
+mcp = ["idealyst-mcp-runtime", "runtime-core/mcp"]
 
 [[bin]]
 name = "mcp"
 required-features = ["mcp"]
 ```
 
-The `mcp` feature on `framework-core` activates `cfg(idealyst_mcp)`, which gates every `inventory::submit!` emission in the proc-macros. Native release builds with the feature off carry zero MCP data.
+The `mcp` feature on `runtime-core` activates `cfg(idealyst_mcp)`, which gates every `inventory::submit!` emission in the proc-macros. Native release builds with the feature off carry zero MCP data.
 
-Per [CLAUDE.md §3], MCP is a peripheral feature — the runtime and registry live outside `framework-core`. `framework-core` only exposes the `cfg` flag and the macro-emission helper functions.
+Per [CLAUDE.md §3], MCP is a peripheral feature — the runtime and registry live outside `runtime-core`. `runtime-core` only exposes the `cfg` flag and the macro-emission helper functions.
 
 ## 8. CLI integration
 
@@ -261,7 +261,7 @@ file save → dev-reload detects → cargo build --features mcp --bin mcp_catalo
 
 If the rebuild fails (compile error), the MCP server keeps serving the previous good catalog and surfaces the build error as a server-side log entry. The client doesn't see a stale-vs-fresh distinction unless it specifically queries for build status (future tool: `last_build_status`).
 
-**Latency expectations.** Sub-second for trivial edits (doc-comment-only changes hit incremental compilation hard); a few seconds when component bodies change; ten-plus seconds on the first cold rebuild or when something in `framework-core` itself changes. Acceptable for the workflow — the user isn't blocked on it, the LLM consumer just sees a fresher catalog on the next query.
+**Latency expectations.** Sub-second for trivial edits (doc-comment-only changes hit incremental compilation hard); a few seconds when component bodies change; ten-plus seconds on the first cold rebuild or when something in `runtime-core` itself changes. Acceptable for the workflow — the user isn't blocked on it, the LLM consumer just sees a fresher catalog on the next query.
 
 ## 9. Open questions
 
@@ -271,13 +271,13 @@ Both rely on linker-section magic and don't work in `no_std` / `wasm32-unknown-u
 
 ### 9.2 Always-on vs feature-gated registration
 
-**Decision: always feature-gated.** Confirmed with the author — the 99% use case ("normal native build") must carry zero MCP overhead. `inventory::submit!` is only emitted when `cfg(idealyst_mcp)` is on (driven by the `mcp` Cargo feature on `framework-core`). iOS / Android / wasm release binaries with the feature off contain no MCP data; the macro expansions are pure no-ops.
+**Decision: always feature-gated.** Confirmed with the author — the 99% use case ("normal native build") must carry zero MCP overhead. `inventory::submit!` is only emitted when `cfg(idealyst_mcp)` is on (driven by the `mcp` Cargo feature on `runtime-core`). iOS / Android / wasm release binaries with the feature off contain no MCP data; the macro expansions are pure no-ops.
 
 This is not a "binary size optimization" trade-off — it's a correctness requirement that the introspection layer doesn't leak into shipping native code.
 
 ### 9.3 Third-party component crates
 
-Crates outside the workspace that expose `#[component]`s should automatically appear in the MCP catalog as long as they depend on `framework-core` (which re-exports the macros) with the `mcp` feature on. `inventory`'s behavior across rlib boundaries is well-trodden on the host targets we care about. Needs validation; expected to work.
+Crates outside the workspace that expose `#[component]`s should automatically appear in the MCP catalog as long as they depend on `runtime-core` (which re-exports the macros) with the `mcp` feature on. `inventory`'s behavior across rlib boundaries is well-trodden on the host targets we care about. Needs validation; expected to work.
 
 ### 9.4 Catalog schema versioning
 
@@ -302,7 +302,7 @@ Phases 1–2 are the minimum viable spike — they validate the registration + r
 
 ## 11. Testing
 
-Per [CLAUDE.md §1], framework-core-touching changes need tests. Specifically:
+Per [CLAUDE.md §1], runtime-core-touching changes need tests. Specifically:
 
 - A macros-crate integration test asserts a `#[component]` function produces a discoverable inventory entry with the expected `short_name`, `file`, `line`.
 - A second test asserts `ui! { dark_layer() }` inside a host fn produces an edge with `to: "dark_layer"` and the host fn's path as `from`.

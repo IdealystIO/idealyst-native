@@ -29,9 +29,9 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
-use framework_core::primitives::text_area::{text_area, TextAreaHandle};
-use framework_core::stylesheet;
-use framework_core::{
+use runtime_core::primitives::text_area::{text_area, TextAreaHandle};
+use runtime_core::stylesheet;
+use runtime_core::{
     button, signal, switch, text, text_fmt, ui, AlignItems, Color, FlexDirection,
     FontWeight, JustifyContent, KeyEvent, KeyOutcome, Length, Overflow, Position, Primitive, Ref,
     Signal,
@@ -55,7 +55,7 @@ static ALLOCATOR: lol_alloc::AssumeSingleThreaded<lol_alloc::FreeListAllocator> 
     unsafe { lol_alloc::AssumeSingleThreaded::new(lol_alloc::FreeListAllocator::new()) };
 
 thread_local! {
-    static OWNER: RefCell<Option<framework_core::Owner>> = const { RefCell::new(None) };
+    static OWNER: RefCell<Option<runtime_core::Owner>> = const { RefCell::new(None) };
 }
 
 // =============================================================================
@@ -224,7 +224,7 @@ stylesheet! {
 }
 
 // Simulator aspect (iPhone-portrait 390 × 844 logical, matches
-// `native-phone`). The iframe is sized to this ratio so neither
+// `variant-phone`). The iframe is sized to this ratio so neither
 // mode (simulator canvas in sim mode, snippet DOM in web mode)
 // shows internal scrollbars around the preview content. Pick a
 // width that fits the editor column comfortably and derive the
@@ -332,7 +332,7 @@ pub fn start() {
         idea_codeblock::register(&mut b);
         webview::register(&mut b);
     }
-    let owner = framework_core::render(backend, app());
+    let owner = runtime_core::render(backend, app());
     OWNER.with(|slot| *slot.borrow_mut() = Some(owner));
 }
 

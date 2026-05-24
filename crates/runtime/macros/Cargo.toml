@@ -1,0 +1,43 @@
+[package]
+name = "runtime-macros"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+proc-macro = true
+
+[features]
+# Forwarded from runtime-core's debug-stats. Toggles whether
+# `#[component]` emits enter/exit instrumentation calls into the
+# generated component function bodies. When off, the macro emits
+# no instrumentation at all.
+debug-stats = []
+
+# Forwarded from runtime-core's `hot-reload`. When on, `#[component]`
+# rewrites the function body to dispatch through
+# `dev_hot::call(impl_fn, args_tuple)` so a hot-reloaded
+# replacement can be jump-table-swapped at runtime. When off, the
+# macro emits the function exactly as the author wrote it — no
+# wrapper, no indirection, zero production overhead.
+hot-reload = []
+
+# Framework MCP — when on, `#[component]` additionally emits an
+# `inventory::submit!` call that registers the component into
+# `mcp-catalog`'s distributed slice. Consuming crates that want a
+# catalog enable this through `mcp-catalog/mcp` or by depending on
+# `runtime-macros` with this feature on directly. When off, the
+# macro emits zero MCP code — no inventory entry, no dependency on
+# `mcp-catalog`. See `docs/mcp-catalog-spec.md`.
+mcp = []
+
+[dependencies]
+syn = { version = "2", features = ["full", "visit", "visit-mut", "extra-traits"] }
+quote = "1"
+# `span-locations` gives us `Span::start()` so the `mcp` feature can
+# capture per-edge source lines when walking `ui!`/`jsx!` bodies. On
+# stable Rust inside a real proc-macro context, the line is `0` (the
+# proc_macro crate doesn't expose source locations on stable); the
+# field is still emitted so a future stable Rust will light it up
+# automatically. See mcp_emit.rs / mcp_catalog::EdgeRef.
+proc-macro2 = { version = "1", features = ["span-locations"] }

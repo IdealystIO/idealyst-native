@@ -29,7 +29,7 @@ import android.view.View
 class RustTouchListener(private val nativePtr: Long) : View.OnTouchListener {
 
     companion object {
-        // Mirror `TouchPhase` in framework-core.
+        // Mirror `TouchPhase` in runtime-core.
         private const val PHASE_BEGAN = 0
         private const val PHASE_MOVED = 1
         private const val PHASE_ENDED = 2

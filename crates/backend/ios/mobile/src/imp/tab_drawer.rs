@@ -1,5 +1,5 @@
 use block2::ConcreteBlock;
-use framework_core::primitives::navigator::{
+use runtime_core::primitives::navigator::{
     DrawerHandle, DrawerNavigatorCallbacks, DrawerType, MountPolicy, NavCommand, NavigatorControl,
     NavigatorHandle, TabNavigatorCallbacks, TabsHandle,
 };
@@ -19,9 +19,9 @@ use super::{pin_to_edges, IosNode};
 
 #[cfg(feature = "debug-stats")]
 fn dump_debug_stats(label: &str) {
-    let events = framework_core::debug::take_events();
-    let summary = framework_core::debug::component_summary(&events);
-    let counters = framework_core::debug::take_phase_counters();
+    let events = runtime_core::debug::take_events();
+    let summary = runtime_core::debug::component_summary(&events);
+    let counters = runtime_core::debug::take_phase_counters();
     backend_ios_core::ios_log(&format!("[profiler] {} — {} events", label, events.len()));
     for (name, s) in &summary {
         backend_ios_core::ios_log(&format!("[profiler]   {} — calls: {}, total: {}µs, max: {}µs",
@@ -41,7 +41,7 @@ fn dump_debug_stats(label: &str) {
 pub(crate) struct MountedScreen {
     pub(crate) view: Retained<UIView>,
     pub(crate) scope_id: u64,
-    pub(crate) options: framework_core::ScreenOptions,
+    pub(crate) options: runtime_core::ScreenOptions,
 }
 
 /// Per-instance state for tab and drawer navigators.
@@ -65,7 +65,7 @@ pub(crate) struct TabDrawerEntry {
     /// Mirror of the nav state's active-route signal, so
     /// `*_attach_initial` (which receives no route name) can ask the
     /// framework what the initial route is.
-    pub(crate) active_route_sig: framework_core::Signal<&'static str>,
+    pub(crate) active_route_sig: runtime_core::Signal<&'static str>,
     /// Embedded `UINavigationController`'s root `UIViewController`.
     /// Populated for drawer navigators (so they own a native header
     /// bar without depending on a parent stack) and left `None` for
@@ -87,11 +87,11 @@ pub(crate) struct TabDrawerEntry {
     /// long as the drawer exists. `None` until installed in
     /// `create_drawer_navigator`; never set for tab navigators
     /// (they have no header bar to re-tint).
-    pub(crate) theme_effect: Option<framework_core::Effect>,
+    pub(crate) theme_effect: Option<runtime_core::Effect>,
     /// Effect that re-applies the drawer's body background color
     /// when the theme swaps. Same lifetime as `theme_effect`. `None`
     /// when the author didn't pass `.background_color(...)`.
-    pub(crate) background_effect: Option<framework_core::Effect>,
+    pub(crate) background_effect: Option<runtime_core::Effect>,
 }
 
 // =========================================================================
@@ -183,11 +183,11 @@ fn select_screen(
     mounted: &Rc<RefCell<HashMap<&'static str, MountedScreen>>>,
     current_route: &Rc<RefCell<Option<&'static str>>>,
     current_scope: &Rc<RefCell<Option<u64>>>,
-    mount_fn: &Rc<dyn Fn(&'static str, Box<dyn std::any::Any>) -> framework_core::primitives::navigator::MountResult<IosNode>>,
+    mount_fn: &Rc<dyn Fn(&'static str, Box<dyn std::any::Any>) -> runtime_core::primitives::navigator::MountResult<IosNode>>,
     release_fn: &Rc<dyn Fn(u64)>,
     name: &'static str,
     params: Box<dyn std::any::Any>,
-) -> framework_core::ScreenOptions {
+) -> runtime_core::ScreenOptions {
     match policy {
         MountPolicy::LazyDisposing => {
             if let Some(old_scope) = current_scope.borrow_mut().take() {
@@ -243,7 +243,7 @@ pub(crate) fn tab_navigator_attach_initial(
     navigator: &IosNode,
     screen: IosNode,
     scope_id: u64,
-    _options: framework_core::ScreenOptions,
+    _options: runtime_core::ScreenOptions,
 ) {
     let key = navigator.view_key();
     let Some(entry) = tab_drawer_instances.get(&key) else {
@@ -272,7 +272,7 @@ pub(crate) fn tab_navigator_attach_initial(
                 scope_id,
                 // Tabs don't render a header; defaulted ScreenOptions
                 // is fine here. (`_options` is ignored above.)
-                options: framework_core::ScreenOptions::default(),
+                options: runtime_core::ScreenOptions::default(),
             },
         );
     }
@@ -419,10 +419,10 @@ pub(crate) fn create_drawer_navigator(
         let nav_ctrl_for_theme: Retained<NSObject> = unsafe {
             Retained::retain(Retained::as_ptr(&nav_ctrl) as *mut NSObject).unwrap()
         };
-        let theme_effect = framework_core::Effect::new(move || {
+        let theme_effect = runtime_core::Effect::new(move || {
             // Per-token reactivity does subscription for us: the
             // `apply_header_options_with_nav` call below resolves
-            // each `Tokenized<Color>` through the framework-core
+            // each `Tokenized<Color>` through the runtime-core
             // token registry, which subscribes this effect to just
             // the tokens the closures actually read. Unrelated
             // tokens don't wake us. If the user's `ScreenOptions`
@@ -456,7 +456,7 @@ pub(crate) fn create_drawer_navigator(
     if let Some(bg_closure) = callbacks.background_color.clone() {
         let nav_view_for_bg = nav_view.clone();
         let body_for_bg = body.clone();
-        let bg_effect = framework_core::Effect::new(move || {
+        let bg_effect = runtime_core::Effect::new(move || {
             // Per-token reactivity does subscription naturally:
             // `bg_closure()` typically calls `Tokenized<Color>::resolve()`
             // which subscribes this effect to just the token(s) it
@@ -581,7 +581,7 @@ pub(crate) fn create_drawer_navigator(
         let body_anim = body_for_anim.clone();
         let style = drawer_style;
 
-        let trans = framework_core::Transition::new(300, framework_core::Easing::EaseOut);
+        let trans = runtime_core::Transition::new(300, runtime_core::Easing::EaseOut);
         animate(&trans, Rc::new(move || {
             let _: () = unsafe {
                 msg_send![&scrim_anim, setAlpha: if open { 1.0 } else { 0.0 } as CGFloat]
@@ -695,7 +695,7 @@ pub(crate) fn create_drawer_navigator(
             }
             NavCommand::OpenDrawer => {
                 #[cfg(feature = "debug-stats")]
-                framework_core::debug::clear_events();
+                runtime_core::debug::clear_events();
                 is_open_for_dispatch.set(true);
                 is_open_signal.set(true);
                 open_fn(true);
@@ -705,7 +705,7 @@ pub(crate) fn create_drawer_navigator(
             }
             NavCommand::CloseDrawer => {
                 #[cfg(feature = "debug-stats")]
-                framework_core::debug::clear_events();
+                runtime_core::debug::clear_events();
                 is_open_for_dispatch.set(false);
                 is_open_signal.set(false);
                 close_fn(false);
@@ -715,7 +715,7 @@ pub(crate) fn create_drawer_navigator(
             }
             NavCommand::ToggleDrawer => {
                 #[cfg(feature = "debug-stats")]
-                framework_core::debug::clear_events();
+                runtime_core::debug::clear_events();
                 let new_state = !is_open_for_dispatch.get();
                 is_open_for_dispatch.set(new_state);
                 is_open_signal.set(new_state);
@@ -738,7 +738,7 @@ pub(crate) fn drawer_navigator_attach_initial(
     navigator: &IosNode,
     screen: IosNode,
     scope_id: u64,
-    options: framework_core::ScreenOptions,
+    options: runtime_core::ScreenOptions,
 ) {
     let key = navigator.view_key();
     let Some(entry) = tab_drawer_instances.get(&key) else {

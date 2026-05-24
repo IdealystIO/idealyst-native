@@ -1,6 +1,6 @@
 //! Feedback — Spinner, Skeleton, Alert.
 
-use framework_core::{ui, Primitive};
+use runtime_core::{ui, Primitive};
 use idea_ui::doc_controls::DocControls;
 use idea_ui::{
     alert, skeleton, spinner, stack, AlertProps, SkeletonProps, SpinnerProps, StackGap,

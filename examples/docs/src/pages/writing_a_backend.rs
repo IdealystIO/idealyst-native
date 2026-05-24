@@ -5,7 +5,7 @@
 
 use docs_macro::docs;
 #[allow(unused_imports)]
-use crate::shell::{codeblock, pageheader, CodeBlockProps, PageHeaderProps};
+use crate::shell::{code_block, page_header, CodeBlockProps, PageHeaderProps};
 #[allow(unused_imports)]
 use idea_ui::{body, card, heading, stack};
 
@@ -34,11 +34,11 @@ docs! {
     },
 
     section(heading = "The Backend trait") {
-        p("A backend implements one trait — ", code("framework_core::Backend"),
+        p("A backend implements one trait — ", code("runtime_core::Backend"),
           ". The declaration is short:"),
 
         code(rust, r##"
-            use framework_core::{Backend, /* primitives, styles, etc. */};
+            use runtime_core::{Backend, /* primitives, styles, etc. */};
 
             pub struct MyBackend {
                 // your platform-specific state
@@ -386,7 +386,7 @@ docs! {
 
         code(rust, r##"
             use std::rc::Rc;
-            use framework_core::{Backend, Action, StyleRules, IconData};
+            use runtime_core::{Backend, Action, StyleRules, IconData};
 
             #[derive(Clone)]
             struct Node {
@@ -450,7 +450,7 @@ docs! {
         p("Once your backend is built, hand it to the framework:"),
 
         code(rust, r##"
-            use framework_core::{mount, Owner};
+            use runtime_core::{mount, Owner};
 
             fn main() {
                 let backend = MyBackend::new(/* platform args */);
@@ -475,7 +475,7 @@ docs! {
         p("If you have a pre-built ", code("Primitive"),
           " (e.g. in a test fixture or a wire-protocol replay) and there's \
            no constructor to run inside the scope, ",
-          code("framework_core::render(backend, tree)"),
+          code("runtime_core::render(backend, tree)"),
           " is the value-taking variant. It's literally ",
           code("mount(backend, move || tree)"),
           " — same shape, no closure overhead."),
@@ -501,7 +501,7 @@ docs! {
     section(heading = "Where to read more") {
         list(
             [link("The shipped backends", to = "backends"),
-             " — high-level overview of web, iOS, Android, Roku, and the AAS \
+             " — high-level overview of web, iOS, Android, Roku, and the runtime-server \
               dev backend. Useful for seeing how each model maps to a real \
               platform."],
             [link("Reactivity", to = "reactivity"),
@@ -522,7 +522,7 @@ docs! {
               primitive creation can opt in by capturing the ",
              code("test_id"), " field)."],
             [link("Dev tools", to = "cli"),
-             " — what AAS expects from the wire side if you're writing a \
+             " — what runtime-server expects from the wire side if you're writing a \
               generator-style backend."],
         ),
     },

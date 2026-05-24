@@ -1,7 +1,7 @@
 //! Theme-as-struct runtime — the previous `framework-theme` crate,
 //! folded into idea-ui.
 //!
-//! `framework-core` cares about **tokens** (named values, plus
+//! `runtime-core` cares about **tokens** (named values, plus
 //! `Tokenized<T>` references in style rules). It deliberately does
 //! not care how the author organizes those tokens. This module
 //! provides the optional "theme is a struct that implements
@@ -17,7 +17,7 @@
 //! ```no_run
 //! use idea_ui::{install_theme, set_theme, ThemeTokens, TokenEntry, TokenValue};
 //!
-//! struct MyTheme { accent: framework_core::Color }
+//! struct MyTheme { accent: runtime_core::Color }
 //! impl ThemeTokens for MyTheme {
 //!     fn tokens(&self) -> Vec<TokenEntry> {
 //!         vec![TokenEntry {
@@ -36,9 +36,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use framework_core::{install_tokens, update_tokens, Effect, Signal};
+use runtime_core::{install_tokens, update_tokens, Effect, Signal};
 
-pub use framework_core::{TokenEntry, TokenValue, Tokenized};
+pub use runtime_core::{TokenEntry, TokenValue, Tokenized};
 
 /// A theme that exposes its tokens by name and concrete value.
 ///
@@ -55,7 +55,7 @@ thread_local! {
     /// The active theme. Wrapped in a `Signal<Rc<dyn Any>>` so
     /// effects subscribe via the existing reactivity system and
     /// re-apply on swap. Only callers who use the theme-as-struct
-    /// pattern read this; nothing in framework-core or backends
+    /// pattern read this; nothing in runtime-core or backends
     /// touches it.
     static ACTIVE_THEME: RefCell<Option<Signal<Rc<dyn Any>>>> = const { RefCell::new(None) };
 
@@ -79,7 +79,7 @@ thread_local! {
 /// Install the initial active theme. Call once at app startup
 /// before rendering. Stashes the theme as `Rc<dyn Any>` in this
 /// module's signal and forwards its `tokens()` to
-/// [`framework_core::install_tokens`].
+/// [`runtime_core::install_tokens`].
 pub fn install_theme<T: ThemeTokens + 'static>(theme: T) {
     let tokens = theme.tokens();
     let rc: Rc<dyn Any> = Rc::new(theme);
@@ -89,7 +89,7 @@ pub fn install_theme<T: ThemeTokens + 'static>(theme: T) {
 }
 
 /// Swap the active theme. Forwards the new tokens to
-/// [`framework_core::update_tokens`] (which wipes the framework's
+/// [`runtime_core::update_tokens`] (which wipes the framework's
 /// resolution cache, re-fires every styled effect via the tokens
 /// version signal, and pushes deltas to the backend) and re-fires
 /// this module's [`active_theme`] signal so author code reading the
@@ -185,7 +185,7 @@ pub fn active_theme() -> Rc<dyn Any> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use framework_core::Signal;
+    use runtime_core::Signal;
 
     #[derive(Clone)]
     struct TestTheme {

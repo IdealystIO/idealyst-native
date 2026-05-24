@@ -2,10 +2,10 @@
 
 use std::rc::Rc;
 
-use framework_core::color::Rgba;
-use framework_core::primitives::key::KeyDownHandler;
-use framework_core::{Length, StyleRules};
-use native_layout::LayoutNode;
+use runtime_core::color::Rgba;
+use runtime_core::primitives::key::KeyDownHandler;
+use runtime_core::{Length, StyleRules};
+use runtime_layout::LayoutNode;
 
 /// Public handle the framework holds in its `Self::Node` slot. Just
 /// an id — actual node data lives keyed by this id in
@@ -64,9 +64,26 @@ pub(crate) struct NodeData {
     // Per-frame animation overrides. Driven by `set_animated_f32` /
     // `set_animated_color`; consulted by the renderer on every paint.
     // -----------------------------------------------------------------
-    /// 0.0..=1.0. Multiplied into bg's alpha and used to blend fg
-    /// against the painted-under bg. Default 1.0.
+    /// Static opacity from the stylesheet (`opacity: …`). Seeded by
+    /// `apply_style`; left at 1.0 when the stylesheet doesn't set
+    /// one. Composed multiplicatively with `animated_opacity` (when
+    /// set) and the parent's effective opacity.
     pub opacity: f32,
+    /// Animation-driven opacity override from
+    /// `set_animated_f32(Opacity, …)`. When `Some`, wins over the
+    /// static `opacity` field in the paint pass — mirrors the way
+    /// `animated_bg` / `animated_fg` win over `bg` / `fg`.
+    ///
+    /// The split exists because, on hot-patch, the dev-server
+    /// replays every `ApplyStyle` and would otherwise clobber the
+    /// in-flight opacity with the stylesheet's starting value (the
+    /// welcome example sets `opacity: 0.0` on the wrapper and
+    /// animates up to 1.0; pre-split, every hot-patch landed back
+    /// at 0.0 before the next animation tick could rewrite it).
+    /// iOS/macOS already keep animated opacity in a separate map
+    /// (`AnimatedTransformState.opacity`); this is the analogous
+    /// per-node slot for terminal.
+    pub animated_opacity: Option<f32>,
     /// Pixel-space translate applied on top of the laid-out frame.
     /// The renderer adds these to the resolved (x, y) before
     /// composing.
@@ -106,7 +123,7 @@ pub(crate) struct NodeData {
 /// every paint.
 #[derive(Clone)]
 pub(crate) struct ResolvedGradient {
-    pub kind: framework_core::GradientKind,
+    pub kind: runtime_core::GradientKind,
     pub stops: Vec<(f32, Rgba)>,
     /// Per-stop animated color overrides written by
     /// `set_animated_color(GradientStopColor(idx))`. `None` means

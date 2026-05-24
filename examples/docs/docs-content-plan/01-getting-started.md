@@ -98,7 +98,7 @@ Every Idealyst app starts the same way: one function annotated with
 looks like this:
 
 ```rust
-use framework_core::{component, signal, ui, Primitive};
+use runtime_core::{component, signal, ui, Primitive};
 
 #[component]
 pub fn app() -> Primitive {
@@ -136,7 +136,7 @@ A few things to notice, without going deep on any of them yet:
 
 ## Building UI: components, not just primitives
 
-The scaffold uses framework-core primitives (`View`, `Text`,
+The scaffold uses runtime-core primitives (`View`, `Text`,
 `Button`) directly. For most projects you'll want higher-level
 pieces too — headings, cards, themed buttons, layout stacks.
 
@@ -148,7 +148,7 @@ You have four options:
 - **Build your own** with the framework's theme and stylesheet
   system on top of the primitive vocabulary. See
   [Styles](#) for how that system works.
-- **Use a third-party library** built on framework-core.
+- **Use a third-party library** built on runtime-core.
 - **Skip it.** Primitives alone are a complete option.
 
 The framework underneath is the same in every case.

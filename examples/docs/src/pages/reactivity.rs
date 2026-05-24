@@ -6,7 +6,7 @@
 
 use docs_macro::docs;
 #[allow(unused_imports)]
-use crate::shell::{codeblock, pageheader, CodeBlockProps, PageHeaderProps};
+use crate::shell::{code_block, page_header, CodeBlockProps, PageHeaderProps};
 #[allow(unused_imports)]
 use idea_ui::{body, card, heading, stack};
 
@@ -43,7 +43,7 @@ docs! {
         p("Make a signal:"),
 
         code(rust, r##"
-            use framework_core::signal;
+            use runtime_core::signal;
 
             let count = signal!(0);
             let name = signal!(String::from("Ada"));
@@ -158,7 +158,7 @@ docs! {
            then re-runs the closure whenever any of those signals change."),
 
         code(rust, r##"
-            use framework_core::Effect;
+            use runtime_core::Effect;
 
             let _e = Effect::new(move || {
                 println!("count is now {}", count.get());
@@ -239,7 +239,7 @@ docs! {
           "), auto-binds the returned handle to a hygienic local, and \
            reads more like the body it wraps:"),
         code(rust, r##"
-            use framework_core::{effect, signal};
+            use runtime_core::{effect, signal};
 
             let count = signal!(0);
             effect!({
@@ -269,7 +269,7 @@ docs! {
            with any reactive run that allocates an external resource — \
            timers, sockets, native handles, third-party subscriptions:"),
         code(rust, r##"
-            use framework_core::{effect, on_cleanup, after_ms};
+            use runtime_core::{effect, on_cleanup, after_ms};
 
             effect!({
                 let task = after_ms(500, || tick());
@@ -293,7 +293,7 @@ docs! {
            N. The cache invalidates only when one of the memo's \
            tracked dependencies changes:"),
         code(rust, r##"
-            use framework_core::{signal, memo};
+            use runtime_core::{signal, memo};
 
             let items = signal!(vec![1, 2, 3, 4, 5]);
             let total = memo(move || items.with(|v| v.iter().sum::<i32>()));
@@ -329,7 +329,7 @@ docs! {
           " calls inside the batch produce ONE effect re-run per \
            dependent, not N:"),
         code(rust, r##"
-            use framework_core::{signal, batch};
+            use runtime_core::{signal, batch};
 
             let first = signal!("Ada".to_string());
             let last  = signal!("Lovelace".to_string());
@@ -353,7 +353,7 @@ docs! {
            run. Sometimes you want explicit control — \"re-run only \
            when this specific set of deps changes\":"),
         code(rust, r##"
-            use framework_core::{signal, on, on_defer};
+            use runtime_core::{signal, on, on_defer};
 
             let count = signal!(0);
             let mood  = signal!("ok");
@@ -383,7 +383,7 @@ docs! {
            actions. The reducer closure is called inside a tracked \
            context, so reads inside it auto-subscribe:"),
         code(rust, r##"
-            use framework_core::{reducer, Action};
+            use runtime_core::{reducer, Action};
 
             enum CounterAction { Inc, Dec, Reset }
 
@@ -419,7 +419,7 @@ docs! {
           " as signals, plus a ", code("refetch()"),
           " trigger and a cancellation token:"),
         code(rust, r##"
-            use framework_core::{resource, signal};
+            use runtime_core::{resource, signal};
 
             let user_id = signal!(42u32);
 
@@ -464,7 +464,7 @@ docs! {
            the value visible to ", code("inject::<T>()"),
           " in any descendant:"),
         code(rust, r##"
-            use framework_core::{provide, inject, inject_or};
+            use runtime_core::{provide, inject, inject_or};
 
             #[derive(Clone)]
             struct Theme { primary: Color }
@@ -507,7 +507,7 @@ docs! {
            component instance → same id, every render. Different \
            instances → different ids:"),
         code(rust, r##"
-            use framework_core::use_id;
+            use runtime_core::use_id;
 
             let id = use_id();  // e.g. "ui-1a3f9c0d8e4b2671"
             ui! {
@@ -533,7 +533,7 @@ docs! {
            the current value, but I don't want to re-run if it changes\")."),
 
         code(rust, r##"
-            use framework_core::untrack;
+            use runtime_core::untrack;
 
             Effect::new(move || {
                 let user = current_user.get();              // tracked: re-fire if user changes
@@ -590,7 +590,7 @@ docs! {
           code("count"), " changes."),
 
         p("The first-class ", code("Derived<T>"), " type lives in ",
-          code("framework-core"),
+          code("runtime-core"),
           " and carries both the runtime closure and a structured description \
            (method name + input signal ids). The structured form is what lets \
            generator backends like Roku ship the derived expression to the \
@@ -628,7 +628,7 @@ docs! {
            primitive mounts."),
 
         code(rust, r##"
-            use framework_core::{Ref, ButtonHandle};
+            use runtime_core::{Ref, ButtonHandle};
 
             let btn: Ref<ButtonHandle> = Ref::new();
 
@@ -702,12 +702,12 @@ docs! {
     section(heading = "mount() — opening the root scope") {
         p("Scopes are nested, but every tree has a root, and the root has \
            to come from somewhere. The framework's entry point is ",
-          code("framework_core::mount(backend, app)"),
+          code("runtime_core::mount(backend, app)"),
           " — it opens the root reactive scope and runs the user's ",
           code("app"), " constructor inside it:"),
 
         code(rust, r##"
-            use framework_core::mount;
+            use runtime_core::mount;
 
             // Host glue (web.rs, generated iOS/Android wrappers, etc.):
             let backend = Rc::new(RefCell::new(WebBackend::new("#app")));
@@ -785,7 +785,7 @@ docs! {
     },
 
     section(heading = "render() — the value-taking variant") {
-        p(code("framework_core::render(backend, primitive_value)"),
+        p(code("runtime_core::render(backend, primitive_value)"),
           " is the pre-built-tree alternative: it takes a ",
           code("Primitive"),
           " value that the caller has already constructed, and opens \

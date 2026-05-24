@@ -6,7 +6,7 @@ example targets it first.
 
 ## Bootstrap: every web host must do this
 
-Before constructing a `WebBackend` or calling `framework_core::mount(...)`,
+Before constructing a `WebBackend` or calling `runtime_core::mount(...)`,
 the host **must** call:
 
 ```rust
@@ -14,12 +14,12 @@ backend_web::install_scheduler();
 backend_web::install_time_source();
 ```
 
-- **`install_scheduler`** wires `framework_core::scheduling::after_ms` /
+- **`install_scheduler`** wires `runtime_core::scheduling::after_ms` /
   `schedule_microtask` / `request_animation_frame` to `setTimeout` /
   `queueMicrotask` / `requestAnimationFrame`. Without it, timer-driven
   features (presence animations, anything that calls `after_ms`) fire
   synchronously or never fire at all.
-- **`install_time_source`** wires `framework_core::time::now_micros` to
+- **`install_time_source`** wires `runtime_core::time::now_micros` to
   `performance.now()`. Without it, `now_micros()` returns 0 on wasm32, which
   means every `PhaseTimer` records duration 0; counts are real but timings
   are useless.
@@ -45,7 +45,7 @@ is non-obvious.
   rather than one call per property; the JS dispatcher reads capability
   flags to choose the fastest available update path.
 - **`dev_transport.rs`** (feature `aas-shell`): `web_sys::WebSocket` + rAF
-  outbound pump for hot-reload / AAS over the wire protocol on web.
+  outbound pump for hot-reload / runtime-server over the wire protocol on web.
 
 ## Style architecture
 

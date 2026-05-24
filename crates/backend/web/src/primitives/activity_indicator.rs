@@ -3,14 +3,14 @@
 //! `ensure_spinner_keyframes`.
 
 use crate::WebBackend;
-use framework_core::primitives::activity_indicator::ActivityIndicatorSize;
+use runtime_core::primitives::activity_indicator::ActivityIndicatorSize;
 use wasm_bindgen::JsCast;
 use web_sys::Node;
 
 pub(crate) fn create(
     b: &mut WebBackend,
     size: ActivityIndicatorSize,
-    color: Option<&framework_core::Color>,
+    color: Option<&runtime_core::Color>,
 ) -> Node {
     // Inject the keyframes rule once. Subsequent creations reuse the
     // same rule by checking a flag on the backend.

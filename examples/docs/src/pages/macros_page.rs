@@ -1,11 +1,11 @@
 //! Macros — the proc-macro surface area: `ui!`, `#[component]`,
 //! `signal!`, `stylesheet!`, `jsx!`.
 
-use framework_core::{ui, Primitive};
+use runtime_core::{ui, Primitive};
 use idea_ui::{body, card, heading, BodyTone, HeadingKind};
 
 use crate::shell::{
-    codeblock, pagebody, pageheader, section, CodeBlockProps, PageBodyProps, PageHeaderProps,
+    code_block, page_body, page_header, section, CodeBlockProps, PageBodyProps, PageHeaderProps,
     SectionProps,
 };
 

@@ -6,7 +6,7 @@ license.workspace = true
 
 # Third-party `CodeBlock` primitive — a single backend node rendering
 # a flat sequence of `(text, color)` runs. Carved out of
-# `framework-core` after a measurement showed the equivalent
+# `runtime-core` after a measurement showed the equivalent
 # composition (`View` + `Repeat<styled-View-with-Text>`) generates
 # 100-300× more backend ops per re-render than the single-node
 # primitive, even with the batched-Repeat fast path. The structural
@@ -27,7 +27,7 @@ license.workspace = true
 # right move.
 
 [dependencies]
-framework-core = { workspace = true }
+runtime-core = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }

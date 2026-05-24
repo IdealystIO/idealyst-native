@@ -9,7 +9,7 @@
 
 use crate::{WebViewOps, WebViewProps};
 use backend_web::WebBackend;
-use framework_core::Effect;
+use runtime_core::Effect;
 use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;

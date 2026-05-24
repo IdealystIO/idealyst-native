@@ -12,7 +12,7 @@ description = "Self-referencing documentation app for idea-ui"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-framework-core = { workspace = true }
+runtime-core = { workspace = true }
 idea-ui = { workspace = true, features = ["docs"] }
 
 # Web-only deps. The cross-platform `app()` tree never references

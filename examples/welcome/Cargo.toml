@@ -16,7 +16,7 @@ description = "Animated welcome demo — three-act cinematic intro driven by the
 crate-type = ["rlib"]
 
 [dependencies]
-framework-core = { workspace = true }
+runtime-core = { workspace = true }
 
 [package.metadata.idealyst.app]
 name      = "Welcome"

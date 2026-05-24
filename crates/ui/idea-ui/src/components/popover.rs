@@ -38,9 +38,9 @@
 
 use std::rc::Rc;
 
-use framework_core::primitives::overlay::BackdropMode;
-use framework_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
-use framework_core::{ui, ChildList, Primitive};
+use runtime_core::primitives::overlay::BackdropMode;
+use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
+use runtime_core::{ui, ChildList, Primitive};
 
 use crate::stylesheets::Popover;
 
@@ -91,7 +91,7 @@ pub fn popover(props: PopoverProps) -> Primitive {
         View(style = surface_style) { content }
     }];
 
-    let mut bound = framework_core::anchored_overlay(target, overlay_children)
+    let mut bound = runtime_core::anchored_overlay(target, overlay_children)
         .side(props.side)
         .align(props.align)
         .offset(props.offset)
@@ -100,5 +100,5 @@ pub fn popover(props: PopoverProps) -> Primitive {
     if let Some(d) = props.on_dismiss {
         bound = bound.on_dismiss(move || (d)());
     }
-    framework_core::IntoPrimitive::into_primitive(bound)
+    runtime_core::IntoPrimitive::into_primitive(bound)
 }

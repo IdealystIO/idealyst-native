@@ -1,4 +1,4 @@
-# Open architectural questions — AAS per-client sessions
+# Open architectural questions — runtime-server per-client sessions
 
 State after your second pass of feedback. Resolved items collapsed,
 open items called out at the top.

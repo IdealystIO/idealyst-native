@@ -2,7 +2,7 @@
 //! requested axis.
 
 use crate::WebBackend;
-use framework_core::primitives::scroll_view::{ScrollViewHandle, ScrollViewOps};
+use runtime_core::primitives::scroll_view::{ScrollViewHandle, ScrollViewOps};
 use std::any::Any;
 use std::rc::Rc;
 use wasm_bindgen::JsCast;

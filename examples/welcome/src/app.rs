@@ -3,7 +3,7 @@
 //! creates every ref + wires the animations; this function just
 //! lays out the tree.
 
-use framework_core::{ui, Primitive};
+use runtime_core::{ui, Primitive};
 
 use crate::components::content_layer::{content_layer, ContentLayerProps};
 use crate::components::page::page_sheet;

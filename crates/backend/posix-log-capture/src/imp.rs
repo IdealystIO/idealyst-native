@@ -5,7 +5,7 @@
 use std::io::Read;
 use std::sync::Once;
 
-use framework_core::robot::logs::{install_log_capture, push, LogCapture};
+use runtime_core::robot::logs::{install_log_capture, push, LogCapture};
 
 pub(super) fn install() {
     install_log_capture(Box::new(PosixLogCapture));

@@ -23,7 +23,7 @@ once, give it a stable identifier, and reuse it everywhere — on
 navigators, in `Link`s, in pushes:
 
 ```rust
-use framework_core::Route;
+use runtime_core::Route;
 
 pub const HOME:    Route<()>            = Route::new("home",    "/");
 pub const PROFILE: Route<ProfileParams> = Route::new("profile", "/profile/:id");
@@ -41,7 +41,7 @@ no-params routes, use `()`. For routes that take data, declare a
 struct and implement `RouteParams`:
 
 ```rust
-use framework_core::RouteParams;
+use runtime_core::RouteParams;
 use std::collections::HashMap;
 
 pub struct ProfileParams {
@@ -85,7 +85,7 @@ A `Screen` is what a route's render closure returns: a primitive
 tree plus optional header configuration.
 
 ```rust
-use framework_core::{Screen, ui};
+use runtime_core::{Screen, ui};
 
 fn render_home(_params: ()) -> Screen {
     Screen::new(ui! {
@@ -129,7 +129,7 @@ fn render_home(_: ()) -> Primitive {
 threads through `history.pushState` / `popstate`.
 
 ```rust
-use framework_core::{Navigator, Ref};
+use runtime_core::{Navigator, Ref};
 
 let nav: Ref<NavigatorHandle> = Ref::new();
 
@@ -173,7 +173,7 @@ code.
 `TabNavigator` is a tab bar plus a switched content region.
 
 ```rust
-use framework_core::{TabNavigator, TabSpec};
+use runtime_core::{TabNavigator, TabSpec};
 
 let tabs: Ref<TabsHandle> = Ref::new();
 
@@ -242,7 +242,7 @@ whatever navigation UI the design calls for; tapping an entry
 switches the body to that entry's screen.
 
 ```rust
-use framework_core::{DrawerNavigator, DrawerSide};
+use runtime_core::{DrawerNavigator, DrawerSide};
 
 let drawer: Ref<DrawerHandle> = Ref::new();
 

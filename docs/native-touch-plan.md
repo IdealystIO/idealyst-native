@@ -158,13 +158,13 @@ isn't pleasant unless this works.
 
 ## Build order
 
-1. **Core types** in framework-core: `TouchEvent`, `TouchPhase`,
+1. **Core types** in runtime-core: `TouchEvent`, `TouchPhase`,
    `TouchId`, `TouchResponse`, `Vec2`. Add `on_touch` slot to View.
 2. **Backend trait** methods (default no-op).
 3. **wgpu first** — fastest iteration, dispatcher already hit-tests for
    clicks. Implement bubble + claim entirely in the renderer.
 4. **Rust tap/long-press recognizers** as standalone modules in
-   `framework_core::touch::recognizers`. Author-facing building
+   `runtime_core::touch::recognizers`. Author-facing building
    blocks; existing widget primitives (`Pressable`, `Button`) keep
    their native event paths — see above.
 5. **Backend implementations** — all four (web, Android, iOS, wgpu)

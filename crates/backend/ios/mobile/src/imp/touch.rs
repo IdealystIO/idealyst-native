@@ -7,7 +7,7 @@
 //!
 //! The framework's View primitive creates instances of this class
 //! (via `create_view`) instead of plain `UIView`, so a later
-//! [`Backend::install_touch_handler`](framework_core::Backend::install_touch_handler)
+//! [`Backend::install_touch_handler`](runtime_core::Backend::install_touch_handler)
 //! drops the handler into the view's ivars without recreating the
 //! node. Views with no installed handler dispatch touches straight
 //! to `super` — overhead is one method call per touch event.
@@ -17,7 +17,7 @@
 use std::cell::RefCell;
 use std::collections::HashSet;
 
-use framework_core::{TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint};
+use runtime_core::{TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint};
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};

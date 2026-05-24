@@ -4,7 +4,7 @@
 //! Strategy: a single [`apply`] function takes a DOM `Element` and the
 //! resolved `AccessibilityProps` and writes (or clears) each attribute.
 //! All `create_*` paths call it after constructing the node; the
-//! dynamic [`update_accessibility`](framework_core::Backend::update_accessibility)
+//! dynamic [`update_accessibility`](runtime_core::Backend::update_accessibility)
 //! path reuses it identically. Removing-on-`None` is intentional —
 //! `update_accessibility` must be able to clear an attribute that was
 //! previously set, otherwise reactive a11y prop changes leak stale
@@ -14,7 +14,7 @@
 //! attributes directly off the DOM, so the web backend doesn't need
 //! a parallel semantics tree — `dump_accessibility_tree` stays `None`.
 
-use framework_core::accessibility::{
+use runtime_core::accessibility::{
     AccessibilityProps, AccessibilityTraits, LiveRegionPriority, Role,
 };
 use wasm_bindgen::JsCast;
@@ -23,7 +23,7 @@ use web_sys::{Element, Node};
 /// Apply / refresh every ARIA attribute on `node` from `props`.
 ///
 /// `inferred_role` is the primitive's default role (see
-/// [`framework_core::accessibility::default_role`]). If
+/// [`runtime_core::accessibility::default_role`]). If
 /// `props.role.is_none()` and `inferred_role.is_some()`, the inferred
 /// role is written; if both are `None`, the `role` attribute is left
 /// absent. Author-supplied `props.role` always wins.

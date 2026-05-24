@@ -12,8 +12,8 @@
 use std::any::Any;
 use std::rc::Rc;
 
-use framework_core::primitives::portal::ViewportRect;
-use framework_core::{ViewOps, ViewHandle, TextHandle};
+use runtime_core::primitives::portal::ViewportRect;
+use runtime_core::{ViewOps, ViewHandle, TextHandle};
 use objc2::msg_send;
 use objc2_app_kit::NSView;
 use objc2_foundation::CGRect;
@@ -78,7 +78,7 @@ impl ViewOps for MacosViewOps {
     fn set_animated_f32(
         &self,
         node: &dyn Any,
-        prop: framework_core::animation::AnimProp,
+        prop: runtime_core::animation::AnimProp,
         value: f32,
     ) {
         if let Some(n) = node.downcast_ref::<MacosNode>() {
@@ -89,7 +89,7 @@ impl ViewOps for MacosViewOps {
     fn set_animated_color(
         &self,
         node: &dyn Any,
-        prop: framework_core::animation::AnimProp,
+        prop: runtime_core::animation::AnimProp,
         value: [f32; 4],
     ) {
         if let Some(n) = node.downcast_ref::<MacosNode>() {
@@ -106,11 +106,11 @@ pub(crate) static MACOS_VIEW_OPS: MacosViewOps = MacosViewOps;
 
 pub(crate) struct MacosTextOps;
 
-impl framework_core::TextOps for MacosTextOps {
+impl runtime_core::TextOps for MacosTextOps {
     fn set_animated_color(
         &self,
         node: &dyn Any,
-        prop: framework_core::animation::AnimProp,
+        prop: runtime_core::animation::AnimProp,
         value: [f32; 4],
     ) {
         if let Some(n) = node.downcast_ref::<MacosNode>() {

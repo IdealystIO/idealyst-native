@@ -32,9 +32,9 @@
 
 use std::rc::Rc;
 
-use framework_core::primitives::overlay::BackdropMode;
-use framework_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
-use framework_core::{
+use runtime_core::primitives::overlay::BackdropMode;
+use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
+use runtime_core::{
     signal, ui, IntoPrimitive, PressableHandle, Primitive, Ref, Signal, StyleApplication,
     VariantEnum,
 };
@@ -111,7 +111,7 @@ pub fn select(props: SelectProps) -> Primitive {
     // flips programmatically.
     let label_options = options.clone();
     let label_placeholder = placeholder.clone();
-    let label_source: framework_core::TextSource = framework_core::IntoTextSource::into_text_source(
+    let label_source: runtime_core::TextSource = runtime_core::IntoTextSource::into_text_source(
         move || {
             label_options
                 .iter()
@@ -121,13 +121,13 @@ pub fn select(props: SelectProps) -> Primitive {
                 .unwrap_or_default()
         },
     );
-    // Use framework-core's `text` builder rather than constructing
+    // Use runtime-core's `text` builder rather than constructing
     // `Primitive::Text` directly: feature-gated fields like
-    // `test_id` (added when `framework-core/robot` is on) get
-    // initialized inside framework-core, so this crate never has
+    // `test_id` (added when `runtime-core/robot` is on) get
+    // initialized inside runtime-core, so this crate never has
     // to know about them.
-    use framework_core::IntoPrimitive;
-    let label_child = framework_core::text(label_source).into_primitive();
+    use runtime_core::IntoPrimitive;
+    let label_child = runtime_core::text(label_source).into_primitive();
     let trigger_style = move || {
         let _ = crate::theme_runtime::active_theme()
             .downcast_ref::<IdeaThemeRef>()
@@ -136,7 +136,7 @@ pub fn select(props: SelectProps) -> Primitive {
             .with("size", size.as_variant_str().to_string())
     };
     let on_open: Rc<dyn Fn()> = Rc::new(move || open.set(true));
-    let trigger = framework_core::pressable(vec![label_child], move || (on_open)())
+    let trigger = runtime_core::pressable(vec![label_child], move || (on_open)())
         .with_style(trigger_style)
         .bind(trigger_ref)
         .into_primitive();
@@ -151,7 +151,7 @@ pub fn select(props: SelectProps) -> Primitive {
     let menu_options = options.clone();
     let menu_on_change = on_change.clone();
     let menu_close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
-    let menu = framework_core::when(
+    let menu = runtime_core::when(
         move || open.get(),
         move || {
             menu_build(
@@ -212,16 +212,16 @@ fn menu_build(
         };
 
         let label_child =
-            framework_core::text(framework_core::TextSource::Static(opt_label))
+            runtime_core::text(runtime_core::TextSource::Static(opt_label))
                 .into_primitive();
-        let row = framework_core::pressable(vec![label_child], move || (on_click)())
+        let row = runtime_core::pressable(vec![label_child], move || (on_click)())
             .with_style(row_style)
             .into_primitive();
         rows.push(row);
     }
 
     let menu_style = SelectMenu();
-    framework_core::anchored_overlay(
+    runtime_core::anchored_overlay(
         AnchorTarget::from(trigger_ref),
         vec![ui! { View(style = menu_style) { rows } }],
     )

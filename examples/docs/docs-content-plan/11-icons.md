@@ -15,7 +15,7 @@ list to maintain.
 ## Using an icon
 
 ```rust
-use framework_core::icon;
+use runtime_core::icon;
 use icons_lucide::{SEARCH, MENU};
 
 ui! {
@@ -159,7 +159,7 @@ animation update per change.
 For a one-shot draw-on when the icon first appears:
 
 ```rust
-use framework_core::{StrokeAnimation, Easing};
+use runtime_core::{StrokeAnimation, Easing};
 
 ui! {
     icon(LOGO).draw_in(StrokeAnimation::new(600, Easing::EaseOut))
@@ -193,7 +193,7 @@ constants:
 
 ```rust
 // my_icons/src/lib.rs
-use framework_core::{FillRule, IconData};
+use runtime_core::{FillRule, IconData};
 
 pub const STAR: IconData = IconData {
     view_box: (24, 24),
@@ -215,7 +215,7 @@ That's it. Copy path data from any SVG, drop it into a
 constant, use it like any other icon:
 
 ```rust
-use framework_core::icon;
+use runtime_core::icon;
 use my_icons::{STAR, LOGO};
 
 ui! {
@@ -269,11 +269,11 @@ fn main() {
         let (vb, paths) = parse_svg(&path);
 
         out.push_str(&format!(
-            "pub const {name}: ::framework_core::IconData = \
-             ::framework_core::IconData {{ \
+            "pub const {name}: ::runtime_core::IconData = \
+             ::runtime_core::IconData {{ \
                 view_box: ({}, {}), \
                 paths: &[{}], \
-                fill_rule: ::framework_core::FillRule::NonZero, \
+                fill_rule: ::runtime_core::FillRule::NonZero, \
              }};\n",
             vb.0, vb.1,
             paths.iter().map(|p| format!("{p:?}")).collect::<Vec<_>>().join(",")
@@ -300,7 +300,7 @@ Multiple icon packs coexist without ceremony. They're just Rust
 modules of constants:
 
 ```rust
-use framework_core::icon;
+use runtime_core::icon;
 use icons_lucide::SEARCH;       // first-party pack
 use my_icons::LOGO;             // custom pack
 use heroicons::CHECK;           // third-party pack (hypothetical)

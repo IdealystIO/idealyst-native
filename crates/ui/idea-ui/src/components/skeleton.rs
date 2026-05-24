@@ -18,7 +18,7 @@
 //! }
 //! ```
 
-use framework_core::{ui, Length, Primitive, StyleApplication};
+use runtime_core::{ui, Length, Primitive, StyleApplication};
 
 use crate::stylesheets::Skeleton;
 use crate::theme::IdeaThemeRef;
@@ -77,8 +77,8 @@ pub fn skeleton(props: &SkeletonProps) -> Primitive {
             .override_border_radius(Length::Px(radius));
         // No `override_width` / `override_height` builders yet —
         // poke `overrides` directly. (Framework follow-up.)
-        app.overrides.width = Some(framework_core::Tokenized::Literal(width.clone()));
-        app.overrides.height = Some(framework_core::Tokenized::Literal(Length::Px(height)));
+        app.overrides.width = Some(runtime_core::Tokenized::Literal(width.clone()));
+        app.overrides.height = Some(runtime_core::Tokenized::Literal(Length::Px(height)));
         app
     };
 

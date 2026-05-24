@@ -1,7 +1,7 @@
-use framework_core::primitives::navigator::{
+use runtime_core::primitives::navigator::{
     NavCommand, NavigatorCallbacks, NavigatorControl, NavigatorHandle, NavigatorOps,
 };
-use framework_core::StyleRules;
+use runtime_core::StyleRules;
 use objc2::rc::Retained;
 use objc2::{msg_send, msg_send_id};
 use objc2_foundation::{CGFloat, MainThreadMarker};
@@ -153,7 +153,7 @@ pub(crate) fn navigator_attach_initial(
     navigator: &IosNode,
     screen: IosNode,
     scope_id: u64,
-    options: framework_core::ScreenOptions,
+    options: runtime_core::ScreenOptions,
 ) {
     let key = navigator.view_key();
     let Some(entry) = navigator_instances.get(&key) else {
@@ -263,11 +263,11 @@ pub(crate) fn apply_nav_title_style(
 
         let size: CGFloat = style.font_size.as_ref()
             .map(|t| match t.resolve() {
-                framework_core::Length::Px(v) => v as CGFloat,
+                runtime_core::Length::Px(v) => v as CGFloat,
                 _ => 17.0,
             })
             .unwrap_or(17.0);
-        let weight = style.font_weight.unwrap_or(framework_core::FontWeight::SemiBold);
+        let weight = style.font_weight.unwrap_or(runtime_core::FontWeight::SemiBold);
         let ui_weight = font_weight_to_uikit(weight);
         let font: Retained<objc2_foundation::NSObject> =
             msg_send_id![

@@ -1,5 +1,5 @@
 //! Runnable example that demonstrates the prototype: build a small
-//! Primitive tree, drive it through `framework_core::render(...)`
+//! Primitive tree, drive it through `runtime_core::render(...)`
 //! against a [`WireRecordingBackend`], and print the captured
 //! command stream as pretty JSON.
 //!
@@ -11,7 +11,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use framework_core::{render, IntoAction, Primitive, TextSource};
+use runtime_core::{render, IntoAction, Primitive, TextSource};
 use dev_server::WireRecordingBackend;
 
 fn main() {
@@ -37,7 +37,7 @@ fn main() {
                 }],
                 style: None,
                 ref_fill: None,
-                safe_area_sides: framework_core::SafeAreaSides::NONE,
+                safe_area_sides: runtime_core::SafeAreaSides::NONE,
                 on_touch: None,
                 accessibility: Default::default(),
                 test_id: None,
@@ -59,7 +59,7 @@ fn main() {
         ],
         style: None,
         ref_fill: None,
-        safe_area_sides: framework_core::SafeAreaSides::NONE,
+        safe_area_sides: runtime_core::SafeAreaSides::NONE,
         on_touch: None,
         accessibility: Default::default(),
         test_id: None,

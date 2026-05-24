@@ -4,7 +4,7 @@
 //! ui! { Body(content = "Hello", tone = BodyTone::Muted) }
 //! ```
 
-use framework_core::{ui, Primitive};
+use runtime_core::{ui, Primitive};
 
 use crate::stylesheets::Body;
 pub use crate::stylesheets::{BodyAlign, BodyTone};

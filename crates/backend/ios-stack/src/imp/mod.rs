@@ -27,14 +27,14 @@ macro_rules! ios_log {
     };
 }
 
-use framework_core::primitives::activity_indicator::ActivityIndicatorSize;
-use framework_core::primitives::graphics::{OnLost, OnReady, OnResize};
-use framework_core::primitives::link::LinkConfig;
-use framework_core::primitives::navigator::{
+use runtime_core::primitives::activity_indicator::ActivityIndicatorSize;
+use runtime_core::primitives::graphics::{OnLost, OnReady, OnResize};
+use runtime_core::primitives::link::LinkConfig;
+use runtime_core::primitives::navigator::{
     DrawerHandle, DrawerNavigatorCallbacks, NavigatorCallbacks,
     NavigatorControl, NavigatorHandle, TabNavigatorCallbacks, TabsHandle,
 };
-use framework_core::{Backend, Color, StyleRules};
+use runtime_core::{Backend, Color, StyleRules};
 use objc2::rc::Retained;
 use objc2::{msg_send, msg_send_id};
 use objc2_foundation::{MainThreadMarker, NSObject, NSString};
@@ -222,7 +222,7 @@ pub(crate) fn mount_screen_in_vc(mtm: MainThreadMarker, screen: &UIView) -> Reta
 /// targets that must be kept alive (caller stores or forgets them).
 pub(crate) fn apply_header_options(
     vc: &UIViewController,
-    options: &framework_core::ScreenOptions,
+    options: &runtime_core::ScreenOptions,
     mtm: MainThreadMarker,
 ) -> Vec<Retained<NSObject>> {
     let mut retained = Vec::new();
@@ -306,28 +306,28 @@ pub(crate) fn apply_header_options(
 impl Backend for IosBackend {
     type Node = IosNode;
 
-    fn platform(&self) -> framework_core::Platform {
+    fn platform(&self) -> runtime_core::Platform {
         if cfg!(all(target_os = "ios", target_abi = "sim")) {
-            framework_core::Platform::Custom("Sim")
+            runtime_core::Platform::Custom("Sim")
         } else {
-            framework_core::Platform::Ios
+            runtime_core::Platform::Ios
         }
     }
 
-    fn color_scheme(&self) -> framework_core::ColorScheme {
+    fn color_scheme(&self) -> runtime_core::ColorScheme {
         // UITraitCollection.currentTraitCollection.userInterfaceStyle
         // 0 = Unspecified, 1 = Light, 2 = Dark (UIUserInterfaceStyle).
         let tc: Retained<NSObject> =
             unsafe { msg_send_id![objc2::class!(UITraitCollection), currentTraitCollection] };
         let style: isize = unsafe { msg_send![&tc, userInterfaceStyle] };
         match style {
-            1 => framework_core::ColorScheme::Light,
-            2 => framework_core::ColorScheme::Dark,
-            _ => framework_core::ColorScheme::Auto,
+            1 => runtime_core::ColorScheme::Light,
+            2 => runtime_core::ColorScheme::Dark,
+            _ => runtime_core::ColorScheme::Auto,
         }
     }
 
-    fn create_view(&mut self, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
+    fn create_view(&mut self, _a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
         let stack = unsafe { UIStackView::new(self.mtm) };
         let _: () = unsafe { msg_send![&stack, setAxis: 1isize] };
         let _: () = unsafe { msg_send![&stack, setAlignment: 0isize] };
@@ -335,7 +335,7 @@ impl Backend for IosBackend {
         IosNode::View(Retained::into_super(stack))
     }
 
-    fn create_text(&mut self, content: &str, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
+    fn create_text(&mut self, content: &str, _a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
         let label = unsafe { UILabel::new(self.mtm) };
         let ns_text = NSString::from_str(content);
         unsafe { label.setText(Some(&ns_text)) };
@@ -346,10 +346,10 @@ impl Backend for IosBackend {
     fn create_button(
         &mut self,
         label: &str,
-        on_click: &framework_core::Action,
-        leading_icon: Option<&framework_core::IconData>,
-        _trailing_icon: Option<&framework_core::IconData>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        on_click: &runtime_core::Action,
+        leading_icon: Option<&runtime_core::IconData>,
+        _trailing_icon: Option<&runtime_core::IconData>,
+        _a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let button = unsafe {
             UIButton::buttonWithType(UIButtonType::System, self.mtm)
@@ -387,8 +387,8 @@ impl Backend for IosBackend {
         initial_value: &str,
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
-        _on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        _a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let field = unsafe { UITextField::new(self.mtm) };
         let ns_val = NSString::from_str(initial_value);
@@ -426,7 +426,7 @@ impl Backend for IosBackend {
         &mut self,
         initial_value: bool,
         on_change: Rc<dyn Fn(bool)>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        _a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let switch = unsafe { UISwitch::new(self.mtm) };
         unsafe { switch.setOn_animated(initial_value, false) };
@@ -450,7 +450,7 @@ impl Backend for IosBackend {
         }
     }
 
-    fn create_scroll_view(&mut self, horizontal: bool, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
+    fn create_scroll_view(&mut self, horizontal: bool, _a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
         let scroll = unsafe { UIScrollView::new(self.mtm) };
 
         // UIScrollView has zero intrinsic content size, so a parent
@@ -518,7 +518,7 @@ impl Backend for IosBackend {
         max: f32,
         _step: Option<f32>,
         on_change: Rc<dyn Fn(f32)>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        _a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let slider = unsafe { UISlider::new(self.mtm) };
         unsafe {
@@ -547,7 +547,7 @@ impl Backend for IosBackend {
         &mut self,
         size: ActivityIndicatorSize,
         color: Option<&Color>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        _a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let style = match size {
             ActivityIndicatorSize::Small => UIActivityIndicatorViewStyle::Medium,
@@ -570,9 +570,9 @@ impl Backend for IosBackend {
 
     fn create_icon(
         &mut self,
-        data: &framework_core::primitives::icon::IconData,
+        data: &runtime_core::primitives::icon::IconData,
         color: Option<&Color>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        _a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         icon::create_icon(self.mtm, data, color)
     }
@@ -591,14 +591,14 @@ impl Backend for IosBackend {
         from: f32,
         to: f32,
         duration_ms: u32,
-        easing: framework_core::Easing,
+        easing: runtime_core::Easing,
         infinite: bool,
         autoreverses: bool,
     ) {
         icon::animate_icon_stroke(node, from, to, duration_ms, easing, infinite, autoreverses)
     }
 
-    fn make_icon_handle(&self, node: &Self::Node) -> framework_core::IconHandle {
+    fn make_icon_handle(&self, node: &Self::Node) -> runtime_core::IconHandle {
         icon::make_handle(node)
     }
 
@@ -607,12 +607,12 @@ impl Backend for IosBackend {
         on_ready: OnReady,
         on_resize: OnResize,
         on_lost: OnLost,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        _a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         graphics::create_graphics(self.mtm, &mut self.callback_targets, on_ready, on_resize, on_lost)
     }
 
-    fn create_link(&mut self, config: LinkConfig, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
+    fn create_link(&mut self, config: LinkConfig, _a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
         // Use a UIStackView (vertical) as a tappable container so
         // child primitives (Text, etc.) render inside it. A UIButton
         // would swallow children into its internal title label layout.
@@ -730,7 +730,7 @@ impl Backend for IosBackend {
                     let fs_val = fs.resolve();
                     let size = length_to_px(&fs_val);
                     if size > 0.0 {
-                        let weight = style.font_weight.as_ref().copied().unwrap_or(framework_core::FontWeight::Normal);
+                        let weight = style.font_weight.as_ref().copied().unwrap_or(runtime_core::FontWeight::Normal);
                         let ui_weight = font_weight_to_uikit(weight);
                         let font: Retained<NSObject> = unsafe {
                             msg_send_id![
@@ -778,7 +778,7 @@ impl Backend for IosBackend {
         &mut self,
         callbacks: NavigatorCallbacks<Self::Node>,
         control: Rc<NavigatorControl>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        _a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         navigator::create_navigator(self.mtm, &mut self.navigator_instances, callbacks, control)
     }
@@ -788,7 +788,7 @@ impl Backend for IosBackend {
         navigator: &Self::Node,
         screen: Self::Node,
         scope_id: u64,
-        options: framework_core::ScreenOptions,
+        options: runtime_core::ScreenOptions,
     ) {
         navigator::navigator_attach_initial(self.mtm, &self.navigator_instances, navigator, screen, scope_id, options)
     }
@@ -796,7 +796,7 @@ impl Backend for IosBackend {
     fn apply_navigator_header_style(
         &mut self,
         navigator: &Self::Node,
-        style: &Rc<framework_core::StyleRules>,
+        style: &Rc<runtime_core::StyleRules>,
     ) {
         let key = navigator.view_key();
         if let Some(entry) = self.navigator_instances.get(&key) {
@@ -807,7 +807,7 @@ impl Backend for IosBackend {
     fn apply_navigator_title_style(
         &mut self,
         navigator: &Self::Node,
-        style: &Rc<framework_core::StyleRules>,
+        style: &Rc<runtime_core::StyleRules>,
     ) {
         let key = navigator.view_key();
         if let Some(entry) = self.navigator_instances.get(&key) {
@@ -818,7 +818,7 @@ impl Backend for IosBackend {
     fn apply_navigator_button_style(
         &mut self,
         navigator: &Self::Node,
-        style: &Rc<framework_core::StyleRules>,
+        style: &Rc<runtime_core::StyleRules>,
     ) {
         let key = navigator.view_key();
         if let Some(entry) = self.navigator_instances.get(&key) {
@@ -840,10 +840,10 @@ impl Backend for IosBackend {
 
     fn create_portal(
         &mut self,
-        target: framework_core::primitives::portal::PortalTarget,
+        target: runtime_core::primitives::portal::PortalTarget,
         _on_dismiss: Option<Rc<dyn Fn()>>,
         trap_focus: bool,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        _a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         // On the iOS stack backend we mount portals as plain
         // window-level UIViews — not `presentViewController:` sheets.
@@ -877,16 +877,16 @@ impl Backend for IosBackend {
     // (Popover, Select).
     // =================================================================
 
-    fn make_button_handle(&self, node: &Self::Node) -> framework_core::ButtonHandle {
-        framework_core::ButtonHandle::new(Rc::new(node.clone()), &handles::IOS_BUTTON_OPS)
+    fn make_button_handle(&self, node: &Self::Node) -> runtime_core::ButtonHandle {
+        runtime_core::ButtonHandle::new(Rc::new(node.clone()), &handles::IOS_BUTTON_OPS)
     }
 
-    fn make_pressable_handle(&self, node: &Self::Node) -> framework_core::PressableHandle {
-        framework_core::PressableHandle::new(Rc::new(node.clone()), &handles::IOS_PRESSABLE_OPS)
+    fn make_pressable_handle(&self, node: &Self::Node) -> runtime_core::PressableHandle {
+        runtime_core::PressableHandle::new(Rc::new(node.clone()), &handles::IOS_PRESSABLE_OPS)
     }
 
-    fn make_view_handle(&self, node: &Self::Node) -> framework_core::ViewHandle {
-        framework_core::ViewHandle::new(Rc::new(node.clone()), &handles::IOS_VIEW_OPS)
+    fn make_view_handle(&self, node: &Self::Node) -> runtime_core::ViewHandle {
+        runtime_core::ViewHandle::new(Rc::new(node.clone()), &handles::IOS_VIEW_OPS)
     }
 
     // =================================================================
@@ -897,7 +897,7 @@ impl Backend for IosBackend {
         &mut self,
         callbacks: TabNavigatorCallbacks<Self::Node>,
         control: Rc<NavigatorControl>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        _a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         tab_drawer::create_tab_navigator(self.mtm, &mut self.tab_drawer_instances, callbacks, control)
     }
@@ -907,7 +907,7 @@ impl Backend for IosBackend {
         navigator: &Self::Node,
         screen: Self::Node,
         scope_id: u64,
-        options: framework_core::ScreenOptions,
+        options: runtime_core::ScreenOptions,
     ) {
         tab_drawer::tab_navigator_attach_initial(&self.tab_drawer_instances, navigator, screen, scope_id, options)
     }
@@ -928,7 +928,7 @@ impl Backend for IosBackend {
         &mut self,
         callbacks: DrawerNavigatorCallbacks<Self::Node>,
         control: Rc<NavigatorControl>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        _a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         tab_drawer::create_drawer_navigator(self.mtm, &mut self.tab_drawer_instances, callbacks, control)
     }
@@ -938,7 +938,7 @@ impl Backend for IosBackend {
         navigator: &Self::Node,
         screen: Self::Node,
         scope_id: u64,
-        options: framework_core::ScreenOptions,
+        options: runtime_core::ScreenOptions,
     ) {
         tab_drawer::drawer_navigator_attach_initial(
             self.mtm, &self.tab_drawer_instances, &mut self.callback_targets,
@@ -968,7 +968,7 @@ impl Backend for IosBackend {
     fn apply_drawer_sidebar_style(
         &mut self,
         navigator: &Self::Node,
-        style: &Rc<framework_core::StyleRules>,
+        style: &Rc<runtime_core::StyleRules>,
     ) {
         let key = navigator.view_key();
         if let Some(entry) = self.tab_drawer_instances.get(&key) {

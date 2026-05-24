@@ -21,13 +21,13 @@ static ALLOCATOR: lol_alloc::AssumeSingleThreaded<lol_alloc::FreeListAllocator> 
 thread_local! {
     /// `render` returns an `Owner` that must outlive the page. Stash
     /// it in a thread-local so it survives `start()` returning.
-    static OWNER: RefCell<Option<framework_core::Owner>> = const { RefCell::new(None) };
+    static OWNER: RefCell<Option<runtime_core::Owner>> = const { RefCell::new(None) };
 }
 
 #[wasm_bindgen(start)]
 pub fn start() {
     console_error_panic_hook::set_once();
     let backend = Rc::new(RefCell::new(WebBackend::new("#app")));
-    let owner = framework_core::render(backend, super::app());
+    let owner = runtime_core::render(backend, super::app());
     OWNER.with(|slot| *slot.borrow_mut() = Some(owner));
 }

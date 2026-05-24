@@ -22,7 +22,7 @@
 //! Quick start:
 //!
 //! ```ignore
-//! use framework_core::{component, signal, ui, Primitive};
+//! use runtime_core::{component, signal, ui, Primitive};
 //! use idea_ui::{install_idea_theme, light_theme, ButtonKind, IntentTag, StackGap};
 //!
 //! #[component]

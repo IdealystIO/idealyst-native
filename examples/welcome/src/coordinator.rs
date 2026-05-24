@@ -8,15 +8,15 @@
 //! Animation plumbing doesn't leak into the tree-building code.
 //!
 //! All scheduling here is scope-anchored: the framework's
-//! [`framework_core::after_ms_scoped`] / [`framework_core::raf_loop_scoped`]
-//! and the auto-cleanup baked into [`framework_core::timeline!`] mean
+//! [`runtime_core::after_ms_scoped`] / [`runtime_core::raf_loop_scoped`]
+//! and the auto-cleanup baked into [`runtime_core::timeline!`] mean
 //! the welcome's timers die naturally with the mounted `Owner` —
 //! no `std::mem::forget` boilerplate, no `on_cleanup(move || drop(...))`.
 
 use std::time::Duration;
 
-use framework_core::animation::{AnimProp, SpringTo, TweenTo};
-use framework_core::{
+use runtime_core::animation::{AnimProp, SpringTo, TweenTo};
+use runtime_core::{
     effect, node_ref, raf_loop_scoped, timeline, Ref, TextHandle, ViewHandle,
 };
 
@@ -65,7 +65,7 @@ pub struct WelcomeRefs {
 /// the raf-driven pulse, and return the refs.
 ///
 /// Call once from inside the mounted reactive scope (i.e. from
-/// `app()` running under `framework_core::mount(...)`). Every
+/// `app()` running under `runtime_core::mount(...)`). Every
 /// scheduling primitive used here is scope-anchored, so the
 /// returned refs and all their animations die with the surrounding
 /// `Owner`.
@@ -90,7 +90,7 @@ pub fn use_welcome() -> WelcomeRefs {
 
     // ---- Animated values, one per (element, property) pair ----
     //
-    // Declared via `framework_core::session::animated(key, initial)`
+    // Declared via `runtime_core::session::animated(key, initial)`
     // so each AV's current value survives `SessionMsg::Rerender`
     // (hot-patch landing). Combined with the session-relative
     // [`timeline!`] macro (which fires already-elapsed acts
@@ -104,7 +104,7 @@ pub fn use_welcome() -> WelcomeRefs {
     // last-write-wins. The `welcome_` prefix scopes them so a
     // larger app composing welcome alongside other components
     // doesn't accidentally collide.
-    use framework_core::session::animated as keyed;
+    use runtime_core::session::animated as keyed;
     let welcome_opacity = keyed("welcome_opacity", 0.0_f32);
     let welcome_scale = keyed("welcome_scale", PHRASE_ENTER_SCALE);
     let welcome_y = keyed("welcome_y", PHRASE_ENTER_Y);
@@ -243,7 +243,7 @@ pub fn use_welcome() -> WelcomeRefs {
         // pulse / planet orbit resumes within one frame of the
         // rerender instead of waiting another 3.2 seconds for the
         // act timeline to replay.
-        framework_core::session::after_ms(glare_start as u64, move || {
+        runtime_core::session::after_ms(glare_start as u64, move || {
             let period_ms = SUN_PULSE_PERIOD_MS;
             // Wait half a period before the scale pulse takes over
             // the entrance spring — joins on `sin(0) = 0` so the
@@ -251,15 +251,15 @@ pub fn use_welcome() -> WelcomeRefs {
             let scale_gate_ms = period_ms / 2.0;
             // `session::epoch_micros` returns the *first-call* time
             // for this session thread and survives hot-patch rerenders
-            // (see [framework_core::session]). With plain
+            // (see [runtime_core::session]). With plain
             // `time::now_micros()`, every rerender recaptured a fresh
             // epoch and the sun pulse / planet orbits visibly snapped
             // back to their initial phase on every save. Anchoring to
             // the session epoch keeps the animation phase continuous
             // across edits.
-            let epoch = framework_core::session::epoch_micros();
+            let epoch = runtime_core::session::epoch_micros();
             raf_loop_scoped(move || {
-                let now = framework_core::time::now_micros();
+                let now = runtime_core::time::now_micros();
                 let elapsed_ms = (now.saturating_sub(epoch) as f64) / 1000.0;
                 let phase = (elapsed_ms / period_ms) * std::f64::consts::TAU;
                 let sin = phase.sin();

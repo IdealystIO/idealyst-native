@@ -16,7 +16,7 @@
 
 use std::rc::Rc;
 
-use framework_core::{ui, IntoPrimitive, Primitive, StyleApplication};
+use runtime_core::{ui, IntoPrimitive, Primitive, StyleApplication};
 
 use crate::components::badge::BadgeKind;
 use crate::components::button::IntentTag;
@@ -68,8 +68,8 @@ pub fn tag(props: &TagProps) -> Primitive {
             // not `Button(...)` — the ui!-side `Button` tag is now
             // idea-ui's styled Button, and we want a bare clickable
             // here that the TagClose stylesheet fully owns.
-            let close_text = framework_core::text("×".to_string()).into_primitive();
-            let close = framework_core::pressable(vec![close_text], move || (on_remove)())
+            let close_text = runtime_core::text("×".to_string()).into_primitive();
+            let close = runtime_core::pressable(vec![close_text], move || (on_remove)())
                 .with_style(close_style)
                 .into_primitive();
             ui! {

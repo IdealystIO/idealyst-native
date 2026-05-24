@@ -12,7 +12,7 @@
 
 use docs_macro::docs;
 #[allow(unused_imports)]
-use crate::shell::{codeblock, pageheader, CodeBlockProps, PageHeaderProps};
+use crate::shell::{code_block, page_header, CodeBlockProps, PageHeaderProps};
 #[allow(unused_imports)]
 use idea_ui::{body, card, heading, stack};
 
@@ -25,7 +25,7 @@ docs! {
     concepts = [Theme],
 
     section(heading = "Why this lives in user space") {
-        p(code("framework-core"),
+        p(code("runtime-core"),
           " ships ", code("Tokenized<T>"),
           " (the primitive) plus ", code("install_tokens(...)"),
           " / ", code("update_tokens(...)"),
@@ -61,7 +61,7 @@ docs! {
               the registry (per-token reactivity does the rest)."],
         ),
         code(rust, r##"
-            use framework_core::{Color, Length, Tokenized, TokenEntry, TokenValue};
+            use runtime_core::{Color, Length, Tokenized, TokenEntry, TokenValue};
             use idea_ui::ThemeTokens;
 
             // Your theme struct. Shape is yours — the framework
@@ -170,7 +170,7 @@ docs! {
           code("&MyTheme"),
           ", and your closures access tokens through typed fields:"),
         code(rust, r##"
-            use framework_core::stylesheet;
+            use runtime_core::stylesheet;
 
             stylesheet! {
                 pub Card<MyTheme> {
@@ -299,7 +299,7 @@ docs! {
     section(heading = "Rolling your own (without idea-ui)") {
         p("If the ", code("idea-ui"),
           " convention isn't a fit, skip it entirely. ",
-          code("framework-core"),
+          code("runtime-core"),
           " gives you everything you need:"),
         list(
             [code("install_tokens(entries)"),
@@ -316,7 +316,7 @@ docs! {
               effect to that specific token."],
         ),
         code(rust, r##"
-            use framework_core::{install_tokens, update_tokens, TokenEntry, TokenValue, Color};
+            use runtime_core::{install_tokens, update_tokens, TokenEntry, TokenValue, Color};
 
             // Boot — no theme struct involved.
             install_tokens(vec![

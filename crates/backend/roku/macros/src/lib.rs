@@ -53,7 +53,7 @@
 //! Attribute macros expand inner-most-first, so `#[method]` runs
 //! first, emits its BRS const + the unchanged `fn`, and the next
 //! attribute then sees the original function as if `#[method]`
-//! weren't there. `framework-macros` therefore never has to know
+//! weren't there. `runtime-macros` therefore never has to know
 //! about Roku.
 //!
 //! # What's transpilable

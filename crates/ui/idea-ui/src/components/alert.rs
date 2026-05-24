@@ -19,7 +19,7 @@
 
 use std::rc::Rc;
 
-use framework_core::{ui, IntoPrimitive, Primitive, StyleApplication};
+use runtime_core::{ui, IntoPrimitive, Primitive, StyleApplication};
 
 use crate::components::badge::BadgeKind;
 use crate::components::button::IntentTag;
@@ -77,8 +77,8 @@ pub fn alert(props: &AlertProps) -> Primitive {
 
     let close_node: Option<Primitive> = props.on_dismiss.clone().map(|on_dismiss| {
         // Bare-clickable close × — see Tag for the same reasoning.
-        let close_text = framework_core::text("×".to_string()).into_primitive();
-        framework_core::pressable(vec![close_text], move || (on_dismiss)())
+        let close_text = runtime_core::text("×".to_string()).into_primitive();
+        runtime_core::pressable(vec![close_text], move || (on_dismiss)())
             .with_style(close_style)
             .into_primitive()
     });

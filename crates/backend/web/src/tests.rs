@@ -251,7 +251,7 @@ fn node_id_unique_across_many_create_drop_cycles() {
 /// `background-image` without re-walking the stylesheet.
 #[wasm_bindgen_test]
 fn apply_style_snapshots_gradient_shape_for_animation() {
-    use framework_core::{Color, Gradient, GradientKind, GradientStop, StyleRules};
+    use runtime_core::{Color, Gradient, GradientKind, GradientStop, StyleRules};
     use std::rc::Rc;
 
     install_mount();
@@ -276,7 +276,7 @@ fn apply_style_snapshots_gradient_shape_for_animation() {
     // Look up the id BEFORE apply so we know what to check.
     let id = backend.node_id(&node);
 
-    use framework_core::Backend;
+    use runtime_core::Backend;
     backend.apply_style(&node, &rules);
 
     let snapshot = backend
@@ -301,7 +301,7 @@ fn apply_style_snapshots_gradient_shape_for_animation() {
 /// the welcome example.
 #[wasm_bindgen_test]
 fn apply_styled_states_snapshots_gradient_shape_for_animation() {
-    use framework_core::{Color, Gradient, GradientKind, GradientStop, StyleRules};
+    use runtime_core::{Color, Gradient, GradientKind, GradientStop, StyleRules};
     use std::rc::Rc;
 
     install_mount();
@@ -317,7 +317,7 @@ fn apply_styled_states_snapshots_gradient_shape_for_animation() {
             kind: GradientKind::Radial {
                 center: (0.5, 0.5),
                 radius: 1.0,
-                extent: framework_core::RadialExtent::FarthestCorner,
+                extent: runtime_core::RadialExtent::FarthestCorner,
             },
             stops: vec![
                 GradientStop { offset: 0.0, color: Color("#fff".into()) },
@@ -329,7 +329,7 @@ fn apply_styled_states_snapshots_gradient_shape_for_animation() {
 
     let id = backend.node_id(&node);
 
-    use framework_core::Backend;
+    use runtime_core::Backend;
     // `apply_styled_states` with an empty overlay list — same
     // shape the framework uses when `handles_states_natively`
     // returns true but the node has no per-state styling.
@@ -347,7 +347,7 @@ fn apply_styled_states_snapshots_gradient_shape_for_animation() {
     // Verify the extent round-tripped through the snapshot.
     match snapshot.gradient_shape.as_ref().unwrap().kind {
         crate::animated::GradientShapeKind::Radial { extent, .. } => {
-            assert_eq!(extent, framework_core::RadialExtent::FarthestCorner);
+            assert_eq!(extent, runtime_core::RadialExtent::FarthestCorner);
         }
         other => panic!("expected Radial in snapshot, got {:?}", other),
     }

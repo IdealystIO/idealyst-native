@@ -6,7 +6,7 @@
 //! card bodies). Use `axis = StackAxis::Row` for row layouts (toolbars,
 //! button groups, badge rows).
 
-use framework_core::{ui, ChildList, Primitive};
+use runtime_core::{ui, ChildList, Primitive};
 
 use crate::stylesheets::Stack;
 

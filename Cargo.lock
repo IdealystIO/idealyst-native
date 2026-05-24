@@ -3,18 +3,6 @@
 version = 4
 
 [[package]]
-name = "aas-shell-native"
-version = "0.0.1"
-dependencies = [
- "dev-client",
- "framework-core",
- "mdns-sd",
- "serde_json",
- "tungstenite",
- "wire",
-]
-
-[[package]]
 name = "ab_glyph"
 version = "0.2.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -190,9 +178,9 @@ checksum = "fc7eb209b1518d6bb87b283c20095f5228ecda460da70b44f0802523dea6da04"
 name = "android-sim"
 version = "0.0.1"
 dependencies = [
- "framework-core",
  "glyphon",
  "render-wgpu",
+ "runtime-core",
  "web-time",
 ]
 
@@ -230,10 +218,10 @@ dependencies = [
  "backend-web",
  "console_error_panic_hook",
  "dev-client",
- "framework-core",
  "idea-ui",
  "js-sys",
  "lol_alloc",
+ "runtime-core",
  "wasm-bindgen",
  "web-sys",
 ]
@@ -384,40 +372,40 @@ name = "backend-android-core"
 version = "0.0.1"
 dependencies = [
  "android_logger",
- "framework-core",
  "jni 0.21.1",
  "log",
  "ndk-sys 0.6.0+11769913",
  "raw-window-handle",
+ "runtime-core",
 ]
 
 [[package]]
 name = "backend-android-mobile"
 version = "0.0.1"
 dependencies = [
- "aas-shell-native",
  "android_logger",
  "backend-android-core",
- "framework-core",
  "jni 0.21.1",
  "log",
- "native-layout",
  "ndk-sys 0.6.0+11769913",
  "raw-window-handle",
+ "runtime-core",
+ "runtime-layout",
+ "runtime-server-shell-native",
 ]
 
 [[package]]
 name = "backend-android-tv"
 version = "0.0.1"
 dependencies = [
- "aas-shell-native",
  "android_logger",
  "backend-android-core",
- "framework-core",
  "jni 0.21.1",
  "log",
  "ndk-sys 0.6.0+11769913",
  "raw-window-handle",
+ "runtime-core",
+ "runtime-server-shell-native",
 ]
 
 [[package]]
@@ -425,9 +413,9 @@ name = "backend-apple-core"
 version = "0.0.1"
 dependencies = [
  "block2 0.5.1",
- "framework-core",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
+ "runtime-core",
 ]
 
 [[package]]
@@ -436,27 +424,27 @@ version = "0.0.1"
 dependencies = [
  "backend-apple-core",
  "block2 0.5.1",
- "framework-core",
- "native-layout",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "objc2-ui-kit",
  "raw-window-handle",
+ "runtime-core",
+ "runtime-layout",
 ]
 
 [[package]]
 name = "backend-ios-mobile"
 version = "0.0.1"
 dependencies = [
- "aas-shell-native",
  "backend-ios-core",
  "block2 0.5.1",
- "framework-core",
- "native-layout",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "objc2-ui-kit",
  "raw-window-handle",
+ "runtime-core",
+ "runtime-layout",
+ "runtime-server-shell-native",
 ]
 
 [[package]]
@@ -464,41 +452,41 @@ name = "backend-ios-stack"
 version = "0.0.1"
 dependencies = [
  "block2 0.5.1",
- "framework-core",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "objc2-ui-kit",
  "raw-window-handle",
+ "runtime-core",
 ]
 
 [[package]]
 name = "backend-ios-tv"
 version = "0.0.1"
 dependencies = [
- "aas-shell-native",
  "backend-ios-core",
  "block2 0.5.1",
- "framework-core",
- "native-layout",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "objc2-ui-kit",
  "raw-window-handle",
+ "runtime-core",
+ "runtime-layout",
+ "runtime-server-shell-native",
 ]
 
 [[package]]
 name = "backend-macos"
 version = "0.0.1"
 dependencies = [
- "aas-shell-native",
  "backend-apple-core",
  "block2 0.5.1",
- "framework-core",
- "native-layout",
  "objc2 0.5.2",
  "objc2-app-kit",
  "objc2-foundation 0.2.2",
  "raw-window-handle",
+ "runtime-core",
+ "runtime-layout",
+ "runtime-server-shell-native",
 ]
 
 [[package]]
@@ -506,7 +494,7 @@ name = "backend-roku"
 version = "0.0.1"
 dependencies = [
  "backend-roku-macros",
- "framework-core",
+ "runtime-core",
  "serde",
  "serde_json",
 ]
@@ -533,8 +521,8 @@ dependencies = [
 name = "backend-terminal"
 version = "0.0.1"
 dependencies = [
- "framework-core",
- "native-layout",
+ "runtime-core",
+ "runtime-layout",
 ]
 
 [[package]]
@@ -542,9 +530,9 @@ name = "backend-web"
 version = "0.0.1"
 dependencies = [
  "dev-client",
- "framework-core",
  "js-sys",
  "raw-window-handle",
+ "runtime-core",
  "serde_json",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -565,8 +553,8 @@ version = "0.0.1"
 dependencies = [
  "backend-web",
  "console_error_panic_hook",
- "framework-core",
  "idea-ui",
+ "runtime-core",
  "wasm-bindgen",
  "web-sys",
  "webview",
@@ -578,9 +566,9 @@ version = "0.0.1"
 dependencies = [
  "backend-web",
  "console_error_panic_hook",
- "framework-core",
  "idea-ui",
  "lol_alloc",
+ "runtime-core",
  "wasm-bindgen",
  "web-sys",
 ]
@@ -591,8 +579,8 @@ version = "0.0.1"
 dependencies = [
  "backend-web",
  "console_error_panic_hook",
- "framework-core",
  "idea-ui",
+ "runtime-core",
  "wasm-bindgen",
  "web-sys",
 ]
@@ -679,18 +667,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "build-aas"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "build-ios",
- "object 0.39.1",
- "serde",
- "serde_json",
- "subsecond-types",
-]
-
-[[package]]
 name = "build-android"
 version = "0.0.1"
 dependencies = [
@@ -730,7 +706,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "build-runtime-server"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "build-ios",
+ "object 0.39.1",
+ "serde",
+ "serde_json",
+ "subsecond-types",
+]
+
+[[package]]
 name = "build-sim"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "build-ios",
+]
+
+[[package]]
+name = "build-terminal"
 version = "0.0.1"
 dependencies = [
  "anyhow",
@@ -1253,9 +1249,19 @@ dependencies = [
 name = "dev-client"
 version = "0.0.1"
 dependencies = [
- "framework-core",
+ "runtime-core",
  "serde_json",
  "wire",
+]
+
+[[package]]
+name = "dev-hot"
+version = "0.0.1"
+dependencies = [
+ "memmap2",
+ "object 0.39.1",
+ "subsecond",
+ "subsecond-types",
 ]
 
 [[package]]
@@ -1282,12 +1288,12 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "ctrlc",
- "framework-core",
- "framework-hot",
+ "dev-hot",
  "idea-ui",
  "libc",
  "mdns-sd",
  "notify-debouncer-mini",
+ "runtime-core",
  "serde",
  "serde_json",
  "subsecond-types",
@@ -1351,7 +1357,6 @@ dependencies = [
  "console_error_panic_hook",
  "dev-client",
  "docs-macro",
- "framework-core",
  "host-web",
  "idea-ui",
  "ios-sim",
@@ -1359,6 +1364,7 @@ dependencies = [
  "libc",
  "lol_alloc",
  "render-api",
+ "runtime-core",
  "wasm-bindgen",
  "web-sys",
 ]
@@ -1597,52 +1603,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
-]
-
-[[package]]
-name = "framework-core"
-version = "0.0.1"
-dependencies = [
- "bitflags 2.11.1",
- "framework-hot",
- "framework-macros",
- "framework-mcp",
- "log",
- "mdns-sd",
- "pollster",
- "raw-window-handle",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "framework-hot"
-version = "0.0.1"
-dependencies = [
- "memmap2",
- "object 0.39.1",
- "subsecond",
- "subsecond-types",
-]
-
-[[package]]
-name = "framework-macros"
-version = "0.0.1"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
-name = "framework-mcp"
-version = "0.0.1"
-dependencies = [
- "framework-core",
- "framework-macros",
- "inventory",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -1961,18 +1921,8 @@ name = "hello-roku"
 version = "0.0.1"
 dependencies = [
  "backend-roku",
- "framework-core",
  "idea-ui",
-]
-
-[[package]]
-name = "hello-terminal"
-version = "0.0.1"
-dependencies = [
- "backend-terminal",
- "framework-core",
- "host-terminal",
- "welcome",
+ "runtime-core",
 ]
 
 [[package]]
@@ -1993,10 +1943,10 @@ version = "0.0.1"
 dependencies = [
  "backend-apple-core",
  "backend-macos",
- "framework-core",
  "objc2 0.5.2",
  "objc2-app-kit",
  "objc2-foundation 0.2.2",
+ "runtime-core",
 ]
 
 [[package]]
@@ -2005,19 +1955,21 @@ version = "0.0.1"
 dependencies = [
  "backend-terminal",
  "crossterm",
- "framework-core",
+ "libc",
+ "runtime-core",
+ "runtime-server-shell-native",
 ]
 
 [[package]]
 name = "host-web"
 version = "0.0.1"
 dependencies = [
- "framework-core",
  "js-sys",
  "log",
  "raw-window-handle",
  "render-api",
  "render-wgpu",
+ "runtime-core",
  "wasm-bindgen",
  "web-sys",
  "wgpu",
@@ -2029,8 +1981,8 @@ version = "0.0.1"
 dependencies = [
  "accesskit",
  "accesskit_winit",
- "framework-core",
  "render-wgpu",
+ "runtime-core",
  "winit",
 ]
 
@@ -2038,7 +1990,6 @@ dependencies = [
 name = "host-winit"
 version = "0.0.1"
 dependencies = [
- "framework-core",
  "log",
  "objc2 0.5.2",
  "objc2-app-kit",
@@ -2047,6 +1998,8 @@ dependencies = [
  "raw-window-handle",
  "render-api",
  "render-wgpu",
+ "runtime-core",
+ "runtime-server-shell-native",
  "wgpu",
  "winit",
 ]
@@ -2115,7 +2068,7 @@ dependencies = [
 name = "icons-lucide"
 version = "0.0.1"
 dependencies = [
- "framework-core",
+ "runtime-core",
 ]
 
 [[package]]
@@ -2205,7 +2158,7 @@ name = "idea-codeblock"
 version = "0.0.1"
 dependencies = [
  "backend-web",
- "framework-core",
+ "runtime-core",
  "wasm-bindgen",
  "web-sys",
 ]
@@ -2214,8 +2167,8 @@ dependencies = [
 name = "idea-ui"
 version = "0.0.1"
 dependencies = [
- "framework-core",
  "idea-ui-docs-derive",
+ "runtime-core",
 ]
 
 [[package]]
@@ -2224,9 +2177,9 @@ version = "0.0.1"
 dependencies = [
  "backend-web",
  "console_error_panic_hook",
- "framework-core",
  "idea-ui",
  "lol_alloc",
+ "runtime-core",
  "wasm-bindgen",
  "web-sys",
 ]
@@ -2246,24 +2199,27 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
- "build-aas",
  "build-android",
  "build-ios",
  "build-macos",
  "build-roku",
+ "build-runtime-server",
  "build-sim",
+ "build-terminal",
  "build-web",
  "clap",
  "ctrlc",
  "dev-http",
  "dev-reload",
- "framework-mcp",
+ "libc",
+ "mcp-catalog",
  "mcp-server",
  "mdns-sd",
  "run-android",
  "run-ios",
  "run-macos",
  "run-roku",
+ "run-terminal",
  "serde",
  "serde_json",
  "syn",
@@ -2365,9 +2321,9 @@ dependencies = [
 name = "ios-sim"
 version = "0.0.1"
 dependencies = [
- "framework-core",
  "glyphon",
  "render-wgpu",
+ "runtime-core",
  "web-time",
 ]
 
@@ -2650,9 +2606,9 @@ dependencies = [
 name = "maps"
 version = "0.0.1"
 dependencies = [
- "framework-core",
  "maps-core",
  "maps-web",
+ "runtime-core",
 ]
 
 [[package]]
@@ -2678,12 +2634,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "mcp-catalog"
+version = "0.0.1"
+dependencies = [
+ "inventory",
+ "runtime-core",
+ "runtime-macros",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "mcp-demo"
 version = "0.0.1"
 dependencies = [
- "framework-core",
- "framework-mcp",
+ "mcp-catalog",
  "mcp-server",
+ "runtime-core",
  "serde_json",
  "tokio",
 ]
@@ -2693,7 +2660,7 @@ name = "mcp-server"
 version = "0.0.1"
 dependencies = [
  "anyhow",
- "framework-mcp",
+ "mcp-catalog",
  "mdns-sd",
  "notify-debouncer-mini",
  "rmcp",
@@ -2822,41 +2789,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "706bf8a5e8c8ddb99128c3291d31bd21f4bcde17f0f4c20ec678d85c74faa149"
 dependencies = [
  "log",
-]
-
-[[package]]
-name = "native-layout"
-version = "0.0.1"
-dependencies = [
- "framework-core",
- "taffy",
-]
-
-[[package]]
-name = "native-phone"
-version = "0.0.1"
-dependencies = [
- "framework-core",
- "host-winit",
- "render-wgpu",
-]
-
-[[package]]
-name = "native-tablet"
-version = "0.0.1"
-dependencies = [
- "framework-core",
- "host-winit",
- "render-wgpu",
-]
-
-[[package]]
-name = "native-tv"
-version = "0.0.1"
-dependencies = [
- "framework-core",
- "host-winit",
- "render-wgpu",
 ]
 
 [[package]]
@@ -3672,8 +3604,8 @@ dependencies = [
 name = "posix-log-capture"
 version = "0.0.1"
 dependencies = [
- "framework-core",
  "libc",
+ "runtime-core",
 ]
 
 [[package]]
@@ -3931,7 +3863,7 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 name = "render-api"
 version = "0.0.1"
 dependencies = [
- "framework-core",
+ "runtime-core",
 ]
 
 [[package]]
@@ -3940,14 +3872,14 @@ version = "0.0.1"
 dependencies = [
  "bytemuck",
  "cpal",
- "framework-core",
  "glyphon",
  "image",
  "log",
- "native-layout",
  "openh264",
  "re_mp4",
  "render-api",
+ "runtime-core",
+ "runtime-layout",
  "symphonia",
  "web-time",
  "wgpu",
@@ -4040,6 +3972,60 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "build-roku",
+]
+
+[[package]]
+name = "run-terminal"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "build-ios",
+ "build-terminal",
+]
+
+[[package]]
+name = "runtime-core"
+version = "0.0.1"
+dependencies = [
+ "bitflags 2.11.1",
+ "dev-hot",
+ "log",
+ "mcp-catalog",
+ "mdns-sd",
+ "pollster",
+ "raw-window-handle",
+ "runtime-macros",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "runtime-layout"
+version = "0.0.1"
+dependencies = [
+ "runtime-core",
+ "taffy",
+]
+
+[[package]]
+name = "runtime-macros"
+version = "0.0.1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "runtime-server-shell-native"
+version = "0.0.1"
+dependencies = [
+ "dev-client",
+ "mdns-sd",
+ "runtime-core",
+ "serde_json",
+ "tungstenite",
+ "wire",
 ]
 
 [[package]]
@@ -5262,6 +5248,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
+name = "variant-phone"
+version = "0.0.1"
+dependencies = [
+ "host-winit",
+ "render-wgpu",
+ "runtime-core",
+]
+
+[[package]]
+name = "variant-tablet"
+version = "0.0.1"
+dependencies = [
+ "host-winit",
+ "render-wgpu",
+ "runtime-core",
+]
+
+[[package]]
+name = "variant-tv"
+version = "0.0.1"
+dependencies = [
+ "host-winit",
+ "render-wgpu",
+ "runtime-core",
+]
+
+[[package]]
 name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5532,12 +5545,12 @@ dependencies = [
  "backend-android-mobile",
  "backend-ios-mobile",
  "backend-web",
- "framework-core",
  "jni 0.21.1",
  "js-sys",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "objc2-ui-kit",
+ "runtime-core",
  "wasm-bindgen",
  "web-sys",
 ]
@@ -5546,7 +5559,7 @@ dependencies = [
 name = "welcome"
 version = "0.0.1"
 dependencies = [
- "framework-core",
+ "runtime-core",
 ]
 
 [[package]]
@@ -6195,10 +6208,10 @@ dependencies = [
 name = "wire"
 version = "0.0.1"
 dependencies = [
- "aas-shell-native",
  "dev-client",
  "dev-server",
- "framework-core",
+ "runtime-core",
+ "runtime-server-shell-native",
  "serde",
  "serde_json",
  "tungstenite",

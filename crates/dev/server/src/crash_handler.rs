@@ -5,7 +5,7 @@
 //! host bin didn't export (or a TLS slot the dylib didn't bind) — the
 //! process dies from the kernel signal with no Rust panic to catch.
 //! Without a handler the user just sees the sidecar disappear; the
-//! AAS log shows nothing past "[aas-app] patch applied; notifying ...".
+//! runtime-server log shows nothing past "[runtime-server-app] patch applied; notifying ...".
 //!
 //! This module installs a sigaction-based handler that prints a single
 //! line with the faulting address (`siginfo_t.si_addr`) and the
@@ -33,7 +33,7 @@ pub fn install() {
 
 #[cfg(not(target_os = "macos"))]
 pub fn install() {
-    // Non-macOS sidecars aren't in scope for the AAS path right now;
+    // Non-macOS sidecars aren't in scope for the runtime-server path right now;
     // a glibc/ELF variant can land alongside the linux backend work.
 }
 
@@ -184,11 +184,11 @@ fn looks_mapped(addr: u64) -> bool {
     addr > 0x1000 && addr < 0x0000_8000_0000_0000
 }
 
-/// Write `[aas-app]   lr=0x<hex> fp=0x<hex> sp=0x<hex>\n`.
+/// Write `[runtime-server-app]   lr=0x<hex> fp=0x<hex> sp=0x<hex>\n`.
 #[cfg(target_os = "macos")]
 fn write_regs_line(buf: &mut [u8], lr: u64, fp: u64, sp: u64) -> usize {
     let mut n = 0;
-    n += copy_bytes(buf, n, b"[aas-app]   lr=0x");
+    n += copy_bytes(buf, n, b"[runtime-server-app]   lr=0x");
     n += write_hex(buf, n, lr);
     n += copy_bytes(buf, n, b" fp=0x");
     n += write_hex(buf, n, fp);
@@ -198,11 +198,11 @@ fn write_regs_line(buf: &mut [u8], lr: u64, fp: u64, sp: u64) -> usize {
     n
 }
 
-/// Write `[aas-app]   frame N pc=0x<hex>\n`.
+/// Write `[runtime-server-app]   frame N pc=0x<hex>\n`.
 #[cfg(target_os = "macos")]
 fn write_frame_line(buf: &mut [u8], i: usize, pc: u64) -> usize {
     let mut n = 0;
-    n += copy_bytes(buf, n, b"[aas-app]   frame ");
+    n += copy_bytes(buf, n, b"[runtime-server-app]   frame ");
     // single-digit index, 0..=11 fits
     if i < 10 {
         buf[n] = b'0' + (i as u8);
@@ -218,11 +218,11 @@ fn write_frame_line(buf: &mut [u8], i: usize, pc: u64) -> usize {
     n
 }
 
-/// Write `[aas-app] FATAL SIG{NAME} addr=0x<hex> pc=0x<hex>\n` into
+/// Write `[runtime-server-app] FATAL SIG{NAME} addr=0x<hex> pc=0x<hex>\n` into
 /// `buf`. Returns bytes written. Signal-safe (no allocation, no locks).
 #[cfg(target_os = "macos")]
 fn write_hex_line(buf: &mut [u8], sig: libc::c_int, addr: usize, pc: u64) -> usize {
-    let prefix = b"\n[aas-app] FATAL ";
+    let prefix = b"\n[runtime-server-app] FATAL ";
     let mut n = 0;
     n += copy_bytes(buf, n, prefix);
     let name: &[u8] = match sig {

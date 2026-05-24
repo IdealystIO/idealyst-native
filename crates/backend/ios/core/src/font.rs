@@ -6,8 +6,8 @@
 //! this file maps the resolved PS name into a `UIFont` and onto a
 //! `UIView.font`.
 
-use framework_core::assets::SystemFallback;
-use framework_core::{FontFamily, FontStyle, FontWeight};
+use runtime_core::assets::SystemFallback;
+use runtime_core::{FontFamily, FontStyle, FontWeight};
 use objc2::rc::Retained;
 use objc2::{msg_send, msg_send_id};
 use objc2_foundation::{CGFloat, NSObject, NSString};

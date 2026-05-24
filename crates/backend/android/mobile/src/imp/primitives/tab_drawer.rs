@@ -38,7 +38,7 @@
 
 use backend_android_core::helpers::apply_default_layout_params;
 use crate::imp::{with_env, AndroidBackend};
-use framework_core::primitives::navigator::{
+use runtime_core::primitives::navigator::{
     DrawerHandle, DrawerNavigatorCallbacks, MountResult, NavCommand, NavigatorCallbacks,
     NavigatorControl, NavigatorHandle, NavigatorOps, TabNavigatorCallbacks, TabsHandle,
 };
@@ -59,7 +59,7 @@ use std::rc::Rc;
 /// `TabDrawerEntry`) so the JNI side only sees a stable pointer
 /// it can dereference cheaply, with no hashmap lookup.
 struct DrawerListenerBox {
-    is_open: framework_core::Signal<bool>,
+    is_open: runtime_core::Signal<bool>,
     open_changed: Rc<dyn Fn(bool)>,
 }
 
@@ -266,8 +266,8 @@ pub(crate) fn create_drawer(
         // upcoming `attachDrawer` call. Gravity.START = 0x00800003,
         // Gravity.END = 0x00800005.
         let gravity = match side {
-            framework_core::DrawerSide::Start => 0x00800003i32,
-            framework_core::DrawerSide::End => 0x00800005i32,
+            runtime_core::DrawerSide::Start => 0x00800003i32,
+            runtime_core::DrawerSide::End => 0x00800005i32,
         };
         let _ = env.call_method(
             &local,
@@ -644,7 +644,7 @@ pub(crate) fn attach_initial(
     navigator: &GlobalRef,
     screen: GlobalRef,
     scope_id: u64,
-    options: framework_core::ScreenOptions,
+    options: runtime_core::ScreenOptions,
 ) {
     let Some(entry) = b.tab_drawer_instances.get(&AndroidBackend::node_key_of(navigator)) else {
         log::error!("tab_drawer attach_initial: no instance for node");
@@ -685,7 +685,7 @@ fn attach_toolbar_to_body(
     env: &mut jni::JNIEnv,
     context: &GlobalRef,
     body: &GlobalRef,
-    options: &framework_core::ScreenOptions,
+    options: &runtime_core::ScreenOptions,
 ) -> Option<GlobalRef> {
     use crate::imp::callbacks::HeaderButtonCallback;
     use jni::sys::jlong;
@@ -801,7 +801,7 @@ fn attach_toolbar_to_body(
 pub(crate) fn apply_header_style(
     b: &AndroidBackend,
     navigator: &GlobalRef,
-    rules: &std::rc::Rc<framework_core::StyleRules>,
+    rules: &std::rc::Rc<runtime_core::StyleRules>,
 ) {
     let Some(entry) = b.tab_drawer_instances.get(&AndroidBackend::node_key_of(navigator)) else {
         return;
@@ -836,7 +836,7 @@ pub(crate) fn apply_header_style(
 pub(crate) fn apply_title_style(
     b: &AndroidBackend,
     navigator: &GlobalRef,
-    rules: &std::rc::Rc<framework_core::StyleRules>,
+    rules: &std::rc::Rc<runtime_core::StyleRules>,
 ) {
     let Some(entry) = b.tab_drawer_instances.get(&AndroidBackend::node_key_of(navigator)) else {
         return;
@@ -875,7 +875,7 @@ pub(crate) fn apply_title_style(
 pub(crate) fn apply_body_style(
     b: &AndroidBackend,
     navigator: &GlobalRef,
-    rules: &std::rc::Rc<framework_core::StyleRules>,
+    rules: &std::rc::Rc<runtime_core::StyleRules>,
 ) {
     let Some(entry) = b.tab_drawer_instances.get(&AndroidBackend::node_key_of(navigator)) else {
         return;
@@ -908,7 +908,7 @@ pub(crate) fn apply_body_style(
 pub(crate) fn apply_button_style(
     b: &AndroidBackend,
     navigator: &GlobalRef,
-    rules: &std::rc::Rc<framework_core::StyleRules>,
+    rules: &std::rc::Rc<runtime_core::StyleRules>,
 ) {
     let Some(entry) = b.tab_drawer_instances.get(&AndroidBackend::node_key_of(navigator)) else {
         return;

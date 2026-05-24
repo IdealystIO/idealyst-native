@@ -2,7 +2,7 @@
 //! kept alive in `WebBackend::_click_closures`.
 
 use crate::WebBackend;
-use framework_core::{ButtonHandle, ButtonOps};
+use runtime_core::{ButtonHandle, ButtonOps};
 use std::any::Any;
 use std::rc::Rc;
 use wasm_bindgen::closure::Closure;
@@ -13,8 +13,8 @@ pub(crate) fn create(
     b: &mut WebBackend,
     label: &str,
     on_click: Rc<dyn Fn()>,
-    leading_icon: Option<&framework_core::IconData>,
-    trailing_icon: Option<&framework_core::IconData>,
+    leading_icon: Option<&runtime_core::IconData>,
+    trailing_icon: Option<&runtime_core::IconData>,
 ) -> Node {
     // Ensure the global style element exists so the `:where(button)`
     // UA reset is in place before any author class rules attach to
@@ -76,16 +76,16 @@ impl ButtonOps for WebButtonOps {
         }
     }
 
-    fn rect(&self, node: &dyn Any) -> framework_core::ViewportRect {
+    fn rect(&self, node: &dyn Any) -> runtime_core::ViewportRect {
         node.downcast_ref::<web_sys::HtmlElement>()
             .map(measure_element_rect)
             .unwrap_or_default()
     }
 }
 
-fn measure_element_rect(el: &web_sys::HtmlElement) -> framework_core::ViewportRect {
+fn measure_element_rect(el: &web_sys::HtmlElement) -> runtime_core::ViewportRect {
     let r = el.get_bounding_client_rect();
-    framework_core::ViewportRect {
+    runtime_core::ViewportRect {
         x: r.x() as f32,
         y: r.y() as f32,
         width: r.width() as f32,

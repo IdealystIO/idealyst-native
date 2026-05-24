@@ -6,8 +6,8 @@
 //! property rather than `<input>.value`.
 
 use crate::WebBackend;
-use framework_core::primitives::key::{KeyDownHandler, KeyEvent, KeyOutcome};
-use framework_core::primitives::text_area::{TextAreaHandle, TextAreaOps};
+use runtime_core::primitives::key::{KeyDownHandler, KeyEvent, KeyOutcome};
+use runtime_core::primitives::text_area::{TextAreaHandle, TextAreaOps};
 use std::any::Any;
 use std::rc::Rc;
 use wasm_bindgen::closure::Closure;

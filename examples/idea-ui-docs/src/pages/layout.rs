@@ -1,6 +1,6 @@
 //! Layout — Stack, Card, Divider.
 
-use framework_core::{ui, Primitive};
+use runtime_core::{ui, Primitive};
 use idea_ui::doc_controls::DocControls;
 use idea_ui::{
     badge, body, card, divider, heading, stack, BadgeKind, BadgeProps, CardProps, DividerProps,

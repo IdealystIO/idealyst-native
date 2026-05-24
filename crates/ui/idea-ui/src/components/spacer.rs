@@ -13,7 +13,7 @@
 //! }
 //! ```
 
-use framework_core::{ui, Primitive};
+use runtime_core::{ui, Primitive};
 
 use crate::stylesheets::Spacer;
 

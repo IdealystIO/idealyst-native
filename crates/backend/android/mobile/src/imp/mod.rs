@@ -19,7 +19,7 @@ mod style;
 // imported directly by their callers.
 pub(crate) mod view_rect;
 
-use framework_core::{Backend, ButtonHandle, StyleRules};
+use runtime_core::{Backend, ButtonHandle, StyleRules};
 use jni::objects::{GlobalRef, JObject, JValue};
 use jni::sys::{jint, jlong, JNI_VERSION_1_6};
 use jni::{JNIEnv, JavaVM};
@@ -142,7 +142,7 @@ pub(crate) struct NodeAnim {
     /// the apply path falls back to a fixed default. The layout
     /// pass calls `sync_radial_gradient_radius` with the just-laid-
     /// out frame to recompute the radius and write the real value.
-    pub(crate) gradient_radial_extent: Option<framework_core::RadialExtent>,
+    pub(crate) gradient_radial_extent: Option<runtime_core::RadialExtent>,
     pub(crate) gradient_radial_radius_factor: Option<f32>,
 
     /// Raw pointer to the leaked `Box<StateCallback>` held by the
@@ -198,12 +198,12 @@ pub struct AndroidBackend {
     /// and writes per-child `FrameLayout.LayoutParams { leftMargin,
     /// topMargin, width, height }` so absolute-positioned and
     /// flex-laid-out children both land where Taffy says they should.
-    pub(crate) layout: native_layout::LayoutTree,
+    pub(crate) layout: runtime_layout::LayoutTree,
     /// View pointer → (`GlobalRef`, Taffy node). Indexed by the same
     /// raw `JObject*` pointer scheme as `anim_state`. Iterated in the
     /// layout pass to apply computed frames.
     pub(crate) view_to_layout:
-        HashMap<usize, (GlobalRef, native_layout::LayoutNode)>,
+        HashMap<usize, (GlobalRef, runtime_layout::LayoutNode)>,
     /// Registry of third-party `Primitive::External` handlers,
     /// populated by `register_external::<T>(...)` calls from
     /// per-platform leaf crates (e.g. `webview-android::register`).
@@ -211,7 +211,7 @@ pub struct AndroidBackend {
     /// unregistered kinds fall through to a "not supported" placeholder
     /// TextView.
     pub(crate) external_handlers:
-        framework_core::ExternalRegistry<AndroidBackend>,
+        runtime_core::ExternalRegistry<AndroidBackend>,
     /// Per-`Typeface` registry of custom fonts. Filled by
     /// [`Backend::register_asset`] for `AssetTag::Font`
     /// (bytes → Android `Typeface.createFromFile`) and
@@ -255,7 +255,7 @@ fn density_of(env: &mut JNIEnv, view: &JObject) -> Option<f32> {
 fn apply_frame_to_layout_params(
     env: &mut JNIEnv,
     view: &GlobalRef,
-    frame: native_layout::Frame,
+    frame: runtime_layout::Frame,
 ) {
     let view_obj = view.as_obj();
     let density = density_of(env, &view_obj).unwrap_or(1.0);
@@ -338,9 +338,9 @@ impl AndroidBackend {
             tab_drawer_instances: HashMap::new(),
             scroll_view_inner: HashMap::new(),
             portal_instances: HashMap::new(),
-            layout: native_layout::LayoutTree::new(),
+            layout: runtime_layout::LayoutTree::new(),
             view_to_layout: HashMap::new(),
-            external_handlers: framework_core::ExternalRegistry::new(),
+            external_handlers: runtime_core::ExternalRegistry::new(),
             font_registry: font::FontRegistry::new(),
         }
     }
@@ -385,7 +385,7 @@ impl AndroidBackend {
     pub(crate) fn layout_for_view(
         &mut self,
         view: &GlobalRef,
-    ) -> native_layout::LayoutNode {
+    ) -> runtime_layout::LayoutNode {
         let key = Self::node_key(view);
         if let Some((_, node)) = self.view_to_layout.get(&key) {
             return *node;
@@ -429,8 +429,8 @@ impl AndroidBackend {
     }
 
     /// Public wrapper around [`Self::run_layout_pass`]. Used by the
-    /// AAS shell — in AAS mode the backend lives by-value inside an
-    /// `AasClient`, so `install_global_self` is never called and the
+    /// runtime-server shell — in runtime-server mode the backend lives by-value inside an
+    /// `RuntimeServerClient`, so `install_global_self` is never called and the
     /// `schedule_layout_pass_retry` path bails on the missing
     /// `ANDROID_BACKEND_SELF.upgrade()`. The shell calls this
     /// synchronously after each `apply_batch` instead. Mirrors the
@@ -455,7 +455,7 @@ impl AndroidBackend {
             vh,
             self.view_to_layout.len()
         );
-        let roots: Vec<native_layout::LayoutNode> = self
+        let roots: Vec<runtime_layout::LayoutNode> = self
             .view_to_layout
             .values()
             .map(|(_, n)| *n)
@@ -466,7 +466,7 @@ impl AndroidBackend {
         }
         // Snapshot the entries up front so the mutable JNI calls
         // below don't conflict with the borrow on `self.view_to_layout`.
-        let frames: Vec<(GlobalRef, native_layout::Frame)> = self
+        let frames: Vec<(GlobalRef, runtime_layout::Frame)> = self
             .view_to_layout
             .values()
             .map(|(view, n)| (view.clone(), self.layout.frame_of(*n)))
@@ -536,7 +536,7 @@ impl AndroidBackend {
 // ---------------------------------------------------------------------------
 
 pub(crate) struct AndroidViewOps;
-impl framework_core::ViewOps for AndroidViewOps {
+impl runtime_core::ViewOps for AndroidViewOps {
     /// Node's rect in its parent's coordinate system, in dp. Mirrors
     /// `IosViewOps::frame` so author-level code reading
     /// `Ref<ViewHandle>::frame()` gets equivalent behavior on both
@@ -553,7 +553,7 @@ impl framework_core::ViewOps for AndroidViewOps {
     fn frame(
         &self,
         node: &dyn std::any::Any,
-    ) -> Option<framework_core::primitives::portal::ViewportRect> {
+    ) -> Option<runtime_core::primitives::portal::ViewportRect> {
         let view = node.downcast_ref::<GlobalRef>()?;
         with_env(|env| {
             let obj = view.as_obj();
@@ -577,7 +577,7 @@ impl framework_core::ViewOps for AndroidViewOps {
                 .and_then(|v| v.f())
                 .unwrap_or(0.0);
             let density = density_of(env, &obj).unwrap_or(1.0);
-            Some(framework_core::primitives::portal::ViewportRect {
+            Some(runtime_core::primitives::portal::ViewportRect {
                 x: x_px / density,
                 y: y_px / density,
                 width: w_px as f32 / density,
@@ -593,7 +593,7 @@ impl framework_core::ViewOps for AndroidViewOps {
     fn set_animated_f32(
         &self,
         node: &dyn std::any::Any,
-        prop: framework_core::animation::AnimProp,
+        prop: runtime_core::animation::AnimProp,
         value: f32,
     ) {
         if let Some(n) = node.downcast_ref::<GlobalRef>() {
@@ -605,7 +605,7 @@ impl framework_core::ViewOps for AndroidViewOps {
     fn set_animated_color(
         &self,
         node: &dyn std::any::Any,
-        prop: framework_core::animation::AnimProp,
+        prop: runtime_core::animation::AnimProp,
         value: [f32; 4],
     ) {
         if let Some(n) = node.downcast_ref::<GlobalRef>() {
@@ -616,7 +616,7 @@ impl framework_core::ViewOps for AndroidViewOps {
 pub(crate) static ANDROID_VIEW_OPS: AndroidViewOps = AndroidViewOps;
 
 pub(crate) struct AndroidTextOps;
-impl framework_core::TextOps for AndroidTextOps {
+impl runtime_core::TextOps for AndroidTextOps {
     /// Route text-color animations through the backend's
     /// `set_animated_color` — Android's `ForegroundColor` branch
     /// dispatches to `TextView.setTextColor`, which is what makes
@@ -625,7 +625,7 @@ impl framework_core::TextOps for AndroidTextOps {
     fn set_animated_color(
         &self,
         node: &dyn std::any::Any,
-        prop: framework_core::animation::AnimProp,
+        prop: runtime_core::animation::AnimProp,
         value: [f32; 4],
     ) {
         if let Some(n) = node.downcast_ref::<GlobalRef>() {
@@ -664,14 +664,14 @@ pub fn install_global_self(weak: std::rc::Weak<std::cell::RefCell<AndroidBackend
 /// will see the new AV value on its next frame).
 pub fn set_animated_f32(
     node: &GlobalRef,
-    prop: framework_core::animation::AnimProp,
+    prop: runtime_core::animation::AnimProp,
     value: f32,
 ) {
     let weak = ANDROID_BACKEND_SELF.with(|s| s.borrow().clone());
     let Some(weak) = weak else { return };
     let Some(rc) = weak.upgrade() else { return };
     if let Ok(mut b) = rc.try_borrow_mut() {
-        use framework_core::Backend;
+        use runtime_core::Backend;
         b.set_animated_f32(node, prop, value);
     };
 }
@@ -680,14 +680,14 @@ pub fn set_animated_f32(
 /// the global backend's `set_animated_color`.
 pub fn set_animated_color(
     node: &GlobalRef,
-    prop: framework_core::animation::AnimProp,
+    prop: runtime_core::animation::AnimProp,
     value: [f32; 4],
 ) {
     let weak = ANDROID_BACKEND_SELF.with(|s| s.borrow().clone());
     let Some(weak) = weak else { return };
     let Some(rc) = weak.upgrade() else { return };
     if let Ok(mut b) = rc.try_borrow_mut() {
-        use framework_core::Backend;
+        use runtime_core::Backend;
         b.set_animated_color(node, prop, value);
     };
 }
@@ -701,11 +701,11 @@ pub fn set_animated_color(
 impl Backend for AndroidBackend {
     type Node = GlobalRef;
 
-    fn platform(&self) -> framework_core::Platform {
-        framework_core::Platform::Android
+    fn platform(&self) -> runtime_core::Platform {
+        runtime_core::Platform::Android
     }
 
-    fn color_scheme(&self) -> framework_core::ColorScheme {
+    fn color_scheme(&self) -> runtime_core::ColorScheme {
         // context.getResources().getConfiguration().uiMode & UI_MODE_NIGHT_MASK
         // UI_MODE_NIGHT_UNDEFINED = 0x00, UI_MODE_NIGHT_NO = 0x10,
         // UI_MODE_NIGHT_YES = 0x20
@@ -722,16 +722,16 @@ impl Backend for AndroidBackend {
             });
             match ui_mode {
                 Ok(mode) => match mode & 0x30 {
-                    0x10 => framework_core::ColorScheme::Light,
-                    0x20 => framework_core::ColorScheme::Dark,
-                    _ => framework_core::ColorScheme::Auto,
+                    0x10 => runtime_core::ColorScheme::Light,
+                    0x20 => runtime_core::ColorScheme::Dark,
+                    _ => runtime_core::ColorScheme::Auto,
                 },
-                Err(_) => framework_core::ColorScheme::Auto,
+                Err(_) => runtime_core::ColorScheme::Auto,
             }
         })
     }
 
-    fn create_view(&mut self, a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
+    fn create_view(&mut self, a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
         let node = primitives::view::create(self);
         a11y::apply(&node, a11y, None);
         node
@@ -739,8 +739,8 @@ impl Backend for AndroidBackend {
 
     fn create_link(
         &mut self,
-        config: framework_core::primitives::link::LinkConfig,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        config: runtime_core::primitives::link::LinkConfig,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let route = config.route;
         let node = primitives::link::create(self, config.on_activate);
@@ -754,28 +754,28 @@ impl Backend for AndroidBackend {
             .label
             .clone()
             .unwrap_or_else(|| route.to_string());
-        let effective_a11y = framework_core::accessibility::AccessibilityProps {
+        let effective_a11y = runtime_core::accessibility::AccessibilityProps {
             label: Some(resolved_label),
             ..a11y.clone()
         };
         a11y::apply(
             &node,
             &effective_a11y,
-            Some(framework_core::accessibility::Role::Link),
+            Some(runtime_core::accessibility::Role::Link),
         );
         node
     }
 
-    fn create_text(&mut self, content: &str, a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
+    fn create_text(&mut self, content: &str, a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
         let node = primitives::text::create(self, content);
-        a11y::apply(&node, a11y, Some(framework_core::accessibility::Role::Text));
+        a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::Text));
         node
     }
 
-    fn create_button(&mut self, label: &str, on_click: &framework_core::Action, _leading_icon: Option<&framework_core::IconData>, _trailing_icon: Option<&framework_core::IconData>, a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
+    fn create_button(&mut self, label: &str, on_click: &runtime_core::Action, _leading_icon: Option<&runtime_core::IconData>, _trailing_icon: Option<&runtime_core::IconData>, a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
         // TODO: render icons as compound drawables on the button
         let node = primitives::button::create(self, label, on_click.fire.clone());
-        a11y::apply(&node, a11y, Some(framework_core::accessibility::Role::Button));
+        a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::Button));
         node
     }
 
@@ -786,7 +786,7 @@ impl Backend for AndroidBackend {
     fn install_touch_handler(
         &mut self,
         node: &Self::Node,
-        handler: framework_core::TouchHandler,
+        handler: runtime_core::TouchHandler,
     ) {
         primitives::touch::install(self, node, handler)
     }
@@ -794,7 +794,7 @@ impl Backend for AndroidBackend {
     fn claim_touch(
         &mut self,
         node: &Self::Node,
-        _touch_id: framework_core::TouchId,
+        _touch_id: runtime_core::TouchId,
     ) {
         // The Kotlin `RustTouchListener` already calls
         // `requestDisallowInterceptTouchEvent` inline when a touch
@@ -809,24 +809,24 @@ impl Backend for AndroidBackend {
         primitives::text::update_text(node, content)
     }
 
-    fn create_image(&mut self, src: &str, alt: Option<&str>, a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
+    fn create_image(&mut self, src: &str, alt: Option<&str>, a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
         let node = primitives::image::create(self, src, alt);
-        a11y::apply(&node, a11y, Some(framework_core::accessibility::Role::Image));
+        a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::Image));
         node
     }
 
     fn create_icon(
         &mut self,
-        data: &framework_core::primitives::icon::IconData,
-        color: Option<&framework_core::Color>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        data: &runtime_core::primitives::icon::IconData,
+        color: Option<&runtime_core::Color>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = primitives::icon::create(self, data, color);
-        a11y::apply(&node, a11y, Some(framework_core::accessibility::Role::Image));
+        a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::Image));
         node
     }
 
-    fn update_icon_color(&mut self, node: &Self::Node, color: &framework_core::Color) {
+    fn update_icon_color(&mut self, node: &Self::Node, color: &runtime_core::Color) {
         primitives::icon::update_color(node, color)
     }
 
@@ -840,7 +840,7 @@ impl Backend for AndroidBackend {
         from: f32,
         to: f32,
         duration_ms: u32,
-        easing: framework_core::Easing,
+        easing: runtime_core::Easing,
         infinite: bool,
         autoreverses: bool,
     ) {
@@ -852,11 +852,11 @@ impl Backend for AndroidBackend {
         initial_value: &str,
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
-        on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = primitives::text_input::create(self, initial_value, placeholder, on_change, on_key_down);
-        a11y::apply(&node, a11y, Some(framework_core::accessibility::Role::TextField));
+        a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::TextField));
         node
     }
 
@@ -869,11 +869,11 @@ impl Backend for AndroidBackend {
         initial_value: &str,
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
-        on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = primitives::text_input::create_multiline(self, initial_value, placeholder, on_change, on_key_down);
-        a11y::apply(&node, a11y, Some(framework_core::accessibility::Role::TextArea));
+        a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::TextArea));
         node
     }
 
@@ -884,20 +884,20 @@ impl Backend for AndroidBackend {
     fn make_text_input_handle(
         &self,
         node: &Self::Node,
-    ) -> framework_core::primitives::text_input::TextInputHandle {
+    ) -> runtime_core::primitives::text_input::TextInputHandle {
         primitives::text_input::make_text_input_handle(node)
     }
 
     fn make_text_area_handle(
         &self,
         node: &Self::Node,
-    ) -> framework_core::primitives::text_area::TextAreaHandle {
+    ) -> runtime_core::primitives::text_area::TextAreaHandle {
         primitives::text_input::make_text_area_handle(node)
     }
 
-    fn create_toggle(&mut self, initial_value: bool, on_change: Rc<dyn Fn(bool)>, a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
+    fn create_toggle(&mut self, initial_value: bool, on_change: Rc<dyn Fn(bool)>, a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
         let node = primitives::toggle::create(self, initial_value, on_change);
-        a11y::apply(&node, a11y, Some(framework_core::accessibility::Role::Switch));
+        a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::Switch));
         node
     }
 
@@ -905,7 +905,7 @@ impl Backend for AndroidBackend {
         primitives::toggle::update_value(node, value)
     }
 
-    fn create_scroll_view(&mut self, horizontal: bool, a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
+    fn create_scroll_view(&mut self, horizontal: bool, a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
         let node = primitives::scroll_view::create(self, horizontal);
         // ScrollView has no first-class role — Android handles scroll
         // chrome itself. apply() still writes author-set label / hint
@@ -921,10 +921,10 @@ impl Backend for AndroidBackend {
         max: f32,
         step: Option<f32>,
         on_change: Rc<dyn Fn(f32)>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = primitives::slider::create(self, initial_value, min, max, step, on_change);
-        a11y::apply(&node, a11y, Some(framework_core::accessibility::Role::Slider));
+        a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::Slider));
         node
     }
 
@@ -938,10 +938,10 @@ impl Backend for AndroidBackend {
         autoplay: bool,
         controls: bool,
         loop_playback: bool,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = primitives::video::create(self, src, autoplay, controls, loop_playback);
-        a11y::apply(&node, a11y, Some(framework_core::accessibility::Role::Image));
+        a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::Image));
         node
     }
 
@@ -951,13 +951,13 @@ impl Backend for AndroidBackend {
 
     fn create_virtualizer(
         &mut self,
-        callbacks: framework_core::VirtualizerCallbacks<Self::Node>,
+        callbacks: runtime_core::VirtualizerCallbacks<Self::Node>,
         overscan: f32,
         horizontal: bool,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = primitives::virtualizer::create(self, callbacks, overscan, horizontal);
-        a11y::apply(&node, a11y, Some(framework_core::accessibility::Role::List));
+        a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::List));
         node
     }
 
@@ -967,27 +967,27 @@ impl Backend for AndroidBackend {
 
     fn create_activity_indicator(
         &mut self,
-        size: framework_core::primitives::activity_indicator::ActivityIndicatorSize,
-        color: Option<&framework_core::Color>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        size: runtime_core::primitives::activity_indicator::ActivityIndicatorSize,
+        color: Option<&runtime_core::Color>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = primitives::activity_indicator::create(self, size, color);
-        a11y::apply(&node, a11y, Some(framework_core::accessibility::Role::Spinner));
+        a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::Spinner));
         node
     }
 
     fn make_video_handle(
         &self,
         node: &Self::Node,
-    ) -> framework_core::primitives::video::VideoHandle {
+    ) -> runtime_core::primitives::video::VideoHandle {
         primitives::video::make_handle(node)
     }
 
     fn create_navigator(
         &mut self,
-        callbacks: framework_core::NavigatorCallbacks<Self::Node>,
-        control: Rc<framework_core::NavigatorControl>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        callbacks: runtime_core::NavigatorCallbacks<Self::Node>,
+        control: Rc<runtime_core::NavigatorControl>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = primitives::navigator::create(self, callbacks, control);
         a11y::apply(&node, a11y, None);
@@ -999,7 +999,7 @@ impl Backend for AndroidBackend {
         navigator: &Self::Node,
         screen: Self::Node,
         scope_id: u64,
-        _options: framework_core::ScreenOptions,
+        _options: runtime_core::ScreenOptions,
     ) {
         primitives::navigator::attach_initial(self, navigator, screen, scope_id)
     }
@@ -1011,7 +1011,7 @@ impl Backend for AndroidBackend {
     fn make_navigator_handle(
         &self,
         node: &Self::Node,
-    ) -> framework_core::NavigatorHandle {
+    ) -> runtime_core::NavigatorHandle {
         primitives::navigator::make_handle(self, node)
     }
 
@@ -1021,9 +1021,9 @@ impl Backend for AndroidBackend {
     // sidebar); the framework swaps the active screen on Select.
     fn create_tab_navigator(
         &mut self,
-        callbacks: framework_core::TabNavigatorCallbacks<Self::Node>,
-        control: Rc<framework_core::NavigatorControl>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        callbacks: runtime_core::TabNavigatorCallbacks<Self::Node>,
+        control: Rc<runtime_core::NavigatorControl>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = primitives::tab_drawer::create_tab(self, callbacks, control);
         a11y::apply(&node, a11y, None);
@@ -1035,7 +1035,7 @@ impl Backend for AndroidBackend {
         navigator: &Self::Node,
         screen: Self::Node,
         scope_id: u64,
-        options: framework_core::ScreenOptions,
+        options: runtime_core::ScreenOptions,
     ) {
         primitives::tab_drawer::attach_initial(self, navigator, screen, scope_id, options)
     }
@@ -1047,15 +1047,15 @@ impl Backend for AndroidBackend {
     fn make_tab_navigator_handle(
         &self,
         node: &Self::Node,
-    ) -> framework_core::TabsHandle {
+    ) -> runtime_core::TabsHandle {
         primitives::tab_drawer::make_tab_handle(self, node)
     }
 
     fn create_drawer_navigator(
         &mut self,
-        callbacks: framework_core::DrawerNavigatorCallbacks<Self::Node>,
-        control: Rc<framework_core::NavigatorControl>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        callbacks: runtime_core::DrawerNavigatorCallbacks<Self::Node>,
+        control: Rc<runtime_core::NavigatorControl>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = primitives::tab_drawer::create_drawer(self, callbacks, control);
         a11y::apply(&node, a11y, None);
@@ -1067,7 +1067,7 @@ impl Backend for AndroidBackend {
         navigator: &Self::Node,
         screen: Self::Node,
         scope_id: u64,
-        options: framework_core::ScreenOptions,
+        options: runtime_core::ScreenOptions,
     ) {
         primitives::tab_drawer::attach_initial(self, navigator, screen, scope_id, options)
     }
@@ -1083,7 +1083,7 @@ impl Backend for AndroidBackend {
     fn apply_navigator_header_style(
         &mut self,
         navigator: &Self::Node,
-        style: &std::rc::Rc<framework_core::StyleRules>,
+        style: &std::rc::Rc<runtime_core::StyleRules>,
     ) {
         primitives::tab_drawer::apply_header_style(self, navigator, style)
     }
@@ -1091,7 +1091,7 @@ impl Backend for AndroidBackend {
     fn apply_navigator_title_style(
         &mut self,
         navigator: &Self::Node,
-        style: &std::rc::Rc<framework_core::StyleRules>,
+        style: &std::rc::Rc<runtime_core::StyleRules>,
     ) {
         primitives::tab_drawer::apply_title_style(self, navigator, style)
     }
@@ -1099,7 +1099,7 @@ impl Backend for AndroidBackend {
     fn apply_navigator_button_style(
         &mut self,
         navigator: &Self::Node,
-        style: &std::rc::Rc<framework_core::StyleRules>,
+        style: &std::rc::Rc<runtime_core::StyleRules>,
     ) {
         primitives::tab_drawer::apply_button_style(self, navigator, style)
     }
@@ -1107,7 +1107,7 @@ impl Backend for AndroidBackend {
     fn apply_navigator_body_style(
         &mut self,
         navigator: &Self::Node,
-        style: &std::rc::Rc<framework_core::StyleRules>,
+        style: &std::rc::Rc<runtime_core::StyleRules>,
     ) {
         primitives::tab_drawer::apply_body_style(self, navigator, style)
     }
@@ -1119,16 +1119,16 @@ impl Backend for AndroidBackend {
     fn make_drawer_navigator_handle(
         &self,
         node: &Self::Node,
-    ) -> framework_core::DrawerHandle {
+    ) -> runtime_core::DrawerHandle {
         primitives::tab_drawer::make_drawer_handle(self, node)
     }
 
     fn create_graphics(
         &mut self,
-        on_ready: framework_core::primitives::graphics::OnReady,
-        on_resize: framework_core::primitives::graphics::OnResize,
-        on_lost: framework_core::primitives::graphics::OnLost,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        on_ready: runtime_core::primitives::graphics::OnReady,
+        on_resize: runtime_core::primitives::graphics::OnResize,
+        on_lost: runtime_core::primitives::graphics::OnLost,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = primitives::graphics::create(self, on_ready, on_resize, on_lost);
         // Graphics surfaces are GPU-rendered content with no inherent
@@ -1144,16 +1144,16 @@ impl Backend for AndroidBackend {
     fn make_graphics_handle(
         &self,
         node: &Self::Node,
-    ) -> framework_core::primitives::graphics::GraphicsHandle {
+    ) -> runtime_core::primitives::graphics::GraphicsHandle {
         primitives::graphics::make_handle(node)
     }
 
     fn create_portal(
         &mut self,
-        target: framework_core::primitives::portal::PortalTarget,
+        target: runtime_core::primitives::portal::PortalTarget,
         on_dismiss: Option<Rc<dyn Fn()>>,
         trap_focus: bool,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = primitives::overlay::create(self, target, on_dismiss, trap_focus);
         // Portal container is transparent — author sets role
@@ -1172,7 +1172,7 @@ impl Backend for AndroidBackend {
         type_id: std::any::TypeId,
         type_name: &'static str,
         payload: &Rc<dyn std::any::Any>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         // Look up the handler; clone the Rc so we can drop the registry
         // borrow before calling the handler (which itself needs
@@ -1209,16 +1209,16 @@ impl Backend for AndroidBackend {
     /// `view_handle.as_any()` to `GlobalRef` and reach the backend
     /// through `set_animated_f32` / `set_animated_color`; without this
     /// override the handle stores `Rc<()>` and the downcast fails.
-    fn make_view_handle(&self, node: &Self::Node) -> framework_core::ViewHandle {
-        framework_core::ViewHandle::new(Rc::new(node.clone()), &ANDROID_VIEW_OPS)
+    fn make_view_handle(&self, node: &Self::Node) -> runtime_core::ViewHandle {
+        runtime_core::ViewHandle::new(Rc::new(node.clone()), &ANDROID_VIEW_OPS)
     }
 
     /// See [`Self::make_view_handle`]. Same plumbing for `TextHandle`
     /// so the welcome example's per-frame `setTextColor` write can
     /// reach a `TextView` (rather than `setTintColor`-equivalent on a
     /// generic wrapper) and animate `color` end-to-end.
-    fn make_text_handle(&self, node: &Self::Node) -> framework_core::TextHandle {
-        framework_core::TextHandle::new(Rc::new(node.clone()), &ANDROID_TEXT_OPS)
+    fn make_text_handle(&self, node: &Self::Node) -> runtime_core::TextHandle {
+        runtime_core::TextHandle::new(Rc::new(node.clone()), &ANDROID_TEXT_OPS)
     }
 
     fn clear_children(&mut self, node: &Self::Node) {
@@ -1227,14 +1227,14 @@ impl Backend for AndroidBackend {
 
     fn register_asset(
         &mut self,
-        id: framework_core::AssetId,
-        kind: framework_core::AssetTag,
-        source: &framework_core::AssetSource,
+        id: runtime_core::AssetId,
+        kind: runtime_core::AssetTag,
+        source: &runtime_core::AssetSource,
     ) {
         // Only the font branch needs JNI today; images on Android go
         // through `create_image(src)` directly. Future image / video
         // caches would chain here the same way the iOS backend does.
-        if kind != framework_core::AssetTag::Font {
+        if kind != runtime_core::AssetTag::Font {
             return;
         }
         let context = self.context.clone();
@@ -1246,24 +1246,24 @@ impl Backend for AndroidBackend {
 
     fn unregister_asset(
         &mut self,
-        id: framework_core::AssetId,
-        kind: framework_core::AssetTag,
+        id: runtime_core::AssetId,
+        kind: runtime_core::AssetTag,
     ) {
         self.font_registry.unregister_asset(id, kind);
     }
 
     fn register_typeface(
         &mut self,
-        id: framework_core::assets::TypefaceId,
+        id: runtime_core::assets::TypefaceId,
         family_name: &str,
-        faces: &[framework_core::assets::TypefaceFace],
-        fallback: framework_core::assets::SystemFallback,
+        faces: &[runtime_core::assets::TypefaceFace],
+        fallback: runtime_core::assets::SystemFallback,
     ) {
         self.font_registry
             .register_typeface(id, family_name, faces, fallback);
     }
 
-    fn unregister_typeface(&mut self, id: framework_core::assets::TypefaceId) {
+    fn unregister_typeface(&mut self, id: runtime_core::assets::TypefaceId) {
         self.font_registry.unregister_typeface(id);
     }
 
@@ -1290,14 +1290,14 @@ impl Backend for AndroidBackend {
     fn set_animated_f32(
         &mut self,
         node: &Self::Node,
-        prop: framework_core::animation::AnimProp,
+        prop: runtime_core::animation::AnimProp,
         value: f32,
     ) {
         // Android View has separate native properties for each
         // transform component (translationX/Y, scaleX/Y, rotation)
         // plus alpha — no composition needed. Each AnimProp maps
         // directly to one setter via JNI.
-        use framework_core::animation::AnimProp as P;
+        use runtime_core::animation::AnimProp as P;
         let (method, sig) = match prop {
             P::Opacity => ("setAlpha", "(F)V"),
             P::TranslateX => ("setTranslationX", "(F)V"),
@@ -1356,10 +1356,10 @@ impl Backend for AndroidBackend {
     fn set_animated_color(
         &mut self,
         node: &Self::Node,
-        prop: framework_core::animation::AnimProp,
+        prop: runtime_core::animation::AnimProp,
         value: [f32; 4],
     ) {
-        use framework_core::animation::AnimProp as P;
+        use runtime_core::animation::AnimProp as P;
         // Pack sRGB[r,g,b,a] (0..1 floats) into Android ARGB
         // (0xAARRGGBB) — the int Android's setBackgroundColor takes.
         let r = (value[0].clamp(0.0, 1.0) * 255.0).round() as u32;
@@ -1422,12 +1422,12 @@ impl Backend for AndroidBackend {
         }
     }
 
-    fn frame(&self, node: &Self::Node) -> Option<framework_core::primitives::portal::ViewportRect> {
+    fn frame(&self, node: &Self::Node) -> Option<runtime_core::primitives::portal::ViewportRect> {
         // Parent-relative rect in dp — matches iOS's `Backend::frame`
         // impl. Framework portal / anchoring code consults this; the
         // ViewHandle-side analog used by author code lives on
         // `AndroidViewOps::frame` (same body, different trait).
-        <AndroidViewOps as framework_core::ViewOps>::frame(
+        <AndroidViewOps as runtime_core::ViewOps>::frame(
             &ANDROID_VIEW_OPS,
             node as &dyn std::any::Any,
         )
@@ -1475,7 +1475,7 @@ impl Backend for AndroidBackend {
     fn attach_states(
         &mut self,
         node: &Self::Node,
-        setter: Rc<dyn Fn(framework_core::StateBits, bool)>,
+        setter: Rc<dyn Fn(runtime_core::StateBits, bool)>,
     ) {
         // Box the setter behind a stable raw pointer the JVM can hand
         // back via JNI on event firings, mirroring the
@@ -1537,8 +1537,8 @@ impl Backend for AndroidBackend {
     fn update_accessibility(
         &mut self,
         node: &Self::Node,
-        a11y_props: &framework_core::accessibility::AccessibilityProps,
-        inferred_role: Option<framework_core::accessibility::Role>,
+        a11y_props: &runtime_core::accessibility::AccessibilityProps,
+        inferred_role: Option<runtime_core::accessibility::Role>,
     ) {
         a11y::apply(node, a11y_props, inferred_role);
     }
@@ -1546,7 +1546,7 @@ impl Backend for AndroidBackend {
     fn announce_for_accessibility(
         &mut self,
         msg: &str,
-        priority: framework_core::accessibility::LiveRegionPriority,
+        priority: runtime_core::accessibility::LiveRegionPriority,
     ) {
         // Routed through the backend's host root view —
         // `announceForAccessibility` exists on `View`, and the host
@@ -1562,7 +1562,7 @@ impl Backend for AndroidBackend {
     }
 
     fn finish(&mut self, root: Self::Node) {
-        // Idempotent: in AAS mode, each reconnect / re-snapshot from
+        // Idempotent: in runtime-server mode, each reconnect / re-snapshot from
         // the dev-server replays the full command stream, which
         // includes the `Finish` that drives this method. The
         // `WireBackend` (in `dev-client`) is idempotent for tree
@@ -1571,7 +1571,7 @@ impl Backend for AndroidBackend {
         // `addView` on a child whose `getParent()` is non-null
         // throws `IllegalStateException`, which used to surface as
         // a JNI panic and (before the panic hook + exception clear
-        // in the AAS shell) crashed the process outright.
+        // in the runtime-server shell) crashed the process outright.
         //
         // The fix: check the current parent. If it's already
         // `self.root`, we're done. If it's some OTHER ViewGroup
@@ -1640,6 +1640,17 @@ impl Backend for AndroidBackend {
         // resume-after-paused case where the activity is re-attached
         // and the very first frame is still 0×0.
         crate::imp::scheduler::schedule_layout_pass_retry(0);
+    }
+
+    /// Backend-trait entry point the runtime-server shell uses to drive layout
+    /// when the deferred `schedule_layout_pass_retry` path's
+    /// `ANDROID_BACKEND_SELF.upgrade()` returns `None` (runtime-server mode
+    /// owns the backend by-value inside `RuntimeServerClient`, so the global
+    /// self-ref is never installed). Delegates to the existing
+    /// public [`AndroidBackend::run_layout`] wrapper around
+    /// `run_layout_pass`.
+    fn run_layout(&mut self) {
+        AndroidBackend::run_layout(self);
     }
 }
 

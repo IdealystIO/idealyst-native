@@ -20,20 +20,20 @@ pub use imp::{
 #[cfg(not(target_os = "macos"))]
 pub use stub::MacosBackend;
 
-// Optional AAS-client entry point. Exposes `spawn_aas_shell` +
+// Optional runtime-server-client entry point. Exposes `spawn_runtime_server_shell` +
 // `start_main_thread_drain_timer`, modeled on `backend-ios-mobile`'s
-// `aas` module. Only compiled when `--features aas-shell` is set —
+// `aas` module. Only compiled when `--features runtime-server` is set —
 // the native-rendering build path pays zero binary cost.
 //
 // Unlike iOS (where Swift drives the entry via `ios_main` extern "C"),
 // the macOS host is pure Rust (`host-appkit`), so we expose a Rust
 // function rather than a C symbol. `host-appkit`'s `run_aas` calls
-// `spawn_aas_shell` from inside its own `NSApplication` setup.
-#[cfg(all(target_os = "macos", feature = "aas-shell"))]
-pub mod aas;
+// `spawn_runtime_server_shell` from inside its own `NSApplication` setup.
+#[cfg(all(target_os = "macos", feature = "runtime-server"))]
+pub mod runtime_server;
 
 /// Install the macOS scheduler (NSTimer-backed). Must be called once
-/// before `framework_core::render(...)` so timer-driven features
+/// before `runtime_core::render(...)` so timer-driven features
 /// (presence animations, anything calling `after_ms` /
 /// `schedule_microtask`) delay correctly instead of firing
 /// synchronously.
@@ -57,12 +57,12 @@ pub fn install_global_self(_weak: std::rc::Weak<std::cell::RefCell<MacosBackend>
 /// matching `MacosNode` is exposed only on macOS, so consumer code
 /// that reaches these on a non-macOS host is necessarily host-only.
 #[cfg(not(target_os = "macos"))]
-pub fn set_animated_f32<T>(_node: &T, _prop: framework_core::animation::AnimProp, _value: f32) {}
+pub fn set_animated_f32<T>(_node: &T, _prop: runtime_core::animation::AnimProp, _value: f32) {}
 
 #[cfg(not(target_os = "macos"))]
 pub fn set_animated_color<T>(
     _node: &T,
-    _prop: framework_core::animation::AnimProp,
+    _prop: runtime_core::animation::AnimProp,
     _value: [f32; 4],
 ) {
 }

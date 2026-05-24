@@ -5,7 +5,7 @@
 
 use std::rc::Rc;
 
-use framework_core::{ui, Primitive};
+use runtime_core::{ui, Primitive};
 use idea_ui::doc_controls::DocControls;
 use idea_ui::{
     badge, btn, stack, BadgeProps, ButtonProps, IconButtonProps, StackGap, TagProps,

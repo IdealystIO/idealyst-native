@@ -339,24 +339,24 @@ overlays whose content depends on a gesture position).
 Neither version is the default — authors opt into one or the other
 explicitly. Sampling is a choice, not a free behavior.
 
-## AAS / wire compatibility
+## runtime-server / wire compatibility
 
 Per [project_aas_state_snapshot](../crates/framework/core/MEMORY-aas.md):
-when a fresh AAS client connects mid-session, it receives a
+when a fresh runtime-server client connects mid-session, it receives a
 `SceneModel` snapshot.
 
 Motion's wire story is the hard part of this design. Two options:
 
-### Option A: AAS graphics-degraded
+### Option A: runtime-server graphics-degraded
 
 Match the existing `create_graphics` policy per
 [project_aas_graphics_unsupported](../crates/framework/core/MEMORY-graphics.md).
 Motion-bound transforms work fully locally but degrade to "static
-value at the time of write" over AAS — the binding is replaced
+value at the time of write" over runtime-server — the binding is replaced
 with a one-shot transform write per `write_motion` call.
 
 Pro: simple, predictable, matches existing policy.
-Con: AAS visualizations of gesture-driven UIs look choppy or
+Con: runtime-server visualizations of gesture-driven UIs look choppy or
 miss the animation entirely.
 
 ### Option B: Per-frame batched writes
@@ -364,23 +364,23 @@ miss the animation entirely.
 The dev-side runtime batches `write_motion` calls in a
 `pending_writes: HashMap<MotionId, f32>` flushed once per
 `raf_loop` tick. Wire commands grow `WriteMotion { id, value }`.
-Device-side AAS runtime replays writes against its own native
+Device-side runtime-server runtime replays writes against its own native
 motion handles.
 
 `animate_motion` and `spring_motion` ship as single wire messages
 (target + duration / spring config); the device-side runs the
 animation natively. This is cheap.
 
-Pro: AAS sees smooth motion.
+Pro: runtime-server sees smooth motion.
 Con: significant wire traffic for sustained gestures (60hz × N
 motion writes), plus device-side has to maintain its own animator
 for tween/spring.
 
 ### Recommendation
 
-Ship **Option A first**. It matches existing AAS-feature-parity
+Ship **Option A first**. It matches existing runtime-server-feature-parity
 policy and lets us land motion locally without designing a wire
-batching scheme upfront. Revisit if AAS demos of gesture
+batching scheme upfront. Revisit if runtime-server demos of gesture
 interactions become a real product need.
 
 Either way, `SceneModel` grows:
@@ -422,7 +422,7 @@ properties.
 End-to-end this is 2–3 weeks. The API can land in the first 2 days
 as wgpu-only and ship incrementally.
 
-1. **Cross-platform types** in framework-core (~½ day):
+1. **Cross-platform types** in runtime-core (~½ day):
    `Motion<f32>`, `AnimProperty`, `SpringConfig`, `MotionRef`,
    stylesheet builders for `translate_x` / `translate_y` / `scale` /
    `rotation` / `opacity`, the `IntoMotionOrStatic` trait. Plus
@@ -437,11 +437,11 @@ as wgpu-only and ship incrementally.
    `ObjectAnimator` / `SpringAnimation` for animated targets.
 5. **Web implementation** (~1 day): CSS custom property route +
    WAAPI for animated targets.
-6. **AAS** (~1 day for Option A): degrade to static writes on the
+6. **runtime-server** (~1 day for Option A): degrade to static writes on the
    wire backend. `SceneModel` extensions.
 7. **Reactivity bridges** (~½ day): `signal_sampled_on_settle()`
    and `signal_sampled_each_frame()` as opt-in adapters.
-8. **Tests** as we go — unit-testable on the framework-core side
+8. **Tests** as we go — unit-testable on the runtime-core side
    (motion arithmetic, animation state machines); platform binding
    smoke-tested manually + via the demo apps.
 
@@ -457,7 +457,7 @@ as wgpu-only and ship incrementally.
   latency.
 - `signal_sampled_on_settle()` produces a Signal that updates only
   on tween/spring completion.
-- AAS clients see motion-bound transforms (either degraded per
+- runtime-server clients see motion-bound transforms (either degraded per
   Option A or smooth per Option B).
 
 ## Out of scope (for v1)

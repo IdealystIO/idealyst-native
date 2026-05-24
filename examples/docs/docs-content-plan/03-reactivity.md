@@ -21,7 +21,7 @@ underneath.
 ### Making a signal
 
 ```rust
-use framework_core::signal;
+use runtime_core::signal;
 
 let count = signal!(0);
 let name = signal!(String::from("Ada"));
@@ -129,7 +129,7 @@ runs the closure once, recording every signal read, then re-runs
 the closure whenever any of those signals change.
 
 ```rust
-use framework_core::Effect;
+use runtime_core::Effect;
 
 let _e = Effect::new(move || {
     println!("count is now {}", count.get());
@@ -196,7 +196,7 @@ subscribing — usually because the read is incidental ("I want the
 current value, but I don't want to re-run if it changes").
 
 ```rust
-use framework_core::untrack;
+use runtime_core::untrack;
 
 Effect::new(move || {
     let user = current_user.get();              // tracked: re-fire if user changes
@@ -248,7 +248,7 @@ let _e = Effect::new(move || doubled.set(count.get() * 2));
 `doubled` is now a signal that mirrors `count * 2`. Anything that
 reads `doubled.get()` re-runs when `count` changes.
 
-The first-class `Derived<T>` type lives in `framework-core` and
+The first-class `Derived<T>` type lives in `runtime-core` and
 carries both the runtime closure and a structured description
 (method name + input signal ids). The structured form is what lets
 generator backends like Roku ship the derived expression to the
@@ -279,7 +279,7 @@ in the same arena as signals and effects, but it's not a value type
 primitive mounts.
 
 ```rust
-use framework_core::{Ref, ButtonHandle};
+use runtime_core::{Ref, ButtonHandle};
 
 let btn: Ref<ButtonHandle> = Ref::new();
 

@@ -2,7 +2,7 @@
 
 use docs_macro::docs;
 #[allow(unused_imports)]
-use crate::shell::{codeblock, pageheader, CodeBlockProps, PageHeaderProps};
+use crate::shell::{code_block, page_header, CodeBlockProps, PageHeaderProps};
 #[allow(unused_imports)]
 use idea_ui::{body, card, heading, stack};
 
@@ -146,7 +146,7 @@ docs! {
           " if you don't need a context. Grammar:"),
 
         code(rust, r##"
-            use framework_core::{stylesheet, Color, Length, Tokenized};
+            use runtime_core::{stylesheet, Color, Length, Tokenized};
 
             // Token-only example. No context type needed; the
             // stylesheet directly references token names.
@@ -413,7 +413,7 @@ docs! {
 
     section(heading = "Building your own stylesheets") {
         p("The ", code("stylesheet!"),
-          " macro is part of ", code("framework-core"),
+          " macro is part of ", code("runtime-core"),
           ". Nothing in it is idea-ui-specific. To build your own \
            component library or just some app-local styles:"),
         list(

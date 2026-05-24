@@ -12,31 +12,31 @@ name = "backend_ios"
 crate-type = ["staticlib", "rlib"]
 
 [features]
-debug-stats = ["framework-core/debug-stats"]
-# Optional: compile in the AAS-client entry point + main-thread
-# scheduler so the iOS app can run as a thin client of an AAS
+debug-stats = ["runtime-core/debug-stats"]
+# Optional: compile in the runtime-server-client entry point + main-thread
+# scheduler so the iOS app can run as a thin client of an runtime-server
 # dev-server (instead of mounting the user's tree locally). When
 # off, the crate is a pure native backend with no transport code.
 # When on, it pulls `dev-client` and exposes `ios_main` + supporting
 # C-ABI entry points the Swift host uses.
-aas-shell = ["dep:aas-shell-native", "aas-shell-native/aas-shell"]
+runtime-server = ["dep:runtime-server-shell-native", "runtime-server-shell-native/runtime-server"]
 # Compile in this backend's NSTimer-based `RenderLoopDriver`. The
 # driver itself lives in `backend-ios-core` (shared with TV); this
-# feature just turns it on and forwards `framework-core/async-driver`
+# feature just turns it on and forwards `runtime-core/async-driver`
 # so `render_loop` / `spawn_async` resolve. Host calls
 # `install_render_loop()` once at init.
-async-driver = ["framework-core/async-driver", "backend-ios-core/async-driver"]
+async-driver = ["runtime-core/async-driver", "backend-ios-core/async-driver"]
 
 [dependencies]
-framework-core = { workspace = true }
-native-layout = { workspace = true }
+runtime-core = { workspace = true }
+runtime-layout = { workspace = true }
 # Shared iOS/tvOS helpers (style + render loop driver). Same crate
 # is consumed by `backend-ios-tv`.
 backend-ios-core = { workspace = true }
-# Only used when `aas-shell` is on. Pulls tungstenite + mdns-sd +
-# the worker-thread `AasShell` from the shared native-shell crate
-# (also consumed by Android, TV, desktop AAS hosts).
-aas-shell-native = { workspace = true, optional = true }
+# Only used when `runtime-server` is on. Pulls tungstenite + mdns-sd +
+# the worker-thread `RuntimeServerShell` from the shared native-shell crate
+# (also consumed by Android, TV, desktop runtime-server hosts).
+runtime-server-shell-native = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "ios")'.dependencies]
 block2 = "0.5"

@@ -3,7 +3,7 @@
 This page covers the moving parts behind day-to-day development:
 how the CLI turns your one-crate app into running platform builds,
 how hot reload patches a running app without losing its state, what
-**app-as-server** (AAS) is and when to use it, and how the MCP
+**app-as-server** (runtime-server) is and when to use it, and how the MCP
 server hooks Robot up to an external tool like Claude Desktop.
 
 Most of what's here lives below the surface of the user-facing
@@ -81,7 +81,7 @@ Each backend has its own native build flow. The CLI invokes them:
 - **Roku** — Rust build for the host process, BrightScript
   packaging for the device side, push over the developer-mode
   HTTP interface.
-- **AAS** — `cargo build` for the dev-host binary, then run.
+- **runtime-server** — `cargo build` for the dev-host binary, then run.
 
 You can run any of these by hand if you need to debug the
 pipeline. The CLI is orchestration; the underlying tools are
@@ -113,7 +113,7 @@ function dispatcher and a primitive-tree diff.
 compile time:
 
 - The **outer function** keeps the public name (`counter`). Its
-  body is `framework_hot::call(__counter_hot_impl, args)` — a
+  body is `dev_hot::call(__counter_hot_impl, args)` — a
   dispatch through a runtime jump table.
 - The **inner function** (`__counter_hot_impl`) holds the real
   body.
@@ -125,7 +125,7 @@ runs the new code. The outer function — and everything that
 holds a function pointer to it — never has to be updated.
 
 This is the same mechanism the [subsecond](https://github.com/DioxusLabs/dioxus)
-crate from the Dioxus project uses. Idealyst's `framework-hot`
+crate from the Dioxus project uses. Idealyst's `dev-hot`
 sits on top, integrating the dispatch with the reactive
 substrate.
 
@@ -137,7 +137,7 @@ might return a primitive tree that's structurally identical to
 the old one — just with different values. The framework needs to
 figure out what changed and what to update on the backend.
 
-That's `framework-hot`'s other job. When a component re-renders
+That's `dev-hot`'s other job. When a component re-renders
 after a hot patch, the framework:
 
 1. **Hashes each primitive in the new tree** by its identity
@@ -178,7 +178,7 @@ values, even adding new primitives inside a component — hot
 reload covers it. A full reload is the framework saying "I tried
 and the change is structural enough that I'm starting over."
 
-## AAS — app-as-server
+## runtime-server — app-as-server
 
 This is the part that's worth understanding even if you never use
 it for anything fancy: it changes what "running the app" means.
@@ -193,7 +193,7 @@ two builds, two processes.
 
 This is fine and fast. It's what most development looks like.
 
-### AAS mode
+### runtime-server mode
 
 `idealyst dev --aas` is different. The CLI builds **one
 dev-host binary** that runs the user's reactive runtime. It
@@ -207,7 +207,7 @@ Then clients connect:
 
 ```
 ┌─────────────────────────────┐
-│   AAS dev-host (your Mac)   │
+│   runtime-server dev-host (your Mac)   │
 │   - app()'s reactive state  │
 │   - signals, effects, scopes│
 │   - the primitive tree      │
@@ -240,7 +240,7 @@ scroll position, and signal values that were on the dev-host's
 side survive across the rebuild because they live in the
 dev-host's arena, not in any client.
 
-### What AAS is good for
+### What runtime-server is good for
 
 - **Cross-platform comparison.** Run web, iOS, and Android
   clients side by side, navigate on one, watch the others
@@ -256,15 +256,15 @@ dev-host's arena, not in any client.
 - **Debugging the wire protocol or backends.** Because the wire
   is the seam, you can log it, replay it, modify it in flight.
 
-### What AAS isn't good for
+### What runtime-server isn't good for
 
 - **GPU work.** `Graphics` primitives don't ship over the wire.
-  They emit a placeholder when the dev-host is in AAS mode. If
+  They emit a placeholder when the dev-host is in runtime-server mode. If
   you're building anything with a `wgpu` canvas, run in
   local-render mode.
 - **Performance testing.** Every interaction pays a WebSocket
-  round-trip. AAS is for development, not perf measurement.
-- **Production.** AAS is a development tool. Shipping an
+  round-trip. runtime-server is for development, not perf measurement.
+- **Production.** runtime-server is a development tool. Shipping an
   app-as-server architecture has security implications that the
   current implementation doesn't address.
 
@@ -375,7 +375,7 @@ To recap how the pieces fit:
 - **Hot reload** patches a running app without restarting it.
   Component bodies update through a function-pointer dispatcher;
   primitive trees update through identity-keyed diffs.
-- **AAS** is a dev mode where the framework runs once on your
+- **runtime-server** is a dev mode where the framework runs once on your
   machine and thin clients connect over WebSocket. State lives
   in one place; every client sees it.
 - **Robot** is the introspection layer that lets external
@@ -392,10 +392,10 @@ it.
 ## Where to read more
 
 - [Robot](#) — the tools the bridge exposes, in detail.
-- [Backends](#) — what the AAS thin clients are doing on each
+- [Backends](#) — what the runtime-server thin clients are doing on each
   platform.
 - [Architecture in more depth](#architecture-in-more-depth) (on
-  the Overview) — where `framework-hot`, `framework-wire`, and
+  the Overview) — where `dev-hot`, `framework-wire`, and
   `framework-dev-client` sit.
 - [Hot reload internals](#) — identity hashing, diff strategy,
   what survives a patch in detail.

@@ -14,7 +14,7 @@
 //! `.get()` heuristic) trigger reactive updates on the underlying
 //! `Text` primitive automatically.
 
-use framework_core::{ui, Primitive};
+use runtime_core::{ui, Primitive};
 
 use crate::stylesheets::Heading;
 pub use crate::stylesheets::{HeadingAlign, HeadingKind};

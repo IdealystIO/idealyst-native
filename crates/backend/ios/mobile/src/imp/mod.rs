@@ -21,14 +21,14 @@ macro_rules! ios_log {
     };
 }
 
-use framework_core::primitives::activity_indicator::ActivityIndicatorSize;
-use framework_core::primitives::graphics::{OnLost, OnReady, OnResize};
-use framework_core::primitives::link::LinkConfig;
-use framework_core::primitives::navigator::{
+use runtime_core::primitives::activity_indicator::ActivityIndicatorSize;
+use runtime_core::primitives::graphics::{OnLost, OnReady, OnResize};
+use runtime_core::primitives::link::LinkConfig;
+use runtime_core::primitives::navigator::{
     DrawerHandle, DrawerNavigatorCallbacks, NavigatorCallbacks,
     NavigatorControl, NavigatorHandle, TabNavigatorCallbacks, TabsHandle,
 };
-use framework_core::{Backend, Color, StyleRules};
+use runtime_core::{Backend, Color, StyleRules};
 use objc2::rc::Retained;
 use objc2::{msg_send, msg_send_id};
 use objc2_foundation::{MainThreadMarker, NSObject, NSString};
@@ -108,17 +108,17 @@ pub struct IosBackend {
     /// `apply_style` / `insert` / `finish` paths can update it. After
     /// build, `finish` calls `layout.compute(...)` and walks the
     /// UIView tree to set each subview's `frame`.
-    pub(crate) layout: native_layout::LayoutTree,
+    pub(crate) layout: runtime_layout::LayoutTree,
     /// Map from view pointer (as key) to (retained reference, layout node).
     /// We hold a `Retained<UIView>` so the layout pass can iterate every
     /// registered view directly — recursing through `UIView.subviews`
     /// misses subtrees that aren't yet attached to the host (e.g. a
     /// `UINavigationController`'s top VC view, which only gets added
     /// on UIKit's first layout pass, after our `finish()` returns).
-    pub(crate) view_to_layout: HashMap<usize, (Retained<UIView>, native_layout::LayoutNode)>,
+    pub(crate) view_to_layout: HashMap<usize, (Retained<UIView>, runtime_layout::LayoutNode)>,
     /// Per-view cached animation state. Mirrors the web backend's
     /// `animated_states` map; see [`animated`] for the routing
-    /// from [`AnimProp`](framework_core::animation::AnimProp) to
+    /// from [`AnimProp`](runtime_core::animation::AnimProp) to
     /// UIKit setters and the rationale for caching the transform
     /// components.
     pub(crate) animated_states: animated::AnimatedStateMap,
@@ -129,7 +129,7 @@ pub struct IosBackend {
     /// unregistered kinds fall through to a "not supported" placeholder
     /// UILabel.
     pub(crate) external_handlers:
-        framework_core::ExternalRegistry<IosBackend>,
+        runtime_core::ExternalRegistry<IosBackend>,
     /// Per-view AVPlayer/AVPlayerLayer retention for `Primitive::Video`,
     /// keyed by the host UIView pointer. The post-layout pass walks
     /// every registered view; for any video-backed view, the entry's
@@ -235,12 +235,12 @@ pub fn install_global_self(weak: std::rc::Weak<std::cell::RefCell<IosBackend>>) 
 /// or the install has been dropped (post-teardown), or if the
 /// backend is already borrowed (the in-flight Rust call will see
 /// the new value on its next frame).
-pub fn set_animated_f32(node: &IosNode, prop: framework_core::animation::AnimProp, value: f32) {
+pub fn set_animated_f32(node: &IosNode, prop: runtime_core::animation::AnimProp, value: f32) {
     let weak = IOS_BACKEND_SELF.with(|s| s.borrow().clone());
     let Some(weak) = weak else { return };
     let Some(rc) = weak.upgrade() else { return };
     if let Ok(mut b) = rc.try_borrow_mut() {
-        use framework_core::Backend;
+        use runtime_core::Backend;
         b.set_animated_f32(node, prop, value);
     };
 }
@@ -249,14 +249,14 @@ pub fn set_animated_f32(node: &IosNode, prop: framework_core::animation::AnimPro
 /// the global backend's `set_animated_color`.
 pub fn set_animated_color(
     node: &IosNode,
-    prop: framework_core::animation::AnimProp,
+    prop: runtime_core::animation::AnimProp,
     value: [f32; 4],
 ) {
     let weak = IOS_BACKEND_SELF.with(|s| s.borrow().clone());
     let Some(weak) = weak else { return };
     let Some(rc) = weak.upgrade() else { return };
     if let Ok(mut b) = rc.try_borrow_mut() {
-        use framework_core::Backend;
+        use runtime_core::Backend;
         b.set_animated_color(node, prop, value);
     };
 }
@@ -338,10 +338,10 @@ impl IosBackend {
             image_cache: HashMap::new(),
             font_registry: backend_ios_core::font::FontRegistry::new(),
             portal_instances: HashMap::new(),
-            layout: native_layout::LayoutTree::new(),
+            layout: runtime_layout::LayoutTree::new(),
             view_to_layout: HashMap::new(),
             animated_states: HashMap::new(),
-            external_handlers: framework_core::ExternalRegistry::new(),
+            external_handlers: runtime_core::ExternalRegistry::new(),
             video_instances: HashMap::new(),
             virtualizer_instances: HashMap::new(),
             collection_views: std::collections::HashSet::new(),
@@ -393,7 +393,7 @@ impl IosBackend {
     /// Get or create a layout node for a UIView. Called from every
     /// `create_*` method so each native view has a corresponding
     /// node in the layout tree.
-    pub(crate) fn layout_for_view(&mut self, view: &UIView) -> native_layout::LayoutNode {
+    pub(crate) fn layout_for_view(&mut self, view: &UIView) -> runtime_layout::LayoutNode {
         let key = view as *const UIView as usize;
         if let Some((_, node)) = self.view_to_layout.get(&key) {
             return *node;
@@ -409,7 +409,7 @@ impl IosBackend {
     /// Look up an existing layout node by view pointer. Returns
     /// `None` for views that weren't created by this backend
     /// (e.g. UIKit-internal scroll view internals).
-    pub(crate) fn layout_of(&self, view: &UIView) -> Option<native_layout::LayoutNode> {
+    pub(crate) fn layout_of(&self, view: &UIView) -> Option<runtime_layout::LayoutNode> {
         let key = view as *const UIView as usize;
         self.view_to_layout.get(&key).map(|(_, n)| *n)
     }
@@ -462,7 +462,7 @@ impl IosBackend {
                 // size the slot against a negative dimension.
                 let w = if w < 0.0 { 0.0 } else { w };
                 let h = if h < 0.0 { 0.0 } else { h };
-                native_layout::Size {
+                runtime_layout::Size {
                     width: known_dimensions.width.unwrap_or(w),
                     height: known_dimensions.height.unwrap_or(h),
                 }
@@ -556,7 +556,7 @@ pub(crate) fn mount_screen_in_vc(mtm: MainThreadMarker, screen: &UIView) -> Reta
 /// targets that must be kept alive (caller stores or forgets them).
 pub(crate) fn apply_header_options(
     vc: &UIViewController,
-    options: &framework_core::ScreenOptions,
+    options: &runtime_core::ScreenOptions,
     mtm: MainThreadMarker,
 ) -> Vec<Retained<NSObject>> {
     apply_header_options_with_nav(vc, None, options, mtm)
@@ -572,7 +572,7 @@ pub(crate) fn apply_header_options(
 pub(crate) fn apply_header_options_with_nav(
     vc: &UIViewController,
     explicit_nav_ctrl: Option<&Retained<NSObject>>,
-    options: &framework_core::ScreenOptions,
+    options: &runtime_core::ScreenOptions,
     mtm: MainThreadMarker,
 ) -> Vec<Retained<NSObject>> {
     let mut retained = Vec::new();
@@ -739,7 +739,7 @@ pub(crate) fn apply_header_options_with_nav(
 impl Backend for IosBackend {
     type Node = IosNode;
 
-    fn platform(&self) -> framework_core::Platform {
+    fn platform(&self) -> runtime_core::Platform {
         // `target_abi = "sim"` is set for `aarch64-apple-ios-sim` and
         // `x86_64-apple-ios` simulator targets; absent on real devices.
         // The sim self-reports via `Custom("Sim")` so author code
@@ -747,26 +747,26 @@ impl Backend for IosBackend {
         // device — there's no separate `is_simulator` signal, just
         // the `Platform` value the backend returns.
         if cfg!(all(target_os = "ios", target_abi = "sim")) {
-            framework_core::Platform::Custom("Sim")
+            runtime_core::Platform::Custom("Sim")
         } else {
-            framework_core::Platform::Ios
+            runtime_core::Platform::Ios
         }
     }
 
-    fn color_scheme(&self) -> framework_core::ColorScheme {
+    fn color_scheme(&self) -> runtime_core::ColorScheme {
         // UITraitCollection.currentTraitCollection.userInterfaceStyle
         // 0 = Unspecified, 1 = Light, 2 = Dark (UIUserInterfaceStyle).
         let tc: Retained<NSObject> =
             unsafe { msg_send_id![objc2::class!(UITraitCollection), currentTraitCollection] };
         let style: isize = unsafe { msg_send![&tc, userInterfaceStyle] };
         match style {
-            1 => framework_core::ColorScheme::Light,
-            2 => framework_core::ColorScheme::Dark,
-            _ => framework_core::ColorScheme::Auto,
+            1 => runtime_core::ColorScheme::Light,
+            2 => runtime_core::ColorScheme::Dark,
+            _ => runtime_core::ColorScheme::Auto,
         }
     }
 
-    fn create_view(&mut self, a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
+    fn create_view(&mut self, a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
         // IdealystTouchView is a UIView subclass that overrides the
         // four `touchesBegan:/Moved:/Ended:/Cancelled:` entry points
         // so a later `install_touch_handler` can attach a raw-touch
@@ -792,7 +792,7 @@ impl Backend for IosBackend {
         node
     }
 
-    fn create_text(&mut self, content: &str, a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
+    fn create_text(&mut self, content: &str, a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
         let label = unsafe { UILabel::new(self.mtm) };
         let ns_text = NSString::from_str(content);
         unsafe { label.setText(Some(&ns_text)) };
@@ -824,16 +824,16 @@ impl Backend for IosBackend {
                 let avail_w = known_dimensions
                     .width
                     .unwrap_or(match available_space.width {
-                        native_layout::AvailableSpace::Definite(w) => w,
-                        native_layout::AvailableSpace::MaxContent => f32::INFINITY,
-                        native_layout::AvailableSpace::MinContent => 0.0,
+                        runtime_layout::AvailableSpace::Definite(w) => w,
+                        runtime_layout::AvailableSpace::MaxContent => f32::INFINITY,
+                        runtime_layout::AvailableSpace::MinContent => 0.0,
                     });
                 let avail_h = known_dimensions
                     .height
                     .unwrap_or(match available_space.height {
-                        native_layout::AvailableSpace::Definite(h) => h,
-                        native_layout::AvailableSpace::MaxContent => f32::INFINITY,
-                        native_layout::AvailableSpace::MinContent => 0.0,
+                        runtime_layout::AvailableSpace::Definite(h) => h,
+                        runtime_layout::AvailableSpace::MaxContent => f32::INFINITY,
+                        runtime_layout::AvailableSpace::MinContent => 0.0,
                     });
 
                 // Ask UIKit how the label fits in this much space.
@@ -852,7 +852,7 @@ impl Backend for IosBackend {
                 // last character/line by a fractional point. Always
                 // round up so the frame is at least the size the
                 // text needs.
-                let result = native_layout::Size {
+                let result = runtime_layout::Size {
                     width: known_dimensions
                         .width
                         .unwrap_or((fitted.width as f32).ceil()),
@@ -875,10 +875,10 @@ impl Backend for IosBackend {
     fn create_button(
         &mut self,
         label: &str,
-        on_click: &framework_core::Action,
-        leading_icon: Option<&framework_core::IconData>,
-        _trailing_icon: Option<&framework_core::IconData>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        on_click: &runtime_core::Action,
+        leading_icon: Option<&runtime_core::IconData>,
+        _trailing_icon: Option<&runtime_core::IconData>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let button = unsafe {
             UIButton::buttonWithType(UIButtonType::System, self.mtm)
@@ -917,16 +917,16 @@ impl Backend for IosBackend {
                 let avail_w = known_dimensions
                     .width
                     .unwrap_or(match available_space.width {
-                        native_layout::AvailableSpace::Definite(w) => w,
-                        native_layout::AvailableSpace::MaxContent => f32::INFINITY,
-                        native_layout::AvailableSpace::MinContent => 0.0,
+                        runtime_layout::AvailableSpace::Definite(w) => w,
+                        runtime_layout::AvailableSpace::MaxContent => f32::INFINITY,
+                        runtime_layout::AvailableSpace::MinContent => 0.0,
                     });
                 let avail_h = known_dimensions
                     .height
                     .unwrap_or(match available_space.height {
-                        native_layout::AvailableSpace::Definite(h) => h,
-                        native_layout::AvailableSpace::MaxContent => f32::INFINITY,
-                        native_layout::AvailableSpace::MinContent => 0.0,
+                        runtime_layout::AvailableSpace::Definite(h) => h,
+                        runtime_layout::AvailableSpace::MaxContent => f32::INFINITY,
+                        runtime_layout::AvailableSpace::MinContent => 0.0,
                     });
                 let target = objc2_foundation::CGSize {
                     width: if avail_w.is_finite() { avail_w as f64 } else { f64::MAX },
@@ -934,7 +934,7 @@ impl Backend for IosBackend {
                 };
                 let fitted: objc2_foundation::CGSize =
                     unsafe { msg_send![&button_for_measure, sizeThatFits: target] };
-                native_layout::Size {
+                runtime_layout::Size {
                     width: known_dimensions.width.unwrap_or(fitted.width as f32),
                     height: known_dimensions.height.unwrap_or(fitted.height as f32),
                 }
@@ -968,8 +968,8 @@ impl Backend for IosBackend {
         initial_value: &str,
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
-        on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let field = unsafe { UITextField::new(self.mtm) };
         let ns_val = NSString::from_str(initial_value);
@@ -1021,8 +1021,8 @@ impl Backend for IosBackend {
         initial_value: &str,
         _placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
-        on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         // UITextView is the multi-line equivalent of UITextField. It
         // ships with `editable: true` already, so we don't need to
@@ -1063,7 +1063,7 @@ impl Backend for IosBackend {
         &mut self,
         initial_value: bool,
         on_change: Rc<dyn Fn(bool)>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let switch = unsafe { UISwitch::new(self.mtm) };
         unsafe { switch.setOn_animated(initial_value, false) };
@@ -1088,7 +1088,7 @@ impl Backend for IosBackend {
             std::rc::Rc::new(move |known_dimensions, _available_space| {
                 let intrinsic: objc2_foundation::CGSize =
                     unsafe { msg_send![&switch_for_measure, intrinsicContentSize] };
-                native_layout::Size {
+                runtime_layout::Size {
                     width: known_dimensions.width.unwrap_or(intrinsic.width as f32),
                     height: known_dimensions.height.unwrap_or(intrinsic.height as f32),
                 }
@@ -1112,7 +1112,7 @@ impl Backend for IosBackend {
         }
     }
 
-    fn create_scroll_view(&mut self, horizontal: bool, a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
+    fn create_scroll_view(&mut self, horizontal: bool, a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
         // Plain UIScrollView, frame-based. Children are added
         // directly as subviews (no inner UIStackView). Their frames
         // come from Taffy via `apply_frames`. We sync the scroll
@@ -1150,7 +1150,7 @@ impl Backend for IosBackend {
         max: f32,
         _step: Option<f32>,
         on_change: Rc<dyn Fn(f32)>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let slider = unsafe { UISlider::new(self.mtm) };
         unsafe {
@@ -1177,7 +1177,7 @@ impl Backend for IosBackend {
             std::rc::Rc::new(move |known_dimensions, _available_space| {
                 let intrinsic: objc2_foundation::CGSize =
                     unsafe { msg_send![&slider_for_measure, intrinsicContentSize] };
-                native_layout::Size {
+                runtime_layout::Size {
                     width: known_dimensions.width.unwrap_or(intrinsic.width as f32),
                     height: known_dimensions.height.unwrap_or(intrinsic.height as f32),
                 }
@@ -1199,7 +1199,7 @@ impl Backend for IosBackend {
         &mut self,
         size: ActivityIndicatorSize,
         color: Option<&Color>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let style = match size {
             ActivityIndicatorSize::Small => UIActivityIndicatorViewStyle::Medium,
@@ -1221,31 +1221,31 @@ impl Backend for IosBackend {
         a11y::apply(
             &node,
             a11y,
-            Some(framework_core::accessibility::Role::Spinner),
+            Some(runtime_core::accessibility::Role::Spinner),
         );
         node
     }
 
     fn create_icon(
         &mut self,
-        data: &framework_core::primitives::icon::IconData,
+        data: &runtime_core::primitives::icon::IconData,
         color: Option<&Color>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = icon::create_icon(self.mtm, data, color);
         a11y::apply(
             &node,
             a11y,
-            Some(framework_core::accessibility::Role::Image),
+            Some(runtime_core::accessibility::Role::Image),
         );
         node
     }
 
     fn register_asset(
         &mut self,
-        id: framework_core::AssetId,
-        kind: framework_core::AssetTag,
-        source: &framework_core::AssetSource,
+        id: runtime_core::AssetId,
+        kind: runtime_core::AssetTag,
+        source: &runtime_core::AssetSource,
     ) {
         // Font branch routes into the CoreText-backed registry first;
         // when the asset isn't a font, the call falls through to the
@@ -1259,31 +1259,31 @@ impl Backend for IosBackend {
 
     fn unregister_asset(
         &mut self,
-        id: framework_core::AssetId,
-        kind: framework_core::AssetTag,
+        id: runtime_core::AssetId,
+        kind: runtime_core::AssetTag,
     ) {
         self.font_registry.unregister_asset(id, kind);
-        if kind == framework_core::AssetTag::Image {
+        if kind == runtime_core::AssetTag::Image {
             self.image_cache.remove(&id);
         }
     }
 
     fn register_typeface(
         &mut self,
-        id: framework_core::assets::TypefaceId,
+        id: runtime_core::assets::TypefaceId,
         family_name: &str,
-        faces: &[framework_core::assets::TypefaceFace],
-        fallback: framework_core::assets::SystemFallback,
+        faces: &[runtime_core::assets::TypefaceFace],
+        fallback: runtime_core::assets::SystemFallback,
     ) {
         self.font_registry
             .register_typeface(id, family_name, faces, fallback);
     }
 
-    fn unregister_typeface(&mut self, id: framework_core::assets::TypefaceId) {
+    fn unregister_typeface(&mut self, id: runtime_core::assets::TypefaceId) {
         self.font_registry.unregister_typeface(id);
     }
 
-    fn create_image(&mut self, src: &str, alt: Option<&str>, a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
+    fn create_image(&mut self, src: &str, alt: Option<&str>, a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
         let node = image::create_image(self.mtm, &self.image_cache, src, alt);
         // Register with the layout tree so Taffy gives it a frame.
         // Image views need an intrinsic-size measurer so they don't
@@ -1296,7 +1296,7 @@ impl Backend for IosBackend {
         a11y::apply(
             &node,
             a11y,
-            Some(framework_core::accessibility::Role::Image),
+            Some(runtime_core::accessibility::Role::Image),
         );
         node
     }
@@ -1316,7 +1316,7 @@ impl Backend for IosBackend {
         autoplay: bool,
         controls: bool,
         loop_playback: bool,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = video::create_video(
             self.mtm,
@@ -1340,7 +1340,7 @@ impl Backend for IosBackend {
         a11y::apply(
             &node,
             a11y,
-            Some(framework_core::accessibility::Role::Image),
+            Some(runtime_core::accessibility::Role::Image),
         );
         node
     }
@@ -1352,16 +1352,16 @@ impl Backend for IosBackend {
     fn make_video_handle(
         &self,
         node: &Self::Node,
-    ) -> framework_core::primitives::video::VideoHandle {
+    ) -> runtime_core::primitives::video::VideoHandle {
         video::make_handle(&self.video_instances, node)
     }
 
     fn create_virtualizer(
         &mut self,
-        callbacks: framework_core::VirtualizerCallbacks<Self::Node>,
+        callbacks: runtime_core::VirtualizerCallbacks<Self::Node>,
         overscan: f32,
         horizontal: bool,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         // Build the UICollectionView + flow layout + data source.
         // Phase-1 MVP: vertical-scrolling, single-column, Known sizing.
@@ -1394,7 +1394,7 @@ impl Backend for IosBackend {
         a11y::apply(
             &node,
             a11y,
-            Some(framework_core::accessibility::Role::List),
+            Some(runtime_core::accessibility::Role::List),
         );
         node
     }
@@ -1442,14 +1442,14 @@ impl Backend for IosBackend {
         from: f32,
         to: f32,
         duration_ms: u32,
-        easing: framework_core::Easing,
+        easing: runtime_core::Easing,
         infinite: bool,
         autoreverses: bool,
     ) {
         icon::animate_icon_stroke(node, from, to, duration_ms, easing, infinite, autoreverses)
     }
 
-    fn make_icon_handle(&self, node: &Self::Node) -> framework_core::IconHandle {
+    fn make_icon_handle(&self, node: &Self::Node) -> runtime_core::IconHandle {
         icon::make_handle(node)
     }
 
@@ -1458,7 +1458,7 @@ impl Backend for IosBackend {
         on_ready: OnReady,
         on_resize: OnResize,
         on_lost: OnLost,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = graphics::create_graphics(self.mtm, &mut self.callback_targets, on_ready, on_resize, on_lost);
         // Graphics surfaces are GPU-rendered content with no inherent
@@ -1467,7 +1467,7 @@ impl Backend for IosBackend {
         node
     }
 
-    fn create_link(&mut self, config: LinkConfig, a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
+    fn create_link(&mut self, config: LinkConfig, a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
         // Plain UIView (was UIStackView). UIStackView injected internal
         // UISV-canvas-connection constraints that fought Taffy's
         // frame-based positioning — manifested as sibling links in the
@@ -1499,19 +1499,19 @@ impl Backend for IosBackend {
         // than leaving the link unlabelled. Author overrides still win.
         let resolved_label = a11y.label.clone()
             .unwrap_or_else(|| config.route.to_string());
-        let effective_a11y = framework_core::accessibility::AccessibilityProps {
+        let effective_a11y = runtime_core::accessibility::AccessibilityProps {
             label: Some(resolved_label),
             ..a11y.clone()
         };
         a11y::apply(
             &node,
             &effective_a11y,
-            Some(framework_core::accessibility::Role::Link),
+            Some(runtime_core::accessibility::Role::Link),
         );
         node
     }
 
-    fn create_pressable(&mut self, on_click: Rc<dyn Fn()>, a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
+    fn create_pressable(&mut self, on_click: Rc<dyn Fn()>, a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
         // Mirror `create_link`'s tap-gesture wiring so `Pressable`
         // children actually fire their click handlers. The default
         // `Backend::create_pressable` (see
@@ -1543,7 +1543,7 @@ impl Backend for IosBackend {
         a11y::apply(
             &node,
             a11y,
-            Some(framework_core::accessibility::Role::Button),
+            Some(runtime_core::accessibility::Role::Button),
         );
         node
     }
@@ -1551,7 +1551,7 @@ impl Backend for IosBackend {
     fn install_touch_handler(
         &mut self,
         node: &Self::Node,
-        handler: framework_core::TouchHandler,
+        handler: runtime_core::TouchHandler,
     ) {
         // `create_view` mints `IdealystTouchView` instances; every
         // framework View should pass this `isKindOfClass:` check.
@@ -1580,7 +1580,7 @@ impl Backend for IosBackend {
     fn claim_touch(
         &mut self,
         node: &Self::Node,
-        _touch_id: framework_core::TouchId,
+        _touch_id: runtime_core::TouchId,
     ) {
         // Walk up the responder chain looking for any UIScrollView
         // ancestor and force-cancel its in-flight pan. See
@@ -1758,7 +1758,7 @@ impl Backend for IosBackend {
         let parent_layout = self.layout_for_view(parent);
         // Snapshot child layout nodes before mutating UIKit, since
         // we'll be looking them up by view pointer.
-        let child_layouts: Vec<native_layout::LayoutNode> = parent
+        let child_layouts: Vec<runtime_layout::LayoutNode> = parent
             .subviews()
             .iter()
             .filter_map(|sub| self.layout_of(sub))
@@ -1896,7 +1896,7 @@ impl Backend for IosBackend {
     fn set_animated_f32(
         &mut self,
         node: &Self::Node,
-        prop: framework_core::animation::AnimProp,
+        prop: runtime_core::animation::AnimProp,
         value: f32,
     ) {
         self.impl_set_animated_f32(node, prop, value);
@@ -1905,18 +1905,18 @@ impl Backend for IosBackend {
     fn set_animated_color(
         &mut self,
         node: &Self::Node,
-        prop: framework_core::animation::AnimProp,
+        prop: runtime_core::animation::AnimProp,
         value: [f32; 4],
     ) {
         self.impl_set_animated_color(node, prop, value);
     }
 
-    fn frame(&self, node: &Self::Node) -> Option<framework_core::primitives::portal::ViewportRect> {
+    fn frame(&self, node: &Self::Node) -> Option<runtime_core::primitives::portal::ViewportRect> {
         // UIView.frame is already in superview coordinates — that's
         // the relative-to-parent rect.
         let view = node.as_view();
         let frame: objc2_foundation::CGRect = unsafe { msg_send![view, frame] };
-        Some(framework_core::primitives::portal::ViewportRect {
+        Some(runtime_core::primitives::portal::ViewportRect {
             x: frame.origin.x as f32,
             y: frame.origin.y as f32,
             width: frame.size.width as f32,
@@ -1924,7 +1924,7 @@ impl Backend for IosBackend {
         })
     }
 
-    fn absolute_frame(&self, node: &Self::Node) -> Option<framework_core::primitives::portal::ViewportRect> {
+    fn absolute_frame(&self, node: &Self::Node) -> Option<runtime_core::primitives::portal::ViewportRect> {
         // Same conversion as `rect_of_node` in handles.rs: convert
         // bounds to window coordinates. Returns None if the view
         // isn't yet mounted in a window.
@@ -1938,7 +1938,7 @@ impl Backend for IosBackend {
         let frame_in_window: objc2_foundation::CGRect = unsafe {
             msg_send![view, convertRect: bounds, toView: &*window]
         };
-        Some(framework_core::primitives::portal::ViewportRect {
+        Some(runtime_core::primitives::portal::ViewportRect {
             x: frame_in_window.origin.x as f32,
             y: frame_in_window.origin.y as f32,
             width: frame_in_window.size.width as f32,
@@ -1973,7 +1973,7 @@ impl Backend for IosBackend {
         &mut self,
         callbacks: NavigatorCallbacks<Self::Node>,
         control: Rc<NavigatorControl>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = navigator::create_navigator(self.mtm, &mut self.navigator_instances, callbacks, control);
         // Navigator chrome is transparent in the AX tree; per-screen
@@ -1988,7 +1988,7 @@ impl Backend for IosBackend {
         navigator: &Self::Node,
         screen: Self::Node,
         scope_id: u64,
-        options: framework_core::ScreenOptions,
+        options: runtime_core::ScreenOptions,
     ) {
         navigator::navigator_attach_initial(self.mtm, &self.navigator_instances, navigator, screen, scope_id, options)
     }
@@ -1996,7 +1996,7 @@ impl Backend for IosBackend {
     fn apply_navigator_header_style(
         &mut self,
         navigator: &Self::Node,
-        style: &Rc<framework_core::StyleRules>,
+        style: &Rc<runtime_core::StyleRules>,
     ) {
         let key = navigator.view_key();
         if let Some(entry) = self.navigator_instances.get(&key) {
@@ -2007,7 +2007,7 @@ impl Backend for IosBackend {
     fn apply_navigator_title_style(
         &mut self,
         navigator: &Self::Node,
-        style: &Rc<framework_core::StyleRules>,
+        style: &Rc<runtime_core::StyleRules>,
     ) {
         let key = navigator.view_key();
         if let Some(entry) = self.navigator_instances.get(&key) {
@@ -2018,7 +2018,7 @@ impl Backend for IosBackend {
     fn apply_navigator_button_style(
         &mut self,
         navigator: &Self::Node,
-        style: &Rc<framework_core::StyleRules>,
+        style: &Rc<runtime_core::StyleRules>,
     ) {
         let key = navigator.view_key();
         if let Some(entry) = self.navigator_instances.get(&key) {
@@ -2040,10 +2040,10 @@ impl Backend for IosBackend {
 
     fn create_portal(
         &mut self,
-        target: framework_core::primitives::portal::PortalTarget,
+        target: runtime_core::primitives::portal::PortalTarget,
         _on_dismiss: Option<Rc<dyn Fn()>>,
         trap_focus: bool,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         // On iOS-mobile we don't use `presentViewController:` for
         // portals — they're window-level `UIView` subviews. There's
@@ -2053,7 +2053,7 @@ impl Backend for IosBackend {
         // response to whatever interaction the composition wires up
         // (backdrop tap, swipe handler on a sheet child, etc.). We
         // accept the callback but never fire it from this backend.
-        use framework_core::primitives::portal::PortalTarget;
+        use runtime_core::primitives::portal::PortalTarget;
 
         let (anchor_spec, container_rules) = match &target {
             PortalTarget::Viewport(placement) => {
@@ -2077,7 +2077,7 @@ impl Backend for IosBackend {
                     "[ios-portal] PortalTarget::Named({:?}) not implemented — falling back to FullScreen",
                     name
                 );
-                use framework_core::primitives::portal::ViewportPlacement;
+                use runtime_core::primitives::portal::ViewportPlacement;
                 (None, portal::container_style_for_placement(ViewportPlacement::FullScreen))
             }
         };
@@ -2120,7 +2120,7 @@ impl Backend for IosBackend {
         type_id: std::any::TypeId,
         type_name: &'static str,
         payload: &std::rc::Rc<dyn std::any::Any>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = if let Some(handler) = self.external_handlers.get(type_id) {
             handler(payload, self)
@@ -2146,7 +2146,7 @@ impl Backend for IosBackend {
     fn apply_safe_area_padding(
         &mut self,
         node: &Self::Node,
-        sides: framework_core::SafeAreaSides,
+        sides: runtime_core::SafeAreaSides,
     ) {
         // Read the platform's current safe-area insets from the host
         // root. `LayoutObserverView` mirrors the host's insets, so
@@ -2157,10 +2157,10 @@ impl Backend for IosBackend {
         // Mask per-side: only contribute on sides the author opted
         // into. `set_safe_area_extra` always takes all four sides;
         // we pass zero for unopted ones so the math stays uniform.
-        let top = if sides.contains(framework_core::SafeAreaSides::TOP) { insets.top } else { 0.0 };
-        let right = if sides.contains(framework_core::SafeAreaSides::RIGHT) { insets.right } else { 0.0 };
-        let bottom = if sides.contains(framework_core::SafeAreaSides::BOTTOM) { insets.bottom } else { 0.0 };
-        let left = if sides.contains(framework_core::SafeAreaSides::LEFT) { insets.left } else { 0.0 };
+        let top = if sides.contains(runtime_core::SafeAreaSides::TOP) { insets.top } else { 0.0 };
+        let right = if sides.contains(runtime_core::SafeAreaSides::RIGHT) { insets.right } else { 0.0 };
+        let bottom = if sides.contains(runtime_core::SafeAreaSides::BOTTOM) { insets.bottom } else { 0.0 };
+        let left = if sides.contains(runtime_core::SafeAreaSides::LEFT) { insets.left } else { 0.0 };
 
         let view = node.as_view();
         let layout_node = self.layout_for_view(view);
@@ -2171,7 +2171,7 @@ impl Backend for IosBackend {
     fn apply_scroll_view_safe_area_inset(
         &mut self,
         node: &Self::Node,
-        sides: framework_core::SafeAreaSides,
+        sides: runtime_core::SafeAreaSides,
     ) {
         // Delegate inset math to UIKit by toggling
         // `contentInsetAdjustmentBehavior` and leaving
@@ -2229,35 +2229,35 @@ impl Backend for IosBackend {
     // (Popover, Select).
     // =================================================================
 
-    fn make_button_handle(&self, node: &Self::Node) -> framework_core::ButtonHandle {
-        framework_core::ButtonHandle::new(Rc::new(node.clone()), &handles::IOS_BUTTON_OPS)
+    fn make_button_handle(&self, node: &Self::Node) -> runtime_core::ButtonHandle {
+        runtime_core::ButtonHandle::new(Rc::new(node.clone()), &handles::IOS_BUTTON_OPS)
     }
 
-    fn make_pressable_handle(&self, node: &Self::Node) -> framework_core::PressableHandle {
-        framework_core::PressableHandle::new(Rc::new(node.clone()), &handles::IOS_PRESSABLE_OPS)
+    fn make_pressable_handle(&self, node: &Self::Node) -> runtime_core::PressableHandle {
+        runtime_core::PressableHandle::new(Rc::new(node.clone()), &handles::IOS_PRESSABLE_OPS)
     }
 
-    fn make_view_handle(&self, node: &Self::Node) -> framework_core::ViewHandle {
-        framework_core::ViewHandle::new(Rc::new(node.clone()), &handles::IOS_VIEW_OPS)
+    fn make_view_handle(&self, node: &Self::Node) -> runtime_core::ViewHandle {
+        runtime_core::ViewHandle::new(Rc::new(node.clone()), &handles::IOS_VIEW_OPS)
     }
 
-    fn make_text_handle(&self, node: &Self::Node) -> framework_core::TextHandle {
-        framework_core::TextHandle::new(Rc::new(node.clone()), &handles::IOS_TEXT_OPS)
+    fn make_text_handle(&self, node: &Self::Node) -> runtime_core::TextHandle {
+        runtime_core::TextHandle::new(Rc::new(node.clone()), &handles::IOS_TEXT_OPS)
     }
 
     fn make_text_input_handle(
         &self,
         node: &Self::Node,
-    ) -> framework_core::primitives::text_input::TextInputHandle {
+    ) -> runtime_core::primitives::text_input::TextInputHandle {
         if let IosNode::TextField(field) = node {
-            framework_core::primitives::text_input::TextInputHandle::new(
+            runtime_core::primitives::text_input::TextInputHandle::new(
                 Rc::new(field.clone()),
                 &handles::IOS_TEXT_INPUT_OPS,
             )
         } else {
             // Shouldn't happen — walker only calls this for TextInput
             // nodes. Fall back to a no-op handle wrapping an empty box.
-            framework_core::primitives::text_input::TextInputHandle::new(
+            runtime_core::primitives::text_input::TextInputHandle::new(
                 Rc::new(()),
                 &handles::IOS_TEXT_INPUT_OPS,
             )
@@ -2267,14 +2267,14 @@ impl Backend for IosBackend {
     fn make_text_area_handle(
         &self,
         node: &Self::Node,
-    ) -> framework_core::primitives::text_area::TextAreaHandle {
+    ) -> runtime_core::primitives::text_area::TextAreaHandle {
         if let IosNode::TextView(view) = node {
-            framework_core::primitives::text_area::TextAreaHandle::new(
+            runtime_core::primitives::text_area::TextAreaHandle::new(
                 Rc::new(view.clone()),
                 &handles::IOS_TEXT_AREA_OPS,
             )
         } else {
-            framework_core::primitives::text_area::TextAreaHandle::new(
+            runtime_core::primitives::text_area::TextAreaHandle::new(
                 Rc::new(()),
                 &handles::IOS_TEXT_AREA_OPS,
             )
@@ -2289,7 +2289,7 @@ impl Backend for IosBackend {
         &mut self,
         callbacks: TabNavigatorCallbacks<Self::Node>,
         control: Rc<NavigatorControl>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = tab_drawer::create_tab_navigator(self.mtm, &mut self.tab_drawer_instances, callbacks, control);
         a11y::apply(&node, a11y, None);
@@ -2301,7 +2301,7 @@ impl Backend for IosBackend {
         navigator: &Self::Node,
         screen: Self::Node,
         scope_id: u64,
-        options: framework_core::ScreenOptions,
+        options: runtime_core::ScreenOptions,
     ) {
         tab_drawer::tab_navigator_attach_initial(&self.tab_drawer_instances, navigator, screen, scope_id, options)
     }
@@ -2322,7 +2322,7 @@ impl Backend for IosBackend {
         &mut self,
         callbacks: DrawerNavigatorCallbacks<Self::Node>,
         control: Rc<NavigatorControl>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let node = tab_drawer::create_drawer_navigator(self.mtm, &mut self.tab_drawer_instances, callbacks, control);
         a11y::apply(&node, a11y, None);
@@ -2334,7 +2334,7 @@ impl Backend for IosBackend {
         navigator: &Self::Node,
         screen: Self::Node,
         scope_id: u64,
-        options: framework_core::ScreenOptions,
+        options: runtime_core::ScreenOptions,
     ) {
         tab_drawer::drawer_navigator_attach_initial(
             self.mtm, &self.tab_drawer_instances, &mut self.callback_targets,
@@ -2364,7 +2364,7 @@ impl Backend for IosBackend {
     fn apply_drawer_sidebar_style(
         &mut self,
         navigator: &Self::Node,
-        style: &Rc<framework_core::StyleRules>,
+        style: &Rc<runtime_core::StyleRules>,
     ) {
         let key = navigator.view_key();
         if let Some(entry) = self.tab_drawer_instances.get(&key) {
@@ -2390,8 +2390,8 @@ impl Backend for IosBackend {
     fn update_accessibility(
         &mut self,
         node: &Self::Node,
-        a11y_props: &framework_core::accessibility::AccessibilityProps,
-        inferred_role: Option<framework_core::accessibility::Role>,
+        a11y_props: &runtime_core::accessibility::AccessibilityProps,
+        inferred_role: Option<runtime_core::accessibility::Role>,
     ) {
         a11y::apply(node, a11y_props, inferred_role);
     }
@@ -2399,7 +2399,7 @@ impl Backend for IosBackend {
     fn announce_for_accessibility(
         &mut self,
         msg: &str,
-        priority: framework_core::accessibility::LiveRegionPriority,
+        priority: runtime_core::accessibility::LiveRegionPriority,
     ) {
         a11y::announce(msg, priority);
     }
@@ -2409,6 +2409,17 @@ impl Backend for IosBackend {
             pin_to_edges(host, root.as_view());
         }
         self.run_layout_pass(&root);
+    }
+
+    /// Backend-trait entry point the runtime-server shell uses to drive layout
+    /// when the deferred `schedule_layout_pass` path's
+    /// `IOS_BACKEND_SELF.upgrade()` returns `None` (runtime-server mode owns
+    /// the backend by-value inside `RuntimeServerClient`, so the global
+    /// self-ref is never installed). Delegates to the existing
+    /// public [`Self::run_layout`] wrapper around
+    /// `run_layout_pass_global`.
+    fn run_layout(&mut self) {
+        IosBackend::run_layout(self);
     }
 }
 
@@ -2425,9 +2436,9 @@ impl IosBackend {
 
     /// Public version of [`Self::run_layout_pass_global`] for hosts
     /// that drive layout synchronously rather than through
-    /// [`schedule_layout_pass`] / `IOS_BACKEND_SELF`. The AAS iOS
-    /// client uses this after each command batch: in AAS mode the
-    /// `IosBackend` is moved into the `AasClient` by value, so
+    /// [`schedule_layout_pass`] / `IOS_BACKEND_SELF`. The runtime-server iOS
+    /// client uses this after each command batch: in runtime-server mode the
+    /// `IosBackend` is moved into the `RuntimeServerClient` by value, so
     /// there's no `Rc<RefCell<IosBackend>>` to register globally and
     /// the deferred-via-dispatch_async path bails silently. Calling
     /// this synchronously after `apply_batch` finishes guarantees
@@ -2453,7 +2464,7 @@ impl IosBackend {
         // Find every Taffy root. The framework root is one; each screen
         // mounted via `mount_screen_in_vc` (which bypasses
         // `Backend::insert`) is another.
-        let roots: Vec<native_layout::LayoutNode> = self
+        let roots: Vec<runtime_layout::LayoutNode> = self
             .view_to_layout
             .values()
             .map(|(_, n)| *n)
@@ -2657,13 +2668,13 @@ impl IosBackend {
     /// `apply_safe_area_padding` to avoid trusting a stale framework
     /// signal value during the build/layout flow — UIKit's value is
     /// the source of truth.
-    fn platform_safe_area_insets(&self) -> framework_core::EdgeInsets {
+    fn platform_safe_area_insets(&self) -> runtime_core::EdgeInsets {
         let Some(host) = &self.host_root else {
-            return framework_core::EdgeInsets::ZERO;
+            return runtime_core::EdgeInsets::ZERO;
         };
         let insets: callbacks::UIEdgeInsets =
             unsafe { msg_send![&**host, safeAreaInsets] };
-        framework_core::EdgeInsets {
+        runtime_core::EdgeInsets {
             top: insets.top as f32,
             right: insets.right as f32,
             bottom: insets.bottom as f32,

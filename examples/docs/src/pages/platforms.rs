@@ -1,16 +1,16 @@
 //! Platforms — what each backend looks like and where it runs.
 
-use framework_core::{ui, Primitive};
+use runtime_core::{ui, Primitive};
 use idea_ui::{body, card, heading, BodyTone, HeadingKind};
 
-use crate::shell::{pagebody, pageheader, section, PageBodyProps, PageHeaderProps, SectionProps};
+use crate::shell::{page_body, page_header, section, PageBodyProps, PageHeaderProps, SectionProps};
 
 pub fn page() -> Primitive {
     ui! {
         PageBody {
             PageHeader(
                 title = "Platforms".to_string(),
-                description = "Idealyst targets web, iOS, Android, Roku, and AAS — same Rust \
+                description = "Idealyst targets web, iOS, Android, Roku, and runtime-server — same Rust \
                                crate, different backend.".to_string(),
             )
 
@@ -77,15 +77,15 @@ pub fn page() -> Primitive {
             }
 
             Card {
-                Heading(content = "AAS — App-as-Server".to_string(), kind = HeadingKind::H2)
+                Heading(content = "runtime-server — App-as-Server".to_string(), kind = HeadingKind::H2)
                 Body(
-                    content = "AAS runs the Rust app on a server and ships a wire-format \
+                    content = "runtime-server runs the Rust app on a server and ships a wire-format \
                                command stream to thin clients. The server owns state and \
                                business logic; clients render. Fresh clients receive a \
                                snapshot (a `SceneModel`) rather than the full command log, \
                                so reconnects are O(scene) not O(history). The dev server \
-                               uses AAS internally for hot-reload — your saves rebuild a \
-                               dylib, the AAS server reloads it, and connected clients see \
+                               uses runtime-server internally for hot-reload — your saves rebuild a \
+                               dylib, the runtime-server server reloads it, and connected clients see \
                                the diff with no full reload.".to_string(),
                     tone = BodyTone::Muted,
                 )

@@ -27,7 +27,7 @@ class RustStateListener(private val nativePtr: Long) :
     View.OnFocusChangeListener {
 
     companion object {
-        // Mirror StateBits in framework-core. PRESSED = 1 << 1,
+        // Mirror StateBits in runtime-core. PRESSED = 1 << 1,
         // FOCUSED = 1 << 2.
         private const val BIT_PRESSED = 2
         private const val BIT_FOCUSED = 4

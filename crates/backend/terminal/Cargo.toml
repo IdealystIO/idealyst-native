@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# ASCII / terminal backend for `framework_core::Backend`. Renders the
+# ASCII / terminal backend for `runtime_core::Backend`. Renders the
 # UI tree into a character grid that the `host-terminal` crate paints
 # to stdout with ANSI colors via crossterm. Mouse + keyboard input
 # are forwarded back into the framework through `Action`/`on_click`
@@ -18,5 +18,5 @@ license.workspace = true
 crate-type = ["rlib"]
 
 [dependencies]
-framework-core = { workspace = true }
-native-layout = { workspace = true }
+runtime-core = { workspace = true }
+runtime-layout = { workspace = true }

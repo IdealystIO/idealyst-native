@@ -1,4 +1,4 @@
-use framework_core::{face, typeface, FontStyle, FontWeight, SystemFallback, Typeface};
+use runtime_core::{face, typeface, FontStyle, FontWeight, SystemFallback, Typeface};
 
 // Typeface bundle for the Inter famil]y. Add your own fonts here
 pub static INTER: Typeface = typeface! {

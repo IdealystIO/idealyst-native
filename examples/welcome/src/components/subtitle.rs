@@ -3,7 +3,7 @@
 
 use std::rc::Rc;
 
-use framework_core::{
+use runtime_core::{
     component, ui, AlignItems, FlexDirection, FontWeight, Primitive, StyleRules, StyleSheet,
     TextAlign, Tokenized,
 };
@@ -28,7 +28,7 @@ pub fn subtitle(props: &SubtitleProps) -> Primitive {
     let text = text_sheet();
     let label = format!(
         "Your {} app starts here.",
-        framework_core::platform().canonical(),
+        runtime_core::platform().canonical(),
     );
     ui! {
         View(style = wrapper) {

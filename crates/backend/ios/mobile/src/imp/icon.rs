@@ -14,8 +14,8 @@
 //! `create_icon` uses strategy 1. Strategy 2 is exposed as
 //! `render_to_uiimage` for use by the navigator/tab implementations.
 
-use framework_core::primitives::icon::{FillRule, IconData};
-use framework_core::Color;
+use runtime_core::primitives::icon::{FillRule, IconData};
+use runtime_core::Color;
 use objc2::msg_send;
 use objc2::msg_send_id;
 use objc2::rc::Retained;
@@ -146,7 +146,7 @@ pub(crate) fn animate_icon_stroke(
     from: f32,
     to: f32,
     duration_ms: u32,
-    easing: framework_core::Easing,
+    easing: runtime_core::Easing,
     infinite: bool,
     autoreverses: bool,
 ) {
@@ -219,14 +219,14 @@ fn get_shape_layer(node: &IosNode) -> Option<Retained<NSObject>> {
     Some(shape)
 }
 
-fn easing_to_timing_function(easing: framework_core::Easing) -> Retained<NSObject> {
+fn easing_to_timing_function(easing: runtime_core::Easing) -> Retained<NSObject> {
     let name = match easing {
-        framework_core::Easing::Linear => "linear",
-        framework_core::Easing::Ease => "default",
-        framework_core::Easing::EaseIn => "easeIn",
-        framework_core::Easing::EaseOut => "easeOut",
-        framework_core::Easing::EaseInOut => "easeInEaseOut",
-        framework_core::Easing::CubicBezier(_, _, _, _) => "default",
+        runtime_core::Easing::Linear => "linear",
+        runtime_core::Easing::Ease => "default",
+        runtime_core::Easing::EaseIn => "easeIn",
+        runtime_core::Easing::EaseOut => "easeOut",
+        runtime_core::Easing::EaseInOut => "easeInEaseOut",
+        runtime_core::Easing::CubicBezier(_, _, _, _) => "default",
     };
     let ns_name = NSString::from_str(name);
     unsafe {
@@ -239,7 +239,7 @@ fn easing_to_timing_function(easing: framework_core::Easing) -> Retained<NSObjec
 // IconHandle / IconOps for iOS
 // ==========================================================================
 
-use framework_core::primitives::icon::{IconHandle, IconOps};
+use runtime_core::primitives::icon::{IconHandle, IconOps};
 
 pub(crate) fn make_handle(node: &IosNode) -> IconHandle {
     let view: Retained<UIView> = Retained::clone(match node {
@@ -271,7 +271,7 @@ impl IconOps for IosIconOps {
         from: f32,
         to: f32,
         duration_ms: u32,
-        easing: framework_core::Easing,
+        easing: runtime_core::Easing,
     ) {
         let Some(view) = node.downcast_ref::<Retained<UIView>>() else { return };
         // Build a temporary IosNode to reuse the existing function.

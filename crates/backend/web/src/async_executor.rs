@@ -6,12 +6,12 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use framework_core::driver::{AsyncExecutor, BoxedWorkerFuture};
+use runtime_core::driver::{AsyncExecutor, BoxedWorkerFuture};
 
-/// Register this backend's executor with `framework-core`. Idempotent —
+/// Register this backend's executor with `runtime-core`. Idempotent —
 /// first install wins.
 pub fn install_async_executor() {
-    framework_core::driver::install_async_executor(Box::new(WasmAsyncExecutor));
+    runtime_core::driver::install_async_executor(Box::new(WasmAsyncExecutor));
 }
 
 struct WasmAsyncExecutor;

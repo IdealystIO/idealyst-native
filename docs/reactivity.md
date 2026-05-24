@@ -6,7 +6,7 @@ styling system uses it to re-resolve stylesheets when the theme
 changes; refs are arena-allocated alongside signals. Understanding
 this layer makes the rest of the framework legible.
 
-The implementation lives in `framework_core::reactive`.
+The implementation lives in `runtime_core::reactive`.
 
 ## Model
 
@@ -285,7 +285,7 @@ construction.
 
 ## `schedule_microtask` and deferred teardown
 
-`framework_core::scheduling::schedule_microtask` exposes a
+`runtime_core::scheduling::schedule_microtask` exposes a
 single-shot microtask helper. The web build uses
 `js_sys::Promise::resolve().then(...)`; native builds use a
 trampoline equivalent (the implementation is gated per target).

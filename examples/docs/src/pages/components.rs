@@ -2,7 +2,7 @@
 
 use docs_macro::docs;
 #[allow(unused_imports)]
-use crate::shell::{codeblock, pageheader, CodeBlockProps, PageHeaderProps};
+use crate::shell::{code_block, page_header, CodeBlockProps, PageHeaderProps};
 #[allow(unused_imports)]
 use idea_ui::{body, card, heading, stack};
 
@@ -24,7 +24,7 @@ docs! {
 
     section(heading = "The shape") {
         code(rust, r##"
-            use framework_core::{component, signal, ui, Primitive};
+            use runtime_core::{component, signal, ui, Primitive};
 
             pub struct CounterProps {
                 pub initial: i32,
@@ -131,7 +131,7 @@ docs! {
              code("Option<Primitive>"), ", ", code("Vec<Primitive>"),
              "). Used to assemble children outside ", code("ui!"), "."],
             [code("ui! { … }"),
-             " — the primary UI DSL. Lowers to plain framework-core calls. Covered \
+             " — the primary UI DSL. Lowers to plain runtime-core calls. Covered \
               below and on the UI DSL page."],
             [code("jsx! { … }"),
              " — a JSX-flavored variant of ", code("ui!"),
@@ -155,7 +155,7 @@ docs! {
         p("You declare methods inside the component's body:"),
 
         code(rust, r##"
-            use framework_core::{component, signal, ui, Bindable, Primitive};
+            use runtime_core::{component, signal, ui, Bindable, Primitive};
 
             #[derive(Default)]
             pub struct CounterProps {
@@ -191,7 +191,7 @@ docs! {
         p("The parent captures the handle via a ", code("Ref"), ":"),
 
         code(rust, r##"
-            use framework_core::Ref;
+            use runtime_core::Ref;
 
             #[component]
             pub fn parent_app() -> Primitive {
@@ -291,7 +291,7 @@ docs! {
     section(heading = "What ui! actually emits") {
         p("This is where it gets fun. ", code("ui!"),
           " is syntax sugar — the macro parses tokens and emits ordinary Rust calls \
-           into framework-core's primitive constructors. You can write the same \
+           into runtime-core's primitive constructors. You can write the same \
            component without the macro, and the framework can't tell the difference."),
 
         p("Here's the counter from above in three forms."),
@@ -337,7 +337,7 @@ docs! {
 
     section(heading = "With no macro at all") {
         code(rust, r##"
-            use framework_core::{button, component, signal, text, view, IntoPrimitive, Primitive};
+            use runtime_core::{button, component, signal, text, view, IntoPrimitive, Primitive};
 
             #[component]
             pub fn counter(props: &CounterProps) -> Primitive {
@@ -429,7 +429,7 @@ docs! {
 
     section(heading = "Bringing your own front-end") {
         p(code("ui!"), " and ", code("jsx!"),
-          " are sugar over the same set of framework-core calls. Nothing about the \
+          " are sugar over the same set of runtime-core calls. Nothing about the \
            framework privileges either one: a third macro that emits the same calls \
            would slot in alongside them."),
 
@@ -453,7 +453,7 @@ docs! {
         p("Tying everything together:"),
 
         code(rust, r##"
-            use framework_core::{component, signal, ui, Bindable, Primitive};
+            use runtime_core::{component, signal, ui, Bindable, Primitive};
 
             #[derive(Default)]
             pub struct CounterProps {
@@ -489,7 +489,7 @@ docs! {
              " and rewrites the return type from ", code("Primitive"), " to ",
              code("Bindable<CounterHandle>"), "."],
             [code("ui!"),
-             " lowers to plain framework-core calls, with the reactive text being \
+             " lowers to plain runtime-core calls, with the reactive text being \
               wrapped in an Effect and the trailing value coerced to ",
              code("Primitive"), "."],
         ),

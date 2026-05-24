@@ -100,10 +100,10 @@ pub fn derive_doc_controls(input: TokenStream) -> TokenStream {
         match kind {
             FieldKind::String => {
                 state_fields.push(quote! {
-                    pub #f_ident: ::framework_core::Signal<::std::string::String>
+                    pub #f_ident: ::runtime_core::Signal<::std::string::String>
                 });
                 init_field_inits.push(quote! {
-                    #f_ident: ::framework_core::Signal::new(::std::string::String::default())
+                    #f_ident: ::runtime_core::Signal::new(::std::string::String::default())
                 });
                 from_state_overrides.push(quote! {
                     props.#f_ident = state.#f_ident.get();
@@ -118,10 +118,10 @@ pub fn derive_doc_controls(input: TokenStream) -> TokenStream {
             }
             FieldKind::Bool => {
                 state_fields.push(quote! {
-                    pub #f_ident: ::framework_core::Signal<bool>
+                    pub #f_ident: ::runtime_core::Signal<bool>
                 });
                 init_field_inits.push(quote! {
-                    #f_ident: ::framework_core::Signal::new(false)
+                    #f_ident: ::runtime_core::Signal::new(false)
                 });
                 from_state_overrides.push(quote! {
                     props.#f_ident = state.#f_ident.get();
@@ -137,16 +137,16 @@ pub fn derive_doc_controls(input: TokenStream) -> TokenStream {
             FieldKind::OptionString => {
                 let enabled_field = format_ident!("__{}_enabled", f_ident);
                 state_fields.push(quote! {
-                    pub #enabled_field: ::framework_core::Signal<bool>
+                    pub #enabled_field: ::runtime_core::Signal<bool>
                 });
                 state_fields.push(quote! {
-                    pub #f_ident: ::framework_core::Signal<::std::string::String>
+                    pub #f_ident: ::runtime_core::Signal<::std::string::String>
                 });
                 init_field_inits.push(quote! {
-                    #enabled_field: ::framework_core::Signal::new(false)
+                    #enabled_field: ::runtime_core::Signal::new(false)
                 });
                 init_field_inits.push(quote! {
-                    #f_ident: ::framework_core::Signal::new(::std::string::String::default())
+                    #f_ident: ::runtime_core::Signal::new(::std::string::String::default())
                 });
                 from_state_overrides.push(quote! {
                     props.#f_ident = ::idea_ui::doc_controls::optional_string_value(
@@ -177,10 +177,10 @@ pub fn derive_doc_controls(input: TokenStream) -> TokenStream {
             }
             FieldKind::VariantEnum(ty) => {
                 state_fields.push(quote! {
-                    pub #f_ident: ::framework_core::Signal<#ty>
+                    pub #f_ident: ::runtime_core::Signal<#ty>
                 });
                 init_field_inits.push(quote! {
-                    #f_ident: ::framework_core::Signal::new(
+                    #f_ident: ::runtime_core::Signal::new(
                         <#ty as ::core::default::Default>::default(),
                     )
                 });
@@ -234,22 +234,22 @@ pub fn derive_doc_controls(input: TokenStream) -> TokenStream {
                 props
             }
 
-            fn render_controls(state: &Self::State) -> ::framework_core::Primitive {
-                let rows: ::std::vec::Vec<::framework_core::Primitive> = vec![
+            fn render_controls(state: &Self::State) -> ::runtime_core::Primitive {
+                let rows: ::std::vec::Vec<::runtime_core::Primitive> = vec![
                     #( #control_rows, )*
                 ];
                 ::idea_ui::doc_controls::controls_panel(rows)
             }
 
-            fn reactive_preview<F: ::std::ops::Fn(Self) -> ::framework_core::Primitive + 'static>(
+            fn reactive_preview<F: ::std::ops::Fn(Self) -> ::runtime_core::Primitive + 'static>(
                 state: &Self::State,
                 build: F,
-            ) -> ::framework_core::Primitive {
+            ) -> ::runtime_core::Primitive {
                 // Copy the state out (it's just Signal handles).
                 // The scrutinee + branch both close over `state` —
                 // copying lets each have its own owned snapshot.
                 let state = *state;
-                ::framework_core::switch(
+                ::runtime_core::switch(
                     move || ( #( #key_reads, )* ),
                     move |_key| {
                         let props = <Self as ::idea_ui::doc_controls::DocControls>::from_state(&state);

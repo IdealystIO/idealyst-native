@@ -7,7 +7,7 @@
 
 use docs_macro::docs;
 #[allow(unused_imports)]
-use crate::shell::{codeblock, pageheader, CodeBlockProps, PageHeaderProps};
+use crate::shell::{code_block, page_header, CodeBlockProps, PageHeaderProps};
 #[allow(unused_imports)]
 use idea_ui::{body, card, heading, stack};
 
@@ -15,7 +15,7 @@ docs! {
     slug = "third-party-primitives",
     title = "Third-party primitives",
     category = Advanced,
-    description = "Ship a new primitive (with its own native FFI) without forking framework-core. One escape hatch — Primitive::External — plus a per-backend registry pattern and a small umbrella-crate convention.",
+    description = "Ship a new primitive (with its own native FFI) without forking runtime-core. One escape hatch — Primitive::External — plus a per-backend registry pattern and a small umbrella-crate convention.",
     related = ["primitives", "backends", "writing-a-backend"],
     concepts = [External],
 
@@ -29,7 +29,7 @@ docs! {
           code("MapView"), " that wraps MapKit on iOS and Google Maps on \
            Android and a Leaflet iframe on web. A camera viewfinder. A \
            Stripe card-element. An AR scene. These are real platform things \
-           with no business living in framework-core, but they need to look \
+           with no business living in runtime-core, but they need to look \
            and behave like primitives at the call site — they need styles, \
            refs, scope-tied cleanup, the works."),
         p(code("Primitive::External"), " is the one extension hatch the \
@@ -43,7 +43,7 @@ docs! {
           " enum, one inherent method on each backend, and a small \
            three-crate convention for SDK authors:"),
         list(
-            [code("framework-core"),
+            [code("runtime-core"),
              " — defines ", code("Primitive::External { type_id, type_name, payload, .. }"),
              " and a per-backend ", code("ExternalRegistry<B>"),
              " helper. Knows nothing about specific external kinds."],
@@ -120,7 +120,7 @@ docs! {
         code(rust, r##"
             // crates/sdk/maps/src/lib.rs
 
-            use framework_core::{external, Bound, ExternalHandle};
+            use runtime_core::{external, Bound, ExternalHandle};
             pub use maps_core::MapViewProps;
 
             /// Public constructor. PascalCase so it reads as a primitive
@@ -150,7 +150,7 @@ docs! {
            even pull the web leaf into the dep graph:"),
         code(toml, r##"
             [dependencies]
-            framework-core = { workspace = true }
+            runtime-core = { workspace = true }
             maps-core = { workspace = true }
 
             [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -201,7 +201,7 @@ docs! {
         p("Refs are typed against the props type, so different SDKs can't \
            accidentally collide on a single ", code("Ref<H>"), " slot:"),
         code(rust, r##"
-            use framework_core::{Ref, ExternalHandle};
+            use runtime_core::{Ref, ExternalHandle};
             use maps::{MapView, MapViewProps};
 
             let map_ref: Ref<ExternalHandle<MapViewProps>> = Ref::new();

@@ -53,7 +53,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use framework_core::VirtualizerCallbacks;
+use runtime_core::VirtualizerCallbacks;
 use objc2::rc::Retained;
 use objc2::runtime::{NSObject, NSObjectProtocol};
 use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
@@ -592,14 +592,14 @@ mod tests {
     //!      NSIndexPath, which exercises the trampoline but not the
     //!      actual UICollectionView layout flow we depend on.
     //!
-    //! The framework-core walker tests cover `VirtualizerCallbacks`
+    //! The runtime-core walker tests cover `VirtualizerCallbacks`
     //! plumbing on a stub backend; this test covers the iOS-specific
     //! "method exists + returns something" property. Cell recycling
     //! behavior is gated to manual on-device QA against the
     //! `examples/welcome` flat-list page until we wire up a UI test
     //! target.
     use super::*;
-    use framework_core::VirtualizerCallbacks;
+    use runtime_core::VirtualizerCallbacks;
 
     /// `create_virtualizer` must return a node instead of panicking
     /// (the framework's default impl `unimplemented!()`s, which is

@@ -1,8 +1,8 @@
-//! Host↔sidecar IPC for the split-process AAS dev server.
+//! Host↔sidecar IPC for the split-process runtime-server dev server.
 //!
 //! ## Architecture
 //!
-//! The AAS dev host used to be a single binary that statically linked
+//! The runtime-server dev host used to be a single binary that statically linked
 //! the user's crate (`docs`) alongside the WebSocket server, mDNS
 //! advertise, and the file-watch + rebuild loop. To load new user
 //! code after an edit, the entire process had to `execve` itself.
@@ -145,7 +145,7 @@ pub enum SidecarIn {
     },
     /// Install a hot-patch jump table. The host built this from a
     /// freshly-linked patch dylib; the sidecar dlopens it via
-    /// `framework_hot::apply_patch` and any subsequent component
+    /// `dev_hot::apply_patch` and any subsequent component
     /// dispatch lands in the patched body. The dylib is loaded once
     /// process-wide; every running session thread is then told to
     /// tear down its `Owner` and re-render so it picks up the new
@@ -156,7 +156,7 @@ pub enum SidecarIn {
         /// Serialized as JSON so the IPC frame stays a single
         /// `serde_json::to_vec` round-trip. The sidecar parses
         /// this back into `subsecond_types::JumpTable` and feeds
-        /// it to `framework_hot::apply_patch`.
+        /// it to `dev_hot::apply_patch`.
         table_json: String,
     },
 }
@@ -498,7 +498,7 @@ pub fn is_eof(e: &std::io::Error) -> bool {
 // In-process sidecar runtime
 // ---------------------------------------------------------------------------
 //
-// Compiled into the AAS *sidecar* binary — the worker that statically
+// Compiled into the runtime-server *sidecar* binary — the worker that statically
 // links the user's crate and runs N independent author runtimes
 // (one per dev-host session) on dedicated threads. Pre-refactor this
 // code was inlined into the build-orchestrator's `format!` template
@@ -509,14 +509,14 @@ pub fn is_eof(e: &std::io::Error) -> bool {
 // Now the sidecar wrapper is a 4-line `fn main() { run(my_crate::app) }`.
 // Internal refactors stop at this crate's boundary.
 
-#[cfg(feature = "aas-runtime")]
+#[cfg(feature = "runtime-server")]
 pub use runtime::run;
 
-#[cfg(feature = "aas-runtime")]
+#[cfg(feature = "runtime-server")]
 mod runtime {
     use super::{is_eof, read_frame, write_frame, SidecarIn, SidecarOut};
     use crate::WireRecordingBackend;
-    use framework_core::{mount, Owner, Primitive};
+    use runtime_core::{mount, Owner, Primitive};
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::io::{stdin, stdout, BufReader, Write};
@@ -546,7 +546,7 @@ mod runtime {
         join: JoinHandle<()>,
     }
 
-    /// Entry point for the AAS sidecar process.
+    /// Entry point for the runtime-server sidecar process.
     ///
     /// Blocks until the host closes the stdin pipe (typically when the
     /// host process exits or SIGKILLs the sidecar). Spawns and joins
@@ -562,11 +562,11 @@ mod runtime {
         // Install a SIGSEGV/SIGBUS handler so silent dylib-call
         // crashes (from a hot-patched function jumping to a bad
         // address) print the faulting address before the process
-        // dies. Without this the AAS log just stops mid-flow and
+        // dies. Without this the runtime-server log just stops mid-flow and
         // the user can't tell what blew up.
         crate::crash_handler::install();
 
-        // Install the sidecar's `framework_core::scheduling::Scheduler`
+        // Install the sidecar's `runtime_core::scheduling::Scheduler`
         // impl so author code using `raf_loop_scoped` / `after_ms` /
         // `after_animation_frame` actually fires. Without this, the
         // welcome example's planet orbits (and any other raf-driven
@@ -609,11 +609,11 @@ mod runtime {
             let msg: SidecarIn = match read_frame(&mut input) {
                 Ok(f) => f,
                 Err(e) if is_eof(&e) => {
-                    eprintln!("[aas-app] host pipe closed; exiting");
+                    eprintln!("[runtime-server-app] host pipe closed; exiting");
                     break;
                 }
                 Err(e) => {
-                    eprintln!("[aas-app] frame read error: {e} — exiting");
+                    eprintln!("[runtime-server-app] frame read error: {e} — exiting");
                     return Err(e);
                 }
             };
@@ -622,7 +622,7 @@ mod runtime {
                 SidecarIn::CreateSession { session, viewport } => {
                     if sessions.contains_key(&session) {
                         eprintln!(
-                            "[aas-app] CreateSession({session}): already exists; ignoring"
+                            "[runtime-server-app] CreateSession({session}): already exists; ignoring"
                         );
                         continue;
                     }
@@ -667,13 +667,13 @@ mod runtime {
                 }
                 SidecarIn::CloseSession { session } => {
                     let Some(handle) = sessions.remove(&session) else {
-                        eprintln!("[aas-app] CloseSession({session}): no such session");
+                        eprintln!("[runtime-server-app] CloseSession({session}): no such session");
                         continue;
                     };
                     let _ = handle.tx.send(SessionMsg::Shutdown);
                     drop(handle.tx);
                     if let Err(e) = handle.join.join() {
-                        eprintln!("[aas-app] session thread panicked: {:?}", e);
+                        eprintln!("[runtime-server-app] session thread panicked: {:?}", e);
                     }
                     let mut o = out.lock().expect("stdout lock");
                     write_frame(&mut *o, &SidecarOut::SessionEnded { session })?;
@@ -682,13 +682,13 @@ mod runtime {
                 SidecarIn::Event { session, event } => {
                     let Some(handle) = sessions.get(&session) else {
                         eprintln!(
-                            "[aas-app] Event for unknown session {session:?}; dropping"
+                            "[runtime-server-app] Event for unknown session {session:?}; dropping"
                         );
                         continue;
                     };
                     if handle.tx.send(SessionMsg::Event(event)).is_err() {
                         eprintln!(
-                            "[aas-app] session {session:?} channel closed; pruning"
+                            "[runtime-server-app] session {session:?} channel closed; pruning"
                         );
                         sessions.remove(&session);
                     }
@@ -697,10 +697,10 @@ mod runtime {
                     match serde_json::from_str::<subsecond_types::JumpTable>(&table_json) {
                         Ok(table) => {
                             eprintln!(
-                                "[aas-app] applying patch ({} jump-table entries)",
+                                "[runtime-server-app] applying patch ({} jump-table entries)",
                                 table.map.len(),
                             );
-                            match unsafe { framework_hot::apply_patch(table) } {
+                            match unsafe { dev_hot::apply_patch(table) } {
                                 Ok(()) => {
                                     if sessions.is_empty() {
                                         // No clients connected → the patch is loaded
@@ -715,31 +715,31 @@ mod runtime {
                                         // refreshing it should mint a new session
                                         // and pick up the patch immediately.
                                         eprintln!(
-                                            "[aas-app] patch applied but NO CLIENTS connected — \
+                                            "[runtime-server-app] patch applied but NO CLIENTS connected — \
                                              refresh your browser tab (Cmd+Shift+R) to mint a \
                                              new session and see the patched code"
                                         );
                                     } else {
                                         eprintln!(
-                                            "[aas-app] patch applied; notifying {} session(s) to re-render",
+                                            "[runtime-server-app] patch applied; notifying {} session(s) to re-render",
                                             sessions.len(),
                                         );
                                     }
                                     for (id, handle) in &sessions {
                                         if handle.tx.send(SessionMsg::Rerender).is_err() {
                                             eprintln!(
-                                                "[aas-app] session {id} unreachable during rerender fan-out"
+                                                "[runtime-server-app] session {id} unreachable during rerender fan-out"
                                             );
                                         }
                                     }
                                 }
                                 Err(e) => {
-                                    eprintln!("[aas-app] apply_patch failed: {e:?}");
+                                    eprintln!("[runtime-server-app] apply_patch failed: {e:?}");
                                 }
                             }
                         }
                         Err(e) => {
-                            eprintln!("[aas-app] failed to parse JumpTable JSON: {e}");
+                            eprintln!("[runtime-server-app] failed to parse JumpTable JSON: {e}");
                         }
                     }
                 }
@@ -781,20 +781,20 @@ mod runtime {
         if let Some(v) = initial_viewport {
             crate::set_session_viewport(v.width, v.height);
         }
-        // `framework_hot::with_retry` wraps the mount in subsecond's
+        // `dev_hot::with_retry` wraps the mount in subsecond's
         // catch-unwind / auto-retry loop. This is the idiomatic
         // Dioxus pattern: when patched code reached via
-        // `framework_hot::call(__Component_hot_impl, ...)` makes a
+        // `dev_hot::call(__Component_hot_impl, ...)` makes a
         // call against a stale function pointer, subsecond raises
         // `HotFnPanic`; without this outer `with_retry` boundary,
         // that panic kills the session thread, the host's IPC
         // channel never sees a clean error, and the user sees a
         // silently-frozen UI after the first hot-patch. With the
         // boundary, the call retries against the fresh jump table.
-        // `framework_hot::with_retry` wraps the mount in subsecond's
+        // `dev_hot::with_retry` wraps the mount in subsecond's
         // catch-unwind / auto-retry loop. This is the idiomatic
         // Dioxus pattern: when patched code reached via
-        // `framework_hot::call(__Component_hot_impl, ...)` makes a
+        // `dev_hot::call(__Component_hot_impl, ...)` makes a
         // call against a stale function pointer, subsecond raises
         // `HotFnPanic`; without this outer `with_retry` boundary,
         // that panic kills the session thread, the host's IPC
@@ -802,7 +802,7 @@ mod runtime {
         // silently-frozen UI after the first hot-patch. With the
         // boundary, the call retries against the fresh jump table.
         let backend_for_mount = backend_rc.clone();
-        let mut owner: Option<Owner> = Some(framework_hot::with_retry(|| {
+        let mut owner: Option<Owner> = Some(dev_hot::with_retry(|| {
             mount(backend_for_mount.clone(), app)
         }));
         let mut cursor = recorder.command_count();
@@ -848,7 +848,7 @@ mod runtime {
                     if let Err(e) = drop_result {
                         let msg = panic_payload_to_string(&e);
                         eprintln!(
-                            "[aas-app] {session}: PANIC during old-owner drop: {msg}"
+                            "[runtime-server-app] {session}: PANIC during old-owner drop: {msg}"
                         );
                         return;
                     }
@@ -859,7 +859,7 @@ mod runtime {
                     let backend_for_mount = backend_rc.clone();
                     let mount_result = std::panic::catch_unwind(
                         std::panic::AssertUnwindSafe(|| {
-                            framework_hot::with_retry(|| {
+                            dev_hot::with_retry(|| {
                                 mount(backend_for_mount.clone(), app)
                             })
                         }),
@@ -870,7 +870,7 @@ mod runtime {
                         Err(e) => {
                             let msg = panic_payload_to_string(&e);
                             eprintln!(
-                                "[aas-app] {session}: PANIC during patched mount(app): {msg}"
+                                "[runtime-server-app] {session}: PANIC during patched mount(app): {msg}"
                             );
                             return;
                         }
@@ -879,7 +879,7 @@ mod runtime {
                     cursor = 0;
                     let cmd_count = recorder.command_count();
                     eprintln!(
-                        "[aas-app] {session}: rerender total={}us (drop={}us reset={}us mount={}us cmds={})",
+                        "[runtime-server-app] {session}: rerender total={}us (drop={}us reset={}us mount={}us cmds={})",
                         t_total.elapsed().as_micros(), drop_us, reset_us, mount_us, cmd_count
                     );
                     if let Ok(mut o) = out.lock() {
@@ -893,7 +893,7 @@ mod runtime {
                     }
                 }
                 SessionMsg::Shutdown => {
-                    eprintln!("[aas-app] session {session} shutting down");
+                    eprintln!("[runtime-server-app] session {session} shutting down");
                     drop(owner);
                     return;
                 }
@@ -994,19 +994,19 @@ mod runtime {
                 let dt = std::time::Duration::from_millis(dt_ms as u64);
                 if let Err(e) = std::panic::catch_unwind(
                     std::panic::AssertUnwindSafe(|| {
-                        framework_hot::with_retry(|| recorder.tick_animations(dt))
+                        dev_hot::with_retry(|| recorder.tick_animations(dt))
                     }),
                 ) {
                     let msg = panic_payload_to_string(&e);
                     eprintln!(
-                        "[aas-app] tick_animations panicked: {msg} — likely a stale \
+                        "[runtime-server-app] tick_animations panicked: {msg} — likely a stale \
                          hot-patch call site that didn't get caught by the inner \
                          `with_retry`; will retry on next RequestFrame"
                     );
                 }
             }
             Error { message } => {
-                eprintln!("[aas-app] client reported error: {message}");
+                eprintln!("[runtime-server-app] client reported error: {message}");
             }
         }
     }

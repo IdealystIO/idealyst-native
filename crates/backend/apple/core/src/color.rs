@@ -1,5 +1,5 @@
 //! Cross-Apple color parsing. The CSS-style string → sRGB float
-//! tuple step is pure (lives in `framework_core::color`); this
+//! tuple step is pure (lives in `runtime_core::color`); this
 //! wrapper just coerces to `CGFloat` so the result drops straight
 //! into `UIColor::colorWithRed:...` / `NSColor::colorWithRed:...`
 //! without per-call casting at every caller.
@@ -15,11 +15,11 @@ use objc2_foundation::CGFloat;
 /// (matches the legacy iOS behavior before centralization).
 ///
 /// The parsing logic lives in
-/// [`framework_core::color::parse_or`]; this wrapper exists so the
+/// [`runtime_core::color::parse_or`]; this wrapper exists so the
 /// leaf crate's `color_to_uicolor` / `color_to_nscolor` adapter
 /// stays a one-liner.
 pub fn parse_color(s: &str) -> (CGFloat, CGFloat, CGFloat, CGFloat) {
-    let [r, g, b, a] = framework_core::color::parse_or(s, framework_core::color::Rgba::BLACK)
+    let [r, g, b, a] = runtime_core::color::parse_or(s, runtime_core::color::Rgba::BLACK)
         .to_srgb_f32();
     (r as CGFloat, g as CGFloat, b as CGFloat, a as CGFloat)
 }

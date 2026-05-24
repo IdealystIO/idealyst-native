@@ -1,4 +1,4 @@
-//! Headless AAS smoke tests.
+//! Headless runtime-server smoke tests.
 //!
 //! Exercises the dev-server core without the WebSocket transport:
 //! a recorder backend, a synthetic primitive tree, the real
@@ -11,7 +11,7 @@
 //!    refactor that breaks the recorder shows up immediately.
 //!
 //! 2. **Robot can drive the server-side registry.** With the
-//!    `robot` feature on for `framework-core` (activated via
+//!    `robot` feature on for `runtime-core` (activated via
 //!    dev-deps), the walker populates the thread-local registry.
 //!    Tests construct a [`Robot`], look up an element by label,
 //!    invoke `click(...)`, and assert the click closure fired by
@@ -19,16 +19,16 @@
 //!    closure's signal mutation re-fires the relevant effect).
 //!
 //! Run with `cargo test -p dev-server`. The `robot` feature on
-//! `framework-core` is enabled automatically through this crate's
+//! `runtime-core` is enabled automatically through this crate's
 //! `[dev-dependencies]` block.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use dev_server::WireRecordingBackend;
-use framework_core::primitives::portal::{PortalTarget, ViewportPlacement};
-use framework_core::robot::{Query, Robot};
-use framework_core::{
+use runtime_core::primitives::portal::{PortalTarget, ViewportPlacement};
+use runtime_core::robot::{Query, Robot};
+use runtime_core::{
     render, signal, Color, DrawerNavigator, IntoAction,
     Primitive, Route, SafeAreaSides, TextSource, TokenEntry,
 };
@@ -39,7 +39,7 @@ use wire::Command;
 /// test self-contained and explicit about every field). Returns a
 /// `(tree, click_count_signal)` pair so the caller can both render
 /// the tree and observe state mutated by the button's `on_click`.
-fn sample_tree() -> (Primitive, framework_core::Signal<i32>) {
+fn sample_tree() -> (Primitive, runtime_core::Signal<i32>) {
     let click_count = signal!(0_i32);
     // `Primitive::Button.on_click` is `derive::Action` since the
     // generator migration — bare `Fn()` closures lift via the
@@ -53,7 +53,7 @@ fn sample_tree() -> (Primitive, framework_core::Signal<i32>) {
     let tree = Primitive::View {
         children: vec![
             Primitive::Text {
-                source: TextSource::Static("Hello, AAS".into()),
+                source: TextSource::Static("Hello, runtime-server".into()),
                 style: None,
                 ref_fill: None,
                 accessibility: Default::default(),
@@ -347,7 +347,7 @@ fn robot_finds_element_by_test_id() {
         .expect("Text registered with test_id 'greeting'");
     assert_eq!(
         greeting.label.as_deref(),
-        Some("Hello, AAS"),
+        Some("Hello, runtime-server"),
         "Text label captured into the registry"
     );
 
@@ -362,7 +362,7 @@ fn robot_finds_element_by_test_id() {
 
 /// **Test 4: theme toggle re-emits navigator chrome + body style.**
 ///
-/// Pins down the AAS reactive bridge for the
+/// Pins down the runtime-server reactive bridge for the
 /// `.header_background(...)` / `.title_color(...)` / `.header_tint(...)`
 /// / `.background_color(...)` builder methods on `DrawerNavigator`.
 ///
@@ -370,7 +370,7 @@ fn robot_finds_element_by_test_id() {
 /// source (typically `active_theme()` via idea-ui). On the local
 /// path the walker wraps each in an `Effect`, so a theme swap
 /// re-fires the closure and re-applies the resolved color directly
-/// on the backend. On the AAS path the same Effect runs on the
+/// on the backend. On the runtime-server path the same Effect runs on the
 /// **server**, but its application target is `WireRecordingBackend`
 /// — which must (a) emit a new `ApplyNavigator{Header,Title,Button,
 /// Body}Style` command for each cohort firing, and (b) emit a
@@ -626,7 +626,7 @@ fn aas_hot_patch_preserves_header_handler_id() {
     let build = || {
         Primitive::from(
             DrawerNavigator::new(&ROUTE).screen(ROUTE, |_| {
-                framework_core::primitives::navigator::Screen::new(Primitive::View {
+                runtime_core::primitives::navigator::Screen::new(Primitive::View {
                     children: vec![],
                     style: None,
                     ref_fill: None,
@@ -635,7 +635,7 @@ fn aas_hot_patch_preserves_header_handler_id() {
                     accessibility: Default::default(),
                     test_id: None,
                 })
-                .header_left(framework_core::primitives::navigator::HeaderButton::new(
+                .header_left(runtime_core::primitives::navigator::HeaderButton::new(
                     "line.3.horizontal",
                     || {}, // no-op; we only care about the HandlerId
                 ))
@@ -661,7 +661,7 @@ fn aas_hot_patch_preserves_header_handler_id() {
 
     // --- Simulate hot-patch: drop the owner, reset, re-render. ---
     // Mirrors the sidecar's `ApplyPatch` flow in
-    // `crates/build/aas/src/lib.rs`. Without identity-keyed
+    // `crates/build/runtime-server/src/lib.rs`. Without identity-keyed
     // `HandlerId`s, the post-reset render would mint a *new* id
     // for the header_left, and the test asserts on equality
     // would fail.

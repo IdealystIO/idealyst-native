@@ -19,7 +19,7 @@ class RustTextWatcher(private val nativePtr: Long) : TextWatcher {
      * Set to `true` around a programmatic `setText(...)` from Rust
      * (see `update_value` in `text_input.rs`). `TextWatcher` doesn't
      * distinguish programmatic vs. user-typed writes; without this
-     * guard, an AAS wire-replay landing a fresh value from the
+     * guard, an runtime-server wire-replay landing a fresh value from the
      * server would `setText` → fire `afterTextChanged` →
      * `nativeChanged` → another `EventOccurred` back to the server →
      * server emits again. With fast input (keystrokes faster than

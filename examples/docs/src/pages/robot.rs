@@ -2,7 +2,7 @@
 
 use docs_macro::docs;
 #[allow(unused_imports)]
-use crate::shell::{codeblock, pageheader, CodeBlockProps, PageHeaderProps};
+use crate::shell::{code_block, page_header, CodeBlockProps, PageHeaderProps};
 #[allow(unused_imports)]
 use idea_ui::{body, card, heading, stack};
 
@@ -28,14 +28,14 @@ docs! {
     },
 
     section(heading = "Enabling Robot") {
-        p("Robot is feature-gated on ", code("framework-core"),
+        p("Robot is feature-gated on ", code("runtime-core"),
           ". Enable it from your app's ", code("Cargo.toml"),
           " by forwarding the feature flag:"),
 
         code(toml, r##"
             [features]
             default = ["robot"]
-            robot = ["framework-core/robot"]
+            robot = ["runtime-core/robot"]
         "##),
 
         p("Once the feature is on, the usual CLI commands pick it up — ",

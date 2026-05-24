@@ -13,7 +13,7 @@
 //! }
 //! ```
 //!
-//! Built on top of [`framework_core::pressable`] (a tappable `<div>`
+//! Built on top of [`runtime_core::pressable`] (a tappable `<div>`
 //! with no UA chrome on web), so the entire visual is owned by the
 //! `Button` stylesheet's `appearance` variant axis. The component
 //! joins `intent` + `kind` into the appearance key (e.g.
@@ -21,7 +21,7 @@
 
 use std::rc::Rc;
 
-use framework_core::{
+use runtime_core::{
     text, IntoPrimitive, PressableHandle, Primitive, Ref, StyleApplication, VariantEnum,
 };
 
@@ -78,7 +78,7 @@ impl IntentTag {
     }
 }
 
-impl framework_core::VariantEnum for IntentTag {
+impl runtime_core::VariantEnum for IntentTag {
     fn as_variant_str(self) -> &'static str {
         self.as_str()
     }
@@ -121,7 +121,7 @@ impl ButtonKind {
     }
 }
 
-impl framework_core::VariantEnum for ButtonKind {
+impl runtime_core::VariantEnum for ButtonKind {
     fn as_variant_str(self) -> &'static str {
         self.as_str()
     }
@@ -184,7 +184,7 @@ pub fn button(props: &ButtonProps) -> Primitive {
 
     let children: Vec<Primitive> = vec![text(label).into_primitive()];
     let on_click_for_p = on_click.clone();
-    let mut bound = framework_core::pressable(children, move || (on_click_for_p)())
+    let mut bound = runtime_core::pressable(children, move || (on_click_for_p)())
         .with_style(style);
     if let Some(d) = disabled {
         bound = bound.disabled(move || (d)());

@@ -17,7 +17,7 @@
 
 use crate::phase_timer::PhaseTimer;
 use crate::{DynamicPtrEntry, DynamicRule, DynamicSlot, PregenEntry, WebBackend};
-use framework_core::StyleRules;
+use runtime_core::StyleRules;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use wasm_bindgen::JsCast;
@@ -232,9 +232,9 @@ impl WebBackend {
     /// felt by the DOM.
     pub(crate) fn impl_install_theme_variables(
         &mut self,
-        tokens: &[framework_core::TokenEntry],
+        tokens: &[runtime_core::TokenEntry],
     ) {
-        use framework_core::TokenValue;
+        use runtime_core::TokenValue;
         // Format helpers — one match per variant, kept inline so we
         // never allocate a temp Vec for the value-to-string step.
         fn token_value_css(v: &TokenValue) -> String {
@@ -333,7 +333,7 @@ impl WebBackend {
     pub(crate) fn snapshot_gradient_for_animation(
         &mut self,
         id: u32,
-        gradient: Option<&framework_core::Gradient>,
+        gradient: Option<&runtime_core::Gradient>,
     ) {
         let Some(g) = gradient else {
             return;
@@ -346,10 +346,10 @@ impl WebBackend {
         let colors: Vec<[f32; 4]> = stops.iter().map(|s| color_to_srgb(&s.color)).collect();
         let shape = crate::animated::GradientShape {
             kind: match g.kind {
-                framework_core::GradientKind::Linear { angle_deg } => {
+                runtime_core::GradientKind::Linear { angle_deg } => {
                     crate::animated::GradientShapeKind::Linear { angle_deg }
                 }
-                framework_core::GradientKind::Radial { center, radius, extent } => {
+                runtime_core::GradientKind::Radial { center, radius, extent } => {
                     crate::animated::GradientShapeKind::Radial { center, radius, extent }
                 }
             },
@@ -437,7 +437,7 @@ impl WebBackend {
         &mut self,
         node: &web_sys::Node,
         base: &std::rc::Rc<StyleRules>,
-        overlays: &[(framework_core::StateBits, std::rc::Rc<StyleRules>)],
+        overlays: &[(runtime_core::StateBits, std::rc::Rc<StyleRules>)],
     ) {
         // Outer phase covers the whole call — comparing this against
         // the sum of the sub-phases lets us see how much time is
@@ -612,10 +612,10 @@ impl WebBackend {
             let mut state_indices: Vec<u32> = Vec::with_capacity(overlays.len());
             for (bit, overlay) in overlays {
                 let pseudo = match *bit {
-                    framework_core::StateBits::HOVERED => ":hover",
-                    framework_core::StateBits::PRESSED => ":active",
-                    framework_core::StateBits::FOCUSED => ":focus",
-                    framework_core::StateBits::DISABLED => ":disabled",
+                    runtime_core::StateBits::HOVERED => ":hover",
+                    runtime_core::StateBits::PRESSED => ":active",
+                    runtime_core::StateBits::FOCUSED => ":focus",
+                    runtime_core::StateBits::DISABLED => ":disabled",
                     _ => continue,
                 };
                 let selector = format!("{}{}", class_name, pseudo);
@@ -714,9 +714,9 @@ impl WebBackend {
     /// teardown.
     pub(crate) fn impl_mint_class_for_app(
         &mut self,
-        app: &framework_core::StyleApplication,
+        app: &runtime_core::StyleApplication,
     ) -> String {
-        let resolved = framework_core::resolve_style(app);
+        let resolved = runtime_core::resolve_style(app);
         let key = resolved.content_key();
 
         // 1. Existing dynamic-by-content hit: bump refcount + reuse.
@@ -813,8 +813,8 @@ fn push_u64_hex(out: &mut String, n: u64) {
 }
 
 /// Render a `Length` as a CSS value string.
-fn length_css(l: framework_core::Length) -> String {
-    use framework_core::Length;
+fn length_css(l: runtime_core::Length) -> String {
+    use runtime_core::Length;
     match l {
         Length::Px(v) => format!("{}px", v),
         Length::Percent(v) => format!("{}%", v),
@@ -822,19 +822,19 @@ fn length_css(l: framework_core::Length) -> String {
     }
 }
 
-/// Resolve a `framework_core::Color` (a CSS-string wrapper) to a
+/// Resolve a `runtime_core::Color` (a CSS-string wrapper) to a
 /// concrete sRGB `[r, g, b, a]` in `0..=1`, used to seed the per-node
 /// `gradient_stops` snapshot the animation path mutates. Parsing
-/// lives in `framework_core::color`; unknown shapes (named colors,
+/// lives in `runtime_core::color`; unknown shapes (named colors,
 /// `hsl(...)`) fall back to opaque black — the CSS class still
 /// renders them correctly; this is only the seed for the animation
 /// state machine.
-pub(crate) fn color_to_srgb(c: &framework_core::Color) -> [f32; 4] {
-    framework_core::color::parse_or(&c.0, framework_core::color::Rgba::BLACK).to_srgb_f32()
+pub(crate) fn color_to_srgb(c: &runtime_core::Color) -> [f32; 4] {
+    runtime_core::color::parse_or(&c.0, runtime_core::color::Rgba::BLACK).to_srgb_f32()
 }
 
-fn tokenized_color_css(t: &framework_core::Tokenized<framework_core::Color>) -> String {
-    use framework_core::Tokenized;
+fn tokenized_color_css(t: &runtime_core::Tokenized<runtime_core::Color>) -> String {
+    use runtime_core::Tokenized;
     match t {
         Tokenized::Literal(c) => c.0.clone(),
         Tokenized::Token { name, fallback } => {
@@ -848,7 +848,7 @@ fn tokenized_color_css(t: &framework_core::Tokenized<framework_core::Color>) -> 
 /// emitted in the order the author supplied; their `offset` (0..1)
 /// becomes a percentage. Color is taken verbatim — the framework's
 /// `Color(String)` already wraps an arbitrary CSS color expression.
-fn gradient_css(g: &framework_core::Gradient) -> String {
+fn gradient_css(g: &runtime_core::Gradient) -> String {
     let stops: Vec<String> = g
         .stops
         .iter()
@@ -856,12 +856,12 @@ fn gradient_css(g: &framework_core::Gradient) -> String {
         .collect();
     let stops_joined = stops.join(", ");
     match g.kind {
-        framework_core::GradientKind::Linear { angle_deg } => {
+        runtime_core::GradientKind::Linear { angle_deg } => {
             // CSS `linear-gradient(angle, stops)`: `0deg` is
             // bottom→top, matching the framework's convention.
             format!("linear-gradient({}deg, {})", angle_deg, stops_joined)
         }
-        framework_core::GradientKind::Radial { center, radius, extent } => {
+        runtime_core::GradientKind::Radial { center, radius, extent } => {
             // `radial-gradient(ellipse <rx>% <ry>% at <x>% <y>%, stops)`.
             //
             // CSS doesn't allow percentage sizing with the `circle`
@@ -877,8 +877,8 @@ fn gradient_css(g: &framework_core::Gradient) -> String {
             //   produces with `ellipse farthest-corner`, but in
             //   percentage form so `radius != 1.0` still scales.
             let base_pct = match extent {
-                framework_core::RadialExtent::ClosestSide => 50.0,
-                framework_core::RadialExtent::FarthestCorner => 70.7106781,
+                runtime_core::RadialExtent::ClosestSide => 50.0,
+                runtime_core::RadialExtent::FarthestCorner => 70.7106781,
             };
             let pct = (radius * base_pct).max(0.0);
             format!(
@@ -894,8 +894,8 @@ fn gradient_css(g: &framework_core::Gradient) -> String {
 
 /// Render a tokenized length: literal as `{n}px` / `{n}%` / `auto`,
 /// token as `var(--name, fallback)`.
-fn tokenized_length_css(t: &framework_core::Tokenized<framework_core::Length>) -> String {
-    use framework_core::Tokenized;
+fn tokenized_length_css(t: &runtime_core::Tokenized<runtime_core::Length>) -> String {
+    use runtime_core::Tokenized;
     match t {
         Tokenized::Literal(l) => length_css(*l),
         Tokenized::Token { name, fallback } => {
@@ -906,8 +906,8 @@ fn tokenized_length_css(t: &framework_core::Tokenized<framework_core::Length>) -
 
 /// Render a tokenized raw number (used for `opacity`, `flex_grow`).
 /// The literal is just the number; tokens emit `var(--name, fallback)`.
-fn tokenized_f32_css(t: &framework_core::Tokenized<f32>) -> String {
-    use framework_core::Tokenized;
+fn tokenized_f32_css(t: &runtime_core::Tokenized<f32>) -> String {
+    use runtime_core::Tokenized;
     match t {
         Tokenized::Literal(v) => v.to_string(),
         Tokenized::Token { name, fallback } => {
@@ -920,8 +920,8 @@ fn tokenized_f32_css(t: &framework_core::Tokenized<f32>) -> String {
 /// line-height, letter-spacing). Literal becomes `{n}px`; token
 /// becomes `calc(var(--name, fallback) * 1px)` so the unit applies
 /// regardless of how the variable is resolved.
-fn tokenized_border_width_css(t: &framework_core::Tokenized<f32>) -> String {
-    use framework_core::Tokenized;
+fn tokenized_border_width_css(t: &runtime_core::Tokenized<f32>) -> String {
+    use runtime_core::Tokenized;
     match t {
         Tokenized::Literal(v) => format!("{}px", v),
         Tokenized::Token { name, fallback } => {
@@ -933,12 +933,12 @@ fn tokenized_border_width_css(t: &framework_core::Tokenized<f32>) -> String {
 /// Same shape as `tokenized_border_width_css` — kept as a separate
 /// helper so semantic call sites read clearly. (Both line-height and
 /// letter-spacing want the `px` unit attached.)
-fn tokenized_px_f32_css(t: &framework_core::Tokenized<f32>) -> String {
+fn tokenized_px_f32_css(t: &runtime_core::Tokenized<f32>) -> String {
     tokenized_border_width_css(t)
 }
 
-fn flex_direction_css(v: framework_core::FlexDirection) -> &'static str {
-    use framework_core::FlexDirection;
+fn flex_direction_css(v: runtime_core::FlexDirection) -> &'static str {
+    use runtime_core::FlexDirection;
     match v {
         FlexDirection::Row => "row",
         FlexDirection::Column => "column",
@@ -947,8 +947,8 @@ fn flex_direction_css(v: framework_core::FlexDirection) -> &'static str {
     }
 }
 
-fn flex_wrap_css(v: framework_core::FlexWrap) -> &'static str {
-    use framework_core::FlexWrap;
+fn flex_wrap_css(v: runtime_core::FlexWrap) -> &'static str {
+    use runtime_core::FlexWrap;
     match v {
         FlexWrap::NoWrap => "nowrap",
         FlexWrap::Wrap => "wrap",
@@ -956,8 +956,8 @@ fn flex_wrap_css(v: framework_core::FlexWrap) -> &'static str {
     }
 }
 
-fn justify_content_css(v: framework_core::JustifyContent) -> &'static str {
-    use framework_core::JustifyContent;
+fn justify_content_css(v: runtime_core::JustifyContent) -> &'static str {
+    use runtime_core::JustifyContent;
     match v {
         JustifyContent::FlexStart => "flex-start",
         JustifyContent::FlexEnd => "flex-end",
@@ -968,8 +968,8 @@ fn justify_content_css(v: framework_core::JustifyContent) -> &'static str {
     }
 }
 
-fn align_items_css(v: framework_core::AlignItems) -> &'static str {
-    use framework_core::AlignItems;
+fn align_items_css(v: runtime_core::AlignItems) -> &'static str {
+    use runtime_core::AlignItems;
     match v {
         AlignItems::FlexStart => "flex-start",
         AlignItems::FlexEnd => "flex-end",
@@ -979,8 +979,8 @@ fn align_items_css(v: framework_core::AlignItems) -> &'static str {
     }
 }
 
-fn align_content_css(v: framework_core::AlignContent) -> &'static str {
-    use framework_core::AlignContent;
+fn align_content_css(v: runtime_core::AlignContent) -> &'static str {
+    use runtime_core::AlignContent;
     match v {
         AlignContent::FlexStart => "flex-start",
         AlignContent::FlexEnd => "flex-end",
@@ -991,8 +991,8 @@ fn align_content_css(v: framework_core::AlignContent) -> &'static str {
     }
 }
 
-fn align_self_css(v: framework_core::AlignSelf) -> &'static str {
-    use framework_core::AlignSelf;
+fn align_self_css(v: runtime_core::AlignSelf) -> &'static str {
+    use runtime_core::AlignSelf;
     match v {
         AlignSelf::Auto => "auto",
         AlignSelf::FlexStart => "flex-start",
@@ -1003,16 +1003,16 @@ fn align_self_css(v: framework_core::AlignSelf) -> &'static str {
     }
 }
 
-fn position_css(v: framework_core::Position) -> &'static str {
-    use framework_core::Position;
+fn position_css(v: runtime_core::Position) -> &'static str {
+    use runtime_core::Position;
     match v {
         Position::Relative => "relative",
         Position::Absolute => "absolute",
     }
 }
 
-fn font_weight_css(v: framework_core::FontWeight) -> &'static str {
-    use framework_core::FontWeight;
+fn font_weight_css(v: runtime_core::FontWeight) -> &'static str {
+    use runtime_core::FontWeight;
     match v {
         FontWeight::Thin => "100",
         FontWeight::ExtraLight => "200",
@@ -1026,16 +1026,16 @@ fn font_weight_css(v: framework_core::FontWeight) -> &'static str {
     }
 }
 
-fn font_style_css(v: framework_core::FontStyle) -> &'static str {
-    use framework_core::FontStyle;
+fn font_style_css(v: runtime_core::FontStyle) -> &'static str {
+    use runtime_core::FontStyle;
     match v {
         FontStyle::Normal => "normal",
         FontStyle::Italic => "italic",
     }
 }
 
-fn text_align_css(v: framework_core::TextAlign) -> &'static str {
-    use framework_core::TextAlign;
+fn text_align_css(v: runtime_core::TextAlign) -> &'static str {
+    use runtime_core::TextAlign;
     match v {
         TextAlign::Left => "left",
         TextAlign::Right => "right",
@@ -1044,8 +1044,8 @@ fn text_align_css(v: framework_core::TextAlign) -> &'static str {
     }
 }
 
-fn text_transform_css(v: framework_core::TextTransform) -> &'static str {
-    use framework_core::TextTransform;
+fn text_transform_css(v: runtime_core::TextTransform) -> &'static str {
+    use runtime_core::TextTransform;
     match v {
         TextTransform::None => "none",
         TextTransform::Uppercase => "uppercase",
@@ -1054,16 +1054,16 @@ fn text_transform_css(v: framework_core::TextTransform) -> &'static str {
     }
 }
 
-fn overflow_css(v: framework_core::Overflow) -> &'static str {
-    use framework_core::Overflow;
+fn overflow_css(v: runtime_core::Overflow) -> &'static str {
+    use runtime_core::Overflow;
     match v {
         Overflow::Visible => "visible",
         Overflow::Hidden => "hidden",
     }
 }
 
-fn transform_css(t: &framework_core::Transform) -> String {
-    use framework_core::Transform;
+fn transform_css(t: &runtime_core::Transform) -> String {
+    use runtime_core::Transform;
     match t {
         Transform::TranslateX(l) => format!("translateX({})", length_css(*l)),
         Transform::TranslateY(l) => format!("translateY({})", length_css(*l)),
@@ -1075,8 +1075,8 @@ fn transform_css(t: &framework_core::Transform) -> String {
     }
 }
 
-fn easing_css(e: framework_core::Easing) -> String {
-    use framework_core::Easing;
+fn easing_css(e: runtime_core::Easing) -> String {
+    use runtime_core::Easing;
     match e {
         Easing::Linear => "linear".to_string(),
         Easing::Ease => "ease".to_string(),
@@ -1093,12 +1093,12 @@ fn easing_css(e: framework_core::Easing) -> String {
 /// content key for state-bearing dynamic slots. Distinct tags ensure
 /// distinct keys (and thus distinct minted class names) for
 /// different state combinations.
-fn state_bit_tag(b: framework_core::StateBits) -> &'static str {
+fn state_bit_tag(b: runtime_core::StateBits) -> &'static str {
     match b {
-        framework_core::StateBits::HOVERED => "h",
-        framework_core::StateBits::PRESSED => "p",
-        framework_core::StateBits::FOCUSED => "f",
-        framework_core::StateBits::DISABLED => "d",
+        runtime_core::StateBits::HOVERED => "h",
+        runtime_core::StateBits::PRESSED => "p",
+        runtime_core::StateBits::FOCUSED => "f",
+        runtime_core::StateBits::DISABLED => "d",
         _ => "?",
     }
 }
@@ -1243,10 +1243,10 @@ pub(crate) fn rules_to_css(rules: &StyleRules) -> String {
     // a CSS-savvy author wants.
     if let Some(ff) = &rules.font_family {
         match ff {
-            framework_core::FontFamily::System(name) => {
+            runtime_core::FontFamily::System(name) => {
                 parts.push(format!("font-family: {}", name));
             }
-            framework_core::FontFamily::Typeface(tf) => {
+            runtime_core::FontFamily::Typeface(tf) => {
                 parts.push(format!("font-family: \"{}\"", tf.family_name));
             }
         }

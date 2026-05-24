@@ -13,9 +13,9 @@ use crate::meta::{
 // A demo function the page references. The macro emits a real call;
 // if it didn't exist, the docs! invocation wouldn't compile.
 #[allow(dead_code)]
-fn counter_demo() -> framework_core::Primitive {
-    use framework_core::IntoPrimitive;
-    framework_core::view(Vec::new()).into_primitive()
+fn counter_demo() -> runtime_core::Primitive {
+    use runtime_core::IntoPrimitive;
+    runtime_core::view(Vec::new()).into_primitive()
 }
 
 mod reactivity {
@@ -34,7 +34,7 @@ mod reactivity {
     #[allow(unused_imports)]
     use idea_ui::{body, card, heading, stack};
     #[allow(unused_imports)]
-    use crate::shell::{codeblock, pageheader, CodeBlockProps, PageHeaderProps};
+    use crate::shell::{code_block, page_header, CodeBlockProps, PageHeaderProps};
 
     docs! {
         slug = "reactivity",
@@ -233,5 +233,5 @@ fn note_block() {
 
 #[test]
 fn page_function_renders() {
-    let _prim: framework_core::Primitive = reactivity::page();
+    let _prim: runtime_core::Primitive = reactivity::page();
 }

@@ -13,6 +13,7 @@ pub mod building_a_theme_system;
 pub mod components;
 pub mod dev_tools;
 pub mod icons;
+pub mod introduction;
 pub mod lists;
 pub mod navigation;
 pub mod overview;

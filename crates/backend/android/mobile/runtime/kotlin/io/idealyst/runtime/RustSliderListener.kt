@@ -16,7 +16,7 @@ class RustSliderListener(private val nativePtr: Long) :
 
     override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
         // Forward only user-driven drags. Programmatic `setProgress`
-        // calls (wire-replay landing a fresh value from the AAS
+        // calls (wire-replay landing a fresh value from the runtime-server
         // server, or a sibling effect writing the same signal) fire
         // this listener with `fromUser = false`; routing those back
         // through `nativeChanged` would push the value at the server,

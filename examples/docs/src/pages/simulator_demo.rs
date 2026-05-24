@@ -23,10 +23,10 @@
 
 use std::rc::Rc;
 
-use framework_core::{ui, Primitive};
+use runtime_core::{ui, Primitive};
 
 use crate::components::simulator::{simulator, SimulatorProps};
-use crate::shell::{pagebody, pageheader, PageBodyProps, PageHeaderProps};
+use crate::shell::{page_body, page_header, PageBodyProps, PageHeaderProps};
 
 /// The "app" mounted INSIDE the simulator. Re-uses the docs site's
 /// own `crate::app()` so the preview shows the same tree you're

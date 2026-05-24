@@ -10,8 +10,8 @@ This doc covers the contract a backend implements, the framework
 guarantees a backend can rely on, and the lifecycle rules that
 keep things from blowing up at teardown.
 
-Implementation: `framework_core::backend` (the trait + default
-ops), plus the render walker in `framework_core::lib`.
+Implementation: `runtime_core::backend` (the trait + default
+ops), plus the render walker in `runtime_core::lib`.
 
 ---
 
@@ -95,7 +95,7 @@ handle).
 
 ## The render walker
 
-`framework_core::render(backend, primitive)` is the entry point.
+`runtime_core::render(backend, primitive)` is the entry point.
 The walker visits each `Primitive` and emits calls into the
 backend trait.
 
@@ -273,7 +273,7 @@ inside `create_navigator`.
 For callbacks that arrive **synchronously** from inside platform
 code (a JS callback fired during `release()`, an Android listener
 that re-enters during `removeAllViews`), the backend is responsible
-for deferring the work — typically with `framework_core::schedule_microtask`
+for deferring the work — typically with `runtime_core::schedule_microtask`
 — so the re-entrant call lands after the outer borrow has been
 released.
 
@@ -325,7 +325,7 @@ fn release_virtualizer(b: &mut WebBackend, node: &Node) {
 
     // Step 2: defer the heavy release call to a microtask, so the
     // outer borrow_mut() has been released by the time we re-enter.
-    framework_core::schedule_microtask(move || {
+    runtime_core::schedule_microtask(move || {
         let release_fn: js_sys::Function = /* … */;
         let _ = release_fn.call0(&instance.js);
         drop(instance);                       // drops the closures JS held
@@ -382,7 +382,7 @@ The framework also fires `virtualizer_data_changed(node)` from an
 `Effect` that reads the data signal, so the backend can re-query
 counts/keys/sizes and diff against its mounted set.
 
-Authors write `framework_core::primitives::flat_list::flat_list(...)`
+Authors write `runtime_core::primitives::flat_list::flat_list(...)`
 or `ui! { FlatList(...) }` — both produce this primitive with the
 data-side closures pre-wired.
 
@@ -459,7 +459,7 @@ fn release_graphics(&mut self, node: &Self::Node);
 The backend exposes the drawable as a `raw_window_handle`-compatible
 object. The author's GPU library of choice (wgpu, glow, …) wires up
 its own pipeline against that. The framework doesn't link any GPU
-crate — wgpu types appear only in `framework_core::primitives::graphics`'s
+crate — wgpu types appear only in `runtime_core::primitives::graphics`'s
 *author-facing* API, behind a feature flag in downstream code.
 
 ---
@@ -511,7 +511,7 @@ fn register_stylesheet(&mut self, rules: &[Rc<StyleRules>]);
 fn unregister_stylesheet(&mut self, rules: &[Rc<StyleRules>]);
 ```
 
-`rules` is the result of `framework_core::style::pregenerate_for_theme`
+`rules` is the result of `runtime_core::style::pregenerate_for_theme`
 — one entry for base, one per single-axis variant, one per declared
 compound variant. The backend can mint a CSS class per entry, or
 build a `Drawable` per entry, or whatever its caching strategy is.
@@ -656,7 +656,7 @@ path that re-enters a trait method will panic:
 
 Two tools to handle this:
 
-1. **`framework_core::schedule_microtask(f)`** — defers `f` to run
+1. **`runtime_core::schedule_microtask(f)`** — defers `f` to run
    after the current synchronous chain returns. Use this in
    release hooks that synchronously trigger platform teardown
    which fires callbacks. Web `release_virtualizer` and `build_switch`'s

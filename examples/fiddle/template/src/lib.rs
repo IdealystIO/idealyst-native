@@ -42,9 +42,9 @@ mod sim_mode {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    use framework_core::primitives::graphics::{OnReadyEvent, OnResizeEvent};
-    use framework_core::{ui, view, ColorScheme, IntoPrimitive, Length, StyleRules, StyleSheet};
-    use host_web::{DeviceProfile, Skin};
+    use runtime_core::primitives::graphics::{OnReadyEvent, OnResizeEvent};
+    use runtime_core::{ui, view, ColorScheme, IntoPrimitive, Length, StyleRules, StyleSheet};
+    use host_web::{DeviceProfile, Painter};
     use wasm_bindgen::prelude::*;
 
     #[global_allocator]
@@ -52,13 +52,13 @@ mod sim_mode {
         unsafe { lol_alloc::AssumeSingleThreaded::new(lol_alloc::FreeListAllocator::new()) };
 
     thread_local! {
-        static OWNER: RefCell<Option<framework_core::Owner>> = const { RefCell::new(None) };
+        static OWNER: RefCell<Option<runtime_core::Owner>> = const { RefCell::new(None) };
         // `host-web::WebHostHandle` is `!Send + !Sync`; thread-local is
         // the right home.
         static HANDLE: RefCell<Option<host_web::WebHostHandle>> = const { RefCell::new(None) };
     }
 
-    /// iPhone-portrait profile — matches `native-phone` so a snippet
+    /// iPhone-portrait profile — matches `variant-phone` so a snippet
     /// authored against the simulator lays out identically to the
     /// native preview window. The fiddle picks the iframe's CSS
     /// dimensions to match this aspect ratio (see the webapp's
@@ -83,12 +83,12 @@ mod sim_mode {
         idea_ui::install_idea_theme(idea_ui::light_theme());
 
         let backend = Rc::new(RefCell::new(backend_web::WebBackend::new("#app")));
-        let owner = framework_core::render(backend, simulator_tree());
+        let owner = runtime_core::render(backend, simulator_tree());
         OWNER.with(|slot| *slot.borrow_mut() = Some(owner));
     }
 
-    fn simulator_tree() -> framework_core::Primitive {
-        let graphics = framework_core::primitives::graphics::graphics(move |event: OnReadyEvent| {
+    fn simulator_tree() -> runtime_core::Primitive {
+        let graphics = runtime_core::primitives::graphics::graphics(move |event: OnReadyEvent| {
             wasm_bindgen_futures::spawn_local(async move {
                 let profile = DeviceProfile {
                     logical_size: (LOGICAL_W, LOGICAL_H),
@@ -96,7 +96,7 @@ mod sim_mode {
                     title: "Idealyst Fiddle".to_string(),
                     color_scheme: ColorScheme::Light,
                 };
-                let skin: Rc<dyn Skin> = Rc::new(ios_sim::IosSim::new());
+                let skin: Rc<dyn Painter> = Rc::new(ios_sim::IosSim::new());
                 match host_web::mount(event.surface, event.size, profile, skin, || {
                     super::snippet::app()
                 })
@@ -158,7 +158,7 @@ mod web_mode {
         unsafe { lol_alloc::AssumeSingleThreaded::new(lol_alloc::FreeListAllocator::new()) };
 
     thread_local! {
-        static OWNER: RefCell<Option<framework_core::Owner>> = const { RefCell::new(None) };
+        static OWNER: RefCell<Option<runtime_core::Owner>> = const { RefCell::new(None) };
     }
 
     #[wasm_bindgen(start)]
@@ -168,7 +168,7 @@ mod web_mode {
         backend_web::install_async_executor();
         backend_web::install_render_loop();
         // Same theme install as `sim_mode::start` — `idea-ui`
-        // components read from `framework_core::active_theme()` and
+        // components read from `runtime_core::active_theme()` and
         // panic if it's empty. Snippet authors can override via
         // `idea_ui::set_idea_theme(...)` at runtime.
         idea_ui::install_idea_theme(idea_ui::light_theme());
@@ -178,7 +178,7 @@ mod web_mode {
         // web mode. The iframe shell's `#app` div fills the
         // viewport, so any `flex_grow: 1` / `height: 100%` at the
         // snippet's root will take the full preview area.
-        let owner = framework_core::render(backend, super::snippet::app());
+        let owner = runtime_core::render(backend, super::snippet::app());
         OWNER.with(|slot| *slot.borrow_mut() = Some(owner));
     }
 }
@@ -195,11 +195,11 @@ pub use web_mode::start;
 /// above the user's code so any of these symbols are in scope
 /// without an explicit `use` line. Grow this list as snippets need
 /// more — anything not re-exported here forces the user to type
-/// out a full `framework_core::` / `idea_ui::` path.
+/// out a full `runtime_core::` / `idea_ui::` path.
 #[allow(unused_imports)]
 pub mod __rt {
     // Framework primitives + builders the snippet hits constantly.
-    pub use framework_core::{
+    pub use runtime_core::{
         bind, button, component, pressable, signal, switch, text, text_fmt, ui, view, when,
         AlignItems, Color, ColorScheme, Easing, Effect, FlexDirection, FontWeight,
         JustifyContent, Length, Overflow, Position, Primitive, Ref, Signal, StyleRules,
@@ -208,7 +208,7 @@ pub mod __rt {
     // Style declaration macro — re-export so snippets can write
     // `stylesheet! { pub Foo<()> { base(_t) { ... } } }` without
     // typing the full path.
-    pub use framework_core::stylesheet;
+    pub use runtime_core::stylesheet;
     // idea-ui's higher-level components, so snippets default to
     // the styled shape rather than building everything out of bare
     // `View` + per-instance stylesheets.

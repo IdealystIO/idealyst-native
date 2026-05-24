@@ -9,7 +9,7 @@
 //! helper class `io.idealyst.runtime.Animators` that owns a
 //! `ValueAnimator` and re-invokes the multi-arg setter on each tick.
 
-use framework_core::{Easing, Transition};
+use runtime_core::{Easing, Transition};
 use jni::objects::{GlobalRef, JObject, JValue};
 use jni::JNIEnv;
 

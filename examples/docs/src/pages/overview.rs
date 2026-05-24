@@ -7,7 +7,7 @@
 
 use docs_macro::docs;
 #[allow(unused_imports)]
-use crate::shell::{codeblock, pageheader, CodeBlockProps, PageHeaderProps};
+use crate::shell::{code_block, page_header, CodeBlockProps, PageHeaderProps};
 #[allow(unused_imports)]
 use idea_ui::{body, card, heading, stack};
 
@@ -537,7 +537,7 @@ docs! {
             ┌─────────────────┴─────────────────┐
             ▼                                   ▼
   ┌────────────────────┐               ┌────────────────────┐
-  │  framework-macros  │               │      idea-ui       │
+  │  runtime-macros  │               │      idea-ui       │
   │  ui!, jsx!,        │               │  component library │
   │  #[component],     │               │  (optional)        │
   │  stylesheet!,      │               └─────────┬──────────┘
@@ -546,7 +546,7 @@ docs! {
             └─────────────────┬───────────────────┘
                               ▼
   ┌─────────────────────────────────────────────────────────────┐
-  │                      framework-core                          │
+  │                      runtime-core                          │
   │  primitives  ·  signals + effects + scopes                   │
   │  render walker  ·  style resolution + theming                │
   │  identity  ·  scheduling  ·  Backend trait                   │
@@ -556,7 +556,7 @@ docs! {
           ┌───────────────────┼───────────────────┐
           ▼                   ▼                   ▼
   ┌──────────────┐    ┌──────────────┐    ┌──────────────────┐
-  │framework-hot │    │framework-wire│    │ framework-native-│
+  │dev-hot │    │framework-wire│    │ framework-native-│
   │ hot patches  │    │ dev protocol │    │     layout       │
   │              │    │              │    │  (Taffy / flex)  │
   └──────────────┘    └──────┬───────┘    └──────────────────┘
@@ -570,47 +570,47 @@ docs! {
                        Backend trait
           ┌──────────┬─────────┬─────────┬─────────┐
           ▼          ▼         ▼         ▼         ▼
-        web        ios     android     roku    aas-shell
+        web        ios     android     roku    runtime-server
        (DOM)    (UIKit)   (Views)   (SG/TV)  (dev mode)
         "##),
     },
 
     section(heading = "The layers in one line each") {
         list(
-            [code("framework-macros"), " — Compile-time DSLs (", code("ui!"), ", ",
+            [code("runtime-macros"), " — Compile-time DSLs (", code("ui!"), ", ",
               code("jsx!"), ", ", code("#[component]"), ", ", code("stylesheet!"),
-              ", ", code("methods!"), "). Lowers source into plain framework-core \
+              ", ", code("methods!"), "). Lowers source into plain runtime-core \
               calls; nothing here exists at runtime."],
-            [code("framework-core"), " — The runtime everything else builds on. \
+            [code("runtime-core"), " — The runtime everything else builds on. \
               Primitives, signals + effects, render walker, style resolution, \
               identity, the ", code("Backend"), " trait. Your app code talks \
               mostly to this crate."],
             [code("idea-ui"), " — Optional component library on top of \
-              framework-core. Heading, Card, Stack, Btn, themed colors, \
+              runtime-core. Heading, Card, Stack, Btn, themed colors, \
               breakpoints. Use it, replace bits of it, or skip it."],
-            [code("framework-hot"), " — Diff-and-patch for hot reload. Compares \
+            [code("dev-hot"), " — Diff-and-patch for hot reload. Compares \
               two ", code("Primitive"), " trees by their identity hashes and \
               produces the minimal sequence of backend operations to morph one \
               into the other."],
             [code("framework-wire"), " — The wire protocol. Pure data: a ",
               code("Command"), " enum and three id namespaces (nodes, handlers, \
-              styles). No framework-core dependency. Used by hot reload, \
+              styles). No runtime-core dependency. Used by hot reload, \
               app-as-server, and any future server-driven mode."],
             [code("framework-dev-client"), " — The app side of the wire. \
               Receives commands from the dev server and replays them against the \
               local backend, so ", code("idealyst dev"), " updates a running app \
               without recompiling."],
-            [code("framework-native-layout"), " — Wraps Taffy (flexbox + grid) \
+            [code("framework-runtime-layout"), " — Wraps Taffy (flexbox + grid) \
               for backends without a native layout engine. Web uses the \
               browser's layout; iOS, Android, and Roku use this."],
-            ["Robot — Feature-gated introspection inside framework-core. With ",
+            ["Robot — Feature-gated introspection inside runtime-core. With ",
               code("--features robot"), " enabled, external processes can list \
               components on screen, find elements by props or path, read \
               frames, click, and type. Powers automated testing without \
               per-platform harnesses."],
             ["Backends — One crate per platform under ", code("crates/backend/"),
               ". Each implements ", code("Backend"), " by translating its method \
-              calls into native operations. The AAS backend is the odd one out — \
+              calls into native operations. The runtime-server backend is the odd one out — \
               it serializes the tree onto the wire instead of rendering it."],
             ["CLI — Orchestration. Scaffolds projects, runs the dev server, \
               materializes the per-platform host crate, drives builds. Not part \
@@ -628,14 +628,14 @@ docs! {
             ["framework-wire. Write a new transport, a new viewer, or a \
               server-driven UI host. The protocol is pure data; nothing about \
               it assumes \"the dev server\" specifically."],
-            ["framework-hot. Substitute a different diff strategy, or \
+            ["dev-hot. Substitute a different diff strategy, or \
               intercept patches to log, replay, or transform them."],
             ["Robot. Drive a running app from another process — IDE plugins, \
               accessibility tooling, scripted demos, test runners. The ",
               code("robot-mcp-proxy"), " crate is one such consumer; you can \
               write your own."],
-            ["framework-macros. Write your own front-end syntax. Anything that \
-              emits the right framework-core calls slots in alongside ",
+            ["runtime-macros. Write your own front-end syntax. Anything that \
+              emits the right runtime-core calls slots in alongside ",
               code("ui!"), " and ", code("jsx!"), "."],
         ),
         p("None of these are required to ship an app. They exist because the \

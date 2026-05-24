@@ -6,7 +6,7 @@ the *rendering strategy*. Each backend interprets a `StyleRules` value
 however suits its platform: the web backend mints CSS classes, native
 backends call view setters directly.
 
-Implementation: `framework_core::style` plus `framework_macros::stylesheet`.
+Implementation: `runtime_core::style` plus `runtime_macros::stylesheet`.
 
 ---
 

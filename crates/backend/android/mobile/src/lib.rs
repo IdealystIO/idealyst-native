@@ -24,7 +24,7 @@
 //! # Threading
 //!
 //! The framework's reactive arena is thread-local (see
-//! `framework-core/src/reactive.rs`). All `Backend` calls happen on
+//! `runtime-core/src/reactive.rs`). All `Backend` calls happen on
 //! the Android UI thread (where the app started `render`), so
 //! `AndroidBackend` is `!Send`/`!Sync` and assumes single-threaded
 //! access.
@@ -70,7 +70,7 @@ pub use jni::objects::GlobalRef as AndroidNode;
 pub use backend_android_core::render_loop::install_render_loop;
 
 /// Install the Android scheduler (Handler.postDelayed on the main
-/// Looper). Must be called once before `framework_core::render(...)`
+/// Looper). Must be called once before `runtime_core::render(...)`
 /// so timer-driven features (long-press recognizer, presence
 /// animations, anything calling `after_ms` / `schedule_microtask`)
 /// delay correctly instead of firing synchronously.
@@ -117,21 +117,21 @@ pub fn install_global_self(_weak: std::rc::Weak<std::cell::RefCell<AndroidBacken
 #[cfg(not(target_os = "android"))]
 pub fn set_animated_f32(
     _node: &AndroidNode,
-    _prop: framework_core::animation::AnimProp,
+    _prop: runtime_core::animation::AnimProp,
     _value: f32,
 ) {}
 
 #[cfg(not(target_os = "android"))]
 pub fn set_animated_color(
     _node: &AndroidNode,
-    _prop: framework_core::animation::AnimProp,
+    _prop: runtime_core::animation::AnimProp,
     _value: [f32; 4],
 ) {}
 
-/// Optional AAS-client glue. Compiled in only when the `aas-shell`
+/// Optional runtime-server-client glue. Compiled in only when the `runtime-server`
 /// Cargo feature is on. The module exposes `attach` / `drain` /
 /// `detach` entry points; the consuming staticlib crate defines its
 /// own JNI exports (with package-qualified names like
-/// `Java_<pkg>_NativeBridge_attachAas`) that trampoline into these.
-#[cfg(all(target_os = "android", feature = "aas-shell"))]
-pub mod aas;
+/// `Java_<pkg>_NativeBridge_attachRuntimeServer`) that trampoline into these.
+#[cfg(all(target_os = "android", feature = "runtime-server"))]
+pub mod runtime_server;

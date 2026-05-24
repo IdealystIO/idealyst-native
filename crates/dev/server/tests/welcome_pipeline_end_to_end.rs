@@ -1,4 +1,4 @@
-//! End-to-end integration test for the AAS animation-over-wire path.
+//! End-to-end integration test for the runtime-server animation-over-wire path.
 //!
 //! Mirrors the welcome example's pipeline shape against a recording
 //! backend instead of a real client:
@@ -38,8 +38,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use dev_server::{scheduler, WireRecordingBackend};
-use framework_core::animation::{AnimProp, AnimatedValue};
-use framework_core::{
+use runtime_core::animation::{AnimProp, AnimatedValue};
+use runtime_core::{
     after_ms_scoped, mount, node_ref, raf_loop_scoped, Primitive, Ref,
     RefFill, SafeAreaSides, ViewHandle,
 };
@@ -160,12 +160,12 @@ fn end_to_end_raf_dropping_own_handle_inside_mount_does_not_panic() {
     let fired_for_app = fired.clone();
     let app = move || {
         let fired_inner = fired_for_app.clone();
-        let handle_slot: Rc<RefCell<Option<framework_core::scheduling::RafLoop>>> =
+        let handle_slot: Rc<RefCell<Option<runtime_core::scheduling::RafLoop>>> =
             Rc::new(RefCell::new(None));
         let handle_slot_for_raf = handle_slot.clone();
         // `raf_loop` (not _scoped) — we want a handle to drop
         // explicitly rather than rely on scope cleanup.
-        let raf = framework_core::raf_loop(move || {
+        let raf = runtime_core::raf_loop(move || {
             fired_inner.set(fired_inner.get() + 1);
             // Drop this raf's own handle mid-tick. The old scheduler
             // panicked here; the new one cleanly cancels.

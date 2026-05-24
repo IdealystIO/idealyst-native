@@ -6,7 +6,7 @@
 
 use docs_macro::docs;
 #[allow(unused_imports)]
-use crate::shell::{codeblock, pageheader, CodeBlockProps, PageHeaderProps};
+use crate::shell::{code_block, page_header, CodeBlockProps, PageHeaderProps};
 #[allow(unused_imports)]
 use idea_ui::{body, card, heading, stack};
 
@@ -114,7 +114,7 @@ docs! {
           " tree. The minimal shape looks like this:"),
 
         code(rust, r##"
-            use framework_core::{component, signal, ui, Primitive};
+            use runtime_core::{component, signal, ui, Primitive};
 
             #[component]
             pub fn app() -> Primitive {
@@ -154,7 +154,7 @@ docs! {
     },
 
     section(heading = "Building UI: components, not just primitives") {
-        p("The scaffold uses framework-core primitives (", code("View"), ", ",
+        p("The scaffold uses runtime-core primitives (", code("View"), ", ",
           code("Text"), ", ", code("Button"), ") directly. For most projects you'll \
            want higher-level pieces too — headings, cards, themed buttons, layout \
            stacks."),
@@ -166,7 +166,7 @@ docs! {
               with it. See idea-ui for what's included and how to use it."],
             ["Build your own with the framework's theme and stylesheet system on \
               top of the primitive vocabulary. See Styles for how that system works."],
-            ["Use a third-party library built on framework-core."],
+            ["Use a third-party library built on runtime-core."],
             ["Skip it. Primitives alone are a complete option."],
         ),
 

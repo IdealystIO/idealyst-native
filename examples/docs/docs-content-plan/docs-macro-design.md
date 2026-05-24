@@ -258,7 +258,7 @@ impl DocConcept {
             DocConcept::StyleState => "Style state",
             DocConcept::AmbientNavigator => "Ambient navigator",
             DocConcept::AppBackendSplit => "App ↔ Backend split",
-            DocConcept::Aas => "AAS (app-as-server)",
+            DocConcept::Aas => "runtime-server (app-as-server)",
             DocConcept::McpServer => "MCP server",
             DocConcept::TestId => "test_id",
             // ... etc., one arm per variant
@@ -283,7 +283,7 @@ to the metadata consumer.
 ## The macro's input grammar
 
 ```rust
-use framework_core::docs;
+use runtime_core::docs;
 use crate::demos::counter_demo;
 
 docs! {

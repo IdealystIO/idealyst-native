@@ -9,7 +9,7 @@
 
 use docs_macro::docs;
 #[allow(unused_imports)]
-use crate::shell::{codeblock, pageheader, CodeBlockProps, PageHeaderProps};
+use crate::shell::{code_block, page_header, CodeBlockProps, PageHeaderProps};
 #[allow(unused_imports)]
 use idea_ui::{body, card, heading, stack};
 
@@ -29,11 +29,11 @@ docs! {
            backend (Skia, vello, a CPU rasterizer) can be slotted in \
            under the same shell; and a new platform skin can be added \
            without recompiling either. The layers communicate through \
-           a small, frozen contract crate and a `Skin` trait."),
+           a small, frozen contract crate and a `Painter` trait."),
         p("The layout, under ", code("crates/"), ":"),
         code(text, r##"
             render/api              render-api     No wgpu, no winit. Pure contract types.
-            render/wgpu             render-wgpu    Renderer + Skin trait + interaction host. Depends on api + wgpu.
+            render/wgpu             render-wgpu    Renderer + Painter trait + interaction host. Depends on api + wgpu.
             ios-sim                 ios-sim        iOS skin (UISwitch/Slider/TextField/spinner/keyboard).
             android-sim             android-sim    Android Material 3 skin.
             host/winit              host-winit     Winit shell. Depends on api + render-wgpu + winit + wgpu.
@@ -61,15 +61,15 @@ docs! {
              " trait. No wgpu, no winit, no platform-specific anything. \
               Every other layer depends on this; it depends on no one."],
             [code("render-wgpu"), " — the renderer + interaction host. \
-              Implements ", code("framework_core::Backend"), " (so the \
+              Implements ", code("runtime_core::Backend"), " (so the \
               framework can hand it a primitive tree) and ",
              code("EventSink"), " (so a shell can hand it events). Owns \
               the wgpu pipeline, the Taffy layout tree, the animator, \
-              and the ", code("Skin"), " trait. Holds an ",
-             code("Rc<dyn Skin>"), " for the lifetime of the host; \
+              and the ", code("Painter"), " trait. Holds an ",
+             code("Rc<dyn Painter>"), " for the lifetime of the host; \
               every widget and keyboard paint call routes through it."],
             [code("ios-sim"), " / ", code("android-sim"),
-             " — concrete skins. Each implements ", code("Skin"),
+             " — concrete skins. Each implements ", code("Painter"),
              " with its palette + paint policy. Stateless unit \
               structs; instantiate once, wrap in ", code("Rc"),
              ". Adding a third skin is one new crate."],
@@ -78,7 +78,7 @@ docs! {
              code("winit::WindowEvent"), " values into the api crate's \
               event types and forwards them through ", code("EventSink"),
              ". Takes the skin as a constructor argument."],
-            [code("native-phone"), " / ", code("-tablet"), " / ",
+            [code("variant-phone"), " / ", code("-tablet"), " / ",
              code("-tv"), " — variant facades. Each fixes a ",
              code("DeviceProfile"), " (window size, color scheme) and \
               calls ", code("host-winit::run(profile, skin, app)"),
@@ -90,7 +90,7 @@ docs! {
           ". Any future render backend is one new crate that implements \
            the same two traits as ", code("render-wgpu"),
           ". Any future skin (Fluent, Roku, design-system-X) is one \
-           new crate implementing ", code("Skin"),
+           new crate implementing ", code("Painter"),
           ". No central registry to update."),
     },
 
@@ -260,7 +260,7 @@ docs! {
            should normalize the same way."),
     },
 
-    section(heading = "DeviceProfile and Skin") {
+    section(heading = "DeviceProfile and Painter") {
         p("Two values the variant crates compose and pass to the shell."),
 
         code(rust, r##"
@@ -271,7 +271,7 @@ docs! {
             }
 
             // From render-wgpu:
-            pub trait Skin { /* paint methods + keyboard rows */ }
+            pub trait Painter { /* paint methods + keyboard rows */ }
         "##),
 
         p(code("DeviceProfile"),
@@ -281,7 +281,7 @@ docs! {
           " crates each carry a different profile; that's the entirety \
            of what a variant crate does on this front."),
         p("The platform look (UIKit vs Material 3 vs anything else) \
-           is a separate axis: a ", code("Rc<dyn Skin>"), " passed \
+           is a separate axis: a ", code("Rc<dyn Painter>"), " passed \
            alongside the profile. The variant crates don't pick a \
            default — the caller does. That keeps the variant crate \
            ignorant of which skins exist and makes adding a new skin \
@@ -351,7 +351,7 @@ docs! {
             use std::time::Instant;
             use render_api::DeviceProfile;
             use render_wgpu::{install_redraw_hook, Host, Renderer};
-            use framework_core::Primitive;
+            use runtime_core::Primitive;
 
             pub fn run<F: FnOnce() -> Primitive + 'static>(
                 profile: DeviceProfile,
@@ -406,7 +406,7 @@ docs! {
           "; you are the replacement for it."),
         p("Two traits to implement:"),
         list(
-            [code("framework_core::Backend"),
+            [code("runtime_core::Backend"),
              " — so the framework can hand you a primitive tree and \
               drive ", code("create_*"), " / ", code("insert"), " / ",
              code("apply_style"),
@@ -435,7 +435,7 @@ docs! {
           code("Cargo.toml"), ":"),
         list(
             ["Shipping an app on a variant the framework provides — \
-              depend on the variant crate (", code("native-phone"),
+              depend on the variant crate (", code("variant-phone"),
              ", etc.). It pulls in everything it needs."],
             ["Writing a new native shell — depend on ",
              code("render-api"), " (for the contract) and ",
@@ -466,7 +466,7 @@ docs! {
               renderer used by ", code("idealyst dev"),
              "; the production backends are web, iOS, and Android."],
             [link("Writing your own backend", to = "writing-a-backend"),
-             " — the full ", code("framework_core::Backend"),
+             " — the full ", code("runtime_core::Backend"),
              " trait surface a render backend has to implement, \
               independent of the wgpu split."],
             [link("Primitives", to = "primitives"),

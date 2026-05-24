@@ -1,10 +1,10 @@
 //! CLI — the `idealyst` command-line tool.
 
-use framework_core::{ui, Primitive};
+use runtime_core::{ui, Primitive};
 use idea_ui::{body, card, heading, BodyTone, HeadingKind};
 
 use crate::shell::{
-    codeblock, pagebody, pageheader, section, sectionwithcode, CodeBlockProps, PageBodyProps,
+    code_block, page_body, page_header, section, section_with_code, CodeBlockProps, PageBodyProps,
     PageHeaderProps, SectionProps, SectionWithCodeProps,
 };
 

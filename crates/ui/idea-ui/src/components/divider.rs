@@ -1,6 +1,6 @@
 //! `Divider` — thin separator line, horizontal or vertical.
 
-use framework_core::{ui, Primitive};
+use runtime_core::{ui, Primitive};
 
 use crate::stylesheets::Divider;
 pub use crate::stylesheets::DividerAxis;

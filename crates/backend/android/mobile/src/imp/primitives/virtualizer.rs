@@ -8,7 +8,7 @@
 
 use backend_android_core::helpers::apply_default_layout_params;
 use crate::imp::{with_env, AndroidBackend};
-use framework_core::VirtualizerCallbacks;
+use runtime_core::VirtualizerCallbacks;
 use jni::objects::{GlobalRef, JValue};
 use jni::sys::jlong;
 

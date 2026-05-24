@@ -1,6 +1,6 @@
 //! `Caption` — small muted helper text.
 
-use framework_core::{ui, Primitive};
+use runtime_core::{ui, Primitive};
 
 use crate::stylesheets::Caption;
 pub use crate::stylesheets::{CaptionAlign, CaptionTone};

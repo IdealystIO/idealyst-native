@@ -7,7 +7,7 @@
 
 use std::rc::Rc;
 
-use framework_core::{
+use runtime_core::{
     component, ui, DrawerContentProps, LayoutProps, Primitive, SafeAreaSides, Signal,
     StyleApplication,
 };
@@ -138,12 +138,17 @@ fn nav_link(
     };
 
     use crate::routes::{
-        ANIMATION_ROUTE, CLI_ROUTE, COMPONENTS_ROUTE, MACROS_ROUTE, NAVIGATION_ROUTE,
-        OVERVIEW_ROUTE, PLATFORMS_ROUTE, PRIMITIVES_ROUTE, QUICKSTART_ROUTE, REACTIVITY_ROUTE,
-        SIMULATOR_ROUTE, STYLES_ROUTE, UI_DSL_ROUTE,
+        ANIMATION_ROUTE, CLI_ROUTE, COMPONENTS_ROUTE, INTRODUCTION_ROUTE, MACROS_ROUTE,
+        NAVIGATION_ROUTE, OVERVIEW_ROUTE, PLATFORMS_ROUTE, PRIMITIVES_ROUTE, QUICKSTART_ROUTE,
+        REACTIVITY_ROUTE, SIMULATOR_ROUTE, STYLES_ROUTE, UI_DSL_ROUTE,
     };
 
     match name {
+        "introduction" => ui! {
+            Link(route = &INTRODUCTION_ROUTE, params = ()) {
+                Text(style = style) { label_text }
+            }
+        },
         "overview" => ui! {
             Link(route = &OVERVIEW_ROUTE, params = ()) {
                 Text(style = style) { label_text }
@@ -218,7 +223,7 @@ fn nav_link(
 // outlet. Native backends draw their own drawer chrome and ignore
 // this slot.
 //
-// Compiled unconditionally so the AAS recording backend (which runs
+// Compiled unconditionally so the runtime-server recording backend (which runs
 // natively on the dev host) can invoke it too: its `create_drawer_
 // navigator` executes the closure, captures every node it builds as
 // wire commands, and ships the layout to the browser via
@@ -270,7 +275,7 @@ pub struct PageBodyProps {
 /// page layout. If you need a one-off override, hand-roll the
 /// `ScrollView { Stack(...) { ... } }` instead.
 #[component]
-pub fn pagebody(props: PageBodyProps) -> Primitive {
+pub fn page_body(props: PageBodyProps) -> Primitive {
     let children = props.children;
     ui! {
         ScrollView {
@@ -290,7 +295,7 @@ pub struct PageHeaderProps {
 /// `PageHeader(title = "...", description = "...")` — the H1 + subtitle
 /// every page opens with.
 #[component]
-pub fn pageheader(props: PageHeaderProps) -> Primitive {
+pub fn page_header(props: PageHeaderProps) -> Primitive {
     let title = props.title;
     let description = props.description;
     let children: Vec<Primitive> = vec![
@@ -334,7 +339,7 @@ pub struct SectionWithCodeProps {
 /// `SectionWithCode(title = "...", body = "...", code = "...")` —
 /// section card with a code block under the prose.
 #[component]
-pub fn sectionwithcode(props: SectionWithCodeProps) -> Primitive {
+pub fn section_with_code(props: SectionWithCodeProps) -> Primitive {
     let title = props.title;
     let body_text = props.body;
     let code_text = props.code;
@@ -361,7 +366,7 @@ pub struct CodeBlockProps {
 /// chrome. Use inside a hand-rolled `Card { ... }` when you need
 /// multiple code blocks or interleaved prose.
 #[component]
-pub fn codeblock(props: CodeBlockProps) -> Primitive {
+pub fn code_block(props: CodeBlockProps) -> Primitive {
     let code_text = props.code;
     let code_style = CodeBlockSheet();
     let code_text_style = CodeBlockText();

@@ -7,7 +7,7 @@ license.workspace = true
 # Android TV backend. Adds Leanback patterns + D-pad focus on top of
 # the shared `backend-android-core` substrate. Same shape as
 # `backend-android-mobile`: a cdylib + rlib pair with optional
-# `aas-shell` for thin-client mode.
+# `runtime-server` for thin-client mode.
 #
 # Skeleton — TV-specific component variants and focus glue land here
 # as they're built out.
@@ -19,14 +19,14 @@ name = "backend_android_tv"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-aas-shell = ["dep:aas-shell-native", "aas-shell-native/aas-shell"]
-async-driver = ["framework-core/async-driver"]
+runtime-server = ["dep:runtime-server-shell-native", "runtime-server-shell-native/runtime-server"]
+async-driver = ["runtime-core/async-driver"]
 
 [dependencies]
-framework-core = { workspace = true }
+runtime-core = { workspace = true }
 backend-android-core = { workspace = true }
 raw-window-handle = "0.6"
-aas-shell-native = { workspace = true, optional = true }
+runtime-server-shell-native = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"

@@ -29,7 +29,7 @@
 //! }
 //! ```
 
-use framework_core::{pressable, text, ui, Primitive, Signal, StyleApplication};
+use runtime_core::{pressable, text, ui, Primitive, Signal, StyleApplication};
 use std::rc::Rc;
 
 use crate::stylesheets::{TabBar, TabButton};

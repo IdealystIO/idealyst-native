@@ -11,7 +11,7 @@ use super::animation::*;
 use backend_android_core::helpers::*;
 use super::font::{apply_resolved_font_to_textview, FontRegistry};
 use super::NodeAnim;
-use framework_core::StyleRules;
+use runtime_core::StyleRules;
 use jni::objects::{GlobalRef, JObject, JValue};
 use jni::JNIEnv;
 
@@ -97,14 +97,14 @@ pub(crate) fn apply_rules(
         // CSS-variable equivalent, so we always materialize to the
         // current value.
         let w_lp = rules.width.as_ref().map(|tok| match tok.resolve() {
-            framework_core::Length::Px(v) => dp_to_px(env, &view, v),
-            framework_core::Length::Percent(_) => -1,
-            framework_core::Length::Auto => -2,
+            runtime_core::Length::Px(v) => dp_to_px(env, &view, v),
+            runtime_core::Length::Percent(_) => -1,
+            runtime_core::Length::Auto => -2,
         });
         let h_lp = rules.height.as_ref().map(|tok| match tok.resolve() {
-            framework_core::Length::Px(v) => dp_to_px(env, &view, v),
-            framework_core::Length::Percent(_) => -1,
-            framework_core::Length::Auto => -2,
+            runtime_core::Length::Px(v) => dp_to_px(env, &view, v),
+            runtime_core::Length::Percent(_) => -1,
+            runtime_core::Length::Auto => -2,
         });
         // getLayoutParams() may return null if the view hasn't been
         // attached to a parent yet. Build a fresh
@@ -173,7 +173,7 @@ pub(crate) fn apply_rules(
                 }
             }
         }
-        if let Some(framework_core::Length::Px(size)) =
+        if let Some(runtime_core::Length::Px(size)) =
             rules.font_size.as_ref().map(|t| t.resolve())
         {
             // font-size isn't animatable in v1; snap.
@@ -199,12 +199,12 @@ pub(crate) fn apply_rules(
                 .font_weight
                 .as_ref()
                 .copied()
-                .unwrap_or(framework_core::FontWeight::Normal);
+                .unwrap_or(runtime_core::FontWeight::Normal);
             let fstyle = rules
                 .font_style
                 .as_ref()
                 .copied()
-                .unwrap_or(framework_core::FontStyle::Normal);
+                .unwrap_or(runtime_core::FontStyle::Normal);
             apply_resolved_font_to_textview(
                 env,
                 &view,
@@ -223,10 +223,10 @@ pub(crate) fn apply_rules(
         // horizontal axis.
         if let Some(align) = rules.text_align {
             let gravity = match align {
-                framework_core::TextAlign::Left => 3 | 48,           // LEFT | TOP
-                framework_core::TextAlign::Center => 1 | 48,         // CENTER_HORIZONTAL | TOP
-                framework_core::TextAlign::Right => 5 | 48,          // RIGHT | TOP
-                framework_core::TextAlign::Justify => 3 | 48,        // No JUSTIFY mode on TextView v1; fall back to LEFT
+                runtime_core::TextAlign::Left => 3 | 48,           // LEFT | TOP
+                runtime_core::TextAlign::Center => 1 | 48,         // CENTER_HORIZONTAL | TOP
+                runtime_core::TextAlign::Right => 5 | 48,          // RIGHT | TOP
+                runtime_core::TextAlign::Justify => 3 | 48,        // No JUSTIFY mode on TextView v1; fall back to LEFT
             };
             let _ = env.call_method(
                 &view,
@@ -369,7 +369,7 @@ fn apply_transform(
     state: &mut NodeAnim,
     rules: &StyleRules,
 ) {
-    use framework_core::{Length, Transform};
+    use runtime_core::{Length, Transform};
     // Default identity values. The loop overwrites them if matching
     // ops appear in `transform`. Percent translates are stashed on
     // `state` instead of converted here — translate-% is CSS-spec
@@ -463,8 +463,8 @@ pub(crate) fn sync_radial_gradient_radius(
     let half_w_px = width_dp * 0.5 * density;
     let half_h_px = height_dp * 0.5 * density;
     let reference_px = match extent {
-        framework_core::RadialExtent::ClosestSide => half_w_px.min(half_h_px),
-        framework_core::RadialExtent::FarthestCorner => {
+        runtime_core::RadialExtent::ClosestSide => half_w_px.min(half_h_px),
+        runtime_core::RadialExtent::FarthestCorner => {
             (half_w_px * half_w_px + half_h_px * half_h_px).sqrt()
         }
     };
@@ -699,7 +699,7 @@ fn set_corner_radii(env: &mut JNIEnv, drawable: &JObject, r: [f32; 4]) {
     );
 }
 
-/// Mirror a [`framework_core::Gradient`] onto an existing
+/// Mirror a [`runtime_core::Gradient`] onto an existing
 /// `GradientDrawable`. Each call rebuilds the colors + locations
 /// arrays — the GradientDrawable's color path is opaque (no
 /// per-stop setters) so we hand it the full array each time. The
@@ -710,7 +710,7 @@ fn apply_gradient_to_drawable(
     env: &mut JNIEnv,
     view: &JObject,
     drawable: &JObject,
-    g: &framework_core::Gradient,
+    g: &runtime_core::Gradient,
     state: &mut NodeAnim,
 ) {
     // Sort stops by ascending offset. GradientDrawable's setColors
@@ -740,7 +740,7 @@ fn apply_gradient_to_drawable(
     );
 
     match g.kind {
-        framework_core::GradientKind::Linear { angle_deg } => {
+        runtime_core::GradientKind::Linear { angle_deg } => {
             // LINEAR_GRADIENT = 0
             let _ = env.call_method(
                 drawable,
@@ -781,7 +781,7 @@ fn apply_gradient_to_drawable(
                 }
             }
         }
-        framework_core::GradientKind::Radial { center: _, radius, extent } => {
+        runtime_core::GradientKind::Radial { center: _, radius, extent } => {
             // RADIAL_GRADIENT = 1
             let _ = env.call_method(
                 drawable,
@@ -812,8 +812,8 @@ fn apply_gradient_to_drawable(
             let half_w = (w_px as f32 * 0.5).max(0.0);
             let half_h = (h_px as f32 * 0.5).max(0.0);
             let reference_px = match extent {
-                framework_core::RadialExtent::ClosestSide => half_w.min(half_h),
-                framework_core::RadialExtent::FarthestCorner => (half_w * half_w + half_h * half_h).sqrt(),
+                runtime_core::RadialExtent::ClosestSide => half_w.min(half_h),
+                runtime_core::RadialExtent::FarthestCorner => (half_w * half_w + half_h * half_h).sqrt(),
             };
             let radius_px = if reference_px > 0.0 {
                 reference_px * radius
@@ -885,30 +885,30 @@ fn cyclic_distance(a: f32, b: f32) -> f32 {
 
 /// Local helper on `Gradient` to extract the center coordinate from a
 /// `Radial` variant. Returns `(0.5, 0.5)` for linear (the field is
-/// unused). Lives here rather than on `framework_core::Gradient`
-/// because the framework-core type doesn't need to know about Android
+/// unused). Lives here rather than on `runtime_core::Gradient`
+/// because the runtime-core type doesn't need to know about Android
 /// `GradientDrawable.setGradientCenter`'s shape.
 trait GradientKindCenter {
     fn kind_center(&self) -> (f32, f32);
 }
-impl GradientKindCenter for framework_core::Gradient {
+impl GradientKindCenter for runtime_core::Gradient {
     fn kind_center(&self) -> (f32, f32) {
         match self.kind {
-            framework_core::GradientKind::Radial { center, .. } => center,
-            framework_core::GradientKind::Linear { .. } => (0.5, 0.5),
+            runtime_core::GradientKind::Radial { center, .. } => center,
+            runtime_core::GradientKind::Linear { .. } => (0.5, 0.5),
         }
     }
 }
 
-/// Resolve a `framework_core::Color` to sRGB `[r, g, b, a]` floats.
+/// Resolve a `runtime_core::Color` to sRGB `[r, g, b, a]` floats.
 /// Used to seed `state.gradient_stops` so the per-frame
 /// `GradientStopColor` writer can mutate one entry and re-emit
 /// without re-parsing the stylesheet. Falls back to fully
 /// transparent on unknown input — matches the legacy behavior of
 /// `parse_color(...).unwrap_or(0)` (Android's `0` int is fully
 /// transparent).
-pub(crate) fn color_to_srgb(c: &framework_core::Color) -> [f32; 4] {
-    framework_core::color::parse_or(&c.0, framework_core::color::Rgba::TRANSPARENT).to_srgb_f32()
+pub(crate) fn color_to_srgb(c: &runtime_core::Color) -> [f32; 4] {
+    runtime_core::color::parse_or(&c.0, runtime_core::color::Rgba::TRANSPARENT).to_srgb_f32()
 }
 
 /// Cached `Build.VERSION.SDK_INT` — read once from the JVM on the
@@ -995,7 +995,7 @@ fn push_gradient_colors_to_drawable(
 /// sRGB float `[r, g, b, a]` → packed ARGB `i32` (Android's color
 /// representation). Symmetric with `color_to_srgb`.
 pub(crate) fn srgb_to_argb_i32(c: [f32; 4]) -> i32 {
-    framework_core::color::Rgba::from_srgb_f32(c).to_argb_u32() as i32
+    runtime_core::color::Rgba::from_srgb_f32(c).to_argb_u32() as i32
 }
 
 /// Per-frame writer for `AnimProp::GradientStopColor(idx)`. Mutates

@@ -4,7 +4,7 @@
 //!
 //! 1. `pub static PAGE_META: crate::meta::PageMeta = ...` — the metadata
 //!    blob. All `&'static` data, lives in `.rodata`.
-//! 2. `pub fn page() -> ::framework_core::Primitive` — the
+//! 2. `pub fn page() -> ::runtime_core::Primitive` — the
 //!    renderable screen. v1 emits a minimal tree (title + sections
 //!    + paragraphs as plain text); rendering rich layouts via shell
 //!    components lands in a follow-up.
@@ -264,8 +264,8 @@ fn emit_page_fn(page: &DocPage) -> Result<TokenStream2> {
     }
 
     Ok(quote! {
-        pub fn page() -> ::framework_core::Primitive {
-            ::framework_core::ui! {
+        pub fn page() -> ::runtime_core::Primitive {
+            ::runtime_core::ui! {
                 ScrollView {
                     Stack(gap = ::idea_ui::StackGap::Xl) {
                         PageHeader(

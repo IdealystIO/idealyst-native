@@ -6,7 +6,7 @@
 
 use std::rc::Rc;
 
-use framework_core::{
+use runtime_core::{
     component, ui, Color, Gradient, GradientKind, GradientStop, Position, Primitive, RadialExtent,
     StyleRules, StyleSheet, Tokenized,
 };

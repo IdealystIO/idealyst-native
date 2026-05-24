@@ -18,11 +18,11 @@
 //! browser handles like any same-origin resource. The blob URL is
 //! revoked on `unregister_asset` to free the underlying allocation.
 //!
-//! [`AssetId`]: framework_core::AssetId
-//! [`Typeface`]: framework_core::Typeface
+//! [`AssetId`]: runtime_core::AssetId
+//! [`Typeface`]: runtime_core::Typeface
 //! [`@font-face`]: https://developer.mozilla.org/en-US/docs/Web/CSS/@font-face
 
-use framework_core::{
+use runtime_core::{
     AssetId, AssetSource, AssetTag, FontStyle, FontWeight, SystemFallback, TypefaceFace,
     TypefaceId,
 };
@@ -226,7 +226,7 @@ fn format_hint_from_source(source: &AssetSource) -> Option<&'static str> {
     })
 }
 
-/// CSS numeric weight matching `framework_core::style::FontWeight`'s
+/// CSS numeric weight matching `runtime_core::style::FontWeight`'s
 /// ladder.
 fn font_weight_css(w: FontWeight) -> &'static str {
     match w {

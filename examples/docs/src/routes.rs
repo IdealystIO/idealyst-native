@@ -5,7 +5,11 @@
 //! beneath it as nav links. On mobile, the same flat list flows
 //! through the DrawerNavigator's drawer entries.
 
-use framework_core::Route;
+use runtime_core::Route;
+
+// Introduction (architectural / "why it was built this way")
+pub const INTRODUCTION_ROUTE: Route<()> =
+    Route::<()>::new("introduction", "/introduction");
 
 // Getting Started
 pub const OVERVIEW_ROUTE: Route<()> = Route::<()>::new("overview", "/");
@@ -66,6 +70,12 @@ pub struct IndexSection {
 /// entries appear underneath. Order matters — sidebar renders in
 /// declaration order.
 pub const SECTIONS: &[IndexSection] = &[
+    IndexSection {
+        label: "Introduction",
+        items: &[
+            IndexEntry { name: "introduction", label: "Introduction" },
+        ],
+    },
     IndexSection {
         label: "Getting Started",
         items: &[

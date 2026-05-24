@@ -14,7 +14,7 @@ severity: high
 
 ## Background
 
-Fresh AAS clients receive a `SceneModel` snapshot rather than the full
+Fresh runtime-server clients receive a `SceneModel` snapshot rather than the full
 command log (see auto-memory `project_aas_state_snapshot`). That means
 **every new wire variant must be reflected in SceneModel** for late-join
 clients to see correct state. Wire is also the contract between
@@ -35,9 +35,9 @@ versioned or the dev loop silently desyncs.
 - [ ] **Server↔client schema parity** — search `dev-server` for senders
       and `dev-client` for matching receivers; every sent variant should
       have a handler.
-- [ ] **`graphics` placeholder** — confirm `create_graphics` in AAS mode
+- [ ] **`graphics` placeholder** — confirm `create_graphics` in runtime-server mode
       stays a placeholder (see auto-memory `project_aas_graphics_unsupported`).
-      Flag any code that would attempt real GPU work in AAS.
+      Flag any code that would attempt real GPU work in runtime-server.
 - [ ] **Backwards compat** — when a wire field is removed or renamed, flag
       it for a version bump or migration plan.
 

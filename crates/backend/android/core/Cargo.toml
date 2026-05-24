@@ -15,12 +15,12 @@ crate-type = ["rlib"]
 
 [features]
 # Compile in the render-thread `RenderLoopDriver`. Forwards to
-# `framework-core/async-driver` so `framework_core::driver::*` is
+# `runtime-core/async-driver` so `runtime_core::driver::*` is
 # in scope. The leaf crates' `async-driver` feature turns this on.
-async-driver = ["framework-core/async-driver"]
+async-driver = ["runtime-core/async-driver"]
 
 [dependencies]
-framework-core = { workspace = true }
+runtime-core = { workspace = true }
 raw-window-handle = "0.6"
 
 [target.'cfg(target_os = "android")'.dependencies]

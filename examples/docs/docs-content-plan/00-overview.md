@@ -510,7 +510,7 @@ all hook in at one of these layers without reaching past it.
             ┌─────────────────┴─────────────────┐
             ▼                                   ▼
   ┌────────────────────┐               ┌────────────────────┐
-  │  framework-macros  │               │      idea-ui       │
+  │  runtime-macros  │               │      idea-ui       │
   │  ui!, jsx!,        │               │  component library │
   │  #[component],     │               │  (optional)        │
   │  stylesheet!,      │               └─────────┬──────────┘
@@ -519,7 +519,7 @@ all hook in at one of these layers without reaching past it.
             └─────────────────┬───────────────────┘
                               ▼
   ┌─────────────────────────────────────────────────────────────┐
-  │                      framework-core                          │
+  │                      runtime-core                          │
   │  primitives  ·  signals + effects + scopes                   │
   │  render walker  ·  style resolution + theming                │
   │  identity  ·  scheduling  ·  Backend trait                   │
@@ -529,7 +529,7 @@ all hook in at one of these layers without reaching past it.
           ┌───────────────────┼───────────────────┐
           ▼                   ▼                   ▼
   ┌──────────────┐    ┌──────────────┐    ┌──────────────────┐
-  │framework-hot │    │framework-wire│    │ framework-native-│
+  │dev-hot │    │framework-wire│    │ framework-native-│
   │ hot patches  │    │ dev protocol │    │     layout       │
   │              │    │              │    │  (Taffy / flex)  │
   └──────────────┘    └──────┬───────┘    └──────────────────┘
@@ -549,25 +549,25 @@ all hook in at one of these layers without reaching past it.
 
 ### The layers in one line each
 
-- **framework-macros** — Compile-time DSLs (`ui!`, `jsx!`,
+- **runtime-macros** — Compile-time DSLs (`ui!`, `jsx!`,
   `#[component]`, `stylesheet!`, `methods!`). Lowers source into plain
-  framework-core calls; nothing here exists at runtime.
+  runtime-core calls; nothing here exists at runtime.
 
-- **framework-core** — The runtime everything else builds on.
+- **runtime-core** — The runtime everything else builds on.
   Primitives, signals + effects, render walker, style resolution,
   identity, the `Backend` trait. Your app code talks mostly to this
   crate.
 
-- **idea-ui** — Optional component library on top of framework-core.
+- **idea-ui** — Optional component library on top of runtime-core.
   Heading, Card, Stack, Btn, themed colors, breakpoints. Use it,
   replace bits of it, or skip it.
 
-- **framework-hot** — Diff-and-patch for hot reload. Compares two
+- **dev-hot** — Diff-and-patch for hot reload. Compares two
   `Primitive` trees by their identity hashes and produces the minimal
   sequence of backend operations to morph one into the other.
 
 - **framework-wire** — The wire protocol. Pure data: a `Command` enum
-  and three id namespaces (nodes, handlers, styles). No framework-core
+  and three id namespaces (nodes, handlers, styles). No runtime-core
   dependency. Used by hot reload, app-as-server, and any future
   server-driven mode.
 
@@ -576,18 +576,18 @@ all hook in at one of these layers without reaching past it.
   backend, so `idealyst dev` updates a running app without
   recompiling.
 
-- **framework-native-layout** — Wraps Taffy (flexbox + grid) for
+- **framework-runtime-layout** — Wraps Taffy (flexbox + grid) for
   backends without a native layout engine. Web uses the browser's
   layout; iOS, Android, and Roku use this.
 
-- **Robot** — Feature-gated introspection inside framework-core. With
+- **Robot** — Feature-gated introspection inside runtime-core. With
   `--features robot` enabled, external processes can list components
   on screen, find elements by props or path, read frames, click, and
   type. Powers automated testing without per-platform harnesses.
 
 - **Backends** — One crate per platform under `crates/backend/`. Each
   implements `Backend` by translating its method calls into native
-  operations. The AAS backend is the odd one out — it serializes the
+  operations. The runtime-server backend is the odd one out — it serializes the
   tree onto the wire instead of rendering it.
 
 - **CLI** — Orchestration. Scaffolds projects, runs the dev server,
@@ -605,14 +605,14 @@ Each crate boundary is a place to plug something new in:
 - **framework-wire.** Write a new transport, a new viewer, or a
   server-driven UI host. The protocol is pure data; nothing about it
   assumes "the dev server" specifically.
-- **framework-hot.** Substitute a different diff strategy, or
+- **dev-hot.** Substitute a different diff strategy, or
   intercept patches to log, replay, or transform them.
 - **Robot.** Drive a running app from another process — IDE plugins,
   accessibility tooling, scripted demos, test runners. The
   `robot-mcp-proxy` crate is one such consumer; you can write your
   own.
-- **framework-macros.** Write your own front-end syntax. Anything
-  that emits the right framework-core calls slots in alongside `ui!`
+- **runtime-macros.** Write your own front-end syntax. Anything
+  that emits the right runtime-core calls slots in alongside `ui!`
   and `jsx!`.
 
 None of these are required to ship an app. They exist because the

@@ -22,7 +22,7 @@
 //!   `:hover`, shipped to Roku as a per-state wire command.
 
 use backend_roku::method;
-use framework_core::{
+use runtime_core::{
     signal, stylesheet, ui, AlignItems, Color, FlexDirection, FontWeight,
     JustifyContent, Length, Primitive, Signal, Tokenized,
 };

@@ -15,13 +15,13 @@ crate-type = ["cdylib", "rlib"]
 # Connect to a running `idealyst dev` server on startup instead of
 # rendering the local `app()` tree. Pulls in the `dev-client` crate
 # only when the feature is on, so a release build stays lean.
-dev-hot-reload = ["dep:dev-client", "backend-web/aas-shell"]
+dev-hot-reload = ["dep:dev-client", "backend-web/runtime-server"]
 
 [dependencies]
 # `async-driver` exposes `spawn_async` + `render_loop`. The Simulator
 # component delegates wgpu init + per-frame paint through `host-web`,
 # which talks to those drivers under the hood.
-framework-core = { workspace = true, features = ["async-driver"] }
+runtime-core = { workspace = true, features = ["async-driver"] }
 idea-ui = { workspace = true }
 docs-macro = { workspace = true }
 libc = "0.2"
@@ -48,7 +48,7 @@ ios-sim = { workspace = true }
 backend-web = { workspace = true, features = ["async-driver"] }
 wasm-bindgen = "0.2"
 # `Reflect` lives in `js-sys`; the dev-client shim reads
-# `window.IDEALYST_AAS_URL` through it.
+# `window.IDEALYST_RUNTIME_SERVER_URL` through it.
 js-sys = "0.3"
 web-sys = { version = "0.3", features = ["console"] }
 console_error_panic_hook = "0.1"

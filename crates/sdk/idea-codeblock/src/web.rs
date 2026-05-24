@@ -1,7 +1,7 @@
 //! Web leaf for the `idea-codeblock` primitive. Registers a
 //! `CodeBlockProps` handler against `WebBackend` that builds a
 //! `<pre>` of color-styled `<span>` children — the same DOM shape
-//! the old framework-core `Primitive::CodeBlock` produced.
+//! the old runtime-core `Primitive::CodeBlock` produced.
 //!
 //! Lifted verbatim from the old
 //! `backend-web/src/primitives/code_block.rs` so existing fiddle
@@ -59,7 +59,7 @@ fn build_pre(props: &Rc<CodeBlockProps>) -> web_sys::Element {
 fn write_spans(
     document: &web_sys::Document,
     pre: &web_sys::Element,
-    spans: &[(String, framework_core::Color)],
+    spans: &[(String, runtime_core::Color)],
 ) {
     for (text, color) in spans {
         let span = document

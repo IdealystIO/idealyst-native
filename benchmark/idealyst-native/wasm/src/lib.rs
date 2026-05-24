@@ -18,7 +18,7 @@
 //! variants (which mirror those same dimensions).
 
 use backend_web::WebBackend;
-use framework_core::{
+use runtime_core::{
     signal, stylesheet, ui, view, AlignItems, Color, FlexDirection, IntoPrimitive, JustifyContent,
     Length, Overflow, Primitive, Signal, TokenEntry, TokenValue, Tokenized,
 };
@@ -260,7 +260,7 @@ thread_local! {
     /// stay alive for the page's lifetime. Without this, the Owner
     /// would drop at the end of `start()` and the framework would
     /// tear down everything immediately.
-    static OWNER: RefCell<Option<framework_core::Owner>> = const { RefCell::new(None) };
+    static OWNER: RefCell<Option<runtime_core::Owner>> = const { RefCell::new(None) };
 
     /// Diagnostic-only: a second handle to the backend so we can
     /// inspect its per-node HashMaps from the arena_stats accessor.
@@ -461,20 +461,20 @@ fn build_leaf(id: u32, target_id: u32, global: Signal<u32>, branch: Signal<u32>)
     // whole component construction; the cleanup of that macro
     // collapsed both arms here.
     let source = if id == target_id {
-        framework_core::text_fmt!(
+        runtime_core::text_fmt!(
             "leaf {}: g={} b={}",
             id,
-            framework_core::bind!(global),
-            framework_core::bind!(branch),
+            runtime_core::bind!(global),
+            runtime_core::bind!(branch),
         )
     } else {
-        framework_core::text_fmt!(
+        runtime_core::text_fmt!(
             "leaf {}: g={}",
             id,
-            framework_core::bind!(global),
+            runtime_core::bind!(global),
         )
     };
-    framework_core::text(source).into_primitive()
+    runtime_core::text(source).into_primitive()
 }
 
 /// Recursively turn a NodeSpec into a Primitive tree. Branches
@@ -538,10 +538,10 @@ fn app(initial_rows: usize) -> Primitive {
         if let Some(b_rc) = s.borrow().as_ref() {
             let mut b = b_rc.borrow_mut();
             b.register_signal_for_js(global_counter.id(), move || {
-                framework_core::untrack(|| global_counter.get()).to_string()
+                runtime_core::untrack(|| global_counter.get()).to_string()
             });
             b.register_signal_for_js(branch_counter.id(), move || {
-                framework_core::untrack(|| branch_counter.get()).to_string()
+                runtime_core::untrack(|| branch_counter.get()).to_string()
             });
             // Wire `shared_color` to the JS-side signal-change
             // dispatcher so the signal-class suite's bindings (which
@@ -551,7 +551,7 @@ fn app(initial_rows: usize) -> Primitive {
             // fire (no harm), but the binding's JS dispatcher is
             // what makes the SHARED bumps fast at scale.
             b.register_signal_for_js(shared_color.id(), move || {
-                framework_core::untrack(|| shared_color.get()).to_string()
+                runtime_core::untrack(|| shared_color.get()).to_string()
             });
         }
     });
@@ -609,10 +609,10 @@ fn app(initial_rows: usize) -> Primitive {
                                                 // body — same shape as a static
                                                 // `Text { format!(…) }`.
                                                 Text {
-                                                    framework_core::text_fmt!(
+                                                    runtime_core::text_fmt!(
                                                         "row {}: c={}",
                                                         i,
-                                                        framework_core::bind!(sigs[i]),
+                                                        runtime_core::bind!(sigs[i]),
                                                     )
                                                 }
                                             }
@@ -665,7 +665,7 @@ fn app(initial_rows: usize) -> Primitive {
                                                     } else {
                                                         Color("#ff5b6c".into())
                                                     };
-                                                    framework_core::StyleApplication::new(
+                                                    runtime_core::StyleApplication::new(
                                                         RStyleRow::sheet(),
                                                     )
                                                     .override_background(color)
@@ -694,7 +694,7 @@ fn app(initial_rows: usize) -> Primitive {
                                             // Pre-resolve both classes
                                             // (one per signal value)
                                             // at construction.
-                                            View(style = framework_core::signal_class(
+                                            View(style = runtime_core::signal_class(
                                                 shared_color,
                                                 &[0u32, 1u32],
                                                 |v: u32| {
@@ -703,7 +703,7 @@ fn app(initial_rows: usize) -> Primitive {
                                                     } else {
                                                         Color("#ff5b6c".into())
                                                     };
-                                                    framework_core::StyleApplication::new(
+                                                    runtime_core::StyleApplication::new(
                                                         RStyleRow::sheet(),
                                                     )
                                                     .override_background(color)
@@ -758,7 +758,7 @@ pub fn start(initial_rows: usize) {
     // first render panics the moment it hits a Switch primitive (or any
     // other path that calls `schedule_microtask`).
     backend_web::install_scheduler();
-    // Register a TimeSource so `framework_core::debug::now_micros`
+    // Register a TimeSource so `runtime_core::debug::now_micros`
     // (used by `PhaseTimer` and the rest of the debug-stats
     // aggregator) reads `performance.now()` instead of returning 0.
     // Without this, every phase counter records duration 0 and the
@@ -774,7 +774,7 @@ pub fn start(initial_rows: usize) {
     let backend = Rc::new(RefCell::new(WebBackend::new("#app")));
     backend_web::install_text_batcher(&backend);
     BACKEND.with(|slot| *slot.borrow_mut() = Some(backend.clone()));
-    let owner = framework_core::render(backend, app(rows));
+    let owner = runtime_core::render(backend, app(rows));
     OWNER.with(|slot| *slot.borrow_mut() = Some(owner));
 }
 
@@ -878,7 +878,7 @@ pub fn setup_hierarchy(seed: u32, nodes: u32, max_depth: u32) {
     // (once on mode flip, again on version bump), with the first
     // build's 100k+ Effects torn down before the second builds the
     // same tree fresh. Batching collapses to a single rebuild.
-    framework_core::batch(|| {
+    runtime_core::batch(|| {
         MODE.with(|c| {
             if let Some(sig) = c.borrow().as_ref() {
                 sig.set(1);
@@ -944,13 +944,13 @@ pub fn setup_counters(n: u32) {
             for sig in &sigs {
                 let sig_for_notify = *sig;
                 b.register_signal_for_js(sig.id(), move || {
-                    framework_core::untrack(|| sig_for_notify.get()).to_string()
+                    runtime_core::untrack(|| sig_for_notify.get()).to_string()
                 });
             }
         }
     });
     COUNTERS.with(|c| *c.borrow_mut() = sigs);
-    framework_core::batch(|| {
+    runtime_core::batch(|| {
         MODE.with(|c| {
             if let Some(sig) = c.borrow().as_ref() {
                 sig.set(2);
@@ -986,7 +986,7 @@ pub fn bump_range(start: u32, end: u32, v: u32) {
     if s >= e {
         return;
     }
-    framework_core::batch(|| {
+    runtime_core::batch(|| {
         COUNTERS.with(|c| {
             let c = c.borrow();
             for sig in c.iter().skip(s).take(e - s) {
@@ -1015,7 +1015,7 @@ pub fn setup_reactive_styles(n: u32) {
             sig.set(0);
         }
     });
-    framework_core::batch(|| {
+    runtime_core::batch(|| {
         MODE.with(|c| {
             if let Some(sig) = c.borrow().as_ref() {
                 sig.set(3);
@@ -1042,7 +1042,7 @@ pub fn setup_signal_class_rows(n: u32) {
             sig.set(0);
         }
     });
-    framework_core::batch(|| {
+    runtime_core::batch(|| {
         MODE.with(|c| {
             if let Some(sig) = c.borrow().as_ref() {
                 sig.set(4);
@@ -1100,7 +1100,7 @@ pub fn row_count() -> usize {
 /// for human-readable output.
 #[wasm_bindgen]
 pub fn bench_stats_json() -> String {
-    let s = framework_core::arena_stats();
+    let s = runtime_core::arena_stats();
     let backend_json = {
         let b = BACKEND.with(|slot| slot.borrow().as_ref().map(|rc| rc.borrow().debug_counts()));
         match b {
@@ -1126,7 +1126,7 @@ pub fn bench_stats_json() -> String {
     )
 }
 
-/// Drain + serialize `framework_core::debug` phase counters as a
+/// Drain + serialize `runtime_core::debug` phase counters as a
 /// JSON object: `{ "phase_name": { "calls": N, "total_us": N,
 /// "max_us": N, "avg_us": N }, … }`. Calling this also CLEARS the
 /// counters so a subsequent `bench_stats_json` measures a fresh
@@ -1136,7 +1136,7 @@ pub fn bench_stats_json() -> String {
 /// returns `"null"` — phase counters don't exist in that build.
 #[cfg(feature = "debug-stats")]
 fn phase_counters_json() -> String {
-    let counters = framework_core::debug::take_phase_counters();
+    let counters = runtime_core::debug::take_phase_counters();
     if counters.is_empty() {
         return "{}".into();
     }
@@ -1174,5 +1174,5 @@ fn phase_counters_json() -> String {
 #[wasm_bindgen]
 pub fn clear_phase_counters() {
     #[cfg(feature = "debug-stats")]
-    framework_core::debug::clear_phase_counters();
+    runtime_core::debug::clear_phase_counters();
 }

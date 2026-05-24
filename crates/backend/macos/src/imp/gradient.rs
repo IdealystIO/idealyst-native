@@ -12,7 +12,7 @@
 //! and the same constraint applies on macOS — we drive the
 //! resize explicitly during the frame-apply walk.
 
-use framework_core::Gradient;
+use runtime_core::Gradient;
 use objc2::msg_send;
 use objc2::rc::Retained;
 use objc2_app_kit::NSView;
@@ -100,7 +100,7 @@ pub(crate) fn install_gradient(view: &NSView, gradient: &Gradient) -> Option<Gra
     // unit-square coords; `radius * 0.5` for ClosestSide,
     // `radius * 1/√2` for FarthestCorner).
     match gradient.kind {
-        framework_core::GradientKind::Linear { angle_deg } => {
+        runtime_core::GradientKind::Linear { angle_deg } => {
             let theta_rad = (angle_deg as f64).to_radians();
             let dx = theta_rad.sin();
             let dy = -theta_rad.cos();
@@ -117,7 +117,7 @@ pub(crate) fn install_gradient(view: &NSView, gradient: &Gradient) -> Option<Gra
             let _: () = unsafe { msg_send![&gradient_layer, setStartPoint: start] };
             let _: () = unsafe { msg_send![&gradient_layer, setEndPoint: end] };
         }
-        framework_core::GradientKind::Radial {
+        runtime_core::GradientKind::Radial {
             center,
             radius,
             extent,
@@ -129,8 +129,8 @@ pub(crate) fn install_gradient(view: &NSView, gradient: &Gradient) -> Option<Gra
                 y: center.1 as f64,
             };
             let axis_offset = match extent {
-                framework_core::RadialExtent::ClosestSide => radius * 0.5,
-                framework_core::RadialExtent::FarthestCorner => {
+                runtime_core::RadialExtent::ClosestSide => radius * 0.5,
+                runtime_core::RadialExtent::FarthestCorner => {
                     radius * std::f32::consts::FRAC_1_SQRT_2
                 }
             };
@@ -184,8 +184,8 @@ pub(crate) fn set_animated_gradient_stop(
     write_colors_from_srgb(&state.layer, &state.stops_srgb);
 }
 
-fn color_to_srgb(color: &framework_core::Color) -> [f32; 4] {
-    framework_core::color::parse_or(&color.0, framework_core::color::Rgba::BLACK).to_srgb_f32()
+fn color_to_srgb(color: &runtime_core::Color) -> [f32; 4] {
+    runtime_core::color::parse_or(&color.0, runtime_core::color::Rgba::BLACK).to_srgb_f32()
 }
 
 fn write_colors_from_srgb(layer: &NSObject, stops: &[[f32; 4]]) {

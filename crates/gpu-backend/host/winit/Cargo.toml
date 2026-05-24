@@ -1,0 +1,58 @@
+[package]
+name = "host-winit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# winit-driven host shell for the wgpu native runtime.
+#
+# Translates `winit::event::WindowEvent` values into the
+# normalized `PointerEvent` / `ScrollEvent` / `KeyEvent` types
+# defined by `render-api`, drives a wgpu surface against a winit
+# window, and re-exports the public surface the native variant
+# crates (`variant-phone`, `variant-tablet`, `variant-tv`) consume.
+
+[features]
+default = []
+# Optional runtime-server-client variant: instead of mounting the
+# user's local `app()` into the wgpu window, spawn a
+# `RuntimeServerShell<WgpuBackend>` that connects to a dev-host over
+# WebSocket and renders the streamed wire commands. Tick happens
+# inside winit's `RedrawRequested` handler. Off by default so the
+# local-mount build path pulls zero transport code.
+runtime-server = ["dep:runtime-server-shell-native", "runtime-server-shell-native/runtime-server"]
+
+[dependencies]
+render-api = { workspace = true }
+render-wgpu = { workspace = true }
+runtime-core = { workspace = true }
+
+# Only used when `runtime-server` is on. Pulls tungstenite + mdns-sd
+# + the worker-thread `RuntimeServerShell` from the shared native-
+# shell crate (same one iOS / Android / macOS / desktop AAS hosts
+# consume).
+runtime-server-shell-native = { workspace = true, optional = true }
+
+wgpu = "29"
+winit = { version = "0.30", features = ["rwh_06"] }
+raw-window-handle = "0.6"
+log = "0.4"
+pollster = "0.4"
+
+# macOS-only: OS-level aspect-locked drag matching the iOS
+# Simulator. winit 0.30 doesn't expose this. We install an
+# `NSWindowDelegate` whose `windowWillResize:toSize:` constrains
+# every proposed resize to the device's aspect ratio.
+# `contentAspectRatio` alone proved unreliable on modern macOS
+# (it's advisory during interactive drag); the delegate is the
+# authoritative path AppKit uses internally too. All obj-c
+# interop lives in one `mod mac` behind a cfg.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSGeometry"] }
+objc2-app-kit = { version = "0.2", features = [
+    "NSWindow",
+    "NSResponder",
+    "NSView",
+] }
+

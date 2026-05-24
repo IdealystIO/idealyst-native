@@ -7,8 +7,8 @@ backend at first style-apply. There's one declaration site (the
 hashing a stable id, wiring the right native API on each platform —
 is the framework's problem.
 
-Implementation: `framework_core::assets` (declaration macros + types),
-`framework_core::style::ensure_typefaces_registered_with` (registration
+Implementation: `runtime_core::assets` (declaration macros + types),
+`runtime_core::style::ensure_typefaces_registered_with` (registration
 walk), `Backend::register_asset` + `Backend::register_typeface`
 (per-platform receivers).
 
@@ -19,7 +19,7 @@ walk), `Backend::register_asset` + `Backend::register_typeface`
 Every project, every platform, one shape:
 
 ```rust
-use framework_core::{face, typeface, FontStyle, FontWeight, SystemFallback, Typeface};
+use runtime_core::{face, typeface, FontStyle, FontWeight, SystemFallback, Typeface};
 
 pub static INTER: Typeface = typeface! {
     name: "Inter",
@@ -227,7 +227,7 @@ Filter logcat with `adb logcat -v time | grep '\[font\]'`.
 
 `backend-android-tv` and `backend-android-core` don't have their own
 font apply paths — only `backend-android-mobile` and `backend-ios-mobile`
-materialize custom typefaces. AAS / dev-client traffic preserves the
+materialize custom typefaces. runtime-server / dev-client traffic preserves the
 `TypefaceId` and `family_name` on the wire (`WireFontFamily::Typeface
 { id, family_name }`) and rehydrates a stub `Typeface` on the replay
 side; the actual face bytes were already registered against the

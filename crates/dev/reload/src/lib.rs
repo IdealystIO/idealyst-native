@@ -15,7 +15,7 @@
 //! counter alone — the page keeps running the last good wasm until
 //! the user fixes the error.
 //!
-//! AAS mode reuses this path with `user_features =
+//! runtime-server mode reuses this path with `user_features =
 //! vec!["dev-hot-reload"]`; `build-web`'s wrapper grows a matching
 //! `[features]` block that forwards the flag to the user-crate dep,
 //! so the resulting wasm connects to the host's WebSocket instead
@@ -45,7 +45,7 @@ pub struct BuildOptions {
     /// Framework-source resolution result. Passed through to
     /// [`build_web::BuildOptions`] verbatim.
     pub source: FrameworkSource,
-    /// Cargo features to enable on the user crate. AAS mode passes
+    /// Cargo features to enable on the user crate. runtime-server mode passes
     /// `["dev-hot-reload"]` so the user crate compiles its
     /// hot-reload integration. Empty == default features.
     pub features: Vec<String>,
@@ -78,7 +78,7 @@ pub fn start(dir: &Path, gen: Arc<AtomicU64>, source: FrameworkSource) -> Result
 }
 
 /// Same as [`start`], with explicit build options. Used by callers
-/// that need to pin cargo features (e.g. `dev-hot-reload` for AAS).
+/// that need to pin cargo features (e.g. `dev-hot-reload` for runtime-server).
 pub fn start_with(
     dir: &Path,
     gen: Arc<AtomicU64>,

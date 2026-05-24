@@ -15,10 +15,10 @@ license.workspace = true
 crate-type = ["staticlib", "rlib"]
 
 [features]
-debug-stats = ["framework-core/debug-stats"]
+debug-stats = ["runtime-core/debug-stats"]
 
 [dependencies]
-framework-core = { workspace = true }
+runtime-core = { workspace = true }
 
 [target.'cfg(target_os = "ios")'.dependencies]
 block2 = "0.5"

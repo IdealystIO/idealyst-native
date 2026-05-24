@@ -9,7 +9,7 @@
 //! trampolining back through JNI to release the matching scope.
 
 use crate::imp::{with_env, AndroidBackend};
-use framework_core::primitives::navigator::{
+use runtime_core::primitives::navigator::{
     NavCommand, NavigatorCallbacks, NavigatorControl, NavigatorHandle, NavigatorOps,
 };
 use jni::objects::{GlobalRef, JValue};

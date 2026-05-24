@@ -1,5 +1,5 @@
 use block2::ConcreteBlock;
-use framework_core::primitives::navigator::{
+use runtime_core::primitives::navigator::{
     DrawerHandle, DrawerNavigatorCallbacks, DrawerType, NavCommand, NavigatorControl,
     NavigatorHandle, TabNavigatorCallbacks, TabsHandle,
 };
@@ -19,9 +19,9 @@ use super::{pin_to_edges, IosNode};
 
 #[cfg(feature = "debug-stats")]
 fn dump_debug_stats(label: &str) {
-    let events = framework_core::debug::take_events();
-    let summary = framework_core::debug::component_summary(&events);
-    let counters = framework_core::debug::take_phase_counters();
+    let events = runtime_core::debug::take_events();
+    let summary = runtime_core::debug::component_summary(&events);
+    let counters = runtime_core::debug::take_phase_counters();
     super::ios_log(&format!("[profiler] {} — {} events", label, events.len()));
     for (name, s) in &summary {
         super::ios_log(&format!("[profiler]   {} — calls: {}, total: {}µs, max: {}µs",
@@ -106,7 +106,7 @@ pub(crate) fn tab_navigator_attach_initial(
     navigator: &IosNode,
     screen: IosNode,
     scope_id: u64,
-    _options: framework_core::ScreenOptions,
+    _options: runtime_core::ScreenOptions,
 ) {
     let key = navigator.view_key();
     let Some(entry) = tab_drawer_instances.get(&key) else {
@@ -277,7 +277,7 @@ pub(crate) fn create_drawer_navigator(
         let body_anim = body_for_anim.clone();
         let style = drawer_style;
 
-        let trans = framework_core::Transition::new(200, framework_core::Easing::EaseOut);
+        let trans = runtime_core::Transition::new(200, runtime_core::Easing::EaseOut);
         animate(&trans, Rc::new(move || {
             let _: () = unsafe {
                 msg_send![&scrim_anim, setAlpha: if open { 1.0 } else { 0.0 } as CGFloat]
@@ -361,7 +361,7 @@ pub(crate) fn create_drawer_navigator(
             }
             NavCommand::OpenDrawer => {
                 #[cfg(feature = "debug-stats")]
-                framework_core::debug::clear_events();
+                runtime_core::debug::clear_events();
                 is_open_for_dispatch.set(true);
                 is_open_signal.set(true);
                 open_fn(true);
@@ -371,7 +371,7 @@ pub(crate) fn create_drawer_navigator(
             }
             NavCommand::CloseDrawer => {
                 #[cfg(feature = "debug-stats")]
-                framework_core::debug::clear_events();
+                runtime_core::debug::clear_events();
                 is_open_for_dispatch.set(false);
                 is_open_signal.set(false);
                 close_fn(false);
@@ -381,7 +381,7 @@ pub(crate) fn create_drawer_navigator(
             }
             NavCommand::ToggleDrawer => {
                 #[cfg(feature = "debug-stats")]
-                framework_core::debug::clear_events();
+                runtime_core::debug::clear_events();
                 let new_state = !is_open_for_dispatch.get();
                 is_open_for_dispatch.set(new_state);
                 is_open_signal.set(new_state);
@@ -404,7 +404,7 @@ pub(crate) fn drawer_navigator_attach_initial(
     navigator: &IosNode,
     screen: IosNode,
     scope_id: u64,
-    options: framework_core::ScreenOptions,
+    options: runtime_core::ScreenOptions,
 ) {
     let key = navigator.view_key();
     let Some(entry) = tab_drawer_instances.get(&key) else {

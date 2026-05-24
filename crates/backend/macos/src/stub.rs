@@ -6,7 +6,7 @@
 //! someone calls the stub at runtime on a non-macOS host, which the
 //! cargo target gates already prevent.
 
-use framework_core::{Backend, StyleRules};
+use runtime_core::{Backend, StyleRules};
 use std::rc::Rc;
 
 pub struct MacosBackend;
@@ -14,27 +14,27 @@ pub struct MacosBackend;
 impl Backend for MacosBackend {
     type Node = ();
 
-    fn platform(&self) -> framework_core::Platform {
-        framework_core::Platform::MacOs
+    fn platform(&self) -> runtime_core::Platform {
+        runtime_core::Platform::MacOs
     }
 
-    fn create_view(&mut self, _a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
+    fn create_view(&mut self, _a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
         unreachable!("backend-macos stub: AppKit calls only on macOS target")
     }
     fn create_text(
         &mut self,
         _content: &str,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        _a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         unreachable!()
     }
     fn create_button(
         &mut self,
         _label: &str,
-        _on_click: &framework_core::Action,
-        _leading_icon: Option<&framework_core::IconData>,
-        _trailing_icon: Option<&framework_core::IconData>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        _on_click: &runtime_core::Action,
+        _leading_icon: Option<&runtime_core::IconData>,
+        _trailing_icon: Option<&runtime_core::IconData>,
+        _a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         unreachable!()
     }

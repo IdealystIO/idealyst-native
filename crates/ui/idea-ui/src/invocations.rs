@@ -1,7 +1,7 @@
 //! `#[macro_export]` invocation macros for every component.
 //!
 //! These are the macros `ui! { Foo(...) }` lowers to —
-//! `framework-macros`' `ui!` emitter takes a component name like
+//! `runtime-macros`' `ui!` emitter takes a component name like
 //! `Stack`, lowercases it, and emits `stack!(...)`. Each macro here
 //! constructs the matching `*Props` struct and calls the plain
 //! function in `components/*`.
@@ -49,7 +49,7 @@ macro_rules! stack {
 // The ui! tag is `Btn(...)` (lowered to `btn!(...)`) rather than
 // `Button(...)` because the framework's `ui!` macro already
 // recognizes `Button` as a shorthand for the framework's `<button>`
-// primitive (`framework_core::button`). Keeping both tags lets
+// primitive (`runtime_core::button`). Keeping both tags lets
 // app code mix raw HTML-button-style primitives with idea-ui's
 // styled `Btn` without one taking the other's name.
 // =============================================================================

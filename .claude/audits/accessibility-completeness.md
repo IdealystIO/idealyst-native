@@ -123,7 +123,7 @@ For each of `crates/backend/web`, `crates/backend/ios/mobile`,
       `Command::AnnounceForAccessibility` exist** and are emitted by
       the recorder and handled by the replayer.
 - [ ] **`SceneModel` carries per-node a11y state** so a late-joining
-      AAS client receives the current props via snapshot, not the
+      runtime-server client receives the current props via snapshot, not the
       `Default::default()` it would get from re-applying creates in
       isolation. See memory `project_aas_state_snapshot`.
 - [ ] **`AccessibilityAction` handlers cross the wire as `HandlerId`

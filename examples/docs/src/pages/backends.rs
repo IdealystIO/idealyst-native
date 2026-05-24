@@ -1,11 +1,11 @@
 //! Backends page — built via the `docs!` macro.
 //!
 //! Map of the backends Idealyst ships: web, iOS, Android, Roku, and
-//! the AAS dev-mode shell client.
+//! the runtime-server dev-mode shell client.
 
 use docs_macro::docs;
 #[allow(unused_imports)]
-use crate::shell::{codeblock, pageheader, CodeBlockProps, PageHeaderProps};
+use crate::shell::{code_block, page_header, CodeBlockProps, PageHeaderProps};
 #[allow(unused_imports)]
 use idea_ui::{body, card, heading, stack};
 
@@ -15,7 +15,7 @@ docs! {
     category = Reference,
     description = "The piece of code that puts an Idealyst app on a specific platform's screen.",
     related = ["writing-a-backend", "dev-tools", "overview", "primitives"],
-    concepts = [Backend, RuntimeBackend, GeneratorBackend, Aas],
+    concepts = [Backend, RuntimeBackend, GeneratorBackend, RuntimeServer],
 
     section(heading = "Intro") {
         p("A backend is the piece of code that knows how to put an Idealyst \
@@ -41,7 +41,7 @@ docs! {
              code("-mobile"), ", ", code("-tv"),
              ") — Android phones / tablets / TV (Views); production-ready"],
             [code("backend-roku"), " — Roku devices (SceneGraph + BrightScript); experimental"],
-            [code("aas-shell-native"), " — Dev-mode app-as-server client; dev only"],
+            [code("runtime-server-shell-native"), " — Dev-mode app-as-server client; dev only"],
         ),
         p("Each one lives in ", code("crates/backend/<name>"), " and gets \
            pulled in by the CLI when you target the matching platform."),
@@ -159,15 +159,15 @@ docs! {
            you'd build a production TV app on."),
     },
 
-    section(heading = "AAS — the dev-mode backend") {
-        p(code("aas-shell-native"), " is the app-as-server client. \
+    section(heading = "runtime-server — the dev-mode backend") {
+        p(code("runtime-server-shell-native"), " is the app-as-server client. \
            It's unusual because it doesn't render anything itself — it \
            forwards backend operations to whatever real backend is on the \
            other end."),
         p("The shape:"),
         code(text, r##"
             ┌────────────────────┐  WebSocket  ┌────────────────────┐
-            │  AAS dev-host      │ ──────────► │  AAS shell client  │
+            │  runtime-server dev-host      │ ──────────► │  runtime-server shell client  │
             │  (your app, on     │             │  (browser / phone, │
             │   the dev machine) │ ◄────────── │   thin client)     │
             └────────────────────┘             └────────────────────┘
@@ -180,7 +180,7 @@ docs! {
            thin clients. Edit code on the dev machine, every connected client \
            updates. Navigate on one client, the navigation state syncs to \
            the others."),
-        p("AAS is its own concept worth a page — see ",
+        p("runtime-server is its own concept worth a page — see ",
           link("Dev tools", to = "dev-tools"), " for the full story, \
            including how the wire protocol works and what \"app-as-server\" \
            actually buys you in day-to-day development."),
@@ -199,7 +199,7 @@ docs! {
         code(bash, r##"
             idealyst dev --web       # only the web backend
             idealyst dev --ios       # only the iOS backend
-            idealyst dev --aas       # AAS dev-host with whatever clients connect
+            idealyst dev --aas       # runtime-server dev-host with whatever clients connect
         "##),
     },
 
@@ -207,7 +207,7 @@ docs! {
         p("The shipped backends cover the major platforms, but there's no \
            reason to stop there. The ", code("Backend"), " trait is small \
            (~30 methods), and a working backend lives in one Rust crate that \
-           depends only on ", code("framework-core"), " and whatever native \
+           depends only on ", code("runtime-core"), " and whatever native \
            bindings it needs."),
         p("Things people could plug in:"),
         list(
@@ -234,11 +234,11 @@ docs! {
             [link("Writing your own backend", to = "writing-a-backend"),
              " — the full trait, lifecycle, and a worked example."],
             [link("Dev tools", to = "dev-tools"),
-             " — AAS in depth, the wire protocol, hot reload."],
+             " — runtime-server in depth, the wire protocol, hot reload."],
             [link("Architecture in more depth", to = "overview"),
              " (on the Overview) — where backends sit relative to ",
-             code("framework-wire"), ", ", code("framework-hot"), ", and ",
-             code("framework-native-layout"), "."],
+             code("framework-wire"), ", ", code("dev-hot"), ", and ",
+             code("framework-runtime-layout"), "."],
         ),
     },
 }

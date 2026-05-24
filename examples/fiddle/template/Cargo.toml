@@ -37,7 +37,7 @@ web = []
 [dependencies]
 # Path-relative to this Cargo.toml: `examples/fiddle/template/Cargo.toml`
 # → workspace crates live four levels up.
-framework-core = { path = "../../../crates/framework/core", features = ["async-driver"] }
+runtime-core = { path = "../../../crates/framework/core", features = ["async-driver"] }
 idea-ui = { path = "../../../crates/ui/idea-ui" }
 
 # Browser-only deps. The compiled snippet only runs on wasm32; the

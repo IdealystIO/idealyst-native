@@ -10,13 +10,13 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
 
-use framework_core::driver::{
+use runtime_core::driver::{
     install_render_loop_driver, RenderLoopDriver, RenderLoopHandle,
 };
 use objc2::rc::Retained;
 use objc2_foundation::NSObject;
 
-/// Register this backend's driver with `framework-core`. Idempotent —
+/// Register this backend's driver with `runtime-core`. Idempotent —
 /// first install wins.
 pub fn install_render_loop() {
     install_render_loop_driver(Box::new(IosRenderLoopDriver));

@@ -14,7 +14,7 @@ import android.widget.EditText
  *
  * Only `KeyEvent.ACTION_DOWN` fires the callback — autorepeat and
  * key-up are filtered. This matches the cross-platform contract
- * documented on `KeyOutcome` / `KeyEvent` in `framework_core`: one
+ * documented on `KeyOutcome` / `KeyEvent` in `runtime_core`: one
  * call per logical keydown, before the platform default runs.
  *
  * Return value semantics:

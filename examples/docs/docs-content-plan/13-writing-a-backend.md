@@ -18,11 +18,11 @@ viable implementation.
 
 ## The Backend trait
 
-A backend implements one trait — `framework_core::Backend`. The
+A backend implements one trait — `runtime_core::Backend`. The
 declaration is short:
 
 ```rust
-use framework_core::{Backend, /* primitives, styles, etc. */};
+use runtime_core::{Backend, /* primitives, styles, etc. */};
 
 pub struct MyBackend {
     // your platform-specific state
@@ -334,7 +334,7 @@ The smallest plausible backend looks like this:
 
 ```rust
 use std::rc::Rc;
-use framework_core::{Backend, Action, StyleRules, IconData};
+use runtime_core::{Backend, Action, StyleRules, IconData};
 
 #[derive(Clone)]
 struct Node {
@@ -397,7 +397,7 @@ day, and grow it as you need more primitives.
 Once your backend is built, hand it to the framework:
 
 ```rust
-use framework_core::{render, Owner};
+use runtime_core::{render, Owner};
 
 fn main() {
     let mut backend = MyBackend::new(/* platform args */);
@@ -430,7 +430,7 @@ both driven by whatever event source you wired in.
 ## Where to read more
 
 - [The shipped backends](#) — high-level overview of web, iOS,
-  Android, Roku, and the AAS dev backend. Useful for seeing how
+  Android, Roku, and the runtime-server dev backend. Useful for seeing how
   each model maps to a real platform.
 - [Reactivity](#) — what's happening on the framework side when
   your `update_text` or `apply_style` gets called.
@@ -443,5 +443,5 @@ both driven by whatever event source you wired in.
 - [Robot](#) — what test-id propagation looks like (your
   backend's primitive creation can opt in by capturing the
   `test_id` field).
-- [Dev tools](#) — what AAS expects from the wire side if you're
+- [Dev tools](#) — what runtime-server expects from the wire side if you're
   writing a generator-style backend.

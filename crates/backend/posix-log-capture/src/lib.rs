@@ -2,7 +2,7 @@
 //!
 //! Splices stdout/stderr through pipes via `libc::dup` + `libc::pipe`
 //! + `libc::dup2`, reads each line on a worker thread, pushes it
-//! into `framework_core::robot::logs` via `push("stdout"/"stderr",
+//! into `runtime_core::robot::logs` via `push("stdout"/"stderr",
 //! …)`, and mirrors the bytes back to the original fd so the
 //! platform's console (Xcode, adb logcat, terminal) still shows
 //! them.
@@ -12,7 +12,7 @@
 //! ```ignore
 //! // Once at host startup, before any logging happens:
 //! posix_log_capture::install();
-//! framework_core::robot::logs::start_stdio_capture();
+//! runtime_core::robot::logs::start_stdio_capture();
 //! ```
 //!
 //! On non-unix targets [`install`] is a compiled-in no-op so cross-
@@ -23,7 +23,7 @@
 #[cfg(unix)]
 mod imp;
 
-/// Register the POSIX `LogCapture` impl with `framework-core`. First
+/// Register the POSIX `LogCapture` impl with `runtime-core`. First
 /// install wins; subsequent calls are silently ignored.
 ///
 /// On non-unix targets this is a no-op — `LogCapture` has no

@@ -43,7 +43,7 @@
 
 use std::rc::Rc;
 
-use framework_core::{ui, ChildList, Primitive, Signal, VariantEnum};
+use runtime_core::{ui, ChildList, Primitive, Signal, VariantEnum};
 
 // `ui!`-lowered names need the local macros + variant types in
 // scope.
@@ -198,7 +198,7 @@ pub fn variant_enum_control<E>(value: Signal<E>) -> Primitive
 where
     E: VariantEnum + PartialEq + 'static,
 {
-    use framework_core::Effect;
+    use runtime_core::Effect;
 
     let variants = E::all_variants();
     let options: Vec<IdeaSelectOption> = variants

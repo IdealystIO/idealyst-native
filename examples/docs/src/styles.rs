@@ -6,8 +6,8 @@
 //! Every sheet closes over `IdeaThemeRef` so chrome follows the
 //! installed theme.
 
-use framework_core::stylesheet;
-use framework_core::{AlignItems, Color, FlexDirection, Length, Tokenized};
+use runtime_core::stylesheet;
+use runtime_core::{AlignItems, Color, FlexDirection, Length, Tokenized};
 use idea_ui::{IdeaTheme, IdeaThemeRef};
 
 stylesheet! {
@@ -21,7 +21,7 @@ stylesheet! {
             // sidebar's own ScrollView and the content-area ScrollView
             // each handle their own overflow.
             height: Length::pct(100.0),
-            overflow: framework_core::Overflow::Hidden,
+            overflow: runtime_core::Overflow::Hidden,
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::Stretch,
         }
@@ -90,8 +90,8 @@ stylesheet! {
         base(_t) {
             color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
             font_size: Tokenized::token("typography-size-xs", Length::Px(11.0)),
-            font_weight: framework_core::FontWeight::Bold,
-            text_transform: framework_core::TextTransform::Uppercase,
+            font_weight: runtime_core::FontWeight::Bold,
+            text_transform: runtime_core::TextTransform::Uppercase,
             padding_horizontal: Tokenized::token("spacing-md", Length::Px(12.0)),
             padding_vertical: Tokenized::token("spacing-xs", Length::Px(4.0)),
         }
@@ -129,7 +129,7 @@ stylesheet! {
             background: Color("transparent".into()),
             color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
             font_size: Tokenized::token("typography-size-md", Length::Px(14.0)),
-            text_align: framework_core::TextAlign::Left,
+            text_align: runtime_core::TextAlign::Left,
         }
         variant active {
             #[default]
@@ -164,7 +164,7 @@ stylesheet! {
             border_color: Tokenized::token("color-border", Color("#e4e6ef".into())),
             border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
             padding: Tokenized::token("spacing-md", Length::Px(12.0)),
-            overflow: framework_core::Overflow::Hidden,
+            overflow: runtime_core::Overflow::Hidden,
         }
         transitions {
             background: 250ms EaseInOut,

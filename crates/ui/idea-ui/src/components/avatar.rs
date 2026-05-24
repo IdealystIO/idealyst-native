@@ -15,7 +15,7 @@
 //! }
 //! ```
 
-use framework_core::{ui, Primitive, StyleApplication, VariantEnum};
+use runtime_core::{ui, Primitive, StyleApplication, VariantEnum};
 
 use crate::stylesheets::{Avatar, AvatarText};
 use crate::theme::IdeaThemeRef;

@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use framework_core::{signal, ui, Primitive};
+use runtime_core::{signal, ui, Primitive};
 use idea_ui::doc_controls::DocControls;
 use idea_ui::{
     avatar, body, card, heading, stack, tabs, AvatarProps, BodyTone, HeadingKind, StackGap, Tab,
@@ -50,7 +50,7 @@ fn avatar_demo() -> Primitive {
 fn tabs_demo() -> Primitive {
     // `Tabs` is intentionally minimal: it owns the strip and the
     // active-index signal, nothing else. Panel switching is wired
-    // by the caller via `framework_core::switch`, keyed off the
+    // by the caller via `runtime_core::switch`, keyed off the
     // same signal. This keeps `Tabs` composable with any panel
     // content the framework knows how to render — including future
     // navigator-routed integrations — without baking a panel slot
@@ -58,7 +58,7 @@ fn tabs_demo() -> Primitive {
     let active = signal!(0usize);
     let on_change: Rc<dyn Fn(usize)> = Rc::new(move |idx| active.set(idx));
 
-    let panel = framework_core::switch(
+    let panel = runtime_core::switch(
         move || active.get(),
         |idx: &usize| match idx {
             0 => ui! {
@@ -98,7 +98,7 @@ fn tabs_demo() -> Primitive {
             Heading(content = "Tabs".to_string(), kind = HeadingKind::H2)
             Body(content = "Controlled by a `Signal<usize>` indexing the active tab. \
                               Tap a tab to swap the panel below — panel content is wired \
-                              by the caller via `framework_core::switch`, keyed off the same \
+                              by the caller via `runtime_core::switch`, keyed off the same \
                               signal that drives the strip's highlight.".to_string(),
                  tone = BodyTone::Muted)
             Tabs(

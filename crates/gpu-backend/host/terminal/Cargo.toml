@@ -1,0 +1,43 @@
+[package]
+name = "host-terminal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Terminal host shell for `backend-terminal`. Owns the crossterm boot
+# (raw mode, alternate screen, mouse capture), the render loop, the
+# input dispatcher, and the ANSI paint pass.
+#
+# Public entry point is `host_terminal::run(app, opts)` mirroring the
+# AppKit host's surface.
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+default = []
+# Optional runtime-server-client variant: instead of mounting the
+# user's `app()` locally, [`run_runtime_server`] spawns a
+# `RuntimeServerShell<TerminalBackend>` that connects to a dev-
+# host over WebSocket and renders the streamed wire commands into
+# the same crossterm grid. Tick happens inside the existing
+# frame loop. Off by default so the local path pulls zero
+# transport code.
+runtime-server = ["dep:runtime-server-shell-native"]
+
+[dependencies]
+runtime-core = { workspace = true }
+backend-terminal = { workspace = true }
+crossterm = "0.27"
+
+# Used by `stderr_redirect` to keep the framework's `eprintln!`
+# chatter (hot-reload diffs, runtime-server connect/disconnect,
+# mDNS browse output) from interleaving with crossterm's ANSI
+# paint stream and shredding the cell grid.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# Only used when `runtime-server` is on. Same shared transport
+# all native runtime-server clients (iOS, Android, macOS, sim)
+# consume.
+runtime-server-shell-native = { workspace = true, optional = true, features = ["runtime-server"] }

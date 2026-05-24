@@ -5,7 +5,7 @@
 
 use docs_macro::docs;
 #[allow(unused_imports)]
-use crate::shell::{codeblock, pageheader, CodeBlockProps, PageHeaderProps};
+use crate::shell::{code_block, page_header, CodeBlockProps, PageHeaderProps};
 #[allow(unused_imports)]
 use idea_ui::{body, card, heading, stack};
 
@@ -66,7 +66,7 @@ docs! {
             }
         "##),
         p("Children are a flat list of primitives, laid out by the platform's \
-           flex engine (via framework-native-layout on native backends, via the \
+           flex engine (via framework-runtime-layout on native backends, via the \
            browser on web). A View has no behavior of its own — no press target, \
            no scrolling, no clipping unless its style says so."),
         p("Optional ", code("safe_area_sides"), " opts the view into per-side \
@@ -491,10 +491,10 @@ docs! {
           code("on_resize"),
           " and (implicitly) per-frame callbacks let you update."),
         p("The framework does not interpret any of it. The GPU context is \
-           type-erased, so framework-core stays wgpu-free even though backends \
+           type-erased, so runtime-core stays wgpu-free even though backends \
            that support graphics carry the dependency."),
-        p("Not supported in AAS dev mode — the wire protocol can't ship GPU \
-           work, so an AAS host renders a placeholder. Local-render mode is \
+        p("Not supported in runtime-server dev mode — the wire protocol can't ship GPU \
+           work, so an runtime-server host renders a placeholder. Local-render mode is \
            required."),
         p("See Graphics for the lifecycle, surface configuration, and the \
            constraints."),

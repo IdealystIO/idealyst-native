@@ -25,7 +25,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use dev_server::scheduler;
-use framework_core::scheduling::{raf_loop, RafLoop};
+use runtime_core::scheduling::{raf_loop, RafLoop};
 
 /// Helper: install the scheduler once per test binary. The framework's
 /// `install_scheduler` is `OnceLock`-guarded so repeated calls within

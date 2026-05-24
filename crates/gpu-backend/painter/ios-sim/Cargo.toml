@@ -1,0 +1,23 @@
+[package]
+name = "ios-sim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# iOS simulator skin for the wgpu native runtime.
+#
+# Implements `render_wgpu::Painter` with the UIKit palette + paint
+# policy: UISwitch / UISlider / UITextField chrome,
+# UIActivityIndicatorView spinner, the QWERTY keyboard layout
+# with white letter chips and gray modifier chips. Stateless;
+# the renderer holds an `Rc<IosSim>` and dispatches every paint
+# call through the trait.
+
+[dependencies]
+render-wgpu = { workspace = true }
+runtime-core = { workspace = true }
+glyphon = "0.11"
+# `Instant`/`Duration` shim that works on wasm32 — same dep
+# choice as `render-wgpu`. Only used here so the Painter trait
+# signature's `now: web_time::Instant` parameter type-checks.
+web-time = "1"

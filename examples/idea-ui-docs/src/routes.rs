@@ -2,7 +2,7 @@
 //! sidebar renders these in order, and the Navigator wires each
 //! route to its page component.
 
-use framework_core::Route;
+use runtime_core::Route;
 
 pub const OVERVIEW_ROUTE: Route<()> = Route::<()>::new("overview", "/");
 pub const THEMES_ROUTE: Route<()> = Route::<()>::new("themes", "/themes");

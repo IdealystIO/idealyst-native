@@ -1,4 +1,4 @@
-use framework_core::primitives::key::{KeyDownHandler, KeyEvent, KeyOutcome};
+use runtime_core::primitives::key::{KeyDownHandler, KeyEvent, KeyOutcome};
 use objc2::encode::{Encode, Encoding};
 use objc2::rc::Retained;
 use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
@@ -298,7 +298,7 @@ declare_class!(
         fn safe_area_insets_did_change(&self) {
             let _: () = unsafe { msg_send![super(self), safeAreaInsetsDidChange] };
             let insets: UIEdgeInsets = unsafe { msg_send![self, safeAreaInsets] };
-            framework_core::set_safe_area_insets(framework_core::EdgeInsets {
+            runtime_core::set_safe_area_insets(runtime_core::EdgeInsets {
                 top: insets.top as f32,
                 right: insets.right as f32,
                 bottom: insets.bottom as f32,
@@ -538,7 +538,7 @@ impl TextKeyDelegate {
     /// translate [`KeyOutcome`] into the BOOL UIKit expects.
     ///
     /// Replacement-text → `key` heuristics — chosen to match the
-    /// vocabulary documented on `framework_core::primitives::key`:
+    /// vocabulary documented on `runtime_core::primitives::key`:
     ///
     /// - `""` with `range.length > 0` → `"Backspace"`. (UIKit reports
     ///   backspace as a deletion of the character behind the caret;

@@ -27,7 +27,7 @@
 //!   inline `set_attribute("style", …)` that wins over class
 //!   styles).
 //! - Default skin is `IosSim`; pass a custom one via `skin`.
-//! - Default device profile matches `native_phone` (iPhone-14
+//! - Default device profile matches `variant_phone` (iPhone-14
 //!   portrait, 390 × 844 logical).
 //! - Pointer / wheel input is wired by `host-web`; the embedded
 //!   host receives `pointerdown` / `pointermove` / `pointerup` /
@@ -36,14 +36,14 @@
 
 use std::rc::Rc;
 
-use framework_core::primitives::graphics::{OnReadyEvent, OnResizeEvent};
-use framework_core::{component, ui, view, IntoPrimitive, Length, Primitive, StyleRules, StyleSheet};
-// `host_web` re-exports `DeviceProfile` and `Skin` so the Simulator
+use runtime_core::primitives::graphics::{OnReadyEvent, OnResizeEvent};
+use runtime_core::{component, ui, view, IntoPrimitive, Length, Primitive, StyleRules, StyleSheet};
+// `host_web` re-exports `DeviceProfile` and `Painter` so the Simulator
 // only needs one preview-stack dep.
-use host_web::{DeviceProfile, Skin};
+use host_web::{DeviceProfile, Painter};
 
 #[cfg(target_arch = "wasm32")]
-use framework_core::driver::spawn_async;
+use runtime_core::driver::spawn_async;
 
 // Cross-target shared-state cell. `host_web::WebHostHandle` is
 // `!Send` on wasm; the lifecycle callbacks all fire on the JS event
@@ -70,7 +70,7 @@ mod shared {
 }
 
 /// Default device profile when the caller doesn't supply one — iPhone
-/// 14 / 15 portrait. Matches `native_phone::{WIDTH, HEIGHT}` so the
+/// 14 / 15 portrait. Matches `variant_phone::{WIDTH, HEIGHT}` so the
 /// embedded preview lays out identically to the native phone variant.
 pub const DEFAULT_LOGICAL_W: u32 = 390;
 pub const DEFAULT_LOGICAL_H: u32 = 844;
@@ -95,18 +95,18 @@ pub struct SimulatorProps {
     pub build_ui: Rc<dyn Fn() -> Primitive>,
     /// Pluggable simulator skin. `None` resolves to `IosSim`; pass
     /// `Some(Rc::new(AndroidSim::new()))` for the Material 3 look,
-    /// or any other `render_wgpu::Skin` implementor.
-    pub skin: Option<Rc<dyn Skin>>,
+    /// or any other `render_wgpu::Painter` implementor.
+    pub skin: Option<Rc<dyn Painter>>,
     /// Device profile (logical size + title + color scheme). When
     /// `None`, an iPhone-14-portrait profile is used so the embedded
-    /// preview matches `native_phone`.
+    /// preview matches `variant_phone`.
     pub profile: Option<DeviceProfile>,
 }
 
 impl Default for SimulatorProps {
     fn default() -> Self {
         Self {
-            build_ui: Rc::new(|| framework_core::view(Vec::new()).into()),
+            build_ui: Rc::new(|| runtime_core::view(Vec::new()).into()),
             skin: None,
             profile: None,
         }
@@ -118,17 +118,17 @@ fn default_profile() -> DeviceProfile {
         logical_size: (DEFAULT_LOGICAL_W, DEFAULT_LOGICAL_H),
         position: None,
         title: "Idealyst Simulator".to_string(),
-        color_scheme: framework_core::ColorScheme::Light,
+        color_scheme: runtime_core::ColorScheme::Light,
     }
 }
 
-fn default_skin() -> Rc<dyn Skin> {
+fn default_painter() -> Rc<dyn Painter> {
     Rc::new(ios_sim::IosSim::new())
 }
 
 // `skin` / `profile` default through the macro so callers only have
 // to fill in `build_ui = …`. The closures pick `IosSim` + the
-// iPhone-portrait profile, matching `native_phone`.
+// iPhone-portrait profile, matching `variant_phone`.
 #[component(default(
     skin = None,
     profile = None,
@@ -141,7 +141,7 @@ pub fn simulator(props: SimulatorProps) -> Primitive {
     } = props;
 
     let profile = profile.unwrap_or_else(default_profile);
-    let skin = skin.unwrap_or_else(default_skin);
+    let skin = skin.unwrap_or_else(default_painter);
     let logical = (
         profile.logical_size.0 as f32,
         profile.logical_size.1 as f32,
@@ -163,7 +163,7 @@ pub fn simulator(props: SimulatorProps) -> Primitive {
     #[cfg(target_arch = "wasm32")]
     let slot_lost = slot;
 
-    let graphics = framework_core::primitives::graphics::graphics(move |_event: OnReadyEvent| {
+    let graphics = runtime_core::primitives::graphics::graphics(move |_event: OnReadyEvent| {
         // On native targets we don't have a wgpu/web shell yet; the
         // Graphics surface still allocates but nothing drives it.
         // Web is the only path that actually mounts.

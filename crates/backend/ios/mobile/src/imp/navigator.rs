@@ -1,7 +1,7 @@
-use framework_core::primitives::navigator::{
+use runtime_core::primitives::navigator::{
     NavCommand, NavigatorCallbacks, NavigatorControl, NavigatorHandle, NavigatorOps,
 };
-use framework_core::StyleRules;
+use runtime_core::StyleRules;
 use objc2::rc::Retained;
 use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{
@@ -48,7 +48,7 @@ impl NavigatorOps for IosNavigatorOps {}
 // system back-chevron in the navigation bar, and any external
 // `popViewController` call. None of those route through our
 // `NavCommand::Pop` branch, so the rust-side `stack` would diverge
-// from the UI and `release_screen` (which in AAS mode ships a
+// from the UI and `release_screen` (which in runtime-server mode ships a
 // `ScreenReleased` event back over the wire) would never fire.
 //
 // Hooking the delegate's `didShow` callback is the simplest reliable
@@ -60,7 +60,7 @@ pub(crate) struct NavigatorDelegateIvars {
     /// Shared with the dispatch closure so we observe (and trim) the
     /// same stack the dispatcher pushes onto.
     stack: Rc<RefCell<Vec<ScreenEntry>>>,
-    /// The navigator callbacks' `release_screen` — usually the AAS
+    /// The navigator callbacks' `release_screen` — usually the runtime-server
     /// stub that emits `AppToDev::ScreenReleased`.
     release: Rc<dyn Fn(u64)>,
     /// The navigator callbacks' `depth_changed`.
@@ -292,7 +292,7 @@ pub(crate) fn navigator_attach_initial(
     navigator: &IosNode,
     screen: IosNode,
     scope_id: u64,
-    options: framework_core::ScreenOptions,
+    options: runtime_core::ScreenOptions,
 ) {
     let key = navigator.view_key();
     let Some(entry) = navigator_instances.get(&key) else {
@@ -402,11 +402,11 @@ pub(crate) fn apply_nav_title_style(
 
         let size: CGFloat = style.font_size.as_ref()
             .map(|t| match t.resolve() {
-                framework_core::Length::Px(v) => v as CGFloat,
+                runtime_core::Length::Px(v) => v as CGFloat,
                 _ => 17.0,
             })
             .unwrap_or(17.0);
-        let weight = style.font_weight.unwrap_or(framework_core::FontWeight::SemiBold);
+        let weight = style.font_weight.unwrap_or(runtime_core::FontWeight::SemiBold);
         let ui_weight = font_weight_to_uikit(weight);
         let font: Retained<objc2_foundation::NSObject> =
             msg_send_id![

@@ -1,6 +1,6 @@
 //! Typography — Heading, Body, Caption.
 
-use framework_core::{ui, Primitive};
+use runtime_core::{ui, Primitive};
 use idea_ui::doc_controls::DocControls;
 use idea_ui::{
     body, caption, heading, stack, BodyProps, CaptionProps, HeadingProps, StackGap,

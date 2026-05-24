@@ -2,8 +2,8 @@
 //! value signal and a per-keystroke `on_change` callback.
 
 use crate::WebBackend;
-use framework_core::primitives::key::{KeyDownHandler, KeyEvent, KeyOutcome};
-use framework_core::primitives::text_input::{TextInputHandle, TextInputOps};
+use runtime_core::primitives::key::{KeyDownHandler, KeyEvent, KeyOutcome};
+use runtime_core::primitives::text_input::{TextInputHandle, TextInputOps};
 use std::any::Any;
 use std::rc::Rc;
 use wasm_bindgen::closure::Closure;

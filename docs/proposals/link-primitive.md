@@ -21,8 +21,8 @@ content-wrapping primitive that emits the platform's native
 ### Author API
 
 ```rust
-use framework_core::ui;
-use framework_core::primitives::link::{link, NavKind};
+use runtime_core::ui;
+use runtime_core::primitives::link::{link, NavKind};
 
 ui! {
     Link(route = HOME_ROUTE, params = ()) {
@@ -174,7 +174,7 @@ The navigator system already runs each screen inside its own
 a thread-local** while the screen builds:
 
 ```rust
-// framework-core internal:
+// runtime-core internal:
 thread_local! {
     static AMBIENT_NAV: RefCell<Vec<Rc<NavigatorControl>>> =
         const { RefCell::new(Vec::new()) };
@@ -416,12 +416,12 @@ fn create_link(&mut self, config: LinkConfig) -> GlobalRef {
 - `Primitive` enum grows one variant.
 - `RefFill` enum grows one variant: `Link(Box<dyn FnOnce(LinkHandle)>)`.
 - Walker grows the `Primitive::Link` arm above.
-- `framework_macros::ui` / `jsx` recognize `Link` as a primitive
+- `runtime_macros::ui` / `jsx` recognize `Link` as a primitive
   name — same special-casing as `Button`, `View`, `Text`. (Lower
-  to `framework_core::primitives::link::link(...)`.)
+  to `runtime_core::primitives::link::link(...)`.)
 - `Navigator`'s `mount_screen` pushes/pops the ambient navigator
   stack around its `with_scope` call.
-- New module: `framework_core::primitives::link` (handle, ops,
+- New module: `runtime_core::primitives::link` (handle, ops,
   constructor, `Bound<LinkHandle>` impl).
 
 Backends without an implementation get the trait default

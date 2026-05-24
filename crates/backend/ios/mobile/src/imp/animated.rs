@@ -32,8 +32,8 @@
 
 use std::collections::HashMap;
 
-use framework_core::animation::AnimProp;
-use framework_core::Color;
+use runtime_core::animation::AnimProp;
+use runtime_core::Color;
 use objc2::encode::{Encode, Encoding};
 use objc2::msg_send;
 use objc2::rc::Retained;
@@ -199,9 +199,9 @@ impl IosBackend {
     pub(crate) fn apply_static_transform(
         &mut self,
         node: &IosNode,
-        style: &framework_core::StyleRules,
+        style: &runtime_core::StyleRules,
     ) {
-        use framework_core::{Length, Transform};
+        use runtime_core::{Length, Transform};
         let key = node.view_key();
         let view = node.as_view();
         let state = self.animated_states.entry(key).or_default();

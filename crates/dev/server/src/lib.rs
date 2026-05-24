@@ -1,7 +1,7 @@
 //! Dev-side runtime for the hot-reload wire protocol.
 //!
 //! Provides a [`WireRecordingBackend`] that implements
-//! [`framework_core::Backend`] with `Node = NodeId`. Each method
+//! [`runtime_core::Backend`] with `Node = NodeId`. Each method
 //! emits one [`Command`] (or a small cluster) into the recorder's
 //! outbound queue, plus registers any closures the walker hands it
 //! into a [`HandlerTable`].
@@ -18,8 +18,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use framework_core::primitives;
-use framework_core::{
+use runtime_core::primitives;
+use runtime_core::{
     Backend, Color, ColorScheme, StateBits, StyleRules, TextHandle, TextOps, ViewHandle, ViewOps,
 };
 use wire::{
@@ -27,21 +27,21 @@ use wire::{
 };
 
 pub mod convert_out;
-// AAS dev-host driver. Pulled in only when the consumer activates
-// the `aas-runtime` feature — `host::run` and `HotPatchAdapter`
+// runtime-server dev-host driver. Pulled in only when the consumer activates
+// the `runtime-server` feature — `host::run` and `HotPatchAdapter`
 // depend on `anyhow` + `subsecond_types`, which are optional deps.
 // Recorder-only consumers (tests, `examples/welcome`) don't pay
 // the cost.
-#[cfg(feature = "aas-runtime")]
+#[cfg(feature = "runtime-server")]
 pub mod host;
 mod scene_model;
-// Sidecar `framework_core::scheduling::Scheduler` impl — installed
+// Sidecar `runtime_core::scheduling::Scheduler` impl — installed
 // once at sidecar startup so `raf_loop_scoped`, `after_ms`, etc.
 // fire on the dev side. Otherwise the framework's animation clock
 // gets an inert handle and any author code using raf-driven custom
 // math (welcome's planets) does nothing.
 pub mod scheduler;
-#[cfg(feature = "aas-runtime")]
+#[cfg(feature = "runtime-server")]
 pub mod crash_handler;
 pub mod sidecar;
 // Always compiled — the test-support module is small and its only
@@ -65,23 +65,23 @@ pub use transport::{
 pub use transport::serve_with_robot_bridge;
 pub use watch::{spawn_change_loop, spawn_rebuild_loop, RebuildCommand, RebuildConfig};
 
-/// The AAS (Application-as-a-Server) **server-side backend** —
-/// implements `framework_core::Backend` with `Node = NodeId`. Plug
-/// this into `framework_core::render(...)` exactly like you'd plug
+/// The runtime-server (Application-as-a-Server) **server-side backend** —
+/// implements `runtime_core::Backend` with `Node = NodeId`. Plug
+/// this into `runtime_core::render(...)` exactly like you'd plug
 /// in `WebBackend` / `IosBackend` / `AndroidBackend`. Instead of
 /// driving native widgets it records every walker call as a wire
 /// [`wire::Command`] for transport to one or more
-/// [`AasClient`](dev_client::AasClient)s.
+/// [`RuntimeServerClient`](dev_client::RuntimeServerClient)s.
 ///
-/// `AasBackend` is the heart of the AAS architecture:
+/// `AasBackend` is the heart of the runtime-server architecture:
 ///
 /// ```text
-/// UI tree → AasBackend → Wire (Commands) → AasClient → Platform Backend → Native
+/// UI tree → AasBackend → Wire (Commands) → RuntimeServerClient → Platform Backend → Native
 /// ```
 ///
 /// The same `Primitive` tree your iOS/web app would render natively
 /// is what the server runs against this backend. The wire output is
-/// platform-agnostic; an `AasClient` wrapping any platform backend
+/// platform-agnostic; an `RuntimeServerClient` wrapping any platform backend
 /// can replay it.
 pub use crate::WireRecordingBackend as AasBackend;
 
@@ -90,7 +90,7 @@ pub use crate::WireRecordingBackend as AasBackend;
 /// from the app look up the entry and invoke the captured closure.
 ///
 /// **Identity-keyed dedup.** Closures registered with an
-/// [`framework_core::Identity`] reuse the same `HandlerId` across
+/// [`runtime_core::Identity`] reuse the same `HandlerId` across
 /// hot-reload rebuilds: the table keeps `identity_to_id` populated
 /// across [`Self::clear_closures`] (called from
 /// `reset_log_and_scene`), so a re-register from the freshly-walked
@@ -112,7 +112,7 @@ pub struct HandlerTable {
     /// [`Self::register_unit_for_identity`] / friends, where the
     /// existing slot is overwritten with the freshly-walked closure
     /// (capturing the post-reset `Rc<NavigatorControl>` etc.).
-    identity_to_id: HashMap<framework_core::Identity, HandlerId>,
+    identity_to_id: HashMap<runtime_core::Identity, HandlerId>,
 }
 
 enum Handler {
@@ -160,7 +160,7 @@ impl HandlerTable {
     }
 
     /// Identity-keyed register. Same logical emission site (same
-    /// [`framework_core::Identity`]) across rebuilds reuses the same
+    /// [`runtime_core::Identity`]) across rebuilds reuses the same
     /// `HandlerId` — the closure under the id is replaced with the
     /// freshly-walked one. Cross-rebuild stability is what keeps the
     /// client's leaked `HeaderButtonCallback`, button click pointer,
@@ -171,10 +171,10 @@ impl HandlerTable {
     /// without ambient identity get this gracefully.
     pub fn register_unit_for_identity(
         &mut self,
-        identity: framework_core::Identity,
+        identity: runtime_core::Identity,
         f: Rc<dyn Fn()>,
     ) -> HandlerId {
-        if identity == framework_core::Identity::UNIDENTIFIED {
+        if identity == runtime_core::Identity::UNIDENTIFIED {
             return self.register_unit(f);
         }
         let id = *self.identity_to_id.entry(identity).or_insert_with(|| {
@@ -189,10 +189,10 @@ impl HandlerTable {
     /// `Toggle.on_change`.
     pub fn register_bool_for_identity(
         &mut self,
-        identity: framework_core::Identity,
+        identity: runtime_core::Identity,
         f: Rc<dyn Fn(bool)>,
     ) -> HandlerId {
-        if identity == framework_core::Identity::UNIDENTIFIED {
+        if identity == runtime_core::Identity::UNIDENTIFIED {
             return self.register_bool(f);
         }
         let id = *self.identity_to_id.entry(identity).or_insert_with(|| {
@@ -207,10 +207,10 @@ impl HandlerTable {
     /// `Slider.on_change`.
     pub fn register_float_for_identity(
         &mut self,
-        identity: framework_core::Identity,
+        identity: runtime_core::Identity,
         f: Rc<dyn Fn(f32)>,
     ) -> HandlerId {
-        if identity == framework_core::Identity::UNIDENTIFIED {
+        if identity == runtime_core::Identity::UNIDENTIFIED {
             return self.register_float(f);
         }
         let id = *self.identity_to_id.entry(identity).or_insert_with(|| {
@@ -225,10 +225,10 @@ impl HandlerTable {
     /// `TextInput.on_change`.
     pub fn register_string_for_identity(
         &mut self,
-        identity: framework_core::Identity,
+        identity: runtime_core::Identity,
         f: Rc<dyn Fn(String)>,
     ) -> HandlerId {
-        if identity == framework_core::Identity::UNIDENTIFIED {
+        if identity == runtime_core::Identity::UNIDENTIFIED {
             return self.register_string(f);
         }
         let id = *self.identity_to_id.entry(identity).or_insert_with(|| {
@@ -284,7 +284,7 @@ pub type NavStateSnapshot = HashMap<u64, Vec<String>>;
 struct RecorderState {
     next_node: u64,
     next_style: u64,
-    /// Identity → NodeId memo. Keyed by [`framework_core::Identity`]
+    /// Identity → NodeId memo. Keyed by [`runtime_core::Identity`]
     /// (the structural identity the walker sets via
     /// `with_current_identity` before every `backend.create_*` call).
     /// Survives [`WireRecordingBackend::reset_log_and_scene`] so that
@@ -294,11 +294,11 @@ struct RecorderState {
     /// on the client; new `ApplyStyle` for the same node lands on
     /// the right native view).
     ///
-    /// Emissions that arrive under [`framework_core::Identity::UNIDENTIFIED`]
+    /// Emissions that arrive under [`runtime_core::Identity::UNIDENTIFIED`]
     /// bypass dedup (mint a fresh id every time). Used as a
     /// pressure-release for any emission site that hasn't been
     /// migrated to set an identity yet.
-    identity_to_node: HashMap<framework_core::Identity, NodeId>,
+    identity_to_node: HashMap<runtime_core::Identity, NodeId>,
     /// Monotonic generation counter. Bumped by
     /// [`WireRecordingBackend::reset_log_and_scene`] each time the
     /// scene is wiped + re-rendered (typically after a hot-reload
@@ -388,7 +388,7 @@ impl RecorderState {
     /// `state`.
     fn wire_a11y(
         &mut self,
-        p: &framework_core::accessibility::AccessibilityProps,
+        p: &runtime_core::accessibility::AccessibilityProps,
     ) -> wire::WireAccessibilityProps {
         convert_out::a11y_to_wire(p, &mut self.handlers)
     }
@@ -403,7 +403,7 @@ pub struct NavigatorRecState {
     /// Framework-supplied callbacks. `Rc`'d because individual fields
     /// are already `Rc<dyn Fn(...)>`; the wrapping `Rc` makes whole-
     /// struct clones cheap from inside the dispatcher closure.
-    pub callbacks: Rc<framework_core::primitives::navigator::NavigatorCallbacks<NodeId>>,
+    pub callbacks: Rc<runtime_core::primitives::navigator::NavigatorCallbacks<NodeId>>,
     /// Scope ids of the screens currently on the navigator's stack,
     /// top of stack = end of vec. Updated by the dispatcher on push
     /// and by app-event handlers on swipe-back.
@@ -436,7 +436,7 @@ impl WireRecordingBackend {
         // Install a per-thread weak handle so `RecordingViewOps`
         // (called from `AnimatedValue::bind` -> `ViewHandle::set_animated_*`)
         // can reach this recorder to emit `SetAnimated*` wire commands.
-        // The AAS sidecar runs one session per thread, so per-thread
+        // The runtime-server sidecar runs one session per thread, so per-thread
         // is the right scope — host process for the dev server.
         RECORDER_HANDLE.with(|slot| {
             *slot.borrow_mut() = Some(Rc::downgrade(&inner));
@@ -463,7 +463,7 @@ impl WireRecordingBackend {
     /// and emits real `NavigatorPush` wire commands, so the same
     /// screens come back without any client-side cooperation.
     pub fn restore_nav_state(&self, saved: &NavStateSnapshot) {
-        use framework_core::primitives::navigator::NavCommand;
+        use runtime_core::primitives::navigator::NavCommand;
         for (nav_id_raw, urls) in saved {
             let nav_id = NodeId(*nav_id_raw);
             // Snapshot the callbacks under a short borrow.
@@ -513,7 +513,7 @@ impl WireRecordingBackend {
     /// command, so catch-up and incremental-broadcast paths work
     /// unchanged.
     ///
-    /// The infra-only AAS host uses this to mirror the sidecar's
+    /// The infra-only runtime-server host uses this to mirror the sidecar's
     /// command stream into its own recorder without running the user
     /// code itself. Local renders should always go through the
     /// `Backend` trait — this method bypasses the framework runtime
@@ -526,7 +526,7 @@ impl WireRecordingBackend {
     /// registered tick closures + scheduler-stored raf-loop closures
     /// + expired `after_ms` deadlines. This is the explicit
     /// equivalent of a platform `raf_loop` callback firing — used by
-    /// the AAS sidecar when a client sends
+    /// the runtime-server sidecar when a client sends
     /// `AppToDev::RequestFrame { dt_ms }` to drive the next frame.
     ///
     /// Order: scheduler-stored closures first (raf_loop callbacks
@@ -549,7 +549,7 @@ impl WireRecordingBackend {
     /// registry.
     pub fn tick_animations(&self, dt: std::time::Duration) -> usize {
         scheduler::drive_pending();
-        framework_core::animation::clock::tick_for_test(dt)
+        runtime_core::animation::clock::tick_for_test(dt)
     }
 
     /// Drop every command from the log and reset the scene to empty.
@@ -742,22 +742,22 @@ impl WireRecordingBackend {
     }
 
     /// Allocate a `NodeId` for the current emission site. Uses the
-    /// ambient [`framework_core::current_identity`] to dedup across
+    /// ambient [`runtime_core::current_identity`] to dedup across
     /// sidecar respawns: the same structural emission always gets the
     /// same `NodeId`, which is what makes hot reload incremental
     /// rather than a full-scene reset. Emissions under
-    /// [`framework_core::Identity::UNIDENTIFIED`] (legacy path that
+    /// [`runtime_core::Identity::UNIDENTIFIED`] (legacy path that
     /// hasn't been migrated yet) always mint fresh — no dedup.
     fn mint_node(state: &mut RecorderState) -> NodeId {
-        let id = framework_core::current_identity();
-        if id != framework_core::Identity::UNIDENTIFIED {
+        let id = runtime_core::current_identity();
+        if id != runtime_core::Identity::UNIDENTIFIED {
             if let Some(&existing) = state.identity_to_node.get(&id) {
                 return existing;
             }
         }
         state.next_node += 1;
         let assigned = NodeId(state.next_node);
-        if id != framework_core::Identity::UNIDENTIFIED {
+        if id != runtime_core::Identity::UNIDENTIFIED {
             state.identity_to_node.insert(id, assigned);
         }
         assigned
@@ -880,9 +880,9 @@ impl ViewOps for RecordingViewOps {
     fn frame(
         &self,
         _node: &dyn std::any::Any,
-    ) -> Option<framework_core::primitives::portal::ViewportRect> {
+    ) -> Option<runtime_core::primitives::portal::ViewportRect> {
         let (w, h) = SESSION_VIEWPORT.with(|c| c.get())?;
-        Some(framework_core::primitives::portal::ViewportRect {
+        Some(runtime_core::primitives::portal::ViewportRect {
             x: 0.0,
             y: 0.0,
             width: w,
@@ -893,7 +893,7 @@ impl ViewOps for RecordingViewOps {
     /// Route animated scalar writes to the per-thread recorder's
     /// `set_animated_f32`. Mirrors the pattern in `backend-web`'s
     /// `WebViewOps`, but routes through a thread-local Weak handle
-    /// instead of a process-global one — the AAS sidecar runs one
+    /// instead of a process-global one — the runtime-server sidecar runs one
     /// reactive runtime per session thread, so the handle must be
     /// per-thread.
     ///
@@ -903,7 +903,7 @@ impl ViewOps for RecordingViewOps {
     fn set_animated_f32(
         &self,
         node: &dyn std::any::Any,
-        prop: framework_core::animation::AnimProp,
+        prop: runtime_core::animation::AnimProp,
         value: f32,
     ) {
         let Some(node_id) = node.downcast_ref::<NodeId>() else { return };
@@ -928,7 +928,7 @@ impl ViewOps for RecordingViewOps {
     fn set_animated_color(
         &self,
         node: &dyn std::any::Any,
-        prop: framework_core::animation::AnimProp,
+        prop: runtime_core::animation::AnimProp,
         value: [f32; 4],
     ) {
         let Some(node_id) = node.downcast_ref::<NodeId>() else { return };
@@ -1002,7 +1002,7 @@ impl TextOps for RecordingTextOps {
     fn set_animated_color(
         &self,
         node: &dyn std::any::Any,
-        prop: framework_core::animation::AnimProp,
+        prop: runtime_core::animation::AnimProp,
         value: [f32; 4],
     ) {
         let Some(node_id) = node.downcast_ref::<NodeId>() else { return };
@@ -1046,7 +1046,7 @@ impl Backend for WireRecordingBackend {
     /// Author code that calls `AnimatedValue::bind_text_color` (the
     /// welcome example's headline color fade) reaches `TextOps` via
     /// `TextHandle::set_animated_color`; without this override the
-    /// default [`framework_core::Backend::make_text_handle`] returns
+    /// default [`runtime_core::Backend::make_text_handle`] returns
     /// `NoopTextOps` and every animation tick is silently dropped.
     fn make_text_handle(&self, node: &Self::Node) -> TextHandle {
         TextHandle::new(Rc::new(*node), &RecordingTextOps)
@@ -1054,7 +1054,7 @@ impl Backend for WireRecordingBackend {
 
     fn create_view(
         &mut self,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
@@ -1069,7 +1069,7 @@ impl Backend for WireRecordingBackend {
     fn create_text(
         &mut self,
         content: &str,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
@@ -1085,13 +1085,13 @@ impl Backend for WireRecordingBackend {
     fn create_button(
         &mut self,
         label: &str,
-        on_click: &framework_core::Action,
+        on_click: &runtime_core::Action,
         leading_icon: Option<&primitives::icon::IconData>,
         trailing_icon: Option<&primitives::icon::IconData>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
-        let identity = framework_core::current_identity();
+        let identity = runtime_core::current_identity();
         let id = Self::mint_node(&mut state);
         let handler = state
             .handlers
@@ -1113,10 +1113,10 @@ impl Backend for WireRecordingBackend {
     fn create_pressable(
         &mut self,
         on_click: Rc<dyn Fn()>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
-        let identity = framework_core::current_identity();
+        let identity = runtime_core::current_identity();
         let id = Self::mint_node(&mut state);
         let handler = state
             .handlers
@@ -1170,7 +1170,7 @@ impl Backend for WireRecordingBackend {
         &mut self,
         src: &str,
         alt: Option<&str>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
@@ -1196,7 +1196,7 @@ impl Backend for WireRecordingBackend {
         &mut self,
         data: &primitives::icon::IconData,
         color: Option<&Color>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
@@ -1233,7 +1233,7 @@ impl Backend for WireRecordingBackend {
         from: f32,
         to: f32,
         duration_ms: u32,
-        easing: framework_core::Easing,
+        easing: runtime_core::Easing,
         infinite: bool,
         autoreverses: bool,
     ) {
@@ -1262,15 +1262,15 @@ impl Backend for WireRecordingBackend {
         initial_value: &str,
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
-        _on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        // `_on_key_down` is not yet wired across the AAS protocol
+        // `_on_key_down` is not yet wired across the runtime-server protocol
         // (would require a new wire op + per-frame key event
         // dispatch). Snapshot/replay clients don't observe key
         // interception — they see the resulting Signal updates only.
         let mut state = self.inner.borrow_mut();
-        let identity = framework_core::current_identity();
+        let identity = runtime_core::current_identity();
         let id = Self::mint_node(&mut state);
         let handler = state
             .handlers
@@ -1299,15 +1299,15 @@ impl Backend for WireRecordingBackend {
         initial_value: &str,
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
-        _on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         // `_on_key_down` is dropped on the wire for the same reason as
-        // `create_text_input` above — AAS doesn't yet carry intercepted
+        // `create_text_input` above — runtime-server doesn't yet carry intercepted
         // key events. Snapshot/replay clients still see the resulting
         // Signal updates.
         let mut state = self.inner.borrow_mut();
-        let identity = framework_core::current_identity();
+        let identity = runtime_core::current_identity();
         let id = Self::mint_node(&mut state);
         let handler = state
             .handlers
@@ -1344,7 +1344,7 @@ impl Backend for WireRecordingBackend {
         _type_id: std::any::TypeId,
         type_name: &'static str,
         _payload: &Rc<dyn std::any::Any>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
@@ -1361,10 +1361,10 @@ impl Backend for WireRecordingBackend {
         &mut self,
         initial_value: bool,
         on_change: Rc<dyn Fn(bool)>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
-        let identity = framework_core::current_identity();
+        let identity = runtime_core::current_identity();
         let id = Self::mint_node(&mut state);
         let handler = state
             .handlers
@@ -1390,7 +1390,7 @@ impl Backend for WireRecordingBackend {
     fn create_scroll_view(
         &mut self,
         horizontal: bool,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
@@ -1410,10 +1410,10 @@ impl Backend for WireRecordingBackend {
         max: f32,
         step: Option<f32>,
         on_change: Rc<dyn Fn(f32)>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
-        let identity = framework_core::current_identity();
+        let identity = runtime_core::current_identity();
         let id = Self::mint_node(&mut state);
         let handler = state
             .handlers
@@ -1445,7 +1445,7 @@ impl Backend for WireRecordingBackend {
         autoplay: bool,
         controls: bool,
         loop_playback: bool,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
@@ -1473,7 +1473,7 @@ impl Backend for WireRecordingBackend {
         &mut self,
         size: primitives::activity_indicator::ActivityIndicatorSize,
         color: Option<&Color>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
@@ -1545,9 +1545,9 @@ impl Backend for WireRecordingBackend {
 
     fn register_asset(
         &mut self,
-        id: framework_core::AssetId,
-        kind: framework_core::AssetTag,
-        source: &framework_core::AssetSource,
+        id: runtime_core::AssetId,
+        kind: runtime_core::AssetTag,
+        source: &runtime_core::AssetSource,
     ) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::RegisterAsset {
@@ -1559,8 +1559,8 @@ impl Backend for WireRecordingBackend {
 
     fn unregister_asset(
         &mut self,
-        id: framework_core::AssetId,
-        kind: framework_core::AssetTag,
+        id: runtime_core::AssetId,
+        kind: runtime_core::AssetTag,
     ) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::UnregisterAsset {
@@ -1571,10 +1571,10 @@ impl Backend for WireRecordingBackend {
 
     fn register_typeface(
         &mut self,
-        id: framework_core::TypefaceId,
+        id: runtime_core::TypefaceId,
         family_name: &str,
-        faces: &[framework_core::TypefaceFace],
-        fallback: framework_core::SystemFallback,
+        faces: &[runtime_core::TypefaceFace],
+        fallback: runtime_core::SystemFallback,
     ) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::RegisterTypeface {
@@ -1585,7 +1585,7 @@ impl Backend for WireRecordingBackend {
         });
     }
 
-    fn unregister_typeface(&mut self, id: framework_core::TypefaceId) {
+    fn unregister_typeface(&mut self, id: runtime_core::TypefaceId) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::UnregisterTypeface {
             id: convert_out::typeface_id_to_wire(id),
@@ -1629,7 +1629,7 @@ impl Backend for WireRecordingBackend {
         &mut self,
         node: &Self::Node,
         s: primitives::presence::PresenceState,
-        transition: Option<(u32, framework_core::Easing)>,
+        transition: Option<(u32, runtime_core::Easing)>,
     ) {
         let mut state = self.inner.borrow_mut();
         let wire_state = wire::WirePresenceState {
@@ -1654,8 +1654,8 @@ impl Backend for WireRecordingBackend {
     fn update_accessibility(
         &mut self,
         node: &Self::Node,
-        a11y: &framework_core::accessibility::AccessibilityProps,
-        inferred_role: Option<framework_core::accessibility::Role>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+        inferred_role: Option<runtime_core::accessibility::Role>,
     ) {
         let mut state = self.inner.borrow_mut();
         let wire_a11y = state.wire_a11y(a11y);
@@ -1669,7 +1669,7 @@ impl Backend for WireRecordingBackend {
     fn announce_for_accessibility(
         &mut self,
         msg: &str,
-        priority: framework_core::accessibility::LiveRegionPriority,
+        priority: runtime_core::accessibility::LiveRegionPriority,
     ) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::AnnounceForAccessibility {
@@ -1681,10 +1681,10 @@ impl Backend for WireRecordingBackend {
     /// Forward installed tokens onto the wire so client-side backends
     /// with a runtime variable store (web's CSS custom properties)
     /// receive them. Without this override, the trait default was a
-    /// no-op and any author-installed theme tokens never reached AAS
+    /// no-op and any author-installed theme tokens never reached runtime-server
     /// clients — token-keyed `Tokenized<T>` references silently fell
     /// back to literals on every replay.
-    fn install_tokens(&mut self, tokens: &[framework_core::TokenEntry]) {
+    fn install_tokens(&mut self, tokens: &[runtime_core::TokenEntry]) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::InstallThemeVariables {
             tokens: tokens.iter().map(token_entry_to_wire).collect(),
@@ -1695,7 +1695,7 @@ impl Backend for WireRecordingBackend {
     /// [`install_tokens`]; mirrors `update_tokens` on the framework
     /// side. Clients with a variable store update in place; clients
     /// without one re-resolve via the framework's token-version signal.
-    fn update_tokens(&mut self, tokens: &[framework_core::TokenEntry]) {
+    fn update_tokens(&mut self, tokens: &[runtime_core::TokenEntry]) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::InstallThemeVariables {
             tokens: tokens.iter().map(token_entry_to_wire).collect(),
@@ -1707,10 +1707,10 @@ impl Backend for WireRecordingBackend {
         target: primitives::portal::PortalTarget,
         on_dismiss: Option<Rc<dyn Fn()>>,
         trap_focus: bool,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
-        let identity = framework_core::current_identity();
+        let identity = runtime_core::current_identity();
         let id = Self::mint_node(&mut state);
         let handler = on_dismiss
             .map(|cb| state.handlers.register_unit_for_identity(identity, cb));
@@ -1719,7 +1719,7 @@ impl Backend for WireRecordingBackend {
                 wire::WirePortalTarget::Viewport(wire_viewport_placement(placement))
             }
             primitives::portal::PortalTarget::Anchor { target: _, side, align, offset } => {
-                // AAS can't track anchor rects on the device — the
+                // runtime-server can't track anchor rects on the device — the
                 // anchor node id isn't carried in framework's
                 // type-erased AnchorTarget. Best-effort: emit a
                 // viewport-centered portal with the side/align/offset
@@ -1753,7 +1753,7 @@ impl Backend for WireRecordingBackend {
         _on_ready: primitives::graphics::OnReady,
         _on_resize: primitives::graphics::OnResize,
         _on_lost: primitives::graphics::OnLost,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         // The author's `on_ready` / `on_resize` / `on_lost` closures
         // can't travel over the wire (they capture renderer state
@@ -1782,9 +1782,9 @@ impl Backend for WireRecordingBackend {
 
     fn create_navigator(
         &mut self,
-        callbacks: framework_core::primitives::navigator::NavigatorCallbacks<Self::Node>,
-        control: Rc<framework_core::primitives::navigator::NavigatorControl>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        callbacks: runtime_core::primitives::navigator::NavigatorCallbacks<Self::Node>,
+        control: Rc<runtime_core::primitives::navigator::NavigatorControl>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let nav_id;
         let initial_route = callbacks.initial_route;
@@ -1827,7 +1827,7 @@ impl Backend for WireRecordingBackend {
         navigator: &Self::Node,
         screen: Self::Node,
         scope_id: u64,
-        options: framework_core::primitives::navigator::ScreenOptions,
+        options: runtime_core::primitives::navigator::ScreenOptions,
     ) {
         let mirror = self.nav_state_mirror.clone();
         let mut urls_snapshot: Option<Vec<String>> = None;
@@ -1860,9 +1860,9 @@ impl Backend for WireRecordingBackend {
 
     fn create_tab_navigator(
         &mut self,
-        callbacks: framework_core::primitives::navigator::TabNavigatorCallbacks<Self::Node>,
-        control: Rc<framework_core::primitives::navigator::NavigatorControl>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        callbacks: runtime_core::primitives::navigator::TabNavigatorCallbacks<Self::Node>,
+        control: Rc<runtime_core::primitives::navigator::NavigatorControl>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let nav_id;
         let initial_route = callbacks.navigator.initial_route;
@@ -1877,23 +1877,23 @@ impl Backend for WireRecordingBackend {
             })
             .collect();
         let placement = match callbacks.placement {
-            framework_core::primitives::navigator::TabPlacement::Bottom
-            | framework_core::primitives::navigator::TabPlacement::Auto => {
+            runtime_core::primitives::navigator::TabPlacement::Bottom
+            | runtime_core::primitives::navigator::TabPlacement::Auto => {
                 wire::WireTabPlacement::Bottom
             }
-            framework_core::primitives::navigator::TabPlacement::Top
-            | framework_core::primitives::navigator::TabPlacement::Sidebar => {
+            runtime_core::primitives::navigator::TabPlacement::Top
+            | runtime_core::primitives::navigator::TabPlacement::Sidebar => {
                 wire::WireTabPlacement::Top
             }
         };
         let mount_policy = match callbacks.mount_policy {
-            framework_core::primitives::navigator::MountPolicy::EagerPersistent => {
+            runtime_core::primitives::navigator::MountPolicy::EagerPersistent => {
                 wire::WireMountPolicy::EagerPersistent
             }
-            framework_core::primitives::navigator::MountPolicy::LazyPersistent => {
+            runtime_core::primitives::navigator::MountPolicy::LazyPersistent => {
                 wire::WireMountPolicy::LazyPersistent
             }
-            framework_core::primitives::navigator::MountPolicy::LazyDisposing => {
+            runtime_core::primitives::navigator::MountPolicy::LazyDisposing => {
                 wire::WireMountPolicy::LazyDisposing
             }
         };
@@ -1935,7 +1935,7 @@ impl Backend for WireRecordingBackend {
         navigator: &Self::Node,
         screen: Self::Node,
         scope_id: u64,
-        options: framework_core::primitives::navigator::ScreenOptions,
+        options: runtime_core::primitives::navigator::ScreenOptions,
     ) {
         // Same wire shape as the stack-navigator initial attach; the
         // app side dispatches based on what kind of navigator the
@@ -1945,37 +1945,37 @@ impl Backend for WireRecordingBackend {
 
     fn create_drawer_navigator(
         &mut self,
-        callbacks: framework_core::primitives::navigator::DrawerNavigatorCallbacks<Self::Node>,
-        control: Rc<framework_core::primitives::navigator::NavigatorControl>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        callbacks: runtime_core::primitives::navigator::DrawerNavigatorCallbacks<Self::Node>,
+        control: Rc<runtime_core::primitives::navigator::NavigatorControl>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let nav_id;
         let initial_route = callbacks.navigator.initial_route;
         let initial_path = callbacks.navigator.initial_path;
         let side = match callbacks.side {
-            framework_core::primitives::navigator::DrawerSide::Start => {
+            runtime_core::primitives::navigator::DrawerSide::Start => {
                 wire::WireDrawerSide::Left
             }
-            framework_core::primitives::navigator::DrawerSide::End => {
+            runtime_core::primitives::navigator::DrawerSide::End => {
                 wire::WireDrawerSide::Right
             }
         };
         let drawer_type = match callbacks.drawer_type {
-            framework_core::primitives::navigator::DrawerType::Front => {
+            runtime_core::primitives::navigator::DrawerType::Front => {
                 wire::WireDrawerType::Front
             }
-            framework_core::primitives::navigator::DrawerType::Slide => {
+            runtime_core::primitives::navigator::DrawerType::Slide => {
                 wire::WireDrawerType::Slide
             }
         };
         let mount_policy = match callbacks.mount_policy {
-            framework_core::primitives::navigator::MountPolicy::EagerPersistent => {
+            runtime_core::primitives::navigator::MountPolicy::EagerPersistent => {
                 wire::WireMountPolicy::EagerPersistent
             }
-            framework_core::primitives::navigator::MountPolicy::LazyPersistent => {
+            runtime_core::primitives::navigator::MountPolicy::LazyPersistent => {
                 wire::WireMountPolicy::LazyPersistent
             }
-            framework_core::primitives::navigator::MountPolicy::LazyDisposing => {
+            runtime_core::primitives::navigator::MountPolicy::LazyDisposing => {
                 wire::WireMountPolicy::LazyDisposing
             }
         };
@@ -2021,7 +2021,7 @@ impl Backend for WireRecordingBackend {
         navigator: &Self::Node,
         screen: Self::Node,
         scope_id: u64,
-        options: framework_core::primitives::navigator::ScreenOptions,
+        options: runtime_core::primitives::navigator::ScreenOptions,
     ) {
         self.navigator_attach_initial(navigator, screen, scope_id, options);
     }
@@ -2052,10 +2052,10 @@ impl Backend for WireRecordingBackend {
 
     fn create_virtualizer(
         &mut self,
-        callbacks: framework_core::VirtualizerCallbacks<Self::Node>,
+        callbacks: runtime_core::VirtualizerCallbacks<Self::Node>,
         overscan: f32,
         horizontal: bool,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         // Eagerly snapshot the current data set: count + keys +
         // initial sizes. The wire ships these so the app's
@@ -2186,10 +2186,10 @@ impl Backend for WireRecordingBackend {
     fn create_link(
         &mut self,
         config: primitives::link::LinkConfig,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let mut state = self.inner.borrow_mut();
-        let identity = framework_core::current_identity();
+        let identity = runtime_core::current_identity();
         let id = Self::mint_node(&mut state);
         let handler = state
             .handlers
@@ -2267,30 +2267,30 @@ impl Backend for WireRecordingBackend {
 // Wire mappers for the new portal primitive's positioning enums.
 // ---------------------------------------------------------------------------
 
-fn token_entry_to_wire(entry: &framework_core::TokenEntry) -> wire::WireTokenEntry {
+fn token_entry_to_wire(entry: &runtime_core::TokenEntry) -> wire::WireTokenEntry {
     wire::WireTokenEntry {
         name: entry.name.to_string(),
         value: token_value_to_wire(&entry.value),
     }
 }
 
-fn token_value_to_wire(value: &framework_core::TokenValue) -> wire::WireTokenValue {
+fn token_value_to_wire(value: &runtime_core::TokenValue) -> wire::WireTokenValue {
     match value {
-        framework_core::TokenValue::Color(c) => {
+        runtime_core::TokenValue::Color(c) => {
             wire::WireTokenValue::Color(wire::WireColor(c.0.clone()))
         }
-        framework_core::TokenValue::Number(n) => wire::WireTokenValue::Number(*n),
-        framework_core::TokenValue::Length(l) => {
+        runtime_core::TokenValue::Number(n) => wire::WireTokenValue::Number(*n),
+        runtime_core::TokenValue::Length(l) => {
             wire::WireTokenValue::Length(length_to_wire_token(*l))
         }
     }
 }
 
-fn length_to_wire_token(l: framework_core::Length) -> wire::WireLength {
+fn length_to_wire_token(l: runtime_core::Length) -> wire::WireLength {
     match l {
-        framework_core::Length::Px(v) => wire::WireLength::Px(v),
-        framework_core::Length::Percent(v) => wire::WireLength::Pct(v),
-        framework_core::Length::Auto => wire::WireLength::Auto,
+        runtime_core::Length::Px(v) => wire::WireLength::Px(v),
+        runtime_core::Length::Percent(v) => wire::WireLength::Pct(v),
+        runtime_core::Length::Auto => wire::WireLength::Auto,
     }
 }
 
@@ -2336,10 +2336,10 @@ fn wire_element_align(a: primitives::portal::ElementAlign) -> wire::WireElementA
 fn navigator_dispatcher_handle(
     inner: &Rc<RefCell<RecorderState>>,
     nav_id: NodeId,
-    cbs: Rc<framework_core::primitives::navigator::NavigatorCallbacks<NodeId>>,
-    cmd: framework_core::primitives::navigator::NavCommand,
+    cbs: Rc<runtime_core::primitives::navigator::NavigatorCallbacks<NodeId>>,
+    cmd: runtime_core::primitives::navigator::NavCommand,
 ) {
-    use framework_core::primitives::navigator::NavCommand;
+    use runtime_core::primitives::navigator::NavCommand;
     // Helper closure: build the screen subtree by invoking
     // `mount_screen` (which calls back into the recording backend),
     // then translate into wire form. Borrows are released BEFORE
@@ -2506,7 +2506,7 @@ enum PushLikeKind {
 
 fn screen_options_to_wire(
     state: &mut RecorderState,
-    options: &framework_core::primitives::navigator::ScreenOptions,
+    options: &runtime_core::primitives::navigator::ScreenOptions,
 ) -> wire::WireScreenOptions {
     wire::WireScreenOptions {
         title: options.title.clone(),
@@ -2524,7 +2524,7 @@ fn screen_options_to_wire(
 
 fn header_button_to_wire(
     state: &mut RecorderState,
-    btn: &framework_core::primitives::navigator::HeaderButton,
+    btn: &runtime_core::primitives::navigator::HeaderButton,
     slot: u32,
 ) -> wire::WireHeaderButton {
     // Derive a stable identity for this header button from the
@@ -2544,8 +2544,8 @@ fn header_button_to_wire(
     // id (identity match) with the *new* `Rc<NavigatorControl>` in
     // its captured closure — so a tap still fires `ToggleDrawer`
     // on the live navigator instead of getting silently dropped.
-    let identity = framework_core::Identity::node(
-        framework_core::current_identity(),
+    let identity = runtime_core::Identity::node(
+        runtime_core::current_identity(),
         slot,
         None,
         None,

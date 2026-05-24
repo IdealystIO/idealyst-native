@@ -11,7 +11,7 @@
 //! }
 //! ```
 
-use framework_core::{ui, Primitive, Signal};
+use runtime_core::{ui, Primitive, Signal};
 use std::rc::Rc;
 
 use crate::stylesheets::{FieldLabel, SwitchRow};

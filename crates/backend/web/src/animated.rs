@@ -1,7 +1,7 @@
 //! Web backend implementation of `Backend::set_animated_*`.
 //!
 //! Per-frame writes from
-//! [`AnimatedValue`](framework_core::animation::AnimatedValue)
+//! [`AnimatedValue`](runtime_core::animation::AnimatedValue)
 //! arrive here keyed by `(node, AnimProp)`. We:
 //!
 //! 1. Look up (or create) the node's [`AnimatedNodeState`] in
@@ -34,7 +34,7 @@
 
 use std::collections::HashMap;
 
-use framework_core::animation::AnimProp;
+use runtime_core::animation::AnimProp;
 use wasm_bindgen::JsCast;
 
 use crate::WebBackend;
@@ -69,11 +69,11 @@ pub(crate) struct AnimatedNodeState {
     pub gradient_stops: Vec<[f32; 4]>,
 }
 
-/// Everything about a `framework_core::Gradient` *except* the stop
+/// Everything about a `runtime_core::Gradient` *except* the stop
 /// colors — those live on `AnimatedNodeState::gradient_stops` so
 /// they can be mutated per frame without rebuilding the rest. The
 /// fields here are flat clones of the framework's enum (we don't
-/// want to depend on framework-core internals from the animation
+/// want to depend on runtime-core internals from the animation
 /// state).
 #[derive(Clone, Debug)]
 pub(crate) struct GradientShape {
@@ -89,7 +89,7 @@ pub(crate) enum GradientShapeKind {
     Radial {
         center: (f32, f32),
         radius: f32,
-        extent: framework_core::RadialExtent,
+        extent: runtime_core::RadialExtent,
     },
 }
 
@@ -306,8 +306,8 @@ pub(crate) fn gradient_inline_css(shape: &GradientShape, stops: &[[f32; 4]]) -> 
         }
         GradientShapeKind::Radial { center, radius, extent } => {
             let base_pct = match extent {
-                framework_core::RadialExtent::ClosestSide => 50.0,
-                framework_core::RadialExtent::FarthestCorner => 70.7106781,
+                runtime_core::RadialExtent::ClosestSide => 50.0,
+                runtime_core::RadialExtent::FarthestCorner => 70.7106781,
             };
             let pct = (radius * base_pct).max(0.0);
             format!(

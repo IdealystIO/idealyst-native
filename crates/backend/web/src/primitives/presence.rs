@@ -22,8 +22,8 @@
 //! stylesheet, the inline `style` value wins (matching CSS
 //! specificity), so presence overrides cleanly.
 
-use framework_core::primitives::presence::PresenceState;
-use framework_core::Easing;
+use runtime_core::primitives::presence::PresenceState;
+use runtime_core::Easing;
 use wasm_bindgen::JsCast;
 use web_sys::Node;
 

@@ -13,19 +13,19 @@ let backend = IosBackend::new(...);
 backend_ios_mobile::install_global_self(&backend); // for AnimatedValue::bind
 ```
 
-- **`install_scheduler`** wires `framework_core::scheduling::after_ms` /
+- **`install_scheduler`** wires `runtime_core::scheduling::after_ms` /
   `schedule_microtask` / `raf` to `dispatch_after` / `dispatch_async(main)` /
   `CADisplayLink`.
 - **`install_global_self`** stores a `Weak<RefCell<IosBackend>>` so animated
   property writes can find the backend without threading it through
   closures. Without it, `AnimatedValue::bind` silently no-ops.
 
-Call `framework_core::mount(backend, app)`, not `render(backend, app())`.
+Call `runtime_core::mount(backend, app)`, not `render(backend, app())`.
 See `project_mount_vs_render` in memory.
 
 ## Layout
 
-Layout is driven through [`native-layout`](../../../framework/native-layout)
+Layout is driven through [`runtime-layout`](../../../framework/runtime-layout)
 (Taffy). Each `IosNode` carries its UIKit view *and* its Taffy `LayoutNode`;
 the `finish` hook runs `LayoutTree::compute` against the root and walks the
 tree applying frames.
@@ -67,7 +67,7 @@ backend's structure but skip the workarounds:
   `project_gradient_native`.
 
 If you're patching a primitive on this backend and you find yourself
-adding a per-platform hack to the *call site* (in framework-core or in
+adding a per-platform hack to the *call site* (in runtime-core or in
 author code), stop. The fix belongs in this backend. See
 `feedback_backend_owns_rendering` in memory and the project CLAUDE.md §7.
 

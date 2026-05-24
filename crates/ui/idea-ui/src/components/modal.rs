@@ -1,6 +1,6 @@
 //! `Modal` — a centered viewport overlay with a themed surface.
 //!
-//! Mostly sugar over [`framework_core::overlay`] —
+//! Mostly sugar over [`runtime_core::overlay`] —
 //! viewport-centered placement, dismiss-on-backdrop-click,
 //! focus-trapped. Renders a themed `Card`-like surface around the
 //! caller's children so a typical modal call site is just:
@@ -35,9 +35,9 @@
 
 use std::rc::Rc;
 
-use framework_core::primitives::overlay::BackdropMode;
-use framework_core::primitives::portal::ViewportPlacement;
-use framework_core::{ui, ChildList, Primitive};
+use runtime_core::primitives::overlay::BackdropMode;
+use runtime_core::primitives::portal::ViewportPlacement;
+use runtime_core::{ui, ChildList, Primitive};
 
 use crate::stylesheets::Modal;
 
@@ -90,11 +90,11 @@ pub fn modal(props: ModalProps) -> Primitive {
     // `Fn() + 'static` but we have an `Option<Rc<dyn Fn()>>`. The
     // `.on_dismiss(...)` builder takes a closure; we wrap the
     // optional Rc accordingly.
-    let mut bound = framework_core::overlay(overlay_children)
+    let mut bound = runtime_core::overlay(overlay_children)
         .placement(ViewportPlacement::Center)
         .backdrop(backdrop);
     if let Some(d) = on_dismiss_handler {
         bound = bound.on_dismiss(move || (d)());
     }
-    framework_core::IntoPrimitive::into_primitive(bound)
+    runtime_core::IntoPrimitive::into_primitive(bound)
 }

@@ -2,7 +2,7 @@
 //! design (theme-as-trait, intent-as-trait), and links via the
 //! sidebar to each category.
 
-use framework_core::{ui, Primitive};
+use runtime_core::{ui, Primitive};
 use idea_ui::{body, card, heading, stack, BodyTone, HeadingKind, StackGap};
 
 use crate::shell::page_header;

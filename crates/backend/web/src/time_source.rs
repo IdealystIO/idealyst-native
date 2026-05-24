@@ -8,14 +8,14 @@
 
 use std::cell::RefCell;
 
-use framework_core::time::TimeSource;
+use runtime_core::time::TimeSource;
 use wasm_bindgen::prelude::*;
 
-/// Register this backend's time source with `framework-core`.
+/// Register this backend's time source with `runtime-core`.
 /// Idempotent — first install wins. Should run before any
 /// `debug-stats` measurement starts.
 pub fn install_time_source() {
-    framework_core::time::install_time_source(Box::new(WebTimeSource::new()));
+    runtime_core::time::install_time_source(Box::new(WebTimeSource::new()));
 }
 
 struct WebTimeSource {

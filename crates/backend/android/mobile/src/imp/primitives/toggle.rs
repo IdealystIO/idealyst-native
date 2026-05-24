@@ -59,7 +59,7 @@ pub(crate) fn create(
 
 /// Apply a programmatic value to the toggle. Suppresses the
 /// `OnCheckedChangeListener` for the duration of the `setChecked`
-/// call — without this guard, an AAS-driven value update (server
+/// call — without this guard, an runtime-server-driven value update (server
 /// emits the authoritative `value` over the wire) would race a
 /// recent user tap: `setChecked` fires the listener → listener
 /// sends the new value back to the server as an event → server

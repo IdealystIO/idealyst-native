@@ -33,7 +33,7 @@
 use crate::imp::callbacks::leak;
 use backend_android_core::helpers::apply_default_layout_params;
 use crate::imp::{with_env, AndroidBackend};
-use framework_core::primitives::graphics::{
+use runtime_core::primitives::graphics::{
     GraphicsHandle, GraphicsOps, GraphicsSurface, OnLost, OnReady, OnReadyEvent, OnResize,
     OnResizeEvent, SurfaceProvider,
 };

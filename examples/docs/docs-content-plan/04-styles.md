@@ -42,7 +42,7 @@ shape; it just has to implement the `ThemeTokens` trait so the
 framework knows what to install as runtime variables.
 
 ```rust
-use framework_core::{Color, Length, Tokenized, TokenEntry, TokenValue};
+use runtime_core::{Color, Length, Tokenized, TokenEntry, TokenValue};
 use framework_theme::ThemeTokens;
 
 #[derive(Clone)]
@@ -214,7 +214,7 @@ The `stylesheet!` macro is how you declare a typed, themed
 stylesheet. Grammar:
 
 ```rust
-use framework_core::{stylesheet, Color, Length};
+use runtime_core::{stylesheet, Color, Length};
 
 stylesheet! {
     pub Card<MyTheme> {
@@ -477,7 +477,7 @@ stylesheet directly references token names with
 styles that don't need typed theme access:
 
 ```rust
-use framework_core::{stylesheet, Color, Length, Tokenized};
+use runtime_core::{stylesheet, Color, Length, Tokenized};
 
 stylesheet! {
     pub Card<()> {
@@ -508,7 +508,7 @@ your own.
 
 ## Building your own stylesheets
 
-The `stylesheet!` macro is part of `framework-core`. Nothing in it
+The `stylesheet!` macro is part of `runtime-core`. Nothing in it
 is idea-ui-specific. To build your own component library or just
 some app-local styles:
 

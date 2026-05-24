@@ -3,13 +3,13 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use framework_core::driver::{
+use runtime_core::driver::{
     install_render_loop_driver, RenderLoopDriver, RenderLoopHandle,
 };
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 
-/// Register this backend's driver with `framework-core`. Idempotent —
+/// Register this backend's driver with `runtime-core`. Idempotent —
 /// first install wins.
 pub fn install_render_loop() {
     install_render_loop_driver(Box::new(WebRenderLoopDriver));

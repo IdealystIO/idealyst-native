@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use framework_core::{ui, Primitive, Signal};
+use runtime_core::{ui, Primitive, Signal};
 use idea_ui::{
     badge, body, btn, card, heading, stack, BadgeKind, BodyTone, ButtonKind, HeadingKind,
     IntentTag, StackAxis, StackGap,

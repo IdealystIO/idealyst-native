@@ -49,7 +49,7 @@
 //!   when it builds the native view. No framework-level
 //!   `update_web_view_url` plumbing involved.
 
-use framework_core::{Bound, Primitive, Ref, RefFill};
+use runtime_core::{Bound, Primitive, Ref, RefFill};
 use std::any::{Any, TypeId};
 use std::rc::Rc;
 
@@ -230,7 +230,7 @@ pub fn WebView(props: WebViewProps) -> Bound<WebViewHandle> {
         payload: Rc::new(props) as Rc<dyn Any>,
         style: None,
         ref_fill: None,
-        accessibility: framework_core::accessibility::AccessibilityProps::default(),
+        accessibility: runtime_core::accessibility::AccessibilityProps::default(),
     })
 }
 
@@ -307,7 +307,7 @@ static OPS: &dyn WebViewOps = ios::OPS;
     target_os = "ios",
 )))]
 mod fallback {
-    use framework_core::Backend;
+    use runtime_core::Backend;
 
     /// No-op register for unsupported targets. User code calls this
     /// unconditionally; the framework's External placeholder shows up

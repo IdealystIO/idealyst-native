@@ -7,17 +7,17 @@
 //!    so we inherit SPA fallback, no-cache headers, and correct
 //!    MIME types.
 //!
-//! 2. **AAS discovery bridge.** Browses the local network for an
-//!    AAS dev-server matching a given `app_id` and feeds the
+//! 2. **runtime-server discovery bridge.** Browses the local network for an
+//!    runtime-server dev-server matching a given `app_id` and feeds the
 //!    resulting `ws://...` URL into [`dev_http::AasContext`]. The
-//!    HTTP layer then (a) inlines a `<script>window.IDEALYST_AAS_URL
+//!    HTTP layer then (a) inlines a `<script>window.IDEALYST_RUNTIME_SERVER_URL
 //!    = "..."</script>` into every served HTML response and
 //!    (b) exposes the same value via `/__idealyst/aas_url`. Wasm
 //!    bundles pick it up synchronously at boot, no async fetch
 //!    dance required.
 //!
 //! Replaces the old `serve.py` — that script only did the static
-//! side, so users had to bake the AAS URL into the wasm at build
+//! side, so users had to bake the runtime-server URL into the wasm at build
 //! time. This binary closes the loop: a dev-server that restarts
 //! on a fresh ephemeral port is transparently picked up by a page
 //! refresh.
@@ -42,7 +42,7 @@ use anyhow::{anyhow, Context, Result};
 use dev_http::{serve_static, AasContext};
 use mdns_sd::{ServiceDaemon, ServiceEvent};
 
-/// DNS-SD service type the AAS dev-server publishes itself under.
+/// DNS-SD service type the runtime-server dev-server publishes itself under.
 /// Mirrors the constant in `dev-server/src/transport.rs`. Kept in
 /// sync by convention rather than a shared crate to avoid this
 /// binary having to pull in the whole `wire` + `dev-server`
@@ -145,12 +145,12 @@ fn print_usage() {
     eprintln!(
         "Usage: web-dev-host --app-id <id> [--addr <host:port>] [--root <dir>]\n\
          \n\
-         Static-file dev-host that auto-discovers an AAS dev-server with\n\
+         Static-file dev-host that auto-discovers an runtime-server dev-server with\n\
          the matching `app_id` via Bonjour and exposes its URL to served\n\
-         pages via `window.IDEALYST_AAS_URL` + `/__idealyst/aas_url`.\n\
+         pages via `window.IDEALYST_RUNTIME_SERVER_URL` + `/__idealyst/aas_url`.\n\
          \n\
          Options:\n\
-         \x20 --app-id <id>       AAS app_id to look for (required)\n\
+         \x20 --app-id <id>       runtime-server app_id to look for (required)\n\
          \x20 --addr <host:port>  HTTP bind address (default 0.0.0.0:8080)\n\
          \x20 --root <dir>        Static root directory (default current dir)"
     );
@@ -163,7 +163,7 @@ fn print_usage() {
 ///
 /// Keeping the daemon alive (vs. building one per discover() call)
 /// matters here — we want the running daemon to *immediately*
-/// notice when the AAS server restarts on a fresh port, so a page
+/// notice when the runtime-server server restarts on a fresh port, so a page
 /// refresh after a dev-server hot-reload sees the new URL.
 fn spawn_mdns_browser(app_id: String, out: Arc<Mutex<Option<String>>>) {
     thread::spawn(move || {
@@ -193,14 +193,14 @@ fn spawn_mdns_browser(app_id: String, out: Arc<Mutex<Option<String>>>) {
                     }
                     let host_url = pick_url(&info);
                     if let Some(url) = host_url {
-                        eprintln!("[web-dev-host] discovered AAS at {url}");
+                        eprintln!("[web-dev-host] discovered runtime-server at {url}");
                         if let Ok(mut g) = out.lock() {
                             *g = Some(url);
                         }
                     }
                 }
                 ServiceEvent::ServiceRemoved(_, name) => {
-                    eprintln!("[web-dev-host] AAS service {name} disappeared");
+                    eprintln!("[web-dev-host] runtime-server service {name} disappeared");
                     if let Ok(mut g) = out.lock() {
                         *g = None;
                     }

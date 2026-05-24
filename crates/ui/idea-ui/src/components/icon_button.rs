@@ -16,7 +16,7 @@
 
 use std::rc::Rc;
 
-use framework_core::{text, IntoPrimitive, Primitive, StyleApplication, VariantEnum};
+use runtime_core::{text, IntoPrimitive, Primitive, StyleApplication, VariantEnum};
 
 use crate::components::button::{ButtonKind, IntentTag};
 use crate::stylesheets::IconButton;
@@ -69,7 +69,7 @@ pub fn icon_button(props: &IconButtonProps) -> Primitive {
     };
 
     let glyph_child = text(glyph).into_primitive();
-    let mut bound = framework_core::pressable(vec![glyph_child], move || (on_click)())
+    let mut bound = runtime_core::pressable(vec![glyph_child], move || (on_click)())
         .with_style(style);
     if let Some(d) = disabled {
         bound = bound.disabled(move || (d)());

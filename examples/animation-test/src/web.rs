@@ -12,8 +12,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use backend_web::WebBackend;
-use framework_core::animation::AnimProp;
-use framework_core::Backend;
+use runtime_core::animation::AnimProp;
+use runtime_core::Backend;
 use wasm_bindgen::prelude::*;
 
 #[global_allocator]
@@ -21,7 +21,7 @@ static ALLOCATOR: lol_alloc::AssumeSingleThreaded<lol_alloc::FreeListAllocator> 
     unsafe { lol_alloc::AssumeSingleThreaded::new(lol_alloc::FreeListAllocator::new()) };
 
 thread_local! {
-    static OWNER: RefCell<Option<framework_core::Owner>> = const { RefCell::new(None) };
+    static OWNER: RefCell<Option<runtime_core::Owner>> = const { RefCell::new(None) };
     /// Active WebBackend handle. Installed by [`start`] before the
     /// first render; the demo's per-frame property writes
     /// ([`set_animated_f32`]) read this back to call into the
@@ -37,7 +37,7 @@ pub fn start() {
     console_error_panic_hook::set_once();
 
     // Scheduler — the animation clock and all touch recognizers
-    // dispatch through `framework_core::scheduling`. Without this
+    // dispatch through `runtime_core::scheduling`. Without this
     // install, `AnimatedValue::animate` registers a tick that
     // would never fire because the underlying `raf_loop` returns
     // an inert handle.
@@ -58,13 +58,13 @@ pub fn start() {
         // Stash the backend handle so author-facing helpers
         // (`set_animated_f32` below) can dispatch into it.
         WEB_BACKEND.with(|s| *s.borrow_mut() = Some(backend.clone()));
-        let owner = framework_core::render(backend, super::app());
+        let owner = runtime_core::render(backend, super::app());
         OWNER.with(|slot| *slot.borrow_mut() = Some(owner));
     }
 }
 
 /// Write an animated scalar property to a node on the active
-/// `WebBackend`. The demo's [`AnimatedValue`](framework_core::animation::AnimatedValue)
+/// `WebBackend`. The demo's [`AnimatedValue`](runtime_core::animation::AnimatedValue)
 /// subscribers call this each frame to push the new value as
 /// inline CSS (`element.style.scale = "<x> <y>"`,
 /// `element.style.translate = "<x>px <y>px"`, etc.) — much cheaper

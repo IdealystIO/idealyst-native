@@ -20,12 +20,12 @@ states, and a real menu bar.
 
 ### In
 
-- New crate `backend-macos` implementing `framework_core::Backend`.
+- New crate `backend-macos` implementing `runtime_core::Backend`.
 - New shared substrate `backend-apple-core` (renamed/promoted from
   the current `backend-ios-core`) holding the cross-Apple pieces both
   iOS and macOS need: CoreText font registry, color parsing helpers,
   any other UIKit-or-AppKit-agnostic Foundation/CoreGraphics work.
-- Taffy-backed flex layout via `native-layout` (same as iOS/Android).
+- Taffy-backed flex layout via `runtime-layout` (same as iOS/Android).
 - Cursor input: hover, click, drag, scroll-wheel/trackpad. No touch.
 - Multi-window support deferred — start with a single host NSWindow
   set up by the app's `main`. Multi-window is a follow-up after the
@@ -39,7 +39,7 @@ states, and a real menu bar.
 
 ### Out (deferred, explicit)
 
-- **AAS thin-client mode** — `backend-macos` initial version is
+- **runtime-server thin-client mode** — `backend-macos` initial version is
   local-render only. The `aas-shell` feature flag can be wired up
   later mirroring `backend-ios-mobile/aas-shell`.
 - **Multi-window**, **NSDocument**, **tabbed windows**, **status bar
@@ -315,7 +315,7 @@ regardless of which variant the author chose.
 ## Portal & overlay mapping
 
 `Primitive::Portal` exposes two shapes, both already lowered by
-`framework-core`:
+`runtime-core`:
 
 - **Anchored** (`AnchorTarget::Element { handle, side, align }`):
   pin a popup next to an element. **Map to NSPopover.** This is
@@ -372,7 +372,7 @@ and calls the overlay's dismiss handler.
 - Watching for appearance changes: KVO on
   `NSApplication.effectiveAppearance` OR override
   `viewDidChangeEffectiveAppearance` on `LayoutObserverView`. Fire
-  a theme-changed callback into framework-core's appearance hook.
+  a theme-changed callback into runtime-core's appearance hook.
 - Vibrancy: opt-in only. The sidebar in the NSSplitView gets an
   NSVisualEffectView background by default
   (`material = .sidebar`); regular content panes don't. Authors can
@@ -558,7 +558,7 @@ boundaries — flagging so they don't get lost:
 - No SwiftUI lookalike paint pipeline. Native AppKit widgets only.
 - No reimplementation of NSSplitView / NSToolbar / NSPopover in
   Taffy. We use what AppKit gives us.
-- No "phone simulator on Mac" (`native-phone`/`native-tablet`
+- No "phone simulator on Mac" (`variant-phone`/`variant-tablet`
   variants already do that via wgpu — different code path entirely).
 
 ---

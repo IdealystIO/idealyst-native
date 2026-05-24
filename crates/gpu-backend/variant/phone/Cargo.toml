@@ -1,0 +1,24 @@
+[package]
+name = "variant-phone"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Phone-sized native runtime variant. The window size +
+# simulator skin are configured here; all rendering + event
+# handling comes from `host-winit` (winit shell) + `render-wgpu`
+# (the wgpu renderer) + `ios-sim` / `android-sim` (the platform
+# skins).
+
+[features]
+default = []
+# Forward `host-winit/runtime-server` so author code calling
+# `variant_phone::run_runtime_server(skin, app_id)` gets the
+# WebSocket-driven dev-host client path. Off by default; the
+# local-render `run(skin, app)` path pays no transport cost.
+runtime-server = ["host-winit/runtime-server"]
+
+[dependencies]
+host-winit = { workspace = true }
+render-wgpu = { workspace = true }
+runtime-core = { workspace = true }

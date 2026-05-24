@@ -16,13 +16,13 @@ crate-type = ["rlib"]
 
 [features]
 # Compile in the NSTimer-based `RenderLoopDriver`. Forwards to
-# `framework-core/async-driver` so `framework_core::driver::*` is
+# `runtime-core/async-driver` so `runtime_core::driver::*` is
 # in scope. The leaf crates' `async-driver` feature turns this on.
-async-driver = ["framework-core/async-driver"]
+async-driver = ["runtime-core/async-driver"]
 
 [dependencies]
-framework-core = { workspace = true }
-native-layout = { workspace = true }
+runtime-core = { workspace = true }
+runtime-layout = { workspace = true }
 # Cross-Apple substrate (NSLog, scheduler, CoreText font registry,
 # color parsing). The UIKit-flavored shims in this crate (font.rs's
 # UIFont construction, style.rs's color_to_uicolor) sit on top of

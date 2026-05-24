@@ -6,14 +6,14 @@
 //! function takes a node + resolved props and writes (or clears) every
 //! relevant NSAccessibility property. All `create_*` paths call it
 //! after constructing the view; the dynamic
-//! [`update_accessibility`](framework_core::Backend::update_accessibility)
+//! [`update_accessibility`](runtime_core::Backend::update_accessibility)
 //! path reuses it identically. Clearing on `None` is intentional —
 //! reactive a11y prop changes must not leak stale labels onto a view.
 //!
 //! AppKit walks each `NSView`'s NSAccessibility properties directly
 //! (`accessibilityLabel`, `accessibilityRole`, …), so we don't maintain
 //! a parallel semantics tree and
-//! [`dump_accessibility_tree`](framework_core::Backend::dump_accessibility_tree)
+//! [`dump_accessibility_tree`](runtime_core::Backend::dump_accessibility_tree)
 //! stays `None` for this backend.
 //!
 //! ### AppKit vs UIKit subtleties (see [[project_macos_appkit_uikit_diffs]])
@@ -62,7 +62,7 @@
 //!   so screen-reader announcements stay aligned with web ARIA
 //!   semantics.
 
-use framework_core::accessibility::{
+use runtime_core::accessibility::{
     AccessibilityProps, AccessibilityTraits, LiveRegionPriority, Role,
 };
 use objc2::msg_send;
@@ -75,7 +75,7 @@ use crate::imp::MacosNode;
 /// `props`.
 ///
 /// `inferred_role` is the primitive's default role (see
-/// [`framework_core::accessibility::default_role`]). If
+/// [`runtime_core::accessibility::default_role`]). If
 /// `props.role.is_none()` and `inferred_role.is_some()`, the inferred
 /// role is used to pick the NSAccessibility role string; if both are
 /// `None`, no role override is written (the view keeps whatever role
@@ -416,7 +416,7 @@ fn set_string_or_clear(view: &NSView, sel: objc2::runtime::Sel, value: Option<&s
     // `setAccessibility*:` family) are void-returning. Pre-fix
     // this used `let _: () = ...`, which made objc2's debug-mode
     // signature verifier panic ("expected return to have type
-    // code '@', but found 'v'") the first time the AAS-mode walk
+    // code '@', but found 'v'") the first time the runtime-server-mode walk
     // hit an a11y label. The returned pointer is meaningless for
     // these setters; we ignore it.
     type Id = *mut objc2_foundation::NSObject;

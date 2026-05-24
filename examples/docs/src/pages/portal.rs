@@ -5,7 +5,7 @@
 
 use docs_macro::docs;
 #[allow(unused_imports)]
-use crate::shell::{codeblock, pageheader, CodeBlockProps, PageHeaderProps};
+use crate::shell::{code_block, page_header, CodeBlockProps, PageHeaderProps};
 #[allow(unused_imports)]
 use idea_ui::{body, card, heading, stack};
 
@@ -71,7 +71,7 @@ docs! {
            and exposes ", code(".on_dismiss(...)"), ", ",
           code(".trap_focus(...)"), ", ", code(".bind(...)"), "."),
         code(rust, r##"
-            use framework_core::{portal, PortalTarget, ViewportPlacement, view, text};
+            use runtime_core::{portal, PortalTarget, ViewportPlacement, view, text};
 
             portal(
                 PortalTarget::Viewport(ViewportPlacement::Center),
@@ -99,7 +99,7 @@ docs! {
           code("Primitive::Portal"), " at conversion time, adding the \
            backdrop layer + content wrapper around your children:"),
         code(rust, r##"
-            use framework_core::{overlay, BackdropMode, ViewportPlacement, view, text};
+            use runtime_core::{overlay, BackdropMode, ViewportPlacement, view, text};
 
             overlay(vec![
                 view(vec![
@@ -195,7 +195,7 @@ docs! {
           code("portal(target, children)"),
           " and compose your own. The portal primitive is the seam; \
            everything else is user-space code that happens to live in \
-           framework-core because it's broadly useful."),
+           runtime-core because it's broadly useful."),
         p("For totally platform-specific overlays (native MapKit \
            callouts, system share sheets, system pickers), see ",
           link("Third-party primitives", to = "third-party-primitives"),

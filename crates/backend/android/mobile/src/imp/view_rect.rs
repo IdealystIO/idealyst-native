@@ -23,10 +23,10 @@ use jni::objects::{JObject, JValue};
 /// internally walks the view ancestry.)
 pub(crate) fn view_screen_rect(
     node: &jni::objects::GlobalRef,
-) -> framework_core::primitives::portal::ViewportRect {
+) -> runtime_core::primitives::portal::ViewportRect {
     super::with_env(|env| {
         let Ok(loc) = env.new_int_array(2) else {
-            return framework_core::primitives::portal::ViewportRect::default();
+            return runtime_core::primitives::portal::ViewportRect::default();
         };
         let loc_obj: &JObject = loc.as_ref();
         if env
@@ -38,11 +38,11 @@ pub(crate) fn view_screen_rect(
             )
             .is_err()
         {
-            return framework_core::primitives::portal::ViewportRect::default();
+            return runtime_core::primitives::portal::ViewportRect::default();
         }
         let mut buf = [0i32; 2];
         if env.get_int_array_region(&loc, 0, &mut buf).is_err() {
-            return framework_core::primitives::portal::ViewportRect::default();
+            return runtime_core::primitives::portal::ViewportRect::default();
         }
         let width = env
             .call_method(node.as_obj(), "getWidth", "()I", &[])
@@ -52,7 +52,7 @@ pub(crate) fn view_screen_rect(
             .call_method(node.as_obj(), "getHeight", "()I", &[])
             .and_then(|v| v.i())
             .unwrap_or(0);
-        framework_core::primitives::portal::ViewportRect {
+        runtime_core::primitives::portal::ViewportRect {
             x: buf[0] as f32,
             y: buf[1] as f32,
             width: width as f32,

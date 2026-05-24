@@ -1,0 +1,24 @@
+[package]
+name = "build-terminal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Terminal-host build orchestration for `idealyst dev --terminal`
+# (and a future `idealyst build --terminal`).
+#
+# Same shape as `build-macos`: generate a tiny binary wrapper under
+# `<wrapper_root>/<project>/terminal[-runtime-server]/`, depend on
+# `host-terminal` + (in local mode) the user crate, `cargo build`
+# it, return the produced binary's path.
+#
+# Two modes: local-mount (`host_terminal::run(app, opts)`) and
+# runtime-server-client (`host_terminal::run_runtime_server(app_id,
+# opts)`, no user-crate dep — the sidecar runs the user app).
+
+[dependencies]
+anyhow = "1"
+# Re-uses `build-ios`'s manifest parser + framework-source helper
+# the same way `build-macos` does. Cross-platform target dir +
+# wrapper-root resolution lives there.
+build-ios = { workspace = true }

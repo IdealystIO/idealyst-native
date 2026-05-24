@@ -1,12 +1,12 @@
 //! `Primitive::Image` — an `<img>` with reactive `src`.
 
 use crate::WebBackend;
-use framework_core::AssetId;
+use runtime_core::AssetId;
 use wasm_bindgen::JsCast;
 use web_sys::Node;
 
 /// Sentinel URL the framework emits for asset-backed images.
-/// The shape is `asset://<u64-id>` — see `framework_core::image_asset`.
+/// The shape is `asset://<u64-id>` — see `runtime_core::image_asset`.
 const ASSET_URL_PREFIX: &str = "asset://";
 
 /// If `src` is an `asset://{id}` sentinel, resolve it through the

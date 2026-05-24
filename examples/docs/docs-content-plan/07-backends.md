@@ -134,7 +134,7 @@ Read `backend-roku`'s source comments for the exact constraints if
 you're curious. For now: cool to see, not what you'd build a
 production TV app on.
 
-## AAS — the dev-mode backend
+## runtime-server — the dev-mode backend
 
 `aas-shell-native` is the **app-as-server** client. It's
 unusual because it doesn't render anything itself — it forwards
@@ -144,7 +144,7 @@ The shape:
 
 ```
 ┌────────────────────┐  WebSocket  ┌────────────────────┐
-│  AAS dev-host      │ ──────────► │  AAS shell client  │
+│  runtime-server dev-host      │ ──────────► │  runtime-server shell client  │
 │  (your app, on     │             │  (browser / phone, │
 │   the dev machine) │ ◄────────── │   thin client)     │
 └────────────────────┘             └────────────────────┘
@@ -159,7 +159,7 @@ thin clients. Edit code on the dev machine, every connected
 client updates. Navigate on one client, the navigation state
 syncs to the others.
 
-AAS is its own concept worth a page — see [Dev tools](#) for the
+runtime-server is its own concept worth a page — see [Dev tools](#) for the
 full story, including how the wire protocol works and what
 "app-as-server" actually buys you in day-to-day development.
 
@@ -181,7 +181,7 @@ For one-off runs:
 ```bash
 idealyst dev --web       # only the web backend
 idealyst dev --ios       # only the iOS backend
-idealyst dev --aas       # AAS dev-host with whatever clients connect
+idealyst dev --aas       # runtime-server dev-host with whatever clients connect
 ```
 
 ## Writing your own backend
@@ -189,7 +189,7 @@ idealyst dev --aas       # AAS dev-host with whatever clients connect
 The shipped backends cover the major platforms, but there's no
 reason to stop there. The `Backend` trait is small (~30
 methods), and a working backend lives in one Rust crate that
-depends only on `framework-core` and whatever native bindings it
+depends only on `runtime-core` and whatever native bindings it
 needs.
 
 Things people could plug in:
@@ -212,7 +212,7 @@ gets called when. This page is intentionally just the map.
 
 - [Writing your own backend](#) — the full trait, lifecycle, and a
   worked example.
-- [Dev tools](#) — AAS in depth, the wire protocol, hot reload.
+- [Dev tools](#) — runtime-server in depth, the wire protocol, hot reload.
 - [Architecture in more depth](#) (on the Overview) — where
-  backends sit relative to `framework-wire`, `framework-hot`, and
-  `framework-native-layout`.
+  backends sit relative to `framework-wire`, `dev-hot`, and
+  `framework-runtime-layout`.

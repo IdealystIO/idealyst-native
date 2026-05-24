@@ -9,7 +9,7 @@
 //!
 //! ## Why this is a third-party primitive, not a framework one
 //!
-//! It used to be `Primitive::CodeBlock` in `framework-core`. A
+//! It used to be `Primitive::CodeBlock` in `runtime-core`. A
 //! measurement showed the perf justification was real — the
 //! equivalent composition (`View` + `Repeat<styled-View+Text>`)
 //! generates 100–300× more backend ops per re-render even with the
@@ -18,7 +18,7 @@
 //! replaces one node) can't be closed by framework optimization
 //! alone.
 //!
-//! But the primitive doesn't fit framework-core's intent — it isn't
+//! But the primitive doesn't fit runtime-core's intent — it isn't
 //! a platform-native widget (no platform has a "code block"
 //! element) and it's expressible from existing primitives if perf
 //! weren't a concern. CLAUDE.md rule 3 says exactly this case
@@ -45,7 +45,7 @@
 //! Re-renders pay the same per-render cost as any other
 //! `Primitive::External`: tear down old node + create new node.
 
-use framework_core::{external, Bound, Color, ExternalHandle};
+use runtime_core::{external, Bound, Color, ExternalHandle};
 
 /// Type-erased payload for the CodeBlock external primitive. Lives
 /// here because the framework dispatches handlers by [`TypeId`], and

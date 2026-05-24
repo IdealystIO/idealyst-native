@@ -18,7 +18,7 @@ use jni::objects::{GlobalRef, JValue};
 use jni::sys::jlong;
 use std::cell::RefCell;
 
-pub(crate) fn install(_b: &AndroidBackend, node: &GlobalRef, handler: framework_core::TouchHandler) {
+pub(crate) fn install(_b: &AndroidBackend, node: &GlobalRef, handler: runtime_core::TouchHandler) {
     with_env(|env| {
         let ptr: jlong = leak(TouchCallback {
             inner: RefCell::new(Some(handler)),

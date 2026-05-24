@@ -1,4 +1,4 @@
-//! Cheap RAII phase timer that reports into framework-core's debug
+//! Cheap RAII phase timer that reports into runtime-core's debug
 //! `record_apply_phase` aggregator. Zero overhead when the
 //! `debug-stats` feature is off — the struct vanishes and call sites
 //! become a `let _ = ();` that the optimizer strips.
@@ -27,7 +27,7 @@ impl PhaseTimer {
     pub(crate) fn start(phase: &'static str) -> Self {
         Self {
             phase,
-            start_us: framework_core::debug::now_micros(),
+            start_us: runtime_core::debug::now_micros(),
         }
     }
 }
@@ -35,9 +35,9 @@ impl PhaseTimer {
 #[cfg(feature = "debug-stats")]
 impl Drop for PhaseTimer {
     fn drop(&mut self) {
-        let now = framework_core::debug::now_micros();
+        let now = runtime_core::debug::now_micros();
         let dur = now.saturating_sub(self.start_us);
-        framework_core::debug::record_apply_phase(self.phase, dur);
+        runtime_core::debug::record_apply_phase(self.phase, dur);
     }
 }
 

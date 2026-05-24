@@ -7,7 +7,7 @@ description = "Watch + wasm-pack rebuild loop for `idealyst dev` reload mode"
 
 [dependencies]
 anyhow = "1"
-# File-watch + debounce. Same crate `dev-server` uses for its AAS
+# File-watch + debounce. Same crate `dev-server` uses for its runtime-server
 # rebuild loop — keeps the workspace from carrying two debouncers.
 notify-debouncer-mini = { version = "0.4", default-features = false }
 # Web builds delegate to `build-web`, which generates a wrapper

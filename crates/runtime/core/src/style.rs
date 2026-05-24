@@ -1,0 +1,3577 @@
+//! Style declarations and tokenization infrastructure.
+//!
+//! The framework owns the data model — what a "style" looks like, what
+//! variant axes exist, and how named tokens propagate — but does **not**
+//! own the rendering strategy or the "theme-as-struct" pattern. Each
+//! backend interprets a `StyleRules` value however suits its platform:
+//!
+//! - **Web** can lazily mint CSS classes per unique rule set and swap
+//!   `className` on the node when the style changes.
+//! - **iOS** can update `CALayer` / `UIView` properties directly.
+//! - **Android** can call `View` setters or apply theme attributes.
+//!
+//! # Tokens
+//!
+//! Stylesheets are **closures** from a `VariantSet` to concrete
+//! `StyleRules`. Property values can be either literals or named
+//! `Tokenized::Token { name, fallback }` references. Token values are
+//! installed via [`install_tokens`] and updated via [`update_tokens`].
+//!
+//! The "theme as a typed struct" pattern is provided by `idea-ui`'s
+//! theme runtime as a thin wrapper over these primitives.
+//!
+//! Token updates flow through the existing reactive system: each styled
+//! node's apply-style call lives inside an `Effect` that reads token
+//! values via `Tokenized::<T>::resolve()`. `resolve` subscribes the
+//! active Effect to the per-token `Signal<TokenValue>` in the
+//! registry, so an `update_tokens(["a"])` call only re-fires effects
+//! that referenced `"a"` — token swaps are O(referencing nodes), not
+//! O(styled nodes).
+//!
+//! # Identity for caching
+//!
+//! The framework memoizes resolution per `(stylesheet pointer, variants)`
+//! and returns an `Rc<StyleRules>`. Backends cache their native form
+//! keyed on the rule set's content (a hash or serialization), making
+//! caching immune to allocator-reuse hazards.
+
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::rc::Rc;
+
+use crate::assets::TypefaceId;
+
+// ----------------------------------------------------------------------------
+// Values
+// ----------------------------------------------------------------------------
+
+/// Color value as a backend-portable string. Backends translate to their
+/// native form (CSS string, UIColor, Android color int).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Color(pub String);
+
+impl From<&str> for Color {
+    fn from(s: &str) -> Self {
+        Color(s.to_string())
+    }
+}
+
+impl From<String> for Color {
+    fn from(s: String) -> Self {
+        Color(s)
+    }
+}
+
+/// A measurable length value. Authors mostly write `Length::Px(16.0)`
+/// — or just `16.0`/`16` directly, since `From<f32>` and `From<i32>`
+/// produce `Length::Px`. Percent is for "X% of parent on the relevant
+/// axis". Auto defers to layout (only meaningful on a subset of
+/// properties — `width`, `height`, `margin`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Length {
+    Px(f32),
+    Percent(f32),
+    Auto,
+}
+
+impl Length {
+    /// Shorthand for `Length::Percent(value)`.
+    pub fn pct(value: f32) -> Self { Length::Percent(value) }
+}
+
+impl From<f32> for Length {
+    fn from(v: f32) -> Self { Length::Px(v) }
+}
+
+impl From<i32> for Length {
+    fn from(v: i32) -> Self { Length::Px(v as f32) }
+}
+
+/// Bit-cast for hashing, since `f32` isn't `Eq`/`Hash`. Variant tag in
+/// the high byte so `Px(0.0)` and `Percent(0.0)` hash differently.
+fn length_bits(l: Length) -> u64 {
+    match l {
+        Length::Px(v) => (1u64 << 32) | v.to_bits() as u64,
+        Length::Percent(v) => (2u64 << 32) | v.to_bits() as u64,
+        Length::Auto => 3u64 << 32,
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Tokenized<T> — values that may resolve through a named theme token
+// ----------------------------------------------------------------------------
+
+/// A property value that is either a literal or a reference to a named
+/// theme token. The `name` is theme-independent; the `fallback` is the
+/// concrete value that should be used when no theme variable system is
+/// available (mobile backends, SSR, etc.) or when the variable hasn't
+/// been installed yet.
+///
+/// **Why this exists.** Backends that support runtime variables (web's
+/// CSS custom properties) can emit `var(--name, fallback)` instead of
+/// the literal value. Theme swap then becomes a single write per token
+/// — no class regeneration, no per-element style mutation. Backends
+/// without a variable system (iOS, Android) just read `.value()` and
+/// behave like the literal was set.
+///
+/// **Identity for caching.** [`StyleRules::content_key`] hashes the
+/// **token name** for `Tokenized::Token` (not the fallback). So two
+/// themes that bind `color-accent` to different colors produce the
+/// **same** content key for a stylesheet that uses `color-accent` —
+/// which is what makes class names theme-stable.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Tokenized<T> {
+    Literal(T),
+    Token { name: &'static str, fallback: T },
+}
+
+impl<T> Tokenized<T> {
+    /// The concrete value to use when no variable system is available.
+    /// For `Literal(v)` returns `v`; for `Token { fallback, .. }`
+    /// returns the fallback.
+    pub fn value(&self) -> &T {
+        match self {
+            Tokenized::Literal(v) => v,
+            Tokenized::Token { fallback, .. } => fallback,
+        }
+    }
+
+    /// The token name, if this is a token reference.
+    pub fn name(&self) -> Option<&'static str> {
+        match self {
+            Tokenized::Token { name, .. } => Some(name),
+            Tokenized::Literal(_) => None,
+        }
+    }
+
+    /// Construct a token reference. Authors typically don't call this
+    /// directly — themes expose `Tokenized<T>` fields built once at
+    /// theme construction.
+    pub const fn token(name: &'static str, fallback: T) -> Self {
+        Tokenized::Token { name, fallback }
+    }
+}
+
+impl<T: Copy> Copy for Tokenized<T> where T: Copy {}
+
+// Per-token reactive resolution. Backends inside an `apply_style` Effect
+// call `.resolve()` instead of `.value()` so the effect subscribes to
+// the per-token signal in `TOKEN_REGISTRY` — only nodes that read a
+// token re-fire on that token's update.
+//
+// One `resolve()` per `T` (Color / Length / f32) because each variant
+// of `TokenValue` carries a different concrete type — there is no
+// generic extraction helper that would work for all three.
+
+impl Tokenized<Color> {
+    /// Reactive read. For `Literal(v)` returns `v` (no subscription).
+    /// For `Token { name, fallback }`, subscribes the active Effect to
+    /// the per-token signal in the registry, extracts the `Color` value
+    /// (or returns `fallback` if the registry has no entry / the
+    /// installed value is the wrong variant).
+    pub fn resolve(&self) -> Color {
+        match self {
+            Tokenized::Literal(v) => v.clone(),
+            Tokenized::Token { name, fallback } => {
+                debug_assert_theme_installed(name);
+                with_or_create_token_signal(name, || TokenValue::Color(fallback.clone()))
+                    .map(|sig| match sig.get() {
+                        TokenValue::Color(c) => c,
+                        other => {
+                            debug_warn_token_type_mismatch(name, "Color", &other);
+                            fallback.clone()
+                        }
+                    })
+                    .unwrap_or_else(|| fallback.clone())
+            }
+        }
+    }
+}
+
+impl Tokenized<Length> {
+    /// Reactive read — see `Tokenized<Color>::resolve`.
+    pub fn resolve(&self) -> Length {
+        match self {
+            Tokenized::Literal(v) => *v,
+            Tokenized::Token { name, fallback } => {
+                debug_assert_theme_installed(name);
+                with_or_create_token_signal(name, || TokenValue::Length(*fallback))
+                    .map(|sig| match sig.get() {
+                        TokenValue::Length(l) => l,
+                        other => {
+                            debug_warn_token_type_mismatch(name, "Length", &other);
+                            *fallback
+                        }
+                    })
+                    .unwrap_or(*fallback)
+            }
+        }
+    }
+}
+
+impl Tokenized<f32> {
+    /// Reactive read — see `Tokenized<Color>::resolve`.
+    pub fn resolve(&self) -> f32 {
+        match self {
+            Tokenized::Literal(v) => *v,
+            Tokenized::Token { name, fallback } => {
+                debug_assert_theme_installed(name);
+                with_or_create_token_signal(name, || TokenValue::Number(*fallback))
+                    .map(|sig| match sig.get() {
+                        TokenValue::Number(n) => n,
+                        other => {
+                            debug_warn_token_type_mismatch(name, "Number", &other);
+                            *fallback
+                        }
+                    })
+                    .unwrap_or(*fallback)
+            }
+        }
+    }
+}
+
+// `From<T> for Tokenized<T>` so the stylesheet macro's
+// `Some(Into::into(expr))` accepts plain literal values.
+impl<T> From<T> for Tokenized<T> {
+    fn from(v: T) -> Self {
+        Tokenized::Literal(v)
+    }
+}
+
+// Allow `f32`/`i32` to flow into `Tokenized<Length>` so existing
+// authoring patterns like `padding: 16` still work after the field
+// type change. Two-step `From` chains aren't transitive in Rust, so
+// we provide the bridges explicitly.
+impl From<f32> for Tokenized<Length> {
+    fn from(v: f32) -> Self {
+        Tokenized::Literal(Length::Px(v))
+    }
+}
+impl From<i32> for Tokenized<Length> {
+    fn from(v: i32) -> Self {
+        Tokenized::Literal(Length::Px(v as f32))
+    }
+}
+
+// `Color` from `&str`/`String` is already provided; bridge those into
+// `Tokenized<Color>` so authors can keep writing `background: "#fff"`.
+impl From<&str> for Tokenized<Color> {
+    fn from(s: &str) -> Self {
+        Tokenized::Literal(Color(s.to_string()))
+    }
+}
+impl From<String> for Tokenized<Color> {
+    fn from(s: String) -> Self {
+        Tokenized::Literal(Color(s))
+    }
+}
+
+// =============================================================================
+// Flex layout enums (mobile-first defaults match React Native)
+// =============================================================================
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum FlexDirection {
+    /// Children stack top-to-bottom. RN default; what `View {}` does
+    /// without explicit configuration.
+    #[default]
+    Column,
+    Row,
+    ColumnReverse,
+    RowReverse,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum FlexWrap {
+    #[default]
+    NoWrap,
+    Wrap,
+    WrapReverse,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum JustifyContent {
+    #[default]
+    FlexStart,
+    FlexEnd,
+    Center,
+    SpaceBetween,
+    SpaceAround,
+    SpaceEvenly,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum AlignItems {
+    FlexStart,
+    FlexEnd,
+    Center,
+    /// RN default. Children fill the cross axis.
+    #[default]
+    Stretch,
+    Baseline,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum AlignContent {
+    #[default]
+    FlexStart,
+    FlexEnd,
+    Center,
+    Stretch,
+    SpaceBetween,
+    SpaceAround,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum AlignSelf {
+    #[default]
+    Auto,
+    FlexStart,
+    FlexEnd,
+    Center,
+    Stretch,
+    Baseline,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Position {
+    #[default]
+    Relative,
+    Absolute,
+}
+
+// =============================================================================
+// Typography enums
+// =============================================================================
+
+/// Font weight, ladder-style. Backends map to their native weight axis:
+/// CSS numeric weights (100..900), iOS `UIFontWeight`, Android typeface
+/// constants. RN-compatible enum; authors don't think in numeric scales.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum FontWeight {
+    Thin,
+    ExtraLight,
+    Light,
+    #[default]
+    Normal,
+    Medium,
+    SemiBold,
+    Bold,
+    ExtraBold,
+    Black,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum FontStyle {
+    #[default]
+    Normal,
+    Italic,
+}
+
+/// `font-family` value. Either a free-form CSS-style family name
+/// (`"Helvetica, sans-serif"`, `"monospace"`) or a declarative
+/// [`Typeface`](crate::assets::Typeface) handle, which the framework
+/// registers with the backend on first use before any rule that
+/// references it is applied.
+///
+/// Authors usually don't construct this directly. The `stylesheet!`
+/// macro wraps every property value in `Into::into(...)`, so:
+///
+/// ```ignore
+/// stylesheet! {
+///     pub Body<MyTheme> {
+///         base(_) {
+///             font_family: "system-ui, sans-serif",       // → System
+///             // or
+///             font_family: &INTER,                        // → Typeface
+///         }
+///     }
+/// }
+/// ```
+///
+/// goes through `From<&str>` / `From<&'static Typeface>` respectively.
+#[derive(Clone, Debug)]
+pub enum FontFamily {
+    /// A CSS-style family name. Passed verbatim to the platform's
+    /// font lookup (web's `font-family`, iOS's `UIFont(name:)`,
+    /// Android's `Typeface.create(name)`). Use for system fonts and
+    /// for typefaces the OS already knows about.
+    System(String),
+    /// A declarative typeface registered with the backend on first
+    /// observation. The framework calls
+    /// [`Backend::register_asset`](crate::Backend::register_asset)
+    /// for each face plus
+    /// [`Backend::register_typeface`](crate::Backend::register_typeface)
+    /// before any `apply_style` that references it; backends then
+    /// resolve fonts via the typeface's `family_name`.
+    Typeface(crate::assets::Typeface),
+}
+
+impl From<String> for FontFamily {
+    fn from(s: String) -> Self {
+        FontFamily::System(s)
+    }
+}
+impl From<&str> for FontFamily {
+    fn from(s: &str) -> Self {
+        FontFamily::System(s.to_string())
+    }
+}
+impl From<crate::assets::Typeface> for FontFamily {
+    fn from(t: crate::assets::Typeface) -> Self {
+        FontFamily::Typeface(t)
+    }
+}
+impl From<&'static crate::assets::Typeface> for FontFamily {
+    fn from(t: &'static crate::assets::Typeface) -> Self {
+        FontFamily::Typeface(*t)
+    }
+}
+
+impl PartialEq for FontFamily {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (FontFamily::System(a), FontFamily::System(b)) => a == b,
+            // Typefaces are equal iff their ids match. Cheaper than
+            // comparing `&'static` slices structurally and matches the
+            // backend's dedup key.
+            (FontFamily::Typeface(a), FontFamily::Typeface(b)) => a.id == b.id,
+            _ => false,
+        }
+    }
+}
+impl Eq for FontFamily {}
+impl std::hash::Hash for FontFamily {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            FontFamily::System(s) => {
+                state.write_u8(0);
+                s.hash(state);
+            }
+            FontFamily::Typeface(t) => {
+                state.write_u8(1);
+                t.id.hash(state);
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum TextAlign {
+    #[default]
+    Left,
+    Right,
+    Center,
+    Justify,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum TextTransform {
+    #[default]
+    None,
+    Uppercase,
+    Lowercase,
+    Capitalize,
+}
+
+// =============================================================================
+// Visual: Overflow / Shadow / Transform
+// =============================================================================
+
+/// Overflow handling at the node's edges. `Scroll` is intentionally not
+/// supported as a style property — scrolling needs a `ScrollView`
+/// primitive (separate concern). Authors who want overflow:hidden for
+/// clipping (e.g. rounded-corner clipping of children) get the option.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Overflow {
+    #[default]
+    Visible,
+    Hidden,
+}
+
+/// Drop shadow. Mobile-shaped — no CSS `spread` (which doesn't map
+/// cleanly to UIView/Android shadow APIs). Backends translate:
+/// - Web: `box-shadow: {x}px {y}px {blur}px {color}`
+/// - iOS: `layer.shadowOffset/Opacity/Radius/Color` setters
+/// - Android: `setElevation` + tinting (approximation)
+#[derive(Clone, Debug, PartialEq)]
+pub struct Shadow {
+    pub x: f32,
+    pub y: f32,
+    pub blur: f32,
+    pub color: Color,
+}
+
+/// Gradient fill for a view's background. Sits alongside the
+/// plain `background` color: when both are set, the gradient
+/// renders over (z-replaces) the solid background. Each backend
+/// maps onto its native gradient primitive:
+/// - Web: `background-image: linear-gradient(...)` / `radial-gradient(...)`.
+/// - iOS: `CAGradientLayer` (`.axial` for linear, `.radial` for radial).
+/// - Android: `GradientDrawable` with the corresponding gradient type,
+///   or a manual `RadialGradient` + `Paint` when the type isn't expressible.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Gradient {
+    pub kind: GradientKind,
+    /// Color stops ordered by ascending offset. Each `(offset, color)`
+    /// pair lives in normalized 0..=1 space: `0.0` is the start of the
+    /// gradient (axial origin / radial center) and `1.0` is the far
+    /// end (axial terminus / radius edge). Stops outside this range
+    /// are clamped by each backend.
+    pub stops: Vec<GradientStop>,
+}
+
+/// One color stop in a [`Gradient`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct GradientStop {
+    /// Offset along the gradient's axis (linear) or radius (radial),
+    /// in normalized 0..=1 space.
+    pub offset: f32,
+    pub color: Color,
+}
+
+/// The shape of a gradient — linear or radial. Each variant carries
+/// only the parameters specific to its shape; the color stops live
+/// on the parent [`Gradient`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum GradientKind {
+    /// Linear gradient along an axis defined by an angle.
+    Linear {
+        /// Direction of the gradient axis in degrees, clockwise from
+        /// straight-up (CSS convention): `0` = bottom→top,
+        /// `90` = left→right, `180` = top→bottom, `270` = right→left.
+        angle_deg: f32,
+    },
+    /// Radial gradient emanating from a center point.
+    Radial {
+        /// Center of the radial gradient, normalized 0..=1 in the
+        /// view's local space. `(0.5, 0.5)` puts the center in the
+        /// middle of the view; `(1.0, 0.0)` puts it at top-right.
+        center: (f32, f32),
+        /// Distance at which the last stop (offset=1.0) sits,
+        /// expressed as a multiple of the chosen `extent`. With
+        /// `extent: ClosestSide` and `radius: 1.0`, the outermost
+        /// stop sits at the closest edge midpoint; with `radius: 2.0`
+        /// it sits twice as far. Values >1.0 push the last stop
+        /// past the box, which is useful when the view is clipped
+        /// to rounded corners and you don't want the gradient cut
+        /// short of the visible edge.
+        radius: f32,
+        /// What "100%" means for the gradient — the reference
+        /// distance multiplied by `radius`. Mirrors CSS's
+        /// `closest-side` / `farthest-corner` keywords on
+        /// `radial-gradient`. Use `FarthestCorner` for vignettes
+        /// that must reach the screen corners on non-square
+        /// viewports; the default `ClosestSide` works for
+        /// aspect-ratio:1 discs (suns, dots, badges).
+        extent: RadialExtent,
+    },
+}
+
+/// Reference distance for a [`GradientKind::Radial`]. Determines
+/// what "100% of radius" means in the view's local coordinate
+/// space — matches the equivalent CSS `radial-gradient(<extent>, …)`
+/// keywords.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum RadialExtent {
+    /// Distance to the closest edge midpoint. On a 100×200 box
+    /// centered, the reference is 50px (half the shorter side).
+    /// Best for circular content on square boxes — the disc
+    /// reaches the view edge at `radius: 1.0`.
+    #[default]
+    ClosestSide,
+    /// Distance to the farthest corner. On the same 100×200 box
+    /// centered, the reference is √(50² + 100²) ≈ 112px. Use this
+    /// when the gradient should reach the corners of a non-square
+    /// box — vignettes, screen-filling glows.
+    FarthestCorner,
+}
+
+/// One element of a transform stack. The full transform is a
+/// `Vec<Transform>` applied in order — matches RN's `transform: [...]`
+/// shape. Backends:
+/// - Web: emits a single `transform: ...` string joining all entries.
+/// - Native: applies each transform to the view's layer matrix in order.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Transform {
+    TranslateX(Length),
+    TranslateY(Length),
+    /// Uniform scale on both axes.
+    Scale(f32),
+    /// Independent scale per axis.
+    ScaleXY { x: f32, y: f32 },
+    /// Rotation in degrees, clockwise.
+    Rotate(f32),
+    SkewX(f32),
+    SkewY(f32),
+}
+
+// =============================================================================
+// Animated transitions
+// =============================================================================
+//
+// A `Transition` declares "when this property's resolved value changes,
+// interpolate over `duration_ms` using `easing`." It does NOT drive
+// per-frame ticking — the backend's native transition machinery does
+// that (CSS `transition` on web, `CATransaction` / `UIView.animate` on
+// iOS, `ObjectAnimator` on Android). The framework just declares
+// intent; backends interpolate.
+//
+// Each animatable property in `StyleRules` has a sibling
+// `*_transition: Option<Transition>` field. The macro's per-property
+// transition shorthands (`padding: 200ms EaseOut`) fan out to all
+// four sides, matching the property shorthand fanout.
+
+/// Easing curve for an animated transition. Five named curves plus a
+/// cubic-bezier escape hatch — covers the cross-platform set.
+/// Backends map to their native primitive:
+/// - Web: CSS timing-function names + `cubic-bezier(...)`
+/// - iOS: `CAMediaTimingFunction` named constants + custom control points
+/// - Android: `Interpolator` subclasses + `PathInterpolator` for custom
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Easing {
+    Linear,
+    /// CSS default — quick start, slow end. Equivalent to
+    /// `cubic-bezier(0.25, 0.1, 0.25, 1.0)`.
+    #[default]
+    Ease,
+    EaseIn,
+    EaseOut,
+    EaseInOut,
+    /// Custom cubic-bezier control points `(x1, y1, x2, y2)`.
+    CubicBezier(f32, f32, f32, f32),
+}
+
+/// Animation timing for a single property. `duration_ms` is integer
+/// milliseconds (no floats — keeps `Hash`/`Eq` straightforward, and
+/// sub-millisecond timing isn't meaningful for UI transitions).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Transition {
+    pub duration_ms: u32,
+    pub easing: Easing,
+}
+
+impl Transition {
+    pub fn new(duration_ms: u32, easing: Easing) -> Self {
+        Self { duration_ms, easing }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// StyleRules — concrete property bag
+// ----------------------------------------------------------------------------
+
+/// A bag of style property values. Every field is optional so a rule set
+/// only carries properties the author cared about. Values are concrete —
+/// no tokens, no indirection. Stylesheets produce these by running their
+/// theme-fed closure.
+///
+/// Property scope is **flex layout only**: this struct intentionally has
+/// no display/grid/float/etc. properties. Every node lays out its
+/// children via flexbox; the framework relies on Yoga (or the web
+/// browser) to do the actual math. RN defaults apply: `flex_direction`
+/// = `Column`, `align_items` = `Stretch`, `flex_shrink` = 0.
+///
+/// Per-side properties (padding/margin/border-radius/border-width) are
+/// stored as four separate fields per axis. Author-facing shorthand
+/// like `padding: 16` is expanded by the `stylesheet!` macro at
+/// compile time and by builder methods at runtime — the data model
+/// itself has only per-side state.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StyleRules {
+    // --- Color + text ---
+    pub background: Option<Tokenized<Color>>,
+    pub color: Option<Tokenized<Color>>,
+    /// Caret color for text-input primitives (`TextInput`, `TextArea`).
+    /// Maps to CSS `caret-color` on web, `tintColor` on UIKit, and
+    /// `setTextCursorDrawable` (API 29+) on Android. Has no effect on
+    /// non-input nodes — backends silently ignore it elsewhere. The
+    /// browser's `caret-color: auto` default follows `color`, so an
+    /// editor that paints `color: transparent` (to defer rendering to
+    /// a syntax-highlight overlay) MUST pin `caret_color` explicitly
+    /// or the caret disappears too.
+    pub caret_color: Option<Tokenized<Color>>,
+    pub font_size: Option<Tokenized<Length>>,
+
+    // --- Flex container (applies when this node has children) ---
+    pub flex_direction: Option<FlexDirection>,
+    pub flex_wrap: Option<FlexWrap>,
+    pub justify_content: Option<JustifyContent>,
+    pub align_items: Option<AlignItems>,
+    pub align_content: Option<AlignContent>,
+    pub gap: Option<Tokenized<Length>>,
+    pub row_gap: Option<Tokenized<Length>>,
+    pub column_gap: Option<Tokenized<Length>>,
+
+    // --- Flex item (this node's behavior inside its parent) ---
+    pub flex_grow: Option<Tokenized<f32>>,
+    pub flex_shrink: Option<Tokenized<f32>>,
+    pub flex_basis: Option<Tokenized<Length>>,
+    pub align_self: Option<AlignSelf>,
+
+    // --- Sizing ---
+    pub width: Option<Tokenized<Length>>,
+    pub height: Option<Tokenized<Length>>,
+    pub min_width: Option<Tokenized<Length>>,
+    pub min_height: Option<Tokenized<Length>>,
+    pub max_width: Option<Tokenized<Length>>,
+    pub max_height: Option<Tokenized<Length>>,
+    /// Preferred width-to-height ratio (`width / height`). When set,
+    /// the layout engine sizes the unspecified dimension to satisfy
+    /// the ratio. Useful for keeping a square (`1.0`) or
+    /// fixed-aspect (e.g. `16.0 / 9.0`) box even when only one
+    /// dimension is sized as a percentage of the parent. Mirrors
+    /// CSS `aspect-ratio` and Taffy's `aspect_ratio` field.
+    pub aspect_ratio: Option<f32>,
+
+    // --- Padding (per-side; no shorthand field) ---
+    pub padding_top: Option<Tokenized<Length>>,
+    pub padding_right: Option<Tokenized<Length>>,
+    pub padding_bottom: Option<Tokenized<Length>>,
+    pub padding_left: Option<Tokenized<Length>>,
+
+    // --- Margin (per-side; no shorthand field) ---
+    pub margin_top: Option<Tokenized<Length>>,
+    pub margin_right: Option<Tokenized<Length>>,
+    pub margin_bottom: Option<Tokenized<Length>>,
+    pub margin_left: Option<Tokenized<Length>>,
+
+    // --- Border radius (per-corner) ---
+    pub border_top_left_radius: Option<Tokenized<Length>>,
+    pub border_top_right_radius: Option<Tokenized<Length>>,
+    pub border_bottom_left_radius: Option<Tokenized<Length>>,
+    pub border_bottom_right_radius: Option<Tokenized<Length>>,
+
+    // --- Border widths (per-side, `f32` not `Length` — borders aren't
+    //     percentages). All four are independent. ---
+    pub border_top_width: Option<Tokenized<f32>>,
+    pub border_right_width: Option<Tokenized<f32>>,
+    pub border_bottom_width: Option<Tokenized<f32>>,
+    pub border_left_width: Option<Tokenized<f32>>,
+
+    // --- Border colors (per-side). ---
+    pub border_top_color: Option<Tokenized<Color>>,
+    pub border_right_color: Option<Tokenized<Color>>,
+    pub border_bottom_color: Option<Tokenized<Color>>,
+    pub border_left_color: Option<Tokenized<Color>>,
+
+    // --- Position ---
+    pub position: Option<Position>,
+    pub top: Option<Tokenized<Length>>,
+    pub right: Option<Tokenized<Length>>,
+    pub bottom: Option<Tokenized<Length>>,
+    pub left: Option<Tokenized<Length>>,
+
+    // --- Typography (text-only on native; cascade on web) ---
+    pub font_family: Option<FontFamily>,
+    pub font_weight: Option<FontWeight>,
+    pub font_style: Option<FontStyle>,
+    pub line_height: Option<Tokenized<f32>>,
+    pub letter_spacing: Option<Tokenized<f32>>,
+    pub text_align: Option<TextAlign>,
+    pub underline: Option<bool>,
+    pub strikethrough: Option<bool>,
+    pub text_transform: Option<TextTransform>,
+
+    // --- Visual ---
+    pub opacity: Option<Tokenized<f32>>,
+    pub overflow: Option<Overflow>,
+    pub shadow: Option<Shadow>,
+    /// Gradient background, rendered over (replacing) the solid
+    /// `background` color when both are set. Each backend maps to its
+    /// native gradient primitive — see [`Gradient`]'s doc for the
+    /// mapping table.
+    pub background_gradient: Option<Gradient>,
+    /// Empty vec means "no transforms"; the field's `Option` distinguishes
+    /// "not set, fall through to other layers" from "explicitly empty".
+    pub transform: Option<Vec<Transform>>,
+    /// Origin point for `transform` (and per-frame animated scale /
+    /// rotate / translate). Defaults to the element's center on every
+    /// platform when `None`. Components are the X and Y origin —
+    /// `(pct(0.0), pct(0.0))` = top-left, `(pct(100.0), pct(0.0))` =
+    /// top-right, `(pct(50.0), pct(100.0))` = bottom-center. Percent
+    /// units are relative to the element's own box, NOT its parent —
+    /// matches CSS `transform-origin`.
+    pub transform_origin: Option<(Length, Length)>,
+
+    // --- Transitions ---
+    // One per animatable property. Set via `transitions { ... }` in
+    // the `stylesheet!` macro. When the property's resolved value
+    // changes, the backend interpolates over `duration_ms` using
+    // `easing`. Properties without a transition spec change instantly.
+    pub background_transition: Option<Transition>,
+    pub color_transition: Option<Transition>,
+    pub caret_color_transition: Option<Transition>,
+    pub opacity_transition: Option<Transition>,
+    pub transform_transition: Option<Transition>,
+    pub width_transition: Option<Transition>,
+    pub height_transition: Option<Transition>,
+    pub top_transition: Option<Transition>,
+    pub right_transition: Option<Transition>,
+    pub bottom_transition: Option<Transition>,
+    pub left_transition: Option<Transition>,
+    pub padding_top_transition: Option<Transition>,
+    pub padding_right_transition: Option<Transition>,
+    pub padding_bottom_transition: Option<Transition>,
+    pub padding_left_transition: Option<Transition>,
+    pub margin_top_transition: Option<Transition>,
+    pub margin_right_transition: Option<Transition>,
+    pub margin_bottom_transition: Option<Transition>,
+    pub margin_left_transition: Option<Transition>,
+    pub border_top_left_radius_transition: Option<Transition>,
+    pub border_top_right_radius_transition: Option<Transition>,
+    pub border_bottom_left_radius_transition: Option<Transition>,
+    pub border_bottom_right_radius_transition: Option<Transition>,
+    pub border_top_width_transition: Option<Transition>,
+    pub border_right_width_transition: Option<Transition>,
+    pub border_bottom_width_transition: Option<Transition>,
+    pub border_left_width_transition: Option<Transition>,
+    pub border_top_color_transition: Option<Transition>,
+    pub border_right_color_transition: Option<Transition>,
+    pub border_bottom_color_transition: Option<Transition>,
+    pub border_left_color_transition: Option<Transition>,
+}
+
+impl StyleRules {
+    /// Layer `other` on top of `self`: properties set in `other` override
+    /// the corresponding fields in `self`.
+    pub fn merge(mut self, other: &StyleRules) -> Self {
+        macro_rules! overlay {
+            ($($f:ident),* $(,)?) => {
+                $(
+                    if other.$f.is_some() {
+                        self.$f = other.$f.clone();
+                    }
+                )*
+            };
+        }
+        overlay!(
+            background, color, caret_color, font_size,
+            flex_direction, flex_wrap, justify_content, align_items, align_content,
+            gap, row_gap, column_gap,
+            flex_grow, flex_shrink, flex_basis, align_self,
+            width, height, min_width, min_height, max_width, max_height, aspect_ratio,
+            padding_top, padding_right, padding_bottom, padding_left,
+            margin_top, margin_right, margin_bottom, margin_left,
+            border_top_left_radius, border_top_right_radius,
+            border_bottom_left_radius, border_bottom_right_radius,
+            border_top_width, border_right_width, border_bottom_width, border_left_width,
+            border_top_color, border_right_color, border_bottom_color, border_left_color,
+            position, top, right, bottom, left,
+            font_family, font_weight, font_style, line_height, letter_spacing,
+            text_align, underline, strikethrough, text_transform,
+            opacity, overflow, shadow, background_gradient, transform, transform_origin,
+            background_transition, color_transition, caret_color_transition,
+            opacity_transition,
+            transform_transition, width_transition, height_transition,
+            top_transition, right_transition, bottom_transition, left_transition,
+            padding_top_transition, padding_right_transition,
+            padding_bottom_transition, padding_left_transition,
+            margin_top_transition, margin_right_transition,
+            margin_bottom_transition, margin_left_transition,
+            border_top_left_radius_transition, border_top_right_radius_transition,
+            border_bottom_left_radius_transition, border_bottom_right_radius_transition,
+            border_top_width_transition, border_right_width_transition,
+            border_bottom_width_transition, border_left_width_transition,
+            border_top_color_transition, border_right_color_transition,
+            border_bottom_color_transition, border_left_color_transition,
+        );
+        self
+    }
+
+    /// Stable content key suitable for backend caches that should be
+    /// immune to allocator-reuse hazards. Each property writes a tagged
+    /// segment so distinct values always produce distinct keys.
+    ///
+    /// **Tokenized fields hash the token name, not the fallback value.**
+    /// Two themes that bind `color-accent` to different concrete colors
+    /// produce the same content key — so the same `(sheet, variants)`
+    /// always maps to the same minted class regardless of which theme
+    /// is active. Theme swap then only updates the variable values, not
+    /// any element's `className`.
+    pub fn content_key(&self) -> String {
+        let mut s = String::with_capacity(256);
+        write_tokenized_color(&mut s, "bg", &self.background);
+        write_tokenized_color(&mut s, "fg", &self.color);
+        write_tokenized_color(&mut s, "cc", &self.caret_color);
+        write_tokenized_length(&mut s, "fs", &self.font_size);
+
+        write_enum(&mut s, "fd", self.flex_direction.map(|x| x as u8));
+        write_enum(&mut s, "fw", self.flex_wrap.map(|x| x as u8));
+        write_enum(&mut s, "jc", self.justify_content.map(|x| x as u8));
+        write_enum(&mut s, "ai", self.align_items.map(|x| x as u8));
+        write_enum(&mut s, "ac", self.align_content.map(|x| x as u8));
+        write_tokenized_length(&mut s, "gap", &self.gap);
+        write_tokenized_length(&mut s, "rgap", &self.row_gap);
+        write_tokenized_length(&mut s, "cgap", &self.column_gap);
+
+        write_tokenized_f32(&mut s, "fg-grow", &self.flex_grow);
+        write_tokenized_f32(&mut s, "fs-shrink", &self.flex_shrink);
+        write_tokenized_length(&mut s, "fb", &self.flex_basis);
+        write_enum(&mut s, "as", self.align_self.map(|x| x as u8));
+
+        write_tokenized_length(&mut s, "w", &self.width);
+        write_tokenized_length(&mut s, "h", &self.height);
+        write_tokenized_length(&mut s, "minw", &self.min_width);
+        write_tokenized_length(&mut s, "minh", &self.min_height);
+        write_tokenized_length(&mut s, "maxw", &self.max_width);
+        write_tokenized_length(&mut s, "maxh", &self.max_height);
+        if let Some(ar) = self.aspect_ratio {
+            s.push_str("ar=");
+            push_u32_hex(&mut s, ar.to_bits());
+            s.push(';');
+        }
+
+        write_tokenized_length(&mut s, "pt", &self.padding_top);
+        write_tokenized_length(&mut s, "pr", &self.padding_right);
+        write_tokenized_length(&mut s, "pb", &self.padding_bottom);
+        write_tokenized_length(&mut s, "pl", &self.padding_left);
+        write_tokenized_length(&mut s, "mt", &self.margin_top);
+        write_tokenized_length(&mut s, "mr", &self.margin_right);
+        write_tokenized_length(&mut s, "mb", &self.margin_bottom);
+        write_tokenized_length(&mut s, "ml", &self.margin_left);
+
+        write_tokenized_length(&mut s, "rtl", &self.border_top_left_radius);
+        write_tokenized_length(&mut s, "rtr", &self.border_top_right_radius);
+        write_tokenized_length(&mut s, "rbl", &self.border_bottom_left_radius);
+        write_tokenized_length(&mut s, "rbr", &self.border_bottom_right_radius);
+
+        write_tokenized_f32(&mut s, "bwt", &self.border_top_width);
+        write_tokenized_f32(&mut s, "bwr", &self.border_right_width);
+        write_tokenized_f32(&mut s, "bwb", &self.border_bottom_width);
+        write_tokenized_f32(&mut s, "bwl", &self.border_left_width);
+        write_tokenized_color(&mut s, "bct", &self.border_top_color);
+        write_tokenized_color(&mut s, "bcr", &self.border_right_color);
+        write_tokenized_color(&mut s, "bcb", &self.border_bottom_color);
+        write_tokenized_color(&mut s, "bcl", &self.border_left_color);
+
+        write_enum(&mut s, "pos", self.position.map(|x| x as u8));
+        write_tokenized_length(&mut s, "top", &self.top);
+        write_tokenized_length(&mut s, "right", &self.right);
+        write_tokenized_length(&mut s, "bot", &self.bottom);
+        write_tokenized_length(&mut s, "left", &self.left);
+
+        // Typography
+        let ff_buf: Option<String> = self.font_family.as_ref().map(|ff| match ff {
+            FontFamily::System(name) => name.clone(),
+            // Typeface key is the id — two stylesheets that reference
+            // the same `Typeface` produce identical content keys
+            // regardless of the family-name string.
+            FontFamily::Typeface(t) => format!("tf:{}", t.id.0),
+        });
+        write_str(&mut s, "ff", ff_buf.as_deref());
+        write_enum(&mut s, "fw", self.font_weight.map(|x| x as u8));
+        write_enum(&mut s, "fst", self.font_style.map(|x| x as u8));
+        write_tokenized_f32(&mut s, "lh", &self.line_height);
+        write_tokenized_f32(&mut s, "ls", &self.letter_spacing);
+        write_enum(&mut s, "ta", self.text_align.map(|x| x as u8));
+        write_enum(&mut s, "ul", self.underline.map(|b| b as u8));
+        write_enum(&mut s, "st", self.strikethrough.map(|b| b as u8));
+        write_enum(&mut s, "tt", self.text_transform.map(|x| x as u8));
+
+        // Visual
+        write_tokenized_f32(&mut s, "op", &self.opacity);
+        write_enum(&mut s, "ov", self.overflow.map(|x| x as u8));
+        if let Some(sh) = &self.shadow {
+            s.push_str("sh=");
+            push_u32_hex(&mut s, sh.x.to_bits());
+            push_u32_hex(&mut s, sh.y.to_bits());
+            push_u32_hex(&mut s, sh.blur.to_bits());
+            s.push_str(&sh.color.0);
+            s.push(';');
+        }
+        if let Some(g) = &self.background_gradient {
+            s.push_str("bg=");
+            match g.kind {
+                GradientKind::Linear { angle_deg } => {
+                    s.push_str("lin");
+                    push_u32_hex(&mut s, angle_deg.to_bits());
+                }
+                GradientKind::Radial { center, radius, extent } => {
+                    s.push_str("rad");
+                    push_u32_hex(&mut s, center.0.to_bits());
+                    push_u32_hex(&mut s, center.1.to_bits());
+                    push_u32_hex(&mut s, radius.to_bits());
+                    s.push_str(match extent {
+                        RadialExtent::ClosestSide => "cs",
+                        RadialExtent::FarthestCorner => "fc",
+                    });
+                }
+            }
+            for stop in &g.stops {
+                push_u32_hex(&mut s, stop.offset.to_bits());
+                s.push_str(&stop.color.0);
+                s.push(',');
+            }
+            s.push(';');
+        }
+        if let Some(xs) = &self.transform {
+            s.push_str("tr=");
+            for t in xs {
+                match t {
+                    Transform::TranslateX(l) => { s.push_str("tx"); push_u64_hex(&mut s, length_bits(*l)); }
+                    Transform::TranslateY(l) => { s.push_str("ty"); push_u64_hex(&mut s, length_bits(*l)); }
+                    Transform::Scale(v) => { s.push_str("sc"); push_u32_hex(&mut s, v.to_bits()); }
+                    Transform::ScaleXY { x, y } => { s.push_str("sxy"); push_u32_hex(&mut s, x.to_bits()); push_u32_hex(&mut s, y.to_bits()); }
+                    Transform::Rotate(v) => { s.push_str("rt"); push_u32_hex(&mut s, v.to_bits()); }
+                    Transform::SkewX(v) => { s.push_str("skx"); push_u32_hex(&mut s, v.to_bits()); }
+                    Transform::SkewY(v) => { s.push_str("sky"); push_u32_hex(&mut s, v.to_bits()); }
+                }
+            }
+            s.push(';');
+        }
+        if let Some((ox, oy)) = self.transform_origin {
+            s.push_str("to=");
+            push_u64_hex(&mut s, length_bits(ox));
+            push_u64_hex(&mut s, length_bits(oy));
+            s.push(';');
+        }
+
+        // Transitions — one labeled segment per animatable property.
+        // Inactive (None) transitions write an empty value so the
+        // cache key remains stable in shape regardless of which
+        // transitions are set.
+        macro_rules! tr {
+            ($label:literal, $field:ident) => {
+                write_transition(&mut s, $label, self.$field);
+            };
+        }
+        tr!("tbg", background_transition);
+        tr!("tco", color_transition);
+        tr!("tcc", caret_color_transition);
+        tr!("top_t", opacity_transition);
+        tr!("ttr", transform_transition);
+        tr!("tw", width_transition);
+        tr!("th", height_transition);
+        tr!("ttt", top_transition);
+        tr!("trt", right_transition);
+        tr!("tbt", bottom_transition);
+        tr!("tlt", left_transition);
+        tr!("tpt", padding_top_transition);
+        tr!("tpr", padding_right_transition);
+        tr!("tpb", padding_bottom_transition);
+        tr!("tpl", padding_left_transition);
+        tr!("tmt", margin_top_transition);
+        tr!("tmr", margin_right_transition);
+        tr!("tmb", margin_bottom_transition);
+        tr!("tml", margin_left_transition);
+        tr!("trtl", border_top_left_radius_transition);
+        tr!("trtr", border_top_right_radius_transition);
+        tr!("trbl", border_bottom_left_radius_transition);
+        tr!("trbr", border_bottom_right_radius_transition);
+        tr!("tbwt", border_top_width_transition);
+        tr!("tbwr", border_right_width_transition);
+        tr!("tbwb", border_bottom_width_transition);
+        tr!("tbwl", border_left_width_transition);
+        tr!("tbct", border_top_color_transition);
+        tr!("tbcr", border_right_color_transition);
+        tr!("tbcb", border_bottom_color_transition);
+        tr!("tbcl", border_left_color_transition);
+
+        s
+    }
+}
+
+fn write_transition(out: &mut String, label: &str, t: Option<Transition>) {
+    let Some(t) = t else { return };
+    out.push_str(label);
+    out.push('=');
+    push_u32_hex(out, t.duration_ms);
+    // Easing encodes as a small tag; CubicBezier appends four f32s.
+    match t.easing {
+        Easing::Linear => out.push_str("lin"),
+        Easing::Ease => out.push_str("eas"),
+        Easing::EaseIn => out.push_str("ein"),
+        Easing::EaseOut => out.push_str("eou"),
+        Easing::EaseInOut => out.push_str("eio"),
+        Easing::CubicBezier(a, b, c, d) => {
+            out.push_str("cb");
+            push_u32_hex(out, a.to_bits());
+            push_u32_hex(out, b.to_bits());
+            push_u32_hex(out, c.to_bits());
+            push_u32_hex(out, d.to_bits());
+        }
+    }
+    out.push(';');
+}
+
+fn write_str(out: &mut String, label: &str, v: Option<&str>) {
+    let Some(v) = v else { return };
+    out.push_str(label);
+    out.push('=');
+    out.push_str(v);
+    out.push(';');
+}
+
+/// Tokenized-color content-key segment. Token references hash by
+/// **name** (`t:color-accent`) so two themes binding the same name to
+/// different colors produce identical keys; literals hash by value.
+/// The literal/token discriminator (`L:` / `T:`) prevents a token
+/// named "ff0000" from colliding with the literal hex `#ff0000`.
+// Note on sparse encoding: each writer emits ONLY when the field is
+// `Some`. The previous emit-`label=;`-always shape wasted ~580 bytes
+// per `content_key` call on overrides that set 1-2 fields (the bulk
+// of reactive-style use cases). At hierarchy scale (20k Effects
+// firing per shared-signal bump) the per-call savings translate to
+// ~30ms / bump — pure waste because the empty `label=;` carried no
+// information the `Some(_)` writes don't already encode. Two
+// distinct override sets still produce distinct keys: the field
+// labels in `Some` writes are unique, and unset fields contribute
+// nothing rather than contributing a fixed prefix.
+
+fn write_tokenized_color(out: &mut String, label: &str, c: &Option<Tokenized<Color>>) {
+    let Some(t) = c else { return };
+    out.push_str(label);
+    out.push('=');
+    match t {
+        Tokenized::Literal(c) => {
+            out.push_str("L:");
+            out.push_str(&c.0);
+        }
+        Tokenized::Token { name, .. } => {
+            out.push_str("T:");
+            out.push_str(name);
+        }
+    }
+    out.push(';');
+}
+
+fn write_tokenized_length(out: &mut String, label: &str, l: &Option<Tokenized<Length>>) {
+    let Some(t) = l else { return };
+    out.push_str(label);
+    out.push('=');
+    match t {
+        Tokenized::Literal(v) => {
+            out.push_str("L:");
+            push_u64_hex(out, length_bits(*v));
+        }
+        Tokenized::Token { name, .. } => {
+            out.push_str("T:");
+            out.push_str(name);
+        }
+    }
+    out.push(';');
+}
+
+fn write_tokenized_f32(out: &mut String, label: &str, v: &Option<Tokenized<f32>>) {
+    let Some(t) = v else { return };
+    out.push_str(label);
+    out.push('=');
+    match t {
+        Tokenized::Literal(v) => {
+            out.push_str("L:");
+            push_u32_hex(out, v.to_bits());
+        }
+        Tokenized::Token { name, .. } => {
+            out.push_str("T:");
+            out.push_str(name);
+        }
+    }
+    out.push(';');
+}
+
+fn write_enum(out: &mut String, label: &str, v: Option<u8>) {
+    let Some(v) = v else { return };
+    out.push_str(label);
+    out.push('=');
+    push_u32_hex(out, v as u32);
+    out.push(';');
+}
+
+fn push_u64_hex(out: &mut String, n: u64) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for shift in (0..16).rev() {
+        let nibble = ((n >> (shift * 4)) & 0xf) as usize;
+        out.push(HEX[nibble] as char);
+    }
+}
+
+/// Writes the 8-char lowercase hex representation of `n` to `out`.
+/// Used by `content_key` to encode `f32::to_bits()` results without
+/// the `format!` machinery.
+fn push_u32_hex(out: &mut String, n: u32) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for shift in (0..8).rev() {
+        let nibble = ((n >> (shift * 4)) & 0xf) as usize;
+        out.push(HEX[nibble] as char);
+    }
+}
+
+// ----------------------------------------------------------------------------
+// StyleSheet — closures from variants to rules, with variants and compounds
+// ----------------------------------------------------------------------------
+
+type RulesFn = Box<dyn Fn(&VariantSet) -> StyleRules>;
+
+pub type VariantAxis = String;
+pub type VariantValue = String;
+
+/// One axis of variants on a stylesheet — its declared values and the
+/// optional default value used when the call site doesn't pick a value.
+pub struct VariantAxisDef {
+    /// The value treated as active when the call site omits this axis.
+    pub default: Option<VariantValue>,
+    /// Per-value overlay closures. Each runs against the theme.
+    pub values: BTreeMap<VariantValue, RulesFn>,
+}
+
+/// A compound variant: only applied when *all* of `when`'s
+/// axis=value pairs are active at apply time.
+pub struct CompoundVariant {
+    pub when: BTreeMap<VariantAxis, VariantValue>,
+    pub rules: RulesFn,
+}
+
+/// A stylesheet declaration. Authors construct one of these once and
+/// wrap it in `Rc` to pass around.
+///
+/// Each entry — `base`, every variant overlay, every compound variant —
+/// is a closure that takes the effective `VariantSet` and returns
+/// concrete `StyleRules`. Stylesheets emit `Tokenized<T>` references by
+/// name; token values are managed separately via [`install_tokens`].
+///
+/// # Resolution order
+/// 1. `base`
+/// 2. For each declared axis, layer the closure for the value selected
+///    in the `VariantSet` (or the axis's default if unselected).
+/// 3. For each declared compound variant, layer its closure iff every
+///    `(axis, value)` in `when` matches the *effective* variant set
+///    (defaults included).
+/// 4. Any `StyleApplication::overrides` field.
+pub struct StyleSheet {
+    base: RulesFn,
+    /// axis → axis definition (default + per-value closures)
+    variants: BTreeMap<VariantAxis, VariantAxisDef>,
+    /// Compound variants are stored as a list (order-preserving).
+    compounds: Vec<CompoundVariant>,
+    /// Cached list of state-overlay axes the sheet declares. Populated
+    /// in `.variant(...)` whenever an axis named `__state_*` is added.
+    /// Empty for the very common case of sheets with no `state` blocks
+    /// — `resolve_state_overlays` short-circuits on `is_empty()` and
+    /// avoids walking the variants BTreeMap per styled node.
+    state_axes: Vec<(crate::StateBits, VariantAxis)>,
+    /// Per-sheet variant cache. Keyed on the effective `VariantSet`;
+    /// value is the pre-resolved `Rc<StyleRules>` for the no-overrides
+    /// case. Populated by [`ensure_registered_with`] at registration
+    /// time. The cache survives token updates because tokenized
+    /// `StyleRules` carry token *names* (not values) so the rule
+    /// content is token-stable.
+    variant_cache: std::cell::RefCell<HashMap<VariantSet, Rc<StyleRules>>>,
+}
+
+impl StyleSheet {
+    /// Constructs a stylesheet whose base rules are produced by `f`.
+    pub fn new<F>(f: F) -> Self
+    where
+        F: Fn(&VariantSet) -> StyleRules + 'static,
+    {
+        Self {
+            base: Box::new(f),
+            variants: BTreeMap::new(),
+            compounds: Vec::new(),
+            state_axes: Vec::new(),
+            variant_cache: std::cell::RefCell::new(HashMap::new()),
+        }
+    }
+
+    /// A stylesheet whose base rules ignore the variant set.
+    pub fn r#static(rules: StyleRules) -> Self {
+        Self {
+            base: Box::new(move |_vs: &VariantSet| rules.clone()),
+            variants: BTreeMap::new(),
+            compounds: Vec::new(),
+            state_axes: Vec::new(),
+            variant_cache: std::cell::RefCell::new(HashMap::new()),
+        }
+    }
+
+    /// Adds (or replaces) a variant overlay on the given axis-value.
+    /// If the axis didn't exist yet it's created with no default.
+    pub fn variant<F>(
+        mut self,
+        axis: impl Into<VariantAxis>,
+        value: impl Into<VariantValue>,
+        f: F,
+    ) -> Self
+    where
+        F: Fn(&VariantSet) -> StyleRules + 'static,
+    {
+        let axis = axis.into();
+        let value = value.into();
+        // Cache state-axis presence at construction so
+        // `resolve_state_overlays` can short-circuit per styled node
+        // instead of walking the variants map. Only add once per
+        // axis even if the user declares multiple values for the
+        // same state (unusual — states only have "on" — but defensive).
+        if let Some(bit) = state_axis_bit(&axis) {
+            if !self.state_axes.iter().any(|(_, a)| a == &axis) {
+                self.state_axes.push((bit, axis.clone()));
+            }
+        }
+        let entry = self.variants.entry(axis).or_insert_with(|| VariantAxisDef {
+            default: None,
+            values: BTreeMap::new(),
+        });
+        entry.values.insert(value, Box::new(f));
+        self
+    }
+
+    /// The cached set of state-overlay axes declared on this
+    /// stylesheet. Returns an empty slice for the common case of
+    /// sheets with no `state` blocks. Used by
+    /// `resolve_state_overlays` to skip per-call iteration of the
+    /// full variants map.
+    pub(crate) fn state_axes(&self) -> &[(crate::StateBits, VariantAxis)] {
+        &self.state_axes
+    }
+
+    /// Per-sheet variant-cache lookup. Returns the pre-resolved
+    /// `Rc<StyleRules>` if `variants` has been registered, `None`
+    /// otherwise. The hot path in [`resolve`] hits this before the
+    /// global resolution cache.
+    pub(crate) fn lookup_variant(&self, variants: &VariantSet) -> Option<Rc<StyleRules>> {
+        self.variant_cache.borrow().get(variants).cloned()
+    }
+
+    /// Insert a pre-resolved rule into the variant cache. Called
+    /// from [`ensure_registered_with`] for each pregen entry.
+    pub(crate) fn insert_variant(&self, variants: VariantSet, rc: Rc<StyleRules>) {
+        self.variant_cache.borrow_mut().insert(variants, rc);
+    }
+
+    /// Sets the default value for an axis. When a call site omits this
+    /// axis from the `VariantSet`, the default value's overlay is
+    /// applied. The default value must also be added via `.variant(...)`
+    /// (or it will silently apply nothing — same as today).
+    pub fn variant_default(
+        mut self,
+        axis: impl Into<VariantAxis>,
+        value: impl Into<VariantValue>,
+    ) -> Self {
+        let axis = axis.into();
+        let value = value.into();
+        let entry = self.variants.entry(axis).or_insert_with(|| VariantAxisDef {
+            default: None,
+            values: BTreeMap::new(),
+        });
+        entry.default = Some(value);
+        self
+    }
+
+    /// Adds a compound variant: an overlay applied only when every
+    /// `(axis, value)` pair in `when` is active at apply time.
+    pub fn compound<F>(
+        mut self,
+        when: Vec<(impl Into<VariantAxis>, impl Into<VariantValue>)>,
+        f: F,
+    ) -> Self
+    where
+        F: Fn(&VariantSet) -> StyleRules + 'static,
+    {
+        let when: BTreeMap<VariantAxis, VariantValue> =
+            when.into_iter().map(|(a, v)| (a.into(), v.into())).collect();
+        self.compounds.push(CompoundVariant {
+            when,
+            rules: Box::new(f),
+        });
+        self
+    }
+
+    /// Returns the effective `VariantSet` for resolution — the call site's
+    /// `VariantSet` overlaid with each axis's declared default (if any)
+    /// for axes the call site didn't specify.
+    fn effective_variants(&self, requested: &VariantSet) -> VariantSet {
+        let mut out = requested.clone();
+        for (axis, def) in &self.variants {
+            if !out.0.contains_key(axis) {
+                if let Some(default) = &def.default {
+                    out.0.insert(axis.clone(), default.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// Resolves the stylesheet against the given variant set.
+    pub fn resolve(&self, variants: &VariantSet) -> StyleRules {
+        let effective_variants = self.effective_variants(variants);
+        let mut effective = (self.base)(&effective_variants);
+
+        // Per-axis variants.
+        for (axis, def) in &self.variants {
+            if let Some(value) = effective_variants.0.get(axis) {
+                if let Some(f) = def.values.get(value) {
+                    effective = effective.merge(&f(&effective_variants));
+                }
+            }
+        }
+
+        // Compound variants — apply when every (axis, value) matches.
+        for c in &self.compounds {
+            let matches = c
+                .when
+                .iter()
+                .all(|(axis, val)| effective_variants.0.get(axis) == Some(val));
+            if matches {
+                effective = effective.merge(&(c.rules)(&effective_variants));
+            }
+        }
+
+        effective
+    }
+
+    // -----------------------------------------------------------------
+    // Introspection for pre-generation
+    // -----------------------------------------------------------------
+
+    /// Returns every (axis, value) pair declared on this stylesheet.
+    /// The pre-generator can walk these to mint a class per single-axis
+    /// selection.
+    pub fn variant_keys(&self) -> Vec<(VariantAxis, VariantValue)> {
+        let mut out = Vec::new();
+        for (axis, def) in &self.variants {
+            for value in def.values.keys() {
+                out.push((axis.clone(), value.clone()));
+            }
+        }
+        out
+    }
+
+    /// Returns the declared compound variants' match conditions.
+    pub fn compound_keys(&self) -> Vec<BTreeMap<VariantAxis, VariantValue>> {
+        self.compounds.iter().map(|c| c.when.clone()).collect()
+    }
+
+    /// Returns the default value declared for an axis, if any.
+    pub fn axis_default(&self, axis: &str) -> Option<&VariantValue> {
+        self.variants.get(axis).and_then(|d| d.default.as_ref())
+    }
+}
+
+/// Map a variant axis name to its `StateBits` flag, or `None` if
+/// the axis isn't a state overlay. The stylesheet macro emits state
+/// axes namespaced as `__state_<name>` so they don't collide with
+/// regular author variants.
+fn state_axis_bit(axis: &str) -> Option<crate::StateBits> {
+    match axis {
+        "__state_hovered" => Some(crate::StateBits::HOVERED),
+        "__state_pressed" => Some(crate::StateBits::PRESSED),
+        "__state_focused" => Some(crate::StateBits::FOCUSED),
+        "__state_disabled" => Some(crate::StateBits::DISABLED),
+        _ => None,
+    }
+}
+
+// ----------------------------------------------------------------------------
+// VariantSet & StyleApplication
+// ----------------------------------------------------------------------------
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct VariantSet(pub BTreeMap<VariantAxis, VariantValue>);
+
+impl VariantSet {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with(
+        mut self,
+        axis: impl Into<VariantAxis>,
+        value: impl Into<VariantValue>,
+    ) -> Self {
+        self.0.insert(axis.into(), value.into());
+        self
+    }
+}
+
+/// The value passed from author code to the framework. The framework
+/// resolves it against the active theme into an `Rc<StyleRules>` before
+/// handing off to the backend.
+///
+/// Resolution order (each layer overrides the previous for any
+/// `Some(...)` property):
+///
+/// 1. **Base**: the stylesheet's `new(|theme| ...)` closure output.
+/// 2. **Variants**: each active variant's overlay closure output.
+/// 3. **Overrides**: per-call-site continuous values (this struct's
+///    `overrides` field). Used for values that can't be enumerated as
+///    discrete variants — e.g. a user-controlled font scale.
+///
+/// The backend sees the merged result; it doesn't know which layer
+/// contributed what. Backend caches (web CSS classes, etc.) key on the
+/// resolved content so each unique combination still gets its own
+/// entry — overrides preserve cacheability without inline styles.
+#[derive(Clone)]
+pub struct StyleApplication {
+    pub sheet: Rc<StyleSheet>,
+    pub variants: VariantSet,
+    pub overrides: StyleRules,
+    /// `true` iff any `override_*` builder has been called on this
+    /// application. Lets `resolve()` skip `overrides.content_key()`
+    /// (a ~600-byte string format walking every field) when there
+    /// are no overrides — the common case for stylesheet-only
+    /// styling. On 10k styled rows this saved ~80ms.
+    has_overrides: bool,
+}
+
+impl StyleApplication {
+    pub fn new(sheet: Rc<StyleSheet>) -> Self {
+        Self {
+            sheet,
+            variants: VariantSet::new(),
+            overrides: StyleRules::default(),
+            has_overrides: false,
+        }
+    }
+
+    /// Lookup-friendly accessor for the overrides flag. Used by
+    /// `resolve()` to pick between the empty-overrides key (just an
+    /// empty string) and the full content-keyed path.
+    pub fn has_overrides(&self) -> bool {
+        self.has_overrides
+    }
+
+    pub fn with(
+        mut self,
+        axis: impl Into<VariantAxis>,
+        value: impl Into<VariantValue>,
+    ) -> Self {
+        self.variants.0.insert(axis.into(), value.into());
+        self
+    }
+
+    /// Override the background color with a per-call-site value.
+    pub fn override_background(mut self, c: impl Into<Tokenized<Color>>) -> Self {
+        self.has_overrides = true;
+        self.overrides.background = Some(c.into());
+        self
+    }
+
+    /// Override the foreground color with a per-call-site value.
+    pub fn override_color(mut self, c: impl Into<Tokenized<Color>>) -> Self {
+        self.has_overrides = true;
+        self.overrides.color = Some(c.into());
+        self
+    }
+
+    /// Override the caret color with a per-call-site value. See
+    /// [`StyleRules::caret_color`] for the cross-platform mapping.
+    pub fn override_caret_color(mut self, c: impl Into<Tokenized<Color>>) -> Self {
+        self.has_overrides = true;
+        self.overrides.caret_color = Some(c.into());
+        self
+    }
+
+    /// Override font size with a per-call-site value.
+    pub fn override_font_size(mut self, v: impl Into<Tokenized<Length>>) -> Self {
+        self.has_overrides = true;
+        self.overrides.font_size = Some(v.into());
+        self
+    }
+
+    /// Shorthand override: set padding on all four sides. Equivalent to
+    /// calling `override_padding_top`, `_right`, `_bottom`, `_left`
+    /// with the same value.
+    pub fn override_padding(mut self, v: impl Into<Tokenized<Length>>) -> Self {
+        self.has_overrides = true;
+        let v = v.into();
+        self.overrides.padding_top = Some(v.clone());
+        self.overrides.padding_right = Some(v.clone());
+        self.overrides.padding_bottom = Some(v.clone());
+        self.overrides.padding_left = Some(v);
+        self
+    }
+
+    pub fn override_padding_horizontal(mut self, v: impl Into<Tokenized<Length>>) -> Self {
+        self.has_overrides = true;
+        let v = v.into();
+        self.overrides.padding_left = Some(v.clone());
+        self.overrides.padding_right = Some(v);
+        self
+    }
+
+    pub fn override_padding_vertical(mut self, v: impl Into<Tokenized<Length>>) -> Self {
+        self.has_overrides = true;
+        let v = v.into();
+        self.overrides.padding_top = Some(v.clone());
+        self.overrides.padding_bottom = Some(v);
+        self
+    }
+
+    pub fn override_padding_top(mut self, v: impl Into<Tokenized<Length>>) -> Self {
+        self.has_overrides = true;
+        self.overrides.padding_top = Some(v.into()); self
+    }
+    pub fn override_padding_right(mut self, v: impl Into<Tokenized<Length>>) -> Self {
+        self.has_overrides = true;
+        self.overrides.padding_right = Some(v.into()); self
+    }
+    pub fn override_padding_bottom(mut self, v: impl Into<Tokenized<Length>>) -> Self {
+        self.has_overrides = true;
+        self.overrides.padding_bottom = Some(v.into()); self
+    }
+    pub fn override_padding_left(mut self, v: impl Into<Tokenized<Length>>) -> Self {
+        self.has_overrides = true;
+        self.overrides.padding_left = Some(v.into()); self
+    }
+
+    /// Shorthand override: margin on all four sides.
+    pub fn override_margin(mut self, v: impl Into<Tokenized<Length>>) -> Self {
+        self.has_overrides = true;
+        let v = v.into();
+        self.overrides.margin_top = Some(v.clone());
+        self.overrides.margin_right = Some(v.clone());
+        self.overrides.margin_bottom = Some(v.clone());
+        self.overrides.margin_left = Some(v);
+        self
+    }
+
+    pub fn override_margin_horizontal(mut self, v: impl Into<Tokenized<Length>>) -> Self {
+        self.has_overrides = true;
+        let v = v.into();
+        self.overrides.margin_left = Some(v.clone());
+        self.overrides.margin_right = Some(v);
+        self
+    }
+
+    pub fn override_margin_vertical(mut self, v: impl Into<Tokenized<Length>>) -> Self {
+        self.has_overrides = true;
+        let v = v.into();
+        self.overrides.margin_top = Some(v.clone());
+        self.overrides.margin_bottom = Some(v);
+        self
+    }
+
+    pub fn override_margin_top(mut self, v: impl Into<Tokenized<Length>>) -> Self {
+        self.has_overrides = true;
+        self.overrides.margin_top = Some(v.into()); self
+    }
+    pub fn override_margin_right(mut self, v: impl Into<Tokenized<Length>>) -> Self {
+        self.has_overrides = true;
+        self.overrides.margin_right = Some(v.into()); self
+    }
+    pub fn override_margin_bottom(mut self, v: impl Into<Tokenized<Length>>) -> Self {
+        self.has_overrides = true;
+        self.overrides.margin_bottom = Some(v.into()); self
+    }
+    pub fn override_margin_left(mut self, v: impl Into<Tokenized<Length>>) -> Self {
+        self.has_overrides = true;
+        self.overrides.margin_left = Some(v.into()); self
+    }
+
+    /// Shorthand override: border-radius on all four corners.
+    pub fn override_border_radius(mut self, v: impl Into<Tokenized<Length>>) -> Self {
+        self.has_overrides = true;
+        let v = v.into();
+        self.overrides.border_top_left_radius = Some(v.clone());
+        self.overrides.border_top_right_radius = Some(v.clone());
+        self.overrides.border_bottom_left_radius = Some(v.clone());
+        self.overrides.border_bottom_right_radius = Some(v);
+        self
+    }
+}
+
+// ----------------------------------------------------------------------------
+// TokenEntry / TokenValue — runtime values for `Tokenized<T>` references
+// ----------------------------------------------------------------------------
+
+/// A single token entry — name plus concrete value. The backend
+/// translates the value to its variable system (e.g. CSS
+/// `--{name}: {value}`).
+#[derive(Clone, Debug)]
+pub struct TokenEntry {
+    pub name: &'static str,
+    pub value: TokenValue,
+}
+
+/// The concrete value carried by a token. The variant determines how
+/// the backend formats it (color string, pixel length, raw number).
+#[derive(Clone, Debug)]
+pub enum TokenValue {
+    Color(Color),
+    Length(Length),
+    Number(f32),
+}
+
+// ----------------------------------------------------------------------------
+// Global token state & resolution cache
+// ----------------------------------------------------------------------------
+
+thread_local! {
+    /// Per-token reactive registry. Each token name maps to a
+    /// `Signal<TokenValue>` carrying the current value. `install_tokens`
+    /// creates entries; `update_tokens` calls `.set(..)` on existing
+    /// entries (creating them if missing). `Tokenized::<T>::resolve()`
+    /// reads from here so each styled effect subscribes ONLY to the
+    /// token signals it actually reads — `update_tokens(["a"])` wakes
+    /// nodes that reference `"a"` and leaves the rest alone.
+    ///
+    /// Signals are created lazily-on-first-touch when called from
+    /// outside an `install_tokens` call (e.g. `resolve()` reaches a
+    /// token that hasn't been installed yet). That keeps subscriptions
+    /// consistent across install order — the same `Signal` exists
+    /// whether install happens before or after the first resolve.
+    static TOKEN_REGISTRY: RefCell<HashMap<&'static str, crate::Signal<TokenValue>>> =
+        RefCell::new(HashMap::new());
+
+    /// Memoization: `(stylesheet pointer, variants, override content)`
+    /// → `Rc<StyleRules>`. Strong refs are held by `REGISTRATIONS`
+    /// for pre-generated styles, and transiently by the caller of
+    /// `resolve(...)` for dynamic ones.
+    ///
+    /// Tokenized fields hash by token name (token-stable), so the same
+    /// `(sheet, variants)` produces the same key regardless of which
+    /// token values are currently installed. Token updates don't
+    /// invalidate this cache — they update the backend's variable
+    /// layer (web) and re-fire styled effects (mobile) so the cached
+    /// rules are re-applied with the new fallbacks.
+    static RESOLUTION_CACHE: RefCell<HashMap<ResolutionKey, Rc<StyleRules>>> =
+        RefCell::new(HashMap::new());
+
+    /// Each currently-registered stylesheet, with the rules that were
+    /// pre-generated for it and a `Weak<StyleSheet>` used to detect
+    /// when the stylesheet has been dropped by all holders. The
+    /// framework calls `Backend::register_stylesheet` exactly once per
+    /// sheet and tracks the rules so we can later call
+    /// `unregister_stylesheet` to free backend-side state.
+    static REGISTRATIONS: RefCell<HashMap<RegKey, Registration>> =
+        RefCell::new(HashMap::new());
+
+    /// Rule sets queued for `unregister_stylesheet` calls. Populated
+    /// by the sweep-dead-stylesheets pass. Drained by
+    /// `ensure_registered_with`, which has the backend in scope.
+    static PENDING_UNREGISTER: RefCell<Vec<Vec<Rc<StyleRules>>>> =
+        RefCell::new(Vec::new());
+
+    /// Tokens queued for the next backend interaction. `install_tokens`
+    /// pushes here; `ensure_registered_with` flushes via
+    /// `Backend::install_tokens`. We can't call the backend directly
+    /// from `install_tokens` because the backend doesn't exist yet at
+    /// app boot.
+    static PENDING_TOKENS: RefCell<Option<Vec<TokenEntry>>> =
+        const { RefCell::new(None) };
+
+    /// Token updates queued for the next backend interaction. Each
+    /// `update_tokens` call appends here; `ensure_registered_with`
+    /// drains and dispatches via `Backend::update_tokens`. Unlike
+    /// `PENDING_TOKENS`, updates accumulate — multiple updates in a
+    /// frame all reach the backend.
+    static PENDING_TOKEN_UPDATES: RefCell<Vec<Vec<TokenEntry>>> =
+        RefCell::new(Vec::new());
+
+    /// Typefaces already registered with the backend this session.
+    /// Drives the dedup in [`ensure_typefaces_registered_with`]: the
+    /// framework calls `register_asset` + `register_typeface` once
+    /// per unique `TypefaceId` no matter how many stylesheets — or
+    /// rules within a stylesheet — reference the same typeface.
+    static REGISTERED_TYPEFACES: RefCell<HashSet<TypefaceId>> =
+        RefCell::new(HashSet::new());
+
+    /// Debug-only tripwire: `true` once `install_tokens` (or
+    /// `update_tokens`) has been called on this thread. Read in
+    /// `Tokenized::<T>::resolve()` for `Tokenized::Token` variants;
+    /// fires a `debug_assert!` when a token is resolved on a thread
+    /// that has never been themed.
+    ///
+    /// **Why thread-local, not global.** The token registry above is
+    /// itself thread-local — every supported backend today renders on
+    /// a single thread, and the registry, resolution cache, and
+    /// signal state all live on that thread. A render thread that
+    /// hasn't installed tokens would silently fall back to
+    /// `Tokenized::fallback` and miss every theme value. The check
+    /// surfaces that misuse loudly in debug builds rather than
+    /// shipping the silent-default-paint regression to a user.
+    ///
+    /// **Why a separate flag and not "registry non-empty".** The
+    /// registry can be non-empty on this thread because *some other
+    /// code path* (e.g. `with_or_create_token_signal` from a prior
+    /// resolve) lazily inserted a slot. That's not a theme install.
+    /// We want the assert to track the explicit theme-install event,
+    /// not registry shape.
+    ///
+    /// **Trade-off.** The audit's preferred long-term fix is a
+    /// `OnceCell` keyed per-`ThemeId` so the cache is multi-thread
+    /// safe by construction. That refactor is deferred — this flag
+    /// is the minimum-viable check to make misuse visible while the
+    /// thread-local cache stands.
+    static THEME_INSTALLED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Mark this thread as having an installed theme. Idempotent.
+/// `install_tokens` / `update_tokens` call this so the
+/// `debug_assert_theme_installed` check in `Tokenized::resolve()`
+/// can distinguish a genuinely-unthemed thread from one that just
+/// hasn't lazily registered every individual token signal yet.
+#[inline]
+fn mark_theme_installed() {
+    THEME_INSTALLED.with(|f| f.set(true));
+}
+
+/// Debug-build-only check: panic if the calling thread has never
+/// had `install_tokens` (or `update_tokens`) invoked. Called from
+/// `Tokenized::<T>::resolve()` for the `Tokenized::Token` variant.
+///
+/// `Tokenized::Literal` resolves bypass this — literals don't read
+/// the registry and don't need a theme to be installed.
+///
+/// In release builds this compiles to a no-op so the silent-fallback
+/// behavior is preserved for production code. The audit-tracked
+/// long-term fix is to key the cache on a `ThemeId` shared across
+/// threads, eliminating the misuse surface entirely.
+#[inline]
+fn debug_assert_theme_installed(token_name: &'static str) {
+    debug_assert!(
+        THEME_INSTALLED.with(|f| f.get()),
+        "Tokenized::resolve() called for token '{}' on thread '{:?}' \
+         that has never had install_tokens() (or update_tokens()) invoked. \
+         The Stylesheet token registry is thread-local — resolves on a \
+         thread without an installed theme silently return the literal \
+         fallback and miss every theme value. Call \
+         `runtime_core::style::install_tokens(...)` on this thread \
+         before resolving styles, or move the resolve to the host \
+         render thread.",
+        token_name,
+        std::thread::current().name().unwrap_or("<unnamed>")
+    );
+}
+
+#[derive(PartialEq, Eq, Hash, Clone)]
+struct RegKey {
+    sheet: *const StyleSheet,
+}
+
+struct Registration {
+    weak: std::rc::Weak<StyleSheet>,
+    rules: Vec<Rc<StyleRules>>,
+}
+
+#[derive(PartialEq, Eq, Hash)]
+struct ResolutionKey {
+    sheet: *const StyleSheet,
+    variants: VariantSet,
+    /// Overrides are part of the cache key — same sheet + variants
+    /// but different override values yield different rules and must
+    /// be cached separately. Serialized to a content key so we have a
+    /// comparable form.
+    overrides: String,
+}
+
+/// Look up the registry signal for `name`, or create one with
+/// `make_initial()` if no entry exists. Returns `None` only if signal
+/// creation panics inside a no-Owner context — but we rely on the
+/// caller's `Owner` to keep slots alive. In practice this always
+/// returns `Some`.
+///
+/// Used by both `Tokenized::<T>::resolve()` (lazy create on first
+/// touch so subscriptions are consistent regardless of install order)
+/// and by `install_tokens` / `update_tokens` (eager create on install).
+/// Read every currently-registered token signal so the calling
+/// `Effect` subscribes to all of them. Used by the theme-cohort
+/// driver in `walker.rs` to ensure the driver re-fires on *any*
+/// `update_tokens` call — even before any cohort entries have
+/// registered (the driver's first iteration runs against an empty
+/// slab, so it'd otherwise touch no signals and subscribe to
+/// nothing).
+///
+/// Tokens added *after* this call still trigger the driver
+/// indirectly: cohort entries that read them via `Tokenized::resolve()`
+/// subscribe inside their reapply closures, so the driver picks
+/// up the new dependency on its next re-run.
+pub(crate) fn subscribe_to_all_token_signals() {
+    TOKEN_REGISTRY.with(|r| {
+        for sig in r.borrow().values() {
+            let _ = sig.get();
+        }
+    });
+}
+
+fn with_or_create_token_signal<F>(
+    name: &'static str,
+    make_initial: F,
+) -> Option<crate::Signal<TokenValue>>
+where
+    F: FnOnce() -> TokenValue,
+{
+    // Fast path: existing entry. Done in a separate scope so the
+    // borrow is dropped before we possibly mutate below.
+    let existing = TOKEN_REGISTRY.with(|r| r.borrow().get(name).copied());
+    if existing.is_some() {
+        return existing;
+    }
+    // Miss — create. Token signals are thread-lifetime by contract
+    // (`TOKEN_REGISTRY` is a process-wide thread-local), so the signal
+    // must NOT be adopted by whatever render scope happens to be
+    // active when the first read lands. `crate::reactive::unscope`
+    // temporarily empties the active-scope stack while we allocate,
+    // so the resulting slot has no owner and is freed only on thread
+    // exit — exactly the lifetime the registry needs.
+    //
+    // Regression: before this guard, the first scope to resolve an
+    // uninstalled token became its owner; when that scope dropped, the
+    // registry still pointed at a freed slot and subsequent resolves
+    // panicked ("signal used after its scope was dropped") or, after
+    // freelist recycling, silently hit unrelated signal data.
+    let sig = crate::reactive::unscope(|| crate::Signal::new(make_initial()));
+    TOKEN_REGISTRY.with(|r| {
+        r.borrow_mut().insert(name, sig);
+    });
+    Some(sig)
+}
+
+/// Debug-only warning when a token's installed `TokenValue` variant
+/// doesn't match the `Tokenized<T>` reading it. Indicates a theme bug
+/// — silently returning the fallback would mask it.
+fn debug_warn_token_type_mismatch(
+    name: &'static str,
+    expected: &str,
+    got: &TokenValue,
+) {
+    #[cfg(debug_assertions)]
+    {
+        let got_label = match got {
+            TokenValue::Color(_) => "Color",
+            TokenValue::Length(_) => "Length",
+            TokenValue::Number(_) => "Number",
+        };
+        eprintln!(
+            "[runtime-core] token '{}' resolved as {} but installed as {} — using fallback",
+            name, expected, got_label
+        );
+    }
+    let _ = (name, expected, got);
+}
+
+/// Push the initial token set. Call once at app startup before
+/// rendering. Creates a `Signal<TokenValue>` in the registry for each
+/// token so subsequent `Tokenized::<T>::resolve()` reads can subscribe.
+/// Tokens are also queued and flushed to the backend via
+/// `Backend::install_tokens` on the first `ensure_registered_with`
+/// call (which has the backend in scope).
+pub fn install_tokens(tokens: &[TokenEntry]) {
+    // Tripwire for the debug-only "resolve on unthemed thread" check.
+    // Set unconditionally — the cost is a single thread-local store
+    // and idempotency is fine.
+    mark_theme_installed();
+    // Seed the per-token registry. If a token name was already
+    // registered (re-install — e.g. tests calling `install_theme`
+    // multiple times), update the existing signal instead of leaking
+    // a fresh slot.
+    for entry in tokens {
+        let installed = TOKEN_REGISTRY.with(|r| r.borrow().get(entry.name).copied());
+        match installed {
+            Some(sig) => sig.set(entry.value.clone()),
+            None => {
+                let _ = with_or_create_token_signal(entry.name, || entry.value.clone());
+            }
+        }
+    }
+    let owned: Vec<TokenEntry> = tokens.to_vec();
+    PENDING_TOKENS.with(|p| *p.borrow_mut() = Some(owned));
+}
+
+/// Push new token values. For each entry, calls `.set(..)` on the
+/// existing `Signal<TokenValue>` in the registry (creates one if the
+/// caller skipped `install_tokens` for that name — permissive). Only
+/// the signals for the names in `tokens` fire, so styled effects that
+/// subscribed via `Tokenized::<T>::resolve()` only re-run if they
+/// referenced one of these tokens.
+///
+/// Pushes deltas to the backend on the next `ensure_registered_with`
+/// flush. Also wipes the framework's resolution cache so subsequent
+/// resolves see fresh `Rc<StyleRules>` (token names are stable, so
+/// the cache shape doesn't change — but content keys hash by name so
+/// the wipe is the simplest way to keep cached rules in sync with
+/// fresh fallback values).
+pub fn update_tokens(tokens: &[TokenEntry]) {
+    // Tripwire for the debug-only "resolve on unthemed thread" check.
+    // `update_tokens` is the permissive partner to `install_tokens` —
+    // a thread that has only ever called `update_tokens` is still a
+    // themed thread.
+    mark_theme_installed();
+    // Stash the pending update + clear the resolution cache BEFORE
+    // firing any signal subscribers. The theme-cohort driver `Effect`
+    // (subscribed via `subscribe_to_all_token_signals`) re-runs
+    // synchronously the moment we `sig.set` on the first token, and
+    // its body calls `take_pending_token_updates()` to flush new
+    // `:root` variables to the backend. If we did the push AFTER the
+    // fires, the cohort driver would see an EMPTY queue on this
+    // call — and end up flushing this theme's tokens on the *next*
+    // `set_theme` invocation, with a visible one-toggle delay (after
+    // `setTheme('dark')` the page still renders light; after the
+    // subsequent `setTheme('light')` it renders dark; etc.). The
+    // toggle suite catches this; the L→D→L verify trips because the
+    // light update never landed in the DOM.
+    let owned: Vec<TokenEntry> = tokens.to_vec();
+    PENDING_TOKEN_UPDATES.with(|p| p.borrow_mut().push(owned));
+    RESOLUTION_CACHE.with(|c| c.borrow_mut().clear());
+
+    for entry in tokens {
+        let existing = TOKEN_REGISTRY.with(|r| r.borrow().get(entry.name).copied());
+        match existing {
+            Some(sig) => sig.set(entry.value.clone()),
+            None => {
+                // Permissive: register a fresh signal for tokens that
+                // were updated before being installed.
+                let _ = with_or_create_token_signal(entry.name, || entry.value.clone());
+            }
+        }
+    }
+}
+
+/// Drain the queue of pending token-update batches. Used by the
+/// theme-cohort driver when fan-out is short-circuited (cascade
+/// backends) so the queue gets flushed even when no `apply_one`
+/// runs.
+pub fn take_pending_token_updates() -> Vec<Vec<TokenEntry>> {
+    PENDING_TOKEN_UPDATES.with(|p| std::mem::take(&mut *p.borrow_mut()))
+}
+
+/// Ensures the backend has been asked to pre-generate state for this
+/// stylesheet against the active theme. Calls `register` with the
+/// resolved rules exactly once per `(sheet, theme)` pair.
+///
+/// Also opportunistically:
+/// - Flushes the pending-unregister queue, calling `unregister` for
+///   each rule set queued by `set_theme` or a dead-stylesheet sweep.
+/// - Flushes the pending-tokens queue, calling `install_tokens` with
+///   the most recent theme's token list (if any was queued by
+///   `install_theme` / `set_theme`).
+/// Walk `rules` for `FontFamily::Typeface` references and, for any
+/// typeface not yet observed this session, emit `register_asset` for
+/// each face's asset followed by `register_typeface` for the family.
+///
+/// Called by the framework before [`ensure_registered_with`] hands the
+/// rules to the backend — every `apply_style` that references a
+/// typeface is guaranteed to find the family already registered.
+///
+/// Dedup is session-wide (thread-local) and keyed by [`TypefaceId`].
+/// Backends do their own dedup as a safety net (see
+/// `WebBackend::impl_register_typeface` and the `@font-face` rule
+/// table), but the framework-side short-circuit keeps the hot path
+/// off the backend round-trip.
+pub fn ensure_typefaces_registered_with<RA, RT>(
+    rules: &[Rc<StyleRules>],
+    mut register_asset: RA,
+    mut register_typeface: RT,
+) where
+    RA: FnMut(crate::assets::AssetId, crate::assets::AssetTag, &crate::assets::AssetSource),
+    RT: FnMut(
+        TypefaceId,
+        &'static str,
+        &'static [crate::assets::TypefaceFace],
+        crate::assets::SystemFallback,
+    ),
+{
+    // Walk rules in order; collect unseen typefaces. We don't
+    // deduplicate the per-rules walk itself — typically `rules` has a
+    // handful of entries and any typeface is the same `Typeface` value
+    // across all variants of a stylesheet — so the hot path is the
+    // thread-local set's O(1) miss check.
+    REGISTERED_TYPEFACES.with(|set| {
+        let mut set = set.borrow_mut();
+        for r in rules {
+            if let Some(FontFamily::Typeface(tf)) = &r.font_family {
+                if set.insert(tf.id) {
+                    for face in tf.faces {
+                        register_asset(
+                            face.asset,
+                            crate::assets::AssetTag::Font,
+                            &face.source,
+                        );
+                    }
+                    register_typeface(tf.id, tf.family_name, tf.faces, tf.fallback);
+                }
+            }
+        }
+    });
+}
+
+/// Pointer-keyed peek at the registration table — `true` iff a live
+/// registration exists for this exact `StyleSheet` instance (compared
+/// by `Rc` pointer, not content).
+///
+/// This is the cheap fast-path the batched-Repeat walker uses to skip
+/// the full [`ensure_registered_with`] call after the sheet's first
+/// row in a build. The full function ALWAYS flushes pending-token
+/// queues + sweeps dead `Weak<StyleSheet>` registrations before its
+/// own `already-registered` early-return; that's correct but
+/// per-row-expensive when N rows share one sheet. The walker can
+/// safely skip when this returns `true` because:
+///   - registrations don't change mid-build (no one writes
+///     `register_stylesheet` from inside `enqueue_primitive`), and
+///   - any pending-token flushing the first call did is still in
+///     effect for the remaining rows.
+pub fn is_registered(sheet: &Rc<StyleSheet>) -> bool {
+    let key = RegKey { sheet: Rc::as_ptr(sheet) };
+    REGISTRATIONS.with(|r| r.borrow().contains_key(&key))
+}
+
+/// - Sweeps registrations whose `Weak<StyleSheet>` no longer upgrades
+///   into the pending-unregister queue.
+pub fn ensure_registered_with<R, U, I, UPD, RA, RT>(
+    sheet: &Rc<StyleSheet>,
+    register: R,
+    unregister: U,
+    install_tokens: I,
+    update_tokens: UPD,
+    register_asset: RA,
+    register_typeface: RT,
+) where
+    R: FnOnce(&[Rc<StyleRules>]),
+    U: Fn(&[Rc<StyleRules>]),
+    I: FnOnce(&[TokenEntry]),
+    UPD: FnMut(&[TokenEntry]),
+    RA: FnMut(crate::assets::AssetId, crate::assets::AssetTag, &crate::assets::AssetSource),
+    RT: FnMut(
+        TypefaceId,
+        &'static str,
+        &'static [crate::assets::TypefaceFace],
+        crate::assets::SystemFallback,
+    ),
+{
+    // Flush pending tokens first — backends that emit `var(--…)` need
+    // the variables installed before any rule that references them
+    // is parsed, otherwise the initial paint uses the fallback.
+    let pending_tokens = PENDING_TOKENS.with(|p| p.borrow_mut().take());
+    if let Some(tokens) = pending_tokens {
+        install_tokens(&tokens);
+    }
+
+    // Flush any pending token updates. These accumulate across all
+    // `update_tokens` calls between walker passes.
+    let pending_updates: Vec<Vec<TokenEntry>> =
+        PENDING_TOKEN_UPDATES.with(|p| std::mem::take(&mut *p.borrow_mut()));
+    let mut update_tokens = update_tokens;
+    for upd in &pending_updates {
+        update_tokens(upd);
+    }
+
+    let sheet_ptr = Rc::as_ptr(sheet);
+    let key = RegKey { sheet: sheet_ptr };
+
+    // Sweep dead registrations (Weak no longer upgrades). They go to
+    // the pending-unregister queue, and any matching entries in the
+    // resolution cache get pruned so we don't pin stale `StyleRules`
+    // alive past their stylesheet's lifetime.
+    let mut dead_sheet_ptrs: Vec<*const StyleSheet> = Vec::new();
+    REGISTRATIONS.with(|r| {
+        let mut regs = r.borrow_mut();
+        let dead_keys: Vec<RegKey> = regs
+            .iter()
+            .filter_map(|(k, reg)| {
+                if reg.weak.upgrade().is_none() {
+                    Some(k.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if !dead_keys.is_empty() {
+            PENDING_UNREGISTER.with(|p| {
+                let mut pending = p.borrow_mut();
+                for k in dead_keys {
+                    dead_sheet_ptrs.push(k.sheet);
+                    if let Some(reg) = regs.remove(&k) {
+                        pending.push(reg.rules);
+                    }
+                }
+            });
+        }
+    });
+    if !dead_sheet_ptrs.is_empty() {
+        RESOLUTION_CACHE.with(|c| {
+            c.borrow_mut().retain(|k, _| !dead_sheet_ptrs.contains(&k.sheet));
+        });
+    }
+
+    // Flush pending unregistrations now that the backend is in scope.
+    let pending: Vec<Vec<Rc<StyleRules>>> =
+        PENDING_UNREGISTER.with(|p| std::mem::take(&mut *p.borrow_mut()));
+    for rules in &pending {
+        unregister(rules);
+    }
+
+    // Already registered? Done.
+    let already = REGISTRATIONS.with(|r| r.borrow().contains_key(&key));
+    if already {
+        return;
+    }
+
+    // Register fresh. We pre-populate the resolution cache with the
+    // pregen Rcs so `resolve()` for a known (sheet, variants,
+    // no-overrides) combination returns the *same Rc instance* the
+    // backend just registered. That lets the backend short-circuit
+    // on `Rc::as_ptr` identity instead of paying for `content_key()`
+    // on every node.
+    let keyed = pregenerate_keyed(sheet);
+    let sheet_ptr = Rc::as_ptr(sheet);
+    RESOLUTION_CACHE.with(|c| {
+        let mut cache = c.borrow_mut();
+        for (variants, rc) in &keyed {
+            let cache_key = ResolutionKey {
+                sheet: sheet_ptr,
+                variants: variants.clone(),
+                overrides: String::new(),
+            };
+            cache.insert(cache_key, rc.clone());
+        }
+    });
+    // Also populate the per-sheet pointer-keyed cache. This is the
+    // fast path `resolve()` consults first.
+    for (variants, rc) in &keyed {
+        sheet.insert_variant(variants.clone(), rc.clone());
+    }
+    let rules: Vec<Rc<StyleRules>> = keyed.into_iter().map(|(_, rc)| rc).collect();
+    // Register any typefaces (and their per-face assets) the sheet
+    // references before shipping the stylesheet itself.
+    ensure_typefaces_registered_with(&rules, register_asset, register_typeface);
+    register(&rules);
+    REGISTRATIONS.with(|r| {
+        r.borrow_mut().insert(
+            key,
+            Registration {
+                weak: Rc::downgrade(sheet),
+                rules,
+            },
+        );
+    });
+}
+
+/// Returns the set of pre-resolvable `StyleRules` for a stylesheet.
+/// Includes:
+/// - The base rules (no variants active).
+/// - One entry per declared (axis, value) — variant overlay layered on
+///   base.
+/// - One entry per declared compound variant — the matched compound
+///   layered on the base + the compound's `when` clause's variants.
+///
+/// Continuous overrides are NOT pre-generatable and aren't included.
+/// Backends like the web backend use this to mint CSS classes ahead of
+/// time so `apply_style` is a cache hit.
+pub fn pregenerate(sheet: &StyleSheet) -> Vec<Rc<StyleRules>> {
+    pregenerate_keyed(sheet)
+        .into_iter()
+        .map(|(_, rc)| rc)
+        .collect()
+}
+
+/// Same as `pregenerate` but also returns the `VariantSet` each rule
+/// was resolved for. Used by `ensure_registered_with` to populate the
+/// resolution cache so `resolve()` returns the *same* `Rc<StyleRules>`
+/// instances the backend registered.
+pub(crate) fn pregenerate_keyed(sheet: &StyleSheet) -> Vec<(VariantSet, Rc<StyleRules>)> {
+    let mut out: Vec<(VariantSet, Rc<StyleRules>)> = Vec::new();
+
+    // 1. Base.
+    let base_vs = VariantSet::new();
+    out.push((base_vs.clone(), Rc::new(sheet.resolve(&base_vs))));
+
+    // 2. Each (axis, value) — every single-axis variant selection.
+    for (axis, value) in sheet.variant_keys() {
+        let variants = VariantSet::new().with(axis, value);
+        out.push((variants.clone(), Rc::new(sheet.resolve(&variants))));
+    }
+
+    // 3. Each compound — the compound's `when` clause defines the
+    //    minimum variant selection that triggers it.
+    for compound_keys in sheet.compound_keys() {
+        let mut variants = VariantSet::new();
+        for (axis, value) in compound_keys {
+            variants.0.insert(axis, value);
+        }
+        out.push((variants.clone(), Rc::new(sheet.resolve(&variants))));
+    }
+
+    out
+}
+
+/// Resolve a style application. Memoized: same key always returns
+/// the same `Rc<StyleRules>` across calls until the cache is wiped
+/// (by [`update_tokens`]) or pruned (stylesheet dropped).
+///
+/// Cache entries are strong `Rc`s — that's what makes back-to-back
+/// applies of the same style hit the cache.
+pub fn resolve(app: &StyleApplication) -> Rc<StyleRules> {
+    // Fast path: no overrides + pre-registered variants.
+    if !app.has_overrides {
+        #[cfg(feature = "debug-stats")]
+        let _t_fast = crate::debug::now_micros();
+        if let Some(rc) = app.sheet.lookup_variant(&app.variants) {
+            #[cfg(feature = "debug-stats")]
+            {
+                crate::debug::record_apply_phase(
+                    "resolve_fast_path_hit",
+                    crate::debug::now_micros().saturating_sub(_t_fast),
+                );
+                crate::debug::record_style_cache_hit();
+            }
+            return rc;
+        }
+        #[cfg(feature = "debug-stats")]
+        crate::debug::record_apply_phase(
+            "resolve_fast_path_miss",
+            crate::debug::now_micros().saturating_sub(_t_fast),
+        );
+    }
+
+    // Slow path: build the full ResolutionKey and consult the
+    // global cache.
+    let overrides_key = if app.has_overrides {
+        app.overrides.content_key()
+    } else {
+        String::new()
+    };
+    let key = ResolutionKey {
+        sheet: Rc::as_ptr(&app.sheet),
+        variants: app.variants.clone(),
+        overrides: overrides_key,
+    };
+
+    // Cache hit? Return the shared Rc.
+    if let Some(rc) = RESOLUTION_CACHE.with(|c| c.borrow().get(&key).cloned()) {
+        #[cfg(feature = "debug-stats")]
+        crate::debug::record_style_cache_hit();
+        return rc;
+    }
+    #[cfg(feature = "debug-stats")]
+    crate::debug::record_style_cache_miss();
+
+    // Miss. Resolve fresh and stash a strong Rc.
+    let base_and_variants = app.sheet.resolve(&app.variants);
+    let final_rules = base_and_variants.merge(&app.overrides);
+    let resolved = Rc::new(final_rules);
+
+    RESOLUTION_CACHE.with(|c| {
+        c.borrow_mut().insert(key, resolved.clone());
+    });
+
+    resolved
+}
+
+// ----------------------------------------------------------------------------
+// Builder support traits — used by the `stylesheet!` macro
+// ----------------------------------------------------------------------------
+//
+// Variant setters (`.size(...)`) and override setters (`.padding(...)`)
+// on a generated builder accept *anything that converts to a closure*
+// reading the value. The same setter shape works for:
+//
+//   - a static enum value:        `.size(CardSize::Small)`
+//   - a static primitive value:   `.padding(16.0)`
+//   - a reactive signal:          `.padding(my_signal)`
+//
+// In the reactive case the builder's `IntoStyleSource` closure picks
+// up the signal subscription naturally because it reads the value
+// inside the apply-style effect.
+//
+// Each generated variant enum has a `pub fn as_variant_str(self) ->
+// &'static str` accessor (emitted by the macro). The
+// `IntoVariantSource` trait's impl for `E` uses that method to
+// convert; the impl for `Signal<E>` reads the signal and converts.
+
+pub trait IntoVariantSource<E: Copy + 'static> {
+    fn into_variant_source(self) -> Box<dyn Fn() -> &'static str>;
+}
+
+pub trait IntoOverrideSource<T: Clone + 'static> {
+    fn into_override_source(self) -> Box<dyn Fn() -> T>;
+}
+
+// A bit of plumbing: variant enums have `as_variant_str`. We can't
+// require it via a trait the macro defines (orphan rules), so we
+// instead expose a marker trait `VariantEnum` that the macro impl's
+// on each generated enum.
+
+pub trait VariantEnum: Copy + 'static {
+    fn as_variant_str(self) -> &'static str;
+    /// Every variant of this enum, in declaration order. Used by
+    /// reflective tooling (the docs-app `DocControls` derive) to
+    /// build a control that cycles through all values.
+    ///
+    /// Default returns an empty slice for hand-rolled implementors
+    /// of this trait — `stylesheet!`-generated enums override.
+    fn all_variants() -> &'static [Self]
+    where
+        Self: Sized,
+    {
+        &[]
+    }
+}
+
+impl<E: VariantEnum> IntoVariantSource<E> for E {
+    fn into_variant_source(self) -> Box<dyn Fn() -> &'static str> {
+        let s = self.as_variant_str();
+        Box::new(move || s)
+    }
+}
+
+impl<E: VariantEnum> IntoVariantSource<E> for crate::Signal<E> {
+    fn into_variant_source(self) -> Box<dyn Fn() -> &'static str> {
+        Box::new(move || self.get().as_variant_str())
+    }
+}
+
+/// Closure-form wrapper. Lets author code derive a variant axis
+/// reactively from any combination of signals — useful when the axis
+/// is a function of state (e.g. `screen == Summary`) rather than the
+/// value of a single `Signal<E>`. The framework's style-effect calls
+/// the closure inside its re-resolution pass, so any signal the
+/// closure reads becomes a dependency.
+///
+/// Wrapped via the [`derive`] free function to dodge Rust's coherence
+/// rules (a blanket `impl<F: Fn() -> E> IntoVariantSource<E> for F`
+/// conflicts with the existing `impl IntoVariantSource<E> for E`).
+pub struct Derive<F>(pub F);
+
+/// Convenience constructor: `derived(move || ...)`. Named with a
+/// trailing `d` so it doesn't collide visually with `#[derive(...)]`
+/// at the call site (and so a `use runtime_core::derived;` doesn't
+/// shadow std's `derive` attribute, even though they're in distinct
+/// namespaces).
+pub fn derived<F, T>(f: F) -> Derive<F>
+where
+    F: Fn() -> T + 'static,
+{
+    Derive(f)
+}
+
+impl<E, F> IntoVariantSource<E> for Derive<F>
+where
+    E: VariantEnum,
+    F: Fn() -> E + 'static,
+{
+    fn into_variant_source(self) -> Box<dyn Fn() -> &'static str> {
+        let f = self.0;
+        Box::new(move || f().as_variant_str())
+    }
+}
+
+impl<T: Clone + 'static> IntoOverrideSource<T> for T {
+    fn into_override_source(self) -> Box<dyn Fn() -> T> {
+        Box::new(move || self.clone())
+    }
+}
+
+impl<T: Clone + 'static> IntoOverrideSource<T> for crate::Signal<T> {
+    fn into_override_source(self) -> Box<dyn Fn() -> T> {
+        Box::new(move || self.get())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: assert a `Tokenized<Color>` resolves to a particular
+    /// fallback string. Tests express the visible color, not whether
+    /// the rule used a token vs literal.
+    fn color_eq(actual: &Option<Tokenized<Color>>, expected_hex: &str) {
+        let value = actual
+            .as_ref()
+            .expect("expected Some color")
+            .value();
+        assert_eq!(value.0, expected_hex);
+    }
+
+    #[test]
+    fn closure_stylesheet_emits_rules() {
+        let sheet = StyleSheet::new(|_vs: &VariantSet| StyleRules {
+            background: Some(Tokenized::token("surface", Color("#fff".into()))),
+            padding_top: Some(Tokenized::Literal(Length::Px(16.0))),
+            ..Default::default()
+        });
+        let r = sheet.resolve(&VariantSet::new());
+        color_eq(&r.background, "#fff");
+        assert_eq!(r.padding_top, Some(Tokenized::Literal(Length::Px(16.0))));
+    }
+
+    #[test]
+    fn static_stylesheet_returns_fixed_rules() {
+        let sheet = StyleSheet::r#static(StyleRules {
+            background: Some(Tokenized::Literal(Color("#abc".into()))),
+            ..Default::default()
+        });
+        let r = sheet.resolve(&VariantSet::new());
+        color_eq(&r.background, "#abc");
+    }
+
+    #[test]
+    fn variant_overlays_layer_on_top_of_base() {
+        let sheet = StyleSheet::new(|_vs: &VariantSet| StyleRules {
+            background: Some(Tokenized::token("surface", Color("#fff".into()))),
+            padding_top: Some(Tokenized::Literal(Length::Px(16.0))),
+            ..Default::default()
+        })
+        .variant("size", "large", |_vs: &VariantSet| StyleRules {
+            padding_top: Some(Tokenized::Literal(Length::Px(32.0))),
+            ..Default::default()
+        });
+        let r = sheet.resolve(&VariantSet::new().with("size", "large"));
+        color_eq(&r.background, "#fff");
+        assert_eq!(r.padding_top, Some(Tokenized::Literal(Length::Px(32.0))));
+    }
+
+    #[test]
+    fn update_tokens_clears_resolution_cache() {
+        let sheet = Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules {
+            background: Some(Tokenized::token("surface", Color("#fff".into()))),
+            ..Default::default()
+        }));
+        let app = StyleApplication::new(sheet);
+
+        let r1 = resolve(&app);
+        color_eq(&r1.background, "#fff");
+
+        // Subsequent resolves hit the cache and return the same Rc.
+        let r2 = resolve(&app);
+        assert!(Rc::ptr_eq(&r1, &r2));
+
+        // `update_tokens` wipes the cache; the next resolve produces
+        // a fresh Rc (token names are stable so the content matches).
+        update_tokens(&[TokenEntry {
+            name: "surface",
+            value: TokenValue::Color(Color("#111".into())),
+        }]);
+        let r3 = resolve(&app);
+        assert!(!Rc::ptr_eq(&r1, &r3));
+    }
+
+    #[test]
+    fn overrides_layer_on_top_of_base_and_variants() {
+        let sheet = Rc::new(
+            StyleSheet::new(|_vs: &VariantSet| StyleRules {
+                background: Some(Tokenized::token("surface", Color("#fff".into()))),
+                font_size: Some(Tokenized::Literal(Length::Px(14.0))),
+                padding_top: Some(Tokenized::Literal(Length::Px(16.0))),
+                ..Default::default()
+            })
+            .variant("size", "large", |_vs: &VariantSet| StyleRules {
+                font_size: Some(Tokenized::Literal(Length::Px(20.0))),
+                ..Default::default()
+            }),
+        );
+
+        // Base only.
+        let r1 = resolve(&StyleApplication::new(sheet.clone()));
+        assert_eq!(r1.font_size, Some(Tokenized::Literal(Length::Px(14.0))));
+
+        // With variant: font becomes 20.
+        let r2 = resolve(&StyleApplication::new(sheet.clone()).with("size", "large"));
+        assert_eq!(r2.font_size, Some(Tokenized::Literal(Length::Px(20.0))));
+
+        // With variant + override: override wins.
+        let r3 = resolve(
+            &StyleApplication::new(sheet.clone())
+                .with("size", "large")
+                .override_font_size(17.5),
+        );
+        assert_eq!(r3.font_size, Some(Tokenized::Literal(Length::Px(17.5))));
+        // Other properties unaffected by the override.
+        assert_eq!(r3.padding_top, Some(Tokenized::Literal(Length::Px(16.0))));
+
+        // Different override values produce distinct cache entries.
+        let r4 = resolve(
+            &StyleApplication::new(sheet.clone())
+                .with("size", "large")
+                .override_font_size(99.0),
+        );
+        assert_eq!(r4.font_size, Some(Tokenized::Literal(Length::Px(99.0))));
+        assert!(!Rc::ptr_eq(&r3, &r4));
+    }
+
+    #[test]
+    fn variant_default_applies_when_axis_unselected() {
+        let sheet = StyleSheet::new(|_vs: &VariantSet| StyleRules {
+            padding_top: Some(Tokenized::Literal(Length::Px(8.0))),
+            ..Default::default()
+        })
+        .variant("size", "small", |_vs: &VariantSet| StyleRules {
+            padding_top: Some(Tokenized::Literal(Length::Px(4.0))),
+            ..Default::default()
+        })
+        .variant("size", "large", |_vs: &VariantSet| StyleRules {
+            padding_top: Some(Tokenized::Literal(Length::Px(16.0))),
+            ..Default::default()
+        })
+        .variant_default("size", "large");
+
+        // Call site omits `size` → default "large" applies → padding 16.
+        let r = sheet.resolve(&VariantSet::new());
+        assert_eq!(r.padding_top, Some(Tokenized::Literal(Length::Px(16.0))));
+
+        // Call site picks "small" → padding 4.
+        let r2 = sheet.resolve(&VariantSet::new().with("size", "small"));
+        assert_eq!(r2.padding_top, Some(Tokenized::Literal(Length::Px(4.0))));
+    }
+
+    #[test]
+    fn compound_variant_applies_only_when_all_match() {
+        let sheet = StyleSheet::new(|_vs: &VariantSet| StyleRules::default())
+            .variant("size", "large", |_vs: &VariantSet| StyleRules {
+                padding_top: Some(Tokenized::Literal(Length::Px(16.0))),
+                ..Default::default()
+            })
+            .variant("kind", "primary", |_vs: &VariantSet| StyleRules {
+                background: Some(Tokenized::Literal(Color("primary-bg".into()))),
+                ..Default::default()
+            })
+            .compound(
+                vec![("size", "large"), ("kind", "primary")],
+                |_vs: &VariantSet| StyleRules {
+                    font_size: Some(Tokenized::Literal(Length::Px(24.0))),
+                    ..Default::default()
+                },
+            );
+
+        // Only size=large → compound NOT applied.
+        let r1 = sheet.resolve(&VariantSet::new().with("size", "large"));
+        assert_eq!(r1.padding_top, Some(Tokenized::Literal(Length::Px(16.0))));
+        assert_eq!(r1.font_size, None);
+
+        // Both axes match → compound APPLIED.
+        let r2 = sheet.resolve(
+            &VariantSet::new().with("size", "large").with("kind", "primary"),
+        );
+        assert_eq!(r2.padding_top, Some(Tokenized::Literal(Length::Px(16.0))));
+        color_eq(&r2.background, "primary-bg");
+        assert_eq!(r2.font_size, Some(Tokenized::Literal(Length::Px(24.0))));
+    }
+
+    #[test]
+    fn variant_keys_lists_every_axis_value() {
+        let sheet = StyleSheet::new(|_vs: &VariantSet| StyleRules::default())
+            .variant("size", "small", |_vs: &VariantSet| StyleRules::default())
+            .variant("size", "large", |_vs: &VariantSet| StyleRules::default())
+            .variant("kind", "primary", |_vs: &VariantSet| StyleRules::default());
+        let mut keys = sheet.variant_keys();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec![
+                ("kind".to_string(), "primary".to_string()),
+                ("size".to_string(), "large".to_string()),
+                ("size".to_string(), "small".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_memoizes_same_inputs() {
+        let sheet = Rc::new(StyleSheet::r#static(StyleRules {
+            background: Some(Tokenized::Literal(Color("#abc".into()))),
+            ..Default::default()
+        }));
+        let app = StyleApplication::new(sheet);
+        let r1 = resolve(&app);
+        let r2 = resolve(&app);
+        assert!(Rc::ptr_eq(&r1, &r2));
+    }
+
+    /// **The core invariant of the tokenization rework**: two
+    /// stylesheets producing the same token references must hash to
+    /// the same content key regardless of installed token values.
+    #[test]
+    fn tokenized_rules_have_token_stable_content_keys() {
+        let sheet_a = StyleSheet::new(|_vs: &VariantSet| StyleRules {
+            background: Some(Tokenized::token("surface", Color("#fff".into()))),
+            ..Default::default()
+        });
+        let sheet_b = StyleSheet::new(|_vs: &VariantSet| StyleRules {
+            background: Some(Tokenized::token("surface", Color("#111".into()))),
+            ..Default::default()
+        });
+        let r_a = sheet_a.resolve(&VariantSet::new());
+        let r_b = sheet_b.resolve(&VariantSet::new());
+        assert_eq!(r_a.content_key(), r_b.content_key());
+        // Sanity: the *fallbacks* differ so we know the test is real.
+        assert_ne!(r_a.background.as_ref().unwrap().value().0,
+                   r_b.background.as_ref().unwrap().value().0);
+    }
+
+    /// Literal values should NOT collide with token references that
+    /// happen to share a string. The content key encoder tags
+    /// literals with `L:` and tokens with `T:` to disambiguate.
+    #[test]
+    fn literal_and_token_with_same_string_have_distinct_keys() {
+        let lit_rules = StyleRules {
+            background: Some(Tokenized::Literal(Color("surface".into()))),
+            ..Default::default()
+        };
+        let tok_rules = StyleRules {
+            background: Some(Tokenized::token("surface", Color("anything".into()))),
+            ..Default::default()
+        };
+        assert_ne!(lit_rules.content_key(), tok_rules.content_key());
+    }
+
+    // -----------------------------------------------------------------
+    // Per-token reactivity (TOKEN_REGISTRY / Tokenized::resolve)
+    // -----------------------------------------------------------------
+    //
+    // Tests use globally-unique token names ("tk_<test>_<token>") to
+    // avoid cross-test contamination from the thread-local registry —
+    // the registry persists across tests on the same thread because
+    // it lives outside any `Scope`.
+
+    #[test]
+    fn install_tokens_populates_registry_and_resolve_returns_installed_value() {
+        install_tokens(&[
+            TokenEntry {
+                name: "tk_install_color",
+                value: TokenValue::Color(Color("#123".into())),
+            },
+            TokenEntry {
+                name: "tk_install_len",
+                value: TokenValue::Length(Length::Px(24.0)),
+            },
+            TokenEntry {
+                name: "tk_install_num",
+                value: TokenValue::Number(0.5),
+            },
+        ]);
+
+        let c: Tokenized<Color> = Tokenized::token("tk_install_color", Color("#fff".into()));
+        let l: Tokenized<Length> = Tokenized::token("tk_install_len", Length::Px(0.0));
+        let n: Tokenized<f32> = Tokenized::token("tk_install_num", 0.0);
+        assert_eq!(c.resolve().0, "#123");
+        assert_eq!(l.resolve(), Length::Px(24.0));
+        assert_eq!(n.resolve(), 0.5);
+    }
+
+    #[test]
+    fn resolve_literal_returns_value_and_does_not_touch_registry() {
+        let c: Tokenized<Color> = Tokenized::Literal(Color("#abc".into()));
+        assert_eq!(c.resolve().0, "#abc");
+        let l: Tokenized<Length> = Tokenized::Literal(Length::Px(8.0));
+        assert_eq!(l.resolve(), Length::Px(8.0));
+        let n: Tokenized<f32> = Tokenized::Literal(7.5);
+        assert_eq!(n.resolve(), 7.5);
+    }
+
+    #[test]
+    fn resolve_uninstalled_token_returns_fallback() {
+        // Token name never installed — resolve still works and lazily
+        // creates a registry entry seeded with the fallback so subsequent
+        // `update_tokens` for the same name can propagate.
+        //
+        // Install a *different* token first so the thread is marked
+        // themed and `debug_assert_theme_installed` doesn't trip; the
+        // permissive lazy-fallback semantics we're exercising apply to
+        // individual missing tokens, not to a totally-unthemed thread.
+        install_tokens(&[TokenEntry {
+            name: "tk_uninstalled_sentinel",
+            value: TokenValue::Color(Color("#000".into())),
+        }]);
+        let c: Tokenized<Color> = Tokenized::token("tk_uninstalled", Color("#fall".into()));
+        assert_eq!(c.resolve().0, "#fall");
+    }
+
+    /// Regression test for the `with_or_create_token_signal` scope-adoption
+    /// audit finding. Token signals stashed in the thread-local
+    /// `TOKEN_REGISTRY` must outlive any render scope — they're the
+    /// theme system's authoritative store and need thread lifetime to
+    /// survive re-mounts (hot reload, fixture teardown, page-rebuild
+    /// in dev tools).
+    ///
+    /// Bug before fix: `Signal::new` inside `with_or_create_token_signal`
+    /// gets registered with the currently-active `Scope`. When that
+    /// scope drops (e.g. app unmount), the slot is freed but
+    /// `TOKEN_REGISTRY` still holds a stale `Signal` handle. The next
+    /// resolve of the same token either panics with
+    /// "signal used after its scope was dropped" or — worse — silently
+    /// hits a recycled slot of an unrelated signal.
+    #[test]
+    fn token_signal_survives_creating_scope_drop() {
+        use crate::reactive::{with_scope, Scope};
+
+        // Use a unique token name so this test doesn't collide with the
+        // other registry-touching tests (registry is process-wide).
+        const NAME: &str = "tk_scope_survival_color";
+
+        // Mark the thread as themed so `debug_assert_theme_installed`
+        // doesn't trip on the first lazy resolve below. The bug under
+        // test is about lazy creation of a *single missing* token's
+        // signal slot, not about a totally-unthemed thread.
+        install_tokens(&[TokenEntry {
+            name: "tk_scope_survival_sentinel",
+            value: TokenValue::Color(Color("#000".into())),
+        }]);
+
+        // First read happens inside scope A. Resolves the token, which
+        // creates the registry signal lazily.
+        {
+            let mut scope_a = Scope::new();
+            with_scope(&mut scope_a, || {
+                let c: Tokenized<Color> = Tokenized::token(NAME, Color("#aaa".into()));
+                let v = c.resolve();
+                assert_eq!(v.0, "#aaa", "first resolve returns the fallback");
+            });
+            // scope_a drops here. With the bug, the token signal's
+            // arena slot is freed; the registry still holds the stale
+            // Signal handle.
+        }
+
+        // Second read happens inside an unrelated scope B. Must NOT
+        // panic — the token registry is supposed to be thread-lifetime.
+        let mut scope_b = Scope::new();
+        let observed = with_scope(&mut scope_b, || {
+            let c: Tokenized<Color> = Tokenized::token(NAME, Color("#bbb".into()));
+            c.resolve()
+        });
+        // We expect the fallback that was installed on the first
+        // resolve to still be returned (registry preserved its
+        // contents). What we don't expect is a panic.
+        assert_eq!(
+            observed.0, "#aaa",
+            "second resolve must return the originally-installed fallback, \
+             proving the token signal outlived its creating scope"
+        );
+
+        // `update_tokens` should also work after the creator scope dropped.
+        update_tokens(&[TokenEntry {
+            name: NAME,
+            value: TokenValue::Color(Color("#ccc".into())),
+        }]);
+        let mut scope_c = Scope::new();
+        let updated = with_scope(&mut scope_c, || {
+            let c: Tokenized<Color> = Tokenized::token(NAME, Color("#bbb".into()));
+            c.resolve()
+        });
+        assert_eq!(
+            updated.0, "#ccc",
+            "update_tokens through the registry-stashed signal must still work \
+             after the creating scope dropped"
+        );
+    }
+
+    /// `update_tokens(["a"])` must fire only the signal for `"a"` — the
+    /// signal for `"b"` stays still. This is the per-token isolation
+    /// invariant at the signal layer.
+    #[test]
+    fn update_tokens_fires_only_changed_token_signal() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        install_tokens(&[
+            TokenEntry {
+                name: "tk_isolate_a",
+                value: TokenValue::Color(Color("#a0".into())),
+            },
+            TokenEntry {
+                name: "tk_isolate_b",
+                value: TokenValue::Color(Color("#b0".into())),
+            },
+        ]);
+
+        let a_runs = Rc::new(Cell::new(0u32));
+        let b_runs = Rc::new(Cell::new(0u32));
+        let a_runs_c = a_runs.clone();
+        let b_runs_c = b_runs.clone();
+
+        let tok_a: Tokenized<Color> =
+            Tokenized::token("tk_isolate_a", Color("#fall".into()));
+        let tok_b: Tokenized<Color> =
+            Tokenized::token("tk_isolate_b", Color("#fall".into()));
+
+        let _ea = crate::Effect::new(move || {
+            let _ = tok_a.resolve();
+            a_runs_c.set(a_runs_c.get() + 1);
+        });
+        let _eb = crate::Effect::new(move || {
+            let _ = tok_b.resolve();
+            b_runs_c.set(b_runs_c.get() + 1);
+        });
+        assert_eq!(a_runs.get(), 1, "effect A fired once on install");
+        assert_eq!(b_runs.get(), 1, "effect B fired once on install");
+
+        update_tokens(&[TokenEntry {
+            name: "tk_isolate_a",
+            value: TokenValue::Color(Color("#a1".into())),
+        }]);
+        assert_eq!(a_runs.get(), 2, "effect A re-fires on its token's update");
+        assert_eq!(b_runs.get(), 1, "effect B did NOT re-fire on A's update");
+
+        update_tokens(&[TokenEntry {
+            name: "tk_isolate_b",
+            value: TokenValue::Color(Color("#b1".into())),
+        }]);
+        assert_eq!(a_runs.get(), 2, "effect A unchanged by B's update");
+        assert_eq!(
+            b_runs.get(),
+            2,
+            "effect B re-fires on its token's update"
+        );
+    }
+
+    /// **Load-bearing test for the whole refactor.** A styled-effect-
+    /// like setup: a `Tokenized::resolve()` read inside an Effect
+    /// subscribes that effect to ONLY the specific token signal — so
+    /// an `update_tokens` for a *different* token leaves the effect
+    /// untouched. This is the property that lets a 10k-row scoreboard
+    /// avoid waking nodes that don't reference the changed token.
+    #[test]
+    fn per_token_isolation_in_styled_effect() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        install_tokens(&[
+            TokenEntry {
+                name: "tk_styled_a",
+                value: TokenValue::Color(Color("#aaaaaa".into())),
+            },
+            TokenEntry {
+                name: "tk_styled_b",
+                value: TokenValue::Color(Color("#bbbbbb".into())),
+            },
+        ]);
+
+        // Effect that reads ONLY token A (like a node whose stylesheet
+        // references `tk_styled_a` for background).
+        let runs = Rc::new(Cell::new(0u32));
+        let last_value = Rc::new(Cell::new(String::new()));
+        let runs_c = runs.clone();
+        let last_value_c = last_value.clone();
+        let tok_a: Tokenized<Color> =
+            Tokenized::token("tk_styled_a", Color("#fff".into()));
+        let _e = crate::Effect::new(move || {
+            // Mirror what a backend's apply_style does — resolve the
+            // tokenized property to a concrete value.
+            let resolved = tok_a.resolve();
+            last_value_c.set(resolved.0);
+            runs_c.set(runs_c.get() + 1);
+        });
+        assert_eq!(runs.get(), 1, "initial run on install");
+        assert_eq!(last_value.take(), "#aaaaaa");
+
+        // Update an UNRELATED token (B). Our effect must NOT re-fire.
+        update_tokens(&[TokenEntry {
+            name: "tk_styled_b",
+            value: TokenValue::Color(Color("#b1b1b1".into())),
+        }]);
+        assert_eq!(
+            runs.get(),
+            1,
+            "styled effect reading only tk_styled_a must not wake on tk_styled_b updates"
+        );
+
+        // Update the SUBSCRIBED token (A). Effect re-fires with new value.
+        update_tokens(&[TokenEntry {
+            name: "tk_styled_a",
+            value: TokenValue::Color(Color("#a1a1a1".into())),
+        }]);
+        assert_eq!(runs.get(), 2, "styled effect re-fires on its own token");
+        assert_eq!(last_value.take(), "#a1a1a1");
+    }
+
+    #[test]
+    fn update_tokens_before_install_is_permissive() {
+        // Calling update_tokens for a never-installed name creates
+        // the registry entry — subsequent resolves see the value.
+        update_tokens(&[TokenEntry {
+            name: "tk_permissive",
+            value: TokenValue::Length(Length::Px(99.0)),
+        }]);
+        let t: Tokenized<Length> = Tokenized::token("tk_permissive", Length::Px(0.0));
+        assert_eq!(t.resolve(), Length::Px(99.0));
+    }
+
+    #[test]
+    fn resolve_with_wrong_variant_falls_back() {
+        // Install a token as Length, then read via Tokenized<Color>.
+        // Should return the fallback (and emit a debug eprintln in
+        // debug builds — not asserted to avoid coupling).
+        install_tokens(&[TokenEntry {
+            name: "tk_wrong_variant",
+            value: TokenValue::Length(Length::Px(10.0)),
+        }]);
+        let c: Tokenized<Color> = Tokenized::token("tk_wrong_variant", Color("#fb".into()));
+        assert_eq!(c.resolve().0, "#fb");
+    }
+
+    /// Regression test for the debug-only "resolve on unthemed thread"
+    /// tripwire. The token registry, resolution cache, and installed
+    /// `THEME_INSTALLED` flag are all thread-local; a `Tokenized::Token`
+    /// resolved on a thread that never called `install_tokens` would
+    /// silently fall back to the literal value and miss every theme
+    /// value — a footgun once any future code path (speculative renders,
+    /// SSR, off-main-thread layout) tries to render off the host thread.
+    /// In debug builds we panic loudly instead of silently degrading.
+    ///
+    /// Release builds preserve the silent-fallback behavior (the assert
+    /// is `debug_assert!`); the corresponding `#[cfg(debug_assertions)]`
+    /// gate on this test makes that explicit — the panic disappears in
+    /// `--release`, so the test would no-op there.
+    #[test]
+    #[cfg(debug_assertions)]
+    fn resolve_panics_in_debug_when_thread_has_no_installed_theme() {
+        // Spawn a fresh thread that has NEVER touched the registry or
+        // called install_tokens — the only way to deterministically
+        // exercise an unthemed thread, since the test runner reuses
+        // threads across tests and the parent thread is themed by all
+        // the other tests in this module.
+        let handle = std::thread::Builder::new()
+            .name("resolve_panics_in_debug_thread".into())
+            .spawn(|| {
+                let c: Tokenized<Color> =
+                    Tokenized::token("tk_unthemed_thread", Color("#fall".into()));
+                // This must trip `debug_assert_theme_installed` and
+                // panic. If it ever returns, the tripwire is broken.
+                let _ = c.resolve();
+            })
+            .expect("spawn worker thread");
+
+        let result = handle.join();
+        assert!(
+            result.is_err(),
+            "expected the spawned thread to panic via debug_assert_theme_installed, \
+             but it returned successfully — the tripwire is silently broken"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // FontFamily + typeface registration
+    // -----------------------------------------------------------------
+
+    // `face!` embeds via `include_bytes!`, so its src paths must
+    // point at real files. We use sibling `runtime-core` sources
+    // as test-only embed targets — the bytes are irrelevant; the
+    // tests only exercise `Typeface`/`FontFamily` identity + struct
+    // shape.
+    fn sample_typeface() -> crate::assets::Typeface {
+        crate::typeface! {
+            name: "TestSans",
+            faces: [
+                crate::face!(weight: FontWeight::Normal, style: FontStyle::Normal,
+                             src: "assets.rs"),
+                crate::face!(weight: FontWeight::Bold, style: FontStyle::Normal,
+                             src: "lib.rs"),
+            ],
+            fallback: crate::assets::SystemFallback::SansSerif,
+        }
+    }
+
+    fn other_typeface() -> crate::assets::Typeface {
+        crate::typeface! {
+            name: "TestMono",
+            faces: [
+                crate::face!(weight: FontWeight::Normal, style: FontStyle::Normal,
+                             src: "reactive.rs"),
+            ],
+            fallback: crate::assets::SystemFallback::Monospace,
+        }
+    }
+
+    #[test]
+    fn font_family_from_string_and_str_produce_system() {
+        let from_str: FontFamily = "Helvetica".into();
+        let from_string: FontFamily = String::from("Helvetica").into();
+        assert_eq!(from_str, FontFamily::System("Helvetica".to_string()));
+        assert_eq!(from_string, from_str);
+    }
+
+    #[test]
+    fn font_family_from_typeface_wraps_value() {
+        let tf = sample_typeface();
+        let ff: FontFamily = tf.into();
+        match ff {
+            FontFamily::Typeface(t) => assert_eq!(t.id, tf.id),
+            _ => panic!("expected Typeface variant"),
+        }
+    }
+
+    #[test]
+    fn font_family_eq_by_typeface_id_not_struct() {
+        let tf = sample_typeface();
+        // Same id but synthetic struct missing the static metadata —
+        // exercises the manual `PartialEq` that compares on id only.
+        let synthetic = crate::assets::Typeface {
+            id: tf.id,
+            family_name: "",
+            faces: &[],
+            fallback: crate::assets::SystemFallback::None,
+        };
+        let a = FontFamily::Typeface(tf);
+        let b = FontFamily::Typeface(synthetic);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn font_family_system_and_typeface_never_equal() {
+        let tf = sample_typeface();
+        let a = FontFamily::System("X".to_string());
+        let b = FontFamily::Typeface(tf);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn font_family_hash_matches_eq() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        fn hash<T: Hash>(t: &T) -> u64 {
+            let mut h = DefaultHasher::new();
+            t.hash(&mut h);
+            h.finish()
+        }
+
+        let tf = sample_typeface();
+        let a = FontFamily::Typeface(tf);
+        let synthetic = crate::assets::Typeface {
+            id: tf.id,
+            family_name: "different-but-same-id",
+            faces: &[],
+            fallback: crate::assets::SystemFallback::None,
+        };
+        let b = FontFamily::Typeface(synthetic);
+        assert_eq!(a, b);
+        assert_eq!(hash(&a), hash(&b), "equal values must hash equal");
+
+        let s1 = FontFamily::System("X".to_string());
+        let s2 = FontFamily::System("X".to_string());
+        assert_eq!(hash(&s1), hash(&s2));
+        let s3 = FontFamily::System("Y".to_string());
+        assert_ne!(hash(&s1), hash(&s3));
+    }
+
+    #[test]
+    fn content_key_typeface_distinct_from_same_named_system() {
+        let tf = sample_typeface();
+        let from_typeface = StyleRules {
+            font_family: Some(FontFamily::Typeface(tf)),
+            ..Default::default()
+        };
+        let from_system = StyleRules {
+            font_family: Some(FontFamily::System(tf.family_name.to_string())),
+            ..Default::default()
+        };
+        // A typeface and a same-name system reference describe
+        // semantically different things (the typeface registration is
+        // a separate backend artifact). Content keys must differ so
+        // the backend doesn't conflate them.
+        assert_ne!(from_typeface.content_key(), from_system.content_key());
+    }
+
+    #[test]
+    fn content_key_same_typeface_collapses_to_same_key() {
+        let tf = sample_typeface();
+        let a = StyleRules {
+            font_family: Some(FontFamily::Typeface(tf)),
+            ..Default::default()
+        };
+        let b = StyleRules {
+            font_family: Some(FontFamily::Typeface(tf)),
+            ..Default::default()
+        };
+        assert_eq!(a.content_key(), b.content_key());
+    }
+
+    #[test]
+    fn ensure_typefaces_registered_dedups_by_id() {
+        // Two rules referencing the same typeface — register
+        // callbacks fire exactly once. Different typefaces in the
+        // same call register separately.
+        let tf_a = sample_typeface();
+        let tf_b = other_typeface();
+        let rules: Vec<Rc<StyleRules>> = vec![
+            Rc::new(StyleRules {
+                font_family: Some(FontFamily::Typeface(tf_a)),
+                ..Default::default()
+            }),
+            Rc::new(StyleRules {
+                font_family: Some(FontFamily::Typeface(tf_a)),
+                ..Default::default()
+            }),
+            Rc::new(StyleRules {
+                font_family: Some(FontFamily::Typeface(tf_b)),
+                ..Default::default()
+            }),
+            // System reference — must NOT trigger registration.
+            Rc::new(StyleRules {
+                font_family: Some(FontFamily::System("system-ui".to_string())),
+                ..Default::default()
+            }),
+        ];
+        let mut asset_calls: Vec<crate::assets::AssetId> = Vec::new();
+        let mut typeface_calls: Vec<TypefaceId> = Vec::new();
+        ensure_typefaces_registered_with(
+            &rules,
+            |id, kind, _src| {
+                assert_eq!(kind, crate::assets::AssetTag::Font);
+                asset_calls.push(id);
+            },
+            |id, _name, _faces, _fallback| {
+                typeface_calls.push(id);
+            },
+        );
+        // 2 faces for tf_a + 1 face for tf_b = 3 asset registrations.
+        assert_eq!(asset_calls.len(), 3);
+        assert_eq!(typeface_calls, vec![tf_a.id, tf_b.id]);
+
+        // A *second* call for an overlapping set is a no-op for the
+        // already-seen typeface. tf_b would also dedup, so a re-call
+        // with [tf_a, tf_b] only fires for items already registered:
+        // both are known → zero new calls.
+        let mut asset_calls2: Vec<crate::assets::AssetId> = Vec::new();
+        let mut typeface_calls2: Vec<TypefaceId> = Vec::new();
+        ensure_typefaces_registered_with(
+            &rules,
+            |id, _, _| asset_calls2.push(id),
+            |id, _, _, _| typeface_calls2.push(id),
+        );
+        assert!(asset_calls2.is_empty(), "no new asset registrations on dedup");
+        assert!(typeface_calls2.is_empty(), "no new typeface registrations on dedup");
+    }
+
+    // ====================================================================
+    // Gradient merge + content_key + RadialExtent + aspect_ratio
+    //
+    // Regression tests for the "manual `overlay!()` macro silently
+    // drops new fields" bug class. `merge()` and `content_key()` are
+    // hand-listed; the welcome example's vignette pulse went dark on
+    // web for an entire release because `background_gradient` was
+    // omitted from `merge`'s list, and the resolved StyleRules
+    // backends received had `background_gradient: None` despite the
+    // sheet declaring one.
+    //
+    // These tests pin the property "every gradient-relevant field
+    // round-trips through merge AND distinguishes content_key" so
+    // any future field addition that forgets either path fails
+    // loudly in CI.
+    // ====================================================================
+
+    /// Helper: a Linear gradient with one stop. Specific values
+    /// don't matter for the merge/key tests; we just need a
+    /// distinct, recognizable `Some(Gradient)`.
+    fn linear_gradient(angle_deg: f32) -> Gradient {
+        Gradient {
+            kind: GradientKind::Linear { angle_deg },
+            stops: vec![GradientStop {
+                offset: 0.0,
+                color: Color("#000".into()),
+            }],
+        }
+    }
+
+    fn radial_gradient(radius: f32, extent: RadialExtent) -> Gradient {
+        Gradient {
+            kind: GradientKind::Radial {
+                center: (0.5, 0.5),
+                radius,
+                extent,
+            },
+            stops: vec![GradientStop {
+                offset: 0.0,
+                color: Color("#000".into()),
+            }],
+        }
+    }
+
+    /// `merge` must carry `background_gradient` from `other` when
+    /// `self` has none. This was the original gradient bug — `merge`
+    /// stripped the field, so backends got `None` and animation
+    /// snapshotting silently failed.
+    #[test]
+    fn merge_overlays_background_gradient_onto_empty_base() {
+        let base = StyleRules::default();
+        let overlay = StyleRules {
+            background_gradient: Some(linear_gradient(45.0)),
+            ..Default::default()
+        };
+        let merged = base.merge(&overlay);
+        assert!(
+            merged.background_gradient.is_some(),
+            "merge dropped background_gradient on empty-base + Some-overlay; \
+             this is the welcome-vignette bug class — verify the overlay! \
+             macro lists `background_gradient`",
+        );
+        assert_eq!(
+            merged.background_gradient.as_ref().unwrap(),
+            &linear_gradient(45.0),
+        );
+    }
+
+    /// `merge` must NOT clobber a base gradient when `other` has
+    /// none. (`overlay!` only overwrites when the other field is
+    /// `Some`; verifying we didn't accidentally write the wrong
+    /// branch.)
+    #[test]
+    fn merge_keeps_base_gradient_when_overlay_has_none() {
+        let base = StyleRules {
+            background_gradient: Some(linear_gradient(30.0)),
+            ..Default::default()
+        };
+        let overlay = StyleRules::default();
+        let merged = base.merge(&overlay);
+        assert_eq!(
+            merged.background_gradient.as_ref().unwrap(),
+            &linear_gradient(30.0),
+            "an empty overlay must not strip the base gradient",
+        );
+    }
+
+    /// When both base and overlay set a gradient, overlay wins.
+    /// Standard `overlay!()` semantics — the existence of this
+    /// behaviour for gradient is what makes state-overlay
+    /// transitions on gradient backgrounds work.
+    #[test]
+    fn merge_overlay_gradient_wins_over_base_gradient() {
+        let base = StyleRules {
+            background_gradient: Some(linear_gradient(0.0)),
+            ..Default::default()
+        };
+        let overlay = StyleRules {
+            background_gradient: Some(linear_gradient(90.0)),
+            ..Default::default()
+        };
+        let merged = base.merge(&overlay);
+        assert_eq!(
+            merged.background_gradient.as_ref().unwrap(),
+            &linear_gradient(90.0),
+        );
+    }
+
+    /// `content_key` must distinguish two gradients that differ
+    /// only in angle. Pre-fix, two distinct gradients could collide
+    /// on the same minted CSS class because `content_key` ignored
+    /// the gradient field entirely.
+    #[test]
+    fn content_key_differentiates_gradients_by_angle() {
+        let a = StyleRules {
+            background_gradient: Some(linear_gradient(0.0)),
+            ..Default::default()
+        };
+        let b = StyleRules {
+            background_gradient: Some(linear_gradient(45.0)),
+            ..Default::default()
+        };
+        assert_ne!(
+            a.content_key(),
+            b.content_key(),
+            "content_key must hash the angle so distinct gradients don't share a class",
+        );
+    }
+
+    /// content_key must distinguish Linear from Radial even when
+    /// they're otherwise unrelated.
+    #[test]
+    fn content_key_differentiates_linear_vs_radial() {
+        let lin = StyleRules {
+            background_gradient: Some(linear_gradient(45.0)),
+            ..Default::default()
+        };
+        let rad = StyleRules {
+            background_gradient: Some(radial_gradient(1.0, RadialExtent::ClosestSide)),
+            ..Default::default()
+        };
+        assert_ne!(lin.content_key(), rad.content_key());
+    }
+
+    /// content_key must distinguish two radial gradients whose only
+    /// difference is the `extent` (`ClosestSide` vs `FarthestCorner`).
+    /// This is the property that prevents the welcome-vignette
+    /// stops from collapsing onto the same class as a sun-disc
+    /// gradient that happens to share radius+center.
+    #[test]
+    fn content_key_differentiates_radial_extents() {
+        let cs = StyleRules {
+            background_gradient: Some(radial_gradient(1.0, RadialExtent::ClosestSide)),
+            ..Default::default()
+        };
+        let fc = StyleRules {
+            background_gradient: Some(radial_gradient(1.0, RadialExtent::FarthestCorner)),
+            ..Default::default()
+        };
+        assert_ne!(
+            cs.content_key(),
+            fc.content_key(),
+            "RadialExtent must contribute to content_key — otherwise gradients with \
+             identical center/radius but different extents share a CSS class and the \
+             wrong one wins on apply",
+        );
+    }
+
+    /// content_key for two identical gradients must MATCH (the dedup
+    /// path relies on this — same content → same minted class).
+    #[test]
+    fn content_key_matches_for_identical_gradients() {
+        let a = StyleRules {
+            background_gradient: Some(radial_gradient(1.5, RadialExtent::FarthestCorner)),
+            ..Default::default()
+        };
+        let b = StyleRules {
+            background_gradient: Some(radial_gradient(1.5, RadialExtent::FarthestCorner)),
+            ..Default::default()
+        };
+        assert_eq!(
+            a.content_key(),
+            b.content_key(),
+            "identical gradient shape must collapse to one cached class",
+        );
+    }
+
+    /// content_key must distinguish radial gradients with different
+    /// stop offsets. Important for animations that interpolate stop
+    /// positions independently of color.
+    #[test]
+    fn content_key_differentiates_gradient_stop_offsets() {
+        let g_a = Gradient {
+            kind: GradientKind::Linear { angle_deg: 45.0 },
+            stops: vec![
+                GradientStop { offset: 0.0, color: Color("#000".into()) },
+                GradientStop { offset: 0.5, color: Color("#fff".into()) },
+            ],
+        };
+        let g_b = Gradient {
+            kind: GradientKind::Linear { angle_deg: 45.0 },
+            stops: vec![
+                GradientStop { offset: 0.0, color: Color("#000".into()) },
+                GradientStop { offset: 0.8, color: Color("#fff".into()) },
+            ],
+        };
+        let a = StyleRules { background_gradient: Some(g_a), ..Default::default() };
+        let b = StyleRules { background_gradient: Some(g_b), ..Default::default() };
+        assert_ne!(a.content_key(), b.content_key());
+    }
+
+    // ----- RadialExtent: default + round-trip ---------------------------
+
+    /// `RadialExtent::default()` is `ClosestSide`. The agent's
+    /// report calls this out as the documented default; pinning the
+    /// constant down here so a future change to the default
+    /// surfaces explicitly.
+    #[test]
+    fn radial_extent_default_is_closest_side() {
+        let d: RadialExtent = RadialExtent::default();
+        assert_eq!(d, RadialExtent::ClosestSide);
+    }
+
+    /// RadialExtent must round-trip through Clone + Copy + PartialEq
+    /// — these are the derives the public API depends on.
+    #[test]
+    fn radial_extent_clone_and_eq_round_trip() {
+        let cs = RadialExtent::ClosestSide;
+        let fc = RadialExtent::FarthestCorner;
+        // Copy semantics — moving doesn't consume.
+        let cs_again = cs;
+        let _still_cs = cs;
+        assert_eq!(cs, cs_again);
+        // Distinct variants compare unequal.
+        assert_ne!(cs, fc);
+        // Clone is independent of Copy (both must work).
+        let fc_cloned = fc.clone();
+        assert_eq!(fc, fc_cloned);
+    }
+
+    /// A `Gradient` carrying a non-default `extent` must survive
+    /// being wrapped in a `Some(StyleRules { background_gradient:
+    /// Some(...) })` and pulled back out. Catches the "field
+    /// silently dropped" failure mode at the type-system level for
+    /// the gradient struct itself.
+    #[test]
+    fn radial_extent_round_trips_through_stylerules_field() {
+        let g = radial_gradient(1.5, RadialExtent::FarthestCorner);
+        let rules = StyleRules {
+            background_gradient: Some(g.clone()),
+            ..Default::default()
+        };
+        let back = rules.background_gradient.unwrap();
+        match back.kind {
+            GradientKind::Radial { extent, .. } => {
+                assert_eq!(extent, RadialExtent::FarthestCorner);
+            }
+            other => panic!("expected Radial, got {:?}", other),
+        }
+        assert_eq!(back, g);
+    }
+
+    // ----- aspect_ratio: round-trip + key + merge -----------------------
+
+    /// `aspect_ratio` round-trips through `merge` (overlay-wins
+    /// semantics). Same regression class as the gradient bug — if
+    /// `aspect_ratio` were dropped from `overlay!()`, this fails.
+    #[test]
+    fn merge_overlays_aspect_ratio() {
+        let base = StyleRules::default();
+        let overlay = StyleRules {
+            aspect_ratio: Some(1.5),
+            ..Default::default()
+        };
+        let merged = base.merge(&overlay);
+        assert_eq!(merged.aspect_ratio, Some(1.5));
+    }
+
+    /// `merge` preserves a base `aspect_ratio` when overlay is empty.
+    #[test]
+    fn merge_keeps_aspect_ratio_when_overlay_has_none() {
+        let base = StyleRules {
+            aspect_ratio: Some(2.0),
+            ..Default::default()
+        };
+        let overlay = StyleRules::default();
+        let merged = base.merge(&overlay);
+        assert_eq!(merged.aspect_ratio, Some(2.0));
+    }
+
+    /// Overlay's `aspect_ratio` wins over base.
+    #[test]
+    fn merge_overlay_aspect_ratio_wins() {
+        let base = StyleRules {
+            aspect_ratio: Some(1.0),
+            ..Default::default()
+        };
+        let overlay = StyleRules {
+            aspect_ratio: Some(16.0 / 9.0),
+            ..Default::default()
+        };
+        let merged = base.merge(&overlay);
+        assert_eq!(merged.aspect_ratio, Some(16.0 / 9.0));
+    }
+
+    /// `content_key` distinguishes different aspect ratios — two
+    /// otherwise-identical rule sets must mint distinct classes.
+    /// Bench-relevant: a 16:9 video card and a 4:3 video card must
+    /// not collapse onto the same `.uiX` class.
+    #[test]
+    fn content_key_differentiates_aspect_ratios() {
+        let a = StyleRules {
+            aspect_ratio: Some(16.0 / 9.0),
+            ..Default::default()
+        };
+        let b = StyleRules {
+            aspect_ratio: Some(4.0 / 3.0),
+            ..Default::default()
+        };
+        assert_ne!(
+            a.content_key(),
+            b.content_key(),
+            "content_key must include aspect_ratio so different ratios mint different classes",
+        );
+    }
+
+    /// content_key for the same aspect ratio collapses (dedup
+    /// invariant).
+    #[test]
+    fn content_key_matches_for_same_aspect_ratio() {
+        let a = StyleRules {
+            aspect_ratio: Some(1.5),
+            ..Default::default()
+        };
+        let b = StyleRules {
+            aspect_ratio: Some(1.5),
+            ..Default::default()
+        };
+        assert_eq!(a.content_key(), b.content_key());
+    }
+
+    /// content_key distinguishes Some(ratio) from None — the
+    /// "ratio of None" path is its own bucket.
+    #[test]
+    fn content_key_differentiates_some_aspect_ratio_from_none() {
+        let with_ratio = StyleRules {
+            aspect_ratio: Some(1.0),
+            ..Default::default()
+        };
+        let without = StyleRules::default();
+        assert_ne!(with_ratio.content_key(), without.content_key());
+    }
+}

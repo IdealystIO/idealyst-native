@@ -41,12 +41,12 @@
 #[cfg(target_arch = "wasm32")]
 mod web;
 
-use framework_core::animation::{
+use runtime_core::animation::{
     stagger, AnimProp, AnimatedValue, DecayFrom, KeyframesTo, LoopFactory, Repeat,
     SequenceFactory, SpringTo, TweenTo,
 };
-use framework_core::primitives::slider::slider;
-use framework_core::{
+use runtime_core::primitives::slider::slider;
+use runtime_core::{
     pan, signal, tap, text, view, AlignItems, Color, Easing, Effect, FlexDirection,
     JustifyContent, Length, Overflow, PanEvent, PanRecognizer, Position, Primitive, Ref, Signal,
     StyleApplication, StyleRules, StyleSheet, TapRecognizer, Tokenized, TouchEvent, TouchPhase,
@@ -908,7 +908,7 @@ fn particle_sim_section() -> Primitive {
     {
         let sim = sim.clone();
         let canvas_ref = canvas_ref;
-        let tick = framework_core::animation::clock::register_guarded(Box::new(
+        let tick = runtime_core::animation::clock::register_guarded(Box::new(
             move |dt| {
                 if let Some(Some(rect)) = canvas_ref.with(|h| h.frame()) {
                     if rect.width > 1.0 && rect.height > 1.0 {
@@ -1399,7 +1399,7 @@ fn section_sheet() -> Rc<StyleSheet> {
         gap: Some(px(10.0)),
         padding_top: Some(px(8.0)),
         flex_grow: Some(1.0.into()),
-        align_self: Some(framework_core::AlignSelf::Stretch),
+        align_self: Some(runtime_core::AlignSelf::Stretch),
         ..Default::default()
     })
 }
@@ -1591,7 +1591,7 @@ fn button_sheet() -> Rc<StyleSheet> {
         padding_right: Some(px(14.0)),
         padding_bottom: Some(px(10.0)),
         padding_left: Some(px(14.0)),
-        align_self: Some(framework_core::AlignSelf::FlexStart),
+        align_self: Some(runtime_core::AlignSelf::FlexStart),
         ..Default::default()
     };
     radius(&mut rules, 8.0);
@@ -1619,7 +1619,7 @@ fn chip_row_sheet() -> Rc<StyleSheet> {
     })
 }
 
-fn title_text(s: &'static str) -> framework_core::Bound<framework_core::TextHandle> {
+fn title_text(s: &'static str) -> runtime_core::Bound<runtime_core::TextHandle> {
     text(s).with_style(title_sheet())
 }
 

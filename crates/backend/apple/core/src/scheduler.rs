@@ -5,7 +5,7 @@
 //! UIKit-flavored leaf crates and the AppKit-flavored macOS backend
 //! both consume this through [`install_scheduler`].
 //!
-//! `framework_core::scheduling` falls back to synchronous execution
+//! `runtime_core::scheduling` falls back to synchronous execution
 //! on native when no scheduler is installed — fine for
 //! `schedule_microtask` (immediate dispatch is correct semantics on
 //! single-threaded native), but **wrong for `after_ms`** since
@@ -14,18 +14,18 @@
 //! other timer-driven feature follow.
 //!
 //! Hosts call [`install_scheduler`] once at startup, before the
-//! first `framework_core::render(...)`.
+//! first `runtime_core::render(...)`.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use block2::StackBlock;
-use framework_core::scheduling::{install_scheduler as install, ScheduleHandle, Scheduler};
+use runtime_core::scheduling::{install_scheduler as install, ScheduleHandle, Scheduler};
 use objc2::msg_send_id;
 use objc2::rc::Retained;
 use objc2_foundation::NSObject;
 
-/// Register this scheduler with `framework-core`. Idempotent — first
+/// Register this scheduler with `runtime-core`. Idempotent — first
 /// install wins. Safe to call from any Apple host (iOS / tvOS / macOS).
 pub fn install_scheduler() {
     install(Box::new(AppleScheduler));

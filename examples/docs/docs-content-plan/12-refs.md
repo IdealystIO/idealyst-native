@@ -44,7 +44,7 @@ Inside a `#[component]` function body, a `methods!` block
 declares the imperative methods the component exposes:
 
 ```rust
-use framework_core::{component, signal, ui, Bindable, Primitive};
+use runtime_core::{component, signal, ui, Bindable, Primitive};
 
 pub struct CounterProps {
     pub initial: i32,
@@ -100,7 +100,7 @@ The parent allocates a `Ref<CounterHandle>` and binds it to the
 child:
 
 ```rust
-use framework_core::Ref;
+use runtime_core::Ref;
 
 #[component]
 pub fn parent_app() -> Primitive {

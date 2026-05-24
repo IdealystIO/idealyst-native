@@ -2,7 +2,7 @@
 
 use docs_macro::docs;
 #[allow(unused_imports)]
-use crate::shell::{codeblock, pageheader, CodeBlockProps, PageHeaderProps};
+use crate::shell::{code_block, page_header, CodeBlockProps, PageHeaderProps};
 #[allow(unused_imports)]
 use idea_ui::{body, card, heading, stack};
 
@@ -55,7 +55,7 @@ docs! {
           " block declares the imperative methods the component exposes:"),
 
         code(rust, r##"
-            use framework_core::{component, signal, ui, Bindable, Primitive};
+            use runtime_core::{component, signal, ui, Bindable, Primitive};
 
             pub struct CounterProps {
                 pub initial: i32,
@@ -112,7 +112,7 @@ docs! {
           " and binds it to the child:"),
 
         code(rust, r##"
-            use framework_core::Ref;
+            use runtime_core::Ref;
 
             #[component]
             pub fn parent_app() -> Primitive {

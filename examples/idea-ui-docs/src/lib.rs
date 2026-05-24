@@ -13,7 +13,7 @@
 //! - `styles.rs` — Local stylesheets for chrome only (not idea-ui).
 //! - `pages/*.rs` — One file per category page.
 
-use framework_core::{component, signal, ui, Navigator, NavigatorHandle, Primitive, Ref, Signal};
+use runtime_core::{component, signal, ui, Navigator, NavigatorHandle, Primitive, Ref, Signal};
 use idea_ui::{install_idea_theme, light_theme};
 
 mod pages;

@@ -24,7 +24,7 @@
 use std::any::Any;
 use std::rc::Rc;
 
-use framework_core::{Color, Length, Tokenized};
+use runtime_core::{Color, Length, Tokenized};
 use crate::theme_runtime::{install_theme, set_theme, ThemeTokens, TokenEntry, TokenValue};
 
 // =============================================================================
@@ -533,7 +533,7 @@ where
     }
 }
 
-/// Build a reactive [`framework_core::HeaderStyle`] closure for a
+/// Build a reactive [`runtime_core::HeaderStyle`] closure for a
 /// navigator's bundled `.header(...)` call. The closure is handed
 /// the current `IdeaTheme` reference and returns the populated
 /// `HeaderStyle`. Re-invoked on every theme swap.
@@ -547,9 +547,9 @@ where
 ///         body_background: Some(t.colors().background.value().clone()),
 ///     }))
 /// ```
-pub fn idea_header<F>(builder: F) -> impl Fn() -> framework_core::HeaderStyle + 'static
+pub fn idea_header<F>(builder: F) -> impl Fn() -> runtime_core::HeaderStyle + 'static
 where
-    F: Fn(&IdeaThemeRef) -> framework_core::HeaderStyle + 'static,
+    F: Fn(&IdeaThemeRef) -> runtime_core::HeaderStyle + 'static,
 {
     move || {
         let theme = crate::theme_runtime::active_theme();
@@ -563,7 +563,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use framework_core::{Length, TokenValue};
+    use runtime_core::{Length, TokenValue};
     use crate::theme_runtime::ThemeTokens;
 
     /// Two theme impls with different spacing/radius/typography should

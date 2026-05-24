@@ -1,4 +1,4 @@
-use framework_core::{Color, Length, StyleRules};
+use runtime_core::{Color, Length, StyleRules};
 use objc2::encode::{Encode, Encoding};
 use objc2::rc::Retained;
 use objc2::{msg_send, msg_send_id};
@@ -18,10 +18,10 @@ unsafe impl Encode for CGColorRef {
 }
 
 /// Parse a CSS-style color string into (r, g, b, a) in 0.0..1.0.
-/// Parsing logic lives in `framework_core::color`; this wrapper
+/// Parsing logic lives in `runtime_core::color`; this wrapper
 /// applies opaque black as the fallback for unknown shapes.
 pub(crate) fn parse_color(s: &str) -> (CGFloat, CGFloat, CGFloat, CGFloat) {
-    let [r, g, b, a] = framework_core::color::parse_or(s, framework_core::color::Rgba::BLACK)
+    let [r, g, b, a] = runtime_core::color::parse_or(s, runtime_core::color::Rgba::BLACK)
         .to_srgb_f32();
     (r as CGFloat, g as CGFloat, b as CGFloat, a as CGFloat)
 }
@@ -39,33 +39,33 @@ pub(crate) fn length_to_px(len: &Length) -> CGFloat {
     }
 }
 
-pub(crate) fn font_weight_to_uikit(weight: framework_core::FontWeight) -> CGFloat {
+pub(crate) fn font_weight_to_uikit(weight: runtime_core::FontWeight) -> CGFloat {
     match weight {
-        framework_core::FontWeight::Thin => -0.6,
-        framework_core::FontWeight::ExtraLight => -0.5,
-        framework_core::FontWeight::Light => -0.4,
-        framework_core::FontWeight::Normal => 0.0,
-        framework_core::FontWeight::Medium => 0.23,
-        framework_core::FontWeight::SemiBold => 0.3,
-        framework_core::FontWeight::Bold => 0.4,
-        framework_core::FontWeight::ExtraBold => 0.56,
-        framework_core::FontWeight::Black => 0.62,
+        runtime_core::FontWeight::Thin => -0.6,
+        runtime_core::FontWeight::ExtraLight => -0.5,
+        runtime_core::FontWeight::Light => -0.4,
+        runtime_core::FontWeight::Normal => 0.0,
+        runtime_core::FontWeight::Medium => 0.23,
+        runtime_core::FontWeight::SemiBold => 0.3,
+        runtime_core::FontWeight::Bold => 0.4,
+        runtime_core::FontWeight::ExtraBold => 0.56,
+        runtime_core::FontWeight::Black => 0.62,
     }
 }
 
 /// Map framework Easing to UIView animation options bitmask.
-pub(crate) fn easing_to_options(easing: &framework_core::Easing) -> u64 {
+pub(crate) fn easing_to_options(easing: &runtime_core::Easing) -> u64 {
     match easing {
-        framework_core::Easing::Linear => 3 << 16,
-        framework_core::Easing::Ease | framework_core::Easing::EaseInOut => 0 << 16,
-        framework_core::Easing::EaseIn => 1 << 16,
-        framework_core::Easing::EaseOut => 2 << 16,
-        framework_core::Easing::CubicBezier(_, _, _, _) => 0 << 16,
+        runtime_core::Easing::Linear => 3 << 16,
+        runtime_core::Easing::Ease | runtime_core::Easing::EaseInOut => 0 << 16,
+        runtime_core::Easing::EaseIn => 1 << 16,
+        runtime_core::Easing::EaseOut => 2 << 16,
+        runtime_core::Easing::CubicBezier(_, _, _, _) => 0 << 16,
     }
 }
 
 /// Run property changes inside a UIView animation block.
-pub(crate) fn animate(transition: &framework_core::Transition, changes: Rc<dyn Fn()>) {
+pub(crate) fn animate(transition: &runtime_core::Transition, changes: Rc<dyn Fn()>) {
     let duration = transition.duration_ms as CGFloat / 1000.0;
     let options = easing_to_options(&transition.easing);
     let block = ConcreteBlock::new(move || {
@@ -137,10 +137,10 @@ pub(crate) fn apply_style_to_view(view: &UIView, style: &StyleRules) {
         };
         if is_stack {
             let axis: isize = match dir {
-                framework_core::FlexDirection::Row
-                | framework_core::FlexDirection::RowReverse => 0,
-                framework_core::FlexDirection::Column
-                | framework_core::FlexDirection::ColumnReverse => 1,
+                runtime_core::FlexDirection::Row
+                | runtime_core::FlexDirection::RowReverse => 0,
+                runtime_core::FlexDirection::Column
+                | runtime_core::FlexDirection::ColumnReverse => 1,
             };
             let _: () = unsafe { msg_send![view, setAxis: axis] };
         }
@@ -268,8 +268,8 @@ pub(crate) fn apply_style_to_view(view: &UIView, style: &StyleRules) {
     // Overflow
     if let Some(overflow) = &style.overflow {
         match overflow {
-            framework_core::Overflow::Hidden => unsafe { view.setClipsToBounds(true) },
-            framework_core::Overflow::Visible => unsafe { view.setClipsToBounds(false) },
+            runtime_core::Overflow::Hidden => unsafe { view.setClipsToBounds(true) },
+            runtime_core::Overflow::Visible => unsafe { view.setClipsToBounds(false) },
         }
     }
 
@@ -325,7 +325,7 @@ pub(crate) fn apply_text_style(view: &UIView, style: &StyleRules, is_label: bool
         let fs_val = fs.resolve();
         let size = length_to_px(&fs_val);
         if size > 0.0 {
-            let weight = style.font_weight.as_ref().copied().unwrap_or(framework_core::FontWeight::Normal);
+            let weight = style.font_weight.as_ref().copied().unwrap_or(runtime_core::FontWeight::Normal);
             let ui_weight = font_weight_to_uikit(weight);
             let font: Retained<NSObject> = unsafe {
                 msg_send_id![
@@ -351,10 +351,10 @@ pub(crate) fn apply_text_style(view: &UIView, style: &StyleRules, is_label: bool
     // Text alignment
     if let Some(ta) = &style.text_align {
         let align: isize = match ta {
-            framework_core::TextAlign::Left => 0,
-            framework_core::TextAlign::Center => 1,
-            framework_core::TextAlign::Right => 2,
-            framework_core::TextAlign::Justify => 3,
+            runtime_core::TextAlign::Left => 0,
+            runtime_core::TextAlign::Center => 1,
+            runtime_core::TextAlign::Right => 2,
+            runtime_core::TextAlign::Justify => 3,
         };
         let _: () = unsafe { msg_send![view, setTextAlignment: align] };
     }

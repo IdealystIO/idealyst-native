@@ -57,11 +57,11 @@ The repo is grouped by concern (`crates/framework/`, `crates/backend/`,
 
 | Crate | Path | Role |
 | --- | --- | --- |
-| `framework-core` | `crates/framework/core` | `Primitive`, `Backend` trait, render walker, reactivity, styles |
-| `framework-macros` | `crates/framework/macros` | `#[component]`, `ui!`, `jsx!`, `stylesheet!` proc-macros |
+| `runtime-core` | `crates/framework/core` | `Primitive`, `Backend` trait, render walker, reactivity, styles |
+| `runtime-macros` | `crates/framework/macros` | `#[component]`, `ui!`, `jsx!`, `stylesheet!` proc-macros |
 | `reactive-arena` | `crates/framework/reactive/arena` | Arena allocator used by the reactivity system |
 | `reactive-refs` | `crates/framework/reactive/refs` | `Ref<H>` machinery |
-| `native-layout` | `crates/framework/native-layout` | Taffy flex-layout helper used by native backends |
+| `runtime-layout` | `crates/framework/runtime-layout` | Taffy flex-layout helper used by native backends |
 | `wire` | `crates/framework/wire` | Hot-reload + server-driven UI wire protocol |
 | `backend-web` | `crates/backend/web` | WASM + DOM backend |
 | `backend-android-mobile` | `crates/backend/android/mobile` | JNI + Android `View` hierarchy backend |
@@ -73,7 +73,7 @@ The repo is grouped by concern (`crates/framework/`, `crates/backend/`,
 Per-backend behaviour notes live in `README.md` files next to each backend
 crate. Start there if you're investigating a platform-specific quirk.
 
-Application crates depend on `framework-core` and the macros. They do
+Application crates depend on `runtime-core` and the macros. They do
 **not** depend on any backend; the platform host crate is the only
 place that names a concrete backend.
 
@@ -85,7 +85,7 @@ Application code
    │  + `Signal<T>` for reactive state
    │  + `StyleSheet` for styling
    ▼
-Render walker  (framework-core)
+Render walker  (runtime-core)
    │  recurses Primitive → calls Backend trait methods
    │  + wires Effects so signal changes drive backend updates
    │  + resolves StyleSheets against active theme into StyleRules

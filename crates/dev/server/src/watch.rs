@@ -56,12 +56,12 @@ pub struct RebuildConfig {
     /// the navigator URL stack across the process image swap.
     ///
     /// Only consulted when `on_success` is `None` (the legacy
-    /// single-process AAS host path).
+    /// single-process runtime-server host path).
     ///
     /// `Send` because it runs on the file-watcher thread; usually
     /// captures an `Arc<Mutex<...>>` shared with the main thread.
     pub before_exec: Option<Box<dyn FnMut() -> Vec<(String, String)> + Send>>,
-    /// Alternative to `before_exec` for the split-process AAS host:
+    /// Alternative to `before_exec` for the split-process runtime-server host:
     /// instead of self-execing on rebuild success, invoke this
     /// callback. The host uses it to SIGKILL + respawn the sidecar
     /// child without dropping the long-lived WebSocket listener.
@@ -83,7 +83,7 @@ pub fn spawn_rebuild_loop(config: RebuildConfig) -> std::thread::JoinHandle<()> 
 
 /// Lightweight variant: just call `on_change` on every debounced
 /// burst. No command execution, no exec, no `on_success` ladder.
-/// Used by the AAS host's hot-patch driver, which owns the entire
+/// Used by the runtime-server host's hot-patch driver, which owns the entire
 /// build pipeline itself.
 pub fn spawn_change_loop(
     watch_paths: Vec<PathBuf>,

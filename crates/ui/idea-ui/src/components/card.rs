@@ -11,7 +11,7 @@
 //! }
 //! ```
 
-use framework_core::{ui, ChildList, Primitive};
+use runtime_core::{ui, ChildList, Primitive};
 
 use crate::stylesheets::Card;
 pub use crate::stylesheets::{CardPadding, CardTone};

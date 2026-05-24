@@ -1,6 +1,6 @@
 //! Inputs — Field, Switch, Select.
 
-use framework_core::{signal, ui, Primitive};
+use runtime_core::{signal, ui, Primitive};
 use idea_ui::doc_controls::DocControls;
 use idea_ui::{
     body, card, field, heading, select, stack, switch, BodyTone, FieldProps, HeadingKind,
@@ -110,7 +110,7 @@ fn select_demo() -> Primitive {
             placeholder = Some("Choose a fruit".to_string())
         )
     };
-    let current = framework_core::switch(
+    let current = runtime_core::switch(
         move || value.get(),
         |v: &String| {
             let label = format!("Current value: {}", v);

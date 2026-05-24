@@ -29,7 +29,7 @@
 //!
 //! # SSR
 //!
-//! The path-matching machinery lives in framework-core
+//! The path-matching machinery lives in runtime-core
 //! (`match_pattern` + `RouteParams::from_segments`); this file only
 //! adds the *DOM* and *history-API* glue. A future SSR backend can
 //! call the same `match_path` callback against an HTTP request path,
@@ -37,7 +37,7 @@
 //! and never touch `window` / `history`.
 
 use crate::WebBackend;
-use framework_core::primitives::navigator::{
+use runtime_core::primitives::navigator::{
     DrawerHandle, DrawerNavigatorCallbacks, MountResult, NavCommand, NavigatorCallbacks,
     NavigatorControl, NavigatorHandle, NavigatorOps, TabNavigatorCallbacks, TabsHandle,
 };
@@ -100,7 +100,7 @@ pub(crate) struct NavigatorInstance {
     /// was registered.
     #[allow(dead_code)]
     pub(crate) build_layout_retainer:
-        Option<Rc<dyn Fn() -> framework_core::LayoutPlan<Node>>>,
+        Option<Rc<dyn Fn() -> runtime_core::LayoutPlan<Node>>>,
     mount_screen: Rc<dyn Fn(&'static str, Box<dyn Any>) -> MountResult<Node>>,
     release_screen: Rc<dyn Fn(u64)>,
     match_path: Rc<dyn Fn(&str) -> Option<(&'static str, Box<dyn Any>)>>,
@@ -112,7 +112,7 @@ pub(crate) struct NavigatorInstance {
     /// for pop, where `NavigatorControl::dispatch` can't know
     /// the new active route's name (it knows only that we're
     /// popping).
-    nav_state: framework_core::NavState,
+    nav_state: runtime_core::NavState,
     depth_changed: Rc<dyn Fn(usize)>,
     /// `true` while the instance is applying a programmatic push /
     /// replace / reset. The popstate handler checks this so it
@@ -122,7 +122,7 @@ pub(crate) struct NavigatorInstance {
     /// When `true`, the create-time microtask skips its URL-based
     /// auto-mount — initial mounting comes through
     /// [`attach_initial_with_node`] with a screen node the caller
-    /// already has. The AAS dev-client sets this so the wire's
+    /// already has. The runtime-server dev-client sets this so the wire's
     /// `NavigatorAttachInitial` is what actually mounts the home
     /// screen (it carries the canonical server-built subtree).
     defer_initial_mount: bool,
@@ -173,7 +173,7 @@ impl NavigatorInstance {
         Some(top)
     }
 
-    /// Mount an externally-built screen node. Used by the AAS path
+    /// Mount an externally-built screen node. Used by the runtime-server path
     /// where `mount_screen` shouldn't be invoked (the screen node
     /// and scope id are already known — server-built, shipped via
     /// the wire).
@@ -182,7 +182,7 @@ impl NavigatorInstance {
     /// `mount_screen` call: stamps the class, appends to the
     /// mount point, records the stack entry, and fires
     /// `depth_changed`. The reactive `nav_state` signals aren't
-    /// updated here — AAS mode renders layout chrome on the
+    /// updated here — runtime-server mode renders layout chrome on the
     /// server, so those signals only matter for local-mode
     /// rendering.
     ///
@@ -503,7 +503,7 @@ where
     let match_path = callbacks.match_path.clone();
     {
         let instance = instance.clone();
-        framework_core::schedule_microtask(move || {
+        runtime_core::schedule_microtask(move || {
             // Layout (if any) was already wired by the walker via
             // `attach_navigator_layout` — see
             // `walker::invoke_layout_and_attach`. The microtask
@@ -512,7 +512,7 @@ where
 
             let mut inst = instance.borrow_mut();
 
-            // AAS / deferred-mount mode: skip URL-driven auto-mount.
+            // runtime-server / deferred-mount mode: skip URL-driven auto-mount.
             // The caller mounts via `navigator_attach_initial` with
             // an externally-built screen node — the framework's wire
             // delivers it shortly after this microtask runs.
@@ -730,7 +730,7 @@ pub(crate) fn create_drawer(
     })
 }
 
-/// AAS / deferred-mount entry point. Called by
+/// runtime-server / deferred-mount entry point. Called by
 /// `WebBackend::navigator_attach_initial` when the navigator was
 /// created with `defer_initial_mount = true`. Mounts the externally-
 /// built `screen` node into the navigator's outlet without going
@@ -748,7 +748,7 @@ pub(crate) fn attach_initial(b: &mut WebBackend, navigator: &Node, screen: Node,
         .attach_initial_with_node(screen, scope_id);
 }
 
-/// AAS layout attach. The dev-side recording backend ran the user's
+/// runtime-server layout attach. The dev-side recording backend ran the user's
 /// `.layout(...)` closure, the wire shipped every node it built
 /// (sidebar, chrome, outlet placeholder), and now we have to (1)
 /// drop the layout root into the navigator container and (2) record
@@ -763,7 +763,7 @@ pub(crate) fn attach_layout(b: &mut WebBackend, navigator: &Node, root: Node, ou
         return;
     };
     let mut inst = entry.instance.borrow_mut();
-    // Container is freshly created with no children in AAS mode
+    // Container is freshly created with no children in runtime-server mode
     // (defer_initial_mount = true, so the create-time microtask
     // bails before mounting anything). Safe to just append the
     // layout root.

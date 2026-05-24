@@ -2,8 +2,8 @@
 //! into a 2D grid of [`Cell`]s. The host turns the grid into ANSI-
 //! escaped bytes and dumps it to stdout.
 
-use framework_core::color::Rgba;
-use framework_core::{GradientKind, Length, RadialExtent};
+use runtime_core::color::Rgba;
+use runtime_core::{GradientKind, Length, RadialExtent};
 
 use crate::node::{NodeData, NodeKind, ResolvedGradient};
 use crate::TerminalBackend;
@@ -107,7 +107,10 @@ impl TerminalBackend {
         // Effective opacity composes multiplicatively down the tree —
         // a vignette wrapper at `opacity: 0.0` hides every band
         // beneath it without each band needing its own zero.
-        let effective_opacity = parent_opacity * data.opacity;
+        // `animated_opacity` wins over the static slot when present
+        // (mirrors `animated_bg` vs `bg`).
+        let own_opacity = data.animated_opacity.unwrap_or(data.opacity);
+        let effective_opacity = parent_opacity * own_opacity;
         if effective_opacity <= 0.0 {
             return;
         }
@@ -300,7 +303,7 @@ fn default_fg(data: &NodeData) -> Rgba {
 
 fn border_requested(data: &NodeData) -> bool {
     let Some(style) = &data.style else { return false };
-    let read = |t: &Option<framework_core::Tokenized<f32>>| -> f32 {
+    let read = |t: &Option<runtime_core::Tokenized<f32>>| -> f32 {
         t.as_ref().map(|t| *t.value()).unwrap_or(0.0)
     };
     read(&style.border_top_width) > 0.0

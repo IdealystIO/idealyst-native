@@ -9,8 +9,8 @@
 use crate::imp::callbacks::{leak, KeyDownCallback, TextChangeCallback};
 use backend_android_core::helpers::{apply_default_layout_params, set_text};
 use crate::imp::{with_env, AndroidBackend};
-use framework_core::primitives::text_area::{TextAreaHandle, TextAreaOps};
-use framework_core::primitives::text_input::{TextInputHandle, TextInputOps};
+use runtime_core::primitives::text_area::{TextAreaHandle, TextAreaOps};
+use runtime_core::primitives::text_input::{TextInputHandle, TextInputOps};
 use jni::objects::{GlobalRef, JObject, JValue};
 use jni::sys::jlong;
 use std::any::Any;
@@ -21,7 +21,7 @@ pub(crate) fn create(
     initial_value: &str,
     placeholder: Option<&str>,
     on_change: Rc<dyn Fn(String)>,
-    on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
+    on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
 ) -> GlobalRef {
     create_inner(b, initial_value, placeholder, on_change, on_key_down, false)
 }
@@ -33,7 +33,7 @@ pub(crate) fn create_multiline(
     initial_value: &str,
     placeholder: Option<&str>,
     on_change: Rc<dyn Fn(String)>,
-    on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
+    on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
 ) -> GlobalRef {
     create_inner(b, initial_value, placeholder, on_change, on_key_down, true)
 }
@@ -43,7 +43,7 @@ fn create_inner(
     initial_value: &str,
     placeholder: Option<&str>,
     on_change: Rc<dyn Fn(String)>,
-    on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
+    on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
     multiline: bool,
 ) -> GlobalRef {
     // EditText with a TextWatcher dispatched through Kotlin
@@ -142,7 +142,7 @@ fn create_inner(
 }
 
 /// Apply a programmatic text value to the EditText. Suppresses
-/// `RustTextWatcher` during the `setText` call so AAS-driven wire
+/// `RustTextWatcher` during the `setText` call so runtime-server-driven wire
 /// replays don't echo back to the server as an `EventOccurred` and
 /// create a feedback loop (see `RustTextWatcher.suppress` for the
 /// loop shape).

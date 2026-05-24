@@ -483,7 +483,7 @@ pub fn long_pressable(props: &LongPressableProps, children: Vec<Primitive>) -> P
         View.on_pointer(move |evt| match evt.phase {
             PointerPhase::Down => {
                 let on = on_long.clone();
-                let t = framework_core::after_ms(threshold_ms, move || on());
+                let t = runtime_core::after_ms(threshold_ms, move || on());
                 task.set(Some(t));
             }
             PointerPhase::Move | PointerPhase::Up | PointerPhase::Cancel => {
@@ -496,7 +496,7 @@ pub fn long_pressable(props: &LongPressableProps, children: Vec<Primitive>) -> P
 }
 ```
 
-Uses the existing `framework_core::after_ms` scheduler — its
+Uses the existing `runtime_core::after_ms` scheduler — its
 `ScheduledTask` drops cancel-on-drop, so simply replacing the
 signal value aborts the pending callback.
 
@@ -549,14 +549,14 @@ state, derive the gesture from coordinate deltas.
 The framework itself stays bare-bones. But there's room for a
 companion crate — `framework-gestures` or similar — that ships the
 common ones: tap, long-press, double-tap, swipe, drag, pinch,
-rotate. Like `framework-macros` is to `framework-core`, the gesture
+rotate. Like `runtime-macros` is to `runtime-core`, the gesture
 crate is a layer on top that authors who don't want to write the
 tap component above pull in for free.
 
 That crate doesn't have to be part of the framework's structural
 contract. It's a userspace library, just one the framework's
 maintainers happen to write. New gestures can land there without
-touching `framework-core` or any backend.
+touching `runtime-core` or any backend.
 
 ---
 

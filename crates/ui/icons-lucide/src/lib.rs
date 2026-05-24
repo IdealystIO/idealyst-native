@@ -8,7 +8,7 @@
 //!
 //! ```ignore
 //! use icons_lucide::{SEARCH, MENU, X};
-//! use framework_core::icon;
+//! use runtime_core::icon;
 //!
 //! icon(SEARCH)
 //! icon(MENU).color(|| theme.primary())

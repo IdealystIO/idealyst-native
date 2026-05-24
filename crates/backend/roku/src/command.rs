@@ -37,7 +37,7 @@ pub struct NodeId(pub u64);
 pub struct HandlerId(pub u64);
 
 /// Activity indicator size — mirrors the framework's enum so the
-/// command stream is decoupled from `framework-core` internal types.
+/// command stream is decoupled from `runtime-core` internal types.
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
 pub enum ActivityIndicatorSize {
     Small,
@@ -435,7 +435,7 @@ pub enum RokuCommand {
     Finish { root: NodeId },
 }
 
-/// Wire representation of `framework_core::primitives::portal::PortalTarget`.
+/// Wire representation of `runtime_core::primitives::portal::PortalTarget`.
 /// `Viewport` carries a placement enum; `Anchor` carries a signal id
 /// the device-side runtime subscribes to so it can re-query the
 /// anchor's bounding rect when it changes. `Named` is reserved for

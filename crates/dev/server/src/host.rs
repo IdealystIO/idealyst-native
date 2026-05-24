@@ -1,8 +1,8 @@
-//! Long-lived AAS dev-host runtime.
+//! Long-lived runtime-server dev-host runtime.
 //!
 //! Pre-refactor, every project that ran `idealyst dev --aas` got a
-//! freshly-generated `<project>-aas-host/src/main.rs` (~280 lines)
-//! pasted out of a `format!` string in `build-aas`. That template
+//! freshly-generated `<project>-runtime-server-host/src/main.rs` (~280 lines)
+//! pasted out of a `format!` string in `build-runtime-server`. That template
 //! reached into [`crate::sidecar::SidecarIn`] and the rest of this
 //! crate's transport API directly, so any internal refactor of
 //! `SidecarIn` / `SidecarOut` shape (struct ⇄ tuple variants,
@@ -18,7 +18,7 @@
 //! ## What "host" means here
 //!
 //! The host is the long-lived dev-side process that:
-//! - Listens for AAS client WebSockets (one per attached device /
+//! - Listens for runtime-server client WebSockets (one per attached device /
 //!   browser tab) and advertises itself via mDNS.
 //! - Spawns the *sidecar* child process and mirrors its outbound
 //!   wire commands into one [`WireRecordingBackend`] per session.
@@ -53,14 +53,14 @@ pub use subsecond_types::JumpTable;
 /// orchestrator under `<project>/target/idealyst/<project>/aas/…`,
 /// or identifiers read from the project's `Cargo.toml`. Nothing in
 /// here references the framework's own checkout, which is what
-/// lets out-of-tree projects run AAS without an
+/// lets out-of-tree projects run runtime-server without an
 /// `idealyst-native/` ancestor on disk.
 pub struct HostConfig {
     /// `addr:port` to bind the WebSocket listener. The host accepts
     /// `0.0.0.0:0` and lets the OS pick a free port; the chosen port
     /// is then published over mDNS (so clients discover the host
     /// without anyone coordinating a fixed number) and, if
-    /// `IDEALYST_AAS_PORT_FILE` is set, written there too so the CLI
+    /// `IDEALYST_RUNTIME_SERVER_PORT_FILE` is set, written there too so the CLI
     /// parent doesn't have to trust mDNS browse caching across
     /// restarts.
     pub bind_addr: String,
@@ -95,8 +95,8 @@ pub struct HostConfig {
 /// fresh `JumpTable`" expectation and whatever produces it on the
 /// build side.
 ///
-/// Defined here (not in `build-aas`) so `dev-server` can call into
-/// it without depending on `build-aas`. The wrapper main wires up
+/// Defined here (not in `build-runtime-server`) so `dev-server` can call into
+/// it without depending on `build-runtime-server`. The wrapper main wires up
 /// the concrete impl, keeping the cross-crate edge thin.
 pub trait HotPatchAdapter: Send + Sync {
     /// Produce a `JumpTable` for `user_crate` against the sidecar's
@@ -144,7 +144,7 @@ pub fn run(
     // host would exit and the sidecar would reparent to PID 1 —
     // every dev session that ended via the orchestrator's
     // `child.kill()` (or a terminal close) leaked one
-    // `nicho-portfolio-aas-app` process. ctrlc's `termination`
+    // `nicho-portfolio-runtime-server-app` process. ctrlc's `termination`
     // feature catches SIGINT + SIGTERM + SIGHUP on Unix.
     //
     // The handler is install-once-per-process; calling it twice
@@ -155,7 +155,7 @@ pub fn run(
     {
         let sidecar_for_signal = sidecar_slot.clone();
         let _ = ctrlc::set_handler(move || {
-            eprintln!("[aas-host] received signal — killing sidecar before exit");
+            eprintln!("[runtime-server-host] received signal — killing sidecar before exit");
             if let Ok(mut guard) = sidecar_for_signal.lock() {
                 if let Some(mut sidecar) = guard.take() {
                     sidecar.kill();
@@ -168,11 +168,11 @@ pub fn run(
     match Sidecar::spawn(&sidecar_path) {
         Ok(s) => {
             *sidecar_slot.lock().unwrap() = Some(s);
-            eprintln!("[aas-host] sidecar spawned: {}", sidecar_path.display());
+            eprintln!("[runtime-server-host] sidecar spawned: {}", sidecar_path.display());
         }
         Err(e) => {
             eprintln!(
-                "[aas-host] sidecar spawn failed: {e} — host running idle (no UI will render)"
+                "[runtime-server-host] sidecar spawn failed: {e} — host running idle (no UI will render)"
             );
         }
     }
@@ -180,7 +180,7 @@ pub fn run(
     let hot_patch = hot_patch.map(Arc::new);
     if hot_patch.is_none() {
         eprintln!(
-            "[aas-host] hot-patch adapter unavailable — file changes will trigger \
+            "[runtime-server-host] hot-patch adapter unavailable — file changes will trigger \
              respawn instead of in-place patch (~slower, but clients stay attached)"
         );
     }
@@ -197,7 +197,7 @@ pub fn run(
         std::time::Duration::from_millis(100),
         Box::new(move || {
             let t_total = std::time::Instant::now();
-            let force_respawn = std::env::var("IDEALYST_AAS_NO_HOTPATCH")
+            let force_respawn = std::env::var("IDEALYST_RUNTIME_SERVER_NO_HOTPATCH")
                 .ok()
                 .map(|v| !v.is_empty() && v != "0")
                 .unwrap_or(false);
@@ -210,7 +210,7 @@ pub fn run(
                     &cargo_target_for_rebuild,
                 );
                 eprintln!(
-                    "[aas-host] respawn applied in {}ms (force_respawn)",
+                    "[runtime-server-host] respawn applied in {}ms (force_respawn)",
                     t_total.elapsed().as_millis()
                 );
                 return;
@@ -220,7 +220,7 @@ pub fn run(
                 &sidecar_for_rebuild,
                 &user_crate_for_rebuild,
             ) {
-                eprintln!("[aas-host] hot-patch failed: {e:#} — respawning sidecar");
+                eprintln!("[runtime-server-host] hot-patch failed: {e:#} — respawning sidecar");
                 respawn_sidecar(
                     &sidecar_for_rebuild,
                     &tracker_for_rebuild,
@@ -229,12 +229,12 @@ pub fn run(
                     &cargo_target_for_rebuild,
                 );
                 eprintln!(
-                    "[aas-host] respawn applied in {}ms (after hot-patch failure)",
+                    "[runtime-server-host] respawn applied in {}ms (after hot-patch failure)",
                     t_total.elapsed().as_millis()
                 );
             } else {
                 eprintln!(
-                    "[aas-host] hot-patch applied in {}ms",
+                    "[runtime-server-host] hot-patch applied in {}ms",
                     t_total.elapsed().as_millis()
                 );
             }
@@ -243,7 +243,7 @@ pub fn run(
 
     let port_mirror: Arc<Mutex<Option<u16>>> = Arc::new(Mutex::new(None));
 
-    if let Ok(path) = std::env::var("IDEALYST_AAS_PORT_FILE") {
+    if let Ok(path) = std::env::var("IDEALYST_RUNTIME_SERVER_PORT_FILE") {
         let port_for_file = port_mirror.clone();
         std::thread::spawn(move || {
             // Ensure the sentinel's parent dir exists before the
@@ -251,13 +251,13 @@ pub fn run(
             // `could not write port sentinel … No such file or
             // directory (os error 2)` on first launch because the
             // path lives under `target/idealyst/<project>/aas/` —
-            // a dir build-aas creates only when the host wrapper
+            // a dir build-runtime-server creates only when the host wrapper
             // itself is compiled, not when the orchestrator points
             // a pre-built host at the path. mkdir_p is idempotent.
             if let Some(parent) = std::path::Path::new(&path).parent() {
                 if let Err(e) = std::fs::create_dir_all(parent) {
                     eprintln!(
-                        "[aas-host] could not create port-sentinel parent {}: {}",
+                        "[runtime-server-host] could not create port-sentinel parent {}: {}",
                         parent.display(),
                         e
                     );
@@ -268,11 +268,11 @@ pub fn run(
                     if let Some(p) = *g {
                         if let Err(e) = std::fs::write(&path, p.to_string()) {
                             eprintln!(
-                                "[aas-host] could not write port sentinel {}: {}",
+                                "[runtime-server-host] could not write port sentinel {}: {}",
                                 path, e
                             );
                         } else {
-                            eprintln!("[aas-host] wrote bound port {} to {}", p, path);
+                            eprintln!("[runtime-server-host] wrote bound port {} to {}", p, path);
                         }
                         return;
                     }
@@ -280,7 +280,7 @@ pub fn run(
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
             eprintln!(
-                "[aas-host] timed out waiting for serve to bind; no port sentinel written"
+                "[runtime-server-host] timed out waiting for serve to bind; no port sentinel written"
             );
         });
     }
@@ -300,7 +300,7 @@ pub fn run(
     // session id, fresh mirror, fresh mount). That's plumbing that
     // crosses host.rs ↔ transport.rs and warrants a focused design
     // pass. Until then: the fail-fast in
-    // `crates/build/aas/src/hotpatch/stub.rs` catches the most
+    // `crates/build/runtime-server/src/hotpatch/stub.rs` catches the most
     // common crash class (Rust-internal monomorphization deferrals)
     // up-front, routing through the existing `try_hotpatch` →
     // `respawn_sidecar` fallback — which DOES coordinate mirror
@@ -309,12 +309,12 @@ pub fn run(
     // For other crash modes (e.g. `_sin`/`_cos`-only deferrals that
     // still SIGSEGV the rerender path on some incremental-build
     // states), the recovery is currently: Ctrl-C + restart
-    // `idealyst dev --aas`. Or set `IDEALYST_AAS_NO_HOTPATCH=1` to
+    // `idealyst dev --aas`. Or set `IDEALYST_RUNTIME_SERVER_NO_HOTPATCH=1` to
     // force every edit through the respawn path.
 
     let session_mode = SessionMode::from_env();
     eprintln!(
-        "[aas-host] starting (advertising app_id={} via mDNS, session mode = {:?})",
+        "[runtime-server-host] starting (advertising app_id={} via mDNS, session mode = {:?})",
         app_id, session_mode,
     );
     serve_with_sidecar_and_tracker(
@@ -343,7 +343,7 @@ fn replay_sessions_to_sidecar(slot: &SidecarSlot, tracker: &SessionTracker) {
         return;
     };
     eprintln!(
-        "[aas-host] replaying {} session(s) to fresh sidecar",
+        "[runtime-server-host] replaying {} session(s) to fresh sidecar",
         sessions.len(),
     );
     for (s, viewport) in sessions {
@@ -412,12 +412,12 @@ fn respawn_sidecar(
         Ok(s) if s.success() => {}
         Ok(s) => {
             eprintln!(
-                "[aas-host] respawn cargo build exited with {s} — sidecar unchanged"
+                "[runtime-server-host] respawn cargo build exited with {s} — sidecar unchanged"
             );
             return;
         }
         Err(e) => {
-            eprintln!("[aas-host] respawn cargo build spawn failed: {e}");
+            eprintln!("[runtime-server-host] respawn cargo build spawn failed: {e}");
             return;
         }
     }
@@ -428,9 +428,9 @@ fn respawn_sidecar(
         match Sidecar::spawn(sidecar_path) {
             Ok(s) => {
                 *g = Some(s);
-                eprintln!("[aas-host] sidecar respawned");
+                eprintln!("[runtime-server-host] sidecar respawned");
             }
-            Err(e) => eprintln!("[aas-host] sidecar respawn failed: {e}"),
+            Err(e) => eprintln!("[runtime-server-host] sidecar respawn failed: {e}"),
         }
     }
     replay_sessions_to_sidecar(sidecar_slot, tracker);

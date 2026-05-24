@@ -1,7 +1,7 @@
 //! Benchmark runner — the page that drives each variant in
 //! sequence through an iframe, collects per-iteration results,
 //! and renders the comparison table. Built using the same
-//! `framework-core` + `backend-web` stack as the idealyst-native
+//! `runtime-core` + `backend-web` stack as the idealyst-native
 //! variant, so the runner is itself a dogfood case for the
 //! framework.
 //!
@@ -26,7 +26,7 @@
 //!      message) advances to the next one.
 
 use backend_web::WebBackend;
-use framework_core::{
+use runtime_core::{
     button, signal, stylesheet, text_input, toggle, ui, AlignItems, Color,
     FlexDirection, JustifyContent, Length, Overflow, Primitive, Signal, TokenEntry, TokenValue,
     Tokenized,
@@ -130,7 +130,7 @@ stylesheet! {
     pub SidebarH1<Theme> {
         base(_t) {
             font_size: 18.0,
-            font_weight: framework_core::FontWeight::SemiBold,
+            font_weight: runtime_core::FontWeight::SemiBold,
             color: Tokenized::token("bench-text", Color("#e8eaf0".into())),
         }
     }
@@ -150,7 +150,7 @@ stylesheet! {
     pub SectionH2<Theme> {
         base(_t) {
             font_size: 11.0,
-            font_weight: framework_core::FontWeight::SemiBold,
+            font_weight: runtime_core::FontWeight::SemiBold,
             color: Tokenized::token("bench-muted", Color("#9099a8".into())),
             letter_spacing: 1.0,
             margin_top: 10.0,
@@ -226,7 +226,7 @@ stylesheet! {
             background: Tokenized::token("bench-primary", Color("#5b6cff".into())),
             color: Tokenized::token("bench-primary-text", Color("#ffffff".into())),
             border_radius: 6.0,
-            font_weight: framework_core::FontWeight::SemiBold,
+            font_weight: runtime_core::FontWeight::SemiBold,
             font_size: 14.0,
         }
     }
@@ -276,7 +276,7 @@ stylesheet! {
 stylesheet! {
     pub FrameHeaderStrong<Theme> {
         base(_t) {
-            font_weight: framework_core::FontWeight::SemiBold,
+            font_weight: runtime_core::FontWeight::SemiBold,
             color: Tokenized::token("bench-text", Color("#e8eaf0".into())),
         }
     }
@@ -336,7 +336,7 @@ stylesheet! {
             flex_grow: 1.0,
             flex_basis: Length::Px(0.0),
             font_size: 11.0,
-            font_weight: framework_core::FontWeight::SemiBold,
+            font_weight: runtime_core::FontWeight::SemiBold,
             color: Tokenized::token("bench-muted", Color("#9099a8".into())),
             letter_spacing: 0.5,
             padding_horizontal: 8.0,
@@ -371,7 +371,7 @@ stylesheet! {
             #[default]
             normal(_t) {}
             label(_t) {
-                font_weight: framework_core::FontWeight::Medium,
+                font_weight: runtime_core::FontWeight::Medium,
             }
             running(_t) {
                 color: Tokenized::token("bench-running", Color("#ffb84d".into())),
@@ -384,7 +384,7 @@ stylesheet! {
             }
             winner(_t) {
                 color: Tokenized::token("bench-winner-text", Color("#b7c2ff".into())),
-                font_weight: framework_core::FontWeight::Bold,
+                font_weight: runtime_core::FontWeight::Bold,
                 background: Tokenized::token("bench-winner-bg", Color("#1e2540".into())),
             }
         }
@@ -828,7 +828,7 @@ struct RunnerState {
     run_start_ms:         RefCell<f64>,
     /// rAF handle for the ticker. Held so we can cancel on
     /// finish/abort.
-    ticker_handle:        RefCell<Option<framework_core::RafLoop>>,
+    ticker_handle:        RefCell<Option<runtime_core::RafLoop>>,
     /// Snapshot of params + suite for the current run, so the
     /// user can edit the form mid-run without affecting
     /// in-flight numbers.
@@ -1131,7 +1131,7 @@ fn snapshot_params(st: &RunnerState, suite: &SuiteInfo) -> HashMap<&'static str,
 
 fn start_ticker(st: Rc<RunnerState>) {
     let st_for_tick = st.clone();
-    let handle = framework_core::raf_loop(move || {
+    let handle = runtime_core::raf_loop(move || {
         let now = now_ms();
         let start = *st_for_tick.run_start_ms.borrow();
         st_for_tick.elapsed_seconds.set((now - start) / 1000.0);
@@ -1292,7 +1292,7 @@ fn sidebar() -> Primitive {
         let row_signal = signal!(current_suite_sig.get() == suite_name);
         {
             let row_signal = row_signal.clone();
-            let _e = framework_core::Effect::new(move || {
+            let _e = runtime_core::Effect::new(move || {
                 let want = selected_for_read.get() == suite_name;
                 if row_signal.get() != want {
                     row_signal.set(want);
@@ -1351,7 +1351,7 @@ fn sidebar() -> Primitive {
                                 let row_signal = signal!(selected.get().contains(id));
                                 {
                                     let row_signal = row_signal.clone();
-                                    let _e = framework_core::Effect::new(move || {
+                                    let _e = runtime_core::Effect::new(move || {
                                         let want = selected_for_read.get().contains(id);
                                         if row_signal.get() != want {
                                             row_signal.set(want);
@@ -1674,12 +1674,12 @@ pub fn start() {
         let mut b = backend.borrow_mut();
         webview::register(&mut *b);
     }
-    let owner = framework_core::render(backend, app());
+    let owner = runtime_core::render(backend, app());
     OWNER.with(|s| *s.borrow_mut() = Some(owner));
 }
 
 thread_local! {
-    static OWNER: RefCell<Option<framework_core::Owner>> = const { RefCell::new(None) };
+    static OWNER: RefCell<Option<runtime_core::Owner>> = const { RefCell::new(None) };
 }
 
 fn format_param(v: f64) -> String {

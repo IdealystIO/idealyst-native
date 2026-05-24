@@ -12,7 +12,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use framework_core::animation::AnimProp;
+use runtime_core::animation::AnimProp;
 use objc2::rc::Retained;
 use objc2::{msg_send, msg_send_id};
 use objc2_app_kit::NSView;
@@ -73,10 +73,10 @@ pub(crate) type AnimatedStateMap = HashMap<usize, RefCell<AnimatedState>>;
 /// `backend-ios-mobile/src/imp/animated.rs::impl_apply_static_transform`.
 pub(crate) fn apply_static_transform(
     node: &MacosNode,
-    style: &framework_core::StyleRules,
+    style: &runtime_core::StyleRules,
     states: &mut AnimatedStateMap,
 ) {
-    use framework_core::{Length, Transform};
+    use runtime_core::{Length, Transform};
     let view = node.as_view();
     let key = view as *const NSView as usize;
     let state = states

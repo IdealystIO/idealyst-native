@@ -19,7 +19,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use framework_core::{Backend, Color, StyleRules};
+use runtime_core::{Backend, Color, StyleRules};
 use objc2::encode::{Encode, Encoding};
 use objc2::rc::Retained;
 use objc2::{msg_send, msg_send_id};
@@ -41,12 +41,12 @@ pub struct MacosBackend {
     /// Parallel layout tree. Same shape as iOS — every NSView pointer
     /// maps to a Taffy node; `finish()` runs `compute(host_bounds)`
     /// and walks the map to assign `frame` on every registered view.
-    pub(crate) layout: native_layout::LayoutTree,
+    pub(crate) layout: runtime_layout::LayoutTree,
     /// Map from view pointer → (retained NSView, layout node).
     /// Retained explicitly so views that aren't yet attached to the
     /// host (e.g. mid-build) survive the layout walk.
     pub(crate) view_to_layout:
-        HashMap<usize, (Retained<NSView>, native_layout::LayoutNode)>,
+        HashMap<usize, (Retained<NSView>, runtime_layout::LayoutNode)>,
     /// Process-registered custom fonts + per-`Typeface` lookup table.
     /// Same shape as iOS — driven by `register_asset` / `register_typeface`.
     /// Read by the text-style applier when constructing NSFont.
@@ -100,7 +100,7 @@ pub fn install_global_self(weak: std::rc::Weak<RefCell<MacosBackend>>) {
 /// value on its next frame).
 pub fn set_animated_f32(
     node: &MacosNode,
-    prop: framework_core::animation::AnimProp,
+    prop: runtime_core::animation::AnimProp,
     value: f32,
 ) {
     let weak = MACOS_BACKEND_SELF.with(|s| s.borrow().clone());
@@ -111,7 +111,7 @@ pub fn set_animated_f32(
     // outlives `rc` per the new borrow rules.
     let borrow = rc.try_borrow_mut();
     if let Ok(mut b) = borrow {
-        use framework_core::Backend;
+        use runtime_core::Backend;
         b.set_animated_f32(node, prop, value);
     }
 }
@@ -120,7 +120,7 @@ pub fn set_animated_f32(
 /// the global backend's `set_animated_color`.
 pub fn set_animated_color(
     node: &MacosNode,
-    prop: framework_core::animation::AnimProp,
+    prop: runtime_core::animation::AnimProp,
     value: [f32; 4],
 ) {
     let weak = MACOS_BACKEND_SELF.with(|s| s.borrow().clone());
@@ -128,7 +128,7 @@ pub fn set_animated_color(
     let Some(rc) = weak.upgrade() else { return };
     let borrow = rc.try_borrow_mut();
     if let Ok(mut b) = borrow {
-        use framework_core::Backend;
+        use runtime_core::Backend;
         b.set_animated_color(node, prop, value);
     }
 }
@@ -142,7 +142,7 @@ impl MacosBackend {
         Self {
             mtm,
             host_root: None,
-            layout: native_layout::LayoutTree::new(),
+            layout: runtime_layout::LayoutTree::new(),
             view_to_layout: HashMap::new(),
             font_registry: backend_apple_core::font::FontRegistry::new(),
             callback_targets: Vec::new(),
@@ -184,7 +184,7 @@ impl MacosBackend {
     /// Get or create a layout node for an NSView. Called from every
     /// `create_*` method so each native view has a corresponding node
     /// in the layout tree.
-    pub(crate) fn layout_for_view(&mut self, view: &NSView) -> native_layout::LayoutNode {
+    pub(crate) fn layout_for_view(&mut self, view: &NSView) -> runtime_layout::LayoutNode {
         let key = view as *const NSView as usize;
         if let Some((_, node)) = self.view_to_layout.get(&key) {
             return *node;
@@ -200,7 +200,7 @@ impl MacosBackend {
     /// Look up an existing layout node by view pointer. Returns
     /// `None` for views that weren't created by this backend.
     #[allow(dead_code)]
-    pub(crate) fn layout_of(&self, view: &NSView) -> Option<native_layout::LayoutNode> {
+    pub(crate) fn layout_of(&self, view: &NSView) -> Option<runtime_layout::LayoutNode> {
         let key = view as *const NSView as usize;
         self.view_to_layout.get(&key).map(|(_, n)| *n)
     }
@@ -287,9 +287,9 @@ fn apply_style_to_view(view: &NSView, style: &StyleRules) {
     .filter_map(|r| r.map(|t| length_to_px(&t.resolve())))
     .fold(0.0_f64, f64::max);
     if radius > 0.0 {
-        fn px_half(t: &framework_core::Tokenized<framework_core::Length>) -> Option<f64> {
+        fn px_half(t: &runtime_core::Tokenized<runtime_core::Length>) -> Option<f64> {
             match t.resolve() {
-                framework_core::Length::Px(v) => Some(v as f64 / 2.0),
+                runtime_core::Length::Px(v) => Some(v as f64 / 2.0),
                 _ => None,
             }
         }
@@ -359,10 +359,10 @@ fn sync_corner_radius(view: &NSView) {
     let _: () = unsafe { msg_send![&layer, setCornerRadius: effective] };
 }
 
-fn length_to_px(len: &framework_core::Length) -> CGFloat {
+fn length_to_px(len: &runtime_core::Length) -> CGFloat {
     match len {
-        framework_core::Length::Px(v) => *v as CGFloat,
-        framework_core::Length::Percent(_) | framework_core::Length::Auto => 0.0,
+        runtime_core::Length::Px(v) => *v as CGFloat,
+        runtime_core::Length::Percent(_) | runtime_core::Length::Auto => 0.0,
     }
 }
 
@@ -373,34 +373,34 @@ fn length_to_px(len: &framework_core::Length) -> CGFloat {
 impl Backend for MacosBackend {
     type Node = MacosNode;
 
-    fn platform(&self) -> framework_core::Platform {
-        framework_core::Platform::MacOs
+    fn platform(&self) -> runtime_core::Platform {
+        runtime_core::Platform::MacOs
     }
 
-    fn color_scheme(&self) -> framework_core::ColorScheme {
+    fn color_scheme(&self) -> runtime_core::ColorScheme {
         // NSAppearance.currentAppearance.name → light/dark.
         // For now treat anything that isn't aqua as dark; refine
         // later if vibrant variants matter.
         let cls = objc2::class!(NSAppearance);
         let appearance: *const NSObject = unsafe { msg_send![cls, currentAppearance] };
         if appearance.is_null() {
-            return framework_core::ColorScheme::Auto;
+            return runtime_core::ColorScheme::Auto;
         }
         let name_ptr: *const NSString = unsafe { msg_send![appearance, name] };
         if name_ptr.is_null() {
-            return framework_core::ColorScheme::Auto;
+            return runtime_core::ColorScheme::Auto;
         }
         let s = unsafe { (*name_ptr).to_string() };
         if s.contains("Dark") {
-            framework_core::ColorScheme::Dark
+            runtime_core::ColorScheme::Dark
         } else if s.contains("Aqua") {
-            framework_core::ColorScheme::Light
+            runtime_core::ColorScheme::Light
         } else {
-            framework_core::ColorScheme::Auto
+            runtime_core::ColorScheme::Auto
         }
     }
 
-    fn create_view(&mut self, a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
+    fn create_view(&mut self, a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
         let view = FlippedView::new(self.mtm);
         let view: Retained<NSView> = Retained::into_super(view);
         let _ = self.layout_for_view(&view);
@@ -411,14 +411,14 @@ impl Backend for MacosBackend {
         a11y::apply(
             &node,
             a11y,
-            framework_core::accessibility::default_role(
-                framework_core::accessibility::PrimitiveKind::View,
+            runtime_core::accessibility::default_role(
+                runtime_core::accessibility::PrimitiveKind::View,
             ),
         );
         node
     }
 
-    fn create_text(&mut self, content: &str, a11y: &framework_core::accessibility::AccessibilityProps) -> Self::Node {
+    fn create_text(&mut self, content: &str, a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
         // NSTextField in label mode is AppKit's UILabel equivalent.
         // `+[NSTextField labelWithString:]` configures it as
         // non-editable, non-selectable, no border, no background.
@@ -452,16 +452,16 @@ impl Backend for MacosBackend {
                 let avail_w = known_dimensions
                     .width
                     .unwrap_or(match available_space.width {
-                        native_layout::AvailableSpace::Definite(w) => w,
-                        native_layout::AvailableSpace::MaxContent => f32::INFINITY,
-                        native_layout::AvailableSpace::MinContent => 0.0,
+                        runtime_layout::AvailableSpace::Definite(w) => w,
+                        runtime_layout::AvailableSpace::MaxContent => f32::INFINITY,
+                        runtime_layout::AvailableSpace::MinContent => 0.0,
                     });
                 let avail_h = known_dimensions
                     .height
                     .unwrap_or(match available_space.height {
-                        native_layout::AvailableSpace::Definite(h) => h,
-                        native_layout::AvailableSpace::MaxContent => f32::INFINITY,
-                        native_layout::AvailableSpace::MinContent => 0.0,
+                        runtime_layout::AvailableSpace::Definite(h) => h,
+                        runtime_layout::AvailableSpace::MaxContent => f32::INFINITY,
+                        runtime_layout::AvailableSpace::MinContent => 0.0,
                     });
                 let bounds = CGRect {
                     origin: objc2_foundation::CGPoint { x: 0.0, y: 0.0 },
@@ -472,7 +472,7 @@ impl Backend for MacosBackend {
                 };
                 let cell: *mut NSObject = unsafe { msg_send![&label_for_measure, cell] };
                 let fitted: CGSize = unsafe { msg_send![cell, cellSizeForBounds: bounds] };
-                native_layout::Size {
+                runtime_layout::Size {
                     width: known_dimensions.width.unwrap_or((fitted.width as f32).ceil()),
                     height: known_dimensions.height.unwrap_or((fitted.height as f32).ceil()),
                 }
@@ -483,8 +483,8 @@ impl Backend for MacosBackend {
         a11y::apply(
             &node,
             a11y,
-            framework_core::accessibility::default_role(
-                framework_core::accessibility::PrimitiveKind::Text,
+            runtime_core::accessibility::default_role(
+                runtime_core::accessibility::PrimitiveKind::Text,
             ),
         );
         node
@@ -493,10 +493,10 @@ impl Backend for MacosBackend {
     fn create_button(
         &mut self,
         label: &str,
-        _on_click: &framework_core::Action,
-        _leading_icon: Option<&framework_core::IconData>,
-        _trailing_icon: Option<&framework_core::IconData>,
-        a11y: &framework_core::accessibility::AccessibilityProps,
+        _on_click: &runtime_core::Action,
+        _leading_icon: Option<&runtime_core::IconData>,
+        _trailing_icon: Option<&runtime_core::IconData>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         // Minimum-viable stub. Real NSButton wiring (bezel style,
         // target/action, icon images, intrinsic measure) lands in
@@ -508,12 +508,12 @@ impl Backend for MacosBackend {
         // lands; the later impl can keep this call site as-is and add
         // its own NSButton-specific a11y in addition.
         let _ = label;
-        let node = self.create_view(&framework_core::accessibility::AccessibilityProps::default());
+        let node = self.create_view(&runtime_core::accessibility::AccessibilityProps::default());
         a11y::apply(
             &node,
             a11y,
-            framework_core::accessibility::default_role(
-                framework_core::accessibility::PrimitiveKind::Button,
+            runtime_core::accessibility::default_role(
+                runtime_core::accessibility::PrimitiveKind::Button,
             ),
         );
         node
@@ -611,7 +611,7 @@ impl Backend for MacosBackend {
         // (direction, gap, justify, align, width/height) flow into
         // the layout pass. `LayoutTree::set_style` accepts
         // `&StyleRules` directly — the translation lives inside
-        // `native-layout`.
+        // `runtime-layout`.
         if let Some(layout_node) = self.layout_of(view) {
             self.layout.set_style(layout_node, style);
         }
@@ -638,7 +638,7 @@ impl Backend for MacosBackend {
     fn set_animated_f32(
         &mut self,
         node: &Self::Node,
-        prop: framework_core::animation::AnimProp,
+        prop: runtime_core::animation::AnimProp,
         value: f32,
     ) {
         animated::set_animated_f32(node, prop, value, &mut self.animated_states);
@@ -647,7 +647,7 @@ impl Backend for MacosBackend {
     fn set_animated_color(
         &mut self,
         node: &Self::Node,
-        prop: framework_core::animation::AnimProp,
+        prop: runtime_core::animation::AnimProp,
         value: [f32; 4],
     ) {
         // Gradient stop writes need the per-view cache (layer +
@@ -655,7 +655,7 @@ impl Backend for MacosBackend {
         // rather than into the standalone `animated::set_animated_color`
         // helper. Background / foreground writes still go through
         // the helper.
-        if let framework_core::animation::AnimProp::GradientStopColor(idx) = prop {
+        if let runtime_core::animation::AnimProp::GradientStopColor(idx) = prop {
             let view = node.as_view();
             let key = view as *const NSView as usize;
             if let Some(state) = self.gradient_states.get_mut(&key) {
@@ -677,8 +677,8 @@ impl Backend for MacosBackend {
     fn update_accessibility(
         &mut self,
         node: &Self::Node,
-        a11y_props: &framework_core::accessibility::AccessibilityProps,
-        inferred_role: Option<framework_core::accessibility::Role>,
+        a11y_props: &runtime_core::accessibility::AccessibilityProps,
+        inferred_role: Option<runtime_core::accessibility::Role>,
     ) {
         a11y::apply(node, a11y_props, inferred_role);
     }
@@ -686,16 +686,16 @@ impl Backend for MacosBackend {
     fn announce_for_accessibility(
         &mut self,
         msg: &str,
-        priority: framework_core::accessibility::LiveRegionPriority,
+        priority: runtime_core::accessibility::LiveRegionPriority,
     ) {
         a11y::announce(msg, priority);
     }
 
-    fn make_view_handle(&self, node: &Self::Node) -> framework_core::ViewHandle {
+    fn make_view_handle(&self, node: &Self::Node) -> runtime_core::ViewHandle {
         handles::make_view_handle(node)
     }
 
-    fn make_text_handle(&self, node: &Self::Node) -> framework_core::TextHandle {
+    fn make_text_handle(&self, node: &Self::Node) -> runtime_core::TextHandle {
         handles::make_text_handle(node)
     }
 
@@ -748,7 +748,7 @@ impl Backend for MacosBackend {
             let frame: CGRect = unsafe { msg_send![&host, frame] };
             bounds = frame;
         }
-        let viewport = native_layout::Size {
+        let viewport = runtime_layout::Size {
             width: bounds.size.width as f32,
             height: bounds.size.height as f32,
         };
@@ -772,7 +772,7 @@ impl Backend for MacosBackend {
         // Apply frames to every registered view. We don't recurse
         // through `NSView.subviews` because some views may not yet
         // be attached at finish time (matches the iOS rationale).
-        let snapshot: Vec<(usize, native_layout::LayoutNode)> = self
+        let snapshot: Vec<(usize, runtime_layout::LayoutNode)> = self
             .view_to_layout
             .iter()
             .map(|(k, (_, n))| (*k, *n))
@@ -837,9 +837,9 @@ impl Backend for MacosBackend {
 
     fn register_asset(
         &mut self,
-        id: framework_core::AssetId,
-        kind: framework_core::AssetTag,
-        source: &framework_core::AssetSource,
+        id: runtime_core::AssetId,
+        kind: runtime_core::AssetTag,
+        source: &runtime_core::AssetSource,
     ) {
         // Font branch handled by apple-core; image branch will land
         // alongside `create_image`. For now non-font assets are no-ops
@@ -850,24 +850,24 @@ impl Backend for MacosBackend {
 
     fn unregister_asset(
         &mut self,
-        id: framework_core::AssetId,
-        kind: framework_core::AssetTag,
+        id: runtime_core::AssetId,
+        kind: runtime_core::AssetTag,
     ) {
         self.font_registry.unregister_asset(id, kind);
     }
 
     fn register_typeface(
         &mut self,
-        id: framework_core::assets::TypefaceId,
+        id: runtime_core::assets::TypefaceId,
         family_name: &str,
-        faces: &[framework_core::assets::TypefaceFace],
-        fallback: framework_core::assets::SystemFallback,
+        faces: &[runtime_core::assets::TypefaceFace],
+        fallback: runtime_core::assets::SystemFallback,
     ) {
         self.font_registry
             .register_typeface(id, family_name, faces, fallback);
     }
 
-    fn unregister_typeface(&mut self, id: framework_core::assets::TypefaceId) {
+    fn unregister_typeface(&mut self, id: runtime_core::assets::TypefaceId) {
         self.font_registry.unregister_typeface(id);
     }
 }

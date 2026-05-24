@@ -1,6 +1,6 @@
 # iOS + Android touch backend implementations
 
-Status: framework-core, wgpu, and web are landed; iOS and Android are
+Status: runtime-core, wgpu, and web are landed; iOS and Android are
 the two missing platform impls of `Backend::install_touch_handler` and
 `Backend::claim_touch`. This doc describes how to land them.
 
@@ -327,7 +327,7 @@ Either platform first. Roughly one engineering day each.
 5. **Tests** — walker→backend wiring is trivially testable (mock
    storage + assert install was called); the dispatcher itself is
    harder to unit-test because of platform setup. The recognizer
-   tests in framework-core already cover the gesture state machines
+   tests in runtime-core already cover the gesture state machines
    on top.
 
 ## Definition of done

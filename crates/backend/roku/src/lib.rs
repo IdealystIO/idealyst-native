@@ -118,7 +118,7 @@ pub use backend_roku_macros::method;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use framework_core::{
+use runtime_core::{
     primitives::{
         activity_indicator::ActivityIndicatorSize, graphics::{OnLost, OnReady, OnResize},
         icon::IconData,
@@ -148,11 +148,11 @@ pub use command::{
 /// stubs that the runtime calls in response to events.
 pub fn snapshot<F>(builder: F) -> Vec<RokuCommand>
 where
-    F: FnOnce() -> framework_core::Primitive,
+    F: FnOnce() -> runtime_core::Primitive,
 {
     let backend = Rc::new(RefCell::new(RokuBackend::new()));
     let tree = builder();
-    let _owner = framework_core::render(backend.clone(), tree);
+    let _owner = runtime_core::render(backend.clone(), tree);
     let cmds = backend.borrow_mut().drain();
     cmds
 }
@@ -161,7 +161,7 @@ where
 /// write to disk.
 pub fn snapshot_to_json<F>(builder: F) -> Result<String, serde_json::Error>
 where
-    F: FnOnce() -> framework_core::Primitive,
+    F: FnOnce() -> runtime_core::Primitive,
 {
     serde_json::to_string(&snapshot(builder))
 }
@@ -170,7 +170,7 @@ where
 /// eyeball when debugging the build pipeline.
 pub fn snapshot_to_pretty_json<F>(builder: F) -> Result<String, serde_json::Error>
 where
-    F: FnOnce() -> framework_core::Primitive,
+    F: FnOnce() -> runtime_core::Primitive,
 {
     serde_json::to_string_pretty(&snapshot(builder))
 }
@@ -437,13 +437,13 @@ fn inspect_simple_text_row(
 impl Backend for RokuBackend {
     type Node = NodeId;
 
-    fn platform(&self) -> framework_core::Platform {
-        framework_core::Platform::Roku
+    fn platform(&self) -> runtime_core::Platform {
+        runtime_core::Platform::Roku
     }
 
     fn create_view(
         &mut self,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        _a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let id = self.mint_node();
         self.push(RokuCommand::CreateView { id });
@@ -453,7 +453,7 @@ impl Backend for RokuBackend {
     fn create_text(
         &mut self,
         content: &str,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        _a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let id = self.mint_node();
         self.push(RokuCommand::CreateText {
@@ -466,10 +466,10 @@ impl Backend for RokuBackend {
     fn create_button(
         &mut self,
         label: &str,
-        on_click: &framework_core::Action,
+        on_click: &runtime_core::Action,
         leading_icon: Option<&IconData>,
         trailing_icon: Option<&IconData>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        _a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let id = self.mint_node();
         let handler = self.mint_handler();
@@ -477,7 +477,7 @@ impl Backend for RokuBackend {
         // the structured metadata (method + signal ids + optional
         // output signal) as a `BindButton` wire op below. The
         // closure itself is still registered in the handler table
-        // so a host-side AAS shell (dev mode) can fire it; in
+        // so a host-side runtime-server shell (dev mode) can fire it; in
         // baked-binary builds the device's transpiled #[method]
         // does the work and the closure is dead weight.
         self.handlers
@@ -516,7 +516,7 @@ impl Backend for RokuBackend {
     fn create_pressable(
         &mut self,
         on_click: Rc<dyn Fn()>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        _a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let id = self.mint_node();
         let handler = self.mint_handler();
@@ -551,12 +551,12 @@ impl Backend for RokuBackend {
 
     fn create_portal(
         &mut self,
-        target: framework_core::primitives::portal::PortalTarget,
+        target: runtime_core::primitives::portal::PortalTarget,
         on_dismiss: Option<Rc<dyn Fn()>>,
         trap_focus: bool,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        _a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        use framework_core::primitives::portal as p;
+        use runtime_core::primitives::portal as p;
         let id = self.mint_node();
         let on_dismiss_handler = on_dismiss.map(|cb| {
             let h = self.mint_handler();
@@ -616,7 +616,7 @@ impl Backend for RokuBackend {
         &mut self,
         src: &str,
         alt: Option<&str>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        _a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let id = self.mint_node();
         self.push(RokuCommand::CreateImage {
@@ -638,7 +638,7 @@ impl Backend for RokuBackend {
         &mut self,
         data: &IconData,
         color: Option<&Color>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        _a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let id = self.mint_node();
         let wire = self.lower_icon(data);
@@ -662,8 +662,8 @@ impl Backend for RokuBackend {
         initial_value: &str,
         placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
-        _on_key_down: Option<framework_core::primitives::key::KeyDownHandler>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        _a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         // `_on_key_down` is unused on Roku — the SceneGraph keyboard
         // surface doesn't expose pre-default key interception in the
@@ -692,7 +692,7 @@ impl Backend for RokuBackend {
         &mut self,
         initial_value: bool,
         on_change: Rc<dyn Fn(bool)>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        _a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let id = self.mint_node();
         let handler = self.mint_handler();
@@ -716,7 +716,7 @@ impl Backend for RokuBackend {
         max: f32,
         step: Option<f32>,
         on_change: Rc<dyn Fn(f32)>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        _a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let id = self.mint_node();
         let handler = self.mint_handler();
@@ -739,7 +739,7 @@ impl Backend for RokuBackend {
     fn create_scroll_view(
         &mut self,
         horizontal: bool,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        _a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let id = self.mint_node();
         self.push(RokuCommand::CreateScrollView { id, horizontal });
@@ -750,7 +750,7 @@ impl Backend for RokuBackend {
         &mut self,
         size: ActivityIndicatorSize,
         color: Option<&Color>,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        _a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let id = self.mint_node();
         let wire_size = match size {
@@ -776,7 +776,7 @@ impl Backend for RokuBackend {
         _on_ready: OnReady,
         _on_resize: OnResize,
         _on_lost: OnLost,
-        _a11y: &framework_core::accessibility::AccessibilityProps,
+        _a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let id = self.mint_node();
         self.push(RokuCommand::CreateView { id });
@@ -849,7 +849,7 @@ impl Backend for RokuBackend {
         anchor: &Self::Node,
         signal_ids: &[u64],
         cond_method: &'static str,
-        arms: &[(framework_core::__serde_json::Value, Self::Node)],
+        arms: &[(runtime_core::__serde_json::Value, Self::Node)],
         default_node: &Self::Node,
     ) {
         let arms_wire: Vec<command::SwitchArm> = arms
@@ -978,7 +978,7 @@ impl Backend for RokuBackend {
     fn note_signal_initial(
         &mut self,
         signal_id: u64,
-        value: &framework_core::__serde_json::Value,
+        value: &runtime_core::__serde_json::Value,
     ) {
         // First-time signal observation: declare the signal to the
         // device with its current value. Subsequent observations of
@@ -1035,12 +1035,12 @@ impl Backend for RokuBackend {
         &mut self,
         node: &Self::Node,
         base: &Rc<StyleRules>,
-        overlays: &[(framework_core::StateBits, Rc<StyleRules>)],
+        overlays: &[(runtime_core::StateBits, Rc<StyleRules>)],
     ) {
         // Find the overlay (if any) for each well-known state.
         // The framework hands us a list, not a map, so we scan
         // once per state.
-        let find = |target: framework_core::StateBits| -> Option<Box<WireStyle>> {
+        let find = |target: runtime_core::StateBits| -> Option<Box<WireStyle>> {
             overlays
                 .iter()
                 .find(|(bits, _)| *bits == target)
@@ -1050,10 +1050,10 @@ impl Backend for RokuBackend {
         self.push(RokuCommand::ApplyStyleStates {
             id: *node,
             base: Box::new(style::lower_style(base)),
-            hovered: find(framework_core::StateBits::HOVERED),
-            focused: find(framework_core::StateBits::FOCUSED),
-            pressed: find(framework_core::StateBits::PRESSED),
-            disabled: find(framework_core::StateBits::DISABLED),
+            hovered: find(runtime_core::StateBits::HOVERED),
+            focused: find(runtime_core::StateBits::FOCUSED),
+            pressed: find(runtime_core::StateBits::PRESSED),
+            disabled: find(runtime_core::StateBits::DISABLED),
         });
     }
 
@@ -1064,7 +1064,7 @@ impl Backend for RokuBackend {
         });
     }
 
-    fn install_tokens(&mut self, _tokens: &[framework_core::TokenEntry]) {
+    fn install_tokens(&mut self, _tokens: &[runtime_core::TokenEntry]) {
         // No-op (matches iOS / Android posture).
         //
         // The Roku wire protocol has no runtime variable layer — there is no
@@ -1088,7 +1088,7 @@ impl Backend for RokuBackend {
         // re-apply-driven model, so the no-op is now the correct behavior.
     }
 
-    fn update_tokens(&mut self, _tokens: &[framework_core::TokenEntry]) {
+    fn update_tokens(&mut self, _tokens: &[runtime_core::TokenEntry]) {
         // See `install_tokens` above — same no-op rationale. Updated token
         // values propagate to the wire via re-application of every styled
         // effect that subscribed to a changed token.
@@ -1136,7 +1136,7 @@ mod tests {
 
     #[test]
     fn button_handler_dispatches() {
-        use framework_core::IntoAction;
+        use runtime_core::IntoAction;
         let mut be = RokuBackend::new();
         let counter = Rc::new(std::cell::Cell::new(0u32));
         let counter2 = counter.clone();
@@ -1161,7 +1161,7 @@ mod tests {
         // be no-ops: the Roku wire protocol has no runtime variable
         // layer, and the framework re-fires every styled effect on
         // token updates so apply_style picks up the new literal values.
-        use framework_core::{TokenEntry, TokenValue};
+        use runtime_core::{TokenEntry, TokenValue};
 
         let mut be = RokuBackend::new();
 
@@ -1172,7 +1172,7 @@ mod tests {
             },
             TokenEntry {
                 name: "primary-color",
-                value: TokenValue::Color(framework_core::Color(
+                value: TokenValue::Color(runtime_core::Color(
                     "#ff0000".to_string(),
                 )),
             },

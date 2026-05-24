@@ -21,7 +21,7 @@
 //! Rust's `macro_rules!` visibility into child modules makes
 //! `Card()` inside `forms::*` ambiguous at compile time. The
 //! proximity rule is covered exhaustively in
-//! `framework-mcp/tests/registers_component.rs` instead. The demo
+//! `mcp-catalog/tests/registers_component.rs` instead. The demo
 //! sticks to distinct names.
 //!
 //! These functions are never called directly — the point is the
@@ -29,14 +29,14 @@
 
 #![allow(dead_code)]
 
-use framework_core::Primitive;
-use framework_core::{component, idealyst_tool, ui, IdealystSchema};
+use runtime_core::Primitive;
+use runtime_core::{component, idealyst_tool, ui, IdealystSchema};
 
 /// A small icon-with-label widget. Leaf component — no `ui!` body,
 /// so it has no composes edges.
 #[component]
 pub fn icon_label() -> Primitive {
-    ::framework_core::view(::std::vec::Vec::new())
+    ::runtime_core::view(::std::vec::Vec::new())
 }
 
 /// A primary action button.
@@ -46,14 +46,14 @@ pub fn icon_label() -> Primitive {
 /// catalog preserves newlines and blank-line paragraph breaks.
 #[component]
 pub fn primary_button() -> Primitive {
-    ::framework_core::view(::std::vec::Vec::new())
+    ::runtime_core::view(::std::vec::Vec::new())
 }
 
 // Note (`//`, not `///`): `spacer` has no doc comment by design — the
 // catalog should record `docs: ""`. This text doesn't become docs.
 #[component]
 pub fn spacer() -> Primitive {
-    ::framework_core::view(::std::vec::Vec::new())
+    ::runtime_core::view(::std::vec::Vec::new())
 }
 
 /// A card with an icon-label header and a primary action.
@@ -101,7 +101,7 @@ pub struct LabeledBadgeProps {
 /// `params: props: &LabeledBadgeProps`.
 #[component]
 pub fn labeled_badge(_props: &LabeledBadgeProps) -> Primitive {
-    ::framework_core::view(::std::vec::Vec::new())
+    ::runtime_core::view(::std::vec::Vec::new())
 }
 
 /// Returns a hex color darkened by `amount` (linear-light space).
@@ -117,13 +117,13 @@ pub fn darken(_hex: &str, _amount: f32) -> String {
 /// The resolver should resolve `Submit` to `forms::submit` since
 /// only one entry has that short-name.
 pub mod forms {
-    use framework_core::Primitive;
-    use framework_core::{component, ui};
+    use runtime_core::Primitive;
+    use runtime_core::{component, ui};
 
     /// A submit button. Unique short-name; resolves directly.
     #[component]
     pub fn submit() -> Primitive {
-        ::framework_core::view(::std::vec::Vec::new())
+        ::runtime_core::view(::std::vec::Vec::new())
     }
 
     /// Form-page host. Composes `Submit`.

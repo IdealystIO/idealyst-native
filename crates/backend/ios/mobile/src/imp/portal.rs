@@ -37,10 +37,10 @@ use objc2_foundation::{MainThreadMarker, NSObject, NSString};
 use objc2_ui_kit::UIView;
 use std::rc::Rc;
 
-use framework_core::primitives::portal::{
+use runtime_core::primitives::portal::{
     AnchorTarget, ElementAlign, ElementSide, ViewportPlacement, ViewportRect,
 };
-use framework_core::{
+use runtime_core::{
     AlignItems, FlexDirection, JustifyContent, Length, Position, StyleRules, Tokenized,
 };
 
@@ -82,7 +82,7 @@ pub(crate) fn create_portal(
     anchor: Option<AnchorSpec>,
     trap_focus: bool,
 ) -> (Retained<UIView>, PortalEntry) {
-    // Always passthrough — the composition layer in framework-core
+    // Always passthrough — the composition layer in runtime-core
     // renders a backdrop as a child primitive when needed; that
     // backdrop sizes itself to fill the viewport and consumes taps
     // through its own gesture recognizer. Outside the backdrop /

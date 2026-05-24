@@ -26,7 +26,7 @@
 //!    closures, and removes the per-canvas instance entry.
 
 use crate::WebBackend;
-use framework_core::primitives::graphics::{
+use runtime_core::primitives::graphics::{
     GraphicsHandle, GraphicsOps, GraphicsSurface, OnLost, OnReady, OnReadyEvent, OnResize,
     OnResizeEvent, SurfaceProvider,
 };
@@ -62,7 +62,7 @@ pub(crate) struct CanvasSurfaceProvider {
 // is structurally `!Send + !Sync` (JS handles can't cross threads),
 // but with no concurrent threads in this target there's no observer
 // who could see a torn read. The bounds exist only to satisfy
-// `framework_core::GraphicsSurface`'s `Arc<dyn SurfaceProvider +
+// `runtime_core::GraphicsSurface`'s `Arc<dyn SurfaceProvider +
 // Send + Sync>`, which unifies the type across native + web; iOS
 // and Android use the same `unsafe impl Send + Sync` pattern for
 // their own provider types.
@@ -101,7 +101,7 @@ impl HasDisplayHandle for CanvasSurfaceProvider {
 pub(crate) struct GraphicsInstance {
     /// The provider is held in an Arc so the user's `GraphicsSurface`
     /// keeps the canvas alive past unmount if they want to. Arc
-    /// (not Rc) so the type matches `framework_core::GraphicsSurface`'s
+    /// (not Rc) so the type matches `runtime_core::GraphicsSurface`'s
     /// `Arc<dyn SurfaceProvider + Send + Sync>` — see the `unsafe
     /// impl Send + Sync` on `CanvasSurfaceProvider` above for why
     /// that's sound on wasm32.

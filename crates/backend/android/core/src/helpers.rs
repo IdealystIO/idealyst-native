@@ -92,13 +92,13 @@ pub fn set_text(env: &mut JNIEnv, view: &JObject, content: &str) {
 }
 
 /// Parse a CSS-style color string into the Android `int` form
-/// (`0xAARRGGBB`). Parsing logic lives in `framework_core::color`;
+/// (`0xAARRGGBB`). Parsing logic lives in `runtime_core::color`;
 /// `Rgba::to_argb_u32()` handles the CSS→Android byte-order
 /// reshuffle so 8-digit `#rrggbbaa` reads as the CSS-spec alpha-
 /// last form (not the legacy `#aarrggbb` interpretation that
 /// produced dark squares on fade-out stops).
 pub fn parse_color(input: &str) -> Option<i32> {
-    framework_core::color::parse(input).ok().map(|c| c.to_argb_u32() as i32)
+    runtime_core::color::parse(input).ok().map(|c| c.to_argb_u32() as i32)
 }
 
 /// Pull the first `Length::Px` value from a per-side group, falling
@@ -108,9 +108,9 @@ pub fn parse_color(input: &str) -> Option<i32> {
 /// to its current value (`.resolve()`) at apply-time. The `.resolve()`
 /// call subscribes the enclosing apply-style Effect to the token's
 /// signal, so token swaps re-fire the apply.
-pub fn px_or(value: Option<&framework_core::Tokenized<framework_core::Length>>, default: f32) -> f32 {
+pub fn px_or(value: Option<&runtime_core::Tokenized<runtime_core::Length>>, default: f32) -> f32 {
     match value.map(|t| t.resolve()) {
-        Some(framework_core::Length::Px(v)) => v,
+        Some(runtime_core::Length::Px(v)) => v,
         // Percent/Auto don't have a well-defined value here without a
         // layout pass; treat as default.
         _ => default,

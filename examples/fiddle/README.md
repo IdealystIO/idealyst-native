@@ -64,7 +64,7 @@ use crate::__rt::*;
 ```
 
 which re-exports the symbols most snippets reach for —
-`framework_core::{view, button, text, signal!, ui!, ...}`, `idea_ui::{card, heading, ...}`,
+`runtime_core::{view, button, text, signal!, ui!, ...}`, `idea_ui::{card, heading, ...}`,
 and `std::rc::Rc`. Anything outside that prelude needs the usual
 fully-qualified path. Snippets must define:
 

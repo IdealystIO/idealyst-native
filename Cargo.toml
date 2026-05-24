@@ -1,16 +1,14 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/framework/core",
-    "crates/framework/hot",
-    "crates/framework/macros",
-    "crates/framework/mcp",
-    "crates/mcp-server",
-    "crates/framework/native-layout",
-    "crates/framework/wire",
-    "crates/framework/dev-client",
-    "crates/framework/reactive/arena",
-    "crates/framework/reactive/refs",
+    # Runtime — platform-agnostic upper half (above the Backend Interface).
+    "crates/runtime/core",
+    "crates/runtime/macros",
+    "crates/runtime/reactive/arena",
+    "crates/runtime/reactive/refs",
+    "crates/runtime/layout",
+
+    # Native backends — implement Backend on top of a platform's UI toolkit.
     "crates/backend/apple/core",
     "crates/backend/macos",
     "crates/backend/ios/core",
@@ -25,55 +23,73 @@ members = [
     "crates/backend/roku/transpile",
     "crates/backend/terminal",
     "crates/backend/web",
-    "crates/render/api",
-    "crates/render/wgpu",
-    "crates/skin/ios-sim",
-    "crates/skin/android-sim",
-    "crates/host/winit",
-    "crates/host/web",
-    "crates/host/appkit",
-    "crates/host/terminal",
-    "crates/host/wgpu-accesskit",
-    "crates/native/phone",
-    "crates/native/tablet",
-    "crates/native/tv",
-    "crates/backend/aas-shell-native",
     "crates/backend/posix-log-capture",
+
+    # GPU Backend — composed of Host + Painter + Engine.
+    "crates/gpu-backend/api",
+    "crates/gpu-backend/engine",
+    "crates/gpu-backend/host/winit",
+    "crates/gpu-backend/host/web",
+    "crates/gpu-backend/host/appkit",
+    "crates/gpu-backend/host/terminal",
+    "crates/gpu-backend/host/wgpu-accesskit",
+    "crates/gpu-backend/painter/ios-sim",
+    "crates/gpu-backend/painter/android-sim",
+    "crates/gpu-backend/variant/phone",
+    "crates/gpu-backend/variant/tablet",
+    "crates/gpu-backend/variant/tv",
+
+    # Dev mode — wire protocol, hot reload, dev server, app-side replayer.
+    "crates/dev/wire",
+    "crates/dev/hot",
+    "crates/dev/client",
+    "crates/dev/server",
+    "crates/dev/http",
+    "crates/dev/reload",
+    "crates/dev/web-host",
+    "crates/dev/runtime-server-shell",
+
+    # MCP — project-aware catalog, stdio server, robot proxy.
+    "crates/mcp/catalog",
+    "crates/mcp/server",
+    "crates/mcp/robot-proxy",
+
+    # UI — component library + extras.
     "crates/ui/idea-ui",
     "crates/ui/idea-ui-docs-derive",
     "crates/ui/icons-lucide",
+
+    # SDK — third-party extension primitives (Primitive::External).
     "crates/sdk/maps-core",
     "crates/sdk/maps",
     "crates/sdk/maps-web",
     "crates/sdk/idea-codeblock",
     "crates/sdk/webview",
-    "crates/cli",
-    "crates/build/aas",
-    "crates/build/android",
-    "crates/build/ios",
-    "crates/build/roku",
-    "crates/build/sim",
-    "crates/build/web",
-    "crates/build/macos",
-    "crates/run/android",
-    "crates/run/ios",
-    "crates/run/roku",
-    "crates/run/macos",
-    "crates/dev/server",
-    "crates/dev/http",
-    "crates/dev/reload",
-    "crates/dev/web-host",
-    "crates/robot-mcp-proxy",
-    "crates/port/core",
-    "crates/port/tsx",
-    "crates/port/react",
-    "crates/port/solid",
-    "crates/port/vue",
-    "crates/port/svelte",
-    "crates/port/project",
-    "crates/port/preview",
+
+    # Tools — CLI + per-platform build/run + source porters.
+    "crates/tools/cli",
+    "crates/tools/build/runtime-server",
+    "crates/tools/build/android",
+    "crates/tools/build/ios",
+    "crates/tools/build/roku",
+    "crates/tools/build/sim",
+    "crates/tools/build/web",
+    "crates/tools/build/macos",
+    "crates/tools/build/terminal",
+    "crates/tools/run/android",
+    "crates/tools/run/ios",
+    "crates/tools/run/roku",
+    "crates/tools/run/macos",
+    "crates/tools/run/terminal",
+    "crates/tools/port/core",
+    "crates/tools/port/tsx",
+    "crates/tools/port/react",
+    "crates/tools/port/solid",
+    "crates/tools/port/vue",
+    "crates/tools/port/svelte",
+    "crates/tools/port/project",
+    "crates/tools/port/preview",
     "examples/hello-roku",
-    "examples/hello-terminal",
     "examples/idea-ui-docs",
     "examples/docs",
     "examples/docs-macro",
@@ -101,30 +117,32 @@ version = "0.0.1"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-framework-core = { path = "crates/framework/core" }
-framework-hot = { path = "crates/framework/hot" }
-framework-macros = { path = "crates/framework/macros" }
-framework-mcp = { path = "crates/framework/mcp" }
-mcp-server = { path = "crates/mcp-server" }
+runtime-core = { path = "crates/runtime/core" }
+dev-hot = { path = "crates/dev/hot" }
+runtime-macros = { path = "crates/runtime/macros" }
+mcp-catalog = { path = "crates/mcp/catalog" }
+mcp-server = { path = "crates/mcp/server" }
 docs-macro = { path = "examples/docs-macro" }
-native-layout = { path = "crates/framework/native-layout" }
-wire = { path = "crates/framework/wire" }
-dev-client = { path = "crates/framework/dev-client" }
+runtime-layout = { path = "crates/runtime/layout" }
+wire = { path = "crates/dev/wire" }
+dev-client = { path = "crates/dev/client" }
 dev-server = { path = "crates/dev/server" }
 dev-http = { path = "crates/dev/http" }
 dev-reload = { path = "crates/dev/reload" }
 web-dev-host = { path = "crates/dev/web-host" }
-build-ios = { path = "crates/build/ios" }
-run-ios = { path = "crates/run/ios" }
-build-aas = { path = "crates/build/aas" }
-build-android = { path = "crates/build/android" }
-run-android = { path = "crates/run/android" }
-build-roku = { path = "crates/build/roku" }
-run-roku = { path = "crates/run/roku" }
-build-sim = { path = "crates/build/sim" }
-build-web = { path = "crates/build/web" }
-build-macos = { path = "crates/build/macos" }
-run-macos = { path = "crates/run/macos" }
+build-ios = { path = "crates/tools/build/ios" }
+run-ios = { path = "crates/tools/run/ios" }
+build-runtime-server = { path = "crates/tools/build/runtime-server" }
+build-android = { path = "crates/tools/build/android" }
+run-android = { path = "crates/tools/run/android" }
+build-roku = { path = "crates/tools/build/roku" }
+run-roku = { path = "crates/tools/run/roku" }
+build-sim = { path = "crates/tools/build/sim" }
+build-web = { path = "crates/tools/build/web" }
+build-macos = { path = "crates/tools/build/macos" }
+run-macos = { path = "crates/tools/run/macos" }
+build-terminal = { path = "crates/tools/build/terminal" }
+run-terminal = { path = "crates/tools/run/terminal" }
 backend-apple-core = { path = "crates/backend/apple/core" }
 backend-macos = { path = "crates/backend/macos" }
 backend-ios-core = { path = "crates/backend/ios/core" }
@@ -139,18 +157,18 @@ backend-roku-macros = { path = "crates/backend/roku/macros" }
 backend-roku-transpile = { path = "crates/backend/roku/transpile" }
 backend-terminal = { path = "crates/backend/terminal" }
 backend-web = { path = "crates/backend/web" }
-render-api = { path = "crates/render/api" }
-render-wgpu = { path = "crates/render/wgpu" }
-ios-sim = { path = "crates/skin/ios-sim" }
-android-sim = { path = "crates/skin/android-sim" }
-host-winit = { path = "crates/host/winit" }
-host-web = { path = "crates/host/web" }
-host-appkit = { path = "crates/host/appkit" }
-host-terminal = { path = "crates/host/terminal" }
-native-phone = { path = "crates/native/phone" }
-native-tablet = { path = "crates/native/tablet" }
-native-tv = { path = "crates/native/tv" }
-aas-shell-native = { path = "crates/backend/aas-shell-native" }
+render-api = { path = "crates/gpu-backend/api" }
+render-wgpu = { path = "crates/gpu-backend/engine" }
+ios-sim = { path = "crates/gpu-backend/painter/ios-sim" }
+android-sim = { path = "crates/gpu-backend/painter/android-sim" }
+host-winit = { path = "crates/gpu-backend/host/winit" }
+host-web = { path = "crates/gpu-backend/host/web" }
+host-appkit = { path = "crates/gpu-backend/host/appkit" }
+host-terminal = { path = "crates/gpu-backend/host/terminal" }
+variant-phone = { path = "crates/gpu-backend/variant/phone" }
+variant-tablet = { path = "crates/gpu-backend/variant/tablet" }
+variant-tv = { path = "crates/gpu-backend/variant/tv" }
+runtime-server-shell-native = { path = "crates/dev/runtime-server-shell" }
 posix-log-capture = { path = "crates/backend/posix-log-capture" }
 idea-ui = { path = "crates/ui/idea-ui" }
 idea-ui-docs-derive = { path = "crates/ui/idea-ui-docs-derive" }

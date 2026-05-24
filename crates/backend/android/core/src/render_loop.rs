@@ -4,7 +4,7 @@ use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use framework_core::driver::{
+use runtime_core::driver::{
     install_render_loop_driver, RenderLoopDriver, RenderLoopHandle,
 };
 
@@ -14,7 +14,7 @@ use framework_core::driver::{
 /// bare `graphics` primitive.
 const FRAME_INTERVAL: Duration = Duration::from_micros(16_667);
 
-/// Register this backend's driver with `framework-core`. Idempotent —
+/// Register this backend's driver with `runtime-core`. Idempotent —
 /// first install wins.
 pub fn install_render_loop() {
     install_render_loop_driver(Box::new(AndroidRenderLoopDriver));

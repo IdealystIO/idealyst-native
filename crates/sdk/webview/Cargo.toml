@@ -28,7 +28,7 @@ license.workspace = true
 # own runtime sources.
 
 [dependencies]
-framework-core = { workspace = true }
+runtime-core = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }

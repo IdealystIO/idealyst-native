@@ -5,7 +5,7 @@
 //! direct analogue for shadows, transforms, transitions, or per-side
 //! borders. We send what the client can express and drop the rest.
 
-use framework_core::{Color, FontWeight, Length, StyleRules, Tokenized};
+use runtime_core::{Color, FontWeight, Length, StyleRules, Tokenized};
 
 use crate::command::{
     AlignItems as WireAlignItems, FlexDirection as WireFlexDirection,
@@ -97,17 +97,17 @@ fn length_px(l: &Length) -> f32 {
     }
 }
 
-fn flex_direction(d: framework_core::FlexDirection) -> WireFlexDirection {
+fn flex_direction(d: runtime_core::FlexDirection) -> WireFlexDirection {
     match d {
-        framework_core::FlexDirection::Row => WireFlexDirection::Row,
-        framework_core::FlexDirection::Column => WireFlexDirection::Column,
-        framework_core::FlexDirection::RowReverse => WireFlexDirection::RowReverse,
-        framework_core::FlexDirection::ColumnReverse => WireFlexDirection::ColumnReverse,
+        runtime_core::FlexDirection::Row => WireFlexDirection::Row,
+        runtime_core::FlexDirection::Column => WireFlexDirection::Column,
+        runtime_core::FlexDirection::RowReverse => WireFlexDirection::RowReverse,
+        runtime_core::FlexDirection::ColumnReverse => WireFlexDirection::ColumnReverse,
     }
 }
 
-fn justify_content(j: framework_core::JustifyContent) -> WireJustifyContent {
-    use framework_core::JustifyContent::*;
+fn justify_content(j: runtime_core::JustifyContent) -> WireJustifyContent {
+    use runtime_core::JustifyContent::*;
     match j {
         FlexStart => WireJustifyContent::Start,
         Center => WireJustifyContent::Center,
@@ -118,8 +118,8 @@ fn justify_content(j: framework_core::JustifyContent) -> WireJustifyContent {
     }
 }
 
-fn align_items(a: framework_core::AlignItems) -> WireAlignItems {
-    use framework_core::AlignItems::*;
+fn align_items(a: runtime_core::AlignItems) -> WireAlignItems {
+    use runtime_core::AlignItems::*;
     match a {
         FlexStart => WireAlignItems::Start,
         Center => WireAlignItems::Center,
@@ -129,8 +129,8 @@ fn align_items(a: framework_core::AlignItems) -> WireAlignItems {
     }
 }
 
-fn text_align(t: framework_core::TextAlign) -> WireTextAlign {
-    use framework_core::TextAlign::*;
+fn text_align(t: runtime_core::TextAlign) -> WireTextAlign {
+    use runtime_core::TextAlign::*;
     match t {
         Left => WireTextAlign::Left,
         Center => WireTextAlign::Center,

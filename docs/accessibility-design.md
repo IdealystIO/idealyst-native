@@ -15,7 +15,7 @@ surface landed before the primitive count grew further.
 
 | Component | Status | Notes |
 |---|---|---|
-| `framework_core::accessibility` module | ✅ | `Role`, `AccessibilityProps`, `AccessibilityTraits`, `LiveRegionPriority`, `AccessibilityAction`, `AccessibilityTree`, `AccessibilityNode`, `AccessibilityRect`, `PrimitiveKind`, `default_role()` — 7 unit tests |
+| `runtime_core::accessibility` module | ✅ | `Role`, `AccessibilityProps`, `AccessibilityTraits`, `LiveRegionPriority`, `AccessibilityAction`, `AccessibilityTree`, `AccessibilityNode`, `AccessibilityRect`, `PrimitiveKind`, `default_role()` — 7 unit tests |
 | `Backend` trait: `update_accessibility`, `announce_for_accessibility`, `dump_accessibility_tree` | ✅ | No-op defaults; every `create_*` takes `&AccessibilityProps` |
 | `Primitive` variants carry `accessibility: AccessibilityProps` | ✅ | 19 variants (control-flow `When`/`Switch`/`Repeat` excluded) |
 | Walker plumbs a11y through every primitive build | ✅ | |
@@ -25,7 +25,7 @@ surface landed before the primitive count grew further.
 | **macOS backend** | ✅ | `NSAccessibility*` setters + `postNotificationWithUserInfo` (Polite→Medium, Assertive→High). `BUSY` trait unmapped (no AppKit equivalent). |
 | **Roku backend** | ✅ no-op | Roku SceneGraph has no AT API; props dropped at the `_a11y` boundary. Audit rule `backend-roku-a11y.md` nudges plumbing when an SDK exposes it. |
 | **wgpu backend** | ✅ | Per-node `accessibility` storage; `dump_accessibility_tree` builds the parallel semantics tree; `pending_announcements` queue drained by the host shell. 5 dedicated tests. |
-| **Wire protocol** | ✅ | `WireAccessibilityProps` + `WireRole` (`#[serde(other)] Unknown` for forward-compat) + `WireLiveRegionPriority` + `WireAccessibilityAction` (name + `HandlerId` trampoline). Every `Create*` carries a11y; new `UpdateAccessibility` + `AnnounceForAccessibility` commands; `WIRE_VERSION=4`. SceneModel snapshot replays per-node a11y so late-joining AAS clients see current state. AX action handlers cross the wire as reverse-channel `HandlerId`s — same trampoline mechanism as `on_click` / `on_change`. |
+| **Wire protocol** | ✅ | `WireAccessibilityProps` + `WireRole` (`#[serde(other)] Unknown` for forward-compat) + `WireLiveRegionPriority` + `WireAccessibilityAction` (name + `HandlerId` trampoline). Every `Create*` carries a11y; new `UpdateAccessibility` + `AnnounceForAccessibility` commands; `WIRE_VERSION=4`. SceneModel snapshot replays per-node a11y so late-joining runtime-server clients see current state. AX action handlers cross the wire as reverse-channel `HandlerId`s — same trampoline mechanism as `on_click` / `on_change`. |
 
 Documented gaps (intentional):
 - Future `Role` variants surface as `WireRole::Unknown` on older replayers → `None` (no role override).
@@ -36,7 +36,7 @@ See `.claude/audits/accessibility-completeness.md` for the audit that keeps the 
 The design follows the framework's two governing rules:
 
 - **Rule 3 (core stays minimal)** — a11y types live in
-  `framework_core::accessibility` and the Backend trait grows the
+  `runtime_core::accessibility` and the Backend trait grows the
   smallest possible surface. Per-role authoring helpers (e.g.
   `aria-current="page"` shortcuts, named "landmark" components) belong
   outside core, on top of these primitives.
@@ -51,7 +51,7 @@ The design follows the framework's two governing rules:
 ## 1. `Role` taxonomy
 
 A single `Role` enum with one variant per semantic role authors think
-in. ~35 variants. Defined in `framework_core::accessibility`.
+in. ~35 variants. Defined in `runtime_core::accessibility`.
 
 ```rust
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -229,7 +229,7 @@ the backend folds the state into a derived label/hint string — the
 
 ## 3. `AccessibilityProps` struct
 
-The shape every `create_*` receives. Owned by `framework_core::accessibility`.
+The shape every `create_*` receives. Owned by `runtime_core::accessibility`.
 
 ```rust
 #[derive(Clone, Debug, Default)]
@@ -315,7 +315,7 @@ passes the inferred default in `props.role`'s slot only when the author
 didn't override; the backend then doesn't have to know which primitive
 it's working with to find the right role — it just reads
 `props.role.unwrap_or(default_for_primitive)`. Default-role table lives
-in `framework_core::accessibility::default_role()` and is documented in
+in `runtime_core::accessibility::default_role()` and is documented in
 the primitive index.
 
 **`actions: Vec<AccessibilityAction>` belongs in core.** Custom AX
@@ -621,7 +621,7 @@ sequentially per backend; only 6a (web) and 6b (iOS) gate the v1 launch.
 
 | Phase | Scope | Files | Effort | Parallelizable |
 |-------|-------|-------|--------|----------------|
-| **1. Core types** | `Role`, `AccessibilityTraits`, `AccessibilityProps`, `AccessibilityAction`, `LiveRegionPriority`, `AccessibilityNode`, `AccessibilityTree`. Add `framework_core::accessibility` module. Unit tests for default values + `Role`/trait mapping helpers. | `crates/framework/core/src/accessibility.rs` (new), `crates/framework/core/src/lib.rs` (re-export). | ~1d | No (foundation) |
+| **1. Core types** | `Role`, `AccessibilityTraits`, `AccessibilityProps`, `AccessibilityAction`, `LiveRegionPriority`, `AccessibilityNode`, `AccessibilityTree`. Add `runtime_core::accessibility` module. Unit tests for default values + `Role`/trait mapping helpers. | `crates/framework/core/src/accessibility.rs` (new), `crates/framework/core/src/lib.rs` (re-export). | ~1d | No (foundation) |
 | **2. Backend trait additions** | Add `update_accessibility`, `announce_for_accessibility`, `dump_accessibility_tree` to `Backend` trait — **all with no-op defaults**. No existing-method changes yet. | `crates/framework/core/src/backend.rs` | ~0.5d | No (gates phases 4+) |
 | **3. Primitive enum field** | Add `accessibility: AccessibilityProps` field to every `Primitive::*` variant. Builder methods (`.label(...)`, `.hint(...)`, `.role(...)`, `.traits(...)`, `.identifier(...)`, etc.) on every primitive's builder. Default `AccessibilityProps::default()` so existing call sites keep compiling. | `crates/framework/core/src/primitive.rs`, every builder in `crates/framework/core/src/primitives/*.rs`, macros in `crates/framework/macros/src/ui.rs` if needed for shorthand. | ~2d | Yes (per primitive) |
 | **4. Walker plumbing** | Every `walker::build_*` function reads its primitive's `accessibility` field and passes it to the backend's `create_*` call. Every `create_*` call site updated to pass `&primitive.accessibility`. | `crates/framework/core/src/walker/*.rs` | ~1d | No (depends on phase 3) |
@@ -679,7 +679,7 @@ Five items the team needs to resolve before phase-1 lands:
 
 4. **Per-primitive default-role table location.** Should `default_role()`
    live as a method on `Primitive`, a free function in
-   `framework_core::accessibility`, or be inlined into each `build_*`
+   `runtime_core::accessibility`, or be inlined into each `build_*`
    walker call? The macros / ui-layer may want to query it for
    compile-time validation ("you set `role: Role::Slider` on a
    `Button`; that's almost certainly wrong"). If we want that, the

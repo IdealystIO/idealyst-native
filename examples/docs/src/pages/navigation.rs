@@ -2,7 +2,7 @@
 
 use docs_macro::docs;
 #[allow(unused_imports)]
-use crate::shell::{codeblock, pageheader, CodeBlockProps, PageHeaderProps};
+use crate::shell::{code_block, page_header, CodeBlockProps, PageHeaderProps};
 #[allow(unused_imports)]
 use idea_ui::{body, card, heading, stack};
 
@@ -47,7 +47,7 @@ docs! {
            navigators, in ", code("Link"), "s, in pushes:"),
 
         code(rust, r##"
-            use framework_core::Route;
+            use runtime_core::Route;
 
             pub const HOME:    Route<()>            = Route::new("home",    "/");
             pub const PROFILE: Route<ProfileParams> = Route::new("profile", "/profile/:id");
@@ -66,7 +66,7 @@ docs! {
            data, declare a struct and implement ", code("RouteParams"), ":"),
 
         code(rust, r##"
-            use framework_core::RouteParams;
+            use runtime_core::RouteParams;
             use std::collections::HashMap;
 
             pub struct ProfileParams {
@@ -111,7 +111,7 @@ docs! {
            primitive tree plus optional header configuration."),
 
         code(rust, r##"
-            use framework_core::{Screen, ui};
+            use runtime_core::{Screen, ui};
 
             fn render_home(_params: ()) -> Screen {
                 Screen::new(ui! {
@@ -160,7 +160,7 @@ docs! {
           " / ", code("popstate"), "."),
 
         code(rust, r##"
-            use framework_core::{Navigator, Ref};
+            use runtime_core::{Navigator, Ref};
 
             let nav: Ref<NavigatorHandle> = Ref::new();
 
@@ -215,7 +215,7 @@ docs! {
         p(code("TabNavigator"), " is a tab bar plus a switched content region."),
 
         code(rust, r##"
-            use framework_core::{TabNavigator, TabSpec};
+            use runtime_core::{TabNavigator, TabSpec};
 
             let tabs: Ref<TabsHandle> = Ref::new();
 
@@ -294,7 +294,7 @@ docs! {
            for; tapping an entry switches the body to that entry's screen."),
 
         code(rust, r##"
-            use framework_core::{DrawerNavigator, DrawerSide};
+            use runtime_core::{DrawerNavigator, DrawerSide};
 
             let drawer: Ref<DrawerHandle> = Ref::new();
 
