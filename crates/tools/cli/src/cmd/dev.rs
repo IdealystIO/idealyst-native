@@ -210,8 +210,41 @@ pub fn run(args: Args) -> Result<()> {
         // letting the host overwrite it — keeps reads from picking
         // up the previous run's number during the bind window.
         let _ = std::fs::remove_file(&port_file);
-        let child = Command::new(&host_binary)
-            .env("IDEALYST_RUNTIME_SERVER_PORT_FILE", &port_file)
+        let mut cmd = Command::new(&host_binary);
+        cmd.env("IDEALYST_RUNTIME_SERVER_PORT_FILE", &port_file);
+        // When the terminal target is in the active set, redirect the
+        // dev-host's stdio to a log file — its `[runtime-server-host]
+        // hot-patch applied …` chatter (every save!) would otherwise
+        // splatter ANSI-escape-unaware bytes onto the same TTY where
+        // crossterm is diff-painting the user's app, shredding the
+        // cell grid. Other targets keep inherited stdio so dev-host
+        // logs stay visible in the orchestrator's terminal.
+        if active_targets.contains(&Target::Terminal) {
+            let log_dir = dir.join(".idealyst");
+            let _ = std::fs::create_dir_all(&log_dir);
+            let log_path = log_dir.join("dev-host.log");
+            match std::fs::File::create(&log_path) {
+                Ok(file) => {
+                    let stderr = file.try_clone().unwrap_or_else(|_| {
+                        std::fs::File::create("/dev/null").expect("open /dev/null")
+                    });
+                    cmd.stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::from(file))
+                        .stderr(std::process::Stdio::from(stderr));
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[dev] could not open {} for dev-host log; falling back to /dev/null: {}",
+                        log_path.display(),
+                        e
+                    );
+                    cmd.stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null());
+                }
+            }
+        }
+        let child = cmd
             .spawn()
             .with_context(|| {
                 format!(

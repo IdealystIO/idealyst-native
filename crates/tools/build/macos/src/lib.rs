@@ -131,13 +131,13 @@ fn generate_wrapper(
     // `host-appkit` is the only required dep in both modes. runtime-server mode
     // additionally needs the `runtime-server` feature forwarded; we
     // declare a wrapper-local `aas` feature that turns it on.
-    let host_dep = opts.source.dep("crates/host/appkit", &[]);
+    let host_dep = opts.source.dep("crates/gpu-backend/host/appkit", &[]);
     // `runtime-core` as a direct dep of the wrapper so the dev
     // command can pass `--features runtime-core/dev` from cargo
     // without needing a [features] section. Without this, cargo
     // rejects the spec because runtime-core is only reachable
     // transitively through host-appkit / the user crate.
-    let fcore_dep = opts.source.dep("crates/framework/core", &[]);
+    let fcore_dep = opts.source.dep("crates/runtime/core", &[]);
 
     let bundle_id = manifest
         .app

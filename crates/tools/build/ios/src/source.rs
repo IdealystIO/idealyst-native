@@ -267,7 +267,14 @@ fn is_framework_root(root: &Path) -> bool {
     if !cargo.is_file() {
         return false;
     }
-    if !root.join("crates/framework/core/Cargo.toml").is_file() {
+    // Post-reorg the runtime crate lives at `crates/runtime/core`
+    // (was `crates/framework/core`). Probe the new path to
+    // re-enable workspace-mode detection for in-tree projects —
+    // without this, examples like `examples/welcome` fall through
+    // to git-mode and produce two distinct `runtime_core` crate
+    // instances (one from the git rev, one from the local path),
+    // failing every wrapper→user-crate type bridge.
+    if !root.join("crates/runtime/core/Cargo.toml").is_file() {
         return false;
     }
     let content = fs::read_to_string(&cargo).unwrap_or_default();
@@ -297,8 +304,10 @@ fn read_project_framework_dep(project_dir: &Path) -> Option<FrameworkSource> {
 
     if let Some(path_str) = table.get("path").and_then(|v| v.as_str()) {
         let core_path = PathBuf::from(path_str);
-        // Expect the path to end in `crates/framework/core`. Strip
-        // those segments to recover the workspace root.
+        // Strip `crates/runtime/core` (3 ancestors up) to recover
+        // the workspace root. `is_framework_root` is the
+        // authoritative check — if the strip lands somewhere that
+        // doesn't look like the framework workspace, fall through.
         let trimmed = core_path
             .ancestors()
             .nth(3)

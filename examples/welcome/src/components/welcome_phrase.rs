@@ -39,7 +39,7 @@ pub fn welcome_phrase(props: &WelcomePhraseProps) -> Primitive {
     let headline = headline_sheet();
     ui! {
         View(style = wrapper) {
-            Text(style = headline) { "Welcome to Idealyst 123" }.bind(refs.welcome_text)
+            Text(style = headline) { "Welcome to Idealyst" }.bind(refs.welcome_text)
         }.bind(refs.welcome)
     }
 }

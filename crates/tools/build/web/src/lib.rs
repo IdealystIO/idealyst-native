@@ -130,14 +130,14 @@ pub fn generate_wrapper(
     // output to use the original lib name by setting `[lib].name`
     // on the wrapper to `manifest.lib_name`, which wasm-pack
     // prefers over the package name when present.
-    let fcore_dep = source.dep("crates/framework/core", &[]);
+    let fcore_dep = source.dep("crates/runtime/core", &[]);
     let bweb_dep = source.dep("crates/backend/web", &[]);
     // `dev-client` is only needed in runtime-server mode. Declared as an
     // optional dep so plain wasm builds don't drag the `WireBackend`
     // replay engine into their bundle. We strip the outer braces from
     // `source.dep` so we can splice in `optional = true` alongside the
     // git/path fields.
-    let dev_client_raw = source.dep("crates/framework/dev-client", &[]);
+    let dev_client_raw = source.dep("crates/dev/client", &[]);
     let dev_client_inner = dev_client_raw
         .trim()
         .trim_start_matches('{')

@@ -467,7 +467,7 @@ pub fn generate_wrapper(
         .with_context(|| format!("create {}", wrapper_dir.display()))?;
 
     let wrapper_name = format!("{}-ios-wrapper", manifest.name);
-    let fcore_dep = source.dep("crates/framework/core", &[]);
+    let fcore_dep = source.dep("crates/runtime/core", &[]);
     let bios_dep = source.dep("crates/backend/ios/mobile", &[]);
 
     let cargo_toml = format!(

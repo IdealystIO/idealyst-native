@@ -161,15 +161,20 @@ fn generate_wrapper(
     // crate (chrome painter). Both come from the framework source so
     // workspace + git installs work identically.
     let (form_crate, form_subpath, form_ident) = match opts.form {
-        FormFactor::Phone => ("variant-phone", "crates/native/phone", "variant_phone"),
-        FormFactor::Tablet => ("variant-tablet", "crates/native/tablet", "variant_tablet"),
-        FormFactor::Tv => ("variant-tv", "crates/native/tv", "variant_tv"),
+        FormFactor::Phone => ("variant-phone", "crates/gpu-backend/variant/phone", "variant_phone"),
+        FormFactor::Tablet => ("variant-tablet", "crates/gpu-backend/variant/tablet", "variant_tablet"),
+        FormFactor::Tv => ("variant-tv", "crates/gpu-backend/variant/tv", "variant_tv"),
     };
     let (skin_crate, skin_subpath, skin_ident, skin_type) = match opts.skin {
-        PainterChoice::Ios => ("ios-sim", "crates/skin/ios-sim", "ios_sim", "IosSim"),
+        PainterChoice::Ios => (
+            "ios-sim",
+            "crates/gpu-backend/painter/ios-sim",
+            "ios_sim",
+            "IosSim",
+        ),
         PainterChoice::Android => (
             "android-sim",
-            "crates/skin/android-sim",
+            "crates/gpu-backend/painter/android-sim",
             "android_sim",
             "AndroidSim",
         ),

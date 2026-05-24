@@ -102,8 +102,8 @@ fn generate_wrapper(
         .with_context(|| format!("create {}", wrapper_dir.display()))?;
 
     let bin_name = binary_name(&manifest.name, opts.mode);
-    let host_dep = opts.source.dep("crates/host/terminal", &[]);
-    let fcore_dep = opts.source.dep("crates/framework/core", &[]);
+    let host_dep = opts.source.dep("crates/gpu-backend/host/terminal", &[]);
+    let fcore_dep = opts.source.dep("crates/runtime/core", &[]);
     let bundle_id = manifest
         .app
         .bundle_id

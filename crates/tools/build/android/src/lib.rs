@@ -310,7 +310,7 @@ fn generate_wrapper(
         BuildMode::Local => format!("{}-android-wrapper", manifest.name),
         BuildMode::RuntimeServer => format!("{}-android-runtime-server-wrapper", manifest.name),
     };
-    let fcore_dep = source.dep("crates/framework/core", &[]);
+    let fcore_dep = source.dep("crates/runtime/core", &[]);
     let bandroid_local_dep = source.dep("crates/backend/android/mobile", &[]);
     let bandroid_aas_dep = source.dep("crates/backend/android/mobile", &["runtime-server"]);
 
