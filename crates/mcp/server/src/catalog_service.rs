@@ -1546,3 +1546,69 @@ impl ServerHandler for CatalogService {
     }
 
 }
+
+#[cfg(test)]
+mod tests {
+    //! Tools-level regression: a `#[component]` linked into this
+    //! test binary must appear in the `list_components` tool's
+    //! response.
+    //!
+    //! Pre-fix the sidecar wrapper omitted `runtime-core/dev`, so
+    //! `#[component]` macro emissions were stubbed out and the
+    //! linked inventory was empty even though the user's source had
+    //! components in it. `idealyst mcp` returned `[]` in runtime-
+    //! server mode. This test wouldn't catch that exact wrapper-
+    //! shape bug (the wrapper-shape regression in
+    //! `build-runtime-server::regression_tests` does), but it locks
+    //! down the OTHER half of the contract: given the dev feature
+    //! is on, the catalog → tool surface really does carry the
+    //! component through.
+
+    use super::*;
+    use runtime_core::Primitive;
+    use runtime_macros::component;
+
+    /// A component whose name we look for in the tool's JSON
+    /// response. The body returns an empty view; we never actually
+    /// mount it — the inventory entry is produced at macro
+    /// expansion time and registered at link.
+    #[allow(dead_code)]
+    #[component]
+    pub fn list_components_regression_canary() -> Primitive {
+        ::runtime_core::view(::std::vec::Vec::new())
+    }
+
+    #[tokio::test]
+    async fn list_components_returns_in_process_catalog_components() {
+        let svc = CatalogService::new();
+
+        let result = svc
+            .list_components()
+            .await
+            .expect("list_components tool call succeeds");
+
+        // `CallToolResult::success(vec![Content::text(json)])` —
+        // the JSON-pretty-printed component array is the first
+        // content block's text. Pull it out, parse, and verify
+        // our canary's there.
+        let payload = result
+            .content
+            .iter()
+            .find_map(|c| c.as_text().map(|t| t.text.clone()))
+            .expect("tool result has a text content block");
+
+        let entries: serde_json::Value =
+            serde_json::from_str(&payload).expect("response is valid JSON");
+        let arr = entries.as_array().expect("response is a JSON array");
+
+        let names: Vec<&str> = arr
+            .iter()
+            .filter_map(|e| e["name"].as_str())
+            .collect();
+        assert!(
+            names.contains(&"list_components_regression_canary"),
+            "expected canary component in list_components output; got {:?}",
+            names,
+        );
+    }
+}

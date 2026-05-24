@@ -11,3 +11,7 @@ anyhow = "1"
 # so we don't reimplement them. The Manifest schema is the shared
 # contract between iOS/runtime-server/Android builders.
 build-ios = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+toml = "0.8"

@@ -1439,36 +1439,6 @@ impl Backend for WireRecordingBackend {
         });
     }
 
-    fn create_video(
-        &mut self,
-        src: &str,
-        autoplay: bool,
-        controls: bool,
-        loop_playback: bool,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
-        let mut state = self.inner.borrow_mut();
-        let id = Self::mint_node(&mut state);
-        let wire_a11y = state.wire_a11y(a11y);
-        state.emit(Command::CreateVideo {
-            id,
-            src: src.to_string(),
-            autoplay,
-            controls,
-            loop_playback,
-            a11y: wire_a11y,
-        });
-        id
-    }
-
-    fn update_video_src(&mut self, node: &Self::Node, src: &str) {
-        let mut state = self.inner.borrow_mut();
-        state.emit(Command::UpdateVideoSrc {
-            node: *node,
-            src: src.to_string(),
-        });
-    }
-
     fn create_activity_indicator(
         &mut self,
         size: primitives::activity_indicator::ActivityIndicatorSize,

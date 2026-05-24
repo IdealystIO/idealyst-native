@@ -9,3 +9,6 @@ description = "iOS build orchestration: generates an ephemeral staticlib wrapper
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+
+[dev-dependencies]
+tempfile = "3"

@@ -349,3 +349,113 @@ fn cargo_build(wrapper_dir: &Path, release: bool) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod regression_tests {
+    //! Wrapper-shape regression for `build-sim`.
+    //!
+    //! The sim wrapper is a thin shim that picks a form-factor
+    //! crate (`variant-phone` / `tablet` / `tv`) and a skin crate
+    //! (`ios-sim` / `android-sim`). It doesn't carry `runtime-core`
+    //! directly — the form-factor crate pulls it in transitively.
+    //!
+    //! What the wrapper IS responsible for: forwarding the
+    //! `runtime-server` feature onto the form-factor crate in
+    //! runtime-server mode. The variant crate (`variant-phone`,
+    //! etc.) gates its `run_runtime_server` entry point on that
+    //! feature; if the wrapper drops it, the generated main.rs
+    //! references a function that doesn't exist at link time, and
+    //! `idealyst run sim --runtime-server` fails to compile. The
+    //! reverse is just as bad: turning the feature on in local
+    //! mode pulls in the WebSocket / WireBackend transport stack
+    //! for no reason.
+
+    use super::*;
+    use build_ios::{AppMetadata, Manifest, SplashConfig};
+
+    fn fake_manifest() -> Manifest {
+        Manifest {
+            name: "demo".to_string(),
+            lib_name: "demo".to_string(),
+            app: AppMetadata {
+                name: "Demo".to_string(),
+                bundle_id: Some("ai.example.demo".to_string()),
+                version: "0.0.1".to_string(),
+                splash: SplashConfig {
+                    background: "#000000".to_string(),
+                    title: "Demo".to_string(),
+                    title_color: "#ffffff".to_string(),
+                    duration_ms: 0,
+                },
+                targets: Vec::new(),
+            },
+        }
+    }
+
+    fn run_generator(mode: BuildMode) -> (std::path::PathBuf, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project_dir = tmp.path().join("project");
+        let wrapper_dir = tmp.path().join("wrapper");
+        let cargo_target = tmp.path().join("target");
+        let workspace_root = tmp.path().join("workspace");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::create_dir_all(&workspace_root).unwrap();
+        let manifest = fake_manifest();
+        let opts = BuildOptions {
+            release: false,
+            form: FormFactor::Phone,
+            skin: PainterChoice::Ios,
+            mode,
+            source: FrameworkSource::Workspace { root: workspace_root },
+        };
+        generate_wrapper(&wrapper_dir, &cargo_target, &project_dir, &manifest, &opts)
+            .expect("generate wrapper");
+        (wrapper_dir, tmp)
+    }
+
+    fn variant_phone_features(toml_text: &str) -> Vec<String> {
+        let parsed: toml::Value = toml::from_str(toml_text).expect("valid TOML");
+        let phone = parsed
+            .get("dependencies")
+            .and_then(|d| d.get("variant-phone"))
+            .expect("sim wrapper deps variant-phone");
+        // Two shapes: `{ path = "...", features = [...] }` or
+        // `{ path = "..." }`. The Workspace-mode `dep()` always
+        // produces inline tables, so a table lookup is safe.
+        phone
+            .get("features")
+            .and_then(|f| f.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn local_mode_does_not_enable_runtime_server_feature() {
+        let (wrapper_dir, _tmp) = run_generator(BuildMode::Local);
+        let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap();
+        let feats = variant_phone_features(&cargo);
+        assert!(
+            !feats.iter().any(|f| f == "runtime-server"),
+            "local sim wrapper must NOT enable variant-phone's `runtime-server` \
+             feature; got {:?}",
+            feats,
+        );
+    }
+
+    #[test]
+    fn runtime_server_mode_enables_runtime_server_feature() {
+        let (wrapper_dir, _tmp) = run_generator(BuildMode::RuntimeServer);
+        let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap();
+        let feats = variant_phone_features(&cargo);
+        assert!(
+            feats.iter().any(|f| f == "runtime-server"),
+            "runtime-server sim wrapper must enable variant-phone's `runtime-server` \
+             feature so `run_runtime_server` is in scope. Got {:?}",
+            feats,
+        );
+    }
+}

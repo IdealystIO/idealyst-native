@@ -115,17 +115,15 @@ mod mac {
             // `windowWillClose:` into `WindowEvent::CloseRequested`
             // — is no longer attached. Without an explicit close
             // handler here, clicking the red traffic-light just
-            // hid the window and left the process running
-            // (audio threads, mixer, the lot). Forwarding to
-            // winit's delegate is the "proper" fix but would
+            // hid the window and left the process running.
+            // Forwarding to winit's delegate is the "proper" fix but would
             // require holding its `Retained` and `super`-style
             // chaining; for the single-window simulator this
             // direct hook is simpler and correct.
             #[method(windowWillClose:)]
             unsafe fn window_will_close(&self, _notification: &objc2_foundation::NSNotification) {
-                // OS reclaims every thread (cpal audio, decode
-                // threads, owner park) so no manual cleanup is
-                // strictly required. Multi-window will need to
+                // OS reclaims every thread (owner park) so no
+                // manual cleanup is strictly required. Multi-window will need to
                 // skip the exit and instead post a Rust-side
                 // notification that decrements an active-window
                 // counter, calling exit only on the last close.
@@ -589,15 +587,14 @@ impl App {
         );
         surface_tex.present();
 
-        // If any tween / video / drawer needs another frame,
-        // route the wake-up through the event-loop proxy
+        // If any tween / drawer needs another frame, route the
+        // wake-up through the event-loop proxy
         // (`render_wgpu::request_redraw()` → `AppEvent::Redraw`
         // → `user_event` → `window.request_redraw`). Calling
         // `gpu.window.request_redraw()` directly from inside
         // the `RedrawRequested` handler is silently coalesced
-        // on macOS — pure video-playback (no other animator
-        // signal) would break the chain and stall at ~2 fps
-        // even though decoding kept up at 30 fps.
+        // on macOS — a slow animation source would break the
+        // chain and stall the redraw loop.
         if self.host.tick() {
             render_wgpu::request_redraw();
         }
@@ -825,19 +822,12 @@ impl ApplicationHandler<AppEvent> for App {
         match event {
             WindowEvent::CloseRequested => {
                 eprintln!("[close] CloseRequested fired — shutting down");
-                // Tear down per-window resources we know about
-                // and the user can't (audio sources registered
-                // by Video nodes, decoder threads). Scoped per-
-                // host so multi-window setups don't cross-cancel.
-                self.host.shutdown_videos();
                 event_loop.exit();
                 // Force the process to exit. On macOS, NSApp
                 // does NOT terminate when the last window
                 // closes — `event_loop.exit()` returns control
                 // from `run_app`, but reactive-scope statics
-                // and the global audio subsystem's owner thread
-                // keep the process alive (cpal's stream keeps
-                // draining whatever the mixer still holds).
+                // can keep the process alive.
                 // When the run loop is single-window today, the
                 // user expectation is "X button kills the app",
                 // matching how virtually every macOS preview /

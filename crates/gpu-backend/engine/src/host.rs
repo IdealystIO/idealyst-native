@@ -15,7 +15,7 @@
 //!
 //! Single-threaded. Same as the framework itself — `Signal`s,
 //! `Effect`s, and the `Rc`-based node tree all live on the host
-//! thread. Cross-thread input (background networking, audio) would
+//! thread. Cross-thread input (background networking) would
 //! need to post into this thread before calling `pointer_*` /
 //! `key`.
 
@@ -282,14 +282,6 @@ enum ActivePress {
     /// Slider: press fires the initial value, every move updates,
     /// release just ends the drag.
     SliderDrag { node: WgpuNode },
-    /// Video scrubber: press → continuous seek on every pointer
-    /// move while the gesture is alive. Audio is muted for the
-    /// duration so the user doesn't hear sliced audio under rapid
-    /// re-seeks; we restore the prior muted state on release.
-    VideoScrub {
-        node: WgpuNode,
-        prior_muted: bool,
-    },
 }
 
 enum ReleaseAction {
@@ -553,15 +545,6 @@ impl Host {
     pub fn text_store(&self) -> &Rc<RefCell<TextStore>> { &self.text }
     pub fn font_system(&self) -> &Rc<RefCell<FontSystem>> { &self.font_system }
 
-    /// Tear down every active video decoder owned by this host's
-    /// tree. The platform shell calls this on window-close so
-    /// audio stops immediately instead of lingering until the
-    /// `Rc` chain to each `VideoDecoder` finishes unwinding. Per
-    /// host: closing one window leaves siblings (and their
-    /// running videos) alone.
-    pub fn shutdown_videos(&self) {
-        crate::backend_impl::shutdown_all_videos(&self.backend);
-    }
     /// The active skin. Renderer borrows this every frame to
     /// paint widget chrome + the on-screen keyboard.
     pub fn skin(&self) -> &Rc<dyn Painter> { &self.skin }
@@ -637,18 +620,6 @@ impl Host {
         // Any visible spinner needs the next frame to advance its
         // rotation phase.
         let spinner_alive = self.backend.borrow().active_spinner_count > 0;
-        // A Video node whose decoder is still playing needs
-        // continual redraws so the renderer's pre-pass can
-        // upload the next decoded frame as it arrives. We can't
-        // call `request_redraw` from the decoder thread (the
-        // hook is thread-local to the main thread); instead the
-        // host polls here each tick.
-        let any_video = crate::backend_impl::any_video_playing(&self.backend);
-        // Keep the redraw loop alive while a Video's controls bar
-        // is in its post-hover fade-out window. Otherwise the bar
-        // would freeze at "just hovered" and never reach alpha=0.
-        let any_video_controls =
-            crate::backend_impl::any_video_controls_alive(&self.backend);
         any_anim
             || any_momentum
             || kb_alive
@@ -657,8 +628,6 @@ impl Host {
             || press_alive
             || any_nav
             || any_drawer
-            || any_video
-            || any_video_controls
     }
 
     /// Re-shape the status-bar clock glyph against the current
@@ -904,12 +873,6 @@ impl Host {
 
     pub fn pointer_move(&mut self, ev: PointerEvent) {
         self.pointer = ev.position;
-        // Video controls hover-fade: every move refreshes the
-        // visibility timer for whatever Video the pointer is
-        // over. Cheap walk; bails on hit-test rejection.
-        if crate::backend_impl::update_video_hover(&self.backend, ev.position) {
-            crate::scheduler::request_redraw();
-        }
         if self.dispatch_touch_moved(&ev) {
             return;
         }
@@ -918,11 +881,6 @@ impl Host {
             ActivePress::SliderDrag { node } => {
                 self.update_slider_drag(&node);
                 self.active_press = Some(ActivePress::SliderDrag { node });
-            }
-            ActivePress::VideoScrub { node, prior_muted } => {
-                crate::backend_impl::scrub_video(&node, ev.position);
-                crate::scheduler::request_redraw();
-                self.active_press = Some(ActivePress::VideoScrub { node, prior_muted });
             }
             ActivePress::Pan {
                 scrollview,
@@ -1039,24 +997,6 @@ impl Host {
         // this short-circuit becomes the only branch.
         if self.dispatch_touch_began(&ev) {
             return;
-        }
-
-        // Video controls dispatch — runs before the widget-action
-        // path so a press on the scrubber/play-button doesn't get
-        // captured as a generic Pressable. Resolves the press,
-        // fires the action (toggle play, or capture a scrub drag),
-        // and stops here.
-        match crate::backend_impl::dispatch_video_control_press(&self.backend, ev.position) {
-            crate::backend_impl::VideoControlPress::Toggled => {
-                crate::scheduler::request_redraw();
-                return;
-            }
-            crate::backend_impl::VideoControlPress::ScrubStart { node, prior_muted } => {
-                self.active_press = Some(ActivePress::VideoScrub { node, prior_muted });
-                crate::scheduler::request_redraw();
-                return;
-            }
-            crate::backend_impl::VideoControlPress::Miss => {}
         }
 
         // On-screen keyboard intercept. While an input is
@@ -1285,16 +1225,6 @@ impl Host {
                 // value. Treat as not-a-dismiss — user was
                 // interacting with a control.
             }
-            ActivePress::VideoScrub { node, prior_muted } => {
-                // Final position already seeked in the last
-                // pointer_move; here we just restore the audio
-                // muted flag we captured at press-down. The
-                // brief mute keeps rapid re-seek audio out of
-                // the user's ears; on release the next decoded
-                // packets reach the ring naturally.
-                crate::backend_impl::end_scrub(&node, prior_muted);
-                crate::scheduler::request_redraw();
-            }
             ActivePress::Pan {
                 scrollview,
                 last_time,
@@ -1482,11 +1412,6 @@ impl Host {
         match self.active_press.take() {
             Some(ActivePress::Click { node, .. }) => {
                 set_state(&self.backend, &node, StateBits::PRESSED, false);
-            }
-            Some(ActivePress::VideoScrub { node, prior_muted }) => {
-                // Restore audio so a cancelled scrub doesn't
-                // leave the clip muted indefinitely.
-                crate::backend_impl::end_scrub(&node, prior_muted);
             }
             _ => {}
         }

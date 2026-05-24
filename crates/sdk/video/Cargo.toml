@@ -1,0 +1,52 @@
+[package]
+name = "video"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Third-party `Video` SDK — one crate, cfg-gated per-backend impl
+# modules. Mirrors the `webview` SDK's single-crate layout (see
+# `crates/sdk/webview/Cargo.toml` for the same rationale).
+#
+# # Backend coverage
+#
+# - Web: `<video>` element.
+# - iOS: `AVPlayerLayer` over a `UIView` host.
+# - Android: `android.widget.VideoView`.
+# - Other targets (wgpu desktop, terminal, etc.): the framework's
+#   `External` placeholder. Apps that want video on those targets ship
+#   their own SDK module — the `register_external` surface is open.
+
+[dependencies]
+runtime-core = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+web-sys = { version = "0.3", features = [
+    "Document",
+    "Element",
+    "HtmlMediaElement",
+    "HtmlVideoElement",
+    "Node",
+] }
+wasm-bindgen = "0.2"
+
+[target.'cfg(target_os = "android")'.dependencies]
+backend-android-mobile = { workspace = true }
+backend-android-core = { workspace = true }
+jni = "0.21"
+
+[target.'cfg(target_os = "ios")'.dependencies]
+backend-ios-mobile = { workspace = true }
+block2 = "0.5"
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = [
+    "NSString",
+    "NSURL",
+    "NSNotification",
+    "NSGeometry",
+] }
+objc2-ui-kit = { version = "0.2", features = [
+    "UIView",
+    "UIResponder",
+] }

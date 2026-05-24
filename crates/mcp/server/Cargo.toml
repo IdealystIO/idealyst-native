@@ -38,3 +38,14 @@ mdns-sd = { version = "0.10", default-features = false }
 # stderr logging (rmcp examples use it; not strictly required).
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+# `runtime-core` + `runtime-macros` provide `#[component]` for the
+# `catalog_service::tests` module, which mounts a few synthetic
+# components and asserts they round-trip through the
+# `list_components` tool's in-process catalog fallback path. The
+# `mcp` feature is what makes `#[component]` emit `inventory::submit!`
+# entries — without it, the test binary's catalog is empty even
+# though the components compile.
+runtime-core = { workspace = true, features = ["mcp"] }
+runtime-macros = { workspace = true, features = ["mcp"] }

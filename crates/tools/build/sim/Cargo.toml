@@ -11,3 +11,7 @@ anyhow = "1"
 # resolver. Same crates that build-ios / build-android / build-runtime-server
 # depend on for the same reason.
 build-ios = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+toml = "0.8"

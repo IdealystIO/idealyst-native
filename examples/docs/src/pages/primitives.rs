@@ -116,7 +116,7 @@ docs! {
 
     section(heading = "Content") {
         p("Primitives that render media — text runs, bitmaps, vector icons, \
-           video, and embedded web content."),
+           and embedded web content."),
     },
 
     section(heading = "Text") {
@@ -163,11 +163,21 @@ docs! {
     },
 
     section(heading = "Video") {
-        p("Video playback. URL-only — backends use their native players, so \
-           codec support is whatever the platform handles."),
+        p("Video playback lives in the third-party ",
+          code("video"), " SDK crate, not the closed-enum primitive set. \
+          ", code("AVPlayerLayer"), " on iOS, ",
+          code("android.widget.VideoView"), " on Android, ",
+          code("<video>"), " on web. Add the dependency and call ",
+          code("video::register(&mut backend)"), " once at app boot."),
         code(rust, r##"
+            use video::prelude::*;
             ui! {
-                Video(src = "https://...", autoplay = true, controls = true, loop_playback = false)
+                { Video(VideoProps {
+                    src: src("https://example.com/clip.mp4"),
+                    autoplay: true,
+                    controls: true,
+                    ..Default::default()
+                }) }
             }
         "##),
     },

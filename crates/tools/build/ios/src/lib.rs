@@ -643,3 +643,88 @@ fn cargo_build(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod regression_tests {
+    //! Wrapper-shape regression for `build-ios`.
+    //!
+    //! Unlike macOS, iOS doesn't expose a wrapper-local `dev`
+    //! feature — the launcher passes `--features runtime-core/dev`
+    //! straight through to cargo. For that to resolve, the wrapper
+    //! must declare `runtime-core` as a direct dependency.
+    //! Otherwise cargo errors "unknown feature for unknown package
+    //! runtime-core" the moment the launcher fires its build, and
+    //! the MCP catalog never sees the components linked into the
+    //! resulting staticlib.
+
+    use super::*;
+    use crate::source::FrameworkSource;
+
+    fn fake_manifest() -> Manifest {
+        Manifest {
+            name: "demo".to_string(),
+            lib_name: "demo".to_string(),
+            app: AppMetadata {
+                name: "Demo".to_string(),
+                bundle_id: Some("ai.example.demo".to_string()),
+                version: "0.0.1".to_string(),
+                splash: SplashConfig {
+                    background: "#000000".to_string(),
+                    title: "Demo".to_string(),
+                    title_color: "#ffffff".to_string(),
+                    duration_ms: 0,
+                },
+                targets: Vec::new(),
+            },
+        }
+    }
+
+    fn run_generator() -> (std::path::PathBuf, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project_dir = tmp.path().join("project");
+        let wrapper_dir = tmp.path().join("wrapper");
+        let workspace_root = tmp.path().join("workspace");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::create_dir_all(&workspace_root).unwrap();
+        let manifest = fake_manifest();
+        let source = FrameworkSource::Workspace { root: workspace_root };
+        generate_wrapper(&wrapper_dir, &project_dir, &source, &manifest)
+            .expect("generate wrapper");
+        (wrapper_dir, tmp)
+    }
+
+    #[test]
+    fn wrapper_has_runtime_core_dep_so_launcher_can_pass_dev_feature() {
+        let (wrapper_dir, _tmp) = run_generator();
+        let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml"))
+            .expect("read Cargo.toml");
+        let parsed: toml::Value = toml::from_str(&cargo).expect("valid TOML");
+        assert!(
+            parsed
+                .get("dependencies")
+                .and_then(|d| d.get("runtime-core"))
+                .is_some(),
+            "iOS wrapper missing `runtime-core` dep — launcher's \
+             `--features runtime-core/dev` will fail at cargo time and \
+             MCP catalog will be empty. Got:\n{cargo}",
+        );
+    }
+
+    #[test]
+    fn wrapper_path_deps_user_crate() {
+        let (wrapper_dir, _tmp) = run_generator();
+        let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml"))
+            .expect("read Cargo.toml");
+        let parsed: toml::Value = toml::from_str(&cargo).expect("valid TOML");
+        let user_dep = parsed
+            .get("dependencies")
+            .and_then(|d| d.get("demo"))
+            .expect("wrapper depends on user crate `demo`");
+        assert!(
+            user_dep.get("path").is_some(),
+            "iOS wrapper's user-crate dep should be a path dep so the local \
+             code is what links into the staticlib; got {:?}",
+            user_dep,
+        );
+    }
+}

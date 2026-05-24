@@ -1,0 +1,27 @@
+[package]
+name = "drawer-navigator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# First-party `Drawer` navigator SDK — registers a NavigatorHandler
+# that drives a slide-in side panel + body region:
+#   - Web: scrim + animated sidebar (with optional pinned sidebar above
+#     a breakpoint).
+#   - iOS: custom UIView-based drawer overlay (no native control).
+#   - Android: DrawerLayout + per-fragment FragmentManager.
+#
+# Single-crate cfg-gated layout. App bootstrap:
+# `drawer_navigator::register(&mut backend)`.
+
+[dependencies]
+runtime-core = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+
+[target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
+backend-android-mobile = { workspace = true }
+
+[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
+backend-ios-mobile = { workspace = true }

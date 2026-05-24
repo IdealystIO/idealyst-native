@@ -507,3 +507,91 @@ fn sync_pkg_dir(src: &Path, dst: &Path) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod regression_tests {
+    //! Wrapper-shape regression for `build-web`.
+    //!
+    //! The web wrapper has both a `runtime-core` direct dep (so the
+    //! launcher's `--features runtime-core/dev` resolves) AND an
+    //! `aas` feature that flips on `backend-web/runtime-server`
+    //! (the WebSocket / WireBackend boot path). Dropping either
+    //! breaks dev mode silently:
+    //!  - no runtime-core dep → `--features runtime-core/dev` errors
+    //!    at cargo time, MCP catalog ends up empty.
+    //!  - no `aas` feature on the wrapper → `idealyst dev --web
+    //!    --runtime-server` builds a wasm bundle that mounts
+    //!    `app()` locally in the browser instead of connecting to
+    //!    the dev-host, and saves visibly do nothing.
+
+    use super::*;
+    use build_ios::{AppMetadata, Manifest, SplashConfig};
+
+    fn fake_manifest() -> Manifest {
+        Manifest {
+            name: "demo".to_string(),
+            lib_name: "demo".to_string(),
+            app: AppMetadata {
+                name: "Demo".to_string(),
+                bundle_id: Some("ai.example.demo".to_string()),
+                version: "0.0.1".to_string(),
+                splash: SplashConfig {
+                    background: "#000000".to_string(),
+                    title: "Demo".to_string(),
+                    title_color: "#ffffff".to_string(),
+                    duration_ms: 0,
+                },
+                targets: Vec::new(),
+            },
+        }
+    }
+
+    fn run_generator() -> (std::path::PathBuf, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project_dir = tmp.path().join("project");
+        let wrapper_dir = tmp.path().join("wrapper");
+        let workspace_root = tmp.path().join("workspace");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::create_dir_all(&workspace_root).unwrap();
+        let manifest = fake_manifest();
+        let source = FrameworkSource::Workspace { root: workspace_root };
+        generate_wrapper(&wrapper_dir, &project_dir, &source, &manifest, &[])
+            .expect("generate wrapper");
+        (wrapper_dir, tmp)
+    }
+
+    #[test]
+    fn wrapper_has_runtime_core_dep() {
+        let (wrapper_dir, _tmp) = run_generator();
+        let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap();
+        let parsed: toml::Value = toml::from_str(&cargo).expect("valid TOML");
+        assert!(
+            parsed
+                .get("dependencies")
+                .and_then(|d| d.get("runtime-core"))
+                .is_some(),
+            "web wrapper missing runtime-core dep — launcher's \
+             `--features runtime-core/dev` will fail. Got:\n{cargo}",
+        );
+    }
+
+    #[test]
+    fn wrapper_aas_feature_pulls_backend_web_runtime_server() {
+        let (wrapper_dir, _tmp) = run_generator();
+        let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap();
+        let parsed: toml::Value = toml::from_str(&cargo).expect("valid TOML");
+        let aas = parsed
+            .get("features")
+            .and_then(|f| f.get("aas"))
+            .and_then(|a| a.as_array())
+            .expect("web wrapper declares the `aas` feature");
+        let entries: Vec<&str> = aas.iter().filter_map(|v| v.as_str()).collect();
+        assert!(
+            entries.iter().any(|e| *e == "backend-web/runtime-server"),
+            "web wrapper `aas` feature must enable backend-web/runtime-server; \
+             without it, `idealyst dev --web --runtime-server` produces a \
+             local-mount bundle that won't connect to the dev-host. Got {:?}",
+            entries,
+        );
+    }
+}

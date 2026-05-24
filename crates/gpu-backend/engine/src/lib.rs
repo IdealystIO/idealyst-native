@@ -39,20 +39,6 @@ pub mod nav_anim;
 mod node;
 pub mod pipeline;
 mod renderer;
-// Audio + native video pipelines depend on `cpal` / `openh264` C++
-// builds that don't compile to wasm32 — see `Cargo.toml` for the
-// target-gating. On the web target the `video` module resolves to
-// `video_wasm.rs` (no-op `VideoDecoder`) instead of `video.rs`,
-// and the audio module isn't compiled at all (nothing references
-// it from the wasm-side `VideoDecoder` stub).
-#[cfg(not(target_arch = "wasm32"))]
-mod video;
-#[cfg(target_arch = "wasm32")]
-#[path = "video_wasm.rs"]
-mod video;
-#[cfg(not(target_arch = "wasm32"))]
-mod audio;
-mod dom_overlay;
 mod scheduler;
 mod painter;
 mod style_convert;
@@ -73,7 +59,6 @@ pub use backend_impl::{
     graphics_with_drawer, install_global_self, register_graphics_drawer, set_animated_color,
     set_animated_f32, WgpuBackend,
 };
-pub use dom_overlay::{DomOverlay, DomOverlayKey, DomVideoSpec};
 pub use host::Host;
 pub use nav_anim::{
     clear_transition_override, default_transition, with_transition, InstantTransition,

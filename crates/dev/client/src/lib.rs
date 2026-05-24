@@ -470,25 +470,6 @@ where
                 let node = self.backend.borrow_mut().create_scroll_view(horizontal, &a11y);
                 self.nodes.insert(id, node);
             }
-            Command::CreateVideo {
-                id,
-                src,
-                autoplay,
-                controls,
-                loop_playback,
-                a11y,
-            } => {
-                if self.nodes.contains_key(&id) { return Ok(()); }
-                let a11y = self.a11y_props(a11y);
-                let node = self.backend.borrow_mut().create_video(
-                    &src,
-                    autoplay,
-                    controls,
-                    loop_playback,
-                    &a11y,
-                );
-                self.nodes.insert(id, node);
-            }
             Command::CreateActivityIndicator { id, size, color, a11y } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
                 let size = convert::wire_activity_size(size);
@@ -736,10 +717,6 @@ where
             Command::UpdateSliderValue { node, value } => {
                 let n = self.nodes.get(&node).ok_or(ReplayError::UnknownNode(node))?.clone();
                 self.backend.borrow_mut().update_slider_value(&n, value);
-            }
-            Command::UpdateVideoSrc { node, src } => {
-                let n = self.nodes.get(&node).ok_or(ReplayError::UnknownNode(node))?.clone();
-                self.backend.borrow_mut().update_video_src(&n, &src);
             }
             Command::SetDisabled { node, disabled } => {
                 let n = self.nodes.get(&node).ok_or(ReplayError::UnknownNode(node))?.clone();

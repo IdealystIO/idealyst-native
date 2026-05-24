@@ -48,7 +48,6 @@ pub(super) fn debug_kind_of(node: &Primitive) -> debug::PrimitiveKind {
         Primitive::Toggle { .. } => PrimitiveKind::Toggle,
         Primitive::ScrollView { .. } => PrimitiveKind::ScrollView,
         Primitive::Slider { .. } => PrimitiveKind::Slider,
-        Primitive::Video { .. } => PrimitiveKind::Video,
         Primitive::ActivityIndicator { .. } => PrimitiveKind::ActivityIndicator,
         Primitive::Virtualizer { .. } => PrimitiveKind::Virtualizer,
         Primitive::Graphics { .. } => PrimitiveKind::Graphics,

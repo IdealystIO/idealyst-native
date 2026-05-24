@@ -13,7 +13,7 @@ in app code.
 
 - **`Primitive` enum**. The closed set of "things the render walker knows
   how to walk." `View`, `Text`, `Button`, `Image`, `TextInput`, `ScrollView`,
-  `Slider`, `Toggle`, `Icon`, `Video`, `ActivityIndicator`, `Virtualizer`,
+  `Slider`, `Toggle`, `Icon`, `ActivityIndicator`, `Virtualizer`,
   `Graphics`, `Link`, `When`, `Portal`, `Presence`, `External`, navigators.
   Adding a new primitive means a new variant plus the `Backend` hooks that
   go with it.

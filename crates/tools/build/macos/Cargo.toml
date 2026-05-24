@@ -21,3 +21,7 @@ anyhow = "1"
 # for the same reason `build-sim` does — same wrapper layout
 # conventions, same workspace-vs-git source resolution.
 build-ios = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+toml = "0.8"

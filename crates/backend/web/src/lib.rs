@@ -1805,23 +1805,6 @@ impl Backend for WebBackend {
         primitives::slider::update_value(node, value)
     }
 
-    fn create_video(
-        &mut self,
-        src: &str,
-        autoplay: bool,
-        controls: bool,
-        loop_playback: bool,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
-        let node = primitives::video::create(self, src, autoplay, controls, loop_playback);
-        a11y::apply(&node, a11y, None);
-        node
-    }
-
-    fn update_video_src(&mut self, node: &Self::Node, src: &str) {
-        primitives::video::update_src(node, src)
-    }
-
     fn create_activity_indicator(
         &mut self,
         size: runtime_core::primitives::activity_indicator::ActivityIndicatorSize,
@@ -2359,13 +2342,6 @@ impl Backend for WebBackend {
         node: &Self::Node,
     ) -> runtime_core::primitives::scroll_view::ScrollViewHandle {
         primitives::scroll_view::make_handle(node)
-    }
-
-    fn make_video_handle(
-        &self,
-        node: &Self::Node,
-    ) -> runtime_core::primitives::video::VideoHandle {
-        primitives::video::make_handle(node)
     }
 
     fn finish(&mut self, root: Self::Node) {

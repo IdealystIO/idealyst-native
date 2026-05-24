@@ -1,0 +1,28 @@
+[package]
+name = "stack-navigator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# First-party `Stack` navigator SDK — registers a NavigatorHandler that
+# drives a native push/pop navigation stack:
+#   - Web: inline subtree swap with CSS transitions.
+#   - iOS: UINavigationController.
+#   - Android: FragmentManager backstack inside a RustNavigator host.
+#
+# Mirrors the single-crate cfg-gated layout of `crates/sdk/video/` and
+# `crates/sdk/webview/`. App bootstrap calls `stack_navigator::register(
+# &mut backend)` once; the registration installs the per-target handler
+# factory into the backend's NavigatorRegistry.
+
+[dependencies]
+runtime-core = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+
+[target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
+backend-android-mobile = { workspace = true }
+
+[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
+backend-ios-mobile = { workspace = true }

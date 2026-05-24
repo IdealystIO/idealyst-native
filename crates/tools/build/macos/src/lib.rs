@@ -362,3 +362,103 @@ fn cargo_build(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod regression_tests {
+    //! Wrapper-shape regressions for `build-macos`.
+    //!
+    //! macOS uses a wrapper-local `dev` feature instead of letting
+    //! the launcher pass `--features runtime-core/dev` directly —
+    //! the cargo `--features dev` invocation from
+    //! `cli/cmd/dev.rs::dev_user_features_macos` activates the
+    //! wrapper's `dev` feature, which in turn pulls in
+    //! `runtime-core/dev`. If the wrapper-side `dev` mapping is
+    //! ever dropped, `idealyst mcp` against a running macOS dev
+    //! session returns an empty catalog — same end-user symptom
+    //! the runtime-server sidecar bug had.
+    //!
+    //! These tests don't fire `cargo build`; they only run the
+    //! wrapper-generation step (sub-millisecond) and assert on the
+    //! produced Cargo.toml.
+
+    use super::*;
+    use build_ios::{AppMetadata, Manifest, SplashConfig};
+
+    fn fake_manifest() -> Manifest {
+        Manifest {
+            name: "demo".to_string(),
+            lib_name: "demo".to_string(),
+            app: AppMetadata {
+                name: "Demo".to_string(),
+                bundle_id: Some("ai.example.demo".to_string()),
+                version: "0.0.1".to_string(),
+                splash: SplashConfig {
+                    background: "#000000".to_string(),
+                    title: "Demo".to_string(),
+                    title_color: "#ffffff".to_string(),
+                    duration_ms: 0,
+                },
+                targets: Vec::new(),
+            },
+        }
+    }
+
+    fn run_generator(mode: BuildMode) -> (std::path::PathBuf, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project_dir = tmp.path().join("project");
+        let wrapper_dir = tmp.path().join("wrapper");
+        let cargo_target = tmp.path().join("target");
+        let workspace_root = tmp.path().join("workspace");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::create_dir_all(&workspace_root).unwrap();
+        let manifest = fake_manifest();
+        let opts = BuildOptions {
+            release: false,
+            mode,
+            source: FrameworkSource::Workspace { root: workspace_root },
+            user_features: Vec::new(),
+        };
+        generate_wrapper(&wrapper_dir, &cargo_target, &project_dir, &manifest, &opts)
+            .expect("generate wrapper");
+        (wrapper_dir, tmp)
+    }
+
+    fn dev_feature_pulls_runtime_core_dev(toml_text: &str) -> bool {
+        let parsed: toml::Value = toml::from_str(toml_text).expect("valid TOML");
+        let features = match parsed.get("features").and_then(|f| f.as_table()) {
+            Some(t) => t,
+            None => return false,
+        };
+        let dev = match features.get("dev").and_then(|d| d.as_array()) {
+            Some(a) => a,
+            None => return false,
+        };
+        dev.iter()
+            .filter_map(|v| v.as_str())
+            .any(|s| s == "runtime-core/dev")
+    }
+
+    #[test]
+    fn local_wrapper_dev_feature_pulls_runtime_core_dev() {
+        let (wrapper_dir, _tmp) = run_generator(BuildMode::Local);
+        let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml"))
+            .expect("read Cargo.toml");
+        assert!(
+            dev_feature_pulls_runtime_core_dev(&cargo),
+            "local macOS wrapper missing `[features] dev = [..., \"runtime-core/dev\"]`. \
+             MCP catalog will be empty in `idealyst dev --macos`. Got:\n{cargo}",
+        );
+    }
+
+    #[test]
+    fn runtime_server_wrapper_dev_feature_pulls_runtime_core_dev() {
+        let (wrapper_dir, _tmp) = run_generator(BuildMode::RuntimeServer);
+        let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml"))
+            .expect("read Cargo.toml");
+        assert!(
+            dev_feature_pulls_runtime_core_dev(&cargo),
+            "runtime-server macOS wrapper missing `[features] dev = [..., \"runtime-core/dev\"]`. \
+             MCP catalog will be empty in `idealyst dev --macos --runtime-server`. Got:\n{cargo}",
+        );
+    }
+}

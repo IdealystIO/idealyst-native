@@ -932,23 +932,6 @@ impl Backend for AndroidBackend {
         primitives::slider::update_value(node, value)
     }
 
-    fn create_video(
-        &mut self,
-        src: &str,
-        autoplay: bool,
-        controls: bool,
-        loop_playback: bool,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
-        let node = primitives::video::create(self, src, autoplay, controls, loop_playback);
-        a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::Image));
-        node
-    }
-
-    fn update_video_src(&mut self, node: &Self::Node, src: &str) {
-        primitives::video::update_src(node, src)
-    }
-
     fn create_virtualizer(
         &mut self,
         callbacks: runtime_core::VirtualizerCallbacks<Self::Node>,
@@ -974,13 +957,6 @@ impl Backend for AndroidBackend {
         let node = primitives::activity_indicator::create(self, size, color);
         a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::Spinner));
         node
-    }
-
-    fn make_video_handle(
-        &self,
-        node: &Self::Node,
-    ) -> runtime_core::primitives::video::VideoHandle {
-        primitives::video::make_handle(node)
     }
 
     fn create_navigator(

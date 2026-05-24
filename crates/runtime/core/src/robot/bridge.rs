@@ -698,7 +698,6 @@ fn parse_element_kind(s: &str) -> Option<ElementKind> {
         "Toggle" => Some(ElementKind::Toggle),
         "ScrollView" => Some(ElementKind::ScrollView),
         "Slider" => Some(ElementKind::Slider),
-        "Video" => Some(ElementKind::Video),
         "ActivityIndicator" => Some(ElementKind::ActivityIndicator),
         "Virtualizer" => Some(ElementKind::Virtualizer),
         "Graphics" => Some(ElementKind::Graphics),

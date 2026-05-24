@@ -85,7 +85,6 @@ features = [
     "HtmlCanvasElement",
     "HtmlIFrameElement",
     "HtmlInputElement",
-    "HtmlMediaElement",
     "HtmlStyleElement",
     "HtmlTextAreaElement",
     "KeyboardEvent",

@@ -51,7 +51,6 @@ pub enum PrimitiveKind {
     Toggle,
     ScrollView,
     Slider,
-    Video,
     ActivityIndicator,
     Virtualizer,
     Graphics,

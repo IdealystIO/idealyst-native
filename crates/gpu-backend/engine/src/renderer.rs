@@ -165,20 +165,6 @@ pub struct Renderer {
         runtime_layout::LayoutNode,
         GraphicsTextureEntry,
     >,
-    /// Per-`Video`-node GPU texture state. Keyed by Taffy id.
-    /// Allocated lazily once the decoder has produced its first
-    /// frame (we don't know the source frame size before then);
-    /// re-allocated if a later frame's size differs (e.g.
-    /// resolution change on a stream — unusual but defensive).
-    video_cache: std::collections::HashMap<
-        runtime_layout::LayoutNode,
-        VideoTextureEntry,
-    >,
-    /// Pluggable hook for host shells that mount platform DOM
-    /// elements (currently `host-web`, for the `<video>` overlay).
-    /// `None` on native — openh264 paints into wgpu textures the
-    /// regular way; the overlay methods never fire.
-    dom_overlay: Option<std::rc::Rc<dyn crate::dom_overlay::DomOverlay>>,
 }
 
 /// GPU resources backing one `NodeKind::Graphics` node:
@@ -187,19 +173,6 @@ pub struct Renderer {
 struct GraphicsTextureEntry {
     #[allow(dead_code)]
     texture: wgpu::Texture,
-    view: wgpu::TextureView,
-    bind_group: wgpu::BindGroup,
-    size: (u32, u32),
-}
-
-/// GPU resources backing one `NodeKind::Video` node. The shape
-/// mirrors `GraphicsTextureEntry`; difference is how the texture
-/// gets populated — `queue.write_texture` from a decoder-produced
-/// RGBA buffer instead of a `RenderPass` from a user drawer.
-struct VideoTextureEntry {
-    #[allow(dead_code)]
-    texture: wgpu::Texture,
-    #[allow(dead_code)]
     view: wgpu::TextureView,
     bind_group: wgpu::BindGroup,
     size: (u32, u32),
@@ -260,18 +233,6 @@ pub struct GraphicsRequest {
     pub opacity: f32,
 }
 
-/// One Video node recorded during the tree walk. Resolved in
-/// the renderer's pre-pass: if the decoder thread has a new
-/// frame, allocate / re-allocate the per-node texture to the
-/// decoder's frame size and upload via `queue.write_texture`.
-/// The main UI pass composites the texture as a textured quad
-/// through the image pipeline — same path Graphics uses.
-pub struct VideoRequest {
-    pub node: crate::node::WgpuNode,
-    pub rect: (f32, f32, f32, f32),
-    pub opacity: f32,
-}
-
 impl Renderer {
     /// Create the renderer's GPU resources. `format` must match
     /// the surface's color format; the rect + image pipelines
@@ -290,82 +251,7 @@ impl Renderer {
             ),
             image_cache: std::collections::HashMap::new(),
             graphics_cache: std::collections::HashMap::new(),
-            video_cache: std::collections::HashMap::new(),
-            dom_overlay: None,
         }
-    }
-
-    /// Install a [`crate::dom_overlay::DomOverlay`] for shells
-    /// that paint Video by stamping native DOM elements over the
-    /// canvas (currently `host-web`'s `<video>` overlay). Replaces
-    /// any previously-installed overlay. The renderer drives
-    /// `begin_frame` / `place_*` / `end_frame` per render call when
-    /// an overlay is present.
-    pub fn set_dom_overlay(
-        &mut self,
-        overlay: std::rc::Rc<dyn crate::dom_overlay::DomOverlay>,
-    ) {
-        self.dom_overlay = Some(overlay);
-    }
-
-    /// Ensure a `VideoTextureEntry` exists for `layout` sized to
-    /// `(w, h)`. Allocates on first call; re-allocates when the
-    /// stored size differs from the requested one (decoder
-    /// resolution change). Returns `None` for zero-size inputs.
-    fn ensure_video_texture(
-        &mut self,
-        device: &wgpu::Device,
-        layout: runtime_layout::LayoutNode,
-        w: u32,
-        h: u32,
-    ) -> Option<&VideoTextureEntry> {
-        if w == 0 || h == 0 {
-            return None;
-        }
-        let needs_alloc = self
-            .video_cache
-            .get(&layout)
-            .map(|e| e.size != (w, h))
-            .unwrap_or(true);
-        if needs_alloc {
-            let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("video-frame"),
-                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                // The decoder writes straight sRGB-encoded RGBA
-                // (BT.601 YUV→RGB conversion lands in display-
-                // referred sRGB). Tagging the texture as sRGB
-                // makes the image-pipeline sampler decode back
-                // to linear at sample time, matching the rest
-                // of the renderer's color math.
-                format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            });
-            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("video-frame-bg"),
-                layout: &self.image.texture_bgl,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.image.sampler),
-                    },
-                ],
-            });
-            self.video_cache.insert(
-                layout,
-                VideoTextureEntry { texture, view, bind_group, size: (w, h) },
-            );
-        }
-        self.video_cache.get(&layout)
     }
 
     /// Ensure the cache holds a `GraphicsTextureEntry` for `layout`
@@ -567,10 +453,6 @@ impl Renderer {
         // a pre-pass below (allocate offscreen texture, run user's
         // drawer) before the main render encoder runs.
         let mut graphics_requests: Vec<GraphicsRequest> = Vec::new();
-        // Video nodes — same resolution pattern: pre-pass uploads
-        // the latest decoded frame from each node's decoder
-        // thread; main pass composites via the image pipeline.
-        let mut video_requests: Vec<VideoRequest> = Vec::new();
         // Clear the prior frame's header-hit registry before the
         // walk fills it. Pointer dispatch reads from this Vec on
         // the next press; rebuilding it every frame keeps it in
@@ -601,7 +483,6 @@ impl Renderer {
                 &mut deferred_drawers,
                 &mut image_requests,
                 &mut graphics_requests,
-                &mut video_requests,
                 &mut header_hits,
             );
         }
@@ -632,7 +513,6 @@ impl Renderer {
         let mut nav_top_texts: Vec<StagedText<'_>> = Vec::new();
         let mut nav_top_image_requests: Vec<ImageRequest> = Vec::new();
         let mut nav_top_graphics_requests: Vec<GraphicsRequest> = Vec::new();
-        let mut nav_top_video_requests: Vec<VideoRequest> = Vec::new();
         // Sub-deferred overlays / nav-tops discovered while
         // walking a deferred top screen. Top screens can in
         // principle host overlays of their own; route those into
@@ -669,7 +549,6 @@ impl Renderer {
                 &mut sub_deferred_drawers,
                 &mut nav_top_image_requests,
                 &mut nav_top_graphics_requests,
-                &mut nav_top_video_requests,
                 &mut header_hits,
             );
         }
@@ -695,7 +574,6 @@ impl Renderer {
         let mut overlay_texts: Vec<StagedText<'_>> = Vec::new();
         let mut overlay_image_requests: Vec<ImageRequest> = Vec::new();
         let mut overlay_graphics_requests: Vec<GraphicsRequest> = Vec::new();
-        let mut overlay_video_requests: Vec<VideoRequest> = Vec::new();
 
         // Drawer pass — paints first so true `Overlay` /
         // `AnchoredOverlay` modals composite *over* the drawer
@@ -718,7 +596,6 @@ impl Renderer {
                 &mut overlay_texts,
                 &mut overlay_image_requests,
                 &mut overlay_graphics_requests,
-                &mut overlay_video_requests,
                 &mut drawer_scrim_hits,
             );
         }
@@ -742,7 +619,6 @@ impl Renderer {
                 (viewport[0], viewport[1]),
                 &mut overlay_image_requests,
                 &mut overlay_graphics_requests,
-                &mut overlay_video_requests,
                 overlay_node,
                 &mut overlay_rects,
                 &mut overlay_texts,
@@ -981,108 +857,6 @@ impl Renderer {
             &self.graphics_cache,
         );
 
-        // ----- Video frame uploads -----
-        //
-        // For every `NodeKind::Video` in the tree, check whether
-        // the decoder thread has published a fresher frame than
-        // we've uploaded; if so, ensure the per-node texture and
-        // `queue.write_texture` the RGBA bytes. Upload uses the
-        // shared queue, so the bytes land before the upcoming
-        // main-pass submit reads from the texture. Lifecycle
-        // mirrors the Graphics pre-pass — same data shapes,
-        // different population mechanism.
-        // Take whatever is in each video's slot. Slot presence
-        // is the only signal we need — the decoder thread paces
-        // its publishes (one per output frame, ~30 fps), so a
-        // 120 Hz render pass reads `Some` ~1 in every 4 ticks
-        // and `None` otherwise. No counter snapshot to race
-        // against the decoder's overwrite.
-        for req in video_requests
-            .iter()
-            .chain(nav_top_video_requests.iter())
-            .chain(overlay_video_requests.iter())
-        {
-            let (layout_id, frame) = {
-                let data = req.node.borrow();
-                let decoder = match &data.kind {
-                    NodeKind::Video { decoder, .. } => decoder.clone(),
-                    _ => continue,
-                };
-                let layout_id = data.layout;
-                drop(data);
-                let frame = match decoder.shared.latest_frame.lock() {
-                    Ok(mut slot) => slot.take(),
-                    Err(_) => None,
-                };
-                (layout_id, frame)
-            };
-            let frame = match frame {
-                Some(f) => f,
-                None => continue,
-            };
-            let entry = match self.ensure_video_texture(device, layout_id, frame.width, frame.height) {
-                Some(e) => e,
-                None => continue,
-            };
-            queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &entry.texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                &frame.rgba,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(4 * frame.width),
-                    rows_per_image: Some(frame.height),
-                },
-                wgpu::Extent3d {
-                    width: frame.width,
-                    height: frame.height,
-                    depth_or_array_layers: 1,
-                },
-            );
-        }
-
-        // Composite specs for Video — same shape as Graphics.
-        let mut main_video_specs: Vec<(ImageInstance, runtime_layout::LayoutNode)> = Vec::new();
-        let mut nav_top_video_specs: Vec<(ImageInstance, runtime_layout::LayoutNode)> = Vec::new();
-        let mut overlay_video_specs: Vec<(ImageInstance, runtime_layout::LayoutNode)> = Vec::new();
-        let resolve_video_draws =
-            |reqs: &[VideoRequest],
-             out: &mut Vec<(ImageInstance, runtime_layout::LayoutNode)>,
-             cache: &std::collections::HashMap<runtime_layout::LayoutNode, VideoTextureEntry>| {
-                for req in reqs {
-                    let layout_id = req.node.borrow().layout;
-                    if !cache.contains_key(&layout_id) {
-                        continue;
-                    }
-                    out.push((
-                        ImageInstance {
-                            rect: [req.rect.0, req.rect.1, req.rect.2, req.rect.3],
-                            uv_rect: [0.0, 0.0, 1.0, 1.0],
-                            tint: [1.0, 1.0, 1.0, 1.0],
-                            rotation: 0.0,
-                            opacity: req.opacity,
-                            _pad: [0.0; 2],
-                        },
-                        layout_id,
-                    ));
-                }
-            };
-        resolve_video_draws(&video_requests, &mut main_video_specs, &self.video_cache);
-        resolve_video_draws(
-            &nav_top_video_requests,
-            &mut nav_top_video_specs,
-            &self.video_cache,
-        );
-        resolve_video_draws(
-            &overlay_video_requests,
-            &mut overlay_video_specs,
-            &self.video_cache,
-        );
-
         // ----- Submit 1: main content + keyboard -----
         //
         // Encoded + submitted alone so the overlay batch's
@@ -1117,19 +891,6 @@ impl Renderer {
                     bind_group: &self.graphics_cache[layout_id].bind_group,
                 }
             }));
-            main_image_draws.extend(main_video_specs.iter().map(|(inst, layout_id)| {
-                // Video specs reference `self.video_cache`
-                // (decoded mp4 frames).
-                let bind_group = self
-                    .video_cache
-                    .get(layout_id)
-                    .map(|e| &e.bind_group);
-                ImageDraw {
-                    instance: *inst,
-                    bind_group: bind_group
-                        .expect("video spec referenced an unknown layout id"),
-                }
-            }));
             // Build a draw plan that interleaves rects and texts in
             // DOM order. `text_barriers[i]` is `rects.len()` at the
             // moment `texts[i]` was staged, so the plan is:
@@ -1143,8 +904,7 @@ impl Renderer {
             // rect pipeline shares one instance buffer across calls
             // — multiple `rect.render(...)` invocations in a single
             // submit would all draw the LATEST write, smearing
-            // batches together (see the video-controls comment
-            // below for the same hazard).
+            // batches together.
             let mut phases: Vec<(usize, usize, usize, usize)> = Vec::new();
             {
                 let mut last_rect = 0usize;
@@ -1255,55 +1015,6 @@ impl Renderer {
                 first_phase = false;
             }
 
-            // Video-controls overlay — staged by the walk into a
-            // thread-local, drained here. This MUST go in its
-            // own submit, not just a second pass in encoder1:
-            // `RectPipeline::render` calls `queue.write_buffer`
-            // on a shared instance buffer, and writes queued
-            // before a submit are coalesced — having two passes
-            // in one submit would leave both passes drawing the
-            // *latest* write (the controls rects), which would
-            // smear the controls geometry over the main UI rects
-            // (button backgrounds, screen bg, etc.). Submitting
-            // the main pass first commits its draws against the
-            // main-rects buffer state; this second submit then
-            // queues a fresh write for the controls rects and
-            // draws them on top via `LoadOp::Load`.
-            let controls_overlay = take_video_controls_rects();
-            if !controls_overlay.is_empty() {
-                let mut encoder_ctrl =
-                    device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                        label: Some("idealyst-video-controls-encoder"),
-                    });
-                {
-                    let mut pass2 =
-                        encoder_ctrl.begin_render_pass(&wgpu::RenderPassDescriptor {
-                            label: Some("idealyst-video-controls-pass"),
-                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                view: target_view,
-                                resolve_target: None,
-                                depth_slice: None,
-                                ops: wgpu::Operations {
-                                    load: wgpu::LoadOp::Load,
-                                    store: wgpu::StoreOp::Store,
-                                },
-                            })],
-                            depth_stencil_attachment: None,
-                            timestamp_writes: None,
-                            occlusion_query_set: None,
-                            multiview_mask: None,
-                        });
-                    pass2.set_viewport(vx, vy, vw.max(1.0), vh.max(1.0), 0.0, 1.0);
-                    self.rect.render(
-                        device,
-                        queue,
-                        &mut pass2,
-                        viewport,
-                        &controls_overlay,
-                    );
-                }
-                queue.submit(std::iter::once(encoder_ctrl.finish()));
-            }
         }
 
         // ----- Submit 1.5: nav-slide top screen (loads pass 1) -----
@@ -1334,12 +1045,6 @@ impl Renderer {
                 |(inst, layout_id)| ImageDraw {
                     instance: *inst,
                     bind_group: &self.graphics_cache[layout_id].bind_group,
-                },
-            ));
-            nav_top_image_draws.extend(nav_top_video_specs.iter().map(
-                |(inst, layout_id)| ImageDraw {
-                    instance: *inst,
-                    bind_group: &self.video_cache[layout_id].bind_group,
                 },
             ));
             let mut encoder_mid =
@@ -1418,12 +1123,6 @@ impl Renderer {
                     bind_group: &self.graphics_cache[layout_id].bind_group,
                 },
             ));
-            overlay_image_draws.extend(overlay_video_specs.iter().map(
-                |(inst, layout_id)| ImageDraw {
-                    instance: *inst,
-                    bind_group: &self.video_cache[layout_id].bind_group,
-                },
-            ));
             let mut encoder2 =
                 device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("idealyst-overlays"),
@@ -1493,106 +1192,9 @@ impl Renderer {
             queue.submit(std::iter::once(encoder2.finish()));
         }
 
-        // ----- DOM overlay sync -----
-        //
-        // After all GPU work is dispatched, drive the host's
-        // `DomOverlay` impl (if installed — currently only
-        // `host-web`). Each visible Video node is reported with its
-        // screen rect so the host can create / reposition / drop
-        // matching `<video>` children over the canvas. Native
-        // shells don't install an overlay, so this block does
-        // nothing there.
-        if let Some(overlay) = self.dom_overlay.clone() {
-            overlay.begin_frame();
-            // Video placements come from all three walk buckets
-            // — main, nav-top, and overlay — so an in-flight
-            // navigator transition or a modal that hosts a
-            // Video still gets a `<video>` mounted at the right
-            // place. On native the corresponding wgpu pre-pass
-            // already ran; on wasm those uploads are no-ops
-            // (the stub `VideoDecoder` never publishes a frame)
-            // and the DOM `<video>` element drives playback.
-            let drive_video = |reqs: &[VideoRequest]| {
-                for req in reqs {
-                    let data = req.node.borrow();
-                    if let NodeKind::Video { decoder, .. } = &data.kind {
-                        let key = crate::dom_overlay::DomOverlayKey(
-                            std::rc::Rc::as_ptr(&req.node) as usize,
-                        );
-                        let seek = decoder
-                            .shared
-                            .seek_request
-                            .lock()
-                            .ok()
-                            .and_then(|mut g| g.take())
-                            .map(|us| us as f64 / 1_000_000.0);
-                        let spec = crate::dom_overlay::DomVideoSpec {
-                            src: video_src_for_overlay(decoder),
-                            autoplay: video_autoplay_for_overlay(decoder),
-                            loop_playback: video_loop_for_overlay(decoder),
-                            muted: decoder.is_audio_muted().unwrap_or(false),
-                            volume: video_volume_for_overlay(decoder),
-                            seek,
-                            playing: decoder
-                                .shared
-                                .playing
-                                .load(std::sync::atomic::Ordering::Acquire),
-                        };
-                        overlay.place_video(key, spec, req.rect, req.opacity);
-                    }
-                }
-            };
-            drive_video(&video_requests);
-            drive_video(&nav_top_video_requests);
-            drive_video(&overlay_video_requests);
-            overlay.end_frame();
-        }
-
         drop(text_store);
         drop(backend);
     }
-}
-
-/// Read the source URL for the `DomOverlay`'s `<video>`
-/// placement. The wasm stub stores it verbatim from
-/// `VideoDecoder::spawn`; the native decoder doesn't carry the
-/// original `src` (it streams from the path at construction time
-/// and the file handle is owned by the worker thread). On native
-/// the overlay never fires, so a placeholder is fine.
-#[cfg(target_arch = "wasm32")]
-fn video_src_for_overlay<'a>(decoder: &'a crate::video::VideoDecoder) -> &'a str {
-    decoder.src()
-}
-#[cfg(not(target_arch = "wasm32"))]
-fn video_src_for_overlay<'a>(_decoder: &'a crate::video::VideoDecoder) -> &'a str {
-    ""
-}
-
-#[cfg(target_arch = "wasm32")]
-fn video_autoplay_for_overlay(decoder: &crate::video::VideoDecoder) -> bool {
-    decoder.autoplay()
-}
-#[cfg(not(target_arch = "wasm32"))]
-fn video_autoplay_for_overlay(_decoder: &crate::video::VideoDecoder) -> bool {
-    false
-}
-
-#[cfg(target_arch = "wasm32")]
-fn video_loop_for_overlay(decoder: &crate::video::VideoDecoder) -> bool {
-    decoder.loop_playback()
-}
-#[cfg(not(target_arch = "wasm32"))]
-fn video_loop_for_overlay(_decoder: &crate::video::VideoDecoder) -> bool {
-    false
-}
-
-#[cfg(target_arch = "wasm32")]
-fn video_volume_for_overlay(decoder: &crate::video::VideoDecoder) -> f32 {
-    decoder.volume()
-}
-#[cfg(not(target_arch = "wasm32"))]
-fn video_volume_for_overlay(_decoder: &crate::video::VideoDecoder) -> f32 {
-    1.0
 }
 
 // ---------------------------------------------------------------------------
@@ -1646,7 +1248,6 @@ fn walk<'a>(
     deferred_drawers: &mut Vec<DeferredDrawer>,
     image_requests: &mut Vec<ImageRequest>,
     graphics_requests: &mut Vec<GraphicsRequest>,
-    video_requests: &mut Vec<VideoRequest>,
     header_hits: &mut Vec<crate::host::HeaderHit>,
 ) {
     let data = node.borrow();
@@ -2085,51 +1686,6 @@ fn walk<'a>(
                     opacity: r.opacity,
                 });
             }
-            NodeKind::Video {
-                decoder,
-                controls,
-                last_hover,
-                play_btn_rect,
-                scrubber_rect,
-                mute_btn_rect,
-                frame_rect,
-            } => {
-                // Same record-and-resolve-later pattern as
-                // Graphics; the pre-pass uploads the latest
-                // decoded RGBA frame from the node's decoder
-                // thread, the main pass composites via the
-                // image pipeline.
-                video_requests.push(VideoRequest {
-                    node: node.clone(),
-                    rect: (x, y, w, h),
-                    opacity: r.opacity,
-                });
-                frame_rect.set((x, y, w, h));
-                if *controls {
-                    let shared = &decoder.shared;
-                    let is_playing = shared.playing.load(std::sync::atomic::Ordering::Acquire);
-                    let cur_micros = shared.current_time_micros.load(std::sync::atomic::Ordering::Acquire);
-                    let dur_micros = shared.duration_micros.load(std::sync::atomic::Ordering::Acquire);
-                    // `is_audio_muted()` returns None for silent
-                    // clips — treat as "no mute button to show"
-                    // by mapping None to a sentinel the paint
-                    // helper recognizes.
-                    let muted = decoder.is_audio_muted();
-                    paint_video_controls(
-                        (x, y, w, h),
-                        is_playing,
-                        cur_micros,
-                        dur_micros,
-                        muted,
-                        last_hover.get(),
-                        now,
-                        play_btn_rect,
-                        scrubber_rect,
-                        mute_btn_rect,
-                        rects,
-                    );
-                }
-            }
             NodeKind::Icon { paths, view_box, color, stroke_progress } => {
                 let tint = color.unwrap_or(r.color);
                 // Sample the animator first — `animate_icon_stroke`
@@ -2418,7 +1974,6 @@ fn walk<'a>(
             deferred_drawers,
             image_requests,
             graphics_requests,
-            video_requests,
             header_hits,
         );
     }
@@ -2759,7 +2314,6 @@ fn paint_drawer_overlay<'a>(
     texts: &mut Vec<StagedText<'a>>,
     image_requests: &mut Vec<ImageRequest>,
     graphics_requests: &mut Vec<GraphicsRequest>,
-    video_requests: &mut Vec<VideoRequest>,
     scrim_hits: &mut Vec<crate::host::HeaderHit>,
 ) {
     let (nx, ny, nw, nh) = drawer.nav_rect;
@@ -2842,7 +2396,6 @@ fn paint_drawer_overlay<'a>(
         &mut sub_drawers,
         image_requests,
         graphics_requests,
-        video_requests,
         &mut sub_header_hits,
     );
     // Sidebar header buttons (if any) join the outer hits.
@@ -3004,7 +2557,6 @@ fn walk_overlay<'a>(
     viewport: (f32, f32),
     image_requests: &mut Vec<ImageRequest>,
     graphics_requests: &mut Vec<GraphicsRequest>,
-    video_requests: &mut Vec<VideoRequest>,
     node: &WgpuNode,
     rects: &mut Vec<RectInstance>,
     texts: &mut Vec<StagedText<'a>>,
@@ -3097,7 +2649,6 @@ fn walk_overlay<'a>(
             &mut nested_drawers,
             image_requests,
             graphics_requests,
-            video_requests,
             &mut nested_header_hits,
         );
     }
@@ -3116,7 +2667,6 @@ fn walk_overlay<'a>(
             viewport,
             image_requests,
             graphics_requests,
-            video_requests,
             &child_overlay,
             rects,
             texts,
@@ -3825,281 +3375,6 @@ fn sample_arc(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Video controls
-// ---------------------------------------------------------------------------
-
-/// Tunable bar geometry. `CONTROLS_BAR_H` is the backdrop strip;
-/// the play button is square + centered vertically; the scrubber
-/// line is thin and full-width minus padding.
-const CONTROLS_BAR_H: f32 = 44.0;
-const CONTROLS_BTN: f32 = 28.0;
-const CONTROLS_PAD: f32 = 12.0;
-const CONTROLS_SCRUB_H: f32 = 4.0;
-/// Hover-fade window: controls stay visible for this long after
-/// the last pointer move, then fade out. Paused videos override
-/// this and stay visible.
-const CONTROLS_VISIBLE_SECS: f32 = 2.0;
-const CONTROLS_FADE_SECS: f32 = 0.25;
-
-thread_local! {
-    /// Rects staged by `paint_video_controls` during the tree
-    /// walk. Drained by the renderer immediately after the image
-    /// pass so the controls paint *on top of* the video texture
-    /// instead of being overwritten by it. Avoids threading a new
-    /// `&mut Vec<RectInstance>` parameter through every walk
-    /// recursion site.
-    static VIDEO_CONTROLS_RECTS: std::cell::RefCell<Vec<RectInstance>> =
-        std::cell::RefCell::new(Vec::new());
-}
-
-/// Drain whatever the latest walk staged. Caller is the renderer's
-/// main pass, right after `image.render` finishes — that ordering
-/// is what makes controls land above the video texture.
-pub(crate) fn take_video_controls_rects() -> Vec<RectInstance> {
-    VIDEO_CONTROLS_RECTS.with(|c| std::mem::take(&mut *c.borrow_mut()))
-}
-
-/// Paint the video controls bar on top of `(x, y, w, h)` and
-/// stash the play-button / scrubber rects back onto the node for
-/// pointer hit-testing. `is_playing` switches the icon between
-/// play and pause; `cur_micros / dur_micros` drive the scrubber's
-/// elapsed fill.
-fn paint_video_controls(
-    rect: (f32, f32, f32, f32),
-    is_playing: bool,
-    cur_micros: u64,
-    dur_micros: u64,
-    // `muted`: Some(true) → muted; Some(false) → audible;
-    // None → silent clip with no audio track (hide button).
-    muted: Option<bool>,
-    last_hover: Option<Instant>,
-    now: Instant,
-    play_btn_rect: &std::cell::Cell<(f32, f32, f32, f32)>,
-    scrubber_rect: &std::cell::Cell<(f32, f32, f32, f32)>,
-    mute_btn_rect: &std::cell::Cell<(f32, f32, f32, f32)>,
-    _rects_unused: &mut Vec<RectInstance>,
-) {
-    VIDEO_CONTROLS_RECTS.with(|cell| {
-        let mut overlay = cell.borrow_mut();
-        paint_video_controls_into(
-            rect,
-            is_playing,
-            cur_micros,
-            dur_micros,
-            muted,
-            last_hover,
-            now,
-            play_btn_rect,
-            scrubber_rect,
-            mute_btn_rect,
-            &mut overlay,
-        );
-    });
-}
-
-fn paint_video_controls_into(
-    rect: (f32, f32, f32, f32),
-    is_playing: bool,
-    cur_micros: u64,
-    dur_micros: u64,
-    muted: Option<bool>,
-    last_hover: Option<Instant>,
-    now: Instant,
-    play_btn_rect: &std::cell::Cell<(f32, f32, f32, f32)>,
-    scrubber_rect: &std::cell::Cell<(f32, f32, f32, f32)>,
-    mute_btn_rect: &std::cell::Cell<(f32, f32, f32, f32)>,
-    rects: &mut Vec<RectInstance>,
-) {
-    let (x, y, w, h) = rect;
-    if w < 80.0 || h < 50.0 {
-        return;
-    }
-    // Visibility: paused → always 1.0; playing → fade out 2s after
-    // the last pointer move. Fade is linear over CONTROLS_FADE_SECS.
-    let alpha = if !is_playing {
-        1.0
-    } else if let Some(t) = last_hover {
-        let since = now.saturating_duration_since(t).as_secs_f32();
-        if since < CONTROLS_VISIBLE_SECS {
-            1.0
-        } else if since < CONTROLS_VISIBLE_SECS + CONTROLS_FADE_SECS {
-            1.0 - (since - CONTROLS_VISIBLE_SECS) / CONTROLS_FADE_SECS
-        } else {
-            0.0
-        }
-    } else {
-        0.0
-    };
-    if alpha <= 0.01 {
-        // Hidden — stash zeroed hit-rects so stray clicks don't
-        // resolve to a stale region.
-        play_btn_rect.set((0.0, 0.0, 0.0, 0.0));
-        scrubber_rect.set((0.0, 0.0, 0.0, 0.0));
-        mute_btn_rect.set((0.0, 0.0, 0.0, 0.0));
-        return;
-    }
-
-    // Bar position pinned to the bottom of the video frame.
-    let bar_y = y + h - CONTROLS_BAR_H;
-    let bar_h = CONTROLS_BAR_H;
-
-    // 1) Backdrop strip — solid dark with alpha, no fancy
-    //    gradient (we don't have multi-stop gradients in the
-    //    rect shader). Looks fine on most clips.
-    let bg = srgb_rgba_to_linear([0.0, 0.0, 0.0, 0.55 * alpha]);
-    rects.push(RectInstance {
-        rect: [x, bar_y, w, bar_h],
-        bg,
-        corner_radius: [0.0, 0.0, 0.0, 0.0],
-        border_color: [0.0; 4],
-        border_width: 0.0,
-        rotation: 0.0,
-        shadow_blur: 0.0,
-        ..no_gradient_fields()
-    });
-
-    // 2) Play / pause button — a 28×28 hit zone left-aligned in
-    //    the bar. We paint Lucide-style outlines so the icon
-    //    matches the rest of the framework's iconography.
-    let btn_x = x + CONTROLS_PAD;
-    let btn_y = bar_y + (bar_h - CONTROLS_BTN) * 0.5;
-    play_btn_rect.set((btn_x, btn_y, CONTROLS_BTN, CONTROLS_BTN));
-    let tint = [1.0, 1.0, 1.0, alpha];
-    // Lucide play (filled triangle) / pause (two bars). Stroke-
-    // based — `paint_icon` is stroke-only, so we get the outline
-    // look common in minimalist players.
-    let play_path = ["M 5 3 L 19 12 L 5 21 Z"];
-    let pause_path = ["M 6 4 H 10 V 20 H 6 Z", "M 14 4 H 18 V 20 H 14 Z"];
-    if is_playing {
-        paint_icon(btn_x, btn_y, CONTROLS_BTN, CONTROLS_BTN, &pause_path, (24, 24), tint, 1.0, rects);
-    } else {
-        paint_icon(btn_x, btn_y, CONTROLS_BTN, CONTROLS_BTN, &play_path, (24, 24), tint, 1.0, rects);
-    }
-
-    // 3) Mute button — right-aligned in the bar, mirror of play.
-    //    Only painted when there's an audio track on the clip;
-    //    silent videos hide the button entirely.
-    let mute_btn_x = x + w - CONTROLS_PAD - CONTROLS_BTN;
-    let mute_btn_y = btn_y;
-    let has_audio = muted.is_some();
-    if has_audio {
-        mute_btn_rect.set((mute_btn_x, mute_btn_y, CONTROLS_BTN, CONTROLS_BTN));
-        // Speaker body — same for both states. Lucide "volume"
-        // body path, stroked.
-        let speaker_body = ["M 11 5 L 6 9 H 2 V 15 H 6 L 11 19 Z"];
-        paint_icon(
-            mute_btn_x,
-            mute_btn_y,
-            CONTROLS_BTN,
-            CONTROLS_BTN,
-            &speaker_body,
-            (24, 24),
-            tint,
-            1.0,
-            rects,
-        );
-        // Decorator: "X" when muted, two wave indicators when
-        // audible. Both use straight-line approximations so
-        // `paint_icon`'s stroke renderer can draw them — the
-        // existing Lucide arcs would require `A` (arc) support
-        // we don't have. Visually close enough to read.
-        let decorator: &[&str] = if muted == Some(true) {
-            &["M 16 9 L 22 15", "M 22 9 L 16 15"]
-        } else {
-            &["M 14 9 V 15", "M 17 7 V 17", "M 20 5 V 19"]
-        };
-        paint_icon(
-            mute_btn_x,
-            mute_btn_y,
-            CONTROLS_BTN,
-            CONTROLS_BTN,
-            decorator,
-            (24, 24),
-            tint,
-            1.0,
-            rects,
-        );
-    } else {
-        mute_btn_rect.set((0.0, 0.0, 0.0, 0.0));
-    }
-
-    // 4) Scrubber line — fills the space between the play and
-    //    mute buttons (or out to the right padding if there's no
-    //    audio). Background track at low alpha; elapsed fill at
-    //    full white. The visual line is 4 px tall but the *hit*
-    //    rect spans the full bar height so users don't have to
-    //    pixel-aim at the thin track.
-    let scrub_x = btn_x + CONTROLS_BTN + CONTROLS_PAD;
-    let scrub_right = if has_audio {
-        mute_btn_x - CONTROLS_PAD
-    } else {
-        x + w - CONTROLS_PAD
-    };
-    let scrub_w_total = scrub_right - scrub_x;
-    let scrub_y = bar_y + (bar_h - CONTROLS_SCRUB_H) * 0.5;
-    if scrub_w_total > 8.0 {
-        // Hit rect covers the full bar vertically; the painted
-        // track stays slim.
-        scrubber_rect.set((scrub_x, bar_y, scrub_w_total, bar_h));
-        // Track.
-        rects.push(RectInstance {
-            rect: [scrub_x, scrub_y, scrub_w_total, CONTROLS_SCRUB_H],
-            bg: srgb_rgba_to_linear([1.0, 1.0, 1.0, 0.30 * alpha]),
-            corner_radius: [
-                CONTROLS_SCRUB_H * 0.5,
-                CONTROLS_SCRUB_H * 0.5,
-                CONTROLS_SCRUB_H * 0.5,
-                CONTROLS_SCRUB_H * 0.5,
-            ],
-            border_color: [0.0; 4],
-            border_width: 0.0,
-            rotation: 0.0,
-            shadow_blur: 0.0,
-            ..no_gradient_fields()
-        });
-        // Elapsed fill — proportional to current_time / duration.
-        let progress = if dur_micros > 0 {
-            (cur_micros as f64 / dur_micros as f64).clamp(0.0, 1.0) as f32
-        } else {
-            0.0
-        };
-        let fill_w = scrub_w_total * progress;
-        if fill_w > 0.0 {
-            rects.push(RectInstance {
-                rect: [scrub_x, scrub_y, fill_w, CONTROLS_SCRUB_H],
-                bg: srgb_rgba_to_linear([1.0, 1.0, 1.0, 0.95 * alpha]),
-                corner_radius: [
-                    CONTROLS_SCRUB_H * 0.5,
-                    CONTROLS_SCRUB_H * 0.5,
-                    CONTROLS_SCRUB_H * 0.5,
-                    CONTROLS_SCRUB_H * 0.5,
-                ],
-                border_color: [0.0; 4],
-                border_width: 0.0,
-                rotation: 0.0,
-                shadow_blur: 0.0,
-                ..no_gradient_fields()
-            });
-            // Playhead — a small circle at the end of the fill.
-            let head_d = CONTROLS_SCRUB_H * 2.5;
-            let head_x = scrub_x + fill_w - head_d * 0.5;
-            let head_y = scrub_y + CONTROLS_SCRUB_H * 0.5 - head_d * 0.5;
-            rects.push(RectInstance {
-                rect: [head_x, head_y, head_d, head_d],
-                bg: srgb_rgba_to_linear([1.0, 1.0, 1.0, alpha]),
-                corner_radius: [head_d * 0.5, head_d * 0.5, head_d * 0.5, head_d * 0.5],
-                border_color: [0.0; 4],
-                border_width: 0.0,
-                rotation: 0.0,
-                shadow_blur: 0.0,
-                ..no_gradient_fields()
-            });
-        }
-    } else {
-        scrubber_rect.set((0.0, 0.0, 0.0, 0.0));
-    }
-}
 
 /// Tab-bar strip at the bottom of a TabNavigator. Renders
 /// `tab_count` evenly-spaced "tab buttons" with the active one
@@ -4151,7 +3426,7 @@ fn paint_tab_bar(
     });
 }
 
-/// "Not supported in this simulator" panel for Video / Graphics.
+/// "Not supported in this simulator" panel for Graphics.
 /// A striped warning-colored box with a horizontal caption stripe
 /// across the middle; authors immediately see *what* would have
 /// rendered.

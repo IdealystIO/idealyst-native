@@ -26,5 +26,4 @@ pub mod slider;
 pub mod text_area;
 pub mod text_input;
 pub mod toggle;
-pub mod video;
 pub mod virtualizer;

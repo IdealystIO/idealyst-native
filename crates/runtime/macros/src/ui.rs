@@ -471,7 +471,7 @@ fn emit_component(
         lower.as_str(),
         "text" | "button" | "view" | "when"
         | "image" | "icon" | "text_input" | "toggle" | "scroll_view"
-        | "slider" | "web_view" | "video" | "activity_indicator"
+        | "slider" | "web_view" | "activity_indicator"
         | "flat_list" | "link" | "overlay" | "anchored_overlay" | "presence"
     );
     let supports_disabled = lower.as_str() == "button";
@@ -518,7 +518,6 @@ fn emit_component(
         "toggle" => emit_toggle(&other_props, children),
         "scroll_view" => emit_scroll_view(&other_props, children),
         "slider" => emit_slider(&other_props, children),
-        "video" => emit_video(&other_props, children),
         "activity_indicator" => emit_activity_indicator(&other_props, children),
         "flat_list" => emit_flat_list(&other_props, children),
         "graphics" => emit_graphics(&other_props, children),
@@ -1038,39 +1037,6 @@ fn emit_slider(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
     }
 }
 
-
-/// `Video(src = ..., autoplay = bool, controls = bool, loop_playback = bool)`.
-fn emit_video(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
-    let src = props
-        .iter()
-        .find(|p| p.name == "src")
-        .map(|p| p.value.to_token_stream())
-        .unwrap_or_else(|| quote! { "" });
-    let autoplay_call = if let Some(p) = props.iter().find(|p| p.name == "autoplay") {
-        let v = &p.value;
-        quote! { .autoplay(#v) }
-    } else {
-        quote! {}
-    };
-    let controls_call = if let Some(p) = props.iter().find(|p| p.name == "controls") {
-        let v = &p.value;
-        quote! { .controls(#v) }
-    } else {
-        quote! {}
-    };
-    let loop_call = if let Some(p) = props.iter().find(|p| p.name == "loop_playback") {
-        let v = &p.value;
-        quote! { .loop_playback(#v) }
-    } else {
-        quote! {}
-    };
-    quote! {
-        ::runtime_core::primitives::video::video(#src)
-            #autoplay_call
-            #controls_call
-            #loop_call
-    }
-}
 
 /// `Graphics(on_ready = ..., on_resize = ..., on_lost = ...)`.
 /// `on_ready` is required; the others default to no-ops.

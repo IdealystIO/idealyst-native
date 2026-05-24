@@ -22,3 +22,10 @@ anyhow = "1"
 # the same way `build-macos` does. Cross-platform target dir +
 # wrapper-root resolution lives there.
 build-ios = { workspace = true }
+
+[dev-dependencies]
+# Temp fixture dirs for wrapper-shape regression tests
+# (`src/lib.rs::regression_tests`). Each test generates the wrapper
+# for a synthetic manifest and asserts on the produced main.rs —
+# no cargo build fires.
+tempfile = "3"

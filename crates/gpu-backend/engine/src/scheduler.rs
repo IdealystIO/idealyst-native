@@ -9,9 +9,8 @@
 //! startup.
 //!
 //! Stored in a `OnceLock` with a `Send + Sync` bound so worker
-//! threads (notably the per-Video decoder thread) can ping the
-//! event loop without bouncing through the main thread. Single-
-//! threaded callers see no behavior change.
+//! threads can ping the event loop without bouncing through the
+//! main thread. Single-threaded callers see no behavior change.
 
 use std::sync::OnceLock;
 

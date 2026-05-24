@@ -9,7 +9,6 @@ pub(crate) mod navigator;
 pub(crate) mod portal;
 pub(crate) mod tab_drawer;
 pub(crate) mod touch;
-pub(crate) mod video;
 pub(crate) mod virtualizer;
 
 /// Platform log with format. Forwards to `backend_ios_core::ios_log`
@@ -130,13 +129,6 @@ pub struct IosBackend {
     /// UILabel.
     pub(crate) external_handlers:
         runtime_core::ExternalRegistry<IosBackend>,
-    /// Per-view AVPlayer/AVPlayerLayer retention for `Primitive::Video`,
-    /// keyed by the host UIView pointer. The post-layout pass walks
-    /// every registered view; for any video-backed view, the entry's
-    /// `AVPlayerLayer` is resized to the view's new bounds (CALayer
-    /// sublayers don't auto-resize from autoresizingMask in practice
-    /// on iOS — same gotcha as `idealyst_gradient`).
-    pub(crate) video_instances: video::VideoInstances,
     /// Per-virtualizer side state — keyed by the `UICollectionView`'s
     /// pointer. UIKit holds dataSource + delegate as weak refs, so
     /// we keep the `VirtualizerDataSource` retained here for the
@@ -342,7 +334,6 @@ impl IosBackend {
             view_to_layout: HashMap::new(),
             animated_states: HashMap::new(),
             external_handlers: runtime_core::ExternalRegistry::new(),
-            video_instances: HashMap::new(),
             virtualizer_instances: HashMap::new(),
             collection_views: std::collections::HashSet::new(),
         }
@@ -1308,52 +1299,6 @@ impl Backend for IosBackend {
             let view_clone = view.clone();
             self.install_image_measure(&view_clone);
         }
-    }
-
-    fn create_video(
-        &mut self,
-        src: &str,
-        autoplay: bool,
-        controls: bool,
-        loop_playback: bool,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
-        let node = video::create_video(
-            self.mtm,
-            &mut self.video_instances,
-            src,
-            autoplay,
-            controls,
-            loop_playback,
-        );
-        // Stage in the layout tree so Taffy gives the host view a
-        // frame. The post-layout pass picks up
-        // `video_instances` and syncs the AVPlayerLayer to that
-        // frame — without registering, the frame stays CGRectZero
-        // and the video never paints. Video doesn't need an
-        // intrinsic-size measurer because the player gives the view
-        // no intrinsic content size; authors size it via flex props
-        // (width/height/aspect-ratio) just like a Graphics surface.
-        if let IosNode::View(view) = &node {
-            let _ = self.layout_for_view(view);
-        }
-        a11y::apply(
-            &node,
-            a11y,
-            Some(runtime_core::accessibility::Role::Image),
-        );
-        node
-    }
-
-    fn update_video_src(&mut self, node: &Self::Node, src: &str) {
-        video::update_video_src(&self.video_instances, node, src);
-    }
-
-    fn make_video_handle(
-        &self,
-        node: &Self::Node,
-    ) -> runtime_core::primitives::video::VideoHandle {
-        video::make_handle(&self.video_instances, node)
     }
 
     fn create_virtualizer(
@@ -2563,13 +2508,6 @@ impl IosBackend {
             // doesn't auto-resize sublayers from `autoresizingMask`
             // on iOS in practice).
             backend_ios_core::style::sync_gradient_sublayer(view);
-            // Resize any AVPlayerLayer sublayer this view owns to
-            // match the new bounds. The layer was added at create
-            // time when bounds were 0×0; CALayer sublayers don't
-            // auto-resize from autoresizingMask on iOS, so the
-            // video would otherwise render as a 0×0 tile in the
-            // top-left and decode without anything visible.
-            video::sync_video_sublayer(&self.video_instances, view);
             // Re-clamp cornerRadius against the now-known bounds.
             // `apply_style_to_view` stashes the requested radius
             // when the view's size is percent-based; this call reads

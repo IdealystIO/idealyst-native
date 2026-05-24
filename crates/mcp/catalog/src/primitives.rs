@@ -14,7 +14,6 @@
 use crate::{PrimitiveCategory, PrimitiveEntry, PropFieldSpec};
 
 const ALL_BACKENDS: &[&str] = &["ios", "android", "web", "macos"];
-const MOBILE_AND_WEB: &[&str] = &["ios", "android", "web"];
 const NATIVE_ONLY: &[&str] = &["ios", "android", "macos"];
 
 const COMMON_STYLE_FIELD: PropFieldSpec = PropFieldSpec {
@@ -334,28 +333,6 @@ inventory::submit! {
         ],
         category: PrimitiveCategory::Input,
         backends: ALL_BACKENDS,
-        _seal: (),
-    }
-}
-
-inventory::submit! {
-    PrimitiveEntry {
-        name: "video",
-        pascal_name: "Video",
-        docs: "Video playback surface. Native players on each backend (`AVPlayerLayer`, `VideoView`, `<video>`). Not currently supported on the wgpu/macOS path.",
-        props: &[
-            PropFieldSpec {
-                name: "source",
-                type_str: "VideoSource",
-                doc: "Video URL or asset.",
-                constraint: "",
-            },
-            COMMON_STYLE_FIELD,
-            COMMON_REF_FILL_FIELD,
-            COMMON_ACCESSIBILITY_FIELD,
-        ],
-        category: PrimitiveCategory::Media,
-        backends: MOBILE_AND_WEB,
         _seal: (),
     }
 }

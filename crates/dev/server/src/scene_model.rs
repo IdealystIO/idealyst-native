@@ -159,7 +159,6 @@ impl SceneModel {
             | Command::CreateToggle { id, .. }
             | Command::CreateSlider { id, .. }
             | Command::CreateScrollView { id, .. }
-            | Command::CreateVideo { id, .. }
             | Command::CreateActivityIndicator { id, .. }
             | Command::CreateLink { id, .. }
             | Command::CreatePortal { id, .. }
@@ -252,13 +251,6 @@ impl SceneModel {
                     self.node_create.get_mut(node)
                 {
                     *v = *value;
-                }
-            }
-            Command::UpdateVideoSrc { node, src } => {
-                if let Some(Command::CreateVideo { src: s, .. }) =
-                    self.node_create.get_mut(node)
-                {
-                    *s = src.clone();
                 }
             }
             Command::SetDisabled { node, disabled } => {

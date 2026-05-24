@@ -548,43 +548,8 @@ pub enum NodeKind {
         /// remounts the node (each remount gets its own zero).
         created_at: web_time::Instant,
     },
-    /// Video playback node. The wgpu preview decodes H.264 mp4
-    /// files in-process via `openh264` + `re_mp4` (no system
-    /// FFmpeg dep). The decoder runs on its own thread and posts
-    /// the latest decoded RGBA frame into a shared cell; the
-    /// renderer's pre-pass uploads that frame to a wgpu texture
-    /// and the main UI walk composites it through the image
-    /// pipeline. Play / pause / seek route from the framework's
-    /// `VideoHandle` to the decoder thread.
-    Video {
-        /// The owning decoder (`Drop` joins its thread). Wrapped
-        /// in `Rc` so the `VideoHandle` ops can read the shared
-        /// state without going through `NodeData`.
-        decoder: std::rc::Rc<crate::video::VideoDecoder>,
-        /// Author opted in via `.controls(true)` — the renderer
-        /// paints a play/pause + scrubber bar over the texture,
-        /// and pointer routing dispatches clicks against the
-        /// cached sub-rects.
-        controls: bool,
-        /// `Instant` of the last pointer move over the video.
-        /// Drives the hover-fade — `None` means "not hovered";
-        /// `Some(t)` keeps controls visible for ~2 s past `t`,
-        /// then fades out. Always-on when the decoder is paused
-        /// so the user can still grab the scrubber when stopped.
-        last_hover: std::cell::Cell<Option<web_time::Instant>>,
-        /// Sub-rects the renderer cached on the last frame so
-        /// pointer routing can hit-test without re-deriving them.
-        /// All zero before the first render with controls on.
-        play_btn_rect: std::cell::Cell<(f32, f32, f32, f32)>,
-        scrubber_rect: std::cell::Cell<(f32, f32, f32, f32)>,
-        mute_btn_rect: std::cell::Cell<(f32, f32, f32, f32)>,
-        /// World-space rect of the video frame itself, cached
-        /// during walk so the pointer pipeline can hover-test
-        /// without re-running layout.
-        frame_rect: std::cell::Cell<(f32, f32, f32, f32)>,
-    },
     /// Renders a "not supported in this simulator" panel for
-    /// primitives we don't implement (Video, Graphics).
+    /// primitives we don't implement (Graphics).
     /// Keeps an app that uses them visibly intact instead of
     /// rendering a 0×0 invisible node.
     Unsupported {
@@ -678,7 +643,6 @@ impl std::fmt::Debug for NodeKind {
                 "Graphics(drawer={})",
                 if drawer.borrow().is_some() { "set" } else { "unset" },
             ),
-            NodeKind::Video { .. } => f.write_str("Video"),
             NodeKind::Unsupported { label } => write!(f, "Unsupported({label})"),
         }
     }

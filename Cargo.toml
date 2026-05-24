@@ -65,6 +65,12 @@ members = [
     "crates/sdk/maps-web",
     "crates/sdk/idea-codeblock",
     "crates/sdk/webview",
+    "crates/sdk/video",
+
+    # SDK — navigator-kind extensions (Primitive::NavigatorExt).
+    "crates/sdk/stack-navigator",
+    "crates/sdk/tab-navigator",
+    "crates/sdk/drawer-navigator",
 
     # Tools — CLI + per-platform build/run + source porters.
     "crates/tools/cli",
@@ -178,6 +184,10 @@ maps = { path = "crates/sdk/maps" }
 maps-web = { path = "crates/sdk/maps-web" }
 idea-codeblock = { path = "crates/sdk/idea-codeblock" }
 webview = { path = "crates/sdk/webview" }
+video = { path = "crates/sdk/video" }
+stack-navigator = { path = "crates/sdk/stack-navigator" }
+tab-navigator = { path = "crates/sdk/tab-navigator" }
+drawer-navigator = { path = "crates/sdk/drawer-navigator" }
 
 # Dev profile: `opt-level = "z"` works around a wasm OOB seen at
 # opt-level = 0 (the default). Root cause is likely an UB somewhere
@@ -187,52 +197,6 @@ webview = { path = "crates/sdk/webview" }
 # produce working bundles.
 [profile.dev]
 opt-level = "z"
-
-# Per-package opt-level overrides for the H.264 video decoder.
-# The C++ source bundled with `openh264-sys2` is wildly slow
-# without optimizer flags — at the workspace's default `opt-level
-# = "z"` the decoder ran at ~2 fps on a 360p clip. `opt-level = 3`
-# brings it back to real-time without affecting the rest of the
-# build's size targets. `re_mp4` is hot in the per-sample path
-# too; same treatment. Release builds inherit the workspace
-# `opt-level = "z"` because they care about bytes; if perf there
-# matters, override release similarly.
-[profile.dev.package.openh264]
-opt-level = 3
-[profile.dev.package.openh264-sys2]
-opt-level = 3
-[profile.dev.package.re_mp4]
-opt-level = 3
-[profile.release.package.openh264]
-opt-level = 3
-[profile.release.package.openh264-sys2]
-opt-level = 3
-[profile.release.package.re_mp4]
-opt-level = 3
-
-# Symphonia is the audio decoder and runs per-AAC-packet (~hundreds
-# of times per second). cpal's stream callback runs at audio rate
-# (~ every 10 ms). Both hurt at `opt-level = "z"`.
-[profile.dev.package.symphonia]
-opt-level = 3
-[profile.dev.package.symphonia-core]
-opt-level = 3
-[profile.dev.package.symphonia-bundle-mp3]
-opt-level = 3
-[profile.dev.package.symphonia-codec-aac]
-opt-level = 3
-[profile.dev.package.cpal]
-opt-level = 3
-[profile.release.package.symphonia]
-opt-level = 3
-[profile.release.package.symphonia-core]
-opt-level = 3
-[profile.release.package.symphonia-bundle-mp3]
-opt-level = 3
-[profile.release.package.symphonia-codec-aac]
-opt-level = 3
-[profile.release.package.cpal]
-opt-level = 3
 
 # Size-tuned release profile. We optimize for size rather than speed —
 # UI workloads aren't CPU-bound, but bytes-over-the-wire matter for the

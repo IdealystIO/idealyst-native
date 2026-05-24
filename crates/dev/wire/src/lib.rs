@@ -482,15 +482,6 @@ pub enum Command {
         #[serde(default)]
         a11y: WireAccessibilityProps,
     },
-    CreateVideo {
-        id: NodeId,
-        src: String,
-        autoplay: bool,
-        controls: bool,
-        loop_playback: bool,
-        #[serde(default)]
-        a11y: WireAccessibilityProps,
-    },
     CreateActivityIndicator {
         id: NodeId,
         size: WireActivityIndicatorSize,
@@ -651,10 +642,6 @@ pub enum Command {
     UpdateSliderValue {
         node: NodeId,
         value: f32,
-    },
-    UpdateVideoSrc {
-        node: NodeId,
-        src: String,
     },
     SetDisabled {
         node: NodeId,

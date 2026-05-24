@@ -72,7 +72,6 @@ pub enum Event {
     CreateToggle { value: bool },
     CreateScrollView { horizontal: bool },
     CreateSlider { value: f32, min: f32, max: f32, step: Option<f32> },
-    CreateVideo { src: String, autoplay: bool, controls: bool, loop_playback: bool },
     CreateActivityIndicator,
     CreateVirtualizer { overscan: f32, horizontal: bool },
     CreateGraphics,
@@ -99,7 +98,6 @@ pub enum Event {
     UpdateTextInputValue { node: NodeId, value: String },
     UpdateToggleValue { node: NodeId, value: bool },
     UpdateSliderValue { node: NodeId, value: f32 },
-    UpdateVideoSrc { node: NodeId, src: String },
 
     // --- Style ---
     ApplyStyle { node: NodeId },
@@ -674,28 +672,6 @@ impl Backend for MockBackend {
 
     fn update_slider_value(&mut self, node: &Self::Node, value: f32) {
         self.core.record(Event::UpdateSliderValue { node: *node, value });
-    }
-
-    fn create_video(
-        &mut self,
-        src: &str,
-        autoplay: bool,
-        controls: bool,
-        loop_playback: bool,
-        _a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
-        let id = self.core.mint();
-        self.core.record(Event::CreateVideo {
-            src: src.to_string(),
-            autoplay,
-            controls,
-            loop_playback,
-        });
-        id
-    }
-
-    fn update_video_src(&mut self, node: &Self::Node, src: &str) {
-        self.core.record(Event::UpdateVideoSrc { node: *node, src: src.to_string() });
     }
 
     fn create_activity_indicator(

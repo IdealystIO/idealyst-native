@@ -256,7 +256,15 @@ fn generate_sidecar_wrapper(
     // Without it, subsecond's jump table is never consulted, so the
     // user crate has to keep the feature on regardless of how thin the
     // wrapper gets.
-    let fcore_dep = source.dep("crates/runtime/core", &["hot-reload"]);
+    //
+    // `dev` enables the framework's Robot bridge auto-start + the
+    // MCP catalog inventory — without it the sidecar runs the user's
+    // components but `idealyst mcp` finds no components via mDNS.
+    // Local-mount terminal builds get this via `--features
+    // runtime-core/dev` at cargo invocation; the sidecar build is
+    // driven by build-runtime-server (not the launcher's cargo
+    // command), so we declare it on the dep here instead.
+    let fcore_dep = source.dep("crates/runtime/core", &["hot-reload", "dev"]);
     // `runtime-server` is dev-server's opt-in for both `host::run` and
     // `sidecar::run`. It pulls `dev-hot`, `subsecond-types`,
     // `libc`, and `anyhow` into the wrapper transitively — we no
@@ -573,4 +581,95 @@ fn cargo_build_fat(
         anyhow::bail!("[build-runtime-server:{label}] cargo build exited with {status}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod regression_tests {
+    //! Wrapper-shape regression tests for `build-runtime-server`.
+    //!
+    //! These run the wrapper-generation step (cheap, ~ms) without
+    //! the `cargo build` that follows it in the real build flow.
+    //! They guard against pure plumbing bugs — the kind where the
+    //! sidecar compiles fine but, at runtime, doesn't expose what
+    //! the rest of the system expects.
+
+    use super::*;
+    use build_ios::{AppMetadata, Manifest, SplashConfig};
+
+    fn fake_manifest() -> Manifest {
+        Manifest {
+            name: "demo".to_string(),
+            lib_name: "demo".to_string(),
+            app: AppMetadata {
+                name: "Demo".to_string(),
+                bundle_id: Some("ai.example.demo".to_string()),
+                version: "0.0.1".to_string(),
+                splash: SplashConfig {
+                    background: "#000000".to_string(),
+                    title: "Demo".to_string(),
+                    title_color: "#ffffff".to_string(),
+                    duration_ms: 0,
+                },
+                targets: Vec::new(),
+            },
+        }
+    }
+
+    fn fake_source(workspace_root: &Path) -> FrameworkSource {
+        FrameworkSource::Workspace {
+            root: workspace_root.to_path_buf(),
+        }
+    }
+
+    /// The sidecar wrapper's `runtime-core` dep MUST request both
+    /// `hot-reload` AND `dev`. Pre-fix the dev feature was omitted,
+    /// so the user crate inside the sidecar had `runtime-core/dev`
+    /// off — the MCP catalog inventory never registered, and
+    /// `idealyst mcp` returned zero components in runtime-server
+    /// mode while local mode (which passes `--features
+    /// runtime-core/dev` via cargo) worked. This regression test
+    /// fails any change that drops the `dev` feature from the
+    /// sidecar's runtime-core line.
+    #[test]
+    fn sidecar_wrapper_enables_runtime_core_dev_feature() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project_dir = tmp.path().join("project");
+        let sidecar_dir = tmp.path().join("sidecar");
+        let cargo_target = tmp.path().join("target");
+        let workspace_root = tmp.path().join("framework_workspace");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::create_dir_all(&workspace_root).unwrap();
+
+        let manifest = fake_manifest();
+        let source = fake_source(&workspace_root);
+
+        generate_sidecar_wrapper(&sidecar_dir, &project_dir, &source, &cargo_target, &manifest)
+            .expect("generate sidecar wrapper");
+
+        let cargo_toml = std::fs::read_to_string(sidecar_dir.join("Cargo.toml"))
+            .expect("read generated sidecar Cargo.toml");
+        let parsed: toml::Value = toml::from_str(&cargo_toml).expect("valid TOML");
+        let fcore = parsed
+            .get("dependencies")
+            .and_then(|d| d.get("runtime-core"))
+            .expect("sidecar wrapper has runtime-core dep");
+        let features = fcore
+            .get("features")
+            .and_then(|f| f.as_array())
+            .expect("runtime-core dep has [features] array");
+        let names: Vec<&str> = features.iter().filter_map(|v| v.as_str()).collect();
+
+        assert!(
+            names.contains(&"hot-reload"),
+            "sidecar runtime-core dep missing `hot-reload` feature; got {:?}",
+            names,
+        );
+        assert!(
+            names.contains(&"dev"),
+            "sidecar runtime-core dep missing `dev` feature — \
+             MCP catalog will be empty in runtime-server mode. \
+             Got features = {:?}",
+            names,
+        );
+    }
 }

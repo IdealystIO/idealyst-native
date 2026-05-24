@@ -770,3 +770,139 @@ mod tests {
         assert!(bundle_id_to_jni_package("").is_err());
     }
 }
+
+#[cfg(test)]
+mod regression_tests {
+    //! Wrapper-shape regression for `build-android`.
+    //!
+    //! Both modes' wrappers must declare `runtime-core` as a direct
+    //! dep so the launcher's `--features runtime-core/dev` cargo
+    //! invocation resolves. Additionally:
+    //!  - Local mode must path-dep the user crate (the cdylib's
+    //!    JNI bridge calls `<user>::app()` in-process).
+    //!  - Runtime-server mode must NOT depend on the user crate —
+    //!    that ownership belongs to the sidecar; if the wrapper
+    //!    accidentally re-acquired the dep, the Android binary
+    //!    would link two copies of the user code with diverging
+    //!    runtime-core instances and `Primitive` type mismatches
+    //!    would surface at the cdylib's boundary.
+    //!
+    //! These tests run only the generation step (sub-ms) — no
+    //! cargo build, no NDK toolchain access.
+
+    use super::*;
+    use build_ios::{AppMetadata, Manifest, SplashConfig};
+
+    fn fake_manifest() -> Manifest {
+        Manifest {
+            name: "demo".to_string(),
+            lib_name: "demo".to_string(),
+            app: AppMetadata {
+                name: "Demo".to_string(),
+                bundle_id: Some("ai.example.demo".to_string()),
+                version: "0.0.1".to_string(),
+                splash: SplashConfig {
+                    background: "#000000".to_string(),
+                    title: "Demo".to_string(),
+                    title_color: "#ffffff".to_string(),
+                    duration_ms: 0,
+                },
+                targets: Vec::new(),
+            },
+        }
+    }
+
+    fn run_generator(mode: BuildMode) -> (std::path::PathBuf, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project_dir = tmp.path().join("project");
+        let wrapper_dir = tmp.path().join("wrapper");
+        let workspace_root = tmp.path().join("workspace");
+        let toolchain_bin = tmp.path().join("ndk_bin");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::create_dir_all(&workspace_root).unwrap();
+        std::fs::create_dir_all(&toolchain_bin).unwrap();
+        // `generate_wrapper` probes for the NDK clang wrapper before
+        // writing the .cargo/config.toml linker pin. Stub one so the
+        // existence check passes — we never actually invoke it.
+        std::fs::write(toolchain_bin.join("aarch64-linux-android21-clang"), b"").unwrap();
+        let manifest = fake_manifest();
+        let source = FrameworkSource::Workspace { root: workspace_root };
+        generate_wrapper(
+            &wrapper_dir,
+            &project_dir,
+            &source,
+            &manifest,
+            "ai_example_demo",
+            &toolchain_bin,
+            "aarch64-linux-android",
+            21,
+            mode,
+        )
+        .expect("generate wrapper");
+        (wrapper_dir, tmp)
+    }
+
+    fn parse(toml_text: &str) -> toml::Value {
+        toml::from_str(toml_text).expect("valid TOML")
+    }
+
+    #[test]
+    fn local_wrapper_has_runtime_core_dep() {
+        let (wrapper_dir, _tmp) = run_generator(BuildMode::Local);
+        let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap();
+        let parsed = parse(&cargo);
+        assert!(
+            parsed
+                .get("dependencies")
+                .and_then(|d| d.get("runtime-core"))
+                .is_some(),
+            "local Android wrapper missing runtime-core dep — launcher's \
+             `--features runtime-core/dev` will fail. Got:\n{cargo}",
+        );
+    }
+
+    #[test]
+    fn local_wrapper_path_deps_user_crate() {
+        let (wrapper_dir, _tmp) = run_generator(BuildMode::Local);
+        let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap();
+        let parsed = parse(&cargo);
+        let user_dep = parsed
+            .get("dependencies")
+            .and_then(|d| d.get("demo"))
+            .expect("local Android wrapper deps the user crate by name");
+        assert!(
+            user_dep.get("path").is_some(),
+            "user-crate dep must be a path dep; got {:?}",
+            user_dep,
+        );
+    }
+
+    #[test]
+    fn runtime_server_wrapper_has_runtime_core_dep() {
+        let (wrapper_dir, _tmp) = run_generator(BuildMode::RuntimeServer);
+        let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap();
+        let parsed = parse(&cargo);
+        assert!(
+            parsed
+                .get("dependencies")
+                .and_then(|d| d.get("runtime-core"))
+                .is_some(),
+            "runtime-server Android wrapper missing runtime-core dep. Got:\n{cargo}",
+        );
+    }
+
+    #[test]
+    fn runtime_server_wrapper_does_not_dep_user_crate() {
+        let (wrapper_dir, _tmp) = run_generator(BuildMode::RuntimeServer);
+        let cargo = std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap();
+        let parsed = parse(&cargo);
+        assert!(
+            parsed
+                .get("dependencies")
+                .and_then(|d| d.get("demo"))
+                .is_none(),
+            "runtime-server Android wrapper must NOT depend on the user crate \
+             (the sidecar owns it); leaks two runtime-core instances. Got:\n{cargo}",
+        );
+    }
+}
