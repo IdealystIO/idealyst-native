@@ -478,6 +478,13 @@ pub struct WebBackend {
     /// unregistered kinds fall through to a "not supported" placeholder.
     pub(crate) external_handlers:
         runtime_core::ExternalRegistry<WebBackend>,
+    /// Registry of `Primitive::NavigatorExt` handler factories,
+    /// populated by `register_navigator::<P, _>(...)` calls from
+    /// SDK leaf crates (e.g. `stack_navigator::register`).
+    /// `create_navigator_extension` looks the factory up by presentation
+    /// TypeId; unregistered kinds panic at create time.
+    pub(crate) navigator_handlers:
+        runtime_core::NavigatorRegistry<WebBackend>,
     /// Per-node animated-property state. Tracks the most recent
     /// values written via `Backend::set_animated_f32` /
     /// `set_animated_color` so compound properties like CSS
@@ -627,6 +634,7 @@ impl WebBackend {
             blob_asset_urls: std::collections::HashSet::new(),
             font_face_rule_indices: HashMap::new(),
             external_handlers: runtime_core::ExternalRegistry::new(),
+            navigator_handlers: runtime_core::NavigatorRegistry::new(),
             animated_states: HashMap::new(),
         }
     }
@@ -648,6 +656,21 @@ impl WebBackend {
     {
         self.external_handlers
             .register::<T, _>(move |props, backend| handler(props, backend).into());
+    }
+
+    /// Register a navigator-kind handler factory for the per-backend
+    /// `NavigatorRegistry`. SDK leaf crates (`stack_navigator::register`,
+    /// `tab_navigator::register`, etc.) call this once per app
+    /// bootstrap. `P` is the SDK's presentation payload type; the
+    /// factory produces a fresh handler per
+    /// `Primitive::NavigatorExt { type_id: TypeId::of::<P>(), .. }`
+    /// mounted in the tree.
+    pub fn register_navigator<P, F>(&mut self, factory: F)
+    where
+        P: 'static,
+        F: Fn() -> Box<dyn runtime_core::NavigatorHandler<WebBackend>> + 'static,
+    {
+        self.navigator_handlers.register::<P, _>(factory);
     }
 
     /// Register a signal with the JS-side reactive layer so its
@@ -1984,6 +2007,92 @@ impl Backend for WebBackend {
         // dispatched to drawer_navigator_attach_initial, the default
         // ate it, and the home screen never reached the DOM.
         primitives::navigator::attach_initial(self, navigator, screen, scope_id)
+    }
+
+    // ------------------------------------------------------------------
+    // NavigatorExt — unified path for SDK-supplied navigator kinds.
+    //
+    // Web's three legacy navigator kinds (stack, tab, drawer) all run
+    // through the same underlying `NavigatorInstance` machine — the only
+    // thing that differs is the command dispatcher closure installed on
+    // `NavigatorControl`. So our NavigatorExt path can delegate every
+    // post-create method (attach_initial / release / make_handle) to the
+    // existing helpers without per-kind branching. The SDK's
+    // per-backend handler is what supplies the kind-specific dispatch
+    // wiring during `init`.
+    // ------------------------------------------------------------------
+
+    fn create_navigator_extension(
+        &mut self,
+        type_id: std::any::TypeId,
+        type_name: &'static str,
+        presentation: Rc<dyn std::any::Any>,
+        host: runtime_core::NavigatorHost<Self::Node>,
+        _a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        // Resolve the factory the SDK installed at app-bootstrap time.
+        let factory = self
+            .navigator_handlers
+            .get(type_id)
+            .unwrap_or_else(|| {
+                panic!(
+                    "WebBackend::create_navigator_extension: navigator kind '{}' \
+                     is not registered. Did the app forget to call \
+                     `<navigator-sdk>::register(&mut backend)` during bootstrap?",
+                    type_name
+                )
+            });
+        let mut handler = factory();
+        handler.init(self, host, presentation)
+    }
+
+    fn navigator_extension_attach_initial(
+        &mut self,
+        navigator: &Self::Node,
+        screen: Self::Node,
+        scope_id: u64,
+        _options: runtime_core::primitives::navigator::ScreenOptions,
+    ) {
+        // Same uniform path as the per-kind `*_navigator_attach_initial`
+        // methods — web stores all three kinds in the same instance map.
+        primitives::navigator::attach_initial(self, navigator, screen, scope_id)
+    }
+
+    fn release_navigator_extension(&mut self, node: &Self::Node) {
+        primitives::navigator::release(self, node)
+    }
+
+    fn make_navigator_extension_handle(
+        &self,
+        node: &Self::Node,
+    ) -> runtime_core::NavigatorHandle {
+        primitives::navigator::make_handle(self, node)
+    }
+
+    fn apply_navigator_extension_slot_style(
+        &mut self,
+        navigator: &Self::Node,
+        slot: &'static str,
+        style: &Rc<runtime_core::StyleRules>,
+    ) {
+        // SDK builders emit (slot, style) pairs as opaque strings. Map
+        // first-party slot names to the legacy `apply_*_style` methods
+        // so existing CSS-class machinery for navigator chrome works
+        // unchanged. Unknown slots silently no-op (third-party SDKs may
+        // declare slots beyond this set; the legacy backend has no
+        // hooks for them).
+        match slot {
+            "header" => self.apply_navigator_header_style(navigator, style),
+            "title" => self.apply_navigator_title_style(navigator, style),
+            "button" => self.apply_navigator_button_style(navigator, style),
+            "body" => self.apply_navigator_body_style(navigator, style),
+            "tab_bar" => self.apply_tab_bar_style(navigator, style),
+            "tab_icon" => self.apply_tab_icon_style(navigator, style),
+            "tab_label" => self.apply_tab_label_style(navigator, style),
+            "sidebar" => self.apply_drawer_sidebar_style(navigator, style),
+            "scrim" => self.apply_drawer_scrim_style(navigator, style),
+            _ => {}
+        }
     }
 
     fn attach_navigator_layout(

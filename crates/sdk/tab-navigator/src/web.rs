@@ -1,8 +1,153 @@
-//! Web-backend handler stub for Tab navigator. **Not yet wired** — see
-//! `stack-navigator/src/web.rs` for the port checklist; analog applies
-//! here against `backend-web/src/primitives/navigator.rs`'s
-//! `create_tab_navigator` impl.
+//! Web-backend handler for the Tab navigator SDK.
+//!
+//! Phase-1 adapter: synthesizes a legacy `TabNavigatorCallbacks` from
+//! the framework-supplied `NavigatorHost` + the SDK's
+//! `TabPresentation`, then calls `WebBackend::create_tab_navigator`.
+//! Phase-2 will inline the dispatcher closure here.
 
+use crate::{TabPresentation, TabPlacement, MountPolicy};
 use backend_web::WebBackend;
+use runtime_core::{
+    accessibility::AccessibilityProps, primitives::navigator::tabs::TabRegistration, Backend,
+    MountResult, NavigatorCallbacks, NavigatorHandler, NavigatorHost, TabNavigatorCallbacks,
+    TabPlacement as CoreTabPlacement, MountPolicy as CoreMountPolicy,
+};
+use std::any::Any;
+use std::rc::Rc;
+use web_sys::Node;
 
-pub fn register(_backend: &mut WebBackend) {}
+pub struct WebTabHandler;
+
+impl WebTabHandler {
+    pub fn new() -> Self {
+        Self
+    }
+}
+impl Default for WebTabHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Translate the SDK's `TabPlacement` enum to core's identical-shape
+/// `TabPlacement`. The SDK defines its own copy so the SDK doesn't
+/// have to re-export every kind-specific value type from core.
+fn placement_to_core(p: TabPlacement) -> CoreTabPlacement {
+    match p {
+        TabPlacement::Auto => CoreTabPlacement::Auto,
+        TabPlacement::Top => CoreTabPlacement::Top,
+        TabPlacement::Bottom => CoreTabPlacement::Bottom,
+        TabPlacement::Sidebar => CoreTabPlacement::Sidebar,
+    }
+}
+
+fn mount_policy_to_core(m: MountPolicy) -> CoreMountPolicy {
+    match m {
+        MountPolicy::EagerPersistent => CoreMountPolicy::EagerPersistent,
+        MountPolicy::LazyPersistent => CoreMountPolicy::LazyPersistent,
+        MountPolicy::LazyDisposing => CoreMountPolicy::LazyDisposing,
+    }
+}
+
+impl NavigatorHandler<WebBackend> for WebTabHandler {
+    fn init(
+        &mut self,
+        backend: &mut WebBackend,
+        host: NavigatorHost<Node>,
+        presentation: Rc<dyn Any>,
+    ) -> Node {
+        let presentation = presentation
+            .downcast::<TabPresentation>()
+            .expect("WebTabHandler: presentation must be TabPresentation");
+
+        let NavigatorHost {
+            initial_route,
+            initial_path,
+            defer_initial_mount,
+            mount_screen,
+            release_screen,
+            match_path,
+            build_layout,
+            nav_state,
+            depth_changed,
+            active_changed,
+            control,
+        } = host;
+
+        // Adapter: 3-arg mount_screen → 2-arg; state discarded for the
+        // legacy path. Same posture as WebStackHandler.
+        let mount_2arg: Rc<dyn Fn(&'static str, Box<dyn Any>) -> MountResult<Node>> = {
+            let m = mount_screen;
+            Rc::new(move |name, params| m(name, params, None))
+        };
+
+        let navigator = NavigatorCallbacks {
+            initial_route,
+            initial_path,
+            mount_screen: mount_2arg,
+            release_screen,
+            match_path,
+            build_layout,
+            nav_state,
+            depth_changed,
+            defer_initial_mount,
+        };
+
+        // The TabPresentation Rc may still have other strong refs (the
+        // Primitive::NavigatorExt payload itself); clone the inner data
+        // out instead of trying to Rc::try_unwrap.
+        let tabs: Vec<TabRegistration> = presentation
+            .tab_order
+            .iter()
+            .map(|(route, spec)| TabRegistration {
+                route,
+                label: spec.label.clone(),
+                icon: spec.icon.clone(),
+                badge: spec.badge.clone(),
+            })
+            .collect();
+
+        // Bridge the host's typed `active_changed(name, path)` to the
+        // legacy callback's `active_changed(name)` shape. The legacy
+        // tab dispatcher already updates active_path via the route's
+        // `url`, so the path arg is redundant for the existing impl.
+        let active_changed_legacy: Rc<dyn Fn(&'static str)> = {
+            let ac = active_changed;
+            Rc::new(move |name| ac(name, String::new()))
+        };
+
+        let tab_callbacks = TabNavigatorCallbacks {
+            navigator,
+            tabs,
+            placement: placement_to_core(presentation.placement),
+            mount_policy: mount_policy_to_core(presentation.mount_policy),
+            active_changed: active_changed_legacy,
+        };
+
+        backend.create_tab_navigator(tab_callbacks, control, &AccessibilityProps::default())
+    }
+
+    fn attach_initial(
+        &mut self,
+        _backend: &mut WebBackend,
+        _screen: Node,
+        _scope_id: u64,
+        _options: runtime_core::ScreenOptions,
+    ) {
+        unreachable!(
+            "WebTabHandler::attach_initial — WebBackend dispatches via \
+             navigator_extension_attach_initial → uniform machinery"
+        );
+    }
+
+    fn on_command(&mut self, _cmd: runtime_core::NavCommand) {
+        unreachable!(
+            "WebTabHandler::on_command — legacy tab dispatcher owns the \
+             control plane until Phase-2"
+        );
+    }
+}
+
+pub fn register(backend: &mut WebBackend) {
+    backend.register_navigator::<TabPresentation, _>(|| Box::new(WebTabHandler::new()));
+}

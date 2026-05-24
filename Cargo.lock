@@ -1310,6 +1310,7 @@ dependencies = [
  "backend-ios-mobile",
  "backend-web",
  "runtime-core",
+ "web-sys",
 ]
 
 [[package]]
@@ -4206,6 +4207,7 @@ dependencies = [
  "backend-ios-mobile",
  "backend-web",
  "runtime-core",
+ "web-sys",
 ]
 
 [[package]]
@@ -4436,6 +4438,7 @@ dependencies = [
  "backend-ios-mobile",
  "backend-web",
  "runtime-core",
+ "web-sys",
 ]
 
 [[package]]

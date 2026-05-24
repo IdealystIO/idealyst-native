@@ -129,6 +129,11 @@ pub struct IosBackend {
     /// UILabel.
     pub(crate) external_handlers:
         runtime_core::ExternalRegistry<IosBackend>,
+    /// Registry of `Primitive::NavigatorExt` handler factories.
+    /// SDK leaf crates (`stack_navigator::register`, etc.) install
+    /// factories keyed by their presentation TypeId.
+    pub(crate) navigator_handlers:
+        runtime_core::NavigatorRegistry<IosBackend>,
     /// Per-virtualizer side state — keyed by the `UICollectionView`'s
     /// pointer. UIKit holds dataSource + delegate as weak refs, so
     /// we keep the `VirtualizerDataSource` retained here for the
@@ -334,6 +339,7 @@ impl IosBackend {
             view_to_layout: HashMap::new(),
             animated_states: HashMap::new(),
             external_handlers: runtime_core::ExternalRegistry::new(),
+            navigator_handlers: runtime_core::NavigatorRegistry::new(),
             virtualizer_instances: HashMap::new(),
             collection_views: std::collections::HashSet::new(),
         }
@@ -357,6 +363,20 @@ impl IosBackend {
     /// static fallback if the SDK isn't available on iOS).
     pub fn has_external<T: 'static>(&self) -> bool {
         self.external_handlers.has::<T>()
+    }
+
+    /// Register a navigator-kind handler factory for the per-backend
+    /// `NavigatorRegistry`. Mirrors `register_external` but for
+    /// `Primitive::NavigatorExt`. SDK leaf crates
+    /// (`stack_navigator::register`, `tab_navigator::register`,
+    /// `drawer_navigator::register`) call this once during app
+    /// bootstrap.
+    pub fn register_navigator<P, F>(&mut self, factory: F)
+    where
+        P: 'static,
+        F: Fn() -> Box<dyn runtime_core::NavigatorHandler<IosBackend>> + 'static,
+    {
+        self.navigator_handlers.register::<P, _>(factory);
     }
 
     /// `MainThreadMarker` accessor for third-party SDK extension code
