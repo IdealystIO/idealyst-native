@@ -134,6 +134,15 @@ pub struct IosBackend {
     /// factories keyed by their presentation TypeId.
     pub(crate) navigator_handlers:
         runtime_core::NavigatorRegistry<IosBackend>,
+    /// Per-navigator kind tracker, populated by SDK handlers at init
+    /// time. iOS uses two storage maps (`navigator_instances` for
+    /// stack, `tab_drawer_instances` for tab+drawer), so the unified
+    /// `navigator_extension_*` trait methods need to know the kind to
+    /// dispatch correctly. SDK handlers call
+    /// `backend.set_nav_ext_kind(node, NavExtKind::Stack)` etc.
+    /// after their `init` returns.
+    pub(crate) nav_ext_kinds:
+        std::cell::RefCell<HashMap<usize, runtime_core::NavExtKind>>,
     /// Per-virtualizer side state — keyed by the `UICollectionView`'s
     /// pointer. UIKit holds dataSource + delegate as weak refs, so
     /// we keep the `VirtualizerDataSource` retained here for the
@@ -340,6 +349,7 @@ impl IosBackend {
             animated_states: HashMap::new(),
             external_handlers: runtime_core::ExternalRegistry::new(),
             navigator_handlers: runtime_core::NavigatorRegistry::new(),
+            nav_ext_kinds: std::cell::RefCell::new(HashMap::new()),
             virtualizer_instances: HashMap::new(),
             collection_views: std::collections::HashSet::new(),
         }
@@ -377,6 +387,22 @@ impl IosBackend {
         F: Fn() -> Box<dyn runtime_core::NavigatorHandler<IosBackend>> + 'static,
     {
         self.navigator_handlers.register::<P, _>(factory);
+    }
+
+    /// Record the kind of a freshly-created `Primitive::NavigatorExt`
+    /// node. SDK handlers call this from `init` after constructing
+    /// their navigator via the appropriate legacy method, so the
+    /// unified `navigator_extension_*` trait method overrides can route
+    /// to the right per-kind storage at dispatch time.
+    pub fn set_nav_ext_kind(&self, node: &IosNode, kind: runtime_core::NavExtKind) {
+        self.nav_ext_kinds.borrow_mut().insert(node.view_key(), kind);
+    }
+
+    /// Read back the recorded kind for `node`. Returns `None` if no
+    /// SDK handler tagged the node (which would indicate a misconfigured
+    /// SDK — the trait overrides treat `None` as "fall back to stack").
+    pub fn nav_ext_kind(&self, node: &IosNode) -> Option<runtime_core::NavExtKind> {
+        self.nav_ext_kinds.borrow().get(&node.view_key()).copied()
     }
 
     /// `MainThreadMarker` accessor for third-party SDK extension code
@@ -2340,6 +2366,113 @@ impl Backend for IosBackend {
                     sidebar.setBackgroundColor(Some(&c));
                 }
             }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // NavigatorExt — unified path for SDK-supplied navigator kinds.
+    //
+    // iOS uses two per-kind storage maps (`navigator_instances` for
+    // stack; `tab_drawer_instances` for tab+drawer), so each unified
+    // method consults `nav_ext_kinds` (populated by the SDK handler at
+    // init time) to route to the right legacy method.
+    // ------------------------------------------------------------------
+
+    fn create_navigator_extension(
+        &mut self,
+        type_id: std::any::TypeId,
+        type_name: &'static str,
+        presentation: Rc<dyn std::any::Any>,
+        host: runtime_core::NavigatorHost<Self::Node>,
+        _a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        let factory = self
+            .navigator_handlers
+            .get(type_id)
+            .unwrap_or_else(|| {
+                panic!(
+                    "IosBackend::create_navigator_extension: navigator kind '{}' \
+                     is not registered. Did the app forget to call \
+                     `<navigator-sdk>::register(&mut backend)` during bootstrap?",
+                    type_name
+                )
+            });
+        let mut handler = factory();
+        handler.init(self, host, presentation)
+    }
+
+    fn navigator_extension_attach_initial(
+        &mut self,
+        navigator: &Self::Node,
+        screen: Self::Node,
+        scope_id: u64,
+        options: runtime_core::ScreenOptions,
+    ) {
+        match self.nav_ext_kind(navigator) {
+            Some(runtime_core::NavExtKind::Stack) | None => {
+                self.navigator_attach_initial(navigator, screen, scope_id, options)
+            }
+            Some(runtime_core::NavExtKind::Tab) => {
+                self.tab_navigator_attach_initial(navigator, screen, scope_id, options)
+            }
+            Some(runtime_core::NavExtKind::Drawer) => {
+                self.drawer_navigator_attach_initial(navigator, screen, scope_id, options)
+            }
+            Some(runtime_core::NavExtKind::Custom) => {
+                // Third-party SDKs handle their own per-handler dispatch.
+            }
+        }
+    }
+
+    fn release_navigator_extension(&mut self, node: &Self::Node) {
+        match self.nav_ext_kind(node) {
+            Some(runtime_core::NavExtKind::Stack) | None => self.release_navigator(node),
+            Some(runtime_core::NavExtKind::Tab) => self.release_tab_navigator(node),
+            Some(runtime_core::NavExtKind::Drawer) => self.release_drawer_navigator(node),
+            Some(runtime_core::NavExtKind::Custom) => {}
+        }
+        self.nav_ext_kinds.borrow_mut().remove(&node.view_key());
+    }
+
+    fn make_navigator_extension_handle(
+        &self,
+        node: &Self::Node,
+    ) -> runtime_core::NavigatorHandle {
+        match self.nav_ext_kind(node) {
+            Some(runtime_core::NavExtKind::Stack) | None => self.make_navigator_handle(node),
+            Some(runtime_core::NavExtKind::Tab) => {
+                // TabsHandle wraps a NavigatorHandle internally — extract.
+                self.make_tab_navigator_handle(node).inner().clone()
+            }
+            Some(runtime_core::NavExtKind::Drawer) => {
+                self.make_drawer_navigator_handle(node).inner().clone()
+            }
+            Some(runtime_core::NavExtKind::Custom) => {
+                // Third-party kinds: fall back to the trait's default
+                // (a no-op handle). Such SDKs are expected to override
+                // via their own RefFill::NavigatorExt closure.
+                self.make_navigator_handle(node)
+            }
+        }
+    }
+
+    fn apply_navigator_extension_slot_style(
+        &mut self,
+        navigator: &Self::Node,
+        slot: &'static str,
+        style: &Rc<runtime_core::StyleRules>,
+    ) {
+        match slot {
+            "header" => self.apply_navigator_header_style(navigator, style),
+            "title" => self.apply_navigator_title_style(navigator, style),
+            "button" => self.apply_navigator_button_style(navigator, style),
+            "body" => self.apply_navigator_body_style(navigator, style),
+            "tab_bar" => self.apply_tab_bar_style(navigator, style),
+            "tab_icon" => self.apply_tab_icon_style(navigator, style),
+            "tab_label" => self.apply_tab_label_style(navigator, style),
+            "sidebar" => self.apply_drawer_sidebar_style(navigator, style),
+            "scrim" => self.apply_drawer_scrim_style(navigator, style),
+            _ => {}
         }
     }
 

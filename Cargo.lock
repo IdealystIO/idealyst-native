@@ -1309,6 +1309,7 @@ dependencies = [
  "backend-android-mobile",
  "backend-ios-mobile",
  "backend-web",
+ "jni 0.21.1",
  "runtime-core",
  "web-sys",
 ]
@@ -4206,6 +4207,7 @@ dependencies = [
  "backend-android-mobile",
  "backend-ios-mobile",
  "backend-web",
+ "jni 0.21.1",
  "runtime-core",
  "web-sys",
 ]
@@ -4437,6 +4439,7 @@ dependencies = [
  "backend-android-mobile",
  "backend-ios-mobile",
  "backend-web",
+ "jni 0.21.1",
  "runtime-core",
  "web-sys",
 ]

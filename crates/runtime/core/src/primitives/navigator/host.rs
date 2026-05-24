@@ -32,6 +32,27 @@ use super::shared::{LayoutPlan, MountResult, NavCommand, NavState, NavigatorCont
 use std::any::Any;
 use std::rc::Rc;
 
+/// Helper discriminant SDK handlers can use to tell their backend
+/// "this navigator I just created is of kind X". Backends with per-kind
+/// storage (iOS, Android) use this at dispatch time to route
+/// `navigator_extension_attach_initial` / `release` / etc. to the right
+/// legacy method.
+///
+/// Built-in kinds enumerated here so backends can match on them
+/// without depending on the SDK crates. Third-party kinds use
+/// [`NavExtKind::Custom`] with their own marker discriminant — the SDK
+/// handles its own dispatch in that case.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum NavExtKind {
+    Stack,
+    Tab,
+    Drawer,
+    /// Third-party navigator kind. The SDK is responsible for routing
+    /// post-init operations (slot styles, release, attach_initial)
+    /// through its own per-handler bookkeeping.
+    Custom,
+}
+
 /// Affordances the framework provides to a registered navigator
 /// handler. Constructed by the walker when a `Primitive::NavigatorExt`
 /// is realized; consumed by the handler's `init` plus subsequent

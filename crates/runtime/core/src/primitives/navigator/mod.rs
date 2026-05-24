@@ -38,7 +38,7 @@ pub use drawer::{
     ContentBuilder, DrawerContentProps, DrawerHandle, DrawerNavigator, DrawerNavigatorCallbacks,
     DrawerSide, DrawerType,
 };
-pub use host::{NavigatorHandler, NavigatorHost};
+pub use host::{NavExtKind, NavigatorHandler, NavigatorHost};
 pub use registry::{NavigatorHandlerFactory, NavigatorRegistry};
 pub use shared::{
     ambient_navigator, current_screen_state, match_pattern, AmbientNavGuard, DefaultLinkKind,

@@ -78,8 +78,8 @@ pub use walker::{mount, render, Owner};
 pub use primitives::navigator::{
     current_screen_state, match_pattern, ContentBuilder, DefaultLinkKind, DrawerContentProps,
     DrawerHandle, DrawerNavigator, DrawerNavigatorCallbacks, DrawerSide, DrawerType, HeaderButton,
-    HeaderStyle, LayoutPlan, LayoutProps, MountPolicy, MountResult, NavCommand, NavState,
-    Navigator, NavigatorCallbacks, NavigatorControl, NavigatorExtConfig, NavigatorHandle,
+    HeaderStyle, LayoutPlan, LayoutProps, MountPolicy, MountResult, NavCommand, NavExtKind,
+    NavState, Navigator, NavigatorCallbacks, NavigatorControl, NavigatorExtConfig, NavigatorHandle,
     NavigatorHandler, NavigatorHost, NavigatorOps, NavigatorRegistry, Route, RouteParams, Screen,
     ScreenOptions, ScreenStateGuard, TabNavigator, TabNavigatorCallbacks, TabPlacement,
     TabRegistration, TabSpec, TabsHandle,
