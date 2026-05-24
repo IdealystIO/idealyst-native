@@ -958,23 +958,6 @@ pub trait Backend {
     #[allow(unused_variables)]
     fn update_slider_value(&mut self, node: &Self::Node, value: f32) {}
 
-    /// Create a Video element. Static autoplay/controls/loop are
-    /// passed at construction time; reactive `src` updates flow
-    /// through `update_video_src`.
-    #[allow(unused_variables)]
-    fn create_video(
-        &mut self,
-        src: &str,
-        autoplay: bool,
-        controls: bool,
-        loop_playback: bool,
-        a11y: &crate::accessibility::AccessibilityProps,
-    ) -> Self::Node {
-        unimplemented!("create_video not implemented for this backend")
-    }
-    #[allow(unused_variables)]
-    fn update_video_src(&mut self, node: &Self::Node, src: &str) {}
-
     /// Create a loading spinner. Size/color are static at construction.
     #[allow(unused_variables)]
     fn create_activity_indicator(
@@ -1542,11 +1525,6 @@ pub trait Backend {
     }
 
     #[allow(unused_variables)]
-    fn make_video_handle(&self, node: &Self::Node) -> primitives::video::VideoHandle {
-        primitives::video::VideoHandle::new(Rc::new(()), &NoopVideoOps)
-    }
-
-    #[allow(unused_variables)]
     fn make_activity_indicator_handle(
         &self,
         node: &Self::Node,
@@ -1883,6 +1861,103 @@ pub trait Backend {
         // default no-op
     }
 
+    /// Create a navigator extension — the unified dispatch entry point
+    /// for any registered navigator kind. Backends that hold a
+    /// [`NavigatorRegistry`](primitives::navigator::NavigatorRegistry)
+    /// consult it for a factory keyed by `type_id`; on a miss they
+    /// should fall through to a "navigator not registered" placeholder
+    /// node (so the build doesn't crash but the missing wiring is
+    /// visible).
+    ///
+    /// The `host` carries every framework-owned affordance the
+    /// handler needs (mount/release screens, match paths, nav-state
+    /// signals, `NavigatorControl`). `type_id` drives registry
+    /// dispatch; `type_name` is for debug/error messages.
+    ///
+    /// This single method is the unified replacement for the three
+    /// per-kind `create_navigator` / `create_tab_navigator` /
+    /// `create_drawer_navigator` methods. The per-kind methods exist
+    /// in parallel during the migration; new code should land here.
+    #[allow(unused_variables)]
+    fn create_navigator_extension(
+        &mut self,
+        type_id: std::any::TypeId,
+        type_name: &'static str,
+        presentation: Rc<dyn Any>,
+        host: primitives::navigator::NavigatorHost<Self::Node>,
+        a11y: &crate::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        unimplemented!(
+            "create_navigator_extension not implemented for this backend \
+             (navigator kind: {})",
+            type_name
+        )
+    }
+
+    /// Tear down a navigator extension. Default no-op; backends that
+    /// hold per-node handler state override and drop their handler
+    /// entry keyed by `node`.
+    #[allow(unused_variables)]
+    fn release_navigator_extension(&mut self, node: &Self::Node) {
+        // default no-op
+    }
+
+    /// Apply a slot-style update to a navigator extension. The walker
+    /// calls this when the navigator's `.with_style(...)` chain
+    /// resolves a style for an SDK-defined slot (e.g. `"header"`,
+    /// `"tab_bar"`, `"drawer_scrim"`). Backends look up the handler
+    /// associated with `node` and delegate to its
+    /// [`NavigatorHandler::apply_slot_style`].
+    ///
+    /// Default no-op; SDK-specific slot styling without a registered
+    /// handler is silently ignored.
+    #[allow(unused_variables)]
+    fn apply_navigator_extension_slot_style(
+        &mut self,
+        node: &Self::Node,
+        slot: &'static str,
+        style: &Rc<StyleRules>,
+    ) {
+        // default no-op
+    }
+
+    /// Make a `NavigatorHandle` for a navigator extension. Returned
+    /// from inside the backend's `create_navigator_extension` impl
+    /// when the SDK's `bind(...)` fires a `RefFill::NavigatorExt`.
+    /// Default returns a no-op handle (matches the per-kind
+    /// `make_navigator_handle` posture).
+    #[allow(unused_variables)]
+    fn make_navigator_extension_handle(
+        &self,
+        node: &Self::Node,
+    ) -> primitives::navigator::NavigatorHandle {
+        primitives::navigator::NavigatorHandle::new(Rc::new(()), &NoopNavigatorOps)
+    }
+
+    /// Attach the framework-realized initial screen to a navigator
+    /// extension. The backend's handler is responsible for inserting
+    /// `screen` into its native container; this trait method exists so
+    /// the walker can hand the result of its initial `mount_screen`
+    /// call to the registered handler outside the
+    /// `create_navigator_extension` borrow window.
+    ///
+    /// Default panics — backends that implement `create_navigator_extension`
+    /// must also implement this, typically by looking up the handler
+    /// keyed by `node` and delegating to
+    /// [`NavigatorHandler::attach_initial`](primitives::navigator::NavigatorHandler).
+    #[allow(unused_variables)]
+    fn navigator_extension_attach_initial(
+        &mut self,
+        navigator: &Self::Node,
+        screen: Self::Node,
+        scope_id: u64,
+        options: primitives::navigator::ScreenOptions,
+    ) {
+        unimplemented!(
+            "navigator_extension_attach_initial not implemented for this backend"
+        )
+    }
+
     /// Create a portal — render `children` (mounted via subsequent
     /// `insert(node, child)` calls on the returned node) at `target`,
     /// escaping the parent's layout and clipping context.
@@ -2143,13 +2218,6 @@ impl primitives::scroll_view::ScrollViewOps for NoopScrollViewOps {
 
 struct NoopSliderOps;
 impl primitives::slider::SliderOps for NoopSliderOps {}
-
-struct NoopVideoOps;
-impl primitives::video::VideoOps for NoopVideoOps {
-    fn play(&self, _: &dyn Any) {}
-    fn pause(&self, _: &dyn Any) {}
-    fn seek(&self, _: &dyn Any, _: f32) {}
-}
 
 struct NoopActivityIndicatorOps;
 impl primitives::activity_indicator::ActivityIndicatorOps for NoopActivityIndicatorOps {}

@@ -381,7 +381,6 @@ pub enum PrimitiveKind {
     Toggle,
     Slider,
     ScrollView,
-    Video,
     ActivityIndicator,
     Virtualizer,
     Graphics,
@@ -391,6 +390,7 @@ pub enum PrimitiveKind {
     Portal,
     Presence,
     External,
+    NavigatorExt,
 }
 
 /// Default a11y role inferred from the primitive type. Author-supplied
@@ -417,7 +417,6 @@ pub fn default_role(kind: PrimitiveKind) -> Option<Role> {
         PrimitiveKind::Text => Some(Role::Text),
         PrimitiveKind::Image => Some(Role::Image),
         PrimitiveKind::Icon => Some(Role::Image),
-        PrimitiveKind::Video => Some(Role::Image), // platform-native role; video has no first-class ARIA role
 
         // Feedback
         PrimitiveKind::ActivityIndicator => Some(Role::Spinner),
@@ -437,6 +436,7 @@ pub fn default_role(kind: PrimitiveKind) -> Option<Role> {
         PrimitiveKind::View => None,
         PrimitiveKind::Graphics => None, // GPU-rendered content lives in dump_accessibility_tree
         PrimitiveKind::External => None, // third-party content sets its own role
+        PrimitiveKind::NavigatorExt => None, // navigator container is transparent; screens carry their own role
     }
 }
 
@@ -464,7 +464,6 @@ pub fn primitive_kind(p: &crate::Primitive) -> Option<PrimitiveKind> {
         Primitive::Toggle { .. } => Some(PrimitiveKind::Toggle),
         Primitive::Slider { .. } => Some(PrimitiveKind::Slider),
         Primitive::ScrollView { .. } => Some(PrimitiveKind::ScrollView),
-        Primitive::Video { .. } => Some(PrimitiveKind::Video),
         Primitive::ActivityIndicator { .. } => Some(PrimitiveKind::ActivityIndicator),
         Primitive::Virtualizer { .. } => Some(PrimitiveKind::Virtualizer),
         Primitive::Graphics { .. } => Some(PrimitiveKind::Graphics),
@@ -474,6 +473,7 @@ pub fn primitive_kind(p: &crate::Primitive) -> Option<PrimitiveKind> {
         Primitive::Portal { .. } => Some(PrimitiveKind::Portal),
         Primitive::Presence { .. } => Some(PrimitiveKind::Presence),
         Primitive::External { .. } => Some(PrimitiveKind::External),
+        Primitive::NavigatorExt { .. } => Some(PrimitiveKind::NavigatorExt),
         // Control flow — transparent.
         Primitive::When { .. } | Primitive::Switch { .. } | Primitive::Repeat { .. } => None,
     }

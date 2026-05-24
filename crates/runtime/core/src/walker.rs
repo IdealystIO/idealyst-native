@@ -59,6 +59,7 @@ mod icon;
 mod image;
 mod link;
 mod navigator;
+mod navigator_ext;
 mod portal;
 mod presence;
 mod pressable;
@@ -71,7 +72,6 @@ mod text;
 mod text_input;
 mod theme_cohort;
 mod toggle;
-mod video;
 mod view;
 mod virtualizer;
 mod when_switch;
@@ -291,9 +291,6 @@ pub(super) fn build_inner<B: Backend + 'static>(
         Primitive::Slider { value, on_change, min, max, step, style, ref_fill, accessibility, .. } => {
             slider::build(backend, value, on_change, min, max, step, style, ref_fill, accessibility)
         }
-        Primitive::Video { src, autoplay, controls, loop_playback, style, ref_fill, accessibility, .. } => {
-            video::build(backend, src, autoplay, controls, loop_playback, style, ref_fill, accessibility)
-        }
         Primitive::ActivityIndicator { size, color, style, ref_fill, accessibility, .. } => {
             activity_indicator::build(backend, size, color, style, ref_fill, accessibility)
         }
@@ -357,6 +354,26 @@ pub(super) fn build_inner<B: Backend + 'static>(
             accessibility,
             ..
         } => external::build(backend, type_id, type_name, payload, style, ref_fill, accessibility),
+        Primitive::NavigatorExt {
+            type_id,
+            type_name,
+            presentation,
+            config,
+            style,
+            slot_styles,
+            ref_fill,
+            accessibility,
+        } => navigator_ext::build(
+            backend,
+            type_id,
+            type_name,
+            presentation,
+            config,
+            style,
+            slot_styles,
+            ref_fill,
+            accessibility,
+        ),
         Primitive::Portal {
             children,
             target,

@@ -923,6 +923,60 @@ pub struct NavigatorCallbacks<N: Clone + 'static> {
 }
 
 // ---------------------------------------------------------------------------
+// NavigatorExtConfig — shared framework-driven routing for the new
+// `Primitive::NavigatorExt` path. The fields below are what *every*
+// navigator kind needs regardless of presentation. Kind-specific
+// presentation (tab bar items, drawer width, stack header style, etc.)
+// goes in the SDK's typed presentation payload, NOT here.
+// ---------------------------------------------------------------------------
+
+/// The shared, framework-owned routing config carried by every
+/// `Primitive::NavigatorExt`. SDK builders fill this from their
+/// `.screen(...)` / `.layout(...)` / `.default_screen_options(...)`
+/// methods and bundle it alongside their kind-specific presentation
+/// payload.
+///
+/// This is the structural parallel to the existing
+/// `Navigator` / `TabNavigator` / `DrawerNavigator` builder structs'
+/// shared fields. It's what the walker reads to build
+/// [`super::host::NavigatorHost`].
+pub struct NavigatorExtConfig {
+    pub initial: &'static str,
+    pub initial_path: &'static str,
+    pub screens: HashMap<&'static str, RouteEntry>,
+    pub layout: Option<LayoutBuilder>,
+    pub default_options: Option<ScreenOptions>,
+    /// The default activation shape exposed to `Link` primitives inside
+    /// this navigator's screens. Stack-style SDKs set `Push`; tab- and
+    /// drawer-style SDKs set `Select`. The walker pushes this into the
+    /// `NavigatorControl` before building screens so ambient-capture
+    /// works.
+    pub default_link_kind: DefaultLinkKind,
+    /// When `true`, the framework does NOT call `mount_screen` for the
+    /// initial route — the handler self-mounts (typically after reading
+    /// the current URL, web style). Defaults to `false` so SDKs get
+    /// the "framework mounts the initial route, hands the result to
+    /// `attach_initial`" behavior automatically.
+    pub defer_initial_mount: bool,
+}
+
+impl NavigatorExtConfig {
+    /// Build a fresh config with empty routes, no layout, no default
+    /// options, `Push` default link kind, and standard mount semantics.
+    pub fn new(initial: &'static str, initial_path: &'static str) -> Self {
+        Self {
+            initial,
+            initial_path,
+            screens: HashMap::new(),
+            layout: None,
+            default_options: None,
+            default_link_kind: DefaultLinkKind::Push,
+            defer_initial_mount: false,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Layout — author-supplied chrome wrapper, used by web (and any future
 // SSR / DOM-based backend). Native backends ignore it.
 // ---------------------------------------------------------------------------

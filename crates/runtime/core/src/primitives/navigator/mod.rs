@@ -28,6 +28,8 @@
 //! root.
 
 pub mod drawer;
+pub mod host;
+pub mod registry;
 pub mod shared;
 pub mod stack;
 pub mod tabs;
@@ -36,11 +38,13 @@ pub use drawer::{
     ContentBuilder, DrawerContentProps, DrawerHandle, DrawerNavigator, DrawerNavigatorCallbacks,
     DrawerSide, DrawerType,
 };
+pub use host::{NavigatorHandler, NavigatorHost};
+pub use registry::{NavigatorHandlerFactory, NavigatorRegistry};
 pub use shared::{
     ambient_navigator, match_pattern, AmbientNavGuard, DefaultLinkKind, HeaderButton, HeaderStyle,
     LayoutBuilder, LayoutPlan, LayoutProps, MountResult, NavCommand, NavState, NavigatorCallbacks,
-    NavigatorControl, NavigatorHandle, NavigatorOps, ParamsFromSegments, Route, RouteEntry,
-    RouteParams, Screen, ScreenBuilder, ScreenOptions,
+    NavigatorControl, NavigatorExtConfig, NavigatorHandle, NavigatorOps, ParamsFromSegments, Route,
+    RouteEntry, RouteParams, Screen, ScreenBuilder, ScreenOptions,
 };
 pub use stack::Navigator;
 pub use tabs::{

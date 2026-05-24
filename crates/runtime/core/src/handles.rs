@@ -376,7 +376,6 @@ pub enum RefFill {
     Toggle(Box<dyn FnOnce(primitives::toggle::ToggleHandle)>),
     ScrollView(Box<dyn FnOnce(primitives::scroll_view::ScrollViewHandle)>),
     Slider(Box<dyn FnOnce(primitives::slider::SliderHandle)>),
-    Video(Box<dyn FnOnce(primitives::video::VideoHandle)>),
     ActivityIndicator(Box<dyn FnOnce(primitives::activity_indicator::ActivityIndicatorHandle)>),
     Virtualizer(Box<dyn FnOnce(primitives::virtualizer::VirtualizerHandle)>),
     Graphics(Box<dyn FnOnce(primitives::graphics::GraphicsHandle)>),
@@ -391,6 +390,12 @@ pub enum RefFill {
     /// build the user-facing `ExternalHandle<T>` before filling the
     /// `Ref`.
     External(Box<dyn FnOnce(Rc<dyn Any>)>),
+    /// Fill closure for `Primitive::NavigatorExt`. Hands the SDK a
+    /// pre-built `NavigatorHandle` wired to the navigator's control
+    /// plane; the SDK wraps it in its own kind-specific handle type
+    /// (`StackHandle` / `TabsHandle` / `DrawerHandle` / custom) before
+    /// filling the user's `Ref`.
+    NavigatorExt(Box<dyn FnOnce(primitives::navigator::NavigatorHandle)>),
     Presence(Box<dyn FnOnce(primitives::presence::PresenceHandle)>),
 }
 

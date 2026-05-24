@@ -261,18 +261,6 @@ pub enum Primitive {
         #[cfg(feature = "robot")]
         test_id: Option<&'static str>,
     },
-    /// Video playback. URL-only; backends use their native players
-    /// so codec/format support is whatever the platform handles.
-    Video {
-        src: Box<dyn Fn() -> String>,
-        autoplay: bool,
-        controls: bool,
-        /// Field name is `loop_playback` to avoid the `loop` keyword.
-        loop_playback: bool,
-        style: Option<StyleSource>,
-        ref_fill: Option<RefFill>,
-        accessibility: AccessibilityProps,
-    },
     /// Indeterminate loading spinner. No methods — passive widget.
     ActivityIndicator {
         size: primitives::activity_indicator::ActivityIndicatorSize,
@@ -484,6 +472,47 @@ pub enum Primitive {
         ref_fill: Option<RefFill>,
         accessibility: AccessibilityProps,
     },
+    /// Navigator extension — the unified entry point for any
+    /// registered navigator kind. The framework owns the routing
+    /// substrate (route table, screen scopes, ambient capture,
+    /// `NavigatorControl`, hardware-back coordination); the SDK
+    /// crate that supplies the navigator kind owns the *presentation*
+    /// (native chrome, transitions, gestures).
+    ///
+    /// `type_id` keys the per-backend
+    /// [`NavigatorRegistry`](primitives::navigator::NavigatorRegistry)
+    /// lookup that resolves to the handler factory. `presentation` is
+    /// the SDK's typed payload, passed through unchanged to
+    /// [`NavigatorHandler::init`](primitives::navigator::NavigatorHandler).
+    /// `config` carries the shared routing inputs (route table,
+    /// initial route, layout closure, default screen options) the
+    /// framework consumes to build
+    /// [`NavigatorHost`](primitives::navigator::NavigatorHost).
+    ///
+    /// Per-slot styling (`header`, `tab_bar`, `drawer_scrim`, …) is
+    /// SDK-defined: each SDK declares its slot names and the walker
+    /// dispatches each `(slot, style)` pair through
+    /// `Backend::apply_navigator_extension_slot_style`.
+    ///
+    /// Boxed config because `screens` is a `HashMap`.
+    NavigatorExt {
+        type_id: std::any::TypeId,
+        type_name: &'static str,
+        presentation: Rc<dyn Any>,
+        config: Box<primitives::navigator::NavigatorExtConfig>,
+        /// Body style (analogous to a view's `with_style`). Applied
+        /// via the regular `Backend::apply_style` path on the returned
+        /// navigator node.
+        style: Option<StyleSource>,
+        /// SDK-defined per-slot styles. Each entry's `slot` is an
+        /// opaque string identifier the SDK's handler understands —
+        /// the walker dispatches each via
+        /// `apply_navigator_extension_slot_style`. Empty when the SDK
+        /// builder recorded none.
+        slot_styles: Vec<(&'static str, StyleSource)>,
+        ref_fill: Option<RefFill>,
+        accessibility: AccessibilityProps,
+    },
     /// Portal — render `children` at `target` (viewport root, an
     /// anchored element, or a named container) escaping the parent's
     /// layout and clipping context. The lowest-level render-elsewhere
@@ -581,7 +610,6 @@ impl Primitive {
             | Primitive::Toggle { style, .. }
             | Primitive::ScrollView { style, .. }
             | Primitive::Slider { style, .. }
-            | Primitive::Video { style, .. }
             | Primitive::ActivityIndicator { style, .. }
             | Primitive::Virtualizer { style, .. }
             | Primitive::Graphics { style, .. }
@@ -589,7 +617,8 @@ impl Primitive {
             | Primitive::Switch { style, .. }
             | Primitive::Link { style, .. }
             | Primitive::Portal { style, .. }
-            | Primitive::External { style, .. } => {
+            | Primitive::External { style, .. }
+            | Primitive::NavigatorExt { style, .. } => {
                 *style = Some(src);
             }
             Primitive::Navigator(nav) => {
