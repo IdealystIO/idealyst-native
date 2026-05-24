@@ -17,8 +17,7 @@ use std::time::Duration;
 
 use framework_core::animation::{AnimProp, SpringTo, TweenTo};
 use framework_core::{
-    after_ms_scoped, animated, effect, node_ref, raf_loop_scoped, timeline, Ref, TextHandle,
-    ViewHandle,
+    effect, node_ref, raf_loop_scoped, timeline, Ref, TextHandle, ViewHandle,
 };
 
 use crate::color::{lerp_color, srgb_tuple, srgba_tuple};
@@ -90,34 +89,72 @@ pub fn use_welcome() -> WelcomeRefs {
     };
 
     // ---- Animated values, one per (element, property) pair ----
-    let welcome_opacity = animated!(0.0_f32);
-    let welcome_scale = animated!(PHRASE_ENTER_SCALE);
-    let welcome_y = animated!(PHRASE_ENTER_Y);
-    let welcome_color = animated!(srgb_tuple(COLOR_HEADLINE_DARK));
+    //
+    // Declared via `framework_core::session::animated(key, initial)`
+    // so each AV's current value survives `SessionMsg::Rerender`
+    // (hot-patch landing). Combined with the session-relative
+    // [`timeline!`] macro (which fires already-elapsed acts
+    // immediately), this is what stops the welcome scene from
+    // visibly re-running Acts 1/2/3 on every save: the AVs are
+    // already at their post-act values, the re-fired timeline
+    // tweens compute `current == target`, and the scene picks up
+    // continuously from where the previous run left off.
+    //
+    // Keys must be unique within this session — collisions are
+    // last-write-wins. The `welcome_` prefix scopes them so a
+    // larger app composing welcome alongside other components
+    // doesn't accidentally collide.
+    use framework_core::session::animated as keyed;
+    let welcome_opacity = keyed("welcome_opacity", 0.0_f32);
+    let welcome_scale = keyed("welcome_scale", PHRASE_ENTER_SCALE);
+    let welcome_y = keyed("welcome_y", PHRASE_ENTER_Y);
+    let welcome_color = keyed("welcome_color", srgb_tuple(COLOR_HEADLINE_DARK));
 
-    // Page background tweens from light → dark in Act 2. Replaces
-    // the old DarkLayer overlay — the page itself owns the wash.
-    let page_background = animated!(srgb_tuple(COLOR_LIGHT_BG));
+    let page_background = keyed("welcome_page_background", srgb_tuple(COLOR_LIGHT_BG));
 
-    let glare_opacity = animated!(0.0_f32);
-    let glare_scale = animated!(GLARE_INITIAL_SCALE);
-    let sun_core_color = animated!(srgb_tuple(COLOR_SUN_CORE));
-    let sun_corona_color = animated!(srgba_tuple(255.0, 210.0, 110.0, 0.85));
+    let glare_opacity = keyed("welcome_glare_opacity", 0.0_f32);
+    let glare_scale = keyed("welcome_glare_scale", GLARE_INITIAL_SCALE);
+    let sun_core_color = keyed("welcome_sun_core_color", srgb_tuple(COLOR_SUN_CORE));
+    let sun_corona_color = keyed(
+        "welcome_sun_corona_color",
+        srgba_tuple(255.0, 210.0, 110.0, 0.85),
+    );
 
-    let vignette_opacity = animated!(0.0_f32);
-    let vignette_corner_color = animated!(srgba_tuple(255.0, 168.0, 60.0, 0.0));
+    let vignette_opacity = keyed("welcome_vignette_opacity", 0.0_f32);
+    let vignette_corner_color = keyed(
+        "welcome_vignette_corner_color",
+        srgba_tuple(255.0, 168.0, 60.0, 0.0),
+    );
 
-    let subtitle_opacity = animated!(0.0_f32);
-    let subtitle_y = animated!(SUBTITLE_ENTER_Y);
+    let subtitle_opacity = keyed("welcome_subtitle_opacity", 0.0_f32);
+    let subtitle_y = keyed("welcome_subtitle_y", SUBTITLE_ENTER_Y);
 
-    // Planet AVs. `planet_z` carries a 0/1 flip at `sin θ = 0` so
-    // the single view-per-orbit passes both above and below the
-    // content layer — see the raf-driver below for the math.
-    let planet_x = [animated!(0.0_f32), animated!(0.0_f32), animated!(0.0_f32)];
-    let planet_y = [animated!(0.0_f32), animated!(0.0_f32), animated!(0.0_f32)];
-    let planet_alpha = [animated!(0.0_f32), animated!(0.0_f32), animated!(0.0_f32)];
-    let planet_scale = [animated!(1.0_f32), animated!(1.0_f32), animated!(1.0_f32)];
-    let planet_z = [animated!(0.0_f32), animated!(0.0_f32), animated!(0.0_f32)];
+    // Planet AVs — one keyed entry per (planet_index, property).
+    let planet_x = [
+        keyed("welcome_planet_x_0", 0.0_f32),
+        keyed("welcome_planet_x_1", 0.0_f32),
+        keyed("welcome_planet_x_2", 0.0_f32),
+    ];
+    let planet_y = [
+        keyed("welcome_planet_y_0", 0.0_f32),
+        keyed("welcome_planet_y_1", 0.0_f32),
+        keyed("welcome_planet_y_2", 0.0_f32),
+    ];
+    let planet_alpha = [
+        keyed("welcome_planet_alpha_0", 0.0_f32),
+        keyed("welcome_planet_alpha_1", 0.0_f32),
+        keyed("welcome_planet_alpha_2", 0.0_f32),
+    ];
+    let planet_scale = [
+        keyed("welcome_planet_scale_0", 1.0_f32),
+        keyed("welcome_planet_scale_1", 1.0_f32),
+        keyed("welcome_planet_scale_2", 1.0_f32),
+    ];
+    let planet_z = [
+        keyed("welcome_planet_z_0", 0.0_f32),
+        keyed("welcome_planet_z_1", 0.0_f32),
+        keyed("welcome_planet_z_2", 0.0_f32),
+    ];
 
     // ---- Bind each AV to its target ref + property ----
     welcome_opacity.bind(refs.welcome, AnimProp::Opacity);
@@ -198,13 +235,29 @@ pub fn use_welcome() -> WelcomeRefs {
         let planet_scale_clones = planet_scale.clone();
         let planet_z_clones = planet_z.clone();
 
-        after_ms_scoped(glare_start, move || {
+        // `session::after_ms` schedules relative to the session epoch,
+        // not "now". On the first mount it behaves like
+        // `after_ms_scoped(glare_start, ...)`; after a hot-patch
+        // rerender, if we're already past `glare_start` ms into the
+        // session, this fires immediately — so the raf-driven sun
+        // pulse / planet orbit resumes within one frame of the
+        // rerender instead of waiting another 3.2 seconds for the
+        // act timeline to replay.
+        framework_core::session::after_ms(glare_start as u64, move || {
             let period_ms = SUN_PULSE_PERIOD_MS;
             // Wait half a period before the scale pulse takes over
             // the entrance spring — joins on `sin(0) = 0` so the
             // handoff lands at scale 1.0 with no visible jump.
             let scale_gate_ms = period_ms / 2.0;
-            let epoch = framework_core::time::now_micros();
+            // `session::epoch_micros` returns the *first-call* time
+            // for this session thread and survives hot-patch rerenders
+            // (see [framework_core::session]). With plain
+            // `time::now_micros()`, every rerender recaptured a fresh
+            // epoch and the sun pulse / planet orbits visibly snapped
+            // back to their initial phase on every save. Anchoring to
+            // the session epoch keeps the animation phase continuous
+            // across edits.
+            let epoch = framework_core::session::epoch_micros();
             raf_loop_scoped(move || {
                 let now = framework_core::time::now_micros();
                 let elapsed_ms = (now.saturating_sub(epoch) as f64) / 1000.0;

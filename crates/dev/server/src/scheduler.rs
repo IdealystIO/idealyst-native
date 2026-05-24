@@ -267,3 +267,141 @@ pub fn drive_pending() {
         r.borrow_mut().retain(|s| !s.cancelled.get());
     });
 }
+
+#[cfg(test)]
+mod tests {
+    //! Regression coverage for the welcome-class scheduling pattern:
+    //!
+    //!   session::after_ms(at, body) {
+    //!       raf_loop_scoped(per_frame);
+    //!   }
+    //!
+    //! After hot-patch rerender, the session-relative `after_ms`
+    //! computes `delay = 0` (elapsed already past `at`). The
+    //! deadline must fire in the next [`drive_pending`] AND the
+    //! `raf_loop_scoped` registered from inside it must actually
+    //! produce frame callbacks on subsequent drives. The bug under
+    //! investigation: in the live welcome scene, timeline-driven
+    //! tweens flow after rerender but the raf_loop body never fires.
+    use super::*;
+    use framework_core::scheduling::{after_ms_scoped, raf_loop_scoped};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    /// Install the sidecar scheduler exactly once across the whole
+    /// test binary. `framework_core::scheduling::install_scheduler`
+    /// uses a `OnceLock`, so calling install repeatedly is harmless
+    /// — but starting from a clean state per test isn't possible
+    /// either. All scheduling tests therefore have to live with the
+    /// install-once invariant.
+    fn ensure_installed() {
+        super::install();
+    }
+
+    /// Mirror of the welcome coordinator's pattern: schedule an
+    /// `after_ms_scoped(delay, ...)` whose body calls
+    /// `raf_loop_scoped(...)`. Drive once to fire the deadline +
+    /// register the raf, then drive again to verify the raf body
+    /// runs on the next frame.
+    /// Exact welcome-coordinator pattern: an effect is constructed,
+    /// its body schedules a `session::after_ms(at, raf_setup)`
+    /// where `raf_setup` calls `raf_loop_scoped(per_frame)`. We
+    /// drive long enough to pretend the session epoch has advanced
+    /// past `at` (the post-rerender case), then drop the effect
+    /// (mirroring `SessionMsg::Rerender`'s `owner.take()`) and
+    /// rebuild a fresh one. The second pass must produce raf
+    /// callbacks just like the first.
+    #[test]
+    fn rerender_re_registers_nested_raf_loop() {
+        ensure_installed();
+
+        // Helper: build one "lifetime" of the welcome pattern,
+        // return an owning Effect + a per-lifetime call counter.
+        fn build_lifetime() -> (framework_core::Effect, Rc<Cell<u32>>) {
+            let calls = Rc::new(Cell::new(0u32));
+            let calls_for_body = calls.clone();
+            let effect = framework_core::Effect::new(move || {
+                let counter = calls_for_body.clone();
+                // delay=0 matches `session::after_ms(at, ...)` after
+                // the session epoch has already passed `at`.
+                after_ms_scoped(0, move || {
+                    let counter_inner = counter.clone();
+                    raf_loop_scoped(move || {
+                        counter_inner.set(counter_inner.get() + 1);
+                    });
+                });
+            });
+            (effect, calls)
+        }
+
+        // First lifetime — like the initial mount.
+        let (first_effect, first_calls) = build_lifetime();
+        drive_pending();
+        drive_pending();
+        assert!(
+            first_calls.get() >= 2,
+            "first lifetime: raf should fire on each drive (got {})",
+            first_calls.get()
+        );
+
+        // Drop the first effect (simulates Owner::drop on rerender).
+        // Its on_cleanup chain MUST cancel the deadline + raf so the
+        // second lifetime's counters are independent.
+        drop(first_effect);
+        let snapshot_after_drop = first_calls.get();
+        drive_pending();
+        assert_eq!(
+            first_calls.get(),
+            snapshot_after_drop,
+            "first lifetime's raf must stop firing after its effect drops"
+        );
+
+        // Second lifetime — like the post-hot-patch mount.
+        let (_second_effect, second_calls) = build_lifetime();
+        drive_pending();
+        drive_pending();
+        assert!(
+            second_calls.get() >= 2,
+            "second lifetime (post-rerender): raf should fire on each drive (got {})",
+            second_calls.get()
+        );
+    }
+
+    #[test]
+    fn deadline_then_nested_raf_loop_fires_on_next_drive() {
+        ensure_installed();
+
+        let raf_calls = Rc::new(Cell::new(0u32));
+        let raf_calls_for_body = raf_calls.clone();
+        let _effect = framework_core::Effect::new(move || {
+            let raf_calls_inner = raf_calls_for_body.clone();
+            after_ms_scoped(0, move || {
+                let counter = raf_calls_inner.clone();
+                raf_loop_scoped(move || {
+                    counter.set(counter.get() + 1);
+                });
+            });
+        });
+
+        // 1st drive: should fire the deadline (delay=0) which
+        // schedules the raf. The raf body should also fire once
+        // because the snapshot is taken AFTER deadlines run.
+        drive_pending();
+        let after_first = raf_calls.get();
+        // 2nd drive: raf body should fire again.
+        drive_pending();
+        let after_second = raf_calls.get();
+
+        assert!(
+            after_first >= 1,
+            "raf body should fire at least once on the drive that processes the deadline (got {})",
+            after_first
+        );
+        assert!(
+            after_second > after_first,
+            "raf body should fire again on the next drive (first={}, second={})",
+            after_first,
+            after_second
+        );
+    }
+}

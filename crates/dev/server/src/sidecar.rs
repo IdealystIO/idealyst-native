@@ -702,10 +702,29 @@ mod runtime {
                             );
                             match unsafe { framework_hot::apply_patch(table) } {
                                 Ok(()) => {
-                                    eprintln!(
-                                        "[aas-app] patch applied; notifying {} session(s) to re-render",
-                                        sessions.len(),
-                                    );
+                                    if sessions.is_empty() {
+                                        // No clients connected → the patch is loaded
+                                        // into the sidecar's address space but no
+                                        // session thread will exercise the new code.
+                                        // Visible symptom: the user's browser tab
+                                        // (if any) keeps showing the OLD code's
+                                        // output because there's nothing to drive a
+                                        // re-render. Most common cause: the browser
+                                        // tab is from a previous `idealyst dev --aas`
+                                        // and never reconnected to this sidecar —
+                                        // refreshing it should mint a new session
+                                        // and pick up the patch immediately.
+                                        eprintln!(
+                                            "[aas-app] patch applied but NO CLIENTS connected — \
+                                             refresh your browser tab (Cmd+Shift+R) to mint a \
+                                             new session and see the patched code"
+                                        );
+                                    } else {
+                                        eprintln!(
+                                            "[aas-app] patch applied; notifying {} session(s) to re-render",
+                                            sessions.len(),
+                                        );
+                                    }
                                     for (id, handle) in &sessions {
                                         if handle.tx.send(SessionMsg::Rerender).is_err() {
                                             eprintln!(
@@ -816,27 +835,27 @@ mod runtime {
                     dispatch_app_to_dev(&recorder, app_to_dev);
                 }
                 SessionMsg::Rerender => {
-                    // Hot-patch landed. Tear down + re-render so
-                    // structural changes propagate. Order matters:
-                    // the old `Owner` must drop *before*
-                    // `reset_log_and_scene` runs, because Drop fires
-                    // signal-cleanup effects that may still try to
-                    // touch the recorder's scene state.
-                    eprintln!("[aas-app] {session}: rerender step 1/4 — dropping old owner");
+                    // Timing instrumentation — measure where time
+                    // actually goes during a hot-patch rerender so we
+                    // can target the real bottleneck. Per-step
+                    // elapsed reported in microseconds.
+                    let t_total = std::time::Instant::now();
+                    let t_drop = std::time::Instant::now();
                     let drop_result = std::panic::catch_unwind(
                         std::panic::AssertUnwindSafe(|| drop(owner.take())),
                     );
+                    let drop_us = t_drop.elapsed().as_micros();
                     if let Err(e) = drop_result {
                         let msg = panic_payload_to_string(&e);
                         eprintln!(
-                            "[aas-app] {session}: PANIC during old-owner drop: {msg} — \
-                             session is now in a degraded state; sidecar will respawn shortly"
+                            "[aas-app] {session}: PANIC during old-owner drop: {msg}"
                         );
                         return;
                     }
-                    eprintln!("[aas-app] {session}: rerender step 2/4 — resetting recorder");
+                    let t_reset = std::time::Instant::now();
                     recorder.reset_log_and_scene();
-                    eprintln!("[aas-app] {session}: rerender step 3/4 — calling patched app()");
+                    let reset_us = t_reset.elapsed().as_micros();
+                    let t_mount = std::time::Instant::now();
                     let backend_for_mount = backend_rc.clone();
                     let mount_result = std::panic::catch_unwind(
                         std::panic::AssertUnwindSafe(|| {
@@ -845,23 +864,23 @@ mod runtime {
                             })
                         }),
                     );
+                    let mount_us = t_mount.elapsed().as_micros();
                     let new_owner = match mount_result {
                         Ok(o) => o,
                         Err(e) => {
                             let msg = panic_payload_to_string(&e);
                             eprintln!(
-                                "[aas-app] {session}: PANIC during patched mount(app): {msg} — \
-                                 session is now stuck on the old code"
+                                "[aas-app] {session}: PANIC during patched mount(app): {msg}"
                             );
                             return;
                         }
                     };
                     owner = Some(new_owner);
                     cursor = 0;
+                    let cmd_count = recorder.command_count();
                     eprintln!(
-                        "[aas-app] {session}: rerender step 4/4 — sending SessionReset to host \
-                         ({} commands queued)",
-                        recorder.command_count()
+                        "[aas-app] {session}: rerender total={}us (drop={}us reset={}us mount={}us cmds={})",
+                        t_total.elapsed().as_micros(), drop_us, reset_us, mount_us, cmd_count
                     );
                     if let Ok(mut o) = out.lock() {
                         let _ = write_frame(

@@ -15,6 +15,7 @@ mod primitive;
 mod reactive;
 mod safe_area;
 pub mod scheduling;
+pub mod session;
 pub mod time;
 mod sources;
 mod style;
@@ -371,25 +372,33 @@ macro_rules! animate_at {
 #[macro_export]
 macro_rules! timeline {
     ( $( $at:expr => { $( $av:ident : $animator:expr ),* $(,)? } ),* $(,)? ) => {{
-        let mut __tasks: ::std::vec::Vec<$crate::ScheduledTask> = ::std::vec::Vec::new();
+        // The offsets are interpreted as ms-since-session-epoch
+        // (see [`$crate::session::epoch_micros`]). On first mount
+        // the epoch is "now" so this matches the historical
+        // behavior of scheduling at `delay = at` from `now`. After
+        // a hot-patch rerender, the epoch is preserved — already-
+        // elapsed acts fire immediately, and if the AVs they touch
+        // were declared with [`$crate::session::animated`] (and so
+        // retained their current value), the resulting tweens are
+        // `current == target` no-ops. Net effect: the act timeline
+        // doesn't visually replay on every save.
+        //
+        // Each fired body's task is anchored to the current
+        // reactive scope via the underlying `after_ms_scoped`, so
+        // scope cleanup cancels any timer that hasn't fired yet.
         $(
             {
-                let __at = $at;
+                let __at: u64 = $at as u64;
                 $(
                     {
                         let __av = $av.clone();
-                        __tasks.push($crate::after_ms(__at, move || {
+                        $crate::session::after_ms(__at, move || {
                             __av.animate($animator);
-                        }));
+                        });
                     }
                 )*
             }
         )*
-        // Anchor every pending task to the current reactive scope.
-        // When the scope cleans up the `Vec`'s `Drop` runs each
-        // `ScheduledTask`'s `Drop`, cancelling any timer that
-        // hasn't fired yet. Tasks that already fired are no-ops.
-        $crate::on_cleanup(move || drop(__tasks));
     }};
 }
 
