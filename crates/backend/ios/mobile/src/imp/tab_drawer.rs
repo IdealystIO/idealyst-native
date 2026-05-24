@@ -146,7 +146,7 @@ pub(crate) fn create_tab_navigator(
 
     control.install(Box::new(move |cmd| {
         match cmd {
-            NavCommand::Select { name, params, url: _ } => {
+            NavCommand::Select { name, params, url: _, state: _ } => {
                 select_screen(
                     mount_policy,
                     &body_for_dispatch,
@@ -647,7 +647,7 @@ pub(crate) fn create_drawer_navigator(
 
     control.install(Box::new(move |cmd| {
         match cmd {
-            NavCommand::Select { name, params, url: _ } => {
+            NavCommand::Select { name, params, url: _, state: _ } => {
                 backend_ios_core::ios_log(&format!("[drawer] Select: {}", name));
                 let options = select_screen(
                     mount_policy,

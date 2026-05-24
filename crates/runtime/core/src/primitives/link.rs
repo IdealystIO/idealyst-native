@@ -240,10 +240,10 @@ pub(crate) fn make_on_activate(
         let url = url.clone();
         let params = make_params();
         let cmd = match kind {
-            NavKind::Push => NavCommand::Push { name: route, url, params },
-            NavKind::Replace => NavCommand::Replace { name: route, url, params },
-            NavKind::Reset => NavCommand::Reset { name: route, url, params },
-            NavKind::Select => NavCommand::Select { name: route, url, params },
+            NavKind::Push => NavCommand::Push { name: route, url, params, state: None },
+            NavKind::Replace => NavCommand::Replace { name: route, url, params, state: None },
+            NavKind::Reset => NavCommand::Reset { name: route, url, params, state: None },
+            NavKind::Select => NavCommand::Select { name: route, url, params, state: None },
         };
         control.dispatch(cmd);
     })

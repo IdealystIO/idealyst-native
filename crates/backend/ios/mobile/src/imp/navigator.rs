@@ -198,7 +198,7 @@ pub(crate) fn create_navigator(
         let mut stack = stack_ref.borrow_mut();
         eprintln!("  -> stack_len before = {}", stack.len());
         match cmd {
-            NavCommand::Push { name, params, url: _ } => {
+            NavCommand::Push { name, params, url: _, state: _ } => {
                 eprintln!("  -> Push: calling mount_for_dispatch");
                 let result = mount_for_dispatch(name, params);
                 let vc = mount_screen_in_vc(mtm, result.node.as_view());
@@ -224,7 +224,7 @@ pub(crate) fn create_navigator(
                 depth_for_dispatch(stack.len());
                 super::schedule_layout_pass();
             }
-            NavCommand::Replace { name, params, url: _ } => {
+            NavCommand::Replace { name, params, url: _, state: _ } => {
                 let result = mount_for_dispatch(name, params);
                 let vc = mount_screen_in_vc(mtm, result.node.as_view());
                 let scope_id = result.scope_id;
@@ -246,7 +246,7 @@ pub(crate) fn create_navigator(
                 depth_for_dispatch(stack.len());
                 super::schedule_layout_pass();
             }
-            NavCommand::Reset { name, params, url: _ } => {
+            NavCommand::Reset { name, params, url: _, state: _ } => {
                 let result = mount_for_dispatch(name, params);
                 let vc = mount_screen_in_vc(mtm, result.node.as_view());
                 let scope_id = result.scope_id;

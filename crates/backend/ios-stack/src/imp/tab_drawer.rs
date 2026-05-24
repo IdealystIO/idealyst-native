@@ -80,7 +80,7 @@ pub(crate) fn create_tab_navigator(
 
     control.install(Box::new(move |cmd| {
         match cmd {
-            NavCommand::Select { name, params, url: _ } => {
+            NavCommand::Select { name, params, url: _, state: _ } => {
                 if let Some(old_scope) = cs_for_dispatch.borrow_mut().take() {
                     release(old_scope);
                 }
@@ -343,7 +343,7 @@ pub(crate) fn create_drawer_navigator(
 
     control.install(Box::new(move |cmd| {
         match cmd {
-            NavCommand::Select { name, params, url: _ } => {
+            NavCommand::Select { name, params, url: _, state: _ } => {
                 super::ios_log(&format!("[drawer] Select: {}", name));
                 if let Some(old_scope) = cs_for_dispatch.borrow_mut().take() {
                     release(old_scope);

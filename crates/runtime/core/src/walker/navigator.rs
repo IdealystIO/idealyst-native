@@ -1298,6 +1298,7 @@ fn build_drawer_navigator<B: Backend + 'static>(
                         name,
                         url: String::new(),
                         params: Box::new(()),
+                        state: None,
                     });
                 })
             };

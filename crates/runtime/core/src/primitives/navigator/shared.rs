@@ -547,12 +547,27 @@ impl NavigatorHandle {
     /// produced by `params.to_path(route.path())`. On native backends,
     /// the URL is computed but unused.
     pub fn push<P: RouteParams>(&self, route: &Route<P>, params: P) {
+        self.push_with_state(route, params, None::<()>);
+    }
+
+    /// Push a new screen with an opaque `state` payload alongside the
+    /// typed params. The screen builder can read it via
+    /// [`current_screen_state`]. State is `Rc`'d so the dispatch path
+    /// can hand the same payload to the SDK handler + the screen
+    /// builder + any downstream observer without re-cloning.
+    pub fn push_with_state<P: RouteParams, S: Any>(
+        &self,
+        route: &Route<P>,
+        params: P,
+        state: Option<S>,
+    ) {
         if let Some(c) = &self.control {
             let url = params.to_path(route.path);
             c.dispatch(NavCommand::Push {
                 name: route.name,
                 url,
                 params: Box::new(params),
+                state: state.map(|s| Rc::new(s) as Rc<dyn Any>),
             });
             self.ops.notify_pushed(&*self.node, route.name);
         }
@@ -576,12 +591,24 @@ impl NavigatorHandle {
     /// to pop + push for state but skips the platform's push/pop
     /// animation. On web, uses `history.replaceState`.
     pub fn replace<P: RouteParams>(&self, route: &Route<P>, params: P) {
+        self.replace_with_state(route, params, None::<()>);
+    }
+
+    /// Replace top screen with an opaque `state` payload. See
+    /// [`Self::push_with_state`].
+    pub fn replace_with_state<P: RouteParams, S: Any>(
+        &self,
+        route: &Route<P>,
+        params: P,
+        state: Option<S>,
+    ) {
         if let Some(c) = &self.control {
             let url = params.to_path(route.path);
             c.dispatch(NavCommand::Replace {
                 name: route.name,
                 url,
                 params: Box::new(params),
+                state: state.map(|s| Rc::new(s) as Rc<dyn Any>),
             });
             self.ops.notify_replaced(&*self.node, route.name);
         }
@@ -592,12 +619,24 @@ impl NavigatorHandle {
     /// `history.replaceState` (we don't `pushState` because there's
     /// nothing above to navigate back to).
     pub fn reset<P: RouteParams>(&self, route: &Route<P>, params: P) {
+        self.reset_with_state(route, params, None::<()>);
+    }
+
+    /// Reset stack to a new root with an opaque `state` payload. See
+    /// [`Self::push_with_state`].
+    pub fn reset_with_state<P: RouteParams, S: Any>(
+        &self,
+        route: &Route<P>,
+        params: P,
+        state: Option<S>,
+    ) {
         if let Some(c) = &self.control {
             let url = params.to_path(route.path);
             c.dispatch(NavCommand::Reset {
                 name: route.name,
                 url,
                 params: Box::new(params),
+                state: state.map(|s| Rc::new(s) as Rc<dyn Any>),
             });
             self.ops.notify_reset(&*self.node, route.name);
         }
@@ -788,6 +827,14 @@ impl Default for NavigatorControl {
 /// builder boundary. `url` is the concrete URL string produced by
 /// `RouteParams::to_path` — web pushes it; native backends ignore it.
 ///
+/// `state` is an optional author-supplied payload that rides alongside
+/// the routing data. Unlike `params` (which the route declares a typed
+/// shape for and the screen builder consumes), `state` is opaque to
+/// the framework — the registered handler decides what to do with it
+/// (cache it on the screen, route it to the next view's reactive
+/// scope, ignore). Screens can read their `state` via
+/// [`current_screen_state`].
+///
 /// Not every navigator kind handles every command:
 ///
 /// - Stack handles `Push` / `Pop` / `Replace` / `Reset`. `Select` and
@@ -805,17 +852,20 @@ pub enum NavCommand {
         name: &'static str,
         url: String,
         params: Box<dyn Any>,
+        state: Option<Rc<dyn Any>>,
     },
     Pop,
     Replace {
         name: &'static str,
         url: String,
         params: Box<dyn Any>,
+        state: Option<Rc<dyn Any>>,
     },
     Reset {
         name: &'static str,
         url: String,
         params: Box<dyn Any>,
+        state: Option<Rc<dyn Any>>,
     },
     // ----- select-shaped (tabs + drawer) -----
     /// Switch the active screen to `name`. Used by tabs and drawer.
@@ -826,11 +876,68 @@ pub enum NavCommand {
         name: &'static str,
         url: String,
         params: Box<dyn Any>,
+        state: Option<Rc<dyn Any>>,
     },
     // ----- drawer-shaped -----
     OpenDrawer,
     CloseDrawer,
     ToggleDrawer,
+}
+
+// ---------------------------------------------------------------------------
+// Per-screen state — author-supplied opaque payload, accessible from
+// inside the screen's render closure via current_screen_state::<T>().
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    /// Stack of per-screen `state` payloads. Pushed by the framework's
+    /// `mount_screen` wrapper (in [`super::host::NavigatorHost`]'s
+    /// closure) for the duration of the screen build, popped on the
+    /// way out. Reads from outside any screen build return `None`.
+    static SCREEN_STATE: RefCell<Vec<Option<Rc<dyn Any>>>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// RAII guard that pushes a state payload onto the per-screen stack
+/// while a screen is building. Used internally by the framework — SDK
+/// authors generally don't construct this directly.
+pub struct ScreenStateGuard;
+
+impl ScreenStateGuard {
+    /// Push `state` onto the per-screen stack for the duration of this
+    /// guard's lifetime. Drop pops it.
+    pub fn push(state: Option<Rc<dyn Any>>) -> Self {
+        SCREEN_STATE.with(|s| s.borrow_mut().push(state));
+        ScreenStateGuard
+    }
+}
+
+impl Drop for ScreenStateGuard {
+    fn drop(&mut self) {
+        SCREEN_STATE.with(|s| {
+            let _ = s.borrow_mut().pop();
+        });
+    }
+}
+
+/// Read the current screen's `state` payload, downcast to `T`. Returns
+/// `None` when called outside a screen build, when no state was passed
+/// at navigation time, or when the actual stored type isn't `T`.
+///
+/// Example:
+/// ```ignore
+/// .screen(route, |params: MyParams| {
+///     let state: Option<Rc<MyState>> = current_screen_state::<MyState>();
+///     Screen::new(...)
+/// })
+/// ```
+pub fn current_screen_state<T: Any>() -> Option<Rc<T>> {
+    SCREEN_STATE.with(|s| {
+        s.borrow()
+            .last()
+            .and_then(|opt| opt.clone())
+            .and_then(|rc| Rc::downcast::<T>(rc).ok())
+    })
 }
 
 // ---------------------------------------------------------------------------

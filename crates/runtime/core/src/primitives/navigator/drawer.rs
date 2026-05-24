@@ -128,6 +128,7 @@ impl DrawerHandle {
                 name: route.name(),
                 url,
                 params: Box::new(params),
+                state: None,
             });
         }
     }

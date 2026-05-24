@@ -71,13 +71,15 @@ pub(super) fn build<B: Backend + 'static>(
     // mount_screen: build a screen subtree inside its own scope; return
     // (node, scope_id, options). Weak control to avoid Rc-cycle through
     // dispatcher → mount_screen → control.
-    let mount_screen: Rc<dyn Fn(&'static str, Box<dyn Any>) -> MountResult<B::Node>> = {
+    let mount_screen: Rc<
+        dyn Fn(&'static str, Box<dyn Any>, Option<Rc<dyn Any>>) -> MountResult<B::Node>,
+    > = {
         let scopes = scopes.clone();
         let next_id = next_scope_id.clone();
         let screens = screens.clone();
         let backend = backend.clone();
         let control_for_mount = Rc::downgrade(&control);
-        Rc::new(move |name, params| {
+        Rc::new(move |name, params, state| {
             let entry = screens.get(name).unwrap_or_else(|| {
                 panic!("NavigatorExt: route '{}' is not registered", name)
             });
@@ -88,6 +90,10 @@ pub(super) fn build<B: Backend + 'static>(
                 .expect("mount_screen called after navigator dropped");
             let _ambient_guard =
                 primitives::navigator::AmbientNavGuard::push(control_strong);
+            // Per-screen state stack: pushed for the duration of the
+            // screen build so the user's render closure can read it via
+            // `current_screen_state::<T>()`.
+            let _state_guard = primitives::navigator::shared::ScreenStateGuard::push(state);
             let screen_id = crate::Identity::node(
                 nav_identity,
                 0,
@@ -238,7 +244,7 @@ pub(super) fn build<B: Backend + 'static>(
     // build can re-enter the walker. Skipped when defer_initial_mount is set
     // (handler self-mounts, typically web reading the URL on load).
     if !defer_initial_mount {
-        let initial_result = mount_screen(initial, Box::new(()));
+        let initial_result = mount_screen(initial, Box::new(()), None);
         // The handler installed via create_navigator_extension owns the
         // attach_initial flow; the backend dispatches via the stored
         // handler. See `Backend::navigator_extension_attach_initial`.

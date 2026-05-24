@@ -66,7 +66,7 @@ pub(crate) fn create_navigator(
     control.install(Box::new(move |cmd| {
         let mut stack = stack_ref.borrow_mut();
         match cmd {
-            NavCommand::Push { name, params, url: _ } => {
+            NavCommand::Push { name, params, url: _, state: _ } => {
                 let result = mount_for_dispatch(name, params);
                 let vc = mount_screen_in_vc(mtm, result.node.as_view());
                 let scope_id = result.scope_id;
@@ -88,7 +88,7 @@ pub(crate) fn create_navigator(
                 }
                 depth_for_dispatch(stack.len());
             }
-            NavCommand::Replace { name, params, url: _ } => {
+            NavCommand::Replace { name, params, url: _, state: _ } => {
                 let result = mount_for_dispatch(name, params);
                 let vc = mount_screen_in_vc(mtm, result.node.as_view());
                 let scope_id = result.scope_id;
@@ -109,7 +109,7 @@ pub(crate) fn create_navigator(
                 }
                 depth_for_dispatch(stack.len());
             }
-            NavCommand::Reset { name, params, url: _ } => {
+            NavCommand::Reset { name, params, url: _, state: _ } => {
                 let result = mount_for_dispatch(name, params);
                 let vc = mount_screen_in_vc(mtm, result.node.as_view());
                 let scope_id = result.scope_id;

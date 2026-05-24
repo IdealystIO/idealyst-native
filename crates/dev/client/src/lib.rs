@@ -1617,21 +1617,25 @@ where
                 name: "",
                 url: String::new(),
                 params: Box::new(()),
+                state: None,
             },
             NavOp::Replace => NavCommand::Replace {
                 name: "",
                 url: String::new(),
                 params: Box::new(()),
+                state: None,
             },
             NavOp::Reset => NavCommand::Reset {
                 name: "",
                 url: String::new(),
                 params: Box::new(()),
+                state: None,
             },
             NavOp::Select => NavCommand::Select {
                 name: "",
                 url: String::new(),
                 params: Box::new(()),
+                state: None,
             },
         };
         state.control.dispatch(cmd);

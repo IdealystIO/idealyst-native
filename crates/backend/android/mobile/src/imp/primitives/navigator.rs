@@ -138,7 +138,7 @@ pub(crate) fn create(
         // we still want the Rc kept alive on this side.
         let _release_for_dispatch = release_screen.clone();
         control.install(Box::new(move |cmd| match cmd {
-            NavCommand::Push { name, params, url: _ } => {
+            NavCommand::Push { name, params, url: _, state: _ } => {
                 let result = mount_for_dispatch(name, params);
                 let view = result.node;
                 let scope_id = result.scope_id;
@@ -167,7 +167,7 @@ pub(crate) fn create(
                 });
                 depth_for_dispatch(new_depth as usize);
             }
-            NavCommand::Replace { name, params, url: _ } => {
+            NavCommand::Replace { name, params, url: _, state: _ } => {
                 let result = mount_for_dispatch(name, params);
                 let view = result.node;
                 let scope_id = result.scope_id;
@@ -187,7 +187,7 @@ pub(crate) fn create(
                 });
                 depth_for_dispatch(new_depth as usize);
             }
-            NavCommand::Reset { name, params, url: _ } => {
+            NavCommand::Reset { name, params, url: _, state: _ } => {
                 let result = mount_for_dispatch(name, params);
                 let view = result.node;
                 let scope_id = result.scope_id;

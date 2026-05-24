@@ -496,6 +496,7 @@ impl WireRecordingBackend {
                         name,
                         url: url.clone(),
                         params,
+                        state: None,
                     },
                 );
             }
@@ -2411,16 +2412,16 @@ fn navigator_dispatcher_handle(
     };
 
     match cmd {
-        NavCommand::Push { name, url, params } => {
+        NavCommand::Push { name, url, params, .. } => {
             push_like(PushLikeKind::Push, name, url, params, false)
         }
-        NavCommand::Replace { name, url, params } => {
+        NavCommand::Replace { name, url, params, .. } => {
             push_like(PushLikeKind::Replace, name, url, params, false)
         }
-        NavCommand::Reset { name, url, params } => {
+        NavCommand::Reset { name, url, params, .. } => {
             push_like(PushLikeKind::Reset, name, url, params, false)
         }
-        NavCommand::Select { name, url, params } => {
+        NavCommand::Select { name, url, params, .. } => {
             push_like(PushLikeKind::Select, name, url, params, false)
         }
         NavCommand::Pop => {

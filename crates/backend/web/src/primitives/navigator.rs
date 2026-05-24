@@ -580,14 +580,14 @@ pub(crate) fn create(
 ) -> Node {
     create_inner(b, callbacks, control.clone(), move |instance| {
         control.install(Box::new(move |cmd| match cmd {
-            NavCommand::Push { name, url, params } => {
+            NavCommand::Push { name, url, params, .. } => {
                 instance.borrow_mut().push(name, params, url)
             }
             NavCommand::Pop => instance.borrow_mut().pop(),
-            NavCommand::Replace { name, url, params } => {
+            NavCommand::Replace { name, url, params, .. } => {
                 instance.borrow_mut().replace(name, params, url)
             }
-            NavCommand::Reset { name, url, params } => {
+            NavCommand::Reset { name, url, params, .. } => {
                 instance.borrow_mut().reset(name, params, url)
             }
             NavCommand::Select { .. }
@@ -626,7 +626,7 @@ pub(crate) fn create_tab(
     let TabNavigatorCallbacks { navigator, .. } = callbacks;
     create_inner(b, navigator, control.clone(), move |instance| {
         control.install(Box::new(move |cmd| match cmd {
-            NavCommand::Select { name, url, params } => {
+            NavCommand::Select { name, url, params, .. } => {
                 // Selecting the already-active tab is a no-op.
                 {
                     let inst = instance.borrow();
@@ -639,7 +639,7 @@ pub(crate) fn create_tab(
             // `Reset` is accepted as a "go back to initial tab"
             // hatch — useful for analytics flows that programmatically
             // re-home the user.
-            NavCommand::Reset { name, url, params } => {
+            NavCommand::Reset { name, url, params, .. } => {
                 instance.borrow_mut().reset(name, params, url)
             }
             NavCommand::Push { .. }
@@ -677,7 +677,7 @@ pub(crate) fn create_drawer(
     } = callbacks;
     create_inner(b, navigator, control.clone(), move |instance| {
         control.install(Box::new(move |cmd| match cmd {
-            NavCommand::Select { name, url, params } => {
+            NavCommand::Select { name, url, params, .. } => {
                 {
                     let inst = instance.borrow();
                     if inst.stack.last().map(|e| paths_equal(&e.url, &url)).unwrap_or(false) {
@@ -699,7 +699,7 @@ pub(crate) fn create_drawer(
                 is_open.set(false);
                 open_changed(false);
             }
-            NavCommand::Reset { name, url, params } => {
+            NavCommand::Reset { name, url, params, .. } => {
                 instance.borrow_mut().reset(name, params, url);
                 is_open.set(false);
                 open_changed(false);

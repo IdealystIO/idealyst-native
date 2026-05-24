@@ -414,7 +414,7 @@ fn install_instance(
     let dispatcher_instance = instance.clone();
     control.install(Box::new(move |cmd| {
         match cmd {
-            NavCommand::Select { name, params, url: _ } => {
+            NavCommand::Select { name, params, url: _, state: _ } => {
                 swap_body(&dispatcher_instance, name, params);
                 // Auto-close the drawer after selecting an item. On
                 // Android the drawer is a real overlay (DrawerLayout)
@@ -427,7 +427,7 @@ fn install_instance(
                     drawer_jni_call(&dispatcher_instance, "closeDrawerProgrammatic");
                 }
             }
-            NavCommand::Reset { name, params, url: _ } => {
+            NavCommand::Reset { name, params, url: _, state: _ } => {
                 swap_body(&dispatcher_instance, name, params);
                 if matches!(dispatcher_instance.borrow().kind, DrawerKind::Drawer { .. }) {
                     drawer_jni_call(&dispatcher_instance, "closeDrawerProgrammatic");

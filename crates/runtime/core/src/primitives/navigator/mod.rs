@@ -41,10 +41,11 @@ pub use drawer::{
 pub use host::{NavigatorHandler, NavigatorHost};
 pub use registry::{NavigatorHandlerFactory, NavigatorRegistry};
 pub use shared::{
-    ambient_navigator, match_pattern, AmbientNavGuard, DefaultLinkKind, HeaderButton, HeaderStyle,
-    LayoutBuilder, LayoutPlan, LayoutProps, MountResult, NavCommand, NavState, NavigatorCallbacks,
-    NavigatorControl, NavigatorExtConfig, NavigatorHandle, NavigatorOps, ParamsFromSegments, Route,
-    RouteEntry, RouteParams, Screen, ScreenBuilder, ScreenOptions,
+    ambient_navigator, current_screen_state, match_pattern, AmbientNavGuard, DefaultLinkKind,
+    HeaderButton, HeaderStyle, LayoutBuilder, LayoutPlan, LayoutProps, MountResult, NavCommand,
+    NavState, NavigatorCallbacks, NavigatorControl, NavigatorExtConfig, NavigatorHandle,
+    NavigatorOps, ParamsFromSegments, Route, RouteEntry, RouteParams, Screen, ScreenBuilder,
+    ScreenOptions, ScreenStateGuard,
 };
 pub use stack::Navigator;
 pub use tabs::{

@@ -60,7 +60,16 @@ pub struct NavigatorHost<N: Clone + 'static> {
     /// onto the `scope_id` and passes it to `release_screen` when the
     /// screen leaves the navigator (popped, replaced, reset, tab
     /// changed away in `LazyDisposing` mode, etc.).
-    pub mount_screen: Rc<dyn Fn(&'static str, Box<dyn Any>) -> MountResult<N>>,
+    ///
+    /// The third argument is the optional opaque `state` from the
+    /// originating `NavCommand`. The framework pushes it onto the
+    /// per-screen state stack for the duration of the screen build, so
+    /// the screen's render closure can read it via
+    /// [`super::shared::current_screen_state`]. Pass `None` when the
+    /// handler doesn't have state to forward (initial mount, deep-link
+    /// route resolution, etc.).
+    pub mount_screen:
+        Rc<dyn Fn(&'static str, Box<dyn Any>, Option<Rc<dyn Any>>) -> MountResult<N>>,
 
     /// Drop a previously-mounted screen by scope id. Runs the screen's
     /// cleanup effects. Idempotent — releasing an unknown scope id is

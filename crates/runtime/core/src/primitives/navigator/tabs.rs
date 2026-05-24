@@ -176,6 +176,7 @@ impl TabsHandle {
                 name: route.name(),
                 url,
                 params: Box::new(params),
+                state: None,
             });
         }
     }
