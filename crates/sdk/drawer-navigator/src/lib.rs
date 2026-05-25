@@ -1,8 +1,8 @@
 //! First-party Drawer navigator SDK.
 //!
-//! Routes through `Primitive::Navigator`; the registered
-//! `DrawerHandler` drives a platform-native slide-in side panel +
-//! switchable body region.
+//! Routes through `Primitive::Navigator`; the SDK registers a
+//! per-backend `NavigatorHandler` that drives a slide-in side panel
+//! on iOS/Android and a flex-row sidebar + outlet on web.
 //!
 //! # Usage
 //!
@@ -11,93 +11,254 @@
 //!
 //! let home = Route::<()>::new("home", "/");
 //! let nav: Ref<DrawerHandle> = Ref::new();
-//! drawer_navigator::DrawerNavigator::new(&home)
-//!     .screen(home.clone(), |_| Screen::new(...))
+//!
+//! let sidebar = view! { Sidebar { /* ... */ } };
+//!
+//! DrawerNavigator::new(&home)
+//!     .screen(home.clone(), |_| {
+//!         Screen::new(view!{ /* body */ }).with(
+//!             DrawerScreenOptions::new().title("Home")
+//!         )
+//!     })
+//!     .sidebar(sidebar)
 //!     .drawer_width(280.0)
 //!     .side(DrawerSide::Start)
-//!     .content(|props| /* sidebar content */)
-//!     .bind(nav.clone())
+//!     .bind(nav.clone());
 //! ```
 
 use runtime_core::primitives::navigator::{
-    DefaultLinkKind, NavigatorConfig, NavigatorHandle, Route, RouteEntry, RouteParams,
-    ScreenBuilder, ScreenOptions,
+    NavCommand, NavigatorConfig, NavigatorHandle, NavigatorOps, Route, RouteEntry, RouteParams,
+    Screen, ScreenBuilder,
 };
 use runtime_core::{
-    Bound, Color, HeaderStyle, IntoStyleSource, Primitive, Ref, RefFill, Signal, StyleApplication,
-    StyleRules, StyleSheet, StyleSource, VariantSet,
+    Bound, Color, IntoStyleSource, Primitive, Ref, RefFill, Signal, StyleApplication, StyleRules,
+    StyleSheet, StyleSource, VariantSet,
 };
 use std::any::{Any, TypeId};
-use std::cell::Cell;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 // =============================================================================
-// Drawer-specific value types
+// Per-kind value types (SDK-owned — no privilege in core)
 // =============================================================================
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Default)]
 pub enum DrawerSide {
+    #[default]
     Start,
     End,
 }
-impl Default for DrawerSide {
-    fn default() -> Self {
-        DrawerSide::Start
-    }
-}
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Default)]
 pub enum DrawerType {
+    #[default]
     Front,
     Slide,
 }
-impl Default for DrawerType {
-    fn default() -> Self {
-        DrawerType::Front
-    }
-}
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Default)]
 pub enum MountPolicy {
     EagerPersistent,
+    #[default]
     LazyPersistent,
     LazyDisposing,
 }
-impl Default for MountPolicy {
-    fn default() -> Self {
-        MountPolicy::LazyPersistent
+
+/// Bundle of header colors for `DrawerBuilder::header(...)`. Each
+/// field optional — `None` keeps the platform default for that slot.
+#[derive(Default, Clone)]
+pub struct HeaderStyle {
+    pub background: Option<Color>,
+    pub title: Option<Color>,
+    pub tint: Option<Color>,
+    pub body_background: Option<Color>,
+}
+
+/// Icon-based header bar button.
+#[derive(Clone)]
+pub struct BarButton {
+    pub icon: String,
+    pub on_press: Rc<dyn Fn()>,
+    pub tint: Option<Color>,
+}
+
+impl BarButton {
+    pub fn new(icon: impl Into<String>, on_press: impl Fn() + 'static) -> Self {
+        Self {
+            icon: icon.into(),
+            on_press: Rc::new(on_press),
+            tint: None,
+        }
+    }
+
+    pub fn tint(mut self, color: Color) -> Self {
+        self.tint = Some(color);
+        self
     }
 }
 
-// Re-export `DrawerContentProps` / `ContentBuilder` from runtime-core
-// so authors can use a single canonical type regardless of whether
-// they're driving the legacy `Primitive::DrawerNavigator` or the new
-// SDK path. Same fields, same semantics.
-pub use runtime_core::{ContentBuilder, DrawerContentProps};
+// =============================================================================
+// DrawerSlotProps + sidebar builder
+// =============================================================================
 
-/// Drawer-kind presentation payload.
+/// Reactive props the `.sidebar_with(closure)` form receives.
+/// Captures the framework's nav state alongside drawer-specific
+/// signals so a reactive sidebar can highlight the active route,
+/// observe open/close state, etc.
+pub struct DrawerSlotProps {
+    pub active_route: Signal<&'static str>,
+    pub active_path: Signal<String>,
+    pub depth: Signal<usize>,
+    pub can_go_back: Signal<bool>,
+    pub is_open: Signal<bool>,
+    pub on_select: Rc<dyn Fn(&'static str)>,
+    pub on_close: Rc<dyn Fn()>,
+}
+
+/// SDK-defined sidebar builder. The presentation stores one of these;
+/// the per-backend handler invokes it via `host.build_node` to
+/// materialize the sidebar UIView/Node/DOM-element.
+pub type SidebarBuilder = Rc<dyn Fn(DrawerSlotProps) -> Primitive>;
+
+// =============================================================================
+// DrawerScreenOptions — per-screen typed options
+// =============================================================================
+
+/// SDK-defined per-screen options. Authors set fields via the
+/// `DrawerScreenExt` extension trait on `Screen` (or by passing a
+/// `DrawerScreenOptions` to `Screen::with(...)` directly).
+#[derive(Default, Clone)]
+pub struct DrawerScreenOptions {
+    pub title: Option<String>,
+    pub header_shown: Option<bool>,
+    pub header_left: Option<BarButton>,
+    pub header_right: Option<BarButton>,
+    pub header_background: Option<Rc<dyn Fn() -> Color>>,
+    pub header_tint: Option<Rc<dyn Fn() -> Color>>,
+    pub title_color: Option<Rc<dyn Fn() -> Color>>,
+}
+
+impl DrawerScreenOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn title(mut self, t: impl Into<String>) -> Self {
+        self.title = Some(t.into());
+        self
+    }
+
+    pub fn header_shown(mut self, shown: bool) -> Self {
+        self.header_shown = Some(shown);
+        self
+    }
+
+    pub fn header_left(mut self, btn: BarButton) -> Self {
+        self.header_left = Some(btn);
+        self
+    }
+
+    pub fn header_right(mut self, btn: BarButton) -> Self {
+        self.header_right = Some(btn);
+        self
+    }
+
+    pub fn header_background<F: Fn() -> Color + 'static>(mut self, f: F) -> Self {
+        self.header_background = Some(Rc::new(f));
+        self
+    }
+
+    pub fn header_tint<F: Fn() -> Color + 'static>(mut self, f: F) -> Self {
+        self.header_tint = Some(Rc::new(f));
+        self
+    }
+
+    pub fn title_color<F: Fn() -> Color + 'static>(mut self, f: F) -> Self {
+        self.title_color = Some(Rc::new(f));
+        self
+    }
+}
+
+/// Extension trait adding drawer-specific builder methods to
+/// `Screen`. Authors `use drawer_navigator::DrawerScreenExt;` to
+/// gain `.title(...) / .header_left(...) / .header_right(...)`
+/// directly on `Screen::new(...)` results.
+pub trait DrawerScreenExt: Sized {
+    fn title(self, t: impl Into<String>) -> Self;
+    fn header_shown(self, shown: bool) -> Self;
+    fn header_left(self, btn: BarButton) -> Self;
+    fn header_right(self, btn: BarButton) -> Self;
+    fn header_background<F: Fn() -> Color + 'static>(self, f: F) -> Self;
+    fn header_tint<F: Fn() -> Color + 'static>(self, f: F) -> Self;
+    fn title_color<F: Fn() -> Color + 'static>(self, f: F) -> Self;
+}
+
+impl DrawerScreenExt for Screen {
+    fn title(self, t: impl Into<String>) -> Self {
+        with_drawer_options(self, |o| o.title = Some(t.into()))
+    }
+    fn header_shown(self, shown: bool) -> Self {
+        with_drawer_options(self, |o| o.header_shown = Some(shown))
+    }
+    fn header_left(self, btn: BarButton) -> Self {
+        with_drawer_options(self, |o| o.header_left = Some(btn))
+    }
+    fn header_right(self, btn: BarButton) -> Self {
+        with_drawer_options(self, |o| o.header_right = Some(btn))
+    }
+    fn header_background<F: Fn() -> Color + 'static>(self, f: F) -> Self {
+        with_drawer_options(self, |o| o.header_background = Some(Rc::new(f)))
+    }
+    fn header_tint<F: Fn() -> Color + 'static>(self, f: F) -> Self {
+        with_drawer_options(self, |o| o.header_tint = Some(Rc::new(f)))
+    }
+    fn title_color<F: Fn() -> Color + 'static>(self, f: F) -> Self {
+        with_drawer_options(self, |o| o.title_color = Some(Rc::new(f)))
+    }
+}
+
+fn with_drawer_options(
+    mut screen: Screen,
+    f: impl FnOnce(&mut DrawerScreenOptions),
+) -> Screen {
+    let existing = screen
+        .options
+        .downcast_ref::<DrawerScreenOptions>()
+        .cloned()
+        .unwrap_or_default();
+    let mut opts = existing;
+    f(&mut opts);
+    screen.options = Box::new(opts);
+    screen
+}
+
+// =============================================================================
+// DrawerPresentation — SDK's typed payload riding on Primitive::Navigator
+// =============================================================================
+
 pub struct DrawerPresentation {
     pub side: DrawerSide,
     pub drawer_type: DrawerType,
     pub drawer_width: f32,
     pub swipe_to_open: bool,
     pub mount_policy: MountPolicy,
-    pub content: Option<ContentBuilder>,
-    /// Shared open-state signal — created once at builder time and
-    /// observed by both the per-backend handler's command dispatcher
-    /// (writes Open/Close/Toggle) and the SDK's `.layout(...)` wrap
-    /// (reads into `DrawerContentProps.is_open` so user content
-    /// closures see the live state). Pre-bridge, the handler and
-    /// content closure each held a *different* `Signal<bool>` and
-    /// the content never saw the drawer open / close.
+    /// Sidebar Primitive builder. Author sets via `.sidebar(prim)` or
+    /// `.sidebar_with(closure)`. SDK handler invokes during `init` (via
+    /// `host.build_node` deferred to microtask) to materialize the
+    /// sidebar native view.
+    ///
+    /// `RefCell<Option<…>>` because the SDK handler needs to take
+    /// ownership when materializing. Once taken, the slot is empty
+    /// (subsequent reads see `None`).
+    pub sidebar: RefCell<Option<SidebarBuilder>>,
+    /// Shared open-state signal — read by both the SDK handler's
+    /// dispatcher (writes Open/Close/Toggle) and the sidebar builder
+    /// via `DrawerSlotProps.is_open`.
     pub is_open: Signal<bool>,
 }
 
 impl DrawerPresentation {
-    /// Construct a fresh presentation. Allocates `is_open` in the
-    /// caller's active reactive scope — typically the user component
-    /// that's invoking `DrawerNavigator::new(...)`.
     fn new() -> Self {
         Self {
             side: DrawerSide::default(),
@@ -105,10 +266,23 @@ impl DrawerPresentation {
             drawer_width: 280.0,
             swipe_to_open: true,
             mount_policy: MountPolicy::default(),
-            content: None,
+            sidebar: RefCell::new(None),
             is_open: Signal::new(false),
         }
     }
+}
+
+// =============================================================================
+// Drawer NavCommand verbs — SDK-specific, packed in NavCommand::Custom
+// =============================================================================
+
+/// Drawer-specific verbs that ride on `NavCommand::Custom`. The SDK
+/// handler's dispatcher downcasts the `Custom` payload to this.
+#[derive(Copy, Clone, Debug)]
+pub enum DrawerCmd {
+    Open,
+    Close,
+    Toggle,
 }
 
 // =============================================================================
@@ -118,46 +292,57 @@ impl DrawerPresentation {
 #[derive(Clone)]
 pub struct DrawerHandle {
     inner: NavigatorHandle,
-    /// Mirror of the drawer's open state, set by the registered handler
-    /// when its `on_command` processes Open/Close/Toggle.
-    is_open: Rc<Cell<bool>>,
+    /// Mirror of the open-state signal that lives on the presentation;
+    /// stashed here so `handle.is_open()` doesn't need to round-trip
+    /// through ambient lookup. Same `Signal<bool>` instance.
+    is_open: Signal<bool>,
 }
 
 impl DrawerHandle {
-    pub fn from_inner(inner: NavigatorHandle, is_open: Rc<Cell<bool>>) -> Self {
+    pub fn from_inner(inner: NavigatorHandle, is_open: Signal<bool>) -> Self {
         Self { inner, is_open }
     }
 
-    pub fn select<P: RouteParams>(&self, route: &Route<P>, params: P) {
-        self.inner.replace(route, params);
+    pub fn select<P: RouteParams + Clone>(&self, route: &Route<P>, params: P) {
+        let url = params.to_path(route.path());
+        self.inner.dispatch(NavCommand::Select {
+            name: route.name(),
+            url,
+            params: Box::new(params),
+            state: None,
+        });
     }
 
     pub fn open(&self) {
-        if let Some(c) = self.inner.control() {
-            c.dispatch(runtime_core::primitives::navigator::NavCommand::OpenDrawer);
-        }
+        self.inner.dispatch(NavCommand::Custom(Rc::new(DrawerCmd::Open)));
     }
 
     pub fn close(&self) {
-        if let Some(c) = self.inner.control() {
-            c.dispatch(runtime_core::primitives::navigator::NavCommand::CloseDrawer);
-        }
+        self.inner.dispatch(NavCommand::Custom(Rc::new(DrawerCmd::Close)));
     }
 
     pub fn toggle(&self) {
-        if let Some(c) = self.inner.control() {
-            c.dispatch(runtime_core::primitives::navigator::NavCommand::ToggleDrawer);
-        }
+        self.inner.dispatch(NavCommand::Custom(Rc::new(DrawerCmd::Toggle)));
     }
 
     pub fn is_open(&self) -> bool {
         self.is_open.get()
     }
 
+    pub fn is_open_signal(&self) -> Signal<bool> {
+        self.is_open
+    }
+
     pub fn inner(&self) -> &NavigatorHandle {
         &self.inner
     }
 }
+
+/// No-op `NavigatorOps` for the handle. Drawer doesn't carry per-op
+/// hooks; the dispatcher closure does everything.
+struct DrawerOps;
+impl NavigatorOps for DrawerOps {}
+pub(crate) static DRAWER_OPS: DrawerOps = DrawerOps;
 
 // =============================================================================
 // Builder
@@ -174,15 +359,7 @@ pub struct DrawerNavigator {
 impl DrawerNavigator {
     pub fn new(initial: &Route<()>) -> Bound<DrawerHandle> {
         let nav = Self {
-            config: NavigatorConfig {
-                initial: initial.name(),
-                initial_path: initial.path(),
-                screens: HashMap::new(),
-                layout: None,
-                default_options: None,
-                default_link_kind: DefaultLinkKind::Select,
-                defer_initial_mount: false,
-            },
+            config: NavigatorConfig::new(initial.name(), initial.path()),
             presentation: DrawerPresentation::new(),
             slot_styles: Vec::new(),
             style: None,
@@ -206,78 +383,72 @@ impl DrawerNavigator {
     }
 }
 
-fn with_navigator_ext<F: FnOnce(&mut Primitive)>(b: &mut Bound<DrawerHandle>, f: F) {
+fn with_navigator_prim<F: FnOnce(&mut Primitive)>(b: &mut Bound<DrawerHandle>, f: F) {
     f(b.primitive_mut());
 }
 
-fn with_presentation<F: FnOnce(&mut DrawerPresentation)>(b: &mut Bound<DrawerHandle>, f: F) {
+fn with_presentation<F: FnOnce(&DrawerPresentation)>(b: &mut Bound<DrawerHandle>, f: F) {
+    if let Primitive::Navigator { presentation, .. } = b.primitive_mut() {
+        if let Some(pres) = presentation.downcast_ref::<DrawerPresentation>() {
+            f(pres);
+        }
+    }
+}
+
+fn with_presentation_mut<F: FnOnce(&mut DrawerPresentation)>(
+    b: &mut Bound<DrawerHandle>,
+    f: F,
+) {
     if let Primitive::Navigator { presentation, .. } = b.primitive_mut() {
         let pres = Rc::get_mut(presentation)
             .expect("drawer-navigator: presentation Rc already shared (builder misuse)");
-        let pres: &mut dyn Any = pres;
-        if let Some(typed) = pres.downcast_mut::<DrawerPresentation>() {
+        if let Some(typed) = (pres as &mut dyn Any).downcast_mut::<DrawerPresentation>() {
             f(typed);
         }
     }
 }
 
 /// Builder method surface for `Bound<DrawerHandle>`. Orphan-rule
-/// workaround — see [`crate::DrawerNavigator`] doc.
+/// workaround — `Bound` lives in runtime-core, so the methods ride
+/// on a trait the user `use`s.
 pub trait DrawerBuilder: Sized {
     fn screen<P, R, F>(self, route: Route<P>, render: F) -> Self
     where
         P: RouteParams + 'static,
-        R: Into<runtime_core::primitives::navigator::Screen> + 'static,
+        R: Into<Screen> + 'static,
         F: Fn(P) -> R + 'static;
     fn drawer_width(self, width: f32) -> Self;
     fn side(self, side: DrawerSide) -> Self;
     fn drawer_type(self, dt: DrawerType) -> Self;
     fn swipe_to_open(self, enabled: bool) -> Self;
     fn mount_policy(self, policy: MountPolicy) -> Self;
-    fn content<F>(self, f: F) -> Self
+    /// Pass a pre-built sidebar Primitive. Used when the sidebar
+    /// doesn't need reactive access to nav state.
+    fn sidebar(self, prim: Primitive) -> Self;
+    /// Pass a builder closure that receives reactive `DrawerSlotProps`
+    /// (active route, is_open, on_select, on_close). Used when the
+    /// sidebar's content needs to react to nav state — nav-link
+    /// highlights, animated open/close, etc.
+    fn sidebar_with<F>(self, f: F) -> Self
     where
-        F: Fn(DrawerContentProps) -> Primitive + 'static;
-    fn default_screen_options(self, opts: ScreenOptions) -> Self;
-    fn layout<F>(self, f: F) -> Self
-    where
-        F: Fn(runtime_core::primitives::navigator::LayoutProps) -> Primitive + 'static;
+        F: Fn(DrawerSlotProps) -> Primitive + 'static;
     fn sidebar_style(self, s: impl IntoStyleSource) -> Self;
     fn scrim_style(self, s: impl IntoStyleSource) -> Self;
-    /// Bundled header styling — decomposes a `HeaderStyle`-returning
-    /// closure into individual slot-style entries the handler dispatches
-    /// via `apply_navigator_slot_style`. Each `Some(...)`
-    /// field on the initial probe becomes its own per-slot reactive
-    /// effect; fields that flip from `Some` to `None` at runtime
-    /// panic, matching the legacy `Navigator::header` contract.
-    ///
-    /// Theme reactivity comes from the closure itself reading from
-    /// theme signals — the resulting `StyleSource::Reactive` re-fires
-    /// when any signal touched inside the closure changes.
+    /// Bundled header styling — sets background/title/tint/body
+    /// colors via per-slot reactive style sources the SDK dispatches
+    /// via `apply_slot_style`.
     fn header<F>(self, f: F) -> Self
     where
         F: Fn() -> HeaderStyle + 'static;
     fn bind(self, r: Ref<DrawerHandle>) -> Self;
 }
 
-/// What CSS-level property a `HeaderStyle` Color drives through the
-/// slot-style pipeline.
 #[derive(Copy, Clone)]
 enum HeaderProp {
-    /// `rules.background` — backgrounds of the header bar and body.
     Background,
-    /// `rules.color` — text/tint color (title text + button icons).
     Color,
 }
 
-/// Build a `StyleSource::Reactive` that reads a specific `Color` field
-/// out of `f()`'s `HeaderStyle` and produces a single-property
-/// `StyleApplication`. Used by `.header(...)` to decompose a
-/// `Fn() -> HeaderStyle` closure into per-slot reactive style sources
-/// the SDK can dispatch via the standard slot-style pipeline.
-///
-/// `field_name` is purely for the panic message — it names the
-/// `HeaderStyle` field that's expected to stay `Some` for the
-/// navigator's lifetime.
 fn header_slot_source(
     f: Rc<dyn Fn() -> HeaderStyle>,
     getter: fn(&HeaderStyle) -> &Option<Color>,
@@ -288,9 +459,8 @@ fn header_slot_source(
         let style = f();
         let color = getter(&style).clone().unwrap_or_else(|| {
             panic!(
-                "DrawerBuilder::header — HeaderStyle.{} must stay Some \
-                 after the initial probe (toggling to None at runtime \
-                 isn't supported).",
+                "DrawerBuilder::header — HeaderStyle.{} must stay Some after \
+                 the initial probe (toggling to None at runtime isn't supported).",
                 field_name
             )
         });
@@ -307,145 +477,83 @@ impl DrawerBuilder for Bound<DrawerHandle> {
     fn screen<P, R, F>(mut self, route: Route<P>, render: F) -> Self
     where
         P: RouteParams + 'static,
-        R: Into<runtime_core::primitives::navigator::Screen> + 'static,
+        R: Into<Screen> + 'static,
         F: Fn(P) -> R + 'static,
     {
         let route_name = route.name();
         let route_path = route.path();
-        with_navigator_ext(&mut self, |p| {
+        with_navigator_prim(&mut self, |p| {
             if let Primitive::Navigator { config, .. } = p {
                 let builder: ScreenBuilder = Rc::new(move |any_params: Box<dyn Any>| {
                     let typed: Box<P> = any_params
                         .downcast::<P>()
-                        .expect("drawer-navigator: route params type mismatch on mount");
+                        .expect("drawer-navigator: route params type mismatch");
                     render(*typed).into()
                 });
-                let from_segments = Rc::new(|segs: &HashMap<String, String>| -> Option<Box<dyn Any>> {
-                    P::from_segments(segs).map(|p| Box::new(p) as Box<dyn Any>)
-                });
-                config.screens.insert(route_name, RouteEntry {
-                    path: route_path,
-                    build: builder,
-                    from_segments,
-                });
+                let from_segments = Rc::new(
+                    |segs: &HashMap<String, String>| -> Option<Box<dyn Any>> {
+                        P::from_segments(segs).map(|p| Box::new(p) as Box<dyn Any>)
+                    },
+                );
+                config.screens.insert(
+                    route_name,
+                    RouteEntry { path: route_path, build: builder, from_segments },
+                );
             }
         });
         self
     }
 
     fn drawer_width(mut self, width: f32) -> Self {
-        with_presentation(&mut self, |pres| pres.drawer_width = width);
+        with_presentation_mut(&mut self, |p| p.drawer_width = width);
         self
     }
-
     fn side(mut self, side: DrawerSide) -> Self {
-        with_presentation(&mut self, |pres| pres.side = side);
+        with_presentation_mut(&mut self, |p| p.side = side);
         self
     }
-
     fn drawer_type(mut self, dt: DrawerType) -> Self {
-        with_presentation(&mut self, |pres| pres.drawer_type = dt);
+        with_presentation_mut(&mut self, |p| p.drawer_type = dt);
         self
     }
-
     fn swipe_to_open(mut self, enabled: bool) -> Self {
-        with_presentation(&mut self, |pres| pres.swipe_to_open = enabled);
+        with_presentation_mut(&mut self, |p| p.swipe_to_open = enabled);
         self
     }
-
     fn mount_policy(mut self, policy: MountPolicy) -> Self {
-        with_presentation(&mut self, |pres| pres.mount_policy = policy);
+        with_presentation_mut(&mut self, |p| p.mount_policy = policy);
         self
     }
 
-    fn content<F>(mut self, f: F) -> Self
-    where
-        F: Fn(DrawerContentProps) -> Primitive + 'static,
-    {
-        with_presentation(&mut self, |pres| pres.content = Some(Rc::new(f)));
-        self
-    }
-
-    fn default_screen_options(mut self, opts: ScreenOptions) -> Self {
-        with_navigator_ext(&mut self, |p| {
-            if let Primitive::Navigator { config, .. } = p {
-                config.default_options = Some(opts);
-            }
+    fn sidebar(mut self, prim: Primitive) -> Self {
+        // Wrap as a closure that yields the captured primitive on
+        // first call. Subsequent calls panic — sidebars are built
+        // exactly once per navigator lifetime.
+        let cell: Rc<RefCell<Option<Primitive>>> = Rc::new(RefCell::new(Some(prim)));
+        let builder: SidebarBuilder = Rc::new(move |_props| {
+            cell.borrow_mut()
+                .take()
+                .expect("drawer-navigator: sidebar Primitive already consumed")
+        });
+        with_presentation(&mut self, |p| {
+            *p.sidebar.borrow_mut() = Some(builder);
         });
         self
     }
 
-    fn layout<F>(mut self, f: F) -> Self
+    fn sidebar_with<F>(mut self, f: F) -> Self
     where
-        F: Fn(runtime_core::primitives::navigator::LayoutProps) -> Primitive + 'static,
+        F: Fn(DrawerSlotProps) -> Primitive + 'static,
     {
-        let user_layout = Rc::new(f);
-        with_navigator_ext(&mut self, |p| {
-            if let Primitive::Navigator { config, presentation, .. } = p {
-                // The framework walker hands `layout_fn` a
-                // `LayoutProps { sidebar: empty_view, .. }` because
-                // it has no awareness of drawer-specific content.
-                // Bridge the SDK's `.content(...)` builder into the
-                // `props.sidebar` slot: read the shared `is_open`
-                // signal from the presentation (the handler's
-                // dispatcher writes to the same signal) and derive
-                // `on_select` / `on_close` from the ambient
-                // navigator control plane the framework pushes
-                // before invoking the layout closure.
-                let drawer_pres = presentation
-                    .downcast_ref::<DrawerPresentation>();
-                let content_builder = drawer_pres.and_then(|p| p.content.clone());
-                let is_open_signal = drawer_pres.map(|p| p.is_open);
-                let user_layout = user_layout.clone();
-                config.layout = Some(Rc::new(move |mut props: runtime_core::primitives::navigator::LayoutProps| {
-                    use runtime_core::primitives::navigator::{
-                        ambient_navigator, DrawerContentProps, NavCommand,
-                    };
-                    if let Some(ref build_content) = content_builder {
-                        // `on_select` dispatches a `Select` command
-                        // against the navigator currently being
-                        // built — captured here via the ambient
-                        // navigator the framework pushes before
-                        // calling the layout closure (see
-                        // `walker::navigator::build_layout`).
-                        let on_select: Rc<dyn Fn(&'static str)> = match ambient_navigator() {
-                            Some(control) => {
-                                let control = control.clone();
-                                Rc::new(move |name| {
-                                    control.dispatch(NavCommand::Select {
-                                        name,
-                                        url: String::new(),
-                                        params: Box::new(()),
-                                        state: None,
-                                    });
-                                })
-                            }
-                            None => Rc::new(|_| {}),
-                        };
-                        let on_close: Rc<dyn Fn()> = match ambient_navigator() {
-                            Some(control) => {
-                                Rc::new(move || control.dispatch(NavCommand::CloseDrawer))
-                            }
-                            None => Rc::new(|| {}),
-                        };
-                        let content_props = DrawerContentProps {
-                            active_route: props.active_route,
-                            is_open: is_open_signal
-                                .unwrap_or_else(|| Signal::new(false)),
-                            on_select,
-                            on_close,
-                        };
-                        props.sidebar = build_content(content_props);
-                    }
-                    user_layout(props)
-                }));
-            }
+        let builder: SidebarBuilder = Rc::new(f);
+        with_presentation(&mut self, |p| {
+            *p.sidebar.borrow_mut() = Some(builder);
         });
         self
     }
 
     fn sidebar_style(mut self, s: impl IntoStyleSource) -> Self {
-        with_navigator_ext(&mut self, |p| {
+        with_navigator_prim(&mut self, |p| {
             if let Primitive::Navigator { slot_styles, .. } = p {
                 slot_styles.push(("sidebar", s.into_style_source()));
             }
@@ -454,7 +562,7 @@ impl DrawerBuilder for Bound<DrawerHandle> {
     }
 
     fn scrim_style(mut self, s: impl IntoStyleSource) -> Self {
-        with_navigator_ext(&mut self, |p| {
+        with_navigator_prim(&mut self, |p| {
             if let Primitive::Navigator { slot_styles, .. } = p {
                 slot_styles.push(("scrim", s.into_style_source()));
             }
@@ -466,80 +574,60 @@ impl DrawerBuilder for Bound<DrawerHandle> {
     where
         F: Fn() -> HeaderStyle + 'static,
     {
-        // Probe once to figure out which slots to wire — fields that
-        // are None on the initial probe stay platform-default and
-        // aren't re-evaluated. Matches the legacy contract.
         let f: Rc<dyn Fn() -> HeaderStyle> = Rc::new(f);
         let probe = f();
+        let mut pushes: Vec<(&'static str, StyleSource)> = Vec::new();
         if probe.background.is_some() {
-            let src = header_slot_source(
-                f.clone(),
-                |hs| &hs.background,
-                HeaderProp::Background,
-                "background",
-            );
-            with_navigator_ext(&mut self, |p| {
-                if let Primitive::Navigator { slot_styles, .. } = p {
-                    slot_styles.push(("header", src));
-                }
-            });
+            pushes.push((
+                "header",
+                header_slot_source(f.clone(), |hs| &hs.background, HeaderProp::Background, "background"),
+            ));
         }
         if probe.title.is_some() {
-            let src = header_slot_source(
-                f.clone(),
-                |hs| &hs.title,
-                HeaderProp::Color,
+            pushes.push((
                 "title",
-            );
-            with_navigator_ext(&mut self, |p| {
-                if let Primitive::Navigator { slot_styles, .. } = p {
-                    slot_styles.push(("title", src));
-                }
-            });
+                header_slot_source(f.clone(), |hs| &hs.title, HeaderProp::Color, "title"),
+            ));
         }
         if probe.tint.is_some() {
-            let src = header_slot_source(
-                f.clone(),
-                |hs| &hs.tint,
-                HeaderProp::Color,
-                "tint",
-            );
-            with_navigator_ext(&mut self, |p| {
-                if let Primitive::Navigator { slot_styles, .. } = p {
-                    slot_styles.push(("button", src));
-                }
-            });
+            pushes.push((
+                "button",
+                header_slot_source(f.clone(), |hs| &hs.tint, HeaderProp::Color, "tint"),
+            ));
         }
         if probe.body_background.is_some() {
-            let src = header_slot_source(
-                f.clone(),
-                |hs| &hs.body_background,
-                HeaderProp::Background,
-                "body_background",
-            );
-            with_navigator_ext(&mut self, |p| {
-                if let Primitive::Navigator { slot_styles, .. } = p {
-                    slot_styles.push(("body", src));
-                }
-            });
+            pushes.push((
+                "body",
+                header_slot_source(
+                    f.clone(),
+                    |hs| &hs.body_background,
+                    HeaderProp::Background,
+                    "body_background",
+                ),
+            ));
         }
+        with_navigator_prim(&mut self, |p| {
+            if let Primitive::Navigator { slot_styles, .. } = p {
+                slot_styles.extend(pushes);
+            }
+        });
         self
     }
 
     fn bind(mut self, r: Ref<DrawerHandle>) -> Self {
-        let is_open = Rc::new(Cell::new(false));
-        let is_open_for_fill = is_open.clone();
-        with_navigator_ext(&mut self, |p| {
+        // Capture the is_open signal from the presentation so the
+        // DrawerHandle exposes it via `is_open()` after fill.
+        let mut is_open_signal = Signal::new(false);
+        with_presentation(&mut self, |p| {
+            is_open_signal = p.is_open;
+        });
+        with_navigator_prim(&mut self, |p| {
             if let Primitive::Navigator { ref_fill, .. } = p {
                 *ref_fill = Some(RefFill::Navigator(Box::new(move |handle| {
-                    r.fill(DrawerHandle::from_inner(handle, is_open_for_fill));
+                    r.fill(DrawerHandle::from_inner(handle, is_open_signal));
                 })));
             }
         });
-        // Note: the registered handler should update `is_open` via the
-        // `Signal<bool>` carried in the host's nav-state — this Cell is
-        // a non-reactive mirror exposed through `DrawerHandle::is_open()`.
-        let _keep_is_open_alive = is_open;
         self
     }
 }
@@ -563,20 +651,12 @@ mod ios;
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
 pub use ios::register;
 
-#[cfg(not(any(
-    target_arch = "wasm32",
-    target_os = "android",
-    target_os = "ios",
-)))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
 mod fallback {
     use runtime_core::Backend;
     pub fn register<B: Backend>(_backend: &mut B) {}
 }
-#[cfg(not(any(
-    target_arch = "wasm32",
-    target_os = "android",
-    target_os = "ios",
-)))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
 pub use fallback::register;
 
 // =============================================================================
@@ -585,7 +665,8 @@ pub use fallback::register;
 
 pub mod prelude {
     pub use super::{
-        register, ContentBuilder, DrawerBuilder, DrawerContentProps, DrawerHandle, DrawerNavigator,
-        DrawerPresentation, DrawerSide, DrawerType, MountPolicy,
+        register, BarButton, DrawerBuilder, DrawerCmd, DrawerHandle, DrawerNavigator,
+        DrawerPresentation, DrawerScreenExt, DrawerScreenOptions, DrawerSide, DrawerSlotProps,
+        DrawerType, HeaderStyle, MountPolicy,
     };
 }

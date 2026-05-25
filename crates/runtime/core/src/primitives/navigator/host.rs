@@ -1,34 +1,18 @@
-//! Navigator extension host — the contract a registered navigator
-//! handler implements, and the framework-supplied affordances it
-//! consumes.
+//! Navigator handler contract + framework affordances.
 //!
-//! # Layering
-//!
-//! - **Framework-core** owns the navigation *substrate*: route
-//!   registry, `NavigatorControl`, ambient capture, screen scopes,
-//!   per-screen reactive lifecycle, hardware-back coordination,
-//!   `NavCommand` shape.
+//! - **Framework** owns the substrate (`shared.rs`).
+//! - **SDK crates** implement `NavigatorHandler` per backend they
+//!   support. Each handler owns its kind's chrome (UINavigationController,
+//!   DrawerLayout, DOM router, etc.) and its kind-specific dispatcher.
 //! - **Each backend** holds a [`super::registry::NavigatorRegistry`]
-//!   field, exposes `register_navigator` / `has_navigator` methods, and
-//!   implements `Backend::create_navigator` to consult the
-//!   registry.
-//! - **Each navigator-kind SDK crate** (`stack-navigator`,
-//!   `tab-navigator`, `drawer-navigator`, or any third-party kind)
-//!   implements [`NavigatorHandler`] per backend it supports and
-//!   registers via the backend's `register_navigator` method.
-//! - **The author-facing builders** (`Navigator::new(...)`,
-//!   `TabNavigator::new(...)`, etc.) live in the SDK crates and produce
-//!   `Primitive::Navigator` instances carrying the SDK's typed
-//!   presentation payload.
+//!   keyed by the SDK's presentation `TypeId` and implements
+//!   `Backend::create_navigator` to consult it.
 //!
-//! Compare with [`crate::external::ExternalRegistry`]: that pattern is
-//! for *opaque* third-party primitives (a video, a map, a webview).
-//! Navigators aren't opaque — they participate in routing, lifecycle,
-//! and back-handling. The host below exposes those framework-owned
-//! concerns as typed methods on a single object, instead of routing
-//! everything through an opaque payload.
+//! The framework never branches on navigator kind. The presentation
+//! TypeId is the only thing routing handlers to instances; everything
+//! else is opaque.
 
-use super::shared::{LayoutPlan, MountResult, NavCommand, NavState, NavigatorControl, NavigatorOps};
+use super::shared::{MountResult, NavCommand, NavState, NavigatorControl, NavigatorOps};
 use std::any::Any;
 use std::rc::Rc;
 
@@ -39,162 +23,117 @@ struct NoopHandlerOps;
 impl NavigatorOps for NoopHandlerOps {}
 static NOOP_HANDLER_OPS: NoopHandlerOps = NoopHandlerOps;
 
-/// Helper discriminant SDK handlers can use to tell their backend
-/// "this navigator I just created is of kind X". Backends with per-kind
-/// storage (iOS, Android) use this at dispatch time to route
-/// `navigator_attach_initial` / `release` / etc. to the right
-/// legacy method.
+/// Affordances the framework hands to a registered SDK handler at
+/// `init` time. Carries everything the handler needs from the
+/// substrate — mount/release callbacks, the control plane, reactive
+/// nav state, plus two scope-aware Primitive→Node builders for SDK
+/// chrome.
 ///
-/// Built-in kinds enumerated here so backends can match on them
-/// without depending on the SDK crates. Third-party kinds use
-/// [`NavigatorKind::Custom`] with their own marker discriminant — the SDK
-/// handles its own dispatch in that case.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub enum NavigatorKind {
-    Stack,
-    Tab,
-    Drawer,
-    /// Third-party navigator kind. The SDK is responsible for routing
-    /// post-init operations (slot styles, release, attach_initial)
-    /// through its own per-handler bookkeeping.
-    Custom,
-}
-
-/// Affordances the framework provides to a registered navigator
-/// handler. Constructed by the walker when a `Primitive::Navigator`
-/// is realized; consumed by the handler's `init` plus subsequent
-/// `on_command` calls (the handler stores whatever it needs from here
-/// for the lifetime of the navigator).
+/// The handler stores whatever it needs from this bundle for the
+/// navigator's lifetime; the rest can be dropped after `init`
+/// returns.
 pub struct NavigatorHost<N: Clone + 'static> {
-    /// Route name for the initial screen. Always non-empty.
+    /// Route name for the initial screen.
     pub initial_route: &'static str,
 
-    /// Concrete URL path for the initial screen (`""` if the route's
-    /// pattern has no placeholders). Used by web/SSR backends.
+    /// Concrete URL path for the initial screen.
     pub initial_path: &'static str,
 
-    /// When `true`, the framework will *not* explicitly mount the
-    /// initial screen — the handler is expected to call `mount_screen`
-    /// itself, typically after reading the current URL (web does this
-    /// for deep linking). When `false`, the framework calls
-    /// `mount_screen(initial_route, ())` immediately after `init`
-    /// returns and feeds the result into the handler via a separate
-    /// `attach_initial` hook (see [`NavigatorHandler::attach_initial`]).
+    /// When `true`, the framework does NOT auto-mount the initial
+    /// screen — the handler is expected to call `mount_screen` itself
+    /// (typically web reading the current URL for deep linking).
+    /// When `false`, the framework calls `mount_screen` immediately
+    /// after `init` returns and feeds the result via `attach_initial`.
     pub defer_initial_mount: bool,
 
-    /// Realize a screen subtree. Framework allocates a fresh reactive
-    /// scope, runs the route's builder closure inside it, returns the
-    /// backend node + scope id + per-screen options. The handler holds
-    /// onto the `scope_id` and passes it to `release_screen` when the
-    /// screen leaves the navigator (popped, replaced, reset, tab
-    /// changed away in `LazyDisposing` mode, etc.).
+    /// Realize a screen subtree. Framework allocates a fresh scope,
+    /// runs the route's builder closure inside it, returns the
+    /// backend node + scope id + opaque options.
     ///
-    /// The third argument is the optional opaque `state` from the
-    /// originating `NavCommand`. The framework pushes it onto the
-    /// per-screen state stack for the duration of the screen build, so
-    /// the screen's render closure can read it via
-    /// [`super::shared::current_screen_state`]. Pass `None` when the
-    /// handler doesn't have state to forward (initial mount, deep-link
-    /// route resolution, etc.).
+    /// The third argument is the optional opaque `state` payload from
+    /// the originating `NavCommand`. The framework pushes it onto the
+    /// per-screen state stack for the duration of the screen build,
+    /// so the screen's render closure can read it via
+    /// [`super::shared::current_screen_state`].
     pub mount_screen:
         Rc<dyn Fn(&'static str, Box<dyn Any>, Option<Rc<dyn Any>>) -> MountResult<N>>,
 
-    /// Drop a previously-mounted screen by scope id. Runs the screen's
-    /// cleanup effects. Idempotent — releasing an unknown scope id is
-    /// a no-op.
+    /// Release a previously-mounted screen by scope id. Drops the
+    /// screen's reactive scope (runs cleanup effects). Idempotent.
     pub release_screen: Rc<dyn Fn(u64)>,
 
     /// Match a URL path against the navigator's route table. Returns
-    /// `(route_name, typed_params_box)` for the first matching pattern.
-    /// Used by web/SSR for URL-driven mounting; native handlers can
-    /// ignore.
+    /// `(route_name, typed_params_box)` for the first matching
+    /// pattern. Used by web/SSR; native handlers can ignore.
     pub match_path: Rc<dyn Fn(&str) -> Option<(&'static str, Box<dyn Any>)>>,
 
-    /// Build the user-supplied layout subtree (`.layout(...)` closure),
-    /// if any. The result carries the layout root node + a `Ref` to the
-    /// outlet view, which the framework resolves to a concrete backend
-    /// node after `init`. Web backends use this to render chrome; most
-    /// native backends ignore it (their chrome is supplied by the
-    /// native widget — `UINavigationBar`, `UITabBar`, etc.).
-    pub build_layout: Option<Rc<dyn Fn() -> LayoutPlan<N>>>,
-
-    /// Reactive nav-state mirror. The framework updates these signals
-    /// automatically when commands dispatch through
-    /// [`NavigatorControl::dispatch`]. Handlers normally only *read*
-    /// them (to drive their own internal state); writes belong to the
-    /// `notify_*` methods below, which keep the cached
-    /// [`NavigatorControl::depth`] / [`NavigatorControl::default_link_kind`]
-    /// in sync alongside the signals.
+    /// Reactive nav-state mirror. Updated automatically by the
+    /// substrate's `NavigatorControl::dispatch` for commands that
+    /// change the active route. Handlers update it via the
+    /// `depth_changed` / `active_changed` callbacks below when state
+    /// changes asynchronously (native back gesture, popstate).
     pub nav_state: NavState,
 
-    /// Notify the framework that stack depth changed (after a push /
-    /// pop / replace / reset). Updates the cached depth on
-    /// [`NavigatorControl`] and the `can_go_back` signal. Tab and
-    /// drawer handlers typically never call this — their depth is
-    /// fixed at 1.
+    /// Notify the framework that stack depth changed (push / pop /
+    /// reset). Updates the cached depth on `NavigatorControl` and the
+    /// `can_go_back` signal. Tabs/drawers typically don't call this.
     pub depth_changed: Rc<dyn Fn(usize)>,
 
     /// Notify the framework that the active screen changed without a
     /// depth change (tab switch, drawer item select). Updates
     /// `nav_state.active_route` / `nav_state.active_path`. Stack
-    /// handlers typically don't call this directly — pushing /
-    /// replacing through the dispatcher already updates these signals
-    /// before the command reaches the handler.
+    /// handlers typically don't call this directly.
     pub active_changed: Rc<dyn Fn(&'static str, String)>,
 
     /// The shared control plane. Handlers store this so they can
-    /// dispatch commands originating from *native* gestures (back
-    /// button on Android, edge swipe on iOS, browser back button)
-    /// back into the framework's dispatch path. The framework will
-    /// route those commands to [`NavigatorHandler::on_command`] for
-    /// consistency.
+    /// dispatch commands originating from native gestures (back
+    /// button, edge swipe, browser back) back through the substrate.
     pub control: Rc<NavigatorControl>,
-    /// Generic "build a primitive into a backend node" callback. Used
-    /// by SDK handlers that need to materialize ancillary subtrees
-    /// (drawer sidebar, tab-bar custom content, etc.) outside the
-    /// standard screen-mount path. The framework wraps each call in a
-    /// fresh reactive scope and keeps the scope alive for the
-    /// navigator's lifetime, so effects declared inside the built
-    /// subtree survive past the build call.
+
+    /// Materialize a Primitive into a backend Node. Used for SDK
+    /// chrome that lives the navigator's full lifetime (sidebar,
+    /// custom bars). The framework wraps the call in a fresh reactive
+    /// scope retained on the navigator — effects inside the built
+    /// subtree die when the navigator's enclosing scope drops.
     ///
     /// **Must be called outside the outer `backend.borrow_mut()`**
-    /// (i.e. not synchronously from `init`) — the build path
-    /// re-enters the walker which itself borrows the backend. Defer
-    /// via `runtime_core::schedule_microtask` (or your platform's
-    /// equivalent) from `init`.
+    /// (i.e. not synchronously from `init`). Defer via
+    /// `runtime_core::schedule_microtask` or your platform's
+    /// equivalent.
     pub build_node: Rc<dyn Fn(crate::Primitive) -> N>,
+
+    /// Materialize a Primitive into a Node, scoped to a specific
+    /// screen's lifetime. Pass the `scope_id` from a `MountResult`.
+    /// Used for per-screen SDK chrome (custom title view, custom
+    /// button content) — when the SDK calls `release_screen(scope_id)`,
+    /// anything built here drops alongside the screen.
+    ///
+    /// Same defer-via-microtask rule as `build_node` — must be called
+    /// outside the outer borrow window.
+    pub build_in_screen: Rc<dyn Fn(u64, crate::Primitive) -> N>,
 }
 
-/// Implementation contract for a registered navigator kind. Each SDK
-/// crate implements this trait once per backend it supports.
-///
-/// The handler owns the **presentation** (native chrome, transitions,
-/// gestures). The framework owns the **substrate** (routing, screen
-/// scopes, ambient capture, hardware-back coordination, the
-/// `NavigatorControl` handle exposed to user code).
+/// Implementation contract for a registered navigator kind. SDK
+/// crates implement this once per backend they support.
 ///
 /// # Lifecycle
 ///
-/// 1. Framework calls [`Self::init`] with the host + the SDK's
-///    presentation payload. Handler builds its native root view and
-///    returns it. The framework inserts that view into the parent.
-/// 2. Framework calls [`Self::attach_initial`] with the realized
-///    initial screen (unless `defer_initial_mount` was set). Handler
-///    inserts the screen into its native container.
-/// 3. Framework calls [`Self::on_command`] for every `NavCommand`
-///    dispatched through the navigator's control plane. Handler
-///    interprets per its kind.
-/// 4. On system back gestures the framework calls
-///    [`Self::on_system_back`]; the handler returns whether it
-///    consumed the gesture.
-/// 5. When the navigator's reactive scope drops, the framework calls
-///    [`Self::release`] for handler-owned native resource cleanup.
+/// 1. Framework calls [`Self::init`] with host + opaque presentation.
+///    Handler builds its native root view, installs its dispatcher
+///    on `host.control`, returns the root node.
+/// 2. Framework calls [`Self::attach_initial`] with the framework-
+///    realized initial screen (unless `defer_initial_mount` was set).
+/// 3. Framework dispatches `NavCommand`s through the installed
+///    dispatcher; [`Self::on_command`] is the catch-all for any
+///    command the dispatcher closure didn't handle.
+/// 4. Native back gestures trigger [`Self::on_system_back`].
+/// 5. When the enclosing scope drops, the framework calls
+///    [`Self::release`].
 pub trait NavigatorHandler<B: crate::Backend + 'static>: 'static {
-    /// Construct the native root view. `presentation` is the typed
-    /// payload the SDK chose for its `Primitive::Navigator`
-    /// (e.g. `stack_navigator::StackPresentation`). The handler
-    /// downcasts to its expected type — payload-to-handler type
-    /// matching is enforced by `TypeId` at registration time.
+    /// Construct the navigator's root native view. `presentation` is
+    /// the typed payload the SDK chose for its `Primitive::Navigator`;
+    /// downcast to the expected type (registration uses TypeId so the
+    /// type matches by construction).
     fn init(
         &mut self,
         backend: &mut B,
@@ -203,70 +142,48 @@ pub trait NavigatorHandler<B: crate::Backend + 'static>: 'static {
     ) -> B::Node;
 
     /// Insert the framework-realized initial screen into the native
-    /// container. Skipped when `host.defer_initial_mount` was `true` at
-    /// init time. Default impl panics — handlers that defer must
-    /// override and either implement this as a no-op or self-mount in
-    /// `init`.
+    /// container. `options` is the screen's opaque SDK options
+    /// (downcast to your SDK's options type). Skipped when
+    /// `defer_initial_mount` was `true` at init time.
     fn attach_initial(
         &mut self,
         backend: &mut B,
         screen: B::Node,
         scope_id: u64,
-        options: super::shared::ScreenOptions,
+        options: Box<dyn Any>,
     );
 
-    /// Dispatch a `NavCommand` against the handler. The framework
-    /// forwards every command from [`NavigatorControl::dispatch`] here;
-    /// the handler interprets commands it understands and panics (or
-    /// no-ops, by kind contract) on commands it doesn't.
-    ///
-    /// **No `&mut B`** — this method is invoked through the dispatch
-    /// closure installed on `NavigatorControl::install`, whose
-    /// signature is `Box<dyn Fn(NavCommand)>`. The handler must
-    /// internalize any backend state it needs during `init` (typically
-    /// as `Rc<RefCell<…>>` clones of the backend's internal handles).
-    /// This mirrors how the per-kind backend impls already work today
-    /// — their dispatch closures capture state, not the backend
-    /// itself.
-    fn on_command(&mut self, cmd: NavCommand);
+    /// Catch-all command dispatch. The framework routes every
+    /// `NavCommand` here AFTER the dispatcher closure installed on
+    /// `host.control` runs. Most SDKs implement all dispatch in the
+    /// closure and leave this as the trait default (no-op).
+    #[allow(unused_variables)]
+    fn on_command(&mut self, cmd: NavCommand) {}
 
-    /// System back (Android back-button press, iOS edge-swipe-completed,
-    /// browser-back). Return `true` to consume; `false` to let the
-    /// platform handle it (which usually means closing the app on
-    /// Android root, replaying history on web, no-op on iOS).
-    ///
-    /// Default returns `false`.
+    /// Native back gesture (Android back press, iOS edge-swipe,
+    /// browser back). Return `true` to consume; `false` to let the
+    /// platform handle it. Default: `false`.
     #[allow(unused_variables)]
     fn on_system_back(&mut self, backend: &mut B) -> bool {
         false
     }
 
-    /// Called when the navigator's enclosing scope drops. Handler
-    /// releases its native resources. Default is a no-op so handlers
-    /// that hold only `B::Node` (the framework will release the node
-    /// itself) don't need to override.
+    /// Called when the navigator's enclosing scope drops. SDK
+    /// releases its native resources. Default: no-op.
     #[allow(unused_variables)]
     fn release(&mut self, backend: &mut B) {}
 
-    /// Build the `NavigatorHandle` exposed to author code through
-    /// `Ref<H>` / `.bind(...)`. Backends route their
-    /// `Backend::make_navigator_handle` call through this so the
-    /// SDK can wire the control plane into the returned handle.
-    /// Default returns a no-op handle — handlers that store an
-    /// `Rc<NavigatorControl>` from `host.control` at `init` time
+    /// Build the `NavigatorHandle` exposed to author code via
+    /// `Ref<H>::bind(...)`. Default returns an inert handle (no
+    /// control wired) — SDKs that stored `host.control` at init
     /// should override and call `NavigatorHandle::with_control(...)`.
     fn make_handle(&self) -> super::shared::NavigatorHandle {
         super::shared::NavigatorHandle::new(Rc::new(()), &NOOP_HANDLER_OPS)
     }
 
-    /// Apply a slot style update (e.g. header bar background,
-    /// tab bar tint, drawer scrim color). `slot` is an SDK-defined
-    /// identifier string — the framework hands through opaque strings
-    /// the SDK's builder emits via the navigator's `.with_style(...)`
-    /// chain. Handlers no-op on unknown slots.
-    ///
-    /// Default is a no-op so handlers that don't support per-slot
-    /// styling don't need to override.
+    /// Apply a slot style update. `slot` is an SDK-defined identifier
+    /// string (e.g. `"header"`, `"tab_bar"`, `"sidebar"`); SDKs no-op
+    /// on unknown slots. Default: no-op.
     #[allow(unused_variables)]
     fn apply_slot_style(
         &mut self,

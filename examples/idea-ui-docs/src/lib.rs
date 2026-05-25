@@ -37,9 +37,6 @@ use routes::{
     ACTIONS_ROUTE, FEEDBACK_ROUTE, INPUTS_ROUTE, LAYOUT_ROUTE, OVERLAYS_ROUTE, OVERVIEW_ROUTE,
     STATEFUL_ROUTE, THEMES_ROUTE, TYPOGRAPHY_ROUTE,
 };
-#[cfg(target_arch = "wasm32")]
-use shell::web_layout;
-
 #[component]
 pub fn app() -> Primitive {
     install_idea_theme(light_theme());
@@ -66,8 +63,11 @@ pub fn app() -> Primitive {
         .screen(OVERLAYS_ROUTE, move |_| pages::overlays::page())
         .screen(STATEFUL_ROUTE, move |_| pages::stateful::page());
 
-    #[cfg(target_arch = "wasm32")]
-    let builder = builder.layout(web_layout(is_dark));
+    // `.layout(...)` was dropped from stack-navigator's surface — on
+    // web, screens render raw inside the navigator container without
+    // author-supplied chrome. Future: use `drawer_navigator` if you
+    // want a persistent web sidebar.
+    let _ = is_dark;
 
     ui! {
         { builder.bind(nav) }

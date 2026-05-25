@@ -458,6 +458,14 @@ pub extern "system" fn Java_{jni}_NativeBridge_attach<'local>(
         // time, which breaks the long-press recognizer and
         // every other timer-driven feature.
         backend_android::install_scheduler();
+        // Register third-party extensions (navigator SDKs, custom
+        // primitives) into the backend before any `app()` code runs.
+        // The user crate must expose `pub fn register_extensions(&mut AndroidBackend)`
+        // — even if empty, so the wrapper template can call it unconditionally.
+        {{
+            let mut b = backend.borrow_mut();
+            {lib}::register_extensions(&mut b);
+        }}
         // `mount` runs `app()` inside the root reactive scope so
         // top-level `effect!` / `signal!` / `Ref::new` calls in
         // `app()` adopt the scope. See `runtime_core::mount` docs.

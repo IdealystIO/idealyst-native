@@ -1,0 +1,34 @@
+[package]
+name = "ios-navigator-helpers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+runtime-core = { workspace = true }
+
+# All UIKit machinery is iOS-only; on non-iOS hosts the crate compiles
+# to an empty rlib so the workspace still cross-compiles. SDK iOS
+# handlers cfg-gate their `use ios_navigator_helpers::...` to iOS, so
+# host-side code never touches anything here.
+[target.'cfg(target_os = "ios")'.dependencies]
+backend-ios-mobile = { workspace = true }
+backend-ios-core = { workspace = true }
+runtime-layout = { workspace = true }
+block2 = "0.5"
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = [
+    "NSString",
+    "NSArray",
+    "NSEnumerator",
+    "NSObject",
+] }
+objc2-ui-kit = { version = "0.2", features = [
+    "UIResponder",
+    "UIView",
+    "UIViewController",
+    "UINavigationController",
+    "UIColor",
+    "UIGestureRecognizer",
+    "UITapGestureRecognizer",
+] }

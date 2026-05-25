@@ -1,22 +1,28 @@
 //! Web-backend handler for the Stack navigator SDK.
 //!
-//! The DOM + history-API machinery (NavigatorInstance, popstate
+//! The DOM + history-API machinery (`NavigatorInstance`, popstate
 //! reconciliation, mount/release helpers) lives in the
 //! `web-navigator-helpers` crate, shared with tab + drawer. This
-//! module's `WebStackHandler` is a thin wrapper: it drives the
-//! helpers crate's `create()` at init time, retains the returned
-//! container `Node`, and forwards subsequent post-init dispatch
-//! (attach_initial / release / make_handle) to the matching helpers
-//! entry point.
+//! module's `WebStackHandler` is a thin wrapper: it constructs a
+//! `WebNavCallbacks` from the framework-supplied `NavigatorHost`,
+//! drives the helpers crate's `create()` at init time, retains the
+//! returned container `Node`, and forwards subsequent post-init
+//! dispatch (`attach_initial` / `release` / `make_handle`) to the
+//! matching helpers entry point.
+//!
+//! After the navigator-substrate refactor, the kind-specific callback
+//! bundle types (`WebNavCallbacks`, ...) live in `web-navigator-helpers`
+//! itself — runtime-core no longer ships any of these.
 
 use crate::StackPresentation;
 use backend_web::WebBackend;
-use runtime_core::{
-    MountResult, NavigatorCallbacks, NavigatorHandler, NavigatorHost,
+use runtime_core::primitives::navigator::{
+    MountResult, NavigatorHandler, NavigatorHost,
 };
 use std::any::Any;
 use std::rc::Rc;
 use web_sys::Node;
+use web_navigator_helpers::WebNavCallbacks;
 
 pub struct WebStackHandler {
     /// Container `Node` the helpers crate returns from `create()`.
@@ -52,33 +58,34 @@ impl NavigatorHandler<WebBackend> for WebStackHandler {
             mount_screen,
             release_screen,
             match_path,
-            build_layout,
             nav_state,
             depth_changed,
             active_changed: _,
             control,
             build_node: _,
+            build_in_screen: _,
         } = host;
 
-        // Adapter: the legacy `NavigatorCallbacks::mount_screen` is
-        // 2-arg `(name, params)`; the host's is 3-arg `(name, params,
-        // state)`. State is discarded for the legacy path — no current
-        // first-party stack consumer reads `current_screen_state()`,
-        // and Phase-2 will get a real handler that threads it through.
+        // Adapter: the helpers-crate `WebNavCallbacks::mount_screen` is
+        // 2-arg `(name, params)`; the substrate's host is 3-arg
+        // `(name, params, state)`. Discard `state` for the stack-on-web
+        // path — the helpers crate doesn't currently thread per-screen
+        // state into the URL stack, and no first-party stack screen on
+        // web reads `current_screen_state()`.
         let mount_2arg: Rc<dyn Fn(&'static str, Box<dyn Any>) -> MountResult<Node>> = {
             let m = mount_screen;
             Rc::new(move |name, params| m(name, params, None))
         };
 
-        let callbacks = NavigatorCallbacks {
+        let callbacks = WebNavCallbacks {
             initial_route,
             initial_path,
             mount_screen: mount_2arg,
             release_screen,
             match_path,
-            build_layout,
-            nav_state,
             depth_changed,
+            nav_state,
+            build_layout: None,
             defer_initial_mount,
         };
 
@@ -92,7 +99,7 @@ impl NavigatorHandler<WebBackend> for WebStackHandler {
         _backend: &mut WebBackend,
         screen: Node,
         scope_id: u64,
-        _options: runtime_core::ScreenOptions,
+        _options: Box<dyn Any>,
     ) {
         if let Some(container) = self.container.as_ref() {
             web_navigator_helpers::attach_initial(container, screen, scope_id);

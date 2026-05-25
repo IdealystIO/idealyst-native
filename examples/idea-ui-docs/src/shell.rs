@@ -9,7 +9,12 @@
 
 use std::rc::Rc;
 
-use runtime_core::{ui, ChildList, LayoutProps, Primitive, Signal, StyleApplication, VariantEnum};
+use runtime_core::{ui, ChildList, Primitive, Signal, StyleApplication, VariantEnum};
+// NOTE: LayoutProps is gone — the stack-navigator SDK no longer has
+// a `.layout(...)` API. This shell module's old `web_layout` function
+// has been deleted alongside; the helper components below
+// (`sidebar`, `nav_link`) remain in case they're useful for a
+// drawer-navigator-based rewrite of this example.
 use idea_ui::{
     body, caption, card, dark_theme, divider, heading, light_theme, set_idea_theme, stack, switch,
     BodyTone, HeadingKind, IdeaThemeRef, StackGap,
@@ -25,27 +30,6 @@ use crate::styles::{Content, NavLink, PageRoot, Sidebar, SidebarHeader};
 /// Web-only. On native (UIKit / Android), the platform's own
 /// `UINavigationController` / `FragmentManager` provides the
 /// chrome — a persistent sidebar fights the platform idiom there.
-#[cfg(target_arch = "wasm32")]
-pub fn web_layout(is_dark: Signal<bool>) -> impl Fn(LayoutProps) -> Primitive + 'static {
-    move |props: LayoutProps| {
-        let active_route = props.active_route;
-        let outlet = props.outlet;
-
-        let root_style = PageRoot();
-        let sidebar_style = Sidebar();
-        let content_style = Content();
-
-        ui! {
-            View(style = root_style) {
-                { sidebar(active_route, is_dark, sidebar_style) }
-                View(style = content_style) {
-                    outlet
-                }
-            }
-        }
-    }
-}
-
 /// Build the sidebar: brand header, list of nav links, theme
 /// toggle at the bottom. Pulled out so the layout closure stays
 /// shallow.

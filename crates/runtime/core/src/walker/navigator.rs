@@ -1,16 +1,10 @@
-//! `Primitive::Navigator` build path — the unified entry point for
-//! any registered navigator kind.
+//! `Primitive::Navigator` build path.
 //!
-//! Mirrors the substrate of `walker::navigator::build_navigator` but
-//! routes the final create through the new
-//! [`Backend::create_navigator`] hook, which dispatches via
-//! the per-backend `NavigatorRegistry` to a registered
-//! [`NavigatorHandler`](crate::primitives::navigator::NavigatorHandler).
-//!
-//! The per-kind walkers in [`super::navigator`] remain in place during
-//! the SDK migration; this module is the new path that SDK builders
-//! (`stack-navigator`, `tab-navigator`, `drawer-navigator`, third-party)
-//! produce primitives for.
+//! Builds the framework substrate (routing, scopes, control plane,
+//! reactive nav state) and hands the bundle to the SDK handler the
+//! backend's registry resolves from the presentation TypeId. The
+//! framework never sees the SDK's kind-specific config — it lives
+//! on the presentation payload, which is `Rc<dyn Any>`.
 
 use super::debug::time_backend_create;
 use super::style::attach_style;
@@ -19,7 +13,7 @@ use crate::backend::Backend;
 use crate::handles::RefFill;
 use crate::primitive::Primitive;
 use crate::primitives;
-use crate::reactive::{self, Effect, Ref, Signal};
+use crate::reactive::{self, Effect, Signal};
 use crate::sources::StyleSource;
 use std::any::{Any, TypeId};
 use std::cell::RefCell;
@@ -38,39 +32,34 @@ pub(super) fn build<B: Backend + 'static>(
     accessibility: AccessibilityProps,
 ) -> B::Node {
     use primitives::navigator::{
-        match_pattern, LayoutPlan, LayoutProps, MountResult, NavState, NavigatorControl,
-        NavigatorHost,
+        match_pattern, MountResult, NavState, NavigatorControl, NavigatorHost,
     };
 
-    // Destructure the shared config.
     let primitives::navigator::NavigatorConfig {
         initial,
         initial_path,
         screens,
-        layout,
-        default_options: _default_options,
-        default_link_kind,
         defer_initial_mount,
     } = *config;
 
     // Capture this navigator's identity for stable wire ids across rebuilds.
     let nav_identity = crate::current_identity();
 
-    // Per-screen scope registry — framework owns scopes; backend holds opaque ids.
+    // Per-screen scope registry — framework owns scopes; SDK handler
+    // holds opaque scope ids.
     let scopes: Rc<RefCell<HashMap<u64, Box<reactive::Scope>>>> =
         Rc::new(RefCell::new(HashMap::new()));
     let next_scope_id: Rc<RefCell<u64>> = Rc::new(RefCell::new(0));
 
     let screens = Rc::new(screens);
 
-    // Control plane — populated by the registered handler when the backend
-    // installs the dispatcher inside `create_navigator`.
+    // Control plane — populated by the SDK handler when it installs
+    // its dispatcher inside `init`.
     let control = Rc::new(NavigatorControl::new());
-    control.set_default_link_kind(default_link_kind);
 
     // mount_screen: build a screen subtree inside its own scope; return
-    // (node, scope_id, options). Weak control to avoid Rc-cycle through
-    // dispatcher → mount_screen → control.
+    // (node, scope_id, opaque options). Weak control to avoid Rc-cycle
+    // through dispatcher → mount_screen → control.
     let mount_screen: Rc<
         dyn Fn(&'static str, Box<dyn Any>, Option<Rc<dyn Any>>) -> MountResult<B::Node>,
     > = {
@@ -90,9 +79,6 @@ pub(super) fn build<B: Backend + 'static>(
                 .expect("mount_screen called after navigator dropped");
             let _ambient_guard =
                 primitives::navigator::AmbientNavGuard::push(control_strong);
-            // Per-screen state stack: pushed for the duration of the
-            // screen build so the user's render closure can read it via
-            // `current_screen_state::<T>()`.
             let _state_guard = primitives::navigator::shared::ScreenStateGuard::push(state);
             let screen_id = crate::Identity::node(
                 nav_identity,
@@ -118,7 +104,6 @@ pub(super) fn build<B: Backend + 'static>(
         })
     };
 
-    // release_screen: drop the scope to free signals/effects scoped to the screen.
     let release_screen: Rc<dyn Fn(u64)> = {
         let scopes = scopes.clone();
         Rc::new(move |id| {
@@ -141,7 +126,7 @@ pub(super) fn build<B: Backend + 'static>(
         })
     };
 
-    // Reactive nav-state mirror. The dispatcher updates these on every command.
+    // Reactive nav-state mirror.
     let nav_state = NavState {
         active_route: Signal::new(initial),
         active_path: Signal::new(initial_path.to_string()),
@@ -150,8 +135,6 @@ pub(super) fn build<B: Backend + 'static>(
     };
     control.attach_nav_state(nav_state.clone());
 
-    // depth_changed: handler reports stack depth changes; we mirror to control
-    // + nav_state.depth signal + can_go_back. Weak control to break cycle.
     let depth_changed: Rc<dyn Fn(usize)> = {
         let control = Rc::downgrade(&control);
         let depth_sig = nav_state.depth;
@@ -165,8 +148,6 @@ pub(super) fn build<B: Backend + 'static>(
         })
     };
 
-    // active_changed: handler reports a non-depth-change route switch (tab
-    // tap, drawer item select). Updates the route/path signals.
     let active_changed: Rc<dyn Fn(&'static str, String)> = {
         let route_sig = nav_state.active_route;
         let path_sig = nav_state.active_path;
@@ -176,66 +157,23 @@ pub(super) fn build<B: Backend + 'static>(
         })
     };
 
-    // Layout scope — long-lived owner for any effects inside the layout
-    // closure (reactive text in nav bar, themed colors, etc.).
-    let layout_scope: Rc<RefCell<Option<Box<reactive::Scope>>>> =
-        Rc::new(RefCell::new(None));
-
-    let build_layout: Option<Rc<dyn Fn() -> LayoutPlan<B::Node>>> = layout.map(|layout_fn| {
-        let nav_state = nav_state.clone();
-        let control = control.clone();
-        let backend = backend.clone();
-        let layout_scope_slot = layout_scope.clone();
-        let f: Rc<dyn Fn() -> LayoutPlan<B::Node>> = Rc::new(move || {
-            let outlet_ref: Ref<crate::ViewHandle> = Ref::new();
-            let outlet_primitive: Primitive =
-                crate::view(Vec::new()).bind(outlet_ref.clone()).into();
-            let on_back: Rc<dyn Fn()> = {
-                let control = control.clone();
-                Rc::new(move || control.pop())
-            };
-            let props = LayoutProps {
-                outlet: outlet_primitive,
-                sidebar: crate::view(Vec::new()).into(),
-                active_route: nav_state.active_route,
-                active_path: nav_state.active_path,
-                depth: nav_state.depth,
-                can_go_back: nav_state.can_go_back,
-                on_back,
-            };
-            let _ambient_guard =
-                primitives::navigator::AmbientNavGuard::push(control.clone());
-            let root_primitive = layout_fn(props);
-            let mut scope = Box::new(reactive::Scope::new());
-            let layout_id = crate::Identity::node(nav_identity, 2, None, None);
-            let root = reactive::with_scope(&mut scope, || {
-                crate::with_current_identity(layout_id, || {
-                    super::build(&backend, 0, root_primitive)
-                })
-            });
-            *layout_scope_slot.borrow_mut() = Some(scope);
-            LayoutPlan { root, outlet_ref }
-        });
-        f
-    });
-
-    // `build_node` — generic "materialize this Primitive into a backend
-    // node" callback for SDK handlers that need an ancillary subtree
-    // (drawer sidebar, etc.) outside the screen-mount path. Each call
-    // gets a fresh reactive scope, retained on `build_node_scopes` so
-    // effects inside the built subtree survive past the call. Scopes
-    // free with the navigator when the keepalive effect at the bottom
-    // of this function drops them.
-    let build_node_scopes: Rc<RefCell<Vec<Box<reactive::Scope>>>> =
+    // SDK-chrome scope retention. Both `build_node` (navigator-scoped)
+    // and `build_in_screen` (screen-scoped) need their built subtrees'
+    // effects to outlive the build call. For nav-scoped chrome, we
+    // accumulate scopes here and keep them alive via the cleanup
+    // effect at the bottom. For screen-scoped chrome, the scope rides
+    // on the per-screen `scopes` map (already established).
+    let nav_chrome_scopes: Rc<RefCell<Vec<Box<reactive::Scope>>>> =
         Rc::new(RefCell::new(Vec::new()));
+
     let build_node: Rc<dyn Fn(Primitive) -> B::Node> = {
         let backend = backend.clone();
-        let scopes_slot = build_node_scopes.clone();
-        let aux_identity = crate::Identity::node(nav_identity, 3, None, None);
+        let scopes_slot = nav_chrome_scopes.clone();
+        let chrome_identity = crate::Identity::node(nav_identity, 2, None, None);
         Rc::new(move |prim| {
             let mut scope = Box::new(reactive::Scope::new());
             let node = reactive::with_scope(&mut scope, || {
-                crate::with_current_identity(aux_identity, || {
+                crate::with_current_identity(chrome_identity, || {
                     super::build(&backend, 0, prim)
                 })
             });
@@ -244,7 +182,30 @@ pub(super) fn build<B: Backend + 'static>(
         })
     };
 
-    // Build the host bundle and hand it to the backend's extension creator.
+    let build_in_screen: Rc<dyn Fn(u64, Primitive) -> B::Node> = {
+        let backend = backend.clone();
+        let scopes_map = scopes.clone();
+        let screen_chrome_identity = crate::Identity::node(nav_identity, 3, None, None);
+        Rc::new(move |scope_id, prim| {
+            // Build inside the named screen's existing scope so this
+            // chrome's effects drop alongside the screen body when
+            // `release_screen(scope_id)` fires.
+            let mut map = scopes_map.borrow_mut();
+            let scope = map.get_mut(&scope_id).unwrap_or_else(|| {
+                panic!(
+                    "build_in_screen: unknown scope_id {} — the screen \
+                     was never mounted or has already been released",
+                    scope_id
+                )
+            });
+            reactive::with_scope(scope, || {
+                crate::with_current_identity(screen_chrome_identity, || {
+                    super::build(&backend, 0, prim)
+                })
+            })
+        })
+    };
+
     let host = NavigatorHost {
         initial_route: initial,
         initial_path,
@@ -252,12 +213,12 @@ pub(super) fn build<B: Backend + 'static>(
         mount_screen: mount_screen.clone(),
         release_screen,
         match_path,
-        build_layout,
         nav_state: nav_state.clone(),
         depth_changed,
         active_changed,
         control: control.clone(),
         build_node,
+        build_in_screen,
     };
 
     let node = time_backend_create(pkind!(Navigator), || {
@@ -266,14 +227,8 @@ pub(super) fn build<B: Backend + 'static>(
             .create_navigator(type_id, type_name, presentation, host, &accessibility)
     });
 
-    // Mount initial screen — outside the borrow window so the screen's
-    // build can re-enter the walker. Skipped when defer_initial_mount is set
-    // (handler self-mounts, typically web reading the URL on load).
     if !defer_initial_mount {
         let initial_result = mount_screen(initial, Box::new(()), None);
-        // The handler installed via create_navigator owns the
-        // attach_initial flow; the backend dispatches via the stored
-        // handler. See `Backend::navigator_attach_initial`.
         backend.borrow_mut().navigator_attach_initial(
             &node,
             initial_result.node,
@@ -282,45 +237,28 @@ pub(super) fn build<B: Backend + 'static>(
         );
     }
 
-    // Body-level style — same attach_style path every other primitive uses.
     if let Some(style_source) = style {
         attach_style(backend, &node, style_source);
     }
 
-    // SDK-defined slot styles — dispatch each through
-    // `apply_navigator_slot_style` which the backend routes to
-    // its registered handler's `apply_slot_style`.
     for (slot, style_source) in slot_styles {
         attach_slot_style(backend, &node, slot, style_source);
     }
 
-    // Ref-fill — fires after the navigator's node exists. The handler
-    // (via the backend's `make_navigator_handle`) wires the
-    // control plane into the returned `NavigatorHandle`.
     if let Some(RefFill::Navigator(fill)) = ref_fill {
         let handle = backend.borrow().make_navigator_handle(&node);
         fill(handle);
     }
 
-    // Keep the layout scope alive for the navigator's lifetime — same
-    // pattern as `build_navigator`. The cleanup effect drops when the
-    // enclosing scope drops.
-    let _layout_scope_keepalive = layout_scope.clone();
-    let _build_node_keepalive = build_node_scopes.clone();
+    // Keep nav chrome scopes alive for the navigator's lifetime.
+    let _chrome_keepalive = nav_chrome_scopes.clone();
     let _keepalive_effect = Effect::new(move || {
-        let _ = &_layout_scope_keepalive;
-        let _ = &_build_node_keepalive;
+        let _ = &_chrome_keepalive;
     });
 
     node
 }
 
-/// Bridge a slot StyleSource into a reactive apply call that fires on
-/// `apply_navigator_slot_style`. Matches the shape of
-/// [`super::navigator::attach_navigator_slot_style`] minus the
-/// theme-cohort dance (SDK-registered slots opt-in to theme reactivity
-/// via the standard `Reactive` closure form; full cohort wiring will
-/// land alongside the per-kind walkers' eventual removal).
 fn attach_slot_style<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
     node: &B::Node,
@@ -347,10 +285,6 @@ fn attach_slot_style<B: Backend + 'static>(
             });
         }
         StyleSource::SignalClass(spec) => {
-            // Fall back to the compute closure (same as the per-kind
-            // navigator slot path) — class-apply pathway doesn't reach
-            // navigator slots; the reactive closure form gives equivalent
-            // re-fire semantics.
             let f = spec.compute_fallback.clone();
             let backend_c = backend.clone();
             let node_c = node.clone();

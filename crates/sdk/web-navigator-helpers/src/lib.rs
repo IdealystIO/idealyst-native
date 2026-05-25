@@ -5,8 +5,8 @@
 // to wasm32, so nothing host-side touches this module.
 #![cfg(target_arch = "wasm32")]
 
-//! `Primitive::Navigator` — a `<div>` driven by the browser's
-//! `history` API.
+//! Shared web-side machinery for the three first-party navigator SDKs
+//! (stack / tab / drawer).
 //!
 //! # Model
 //!
@@ -25,8 +25,8 @@
 //!
 //! # Deep linking
 //!
-//! On mount, the backend reads `window.location.pathname` and tries
-//! to match it against the registered routes via the framework's
+//! On mount, the helper reads `window.location.pathname` and tries
+//! to match it against the registered routes via the SDK-supplied
 //! `match_path` callback. If the URL is the initial route's path (or
 //! `/` with the initial route at `/`), the initial route mounts as
 //! the only screen. If it's a different known route, that route
@@ -34,20 +34,22 @@
 //! tapping back returns the user to the app's home screen, mirroring
 //! a normal SPA's UX.
 //!
-//! # SSR
+//! # Substrate boundary
 //!
-//! The path-matching machinery lives in runtime-core
-//! (`match_pattern` + `RouteParams::from_segments`); this file only
-//! adds the *DOM* and *history-API* glue. A future SSR backend can
-//! call the same `match_path` callback against an HTTP request path,
-//! mount the matched screen, render the resulting tree to a string,
-//! and never touch `window` / `history`.
+//! The framework's navigator substrate (runtime-core) owns the
+//! kind-agnostic command vocabulary, the per-screen scope mechanics,
+//! and the reactive `NavState`. Everything kind-specific — chrome,
+//! typed handles, the dispatcher mapping from `NavCommand` to native
+//! action — lives in the SDK crates. This helper crate is the SDK-side
+//! shared engine that all three first-party web SDKs (stack-navigator,
+//! tab-navigator, drawer-navigator) call into for DOM and history-API
+//! glue.
 
 use backend_web::WebBackend;
 use runtime_core::primitives::navigator::{
-    DrawerHandle, DrawerNavigatorCallbacks, MountResult, NavCommand, NavigatorCallbacks,
-    NavigatorControl, NavigatorHandle, NavigatorOps, TabNavigatorCallbacks, TabsHandle,
+    MountResult, NavCommand, NavState, NavigatorControl, NavigatorHandle, NavigatorOps,
 };
+use runtime_core::Signal;
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -55,6 +57,138 @@ use std::rc::Rc;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use web_sys::Node;
+
+// ---------------------------------------------------------------------------
+// Local callback bundle types
+// ---------------------------------------------------------------------------
+//
+// Mirrors the shape of the OLD `NavigatorCallbacks<N>` that lived in
+// runtime-core before the substrate refactor. Each SDK crate fills one
+// of these in and passes it to `create` / `create_tab` / `create_drawer`.
+
+/// Optional layout-build closure: builds the navigator's chrome and
+/// returns `(root_node, optional_outlet_node)`. When `outlet` is
+/// `Some(node)`, screens mount inside that node instead of the
+/// navigator's container — that's how author-supplied chrome (sidebar,
+/// top bar, tab bar) wraps screens.
+pub type WebLayoutBuilder<N> = Rc<dyn Fn() -> (N, Option<N>)>;
+
+/// Kind-agnostic web navigator callbacks. Every SDK passes one of
+/// these; the tab and drawer variants embed it.
+pub struct WebNavCallbacks<N: Clone + 'static> {
+    pub initial_route: &'static str,
+    pub initial_path: &'static str,
+    pub mount_screen:
+        Rc<dyn Fn(&'static str, Box<dyn Any>) -> MountResult<N>>,
+    pub release_screen: Rc<dyn Fn(u64)>,
+    pub match_path: Rc<dyn Fn(&str) -> Option<(&'static str, Box<dyn Any>)>>,
+    pub depth_changed: Rc<dyn Fn(usize)>,
+    pub nav_state: NavState,
+    pub build_layout: Option<WebLayoutBuilder<N>>,
+    pub defer_initial_mount: bool,
+}
+
+/// Tab-navigator-specific callbacks. The web engine treats tabs as
+/// "screen-swap with author chrome" — the registrations are kept for
+/// SDK-side decisions (active highlighting, route mapping) but the
+/// helper itself only needs `placement` + `mount_policy` to wire the
+/// outlet, and `active_changed` to notify the SDK when the active tab
+/// changes.
+pub struct WebTabCallbacks<N: Clone + 'static> {
+    pub navigator: WebNavCallbacks<N>,
+    pub tabs: Vec<TabRegistration>,
+    pub placement: TabPlacement,
+    pub mount_policy: MountPolicy,
+    pub active_changed: Rc<dyn Fn(&'static str, String)>,
+}
+
+/// Drawer-navigator-specific callbacks. Same screen-swap engine as
+/// tabs, plus the `is_open` signal the author's layout subscribes to
+/// and the open/close notification callback.
+pub struct WebDrawerCallbacks<N: Clone + 'static> {
+    pub navigator: WebNavCallbacks<N>,
+    pub side: DrawerSide,
+    pub drawer_type: DrawerType,
+    pub drawer_width: f32,
+    pub mount_policy: MountPolicy,
+    pub is_open: Signal<bool>,
+    pub build_content: Option<Rc<dyn Fn() -> N>>,
+    pub active_changed: Rc<dyn Fn(&'static str, String)>,
+    pub open_changed: Rc<dyn Fn(bool)>,
+    pub background_color: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Local kind-specific enums and structs
+// ---------------------------------------------------------------------------
+//
+// These used to live in runtime-core but are SDK-side concepts after
+// the substrate refactor. They live here so each web SDK doesn't have
+// to redeclare them separately — the three first-party SDKs share this
+// helper crate and these definitions.
+
+/// Identifier + display metadata for a single tab. Opaque on web — the
+/// helper itself doesn't render tabs (authors build their own tab bar
+/// via the layout closure), but the SDK passes the registrations
+/// through so they're available for any helper-side lookups in the
+/// future.
+pub struct TabRegistration {
+    pub route: &'static str,
+    pub path: &'static str,
+    pub label: Option<String>,
+}
+
+/// Where the tab bar lives relative to the screen content. Currently
+/// informational from the helper's standpoint; the author's `.layout()`
+/// closure owns actual positioning.
+#[derive(Clone, Copy, Debug)]
+pub enum TabPlacement {
+    Top,
+    Bottom,
+}
+
+/// When to materialize a screen's subtree relative to navigation.
+///
+/// - `Lazy`: only on first activation (default for tabs / drawer items).
+/// - `Eager`: at navigator creation time.
+#[derive(Clone, Copy, Debug)]
+pub enum MountPolicy {
+    Lazy,
+    Eager,
+}
+
+/// Which side of the screen the drawer slides in from.
+#[derive(Clone, Copy, Debug)]
+pub enum DrawerSide {
+    Left,
+    Right,
+}
+
+/// Visual presentation style for the drawer chrome.
+#[derive(Clone, Copy, Debug)]
+pub enum DrawerType {
+    /// Slides over the content; backdrop dims the content.
+    Overlay,
+    /// Pushes the content sideways; no backdrop.
+    Slide,
+    /// Always visible alongside the content (typical for wide screens).
+    Permanent,
+}
+
+/// Drawer-specific commands ridden across the substrate's
+/// `NavCommand::Custom` channel. The drawer SDK builds one of these
+/// inside an `Rc<dyn Any>`, dispatches it, and the helper's dispatcher
+/// downcasts to flip `is_open`.
+#[derive(Clone, Copy, Debug)]
+pub enum DrawerCmd {
+    Open,
+    Close,
+    Toggle,
+}
+
+// ---------------------------------------------------------------------------
+// Per-screen + per-instance state
+// ---------------------------------------------------------------------------
 
 /// Per-screen entry stored by the web navigator. `node` is the DOM
 /// element produced for the screen; `scope_id` is the framework's
@@ -67,8 +201,8 @@ pub struct ScreenEntry {
     url: String,
 }
 
-/// Per-navigator instance state. Lives in
-/// `WebBackend::navigator_instances`, keyed by the container's
+/// Per-navigator instance state. Lives in the thread-local
+/// `NAVIGATOR_INSTANCES` registry, keyed by the container's
 /// `data-navigator-id`.
 pub struct NavigatorInstance {
     /// The outer `<div>` whose `data-navigator-id` attribute keys
@@ -76,10 +210,10 @@ pub struct NavigatorInstance {
     /// directly here; when a layout is set, screens append into
     /// `outlet` instead.
     pub container: Node,
-    /// When a layout is registered, the framework supplies a
-    /// dedicated `<div>` (built by `LayoutPlan.outlet_ref`) and we
-    /// mount screens into that instead of the container. `None`
-    /// means no layout — screens go into `container`.
+    /// When a layout is registered, the SDK supplies a dedicated
+    /// `<div>` (built by the layout closure) and we mount screens
+    /// into that instead of the container. `None` means no layout
+    /// — screens go into `container`.
     pub outlet: Option<Node>,
     /// Active stack — top is the visible screen. Always non-empty
     /// while the navigator exists; `pop` of the only entry is a no-op.
@@ -98,16 +232,15 @@ pub struct NavigatorInstance {
     /// stays empty.
     pub url_history: Vec<String>,
     /// `build_layout` closure, retained across the navigator's
-    /// lifetime. The framework's `build_layout` populates an
-    /// internal scope slot during the microtask call; the closure
-    /// itself owns the only `Rc` clone of that slot, so dropping
-    /// the closure also drops the scope (and all layout effects
-    /// die with it). Holding it here keeps the layout's reactive
+    /// lifetime. The SDK's `build_layout` populates an internal
+    /// scope slot during the microtask call; the closure itself
+    /// owns the only `Rc` clone of that slot, so dropping the
+    /// closure also drops the scope (and all layout effects die
+    /// with it). Holding it here keeps the layout's reactive
     /// effects alive past the microtask. `None` means no layout
     /// was registered.
     #[allow(dead_code)]
-    pub build_layout_retainer:
-        Option<Rc<dyn Fn() -> runtime_core::LayoutPlan<Node>>>,
+    pub build_layout_retainer: Option<WebLayoutBuilder<Node>>,
     mount_screen: Rc<dyn Fn(&'static str, Box<dyn Any>) -> MountResult<Node>>,
     release_screen: Rc<dyn Fn(u64)>,
     match_path: Rc<dyn Fn(&str) -> Option<(&'static str, Box<dyn Any>)>>,
@@ -119,7 +252,7 @@ pub struct NavigatorInstance {
     /// for pop, where `NavigatorControl::dispatch` can't know
     /// the new active route's name (it knows only that we're
     /// popping).
-    nav_state: runtime_core::NavState,
+    nav_state: NavState,
     depth_changed: Rc<dyn Fn(usize)>,
     /// `true` while the instance is applying a programmatic push /
     /// replace / reset. The popstate handler checks this so it
@@ -128,8 +261,8 @@ pub struct NavigatorInstance {
     suppress_popstate: RefCell<bool>,
     /// When `true`, the create-time microtask skips its URL-based
     /// auto-mount — initial mounting comes through
-    /// [`attach_initial_with_node`] with a screen node the caller
-    /// already has. The runtime-server dev-client sets this so the wire's
+    /// [`attach_initial`] with a screen node the caller already
+    /// has. The runtime-server dev-client sets this so the wire's
     /// `NavigatorAttachInitial` is what actually mounts the home
     /// screen (it carries the canonical server-built subtree).
     defer_initial_mount: bool,
@@ -180,17 +313,17 @@ impl NavigatorInstance {
         Some(top)
     }
 
-    /// Mount an externally-built screen node. Used by the runtime-server path
-    /// where `mount_screen` shouldn't be invoked (the screen node
-    /// and scope id are already known — server-built, shipped via
-    /// the wire).
+    /// Mount an externally-built screen node. Used by the runtime-server
+    /// path where `mount_screen` shouldn't be invoked (the screen
+    /// node and scope id are already known — server-built, shipped
+    /// via the wire).
     ///
     /// Mirrors the tail of [`Self::mount_internal`] from after the
     /// `mount_screen` call: stamps the class, appends to the
     /// mount point, records the stack entry, and fires
     /// `depth_changed`. The reactive `nav_state` signals aren't
-    /// updated here — runtime-server mode renders layout chrome on the
-    /// server, so those signals only matter for local-mode
+    /// updated here — runtime-server mode renders layout chrome on
+    /// the server, so those signals only matter for local-mode
     /// rendering.
     ///
     /// Skipped in local-render mode (`defer_initial_mount = false`)
@@ -447,7 +580,7 @@ fn set_class_present(elem: &web_sys::Element, class: &str, present: bool) {
 /// `install_dispatcher`.
 fn create_inner<F>(
     b: &mut WebBackend,
-    callbacks: NavigatorCallbacks<Node>,
+    callbacks: WebNavCallbacks<Node>,
     control: Rc<NavigatorControl>,
     install_dispatcher: F,
 ) -> Node
@@ -500,28 +633,25 @@ where
 
     // Web's `.layout(...)` escape hatch — author-supplied chrome
     // (sidebar, top bar, etc.) wrapping the navigator's screen
-    // outlet. The framework's walker hands us a `build_layout`
-    // closure; invoking it materializes the chrome subtree into
+    // outlet. The SDK's layout closure returns `(root, optional
+    // outlet)`; invoking it materializes the chrome subtree into
     // backend nodes (each sub-primitive re-enters the walker,
     // which calls `backend.borrow_mut()`).
     //
     // Defer to a microtask: `create_inner` is called from inside
-    // `Backend::create_navigator`, which itself is called inside
+    // the SDK handler's `init`, which itself may be called inside
     // an outer `backend.borrow_mut()`. Invoking `build_layout`
-    // synchronously here re-enters that borrow and panics
+    // synchronously here can re-enter that borrow and panic
     // ("RefCell already borrowed"). The same microtask trick the
     // initial-screen mount uses applies — by the time the
     // microtask fires, the outer borrow has dropped.
     if let Some(build_layout) = callbacks.build_layout.clone() {
         let instance_for_layout = instance.clone();
         runtime_core::schedule_microtask(move || {
-            let plan = build_layout();
-            let outlet_node: Option<Node> = plan.outlet_ref.with(|h| {
-                h.as_any().downcast_ref::<Node>().cloned()
-            }).flatten();
+            let (root, outlet_node) = build_layout();
             let inst = instance_for_layout.borrow();
             inst.container
-                .append_child(&plan.root)
+                .append_child(&root)
                 .expect("attach navigator layout root to container");
             drop(inst);
             if let Some(outlet) = outlet_node {
@@ -532,33 +662,26 @@ where
 
     // Mount the initial / deep-linked stack.
     //
-    // Deferred to a microtask so the build walker's outer
-    // `backend.borrow_mut()` (held across the `create_stack_navigator`
-    // call) is released before `mount_screen` calls back into
-    // `build(&backend, ...)`. Calling synchronously here would trip
-    // a "RefCell already borrowed" panic. Same defer-trick used by
-    // the Virtualizer's initial refresh on the JS side.
+    // Deferred to a microtask so any outer `backend.borrow_mut()`
+    // (held across the SDK handler's `init` call) is released
+    // before `mount_screen` calls back into the framework. Calling
+    // synchronously here would trip a "RefCell already borrowed"
+    // panic. Same defer-trick used by the Virtualizer's initial
+    // refresh on the JS side.
     //
-    // Layout (if any) is already attached by the walker before the
-    // microtask runs — `Backend::attach_navigator_layout` populates
-    // `instance.outlet`. The microtask just covers initial-screen
-    // auto-mount.
+    // Layout (if any) is wired by the microtask above, which is
+    // queued before this one. The microtask here just covers the
+    // initial-screen auto-mount.
     let initial_path = callbacks.initial_path;
     let initial_route = callbacks.initial_route;
     let match_path = callbacks.match_path.clone();
     {
         let instance = instance.clone();
         runtime_core::schedule_microtask(move || {
-            // Layout (if any) was already wired by the walker via
-            // `attach_navigator_layout` — see
-            // `walker::invoke_layout_and_attach`. The microtask
-            // exists for everything *after* layout: URL-driven
-            // auto-mount of the initial screen.
-
             let mut inst = instance.borrow_mut();
 
-            // runtime-server / deferred-mount mode: skip URL-driven auto-mount.
-            // The caller mounts via `stack_navigator_attach_initial` with
+            // runtime-server / deferred-mount mode: skip URL-driven
+            // auto-mount. The caller mounts via `attach_initial` with
             // an externally-built screen node — the framework's wire
             // delivers it shortly after this microtask runs.
             if inst.defer_initial_mount {
@@ -604,7 +727,7 @@ where
 
     // Install the per-instance dispatcher. The exact command set
     // each kind accepts differs (stack uses Push/Pop/Replace/Reset;
-    // tabs uses Select; drawer uses Select + Open/Close/Toggle), so
+    // tabs uses Select; drawer uses Select + Custom(DrawerCmd)), so
     // the caller picks the dispatcher.
     install_dispatcher(instance.clone());
 
@@ -622,7 +745,7 @@ where
 /// Push / Pop / Replace / Reset and panics on tab/drawer commands.
 pub fn create(
     b: &mut WebBackend,
-    callbacks: NavigatorCallbacks<Node>,
+    callbacks: WebNavCallbacks<Node>,
     control: Rc<NavigatorControl>,
 ) -> Node {
     create_inner(b, callbacks, control.clone(), move |instance| {
@@ -637,10 +760,7 @@ pub fn create(
             NavCommand::Reset { name, url, params, .. } => {
                 instance.borrow_mut().reset(name, params, url)
             }
-            NavCommand::Select { .. }
-            | NavCommand::OpenDrawer
-            | NavCommand::CloseDrawer
-            | NavCommand::ToggleDrawer => {
+            NavCommand::Select { .. } | NavCommand::Custom(_) => {
                 panic!(
                     "stack Navigator received a non-stack NavCommand — \
                      check that the dispatched command's shape matches \
@@ -656,8 +776,8 @@ pub fn create(
 /// Web treats all navigator kinds as "screen-swap with author
 /// chrome" — the underlying machinery (mount/release scopes, URL
 /// history, popstate reconciliation) is identical to the stack
-/// navigator. The `TabSpec` metadata (labels, icons, badges) is
-/// ignored at this layer; authors render their own tab bar through
+/// navigator. The `TabRegistration` metadata (labels, icons, badges)
+/// is ignored at this layer; authors render their own tab bar through
 /// `.layout(...)` and call `handle.select(...)` from the bar
 /// buttons. This mirrors how `idea-ui` is expected to ship themed
 /// tab bars: the bar is *just a styled View*, not a navigator
@@ -667,10 +787,14 @@ pub fn create(
 /// active slot, no URL stack growth.
 pub fn create_tab(
     b: &mut WebBackend,
-    callbacks: TabNavigatorCallbacks<Node>,
+    callbacks: WebTabCallbacks<Node>,
     control: Rc<NavigatorControl>,
 ) -> Node {
-    let TabNavigatorCallbacks { navigator, .. } = callbacks;
+    let WebTabCallbacks {
+        navigator,
+        active_changed,
+        ..
+    } = callbacks;
     create_inner(b, navigator, control.clone(), move |instance| {
         control.install(Box::new(move |cmd| match cmd {
             NavCommand::Select { name, url, params, .. } => {
@@ -681,20 +805,20 @@ pub fn create_tab(
                         return;
                     }
                 }
-                instance.borrow_mut().replace(name, params, url);
+                instance.borrow_mut().replace(name, params, url.clone());
+                active_changed(name, url);
             }
             // `Reset` is accepted as a "go back to initial tab"
             // hatch — useful for analytics flows that programmatically
             // re-home the user.
             NavCommand::Reset { name, url, params, .. } => {
-                instance.borrow_mut().reset(name, params, url)
+                instance.borrow_mut().reset(name, params, url.clone());
+                active_changed(name, url);
             }
             NavCommand::Push { .. }
             | NavCommand::Pop
             | NavCommand::Replace { .. }
-            | NavCommand::OpenDrawer
-            | NavCommand::CloseDrawer
-            | NavCommand::ToggleDrawer => {
+            | NavCommand::Custom(_) => {
                 panic!(
                     "TabNavigator received an unsupported NavCommand — \
                      tabs accept Select (and Reset for go-home); pushing / \
@@ -709,20 +833,24 @@ pub fn create_tab(
 ///
 /// Same machinery as tabs: screen-swap with author chrome. The
 /// drawer's visual side panel is rendered by the author's
-/// `.layout(...)` closure; the drawer commands flip the
-/// `callbacks.is_open` signal that the layout subscribes to.
+/// `.layout(...)` closure; drawer commands ride the substrate's
+/// `NavCommand::Custom` channel carrying a `DrawerCmd` payload —
+/// the dispatcher downcasts and flips the `is_open` signal that the
+/// layout subscribes to.
 pub fn create_drawer(
     b: &mut WebBackend,
-    callbacks: DrawerNavigatorCallbacks<Node>,
+    callbacks: WebDrawerCallbacks<Node>,
     control: Rc<NavigatorControl>,
 ) -> Node {
-    let DrawerNavigatorCallbacks {
+    let WebDrawerCallbacks {
         navigator,
         is_open,
         open_changed,
+        active_changed,
+        build_content,
         ..
     } = callbacks;
-    create_inner(b, navigator, control.clone(), move |instance| {
+    let container = create_inner(b, navigator, control.clone(), move |instance| {
         control.install(Box::new(move |cmd| match cmd {
             NavCommand::Select { name, url, params, .. } => {
                 {
@@ -738,7 +866,8 @@ pub fn create_drawer(
                         return;
                     }
                 }
-                instance.borrow_mut().replace(name, params, url);
+                instance.borrow_mut().replace(name, params, url.clone());
+                active_changed(name, url);
                 // Auto-close the drawer on selection. The is_open
                 // signal is what the author's layout subscribes
                 // to; we update it directly here AND call
@@ -747,34 +876,92 @@ pub fn create_drawer(
                 open_changed(false);
             }
             NavCommand::Reset { name, url, params, .. } => {
-                instance.borrow_mut().reset(name, params, url);
+                instance.borrow_mut().reset(name, params, url.clone());
+                active_changed(name, url);
                 is_open.set(false);
                 open_changed(false);
             }
-            NavCommand::OpenDrawer => {
-                is_open.set(true);
-                open_changed(true);
-            }
-            NavCommand::CloseDrawer => {
-                is_open.set(false);
-                open_changed(false);
-            }
-            NavCommand::ToggleDrawer => {
-                let now = !is_open.get();
-                is_open.set(now);
-                open_changed(now);
+            NavCommand::Custom(payload) => {
+                // Drawer-specific verbs ride here. Downcast the
+                // payload to `DrawerCmd`; ignore foreign types so
+                // future SDK additions don't accidentally panic.
+                if let Ok(cmd) = payload.downcast::<DrawerCmd>() {
+                    match *cmd {
+                        DrawerCmd::Open => {
+                            is_open.set(true);
+                            open_changed(true);
+                        }
+                        DrawerCmd::Close => {
+                            is_open.set(false);
+                            open_changed(false);
+                        }
+                        DrawerCmd::Toggle => {
+                            let now = !is_open.get();
+                            is_open.set(now);
+                            open_changed(now);
+                        }
+                    }
+                }
             }
             NavCommand::Push { .. }
             | NavCommand::Pop
             | NavCommand::Replace { .. } => {
                 panic!(
                     "DrawerNavigator received an unsupported NavCommand — \
-                     drawer accepts Select + Open/Close/ToggleDrawer (and \
+                     drawer accepts Select + Custom(DrawerCmd) (and \
                      Reset for go-home)"
                 );
             }
         }));
-    })
+    });
+
+    // Drawer-on-web layout: tag the root with the drawer-specific CSS
+    // class (flex row), then create two child divs — a sidebar pinned
+    // to the leading edge and a body taking the rest of the width.
+    // Materialize the SDK-supplied `build_content` into the sidebar;
+    // make the body the navigator's outlet so subsequent screen mounts
+    // land in the right column rather than over the sidebar.
+    if let Some(container_elem) = container.dyn_ref::<web_sys::Element>() {
+        let _ = container_elem.set_attribute(
+            "class",
+            "ui-nav-root ui-nav-drawer-root",
+        );
+    }
+    let doc = web_sys::window()
+        .expect("window")
+        .document()
+        .expect("document");
+    let sidebar_div = doc
+        .create_element("div")
+        .expect("create_element drawer sidebar failed");
+    let _ = sidebar_div.set_attribute("class", "ui-nav-drawer-sidebar");
+    let body_div = doc
+        .create_element("div")
+        .expect("create_element drawer body failed");
+    let _ = body_div.set_attribute("class", "ui-nav-drawer-body");
+    let _ = container
+        .append_child(&sidebar_div)
+        .expect("append drawer sidebar");
+    let body_node: Node = body_div.unchecked_into();
+    let _ = container
+        .append_child(&body_node)
+        .expect("append drawer body");
+
+    let nav_id = navigator_id_of(&container).expect("nav id stamped by create_inner");
+    let instance_rc = NAVIGATOR_INSTANCES
+        .with(|m| m.borrow().get(&nav_id).map(|e| e.instance.clone()))
+        .expect("instance registered by create_inner");
+    instance_rc.borrow_mut().outlet = Some(body_node);
+
+    if let Some(build_content) = build_content {
+        let sidebar_parent: Node = sidebar_div.unchecked_into();
+        runtime_core::schedule_microtask(move || {
+            let sidebar_node = build_content();
+            let _ = sidebar_parent.append_child(&sidebar_node);
+        });
+    }
+
+    container
 }
 
 /// runtime-server / deferred-mount entry point. Called by the SDK
@@ -783,9 +970,9 @@ pub fn create_drawer(
 /// node into the navigator's outlet without going through `mount_screen`.
 ///
 /// Post-create helpers (`attach_initial`, `attach_layout`, `release`,
-/// the `make_*_handle` family) read from the thread-local
-/// `NAVIGATOR_INSTANCES` registry and don't need a backend handle —
-/// the SDK handler invokes them with just the navigator `Node`.
+/// `make_handle`) read from the thread-local `NAVIGATOR_INSTANCES`
+/// registry and don't need a backend handle — the SDK handler invokes
+/// them with just the navigator `Node`.
 pub fn attach_initial(navigator: &Node, screen: Node, scope_id: u64) {
     let Some(nav_id) = navigator_id_of(navigator) else {
         return;
@@ -797,13 +984,13 @@ pub fn attach_initial(navigator: &Node, screen: Node, scope_id: u64) {
     instance.borrow_mut().attach_initial_with_node(screen, scope_id);
 }
 
-/// runtime-server layout attach. The dev-side recording backend ran the user's
-/// `.layout(...)` closure, the wire shipped every node it built
-/// (sidebar, chrome, outlet placeholder), and now we have to (1)
-/// drop the layout root into the navigator container and (2) record
-/// the outlet node so subsequent `attach_initial`s mount screens
-/// inside the layout's outlet — not the bare container, which would
-/// dump the screen on top of the sidebar.
+/// runtime-server layout attach. The dev-side recording backend ran
+/// the user's `.layout(...)` closure, the wire shipped every node it
+/// built (sidebar, chrome, outlet placeholder), and now we have to
+/// (1) drop the layout root into the navigator container and (2)
+/// record the outlet node so subsequent `attach_initial`s mount
+/// screens inside the layout's outlet — not the bare container,
+/// which would dump the screen on top of the sidebar.
 pub fn attach_layout(navigator: &Node, root: Node, outlet: Node) {
     let Some(nav_id) = navigator_id_of(navigator) else {
         return;
@@ -813,8 +1000,8 @@ pub fn attach_layout(navigator: &Node, root: Node, outlet: Node) {
     });
     let Some(instance) = instance else { return };
     let mut inst = instance.borrow_mut();
-    // Container is freshly created with no children in runtime-server mode
-    // (defer_initial_mount = true, so the create-time microtask
+    // Container is freshly created with no children in runtime-server
+    // mode (defer_initial_mount = true, so the create-time microtask
     // bails before mounting anything). Safe to just append the
     // layout root.
     inst.container
@@ -845,6 +1032,11 @@ pub fn release(node: &Node) {
     let _ = entry.control;
 }
 
+/// Build a `NavigatorHandle` for the navigator identified by `node`.
+/// SDK crates wrap this in their own typed handle (`StackHandle`,
+/// `TabsHandle`, `DrawerHandle`) that exposes the kind-specific
+/// methods. Returns an inert (no-control) handle when `node` isn't a
+/// registered navigator.
 pub fn make_handle(node: &Node) -> NavigatorHandle {
     let Some(nav_id) = navigator_id_of(node) else {
         return NavigatorHandle::new(Rc::new(()), &WebNavigatorOps);
@@ -858,28 +1050,9 @@ pub fn make_handle(node: &Node) -> NavigatorHandle {
     }
 }
 
-/// Make a `TabsHandle`. Same wiring as `make_handle` but wraps the
-/// underlying `NavigatorHandle` so the type-system enforces "tabs
-/// only `.select(...)`, no `.push`".
-pub fn make_tab_handle(node: &Node) -> TabsHandle {
-    TabsHandle::from_inner(make_handle(node))
-}
-
-/// Make a `DrawerHandle`. The drawer's `is_open` probe lives behind
-/// an `Rc<Cell<bool>>` shared with the dispatcher; we hand the same
-/// Cell to every handle clone so they observe each other's writes.
-pub fn make_drawer_handle(node: &Node) -> DrawerHandle {
-    let inner = make_handle(node);
-    // The probe `Cell` lives on the entry below. For now we use a
-    // fresh `Cell` per handle — the authoritative state is the
-    // signal carried in `DrawerNavigatorCallbacks::is_open`, which
-    // every reactive read should go through. The non-reactive
-    // `is_open()` probe is just a convenience for one-shot reads.
-    DrawerHandle::from_inner(inner, Rc::new(std::cell::Cell::new(false)))
-}
-
-/// Per-instance bundle stored on the backend so `make_handle` /
-/// `release` can find the right navigator at lookup time.
+/// Per-instance bundle stored in the thread-local registry so
+/// `make_handle` / `release` can find the right navigator at lookup
+/// time.
 pub struct NavigatorEntry {
     pub instance: Rc<RefCell<NavigatorInstance>>,
     pub control: Rc<NavigatorControl>,
@@ -1029,9 +1202,21 @@ fn ensure_navigator_css(_b: &mut WebBackend) {
         if injected.get() {
             return;
         }
+        // `.ui-nav-root` — plain stack navigator container (single
+        // child stack of `.ui-nav-screen`s).
+        //
+        // `.ui-nav-drawer-root` — drawer navigator on web pins the
+        // sidebar to the left and the body (the screen outlet) takes
+        // the remaining width. The drawer SDK creates two child
+        // divs: `.ui-nav-drawer-sidebar` and `.ui-nav-drawer-body`.
+        // Screens mount into the body, which is reused as the
+        // navigator's outlet.
         let css = ".ui-nav-root{position:relative;width:100%;height:100%;}\
                    .ui-nav-screen{position:absolute;inset:0;width:100%;height:100%;}\
-                   .ui-nav-hidden{display:none;}";
+                   .ui-nav-hidden{display:none;}\
+                   .ui-nav-drawer-root{display:flex;flex-direction:row;width:100%;height:100%;}\
+                   .ui-nav-drawer-sidebar{flex:0 0 auto;height:100%;overflow-y:auto;}\
+                   .ui-nav-drawer-body{flex:1 1 auto;position:relative;height:100%;overflow:hidden;}";
         let Some(win) = web_sys::window() else { return };
         let Some(doc) = win.document() else { return };
         if let Some(head) = doc.head() {

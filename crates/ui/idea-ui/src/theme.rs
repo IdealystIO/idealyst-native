@@ -533,23 +533,30 @@ where
     }
 }
 
-/// Build a reactive [`runtime_core::HeaderStyle`] closure for a
-/// navigator's bundled `.header(...)` call. The closure is handed
-/// the current `IdeaTheme` reference and returns the populated
-/// `HeaderStyle`. Re-invoked on every theme swap.
+/// Build a reactive header-style closure for a navigator's bundled
+/// `.header(...)` call. The closure is handed the current `IdeaTheme`
+/// reference and returns the SDK's `HeaderStyle` (each SDK defines
+/// its own — `stack_navigator::HeaderStyle`, `drawer_navigator::HeaderStyle`,
+/// etc.). Re-invoked on every theme swap.
+///
+/// Generic over `HS` so authors can use `idea_header` with whichever
+/// navigator SDK they're driving:
 ///
 /// ```ignore
+/// use drawer_navigator::HeaderStyle;
+///
 /// DrawerNavigator::new(&ROUTE)
-///     .header(idea_header(|t| HeaderStyle {
+///     .header(idea_header::<HeaderStyle, _>(|t| HeaderStyle {
 ///         background: Some(t.colors().surface.value().clone()),
 ///         title: Some(t.colors().text.value().clone()),
 ///         tint: Some(t.colors().text.value().clone()),
 ///         body_background: Some(t.colors().background.value().clone()),
 ///     }))
 /// ```
-pub fn idea_header<F>(builder: F) -> impl Fn() -> runtime_core::HeaderStyle + 'static
+pub fn idea_header<HS, F>(builder: F) -> impl Fn() -> HS + 'static
 where
-    F: Fn(&IdeaThemeRef) -> runtime_core::HeaderStyle + 'static,
+    HS: 'static,
+    F: Fn(&IdeaThemeRef) -> HS + 'static,
 {
     move || {
         let theme = crate::theme_runtime::active_theme();

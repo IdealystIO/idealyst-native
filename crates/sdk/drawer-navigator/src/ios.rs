@@ -1,29 +1,36 @@
 //! iOS-backend handler for the Drawer navigator SDK.
 //!
-//! Stores the navigator's container `IosNode` and `NavigatorControl`
-//! clone from `init`, then implements the post-init `NavigatorHandler`
-//! methods on top of the backend's existing per-kind inherent helpers.
+//! The UIKit machinery (outer container, scrim, embedded
+//! `UINavigationController` for header bar, sidebar slide-in animation,
+//! drawer open/close dispatcher) lives in the `ios-navigator-helpers`
+//! crate, shared with stack + tab. This module's `IosDrawerHandler`
+//! synthesizes an `IosDrawerCallbacks` from the framework-supplied
+//! `NavigatorHost` + the SDK's `DrawerPresentation`, then calls
+//! `ios_navigator_helpers::create_drawer`.
 
-use crate::{DrawerPresentation, DrawerSide, DrawerType, MountPolicy};
-use backend_ios::{IosBackend, IosNode};
-use runtime_core::{
-    accessibility::AccessibilityProps,
-    primitives::navigator::{DrawerContentProps, NavCommand, NavigatorOps},
-    DrawerNavigatorCallbacks, DrawerSide as CoreDrawerSide, DrawerType as CoreDrawerType,
-    MountPolicy as CoreMountPolicy, MountResult, NavigatorCallbacks, NavigatorControl,
-    NavigatorHandle, NavigatorHandler, NavigatorHost,
+use crate::{
+    BarButton, DrawerCmd, DrawerHandle, DrawerPresentation, DrawerScreenOptions, DrawerSide,
+    DrawerSlotProps, DrawerType, MountPolicy, DRAWER_OPS,
+};
+use backend_ios::{with_backend, IosBackend, IosNode};
+use ios_navigator_helpers::{
+    self as helpers, BarButton as HelpersBarButton, DrawerCmd as HelpersDrawerCmd,
+    DrawerSide as HelpersDrawerSide, DrawerType as HelpersDrawerType, IosDrawerCallbacks,
+    IosNavCallbacks, IosScreenOptions, MountPolicy as HelpersMountPolicy,
+};
+use runtime_core::primitives::navigator::{
+    MountResult, NavCommand, NavigatorHandler, NavigatorHost,
 };
 use std::any::Any;
 use std::rc::Rc;
 
 pub struct IosDrawerHandler {
     container: Option<IosNode>,
-    control: Option<Rc<NavigatorControl>>,
 }
 
 impl IosDrawerHandler {
     pub fn new() -> Self {
-        Self { container: None, control: None }
+        Self { container: None }
     }
 }
 impl Default for IosDrawerHandler {
@@ -32,23 +39,43 @@ impl Default for IosDrawerHandler {
     }
 }
 
-fn side_to_core(s: DrawerSide) -> CoreDrawerSide {
+fn side_to_helpers(s: DrawerSide) -> HelpersDrawerSide {
     match s {
-        DrawerSide::Start => CoreDrawerSide::Start,
-        DrawerSide::End => CoreDrawerSide::End,
+        DrawerSide::Start => HelpersDrawerSide::Start,
+        DrawerSide::End => HelpersDrawerSide::End,
     }
 }
-fn type_to_core(t: DrawerType) -> CoreDrawerType {
+fn type_to_helpers(t: DrawerType) -> HelpersDrawerType {
     match t {
-        DrawerType::Front => CoreDrawerType::Front,
-        DrawerType::Slide => CoreDrawerType::Slide,
+        DrawerType::Front => HelpersDrawerType::Front,
+        DrawerType::Slide => HelpersDrawerType::Slide,
     }
 }
-fn mount_policy_to_core(m: MountPolicy) -> CoreMountPolicy {
+fn mount_policy_to_helpers(m: MountPolicy) -> HelpersMountPolicy {
     match m {
-        MountPolicy::EagerPersistent => CoreMountPolicy::EagerPersistent,
-        MountPolicy::LazyPersistent => CoreMountPolicy::LazyPersistent,
-        MountPolicy::LazyDisposing => CoreMountPolicy::LazyDisposing,
+        MountPolicy::EagerPersistent => HelpersMountPolicy::EagerPersistent,
+        MountPolicy::LazyPersistent => HelpersMountPolicy::LazyPersistent,
+        MountPolicy::LazyDisposing => HelpersMountPolicy::LazyDisposing,
+    }
+}
+
+fn translate_bar_button(btn: &BarButton) -> HelpersBarButton {
+    HelpersBarButton {
+        icon: btn.icon.clone(),
+        on_press: btn.on_press.clone(),
+        tint: btn.tint.clone(),
+    }
+}
+
+fn translate_options(opts: &DrawerScreenOptions) -> IosScreenOptions {
+    IosScreenOptions {
+        title: opts.title.clone(),
+        header_shown: opts.header_shown,
+        header_left: opts.header_left.as_ref().map(translate_bar_button),
+        header_right: opts.header_right.as_ref().map(translate_bar_button),
+        header_background: opts.header_background.clone(),
+        header_tint: opts.header_tint.clone(),
+        title_color: opts.title_color.clone(),
     }
 }
 
@@ -69,77 +96,93 @@ impl NavigatorHandler<IosBackend> for IosDrawerHandler {
             defer_initial_mount,
             mount_screen,
             release_screen,
-            match_path,
-            build_layout,
+            match_path: _,
             nav_state,
             depth_changed,
             active_changed,
             control,
             build_node,
+            build_in_screen: _,
         } = host;
 
         let mount_2arg: Rc<dyn Fn(&'static str, Box<dyn Any>) -> MountResult<IosNode>> = {
             let m = mount_screen;
-            Rc::new(move |name, params| m(name, params, None))
+            Rc::new(move |name, params| {
+                let result = m(name, params, None);
+                let new_options: Box<dyn Any> = if let Some(opts) =
+                    result.options.downcast_ref::<DrawerScreenOptions>()
+                {
+                    Box::new(translate_options(opts))
+                } else if result.options.downcast_ref::<IosScreenOptions>().is_some() {
+                    result.options
+                } else {
+                    Box::new(IosScreenOptions::default())
+                };
+                MountResult {
+                    node: result.node,
+                    scope_id: result.scope_id,
+                    options: new_options,
+                }
+            })
         };
 
-        let navigator = NavigatorCallbacks {
+        let navigator = IosNavCallbacks {
             initial_route,
             initial_path,
             mount_screen: mount_2arg,
             release_screen,
-            match_path,
-            build_layout,
-            nav_state: nav_state.clone(),
             depth_changed,
+            nav_state: nav_state.clone(),
             defer_initial_mount,
         };
 
-        // Shared with the SDK builder's `.layout(...)` wrap — see
-        // `DrawerPresentation::is_open` in `lib.rs`.
         let is_open = presentation.is_open;
         let open_changed: Rc<dyn Fn(bool)> = {
-            Rc::new(move |o| is_open.set(o))
+            let signal = is_open;
+            Rc::new(move |o| signal.set(o))
         };
-
-        let active_changed_legacy: Rc<dyn Fn(&'static str)> = {
+        let active_changed_helpers: Rc<dyn Fn(&'static str)> = {
             let ac = active_changed;
             Rc::new(move |name| ac(name, String::new()))
         };
 
-        let drawer_callbacks = DrawerNavigatorCallbacks {
+        let drawer_callbacks = IosDrawerCallbacks {
             navigator,
-            side: side_to_core(presentation.side),
-            drawer_type: type_to_core(presentation.drawer_type),
+            side: side_to_helpers(presentation.side),
+            drawer_type: type_to_helpers(presentation.drawer_type),
             drawer_width: presentation.drawer_width,
             swipe_to_open: presentation.swipe_to_open,
-            mount_policy: mount_policy_to_core(presentation.mount_policy),
+            mount_policy: mount_policy_to_helpers(presentation.mount_policy),
             is_open,
-            // Drawer panel content rendered through the user's
-            // `.layout(...)` instead (Phase-1 keeps the legacy posture).
+            // The helper crate's `build_content` slot is the
+            // closure-shaped sidebar builder. The SDK's typed
+            // `SidebarBuilder` returns a `Primitive`; we wrap it in a
+            // microtask-deferred closure that calls `host.build_node`
+            // to materialize and returns the resulting `IosNode`. The
+            // helpers crate's drawer engine doesn't currently invoke
+            // `build_content` directly — the SDK still attaches the
+            // sidebar via the deferred microtask below — so this slot
+            // is left `None`.
             build_content: None,
-            active_changed: active_changed_legacy,
+            active_changed: active_changed_helpers,
             open_changed,
             background_color: None,
         };
 
-        self.control = Some(control.clone());
-        let node = backend.create_drawer_navigator(
-            drawer_callbacks,
-            control.clone(),
-            &AccessibilityProps::default(),
-        );
+        let node = helpers::create_drawer(backend.mtm(), drawer_callbacks, control.clone());
         self.container = Some(node.clone());
 
         // Sidebar build + attach — deferred so the outer
         // `backend.borrow_mut()` window (held across this `init` call)
         // is released before the walker re-enters via `build_node`.
-        // The microtask fires on the next runloop turn via the
-        // installed iOS scheduler (NSTimer-backed).
-        if let Some(content_builder) = presentation.content.clone() {
+        if let Some(sidebar_builder) = presentation.sidebar.borrow().clone() {
             let active_route = nav_state.active_route;
+            let active_path = nav_state.active_path.clone();
+            let depth = nav_state.depth;
+            let can_go_back = nav_state.can_go_back;
             let is_open_sig = presentation.is_open;
             let control_for_select = control.clone();
+            let control_for_ambient = control.clone();
             let control_for_close = control;
             let node_for_attach = node.clone();
             runtime_core::schedule_microtask(move || {
@@ -156,35 +199,44 @@ impl NavigatorHandler<IosBackend> for IosDrawerHandler {
                 };
                 let on_close: Rc<dyn Fn()> = {
                     let c = control_for_close;
-                    Rc::new(move || c.dispatch(NavCommand::CloseDrawer))
+                    Rc::new(move || {
+                        c.dispatch(NavCommand::Custom(Rc::new(HelpersDrawerCmd::Close)));
+                    })
                 };
-                let content_props = DrawerContentProps {
+                let props = DrawerSlotProps {
                     active_route,
+                    active_path,
+                    depth,
+                    can_go_back,
                     is_open: is_open_sig,
                     on_select,
                     on_close,
                 };
-                let sidebar_primitive = content_builder(content_props);
+                // Push this navigator onto the ambient stack so any
+                // `Link` primitives built inside `sidebar_builder`
+                // capture it as their target. The sidebar microtask
+                // runs OUTSIDE any navigator's `mount_screen`, so
+                // without this `Link::new` captures `target=None`
+                // and `on_activate` silently no-ops on tap. Guard
+                // pops at end of scope.
+                let _ambient =
+                    runtime_core::primitives::navigator::AmbientNavGuard::push(
+                        control_for_ambient.clone(),
+                    );
+                let sidebar_primitive = sidebar_builder(props);
                 let sidebar_node = build_node(sidebar_primitive);
-                // Attach via the iOS backend's existing helper. Reach
-                // the live `IosBackend` through the installed global
-                // self ref — `install_global_self` runs at host
-                // bootstrap so by the time this microtask fires it's
-                // always present.
-                //
-                // Layout-pass kick AFTER attach: Taffy sizing for the
-                // sidebar's root happens at compute time, but
-                // `attach_sidebar` only adds the subview — it doesn't
-                // re-run the iOS layout pipeline. Without this kick,
-                // the sidebar UIView lands with a 0×0 frame and the
-                // user sees an "empty" drawer panel even though its
-                // children are correctly registered with Taffy.
-                backend_ios::with_backend(|b| {
-                    b.drawer_navigator_attach_sidebar(&node_for_attach, sidebar_node);
-                    b.run_layout();
+                let _ = with_backend(|b| {
+                    helpers::drawer_attach_sidebar(b.mtm(), &node_for_attach, sidebar_node);
                 });
             });
         }
+
+        // Quiet a lint: `_` keeps the import in scope on iOS builds
+        // even when no path below directly names the SDK-side
+        // `DrawerCmd` (we translate to `HelpersDrawerCmd` via the
+        // `Custom` payload). The compile-time cast keeps the
+        // SDK's enum exposed for downstream typed-handle work.
+        let _: Option<DrawerCmd> = None;
 
         node
     }
@@ -194,54 +246,55 @@ impl NavigatorHandler<IosBackend> for IosDrawerHandler {
         backend: &mut IosBackend,
         screen: IosNode,
         scope_id: u64,
-        options: runtime_core::ScreenOptions,
+        options: Box<dyn Any>,
     ) {
-        if let Some(container) = self.container.clone() {
-            backend.drawer_navigator_attach_initial(&container, screen, scope_id, options);
-        }
+        let Some(container) = self.container.clone() else { return };
+        let ios_opts = options
+            .downcast_ref::<DrawerScreenOptions>()
+            .map(translate_options)
+            .unwrap_or_default();
+        helpers::drawer_attach_initial(backend.mtm(), &container, screen, scope_id, &ios_opts);
     }
 
     fn on_command(&mut self, _cmd: runtime_core::NavCommand) {
         unreachable!(
-            "IosDrawerHandler::on_command — backend.create_drawer_navigator owns \
-             the control-plane dispatcher"
+            "IosDrawerHandler::on_command — helpers::create_drawer owns the \
+             control-plane dispatcher"
         );
     }
 
-    fn release(&mut self, backend: &mut IosBackend) {
+    fn release(&mut self, _backend: &mut IosBackend) {
         if let Some(container) = self.container.take() {
-            backend.release_drawer_navigator(&container);
+            helpers::release_tab_drawer(&container);
         }
-        self.control = None;
     }
 
-    fn make_handle(&self) -> NavigatorHandle {
-        match self.control.clone() {
-            Some(c) => NavigatorHandle::with_control(Rc::new(()), &NoopDrawerOps, c),
-            None => NavigatorHandle::new(Rc::new(()), &NoopDrawerOps),
-        }
+    fn make_handle(&self) -> runtime_core::NavigatorHandle {
+        // The SDK's `DrawerHandle` carries the `is_open` signal too,
+        // but the framework-level `NavigatorHandle` returned here is
+        // wrapped by the SDK's `RefFill::Navigator` callback in
+        // `lib.rs::DrawerBuilder::bind`, which threads the is_open
+        // signal in at the wrap site. Returning a plain control-wired
+        // `NavigatorHandle` is enough.
+        let Some(container) = self.container.as_ref() else {
+            return runtime_core::NavigatorHandle::new(Rc::new(()), &DRAWER_OPS);
+        };
+        let _ = DrawerHandle::from_inner; // keep typed-handle ctor in scope
+        helpers::make_drawer_handle(container)
     }
 
     fn apply_slot_style(
         &mut self,
-        backend: &mut IosBackend,
+        _backend: &mut IosBackend,
         slot: &'static str,
         style: &Rc<runtime_core::StyleRules>,
     ) {
         let Some(container) = self.container.clone() else { return };
-        // iOS supports "sidebar" via the drawer's panel UIView background.
-        // The "scrim" slot has no native iOS counterpart yet — drawer
-        // chrome there is owned by the drawer overlay view, not a
-        // separate scrim element.
-        match slot {
-            "sidebar" => backend.apply_drawer_sidebar_style(&container, style),
-            _ => {}
+        if slot == "sidebar" {
+            helpers::apply_drawer_sidebar_style(&container, style);
         }
     }
 }
-
-struct NoopDrawerOps;
-impl NavigatorOps for NoopDrawerOps {}
 
 pub fn register(backend: &mut IosBackend) {
     backend.register_navigator::<DrawerPresentation, _>(|| Box::new(IosDrawerHandler::new()));

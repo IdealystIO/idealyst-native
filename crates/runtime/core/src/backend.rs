@@ -1675,7 +1675,7 @@ pub trait Backend {
         navigator: &Self::Node,
         screen: Self::Node,
         scope_id: u64,
-        options: primitives::navigator::ScreenOptions,
+        options: Box<dyn std::any::Any>,
     ) {
         unimplemented!(
             "navigator_attach_initial not implemented for this backend"

@@ -927,39 +927,13 @@ where
                 )?;
             }
             Command::NavigatorPop { navigator, count } => {
-                let state = self
-                    .navigators
-                    .get(&navigator)
-                    .cloned()
-                    .ok_or(ReplayError::UnknownNode(navigator))?;
-                // Pop idempotency. The server emits a
-                // `Command::NavigatorPop` for client-initiated pops
-                // (swipe-back → `handle_screen_released`), and the
-                // broadcast goes to every connected client —
-                // including the one that originated the pop. That
-                // client's native nav controller has already popped
-                // locally; re-dispatching here would over-pop. We
-                // gate on `mounted_urls.len() > 1` (initial screen
-                // can't be popped) and the cursor-already-at-end so
-                // we don't double-pop during replay either.
-                let mut state_pops = 0;
-                {
-                    let urls_len = state.mounted_urls.borrow().len();
-                    let pos = *state.replay_pos.borrow();
-                    // Only pop what we still have above the initial
-                    // screen, and never pop during replay (when
-                    // `pos < urls_len`).
-                    if pos == urls_len {
-                        state_pops = count.min((urls_len as u32).saturating_sub(1));
-                    }
-                }
-                *state.suppress_release.borrow_mut() = true;
-                for _ in 0..state_pops {
-                    state
-                        .control
-                        .dispatch(runtime_core::primitives::navigator::NavCommand::Pop);
-                }
-                *state.suppress_release.borrow_mut() = false;
+                // Pop dispatch is stubbed pending the wire-protocol
+                // redesign for SDK-driven navigators. The legacy
+                // `NavigatorControl.dispatch(NavCommand::Pop)` path
+                // no longer carries the framework's callback layer
+                // that used to surface the pop to the underlying
+                // backend.
+                let _ = (navigator, count);
             }
             Command::NavigatorMountTab {
                 navigator,
@@ -1004,34 +978,17 @@ where
                 let _ = (navigator, sidebar);
             }
             Command::OpenDrawer { navigator } => {
-                let state = self
-                    .navigators
-                    .get(&navigator)
-                    .cloned()
-                    .ok_or(ReplayError::UnknownNode(navigator))?;
-                state
-                    .control
-                    .dispatch(runtime_core::primitives::navigator::NavCommand::OpenDrawer);
+                // Drawer open/close/toggle were enum variants on the
+                // pre-refactor `NavCommand`; the new model moves these
+                // to SDK-specific Custom payloads. Stubbed pending the
+                // wire-protocol redesign.
+                let _ = navigator;
             }
             Command::CloseDrawer { navigator } => {
-                let state = self
-                    .navigators
-                    .get(&navigator)
-                    .cloned()
-                    .ok_or(ReplayError::UnknownNode(navigator))?;
-                state
-                    .control
-                    .dispatch(runtime_core::primitives::navigator::NavCommand::CloseDrawer);
+                let _ = navigator;
             }
             Command::ToggleDrawer { navigator } => {
-                let state = self
-                    .navigators
-                    .get(&navigator)
-                    .cloned()
-                    .ok_or(ReplayError::UnknownNode(navigator))?;
-                state
-                    .control
-                    .dispatch(runtime_core::primitives::navigator::NavCommand::ToggleDrawer);
+                let _ = navigator;
             }
 
             // --- Navigator chrome styles ---
@@ -1242,75 +1199,31 @@ where
         initial_path: String,
         a11y: wire::WireAccessibilityProps,
     ) {
-        // Idempotency. If a navigator with this id is already
-        // mounted (we kept state across a reconnect, or the wire
-        // is re-applying its snapshot), don't build a second
-        // `UINavigationController` / DOM nav — the old one is
-        // still in the view hierarchy, and the new one would be
-        // orphaned because `Insert` is also idempotent. Pop/Push
-        // commands later in the stream are dispatched against
-        // whichever control is in `self.navigators[id]`, so
-        // overwriting it with a fresh-but-unmounted nav would make
-        // the visible UI un-pop-able.
-        //
-        // We also use this branch to reset `replay_pos`: a
-        // duplicate `CreateNavigator` only arrives when the
-        // append-only log is being replayed (server restart or new
-        // session). The subsequent `AttachInitial`/`Push` stream
-        // should be checked against `mounted_urls` from index 0.
+        // Idempotency. Pre-existing navigator: reset replay cursor
+        // and keep the current mount.
         if let Some(state) = self.navigators.get(&id) {
             *state.replay_pos.borrow_mut() = 0;
             return;
         }
 
-        let route_static: &'static str = Box::leak(initial_route.clone().into_boxed_str());
-        let path_static: &'static str = Box::leak(initial_path.clone().into_boxed_str());
+        // Dev wire stack-navigator creation stubbed pending SDK-
+        // dispatch wire-protocol redesign. We still create a
+        // placeholder backend view so subsequent commands have a node
+        // to target, but no per-kind native nav container is built.
+        let _ = (initial_route,);
+        let a11y_props = self.a11y_props(a11y);
+        let nav_node = self.backend.borrow_mut().create_view(&a11y_props);
 
         let control = Rc::new(runtime_core::primitives::navigator::NavigatorControl::new());
         let mounted_urls = Rc::new(RefCell::new(Vec::new()));
         let replay_pos = Rc::new(RefCell::new(0usize));
 
-        // Pre-allocate state with a placeholder node; we'll set the
-        // real node after `create_stack_navigator` returns.
-        let state = Rc::new(navigators::NavigatorAppState {
-            kind: navigators::NavigatorKind::Stack,
-            // We can't yet fill `node`; placeholder via uninit is
-            // unsafe. Instead we defer state construction until we
-            // have the node.
-            node: self
-                .backend.borrow_mut()
-                .create_view(&runtime_core::accessibility::AccessibilityProps::default()), // temporary placeholder
-            control: control.clone(),
-            pending_mount: Rc::new(RefCell::new(None)),
-            suppress_release: Rc::new(RefCell::new(false)),
-            outbound: self.outbound.clone(),
-            navigator_id: id,
-            initial_path: initial_path.clone(),
-            mounted_urls: mounted_urls.clone(),
-            replay_pos: replay_pos.clone(),
-        });
-
-        // Build callbacks referencing the state Rc.
-        let callbacks = state.build_stub_callbacks(route_static, path_static);
-
-        // Dev wire stack-navigator creation stubbed pending protocol
-        // redesign post-SDK migration. The legacy `Backend::create_stack_navigator`
-        // method was removed; per-kind nav construction now goes
-        // through SDK handlers, which the dev wire doesn't yet drive.
-        // Use the placeholder node we already minted so the rest of
-        // the bookkeeping has something to attach to.
-        let _ = (callbacks, &a11y);
-        let a11y_props = self.a11y_props(a11y);
-        let nav_node = self.backend.borrow_mut().create_view(&a11y_props);
-        let _ = control.clone(); // silence unused-variable warning
-
-        // Reconstruct the state with the real node in place.
         let final_state = Rc::new(navigators::NavigatorAppState {
             kind: navigators::NavigatorKind::Stack,
             node: nav_node.clone(),
             control,
-            pending_mount: state.pending_mount.clone(),
-            suppress_release: state.suppress_release.clone(),
+            pending_mount: Rc::new(RefCell::new(None)),
+            suppress_release: Rc::new(RefCell::new(false)),
             outbound: self.outbound.clone(),
             navigator_id: id,
             initial_path,
@@ -1332,70 +1245,26 @@ where
         mount_policy: WireMountPolicy,
         a11y: wire::WireAccessibilityProps,
     ) {
-        // Idempotent — see comment in `apply_create_navigator`.
         if let Some(state) = self.navigators.get(&id) {
             *state.replay_pos.borrow_mut() = 0;
             return;
         }
 
-        let route_static: &'static str = Box::leak(initial_route.clone().into_boxed_str());
-        let path_static: &'static str = Box::leak(initial_path.clone().into_boxed_str());
-
-        let resolved_tabs = tabs
-            .into_iter()
-            .map(|t| runtime_core::primitives::navigator::TabRegistration {
-                route: Box::leak(t.route.into_boxed_str()),
-                label: t.label,
-                icon: t.icon,
-                badge: None,
-            })
-            .collect();
-        let resolved_placement = match placement {
-            WireTabPlacement::Bottom => {
-                runtime_core::primitives::navigator::TabPlacement::Bottom
-            }
-            WireTabPlacement::Top => runtime_core::primitives::navigator::TabPlacement::Top,
-        };
-        let resolved_mount_policy = convert::wire_mount_policy(mount_policy);
+        // Stubbed pending wire-protocol redesign.
+        let _ = (initial_route, tabs, placement, mount_policy);
+        let a11y_props = self.a11y_props(a11y);
+        let nav_node = self.backend.borrow_mut().create_view(&a11y_props);
 
         let control = Rc::new(runtime_core::primitives::navigator::NavigatorControl::new());
         let mounted_urls = Rc::new(RefCell::new(Vec::new()));
         let replay_pos = Rc::new(RefCell::new(0usize));
-        let state = Rc::new(navigators::NavigatorAppState {
-            kind: navigators::NavigatorKind::Tab,
-            node: self
-                .backend.borrow_mut()
-                .create_view(&runtime_core::accessibility::AccessibilityProps::default()),
-            control: control.clone(),
-            pending_mount: Rc::new(RefCell::new(None)),
-            suppress_release: Rc::new(RefCell::new(false)),
-            outbound: self.outbound.clone(),
-            navigator_id: id,
-            initial_path: initial_path.clone(),
-            mounted_urls: mounted_urls.clone(),
-            replay_pos: replay_pos.clone(),
-        });
-
-        let callbacks = state.build_stub_tab_callbacks(
-            route_static,
-            path_static,
-            resolved_tabs,
-            resolved_placement,
-            resolved_mount_policy,
-        );
-        // Dev wire tab-navigator creation stubbed; see notes on
-        // `apply_create_stack_navigator`.
-        let _ = callbacks;
-        let a11y_props = self.a11y_props(a11y);
-        let nav_node = self.backend.borrow_mut().create_view(&a11y_props);
-        let _ = control.clone();
 
         let final_state = Rc::new(navigators::NavigatorAppState {
             kind: navigators::NavigatorKind::Tab,
             node: nav_node.clone(),
             control,
-            pending_mount: state.pending_mount.clone(),
-            suppress_release: state.suppress_release.clone(),
+            pending_mount: Rc::new(RefCell::new(None)),
+            suppress_release: Rc::new(RefCell::new(false)),
             outbound: self.outbound.clone(),
             navigator_id: id,
             initial_path,
@@ -1419,70 +1288,33 @@ where
         mount_policy: WireMountPolicy,
         a11y: wire::WireAccessibilityProps,
     ) {
-        // Idempotent — see comment in `apply_create_navigator`.
         if let Some(state) = self.navigators.get(&id) {
             *state.replay_pos.borrow_mut() = 0;
             return;
         }
 
-        let route_static: &'static str = Box::leak(initial_route.clone().into_boxed_str());
-        let path_static: &'static str = Box::leak(initial_path.clone().into_boxed_str());
-
-        let resolved_side = match side {
-            WireDrawerSide::Left => runtime_core::primitives::navigator::DrawerSide::Start,
-            WireDrawerSide::Right => runtime_core::primitives::navigator::DrawerSide::End,
-        };
-        let resolved_drawer_type = match drawer_type {
-            WireDrawerType::Front => runtime_core::primitives::navigator::DrawerType::Front,
-            // Wire's `Back` (sidebar fixed behind body) doesn't have a
-            // first-class framework variant; closest is `Slide` which
-            // also moves the body. Acceptable compromise; revisit if
-            // the framework adds Back later.
-            WireDrawerType::Back => runtime_core::primitives::navigator::DrawerType::Slide,
-            WireDrawerType::Slide => runtime_core::primitives::navigator::DrawerType::Slide,
-        };
-        let resolved_mount_policy = convert::wire_mount_policy(mount_policy);
+        // Stubbed pending wire-protocol redesign.
+        let _ = (
+            initial_route,
+            side,
+            drawer_type,
+            drawer_width,
+            swipe_to_open,
+            mount_policy,
+        );
+        let a11y_props = self.a11y_props(a11y);
+        let nav_node = self.backend.borrow_mut().create_view(&a11y_props);
 
         let control = Rc::new(runtime_core::primitives::navigator::NavigatorControl::new());
         let mounted_urls = Rc::new(RefCell::new(Vec::new()));
         let replay_pos = Rc::new(RefCell::new(0usize));
-        let state = Rc::new(navigators::NavigatorAppState {
-            kind: navigators::NavigatorKind::Drawer,
-            node: self
-                .backend.borrow_mut()
-                .create_view(&runtime_core::accessibility::AccessibilityProps::default()),
-            control: control.clone(),
-            pending_mount: Rc::new(RefCell::new(None)),
-            suppress_release: Rc::new(RefCell::new(false)),
-            outbound: self.outbound.clone(),
-            navigator_id: id,
-            initial_path: initial_path.clone(),
-            mounted_urls: mounted_urls.clone(),
-            replay_pos: replay_pos.clone(),
-        });
-
-        let callbacks = state.build_stub_drawer_callbacks(
-            route_static,
-            path_static,
-            resolved_side,
-            resolved_drawer_type,
-            drawer_width,
-            swipe_to_open,
-            resolved_mount_policy,
-        );
-        // Dev wire drawer-navigator creation stubbed; see notes on
-        // `apply_create_stack_navigator`.
-        let _ = callbacks;
-        let a11y_props = self.a11y_props(a11y);
-        let nav_node = self.backend.borrow_mut().create_view(&a11y_props);
-        let _ = control.clone();
 
         let final_state = Rc::new(navigators::NavigatorAppState {
             kind: navigators::NavigatorKind::Drawer,
             node: nav_node.clone(),
             control,
-            pending_mount: state.pending_mount.clone(),
-            suppress_release: state.suppress_release.clone(),
+            pending_mount: Rc::new(RefCell::new(None)),
+            suppress_release: Rc::new(RefCell::new(false)),
             outbound: self.outbound.clone(),
             navigator_id: id,
             initial_path,
@@ -1523,94 +1355,30 @@ where
         url: String,
         _restore: bool,
     ) -> Result<(), ReplayError> {
-        // `_restore` is reserved for platform-specific history glue
-        // (e.g. web's `pushState` should be skipped when the server
-        // is replaying state we already have). The current generic
-        // dispatch path is platform-agnostic; backends that care
-        // about URL/history can subscribe to the wire command
-        // directly.
-        use runtime_core::primitives::navigator::NavCommand;
-
+        // Dev wire push/replace/reset/select dispatch is stubbed
+        // pending the SDK-driven navigator wire-protocol redesign.
+        // The legacy callback layer this method used to drive (via
+        // `NavigatorControl::dispatch` plus a pending mount) has
+        // been removed from runtime-core. We still maintain the
+        // mounted_urls/replay_pos bookkeeping so dedup logic
+        // continues to behave deterministically across reconnects.
         let state = self
             .navigators
             .get(&navigator)
             .cloned()
             .ok_or(ReplayError::UnknownNode(navigator))?;
-        // URL-based replay dedup for Push (the only op
-        // `restore_nav_state` re-emits across a rebuild-exec).
-        // Replace/Reset always apply: a server-emitted Replace
-        // overwrites the top, and Reset rebuilds from scratch —
-        // neither comes out of replay. Select (tab activation)
-        // legitimately re-targets the same scope on each tap, so
-        // it also bypasses dedup.
         if matches!(op, NavOp::Push) {
             let urls = state.mounted_urls.borrow();
             let pos = *state.replay_pos.borrow();
-            eprintln!(
-                "[aas-client] Push url={:?}: mounted_urls={:?} pos={}",
-                url, *urls, pos
-            );
             if pos < urls.len() && urls[pos] == url {
                 drop(urls);
                 *state.replay_pos.borrow_mut() = pos + 1;
-                eprintln!("  -> dedup match, skipping");
                 return Ok(());
             }
-            eprintln!("  -> applying push via control.dispatch");
         }
-        let screen_node = self.lookup_node(screen)?;
-        let opts = convert::wire_screen_options(&options, |id| self.handler_unit(id));
+        let _ = (screen, scope, &options);
+        let _ = self.lookup_node(screen)?;
 
-        let mount_result = runtime_core::primitives::navigator::MountResult {
-            node: screen_node,
-            scope_id: scope.0,
-            options: opts,
-        };
-
-        *state.pending_mount.borrow_mut() = Some(mount_result);
-        *state.suppress_release.borrow_mut() = true;
-
-        let cmd = match op {
-            NavOp::Push => NavCommand::Push {
-                name: "",
-                url: String::new(),
-                params: Box::new(()),
-                state: None,
-            },
-            NavOp::Replace => NavCommand::Replace {
-                name: "",
-                url: String::new(),
-                params: Box::new(()),
-                state: None,
-            },
-            NavOp::Reset => NavCommand::Reset {
-                name: "",
-                url: String::new(),
-                params: Box::new(()),
-                state: None,
-            },
-            NavOp::Select => NavCommand::Select {
-                name: "",
-                url: String::new(),
-                params: Box::new(()),
-                state: None,
-            },
-        };
-        state.control.dispatch(cmd);
-
-        *state.suppress_release.borrow_mut() = false;
-        // Defensive: clear any unconsumed mount (the dispatcher
-        // should have taken it; if it didn't, we don't want to leak
-        // a stale value into the next push).
-        let _ = state.pending_mount.borrow_mut().take();
-
-        // Bookkeep `mounted_urls` for future replay dedup. The
-        // backend's release_screen closure (in navigators.rs)
-        // pops `mounted_urls` whenever a screen leaves the stack,
-        // so for Replace/Reset the previous top(s) are already
-        // off; we just push the new url. Push adds without
-        // releasing. Select doesn't change the stack at the
-        // navigator level, so leave the bookkeeping alone.
         match op {
             NavOp::Push | NavOp::Replace | NavOp::Reset => {
                 state.mounted_urls.borrow_mut().push(url);

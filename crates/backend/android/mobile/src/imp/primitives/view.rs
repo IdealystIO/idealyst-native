@@ -54,14 +54,18 @@ pub(crate) fn insert(b: &mut AndroidBackend, parent: &mut GlobalRef, child: Glob
         )
         .unwrap();
     });
-    // Mirror the parent-child link into the Taffy tree so the
-    // layout pass on `finish` produces a frame for `child` in the
-    // parent's coordinate space. Use the Taffy-tracked parent
-    // (which may be the ScrollView's inner LinearLayout when the
-    // user-visible parent is a ScrollView outer), and `mark_dirty`
-    // the parent so cached measurements are invalidated after the
-    // child-set changes.
-    let parent_layout = b.layout_for_view(&target);
+    // Mirror the parent-child link into the Taffy tree. **Use the
+    // ORIGINAL parent**, not the inner_for-redirected target. The
+    // ScrollView wrapper indirection is a Java-side concern only —
+    // from Taffy's perspective the child is laid out in the
+    // outer's coordinate space (the outer has the user's
+    // `Sidebar()` style with width/padding/etc; the inner is a
+    // bare structural wrapper with no Taffy node of its own).
+    // Routing add_child through the inner makes the inner an
+    // accidental Taffy root with viewport-sized layout, which
+    // ignores the outer ScrollView's `width: 260dp` constraint
+    // and the children end up sized to the full screen instead.
+    let parent_layout = b.layout_for_view(parent);
     let child_layout = b.layout_for_view(&child);
     b.layout.add_child(parent_layout, child_layout);
     b.layout.mark_dirty(parent_layout);
@@ -76,9 +80,10 @@ pub(crate) fn clear_children(b: &mut AndroidBackend, node: &GlobalRef) {
         env.call_method(target.as_obj(), "removeAllViews", "()V", &[])
             .unwrap();
     });
-    let parent_layout = b.layout_for_view(&target);
-    // Detach every Taffy child of `parent_layout` and mark dirty so
-    // cached parent measurements don't keep stale child sizes.
+    // Use the ORIGINAL node for Taffy (not the inner_for redirect) —
+    // same rationale as `insert`: Taffy children live under the outer's
+    // node, not the inner ScrollView wrapper.
+    let parent_layout = b.layout_for_view(node);
     let children = b.layout.children_of(parent_layout);
     for c in children {
         b.layout.remove_child(parent_layout, c);

@@ -18,9 +18,19 @@ use jni::objects::{GlobalRef, JValue};
 
 pub(crate) fn create(b: &mut AndroidBackend, horizontal: bool) -> GlobalRef {
     // ScrollView is a single-child ViewGroup. To accept multiple
-    // children we wrap a LinearLayout inside the ScrollView; the
-    // inner LinearLayout is what receives child `addView` calls (via
+    // children we wrap a FrameLayout inside the ScrollView; the
+    // inner FrameLayout is what receives child `addView` calls (via
     // the outer→inner indirection in `view::insert`).
+    //
+    // FrameLayout (not LinearLayout) because every other framework
+    // container is absolute-positioned via `topMargin` / `leftMargin`
+    // set by Taffy's apply_frames. LinearLayout stacks children
+    // sequentially AND adds their topMargin on top of the stacking
+    // offset, double-counting Taffy's y coordinate: a child Taffy
+    // placed at y=705 ends up at y=(prev_bottom + 705) instead of
+    // y=705. Visible as massive gaps between sidebar sections.
+    // FrameLayout treats topMargin as the absolute y within the
+    // container — matching how Taffy + apply_frames model positions.
     let (outer_ref, inner_ref) = with_env(|env| {
         let outer_class = if horizontal {
             env.find_class("android/widget/HorizontalScrollView").unwrap()
@@ -34,7 +44,7 @@ pub(crate) fn create(b: &mut AndroidBackend, horizontal: bool) -> GlobalRef {
                 &[JValue::Object(&b.context.as_obj())],
             )
             .unwrap();
-        let inner_class = env.find_class("android/widget/LinearLayout").unwrap();
+        let inner_class = env.find_class("android/widget/FrameLayout").unwrap();
         let inner = env
             .new_object(
                 &inner_class,
@@ -42,8 +52,6 @@ pub(crate) fn create(b: &mut AndroidBackend, horizontal: bool) -> GlobalRef {
                 &[JValue::Object(&b.context.as_obj())],
             )
             .unwrap();
-        let orient = if horizontal { 0 } else { 1 };
-        let _ = env.call_method(&inner, "setOrientation", "(I)V", &[JValue::Int(orient)]);
         // Apply defaults BEFORE addView so the parent's
         // `generateLayoutParams` can convert the MarginLayoutParams
         // shape into its expected subtype (FrameLayout.LayoutParams

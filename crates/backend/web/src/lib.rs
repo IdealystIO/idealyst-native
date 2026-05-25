@@ -1955,7 +1955,7 @@ impl Backend for WebBackend {
         navigator: &Self::Node,
         screen: Self::Node,
         scope_id: u64,
-        options: runtime_core::primitives::navigator::ScreenOptions,
+        options: Box<dyn std::any::Any>,
     ) {
         let Some(id) = nav_id_from_node(navigator) else { return };
         let handler = self.nav_handler_instances.get(&id).cloned();

@@ -7,10 +7,8 @@
 
 use std::rc::Rc;
 
-use runtime_core::{
-    component, ui, DrawerContentProps, LayoutProps, Primitive, SafeAreaSides, Signal,
-    StyleApplication,
-};
+use runtime_core::{component, ui, Primitive, SafeAreaSides, Signal, StyleApplication};
+use drawer_navigator::DrawerSlotProps;
 use idea_ui::{
     body, caption, card, dark_theme, divider, heading, light_theme, set_idea_theme, stack, switch,
     BodyTone, HeadingKind, StackGap, StackPadding,
@@ -30,8 +28,8 @@ use crate::styles::{
 
 pub fn content_builder(
     is_dark: Signal<bool>,
-) -> impl Fn(DrawerContentProps) -> Primitive + 'static {
-    move |props: DrawerContentProps| {
+) -> impl Fn(DrawerSlotProps) -> Primitive + 'static {
+    move |props: DrawerSlotProps| {
         let active_route = props.active_route;
         drawer_content(active_route, is_dark)
     }
@@ -230,29 +228,10 @@ fn nav_link(
 // `Command::AttachNavigatorLayout`.
 // =============================================================================
 
-pub fn web_layout() -> impl Fn(LayoutProps) -> Primitive + 'static {
-    move |props: LayoutProps| {
-        let outlet = props.outlet;
-        let sidebar_node = props.sidebar;
-
-        let root_style = PageRoot();
-        let content_style = Content();
-
-        // ScrollView (not View) around the outlet so the right
-        // column scrolls independently of the pinned sidebar. The
-        // PageRoot sets `overflow: Hidden`, so the only
-        // scrollable regions are the sidebar's own ScrollView (set
-        // up by `drawer_content`) and this content-area ScrollView.
-        ui! {
-            View(style = root_style) {
-                sidebar_node
-                ScrollView(style = content_style) {
-                    outlet
-                }
-            }
-        }
-    }
-}
+// web_layout removed — `.layout(...)` is no longer part of the
+// drawer-navigator API. On web, the drawer SDK's chrome arranges
+// the sidebar + screen outlet itself; the author just passes the
+// sidebar Primitive via `.sidebar_with(builder)`.
 
 // =============================================================================
 // Per-page surface helpers — exposed as `#[component]`s so pages

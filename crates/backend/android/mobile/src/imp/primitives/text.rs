@@ -15,6 +15,41 @@ pub(crate) fn create(b: &mut AndroidBackend, content: &str) -> GlobalRef {
             )
             .unwrap();
         set_text(env, &local, content);
+        // Strip the legacy `fontPadding` insets Android adds above the
+        // ascent and below the descent for inter-line breathing room.
+        // The Idealyst style system already gives authors explicit
+        // padding / line_height controls, and on iOS the equivalent
+        // (UILabel) measures text without these extras — so matching
+        // iOS's layout requires turning Android's off too. Without
+        // this, sidebar nav links and other tight text rows look
+        // noticeably taller on Android than on iOS for the same
+        // styles.
+        let _ = env.call_method(
+            &local,
+            "setIncludeFontPadding",
+            "(Z)V",
+            &[JValue::Bool(0)],
+        );
+        // Pin line spacing to 1.0× (no extra) so multi-line text and
+        // single-line rows match iOS UILabel's metrics. Android's
+        // default `lineSpacingMultiplier` varies by API level and can
+        // add visible slack between lines for what should be a tight
+        // row. The framework exposes its own `line_height` style for
+        // authors who want to override.
+        let _ = env.call_method(
+            &local,
+            "setLineSpacing",
+            "(FF)V",
+            &[JValue::Float(0.0), JValue::Float(1.0)],
+        );
+        // Strip the default `minHeight` that Android's TextView
+        // inherits from its style (theme defaults set it to ~48dp
+        // on some API levels for touch-target hygiene). iOS UILabel
+        // has no equivalent; we want the framework's intrinsic-size
+        // measurer to report the true text-metric height so flex
+        // siblings pack tightly.
+        let _ = env.call_method(&local, "setMinHeight", "(I)V", &[JValue::Int(0)]);
+        let _ = env.call_method(&local, "setMinimumHeight", "(I)V", &[JValue::Int(0)]);
         apply_default_layout_params(env, &local);
         env.new_global_ref(local).unwrap()
     });
@@ -92,8 +127,35 @@ fn measure_textview(
             .call_method(&view_obj, "getMeasuredHeight", "()I", &[])
             .and_then(|v| v.i())
             .unwrap_or(0);
-        let w_dp = measured_w_px as f32 / density;
-        let h_dp = measured_h_px as f32 / density;
+        // Subtract Android-side padding so the value we return to
+        // Taffy is the CONTENT size (text glyphs only). Taffy adds
+        // style.padding back on top when computing the node's outer
+        // box. Without this subtraction, padding is double-counted:
+        // Android's TextView.measure() returns text + padding, we
+        // hand that to Taffy as the intrinsic, Taffy adds style
+        // padding again, and the resulting box is ~16dp taller than
+        // iOS UILabel's equivalent (which has no padding semantics
+        // and returns only the text rendering size from `sizeThatFits:`).
+        let pad_l: i32 = env
+            .call_method(&view_obj, "getPaddingLeft", "()I", &[])
+            .and_then(|v| v.i())
+            .unwrap_or(0);
+        let pad_r: i32 = env
+            .call_method(&view_obj, "getPaddingRight", "()I", &[])
+            .and_then(|v| v.i())
+            .unwrap_or(0);
+        let pad_t: i32 = env
+            .call_method(&view_obj, "getPaddingTop", "()I", &[])
+            .and_then(|v| v.i())
+            .unwrap_or(0);
+        let pad_b: i32 = env
+            .call_method(&view_obj, "getPaddingBottom", "()I", &[])
+            .and_then(|v| v.i())
+            .unwrap_or(0);
+        let content_w_px = (measured_w_px - pad_l - pad_r).max(0);
+        let content_h_px = (measured_h_px - pad_t - pad_b).max(0);
+        let w_dp = content_w_px as f32 / density;
+        let h_dp = content_h_px as f32 / density;
         runtime_layout::Size {
             width: known_dimensions.width.unwrap_or(w_dp.ceil()),
             height: known_dimensions.height.unwrap_or(h_dp.ceil()),

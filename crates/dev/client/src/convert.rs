@@ -202,50 +202,23 @@ fn leak_paths(paths: Vec<String>) -> &'static [&'static str] {
     Box::leak(static_paths.into_boxed_slice())
 }
 
-pub fn wire_mount_policy(p: WireMountPolicy) -> primitives::navigator::MountPolicy {
-    match p {
-        WireMountPolicy::EagerPersistent => primitives::navigator::MountPolicy::EagerPersistent,
-        WireMountPolicy::LazyPersistent => primitives::navigator::MountPolicy::LazyPersistent,
-        WireMountPolicy::LazyDisposing => primitives::navigator::MountPolicy::LazyDisposing,
-    }
+/// Wire → mount-policy converter. The runtime-core mount-policy
+/// enum moved into per-SDK type space; this stub preserves the call
+/// site shape but returns a unit value (consumers ignore the result
+/// pending the wire-protocol redesign).
+pub fn wire_mount_policy(_p: WireMountPolicy) {
+    // Pending wire-protocol redesign.
 }
 
-/// Convert a wire `WireScreenOptions` into the framework's
-/// `ScreenOptions`, resolving any `HandlerId` references via the
-/// supplied `handler_factory` (which builds an
-/// `Rc<dyn Fn()>` that ships an `AppToDev::Event` back to dev).
+/// Wire → screen-options stub. Returns an opaque `Box<dyn Any>` —
+/// the runtime-core `ScreenOptions` type was removed when the
+/// navigator substrate moved out of core. The dev-client navigator
+/// path is no-op until the new SDK-driven wire format lands.
 pub fn wire_screen_options(
-    w: &WireScreenOptions,
-    mut handler_factory: impl FnMut(HandlerId) -> Rc<dyn Fn()>,
-) -> primitives::navigator::ScreenOptions {
-    let mut opts = primitives::navigator::ScreenOptions::new();
-    if let Some(ref t) = w.title {
-        opts = opts.title(t.clone());
-    }
-    if let Some(shown) = w.header_shown {
-        opts = opts.header_shown(shown);
-    }
-    if let Some(ref hb) = w.header_left {
-        let on_press_cb = handler_factory(hb.on_press);
-        let mut btn = primitives::navigator::HeaderButton {
-            icon: hb.icon.clone(),
-            on_press: on_press_cb,
-            tint: hb.tint.as_ref().map(|c| wire_color_to_color(c.clone())),
-        };
-        // HeaderButton has Clone so we can hand it straight in.
-        let _ = &mut btn;
-        opts = opts.header_left(btn);
-    }
-    if let Some(ref hb) = w.header_right {
-        let on_press_cb = handler_factory(hb.on_press);
-        let btn = primitives::navigator::HeaderButton {
-            icon: hb.icon.clone(),
-            on_press: on_press_cb,
-            tint: hb.tint.as_ref().map(|c| wire_color_to_color(c.clone())),
-        };
-        opts = opts.header_right(btn);
-    }
-    opts
+    _w: &WireScreenOptions,
+    _handler_factory: impl FnMut(HandlerId) -> Rc<dyn Fn()>,
+) -> Box<dyn std::any::Any> {
+    Box::new(())
 }
 
 /// Materialize a wire style into a concrete `StyleRules`. Tokenized

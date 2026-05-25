@@ -30,12 +30,12 @@ unsafe impl Encode for UIEdgeInsets {
 // CallbackTarget — ObjC action target that calls a Rust closure
 // =========================================================================
 
-pub(crate) struct CallbackTargetIvars {
+pub struct CallbackTargetIvars {
     callback: RefCell<Option<Rc<dyn Fn()>>>,
 }
 
 declare_class!(
-    pub(crate) struct CallbackTarget;
+    pub struct CallbackTarget;
 
     unsafe impl ClassType for CallbackTarget {
         type Super = NSObject;
@@ -59,7 +59,7 @@ declare_class!(
 );
 
 impl CallbackTarget {
-    pub(crate) fn new(mtm: MainThreadMarker, callback: Rc<dyn Fn()>) -> Retained<Self> {
+    pub fn new(mtm: MainThreadMarker, callback: Rc<dyn Fn()>) -> Retained<Self> {
         let this = mtm.alloc::<Self>();
         let this = this.set_ivars(CallbackTargetIvars {
             callback: RefCell::new(Some(callback)),

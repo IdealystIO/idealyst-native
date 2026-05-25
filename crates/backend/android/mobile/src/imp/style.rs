@@ -26,12 +26,32 @@ pub(crate) fn apply_rules(
 
     // --- Padding (per-side; framework stores all four independently).
     //     Each side may animate independently.
-    let want_padding = [
-        dp_to_px(env, &view, px_or(rules.padding_left.as_ref(), 0.0)),
-        dp_to_px(env, &view, px_or(rules.padding_top.as_ref(), 0.0)),
-        dp_to_px(env, &view, px_or(rules.padding_right.as_ref(), 0.0)),
-        dp_to_px(env, &view, px_or(rules.padding_bottom.as_ref(), 0.0)),
-    ];
+    //
+    // Only applied to TextView (and subclasses — Button, etc.). For
+    // container views (FrameLayout, ScrollView) padding is a Taffy
+    // concept that already shifts children's computed `frame.x` /
+    // `frame.y`. If we ALSO call Android's `setPadding` on the
+    // container, the parent's padding shifts children once more on
+    // top of the Taffy-baked offset → buttons end up double-indented
+    // and clipped at the container's right edge. TextView genuinely
+    // needs Android padding so its text rendering wraps inside the
+    // padding box and the intrinsic-size measurer returns the right
+    // width to Taffy.
+    let is_text_view = env
+        .find_class("android/widget/TextView")
+        .ok()
+        .and_then(|c| env.is_instance_of(&view, &c).ok())
+        .unwrap_or(false);
+    let want_padding = if is_text_view {
+        [
+            dp_to_px(env, &view, px_or(rules.padding_left.as_ref(), 0.0)),
+            dp_to_px(env, &view, px_or(rules.padding_top.as_ref(), 0.0)),
+            dp_to_px(env, &view, px_or(rules.padding_right.as_ref(), 0.0)),
+            dp_to_px(env, &view, px_or(rules.padding_bottom.as_ref(), 0.0)),
+        ]
+    } else {
+        [0, 0, 0, 0]
+    };
     let padding_transitions = [
         rules.padding_left_transition,
         rules.padding_top_transition,

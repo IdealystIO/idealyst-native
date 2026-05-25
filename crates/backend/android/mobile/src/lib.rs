@@ -46,6 +46,29 @@ mod stub;
 #[cfg(target_os = "android")]
 pub use imp::{install_global_self, set_animated_color, set_animated_f32, AndroidBackend};
 
+/// SDK extension point: leaked-box callback wrapper for header bar
+/// buttons. Constructed by the navigator helpers crate when building
+/// per-screen Toolbars from `attach_initial` options; the pointer
+/// flows through `RustActionBarHelper.buildToolbar` and is invoked by
+/// the JNI export
+/// `Java_io_idealyst_runtime_RustActionBarHelper_nativeInvoke`.
+///
+/// Exposed `pub` so `android-navigator-helpers` can hand the same
+/// concrete type to the JNI export — the export dereferences the
+/// pointer as `*const HeaderButtonCallback`, so the box layout must
+/// match exactly.
+#[cfg(target_os = "android")]
+pub use imp::callbacks::HeaderButtonCallback;
+
+/// Stable key for a node's animation/instance state — derived from the
+/// `JObject*` pointer the `GlobalRef` wraps. SDK helpers crates index
+/// per-instance state by this so lookups match what the backend uses
+/// internally.
+#[cfg(target_os = "android")]
+pub fn node_key_of(node: &jni::objects::GlobalRef) -> usize {
+    node.as_obj().as_raw() as usize
+}
+
 /// Attach the current thread to the JVM (cached `JavaVM` captured at
 /// `JNI_OnLoad`) and run `f` with the resulting `JNIEnv`. Public entry
 /// point for third-party SDK code (e.g. `webview`'s `Effect` closures
@@ -76,6 +99,19 @@ pub use backend_android_core::render_loop::install_render_loop;
 /// delay correctly instead of firing synchronously.
 #[cfg(target_os = "android")]
 pub use imp::scheduler::install_scheduler;
+
+/// Schedule a layout pass retry. The host scheduling layer
+/// already wraps this in a retry loop for the initial 0×0 case;
+/// SDK code that mutates the view tree outside the normal
+/// build path (e.g. drawer's deferred sidebar attach) calls this
+/// to force a Taffy → apply_frames cycle once the tree settles.
+#[cfg(target_os = "android")]
+pub fn schedule_layout_pass() {
+    imp::scheduler::schedule_layout_pass_retry(0);
+}
+
+#[cfg(not(target_os = "android"))]
+pub fn schedule_layout_pass() {}
 
 /// Notify the backend that the host configuration changed (rotation,
 /// multi-window resize, density change, etc.). Schedules a layout

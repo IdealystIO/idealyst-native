@@ -38,7 +38,7 @@
 //! inside a child navigator's screen drives the child by default.
 
 use crate::primitives::navigator::{
-    ambient_navigator, DefaultLinkKind, NavCommand, NavigatorControl, Route, RouteParams,
+    ambient_navigator, NavCommand, NavigatorControl, Route, RouteParams,
 };
 use crate::{Bound, Primitive, Ref, RefFill};
 use std::any::Any;
@@ -50,33 +50,29 @@ use std::rc::Rc;
 
 /// How activation maps to a `NavCommand`.
 ///
-/// The constructor picks a default based on the ambient navigator:
-/// `Push` inside a stack navigator, `Select` inside a tab or drawer
-/// navigator. Authors can override per-link via `.kind(...)`.
+/// `Default` defers to the SDK-installed link activator on the
+/// ambient `NavigatorControl` — stack SDKs typically don't install
+/// one and the activator falls through to `Push`; tab/drawer SDKs
+/// install one that returns `Select`. Authors can override per-link
+/// with an explicit kind.
 ///
-/// `Pop` is intentionally not a link kind — a hyperlink that
-/// navigates backward isn't really a hyperlink, it's a back
-/// button. Use a regular `Button` + `nav.pop()` for that.
+/// `Pop` isn't a link kind — a hyperlink that navigates backward
+/// isn't a hyperlink, it's a back button. Use a regular `Button` +
+/// `nav.pop()` for that.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum NavKind {
-    /// Push the route onto the stack. Equivalent to
-    /// `NavigatorHandle::push`. Default inside a stack navigator.
+    /// Use the SDK-installed link activator on the ambient navigator,
+    /// or fall back to `Push` when none is installed.
+    Default,
     Push,
-    /// Replace the top of the stack with the new route. Equivalent
-    /// to `NavigatorHandle::replace`.
     Replace,
-    /// Clear the stack and mount the new route as the root.
-    /// Equivalent to `NavigatorHandle::reset`. Useful for
-    /// post-login redirects.
     Reset,
-    /// Switch the active screen to the route's id without changing
-    /// stack depth. Default inside tabs and drawer navigators.
     Select,
 }
 
 impl Default for NavKind {
     fn default() -> Self {
-        NavKind::Push
+        NavKind::Default
     }
 }
 
@@ -162,17 +158,11 @@ pub fn link<P: RouteParams + Clone>(
 
     // Capture the ambient navigator at construction time. A link
     // built outside any screen captures `None` and no-ops on
-    // activation.
+    // activation. The actual dispatch shape (Push vs Select vs SDK-
+    // specific) is resolved at activation time via the captured
+    // control plane's link-activator (or `Push` as fallback).
     let ambient: Option<Rc<NavigatorControl>> = ambient_navigator();
-
-    // Pick the default activation shape from the ambient navigator's
-    // hint. Stack navigators expose `Push`; tabs and drawer expose
-    // `Select`. A link outside any nav keeps `Push` (it no-ops on
-    // activate anyway). Authors can override via `.kind(...)`.
-    let kind = match ambient.as_ref().map(|c| c.default_link_kind()) {
-        Some(DefaultLinkKind::Select) => NavKind::Select,
-        _ => NavKind::Push,
-    };
+    let kind = NavKind::Default;
 
     // Type-erased params source. Each activation needs a fresh
     // `Box<dyn Any>` because `NavCommand::Push`/etc. own their
@@ -240,6 +230,7 @@ pub(crate) fn make_on_activate(
         let url = url.clone();
         let params = make_params();
         let cmd = match kind {
+            NavKind::Default => control.build_link_command(route, url, params),
             NavKind::Push => NavCommand::Push { name: route, url, params, state: None },
             NavKind::Replace => NavCommand::Replace { name: route, url, params, state: None },
             NavKind::Reset => NavCommand::Reset { name: route, url, params, state: None },

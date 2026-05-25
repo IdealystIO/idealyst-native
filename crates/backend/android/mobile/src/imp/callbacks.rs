@@ -33,7 +33,7 @@ pub(crate) struct ClickCallback(pub(crate) Rc<dyn Fn()>);
 /// drawer-driven app is the size of the drawer item list. Could be
 /// freed on the next attach if it grows, but the cost (~16 bytes per
 /// screen) doesn't warrant the complexity today.
-pub(crate) struct HeaderButtonCallback(pub(crate) Rc<dyn Fn()>);
+pub struct HeaderButtonCallback(pub Rc<dyn Fn()>);
 
 /// Owned holder for the per-node state setter the framework hands
 /// us in `attach_states`. JVM side keeps the raw pointer in

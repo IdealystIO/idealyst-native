@@ -1086,24 +1086,13 @@ impl Host {
                 }
             })
         };
-        if let Some((action, navigator)) = header_action {
+        if let Some((action, _navigator)) = header_action {
             match action {
-                HeaderHitAction::Back => {
-                    if let crate::node::NodeKind::Navigator { control, .. } =
-                        &navigator.borrow().kind
-                    {
-                        control.pop();
-                    }
-                }
-                HeaderHitAction::CloseDrawer => {
-                    if let crate::node::NodeKind::DrawerNavigator { control, .. } =
-                        &navigator.borrow().kind
-                    {
-                        control.dispatch(
-                            runtime_core::primitives::navigator::NavCommand::CloseDrawer,
-                        );
-                    }
-                }
+                // Stack-Back and Drawer-Close header taps had their
+                // dispatch removed alongside the legacy nav substrate.
+                // The new per-kind SDK paths will repopulate this hook
+                // when they're wired up for the wgpu backend.
+                HeaderHitAction::Back | HeaderHitAction::CloseDrawer => {}
                 HeaderHitAction::HeaderLeft(cb) | HeaderHitAction::HeaderRight(cb) => {
                     cb();
                 }

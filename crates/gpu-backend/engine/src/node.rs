@@ -699,14 +699,6 @@ pub struct NodeData {
     /// flag is sticky across `apply_style` re-applies (theme
     /// swap, reactive style flips) so the fill survives.
     pub navigator_screen: bool,
-    /// Per-screen header config: title, button slots, header
-    /// background / tint / title color closures. Populated by
-    /// the navigator's attach methods from the framework's
-    /// `MountResult.options`. Stays `None` for non-screen nodes.
-    /// Boxed because `ScreenOptions` contains six `Rc<dyn Fn>`s
-    /// plus several `Option<String>`s — bulky for nodes that
-    /// don't carry one.
-    pub screen_options: Option<Box<runtime_core::primitives::navigator::ScreenOptions>>,
     /// Identifier of the stack `Navigator` this screen belongs
     /// to. Lets the renderer find the navigator's chrome styles
     /// (header_style etc.) when painting the screen's header and
@@ -769,7 +761,6 @@ pub fn new_node(kind: NodeKind, layout: LayoutNode) -> WgpuNode {
         layout,
         children: Vec::new(),
         navigator_screen: false,
-        screen_options: None,
         owning_navigator: None,
         screen_title_layout: None,
         style: None,

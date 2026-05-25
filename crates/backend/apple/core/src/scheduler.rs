@@ -45,14 +45,16 @@ unsafe impl Sync for AppleScheduler {}
 
 impl Scheduler for AppleScheduler {
     fn schedule_microtask(&self, f: Box<dyn FnOnce() + 'static>) {
-        // DispatchQueue.main.async equivalent — schedule for the
-        // next main-thread iteration without waiting on a duration.
-        // `dispatch_after_f` with delay 0 would also work, but
-        // `dispatch_async_f` is cheaper and matches the "microtask"
-        // semantic exactly. We piggy-back on an NSTimer with zero
-        // delay for simplicity since the rest of this file already
-        // uses that machinery.
-        let _ = after_ms_inner(0, f);
+        // `dispatch_async(dispatch_get_main_queue(), block)` — the
+        // canonical "run this on the next main-loop iteration"
+        // primitive on Apple platforms. Independent of NSRunLoop
+        // mode, so it fires reliably even when UIKit is inside a
+        // tracking mode (scroll, touch) where default-mode NSTimers
+        // are paused. NSTimer with 0 delay was the previous impl;
+        // it silently dropped microtasks scheduled during high-
+        // frequency layout activity because the runloop never
+        // entered the timer's mode. libdispatch sidesteps that.
+        dispatch_main_async(f);
     }
 
     fn after_animation_frame(
@@ -180,4 +182,53 @@ impl ScheduleHandle for NsTimerHandle {
     fn cancel(&mut self) {
         self.cancel_inner();
     }
+}
+
+// ===========================================================================
+// libdispatch FFI for `schedule_microtask`
+// ===========================================================================
+//
+// We can't use NSTimer for microtasks: timers added to the main
+// runloop run in `NSDefaultRunLoopMode` (or whichever mode the timer
+// is registered in), and UIKit drops to tracking modes (e.g.
+// `UITrackingRunLoopMode`) during touch / scroll, suspending those
+// timers. `dispatch_async(main_queue, block)` runs in the dispatch
+// system independent of NSRunLoop mode and is the canonical way to
+// say "do this on the main thread on the next iteration".
+//
+// `block2::StackBlock` already builds a libdispatch-compatible block;
+// libdispatch retains it for execution.
+
+#[link(name = "System", kind = "dylib")]
+extern "C" {
+    fn dispatch_async(queue: *const std::ffi::c_void, block: *const std::ffi::c_void);
+    static _dispatch_main_q: std::ffi::c_void;
+}
+
+fn dispatch_main_async(f: Box<dyn FnOnce() + 'static>) {
+    let cell: Rc<RefCell<Option<Box<dyn FnOnce() + 'static>>>> =
+        Rc::new(RefCell::new(Some(f)));
+    let cell_for_block = cell.clone();
+    let block = StackBlock::new(move || {
+        if let Some(g) = cell_for_block.borrow_mut().take() {
+            g();
+        }
+    });
+    // libdispatch needs a heap-allocated block (StackBlock lives on
+    // the stack; .copy() promotes to heap and refcounts via _Block_copy).
+    let block = block.copy();
+    let block_ptr: *const std::ffi::c_void = &*block as *const _ as *const std::ffi::c_void;
+    unsafe {
+        dispatch_async(
+            &_dispatch_main_q as *const _ as *const std::ffi::c_void,
+            block_ptr,
+        );
+    }
+    // The block holds an Rc<RefCell<Option<Box<FnOnce>>>>; that Rc
+    // is captured into the block's heap copy. libdispatch keeps the
+    // block alive until it fires + dispatches, then releases. We
+    // also leak our local `block` Retained so the heap block isn't
+    // double-released before libdispatch is done with it.
+    std::mem::forget(block);
+    std::mem::forget(cell);
 }

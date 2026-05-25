@@ -1,19 +1,35 @@
 //! Web-backend handler for the Drawer navigator SDK.
 //!
-//! Phase-1 adapter: synthesizes a legacy `DrawerNavigatorCallbacks`
-//! from the framework-supplied `NavigatorHost` + the SDK's
-//! `DrawerPresentation`, then calls `WebBackend::create_drawer_navigator`.
-//! Phase-2 will inline the dispatcher closure here.
+//! Synthesizes a `WebDrawerCallbacks` from the framework-supplied
+//! `NavigatorHost` + the SDK's `DrawerPresentation`, then calls
+//! `web_navigator_helpers::create_drawer`. Kind-specific callback
+//! types live in `web-navigator-helpers` after the navigator-substrate
+//! refactor — the SDK's local `DrawerSide` / `DrawerType` /
+//! `MountPolicy` enums translate to the helpers crate's
+//! identically-shaped variants via the per-enum shims below.
+//!
+//! Sidebar materialization: the SDK's `DrawerPresentation.sidebar`
+//! slot holds a `SidebarBuilder` (closure that takes
+//! `DrawerSlotProps` and returns a `Primitive`). The web handler
+//! wraps it in a `Fn() -> Node` closure that defers to a microtask,
+//! invokes `host.build_node` against the synthesized props, and
+//! returns the materialized Node. The closure is handed to the
+//! helpers crate via `WebDrawerCallbacks.build_content` for the
+//! helper engine to mount alongside the screen outlet.
 
-use crate::{DrawerPresentation, DrawerSide, DrawerType, MountPolicy};
+use crate::{
+    DrawerCmd, DrawerPresentation, DrawerSide, DrawerSlotProps, DrawerType, MountPolicy,
+};
 use backend_web::WebBackend;
-use runtime_core::{
-    DrawerNavigatorCallbacks, DrawerSide as CoreDrawerSide, DrawerType as CoreDrawerType,
-    MountPolicy as CoreMountPolicy, MountResult, NavigatorCallbacks, NavigatorHandler,
-    NavigatorHost,
+use runtime_core::primitives::navigator::{
+    MountResult, NavCommand, NavigatorHandler, NavigatorHost,
 };
 use std::any::Any;
 use std::rc::Rc;
+use web_navigator_helpers::{
+    DrawerSide as HelpersDrawerSide, DrawerType as HelpersDrawerType,
+    MountPolicy as HelpersMountPolicy, WebDrawerCallbacks, WebNavCallbacks,
+};
 use web_sys::Node;
 
 pub struct WebDrawerHandler {
@@ -37,25 +53,30 @@ impl Default for WebDrawerHandler {
 struct NoopDrawerOps;
 impl runtime_core::primitives::navigator::NavigatorOps for NoopDrawerOps {}
 
-fn side_to_core(s: DrawerSide) -> CoreDrawerSide {
+fn side_to_helpers(s: DrawerSide) -> HelpersDrawerSide {
     match s {
-        DrawerSide::Start => CoreDrawerSide::Start,
-        DrawerSide::End => CoreDrawerSide::End,
+        DrawerSide::Start => HelpersDrawerSide::Left,
+        DrawerSide::End => HelpersDrawerSide::Right,
     }
 }
 
-fn type_to_core(t: DrawerType) -> CoreDrawerType {
+fn type_to_helpers(t: DrawerType) -> HelpersDrawerType {
     match t {
-        DrawerType::Front => CoreDrawerType::Front,
-        DrawerType::Slide => CoreDrawerType::Slide,
+        // SDK's `Front` (slides over content with backdrop) maps to
+        // the helpers crate's `Overlay`; SDK's `Slide` (pushes
+        // content sideways) maps to `Slide`. The third helpers
+        // variant `Permanent` is exposed only via SDK `drawer_type`
+        // = a future "always visible" variant, which the SDK doesn't
+        // currently expose.
+        DrawerType::Front => HelpersDrawerType::Overlay,
+        DrawerType::Slide => HelpersDrawerType::Slide,
     }
 }
 
-fn mount_policy_to_core(m: MountPolicy) -> CoreMountPolicy {
+fn mount_policy_to_helpers(m: MountPolicy) -> HelpersMountPolicy {
     match m {
-        MountPolicy::EagerPersistent => CoreMountPolicy::EagerPersistent,
-        MountPolicy::LazyPersistent => CoreMountPolicy::LazyPersistent,
-        MountPolicy::LazyDisposing => CoreMountPolicy::LazyDisposing,
+        MountPolicy::EagerPersistent => HelpersMountPolicy::Eager,
+        MountPolicy::LazyPersistent | MountPolicy::LazyDisposing => HelpersMountPolicy::Lazy,
     }
 }
 
@@ -77,12 +98,12 @@ impl NavigatorHandler<WebBackend> for WebDrawerHandler {
             mount_screen,
             release_screen,
             match_path,
-            build_layout,
             nav_state,
             depth_changed,
             active_changed,
             control,
-            build_node: _,
+            build_node,
+            build_in_screen: _,
         } = host;
 
         let mount_2arg: Rc<dyn Fn(&'static str, Box<dyn Any>) -> MountResult<Node>> = {
@@ -90,60 +111,114 @@ impl NavigatorHandler<WebBackend> for WebDrawerHandler {
             Rc::new(move |name, params| m(name, params, None))
         };
 
-        let navigator = NavigatorCallbacks {
+        let navigator = WebNavCallbacks {
             initial_route,
             initial_path,
             mount_screen: mount_2arg,
             release_screen,
             match_path,
-            build_layout,
-            nav_state,
             depth_changed,
+            // Pass the substrate's reactive `nav_state` straight through;
+            // the helpers engine updates active_route / active_path as
+            // screens mount, and the sidebar builder's
+            // `DrawerSlotProps` mirrors them.
+            nav_state: nav_state.clone(),
+            build_layout: None,
             defer_initial_mount,
         };
 
-        // Drawer-specific callbacks: open-state signal + content
-        // factory + active/open change observers. `is_open` is the
-        // SAME signal stored on the SDK's `DrawerPresentation` and
-        // wired into `LayoutProps.sidebar`'s `DrawerContentProps` —
-        // so a `Toggle`/`Open`/`Close` command written here is
-        // observable by reactive closures inside the user's
-        // `.content(...)` builder.
+        // Capture the shared open-state signal from the presentation —
+        // it's the SAME `Signal<bool>` the `DrawerHandle` exposes via
+        // `is_open_signal()` and that the SDK's dispatcher flips on
+        // `DrawerCmd::Open/Close/Toggle`. Stash a copy for the
+        // change-observer closure below.
         let is_open = presentation.is_open;
         let open_changed: Rc<dyn Fn(bool)> = {
-            Rc::new(move |o| is_open.set(o))
+            let signal = is_open;
+            Rc::new(move |o| signal.set(o))
         };
 
-        let active_changed_legacy: Rc<dyn Fn(&'static str)> = {
-            let ac = active_changed;
-            Rc::new(move |name| ac(name, String::new()))
-        };
-
-        // `build_content`: the SDK presentation carries a
-        // `ContentBuilder` closure that takes `DrawerContentProps` and
-        // returns a `Primitive`. The legacy `build_content` expects a
-        // closure that returns the realized Node directly. Wrap the
-        // SDK closure with the framework's screen-build machinery so
-        // its reactive effects survive the navigator's lifetime.
+        // Build a `build_content` closure for the helpers crate. The
+        // SDK's `SidebarBuilder` takes typed `DrawerSlotProps` and
+        // returns a `Primitive`; the helpers crate's slot expects a
+        // `Fn() -> Node` (no args, returns the materialized node
+        // directly). Bridge the two:
+        //   1. Pull the SDK's `SidebarBuilder` out of the presentation
+        //      slot. It's wrapped in `RefCell<Option<...>>` so the
+        //      closure can `take()` on first invocation (sidebars are
+        //      built exactly once per navigator lifetime).
+        //   2. Synthesize `DrawerSlotProps` from the substrate's
+        //      reactive `nav_state` + the shared `is_open` signal +
+        //      a `Select` dispatcher + a close callback.
+        //   3. Invoke `host.build_node` to materialize the SDK's
+        //      returned `Primitive` into a Node.
         //
-        // Phase-2: this should ideally drive through `mount_screen` so
-        // the per-screen scope owns the panel's effects. For Phase-1
-        // adapter, we leave `build_content: None` and route drawer
-        // panel rendering through the user's `.layout(...)` instead —
-        // which is how the legacy DrawerNavigator handles the web case
-        // anyway (web doesn't ship a native drawer chrome).
-        let build_content = None;
+        // `host.build_node` MUST be called outside the outer
+        // `backend.borrow_mut()` window (per its docstring). The
+        // helpers crate already defers its layout-build closure to a
+        // microtask before invoking it — so the closure body here runs
+        // post-borrow and the synchronous `build_node` call is safe.
+        let build_content: Option<Rc<dyn Fn() -> Node>> = {
+            let sidebar_slot = presentation.sidebar.borrow().clone();
+            sidebar_slot.map(|sidebar_builder| {
+                let build_node = build_node.clone();
+                let nav_state = nav_state.clone();
+                let is_open = is_open;
+                let control = control.clone();
+                let cb: Rc<dyn Fn() -> Node> = Rc::new(move || {
+                    let on_select: Rc<dyn Fn(&'static str)> = {
+                        let control = control.clone();
+                        Rc::new(move |name| {
+                            // The sidebar's `on_select` is a click
+                            // handler the author hooks up to drawer
+                            // items. The natural verb is `Select` —
+                            // tabs use the same shape. Path/params
+                            // are empty here because the substrate
+                            // only knows the route name at this
+                            // callback level; richer flows go
+                            // through `DrawerHandle::select` from
+                            // the author's code.
+                            control.dispatch(NavCommand::Select {
+                                name,
+                                url: String::new(),
+                                params: Box::new(()),
+                                state: None,
+                            });
+                        })
+                    };
+                    let on_close: Rc<dyn Fn()> = {
+                        let control = control.clone();
+                        Rc::new(move || {
+                            control.dispatch(NavCommand::Custom(
+                                Rc::new(DrawerCmd::Close),
+                            ));
+                        })
+                    };
+                    let props = DrawerSlotProps {
+                        active_route: nav_state.active_route,
+                        active_path: nav_state.active_path.clone(),
+                        depth: nav_state.depth,
+                        can_go_back: nav_state.can_go_back,
+                        is_open,
+                        on_select,
+                        on_close,
+                    };
+                    let prim = sidebar_builder(props);
+                    build_node(prim)
+                });
+                cb
+            })
+        };
 
-        let drawer_callbacks = DrawerNavigatorCallbacks {
+        let drawer_callbacks = WebDrawerCallbacks {
             navigator,
-            side: side_to_core(presentation.side),
-            drawer_type: type_to_core(presentation.drawer_type),
+            side: side_to_helpers(presentation.side),
+            drawer_type: type_to_helpers(presentation.drawer_type),
             drawer_width: presentation.drawer_width,
-            swipe_to_open: presentation.swipe_to_open,
-            mount_policy: mount_policy_to_core(presentation.mount_policy),
+            mount_policy: mount_policy_to_helpers(presentation.mount_policy),
             is_open,
             build_content,
-            active_changed: active_changed_legacy,
+            active_changed,
             open_changed,
             background_color: None,
         };
@@ -158,14 +233,14 @@ impl NavigatorHandler<WebBackend> for WebDrawerHandler {
         _backend: &mut WebBackend,
         screen: Node,
         scope_id: u64,
-        _options: runtime_core::ScreenOptions,
+        _options: Box<dyn Any>,
     ) {
         if let Some(container) = self.container.as_ref() {
             web_navigator_helpers::attach_initial(container, screen, scope_id);
         }
     }
 
-    fn on_command(&mut self, _cmd: runtime_core::NavCommand) {
+    fn on_command(&mut self, _cmd: NavCommand) {
         unreachable!(
             "WebDrawerHandler::on_command — helpers::create_drawer owns the \
              control-plane dispatcher"

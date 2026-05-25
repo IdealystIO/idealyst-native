@@ -1752,12 +1752,11 @@ fn walk<'a>(
     // strip ends up painting *over* the header icons. Deferring
     // the header paint until after the children means header
     // rects are appended last and win the draw-order race.
-    let paint_header_after_children = data.navigator_screen
-        && data
-            .screen_options
-            .as_ref()
-            .and_then(|o| o.header_shown)
-            .unwrap_or(true);
+    // Navigator-screen header paint deferral was wired to the legacy
+    // nav substrate; per-screen header chrome is now an SDK concern.
+    // Keep the variable threaded through the code below as a no-op
+    // until the new per-kind paint hooks land.
+    let paint_header_after_children = false;
 
     // Determine child origin + clip. A ScrollView shifts children
     // by `-offset` and narrows the clip to its frame (intersected
@@ -2131,7 +2130,7 @@ pub(crate) struct DeferredDrawer {
 /// are the screen's *content* origin (Taffy-laid below the
 /// header inset). The header strip sits at `(x, y -
 /// NAV_HEADER_HEIGHT, w, NAV_HEADER_HEIGHT)`.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, unused_variables)]
 fn paint_screen_header<'a, 'b>(
     skin: &dyn crate::painter::Painter,
     data: &'b crate::node::NodeData,
@@ -2143,131 +2142,10 @@ fn paint_screen_header<'a, 'b>(
     text_store: &'a TextStore,
     header_hits: &mut Vec<crate::host::HeaderHit>,
 ) {
-    use crate::painter::{
-        NavigatorHeaderAction, NavigatorHeaderChrome, NavigatorHeaderHit,
-    };
-    let Some(options) = data.screen_options.as_deref() else { return };
-    // `owning_navigator` is `Weak` to avoid a parent↔child Rc cycle;
-    // upgrade for the duration of this paint pass. If the navigator
-    // has been dropped (shouldn't happen while we're painting one of
-    // its screens, but be defensive), skip the header — the screen
-    // chrome is meaningless without it.
-    let Some(navigator) = data.owning_navigator.as_ref().and_then(|w| w.upgrade()) else {
-        return;
-    };
-    let navigator = &navigator;
-
-    let header_y = y - crate::node::NAV_HEADER_HEIGHT;
-    let header_rect = (x, header_y, w, crate::node::NAV_HEADER_HEIGHT);
-
-    // Stack depth + style fallbacks come from the owning
-    // navigator. Borrow scope kept tight so the navigator's
-    // RefCell isn't held while we call into the skin.
-    let (depth, header_bg_default, title_color_default, tint_default) = {
-        let nav_data = navigator.borrow();
-        match &nav_data.kind {
-            NodeKind::Navigator {
-                scope_ids,
-                header_style,
-                title_style,
-                button_style,
-                ..
-            } => (
-                scope_ids.borrow().len(),
-                header_style
-                    .borrow()
-                    .as_ref()
-                    .and_then(|r| r.background.as_ref())
-                    .map(|t| crate::style_convert::parse_color(&t.resolve())),
-                title_style
-                    .borrow()
-                    .as_ref()
-                    .and_then(|r| r.color.as_ref())
-                    .map(|t| crate::style_convert::parse_color(&t.resolve())),
-                button_style
-                    .borrow()
-                    .as_ref()
-                    .and_then(|r| r.color.as_ref())
-                    .map(|t| crate::style_convert::parse_color(&t.resolve())),
-            ),
-            _ => (0, None, None, None),
-        }
-    };
-
-    // Per-screen closure samples (theme-bound) override
-    // navigator-level style fallbacks. Painter's default beats
-    // them only when both are `None`.
-    let background = options
-        .header_background
-        .as_ref()
-        .map(|f| crate::style_convert::parse_color(&f()))
-        .or(header_bg_default);
-    let title_color = options
-        .title_color
-        .as_ref()
-        .map(|f| crate::style_convert::parse_color(&f()))
-        .or(title_color_default);
-    let tint = options
-        .header_tint
-        .as_ref()
-        .map(|f| crate::style_convert::parse_color(&f()))
-        .or(tint_default);
-
-    let title_buffer = data
-        .screen_title_layout
-        .and_then(|id| text_store.buffers.get(&id))
-        .map(|entry| &entry.buffer);
-
-    // The skin gets first crack at painting (rects + texts) and
-    // populates a local Vec of hit regions; we translate those
-    // into per-frame Host entries below.
-    let mut local_hits: Vec<NavigatorHeaderHit> = Vec::new();
-    let header_left_name = options.header_left.as_ref().map(|b| b.icon.as_str());
-    let header_right_name = options.header_right.as_ref().map(|b| b.icon.as_str());
-    let show_back = depth >= 2 && options.header_left.is_none();
-    // The screen's frame starts `safe_area.top + NAV_HEADER_HEIGHT`
-    // below the navigator's top; the header rect sits in the
-    // `[navigator_top + safe_area, navigator_top + safe_area +
-    // NAV_HEADER_HEIGHT]` band. We pass `safe_area.top` so the
-    // skin can extend the header's bg upward into the status-
-    // bar strip — without this the strip stays the clear color
-    // and the bg appears to ignore the slide.
-    let safe_area_top = runtime_core::safe_area_insets().get().top;
-    let chrome = NavigatorHeaderChrome {
-        title: title_buffer,
-        show_back,
-        header_left_icon: header_left_name,
-        header_right_icon: header_right_name,
-        background,
-        title_color,
-        tint,
-        safe_area_top,
-    };
-    skin.paint_navigator_header(header_rect, chrome, rects, texts, &mut local_hits);
-
-    // Route each hit through `Host::header_hits`. The press
-    // dispatch resolves them in z-order on the next pointer-down.
-    for hit in local_hits {
-        let action = match hit.action {
-            NavigatorHeaderAction::Back => crate::host::HeaderHitAction::Back,
-            NavigatorHeaderAction::HeaderLeft => {
-                let Some(btn) = options.header_left.as_ref() else { continue };
-                crate::host::HeaderHitAction::HeaderLeft(btn.on_press.clone())
-            }
-            NavigatorHeaderAction::HeaderRight => {
-                let Some(btn) = options.header_right.as_ref() else { continue };
-                crate::host::HeaderHitAction::HeaderRight(btn.on_press.clone())
-            }
-        };
-        header_hits.push(crate::host::HeaderHit {
-            rect: hit.rect,
-            // Weak — see `HeaderHit::navigator` doc comment about
-            // why the per-frame hit registry must not strong-ref
-            // the navigator.
-            navigator: Rc::downgrade(navigator),
-            action,
-        });
-    }
+    // Per-screen header chrome was driven by `ScreenOptions` on the
+    // legacy nav substrate. With the substrate trimmed (per-kind SDKs
+    // own header rendering now), this paint hook is a no-op for the
+    // wgpu backend until the SDK-side paint paths land.
 }
 
 /// Sample the drawer's `scrim_style.background` for its scrim

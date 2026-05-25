@@ -2,10 +2,8 @@ pub(crate) mod callbacks;
 pub(crate) mod graphics;
 pub(crate) mod handles;
 pub(crate) mod icon;
-pub(crate) mod navigator;
 pub(crate) mod portal;
 pub(crate) mod style;
-pub(crate) mod tab_drawer;
 
 /// Platform log via NSLog. Always visible in Xcode console.
 #[allow(dead_code)]
@@ -30,10 +28,6 @@ macro_rules! ios_log {
 use runtime_core::primitives::activity_indicator::ActivityIndicatorSize;
 use runtime_core::primitives::graphics::{OnLost, OnReady, OnResize};
 use runtime_core::primitives::link::LinkConfig;
-use runtime_core::primitives::navigator::{
-    DrawerHandle, DrawerNavigatorCallbacks, NavigatorCallbacks,
-    NavigatorControl, NavigatorHandle, TabNavigatorCallbacks, TabsHandle,
-};
 use runtime_core::{Backend, Color, StyleRules};
 use objc2::rc::Retained;
 use objc2::{msg_send, msg_send_id};
@@ -41,7 +35,7 @@ use objc2_foundation::{MainThreadMarker, NSObject, NSString};
 use objc2_ui_kit::{
     UIActivityIndicatorView, UIActivityIndicatorViewStyle, UIButton, UIButtonType,
     UILabel, UIScrollView, UISlider, UIStackView, UISwitch,
-    UITextField, UIView, UIViewController,
+    UITextField, UIView,
 };
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -49,12 +43,10 @@ use std::rc::Rc;
 use callbacks::{
     BoolCallbackTarget, CallbackTarget, FloatCallbackTarget, StringCallbackTarget,
 };
-use navigator::NavigatorEntry;
 use style::{
     animate, apply_style_to_view, apply_text_style, color_to_uicolor, font_weight_to_uikit,
     length_to_px,
 };
-use tab_drawer::TabDrawerEntry;
 
 // =========================================================================
 // IosBackend
@@ -63,8 +55,6 @@ use tab_drawer::TabDrawerEntry;
 pub struct IosBackend {
     mtm: MainThreadMarker,
     host_root: Option<Retained<UIView>>,
-    navigator_instances: HashMap<usize, NavigatorEntry>,
-    tab_drawer_instances: HashMap<usize, TabDrawerEntry>,
     callback_targets: Vec<Retained<NSObject>>,
     scroll_view_inner: HashMap<usize, Retained<UIView>>,
     /// Cache of rasterized icon UIImages keyed by (icon identity, size).
@@ -124,8 +114,6 @@ impl IosBackend {
         Self {
             mtm,
             host_root: None,
-            navigator_instances: HashMap::new(),
-            tab_drawer_instances: HashMap::new(),
             callback_targets: Vec::new(),
             scroll_view_inner: HashMap::new(),
             icon_image_cache: HashMap::new(),
@@ -170,133 +158,6 @@ pub(crate) fn pin_to_edges(parent: &UIView, child: &UIView) {
         let c: Retained<NSObject> = unsafe { msg_send_id![a, constraintEqualToAnchor: &**b] };
         let _: () = unsafe { msg_send![&c, setActive: true] };
     }
-}
-
-/// Mount a framework screen node into a UIViewController.
-/// Pins to the safe area so content sits below the nav bar and
-/// above the home indicator. The navigator's header_style slot
-/// handles the nav bar background color separately.
-pub(crate) fn mount_screen_in_vc(mtm: MainThreadMarker, screen: &UIView) -> Retained<UIViewController> {
-    let vc = unsafe { UIViewController::new(mtm) };
-    let vc_view = vc.view().expect("vc.view");
-
-    let _: () = unsafe {
-        objc2::msg_send![screen, setTranslatesAutoresizingMaskIntoConstraints: false]
-    };
-    unsafe { vc_view.addSubview(screen) };
-
-    // Pin to safe area (below nav bar, above home indicator)
-    let guide: Retained<NSObject> = unsafe { msg_send_id![&vc_view, safeAreaLayoutGuide] };
-    let g_top: Retained<NSObject> = unsafe { msg_send_id![&guide, topAnchor] };
-    let g_bot: Retained<NSObject> = unsafe { msg_send_id![&guide, bottomAnchor] };
-    let g_lead: Retained<NSObject> = unsafe { msg_send_id![&guide, leadingAnchor] };
-    let g_trail: Retained<NSObject> = unsafe { msg_send_id![&guide, trailingAnchor] };
-    let s_top: Retained<NSObject> = unsafe { msg_send_id![screen, topAnchor] };
-    let s_bot: Retained<NSObject> = unsafe { msg_send_id![screen, bottomAnchor] };
-    let s_lead: Retained<NSObject> = unsafe { msg_send_id![screen, leadingAnchor] };
-    let s_trail: Retained<NSObject> = unsafe { msg_send_id![screen, trailingAnchor] };
-
-    // Pin all four edges so the screen ALWAYS fills the safe area.
-    // Without this on the bottom edge, a screen would size to its
-    // intrinsic content height — fine for short screens but breaks
-    // any child with zero intrinsic (UIScrollView, Graphics surface):
-    // the parent stack collapses around the intrinsic-sized siblings
-    // and the zero-intrinsic child gets nothing.
-    //
-    // Children that want to pack-to-top inside a tall screen can use
-    // a Stack with their own layout (the framework's per-stylesheet
-    // alignment rules handle this).
-    for (a, b) in [(&s_top, &g_top), (&s_bot, &g_bot), (&s_lead, &g_lead), (&s_trail, &g_trail)] {
-        let c: Retained<NSObject> = unsafe { msg_send_id![a, constraintEqualToAnchor: &**b] };
-        let _: () = unsafe { msg_send![&c, setActive: true] };
-    }
-
-    vc
-}
-
-/// Configure a UIViewController's navigationItem and the parent
-/// UINavigationBar from `ScreenOptions`. Called after mounting a
-/// screen in a stack or drawer navigator.
-/// Configure a UIViewController's navigationItem and the parent
-/// UINavigationBar from `ScreenOptions`. Returns retained callback
-/// targets that must be kept alive (caller stores or forgets them).
-pub(crate) fn apply_header_options(
-    vc: &UIViewController,
-    options: &runtime_core::ScreenOptions,
-    mtm: MainThreadMarker,
-) -> Vec<Retained<NSObject>> {
-    let mut retained = Vec::new();
-
-    // Hide/show header
-    if let Some(false) = options.header_shown {
-        let nav_ctrl: *const NSObject = unsafe { msg_send![vc, navigationController] };
-        if !nav_ctrl.is_null() {
-            let _: () = unsafe { msg_send![nav_ctrl, setNavigationBarHidden: true, animated: false] };
-        }
-        return vec![];
-    }
-
-    // Title
-    if let Some(ref title) = options.title {
-        let ns = NSString::from_str(title);
-        let _: () = unsafe { msg_send![vc, setTitle: &*ns] };
-    }
-
-    // Left bar button
-    if let Some(ref btn) = options.header_left {
-        let image: Retained<NSObject> = unsafe {
-            let name = NSString::from_str(&btn.icon);
-            msg_send_id![objc2::class!(UIImage), systemImageNamed: &*name]
-        };
-        let on_press = btn.on_press.clone();
-        let target = CallbackTarget::new(mtm, on_press);
-        let sel = objc2::sel!(invoke);
-        let bar_item: Retained<NSObject> = unsafe {
-            msg_send_id![objc2::class!(UIBarButtonItem), new]
-        };
-        let _: () = unsafe { msg_send![&bar_item, setImage: &*image] };
-        let _: () = unsafe { msg_send![&bar_item, setTarget: &*target] };
-        let _: () = unsafe { msg_send![&bar_item, setAction: sel] };
-        if let Some(ref tint) = btn.tint {
-            let c = color_to_uicolor(tint);
-            let _: () = unsafe { msg_send![&bar_item, setTintColor: &*c] };
-        }
-        let nav_item: Retained<NSObject> = unsafe { msg_send_id![vc, navigationItem] };
-        let _: () = unsafe { msg_send![&nav_item, setLeftBarButtonItem: &*bar_item] };
-        let obj: Retained<NSObject> = unsafe {
-            Retained::retain(Retained::as_ptr(&target) as *mut NSObject).unwrap()
-        };
-        retained.push(obj);
-    }
-
-    // Right bar button
-    if let Some(ref btn) = options.header_right {
-        let image: Retained<NSObject> = unsafe {
-            let name = NSString::from_str(&btn.icon);
-            msg_send_id![objc2::class!(UIImage), systemImageNamed: &*name]
-        };
-        let on_press = btn.on_press.clone();
-        let target = CallbackTarget::new(mtm, on_press);
-        let sel = objc2::sel!(invoke);
-        let bar_item: Retained<NSObject> = unsafe {
-            msg_send_id![objc2::class!(UIBarButtonItem), new]
-        };
-        let _: () = unsafe { msg_send![&bar_item, setImage: &*image] };
-        let _: () = unsafe { msg_send![&bar_item, setTarget: &*target] };
-        let _: () = unsafe { msg_send![&bar_item, setAction: sel] };
-        if let Some(ref tint) = btn.tint {
-            let c = color_to_uicolor(tint);
-            let _: () = unsafe { msg_send![&bar_item, setTintColor: &*c] };
-        }
-        let nav_item: Retained<NSObject> = unsafe { msg_send_id![vc, navigationItem] };
-        let _: () = unsafe { msg_send![&nav_item, setRightBarButtonItem: &*bar_item] };
-        let obj: Retained<NSObject> = unsafe {
-            Retained::retain(Retained::as_ptr(&target) as *mut NSObject).unwrap()
-        };
-        retained.push(obj);
-    }
-
-    retained
 }
 
 // =========================================================================
@@ -771,11 +632,6 @@ impl Backend for IosBackend {
     }
 
     // =================================================================
-    // Navigator
-    // =================================================================
-
-
-    // =================================================================
     // Portal
     // =================================================================
 
@@ -830,170 +686,9 @@ impl Backend for IosBackend {
         runtime_core::ViewHandle::new(Rc::new(node.clone()), &handles::IOS_VIEW_OPS)
     }
 
-    // =================================================================
-    // Tab Navigator
-    // =================================================================
-
-
     fn finish(&mut self, root: Self::Node) {
         if let Some(host) = &self.host_root {
             pin_to_edges(host, root.as_view());
-        }
-    }
-}
-
-// ==========================================================================
-// Legacy nav helpers — inherent methods invoked by the per-kind SDK
-// handlers. NOT on the Backend trait.
-// ==========================================================================
-
-impl IosBackend {
-    pub fn create_stack_navigator(
-        &mut self,
-        callbacks: NavigatorCallbacks<IosNode>,
-        control: Rc<NavigatorControl>,
-        _a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> IosNode {
-        navigator::create_stack_navigator(self.mtm, &mut self.navigator_instances, callbacks, control)
-    }
-
-    pub fn stack_navigator_attach_initial(
-        &mut self,
-        navigator: &IosNode,
-        screen: IosNode,
-        scope_id: u64,
-        options: runtime_core::ScreenOptions,
-    ) {
-        navigator::stack_navigator_attach_initial(self.mtm, &self.navigator_instances, navigator, screen, scope_id, options)
-    }
-
-    pub fn apply_navigator_header_style(
-        &mut self,
-        navigator: &IosNode,
-        style: &Rc<runtime_core::StyleRules>,
-    ) {
-        let key = navigator.view_key();
-        if let Some(entry) = self.navigator_instances.get(&key) {
-            navigator::apply_nav_header_style(&entry.controller, navigator.as_view(), style);
-        }
-    }
-
-    pub fn apply_navigator_title_style(
-        &mut self,
-        navigator: &IosNode,
-        style: &Rc<runtime_core::StyleRules>,
-    ) {
-        let key = navigator.view_key();
-        if let Some(entry) = self.navigator_instances.get(&key) {
-            navigator::apply_nav_title_style(&entry.controller, style);
-        }
-    }
-
-    pub fn apply_navigator_button_style(
-        &mut self,
-        navigator: &IosNode,
-        style: &Rc<runtime_core::StyleRules>,
-    ) {
-        let key = navigator.view_key();
-        if let Some(entry) = self.navigator_instances.get(&key) {
-            navigator::apply_nav_button_style(&entry.controller, style);
-        }
-    }
-
-    pub fn release_stack_navigator(&mut self, node: &IosNode) {
-        navigator::release_stack_navigator(&mut self.navigator_instances, node)
-    }
-
-    pub fn make_stack_navigator_handle(&self, node: &IosNode) -> NavigatorHandle {
-        navigator::make_stack_navigator_handle(&self.navigator_instances, node)
-    }
-
-    pub fn create_tab_navigator(
-        &mut self,
-        callbacks: TabNavigatorCallbacks<IosNode>,
-        control: Rc<NavigatorControl>,
-        _a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> IosNode {
-        tab_drawer::create_tab_navigator(self.mtm, &mut self.tab_drawer_instances, callbacks, control)
-    }
-
-    pub fn tab_navigator_attach_initial(
-        &mut self,
-        navigator: &IosNode,
-        screen: IosNode,
-        scope_id: u64,
-        options: runtime_core::ScreenOptions,
-    ) {
-        tab_drawer::tab_navigator_attach_initial(&self.tab_drawer_instances, navigator, screen, scope_id, options)
-    }
-
-    pub fn release_tab_navigator(&mut self, node: &IosNode) {
-        tab_drawer::release_tab_navigator(&mut self.tab_drawer_instances, node)
-    }
-
-    pub fn make_tab_navigator_handle(&self, node: &IosNode) -> TabsHandle {
-        tab_drawer::make_tab_navigator_handle(&self.tab_drawer_instances, node)
-    }
-
-    // =================================================================
-    // Drawer Navigator
-    // =================================================================
-
-    pub fn create_drawer_navigator(
-        &mut self,
-        callbacks: DrawerNavigatorCallbacks<IosNode>,
-        control: Rc<NavigatorControl>,
-        _a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> IosNode {
-        tab_drawer::create_drawer_navigator(self.mtm, &mut self.tab_drawer_instances, callbacks, control)
-    }
-
-    pub fn drawer_navigator_attach_initial(
-        &mut self,
-        navigator: &IosNode,
-        screen: IosNode,
-        scope_id: u64,
-        options: runtime_core::ScreenOptions,
-    ) {
-        tab_drawer::drawer_navigator_attach_initial(
-            self.mtm, &self.tab_drawer_instances, &mut self.callback_targets,
-            navigator, screen, scope_id, options,
-        )
-    }
-
-    pub fn drawer_navigator_attach_sidebar(
-        &mut self,
-        navigator: &IosNode,
-        sidebar: IosNode,
-    ) {
-        tab_drawer::drawer_navigator_attach_sidebar(
-            self.mtm, &self.tab_drawer_instances, &mut self.callback_targets,
-            navigator, sidebar,
-        )
-    }
-
-    pub fn release_drawer_navigator(&mut self, node: &IosNode) {
-        tab_drawer::release_drawer_navigator(&mut self.tab_drawer_instances, node)
-    }
-
-    pub fn make_drawer_navigator_handle(&self, node: &IosNode) -> DrawerHandle {
-        tab_drawer::make_drawer_navigator_handle(&self.tab_drawer_instances, node)
-    }
-
-    pub fn apply_drawer_sidebar_style(
-        &mut self,
-        navigator: &IosNode,
-        style: &Rc<runtime_core::StyleRules>,
-    ) {
-        let key = navigator.view_key();
-        if let Some(entry) = self.tab_drawer_instances.get(&key) {
-            if let Some(ref sidebar) = *entry.sidebar.borrow() {
-                if let Some(ref bg) = style.background {
-                    let bg_val = bg.resolve();
-                    let c = style::color_to_uicolor(&bg_val);
-                    sidebar.setBackgroundColor(Some(&c));
-                }
-            }
         }
     }
 }

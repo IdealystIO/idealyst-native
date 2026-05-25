@@ -1,0 +1,21 @@
+[package]
+name = "android-navigator-helpers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Shared Android-platform machinery for the three first-party navigator
+# SDKs (stack / tab / drawer). On Android, the stack kind uses
+# `RustNavigator` (FragmentManager-host), and the tab/drawer kinds use
+# a plain FrameLayout / RustDrawerLayout view-swap (no FragmentManager).
+# This crate owns the JNI-side machinery for both flavors; each SDK
+# depends on it and supplies its kind-specific callback bundle.
+
+[dependencies]
+runtime-core = { workspace = true }
+
+[target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
+backend-android-mobile = { workspace = true }
+backend-android-core = { workspace = true }
+jni = "0.21"
+log = "0.4"

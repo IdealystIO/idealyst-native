@@ -18,8 +18,10 @@
 //! `#[macro_use]` lifts those to crate-root scope so page modules
 //! can invoke them via the `ui!` DSL.
 
-use runtime_core::{component, signal, ui, HeaderStyle, Primitive, Ref, Screen, Signal};
-use drawer_navigator::{DrawerBuilder, DrawerHandle, DrawerNavigator};
+use runtime_core::{component, signal, ui, Primitive, Ref, Screen, Signal};
+use drawer_navigator::{
+    DrawerBuilder, DrawerHandle, DrawerNavigator, DrawerScreenExt, HeaderStyle,
+};
 use idea_ui::{idea_header, install_idea_theme, light_theme, IdeaTheme};
 
 pub mod meta;
@@ -61,6 +63,15 @@ pub fn register_extensions(backend: &mut backend_ios::IosBackend) {
     drawer_navigator::register(backend);
 }
 
+// Android equivalent — invoked from the generated Android wrapper
+// before `mount`. Same registration contract: without it, the first
+// `Backend::create_navigator` call panics because the drawer's
+// factory isn't installed in `AndroidBackend::navigator_handlers`.
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+pub fn register_extensions(backend: &mut backend_android::AndroidBackend) {
+    drawer_navigator::register(backend);
+}
+
 use routes::{
     ANIMATION_ROUTE, BACKENDS_ROUTE, CLI_ROUTE, COMPONENTS_ROUTE, DEV_TOOLS_ROUTE, ICONS_ROUTE,
     INTRODUCTION_ROUTE, LISTS_ROUTE, MACROS_ROUTE, NAVIGATION_ROUTE, OVERVIEW_ROUTE,
@@ -69,7 +80,7 @@ use routes::{
     REACTIVE_TEXT_BINDINGS_ROUTE, THIRD_PARTY_PRIMITIVES_ROUTE, UI_DSL_ROUTE,
     WGPU_NATIVE_API_ROUTE, WRITING_A_BACKEND_ROUTE,
 };
-use shell::{content_builder, web_layout};
+use shell::content_builder;
 
 #[component]
 pub fn app() -> Primitive {
@@ -154,10 +165,8 @@ pub fn app() -> Primitive {
         .screen(PLATFORMS_ROUTE, |_| {
             Screen::new(pages::platforms::page()).title("Platforms")
         })
-        .content(content_builder(is_dark))
+        .sidebar_with(content_builder(is_dark))
         .bind(drawer);
-
-    let builder = builder.layout(web_layout());
 
     ui! { builder }
 }

@@ -1,19 +1,24 @@
 //! Web-backend handler for the Tab navigator SDK.
 //!
-//! Phase-1 adapter: synthesizes a legacy `TabNavigatorCallbacks` from
-//! the framework-supplied `NavigatorHost` + the SDK's
-//! `TabPresentation`, then calls `WebBackend::create_tab_navigator`.
-//! Phase-2 will inline the dispatcher closure here.
+//! Synthesizes a `WebTabCallbacks` from the framework-supplied
+//! `NavigatorHost` + the SDK's `TabPresentation`, then calls
+//! `web_navigator_helpers::create_tab`. Kind-specific callback types
+//! live in `web-navigator-helpers` after the navigator-substrate
+//! refactor — the SDK's local `TabPlacement` / `MountPolicy` enums
+//! translate to the helpers crate's identically-shaped variants via
+//! the `placement_to_helpers` / `mount_policy_to_helpers` shims.
 
-use crate::{TabPresentation, TabPlacement, MountPolicy};
+use crate::{MountPolicy, TabPlacement, TabPresentation};
 use backend_web::WebBackend;
-use runtime_core::{
-    primitives::navigator::tabs::TabRegistration, MountResult, NavigatorCallbacks,
-    NavigatorHandler, NavigatorHost, TabNavigatorCallbacks,
-    TabPlacement as CoreTabPlacement, MountPolicy as CoreMountPolicy,
+use runtime_core::primitives::navigator::{
+    MountResult, NavigatorHandler, NavigatorHost,
 };
 use std::any::Any;
 use std::rc::Rc;
+use web_navigator_helpers::{
+    MountPolicy as HelpersMountPolicy, TabPlacement as HelpersTabPlacement, TabRegistration,
+    WebNavCallbacks, WebTabCallbacks,
+};
 use web_sys::Node;
 
 pub struct WebTabHandler {
@@ -38,23 +43,29 @@ impl Default for WebTabHandler {
 struct NoopTabOps;
 impl runtime_core::primitives::navigator::NavigatorOps for NoopTabOps {}
 
-/// Translate the SDK's `TabPlacement` enum to core's identical-shape
-/// `TabPlacement`. The SDK defines its own copy so the SDK doesn't
-/// have to re-export every kind-specific value type from core.
-fn placement_to_core(p: TabPlacement) -> CoreTabPlacement {
+/// Translate the SDK's `TabPlacement` enum to the helpers crate's
+/// identically-shaped `TabPlacement`. The helpers crate only models
+/// the two placements its layout engine knows how to position
+/// (`Top` / `Bottom`); `Auto` and `Sidebar` collapse to `Bottom` /
+/// `Top` for now — author chrome owns the actual positioning via
+/// `.layout(...)`, so this mapping is informational on web.
+fn placement_to_helpers(p: TabPlacement) -> HelpersTabPlacement {
     match p {
-        TabPlacement::Auto => CoreTabPlacement::Auto,
-        TabPlacement::Top => CoreTabPlacement::Top,
-        TabPlacement::Bottom => CoreTabPlacement::Bottom,
-        TabPlacement::Sidebar => CoreTabPlacement::Sidebar,
+        TabPlacement::Top | TabPlacement::Sidebar => HelpersTabPlacement::Top,
+        TabPlacement::Auto | TabPlacement::Bottom => HelpersTabPlacement::Bottom,
     }
 }
 
-fn mount_policy_to_core(m: MountPolicy) -> CoreMountPolicy {
+/// Translate the SDK's `MountPolicy` to the helpers crate's. The
+/// helpers crate models only `Lazy` / `Eager`; the SDK's two lazy
+/// variants (`LazyPersistent` / `LazyDisposing`) both collapse to
+/// `Lazy` — the helpers crate's screen-swap engine doesn't currently
+/// implement persistent-but-hidden lazy mounting on web, so disposing
+/// is the only honest fit.
+fn mount_policy_to_helpers(m: MountPolicy) -> HelpersMountPolicy {
     match m {
-        MountPolicy::EagerPersistent => CoreMountPolicy::EagerPersistent,
-        MountPolicy::LazyPersistent => CoreMountPolicy::LazyPersistent,
-        MountPolicy::LazyDisposing => CoreMountPolicy::LazyDisposing,
+        MountPolicy::EagerPersistent => HelpersMountPolicy::Eager,
+        MountPolicy::LazyPersistent | MountPolicy::LazyDisposing => HelpersMountPolicy::Lazy,
     }
 }
 
@@ -76,62 +87,54 @@ impl NavigatorHandler<WebBackend> for WebTabHandler {
             mount_screen,
             release_screen,
             match_path,
-            build_layout,
             nav_state,
             depth_changed,
             active_changed,
             control,
             build_node: _,
+            build_in_screen: _,
         } = host;
 
-        // Adapter: 3-arg mount_screen → 2-arg; state discarded for the
-        // legacy path. Same posture as WebStackHandler.
+        // Adapter: 3-arg `mount_screen` → 2-arg; state is discarded
+        // (the helpers crate's screen-swap engine doesn't currently
+        // thread per-screen state into the URL stack).
         let mount_2arg: Rc<dyn Fn(&'static str, Box<dyn Any>) -> MountResult<Node>> = {
             let m = mount_screen;
             Rc::new(move |name, params| m(name, params, None))
         };
 
-        let navigator = NavigatorCallbacks {
+        let navigator = WebNavCallbacks {
             initial_route,
             initial_path,
             mount_screen: mount_2arg,
             release_screen,
             match_path,
-            build_layout,
-            nav_state,
             depth_changed,
+            nav_state,
+            build_layout: None,
             defer_initial_mount,
         };
 
-        // The TabPresentation Rc may still have other strong refs (the
-        // Primitive::Navigator payload itself); clone the inner data
-        // out instead of trying to Rc::try_unwrap.
+        // Collect tab registrations for the helpers crate. The helper
+        // itself doesn't render the tab bar (authors build their own
+        // via `.layout(...)`); these are kept for any helper-side
+        // lookups in the future.
         let tabs: Vec<TabRegistration> = presentation
             .tab_order
             .iter()
             .map(|(route, spec)| TabRegistration {
                 route,
-                label: spec.label.clone(),
-                icon: spec.icon.clone(),
-                badge: spec.badge.clone(),
+                path: "",
+                label: Some(spec.label.clone()),
             })
             .collect();
 
-        // Bridge the host's typed `active_changed(name, path)` to the
-        // legacy callback's `active_changed(name)` shape. The legacy
-        // tab dispatcher already updates active_path via the route's
-        // `url`, so the path arg is redundant for the existing impl.
-        let active_changed_legacy: Rc<dyn Fn(&'static str)> = {
-            let ac = active_changed;
-            Rc::new(move |name| ac(name, String::new()))
-        };
-
-        let tab_callbacks = TabNavigatorCallbacks {
+        let tab_callbacks = WebTabCallbacks {
             navigator,
             tabs,
-            placement: placement_to_core(presentation.placement),
-            mount_policy: mount_policy_to_core(presentation.mount_policy),
-            active_changed: active_changed_legacy,
+            placement: placement_to_helpers(presentation.placement),
+            mount_policy: mount_policy_to_helpers(presentation.mount_policy),
+            active_changed,
         };
 
         let node = web_navigator_helpers::create_tab(backend, tab_callbacks, control);
@@ -144,7 +147,7 @@ impl NavigatorHandler<WebBackend> for WebTabHandler {
         _backend: &mut WebBackend,
         screen: Node,
         scope_id: u64,
-        _options: runtime_core::ScreenOptions,
+        _options: Box<dyn Any>,
     ) {
         if let Some(container) = self.container.as_ref() {
             web_navigator_helpers::attach_initial(container, screen, scope_id);
