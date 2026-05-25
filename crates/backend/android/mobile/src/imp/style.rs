@@ -26,27 +26,18 @@ pub(crate) fn apply_rules(
 
     // --- Padding.
     //
-    // Padding is a Taffy concept only — it shifts children's computed
-    // `frame.x` / `frame.y` inside the parent's box and inflates the
-    // parent's outer size by `padding*2`. We don't propagate it to
-    // Android's `View.setPadding(...)` for any view kind:
+    // Never propagated to Android's `View.setPadding(...)`. Padding
+    // is a Taffy concept: it shifts children's computed positions
+    // inside the parent's box, and Taffy writes those shifted
+    // positions to each child's `LayoutParams.leftMargin` /
+    // `topMargin`. Setting Android padding on top would double-shift.
     //
-    // - **Containers** (FrameLayout, ScrollView): if we set Android
-    //   padding too, children get shifted once by Taffy's frame.x and
-    //   again by the parent's `paddingLeft`, double-counting the
-    //   indent.
-    // - **TextView**: iOS's UILabel has no native padding — text
-    //   renders flush at the UILabel's frame edge, with the visual
-    //   "padding" coming from Taffy sizing the box larger than the
-    //   text. Mirroring that on Android means TextView's text
-    //   glyphs sit at the TextView's frame edge too. With Android
-    //   padding ON, the text gets pushed 12dp right (for
-    //   `padding_horizontal: 12`) and the label looks indented
-    //   relative to iOS for the same style.
-    //
-    // The intrinsic measurer (`text::measure_textview`) sees the
-    // TextView with `padding = 0` and reports the text-only size
-    // to Taffy; Taffy adds `style.padding` back to derive the box.
+    // Text views don't get padding either: padding on a Text node
+    // is a no-op at the framework level (see the matching strip in
+    // `set_style` for IosNode::Label and TextView paths). Authors
+    // who want spacing around text wrap the Text in a styled View
+    // — that View's padding correctly shifts the Text child via
+    // Taffy without any Android-side `setPadding` involvement.
     let want_padding = [0, 0, 0, 0];
     let padding_transitions = [
         rules.padding_left_transition,

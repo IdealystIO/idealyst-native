@@ -76,7 +76,45 @@ pub(crate) fn create(b: &mut AndroidBackend, horizontal: bool) -> GlobalRef {
     // Register outer→inner so `view::insert(parent=outer, child)`
     // routes through the inner. See module doc.
     b.scroll_view_inner
-        .insert(AndroidBackend::node_key_of(&outer_ref), inner_ref);
+        .insert(AndroidBackend::node_key_of(&outer_ref), inner_ref.clone());
+
+    // Wire the inner as a Taffy CHILD of the outer. `view::insert`
+    // adds user-visible children under `inner_for(parent) = inner` in
+    // Taffy, which makes the inner a Taffy root unless we link it
+    // back to the outer here. Without that link, any author style on
+    // the outer ScrollView — `Sidebar { padding: 16, width: 260dp }`
+    // is the canonical case — never reaches the children: Taffy
+    // computes the inner against viewport size and the children sit
+    // at the inner's (0, 0) with no padding, ignoring the outer's
+    // constraints entirely.
+    //
+    // Width/height resolution still works correctly: the outer
+    // imposes its `style.width` (260dp), Taffy gives the inner the
+    // outer's content area (260dp − padding), and children laid out
+    // inside the inner inherit the padding offset.
+    let outer_layout = b.layout_for_view(&outer_ref);
+    let inner_layout = b.layout_for_view(&inner_ref);
+    b.layout.add_child(outer_layout, inner_layout);
+    b.layout.mark_dirty(outer_layout);
+
+    // Inner needs an explicit flex_direction. With Taffy's default
+    // (`Row`) the inner only takes `max(child.height)` as its
+    // intrinsic — children stack horizontally and the inner's
+    // height collapses to one row. For a vertical scroller (the
+    // common case: sidebar, page content) we want `Column` so the
+    // children stack downward and the inner's height = sum of
+    // children. Without this, only one row of items shows and the
+    // rest get clipped because the inner doesn't grow tall enough
+    // to scroll past the viewport. Horizontal scrollers
+    // (`HorizontalScrollView`) get `Row` instead.
+    let mut inner_rules = runtime_core::StyleRules::default();
+    inner_rules.flex_direction = Some(if horizontal {
+        runtime_core::FlexDirection::Row
+    } else {
+        runtime_core::FlexDirection::Column
+    });
+    inner_rules.align_items = Some(runtime_core::AlignItems::Stretch);
+    b.layout.set_style(inner_layout, &inner_rules);
 
     outer_ref
 }

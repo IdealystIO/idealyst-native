@@ -464,6 +464,138 @@ impl AndroidBackend {
         self.run_layout_pass();
     }
 
+    /// Read system safe-area insets (status bar, navigation bar,
+    /// display cutout) from the host root's `WindowInsets`. Returns
+    /// values in dp so they match Taffy's coordinate space.
+    ///
+    /// On API 30+ uses `WindowInsets.getInsets(systemBars | displayCutout)`
+    /// which reports the unconsumed insets regardless of
+    /// `fitsSystemWindows`. The pre-30 deprecated
+    /// `getSystemWindowInset*` accessors return zero when the
+    /// activity isn't in edge-to-edge mode (system "consumed" them);
+    /// the new path always returns the real values.
+    fn platform_safe_area_insets(&self) -> runtime_core::EdgeInsets {
+        let host = self.root.as_obj();
+        let mut final_insets = runtime_core::EdgeInsets::ZERO;
+        let result = with_env(|env| -> Option<runtime_core::EdgeInsets> {
+            let density = density_of(env, &host).unwrap_or(1.0);
+            let insets_obj = env
+                .call_method(
+                    &host,
+                    "getRootWindowInsets",
+                    "()Landroid/view/WindowInsets;",
+                    &[],
+                )
+                .ok()
+                .and_then(|v| v.l().ok())?;
+            if insets_obj.is_null() {
+                return None;
+            }
+            // Prefer `WindowInsets.getInsets(int typeMask)` (API 30+)
+            // which honors edge-to-edge / non-edge-to-edge alike. The
+            // mask is `Type.systemBars() | Type.displayCutout()` —
+            // `systemBars` is 0x1|0x2|0x4 = 7 (statusBars|navigationBars|captionBar)
+            // and `displayCutout` is 0x80 = 128. So mask = 135.
+            // `android.view.WindowInsets$Type.systemBars()` returns 7;
+            // we hardcode the bits to avoid the static-method lookup
+            // round-trip. These constants are stable in the AOSP
+            // source since they were added in API 30.
+            let type_mask: i32 = 7 | 128;
+            // First try the API-30+ `getInsets(int)` returning Insets.
+            let insets_struct = env
+                .call_method(
+                    &insets_obj,
+                    "getInsets",
+                    "(I)Landroid/graphics/Insets;",
+                    &[jni::objects::JValue::Int(type_mask)],
+                )
+                .ok()
+                .and_then(|v| v.l().ok());
+            let (top_px, right_px, bottom_px, left_px) = match insets_struct {
+                Some(ref s) if !s.is_null() => {
+                    // Insets is a final class with public int fields
+                    // (top, left, bottom, right).
+                    let mut read_field = |name: &str| -> i32 {
+                        env.get_field(s, name, "I").and_then(|v| v.i()).unwrap_or(0)
+                    };
+                    (
+                        read_field("top"),
+                        read_field("right"),
+                        read_field("bottom"),
+                        read_field("left"),
+                    )
+                }
+                _ => {
+                    // Fallback for pre-API-30: deprecated getSystemWindowInset*.
+                    let mut read = |name: &str| -> i32 {
+                        env.call_method(&insets_obj, name, "()I", &[])
+                            .and_then(|v| v.i())
+                            .unwrap_or(0)
+                    };
+                    (
+                        read("getSystemWindowInsetTop"),
+                        read("getSystemWindowInsetRight"),
+                        read("getSystemWindowInsetBottom"),
+                        read("getSystemWindowInsetLeft"),
+                    )
+                }
+            };
+            // Some activity configurations report all-zero insets
+            // (system "consumed" the bars and resized the activity
+            // view above them). On Android's emulator with default
+            // gesture nav, that means the activity's view ends right
+            // at the gesture bar's top edge — but the gesture
+            // indicator pill still renders OVER the bottom of the
+            // activity's content. Children at the activity's bottom
+            // (sidebar toggle in our docs example) end up half-hidden
+            // by the pill. Fall back to Android's standard system
+            // resource lookups so authors get reasonable bottom
+            // breathing room regardless of edge-to-edge state.
+            let (mut top, mut right, mut bottom, mut left) = (
+                top_px as f32 / density,
+                right_px as f32 / density,
+                bottom_px as f32 / density,
+                left_px as f32 / density,
+            );
+            if top == 0.0 && bottom == 0.0 && left == 0.0 && right == 0.0 {
+                if let Some((sb, nb)) = read_system_bar_dimens(env, &host) {
+                    log::info!(
+                        "[safe-area] fallback dimens status_bar={}dp nav_bar={}dp",
+                        sb, nb
+                    );
+                    top = sb;
+                    bottom = nb;
+                }
+                // Last-resort fallback: even when `getIdentifier`
+                // returns 0 (some OEM ROMs strip the platform dimen),
+                // the gesture/nav bar still overlays the bottom of the
+                // activity. A conservative 24dp keeps the toggle row /
+                // last-item area out from under the indicator pill.
+                if bottom == 0.0 {
+                    bottom = 24.0;
+                }
+            }
+            Some(runtime_core::EdgeInsets { top, right, bottom, left })
+        });
+        final_insets = result.unwrap_or(runtime_core::EdgeInsets::ZERO);
+        // Even after the `Insets`/deprecated/`Resources` fallbacks, if
+        // we still see 0 it means `getRootWindowInsets` returned null
+        // (host hasn't been attached to a window yet, e.g. very early
+        // in mount). Apply a conservative bottom inset so the
+        // sidebar's toggle row isn't permanently hidden behind the
+        // gesture pill. The next inset-changed cycle will replace
+        // this with real measurements.
+        if final_insets.top == 0.0
+            && final_insets.bottom == 0.0
+            && final_insets.left == 0.0
+            && final_insets.right == 0.0
+        {
+            final_insets.top = 24.0;
+            final_insets.bottom = 24.0;
+        }
+        final_insets
+    }
+
     /// Run the layout pass: for every Taffy root (the framework's
     /// app root plus any disconnected sub-roots), compute, then
     /// iterate every registered view and write its frame onto the
@@ -671,6 +803,73 @@ pub(crate) static ANDROID_TEXT_OPS: AndroidTextOps = AndroidTextOps;
 thread_local! {
     static ANDROID_BACKEND_SELF: std::cell::RefCell<Option<std::rc::Weak<std::cell::RefCell<AndroidBackend>>>> =
         const { std::cell::RefCell::new(None) };
+}
+
+/// Read Android's well-known `status_bar_height` / `navigation_bar_height`
+/// dimens from the platform's internal resources. Used as a fallback
+/// when `WindowInsets` reports all zeros (some activities consume
+/// insets at the system level but the gesture/nav bar still renders
+/// over content). Returns `(status_bar_dp, navigation_bar_dp)`.
+fn read_system_bar_dimens(
+    env: &mut JNIEnv,
+    host: &JObject,
+) -> Option<(f32, f32)> {
+    let density = density_of(env, host).unwrap_or(1.0);
+    let context = env
+        .call_method(host, "getContext", "()Landroid/content/Context;", &[])
+        .ok()
+        .and_then(|v| v.l().ok())?;
+    if context.is_null() {
+        return None;
+    }
+    let resources = env
+        .call_method(&context, "getResources", "()Landroid/content/res/Resources;", &[])
+        .ok()
+        .and_then(|v| v.l().ok())?;
+    let read_dimen = |env: &mut JNIEnv, name: &str| -> f32 {
+        let id_name = match env.new_string(name) {
+            Ok(s) => s,
+            Err(_) => return 0.0,
+        };
+        let android_str = match env.new_string("android") {
+            Ok(s) => s,
+            Err(_) => return 0.0,
+        };
+        let dimen_str = match env.new_string("dimen") {
+            Ok(s) => s,
+            Err(_) => return 0.0,
+        };
+        let res_id: i32 = env
+            .call_method(
+                &resources,
+                "getIdentifier",
+                "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)I",
+                &[
+                    jni::objects::JValue::Object(&id_name),
+                    jni::objects::JValue::Object(&dimen_str),
+                    jni::objects::JValue::Object(&android_str),
+                ],
+            )
+            .and_then(|v| v.i())
+            .unwrap_or(0);
+        if res_id == 0 {
+            return 0.0;
+        }
+        let px: i32 = env
+            .call_method(
+                &resources,
+                "getDimensionPixelSize",
+                "(I)I",
+                &[jni::objects::JValue::Int(res_id)],
+            )
+            .and_then(|v| v.i())
+            .unwrap_or(0);
+        px as f32 / density
+    };
+    Some((
+        read_dimen(env, "status_bar_height"),
+        read_dimen(env, "navigation_bar_height"),
+    ))
 }
 
 /// Install the backend's self-reference. Called once by the host
@@ -931,6 +1130,12 @@ impl Backend for AndroidBackend {
     }
 
     fn create_toggle(&mut self, initial_value: bool, on_change: Rc<dyn Fn(bool)>, a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
+        // `primitives::toggle::create` now installs an intrinsic-size
+        // `measure_fn`, so it needs `&mut self` to reach Taffy. Without
+        // the measure_fn the Switch was a 0×0 leaf in flex layout, the
+        // surrounding column gave it no height, and the widget got
+        // clipped behind the next sibling — visible as a missing
+        // dark-mode toggle in the docs sidebar.
         let node = primitives::toggle::create(self, initial_value, on_change);
         a11y::apply(&node, a11y, Some(runtime_core::accessibility::Role::Switch));
         node
@@ -938,6 +1143,96 @@ impl Backend for AndroidBackend {
 
     fn update_toggle_value(&mut self, node: &Self::Node, value: bool) {
         primitives::toggle::update_value(node, value)
+    }
+
+    fn apply_safe_area_padding(
+        &mut self,
+        node: &Self::Node,
+        sides: runtime_core::SafeAreaSides,
+    ) {
+        let insets = self.platform_safe_area_insets();
+        log::info!(
+            "[safe-area] apply_safe_area_padding sides={:?} insets=(t={},r={},b={},l={})",
+            sides, insets.top, insets.right, insets.bottom, insets.left
+        );
+        let top = if sides.contains(runtime_core::SafeAreaSides::TOP) {
+            insets.top
+        } else {
+            0.0
+        };
+        let right = if sides.contains(runtime_core::SafeAreaSides::RIGHT) {
+            insets.right
+        } else {
+            0.0
+        };
+        let bottom = if sides.contains(runtime_core::SafeAreaSides::BOTTOM) {
+            insets.bottom
+        } else {
+            0.0
+        };
+        let left = if sides.contains(runtime_core::SafeAreaSides::LEFT) {
+            insets.left
+        } else {
+            0.0
+        };
+        let layout_node = self.layout_for_view(node);
+        self.layout
+            .set_safe_area_extra(layout_node, top, right, bottom, left);
+        crate::imp::scheduler::schedule_layout_pass_retry(0);
+    }
+
+    fn apply_scroll_view_safe_area_inset(
+        &mut self,
+        node: &Self::Node,
+        sides: runtime_core::SafeAreaSides,
+    ) {
+        // For a ScrollView we apply the safe-area inset via Android's
+        // native `setPadding(...)` + `setClipToPadding(false)` —
+        // matches the documented behavior in `Backend::apply_scroll_view_safe_area_inset`
+        // ("scroll surface bleeds edge-to-edge while content origin
+        // is inset"). Going through `setPadding` rather than Taffy
+        // padding here is intentional: the inner FrameLayout that
+        // holds the children is `MATCH_PARENT`-sized to the parent's
+        // *content area*, so when the ScrollView's content area
+        // shrinks the inner shrinks with it and the last child (the
+        // sidebar's theme toggle in the docs example) gets pushed up
+        // out from under the gesture pill. The Taffy `set_safe_area_extra`
+        // path used by `apply_safe_area_padding` reaches the outer's
+        // padding fields but doesn't fall through to the inner's
+        // `MATCH_PARENT` measurement, so the inner stays full-height
+        // and the toggle still ends up clipped.
+        let insets = self.platform_safe_area_insets();
+        let top = if sides.contains(runtime_core::SafeAreaSides::TOP) { insets.top } else { 0.0 };
+        let right = if sides.contains(runtime_core::SafeAreaSides::RIGHT) { insets.right } else { 0.0 };
+        let bottom = if sides.contains(runtime_core::SafeAreaSides::BOTTOM) { insets.bottom } else { 0.0 };
+        let left = if sides.contains(runtime_core::SafeAreaSides::LEFT) { insets.left } else { 0.0 };
+        with_env(|env| {
+            let view_obj = node.as_obj();
+            let density = density_of(env, &view_obj).unwrap_or(1.0);
+            let _ = env.call_method(
+                &view_obj,
+                "setPadding",
+                "(IIII)V",
+                &[
+                    jni::objects::JValue::Int((left * density).round() as i32),
+                    jni::objects::JValue::Int((top * density).round() as i32),
+                    jni::objects::JValue::Int((right * density).round() as i32),
+                    jni::objects::JValue::Int((bottom * density).round() as i32),
+                ],
+            );
+            // Children that scroll past the padded edge should still
+            // render — matches iOS `UIScrollView`'s behavior with
+            // `contentInsetAdjustmentBehavior = .always`. Without
+            // this the scroll thumb and overscroll hint clip at the
+            // padding boundary.
+            let _ = env.call_method(
+                &view_obj,
+                "setClipToPadding",
+                "(Z)V",
+                &[jni::objects::JValue::Bool(0)],
+            );
+        });
+        crate::imp::scheduler::schedule_layout_pass_retry(0);
     }
 
     fn create_scroll_view(&mut self, horizontal: bool, a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
@@ -1253,7 +1548,27 @@ impl Backend for AndroidBackend {
         // frame, which itself reads the style's width/height/
         // padding/etc., so the final frame matches author intent.
         let layout_node = self.layout_for_view(node);
-        self.layout.set_style(layout_node, style);
+        // Strip padding from Text leaves: padding on a Text node has
+        // no children to shift and the renderer (TextView) doesn't
+        // honor it natively in a way that's portable. Authors wrap a
+        // Text in a styled View when they want spacing around it.
+        // Mirror logic in iOS backend for IosNode::Label.
+        let is_text_view = with_env(|env| {
+            env.find_class("android/widget/TextView")
+                .ok()
+                .and_then(|c| env.is_instance_of(&node.as_obj(), &c).ok())
+                .unwrap_or(false)
+        });
+        if is_text_view {
+            let mut text_style: runtime_core::StyleRules = (**style).clone();
+            text_style.padding_left = None;
+            text_style.padding_right = None;
+            text_style.padding_top = None;
+            text_style.padding_bottom = None;
+            self.layout.set_style(layout_node, &text_style);
+        } else {
+            self.layout.set_style(layout_node, style);
+        }
     }
 
     fn set_animated_f32(

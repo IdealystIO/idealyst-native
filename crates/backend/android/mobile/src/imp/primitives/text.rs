@@ -146,35 +146,8 @@ fn measure_textview(
             .call_method(&view_obj, "getMeasuredHeight", "()I", &[])
             .and_then(|v| v.i())
             .unwrap_or(0);
-        // Subtract Android-side padding so the value we return to
-        // Taffy is the CONTENT size (text glyphs only). Taffy adds
-        // style.padding back on top when computing the node's outer
-        // box. Without this subtraction, padding is double-counted:
-        // Android's TextView.measure() returns text + padding, we
-        // hand that to Taffy as the intrinsic, Taffy adds style
-        // padding again, and the resulting box is ~16dp taller than
-        // iOS UILabel's equivalent (which has no padding semantics
-        // and returns only the text rendering size from `sizeThatFits:`).
-        let pad_l: i32 = env
-            .call_method(&view_obj, "getPaddingLeft", "()I", &[])
-            .and_then(|v| v.i())
-            .unwrap_or(0);
-        let pad_r: i32 = env
-            .call_method(&view_obj, "getPaddingRight", "()I", &[])
-            .and_then(|v| v.i())
-            .unwrap_or(0);
-        let pad_t: i32 = env
-            .call_method(&view_obj, "getPaddingTop", "()I", &[])
-            .and_then(|v| v.i())
-            .unwrap_or(0);
-        let pad_b: i32 = env
-            .call_method(&view_obj, "getPaddingBottom", "()I", &[])
-            .and_then(|v| v.i())
-            .unwrap_or(0);
-        let content_w_px = (measured_w_px - pad_l - pad_r).max(0);
-        let content_h_px = (measured_h_px - pad_t - pad_b).max(0);
-        let w_dp = content_w_px as f32 / density;
-        let h_dp = content_h_px as f32 / density;
+        let w_dp = measured_w_px as f32 / density;
+        let h_dp = measured_h_px as f32 / density;
         runtime_layout::Size {
             width: known_dimensions.width.unwrap_or(w_dp.ceil()),
             height: known_dimensions.height.unwrap_or(h_dp.ceil()),

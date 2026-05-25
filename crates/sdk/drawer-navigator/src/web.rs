@@ -27,8 +27,9 @@ use runtime_core::primitives::navigator::{
 use std::any::Any;
 use std::rc::Rc;
 use web_navigator_helpers::{
-    DrawerSide as HelpersDrawerSide, DrawerType as HelpersDrawerType,
-    MountPolicy as HelpersMountPolicy, WebDrawerCallbacks, WebNavCallbacks,
+    DrawerCmd as HelpersDrawerCmd, DrawerSide as HelpersDrawerSide,
+    DrawerType as HelpersDrawerType, MountPolicy as HelpersMountPolicy,
+    WebDrawerCallbacks, WebNavCallbacks,
 };
 use web_sys::Node;
 
@@ -189,8 +190,13 @@ impl NavigatorHandler<WebBackend> for WebDrawerHandler {
                     let on_close: Rc<dyn Fn()> = {
                         let control = control.clone();
                         Rc::new(move || {
+                            // Dispatch the HELPERS DrawerCmd, not the
+                            // SDK's — the dispatcher installed inside
+                            // `create_drawer` downcasts the Custom
+                            // payload to `web_navigator_helpers::DrawerCmd`.
+                            // Mismatched types silently no-op.
                             control.dispatch(NavCommand::Custom(
-                                Rc::new(DrawerCmd::Close),
+                                Rc::new(HelpersDrawerCmd::Close),
                             ));
                         })
                     };
@@ -203,6 +209,18 @@ impl NavigatorHandler<WebBackend> for WebDrawerHandler {
                         on_select,
                         on_close,
                     };
+                    // Push this navigator onto the ambient stack so
+                    // any `Link` primitives built inside `sidebar_builder`
+                    // capture it as their dispatch target. The sidebar
+                    // is built outside any `mount_screen` (via
+                    // `build_node`) so `ambient_navigator()` would
+                    // otherwise return `None` and every Link's
+                    // `on_activate` would silently no-op. Same fix
+                    // applied to iOS/Android drawer handlers.
+                    let _ambient =
+                        runtime_core::primitives::navigator::AmbientNavGuard::push(
+                            control.clone(),
+                        );
                     let prim = sidebar_builder(props);
                     build_node(prim)
                 });
@@ -257,6 +275,23 @@ impl NavigatorHandler<WebBackend> for WebDrawerHandler {
         match self.container.as_ref() {
             Some(c) => web_navigator_helpers::make_handle(c),
             None => runtime_core::NavigatorHandle::new(Rc::new(()), &NoopDrawerOps),
+        }
+    }
+
+    fn apply_slot_style(
+        &mut self,
+        _backend: &mut WebBackend,
+        slot: &'static str,
+        style: &Rc<runtime_core::StyleRules>,
+    ) {
+        let Some(container) = self.container.clone() else { return };
+        match slot {
+            // `body` paints the screen-outlet div's background — same
+            // role as Android's `apply_body_style` and iOS's
+            // `apply_drawer_body_style`. Without this the themed
+            // `HeaderStyle.body_background` is silently dropped on web.
+            "body" => web_navigator_helpers::apply_body_style(&container, style),
+            _ => {}
         }
     }
 }

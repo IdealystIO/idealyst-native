@@ -2005,17 +2005,29 @@ pub fn update_tokens(tokens: &[TokenEntry]) {
     PENDING_TOKEN_UPDATES.with(|p| p.borrow_mut().push(owned));
     RESOLUTION_CACHE.with(|c| c.borrow_mut().clear());
 
-    for entry in tokens {
-        let existing = TOKEN_REGISTRY.with(|r| r.borrow().get(entry.name).copied());
-        match existing {
-            Some(sig) => sig.set(entry.value.clone()),
-            None => {
-                // Permissive: register a fresh signal for tokens that
-                // were updated before being installed.
-                let _ = with_or_create_token_signal(entry.name, || entry.value.clone());
+    // Wrap the per-token signal fires in `batch(...)` so each Effect
+    // subscribed to multiple tokens re-runs ONCE at the end rather
+    // than once per token. A theme switch typically writes ~50 tokens
+    // and a styled Effect reads 2–5 of them; without batching the
+    // same Effect re-runs 2–5 times in sequence, each redoing the
+    // full `apply_style` work (msg_send'ing every property on the
+    // view, scheduling animators). On a docs-sized tree (490 views,
+    // hundreds of effects) that's the difference between a snappy
+    // theme toggle and one that visibly hangs the main thread for
+    // hundreds of ms.
+    crate::reactive::batch(|| {
+        for entry in tokens {
+            let existing = TOKEN_REGISTRY.with(|r| r.borrow().get(entry.name).copied());
+            match existing {
+                Some(sig) => sig.set(entry.value.clone()),
+                None => {
+                    // Permissive: register a fresh signal for tokens that
+                    // were updated before being installed.
+                    let _ = with_or_create_token_signal(entry.name, || entry.value.clone());
+                }
             }
         }
-    }
+    });
 }
 
 /// Drain the queue of pending token-update batches. Used by the

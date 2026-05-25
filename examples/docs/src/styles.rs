@@ -118,15 +118,36 @@ stylesheet! {
     }
 }
 
-// Sidebar nav link. Active variant flips the styling so the
-// current route stands out.
+// Sidebar nav link — two stylesheets because padding on a `Text`
+// node is a framework no-op (Text is glyph rendering, not a
+// container). Box concerns (padding, background, border-radius)
+// belong to a wrapping View; glyph concerns (font, color) belong to
+// the inner Text. The author tree is:
+//   Link { View(style = NavLinkBox()) { Text(style = NavLinkText()) { label } } }
 stylesheet! {
-    pub NavLink<IdeaThemeRef> {
+    pub NavLinkBox<IdeaThemeRef> {
         base(_t) {
             padding_vertical: Tokenized::token("spacing-sm", Length::Px(8.0)),
             padding_horizontal: Tokenized::token("spacing-md", Length::Px(12.0)),
             border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
             background: Color("transparent".into()),
+        }
+        variant active {
+            #[default]
+            off(_t) {}
+            on(_t) {
+                background: Tokenized::token("intent-primary-solid-bg", Color("#5b6cff".into())),
+            }
+        }
+        transitions {
+            background: 200ms EaseOut,
+        }
+    }
+}
+
+stylesheet! {
+    pub NavLinkText<IdeaThemeRef> {
+        base(_t) {
             color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
             font_size: Tokenized::token("typography-size-md", Length::Px(14.0)),
             text_align: runtime_core::TextAlign::Left,
@@ -135,7 +156,6 @@ stylesheet! {
             #[default]
             off(_t) {}
             on(_t) {
-                background: Tokenized::token("intent-primary-solid-bg", Color("#5b6cff".into())),
                 color: Tokenized::token("intent-primary-solid-text", Color("#ffffff".into())),
             }
         }
@@ -143,7 +163,6 @@ stylesheet! {
             color: Tokenized::token("color-text", Color("#1a1a1f".into())),
         }
         transitions {
-            background: 200ms EaseOut,
             color: 200ms EaseOut,
         }
     }

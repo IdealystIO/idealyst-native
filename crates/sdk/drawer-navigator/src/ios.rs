@@ -290,8 +290,22 @@ impl NavigatorHandler<IosBackend> for IosDrawerHandler {
         style: &Rc<runtime_core::StyleRules>,
     ) {
         let Some(container) = self.container.clone() else { return };
-        if slot == "sidebar" {
-            helpers::apply_drawer_sidebar_style(&container, style);
+        match slot {
+            "sidebar" => helpers::apply_drawer_sidebar_style(&container, style),
+            // The drawer wraps its body in a self-owned
+            // `UINavigationController`, so header/title/button slots
+            // route to the same chrome helpers the stack navigator uses.
+            // Without these, themed `HeaderStyle.background/title/tint`
+            // is silently dropped on iOS even though Android applies it.
+            "header" => helpers::apply_drawer_header_style(&container, style),
+            "title" => helpers::apply_drawer_title_style(&container, style),
+            "button" => helpers::apply_drawer_button_style(&container, style),
+            // `body` paints the screen-outlet's background — same role as
+            // Android's `apply_body_style`. Without this, the
+            // `HeaderStyle.body_background` slot fed by themed drawer
+            // builders is silently dropped on iOS.
+            "body" => helpers::apply_drawer_body_style(&container, style),
+            _ => {}
         }
     }
 }

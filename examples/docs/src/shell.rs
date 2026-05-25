@@ -16,8 +16,8 @@ use idea_ui::{
 
 use crate::routes::SECTIONS;
 use crate::styles::{
-    CodeBlockSheet, CodeBlockText, Content, NavLink, PageRoot, Sidebar, SidebarHeader,
-    SidebarSection, SidebarSectionLabel,
+    CodeBlockSheet, CodeBlockText, Content, NavLinkBox, NavLinkText, PageRoot, Sidebar,
+    SidebarHeader, SidebarSection, SidebarSectionLabel,
 };
 
 // =============================================================================
@@ -126,13 +126,17 @@ fn nav_link(
 ) -> Primitive {
     let label_text = label.to_string();
     let route_for_match: &str = name;
-    let style = move || {
-        let variant = if active_route.get() == route_for_match {
-            "on"
-        } else {
-            "off"
-        };
-        StyleApplication::new(NavLink::sheet()).with("active", variant.to_string())
+    // Padding/background/border-radius belong to the outer pill (a
+    // View) — padding on a Text node is a framework no-op. The text
+    // color flips on `active` too, so the inner Text gets its own
+    // style closure subscribed to the same signal.
+    let box_style = move || {
+        let variant = if active_route.get() == route_for_match { "on" } else { "off" };
+        StyleApplication::new(NavLinkBox::sheet()).with("active", variant.to_string())
+    };
+    let text_style = move || {
+        let variant = if active_route.get() == route_for_match { "on" } else { "off" };
+        StyleApplication::new(NavLinkText::sheet()).with("active", variant.to_string())
     };
 
     use crate::routes::{
@@ -147,132 +151,184 @@ fn nav_link(
     match name {
         "introduction" => ui! {
             Link(route = &INTRODUCTION_ROUTE, params = ()) {
-                Text(style = style) { label_text }
+                View(style = box_style) {
+                    Text(style = text_style) { label_text }
+                }
             }
         },
         "overview" => ui! {
             Link(route = &OVERVIEW_ROUTE, params = ()) {
-                Text(style = style) { label_text }
+                View(style = box_style) {
+                    Text(style = text_style) { label_text }
+                }
             }
         },
         "quickstart" => ui! {
             Link(route = &QUICKSTART_ROUTE, params = ()) {
-                Text(style = style) { label_text }
+                View(style = box_style) {
+                    Text(style = text_style) { label_text }
+                }
             }
         },
         "components" => ui! {
             Link(route = &COMPONENTS_ROUTE, params = ()) {
-                Text(style = style) { label_text }
+                View(style = box_style) {
+                    Text(style = text_style) { label_text }
+                }
             }
         },
         "reactivity" => ui! {
             Link(route = &REACTIVITY_ROUTE, params = ()) {
-                Text(style = style) { label_text }
+                View(style = box_style) {
+                    Text(style = text_style) { label_text }
+                }
             }
         },
         "ui-dsl" => ui! {
             Link(route = &UI_DSL_ROUTE, params = ()) {
-                Text(style = style) { label_text }
+                View(style = box_style) {
+                    Text(style = text_style) { label_text }
+                }
             }
         },
         "primitives" => ui! {
             Link(route = &PRIMITIVES_ROUTE, params = ()) {
-                Text(style = style) { label_text }
+                View(style = box_style) {
+                    Text(style = text_style) { label_text }
+                }
             }
         },
         "styles" => ui! {
             Link(route = &STYLES_ROUTE, params = ()) {
-                Text(style = style) { label_text }
+                View(style = box_style) {
+                    Text(style = text_style) { label_text }
+                }
             }
         },
         "animation" => ui! {
             Link(route = &ANIMATION_ROUTE, params = ()) {
-                Text(style = style) { label_text }
+                View(style = box_style) {
+                    Text(style = text_style) { label_text }
+                }
             }
         },
         "navigation" => ui! {
             Link(route = &NAVIGATION_ROUTE, params = ()) {
-                Text(style = style) { label_text }
+                View(style = box_style) {
+                    Text(style = text_style) { label_text }
+                }
             }
         },
         "macros" => ui! {
             Link(route = &MACROS_ROUTE, params = ()) {
-                Text(style = style) { label_text }
+                View(style = box_style) {
+                    Text(style = text_style) { label_text }
+                }
             }
         },
         "cli" => ui! {
             Link(route = &CLI_ROUTE, params = ()) {
-                Text(style = style) { label_text }
+                View(style = box_style) {
+                    Text(style = text_style) { label_text }
+                }
             }
         },
         "platforms" => ui! {
             Link(route = &PLATFORMS_ROUTE, params = ()) {
-                Text(style = style) { label_text }
+                View(style = box_style) {
+                    Text(style = text_style) { label_text }
+                }
             }
         },
         "simulator" => ui! {
             Link(route = &SIMULATOR_ROUTE, params = ()) {
-                Text(style = style) { label_text }
+                View(style = box_style) {
+                    Text(style = text_style) { label_text }
+                }
             }
         },
         "lists" => ui! {
             Link(route = &LISTS_ROUTE, params = ()) {
-                Text(style = style) { label_text }
+                View(style = box_style) {
+                    Text(style = text_style) { label_text }
+                }
             }
         },
         "icons" => ui! {
             Link(route = &ICONS_ROUTE, params = ()) {
-                Text(style = style) { label_text }
+                View(style = box_style) {
+                    Text(style = text_style) { label_text }
+                }
             }
         },
         "refs" => ui! {
             Link(route = &REFS_ROUTE, params = ()) {
-                Text(style = style) { label_text }
+                View(style = box_style) {
+                    Text(style = text_style) { label_text }
+                }
             }
         },
         "portal" => ui! {
             Link(route = &PORTAL_ROUTE, params = ()) {
-                Text(style = style) { label_text }
+                View(style = box_style) {
+                    Text(style = text_style) { label_text }
+                }
             }
         },
         "robot" => ui! {
             Link(route = &ROBOT_ROUTE, params = ()) {
-                Text(style = style) { label_text }
+                View(style = box_style) {
+                    Text(style = text_style) { label_text }
+                }
             }
         },
         "dev-tools" => ui! {
             Link(route = &DEV_TOOLS_ROUTE, params = ()) {
-                Text(style = style) { label_text }
+                View(style = box_style) {
+                    Text(style = text_style) { label_text }
+                }
             }
         },
         "backends" => ui! {
             Link(route = &BACKENDS_ROUTE, params = ()) {
-                Text(style = style) { label_text }
+                View(style = box_style) {
+                    Text(style = text_style) { label_text }
+                }
             }
         },
         "writing-a-backend" => ui! {
             Link(route = &WRITING_A_BACKEND_ROUTE, params = ()) {
-                Text(style = style) { label_text }
+                View(style = box_style) {
+                    Text(style = text_style) { label_text }
+                }
             }
         },
         "third-party-primitives" => ui! {
             Link(route = &THIRD_PARTY_PRIMITIVES_ROUTE, params = ()) {
-                Text(style = style) { label_text }
+                View(style = box_style) {
+                    Text(style = text_style) { label_text }
+                }
             }
         },
         "building-a-theme-system" => ui! {
             Link(route = &BUILDING_A_THEME_SYSTEM_ROUTE, params = ()) {
-                Text(style = style) { label_text }
+                View(style = box_style) {
+                    Text(style = text_style) { label_text }
+                }
             }
         },
         "reactive-text-bindings" => ui! {
             Link(route = &REACTIVE_TEXT_BINDINGS_ROUTE, params = ()) {
-                Text(style = style) { label_text }
+                View(style = box_style) {
+                    Text(style = text_style) { label_text }
+                }
             }
         },
         "wgpu-native-api" => ui! {
             Link(route = &WGPU_NATIVE_API_ROUTE, params = ()) {
-                Text(style = style) { label_text }
+                View(style = box_style) {
+                    Text(style = text_style) { label_text }
+                }
             }
         },
         _ => ui! { Text { label_text } },

@@ -425,6 +425,27 @@ pub fn apply_stack_button_style(
     chrome::apply_nav_button_style(&entry.controller, style);
 }
 
+/// Apply the stack navigator's "body" slot style: the
+/// `UINavigationController`'s root `view.backgroundColor`. The stack's
+/// screen-outlet IS that view (push/pop swap child VCs inside it), so
+/// painting it here gives `HeaderStyle.body_background` the same
+/// behavior as Android's `apply_body_style` and the drawer's
+/// `apply_drawer_body_style`.
+pub fn apply_stack_body_style(
+    navigator: &IosNode,
+    style: &Rc<runtime_core::StyleRules>,
+) {
+    let entry = STACK_INSTANCES.with(|m| m.borrow().get(&navigator.view_key()).cloned());
+    let Some(entry) = entry else { return };
+    let entry = entry.borrow();
+    let Some(view) = entry.controller.view() else { return };
+    if let Some(ref bg) = style.background {
+        let bg_val = bg.resolve();
+        let c = backend_ios_core::style::color_to_uicolor(&bg_val);
+        view.setBackgroundColor(Some(&c));
+    }
+}
+
 /// Apply the drawer navigator's "sidebar" slot style: the sidebar
 /// UIView's `backgroundColor`.
 pub fn apply_drawer_sidebar_style(
@@ -443,4 +464,90 @@ pub fn apply_drawer_sidebar_style(
         let c = backend_ios_core::style::color_to_uicolor(&bg_val);
         sidebar.setBackgroundColor(Some(&c));
     }
+}
+
+/// Apply the drawer/tab navigator's "body" slot style: the
+/// screen-outlet UIView's `backgroundColor`. Mirrors Android's
+/// `apply_body_style` so that `HeaderStyle.body_background` paints
+/// the active-screen container's background uniformly across
+/// backends (rule 7 — backend implementations diverge in mechanism
+/// but converge in observable behavior).
+pub fn apply_drawer_body_style(
+    navigator: &IosNode,
+    style: &Rc<runtime_core::StyleRules>,
+) {
+    let entry =
+        TAB_DRAWER_INSTANCES.with(|m| m.borrow().get(&navigator.view_key()).cloned());
+    let Some(entry) = entry else { return };
+    let entry = entry.borrow();
+    if let Some(ref bg) = style.background {
+        let bg_val = bg.resolve();
+        let c = backend_ios_core::style::color_to_uicolor(&bg_val);
+        entry.body.setBackgroundColor(Some(&c));
+    }
+}
+
+/// Recover a `&UINavigationController` from the type-erased
+/// `Retained<NSObject>` the drawer entry stores. The entry struct
+/// hides the concrete type so it can be shared across navigator
+/// kinds; we constructed it as a `UINavigationController` in
+/// `create_drawer`, so this cast is sound.
+fn drawer_nav_ctrl(
+    obj: &Retained<NSObject>,
+) -> &objc2_ui_kit::UINavigationController {
+    // SAFETY: `header_nav_ctrl` is stored as NSObject only to keep the
+    // entry struct uniform across navigator kinds. The pointer was
+    // populated from a real `UINavigationController::new(mtm)` in
+    // `create_drawer`, so this pointer-cast back is sound.
+    unsafe {
+        &*(Retained::as_ptr(obj) as *const objc2_ui_kit::UINavigationController)
+    }
+}
+
+/// Apply the drawer navigator's "header" slot style: the embedded
+/// `UINavigationController`'s nav-bar background. Mirrors
+/// `apply_stack_header_style` — the drawer wraps its body in a
+/// self-owned `UINavigationController`, so the same chrome helpers
+/// work.
+pub fn apply_drawer_header_style(
+    navigator: &IosNode,
+    style: &Rc<runtime_core::StyleRules>,
+) {
+    let entry =
+        TAB_DRAWER_INSTANCES.with(|m| m.borrow().get(&navigator.view_key()).cloned());
+    let Some(entry) = entry else { return };
+    let entry = entry.borrow();
+    let Some(ref nav_obj) = entry.header_nav_ctrl else { return };
+    let nav_ctrl = drawer_nav_ctrl(nav_obj);
+    let Some(nav_view) = nav_ctrl.view() else { return };
+    chrome::apply_nav_header_style(nav_ctrl, &nav_view, style);
+}
+
+/// Apply the drawer navigator's "title" slot style: title color +
+/// font on the embedded `UINavigationController`'s nav bar.
+pub fn apply_drawer_title_style(
+    navigator: &IosNode,
+    style: &Rc<runtime_core::StyleRules>,
+) {
+    let entry =
+        TAB_DRAWER_INSTANCES.with(|m| m.borrow().get(&navigator.view_key()).cloned());
+    let Some(entry) = entry else { return };
+    let entry = entry.borrow();
+    let Some(ref nav_obj) = entry.header_nav_ctrl else { return };
+    chrome::apply_nav_title_style(drawer_nav_ctrl(nav_obj), style);
+}
+
+/// Apply the drawer navigator's "button" slot style: tint color on
+/// the embedded `UINavigationController`'s nav bar (back chevron +
+/// bar-button items, including the hamburger).
+pub fn apply_drawer_button_style(
+    navigator: &IosNode,
+    style: &Rc<runtime_core::StyleRules>,
+) {
+    let entry =
+        TAB_DRAWER_INSTANCES.with(|m| m.borrow().get(&navigator.view_key()).cloned());
+    let Some(entry) = entry else { return };
+    let entry = entry.borrow();
+    let Some(ref nav_obj) = entry.header_nav_ctrl else { return };
+    chrome::apply_nav_button_style(drawer_nav_ctrl(nav_obj), style);
 }

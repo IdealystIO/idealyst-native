@@ -113,9 +113,45 @@ impl Scheduler for AndroidScheduler {
 /// in case the activity stack still hasn't laid out (rare — e.g.
 /// resuming a backgrounded process). Stops once the host reports a
 /// non-zero size and the layout pass actually applies frames.
+thread_local! {
+    /// Coalescing flag: set when a layout pass is queued (via
+    /// `Handler.postDelayed`) and cleared at the start of the queued
+    /// pass. Mirrors the iOS `LAYOUT_PASS_QUEUED` pattern — see
+    /// [[project_ios_schedule_layout_coalesce]]. Without coalescing,
+    /// any future code path that calls `schedule_layout_pass_retry`
+    /// in a loop (per-insert, per-style-change, per-frame) would
+    /// post N runnables that each fire a full-tree layout. Today the
+    /// callsites are limited (`finish`, `swap_body`,
+    /// `notify_config_changed`) and don't loop, but the flag costs
+    /// ~nothing and prevents the iOS-style regression from sneaking
+    /// in later.
+    static LAYOUT_PASS_QUEUED: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
 pub(crate) fn schedule_layout_pass_retry(retry_count: u32) {
+    // Retry attempts deliberately bypass the coalescing flag: the
+    // retry exists specifically because the previous pass ran with
+    // `viewport_is_ready == false` (host still measuring), so the
+    // outer "queued" state is already cleared by the time we reach
+    // here. The retry's job is to schedule ANOTHER pass after a
+    // backoff delay. Skipping it would drop the retry chain entirely
+    // and leave the initial 0×0 mount stuck.
+    if retry_count == 0 {
+        if LAYOUT_PASS_QUEUED.with(|q| q.replace(true)) {
+            // First-attempt call but a pass is already queued.
+            // The pending pass will see whatever state our caller
+            // just produced; drop this redundant post.
+            return;
+        }
+    }
     let weak = super::ANDROID_BACKEND_SELF.with(|s| s.borrow().clone());
-    let Some(weak) = weak else { return };
+    let Some(weak) = weak else {
+        // Backend already gone — clear the flag so a later install +
+        // schedule cycle isn't permanently jammed.
+        LAYOUT_PASS_QUEUED.with(|q| q.set(false));
+        return;
+    };
     // Exponential backoff: 16, 32, 64, 128 ms then give up. The
     // initial 16ms covers the common "first vsync" case; the rest
     // protect against unusual lifecycles where the activity tree
@@ -125,6 +161,12 @@ pub(crate) fn schedule_layout_pass_retry(retry_count: u32) {
     // closure from CALLBACKS), so we must leak the handle for the
     // post to actually fire. See [[project_android_scheduler_handle_leak]].
     std::mem::forget(schedule_runnable(delay, Box::new(move || {
+        // Clear the queued flag BEFORE running so any
+        // `schedule_layout_pass_retry(0)` arriving during the pass
+        // re-arms a fresh post — matches iOS's coalescing semantics.
+        if retry_count == 0 {
+            LAYOUT_PASS_QUEUED.with(|q| q.set(false));
+        }
         let Some(rc) = weak.upgrade() else { return };
         let mut viewport_ok = false;
         if let Ok(mut b) = rc.try_borrow_mut() {

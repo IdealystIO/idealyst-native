@@ -300,7 +300,25 @@ pub fn set_animated_color(
 /// `RefCell::try_borrow_mut` → `Err` and silently drops the pass.
 /// Deferring to the next runloop turn ensures the framework's borrow
 /// is released first.
+thread_local! {
+    /// Coalescing flag: set when a layout pass is queued but not yet
+    /// fired. Subsequent `schedule_layout_pass()` calls are dropped
+    /// until the queued pass clears it on entry. Without this, the
+    /// build walker's many `Backend::insert` calls each post their
+    /// own pass to libdispatch, producing N passes for one tree
+    /// build (one per insertion) instead of one. The wasted passes
+    /// fire back-to-back after the build returns, blocking the main
+    /// thread for hundreds of ms on a large screen.
+    static LAYOUT_PASS_QUEUED: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
 pub fn schedule_layout_pass() {
+    if LAYOUT_PASS_QUEUED.with(|q| q.replace(true)) {
+        // Already queued — drop this call. The pending pass will
+        // pick up whatever state changes our caller just made.
+        return;
+    }
     extern "C" {
         static _dispatch_main_q: std::ffi::c_void;
         fn dispatch_async_f(
@@ -311,6 +329,11 @@ pub fn schedule_layout_pass() {
     }
 
     extern "C" fn trampoline(_ctx: *mut std::ffi::c_void) {
+        // Clear the queued flag BEFORE running the pass. Any
+        // `schedule_layout_pass` invocations that arrive during the
+        // pass itself will re-arm and fire AFTER this one — they
+        // reflect post-layout state we couldn't have captured here.
+        LAYOUT_PASS_QUEUED.with(|q| q.set(false));
         // Absorb panics — libdispatch is C and a Rust panic unwinding
         // back into it is undefined behavior. The layout pass touches
         // user reactive state via apply effects; if any of those
@@ -1632,9 +1655,24 @@ impl Backend for IosBackend {
 
         // Mirror the resolved style into the Taffy node so flex
         // properties (width/height/flex-direction/padding/gap/…) take
-        // effect during the layout pass.
+        // effect during the layout pass. For Text leaves padding is
+        // stripped: `Text` has no children for padding to position,
+        // and inflating the label's box by padding only produces
+        // empty space around the glyphs that the renderer can't
+        // cleanly inset (UILabel has no native padding). Authors
+        // who want spacing around text wrap the Text in a styled
+        // View — that View's padding works correctly via Taffy.
         let layout_node = self.layout_for_view(view);
-        self.layout.set_style(layout_node, style);
+        if matches!(node, IosNode::Label(_)) {
+            let mut text_style: StyleRules = (**style).clone();
+            text_style.padding_left = None;
+            text_style.padding_right = None;
+            text_style.padding_top = None;
+            text_style.padding_bottom = None;
+            self.layout.set_style(layout_node, &text_style);
+        } else {
+            self.layout.set_style(layout_node, style);
+        }
 
         match node {
             IosNode::Label(_) => apply_text_style(view, style, true, &self.font_registry),

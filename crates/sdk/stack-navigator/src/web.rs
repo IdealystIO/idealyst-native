@@ -132,6 +132,23 @@ impl NavigatorHandler<WebBackend> for WebStackHandler {
             ),
         }
     }
+
+    fn apply_slot_style(
+        &mut self,
+        _backend: &mut WebBackend,
+        slot: &'static str,
+        style: &Rc<runtime_core::StyleRules>,
+    ) {
+        let Some(container) = self.container.clone() else { return };
+        match slot {
+            // `body` paints the screen-outlet div's background, matching
+            // Android's `apply_body_style`. Header/title/button slots
+            // belong to the per-screen native chrome that the web stack
+            // currently delegates to the framework's normal style pass.
+            "body" => web_navigator_helpers::apply_body_style(&container, style),
+            _ => {}
+        }
+    }
 }
 
 struct NoopStackOps;

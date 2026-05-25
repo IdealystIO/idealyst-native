@@ -175,6 +175,12 @@ impl NavigatorHandler<IosBackend> for IosStackHandler {
             "header" => helpers::apply_stack_header_style(&container, style),
             "title" => helpers::apply_stack_title_style(&container, style),
             "button" => helpers::apply_stack_button_style(&container, style),
+            // `body` paints the `UINavigationController`'s root view —
+            // the screen outlet that push/pop swap content inside.
+            // Same role as Android's `apply_body_style` and web's
+            // `apply_body_style`; without this, themed
+            // `HeaderStyle.body_background` is silently dropped.
+            "body" => helpers::apply_stack_body_style(&container, style),
             _ => {}
         }
     }

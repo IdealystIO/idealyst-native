@@ -850,6 +850,19 @@ pub fn create_drawer(
         build_content,
         ..
     } = callbacks;
+    // Rewrite default `Link` activation to `Select` — without this
+    // `Link::new(...)` falls back to `NavCommand::Push` which the
+    // dispatcher below panics on. Same fix as iOS/Android helpers.
+    let select_activator: Rc<
+        dyn Fn(&'static str, String, Box<dyn Any>) -> NavCommand,
+    > = Rc::new(|name, url, params| NavCommand::Select {
+        name,
+        url,
+        params,
+        state: None,
+    });
+    control.install_link_activator(select_activator);
+
     let container = create_inner(b, navigator, control.clone(), move |instance| {
         control.install(Box::new(move |cmd| match cmd {
             NavCommand::Select { name, url, params, .. } => {
@@ -1030,6 +1043,35 @@ pub fn release(node: &Node) {
     // (and its closures) actually free.
     unregister_popstate_target(&entry.instance);
     let _ = entry.control;
+}
+
+/// Paint the navigator's screen-outlet background. SDK handlers
+/// call this from their `apply_slot_style("body", ...)` branch so
+/// that themed builders' `body_background` slot reaches the DOM —
+/// mirrors Android's `apply_body_style` and iOS's
+/// `apply_drawer_body_style`. Honors `rules.background` only; other
+/// fields are ignored for now (the slot's contract on the other
+/// backends is background-only).
+pub fn apply_body_style(navigator: &Node, rules: &Rc<runtime_core::StyleRules>) {
+    let Some(nav_id) = navigator_id_of(navigator) else {
+        return;
+    };
+    let instance = NAVIGATOR_INSTANCES.with(|m| {
+        m.borrow().get(&nav_id).map(|e| e.instance.clone())
+    });
+    let Some(instance) = instance else { return };
+    let outlet = instance.borrow().outlet.clone();
+    let Some(outlet) = outlet else { return };
+    let Some(bg) = rules.background.as_ref() else { return };
+    let css = bg.resolve().0;
+    // `set_attribute("style", ...)` rather than the typed `.style()`
+    // API mirrors the convention in backend-web/src/primitives/link.rs
+    // and avoids pulling in the `CssStyleDeclaration` web-sys feature.
+    // The outlet div carries no other inline styles, so overwriting
+    // the whole `style` attribute is safe here.
+    if let Ok(elem) = outlet.dyn_into::<web_sys::Element>() {
+        let _ = elem.set_attribute("style", &format!("background-color: {};", css));
+    }
 }
 
 /// Build a `NavigatorHandle` for the navigator identified by `node`.
