@@ -384,13 +384,10 @@ pub enum PrimitiveKind {
     ActivityIndicator,
     Virtualizer,
     Graphics,
-    Navigator,
-    TabNavigator,
-    DrawerNavigator,
     Portal,
     Presence,
     External,
-    NavigatorExt,
+    Navigator,
 }
 
 /// Default a11y role inferred from the primitive type. Author-supplied
@@ -427,16 +424,11 @@ pub fn default_role(kind: PrimitiveKind) -> Option<Role> {
         PrimitiveKind::Portal => None,     // transparent; the portal-mounted content carries its own role
         PrimitiveKind::Presence => None,   // transparent; wrapped subtree carries its role
 
-        // Navigation chrome
-        PrimitiveKind::Navigator => None,        // navigator container is transparent; screens carry their own role
-        PrimitiveKind::TabNavigator => None,     // child TabList is what AX cares about (rendered separately)
-        PrimitiveKind::DrawerNavigator => None,  // drawer container is transparent; sidebar is `Role::Drawer` explicitly
-
         // Structural
         PrimitiveKind::View => None,
         PrimitiveKind::Graphics => None, // GPU-rendered content lives in dump_accessibility_tree
         PrimitiveKind::External => None, // third-party content sets its own role
-        PrimitiveKind::NavigatorExt => None, // navigator container is transparent; screens carry their own role
+        PrimitiveKind::Navigator => None, // navigator container is transparent; screens carry their own role
     }
 }
 
@@ -467,13 +459,10 @@ pub fn primitive_kind(p: &crate::Primitive) -> Option<PrimitiveKind> {
         Primitive::ActivityIndicator { .. } => Some(PrimitiveKind::ActivityIndicator),
         Primitive::Virtualizer { .. } => Some(PrimitiveKind::Virtualizer),
         Primitive::Graphics { .. } => Some(PrimitiveKind::Graphics),
-        Primitive::Navigator(_) => Some(PrimitiveKind::Navigator),
-        Primitive::TabNavigator(_) => Some(PrimitiveKind::TabNavigator),
-        Primitive::DrawerNavigator(_) => Some(PrimitiveKind::DrawerNavigator),
         Primitive::Portal { .. } => Some(PrimitiveKind::Portal),
         Primitive::Presence { .. } => Some(PrimitiveKind::Presence),
         Primitive::External { .. } => Some(PrimitiveKind::External),
-        Primitive::NavigatorExt { .. } => Some(PrimitiveKind::NavigatorExt),
+        Primitive::Navigator { .. } => Some(PrimitiveKind::Navigator),
         // Control flow — transparent.
         Primitive::When { .. } | Primitive::Switch { .. } | Primitive::Repeat { .. } => None,
     }

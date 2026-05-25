@@ -1,7 +1,7 @@
 //! `Primitive::Navigator` — `io.idealyst.runtime.RustNavigator` plus
 //! `RustHostFragment` for per-screen hosting.
 //!
-//! Each `create_navigator` call leaks a `NavigatorCallbacks` box and
+//! Each `create_stack_navigator` call leaks a `NavigatorCallbacks` box and
 //! hands the pointer to a `RustNavigator` Kotlin instance. The
 //! navigator wraps a `FrameLayout` (our visible container) and the
 //! Activity's `FragmentManager`; push / pop / replace / reset map
@@ -23,16 +23,16 @@ use std::rc::Rc;
 /// is a GlobalRef to the Kotlin `RustNavigator` instance; the
 /// `control` is the framework-side control plane (also referenced by
 /// every `NavigatorHandle` clone the user holds). Both halves are
-/// dropped together when `release_navigator` fires.
+/// dropped together when `release_stack_navigator` fires.
 pub(crate) struct NavigatorEntry {
     pub(crate) controller: GlobalRef,
     pub(crate) control: Rc<NavigatorControl>,
     /// Pointer to the leaked `NavigatorCallbacks<GlobalRef>`. Freed
-    /// in `release_navigator` so late `nativeReleaseScreen` calls
+    /// in `release_stack_navigator` so late `nativeReleaseScreen` calls
     /// don't read freed memory — see `RustHostFragment.onDestroyView`,
     /// which is the only caller and which always fires *before* the
     /// fragment manager finishes the pop transaction (and thus before
-    /// `release_navigator` can run for the parent navigator).
+    /// `release_stack_navigator` can run for the parent navigator).
     pub(crate) callbacks_ptr: jlong,
     /// Cached depth probe so we can update the control plane in
     /// `notify_pushed` / `notify_popped` without a JNI round trip.
@@ -118,11 +118,11 @@ pub(crate) fn create(
     });
 
     // NOTE: we DO NOT call `mount_screen` here. The framework holds
-    // `backend.borrow_mut()` for the entire create_navigator call,
+    // `backend.borrow_mut()` for the entire create_stack_navigator call,
     // and `mount_screen` re-enters the build walker which also
     // borrow_muts the backend — double borrow → panic.
-    // `Backend::navigator_attach_initial` is the hook the framework
-    // calls *after* create_navigator returns, with the already-built
+    // `Backend::stack_navigator_attach_initial` is the hook the framework
+    // calls *after* create_stack_navigator returns, with the already-built
     // initial screen node.
 
     // Wire the dispatcher onto the control plane. Every command path
@@ -225,7 +225,7 @@ pub(crate) fn create(
     }
 
     // Stash the instance keyed by the *container's* JObject pointer
-    // — that's what we'll get back in `release_navigator` /
+    // — that's what we'll get back in `release_stack_navigator` /
     // `make_handle` since the container is what we return as the
     // navigator's node.
     let key = AndroidBackend::node_key_of(&container_ref);
@@ -243,7 +243,7 @@ pub(crate) fn create(
 }
 
 /// Attach the framework-built initial screen to a freshly-created
-/// navigator. Called by the framework after `create_navigator`
+/// navigator. Called by the framework after `create_stack_navigator`
 /// returns, outside any active backend borrow — so this is the
 /// first point we can safely do the Kotlin-side `mountRoot` call.
 pub(crate) fn attach_initial(
@@ -296,7 +296,7 @@ pub(crate) fn release(b: &mut AndroidBackend, node: &GlobalRef) {
     //
     // Free the leaked callbacks box. Late nativeReleaseScreen calls
     // (an in-flight Kotlin handler dispatched before
-    // `release_navigator` ran) check `ptr != 0` and otherwise no-op,
+    // `release_stack_navigator` ran) check `ptr != 0` and otherwise no-op,
     // so the box being freed here is safe.
     let ptr = entry.callbacks_ptr;
     if ptr != 0 {
@@ -335,7 +335,7 @@ pub(crate) type AndroidNavCallbacks = NavigatorCallbacks<GlobalRef>;
 ///
 /// `ptr` must have been produced by `Box::into_raw` on a
 /// `Box<NavigatorCallbacks<GlobalRef>>` in `create`. If the box has
-/// been freed (because `release_navigator` ran first), `ptr` is
+/// been freed (because `release_stack_navigator` ran first), `ptr` is
 /// still passed but we'd dereference invalid memory — so the box is
 /// freed *after* the controller drop, and on the controller drop
 /// FragmentManager has already fired the onDestroyView calls. Late

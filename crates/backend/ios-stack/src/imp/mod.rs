@@ -774,23 +774,23 @@ impl Backend for IosBackend {
     // Navigator
     // =================================================================
 
-    fn create_navigator(
+    fn create_stack_navigator(
         &mut self,
         callbacks: NavigatorCallbacks<Self::Node>,
         control: Rc<NavigatorControl>,
         _a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        navigator::create_navigator(self.mtm, &mut self.navigator_instances, callbacks, control)
+        navigator::create_stack_navigator(self.mtm, &mut self.navigator_instances, callbacks, control)
     }
 
-    fn navigator_attach_initial(
+    fn stack_navigator_attach_initial(
         &mut self,
         navigator: &Self::Node,
         screen: Self::Node,
         scope_id: u64,
         options: runtime_core::ScreenOptions,
     ) {
-        navigator::navigator_attach_initial(self.mtm, &self.navigator_instances, navigator, screen, scope_id, options)
+        navigator::stack_navigator_attach_initial(self.mtm, &self.navigator_instances, navigator, screen, scope_id, options)
     }
 
     fn apply_navigator_header_style(
@@ -826,12 +826,12 @@ impl Backend for IosBackend {
         }
     }
 
-    fn release_navigator(&mut self, node: &Self::Node) {
-        navigator::release_navigator(&mut self.navigator_instances, node)
+    fn release_stack_navigator(&mut self, node: &Self::Node) {
+        navigator::release_stack_navigator(&mut self.navigator_instances, node)
     }
 
-    fn make_navigator_handle(&self, node: &Self::Node) -> NavigatorHandle {
-        navigator::make_navigator_handle(&self.navigator_instances, node)
+    fn make_stack_navigator_handle(&self, node: &Self::Node) -> NavigatorHandle {
+        navigator::make_stack_navigator_handle(&self.navigator_instances, node)
     }
 
     // =================================================================

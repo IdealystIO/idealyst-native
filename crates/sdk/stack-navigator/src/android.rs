@@ -1,15 +1,15 @@
 //! Android-backend handler for the Stack navigator SDK.
 //!
 //! Phase-1 adapter: synthesizes legacy `NavigatorCallbacks` and calls
-//! `AndroidBackend::create_navigator` (which drives `RustNavigator` +
-//! FragmentManager via JNI). Sets `NavExtKind::Stack` so the unified
+//! `AndroidBackend::create_stack_navigator` (which drives `RustNavigator` +
+//! FragmentManager via JNI). Sets `NavigatorKind::Stack` so the unified
 //! trait method overrides route to the stack storage map.
 
 use crate::StackPresentation;
 use backend_android_mobile::AndroidBackend;
 use jni::objects::GlobalRef;
 use runtime_core::{
-    accessibility::AccessibilityProps, Backend, MountResult, NavExtKind, NavigatorCallbacks,
+    accessibility::AccessibilityProps, Backend, MountResult, NavigatorKind, NavigatorCallbacks,
     NavigatorHandler, NavigatorHost,
 };
 use std::any::Any;
@@ -66,8 +66,8 @@ impl NavigatorHandler<AndroidBackend> for AndroidStackHandler {
             defer_initial_mount,
         };
 
-        let node = backend.create_navigator(callbacks, control, &AccessibilityProps::default());
-        backend.set_nav_ext_kind(&node, NavExtKind::Stack);
+        let node = backend.create_stack_navigator(callbacks, control, &AccessibilityProps::default());
+        backend.set_nav_kind(&node, NavigatorKind::Stack);
         node
     }
 

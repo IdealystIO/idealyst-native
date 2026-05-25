@@ -819,7 +819,7 @@ impl Backend for WgpuBackend {
     // strip around the active screen's rect.
     // -----------------------------------------------------------
 
-    fn create_navigator(
+    fn create_stack_navigator(
         &mut self,
         callbacks: runtime_core::primitives::navigator::NavigatorCallbacks<Self::Node>,
         control: Rc<runtime_core::primitives::navigator::NavigatorControl>,
@@ -837,7 +837,7 @@ impl Backend for WgpuBackend {
         self.layout.set_style(layout, &navigator_container_fill_rules());
         // Consume any per-call animator override installed via
         // `nav_anim::with_transition`. The override is one-shot
-        // per `create_navigator` so nested navigators inside the
+        // per `create_stack_navigator` so nested navigators inside the
         // initial-screen build don't accidentally inherit it.
         let transition_anim = crate::nav_anim::take_transition_override()
             .unwrap_or_else(crate::nav_anim::default_transition);
@@ -865,7 +865,7 @@ impl Backend for WgpuBackend {
         node
     }
 
-    fn make_navigator_handle(
+    fn make_stack_navigator_handle(
         &self,
         node: &Self::Node,
     ) -> runtime_core::primitives::navigator::NavigatorHandle {
@@ -922,7 +922,7 @@ impl Backend for WgpuBackend {
         )
     }
 
-    fn navigator_attach_initial(
+    fn stack_navigator_attach_initial(
         &mut self,
         navigator: &Self::Node,
         screen: Self::Node,
@@ -972,7 +972,7 @@ impl Backend for WgpuBackend {
             },
             layout,
         );
-        init_node_a11y(&node, a11y, PrimitiveKind::TabNavigator);
+        init_node_a11y(&node, a11y, PrimitiveKind::Navigator);
         install_tab_dispatcher(
             &node,
             callbacks,
@@ -1036,7 +1036,7 @@ impl Backend for WgpuBackend {
             },
             layout,
         );
-        init_node_a11y(&node, a11y, PrimitiveKind::DrawerNavigator);
+        init_node_a11y(&node, a11y, PrimitiveKind::Navigator);
         install_drawer_dispatcher(
             &node,
             callbacks,
@@ -1381,7 +1381,7 @@ impl Backend for WgpuBackend {
         request_redraw();
     }
 
-    fn release_navigator(&mut self, node: &Self::Node) {
+    fn release_stack_navigator(&mut self, node: &Self::Node) {
         // Drop every mounted screen's Taffy state + animator
         // tweens + text store entries. The per-screen framework
         // Scopes are owned by the dispatcher closure on the
@@ -2090,7 +2090,7 @@ const _: fn() = || {
 /// dispatcher closure can re-borrow the layout tree from user
 /// code (e.g. `handle.push(...)`) without conflicting with the
 /// framework's own borrow window — those user calls always
-/// happen after `create_navigator` has returned.
+/// happen after `create_stack_navigator` has returned.
 ///
 /// The closure is `Fn` (per [`NavigatorControl::install`]); all
 /// state mutation goes through interior `RefCell`s — the

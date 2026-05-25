@@ -2,13 +2,13 @@
 //!
 //! Phase-1 adapter: synthesizes legacy `TabNavigatorCallbacks` and
 //! calls `IosBackend::create_tab_navigator` (which drives
-//! `UITabBarController`). Sets `NavExtKind::Tab` for unified dispatch.
+//! `UITabBarController`). Sets `NavigatorKind::Tab` for unified dispatch.
 
 use crate::{MountPolicy, TabPlacement, TabPresentation};
 use backend_ios_mobile::{IosBackend, IosNode};
 use runtime_core::{
     accessibility::AccessibilityProps, primitives::navigator::tabs::TabRegistration, Backend,
-    MountPolicy as CoreMountPolicy, MountResult, NavExtKind, NavigatorCallbacks, NavigatorHandler,
+    MountPolicy as CoreMountPolicy, MountResult, NavigatorKind, NavigatorCallbacks, NavigatorHandler,
     NavigatorHost, TabNavigatorCallbacks, TabPlacement as CoreTabPlacement,
 };
 use std::any::Any;
@@ -115,7 +115,7 @@ impl NavigatorHandler<IosBackend> for IosTabHandler {
             control,
             &AccessibilityProps::default(),
         );
-        backend.set_nav_ext_kind(&node, NavExtKind::Tab);
+        backend.set_nav_kind(&node, NavigatorKind::Tab);
         node
     }
 

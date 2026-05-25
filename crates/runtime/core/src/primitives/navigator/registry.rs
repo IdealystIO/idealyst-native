@@ -10,7 +10,7 @@
 //!   it dispatches to ([`super::host::NavigatorHandler`]).
 //! - Each backend embeds a `NavigatorRegistry<Self>` as a field, exposes
 //!   `register_navigator::<P, _>(factory)` and `has_navigator::<P>()`,
-//!   and implements `Backend::create_navigator_extension` to consult
+//!   and implements `Backend::create_navigator` to consult
 //!   the registry (falling through to a "not supported" placeholder on
 //!   a miss).
 //! - Each navigator-kind SDK ships per-backend modules whose `register`
@@ -52,7 +52,7 @@ impl<B: Backend + 'static> NavigatorRegistry<B> {
 
     /// Register a navigator kind. `P` is the SDK's presentation
     /// payload type; `factory` produces a fresh handler per
-    /// `Primitive::NavigatorExt { type_id: TypeId::of::<P>(), .. }`
+    /// `Primitive::Navigator { type_id: TypeId::of::<P>(), .. }`
     /// mounted in the tree. Returns the previously-registered factory
     /// if `P` was already registered (typically `None`; non-`None`
     /// means the same SDK registered twice).

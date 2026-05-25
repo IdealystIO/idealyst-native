@@ -1,6 +1,6 @@
 //! First-party Drawer navigator SDK.
 //!
-//! Routes through `Primitive::NavigatorExt`; the registered
+//! Routes through `Primitive::Navigator`; the registered
 //! `DrawerHandler` drives a platform-native slide-in side panel +
 //! switchable body region.
 //!
@@ -20,7 +20,7 @@
 //! ```
 
 use runtime_core::primitives::navigator::{
-    DefaultLinkKind, NavigatorExtConfig, NavigatorHandle, Route, RouteEntry, RouteParams,
+    DefaultLinkKind, NavigatorConfig, NavigatorHandle, Route, RouteEntry, RouteParams,
     ScreenBuilder, ScreenOptions,
 };
 use runtime_core::{
@@ -152,7 +152,7 @@ impl DrawerHandle {
 // =============================================================================
 
 pub struct DrawerNavigator {
-    config: NavigatorExtConfig,
+    config: NavigatorConfig,
     presentation: DrawerPresentation,
     slot_styles: Vec<(&'static str, StyleSource)>,
     style: Option<StyleSource>,
@@ -162,7 +162,7 @@ pub struct DrawerNavigator {
 impl DrawerNavigator {
     pub fn new(initial: &Route<()>) -> Bound<DrawerHandle> {
         let nav = Self {
-            config: NavigatorExtConfig {
+            config: NavigatorConfig {
                 initial: initial.name(),
                 initial_path: initial.path(),
                 screens: HashMap::new(),
@@ -181,7 +181,7 @@ impl DrawerNavigator {
 
     fn into_primitive(self) -> Primitive {
         let DrawerNavigator { config, presentation, slot_styles, style, ref_fill } = self;
-        Primitive::NavigatorExt {
+        Primitive::Navigator {
             type_id: TypeId::of::<DrawerPresentation>(),
             type_name: std::any::type_name::<DrawerPresentation>(),
             presentation: Rc::new(presentation) as Rc<dyn Any>,
@@ -199,7 +199,7 @@ fn with_navigator_ext<F: FnOnce(&mut Primitive)>(b: &mut Bound<DrawerHandle>, f:
 }
 
 fn with_presentation<F: FnOnce(&mut DrawerPresentation)>(b: &mut Bound<DrawerHandle>, f: F) {
-    if let Primitive::NavigatorExt { presentation, .. } = b.primitive_mut() {
+    if let Primitive::Navigator { presentation, .. } = b.primitive_mut() {
         let pres = Rc::get_mut(presentation)
             .expect("drawer-navigator: presentation Rc already shared (builder misuse)");
         let pres: &mut dyn Any = pres;
@@ -233,7 +233,7 @@ pub trait DrawerBuilder: Sized {
     fn scrim_style(self, s: impl IntoStyleSource) -> Self;
     /// Bundled header styling — decomposes a `HeaderStyle`-returning
     /// closure into individual slot-style entries the handler dispatches
-    /// via `apply_navigator_extension_slot_style`. Each `Some(...)`
+    /// via `apply_navigator_slot_style`. Each `Some(...)`
     /// field on the initial probe becomes its own per-slot reactive
     /// effect; fields that flip from `Some` to `None` at runtime
     /// panic, matching the legacy `Navigator::header` contract.
@@ -301,7 +301,7 @@ impl DrawerBuilder for Bound<DrawerHandle> {
         let route_name = route.name();
         let route_path = route.path();
         with_navigator_ext(&mut self, |p| {
-            if let Primitive::NavigatorExt { config, .. } = p {
+            if let Primitive::Navigator { config, .. } = p {
                 let builder: ScreenBuilder = Rc::new(move |any_params: Box<dyn Any>| {
                     let typed: Box<P> = any_params
                         .downcast::<P>()
@@ -356,7 +356,7 @@ impl DrawerBuilder for Bound<DrawerHandle> {
 
     fn default_screen_options(mut self, opts: ScreenOptions) -> Self {
         with_navigator_ext(&mut self, |p| {
-            if let Primitive::NavigatorExt { config, .. } = p {
+            if let Primitive::Navigator { config, .. } = p {
                 config.default_options = Some(opts);
             }
         });
@@ -368,7 +368,7 @@ impl DrawerBuilder for Bound<DrawerHandle> {
         F: Fn(runtime_core::primitives::navigator::LayoutProps) -> Primitive + 'static,
     {
         with_navigator_ext(&mut self, |p| {
-            if let Primitive::NavigatorExt { config, .. } = p {
+            if let Primitive::Navigator { config, .. } = p {
                 config.layout = Some(Rc::new(f));
             }
         });
@@ -377,7 +377,7 @@ impl DrawerBuilder for Bound<DrawerHandle> {
 
     fn sidebar_style(mut self, s: impl IntoStyleSource) -> Self {
         with_navigator_ext(&mut self, |p| {
-            if let Primitive::NavigatorExt { slot_styles, .. } = p {
+            if let Primitive::Navigator { slot_styles, .. } = p {
                 slot_styles.push(("sidebar", s.into_style_source()));
             }
         });
@@ -386,7 +386,7 @@ impl DrawerBuilder for Bound<DrawerHandle> {
 
     fn scrim_style(mut self, s: impl IntoStyleSource) -> Self {
         with_navigator_ext(&mut self, |p| {
-            if let Primitive::NavigatorExt { slot_styles, .. } = p {
+            if let Primitive::Navigator { slot_styles, .. } = p {
                 slot_styles.push(("scrim", s.into_style_source()));
             }
         });
@@ -410,7 +410,7 @@ impl DrawerBuilder for Bound<DrawerHandle> {
                 "background",
             );
             with_navigator_ext(&mut self, |p| {
-                if let Primitive::NavigatorExt { slot_styles, .. } = p {
+                if let Primitive::Navigator { slot_styles, .. } = p {
                     slot_styles.push(("header", src));
                 }
             });
@@ -423,7 +423,7 @@ impl DrawerBuilder for Bound<DrawerHandle> {
                 "title",
             );
             with_navigator_ext(&mut self, |p| {
-                if let Primitive::NavigatorExt { slot_styles, .. } = p {
+                if let Primitive::Navigator { slot_styles, .. } = p {
                     slot_styles.push(("title", src));
                 }
             });
@@ -436,7 +436,7 @@ impl DrawerBuilder for Bound<DrawerHandle> {
                 "tint",
             );
             with_navigator_ext(&mut self, |p| {
-                if let Primitive::NavigatorExt { slot_styles, .. } = p {
+                if let Primitive::Navigator { slot_styles, .. } = p {
                     slot_styles.push(("button", src));
                 }
             });
@@ -449,7 +449,7 @@ impl DrawerBuilder for Bound<DrawerHandle> {
                 "body_background",
             );
             with_navigator_ext(&mut self, |p| {
-                if let Primitive::NavigatorExt { slot_styles, .. } = p {
+                if let Primitive::Navigator { slot_styles, .. } = p {
                     slot_styles.push(("body", src));
                 }
             });
@@ -461,8 +461,8 @@ impl DrawerBuilder for Bound<DrawerHandle> {
         let is_open = Rc::new(Cell::new(false));
         let is_open_for_fill = is_open.clone();
         with_navigator_ext(&mut self, |p| {
-            if let Primitive::NavigatorExt { ref_fill, .. } = p {
-                *ref_fill = Some(RefFill::NavigatorExt(Box::new(move |handle| {
+            if let Primitive::Navigator { ref_fill, .. } = p {
+                *ref_fill = Some(RefFill::Navigator(Box::new(move |handle| {
                     r.fill(DrawerHandle::from_inner(handle, is_open_for_fill));
                 })));
             }

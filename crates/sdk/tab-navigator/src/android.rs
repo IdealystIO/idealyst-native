@@ -1,7 +1,7 @@
 //! Android-backend handler for the Tab navigator SDK.
 //!
 //! Phase-1 adapter: synthesizes legacy `TabNavigatorCallbacks` and
-//! calls `AndroidBackend::create_tab_navigator`. Sets `NavExtKind::Tab`
+//! calls `AndroidBackend::create_tab_navigator`. Sets `NavigatorKind::Tab`
 //! for unified dispatch.
 
 use crate::{MountPolicy, TabPlacement, TabPresentation};
@@ -9,7 +9,7 @@ use backend_android_mobile::AndroidBackend;
 use jni::objects::GlobalRef;
 use runtime_core::{
     accessibility::AccessibilityProps, primitives::navigator::tabs::TabRegistration, Backend,
-    MountPolicy as CoreMountPolicy, MountResult, NavExtKind, NavigatorCallbacks, NavigatorHandler,
+    MountPolicy as CoreMountPolicy, MountResult, NavigatorKind, NavigatorCallbacks, NavigatorHandler,
     NavigatorHost, TabNavigatorCallbacks, TabPlacement as CoreTabPlacement,
 };
 use std::any::Any;
@@ -115,7 +115,7 @@ impl NavigatorHandler<AndroidBackend> for AndroidTabHandler {
             control,
             &AccessibilityProps::default(),
         );
-        backend.set_nav_ext_kind(&node, NavExtKind::Tab);
+        backend.set_nav_kind(&node, NavigatorKind::Tab);
         node
     }
 

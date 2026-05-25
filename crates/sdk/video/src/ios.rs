@@ -52,11 +52,11 @@ use std::rc::Rc;
 
 pub(crate) static OPS: &dyn VideoOps = &IosVideoOps;
 
-/// AVFoundation is a system framework that ships with iOS; force the
-/// linker to pull it in regardless of whether some other dependency
-/// has already requested it. Without this directive, building this
-/// crate as a standalone staticlib would succeed but the final link
-/// step would fail looking for AVPlayer/AVPlayerLayer.
+// AVFoundation is a system framework that ships with iOS; force the
+// linker to pull it in regardless of whether some other dependency
+// has already requested it. Without this directive, building this
+// crate as a standalone staticlib would succeed but the final link
+// step would fail looking for AVPlayer/AVPlayerLayer.
 #[link(name = "AVFoundation", kind = "framework")]
 extern "C" {}
 

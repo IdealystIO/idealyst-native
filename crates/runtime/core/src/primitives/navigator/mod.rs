@@ -1,54 +1,49 @@
 //! Navigator primitives.
 //!
-//! A *navigator* is a primitive that owns one-or-more registered
-//! screens and decides which one is active. The framework ships
-//! multiple navigator kinds — stack, tabs, drawer — that share a
-//! large substrate (typed routes, per-screen reactive scopes,
-//! ambient-navigator capture for the `Link` primitive, URL
-//! path-matching) and differ only in their *active-screen-selection
-//! UI* and *command shape*.
+//! Core ships exactly one navigator primitive — `Primitive::Navigator`.
+//! Specific navigator kinds (stack / tabs / drawer / third-party) live
+//! in SDK crates under `crates/sdk/` and register handlers into each
+//! backend's `NavigatorRegistry`.
 //!
 //! Module layout:
 //!
-//! - `shared` — the substrate. `Route<P>`, `RouteParams`,
-//!   `NavCommand`, `NavigatorControl`, `NavigatorHandle`,
-//!   `NavigatorCallbacks`, `NavState`, layout machinery,
-//!   ambient-navigator stack, path-matching, screen-entry
-//!   bookkeeping. Every navigator kind uses these.
-//! - `stack` — the `Navigator` builder. Push/pop/replace/reset
-//!   semantics; backed by `UINavigationController` on iOS,
-//!   `FragmentManager` on Android, inline subtree swap on web.
+//! - `shared` — the substrate. `Route<P>`, `RouteParams`, `NavCommand`,
+//!   `NavigatorControl`, `NavigatorHandle`, `NavigatorCallbacks`,
+//!   `NavState`, layout machinery, ambient-navigator stack, path-matching,
+//!   per-screen state stack. Every navigator kind uses these.
+//! - `host` — `NavigatorHost` (framework affordances handed to the
+//!   handler), `NavigatorHandler` trait, `NavigatorKind`.
+//! - `registry` — `NavigatorRegistry<B>` keyed by presentation TypeId.
+//! - `tabs` — kind-specific substrate types (TabSpec, TabPlacement,
+//!   TabRegistration, MountPolicy, TabsHandle, TabNavigatorCallbacks).
+//!   Used by backend inherent helpers + SDK adapters.
+//! - `drawer` — kind-specific substrate types (DrawerSide, DrawerType,
+//!   DrawerContentProps, ContentBuilder, DrawerHandle,
+//!   DrawerNavigatorCallbacks). Same pattern as `tabs`.
 //!
-//! New navigator kinds (tabs, drawer) will land as additional
-//! submodules alongside `stack`, each one a thin builder over the
-//! shared substrate.
-//!
-//! For API continuity, the historical `primitives::navigator::Foo`
-//! paths still resolve — everything is re-exported at this module's
-//! root.
+//! The author-facing builder structs (`Navigator`, `TabNavigator`,
+//! `DrawerNavigator`) used to live here in `stack.rs` / `tabs.rs` /
+//! `drawer.rs` but have been moved to their respective SDK crates.
 
 pub mod drawer;
 pub mod host;
 pub mod registry;
 pub mod shared;
-pub mod stack;
 pub mod tabs;
 
 pub use drawer::{
-    ContentBuilder, DrawerContentProps, DrawerHandle, DrawerNavigator, DrawerNavigatorCallbacks,
-    DrawerSide, DrawerType,
+    ContentBuilder, DrawerContentProps, DrawerHandle, DrawerNavigatorCallbacks, DrawerSide,
+    DrawerType,
 };
-pub use host::{NavExtKind, NavigatorHandler, NavigatorHost};
+pub use host::{NavigatorKind, NavigatorHandler, NavigatorHost};
 pub use registry::{NavigatorHandlerFactory, NavigatorRegistry};
 pub use shared::{
     ambient_navigator, current_screen_state, match_pattern, AmbientNavGuard, DefaultLinkKind,
     HeaderButton, HeaderStyle, LayoutBuilder, LayoutPlan, LayoutProps, MountResult, NavCommand,
-    NavState, NavigatorCallbacks, NavigatorControl, NavigatorExtConfig, NavigatorHandle,
+    NavState, NavigatorCallbacks, NavigatorControl, NavigatorConfig, NavigatorHandle,
     NavigatorOps, ParamsFromSegments, Route, RouteEntry, RouteParams, Screen, ScreenBuilder,
     ScreenOptions, ScreenStateGuard,
 };
-pub use stack::Navigator;
 pub use tabs::{
-    MountPolicy, TabNavigator, TabNavigatorCallbacks, TabPlacement, TabRegistration, TabSpec,
-    TabsHandle,
+    MountPolicy, TabNavigatorCallbacks, TabPlacement, TabRegistration, TabSpec, TabsHandle,
 };

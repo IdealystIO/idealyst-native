@@ -77,12 +77,11 @@ pub use touch::recognizers::{
 pub use walker::{mount, render, Owner};
 pub use primitives::navigator::{
     current_screen_state, match_pattern, ContentBuilder, DefaultLinkKind, DrawerContentProps,
-    DrawerHandle, DrawerNavigator, DrawerNavigatorCallbacks, DrawerSide, DrawerType, HeaderButton,
-    HeaderStyle, LayoutPlan, LayoutProps, MountPolicy, MountResult, NavCommand, NavExtKind,
-    NavState, Navigator, NavigatorCallbacks, NavigatorControl, NavigatorExtConfig, NavigatorHandle,
-    NavigatorHandler, NavigatorHost, NavigatorOps, NavigatorRegistry, Route, RouteParams, Screen,
-    ScreenOptions, ScreenStateGuard, TabNavigator, TabNavigatorCallbacks, TabPlacement,
-    TabRegistration, TabSpec, TabsHandle,
+    DrawerHandle, DrawerNavigatorCallbacks, DrawerSide, DrawerType, HeaderButton, HeaderStyle,
+    LayoutPlan, LayoutProps, MountPolicy, MountResult, NavCommand, NavigatorKind, NavState,
+    NavigatorCallbacks, NavigatorControl, NavigatorConfig, NavigatorHandle, NavigatorHandler,
+    NavigatorHost, NavigatorOps, NavigatorRegistry, Route, RouteParams, Screen, ScreenOptions,
+    ScreenStateGuard, TabNavigatorCallbacks, TabPlacement, TabRegistration, TabSpec, TabsHandle,
 };
 pub use primitives::icon::{icon, FillRule, IconData, IconHandle, IconOps, StrokeAnimation};
 pub use primitives::image::{image, image_asset, ImageHandle, ImageOps};

@@ -147,7 +147,7 @@ impl NavigatorHandler<WebBackend> for WebDrawerHandler {
     ) {
         unreachable!(
             "WebDrawerHandler::attach_initial — WebBackend dispatches via \
-             navigator_extension_attach_initial → uniform machinery"
+             navigator_attach_initial → uniform machinery"
         );
     }
 

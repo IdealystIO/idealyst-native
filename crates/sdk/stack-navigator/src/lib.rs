@@ -2,7 +2,7 @@
 //!
 //! Author-facing API mirrors the legacy `runtime_core::Navigator`
 //! builder so existing app code can switch by replacing one import.
-//! The implementation routes through `Primitive::NavigatorExt`, which
+//! The implementation routes through `Primitive::Navigator`, which
 //! the framework dispatches via the per-backend
 //! [`NavigatorRegistry`](runtime_core::primitives::navigator::NavigatorRegistry)
 //! to a `StackHandler` registered by this crate's `register(&mut backend)`
@@ -24,7 +24,7 @@
 //! ```
 
 use runtime_core::primitives::navigator::{
-    DefaultLinkKind, NavigatorExtConfig, NavigatorHandle, Route, RouteEntry, RouteParams,
+    DefaultLinkKind, NavigatorConfig, NavigatorHandle, Route, RouteEntry, RouteParams,
     ScreenBuilder, ScreenOptions,
 };
 use runtime_core::{Bound, IntoStyleSource, Primitive, Ref, RefFill};
@@ -41,8 +41,8 @@ use std::rc::Rc;
 ///
 /// Carries only what the backend handler needs to render the native
 /// stack — the screen registry, default options, and routing config
-/// live in the shared `NavigatorExtConfig` carried by the same
-/// `Primitive::NavigatorExt`.
+/// live in the shared `NavigatorConfig` carried by the same
+/// `Primitive::Navigator`.
 #[derive(Default)]
 pub struct StackPresentation {
     /// Per-slot styles the handler dispatches via `apply_slot_style`.
@@ -101,14 +101,14 @@ impl StackHandle {
 }
 
 // =============================================================================
-// Builder — produces Primitive::NavigatorExt
+// Builder — produces Primitive::Navigator
 // =============================================================================
 
 /// Stack-navigator builder. Mirrors the legacy `runtime_core::Navigator`
-/// surface; under the hood it produces `Primitive::NavigatorExt` with
-/// a `StackPresentation` payload + `NavigatorExtConfig` shared config.
+/// surface; under the hood it produces `Primitive::Navigator` with
+/// a `StackPresentation` payload + `NavigatorConfig` shared config.
 pub struct Navigator {
-    config: NavigatorExtConfig,
+    config: NavigatorConfig,
     slot_styles: Vec<(&'static str, runtime_core::StyleSource)>,
     style: Option<runtime_core::StyleSource>,
     ref_fill: Option<RefFill>,
@@ -120,7 +120,7 @@ impl Navigator {
     /// framework's `initial_path` resolution.
     pub fn new(initial: &Route<()>) -> Bound<StackHandle> {
         let nav = Self {
-            config: NavigatorExtConfig {
+            config: NavigatorConfig {
                 initial: initial.name(),
                 initial_path: initial.path(),
                 screens: HashMap::new(),
@@ -138,7 +138,7 @@ impl Navigator {
 
     fn into_primitive(self) -> Primitive {
         let Navigator { config, slot_styles, style, ref_fill } = self;
-        Primitive::NavigatorExt {
+        Primitive::Navigator {
             type_id: TypeId::of::<StackPresentation>(),
             type_name: std::any::type_name::<StackPresentation>(),
             presentation: Rc::new(StackPresentation::default()) as Rc<dyn Any>,
@@ -181,7 +181,7 @@ pub trait StackBuilder: Sized {
     fn bind(self, r: Ref<StackHandle>) -> Self;
 }
 
-/// Helper: extract the NavigatorExt primitive's mutable parts.
+/// Helper: extract the Navigator primitive's mutable parts.
 fn with_navigator_ext<F: FnOnce(&mut Primitive)>(b: &mut Bound<StackHandle>, f: F) {
     f(b.primitive_mut());
 }
@@ -194,7 +194,7 @@ impl StackBuilder for Bound<StackHandle> {
         F: Fn(P) -> R + 'static,
     {
         with_navigator_ext(&mut self, |p| {
-            if let Primitive::NavigatorExt { config, .. } = p {
+            if let Primitive::Navigator { config, .. } = p {
                 let builder: ScreenBuilder = Rc::new(move |any_params: Box<dyn Any>| {
                     let typed: Box<P> = any_params
                         .downcast::<P>()
@@ -216,7 +216,7 @@ impl StackBuilder for Bound<StackHandle> {
 
     fn default_screen_options(mut self, opts: ScreenOptions) -> Self {
         with_navigator_ext(&mut self, |p| {
-            if let Primitive::NavigatorExt { config, .. } = p {
+            if let Primitive::Navigator { config, .. } = p {
                 config.default_options = Some(opts);
             }
         });
@@ -228,7 +228,7 @@ impl StackBuilder for Bound<StackHandle> {
         F: Fn(runtime_core::primitives::navigator::LayoutProps) -> Primitive + 'static,
     {
         with_navigator_ext(&mut self, |p| {
-            if let Primitive::NavigatorExt { config, .. } = p {
+            if let Primitive::Navigator { config, .. } = p {
                 config.layout = Some(Rc::new(f));
             }
         });
@@ -237,7 +237,7 @@ impl StackBuilder for Bound<StackHandle> {
 
     fn header_style(mut self, s: impl runtime_core::IntoStyleSource) -> Self {
         with_navigator_ext(&mut self, |p| {
-            if let Primitive::NavigatorExt { slot_styles, .. } = p {
+            if let Primitive::Navigator { slot_styles, .. } = p {
                 slot_styles.push(("header", s.into_style_source()));
             }
         });
@@ -246,7 +246,7 @@ impl StackBuilder for Bound<StackHandle> {
 
     fn title_style(mut self, s: impl runtime_core::IntoStyleSource) -> Self {
         with_navigator_ext(&mut self, |p| {
-            if let Primitive::NavigatorExt { slot_styles, .. } = p {
+            if let Primitive::Navigator { slot_styles, .. } = p {
                 slot_styles.push(("title", s.into_style_source()));
             }
         });
@@ -255,7 +255,7 @@ impl StackBuilder for Bound<StackHandle> {
 
     fn button_style(mut self, s: impl runtime_core::IntoStyleSource) -> Self {
         with_navigator_ext(&mut self, |p| {
-            if let Primitive::NavigatorExt { slot_styles, .. } = p {
+            if let Primitive::Navigator { slot_styles, .. } = p {
                 slot_styles.push(("button", s.into_style_source()));
             }
         });
@@ -264,8 +264,8 @@ impl StackBuilder for Bound<StackHandle> {
 
     fn bind(mut self, r: Ref<StackHandle>) -> Self {
         with_navigator_ext(&mut self, |p| {
-            if let Primitive::NavigatorExt { ref_fill, .. } = p {
-                *ref_fill = Some(RefFill::NavigatorExt(Box::new(move |handle| {
+            if let Primitive::Navigator { ref_fill, .. } = p {
+                *ref_fill = Some(RefFill::Navigator(Box::new(move |handle| {
                     r.fill(StackHandle::from_inner(handle));
                 })));
             }
@@ -301,7 +301,7 @@ pub use ios::register;
 mod fallback {
     use runtime_core::Backend;
     /// No-op register for unsupported targets. The framework's
-    /// `create_navigator_extension` default impl panics — user code
+    /// `create_navigator` default impl panics — user code
     /// hitting Stack on an unsupported target should be explicit about
     /// providing its own handler.
     pub fn register<B: Backend>(_backend: &mut B) {}

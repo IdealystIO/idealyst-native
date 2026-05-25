@@ -358,7 +358,7 @@ pub struct WebBackend {
         HashMap<u32, std::rc::Rc<std::cell::RefCell<primitives::graphics::GraphicsInstance>>>,
     /// Per-Navigator state. Keyed by the navigator id stamped on the
     /// container's `data-navigator-id` attribute so `make_handle` and
-    /// `release_navigator` can find the right entry on lookup.
+    /// `release_stack_navigator` can find the right entry on lookup.
     pub(crate) navigator_instances: primitives::navigator::NavigatorInstances,
     /// Monotonic id counter for navigator containers. Same pattern as
     /// `next_graphics_id` — written as a data attribute on the
@@ -478,10 +478,10 @@ pub struct WebBackend {
     /// unregistered kinds fall through to a "not supported" placeholder.
     pub(crate) external_handlers:
         runtime_core::ExternalRegistry<WebBackend>,
-    /// Registry of `Primitive::NavigatorExt` handler factories,
+    /// Registry of `Primitive::Navigator` handler factories,
     /// populated by `register_navigator::<P, _>(...)` calls from
     /// SDK leaf crates (e.g. `stack_navigator::register`).
-    /// `create_navigator_extension` looks the factory up by presentation
+    /// `create_navigator` looks the factory up by presentation
     /// TypeId; unregistered kinds panic at create time.
     pub(crate) navigator_handlers:
         runtime_core::NavigatorRegistry<WebBackend>,
@@ -663,7 +663,7 @@ impl WebBackend {
     /// `tab_navigator::register`, etc.) call this once per app
     /// bootstrap. `P` is the SDK's presentation payload type; the
     /// factory produces a fresh handler per
-    /// `Primitive::NavigatorExt { type_id: TypeId::of::<P>(), .. }`
+    /// `Primitive::Navigator { type_id: TypeId::of::<P>(), .. }`
     /// mounted in the tree.
     pub fn register_navigator<P, F>(&mut self, factory: F)
     where
@@ -1887,18 +1887,131 @@ impl Backend for WebBackend {
         primitives::graphics::make_handle(self, node)
     }
 
-    fn create_navigator(
+    fn create_stack_navigator(
         &mut self,
         callbacks: runtime_core::NavigatorCallbacks<Self::Node>,
         control: Rc<runtime_core::NavigatorControl>,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        let node = primitives::navigator::create(self, callbacks, control);
-        // Navigator containers are transparent in the AX tree by
-        // default — `accessibility::default_role(Navigator)` returns
-        // None. Author overrides still apply.
-        a11y::apply(&node, a11y, None);
-        node
+        WebBackend::create_stack_navigator(self, callbacks, control, a11y)
+    }
+
+    fn stack_navigator_attach_initial(
+        &mut self,
+        navigator: &Self::Node,
+        screen: Self::Node,
+        scope_id: u64,
+        options: runtime_core::primitives::navigator::ScreenOptions,
+    ) {
+        WebBackend::stack_navigator_attach_initial(self, navigator, screen, scope_id, options)
+    }
+
+    fn release_stack_navigator(&mut self, node: &Self::Node) {
+        WebBackend::release_stack_navigator(self, node)
+    }
+
+    fn make_stack_navigator_handle(
+        &self,
+        node: &Self::Node,
+    ) -> runtime_core::NavigatorHandle {
+        WebBackend::make_stack_navigator_handle(self, node)
+    }
+
+    fn create_tab_navigator(
+        &mut self,
+        callbacks: runtime_core::TabNavigatorCallbacks<Self::Node>,
+        control: Rc<runtime_core::NavigatorControl>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        WebBackend::create_tab_navigator(self, callbacks, control, a11y)
+    }
+
+    fn tab_navigator_attach_initial(
+        &mut self,
+        navigator: &Self::Node,
+        screen: Self::Node,
+        scope_id: u64,
+        options: runtime_core::primitives::navigator::ScreenOptions,
+    ) {
+        WebBackend::tab_navigator_attach_initial(self, navigator, screen, scope_id, options)
+    }
+
+    fn release_tab_navigator(&mut self, node: &Self::Node) {
+        WebBackend::release_tab_navigator(self, node)
+    }
+
+    fn make_tab_navigator_handle(
+        &self,
+        node: &Self::Node,
+    ) -> runtime_core::TabsHandle {
+        WebBackend::make_tab_navigator_handle(self, node)
+    }
+
+    fn create_drawer_navigator(
+        &mut self,
+        callbacks: runtime_core::DrawerNavigatorCallbacks<Self::Node>,
+        control: Rc<runtime_core::NavigatorControl>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        WebBackend::create_drawer_navigator(self, callbacks, control, a11y)
+    }
+
+    fn drawer_navigator_attach_initial(
+        &mut self,
+        navigator: &Self::Node,
+        screen: Self::Node,
+        scope_id: u64,
+        options: runtime_core::primitives::navigator::ScreenOptions,
+    ) {
+        WebBackend::drawer_navigator_attach_initial(self, navigator, screen, scope_id, options)
+    }
+
+    fn release_drawer_navigator(&mut self, node: &Self::Node) {
+        WebBackend::release_drawer_navigator(self, node)
+    }
+
+    fn make_drawer_navigator_handle(
+        &self,
+        node: &Self::Node,
+    ) -> runtime_core::DrawerHandle {
+        WebBackend::make_drawer_navigator_handle(self, node)
+    }
+
+    // ------------------------------------------------------------------
+    // Navigator — unified path for SDK-supplied navigator kinds.
+    //
+    // Web's three legacy navigator kinds (stack, tab, drawer) all run
+    // through the same underlying `NavigatorInstance` machine — the only
+    // thing that differs is the command dispatcher closure installed on
+    // `NavigatorControl`. So our Navigator path can delegate every
+    // post-create method (attach_initial / release / make_handle) to the
+    // existing helpers without per-kind branching. The SDK's
+    // per-backend handler is what supplies the kind-specific dispatch
+    // wiring during `init`.
+    // ------------------------------------------------------------------
+
+    fn create_navigator(
+        &mut self,
+        type_id: std::any::TypeId,
+        type_name: &'static str,
+        presentation: Rc<dyn std::any::Any>,
+        host: runtime_core::NavigatorHost<Self::Node>,
+        _a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        // Resolve the factory the SDK installed at app-bootstrap time.
+        let factory = self
+            .navigator_handlers
+            .get(type_id)
+            .unwrap_or_else(|| {
+                panic!(
+                    "WebBackend::create_navigator: navigator kind '{}' \
+                     is not registered. Did the app forget to call \
+                     `<navigator-sdk>::register(&mut backend)` during bootstrap?",
+                    type_name
+                )
+            });
+        let mut handler = factory();
+        handler.init(self, host, presentation)
     }
 
     fn navigator_attach_initial(
@@ -1908,13 +2021,8 @@ impl Backend for WebBackend {
         scope_id: u64,
         _options: runtime_core::primitives::navigator::ScreenOptions,
     ) {
-        // The framework's local-mode path runs the initial mount
-        // via the microtask in `create_navigator` and never calls
-        // this method directly (the trait default is a no-op).
-        // runtime-server mode is the opposite: the create-time microtask
-        // bails early on `defer_initial_mount = true`, and this
-        // method is the one that actually mounts the screen,
-        // using the wire-supplied DOM subtree + scope id.
+        // Same uniform path as the per-kind `*_navigator_attach_initial`
+        // methods — web stores all three kinds in the same instance map.
         primitives::navigator::attach_initial(self, navigator, screen, scope_id)
     }
 
@@ -1929,147 +2037,7 @@ impl Backend for WebBackend {
         primitives::navigator::make_handle(self, node)
     }
 
-    // On web every navigator kind reduces to the same underlying
-    // screen-swap-plus-layout machinery — the layout slot is where
-    // tab bars and drawer panels actually render. So tab + drawer
-    // creation just dispatches into the existing instance code with
-    // a kind-appropriate command dispatcher; teardown reuses
-    // `release` because the entry shape is identical.
-    fn create_tab_navigator(
-        &mut self,
-        callbacks: runtime_core::TabNavigatorCallbacks<Self::Node>,
-        control: Rc<runtime_core::NavigatorControl>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
-        let node = primitives::navigator::create_tab(self, callbacks, control);
-        a11y::apply(&node, a11y, None);
-        node
-    }
-
-    fn release_tab_navigator(&mut self, node: &Self::Node) {
-        primitives::navigator::release(self, node)
-    }
-
-    fn make_tab_navigator_handle(
-        &self,
-        node: &Self::Node,
-    ) -> runtime_core::TabsHandle {
-        primitives::navigator::make_tab_handle(self, node)
-    }
-
-    fn tab_navigator_attach_initial(
-        &mut self,
-        navigator: &Self::Node,
-        screen: Self::Node,
-        scope_id: u64,
-        _options: runtime_core::primitives::navigator::ScreenOptions,
-    ) {
-        // Same wire-driven mount story as `navigator_attach_initial`,
-        // and on web the three navigator kinds share one
-        // `NavigatorInstance` machine — so route through the same
-        // helper. Without this override the trait default eats the
-        // command silently and the home screen never lands in the DOM.
-        primitives::navigator::attach_initial(self, navigator, screen, scope_id)
-    }
-
-    fn create_drawer_navigator(
-        &mut self,
-        callbacks: runtime_core::DrawerNavigatorCallbacks<Self::Node>,
-        control: Rc<runtime_core::NavigatorControl>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
-        let node = primitives::navigator::create_drawer(self, callbacks, control);
-        a11y::apply(&node, a11y, None);
-        node
-    }
-
-    fn release_drawer_navigator(&mut self, node: &Self::Node) {
-        primitives::navigator::release(self, node)
-    }
-
-    fn make_drawer_navigator_handle(
-        &self,
-        node: &Self::Node,
-    ) -> runtime_core::DrawerHandle {
-        primitives::navigator::make_drawer_handle(self, node)
-    }
-
-    fn drawer_navigator_attach_initial(
-        &mut self,
-        navigator: &Self::Node,
-        screen: Self::Node,
-        scope_id: u64,
-        _options: runtime_core::primitives::navigator::ScreenOptions,
-    ) {
-        // See `tab_navigator_attach_initial`. The trait default is a
-        // no-op, which is why runtime-server-driven drawer apps were rendering a
-        // fully empty `.ui-nav-root` — `Command::NavigatorAttachInitial`
-        // dispatched to drawer_navigator_attach_initial, the default
-        // ate it, and the home screen never reached the DOM.
-        primitives::navigator::attach_initial(self, navigator, screen, scope_id)
-    }
-
-    // ------------------------------------------------------------------
-    // NavigatorExt — unified path for SDK-supplied navigator kinds.
-    //
-    // Web's three legacy navigator kinds (stack, tab, drawer) all run
-    // through the same underlying `NavigatorInstance` machine — the only
-    // thing that differs is the command dispatcher closure installed on
-    // `NavigatorControl`. So our NavigatorExt path can delegate every
-    // post-create method (attach_initial / release / make_handle) to the
-    // existing helpers without per-kind branching. The SDK's
-    // per-backend handler is what supplies the kind-specific dispatch
-    // wiring during `init`.
-    // ------------------------------------------------------------------
-
-    fn create_navigator_extension(
-        &mut self,
-        type_id: std::any::TypeId,
-        type_name: &'static str,
-        presentation: Rc<dyn std::any::Any>,
-        host: runtime_core::NavigatorHost<Self::Node>,
-        _a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
-        // Resolve the factory the SDK installed at app-bootstrap time.
-        let factory = self
-            .navigator_handlers
-            .get(type_id)
-            .unwrap_or_else(|| {
-                panic!(
-                    "WebBackend::create_navigator_extension: navigator kind '{}' \
-                     is not registered. Did the app forget to call \
-                     `<navigator-sdk>::register(&mut backend)` during bootstrap?",
-                    type_name
-                )
-            });
-        let mut handler = factory();
-        handler.init(self, host, presentation)
-    }
-
-    fn navigator_extension_attach_initial(
-        &mut self,
-        navigator: &Self::Node,
-        screen: Self::Node,
-        scope_id: u64,
-        _options: runtime_core::primitives::navigator::ScreenOptions,
-    ) {
-        // Same uniform path as the per-kind `*_navigator_attach_initial`
-        // methods — web stores all three kinds in the same instance map.
-        primitives::navigator::attach_initial(self, navigator, screen, scope_id)
-    }
-
-    fn release_navigator_extension(&mut self, node: &Self::Node) {
-        primitives::navigator::release(self, node)
-    }
-
-    fn make_navigator_extension_handle(
-        &self,
-        node: &Self::Node,
-    ) -> runtime_core::NavigatorHandle {
-        primitives::navigator::make_handle(self, node)
-    }
-
-    fn apply_navigator_extension_slot_style(
+    fn apply_navigator_slot_style(
         &mut self,
         navigator: &Self::Node,
         slot: &'static str,
@@ -2101,7 +2069,7 @@ impl Backend for WebBackend {
         root: Self::Node,
         outlet: Self::Node,
     ) {
-        primitives::navigator::attach_layout(self, navigator, root, outlet)
+        WebBackend::attach_navigator_layout(self, navigator, root, outlet)
     }
 
     fn create_link(
@@ -2483,6 +2451,126 @@ impl Backend for WebBackend {
     // the live DOM + ARIA attributes themselves, so a parallel
     // semantics tree would be redundant. The trait default (None) is
     // correct here — no override needed.
+}
+
+// =========================================================================
+// Legacy nav helpers — implementation details for the per-kind SDK
+// handlers (`stack-navigator/src/web.rs`, etc.). NOT on the `Backend`
+// trait: the framework's navigator surface is `Backend::create_stack_navigator`
+// (the unified path); the per-kind machinery here is what individual
+// SDK handlers call to drive the underlying `NavigatorInstance` machine.
+//
+// The names use kind-explicit prefixes (`stack_*`/`tab_*`/`drawer_*`)
+// instead of the legacy `*_navigator` / `tab_navigator_*` / `drawer_navigator_*`
+// suffixes, so call sites read clearly and there's no shadow against
+// the trait's generic `create_stack_navigator(type_id, …)` etc.
+// =========================================================================
+
+impl WebBackend {
+    pub fn create_stack_navigator(
+        &mut self,
+        callbacks: runtime_core::NavigatorCallbacks<web_sys::Node>,
+        control: Rc<runtime_core::NavigatorControl>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> web_sys::Node {
+        let node = primitives::navigator::create(self, callbacks, control);
+        a11y::apply(&node, a11y, None);
+        node
+    }
+
+    pub fn stack_navigator_attach_initial(
+        &mut self,
+        navigator: &web_sys::Node,
+        screen: web_sys::Node,
+        scope_id: u64,
+        _options: runtime_core::primitives::navigator::ScreenOptions,
+    ) {
+        primitives::navigator::attach_initial(self, navigator, screen, scope_id)
+    }
+
+    pub fn release_stack_navigator(&mut self, node: &web_sys::Node) {
+        primitives::navigator::release(self, node)
+    }
+
+    pub fn make_stack_navigator_handle(
+        &self,
+        node: &web_sys::Node,
+    ) -> runtime_core::NavigatorHandle {
+        primitives::navigator::make_handle(self, node)
+    }
+
+    pub fn create_tab_navigator(
+        &mut self,
+        callbacks: runtime_core::TabNavigatorCallbacks<web_sys::Node>,
+        control: Rc<runtime_core::NavigatorControl>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> web_sys::Node {
+        let node = primitives::navigator::create_tab(self, callbacks, control);
+        a11y::apply(&node, a11y, None);
+        node
+    }
+
+    pub fn release_tab_navigator(&mut self, node: &web_sys::Node) {
+        primitives::navigator::release(self, node)
+    }
+
+    pub fn make_tab_navigator_handle(
+        &self,
+        node: &web_sys::Node,
+    ) -> runtime_core::TabsHandle {
+        primitives::navigator::make_tab_handle(self, node)
+    }
+
+    pub fn tab_navigator_attach_initial(
+        &mut self,
+        navigator: &web_sys::Node,
+        screen: web_sys::Node,
+        scope_id: u64,
+        _options: runtime_core::primitives::navigator::ScreenOptions,
+    ) {
+        primitives::navigator::attach_initial(self, navigator, screen, scope_id)
+    }
+
+    pub fn create_drawer_navigator(
+        &mut self,
+        callbacks: runtime_core::DrawerNavigatorCallbacks<web_sys::Node>,
+        control: Rc<runtime_core::NavigatorControl>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> web_sys::Node {
+        let node = primitives::navigator::create_drawer(self, callbacks, control);
+        a11y::apply(&node, a11y, None);
+        node
+    }
+
+    pub fn release_drawer_navigator(&mut self, node: &web_sys::Node) {
+        primitives::navigator::release(self, node)
+    }
+
+    pub fn make_drawer_navigator_handle(
+        &self,
+        node: &web_sys::Node,
+    ) -> runtime_core::DrawerHandle {
+        primitives::navigator::make_drawer_handle(self, node)
+    }
+
+    pub fn drawer_navigator_attach_initial(
+        &mut self,
+        navigator: &web_sys::Node,
+        screen: web_sys::Node,
+        scope_id: u64,
+        _options: runtime_core::primitives::navigator::ScreenOptions,
+    ) {
+        primitives::navigator::attach_initial(self, navigator, screen, scope_id)
+    }
+
+    pub fn attach_navigator_layout(
+        &mut self,
+        navigator: &web_sys::Node,
+        root: web_sys::Node,
+        outlet: web_sys::Node,
+    ) {
+        primitives::navigator::attach_layout(self, navigator, root, outlet)
+    }
 }
 
 /// Marker ops for `ViewHandle`. Views don't have methods yet (no

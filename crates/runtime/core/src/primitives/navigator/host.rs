@@ -10,7 +10,7 @@
 //!   `NavCommand` shape.
 //! - **Each backend** holds a [`super::registry::NavigatorRegistry`]
 //!   field, exposes `register_navigator` / `has_navigator` methods, and
-//!   implements `Backend::create_navigator_extension` to consult the
+//!   implements `Backend::create_navigator` to consult the
 //!   registry.
 //! - **Each navigator-kind SDK crate** (`stack-navigator`,
 //!   `tab-navigator`, `drawer-navigator`, or any third-party kind)
@@ -18,7 +18,7 @@
 //!   registers via the backend's `register_navigator` method.
 //! - **The author-facing builders** (`Navigator::new(...)`,
 //!   `TabNavigator::new(...)`, etc.) live in the SDK crates and produce
-//!   `Primitive::NavigatorExt` instances carrying the SDK's typed
+//!   `Primitive::Navigator` instances carrying the SDK's typed
 //!   presentation payload.
 //!
 //! Compare with [`crate::external::ExternalRegistry`]: that pattern is
@@ -35,15 +35,15 @@ use std::rc::Rc;
 /// Helper discriminant SDK handlers can use to tell their backend
 /// "this navigator I just created is of kind X". Backends with per-kind
 /// storage (iOS, Android) use this at dispatch time to route
-/// `navigator_extension_attach_initial` / `release` / etc. to the right
+/// `navigator_attach_initial` / `release` / etc. to the right
 /// legacy method.
 ///
 /// Built-in kinds enumerated here so backends can match on them
 /// without depending on the SDK crates. Third-party kinds use
-/// [`NavExtKind::Custom`] with their own marker discriminant — the SDK
+/// [`NavigatorKind::Custom`] with their own marker discriminant — the SDK
 /// handles its own dispatch in that case.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub enum NavExtKind {
+pub enum NavigatorKind {
     Stack,
     Tab,
     Drawer,
@@ -54,7 +54,7 @@ pub enum NavExtKind {
 }
 
 /// Affordances the framework provides to a registered navigator
-/// handler. Constructed by the walker when a `Primitive::NavigatorExt`
+/// handler. Constructed by the walker when a `Primitive::Navigator`
 /// is realized; consumed by the handler's `init` plus subsequent
 /// `on_command` calls (the handler stores whatever it needs from here
 /// for the lifetime of the navigator).
@@ -170,7 +170,7 @@ pub struct NavigatorHost<N: Clone + 'static> {
 ///    [`Self::release`] for handler-owned native resource cleanup.
 pub trait NavigatorHandler<B: crate::Backend + 'static>: 'static {
     /// Construct the native root view. `presentation` is the typed
-    /// payload the SDK chose for its `Primitive::NavigatorExt`
+    /// payload the SDK chose for its `Primitive::Navigator`
     /// (e.g. `stack_navigator::StackPresentation`). The handler
     /// downcasts to its expected type — payload-to-handler type
     /// matching is enforced by `TypeId` at registration time.

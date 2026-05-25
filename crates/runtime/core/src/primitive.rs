@@ -329,38 +329,6 @@ pub enum Primitive {
         ref_fill: Option<RefFill>,
         accessibility: AccessibilityProps,
     },
-    /// Stack-based navigator. Holds a route table built up via
-    /// `.screen(...)` declarations and an initial route to mount as
-    /// the root. The framework hands `Backend::create_navigator` the
-    /// callbacks it needs to mount/release screens; the backend owns
-    /// the platform-native stack (UINavigationController on iOS,
-    /// FragmentManager on Android, inline subtree swap on web).
-    ///
-    /// Boxed so the enum stays compact — the navigator carries a
-    /// `HashMap<&'static str, _>` of screen builders that we don't
-    /// want bloating every other primitive variant.
-    Navigator(Box<primitives::navigator::Navigator>),
-    /// Tab navigator — a tab bar plus a switched content region.
-    /// Holds an ordered list of (route, presentation spec) entries
-    /// and a route table; the framework hands the backend a
-    /// `TabNavigatorCallbacks` bundle so it can build the bar and
-    /// mount/release tab screens.
-    ///
-    /// Phase-3 status: the primitive + walker plumbing is in place
-    /// but backend implementations have not landed. Calling against
-    /// a backend that hasn't implemented `create_tab_navigator`
-    /// panics with `unimplemented!()`.
-    TabNavigator(Box<primitives::navigator::TabNavigator>),
-    /// Drawer navigator — a slide-in side panel plus a switched
-    /// body region. Optionally pinned beside the body above a
-    /// viewport-width breakpoint (becomes a sidebar). Holds an
-    /// ordered list of drawer entries + a route table.
-    ///
-    /// Phase-4 status: the primitive + walker plumbing is in place
-    /// but backend implementations have not landed. Calling against
-    /// a backend that hasn't implemented `create_drawer_navigator`
-    /// panics with `unimplemented!()`.
-    DrawerNavigator(Box<primitives::navigator::DrawerNavigator>),
     /// Reactive conditional. Renders `then()` while `cond` evaluates
     /// to true and `otherwise()` when it's false. `cond` is a
     /// `Derived<bool>` carrying both the runtime callable and the
@@ -492,14 +460,14 @@ pub enum Primitive {
     /// Per-slot styling (`header`, `tab_bar`, `drawer_scrim`, …) is
     /// SDK-defined: each SDK declares its slot names and the walker
     /// dispatches each `(slot, style)` pair through
-    /// `Backend::apply_navigator_extension_slot_style`.
+    /// `Backend::apply_navigator_slot_style`.
     ///
     /// Boxed config because `screens` is a `HashMap`.
-    NavigatorExt {
+    Navigator {
         type_id: std::any::TypeId,
         type_name: &'static str,
         presentation: Rc<dyn Any>,
-        config: Box<primitives::navigator::NavigatorExtConfig>,
+        config: Box<primitives::navigator::NavigatorConfig>,
         /// Body style (analogous to a view's `with_style`). Applied
         /// via the regular `Backend::apply_style` path on the returned
         /// navigator node.
@@ -507,7 +475,7 @@ pub enum Primitive {
         /// SDK-defined per-slot styles. Each entry's `slot` is an
         /// opaque string identifier the SDK's handler understands —
         /// the walker dispatches each via
-        /// `apply_navigator_extension_slot_style`. Empty when the SDK
+        /// `apply_navigator_slot_style`. Empty when the SDK
         /// builder recorded none.
         slot_styles: Vec<(&'static str, StyleSource)>,
         ref_fill: Option<RefFill>,
@@ -618,17 +586,8 @@ impl Primitive {
             | Primitive::Link { style, .. }
             | Primitive::Portal { style, .. }
             | Primitive::External { style, .. }
-            | Primitive::NavigatorExt { style, .. } => {
+            | Primitive::Navigator { style, .. } => {
                 *style = Some(src);
-            }
-            Primitive::Navigator(nav) => {
-                nav.style = Some(src);
-            }
-            Primitive::DrawerNavigator(nav) => {
-                nav.style = Some(src);
-            }
-            Primitive::TabNavigator(nav) => {
-                nav.style = Some(src);
             }
             Primitive::Repeat { .. } => {
                 // Repeat is a children-list primitive; styling

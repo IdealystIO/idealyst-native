@@ -7,7 +7,7 @@
 //! `Reset` command. The app side just translates those commands into
 //! real-backend operations.
 //!
-//! The wrinkle is the real backend's API: `Backend::create_navigator`
+//! The wrinkle is the real backend's API: `Backend::create_stack_navigator`
 //! takes `NavigatorCallbacks<N>` and `NavigatorControl`, and most
 //! backends drive push/pop/replace by invoking the control's
 //! dispatcher (which calls `callbacks.mount_screen`). On the app
@@ -94,7 +94,7 @@ pub struct NavigatorAppState<N: Clone + 'static> {
 
 impl<N: Clone + 'static> NavigatorAppState<N> {
     /// Build the stub `NavigatorCallbacks` the real backend will
-    /// store when we call `create_navigator(...)`. The closures
+    /// store when we call `create_stack_navigator(...)`. The closures
     /// reference state through `Rc` clones so multiple navigators
     /// don't trample each other.
     pub fn build_stub_callbacks(

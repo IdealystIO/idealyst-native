@@ -139,7 +139,7 @@ impl NavigatorDelegate {
     }
 }
 
-pub(crate) fn create_navigator(
+pub(crate) fn create_stack_navigator(
     mtm: MainThreadMarker,
     navigator_instances: &mut HashMap<usize, NavigatorEntry>,
     callbacks: NavigatorCallbacks<IosNode>,
@@ -182,7 +182,7 @@ pub(crate) fn create_navigator(
         let delegate_proto = ProtocolObject::from_ref(&*delegate);
         nav.setDelegate(Some(delegate_proto));
     }
-    eprintln!("[ios-nav] create_navigator: delegate set on UINavigationController");
+    eprintln!("[ios-nav] create_stack_navigator: delegate set on UINavigationController");
 
     let entry = NavigatorEntry {
         controller: nav.clone(),
@@ -286,7 +286,7 @@ pub(crate) fn create_navigator(
     IosNode::View(nav_view)
 }
 
-pub(crate) fn navigator_attach_initial(
+pub(crate) fn stack_navigator_attach_initial(
     mtm: MainThreadMarker,
     navigator_instances: &HashMap<usize, NavigatorEntry>,
     navigator: &IosNode,
@@ -314,7 +314,7 @@ pub(crate) fn navigator_attach_initial(
         .push(ScreenEntry { vc: root_vc, scope_id });
 }
 
-pub(crate) fn release_navigator(
+pub(crate) fn release_stack_navigator(
     navigator_instances: &mut HashMap<usize, NavigatorEntry>,
     node: &IosNode,
 ) {
@@ -324,7 +324,7 @@ pub(crate) fn release_navigator(
     }
 }
 
-pub(crate) fn make_navigator_handle(
+pub(crate) fn make_stack_navigator_handle(
     navigator_instances: &HashMap<usize, NavigatorEntry>,
     node: &IosNode,
 ) -> NavigatorHandle {

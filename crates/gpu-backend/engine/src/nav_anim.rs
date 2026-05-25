@@ -202,16 +202,16 @@ pub fn default_transition() -> Rc<dyn ScreenTransition> {
 //
 // Users select a non-default animator by wrapping the
 // `Navigator::new(...).bind(handle).into()` chain in
-// [`with_transition`]. The wgpu backend's `create_navigator`
+// [`with_transition`]. The wgpu backend's `create_stack_navigator`
 // consumes whatever's installed at call time.
 //
 // Lifecycle note: the override stays installed until the next
-// `create_navigator` call consumes it — it is *not* cleared on
+// `create_stack_navigator` call consumes it — it is *not* cleared on
 // `with_transition`'s exit. This is intentional: the framework's
 // walker processes the returned `Primitive::Navigator` *after*
 // the screen-builder closure (and `with_transition`) has
 // already returned, so an auto-cleared override would always
-// be gone by the time `create_navigator` actually runs. Leaving
+// be gone by the time `create_stack_navigator` actually runs. Leaving
 // it set lets the deferred walker pick it up. If a
 // `with_transition` block ends without producing a Navigator
 // the override stays staged for the next nav built on this
@@ -226,7 +226,7 @@ thread_local! {
 
 /// Stage an animator for the next `Navigator` constructed on
 /// this thread. The framework's walker only fires
-/// `create_navigator` *after* the user closure that built the
+/// `create_stack_navigator` *after* the user closure that built the
 /// `Primitive::Navigator` has returned, so this thread-local
 /// stays set across the closure boundary and is consumed
 /// when the walker eventually reaches the navigator node.
@@ -252,7 +252,7 @@ pub fn with_transition<R>(anim: Rc<dyn ScreenTransition>, build: impl FnOnce() -
 
 /// Drop a staged transition override without binding it to a
 /// navigator. Rarely needed in normal flow — the next
-/// `create_navigator` consumes the stage automatically.
+/// `create_stack_navigator` consumes the stage automatically.
 pub fn clear_transition_override() {
     TRANSITION_OVERRIDE.with(|cell| {
         *cell.borrow_mut() = None;
@@ -260,7 +260,7 @@ pub fn clear_transition_override() {
 }
 
 /// Take and clear the current transition override. The wgpu
-/// backend's `create_navigator` calls this once per navigator;
+/// backend's `create_stack_navigator` calls this once per navigator;
 /// `None` means use [`default_transition`].
 pub(crate) fn take_transition_override() -> Option<Rc<dyn ScreenTransition>> {
     TRANSITION_OVERRIDE.with(|cell| cell.borrow_mut().take())

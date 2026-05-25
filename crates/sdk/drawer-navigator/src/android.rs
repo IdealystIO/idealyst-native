@@ -2,7 +2,7 @@
 //!
 //! Phase-1 adapter: synthesizes legacy `DrawerNavigatorCallbacks` and
 //! calls `AndroidBackend::create_drawer_navigator`. Sets
-//! `NavExtKind::Drawer` for unified dispatch.
+//! `NavigatorKind::Drawer` for unified dispatch.
 
 use crate::{DrawerPresentation, DrawerSide, DrawerType, MountPolicy};
 use backend_android_mobile::AndroidBackend;
@@ -10,7 +10,7 @@ use jni::objects::GlobalRef;
 use runtime_core::{
     accessibility::AccessibilityProps, Backend, DrawerNavigatorCallbacks,
     DrawerSide as CoreDrawerSide, DrawerType as CoreDrawerType, MountPolicy as CoreMountPolicy,
-    MountResult, NavExtKind, NavigatorCallbacks, NavigatorHandler, NavigatorHost, Signal,
+    MountResult, NavigatorKind, NavigatorCallbacks, NavigatorHandler, NavigatorHost, Signal,
 };
 use std::any::Any;
 use std::rc::Rc;
@@ -120,7 +120,7 @@ impl NavigatorHandler<AndroidBackend> for AndroidDrawerHandler {
             control,
             &AccessibilityProps::default(),
         );
-        backend.set_nav_ext_kind(&node, NavExtKind::Drawer);
+        backend.set_nav_kind(&node, NavigatorKind::Drawer);
         node
     }
 

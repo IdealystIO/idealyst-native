@@ -1,15 +1,15 @@
 //! iOS-backend handler for the Stack navigator SDK.
 //!
 //! Phase-1 adapter: synthesizes legacy `NavigatorCallbacks` and calls
-//! `IosBackend::create_navigator` (which drives `UINavigationController`).
-//! Sets `NavExtKind::Stack` on the resulting node so the backend's
+//! `IosBackend::create_stack_navigator` (which drives `UINavigationController`).
+//! Sets `NavigatorKind::Stack` on the resulting node so the backend's
 //! unified `navigator_extension_*` trait method overrides route to the
 //! stack storage map.
 
 use crate::StackPresentation;
 use backend_ios_mobile::{IosBackend, IosNode};
 use runtime_core::{
-    accessibility::AccessibilityProps, Backend, MountResult, NavExtKind, NavigatorCallbacks,
+    accessibility::AccessibilityProps, Backend, MountResult, NavigatorKind, NavigatorCallbacks,
     NavigatorHandler, NavigatorHost,
 };
 use std::any::Any;
@@ -66,8 +66,8 @@ impl NavigatorHandler<IosBackend> for IosStackHandler {
             defer_initial_mount,
         };
 
-        let node = backend.create_navigator(callbacks, control, &AccessibilityProps::default());
-        backend.set_nav_ext_kind(&node, NavExtKind::Stack);
+        let node = backend.create_stack_navigator(callbacks, control, &AccessibilityProps::default());
+        backend.set_nav_kind(&node, NavigatorKind::Stack);
         node
     }
 
@@ -80,7 +80,7 @@ impl NavigatorHandler<IosBackend> for IosStackHandler {
     ) {
         unreachable!(
             "IosStackHandler::attach_initial — IosBackend routes via \
-             navigator_extension_attach_initial + nav_ext_kind"
+             navigator_attach_initial + nav_kind"
         );
     }
 

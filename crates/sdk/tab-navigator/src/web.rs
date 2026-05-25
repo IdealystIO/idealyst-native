@@ -94,7 +94,7 @@ impl NavigatorHandler<WebBackend> for WebTabHandler {
         };
 
         // The TabPresentation Rc may still have other strong refs (the
-        // Primitive::NavigatorExt payload itself); clone the inner data
+        // Primitive::Navigator payload itself); clone the inner data
         // out instead of trying to Rc::try_unwrap.
         let tabs: Vec<TabRegistration> = presentation
             .tab_order
@@ -136,7 +136,7 @@ impl NavigatorHandler<WebBackend> for WebTabHandler {
     ) {
         unreachable!(
             "WebTabHandler::attach_initial — WebBackend dispatches via \
-             navigator_extension_attach_initial → uniform machinery"
+             navigator_attach_initial → uniform machinery"
         );
     }
 

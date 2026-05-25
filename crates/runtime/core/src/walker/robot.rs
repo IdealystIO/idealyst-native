@@ -159,20 +159,8 @@ pub(super) fn robot_extract_meta(node: &Primitive) -> Option<RobotMeta> {
                 },
             })
         }
-        Primitive::Navigator(_) => Some(RobotMeta {
+        Primitive::Navigator { .. } => Some(RobotMeta {
             kind: ElementKind::Navigator,
-            test_id: None,
-            label: None,
-            actions: ElementActions::empty(),
-        }),
-        Primitive::TabNavigator(_) => Some(RobotMeta {
-            kind: ElementKind::TabNavigator,
-            test_id: None,
-            label: None,
-            actions: ElementActions::empty(),
-        }),
-        Primitive::DrawerNavigator(_) => Some(RobotMeta {
-            kind: ElementKind::DrawerNavigator,
             test_id: None,
             label: None,
             actions: ElementActions::empty(),

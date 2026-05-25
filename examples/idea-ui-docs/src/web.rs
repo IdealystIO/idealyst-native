@@ -30,7 +30,7 @@ pub fn start() {
     let mut web = WebBackend::new("#app");
     // Register navigator-SDK handlers so the app's
     // `stack_navigator::Navigator` builders dispatch through
-    // `Backend::create_navigator_extension`.
+    // `Backend::create_navigator`.
     stack_navigator::register(&mut web);
     let backend = Rc::new(RefCell::new(web));
     let owner = runtime_core::render(backend, super::app());

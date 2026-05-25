@@ -55,7 +55,7 @@ pub fn start() {
         let mut web = WebBackend::new("#app");
         // Register navigator-SDK handlers so the app's
         // `drawer_navigator::DrawerNavigator` builder dispatches through
-        // `Backend::create_navigator_extension`.
+        // `Backend::create_navigator`.
         drawer_navigator::register(&mut web);
         let backend = Rc::new(RefCell::new(web));
         let owner = runtime_core::render(backend, super::app());
@@ -119,7 +119,7 @@ mod dev_hot_reload {
                 // The hot-reload-driven docs app still routes through
                 // the dev-server / wire path, but the local backend
                 // needs the SDK handler registered so any
-                // `Primitive::NavigatorExt` the wire carries can be
+                // `Primitive::Navigator` the wire carries can be
                 // realized locally. Match the non-hot-reload setup.
                 drawer_navigator::register(&mut real_backend);
                 let outbound = OutboundSender::new();

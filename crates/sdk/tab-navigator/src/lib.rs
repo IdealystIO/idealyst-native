@@ -1,6 +1,6 @@
 //! First-party Tab navigator SDK.
 //!
-//! Routes through `Primitive::NavigatorExt`; the registered
+//! Routes through `Primitive::Navigator`; the registered
 //! `TabHandler` drives a platform-native tab bar (UITabBarController,
 //! BottomNavigationView, or a web `role=tablist`).
 //!
@@ -20,7 +20,7 @@
 //! ```
 
 use runtime_core::primitives::navigator::{
-    DefaultLinkKind, NavigatorExtConfig, NavigatorHandle, Route, RouteEntry, RouteParams,
+    DefaultLinkKind, NavigatorConfig, NavigatorHandle, Route, RouteEntry, RouteParams,
     ScreenBuilder, ScreenOptions,
 };
 use runtime_core::{Bound, IntoStyleSource, Primitive, Ref, RefFill, StyleSource};
@@ -85,7 +85,7 @@ impl Default for MountPolicy {
 }
 
 /// Tab-kind presentation payload. Carries everything tab-handlers need
-/// that *isn't* in the shared `NavigatorExtConfig`.
+/// that *isn't* in the shared `NavigatorConfig`.
 pub struct TabPresentation {
     pub tab_order: Vec<(&'static str, TabSpec)>,
     pub placement: TabPlacement,
@@ -135,7 +135,7 @@ impl TabsHandle {
 // =============================================================================
 
 pub struct TabNavigator {
-    config: NavigatorExtConfig,
+    config: NavigatorConfig,
     presentation: TabPresentation,
     slot_styles: Vec<(&'static str, StyleSource)>,
     style: Option<StyleSource>,
@@ -145,7 +145,7 @@ pub struct TabNavigator {
 impl TabNavigator {
     pub fn new(initial: &Route<()>) -> Bound<TabsHandle> {
         let nav = Self {
-            config: NavigatorExtConfig {
+            config: NavigatorConfig {
                 initial: initial.name(),
                 initial_path: initial.path(),
                 screens: HashMap::new(),
@@ -164,7 +164,7 @@ impl TabNavigator {
 
     fn into_primitive(self) -> Primitive {
         let TabNavigator { config, presentation, slot_styles, style, ref_fill } = self;
-        Primitive::NavigatorExt {
+        Primitive::Navigator {
             type_id: TypeId::of::<TabPresentation>(),
             type_name: std::any::type_name::<TabPresentation>(),
             presentation: Rc::new(presentation) as Rc<dyn Any>,
@@ -182,7 +182,7 @@ fn with_navigator_ext<F: FnOnce(&mut Primitive)>(b: &mut Bound<TabsHandle>, f: F
 }
 
 fn with_presentation<F: FnOnce(&mut TabPresentation)>(b: &mut Bound<TabsHandle>, f: F) {
-    if let Primitive::NavigatorExt { presentation, .. } = b.primitive_mut() {
+    if let Primitive::Navigator { presentation, .. } = b.primitive_mut() {
         let pres = Rc::get_mut(presentation)
             .expect("tab-navigator: presentation Rc already shared (builder misuse)");
         let pres: &mut dyn Any = pres;
@@ -222,7 +222,7 @@ impl TabsBuilder for Bound<TabsHandle> {
         let route_name = route.name();
         let route_path = route.path();
         with_navigator_ext(&mut self, |p| {
-            if let Primitive::NavigatorExt { config, .. } = p {
+            if let Primitive::Navigator { config, .. } = p {
                 let builder: ScreenBuilder = Rc::new(move |any_params: Box<dyn Any>| {
                     let typed: Box<P> = any_params
                         .downcast::<P>()
@@ -257,7 +257,7 @@ impl TabsBuilder for Bound<TabsHandle> {
 
     fn default_screen_options(mut self, opts: ScreenOptions) -> Self {
         with_navigator_ext(&mut self, |p| {
-            if let Primitive::NavigatorExt { config, .. } = p {
+            if let Primitive::Navigator { config, .. } = p {
                 config.default_options = Some(opts);
             }
         });
@@ -269,7 +269,7 @@ impl TabsBuilder for Bound<TabsHandle> {
         F: Fn(runtime_core::primitives::navigator::LayoutProps) -> Primitive + 'static,
     {
         with_navigator_ext(&mut self, |p| {
-            if let Primitive::NavigatorExt { config, .. } = p {
+            if let Primitive::Navigator { config, .. } = p {
                 config.layout = Some(Rc::new(f));
             }
         });
@@ -278,7 +278,7 @@ impl TabsBuilder for Bound<TabsHandle> {
 
     fn tab_bar_style(mut self, s: impl IntoStyleSource) -> Self {
         with_navigator_ext(&mut self, |p| {
-            if let Primitive::NavigatorExt { slot_styles, .. } = p {
+            if let Primitive::Navigator { slot_styles, .. } = p {
                 slot_styles.push(("tab_bar", s.into_style_source()));
             }
         });
@@ -287,7 +287,7 @@ impl TabsBuilder for Bound<TabsHandle> {
 
     fn tab_icon_style(mut self, s: impl IntoStyleSource) -> Self {
         with_navigator_ext(&mut self, |p| {
-            if let Primitive::NavigatorExt { slot_styles, .. } = p {
+            if let Primitive::Navigator { slot_styles, .. } = p {
                 slot_styles.push(("tab_icon", s.into_style_source()));
             }
         });
@@ -296,7 +296,7 @@ impl TabsBuilder for Bound<TabsHandle> {
 
     fn tab_label_style(mut self, s: impl IntoStyleSource) -> Self {
         with_navigator_ext(&mut self, |p| {
-            if let Primitive::NavigatorExt { slot_styles, .. } = p {
+            if let Primitive::Navigator { slot_styles, .. } = p {
                 slot_styles.push(("tab_label", s.into_style_source()));
             }
         });
@@ -305,8 +305,8 @@ impl TabsBuilder for Bound<TabsHandle> {
 
     fn bind(mut self, r: Ref<TabsHandle>) -> Self {
         with_navigator_ext(&mut self, |p| {
-            if let Primitive::NavigatorExt { ref_fill, .. } = p {
-                *ref_fill = Some(RefFill::NavigatorExt(Box::new(move |handle| {
+            if let Primitive::Navigator { ref_fill, .. } = p {
+                *ref_fill = Some(RefFill::Navigator(Box::new(move |handle| {
                     r.fill(TabsHandle::from_inner(handle));
                 })));
             }

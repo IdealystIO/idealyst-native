@@ -59,7 +59,6 @@ mod icon;
 mod image;
 mod link;
 mod navigator;
-mod navigator_ext;
 mod portal;
 mod presence;
 mod pressable;
@@ -324,9 +323,6 @@ pub(super) fn build_inner<B: Backend + 'static>(
         Primitive::Graphics { on_ready, on_resize, on_lost, style, ref_fill, accessibility, .. } => {
             graphics::build(backend, on_ready, on_resize, on_lost, style, ref_fill, accessibility)
         }
-        Primitive::Navigator(nav) => navigator::build_navigator_dispatch(backend, nav),
-        Primitive::TabNavigator(nav) => navigator::build_tab_navigator_dispatch(backend, nav),
-        Primitive::DrawerNavigator(nav) => navigator::build_drawer_navigator_dispatch(backend, nav),
         Primitive::When { cond, then, otherwise, style } => {
             when_switch::build_when(backend, cond, then, otherwise, style)
         }
@@ -354,7 +350,7 @@ pub(super) fn build_inner<B: Backend + 'static>(
             accessibility,
             ..
         } => external::build(backend, type_id, type_name, payload, style, ref_fill, accessibility),
-        Primitive::NavigatorExt {
+        Primitive::Navigator {
             type_id,
             type_name,
             presentation,
@@ -363,7 +359,7 @@ pub(super) fn build_inner<B: Backend + 'static>(
             slot_styles,
             ref_fill,
             accessibility,
-        } => navigator_ext::build(
+        } => navigator::build(
             backend,
             type_id,
             type_name,

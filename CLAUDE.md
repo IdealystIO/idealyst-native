@@ -8,6 +8,14 @@ Do not run `git stash`, `git stash push`, `git stash pop`, or any variant — no
 
 If you genuinely think stashing is the only option, stop and ask the user first.
 
+## 0a. No `Co-Authored-By: Claude` trailers
+
+Do not add `Co-Authored-By: Claude …` trailers (or any other AI attribution trailer like `Generated-By: Claude`, `🤖 Generated with Claude Code`, etc.) to commit messages or PR bodies. This overrides the global Claude Code default in the harness's git-commit instructions for THIS repo.
+
+If you've already authored a commit with a Claude trailer in this conversation, amend it (or rewrite via `git commit-tree` plumbing if the working tree isn't clean) to strip the trailer before moving on. Never let a Claude-trailered commit ship.
+
+The repo's author of record is the user. Tools that helped write the code don't get an attribution line.
+
 ## 1. Test changes — especially in framework core
 
 Run the test suite when you make changes. Architectural changes to framework core (anything in `crates/framework/core/`, the Backend trait, reactive system, wire protocol, scene model) MUST be accompanied by tests that cover the new behavior. Framework stability is non-negotiable — a change without test coverage is incomplete.

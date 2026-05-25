@@ -51,49 +51,6 @@ impl<B: Backend + 'static> Drop for VirtualizerHandleCleanup<B> {
     }
 }
 
-/// RAII wrapper that calls `Backend::release_navigator` when dropped.
-/// Same shape as Virtualizer / Graphics cleanup. The navigator owns a
-/// stack of per-screen scopes; when the cleanup fires, the backend's
-/// `release_navigator` impl is responsible for releasing every still-
-/// mounted scope via the `release_screen` callback the framework
-/// handed it at create time.
-pub(super) struct NavigatorHandleCleanup<B: Backend + 'static> {
-    pub(super) backend: Rc<RefCell<B>>,
-    pub(super) node: B::Node,
-}
-
-impl<B: Backend + 'static> Drop for NavigatorHandleCleanup<B> {
-    fn drop(&mut self) {
-        self.backend.borrow_mut().release_navigator(&self.node);
-    }
-}
-
-/// RAII wrapper that calls `Backend::release_tab_navigator` when
-/// dropped. Same shape as `NavigatorHandleCleanup`.
-pub(super) struct TabNavigatorHandleCleanup<B: Backend + 'static> {
-    pub(super) backend: Rc<RefCell<B>>,
-    pub(super) node: B::Node,
-}
-
-impl<B: Backend + 'static> Drop for TabNavigatorHandleCleanup<B> {
-    fn drop(&mut self) {
-        self.backend.borrow_mut().release_tab_navigator(&self.node);
-    }
-}
-
-/// RAII wrapper that calls `Backend::release_drawer_navigator` when
-/// dropped. Same shape as `NavigatorHandleCleanup`.
-pub(super) struct DrawerNavigatorHandleCleanup<B: Backend + 'static> {
-    pub(super) backend: Rc<RefCell<B>>,
-    pub(super) node: B::Node,
-}
-
-impl<B: Backend + 'static> Drop for DrawerNavigatorHandleCleanup<B> {
-    fn drop(&mut self) {
-        self.backend.borrow_mut().release_drawer_navigator(&self.node);
-    }
-}
-
 /// RAII wrapper that calls `Backend::release_portal` when dropped.
 /// Installed per Portal primitive by a dedicated `Effect` in the
 /// build walker. When the surrounding scope drops — host's

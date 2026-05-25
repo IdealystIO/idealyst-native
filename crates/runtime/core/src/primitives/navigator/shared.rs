@@ -25,7 +25,7 @@
 //! - `NavigatorHandle` + `NavigatorOps` — the imperative API and
 //!   its backend hook trait.
 //! - `NavigatorCallbacks` — the bundle handed to
-//!   `Backend::create_navigator` (and, eventually, the per-kind
+//!   `Backend::create_stack_navigator` (and, eventually, the per-kind
 //!   `create_tab_navigator` / `create_drawer_navigator` siblings).
 //! - `LayoutProps` / `LayoutPlan` / `LayoutBuilder` — author-supplied
 //!   chrome wrapper for backends that render through a layout (web).
@@ -944,7 +944,7 @@ pub fn current_screen_state<T: Any>() -> Option<Rc<T>> {
 // NavigatorCallbacks — what the framework hands to the backend
 // ---------------------------------------------------------------------------
 
-/// Bundle the framework hands to `Backend::create_navigator`. Same
+/// Bundle the framework hands to `Backend::create_stack_navigator`. Same
 /// shape philosophy as `VirtualizerCallbacks`: typed where possible
 /// (`mount_screen` returns the backend's actual `N`), `Rc`'d so
 /// per-event handlers can clone freely.
@@ -1003,7 +1003,7 @@ pub struct NavigatorCallbacks<N: Clone + 'static> {
     /// `.set(...)` from layout effects if they need to (advanced).
     pub nav_state: NavState,
     /// Subscribe to commands from the handle. The backend installs a
-    /// dispatcher here (see `Backend::create_navigator` doc); when the
+    /// dispatcher here (see `Backend::create_stack_navigator` doc); when the
     /// user's code calls `handle.push(...)`, that dispatcher fires.
     /// The backend's dispatcher must:
     ///   1. Call `mount_screen(name, params)` to get the new node +
@@ -1015,9 +1015,9 @@ pub struct NavigatorCallbacks<N: Clone + 'static> {
     ///      probe stays in sync.
     pub depth_changed: Rc<dyn Fn(usize)>,
     /// When `true`, backends that would normally auto-mount the
-    /// initial route at `create_navigator` time MUST NOT call
+    /// initial route at `create_stack_navigator` time MUST NOT call
     /// `mount_screen` themselves. Initial mounting comes
-    /// exclusively through [`Backend::navigator_attach_initial`]
+    /// exclusively through [`Backend::stack_navigator_attach_initial`]
     /// with a pre-built screen node.
     ///
     /// Set by the runtime-server dev-client's stub callbacks (the wire's
@@ -1030,15 +1030,15 @@ pub struct NavigatorCallbacks<N: Clone + 'static> {
 }
 
 // ---------------------------------------------------------------------------
-// NavigatorExtConfig — shared framework-driven routing for the new
-// `Primitive::NavigatorExt` path. The fields below are what *every*
+// NavigatorConfig — shared framework-driven routing for the new
+// `Primitive::Navigator` path. The fields below are what *every*
 // navigator kind needs regardless of presentation. Kind-specific
 // presentation (tab bar items, drawer width, stack header style, etc.)
 // goes in the SDK's typed presentation payload, NOT here.
 // ---------------------------------------------------------------------------
 
 /// The shared, framework-owned routing config carried by every
-/// `Primitive::NavigatorExt`. SDK builders fill this from their
+/// `Primitive::Navigator`. SDK builders fill this from their
 /// `.screen(...)` / `.layout(...)` / `.default_screen_options(...)`
 /// methods and bundle it alongside their kind-specific presentation
 /// payload.
@@ -1047,7 +1047,7 @@ pub struct NavigatorCallbacks<N: Clone + 'static> {
 /// `Navigator` / `TabNavigator` / `DrawerNavigator` builder structs'
 /// shared fields. It's what the walker reads to build
 /// [`super::host::NavigatorHost`].
-pub struct NavigatorExtConfig {
+pub struct NavigatorConfig {
     pub initial: &'static str,
     pub initial_path: &'static str,
     pub screens: HashMap<&'static str, RouteEntry>,
@@ -1067,7 +1067,7 @@ pub struct NavigatorExtConfig {
     pub defer_initial_mount: bool,
 }
 
-impl NavigatorExtConfig {
+impl NavigatorConfig {
     /// Build a fresh config with empty routes, no layout, no default
     /// options, `Push` default link kind, and standard mount semantics.
     pub fn new(initial: &'static str, initial_path: &'static str) -> Self {

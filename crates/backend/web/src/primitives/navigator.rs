@@ -488,7 +488,7 @@ where
     // Mount the initial / deep-linked stack.
     //
     // Deferred to a microtask so the build walker's outer
-    // `backend.borrow_mut()` (held across the `create_navigator`
+    // `backend.borrow_mut()` (held across the `create_stack_navigator`
     // call) is released before `mount_screen` calls back into
     // `build(&backend, ...)`. Calling synchronously here would trip
     // a "RefCell already borrowed" panic. Same defer-trick used by
@@ -513,7 +513,7 @@ where
             let mut inst = instance.borrow_mut();
 
             // runtime-server / deferred-mount mode: skip URL-driven auto-mount.
-            // The caller mounts via `navigator_attach_initial` with
+            // The caller mounts via `stack_navigator_attach_initial` with
             // an externally-built screen node — the framework's wire
             // delivers it shortly after this microtask runs.
             if inst.defer_initial_mount {
@@ -731,7 +731,7 @@ pub(crate) fn create_drawer(
 }
 
 /// runtime-server / deferred-mount entry point. Called by
-/// `WebBackend::navigator_attach_initial` when the navigator was
+/// `WebBackend::stack_navigator_attach_initial` when the navigator was
 /// created with `defer_initial_mount = true`. Mounts the externally-
 /// built `screen` node into the navigator's outlet without going
 /// through `mount_screen`.

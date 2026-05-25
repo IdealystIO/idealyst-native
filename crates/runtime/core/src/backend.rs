@@ -1569,38 +1569,38 @@ pub trait Backend {
     ///    drops and the screen's signals/effects/refs are freed.
     ///
     /// **The backend MUST NOT call `callbacks.mount_screen` synchronously
-    /// inside this method.** `create_navigator` is invoked while the
+    /// inside this method.** `create_stack_navigator` is invoked while the
     /// framework holds a `borrow_mut` on the backend `RefCell`;
     /// `mount_screen` re-enters the build walker which would attempt
     /// another `borrow_mut` — double-borrow panic. The framework
     /// mounts the initial screen itself *after* this method returns
-    /// and hands the result to [`Backend::navigator_attach_initial`].
+    /// and hands the result to [`Backend::stack_navigator_attach_initial`].
     /// Dispatcher closures saved on `control` run later (outside the
     /// borrow window), so they're free to call `mount_screen`.
     ///
     /// Default impl is `unimplemented!()` — most backends will want a
     /// real implementation.
     #[allow(unused_variables)]
-    fn create_navigator(
+    fn create_stack_navigator(
         &mut self,
         callbacks: primitives::navigator::NavigatorCallbacks<Self::Node>,
         control: Rc<primitives::navigator::NavigatorControl>,
         a11y: &crate::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        unimplemented!("create_navigator not implemented for this backend")
+        unimplemented!("create_stack_navigator not implemented for this backend")
     }
 
     /// Mount the initial screen into a freshly-created navigator.
-    /// Called by the framework immediately after `create_navigator`
+    /// Called by the framework immediately after `create_stack_navigator`
     /// returns, with the result of mounting the initial route via
     /// the framework's per-screen scope machinery.
     ///
-    /// Splitting this from `create_navigator` avoids a re-entrant
-    /// `borrow_mut` — see [`Backend::create_navigator`] for the full
+    /// Splitting this from `create_stack_navigator` avoids a re-entrant
+    /// `borrow_mut` — see [`Backend::create_stack_navigator`] for the full
     /// explanation. Backends that don't implement navigators can
     /// leave the default no-op.
     #[allow(unused_variables)]
-    fn navigator_attach_initial(
+    fn stack_navigator_attach_initial(
         &mut self,
         navigator: &Self::Node,
         screen: Self::Node,
@@ -1609,7 +1609,7 @@ pub trait Backend {
     ) {
         // default: no-op; backends that don't implement Navigator
         // never get called here (the framework only invokes this
-        // alongside `create_navigator`).
+        // alongside `create_stack_navigator`).
     }
 
     /// Apply style to the navigator's header bar (background, shadow).
@@ -1659,13 +1659,13 @@ pub trait Backend {
     /// drop any closures they handed the JS/JVM side. Default is a
     /// no-op for backends that don't implement Navigator.
     #[allow(unused_variables)]
-    fn release_navigator(&mut self, node: &Self::Node) {}
+    fn release_stack_navigator(&mut self, node: &Self::Node) {}
 
     /// Default no-op handle. Backends that actually implement
     /// navigators override this to return a real handle wired to the
     /// control plane (see `NavigatorHandle::with_control`).
     #[allow(unused_variables)]
-    fn make_navigator_handle(
+    fn make_stack_navigator_handle(
         &self,
         node: &Self::Node,
     ) -> primitives::navigator::NavigatorHandle {
@@ -1673,7 +1673,7 @@ pub trait Backend {
     }
 
     /// Create a tab navigator. Same shape contract as
-    /// [`Backend::create_navigator`]: backend stores the callbacks,
+    /// [`Backend::create_stack_navigator`]: backend stores the callbacks,
     /// installs a dispatcher on `control`, but does NOT call
     /// `mount_screen` synchronously (re-entrant borrow). Per-mount
     /// timing depends on `callbacks.mount_policy`:
@@ -1697,7 +1697,7 @@ pub trait Backend {
     }
 
     /// Mount the initial screen into a freshly-created tab
-    /// navigator. Same shape as [`Backend::navigator_attach_initial`]
+    /// navigator. Same shape as [`Backend::stack_navigator_attach_initial`]
     /// — splitting from `create_tab_navigator` avoids the
     /// re-entrant borrow_mut. Backends that mount the initial
     /// screen via a microtask (web) can leave this as the default
@@ -1714,7 +1714,7 @@ pub trait Backend {
     }
 
     /// Tear down a tab navigator. Same contract as
-    /// [`Backend::release_navigator`]. Default no-op so backends
+    /// [`Backend::release_stack_navigator`]. Default no-op so backends
     /// that don't implement tabs aren't required to define this.
     #[allow(unused_variables)]
     fn release_tab_navigator(&mut self, node: &Self::Node) {}
@@ -1732,7 +1732,7 @@ pub trait Backend {
     }
 
     /// Create a drawer navigator. Same shape contract as
-    /// [`Backend::create_navigator`] and
+    /// [`Backend::create_stack_navigator`] and
     /// [`Backend::create_tab_navigator`]: backend stores the
     /// callbacks, installs a dispatcher on `control`, does NOT call
     /// `mount_screen` synchronously.
@@ -1813,7 +1813,7 @@ pub trait Backend {
     }
 
     /// Tear down a drawer navigator. Same contract as
-    /// [`Backend::release_navigator`]. Default no-op so backends
+    /// [`Backend::release_stack_navigator`]. Default no-op so backends
     /// that don't implement drawers aren't required to define this.
     #[allow(unused_variables)]
     fn release_drawer_navigator(&mut self, node: &Self::Node) {}
@@ -1875,11 +1875,11 @@ pub trait Backend {
     /// dispatch; `type_name` is for debug/error messages.
     ///
     /// This single method is the unified replacement for the three
-    /// per-kind `create_navigator` / `create_tab_navigator` /
+    /// per-kind `create_stack_navigator` / `create_tab_navigator` /
     /// `create_drawer_navigator` methods. The per-kind methods exist
     /// in parallel during the migration; new code should land here.
     #[allow(unused_variables)]
-    fn create_navigator_extension(
+    fn create_navigator(
         &mut self,
         type_id: std::any::TypeId,
         type_name: &'static str,
@@ -1888,7 +1888,7 @@ pub trait Backend {
         a11y: &crate::accessibility::AccessibilityProps,
     ) -> Self::Node {
         unimplemented!(
-            "create_navigator_extension not implemented for this backend \
+            "create_navigator not implemented for this backend \
              (navigator kind: {})",
             type_name
         )
@@ -1898,7 +1898,7 @@ pub trait Backend {
     /// hold per-node handler state override and drop their handler
     /// entry keyed by `node`.
     #[allow(unused_variables)]
-    fn release_navigator_extension(&mut self, node: &Self::Node) {
+    fn release_navigator(&mut self, node: &Self::Node) {
         // default no-op
     }
 
@@ -1912,7 +1912,7 @@ pub trait Backend {
     /// Default no-op; SDK-specific slot styling without a registered
     /// handler is silently ignored.
     #[allow(unused_variables)]
-    fn apply_navigator_extension_slot_style(
+    fn apply_navigator_slot_style(
         &mut self,
         node: &Self::Node,
         slot: &'static str,
@@ -1922,12 +1922,12 @@ pub trait Backend {
     }
 
     /// Make a `NavigatorHandle` for a navigator extension. Returned
-    /// from inside the backend's `create_navigator_extension` impl
-    /// when the SDK's `bind(...)` fires a `RefFill::NavigatorExt`.
+    /// from inside the backend's `create_navigator` impl
+    /// when the SDK's `bind(...)` fires a `RefFill::Navigator`.
     /// Default returns a no-op handle (matches the per-kind
-    /// `make_navigator_handle` posture).
+    /// `make_stack_navigator_handle` posture).
     #[allow(unused_variables)]
-    fn make_navigator_extension_handle(
+    fn make_navigator_handle(
         &self,
         node: &Self::Node,
     ) -> primitives::navigator::NavigatorHandle {
@@ -1939,14 +1939,14 @@ pub trait Backend {
     /// `screen` into its native container; this trait method exists so
     /// the walker can hand the result of its initial `mount_screen`
     /// call to the registered handler outside the
-    /// `create_navigator_extension` borrow window.
+    /// `create_navigator` borrow window.
     ///
-    /// Default panics — backends that implement `create_navigator_extension`
+    /// Default panics — backends that implement `create_navigator`
     /// must also implement this, typically by looking up the handler
     /// keyed by `node` and delegating to
     /// [`NavigatorHandler::attach_initial`](primitives::navigator::NavigatorHandler).
     #[allow(unused_variables)]
-    fn navigator_extension_attach_initial(
+    fn navigator_attach_initial(
         &mut self,
         navigator: &Self::Node,
         screen: Self::Node,
@@ -1954,7 +1954,7 @@ pub trait Backend {
         options: primitives::navigator::ScreenOptions,
     ) {
         unimplemented!(
-            "navigator_extension_attach_initial not implemented for this backend"
+            "navigator_attach_initial not implemented for this backend"
         )
     }
 

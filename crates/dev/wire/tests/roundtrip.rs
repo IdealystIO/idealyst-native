@@ -604,11 +604,11 @@ fn screen_released_reverse_channel() {
     };
 
     let control = Rc::new(NavigatorControl::new());
-    let nav_id = recorder.create_navigator(callbacks, control, &Default::default());
+    let nav_id = recorder.create_stack_navigator(callbacks, control, &Default::default());
 
     // Attach an initial screen via the framework path. Note this
-    // mirrors what `navigator_attach_initial` would normally do.
-    recorder.navigator_attach_initial(
+    // mirrors what `stack_navigator_attach_initial` would normally do.
+    recorder.stack_navigator_attach_initial(
         &nav_id,
         wire::NodeId(7),
         100,

@@ -1,7 +1,7 @@
 //! iOS-backend handler for the Drawer navigator SDK.
 //!
 //! Phase-1 adapter: synthesizes legacy `DrawerNavigatorCallbacks` and
-//! calls `IosBackend::create_drawer_navigator`. Sets `NavExtKind::Drawer`
+//! calls `IosBackend::create_drawer_navigator`. Sets `NavigatorKind::Drawer`
 //! for unified dispatch routing.
 
 use crate::{DrawerPresentation, DrawerSide, DrawerType, MountPolicy};
@@ -9,7 +9,7 @@ use backend_ios_mobile::{IosBackend, IosNode};
 use runtime_core::{
     accessibility::AccessibilityProps, Backend, DrawerNavigatorCallbacks,
     DrawerSide as CoreDrawerSide, DrawerType as CoreDrawerType, MountPolicy as CoreMountPolicy,
-    MountResult, NavExtKind, NavigatorCallbacks, NavigatorHandler, NavigatorHost, Signal,
+    MountResult, NavigatorKind, NavigatorCallbacks, NavigatorHandler, NavigatorHost, Signal,
 };
 use std::any::Any;
 use std::rc::Rc;
@@ -121,7 +121,7 @@ impl NavigatorHandler<IosBackend> for IosDrawerHandler {
             control,
             &AccessibilityProps::default(),
         );
-        backend.set_nav_ext_kind(&node, NavExtKind::Drawer);
+        backend.set_nav_kind(&node, NavigatorKind::Drawer);
         node
     }
 

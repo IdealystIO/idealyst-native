@@ -60,7 +60,7 @@
 //! - **No SVG**: icon path data ships as strings; the client
 //!   rasterizes (or looks up in a sprite atlas) at first use.
 //! - **No native navigator**: the `Backend` trait's default
-//!   `unimplemented!()` panics for `create_navigator`, etc. —
+//!   `unimplemented!()` panics for `create_stack_navigator`, etc. —
 //!   implementing those means deciding how the BrightScript client
 //!   expresses navigation stacks, which is out of scope for this
 //!   initial pass. Portals are wired through `create_portal` — the

@@ -379,9 +379,6 @@ pub enum RefFill {
     ActivityIndicator(Box<dyn FnOnce(primitives::activity_indicator::ActivityIndicatorHandle)>),
     Virtualizer(Box<dyn FnOnce(primitives::virtualizer::VirtualizerHandle)>),
     Graphics(Box<dyn FnOnce(primitives::graphics::GraphicsHandle)>),
-    Navigator(Box<dyn FnOnce(primitives::navigator::NavigatorHandle)>),
-    TabNavigator(Box<dyn FnOnce(primitives::navigator::TabsHandle)>),
-    DrawerNavigator(Box<dyn FnOnce(primitives::navigator::DrawerHandle)>),
     Link(Box<dyn FnOnce(primitives::link::LinkHandle)>),
     Portal(Box<dyn FnOnce(primitives::portal::PortalHandle)>),
     /// Fill closure for third-party `Primitive::External` primitives.
@@ -390,12 +387,12 @@ pub enum RefFill {
     /// build the user-facing `ExternalHandle<T>` before filling the
     /// `Ref`.
     External(Box<dyn FnOnce(Rc<dyn Any>)>),
-    /// Fill closure for `Primitive::NavigatorExt`. Hands the SDK a
+    /// Fill closure for `Primitive::Navigator`. Hands the SDK a
     /// pre-built `NavigatorHandle` wired to the navigator's control
     /// plane; the SDK wraps it in its own kind-specific handle type
     /// (`StackHandle` / `TabsHandle` / `DrawerHandle` / custom) before
     /// filling the user's `Ref`.
-    NavigatorExt(Box<dyn FnOnce(primitives::navigator::NavigatorHandle)>),
+    Navigator(Box<dyn FnOnce(primitives::navigator::NavigatorHandle)>),
     Presence(Box<dyn FnOnce(primitives::presence::PresenceHandle)>),
 }
 

@@ -165,8 +165,8 @@ pub struct AndroidBackend {
     pub(crate) anim_state: HashMap<usize, NodeAnim>,
     /// Per-navigator state. Keyed by the navigator container's raw
     /// `JObject*` pointer (the same scheme `anim_state` uses).
-    /// Entries inserted on `create_navigator`, removed in
-    /// `release_navigator`.
+    /// Entries inserted on `create_stack_navigator`, removed in
+    /// `release_stack_navigator`.
     pub(crate) navigator_instances: primitives::navigator::NavigatorInstances,
     /// Per-tab/drawer-navigator state. Keyed by the navigator
     /// container's raw `JObject*` pointer (same scheme
@@ -212,7 +212,7 @@ pub struct AndroidBackend {
     /// TextView.
     pub(crate) external_handlers:
         runtime_core::ExternalRegistry<AndroidBackend>,
-    /// Registry of `Primitive::NavigatorExt` handler factories.
+    /// Registry of `Primitive::Navigator` handler factories.
     /// SDK leaf crates install factories keyed by their presentation
     /// TypeId via `register_navigator`.
     pub(crate) navigator_handlers:
@@ -220,9 +220,9 @@ pub struct AndroidBackend {
     /// Per-navigator kind tracker. Android dispatches per-kind methods
     /// (stack vs tab vs drawer) so the unified `navigator_extension_*`
     /// trait method overrides consult this to route correctly. SDK
-    /// handlers tag the node via `set_nav_ext_kind` at init time.
-    pub(crate) nav_ext_kinds:
-        std::cell::RefCell<HashMap<usize, runtime_core::NavExtKind>>,
+    /// handlers tag the node via `set_nav_kind` at init time.
+    pub(crate) nav_kinds:
+        std::cell::RefCell<HashMap<usize, runtime_core::NavigatorKind>>,
     /// Per-`Typeface` registry of custom fonts. Filled by
     /// [`Backend::register_asset`] for `AssetTag::Font`
     /// (bytes → Android `Typeface.createFromFile`) and
@@ -353,7 +353,7 @@ impl AndroidBackend {
             view_to_layout: HashMap::new(),
             external_handlers: runtime_core::ExternalRegistry::new(),
             navigator_handlers: runtime_core::NavigatorRegistry::new(),
-            nav_ext_kinds: std::cell::RefCell::new(HashMap::new()),
+            nav_kinds: std::cell::RefCell::new(HashMap::new()),
             font_registry: font::FontRegistry::new(),
         }
     }
@@ -372,7 +372,7 @@ impl AndroidBackend {
     }
 
     /// Register a navigator-kind handler factory. Mirrors `register_external`
-    /// but for `Primitive::NavigatorExt`. SDK leaf crates
+    /// but for `Primitive::Navigator`. SDK leaf crates
     /// (`stack_navigator::register`, etc.) call this once at app bootstrap.
     pub fn register_navigator<P, F>(&mut self, factory: F)
     where
@@ -385,16 +385,16 @@ impl AndroidBackend {
     /// Tag a navigator node with its kind so the unified
     /// `navigator_extension_*` overrides can route to the right per-kind
     /// storage map.
-    pub fn set_nav_ext_kind(&self, node: &GlobalRef, kind: runtime_core::NavExtKind) {
-        self.nav_ext_kinds
+    pub fn set_nav_kind(&self, node: &GlobalRef, kind: runtime_core::NavigatorKind) {
+        self.nav_kinds
             .borrow_mut()
             .insert(AndroidBackend::node_key_of(node), kind);
     }
 
     /// Read back the recorded kind for `node`. Returns `None` if the
     /// node wasn't tagged (treated as Stack by the trait overrides).
-    pub fn nav_ext_kind(&self, node: &GlobalRef) -> Option<runtime_core::NavExtKind> {
-        self.nav_ext_kinds
+    pub fn nav_kind(&self, node: &GlobalRef) -> Option<runtime_core::NavigatorKind> {
+        self.nav_kinds
             .borrow()
             .get(&AndroidBackend::node_key_of(node))
             .copied()
@@ -1001,7 +1001,7 @@ impl Backend for AndroidBackend {
         node
     }
 
-    fn create_navigator(
+    fn create_stack_navigator(
         &mut self,
         callbacks: runtime_core::NavigatorCallbacks<Self::Node>,
         control: Rc<runtime_core::NavigatorControl>,
@@ -1012,7 +1012,7 @@ impl Backend for AndroidBackend {
         node
     }
 
-    fn navigator_attach_initial(
+    fn stack_navigator_attach_initial(
         &mut self,
         navigator: &Self::Node,
         screen: Self::Node,
@@ -1022,11 +1022,11 @@ impl Backend for AndroidBackend {
         primitives::navigator::attach_initial(self, navigator, screen, scope_id)
     }
 
-    fn release_navigator(&mut self, node: &Self::Node) {
+    fn release_stack_navigator(&mut self, node: &Self::Node) {
         primitives::navigator::release(self, node)
     }
 
-    fn make_navigator_handle(
+    fn make_stack_navigator_handle(
         &self,
         node: &Self::Node,
     ) -> runtime_core::NavigatorHandle {
@@ -1142,13 +1142,13 @@ impl Backend for AndroidBackend {
     }
 
     // ------------------------------------------------------------------
-    // NavigatorExt — unified path for SDK-supplied navigator kinds.
+    // Navigator — unified path for SDK-supplied navigator kinds.
     // Android uses per-kind storage (`navigator_instances` for stack;
     // `tab_drawer_instances` for tab+drawer), so the unified overrides
-    // route via `nav_ext_kind` populated by SDK handlers at init time.
+    // route via `nav_kind` populated by SDK handlers at init time.
     // ------------------------------------------------------------------
 
-    fn create_navigator_extension(
+    fn create_navigator(
         &mut self,
         type_id: std::any::TypeId,
         type_name: &'static str,
@@ -1161,7 +1161,7 @@ impl Backend for AndroidBackend {
             .get(type_id)
             .unwrap_or_else(|| {
                 panic!(
-                    "AndroidBackend::create_navigator_extension: navigator kind '{}' \
+                    "AndroidBackend::create_navigator: navigator kind '{}' \
                      is not registered. Did the app forget to call \
                      `<navigator-sdk>::register(&mut backend)` during bootstrap?",
                     type_name
@@ -1171,56 +1171,56 @@ impl Backend for AndroidBackend {
         handler.init(self, host, presentation)
     }
 
-    fn navigator_extension_attach_initial(
+    fn navigator_attach_initial(
         &mut self,
         navigator: &Self::Node,
         screen: Self::Node,
         scope_id: u64,
         options: runtime_core::ScreenOptions,
     ) {
-        match self.nav_ext_kind(navigator) {
-            Some(runtime_core::NavExtKind::Stack) | None => {
-                self.navigator_attach_initial(navigator, screen, scope_id, options)
+        match self.nav_kind(navigator) {
+            Some(runtime_core::NavigatorKind::Stack) | None => {
+                self.stack_navigator_attach_initial(navigator, screen, scope_id, options)
             }
-            Some(runtime_core::NavExtKind::Tab) => {
+            Some(runtime_core::NavigatorKind::Tab) => {
                 self.tab_navigator_attach_initial(navigator, screen, scope_id, options)
             }
-            Some(runtime_core::NavExtKind::Drawer) => {
+            Some(runtime_core::NavigatorKind::Drawer) => {
                 self.drawer_navigator_attach_initial(navigator, screen, scope_id, options)
             }
-            Some(runtime_core::NavExtKind::Custom) => {}
+            Some(runtime_core::NavigatorKind::Custom) => {}
         }
     }
 
-    fn release_navigator_extension(&mut self, node: &Self::Node) {
-        match self.nav_ext_kind(node) {
-            Some(runtime_core::NavExtKind::Stack) | None => self.release_navigator(node),
-            Some(runtime_core::NavExtKind::Tab) => self.release_tab_navigator(node),
-            Some(runtime_core::NavExtKind::Drawer) => self.release_drawer_navigator(node),
-            Some(runtime_core::NavExtKind::Custom) => {}
+    fn release_navigator(&mut self, node: &Self::Node) {
+        match self.nav_kind(node) {
+            Some(runtime_core::NavigatorKind::Stack) | None => self.release_stack_navigator(node),
+            Some(runtime_core::NavigatorKind::Tab) => self.release_tab_navigator(node),
+            Some(runtime_core::NavigatorKind::Drawer) => self.release_drawer_navigator(node),
+            Some(runtime_core::NavigatorKind::Custom) => {}
         }
-        self.nav_ext_kinds
+        self.nav_kinds
             .borrow_mut()
             .remove(&AndroidBackend::node_key_of(node));
     }
 
-    fn make_navigator_extension_handle(
+    fn make_navigator_handle(
         &self,
         node: &Self::Node,
     ) -> runtime_core::NavigatorHandle {
-        match self.nav_ext_kind(node) {
-            Some(runtime_core::NavExtKind::Stack) | None => self.make_navigator_handle(node),
-            Some(runtime_core::NavExtKind::Tab) => {
+        match self.nav_kind(node) {
+            Some(runtime_core::NavigatorKind::Stack) | None => self.make_stack_navigator_handle(node),
+            Some(runtime_core::NavigatorKind::Tab) => {
                 self.make_tab_navigator_handle(node).inner().clone()
             }
-            Some(runtime_core::NavExtKind::Drawer) => {
+            Some(runtime_core::NavigatorKind::Drawer) => {
                 self.make_drawer_navigator_handle(node).inner().clone()
             }
-            Some(runtime_core::NavExtKind::Custom) => self.make_navigator_handle(node),
+            Some(runtime_core::NavigatorKind::Custom) => self.make_stack_navigator_handle(node),
         }
     }
 
-    fn apply_navigator_extension_slot_style(
+    fn apply_navigator_slot_style(
         &mut self,
         navigator: &Self::Node,
         slot: &'static str,

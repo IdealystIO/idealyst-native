@@ -2,12 +2,12 @@
 //!
 //! Phase-1 adapter: thin handler whose `init` synthesizes the legacy
 //! `NavigatorCallbacks` from the framework-supplied `NavigatorHost`
-//! and calls `WebBackend::create_navigator` directly. The legacy
-//! `Backend::create_navigator` impl already installs the right
+//! and calls `WebBackend::create_stack_navigator` directly. The legacy
+//! `Backend::create_stack_navigator` impl already installs the right
 //! dispatcher on the control plane, so `on_command` is unreachable.
 //!
 //! Phase-2 (later): port the dispatcher closure + DOM machinery from
-//! `backend-web/src/primitives/navigator.rs::create_navigator` inline
+//! `backend-web/src/primitives/navigator.rs::create_stack_navigator` inline
 //! and drop the dependency on the legacy method. The architecture is
 //! the same — only the wiring shifts.
 
@@ -78,7 +78,7 @@ impl NavigatorHandler<WebBackend> for WebStackHandler {
             defer_initial_mount,
         };
 
-        backend.create_navigator(callbacks, control, &AccessibilityProps::default())
+        backend.create_stack_navigator(callbacks, control, &AccessibilityProps::default())
     }
 
     fn attach_initial(
@@ -88,7 +88,7 @@ impl NavigatorHandler<WebBackend> for WebStackHandler {
         _scope_id: u64,
         _options: runtime_core::ScreenOptions,
     ) {
-        // The web backend's `Backend::navigator_extension_attach_initial`
+        // The web backend's `Backend::navigator_attach_initial`
         // impl delegates directly to `primitives::navigator::attach_initial`
         // (the legacy machinery is uniform across kinds). The handler
         // never sees this call — kept here so the trait is satisfied
@@ -100,7 +100,7 @@ impl NavigatorHandler<WebBackend> for WebStackHandler {
     }
 
     fn on_command(&mut self, _cmd: runtime_core::NavCommand) {
-        // Legacy `create_navigator` already installed the stack
+        // Legacy `create_stack_navigator` already installed the stack
         // dispatcher on the control plane. Phase-2 will take this over.
         unreachable!(
             "WebStackHandler::on_command — legacy stack dispatcher \

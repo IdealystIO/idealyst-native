@@ -869,7 +869,7 @@ where
                 match state.kind {
                     navigators::NavigatorKind::Stack => {
                         self.backend.borrow_mut()
-                            .navigator_attach_initial(&nav, screen_node, scope.0, opts);
+                            .stack_navigator_attach_initial(&nav, screen_node, scope.0, opts);
                     }
                     navigators::NavigatorKind::Tab => {
                         self.backend.borrow_mut()
@@ -1315,7 +1315,7 @@ where
         let replay_pos = Rc::new(RefCell::new(0usize));
 
         // Pre-allocate state with a placeholder node; we'll set the
-        // real node after `create_navigator` returns.
+        // real node after `create_stack_navigator` returns.
         let state = Rc::new(navigators::NavigatorAppState {
             kind: navigators::NavigatorKind::Stack,
             // We can't yet fill `node`; placeholder via uninit is
@@ -1340,7 +1340,7 @@ where
         // Real backend create call. This installs the real backend's
         // dispatcher onto control.
         let a11y_props = self.a11y_props(a11y);
-        let nav_node = self.backend.borrow_mut().create_navigator(
+        let nav_node = self.backend.borrow_mut().create_stack_navigator(
             callbacks,
             control.clone(),
             &a11y_props,

@@ -422,8 +422,8 @@ pub enum NodeKind {
     /// each mounted screen so `release_screen` can be called
     /// with the right id on pop / replace / reset.
     /// `control` is the `NavigatorControl` the framework handed
-    /// us at `create_navigator` time, kept so
-    /// `make_navigator_handle` can wire the user-facing
+    /// us at `create_stack_navigator` time, kept so
+    /// `make_stack_navigator_handle` can wire the user-facing
     /// `NavigatorHandle` to the same control (otherwise calls
     /// like `handle.push(...)` reach a no-op stub).
     Navigator {

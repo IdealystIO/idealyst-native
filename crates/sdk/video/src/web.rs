@@ -21,7 +21,7 @@ pub fn register(backend: &mut WebBackend) {
     backend.register_external::<VideoProps, _>(|props, _backend| build_video(props));
 }
 
-fn build_video(props: &Rc<VideoProps>) -> Node {
+fn build_video(props: &Rc<VideoProps>) -> web_sys::Element {
     let document = web_sys::window()
         .expect("no window")
         .document()
@@ -55,7 +55,7 @@ fn build_video(props: &Rc<VideoProps>) -> Node {
         let _ = video_for_src.set_attribute("src", &url);
     });
 
-    video.unchecked_into::<Node>()
+    video
 }
 
 // ============================================================================

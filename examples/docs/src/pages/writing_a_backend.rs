@@ -275,7 +275,7 @@ docs! {
 
     section(heading = "Navigation (defaults: unimplemented!())") {
         list(
-            [code("create_navigator"), " — stack navigator"],
+            [code("create_stack_navigator"), " — stack navigator"],
             [code("create_tab_navigator")],
             [code("create_drawer_navigator")],
         ),

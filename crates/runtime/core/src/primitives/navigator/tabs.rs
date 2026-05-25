@@ -34,13 +34,7 @@
 //! - `LazyDisposing`: drop the inactive tab's scope on switch.
 //!   Cheap memory; state-losing.
 
-use super::shared::{
-    LayoutBuilder, NavigatorCallbacks, NavigatorHandle, Route, RouteEntry, RouteParams, Screen,
-    ScreenBuilder, ScreenOptions,
-};
-use crate::{Bound, Primitive, Ref, RefFill};
-use std::any::Any;
-use std::collections::HashMap;
+use super::shared::{NavigatorCallbacks, NavigatorHandle, Route, RouteParams};
 use std::rc::Rc;
 
 // ---------------------------------------------------------------------------
@@ -189,193 +183,15 @@ impl TabsHandle {
 }
 
 // ---------------------------------------------------------------------------
-// Author-facing builder
+// Author-facing builder REMOVED — was `pub struct TabNavigator` +
+// `impl TabNavigator { fn new }` + `impl Bound<TabsHandle>`. The
+// builder now lives in `crates/sdk/tab-navigator/` and produces
+// `Primitive::Navigator` instead of the dropped
+// `Primitive::TabNavigator`. The substrate types (TabSpec /
+// TabPlacement / MountPolicy / TabsHandle / TabRegistration /
+// TabNavigatorCallbacks) below remain — backends and SDK adapters
+// reference them.
 // ---------------------------------------------------------------------------
-
-/// Author-facing tab navigator builder. Tabs get declared via
-/// `.tab(...)`; the framework wires the rest. See module-level
-/// docs for usage.
-pub struct TabNavigator {
-    pub initial: &'static str,
-    pub initial_path: &'static str,
-    /// Ordered list of (route name, spec) — preserves the order tabs
-    /// were declared in, which the backend uses to render the bar.
-    pub tab_order: Vec<(&'static str, TabSpec)>,
-    pub screens: HashMap<&'static str, RouteEntry>,
-    pub layout: Option<LayoutBuilder>,
-    pub placement: TabPlacement,
-    pub mount_policy: MountPolicy,
-    pub default_options: Option<ScreenOptions>,
-    pub style: Option<crate::StyleSource>,
-    pub header_style: Option<crate::StyleSource>,
-    pub title_style: Option<crate::StyleSource>,
-    pub button_style: Option<crate::StyleSource>,
-    pub tab_bar_style: Option<crate::StyleSource>,
-    pub tab_icon_style: Option<crate::StyleSource>,
-    pub tab_label_style: Option<crate::StyleSource>,
-    pub ref_fill: Option<RefFill>,
-}
-
-impl TabNavigator {
-    /// Construct a tab navigator with `initial` as the active tab.
-    /// The route must be registered via `.tab(...)` before the
-    /// navigator mounts; an unregistered initial tab panics.
-    pub fn new(initial: &Route<()>) -> Bound<TabsHandle> {
-        Bound::new(Primitive::TabNavigator(Box::new(TabNavigator {
-            initial: initial.name(),
-            initial_path: initial.path(),
-            tab_order: Vec::new(),
-            screens: HashMap::new(),
-            layout: None,
-            placement: TabPlacement::Auto,
-            mount_policy: MountPolicy::LazyPersistent,
-            default_options: None,
-            style: None,
-            header_style: None,
-            title_style: None,
-            button_style: None,
-            tab_bar_style: None,
-            tab_icon_style: None,
-            tab_label_style: None,
-            ref_fill: None,
-        })))
-    }
-}
-
-impl Bound<TabsHandle> {
-    /// Register a tab. Rolls `.screen(...)` and presentation metadata
-    /// into one call — the typical case for a tab navigator. The
-    /// `render` closure returns anything convertible into a
-    /// [`Screen`] — either a bare `Primitive` or a
-    /// `Screen::new(...).title(...).header_left(...)` value when the
-    /// tab also needs per-screen header configuration.
-    pub fn tab<P, R, F>(mut self, route: Route<P>, spec: TabSpec, render: F) -> Self
-    where
-        P: RouteParams,
-        R: Into<Screen>,
-        F: Fn(P) -> R + 'static,
-    {
-        if let Primitive::TabNavigator(nav) = &mut self.primitive {
-            let render = Rc::new(render);
-            let build: ScreenBuilder = Rc::new(move |boxed: Box<dyn Any>| {
-                let params: Box<P> = boxed.downcast().unwrap_or_else(|_| {
-                    panic!(
-                        "TabNavigator: screen param type mismatch for route — \
-                         declared params don't match dispatched params"
-                    )
-                });
-                render(*params).into()
-            });
-            let from_segments = Rc::new(|segs: &HashMap<String, String>| {
-                P::from_segments(segs).map(|p| Box::new(p) as Box<dyn Any>)
-            });
-            nav.tab_order.push((route.name(), spec));
-            nav.screens.insert(
-                route.name(),
-                RouteEntry { path: route.path(), build, from_segments },
-            );
-        }
-        self
-    }
-
-    /// Set default screen options for all screens in this navigator.
-    /// Per-screen `.options()` overrides these.
-    pub fn default_screen_options(mut self, opts: ScreenOptions) -> Self {
-        if let Primitive::TabNavigator(nav) = &mut self.primitive {
-            nav.default_options = Some(opts);
-        }
-        self
-    }
-
-    /// Style the tab navigator's header bar.
-    pub fn header_style(mut self, s: impl crate::IntoStyleSource) -> Self {
-        if let Primitive::TabNavigator(nav) = &mut self.primitive {
-            nav.header_style = Some(s.into_style_source());
-        }
-        self
-    }
-
-    /// Style the tab navigator's title text.
-    pub fn title_style(mut self, s: impl crate::IntoStyleSource) -> Self {
-        if let Primitive::TabNavigator(nav) = &mut self.primitive {
-            nav.title_style = Some(s.into_style_source());
-        }
-        self
-    }
-
-    /// Style the tab navigator's bar button items.
-    pub fn button_style(mut self, s: impl crate::IntoStyleSource) -> Self {
-        if let Primitive::TabNavigator(nav) = &mut self.primitive {
-            nav.button_style = Some(s.into_style_source());
-        }
-        self
-    }
-
-    /// Style the tab bar itself (background, border, etc.).
-    pub fn tab_bar_style(mut self, s: impl crate::IntoStyleSource) -> Self {
-        if let Primitive::TabNavigator(nav) = &mut self.primitive {
-            nav.tab_bar_style = Some(s.into_style_source());
-        }
-        self
-    }
-
-    /// Style the tab icons.
-    pub fn tab_icon_style(mut self, s: impl crate::IntoStyleSource) -> Self {
-        if let Primitive::TabNavigator(nav) = &mut self.primitive {
-            nav.tab_icon_style = Some(s.into_style_source());
-        }
-        self
-    }
-
-    /// Style the tab labels.
-    pub fn tab_label_style(mut self, s: impl crate::IntoStyleSource) -> Self {
-        if let Primitive::TabNavigator(nav) = &mut self.primitive {
-            nav.tab_label_style = Some(s.into_style_source());
-        }
-        self
-    }
-
-    /// Override the tab bar's placement. Default is
-    /// `TabPlacement::Auto` — backends pick based on platform
-    /// conventions (bottom on phones, top on web).
-    pub fn placement(mut self, placement: TabPlacement) -> Self {
-        if let Primitive::TabNavigator(nav) = &mut self.primitive {
-            nav.placement = placement;
-        }
-        self
-    }
-
-    /// Override when tab screens are mounted and disposed.
-    /// Default is `MountPolicy::LazyPersistent`.
-    pub fn mount_policy(mut self, policy: MountPolicy) -> Self {
-        if let Primitive::TabNavigator(nav) = &mut self.primitive {
-            nav.mount_policy = policy;
-        }
-        self
-    }
-
-    /// Install a layout wrapper around the tab navigator. Useful on
-    /// web for adding a top app bar that spans tabs. Native backends
-    /// ignore this — the tab bar controller draws its own chrome.
-    pub fn layout<F>(mut self, f: F) -> Self
-    where
-        F: Fn(super::shared::LayoutProps) -> Primitive + 'static,
-    {
-        if let Primitive::TabNavigator(nav) = &mut self.primitive {
-            nav.layout = Some(Rc::new(f));
-        }
-        self
-    }
-
-    /// Bind a `Ref<TabsHandle>` so the handle is filled at mount
-    /// time.
-    pub fn bind(mut self, r: Ref<TabsHandle>) -> Self {
-        if let Primitive::TabNavigator(nav) = &mut self.primitive {
-            nav.ref_fill = Some(RefFill::TabNavigator(Box::new(move |h| r.fill(h))));
-        }
-        self
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Callbacks bundle — what backends receive

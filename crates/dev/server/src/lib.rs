@@ -396,7 +396,7 @@ impl RecorderState {
 
 /// Per-navigator dev-side state used by the recording backend's
 /// dispatcher. The callbacks come from the framework when
-/// `create_navigator` is called; the stack is the recorder's own
+/// `create_stack_navigator` is called; the stack is the recorder's own
 /// model of the navigator's screen stack (so it can call
 /// `release_screen` for the right scope when handling Pop / swipe-back).
 pub struct NavigatorRecState {
@@ -478,7 +478,7 @@ impl WireRecordingBackend {
                 };
                 nav.callbacks.clone()
             };
-            // Skip the initial route — `navigator_attach_initial`
+            // Skip the initial route — `stack_navigator_attach_initial`
             // already put it in place.
             for url in urls.iter().skip(1) {
                 let Some((name, params)) = (callbacks.match_path)(url) else {
@@ -1751,7 +1751,7 @@ impl Backend for WireRecordingBackend {
         id
     }
 
-    fn create_navigator(
+    fn create_stack_navigator(
         &mut self,
         callbacks: runtime_core::primitives::navigator::NavigatorCallbacks<Self::Node>,
         control: Rc<runtime_core::primitives::navigator::NavigatorControl>,
@@ -1793,7 +1793,7 @@ impl Backend for WireRecordingBackend {
         nav_id
     }
 
-    fn navigator_attach_initial(
+    fn stack_navigator_attach_initial(
         &mut self,
         navigator: &Self::Node,
         screen: Self::Node,
@@ -1911,7 +1911,7 @@ impl Backend for WireRecordingBackend {
         // Same wire shape as the stack-navigator initial attach; the
         // app side dispatches based on what kind of navigator the
         // navigator NodeId belongs to.
-        self.navigator_attach_initial(navigator, screen, scope_id, options);
+        self.stack_navigator_attach_initial(navigator, screen, scope_id, options);
     }
 
     fn create_drawer_navigator(
@@ -1994,7 +1994,7 @@ impl Backend for WireRecordingBackend {
         scope_id: u64,
         options: runtime_core::primitives::navigator::ScreenOptions,
     ) {
-        self.navigator_attach_initial(navigator, screen, scope_id, options);
+        self.stack_navigator_attach_initial(navigator, screen, scope_id, options);
     }
 
     fn drawer_navigator_attach_sidebar(
@@ -2195,7 +2195,7 @@ impl Backend for WireRecordingBackend {
     // unmounted navigator / virtualizer / portal / graphics / external /
     // overlay would leak its `NodeId` on the client side (see
     // `SceneModel::apply` for the matching per-node map clears).
-    fn release_navigator(&mut self, node: &Self::Node) {
+    fn release_stack_navigator(&mut self, node: &Self::Node) {
         let mut state = self.inner.borrow_mut();
         state.navigators.remove(node);
         state.emit(Command::ReleaseNode { node: *node });
@@ -2299,7 +2299,7 @@ fn wire_element_align(a: primitives::portal::ElementAlign) -> wire::WireElementA
 
 // ---------------------------------------------------------------------------
 // Navigator dispatcher — called from the closure installed on the
-// NavigatorControl in `create_navigator`. Free function rather than
+// NavigatorControl in `create_stack_navigator`. Free function rather than
 // method so we don't get tangled up in lifetimes between the closure
 // and `self`.
 // ---------------------------------------------------------------------------
