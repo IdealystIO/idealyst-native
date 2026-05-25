@@ -1,25 +1,25 @@
 //! Android-backend handler for the Drawer navigator SDK.
-//!
-//! Phase-1 adapter: synthesizes legacy `DrawerNavigatorCallbacks` and
-//! calls `AndroidBackend::create_drawer_navigator`. Sets
-//! `NavigatorKind::Drawer` for unified dispatch.
 
 use crate::{DrawerPresentation, DrawerSide, DrawerType, MountPolicy};
-use backend_android_mobile::AndroidBackend;
+use backend_android::AndroidBackend;
 use jni::objects::GlobalRef;
 use runtime_core::{
-    accessibility::AccessibilityProps, Backend, DrawerNavigatorCallbacks,
-    DrawerSide as CoreDrawerSide, DrawerType as CoreDrawerType, MountPolicy as CoreMountPolicy,
-    MountResult, NavigatorKind, NavigatorCallbacks, NavigatorHandler, NavigatorHost, Signal,
+    accessibility::AccessibilityProps, primitives::navigator::NavigatorOps,
+    DrawerNavigatorCallbacks, DrawerSide as CoreDrawerSide, DrawerType as CoreDrawerType,
+    MountPolicy as CoreMountPolicy, MountResult, NavigatorCallbacks, NavigatorControl,
+    NavigatorHandle, NavigatorHandler, NavigatorHost,
 };
 use std::any::Any;
 use std::rc::Rc;
 
-pub struct AndroidDrawerHandler;
+pub struct AndroidDrawerHandler {
+    container: Option<GlobalRef>,
+    control: Option<Rc<NavigatorControl>>,
+}
 
 impl AndroidDrawerHandler {
     pub fn new() -> Self {
-        Self
+        Self { container: None, control: None }
     }
 }
 impl Default for AndroidDrawerHandler {
@@ -71,6 +71,7 @@ impl NavigatorHandler<AndroidBackend> for AndroidDrawerHandler {
             depth_changed,
             active_changed,
             control,
+            build_node: _,
         } = host;
 
         let mount_2arg: Rc<dyn Fn(&'static str, Box<dyn Any>) -> MountResult<GlobalRef>> = {
@@ -90,10 +91,11 @@ impl NavigatorHandler<AndroidBackend> for AndroidDrawerHandler {
             defer_initial_mount,
         };
 
-        let is_open = Signal::new(false);
+        // Shared with the SDK builder's `.layout(...)` wrap — see
+        // `DrawerPresentation::is_open` in `lib.rs`.
+        let is_open = presentation.is_open;
         let open_changed: Rc<dyn Fn(bool)> = {
-            let s = is_open;
-            Rc::new(move |o| s.set(o))
+            Rc::new(move |o| is_open.set(o))
         };
 
         let active_changed_legacy: Rc<dyn Fn(&'static str)> = {
@@ -115,29 +117,63 @@ impl NavigatorHandler<AndroidBackend> for AndroidDrawerHandler {
             background_color: None,
         };
 
+        self.control = Some(control.clone());
         let node = backend.create_drawer_navigator(
             drawer_callbacks,
             control,
             &AccessibilityProps::default(),
         );
-        backend.set_nav_kind(&node, NavigatorKind::Drawer);
+        self.container = Some(node.clone());
         node
     }
 
     fn attach_initial(
         &mut self,
-        _backend: &mut AndroidBackend,
-        _screen: GlobalRef,
-        _scope_id: u64,
-        _options: runtime_core::ScreenOptions,
+        backend: &mut AndroidBackend,
+        screen: GlobalRef,
+        scope_id: u64,
+        options: runtime_core::ScreenOptions,
     ) {
-        unreachable!();
+        if let Some(container) = self.container.clone() {
+            backend.drawer_navigator_attach_initial(&container, screen, scope_id, options);
+        }
     }
 
     fn on_command(&mut self, _cmd: runtime_core::NavCommand) {
-        unreachable!();
+        unreachable!(
+            "AndroidDrawerHandler::on_command — backend.create_drawer_navigator \
+             owns the control-plane dispatcher"
+        );
+    }
+
+    fn release(&mut self, backend: &mut AndroidBackend) {
+        if let Some(container) = self.container.take() {
+            backend.release_drawer_navigator(&container);
+        }
+        self.control = None;
+    }
+
+    fn make_handle(&self) -> NavigatorHandle {
+        match self.control.clone() {
+            Some(c) => NavigatorHandle::with_control(Rc::new(()), &NoopDrawerOps, c),
+            None => NavigatorHandle::new(Rc::new(()), &NoopDrawerOps),
+        }
+    }
+
+    fn apply_slot_style(
+        &mut self,
+        _backend: &mut AndroidBackend,
+        _slot: &'static str,
+        _style: &Rc<runtime_core::StyleRules>,
+    ) {
+        // Android drawer chrome currently has no per-slot styling
+        // helper on the backend. The `sidebar` / `scrim` slots would
+        // wire here when those land — same shape as iOS sidebar.
     }
 }
+
+struct NoopDrawerOps;
+impl NavigatorOps for NoopDrawerOps {}
 
 pub fn register(backend: &mut AndroidBackend) {
     backend.register_navigator::<DrawerPresentation, _>(|| Box::new(AndroidDrawerHandler::new()));

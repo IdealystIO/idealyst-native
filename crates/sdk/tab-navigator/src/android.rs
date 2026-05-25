@@ -1,25 +1,25 @@
 //! Android-backend handler for the Tab navigator SDK.
-//!
-//! Phase-1 adapter: synthesizes legacy `TabNavigatorCallbacks` and
-//! calls `AndroidBackend::create_tab_navigator`. Sets `NavigatorKind::Tab`
-//! for unified dispatch.
 
 use crate::{MountPolicy, TabPlacement, TabPresentation};
-use backend_android_mobile::AndroidBackend;
+use backend_android::AndroidBackend;
 use jni::objects::GlobalRef;
 use runtime_core::{
-    accessibility::AccessibilityProps, primitives::navigator::tabs::TabRegistration, Backend,
-    MountPolicy as CoreMountPolicy, MountResult, NavigatorKind, NavigatorCallbacks, NavigatorHandler,
-    NavigatorHost, TabNavigatorCallbacks, TabPlacement as CoreTabPlacement,
+    accessibility::AccessibilityProps, primitives::navigator::{tabs::TabRegistration, NavigatorOps},
+    MountPolicy as CoreMountPolicy, MountResult, NavigatorCallbacks, NavigatorControl,
+    NavigatorHandle, NavigatorHandler, NavigatorHost, TabNavigatorCallbacks,
+    TabPlacement as CoreTabPlacement,
 };
 use std::any::Any;
 use std::rc::Rc;
 
-pub struct AndroidTabHandler;
+pub struct AndroidTabHandler {
+    container: Option<GlobalRef>,
+    control: Option<Rc<NavigatorControl>>,
+}
 
 impl AndroidTabHandler {
     pub fn new() -> Self {
-        Self
+        Self { container: None, control: None }
     }
 }
 impl Default for AndroidTabHandler {
@@ -67,6 +67,7 @@ impl NavigatorHandler<AndroidBackend> for AndroidTabHandler {
             depth_changed,
             active_changed,
             control,
+            build_node: _,
         } = host;
 
         let mount_2arg: Rc<dyn Fn(&'static str, Box<dyn Any>) -> MountResult<GlobalRef>> = {
@@ -110,29 +111,64 @@ impl NavigatorHandler<AndroidBackend> for AndroidTabHandler {
             active_changed: active_changed_legacy,
         };
 
+        self.control = Some(control.clone());
         let node = backend.create_tab_navigator(
             tab_callbacks,
             control,
             &AccessibilityProps::default(),
         );
-        backend.set_nav_kind(&node, NavigatorKind::Tab);
+        self.container = Some(node.clone());
         node
     }
 
     fn attach_initial(
         &mut self,
-        _backend: &mut AndroidBackend,
-        _screen: GlobalRef,
-        _scope_id: u64,
-        _options: runtime_core::ScreenOptions,
+        backend: &mut AndroidBackend,
+        screen: GlobalRef,
+        scope_id: u64,
+        options: runtime_core::ScreenOptions,
     ) {
-        unreachable!();
+        if let Some(container) = self.container.clone() {
+            backend.tab_navigator_attach_initial(&container, screen, scope_id, options);
+        }
     }
 
     fn on_command(&mut self, _cmd: runtime_core::NavCommand) {
-        unreachable!();
+        unreachable!(
+            "AndroidTabHandler::on_command — backend.create_tab_navigator \
+             owns the control-plane dispatcher"
+        );
+    }
+
+    fn release(&mut self, backend: &mut AndroidBackend) {
+        if let Some(container) = self.container.take() {
+            backend.release_tab_navigator(&container);
+        }
+        self.control = None;
+    }
+
+    fn make_handle(&self) -> NavigatorHandle {
+        match self.control.clone() {
+            Some(c) => NavigatorHandle::with_control(Rc::new(()), &NoopTabOps, c),
+            None => NavigatorHandle::new(Rc::new(()), &NoopTabOps),
+        }
+    }
+
+    fn apply_slot_style(
+        &mut self,
+        _backend: &mut AndroidBackend,
+        _slot: &'static str,
+        _style: &Rc<runtime_core::StyleRules>,
+    ) {
+        // Android does not yet expose per-slot tab-bar styling helpers
+        // on the backend. When a styled-tabs implementation lands,
+        // wire `tab_bar` / `tab_icon` / `tab_label` here in the same
+        // shape as the stack handler's header/title/button slots.
     }
 }
+
+struct NoopTabOps;
+impl NavigatorOps for NoopTabOps {}
 
 pub fn register(backend: &mut AndroidBackend) {
     backend.register_navigator::<TabPresentation, _>(|| Box::new(AndroidTabHandler::new()));

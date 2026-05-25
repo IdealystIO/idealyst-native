@@ -565,6 +565,12 @@ pub unsafe extern "C" fn ios_main(root_view: *mut std::ffi::c_void) {{
 
     let mut backend = IosBackend::new(mtm);
     backend.set_host_root(view);
+    // Hand the bare backend to the user crate so it can install
+    // navigator-SDK / external-primitive handlers before mount. The
+    // user crate must expose `pub fn register_extensions(&mut IosBackend)`
+    // gated to `target_os = "ios"`; empty body is fine when no SDKs
+    // need registering.
+    {lib}::register_extensions(&mut backend);
     let backend = Rc::new(RefCell::new(backend));
     // Lets navigator dispatch closures re-run layout after pushes/replaces.
     backend_ios::install_global_self(Rc::downgrade(&backend));

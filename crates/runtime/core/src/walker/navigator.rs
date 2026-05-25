@@ -219,6 +219,31 @@ pub(super) fn build<B: Backend + 'static>(
         f
     });
 
+    // `build_node` — generic "materialize this Primitive into a backend
+    // node" callback for SDK handlers that need an ancillary subtree
+    // (drawer sidebar, etc.) outside the screen-mount path. Each call
+    // gets a fresh reactive scope, retained on `build_node_scopes` so
+    // effects inside the built subtree survive past the call. Scopes
+    // free with the navigator when the keepalive effect at the bottom
+    // of this function drops them.
+    let build_node_scopes: Rc<RefCell<Vec<Box<reactive::Scope>>>> =
+        Rc::new(RefCell::new(Vec::new()));
+    let build_node: Rc<dyn Fn(Primitive) -> B::Node> = {
+        let backend = backend.clone();
+        let scopes_slot = build_node_scopes.clone();
+        let aux_identity = crate::Identity::node(nav_identity, 3, None, None);
+        Rc::new(move |prim| {
+            let mut scope = Box::new(reactive::Scope::new());
+            let node = reactive::with_scope(&mut scope, || {
+                crate::with_current_identity(aux_identity, || {
+                    super::build(&backend, 0, prim)
+                })
+            });
+            scopes_slot.borrow_mut().push(scope);
+            node
+        })
+    };
+
     // Build the host bundle and hand it to the backend's extension creator.
     let host = NavigatorHost {
         initial_route: initial,
@@ -232,6 +257,7 @@ pub(super) fn build<B: Backend + 'static>(
         depth_changed,
         active_changed,
         control: control.clone(),
+        build_node,
     };
 
     let node = time_backend_create(pkind!(Navigator), || {
@@ -280,8 +306,10 @@ pub(super) fn build<B: Backend + 'static>(
     // pattern as `build_navigator`. The cleanup effect drops when the
     // enclosing scope drops.
     let _layout_scope_keepalive = layout_scope.clone();
+    let _build_node_keepalive = build_node_scopes.clone();
     let _keepalive_effect = Effect::new(move || {
         let _ = &_layout_scope_keepalive;
+        let _ = &_build_node_keepalive;
     });
 
     node

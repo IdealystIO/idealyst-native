@@ -18,6 +18,16 @@ crate-type = ["rlib"]
 [dependencies]
 runtime-core = { workspace = true }
 
+# Target-gated: the CLI-generated wrappers call
+# `register_extensions(&mut <Backend>)` per platform before mount.
+# Empty body on this crate (no SDK deps to install), but the
+# function signature + matching backend dep must exist per target.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+
+[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
+backend-ios-mobile = { workspace = true }
+
 [package.metadata.idealyst.app]
 name      = "Welcome"
 bundle_id = "ai.truday.idealyst.welcome"

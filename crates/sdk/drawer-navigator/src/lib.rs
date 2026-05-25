@@ -24,7 +24,7 @@ use runtime_core::primitives::navigator::{
     ScreenBuilder, ScreenOptions,
 };
 use runtime_core::{
-    Bound, Color, HeaderStyle, IntoStyleSource, Primitive, Ref, RefFill, StyleApplication,
+    Bound, Color, HeaderStyle, IntoStyleSource, Primitive, Ref, RefFill, Signal, StyleApplication,
     StyleRules, StyleSheet, StyleSource, VariantSet,
 };
 use std::any::{Any, TypeId};
@@ -84,10 +84,21 @@ pub struct DrawerPresentation {
     pub swipe_to_open: bool,
     pub mount_policy: MountPolicy,
     pub content: Option<ContentBuilder>,
+    /// Shared open-state signal — created once at builder time and
+    /// observed by both the per-backend handler's command dispatcher
+    /// (writes Open/Close/Toggle) and the SDK's `.layout(...)` wrap
+    /// (reads into `DrawerContentProps.is_open` so user content
+    /// closures see the live state). Pre-bridge, the handler and
+    /// content closure each held a *different* `Signal<bool>` and
+    /// the content never saw the drawer open / close.
+    pub is_open: Signal<bool>,
 }
 
-impl Default for DrawerPresentation {
-    fn default() -> Self {
+impl DrawerPresentation {
+    /// Construct a fresh presentation. Allocates `is_open` in the
+    /// caller's active reactive scope — typically the user component
+    /// that's invoking `DrawerNavigator::new(...)`.
+    fn new() -> Self {
         Self {
             side: DrawerSide::default(),
             drawer_type: DrawerType::default(),
@@ -95,6 +106,7 @@ impl Default for DrawerPresentation {
             swipe_to_open: true,
             mount_policy: MountPolicy::default(),
             content: None,
+            is_open: Signal::new(false),
         }
     }
 }
@@ -171,7 +183,7 @@ impl DrawerNavigator {
                 default_link_kind: DefaultLinkKind::Select,
                 defer_initial_mount: false,
             },
-            presentation: DrawerPresentation::default(),
+            presentation: DrawerPresentation::new(),
             slot_styles: Vec::new(),
             style: None,
             ref_fill: None,
@@ -367,9 +379,66 @@ impl DrawerBuilder for Bound<DrawerHandle> {
     where
         F: Fn(runtime_core::primitives::navigator::LayoutProps) -> Primitive + 'static,
     {
+        let user_layout = Rc::new(f);
         with_navigator_ext(&mut self, |p| {
-            if let Primitive::Navigator { config, .. } = p {
-                config.layout = Some(Rc::new(f));
+            if let Primitive::Navigator { config, presentation, .. } = p {
+                // The framework walker hands `layout_fn` a
+                // `LayoutProps { sidebar: empty_view, .. }` because
+                // it has no awareness of drawer-specific content.
+                // Bridge the SDK's `.content(...)` builder into the
+                // `props.sidebar` slot: read the shared `is_open`
+                // signal from the presentation (the handler's
+                // dispatcher writes to the same signal) and derive
+                // `on_select` / `on_close` from the ambient
+                // navigator control plane the framework pushes
+                // before invoking the layout closure.
+                let drawer_pres = presentation
+                    .downcast_ref::<DrawerPresentation>();
+                let content_builder = drawer_pres.and_then(|p| p.content.clone());
+                let is_open_signal = drawer_pres.map(|p| p.is_open);
+                let user_layout = user_layout.clone();
+                config.layout = Some(Rc::new(move |mut props: runtime_core::primitives::navigator::LayoutProps| {
+                    use runtime_core::primitives::navigator::{
+                        ambient_navigator, DrawerContentProps, NavCommand,
+                    };
+                    if let Some(ref build_content) = content_builder {
+                        // `on_select` dispatches a `Select` command
+                        // against the navigator currently being
+                        // built — captured here via the ambient
+                        // navigator the framework pushes before
+                        // calling the layout closure (see
+                        // `walker::navigator::build_layout`).
+                        let on_select: Rc<dyn Fn(&'static str)> = match ambient_navigator() {
+                            Some(control) => {
+                                let control = control.clone();
+                                Rc::new(move |name| {
+                                    control.dispatch(NavCommand::Select {
+                                        name,
+                                        url: String::new(),
+                                        params: Box::new(()),
+                                        state: None,
+                                    });
+                                })
+                            }
+                            None => Rc::new(|_| {}),
+                        };
+                        let on_close: Rc<dyn Fn()> = match ambient_navigator() {
+                            Some(control) => {
+                                Rc::new(move || control.dispatch(NavCommand::CloseDrawer))
+                            }
+                            None => Rc::new(|| {}),
+                        };
+                        let content_props = DrawerContentProps {
+                            active_route: props.active_route,
+                            is_open: is_open_signal
+                                .unwrap_or_else(|| Signal::new(false)),
+                            on_select,
+                            on_close,
+                        };
+                        props.sidebar = build_content(content_props);
+                    }
+                    user_layout(props)
+                }));
             }
         });
         self

@@ -21,3 +21,13 @@ mod style_helpers;
 mod typeface;
 
 pub use app::app;
+
+// Per-target SDK-handler registration hook the CLI-generated wrappers
+// invoke before mount. `welcome` doesn't depend on any third-party
+// navigator/external SDKs, so each is intentionally empty — but the
+// wrappers always call it, so the symbol must exist for each platform.
+#[cfg(target_arch = "wasm32")]
+pub fn register_extensions(_backend: &mut backend_web::WebBackend) {}
+
+#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
+pub fn register_extensions(_backend: &mut backend_ios::IosBackend) {}

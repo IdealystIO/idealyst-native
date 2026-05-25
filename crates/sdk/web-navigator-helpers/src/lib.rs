@@ -498,6 +498,38 @@ where
         defer_initial_mount: callbacks.defer_initial_mount,
     }));
 
+    // Web's `.layout(...)` escape hatch — author-supplied chrome
+    // (sidebar, top bar, etc.) wrapping the navigator's screen
+    // outlet. The framework's walker hands us a `build_layout`
+    // closure; invoking it materializes the chrome subtree into
+    // backend nodes (each sub-primitive re-enters the walker,
+    // which calls `backend.borrow_mut()`).
+    //
+    // Defer to a microtask: `create_inner` is called from inside
+    // `Backend::create_navigator`, which itself is called inside
+    // an outer `backend.borrow_mut()`. Invoking `build_layout`
+    // synchronously here re-enters that borrow and panics
+    // ("RefCell already borrowed"). The same microtask trick the
+    // initial-screen mount uses applies — by the time the
+    // microtask fires, the outer borrow has dropped.
+    if let Some(build_layout) = callbacks.build_layout.clone() {
+        let instance_for_layout = instance.clone();
+        runtime_core::schedule_microtask(move || {
+            let plan = build_layout();
+            let outlet_node: Option<Node> = plan.outlet_ref.with(|h| {
+                h.as_any().downcast_ref::<Node>().cloned()
+            }).flatten();
+            let inst = instance_for_layout.borrow();
+            inst.container
+                .append_child(&plan.root)
+                .expect("attach navigator layout root to container");
+            drop(inst);
+            if let Some(outlet) = outlet_node {
+                instance_for_layout.borrow_mut().outlet = Some(outlet);
+            }
+        });
+    }
+
     // Mount the initial / deep-linked stack.
     //
     // Deferred to a microtask so the build walker's outer

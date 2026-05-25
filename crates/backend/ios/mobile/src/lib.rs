@@ -10,7 +10,9 @@ mod imp;
 mod stub;
 
 #[cfg(target_os = "ios")]
-pub use imp::{install_global_self, set_animated_color, set_animated_f32, IosBackend, IosNode};
+pub use imp::{
+    install_global_self, set_animated_color, set_animated_f32, with_backend, IosBackend, IosNode,
+};
 
 #[cfg(all(target_os = "ios", feature = "async-driver"))]
 pub use backend_ios_core::render_loop::install_render_loop;

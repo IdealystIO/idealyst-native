@@ -21,8 +21,17 @@ mod pages;
 mod routes;
 mod shell;
 mod styles;
+
+// Web SDK-handler registration. Called by the auto-generated wrapper
+// in `target/idealyst/<name>/web/wrapper/src/lib.rs` before `mount`,
+// while it still has the bare backend. Anything that needs to install
+// per-backend state (navigator handlers, external-primitive handlers,
+// custom assets) goes here. Cross-platform tree itself lives in
+// `app()` — this hook is purely for backend wiring.
 #[cfg(target_arch = "wasm32")]
-mod web;
+pub fn register_extensions(backend: &mut backend_web::WebBackend) {
+    stack_navigator::register(backend);
+}
 
 use routes::{
     ACTIONS_ROUTE, FEEDBACK_ROUTE, INPUTS_ROUTE, LAYOUT_ROUTE, OVERLAYS_ROUTE, OVERVIEW_ROUTE,

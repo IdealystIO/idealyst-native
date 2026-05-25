@@ -271,12 +271,17 @@ macro_rules! center {
 }
 
 // =============================================================================
-// iconbutton — by-ref
+// icon_button — by-ref
+//
+// Multi-word PascalCase `IconButton(...)` lowers to `icon_button!(...)`
+// via the framework's `pascal_to_snake` ui!-tag translator. Keep the
+// macro name in sync with that lowering — `iconbutton!` (single-token)
+// wouldn't match what `ui!` produces.
 // =============================================================================
 
 #[macro_export]
 #[doc(hidden)]
-macro_rules! iconbutton {
+macro_rules! icon_button {
     () => {
         $crate::components::icon_button::icon_button(
             &<$crate::components::icon_button::IconButtonProps as ::core::default::Default>::default(),

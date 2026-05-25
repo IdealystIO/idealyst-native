@@ -10,7 +10,7 @@ use backend_web::WebBackend;
 use runtime_core::{
     DrawerNavigatorCallbacks, DrawerSide as CoreDrawerSide, DrawerType as CoreDrawerType,
     MountPolicy as CoreMountPolicy, MountResult, NavigatorCallbacks, NavigatorHandler,
-    NavigatorHost, Signal,
+    NavigatorHost,
 };
 use std::any::Any;
 use std::rc::Rc;
@@ -82,6 +82,7 @@ impl NavigatorHandler<WebBackend> for WebDrawerHandler {
             depth_changed,
             active_changed,
             control,
+            build_node: _,
         } = host;
 
         let mount_2arg: Rc<dyn Fn(&'static str, Box<dyn Any>) -> MountResult<Node>> = {
@@ -102,10 +103,14 @@ impl NavigatorHandler<WebBackend> for WebDrawerHandler {
         };
 
         // Drawer-specific callbacks: open-state signal + content
-        // factory + active/open change observers.
-        let is_open = Signal::new(false);
+        // factory + active/open change observers. `is_open` is the
+        // SAME signal stored on the SDK's `DrawerPresentation` and
+        // wired into `LayoutProps.sidebar`'s `DrawerContentProps` —
+        // so a `Toggle`/`Open`/`Close` command written here is
+        // observable by reactive closures inside the user's
+        // `.content(...)` builder.
+        let is_open = presentation.is_open;
         let open_changed: Rc<dyn Fn(bool)> = {
-            let is_open = is_open;
             Rc::new(move |o| is_open.set(o))
         };
 

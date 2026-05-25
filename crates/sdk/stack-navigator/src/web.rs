@@ -57,6 +57,7 @@ impl NavigatorHandler<WebBackend> for WebStackHandler {
             depth_changed,
             active_changed: _,
             control,
+            build_node: _,
         } = host;
 
         // Adapter: the legacy `NavigatorCallbacks::mount_screen` is

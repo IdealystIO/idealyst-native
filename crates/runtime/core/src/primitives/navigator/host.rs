@@ -149,6 +149,20 @@ pub struct NavigatorHost<N: Clone + 'static> {
     /// route those commands to [`NavigatorHandler::on_command`] for
     /// consistency.
     pub control: Rc<NavigatorControl>,
+    /// Generic "build a primitive into a backend node" callback. Used
+    /// by SDK handlers that need to materialize ancillary subtrees
+    /// (drawer sidebar, tab-bar custom content, etc.) outside the
+    /// standard screen-mount path. The framework wraps each call in a
+    /// fresh reactive scope and keeps the scope alive for the
+    /// navigator's lifetime, so effects declared inside the built
+    /// subtree survive past the build call.
+    ///
+    /// **Must be called outside the outer `backend.borrow_mut()`**
+    /// (i.e. not synchronously from `init`) — the build path
+    /// re-enters the walker which itself borrows the backend. Defer
+    /// via `runtime_core::schedule_microtask` (or your platform's
+    /// equivalent) from `init`.
+    pub build_node: Rc<dyn Fn(crate::Primitive) -> N>,
 }
 
 /// Implementation contract for a registered navigator kind. Each SDK

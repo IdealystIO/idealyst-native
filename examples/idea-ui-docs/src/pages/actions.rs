@@ -11,7 +11,7 @@ use idea_ui::{
     badge, btn, stack, BadgeProps, ButtonProps, IconButtonProps, StackGap, TagProps,
 };
 // idea-ui's own component invocation macros must be in scope.
-use idea_ui::{iconbutton, tag};
+use idea_ui::{icon_button, tag};
 
 use crate::shell::{demo_card, page_header};
 

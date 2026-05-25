@@ -295,7 +295,13 @@ pub fn start() {{
 /// `idealyst build --web` (no `--aas`).
 #[cfg(not(feature = "runtime-server"))]
 fn start_local() {{
-    let backend = Rc::new(RefCell::new(WebBackend::new("#app")));
+    let mut web = WebBackend::new("#app");
+    // Hand the bare backend to the user crate so it can install
+    // navigator-SDK / external-primitive handlers before mount. The
+    // user crate must expose `pub fn register_extensions(&mut WebBackend)`;
+    // an empty body is fine when the crate has no SDK deps.
+    {lib}::register_extensions(&mut web);
+    let backend = Rc::new(RefCell::new(web));
     backend_web::install_global_self(&backend);
     let owner = runtime_core::mount(backend, {lib}::app);
     OWNER.with(|slot| *slot.borrow_mut() = Some(owner));
@@ -314,7 +320,9 @@ fn start_aas() {{
                   did the dev HTTP server fail to inject it? Falling back to local mount.".into(),
             );
             // Defensive fallback so the page doesn't go blank.
-            let backend = Rc::new(RefCell::new(WebBackend::new("#app")));
+            let mut web = WebBackend::new("#app");
+            {lib}::register_extensions(&mut web);
+            let backend = Rc::new(RefCell::new(web));
             backend_web::install_global_self(&backend);
             let owner = runtime_core::mount(backend, {lib}::app);
             OWNER.with(|slot| *slot.borrow_mut() = Some(owner));

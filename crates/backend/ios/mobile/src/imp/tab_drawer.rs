@@ -92,6 +92,15 @@ pub(crate) struct TabDrawerEntry {
     /// when the theme swaps. Same lifetime as `theme_effect`. `None`
     /// when the author didn't pass `.background_color(...)`.
     pub(crate) background_effect: Option<runtime_core::Effect>,
+    /// Retain anchor for the hamburger `UIBarButtonItem`'s
+    /// `CallbackTarget`. UIKit holds the bar item, but the target
+    /// (the Obj-C object that receives `invoke`) is held weakly via
+    /// `setTarget:`. Without an external strong ref, the target
+    /// deallocs as soon as this `Retained` goes out of scope and the
+    /// menu button silently no-ops. Stored here so the target's
+    /// lifetime matches the drawer's. `None` for tab navigators (no
+    /// menu button is added).
+    pub(crate) menu_callback_target: Option<Retained<NSObject>>,
 }
 
 // =========================================================================
@@ -124,6 +133,7 @@ pub(crate) fn create_tab_navigator(
         mounted: mounted.clone(),
         current_route: current_route.clone(),
         active_route_sig,
+        menu_callback_target: None,
         // Tabs have no header bar; the drawer constructor populates
         // this with its embedded UINavigationController's rootVC.
         header_root_vc: None,
@@ -383,6 +393,34 @@ pub(crate) fn create_drawer_navigator(
     let active_route_sig = callbacks.navigator.nav_state.active_route;
     let mounted: Rc<RefCell<HashMap<&'static str, MountedScreen>>> = Rc::new(RefCell::new(HashMap::new()));
     let current_route: Rc<RefCell<Option<&'static str>>> = Rc::new(RefCell::new(None));
+
+    // Install a leading hamburger button on `root_vc.navigationItem`.
+    // Tapping dispatches `OpenDrawer` on the navigator's control
+    // plane — same path `DrawerHandle::open()` uses, so the per-kind
+    // dispatcher's open animation runs. Without this button there's
+    // no built-in way to open the drawer on iOS (no edge-swipe
+    // recognizer yet); SDK consumers shouldn't need to add their
+    // own bar buttons just to expose drawer entry.
+    let menu_target_retain: Retained<NSObject> = unsafe {
+        let image: Retained<NSObject> = {
+            let name = NSString::from_str("line.3.horizontal");
+            msg_send_id![objc2::class!(UIImage), systemImageNamed: &*name]
+        };
+        let control_for_menu = control.clone();
+        let on_press: Rc<dyn Fn()> = Rc::new(move || {
+            control_for_menu.dispatch(NavCommand::OpenDrawer);
+        });
+        let target = CallbackTarget::new(mtm, on_press);
+        let sel = objc2::sel!(invoke);
+        let bar_item: Retained<NSObject> = msg_send_id![objc2::class!(UIBarButtonItem), new];
+        let _: () = msg_send![&bar_item, setImage: &*image];
+        let _: () = msg_send![&bar_item, setTarget: &*target];
+        let _: () = msg_send![&bar_item, setAction: sel];
+        let nav_item: Retained<NSObject> = msg_send_id![&root_vc, navigationItem];
+        let _: () = msg_send![&nav_item, setLeftBarButtonItem: &*bar_item];
+        Retained::retain(Retained::as_ptr(&target) as *mut NSObject).unwrap()
+    };
+
     let entry = TabDrawerEntry {
         outer: outer.clone(),
         content_host: outer.clone(),
@@ -395,6 +433,7 @@ pub(crate) fn create_drawer_navigator(
         mounted: mounted.clone(),
         current_route: current_route.clone(),
         active_route_sig,
+        menu_callback_target: Some(menu_target_retain),
         header_root_vc: Some(root_vc.clone()),
         header_nav_ctrl: Some(unsafe {
             Retained::retain(Retained::as_ptr(&nav_ctrl) as *mut NSObject).unwrap()

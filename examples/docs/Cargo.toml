@@ -42,6 +42,12 @@ ios-sim = { workspace = true }
 # Everything web-specific is gated on the wasm32 target. The
 # cross-platform `app()` function never touches these — native
 # targets compile without ever resolving them.
+# iOS-only: docs needs `backend-ios-mobile` (imports as `backend_ios`)
+# in scope for the `register_extensions(&mut IosBackend)` hook the
+# CLI-generated wrapper invokes before mount.
+[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
+backend-ios-mobile = { workspace = true }
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # `async-driver` brings in `install_async_executor` + `install_render_loop`,
 # which the docs' wasm entry installs so `host-web::mount` can
@@ -73,6 +79,7 @@ wasm-opt = false
 app.name      = "Idealyst Docs"
 app.bundle_id = "ai.truday.idealyst.docs"
 app.version   = "0.0.1"
+app.targets   = ["web", "ios"]
 
 # Splash-screen settings. The CLI fills in any missing field with
 # sensible defaults — this block is here as a working example.
@@ -82,4 +89,4 @@ app.version   = "0.0.1"
 background  = "#1a1a2e"
 title       = "Idealyst"
 title_color = "#ffffff"
-duration_ms = 1500
+duration_ms = 0

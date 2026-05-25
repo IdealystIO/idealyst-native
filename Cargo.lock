@@ -1256,6 +1256,7 @@ dependencies = [
 name = "docs"
 version = "0.0.1"
 dependencies = [
+ "backend-ios-mobile",
  "backend-web",
  "console_error_panic_hook",
  "dev-client",
@@ -5234,6 +5235,8 @@ dependencies = [
 name = "welcome"
 version = "0.0.1"
 dependencies = [
+ "backend-ios-mobile",
+ "backend-web",
  "runtime-core",
 ]
 

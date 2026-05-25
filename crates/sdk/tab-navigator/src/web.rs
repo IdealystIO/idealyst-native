@@ -81,6 +81,7 @@ impl NavigatorHandler<WebBackend> for WebTabHandler {
             depth_changed,
             active_changed,
             control,
+            build_node: _,
         } = host;
 
         // Adapter: 3-arg mount_screen → 2-arg; state discarded for the

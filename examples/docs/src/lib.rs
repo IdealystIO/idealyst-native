@@ -42,8 +42,24 @@ mod pages;
 #[cfg(test)]
 mod macro_test;
 
+// Web SDK-handler registration called by the CLI-generated wrapper
+// before mount. Used here to register the drawer navigator SDK; any
+// other per-backend extensions (external primitives, custom assets)
+// would also hook in here.
 #[cfg(target_arch = "wasm32")]
-mod web;
+pub fn register_extensions(backend: &mut backend_web::WebBackend) {
+    drawer_navigator::register(backend);
+}
+
+// iOS equivalent — same name + role, different backend type. The
+// iOS wrapper template invokes this before `mount`. Without it, the
+// drawer navigator's factory isn't in `IosBackend::navigator_handlers`
+// and the first `Backend::create_navigator` call panics —
+// abort-trapped because it bubbles up through `ios_main`'s C-ABI.
+#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
+pub fn register_extensions(backend: &mut backend_ios::IosBackend) {
+    drawer_navigator::register(backend);
+}
 
 use routes::{
     ANIMATION_ROUTE, BACKENDS_ROUTE, CLI_ROUTE, COMPONENTS_ROUTE, DEV_TOOLS_ROUTE, ICONS_ROUTE,

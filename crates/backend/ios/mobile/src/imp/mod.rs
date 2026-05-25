@@ -25,9 +25,17 @@ use runtime_core::primitives::graphics::{OnLost, OnReady, OnResize};
 use runtime_core::primitives::link::LinkConfig;
 use runtime_core::primitives::navigator::{
     DrawerHandle, DrawerNavigatorCallbacks, NavigatorCallbacks,
-    NavigatorControl, NavigatorHandle, TabNavigatorCallbacks, TabsHandle,
+    NavigatorControl, NavigatorHandle, NavigatorOps, TabNavigatorCallbacks, TabsHandle,
 };
 use runtime_core::{Backend, Color, StyleRules};
+
+/// No-op `NavigatorOps` returned by `make_navigator_handle` when no
+/// SDK handler is stored for the requested node (e.g. the node id
+/// doesn't appear in `nav_handler_instances`). Keeps the fallback
+/// handle inert without panicking.
+struct NoopNavOps;
+impl NavigatorOps for NoopNavOps {}
+static NOOP_NAV_OPS: NoopNavOps = NoopNavOps;
 use objc2::rc::Retained;
 use objc2::{msg_send, msg_send_id};
 use objc2_foundation::{MainThreadMarker, NSObject, NSString};
@@ -134,15 +142,20 @@ pub struct IosBackend {
     /// factories keyed by their presentation TypeId.
     pub(crate) navigator_handlers:
         runtime_core::NavigatorRegistry<IosBackend>,
-    /// Per-navigator kind tracker, populated by SDK handlers at init
-    /// time. iOS uses two storage maps (`navigator_instances` for
-    /// stack, `tab_drawer_instances` for tab+drawer), so the unified
-    /// `navigator_extension_*` trait methods need to know the kind to
-    /// dispatch correctly. SDK handlers call
-    /// `backend.set_nav_kind(node, NavigatorKind::Stack)` etc.
-    /// after their `init` returns.
-    pub(crate) nav_kinds:
-        std::cell::RefCell<HashMap<usize, runtime_core::NavigatorKind>>,
+    /// Per-navigator-instance SDK handler. Keyed by the navigator
+    /// container's `IosNode::view_key()`. `Backend::create_navigator`
+    /// resolves the factory, runs `init`, and stores the returned
+    /// handler here so subsequent `navigator_attach_initial` /
+    /// `release_navigator` / `make_navigator_handle` /
+    /// `apply_navigator_slot_style` trait methods can route through
+    /// the handler's kind-specific logic instead of branching on a
+    /// kind discriminant + calling per-kind inherent helpers.
+    pub(crate) nav_handler_instances: HashMap<
+        usize,
+        std::rc::Rc<
+            std::cell::RefCell<Box<dyn runtime_core::NavigatorHandler<IosBackend>>>,
+        >,
+    >,
     /// Per-virtualizer side state — keyed by the `UICollectionView`'s
     /// pointer. UIKit holds dataSource + delegate as weak refs, so
     /// we keep the `VirtualizerDataSource` retained here for the
@@ -228,6 +241,24 @@ pub fn install_global_self(weak: std::rc::Weak<std::cell::RefCell<IosBackend>>) 
     IOS_BACKEND_SELF.with(|s| {
         *s.borrow_mut() = Some(weak);
     });
+}
+
+/// Run `f` with a mutable borrow of the installed global backend. Same
+/// pattern as `set_animated_f32` / `set_animated_color` but exposed for
+/// SDK code that needs to reach the backend outside the framework's
+/// usual call paths (e.g. drawer-navigator's deferred sidebar attach,
+/// fired from a `schedule_microtask` after `init` returns).
+///
+/// Returns `Some(f(...))` on success, `None` if the backend hasn't
+/// been installed, has been dropped, or is currently borrowed by
+/// another caller (the borrow_mut fails silently rather than
+/// panicking). Callers that need the result should match on the
+/// `Option`; otherwise it's fine to ignore.
+pub fn with_backend<R>(f: impl FnOnce(&mut IosBackend) -> R) -> Option<R> {
+    let weak = IOS_BACKEND_SELF.with(|s| s.borrow().clone())?;
+    let rc = weak.upgrade()?;
+    let mut b = rc.try_borrow_mut().ok()?;
+    Some(f(&mut b))
 }
 
 /// Push a scalar animation property update to `node` on the
@@ -349,7 +380,7 @@ impl IosBackend {
             animated_states: HashMap::new(),
             external_handlers: runtime_core::ExternalRegistry::new(),
             navigator_handlers: runtime_core::NavigatorRegistry::new(),
-            nav_kinds: std::cell::RefCell::new(HashMap::new()),
+            nav_handler_instances: HashMap::new(),
             virtualizer_instances: HashMap::new(),
             collection_views: std::collections::HashSet::new(),
         }
@@ -387,22 +418,6 @@ impl IosBackend {
         F: Fn() -> Box<dyn runtime_core::NavigatorHandler<IosBackend>> + 'static,
     {
         self.navigator_handlers.register::<P, _>(factory);
-    }
-
-    /// Record the kind of a freshly-created `Primitive::Navigator`
-    /// node. SDK handlers call this from `init` after constructing
-    /// their navigator via the appropriate legacy method, so the
-    /// unified `navigator_extension_*` trait method overrides can route
-    /// to the right per-kind storage at dispatch time.
-    pub fn set_nav_kind(&self, node: &IosNode, kind: runtime_core::NavigatorKind) {
-        self.nav_kinds.borrow_mut().insert(node.view_key(), kind);
-    }
-
-    /// Read back the recorded kind for `node`. Returns `None` if no
-    /// SDK handler tagged the node (which would indicate a misconfigured
-    /// SDK — the trait overrides treat `None` as "fall back to stack").
-    pub fn nav_kind(&self, node: &IosNode) -> Option<runtime_core::NavigatorKind> {
-        self.nav_kinds.borrow().get(&node.view_key()).copied()
     }
 
     /// `MainThreadMarker` accessor for third-party SDK extension code
@@ -2216,10 +2231,14 @@ impl Backend for IosBackend {
     // ------------------------------------------------------------------
     // Navigator — unified path for SDK-supplied navigator kinds.
     //
-    // iOS uses two per-kind storage maps (`navigator_instances` for
-    // stack; `tab_drawer_instances` for tab+drawer), so each unified
-    // method consults `nav_kinds` (populated by the SDK handler at
-    // init time) to route to the right legacy method.
+    // `create_navigator` resolves the SDK-registered factory, runs
+    // `init`, and stashes the returned handler on
+    // `nav_handler_instances` keyed by the container's `view_key`.
+    // Subsequent post-init dispatch (`attach_initial` / `release` /
+    // `make_handle` / `apply_slot_style`) looks the handler up and
+    // forwards through it — the handler then calls whichever
+    // per-kind inherent helper (`stack_navigator_attach_initial`,
+    // `apply_drawer_sidebar_style`, …) is appropriate for its kind.
     // ------------------------------------------------------------------
 
     fn create_navigator(
@@ -2242,7 +2261,17 @@ impl Backend for IosBackend {
                 )
             });
         let mut handler = factory();
-        handler.init(self, host, presentation)
+        let node = handler.init(self, host, presentation);
+        // Stash the handler keyed by the container's view key so
+        // subsequent dispatch routes through the SDK handler instead
+        // of through a kind switch. The handler internally remembers
+        // its container `IosNode` so its post-init methods can call
+        // back into the backend's legacy per-kind helpers.
+        self.nav_handler_instances.insert(
+            node.view_key(),
+            std::rc::Rc::new(std::cell::RefCell::new(handler)),
+        );
+        node
     }
 
     fn navigator_attach_initial(
@@ -2252,51 +2281,25 @@ impl Backend for IosBackend {
         scope_id: u64,
         options: runtime_core::ScreenOptions,
     ) {
-        match self.nav_kind(navigator) {
-            Some(runtime_core::NavigatorKind::Stack) | None => {
-                self.stack_navigator_attach_initial(navigator, screen, scope_id, options)
-            }
-            Some(runtime_core::NavigatorKind::Tab) => {
-                self.tab_navigator_attach_initial(navigator, screen, scope_id, options)
-            }
-            Some(runtime_core::NavigatorKind::Drawer) => {
-                self.drawer_navigator_attach_initial(navigator, screen, scope_id, options)
-            }
-            Some(runtime_core::NavigatorKind::Custom) => {
-                // Third-party SDKs handle their own per-handler dispatch.
-            }
-        }
+        let handler = self.nav_handler_instances.get(&navigator.view_key()).cloned();
+        let Some(handler) = handler else { return };
+        handler.borrow_mut().attach_initial(self, screen, scope_id, options);
     }
 
     fn release_navigator(&mut self, node: &Self::Node) {
-        match self.nav_kind(node) {
-            Some(runtime_core::NavigatorKind::Stack) | None => self.release_stack_navigator(node),
-            Some(runtime_core::NavigatorKind::Tab) => self.release_tab_navigator(node),
-            Some(runtime_core::NavigatorKind::Drawer) => self.release_drawer_navigator(node),
-            Some(runtime_core::NavigatorKind::Custom) => {}
-        }
-        self.nav_kinds.borrow_mut().remove(&node.view_key());
+        let handler = self.nav_handler_instances.remove(&node.view_key());
+        let Some(handler) = handler else { return };
+        handler.borrow_mut().release(self);
     }
 
     fn make_navigator_handle(
         &self,
         node: &Self::Node,
     ) -> runtime_core::NavigatorHandle {
-        match self.nav_kind(node) {
-            Some(runtime_core::NavigatorKind::Stack) | None => self.make_stack_navigator_handle(node),
-            Some(runtime_core::NavigatorKind::Tab) => {
-                // TabsHandle wraps a NavigatorHandle internally — extract.
-                self.make_tab_navigator_handle(node).inner().clone()
-            }
-            Some(runtime_core::NavigatorKind::Drawer) => {
-                self.make_drawer_navigator_handle(node).inner().clone()
-            }
-            Some(runtime_core::NavigatorKind::Custom) => {
-                // Third-party kinds: fall back to the trait's default
-                // (a no-op handle). Such SDKs are expected to override
-                // via their own RefFill::Navigator closure.
-                self.make_stack_navigator_handle(node)
-            }
+        let handler = self.nav_handler_instances.get(&node.view_key()).cloned();
+        match handler {
+            Some(h) => h.borrow().make_handle(),
+            None => runtime_core::NavigatorHandle::new(Rc::new(()), &NOOP_NAV_OPS),
         }
     }
 
@@ -2306,18 +2309,9 @@ impl Backend for IosBackend {
         slot: &'static str,
         style: &Rc<runtime_core::StyleRules>,
     ) {
-        match slot {
-            "header" => self.apply_navigator_header_style(navigator, style),
-            "title" => self.apply_navigator_title_style(navigator, style),
-            "button" => self.apply_navigator_button_style(navigator, style),
-            "body" => self.apply_navigator_body_style(navigator, style),
-            "tab_bar" => self.apply_tab_bar_style(navigator, style),
-            "tab_icon" => self.apply_tab_icon_style(navigator, style),
-            "tab_label" => self.apply_tab_label_style(navigator, style),
-            "sidebar" => self.apply_drawer_sidebar_style(navigator, style),
-            "scrim" => self.apply_drawer_scrim_style(navigator, style),
-            _ => {}
-        }
+        let handler = self.nav_handler_instances.get(&navigator.view_key()).cloned();
+        let Some(handler) = handler else { return };
+        handler.borrow_mut().apply_slot_style(self, slot, style);
     }
 
     // =================================================================

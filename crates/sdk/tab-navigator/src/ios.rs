@@ -1,24 +1,30 @@
 //! iOS-backend handler for the Tab navigator SDK.
 //!
-//! Phase-1 adapter: synthesizes legacy `TabNavigatorCallbacks` and
-//! calls `IosBackend::create_tab_navigator` (which drives
-//! `UITabBarController`). Sets `NavigatorKind::Tab` for unified dispatch.
+//! Stores the `IosNode` returned by `IosBackend::create_tab_navigator`
+//! (a `UITabBarController`-backed view) and the `NavigatorControl`
+//! clone handed to `init`. The handler then implements the
+//! post-init `NavigatorHandler` methods directly on top of the
+//! backend's existing per-kind inherent helpers.
 
 use crate::{MountPolicy, TabPlacement, TabPresentation};
-use backend_ios_mobile::{IosBackend, IosNode};
+use backend_ios::{IosBackend, IosNode};
 use runtime_core::{
-    accessibility::AccessibilityProps, primitives::navigator::tabs::TabRegistration, Backend,
-    MountPolicy as CoreMountPolicy, MountResult, NavigatorKind, NavigatorCallbacks, NavigatorHandler,
-    NavigatorHost, TabNavigatorCallbacks, TabPlacement as CoreTabPlacement,
+    accessibility::AccessibilityProps, primitives::navigator::{tabs::TabRegistration, NavigatorOps},
+    MountPolicy as CoreMountPolicy, MountResult, NavigatorCallbacks, NavigatorControl,
+    NavigatorHandle, NavigatorHandler, NavigatorHost, TabNavigatorCallbacks,
+    TabPlacement as CoreTabPlacement,
 };
 use std::any::Any;
 use std::rc::Rc;
 
-pub struct IosTabHandler;
+pub struct IosTabHandler {
+    container: Option<IosNode>,
+    control: Option<Rc<NavigatorControl>>,
+}
 
 impl IosTabHandler {
     pub fn new() -> Self {
-        Self
+        Self { container: None, control: None }
     }
 }
 impl Default for IosTabHandler {
@@ -67,6 +73,7 @@ impl NavigatorHandler<IosBackend> for IosTabHandler {
             depth_changed,
             active_changed,
             control,
+            build_node: _,
         } = host;
 
         let mount_2arg: Rc<dyn Fn(&'static str, Box<dyn Any>) -> MountResult<IosNode>> = {
@@ -110,29 +117,65 @@ impl NavigatorHandler<IosBackend> for IosTabHandler {
             active_changed: active_changed_legacy,
         };
 
+        self.control = Some(control.clone());
         let node = backend.create_tab_navigator(
             tab_callbacks,
             control,
             &AccessibilityProps::default(),
         );
-        backend.set_nav_kind(&node, NavigatorKind::Tab);
+        self.container = Some(node.clone());
         node
     }
 
     fn attach_initial(
         &mut self,
-        _backend: &mut IosBackend,
-        _screen: IosNode,
-        _scope_id: u64,
-        _options: runtime_core::ScreenOptions,
+        backend: &mut IosBackend,
+        screen: IosNode,
+        scope_id: u64,
+        options: runtime_core::ScreenOptions,
     ) {
-        unreachable!();
+        if let Some(container) = self.container.clone() {
+            backend.tab_navigator_attach_initial(&container, screen, scope_id, options);
+        }
     }
 
     fn on_command(&mut self, _cmd: runtime_core::NavCommand) {
-        unreachable!();
+        unreachable!(
+            "IosTabHandler::on_command — backend.create_tab_navigator owns the \
+             control-plane dispatcher"
+        );
+    }
+
+    fn release(&mut self, backend: &mut IosBackend) {
+        if let Some(container) = self.container.take() {
+            backend.release_tab_navigator(&container);
+        }
+        self.control = None;
+    }
+
+    fn make_handle(&self) -> NavigatorHandle {
+        match self.control.clone() {
+            Some(c) => NavigatorHandle::with_control(Rc::new(()), &NoopTabOps, c),
+            None => NavigatorHandle::new(Rc::new(()), &NoopTabOps),
+        }
+    }
+
+    fn apply_slot_style(
+        &mut self,
+        _backend: &mut IosBackend,
+        _slot: &'static str,
+        _style: &Rc<runtime_core::StyleRules>,
+    ) {
+        // iOS does not yet expose per-slot tab-bar styling helpers on the
+        // backend. When a styled-tabs implementation lands (likely via
+        // `UITabBarAppearance` configuration), wire the `tab_bar` /
+        // `tab_icon` / `tab_label` slots here in the same shape as the
+        // stack handler's header/title/button slots.
     }
 }
+
+struct NoopTabOps;
+impl NavigatorOps for NoopTabOps {}
 
 pub fn register(backend: &mut IosBackend) {
     backend.register_navigator::<TabPresentation, _>(|| Box::new(IosTabHandler::new()));
