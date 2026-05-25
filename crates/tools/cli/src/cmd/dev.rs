@@ -165,6 +165,18 @@ pub struct Args {
     /// server. Use when `pkg/` is already up to date.
     #[arg(long)]
     pub no_build: bool,
+
+    /// Boot the interactive panel (dev-tui) on the current terminal.
+    /// Renders per-target state + a live log stream using the
+    /// framework's own terminal backend, dogfooding `host-terminal`.
+    ///
+    /// Disabled in CI: if stderr isn't a TTY, the flag is ignored
+    /// and the CLI falls back to today's line-oriented output, so
+    /// scripted invocations stay untouched.
+    ///
+    /// Incompatible with `--terminal` (both want the foreground TTY).
+    #[arg(long)]
+    pub interactive: bool,
 }
 
 pub fn run(args: Args) -> Result<()> {
@@ -179,8 +191,29 @@ pub fn run(args: Args) -> Result<()> {
     let manifest = parse_manifest(&dir)?;
     let active_targets = resolve_targets(&args, &manifest.app.targets)?;
 
-    eprintln!(
-        "[dev] {} mode, targets: {}",
+    // Decide if the interactive panel should actually boot. The flag
+    // is the user's request; we still gate on a real TTY (so piped
+    // invocations and CI keep getting line-oriented output) and on
+    // not colliding with the `--terminal` build target — both would
+    // fight for the foreground TTY and corrupt each other.
+    let interactive = args.interactive
+        && {
+            use std::io::IsTerminal;
+            std::io::stderr().is_terminal()
+        }
+        && !active_targets.contains(&Target::Terminal);
+    if args.interactive && !interactive {
+        // Tell the user *why* the flag was ignored so they don't think
+        // it silently failed. Goes through `eprintln!` because the
+        // panel isn't up yet.
+        eprintln!(
+            "[dev] --interactive ignored (stderr is not a TTY, or --terminal target is active)"
+        );
+    }
+
+    crate::dlog!(
+        "dev",
+        "{} mode, targets: {}",
         if args.runtime_server { "runtime-server" } else { "local" },
         active_targets
             .iter()
@@ -193,7 +226,25 @@ pub fn run(args: Args) -> Result<()> {
     // pushes any subprocesses it spawns here; the signal handler
     // walks the vec and kills everything.
     let children: Arc<Mutex<Vec<Child>>> = Arc::new(Mutex::new(Vec::new()));
-    install_ctrlc_handler(children.clone())?;
+    // Interactive mode: crossterm (via host-terminal inside dev-tui)
+    // captures Ctrl-C in raw mode. Installing the usual handler would
+    // call `std::process::exit(0)` mid-frame, skipping host-terminal's
+    // Drop-based terminal-restore and leaving the user in raw mode
+    // with no echo. The TUI's quit path already kills children, so
+    // skip the handler entirely.
+    if !interactive {
+        install_ctrlc_handler(children.clone())?;
+    }
+
+    // Bus published to by `dlog(...)` once installed; the dev-tui
+    // app drains it every frame on the main thread.
+    let dev_bus = if interactive {
+        let bus = dev_tui::DevBus::new();
+        crate::dev_log::install(bus.clone());
+        Some(bus)
+    } else {
+        None
+    };
 
     // In runtime-server mode, start the dev-server once before launching any
     // platform — all clients connect to the same server. The host
@@ -252,8 +303,9 @@ pub fn run(args: Args) -> Result<()> {
                     host_binary.display(),
                 )
             })?;
-        eprintln!(
-            "[dev] runtime-server host running ({}), mDNS-advertised; port file {}",
+        crate::dlog!(
+            "dev",
+            "runtime-server host running ({}), mDNS-advertised; port file {}",
             host_binary.display(),
             port_file.display(),
         );
@@ -282,7 +334,7 @@ pub fn run(args: Args) -> Result<()> {
             let children_for_worker = children.clone();
             std::thread::spawn(move || {
                 if let Err(e) = launch_target(target, &dir, &args_clone, children_for_worker) {
-                    eprintln!("[dev {}] launch failed: {e:#}", target);
+                    crate::dlog!(&format!("dev {}", target), "launch failed: {e:#}");
                 }
             });
         }
@@ -292,7 +344,7 @@ pub fn run(args: Args) -> Result<()> {
         // exits, control returns here and we drop into the children-
         // kill loop below.
         if let Err(e) = launch_target(Target::Terminal, &dir, &args, children.clone()) {
-            eprintln!("[dev terminal] launch failed: {e:#}");
+            crate::dlog!("dev terminal", "launch failed: {e:#}");
         }
         // Clean up sibling targets.
         if let Ok(mut guard) = children.lock() {
@@ -312,10 +364,44 @@ pub fn run(args: Args) -> Result<()> {
         let children_for_worker = children.clone();
         let worker = std::thread::spawn(move || {
             if let Err(e) = launch_target(target, &dir, &args_clone, children_for_worker) {
-                eprintln!("[dev {}] launch failed: {e:#}", target);
+                crate::dlog!(&format!("dev {}", target), "launch failed: {e:#}");
             }
         });
         workers.push(worker);
+    }
+
+    // Interactive panel takes the foreground TTY and blocks until
+    // the user quits (q / Esc / Ctrl-C, handled by crossterm inside
+    // host-terminal). On return we tear down spawned children and
+    // drop the worker handles — they'll exit on broken pipes /
+    // killed subprocesses.
+    if let Some(bus) = dev_bus {
+        let project_name = project_app_name(&dir);
+        let targets: Vec<dev_tui::TargetInfo> = active_targets
+            .iter()
+            .map(|t| dev_tui::TargetInfo {
+                name: t.as_str().to_string(),
+            })
+            .collect();
+        let opts = dev_tui::RunOptions {
+            project_name,
+            targets,
+            runtime_server: args.runtime_server,
+        };
+        // Blocks. host-terminal handles raw mode + alternate screen +
+        // stderr redirect for the duration; on quit it restores
+        // everything before returning.
+        let _ = dev_tui::run(bus, opts);
+
+        // Clean up spawned subprocesses. Mirrors the terminal-target
+        // path's drain-and-kill loop below.
+        if let Ok(mut guard) = children.lock() {
+            for mut child in guard.drain(..) {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+        return Ok(());
     }
 
     // Wait for all workers to settle. In practice the web launcher
@@ -406,7 +492,7 @@ fn dedup_preserve_order(xs: Vec<Target>) -> Vec<Target> {
 /// is what serves the wire WebSocket; runs as a child process for the
 /// rest of this session.
 fn build_runtime_server_host(dir: &Path) -> Result<PathBuf> {
-    eprintln!("[dev] building runtime-server host…");
+    crate::dlog!("dev", "building runtime-server host…");
     let source = crate::framework_source::resolve(dir)?;
     let artifact = build_runtime_server::build(
         dir,
@@ -458,8 +544,9 @@ fn launch_terminal(dir: &Path, args: &Args) -> Result<()> {
     } else {
         run_terminal::RunMode::Local
     };
-    eprintln!(
-        "[dev terminal] building + launching TTY app (mode: {:?})…",
+    crate::dlog!(
+        "dev terminal",
+        "building + launching TTY app (mode: {:?})…",
         mode,
     );
     let source = crate::framework_source::resolve(dir)?;
@@ -474,7 +561,7 @@ fn launch_terminal(dir: &Path, args: &Args) -> Result<()> {
         },
     )
     .context("terminal dev launch failed")?;
-    eprintln!("[dev terminal] exited ({})", artifact.binary.display());
+    crate::dlog!("dev terminal", "exited ({})", artifact.binary.display());
     Ok(())
 }
 
@@ -496,8 +583,9 @@ fn launch_web(dir: &Path, args: &Args) -> Result<()> {
     if args.runtime_server {
         // ── 1. wasm shim that connects to the runtime-server host ────────────
         if !args.no_build {
-            eprintln!(
-                "[dev web] building wasm shim with aas + runtime-core/hot-reload…"
+            crate::dlog!(
+                "dev web",
+                "building wasm shim with aas + runtime-core/hot-reload…"
             );
             dev_reload::build_once(
                 dir,
@@ -542,8 +630,9 @@ fn launch_web(dir: &Path, args: &Args) -> Result<()> {
         spawn_aas_browser(app_id, aas_url.clone());
 
         let ctx = AasContext { aas_url };
-        eprintln!(
-            "[dev web] runtime-server-bridged HTTP at http://{}:{}",
+        crate::dlog!(
+            "dev web",
+            "runtime-server-bridged HTTP at http://{}:{}",
             args.host, args.port
         );
         // Fire-and-forget browser open — matches the iOS sim
@@ -577,8 +666,9 @@ fn launch_web(dir: &Path, args: &Args) -> Result<()> {
             std::mem::forget(handle);
         }
         let ctx = ReloadContext { gen };
-        eprintln!(
-            "[dev web] livereload HTTP at http://{}:{}",
+        crate::dlog!(
+            "dev web",
+            "livereload HTTP at http://{}:{}",
             args.host, args.port
         );
         spawn_browser_opener(&args.host, args.port);
@@ -663,7 +753,7 @@ fn launch_ios(dir: &Path, args: &Args) -> Result<()> {
     } else {
         run_ios::RunMode::Local
     };
-    eprintln!("[dev ios] building + launching simulator (mode: {:?})…", mode);
+    crate::dlog!("dev ios", "building + launching simulator (mode: {:?})…", mode);
     let source = crate::framework_source::resolve(dir)?;
     let artifact = run_ios::run(
         dir,
@@ -675,8 +765,9 @@ fn launch_ios(dir: &Path, args: &Args) -> Result<()> {
         },
     )
     .context("iOS dev launch failed")?;
-    eprintln!(
-        "[dev ios] running on simulator {} ({})",
+    crate::dlog!(
+        "dev ios",
+        "running on simulator {} ({})",
         artifact.simulator_udid,
         artifact.app_bundle.display(),
     );
@@ -720,8 +811,9 @@ fn launch_android(dir: &Path, args: &Args) -> Result<()> {
         None
     };
 
-    eprintln!(
-        "[dev android] building + launching emulator (mode: {:?}{}…",
+    crate::dlog!(
+        "dev android",
+        "building + launching emulator (mode: {:?}{}…",
         mode,
         match aas_port {
             Some(p) => format!(", aas_port={p})"),
@@ -741,8 +833,9 @@ fn launch_android(dir: &Path, args: &Args) -> Result<()> {
         },
     )
     .context("Android dev launch failed")?;
-    eprintln!(
-        "[dev android] running on {} ({})",
+    crate::dlog!(
+        "dev android",
+        "running on {} ({})",
         artifact.serial,
         artifact.apk.display(),
     );
@@ -765,8 +858,9 @@ fn launch_macos(dir: &Path, args: &Args, children: Arc<Mutex<Vec<Child>>>) -> Re
     } else {
         build_macos::BuildMode::Local
     };
-    eprintln!(
-        "[dev macos] building + launching native AppKit app (mode: {:?})…",
+    crate::dlog!(
+        "dev macos",
+        "building + launching native AppKit app (mode: {:?})…",
         mode
     );
     let source = crate::framework_source::resolve(dir)?;
@@ -805,7 +899,7 @@ fn launch_macos(dir: &Path, args: &Args, children: Arc<Mutex<Vec<Child>>>) -> Re
         },
     )
     .context("macOS dev launch failed")?;
-    eprintln!("[dev macos] running detached ({})", artifact.binary.display());
+    crate::dlog!("dev macos", "running detached ({})", artifact.binary.display());
 
     // Track the spawned macOS Child so the Ctrl-C handler can kill
     // it on exit. Pre-fix, `cmd.spawn()` returned a `Child` that
@@ -1006,6 +1100,7 @@ impl Args {
             host: self.host.clone(),
             no_build: self.no_build,
             bridge_port: self.bridge_port,
+            interactive: self.interactive,
         }
     }
 }

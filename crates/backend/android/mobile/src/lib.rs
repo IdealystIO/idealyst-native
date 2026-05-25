@@ -110,6 +110,25 @@ pub fn schedule_layout_pass() {
     imp::scheduler::schedule_layout_pass_retry(0);
 }
 
+/// Synchronously run a Taffy compute + apply_frames pass against
+/// the global backend self-handle. Unlike [`schedule_layout_pass`]
+/// this does NOT post to the main looper — it runs on the calling
+/// thread immediately. Use when the next user-visible frame must
+/// reflect a layout change you just made and you can't afford the
+/// async hop (drawer screen swap is the canonical case: without a
+/// sync layout the new screen flashes briefly with default LPs).
+#[cfg(target_os = "android")]
+pub fn run_layout_now() {
+    if let Some(weak) = imp::backend_self_weak() {
+        if let Some(rc) = weak.upgrade() {
+            rc.borrow_mut().run_layout();
+        }
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+pub fn run_layout_now() {}
+
 #[cfg(not(target_os = "android"))]
 pub fn schedule_layout_pass() {}
 

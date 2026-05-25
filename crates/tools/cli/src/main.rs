@@ -15,6 +15,7 @@ use clap::Parser;
 mod cmd;
 mod config;
 mod dev_config;
+mod dev_log;
 mod framework_source;
 mod memory_limit;
 mod platform;

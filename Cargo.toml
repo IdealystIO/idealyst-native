@@ -85,6 +85,7 @@ members = [
     "crates/tools/build/web",
     "crates/tools/build/macos",
     "crates/tools/build/terminal",
+    "crates/tools/dev-tui",
     "crates/tools/run/android",
     "crates/tools/run/ios",
     "crates/tools/run/roku",
@@ -152,6 +153,7 @@ build-macos = { path = "crates/tools/build/macos" }
 run-macos = { path = "crates/tools/run/macos" }
 build-terminal = { path = "crates/tools/build/terminal" }
 run-terminal = { path = "crates/tools/run/terminal" }
+dev-tui = { path = "crates/tools/dev-tui" }
 backend-apple-core = { path = "crates/backend/apple/core" }
 backend-macos = { path = "crates/backend/macos" }
 backend-ios-core = { path = "crates/backend/ios/core" }

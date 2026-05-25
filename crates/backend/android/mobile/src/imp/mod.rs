@@ -682,6 +682,16 @@ pub fn install_global_self(weak: std::rc::Weak<std::cell::RefCell<AndroidBackend
     });
 }
 
+/// Read the installed backend self-handle without consuming it.
+/// Returns `None` if `install_global_self` hasn't fired (e.g. in
+/// runtime-server-client mode where the backend is moved by value).
+/// Crates outside this one use this to reach the backend from JNI
+/// trampolines and SDK helper code without each having to wire up
+/// its own thread-local.
+pub fn backend_self_weak() -> Option<std::rc::Weak<std::cell::RefCell<AndroidBackend>>> {
+    ANDROID_BACKEND_SELF.with(|s| s.borrow().clone())
+}
+
 /// Push a scalar animation property update to `node` on the installed
 /// global backend. Same shape as `backend_ios::set_animated_f32`.
 /// No-ops cleanly if no backend is installed, the install has been

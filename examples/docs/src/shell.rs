@@ -136,9 +136,12 @@ fn nav_link(
     };
 
     use crate::routes::{
-        ANIMATION_ROUTE, CLI_ROUTE, COMPONENTS_ROUTE, INTRODUCTION_ROUTE, MACROS_ROUTE,
-        NAVIGATION_ROUTE, OVERVIEW_ROUTE, PLATFORMS_ROUTE, PRIMITIVES_ROUTE, QUICKSTART_ROUTE,
-        REACTIVITY_ROUTE, SIMULATOR_ROUTE, STYLES_ROUTE, UI_DSL_ROUTE,
+        ANIMATION_ROUTE, BACKENDS_ROUTE, BUILDING_A_THEME_SYSTEM_ROUTE, CLI_ROUTE,
+        COMPONENTS_ROUTE, DEV_TOOLS_ROUTE, ICONS_ROUTE, INTRODUCTION_ROUTE, LISTS_ROUTE,
+        MACROS_ROUTE, NAVIGATION_ROUTE, OVERVIEW_ROUTE, PLATFORMS_ROUTE, PORTAL_ROUTE,
+        PRIMITIVES_ROUTE, QUICKSTART_ROUTE, REACTIVE_TEXT_BINDINGS_ROUTE, REACTIVITY_ROUTE,
+        REFS_ROUTE, ROBOT_ROUTE, SIMULATOR_ROUTE, STYLES_ROUTE, THIRD_PARTY_PRIMITIVES_ROUTE,
+        UI_DSL_ROUTE, WGPU_NATIVE_API_ROUTE, WRITING_A_BACKEND_ROUTE,
     };
 
     match name {
@@ -209,6 +212,66 @@ fn nav_link(
         },
         "simulator" => ui! {
             Link(route = &SIMULATOR_ROUTE, params = ()) {
+                Text(style = style) { label_text }
+            }
+        },
+        "lists" => ui! {
+            Link(route = &LISTS_ROUTE, params = ()) {
+                Text(style = style) { label_text }
+            }
+        },
+        "icons" => ui! {
+            Link(route = &ICONS_ROUTE, params = ()) {
+                Text(style = style) { label_text }
+            }
+        },
+        "refs" => ui! {
+            Link(route = &REFS_ROUTE, params = ()) {
+                Text(style = style) { label_text }
+            }
+        },
+        "portal" => ui! {
+            Link(route = &PORTAL_ROUTE, params = ()) {
+                Text(style = style) { label_text }
+            }
+        },
+        "robot" => ui! {
+            Link(route = &ROBOT_ROUTE, params = ()) {
+                Text(style = style) { label_text }
+            }
+        },
+        "dev-tools" => ui! {
+            Link(route = &DEV_TOOLS_ROUTE, params = ()) {
+                Text(style = style) { label_text }
+            }
+        },
+        "backends" => ui! {
+            Link(route = &BACKENDS_ROUTE, params = ()) {
+                Text(style = style) { label_text }
+            }
+        },
+        "writing-a-backend" => ui! {
+            Link(route = &WRITING_A_BACKEND_ROUTE, params = ()) {
+                Text(style = style) { label_text }
+            }
+        },
+        "third-party-primitives" => ui! {
+            Link(route = &THIRD_PARTY_PRIMITIVES_ROUTE, params = ()) {
+                Text(style = style) { label_text }
+            }
+        },
+        "building-a-theme-system" => ui! {
+            Link(route = &BUILDING_A_THEME_SYSTEM_ROUTE, params = ()) {
+                Text(style = style) { label_text }
+            }
+        },
+        "reactive-text-bindings" => ui! {
+            Link(route = &REACTIVE_TEXT_BINDINGS_ROUTE, params = ()) {
+                Text(style = style) { label_text }
+            }
+        },
+        "wgpu-native-api" => ui! {
+            Link(route = &WGPU_NATIVE_API_ROUTE, params = ()) {
                 Text(style = style) { label_text }
             }
         },

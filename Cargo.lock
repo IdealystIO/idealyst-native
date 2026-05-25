@@ -1216,6 +1216,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "dev-tui"
+version = "0.0.1"
+dependencies = [
+ "backend-terminal",
+ "host-terminal",
+ "idea-ui",
+ "runtime-core",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2128,6 +2138,7 @@ dependencies = [
  "ctrlc",
  "dev-http",
  "dev-reload",
+ "dev-tui",
  "libc",
  "mcp-catalog",
  "mcp-server",

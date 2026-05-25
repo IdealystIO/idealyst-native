@@ -24,34 +24,30 @@ pub(crate) fn apply_rules(
 ) {
     let view = node.as_obj();
 
-    // --- Padding (per-side; framework stores all four independently).
-    //     Each side may animate independently.
+    // --- Padding.
     //
-    // Only applied to TextView (and subclasses — Button, etc.). For
-    // container views (FrameLayout, ScrollView) padding is a Taffy
-    // concept that already shifts children's computed `frame.x` /
-    // `frame.y`. If we ALSO call Android's `setPadding` on the
-    // container, the parent's padding shifts children once more on
-    // top of the Taffy-baked offset → buttons end up double-indented
-    // and clipped at the container's right edge. TextView genuinely
-    // needs Android padding so its text rendering wraps inside the
-    // padding box and the intrinsic-size measurer returns the right
-    // width to Taffy.
-    let is_text_view = env
-        .find_class("android/widget/TextView")
-        .ok()
-        .and_then(|c| env.is_instance_of(&view, &c).ok())
-        .unwrap_or(false);
-    let want_padding = if is_text_view {
-        [
-            dp_to_px(env, &view, px_or(rules.padding_left.as_ref(), 0.0)),
-            dp_to_px(env, &view, px_or(rules.padding_top.as_ref(), 0.0)),
-            dp_to_px(env, &view, px_or(rules.padding_right.as_ref(), 0.0)),
-            dp_to_px(env, &view, px_or(rules.padding_bottom.as_ref(), 0.0)),
-        ]
-    } else {
-        [0, 0, 0, 0]
-    };
+    // Padding is a Taffy concept only — it shifts children's computed
+    // `frame.x` / `frame.y` inside the parent's box and inflates the
+    // parent's outer size by `padding*2`. We don't propagate it to
+    // Android's `View.setPadding(...)` for any view kind:
+    //
+    // - **Containers** (FrameLayout, ScrollView): if we set Android
+    //   padding too, children get shifted once by Taffy's frame.x and
+    //   again by the parent's `paddingLeft`, double-counting the
+    //   indent.
+    // - **TextView**: iOS's UILabel has no native padding — text
+    //   renders flush at the UILabel's frame edge, with the visual
+    //   "padding" coming from Taffy sizing the box larger than the
+    //   text. Mirroring that on Android means TextView's text
+    //   glyphs sit at the TextView's frame edge too. With Android
+    //   padding ON, the text gets pushed 12dp right (for
+    //   `padding_horizontal: 12`) and the label looks indented
+    //   relative to iOS for the same style.
+    //
+    // The intrinsic measurer (`text::measure_textview`) sees the
+    // TextView with `padding = 0` and reports the text-only size
+    // to Taffy; Taffy adds `style.padding` back to derive the box.
+    let want_padding = [0, 0, 0, 0];
     let padding_transitions = [
         rules.padding_left_transition,
         rules.padding_top_transition,

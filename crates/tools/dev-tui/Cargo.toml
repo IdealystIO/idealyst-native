@@ -1,0 +1,19 @@
+[package]
+name = "dev-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Interactive terminal panel for `idealyst dev --interactive` — dogfoods the framework's terminal backend to show per-target state + a live log stream."
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+runtime-core = { workspace = true }
+backend-terminal = { workspace = true }
+host-terminal = { workspace = true }
+# Pulled in for `install_theme` + the default light palette. The
+# framework panics on first render without an installed theme, even
+# though this scaffold doesn't drive any tokens itself (see
+# [[project_install_theme_required]]).
+idea-ui = { workspace = true }

@@ -1,0 +1,6 @@
+[robot-bridge] listening on port 9718
+[robot-bridge] advertised via mDNS as app-60458._idealyst-robot._tcp.local. (port 9718, app=app)
+
+thread 'main' (14602177) panicked at /Users/nicho/Desktop/idealyst-native/crates/runtime/core/src/backend.rs:1614:9:
+not implemented: create_navigator not implemented for this backend (navigator kind: drawer_navigator::DrawerPresentation)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

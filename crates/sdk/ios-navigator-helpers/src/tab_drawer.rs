@@ -173,6 +173,15 @@ fn select_screen(
             }
             let result = mount_fn(name, params);
             pin_to_edges(body, result.node.as_view());
+            // Force a synchronous Taffy layout + UIKit Auto Layout
+            // pass so the new screen's content has computed frames
+            // before the next render cycle. Without this the screen
+            // is added with zero-frame views and the user sees a
+            // brief white flash until the next layout pass runs.
+            backend_ios::with_backend(|b| b.run_layout());
+            unsafe {
+                let _: () = msg_send![body.as_ref(), layoutIfNeeded];
+            }
             *current_scope.borrow_mut() = Some(result.scope_id);
             *current_route.borrow_mut() = Some(name);
             result
@@ -201,6 +210,14 @@ fn select_screen(
                     .unwrap()
                 };
                 pin_to_edges(body, &view);
+                // Same rationale as the LazyDisposing branch: force a
+                // synchronous Taffy + Auto Layout pass so the new
+                // screen has computed frames before the next render
+                // frame. Without this the user sees a white flash.
+                backend_ios::with_backend(|b| b.run_layout());
+                unsafe {
+                    let _: () = msg_send![body.as_ref(), layoutIfNeeded];
+                }
                 *current_scope.borrow_mut() = Some(result.scope_id);
                 let options = result
                     .options

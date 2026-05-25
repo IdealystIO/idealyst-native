@@ -454,6 +454,17 @@ fn swap_body(
         inst.toolbar = None;
         (inst.body.clone(), inst.context.clone(), is_drawer, old)
     };
+    // Run Taffy synchronously BEFORE the new view enters the visible
+    // tree. The new screen's Taffy nodes (created during mount_screen)
+    // need `compute(root, vw, vh)` so each sub-view's LayoutParams
+    // (leftMargin / topMargin / width / height) reflect the intended
+    // frame. Without this, `body.addView(new_view)` makes Android
+    // measure-and-layout the new subtree with default LPs (MATCH_PARENT
+    // × WRAP_CONTENT, no margins) and the user sees one frame of
+    // wrong positions before the deferred handler-posted layout pass
+    // overwrites them. Running synchronously here means the LPs are
+    // already correct on the first frame after addView.
+    backend_android::run_layout_now();
     let new_toolbar = with_jni_env(|env| {
         let _ = env.call_method(body.as_obj(), "removeAllViews", "()V", &[]);
         let tb = if is_drawer {
@@ -494,9 +505,11 @@ fn swap_body(
         let release = instance.borrow().release_screen.clone();
         release(scope);
     }
-    let mut inst = instance.borrow_mut();
-    inst.toolbar = new_toolbar;
-    inst.current = Some((new_view, new_scope));
+    {
+        let mut inst = instance.borrow_mut();
+        inst.toolbar = new_toolbar;
+        inst.current = Some((new_view, new_scope));
+    }
 }
 
 /// Invoke a no-arg method on the `RustDrawerLayout` (open/close/toggle).

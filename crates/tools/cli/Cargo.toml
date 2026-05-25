@@ -49,6 +49,10 @@ build-macos = { workspace = true }
 run-macos = { workspace = true }
 build-terminal = { workspace = true }
 run-terminal = { workspace = true }
+# Interactive panel for `idealyst dev --interactive`. Pulled in by the
+# CLI only; the dev-tui crate dogfoods the framework's terminal
+# backend to render a live build/run status + log stream.
+dev-tui = { workspace = true }
 # Roku BrightScript transpiler — powers the `brs` subcommand, which
 # scans the project's source files for `#[method]`-tagged fns and
 # concatenates their BrightScript output into a single `.brs` file.

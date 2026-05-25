@@ -50,6 +50,25 @@ pub(crate) fn create(b: &mut AndroidBackend, content: &str) -> GlobalRef {
         // siblings pack tightly.
         let _ = env.call_method(&local, "setMinHeight", "(I)V", &[JValue::Int(0)]);
         let _ = env.call_method(&local, "setMinimumHeight", "(I)V", &[JValue::Int(0)]);
+        // Match iOS UILabel's default vertical alignment (single-line
+        // text is centered vertically in the label's frame). Android
+        // TextView defaults to gravity=top|start, which leaves the
+        // text glyphs flush against the frame's top edge — visible
+        // as a vertical offset versus iOS for any styled control with
+        // padding_vertical (NavLink items are the canonical case).
+        // Multi-line wrapped text fills the frame tightly so the
+        // CENTER_VERTICAL choice is invisible there; only single-line
+        // labels with frame > line_height show the difference.
+        // Gravity flag: Gravity.CENTER_VERTICAL | Gravity.START = 0x10 | 0x00800003.
+        // Use the literal int (the resolved Gravity.CENTER_VERTICAL=16
+        // |Gravity.START=8388611). Putting the value as a plain int
+        // avoids needing to look up Gravity.* fields via JNI.
+        let _ = env.call_method(
+            &local,
+            "setGravity",
+            "(I)V",
+            &[JValue::Int(16 | 8388611)],
+        );
         apply_default_layout_params(env, &local);
         env.new_global_ref(local).unwrap()
     });
