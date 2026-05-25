@@ -14,7 +14,6 @@ pub(crate) mod graphics;
 pub(crate) mod icon;
 pub(crate) mod image;
 pub(crate) mod link;
-pub(crate) mod navigator;
 pub(crate) mod portal;
 pub(crate) mod presence;
 pub(crate) mod pressable;

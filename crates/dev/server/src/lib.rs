@@ -1751,409 +1751,6 @@ impl Backend for WireRecordingBackend {
         id
     }
 
-    fn create_stack_navigator(
-        &mut self,
-        callbacks: runtime_core::primitives::navigator::NavigatorCallbacks<Self::Node>,
-        control: Rc<runtime_core::primitives::navigator::NavigatorControl>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
-        let nav_id;
-        let initial_route = callbacks.initial_route;
-        let initial_path = callbacks.initial_path;
-        let callbacks_rc = Rc::new(callbacks);
-        {
-            let mut state = self.inner.borrow_mut();
-            nav_id = Self::mint_node(&mut state);
-            let wire_a11y = state.wire_a11y(a11y);
-            state.emit(Command::CreateNavigator {
-                id: nav_id,
-                initial_route: initial_route.to_string(),
-                initial_path: initial_path.to_string(),
-                a11y: wire_a11y,
-            });
-            state.navigators.insert(
-                nav_id,
-                NavigatorRecState {
-                    callbacks: callbacks_rc.clone(),
-                    stack: Vec::new(), stack_urls: Vec::new(),
-                },
-            );
-        }
-        // Install dispatcher. The closure captures a Weak ref to the
-        // shared state so it doesn't keep the recorder alive past
-        // teardown.
-        let weak_inner = Rc::downgrade(&self.inner);
-        let cbs = callbacks_rc.clone();
-        control.install(Box::new(move |cmd| {
-            let Some(inner) = weak_inner.upgrade() else {
-                return;
-            };
-            navigator_dispatcher_handle(&inner, nav_id, cbs.clone(), cmd);
-        }));
-        nav_id
-    }
-
-    fn stack_navigator_attach_initial(
-        &mut self,
-        navigator: &Self::Node,
-        screen: Self::Node,
-        scope_id: u64,
-        options: runtime_core::primitives::navigator::ScreenOptions,
-    ) {
-        let mirror = self.nav_state_mirror.clone();
-        let mut urls_snapshot: Option<Vec<String>> = None;
-        {
-            let mut state = self.inner.borrow_mut();
-            if let Some(nav) = state.navigators.get_mut(navigator) {
-                nav.stack.push(scope_id);
-                // Seed `stack_urls` with the navigator's declared
-                // initial path so `restore_nav_state` knows what URL
-                // the bottom-of-stack screen corresponds to.
-                let initial_path = nav.callbacks.initial_path.to_string();
-                nav.stack_urls.push(initial_path);
-                urls_snapshot = Some(nav.stack_urls.clone());
-            }
-            state.scope_to_navigator.insert(scope_id, *navigator);
-            let wire_options = screen_options_to_wire(&mut state, &options);
-            state.emit(Command::NavigatorAttachInitial {
-                navigator: *navigator,
-                screen,
-                scope: wire::ScopeId(scope_id),
-                options: wire_options,
-            });
-        }
-        if let Some(urls) = urls_snapshot {
-            if let Ok(mut m) = mirror.lock() {
-                m.insert(navigator.0, urls);
-            }
-        }
-    }
-
-    fn create_tab_navigator(
-        &mut self,
-        callbacks: runtime_core::primitives::navigator::TabNavigatorCallbacks<Self::Node>,
-        control: Rc<runtime_core::primitives::navigator::NavigatorControl>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
-        let nav_id;
-        let initial_route = callbacks.navigator.initial_route;
-        let initial_path = callbacks.navigator.initial_path;
-        let tabs_wire: Vec<wire::WireTabRegistration> = callbacks
-            .tabs
-            .iter()
-            .map(|t| wire::WireTabRegistration {
-                route: t.route.to_string(),
-                label: t.label.clone(),
-                icon: t.icon.clone(),
-            })
-            .collect();
-        let placement = match callbacks.placement {
-            runtime_core::primitives::navigator::TabPlacement::Bottom
-            | runtime_core::primitives::navigator::TabPlacement::Auto => {
-                wire::WireTabPlacement::Bottom
-            }
-            runtime_core::primitives::navigator::TabPlacement::Top
-            | runtime_core::primitives::navigator::TabPlacement::Sidebar => {
-                wire::WireTabPlacement::Top
-            }
-        };
-        let mount_policy = match callbacks.mount_policy {
-            runtime_core::primitives::navigator::MountPolicy::EagerPersistent => {
-                wire::WireMountPolicy::EagerPersistent
-            }
-            runtime_core::primitives::navigator::MountPolicy::LazyPersistent => {
-                wire::WireMountPolicy::LazyPersistent
-            }
-            runtime_core::primitives::navigator::MountPolicy::LazyDisposing => {
-                wire::WireMountPolicy::LazyDisposing
-            }
-        };
-        let inner_callbacks_rc = Rc::new(callbacks.navigator);
-        {
-            let mut state = self.inner.borrow_mut();
-            nav_id = Self::mint_node(&mut state);
-            let wire_a11y = state.wire_a11y(a11y);
-            state.emit(Command::CreateTabNavigator {
-                id: nav_id,
-                initial_route: initial_route.to_string(),
-                initial_path: initial_path.to_string(),
-                tabs: tabs_wire,
-                placement,
-                mount_policy,
-                a11y: wire_a11y,
-            });
-            state.navigators.insert(
-                nav_id,
-                NavigatorRecState {
-                    callbacks: inner_callbacks_rc.clone(),
-                    stack: Vec::new(), stack_urls: Vec::new(),
-                },
-            );
-        }
-        let weak_inner = Rc::downgrade(&self.inner);
-        let cbs = inner_callbacks_rc.clone();
-        control.install(Box::new(move |cmd| {
-            let Some(inner) = weak_inner.upgrade() else {
-                return;
-            };
-            navigator_dispatcher_handle(&inner, nav_id, cbs.clone(), cmd);
-        }));
-        nav_id
-    }
-
-    fn tab_navigator_attach_initial(
-        &mut self,
-        navigator: &Self::Node,
-        screen: Self::Node,
-        scope_id: u64,
-        options: runtime_core::primitives::navigator::ScreenOptions,
-    ) {
-        // Same wire shape as the stack-navigator initial attach; the
-        // app side dispatches based on what kind of navigator the
-        // navigator NodeId belongs to.
-        self.stack_navigator_attach_initial(navigator, screen, scope_id, options);
-    }
-
-    fn create_drawer_navigator(
-        &mut self,
-        callbacks: runtime_core::primitives::navigator::DrawerNavigatorCallbacks<Self::Node>,
-        control: Rc<runtime_core::primitives::navigator::NavigatorControl>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
-        let nav_id;
-        let initial_route = callbacks.navigator.initial_route;
-        let initial_path = callbacks.navigator.initial_path;
-        let side = match callbacks.side {
-            runtime_core::primitives::navigator::DrawerSide::Start => {
-                wire::WireDrawerSide::Left
-            }
-            runtime_core::primitives::navigator::DrawerSide::End => {
-                wire::WireDrawerSide::Right
-            }
-        };
-        let drawer_type = match callbacks.drawer_type {
-            runtime_core::primitives::navigator::DrawerType::Front => {
-                wire::WireDrawerType::Front
-            }
-            runtime_core::primitives::navigator::DrawerType::Slide => {
-                wire::WireDrawerType::Slide
-            }
-        };
-        let mount_policy = match callbacks.mount_policy {
-            runtime_core::primitives::navigator::MountPolicy::EagerPersistent => {
-                wire::WireMountPolicy::EagerPersistent
-            }
-            runtime_core::primitives::navigator::MountPolicy::LazyPersistent => {
-                wire::WireMountPolicy::LazyPersistent
-            }
-            runtime_core::primitives::navigator::MountPolicy::LazyDisposing => {
-                wire::WireMountPolicy::LazyDisposing
-            }
-        };
-        let drawer_width = callbacks.drawer_width;
-        let swipe_to_open = callbacks.swipe_to_open;
-        let inner_callbacks_rc = Rc::new(callbacks.navigator);
-        {
-            let mut state = self.inner.borrow_mut();
-            nav_id = Self::mint_node(&mut state);
-            let wire_a11y = state.wire_a11y(a11y);
-            state.emit(Command::CreateDrawerNavigator {
-                id: nav_id,
-                initial_route: initial_route.to_string(),
-                initial_path: initial_path.to_string(),
-                side,
-                drawer_type,
-                drawer_width,
-                swipe_to_open,
-                mount_policy,
-                a11y: wire_a11y,
-            });
-            state.navigators.insert(
-                nav_id,
-                NavigatorRecState {
-                    callbacks: inner_callbacks_rc.clone(),
-                    stack: Vec::new(), stack_urls: Vec::new(),
-                },
-            );
-        }
-        let weak_inner = Rc::downgrade(&self.inner);
-        let cbs = inner_callbacks_rc.clone();
-        control.install(Box::new(move |cmd| {
-            let Some(inner) = weak_inner.upgrade() else {
-                return;
-            };
-            navigator_dispatcher_handle(&inner, nav_id, cbs.clone(), cmd);
-        }));
-        nav_id
-    }
-
-    fn drawer_navigator_attach_initial(
-        &mut self,
-        navigator: &Self::Node,
-        screen: Self::Node,
-        scope_id: u64,
-        options: runtime_core::primitives::navigator::ScreenOptions,
-    ) {
-        self.stack_navigator_attach_initial(navigator, screen, scope_id, options);
-    }
-
-    fn drawer_navigator_attach_sidebar(
-        &mut self,
-        navigator: &Self::Node,
-        sidebar: Self::Node,
-    ) {
-        self.inner.borrow_mut().emit(Command::DrawerAttachSidebar {
-            navigator: *navigator,
-            sidebar,
-        });
-    }
-
-    fn attach_navigator_layout(
-        &mut self,
-        navigator: &Self::Node,
-        root: Self::Node,
-        outlet: Self::Node,
-    ) {
-        self.inner.borrow_mut().emit(Command::AttachNavigatorLayout {
-            navigator: *navigator,
-            root,
-            outlet,
-        });
-    }
-
-    fn create_virtualizer(
-        &mut self,
-        callbacks: runtime_core::VirtualizerCallbacks<Self::Node>,
-        overscan: f32,
-        horizontal: bool,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
-        // Eagerly snapshot the current data set: count + keys +
-        // initial sizes. The wire ships these so the app's
-        // virtualizer can stand up its scroll math and visible-window
-        // tracking. Items themselves mount lazily via
-        // `VirtualizerMountItem` reverse-channel events.
-        let count = (callbacks.item_count)();
-        let keys: Vec<u64> = (0..count).map(|i| (callbacks.item_key)(i)).collect();
-        let sizes: Vec<f32> = (0..count).map(|i| (callbacks.item_size)(i)).collect();
-        let measured = callbacks.measure_sizes;
-
-        let mut state = self.inner.borrow_mut();
-        let id = Self::mint_node(&mut state);
-        let wire_a11y = state.wire_a11y(a11y);
-        state.emit(Command::CreateVirtualizer {
-            id,
-            overscan,
-            horizontal,
-            initial_size: wire::WireItemSize { measured, sizes },
-            initial_keys: keys,
-            a11y: wire_a11y,
-        });
-        // Note: callbacks aren't stored on the recorder side yet.
-        // Lazy mount-on-demand is the natural next step:
-        //   - Stash `callbacks` in a `HashMap<NodeId, _>` similar to
-        //     navigators.
-        //   - Add `handle_virtualizer_mount_item(node, index)` on the
-        //     recorder, mirroring `handle_screen_released`.
-        //   - Inside it: `let (n, scope) = (callbacks.mount_item)(idx)`,
-        //     emit `VirtualizerAttachItem { node, index, child: n,
-        //     scope: ScopeId(scope) }`.
-        // Deferred so the comprehensive nav/link/overlay/graphics
-        // work ships first.
-        let _ = callbacks; // suppress unused
-        id
-    }
-
-    fn virtualizer_data_changed(&mut self, node: &Self::Node) {
-        // Re-snapshot count for now — keys/sizes refresh in a follow-up
-        // alongside mount-on-demand wiring above.
-        self.inner.borrow_mut().emit(Command::VirtualizerDataChanged {
-            node: *node,
-            item_count: 0,
-        });
-    }
-
-    fn apply_navigator_header_style(&mut self, navigator: &Self::Node, style: &Rc<StyleRules>) {
-        let mut state = self.inner.borrow_mut();
-        let sid = Self::intern_style(&mut state, style);
-        state.emit(Command::ApplyNavigatorHeaderStyle {
-            navigator: *navigator,
-            style: sid,
-        });
-    }
-
-    fn apply_navigator_title_style(&mut self, navigator: &Self::Node, style: &Rc<StyleRules>) {
-        let mut state = self.inner.borrow_mut();
-        let sid = Self::intern_style(&mut state, style);
-        state.emit(Command::ApplyNavigatorTitleStyle {
-            navigator: *navigator,
-            style: sid,
-        });
-    }
-
-    fn apply_navigator_button_style(&mut self, navigator: &Self::Node, style: &Rc<StyleRules>) {
-        let mut state = self.inner.borrow_mut();
-        let sid = Self::intern_style(&mut state, style);
-        state.emit(Command::ApplyNavigatorButtonStyle {
-            navigator: *navigator,
-            style: sid,
-        });
-    }
-
-    fn apply_navigator_body_style(&mut self, navigator: &Self::Node, style: &Rc<StyleRules>) {
-        let mut state = self.inner.borrow_mut();
-        let sid = Self::intern_style(&mut state, style);
-        state.emit(Command::ApplyNavigatorBodyStyle {
-            navigator: *navigator,
-            style: sid,
-        });
-    }
-
-    fn apply_drawer_sidebar_style(&mut self, navigator: &Self::Node, style: &Rc<StyleRules>) {
-        let mut state = self.inner.borrow_mut();
-        let sid = Self::intern_style(&mut state, style);
-        state.emit(Command::ApplyDrawerSidebarStyle {
-            navigator: *navigator,
-            style: sid,
-        });
-    }
-
-    fn apply_drawer_scrim_style(&mut self, navigator: &Self::Node, style: &Rc<StyleRules>) {
-        let mut state = self.inner.borrow_mut();
-        let sid = Self::intern_style(&mut state, style);
-        state.emit(Command::ApplyDrawerScrimStyle {
-            navigator: *navigator,
-            style: sid,
-        });
-    }
-
-    fn apply_tab_bar_style(&mut self, navigator: &Self::Node, style: &Rc<StyleRules>) {
-        let mut state = self.inner.borrow_mut();
-        let sid = Self::intern_style(&mut state, style);
-        state.emit(Command::ApplyTabBarStyle {
-            navigator: *navigator,
-            style: sid,
-        });
-    }
-
-    fn apply_tab_icon_style(&mut self, navigator: &Self::Node, style: &Rc<StyleRules>) {
-        let mut state = self.inner.borrow_mut();
-        let sid = Self::intern_style(&mut state, style);
-        state.emit(Command::ApplyTabIconStyle {
-            navigator: *navigator,
-            style: sid,
-        });
-    }
-
-    fn apply_tab_label_style(&mut self, navigator: &Self::Node, style: &Rc<StyleRules>) {
-        let mut state = self.inner.borrow_mut();
-        let sid = Self::intern_style(&mut state, style);
-        state.emit(Command::ApplyTabLabelStyle {
-            navigator: *navigator,
-            style: sid,
-        });
-    }
-
     fn create_link(
         &mut self,
         config: primitives::link::LinkConfig,
@@ -2195,23 +1792,6 @@ impl Backend for WireRecordingBackend {
     // unmounted navigator / virtualizer / portal / graphics / external /
     // overlay would leak its `NodeId` on the client side (see
     // `SceneModel::apply` for the matching per-node map clears).
-    fn release_stack_navigator(&mut self, node: &Self::Node) {
-        let mut state = self.inner.borrow_mut();
-        state.navigators.remove(node);
-        state.emit(Command::ReleaseNode { node: *node });
-    }
-
-    fn release_tab_navigator(&mut self, node: &Self::Node) {
-        let mut state = self.inner.borrow_mut();
-        state.navigators.remove(node);
-        state.emit(Command::ReleaseNode { node: *node });
-    }
-
-    fn release_drawer_navigator(&mut self, node: &Self::Node) {
-        let mut state = self.inner.borrow_mut();
-        state.navigators.remove(node);
-        state.emit(Command::ReleaseNode { node: *node });
-    }
 
     fn release_virtualizer(&mut self, node: &Self::Node) {
         let mut state = self.inner.borrow_mut();
@@ -2594,5 +2174,436 @@ impl WireRecordingBackend {
     /// dispatcher needs to be told to switch.
     pub fn handle_tab_selected(&self, _navigator: NodeId, _index: u32) {
         // Reserved for tab signal sync in a follow-up.
+    }
+}
+
+// ==========================================================================
+// Legacy nav recorder methods — inherent. Dev wire's navigator recording
+// path was driven by Backend trait methods that have been removed; these
+// inherent versions are temporarily dead code until the dev wire is
+// rewired to record at the SDK-handler level (post-SDK-migration TODO).
+// ==========================================================================
+
+impl WireRecordingBackend {
+    pub fn create_stack_navigator(
+        &mut self,
+        callbacks: runtime_core::primitives::navigator::NavigatorCallbacks<NodeId>,
+        control: Rc<runtime_core::primitives::navigator::NavigatorControl>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> NodeId {
+        let nav_id;
+        let initial_route = callbacks.initial_route;
+        let initial_path = callbacks.initial_path;
+        let callbacks_rc = Rc::new(callbacks);
+        {
+            let mut state = self.inner.borrow_mut();
+            nav_id = Self::mint_node(&mut state);
+            let wire_a11y = state.wire_a11y(a11y);
+            state.emit(Command::CreateNavigator {
+                id: nav_id,
+                initial_route: initial_route.to_string(),
+                initial_path: initial_path.to_string(),
+                a11y: wire_a11y,
+            });
+            state.navigators.insert(
+                nav_id,
+                NavigatorRecState {
+                    callbacks: callbacks_rc.clone(),
+                    stack: Vec::new(), stack_urls: Vec::new(),
+                },
+            );
+        }
+        // Install dispatcher. The closure captures a Weak ref to the
+        // shared state so it doesn't keep the recorder alive past
+        // teardown.
+        let weak_inner = Rc::downgrade(&self.inner);
+        let cbs = callbacks_rc.clone();
+        control.install(Box::new(move |cmd| {
+            let Some(inner) = weak_inner.upgrade() else {
+                return;
+            };
+            navigator_dispatcher_handle(&inner, nav_id, cbs.clone(), cmd);
+        }));
+        nav_id
+    }
+
+    pub fn stack_navigator_attach_initial(
+        &mut self,
+        navigator: &NodeId,
+        screen: NodeId,
+        scope_id: u64,
+        options: runtime_core::primitives::navigator::ScreenOptions,
+    ) {
+        let mirror = self.nav_state_mirror.clone();
+        let mut urls_snapshot: Option<Vec<String>> = None;
+        {
+            let mut state = self.inner.borrow_mut();
+            if let Some(nav) = state.navigators.get_mut(navigator) {
+                nav.stack.push(scope_id);
+                // Seed `stack_urls` with the navigator's declared
+                // initial path so `restore_nav_state` knows what URL
+                // the bottom-of-stack screen corresponds to.
+                let initial_path = nav.callbacks.initial_path.to_string();
+                nav.stack_urls.push(initial_path);
+                urls_snapshot = Some(nav.stack_urls.clone());
+            }
+            state.scope_to_navigator.insert(scope_id, *navigator);
+            let wire_options = screen_options_to_wire(&mut state, &options);
+            state.emit(Command::NavigatorAttachInitial {
+                navigator: *navigator,
+                screen,
+                scope: wire::ScopeId(scope_id),
+                options: wire_options,
+            });
+        }
+        if let Some(urls) = urls_snapshot {
+            if let Ok(mut m) = mirror.lock() {
+                m.insert(navigator.0, urls);
+            }
+        }
+    }
+
+    pub fn create_tab_navigator(
+        &mut self,
+        callbacks: runtime_core::primitives::navigator::TabNavigatorCallbacks<NodeId>,
+        control: Rc<runtime_core::primitives::navigator::NavigatorControl>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> NodeId {
+        let nav_id;
+        let initial_route = callbacks.navigator.initial_route;
+        let initial_path = callbacks.navigator.initial_path;
+        let tabs_wire: Vec<wire::WireTabRegistration> = callbacks
+            .tabs
+            .iter()
+            .map(|t| wire::WireTabRegistration {
+                route: t.route.to_string(),
+                label: t.label.clone(),
+                icon: t.icon.clone(),
+            })
+            .collect();
+        let placement = match callbacks.placement {
+            runtime_core::primitives::navigator::TabPlacement::Bottom
+            | runtime_core::primitives::navigator::TabPlacement::Auto => {
+                wire::WireTabPlacement::Bottom
+            }
+            runtime_core::primitives::navigator::TabPlacement::Top
+            | runtime_core::primitives::navigator::TabPlacement::Sidebar => {
+                wire::WireTabPlacement::Top
+            }
+        };
+        let mount_policy = match callbacks.mount_policy {
+            runtime_core::primitives::navigator::MountPolicy::EagerPersistent => {
+                wire::WireMountPolicy::EagerPersistent
+            }
+            runtime_core::primitives::navigator::MountPolicy::LazyPersistent => {
+                wire::WireMountPolicy::LazyPersistent
+            }
+            runtime_core::primitives::navigator::MountPolicy::LazyDisposing => {
+                wire::WireMountPolicy::LazyDisposing
+            }
+        };
+        let inner_callbacks_rc = Rc::new(callbacks.navigator);
+        {
+            let mut state = self.inner.borrow_mut();
+            nav_id = Self::mint_node(&mut state);
+            let wire_a11y = state.wire_a11y(a11y);
+            state.emit(Command::CreateTabNavigator {
+                id: nav_id,
+                initial_route: initial_route.to_string(),
+                initial_path: initial_path.to_string(),
+                tabs: tabs_wire,
+                placement,
+                mount_policy,
+                a11y: wire_a11y,
+            });
+            state.navigators.insert(
+                nav_id,
+                NavigatorRecState {
+                    callbacks: inner_callbacks_rc.clone(),
+                    stack: Vec::new(), stack_urls: Vec::new(),
+                },
+            );
+        }
+        let weak_inner = Rc::downgrade(&self.inner);
+        let cbs = inner_callbacks_rc.clone();
+        control.install(Box::new(move |cmd| {
+            let Some(inner) = weak_inner.upgrade() else {
+                return;
+            };
+            navigator_dispatcher_handle(&inner, nav_id, cbs.clone(), cmd);
+        }));
+        nav_id
+    }
+
+    pub fn tab_navigator_attach_initial(
+        &mut self,
+        navigator: &NodeId,
+        screen: NodeId,
+        scope_id: u64,
+        options: runtime_core::primitives::navigator::ScreenOptions,
+    ) {
+        // Same wire shape as the stack-navigator initial attach; the
+        // app side dispatches based on what kind of navigator the
+        // navigator NodeId belongs to.
+        self.stack_navigator_attach_initial(navigator, screen, scope_id, options);
+    }
+
+    pub fn create_drawer_navigator(
+        &mut self,
+        callbacks: runtime_core::primitives::navigator::DrawerNavigatorCallbacks<NodeId>,
+        control: Rc<runtime_core::primitives::navigator::NavigatorControl>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> NodeId {
+        let nav_id;
+        let initial_route = callbacks.navigator.initial_route;
+        let initial_path = callbacks.navigator.initial_path;
+        let side = match callbacks.side {
+            runtime_core::primitives::navigator::DrawerSide::Start => {
+                wire::WireDrawerSide::Left
+            }
+            runtime_core::primitives::navigator::DrawerSide::End => {
+                wire::WireDrawerSide::Right
+            }
+        };
+        let drawer_type = match callbacks.drawer_type {
+            runtime_core::primitives::navigator::DrawerType::Front => {
+                wire::WireDrawerType::Front
+            }
+            runtime_core::primitives::navigator::DrawerType::Slide => {
+                wire::WireDrawerType::Slide
+            }
+        };
+        let mount_policy = match callbacks.mount_policy {
+            runtime_core::primitives::navigator::MountPolicy::EagerPersistent => {
+                wire::WireMountPolicy::EagerPersistent
+            }
+            runtime_core::primitives::navigator::MountPolicy::LazyPersistent => {
+                wire::WireMountPolicy::LazyPersistent
+            }
+            runtime_core::primitives::navigator::MountPolicy::LazyDisposing => {
+                wire::WireMountPolicy::LazyDisposing
+            }
+        };
+        let drawer_width = callbacks.drawer_width;
+        let swipe_to_open = callbacks.swipe_to_open;
+        let inner_callbacks_rc = Rc::new(callbacks.navigator);
+        {
+            let mut state = self.inner.borrow_mut();
+            nav_id = Self::mint_node(&mut state);
+            let wire_a11y = state.wire_a11y(a11y);
+            state.emit(Command::CreateDrawerNavigator {
+                id: nav_id,
+                initial_route: initial_route.to_string(),
+                initial_path: initial_path.to_string(),
+                side,
+                drawer_type,
+                drawer_width,
+                swipe_to_open,
+                mount_policy,
+                a11y: wire_a11y,
+            });
+            state.navigators.insert(
+                nav_id,
+                NavigatorRecState {
+                    callbacks: inner_callbacks_rc.clone(),
+                    stack: Vec::new(), stack_urls: Vec::new(),
+                },
+            );
+        }
+        let weak_inner = Rc::downgrade(&self.inner);
+        let cbs = inner_callbacks_rc.clone();
+        control.install(Box::new(move |cmd| {
+            let Some(inner) = weak_inner.upgrade() else {
+                return;
+            };
+            navigator_dispatcher_handle(&inner, nav_id, cbs.clone(), cmd);
+        }));
+        nav_id
+    }
+
+    pub fn drawer_navigator_attach_initial(
+        &mut self,
+        navigator: &NodeId,
+        screen: NodeId,
+        scope_id: u64,
+        options: runtime_core::primitives::navigator::ScreenOptions,
+    ) {
+        self.stack_navigator_attach_initial(navigator, screen, scope_id, options);
+    }
+
+    pub fn drawer_navigator_attach_sidebar(
+        &mut self,
+        navigator: &NodeId,
+        sidebar: NodeId,
+    ) {
+        self.inner.borrow_mut().emit(Command::DrawerAttachSidebar {
+            navigator: *navigator,
+            sidebar,
+        });
+    }
+
+    pub fn attach_navigator_layout(
+        &mut self,
+        navigator: &NodeId,
+        root: NodeId,
+        outlet: NodeId,
+    ) {
+        self.inner.borrow_mut().emit(Command::AttachNavigatorLayout {
+            navigator: *navigator,
+            root,
+            outlet,
+        });
+    }
+
+    pub fn create_virtualizer(
+        &mut self,
+        callbacks: runtime_core::VirtualizerCallbacks<NodeId>,
+        overscan: f32,
+        horizontal: bool,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> NodeId {
+        // Eagerly snapshot the current data set: count + keys +
+        // initial sizes. The wire ships these so the app's
+        // virtualizer can stand up its scroll math and visible-window
+        // tracking. Items themselves mount lazily via
+        // `VirtualizerMountItem` reverse-channel events.
+        let count = (callbacks.item_count)();
+        let keys: Vec<u64> = (0..count).map(|i| (callbacks.item_key)(i)).collect();
+        let sizes: Vec<f32> = (0..count).map(|i| (callbacks.item_size)(i)).collect();
+        let measured = callbacks.measure_sizes;
+
+        let mut state = self.inner.borrow_mut();
+        let id = Self::mint_node(&mut state);
+        let wire_a11y = state.wire_a11y(a11y);
+        state.emit(Command::CreateVirtualizer {
+            id,
+            overscan,
+            horizontal,
+            initial_size: wire::WireItemSize { measured, sizes },
+            initial_keys: keys,
+            a11y: wire_a11y,
+        });
+        // Note: callbacks aren't stored on the recorder side yet.
+        // Lazy mount-on-demand is the natural next step:
+        //   - Stash `callbacks` in a `HashMap<NodeId, _>` similar to
+        //     navigators.
+        //   - Add `handle_virtualizer_mount_item(node, index)` on the
+        //     recorder, mirroring `handle_screen_released`.
+        //   - Inside it: `let (n, scope) = (callbacks.mount_item)(idx)`,
+        //     emit `VirtualizerAttachItem { node, index, child: n,
+        //     scope: ScopeId(scope) }`.
+        // Deferred so the comprehensive nav/link/overlay/graphics
+        // work ships first.
+        let _ = callbacks; // suppress unused
+        id
+    }
+
+    pub fn virtualizer_data_changed(&mut self, node: &NodeId) {
+        // Re-snapshot count for now — keys/sizes refresh in a follow-up
+        // alongside mount-on-demand wiring above.
+        self.inner.borrow_mut().emit(Command::VirtualizerDataChanged {
+            node: *node,
+            item_count: 0,
+        });
+    }
+
+    pub fn apply_navigator_header_style(&mut self, navigator: &NodeId, style: &Rc<StyleRules>) {
+        let mut state = self.inner.borrow_mut();
+        let sid = Self::intern_style(&mut state, style);
+        state.emit(Command::ApplyNavigatorHeaderStyle {
+            navigator: *navigator,
+            style: sid,
+        });
+    }
+
+    pub fn apply_navigator_title_style(&mut self, navigator: &NodeId, style: &Rc<StyleRules>) {
+        let mut state = self.inner.borrow_mut();
+        let sid = Self::intern_style(&mut state, style);
+        state.emit(Command::ApplyNavigatorTitleStyle {
+            navigator: *navigator,
+            style: sid,
+        });
+    }
+
+    pub fn apply_navigator_button_style(&mut self, navigator: &NodeId, style: &Rc<StyleRules>) {
+        let mut state = self.inner.borrow_mut();
+        let sid = Self::intern_style(&mut state, style);
+        state.emit(Command::ApplyNavigatorButtonStyle {
+            navigator: *navigator,
+            style: sid,
+        });
+    }
+
+    pub fn apply_navigator_body_style(&mut self, navigator: &NodeId, style: &Rc<StyleRules>) {
+        let mut state = self.inner.borrow_mut();
+        let sid = Self::intern_style(&mut state, style);
+        state.emit(Command::ApplyNavigatorBodyStyle {
+            navigator: *navigator,
+            style: sid,
+        });
+    }
+
+    pub fn apply_drawer_sidebar_style(&mut self, navigator: &NodeId, style: &Rc<StyleRules>) {
+        let mut state = self.inner.borrow_mut();
+        let sid = Self::intern_style(&mut state, style);
+        state.emit(Command::ApplyDrawerSidebarStyle {
+            navigator: *navigator,
+            style: sid,
+        });
+    }
+
+    pub fn apply_drawer_scrim_style(&mut self, navigator: &NodeId, style: &Rc<StyleRules>) {
+        let mut state = self.inner.borrow_mut();
+        let sid = Self::intern_style(&mut state, style);
+        state.emit(Command::ApplyDrawerScrimStyle {
+            navigator: *navigator,
+            style: sid,
+        });
+    }
+
+    pub fn apply_tab_bar_style(&mut self, navigator: &NodeId, style: &Rc<StyleRules>) {
+        let mut state = self.inner.borrow_mut();
+        let sid = Self::intern_style(&mut state, style);
+        state.emit(Command::ApplyTabBarStyle {
+            navigator: *navigator,
+            style: sid,
+        });
+    }
+
+    pub fn apply_tab_icon_style(&mut self, navigator: &NodeId, style: &Rc<StyleRules>) {
+        let mut state = self.inner.borrow_mut();
+        let sid = Self::intern_style(&mut state, style);
+        state.emit(Command::ApplyTabIconStyle {
+            navigator: *navigator,
+            style: sid,
+        });
+    }
+
+    pub fn apply_tab_label_style(&mut self, navigator: &NodeId, style: &Rc<StyleRules>) {
+        let mut state = self.inner.borrow_mut();
+        let sid = Self::intern_style(&mut state, style);
+        state.emit(Command::ApplyTabLabelStyle {
+            navigator: *navigator,
+            style: sid,
+        });
+    }
+
+
+    pub fn release_stack_navigator(&mut self, node: &NodeId) {
+        let mut state = self.inner.borrow_mut();
+        state.navigators.remove(node);
+        state.emit(Command::ReleaseNode { node: *node });
+    }
+
+    pub fn release_tab_navigator(&mut self, node: &NodeId) {
+        let mut state = self.inner.borrow_mut();
+        state.navigators.remove(node);
+        state.emit(Command::ReleaseNode { node: *node });
+    }
+
+    pub fn release_drawer_navigator(&mut self, node: &NodeId) {
+        let mut state = self.inner.borrow_mut();
+        state.navigators.remove(node);
+        state.emit(Command::ReleaseNode { node: *node });
     }
 }

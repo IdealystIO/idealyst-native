@@ -1,0 +1,26 @@
+[package]
+name = "web-navigator-helpers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Shared web-platform machinery for the three first-party navigator
+# SDKs (stack / tab / drawer). On web, all three kinds share the same
+# DOM-and-history-API engine — the `<div>` container, `popstate`
+# reconciliation, mount/release helpers, and the per-instance
+# `NavigatorInstance` state — and only differ in their command
+# dispatcher closure (push/pop for stack, select for tab, open/close
+# for drawer). This crate owns that shared engine; each SDK depends on
+# it and supplies the kind-specific dispatcher via the public
+# `create` / `create_tab` / `create_drawer` entry points.
+
+[dependencies]
+runtime-core = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+web-sys = { version = "0.3", features = [
+    "Document", "Element", "Event", "EventTarget", "History", "HtmlElement",
+    "Location", "Node", "PopStateEvent", "Window",
+] }
+wasm-bindgen = "0.2"

@@ -1001,145 +1001,6 @@ impl Backend for AndroidBackend {
         node
     }
 
-    fn create_stack_navigator(
-        &mut self,
-        callbacks: runtime_core::NavigatorCallbacks<Self::Node>,
-        control: Rc<runtime_core::NavigatorControl>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
-        let node = primitives::navigator::create(self, callbacks, control);
-        a11y::apply(&node, a11y, None);
-        node
-    }
-
-    fn stack_navigator_attach_initial(
-        &mut self,
-        navigator: &Self::Node,
-        screen: Self::Node,
-        scope_id: u64,
-        _options: runtime_core::ScreenOptions,
-    ) {
-        primitives::navigator::attach_initial(self, navigator, screen, scope_id)
-    }
-
-    fn release_stack_navigator(&mut self, node: &Self::Node) {
-        primitives::navigator::release(self, node)
-    }
-
-    fn make_stack_navigator_handle(
-        &self,
-        node: &Self::Node,
-    ) -> runtime_core::NavigatorHandle {
-        primitives::navigator::make_handle(self, node)
-    }
-
-    // Tab + drawer navigators on Android — plain FrameLayout +
-    // View-swap, no FragmentManager involvement. The author's
-    // .layout() closure draws the chrome (tab bar / drawer
-    // sidebar); the framework swaps the active screen on Select.
-    fn create_tab_navigator(
-        &mut self,
-        callbacks: runtime_core::TabNavigatorCallbacks<Self::Node>,
-        control: Rc<runtime_core::NavigatorControl>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
-        let node = primitives::tab_drawer::create_tab(self, callbacks, control);
-        a11y::apply(&node, a11y, None);
-        node
-    }
-
-    fn tab_navigator_attach_initial(
-        &mut self,
-        navigator: &Self::Node,
-        screen: Self::Node,
-        scope_id: u64,
-        options: runtime_core::ScreenOptions,
-    ) {
-        primitives::tab_drawer::attach_initial(self, navigator, screen, scope_id, options)
-    }
-
-    fn release_tab_navigator(&mut self, node: &Self::Node) {
-        primitives::tab_drawer::release(self, node)
-    }
-
-    fn make_tab_navigator_handle(
-        &self,
-        node: &Self::Node,
-    ) -> runtime_core::TabsHandle {
-        primitives::tab_drawer::make_tab_handle(self, node)
-    }
-
-    fn create_drawer_navigator(
-        &mut self,
-        callbacks: runtime_core::DrawerNavigatorCallbacks<Self::Node>,
-        control: Rc<runtime_core::NavigatorControl>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
-        let node = primitives::tab_drawer::create_drawer(self, callbacks, control);
-        a11y::apply(&node, a11y, None);
-        node
-    }
-
-    fn drawer_navigator_attach_initial(
-        &mut self,
-        navigator: &Self::Node,
-        screen: Self::Node,
-        scope_id: u64,
-        options: runtime_core::ScreenOptions,
-    ) {
-        primitives::tab_drawer::attach_initial(self, navigator, screen, scope_id, options)
-    }
-
-    fn drawer_navigator_attach_sidebar(
-        &mut self,
-        navigator: &Self::Node,
-        sidebar: Self::Node,
-    ) {
-        primitives::tab_drawer::attach_sidebar(self, navigator, sidebar)
-    }
-
-    fn apply_navigator_header_style(
-        &mut self,
-        navigator: &Self::Node,
-        style: &std::rc::Rc<runtime_core::StyleRules>,
-    ) {
-        primitives::tab_drawer::apply_header_style(self, navigator, style)
-    }
-
-    fn apply_navigator_title_style(
-        &mut self,
-        navigator: &Self::Node,
-        style: &std::rc::Rc<runtime_core::StyleRules>,
-    ) {
-        primitives::tab_drawer::apply_title_style(self, navigator, style)
-    }
-
-    fn apply_navigator_button_style(
-        &mut self,
-        navigator: &Self::Node,
-        style: &std::rc::Rc<runtime_core::StyleRules>,
-    ) {
-        primitives::tab_drawer::apply_button_style(self, navigator, style)
-    }
-
-    fn apply_navigator_body_style(
-        &mut self,
-        navigator: &Self::Node,
-        style: &std::rc::Rc<runtime_core::StyleRules>,
-    ) {
-        primitives::tab_drawer::apply_body_style(self, navigator, style)
-    }
-
-    fn release_drawer_navigator(&mut self, node: &Self::Node) {
-        primitives::tab_drawer::release(self, node)
-    }
-
-    fn make_drawer_navigator_handle(
-        &self,
-        node: &Self::Node,
-    ) -> runtime_core::DrawerHandle {
-        primitives::tab_drawer::make_drawer_handle(self, node)
-    }
 
     // ------------------------------------------------------------------
     // Navigator — unified path for SDK-supplied navigator kinds.
@@ -1804,4 +1665,151 @@ fn external_placeholder_view(b: &mut AndroidBackend, type_name: &'static str) ->
         apply_default_layout_params(env, &local);
         env.new_global_ref(local).unwrap()
     })
+}
+
+// ==========================================================================
+// Legacy nav helpers — inherent methods invoked by the per-kind SDK
+// handlers. NOT on the Backend trait.
+// ==========================================================================
+
+impl AndroidBackend {
+    pub fn create_stack_navigator(
+        &mut self,
+        callbacks: runtime_core::NavigatorCallbacks<GlobalRef>,
+        control: Rc<runtime_core::NavigatorControl>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> GlobalRef {
+        let node = primitives::navigator::create(self, callbacks, control);
+        a11y::apply(&node, a11y, None);
+        node
+    }
+
+    pub fn stack_navigator_attach_initial(
+        &mut self,
+        navigator: &GlobalRef,
+        screen: GlobalRef,
+        scope_id: u64,
+        _options: runtime_core::ScreenOptions,
+    ) {
+        primitives::navigator::attach_initial(self, navigator, screen, scope_id)
+    }
+
+    pub fn release_stack_navigator(&mut self, node: &GlobalRef) {
+        primitives::navigator::release(self, node)
+    }
+
+    pub fn make_stack_navigator_handle(
+        &self,
+        node: &GlobalRef,
+    ) -> runtime_core::NavigatorHandle {
+        primitives::navigator::make_handle(self, node)
+    }
+
+    // Tab + drawer navigators on Android — plain FrameLayout +
+    // View-swap, no FragmentManager involvement. The author's
+    // .layout() closure draws the chrome (tab bar / drawer
+    // sidebar); the framework swaps the active screen on Select.
+    pub fn create_tab_navigator(
+        &mut self,
+        callbacks: runtime_core::TabNavigatorCallbacks<GlobalRef>,
+        control: Rc<runtime_core::NavigatorControl>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> GlobalRef {
+        let node = primitives::tab_drawer::create_tab(self, callbacks, control);
+        a11y::apply(&node, a11y, None);
+        node
+    }
+
+    pub fn tab_navigator_attach_initial(
+        &mut self,
+        navigator: &GlobalRef,
+        screen: GlobalRef,
+        scope_id: u64,
+        options: runtime_core::ScreenOptions,
+    ) {
+        primitives::tab_drawer::attach_initial(self, navigator, screen, scope_id, options)
+    }
+
+    pub fn release_tab_navigator(&mut self, node: &GlobalRef) {
+        primitives::tab_drawer::release(self, node)
+    }
+
+    pub fn make_tab_navigator_handle(
+        &self,
+        node: &GlobalRef,
+    ) -> runtime_core::TabsHandle {
+        primitives::tab_drawer::make_tab_handle(self, node)
+    }
+
+    pub fn create_drawer_navigator(
+        &mut self,
+        callbacks: runtime_core::DrawerNavigatorCallbacks<GlobalRef>,
+        control: Rc<runtime_core::NavigatorControl>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> GlobalRef {
+        let node = primitives::tab_drawer::create_drawer(self, callbacks, control);
+        a11y::apply(&node, a11y, None);
+        node
+    }
+
+    pub fn drawer_navigator_attach_initial(
+        &mut self,
+        navigator: &GlobalRef,
+        screen: GlobalRef,
+        scope_id: u64,
+        options: runtime_core::ScreenOptions,
+    ) {
+        primitives::tab_drawer::attach_initial(self, navigator, screen, scope_id, options)
+    }
+
+    pub fn drawer_navigator_attach_sidebar(
+        &mut self,
+        navigator: &GlobalRef,
+        sidebar: GlobalRef,
+    ) {
+        primitives::tab_drawer::attach_sidebar(self, navigator, sidebar)
+    }
+
+    pub fn apply_navigator_header_style(
+        &mut self,
+        navigator: &GlobalRef,
+        style: &std::rc::Rc<runtime_core::StyleRules>,
+    ) {
+        primitives::tab_drawer::apply_header_style(self, navigator, style)
+    }
+
+    pub fn apply_navigator_title_style(
+        &mut self,
+        navigator: &GlobalRef,
+        style: &std::rc::Rc<runtime_core::StyleRules>,
+    ) {
+        primitives::tab_drawer::apply_title_style(self, navigator, style)
+    }
+
+    pub fn apply_navigator_button_style(
+        &mut self,
+        navigator: &GlobalRef,
+        style: &std::rc::Rc<runtime_core::StyleRules>,
+    ) {
+        primitives::tab_drawer::apply_button_style(self, navigator, style)
+    }
+
+    pub fn apply_navigator_body_style(
+        &mut self,
+        navigator: &GlobalRef,
+        style: &std::rc::Rc<runtime_core::StyleRules>,
+    ) {
+        primitives::tab_drawer::apply_body_style(self, navigator, style)
+    }
+
+    pub fn release_drawer_navigator(&mut self, node: &GlobalRef) {
+        primitives::tab_drawer::release(self, node)
+    }
+
+    pub fn make_drawer_navigator_handle(
+        &self,
+        node: &GlobalRef,
+    ) -> runtime_core::DrawerHandle {
+        primitives::tab_drawer::make_drawer_handle(self, node)
+    }
 }

@@ -1312,6 +1312,7 @@ dependencies = [
  "backend-web",
  "jni 0.21.1",
  "runtime-core",
+ "web-navigator-helpers",
  "web-sys",
 ]
 
@@ -4211,6 +4212,7 @@ dependencies = [
  "backend-web",
  "jni 0.21.1",
  "runtime-core",
+ "web-navigator-helpers",
  "web-sys",
 ]
 
@@ -4443,6 +4445,7 @@ dependencies = [
  "backend-web",
  "jni 0.21.1",
  "runtime-core",
+ "web-navigator-helpers",
  "web-sys",
 ]
 
@@ -5177,6 +5180,16 @@ dependencies = [
  "anyhow",
  "dev-http",
  "mdns-sd",
+]
+
+[[package]]
+name = "web-navigator-helpers"
+version = "0.0.1"
+dependencies = [
+ "backend-web",
+ "runtime-core",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]

@@ -8,19 +8,24 @@
 use crate::{DrawerPresentation, DrawerSide, DrawerType, MountPolicy};
 use backend_web::WebBackend;
 use runtime_core::{
-    accessibility::AccessibilityProps, Backend, DrawerNavigatorCallbacks,
-    DrawerSide as CoreDrawerSide, DrawerType as CoreDrawerType, MountPolicy as CoreMountPolicy,
-    MountResult, NavigatorCallbacks, NavigatorHandler, NavigatorHost, Signal,
+    DrawerNavigatorCallbacks, DrawerSide as CoreDrawerSide, DrawerType as CoreDrawerType,
+    MountPolicy as CoreMountPolicy, MountResult, NavigatorCallbacks, NavigatorHandler,
+    NavigatorHost, Signal,
 };
 use std::any::Any;
 use std::rc::Rc;
 use web_sys::Node;
 
-pub struct WebDrawerHandler;
+pub struct WebDrawerHandler {
+    /// Container `Node` returned by `helpers::create_drawer`. Same
+    /// posture as the stack/tab handlers — retained for post-init
+    /// dispatch.
+    container: Option<Node>,
+}
 
 impl WebDrawerHandler {
     pub fn new() -> Self {
-        Self
+        Self { container: None }
     }
 }
 impl Default for WebDrawerHandler {
@@ -28,6 +33,9 @@ impl Default for WebDrawerHandler {
         Self::new()
     }
 }
+
+struct NoopDrawerOps;
+impl runtime_core::primitives::navigator::NavigatorOps for NoopDrawerOps {}
 
 fn side_to_core(s: DrawerSide) -> CoreDrawerSide {
     match s {
@@ -135,27 +143,41 @@ impl NavigatorHandler<WebBackend> for WebDrawerHandler {
             background_color: None,
         };
 
-        backend.create_drawer_navigator(drawer_callbacks, control, &AccessibilityProps::default())
+        let node = web_navigator_helpers::create_drawer(backend, drawer_callbacks, control);
+        self.container = Some(node.clone());
+        node
     }
 
     fn attach_initial(
         &mut self,
         _backend: &mut WebBackend,
-        _screen: Node,
-        _scope_id: u64,
+        screen: Node,
+        scope_id: u64,
         _options: runtime_core::ScreenOptions,
     ) {
-        unreachable!(
-            "WebDrawerHandler::attach_initial — WebBackend dispatches via \
-             navigator_attach_initial → uniform machinery"
-        );
+        if let Some(container) = self.container.as_ref() {
+            web_navigator_helpers::attach_initial(container, screen, scope_id);
+        }
     }
 
     fn on_command(&mut self, _cmd: runtime_core::NavCommand) {
         unreachable!(
-            "WebDrawerHandler::on_command — legacy drawer dispatcher owns \
-             the control plane until Phase-2"
+            "WebDrawerHandler::on_command — helpers::create_drawer owns the \
+             control-plane dispatcher"
         );
+    }
+
+    fn release(&mut self, _backend: &mut WebBackend) {
+        if let Some(container) = self.container.take() {
+            web_navigator_helpers::release(&container);
+        }
+    }
+
+    fn make_handle(&self) -> runtime_core::NavigatorHandle {
+        match self.container.as_ref() {
+            Some(c) => web_navigator_helpers::make_handle(c),
+            None => runtime_core::NavigatorHandle::new(Rc::new(()), &NoopDrawerOps),
+        }
     }
 }
 

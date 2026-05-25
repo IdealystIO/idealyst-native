@@ -1,31 +1,34 @@
 //! Web-backend handler for the Stack navigator SDK.
 //!
-//! Phase-1 adapter: thin handler whose `init` synthesizes the legacy
-//! `NavigatorCallbacks` from the framework-supplied `NavigatorHost`
-//! and calls `WebBackend::create_stack_navigator` directly. The legacy
-//! `Backend::create_stack_navigator` impl already installs the right
-//! dispatcher on the control plane, so `on_command` is unreachable.
-//!
-//! Phase-2 (later): port the dispatcher closure + DOM machinery from
-//! `backend-web/src/primitives/navigator.rs::create_stack_navigator` inline
-//! and drop the dependency on the legacy method. The architecture is
-//! the same — only the wiring shifts.
+//! The DOM + history-API machinery (NavigatorInstance, popstate
+//! reconciliation, mount/release helpers) lives in the
+//! `web-navigator-helpers` crate, shared with tab + drawer. This
+//! module's `WebStackHandler` is a thin wrapper: it drives the
+//! helpers crate's `create()` at init time, retains the returned
+//! container `Node`, and forwards subsequent post-init dispatch
+//! (attach_initial / release / make_handle) to the matching helpers
+//! entry point.
 
 use crate::StackPresentation;
 use backend_web::WebBackend;
 use runtime_core::{
-    accessibility::AccessibilityProps, Backend, MountResult, NavigatorCallbacks, NavigatorHandler,
-    NavigatorHost,
+    MountResult, NavigatorCallbacks, NavigatorHandler, NavigatorHost,
 };
 use std::any::Any;
 use std::rc::Rc;
 use web_sys::Node;
 
-pub struct WebStackHandler;
+pub struct WebStackHandler {
+    /// Container `Node` the helpers crate returns from `create()`.
+    /// Stored so `attach_initial` / `release` / `make_handle` can look
+    /// the instance back up by `data-navigator-id` without having to
+    /// thread the node down from the framework's dispatch site.
+    container: Option<Node>,
+}
 
 impl WebStackHandler {
     pub fn new() -> Self {
-        Self
+        Self { container: None }
     }
 }
 
@@ -78,36 +81,53 @@ impl NavigatorHandler<WebBackend> for WebStackHandler {
             defer_initial_mount,
         };
 
-        backend.create_stack_navigator(callbacks, control, &AccessibilityProps::default())
+        let node = web_navigator_helpers::create(backend, callbacks, control);
+        self.container = Some(node.clone());
+        node
     }
 
     fn attach_initial(
         &mut self,
         _backend: &mut WebBackend,
-        _screen: Node,
-        _scope_id: u64,
+        screen: Node,
+        scope_id: u64,
         _options: runtime_core::ScreenOptions,
     ) {
-        // The web backend's `Backend::navigator_attach_initial`
-        // impl delegates directly to `primitives::navigator::attach_initial`
-        // (the legacy machinery is uniform across kinds). The handler
-        // never sees this call — kept here so the trait is satisfied
-        // and Phase-2 handlers can take it over.
-        unreachable!(
-            "WebStackHandler::attach_initial — WebBackend dispatches \
-             this directly; handler doesn't see the call"
-        );
+        if let Some(container) = self.container.as_ref() {
+            web_navigator_helpers::attach_initial(container, screen, scope_id);
+        }
     }
 
     fn on_command(&mut self, _cmd: runtime_core::NavCommand) {
-        // Legacy `create_stack_navigator` already installed the stack
-        // dispatcher on the control plane. Phase-2 will take this over.
+        // `web_navigator_helpers::create` installs the stack dispatcher
+        // closure on the control plane during init, so commands route
+        // directly through that closure instead of back through the
+        // handler.
         unreachable!(
-            "WebStackHandler::on_command — legacy stack dispatcher \
-             owns the control plane until the Phase-2 port lands"
+            "WebStackHandler::on_command — helpers::create owns the \
+             control-plane dispatcher"
         );
     }
+
+    fn release(&mut self, _backend: &mut WebBackend) {
+        if let Some(container) = self.container.take() {
+            web_navigator_helpers::release(&container);
+        }
+    }
+
+    fn make_handle(&self) -> runtime_core::NavigatorHandle {
+        match self.container.as_ref() {
+            Some(c) => web_navigator_helpers::make_handle(c),
+            None => runtime_core::NavigatorHandle::new(
+                Rc::new(()),
+                &NoopStackOps,
+            ),
+        }
+    }
 }
+
+struct NoopStackOps;
+impl runtime_core::primitives::navigator::NavigatorOps for NoopStackOps {}
 
 /// Register the Stack navigator handler factory with `backend`. Call
 /// once during app bootstrap before mounting any UI that uses

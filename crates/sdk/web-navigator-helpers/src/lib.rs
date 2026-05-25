@@ -1,3 +1,10 @@
+// The entire crate is wasm-only; on non-wasm targets it compiles to
+// an empty rlib so `cargo check --workspace` succeeds without
+// dragging `web-sys` / `backend-web` (both target-gated deps) into
+// scope. Per-SDK crates already cfg-gate their `mod web` references
+// to wasm32, so nothing host-side touches this module.
+#![cfg(target_arch = "wasm32")]
+
 //! `Primitive::Navigator` — a `<div>` driven by the browser's
 //! `history` API.
 //!
@@ -36,7 +43,7 @@
 //! mount the matched screen, render the resulting tree to a string,
 //! and never touch `window` / `history`.
 
-use crate::WebBackend;
+use backend_web::WebBackend;
 use runtime_core::primitives::navigator::{
     DrawerHandle, DrawerNavigatorCallbacks, MountResult, NavCommand, NavigatorCallbacks,
     NavigatorControl, NavigatorHandle, NavigatorOps, TabNavigatorCallbacks, TabsHandle,
@@ -54,7 +61,7 @@ use web_sys::Node;
 /// per-screen scope identifier, which we hand back to
 /// `release_screen` on pop / replace / reset. `url` is the URL the
 /// screen represents, used by the popstate reconciliation logic.
-pub(crate) struct ScreenEntry {
+pub struct ScreenEntry {
     node: Node,
     scope_id: u64,
     url: String,
@@ -63,17 +70,17 @@ pub(crate) struct ScreenEntry {
 /// Per-navigator instance state. Lives in
 /// `WebBackend::navigator_instances`, keyed by the container's
 /// `data-navigator-id`.
-pub(crate) struct NavigatorInstance {
+pub struct NavigatorInstance {
     /// The outer `<div>` whose `data-navigator-id` attribute keys
     /// this instance. When no layout is set, screens append
     /// directly here; when a layout is set, screens append into
     /// `outlet` instead.
-    pub(crate) container: Node,
+    pub container: Node,
     /// When a layout is registered, the framework supplies a
     /// dedicated `<div>` (built by `LayoutPlan.outlet_ref`) and we
     /// mount screens into that instead of the container. `None`
     /// means no layout — screens go into `container`.
-    pub(crate) outlet: Option<Node>,
+    pub outlet: Option<Node>,
     /// Active stack — top is the visible screen. Always non-empty
     /// while the navigator exists; `pop` of the only entry is a no-op.
     ///
@@ -83,13 +90,13 @@ pub(crate) struct NavigatorInstance {
     /// the outlet holds exactly one child — `stack` has exactly
     /// one entry at all times, and the URL history for "where to
     /// go back to" is tracked separately in `url_history`.
-    pub(crate) stack: Vec<ScreenEntry>,
+    pub stack: Vec<ScreenEntry>,
     /// Layout-mode-only: URLs of previously-visited screens, in
     /// push order (top = most recently navigated away from). On
     /// pop, the URL is matched back against the route table and
     /// the resulting screen is rebuilt. In no-layout mode this
     /// stays empty.
-    pub(crate) url_history: Vec<String>,
+    pub url_history: Vec<String>,
     /// `build_layout` closure, retained across the navigator's
     /// lifetime. The framework's `build_layout` populates an
     /// internal scope slot during the microtask call; the closure
@@ -99,7 +106,7 @@ pub(crate) struct NavigatorInstance {
     /// effects alive past the microtask. `None` means no layout
     /// was registered.
     #[allow(dead_code)]
-    pub(crate) build_layout_retainer:
+    pub build_layout_retainer:
         Option<Rc<dyn Fn() -> runtime_core::LayoutPlan<Node>>>,
     mount_screen: Rc<dyn Fn(&'static str, Box<dyn Any>) -> MountResult<Node>>,
     release_screen: Rc<dyn Fn(u64)>,
@@ -449,8 +456,11 @@ where
 {
     ensure_navigator_css(b);
 
-    let container = b
-        .doc
+    let doc = web_sys::window()
+        .expect("window")
+        .document()
+        .expect("document");
+    let container = doc
         .create_element("div")
         .expect("create_element nav container failed");
     // No `.ui-default` — see view.rs. The `.ui-nav-root` rule
@@ -458,8 +468,11 @@ where
     // (when present) stacks via normal block flow inside.
     set_class_present(&container, "ui-nav-root", true);
 
-    let nav_id = b.next_navigator_id;
-    b.next_navigator_id += 1;
+    let nav_id = NEXT_NAVIGATOR_ID.with(|c| {
+        let v = c.get();
+        c.set(v + 1);
+        v
+    });
     let _ = container.set_attribute("data-navigator-id", &nav_id.to_string());
 
     let container_node: Node = container.unchecked_into();
@@ -567,13 +580,15 @@ where
     // navigator on the page, and register this instance with it.
     register_popstate_target(instance.clone());
 
-    b.navigator_instances.insert(nav_id, NavigatorEntry { instance, control });
+    NAVIGATOR_INSTANCES.with(|m| {
+        m.borrow_mut().insert(nav_id, NavigatorEntry { instance, control });
+    });
     container_node
 }
 
 /// Stack navigator entry point. Installs a dispatcher that accepts
 /// Push / Pop / Replace / Reset and panics on tab/drawer commands.
-pub(crate) fn create(
+pub fn create(
     b: &mut WebBackend,
     callbacks: NavigatorCallbacks<Node>,
     control: Rc<NavigatorControl>,
@@ -618,7 +633,7 @@ pub(crate) fn create(
 ///
 /// `Select` maps to `Replace`: the new screen takes the outlet's
 /// active slot, no URL stack growth.
-pub(crate) fn create_tab(
+pub fn create_tab(
     b: &mut WebBackend,
     callbacks: TabNavigatorCallbacks<Node>,
     control: Rc<NavigatorControl>,
@@ -664,7 +679,7 @@ pub(crate) fn create_tab(
 /// drawer's visual side panel is rendered by the author's
 /// `.layout(...)` closure; the drawer commands flip the
 /// `callbacks.is_open` signal that the layout subscribes to.
-pub(crate) fn create_drawer(
+pub fn create_drawer(
     b: &mut WebBackend,
     callbacks: DrawerNavigatorCallbacks<Node>,
     control: Rc<NavigatorControl>,
@@ -730,22 +745,24 @@ pub(crate) fn create_drawer(
     })
 }
 
-/// runtime-server / deferred-mount entry point. Called by
-/// `WebBackend::stack_navigator_attach_initial` when the navigator was
-/// created with `defer_initial_mount = true`. Mounts the externally-
-/// built `screen` node into the navigator's outlet without going
-/// through `mount_screen`.
-pub(crate) fn attach_initial(b: &mut WebBackend, navigator: &Node, screen: Node, scope_id: u64) {
+/// runtime-server / deferred-mount entry point. Called by the SDK
+/// handler's `attach_initial` when the navigator was created with
+/// `defer_initial_mount = true`. Mounts the externally-built `screen`
+/// node into the navigator's outlet without going through `mount_screen`.
+///
+/// Post-create helpers (`attach_initial`, `attach_layout`, `release`,
+/// the `make_*_handle` family) read from the thread-local
+/// `NAVIGATOR_INSTANCES` registry and don't need a backend handle —
+/// the SDK handler invokes them with just the navigator `Node`.
+pub fn attach_initial(navigator: &Node, screen: Node, scope_id: u64) {
     let Some(nav_id) = navigator_id_of(navigator) else {
         return;
     };
-    let Some(entry) = b.navigator_instances.get(&nav_id) else {
-        return;
-    };
-    entry
-        .instance
-        .borrow_mut()
-        .attach_initial_with_node(screen, scope_id);
+    let instance = NAVIGATOR_INSTANCES.with(|m| {
+        m.borrow().get(&nav_id).map(|e| e.instance.clone())
+    });
+    let Some(instance) = instance else { return };
+    instance.borrow_mut().attach_initial_with_node(screen, scope_id);
 }
 
 /// runtime-server layout attach. The dev-side recording backend ran the user's
@@ -755,14 +772,15 @@ pub(crate) fn attach_initial(b: &mut WebBackend, navigator: &Node, screen: Node,
 /// the outlet node so subsequent `attach_initial`s mount screens
 /// inside the layout's outlet — not the bare container, which would
 /// dump the screen on top of the sidebar.
-pub(crate) fn attach_layout(b: &mut WebBackend, navigator: &Node, root: Node, outlet: Node) {
+pub fn attach_layout(navigator: &Node, root: Node, outlet: Node) {
     let Some(nav_id) = navigator_id_of(navigator) else {
         return;
     };
-    let Some(entry) = b.navigator_instances.get(&nav_id) else {
-        return;
-    };
-    let mut inst = entry.instance.borrow_mut();
+    let instance = NAVIGATOR_INSTANCES.with(|m| {
+        m.borrow().get(&nav_id).map(|e| e.instance.clone())
+    });
+    let Some(instance) = instance else { return };
+    let mut inst = instance.borrow_mut();
     // Container is freshly created with no children in runtime-server mode
     // (defer_initial_mount = true, so the create-time microtask
     // bails before mounting anything). Safe to just append the
@@ -775,11 +793,11 @@ pub(crate) fn attach_layout(b: &mut WebBackend, navigator: &Node, root: Node, ou
 
 /// Tear down a navigator: release every still-mounted screen scope
 /// and drop the instance entry (which drops the dispatcher closures).
-pub(crate) fn release(b: &mut WebBackend, node: &Node) {
+pub fn release(node: &Node) {
     let Some(nav_id) = navigator_id_of(node) else {
         return;
     };
-    let Some(entry) = b.navigator_instances.remove(&nav_id) else {
+    let Some(entry) = NAVIGATOR_INSTANCES.with(|m| m.borrow_mut().remove(&nav_id)) else {
         return;
     };
     let mut inst = entry.instance.borrow_mut();
@@ -795,28 +813,31 @@ pub(crate) fn release(b: &mut WebBackend, node: &Node) {
     let _ = entry.control;
 }
 
-pub(crate) fn make_handle(b: &WebBackend, node: &Node) -> NavigatorHandle {
+pub fn make_handle(node: &Node) -> NavigatorHandle {
     let Some(nav_id) = navigator_id_of(node) else {
         return NavigatorHandle::new(Rc::new(()), &WebNavigatorOps);
     };
-    let Some(entry) = b.navigator_instances.get(&nav_id) else {
-        return NavigatorHandle::new(Rc::new(()), &WebNavigatorOps);
-    };
-    NavigatorHandle::with_control(Rc::new(()), &WebNavigatorOps, entry.control.clone())
+    let control = NAVIGATOR_INSTANCES.with(|m| {
+        m.borrow().get(&nav_id).map(|e| e.control.clone())
+    });
+    match control {
+        Some(c) => NavigatorHandle::with_control(Rc::new(()), &WebNavigatorOps, c),
+        None => NavigatorHandle::new(Rc::new(()), &WebNavigatorOps),
+    }
 }
 
 /// Make a `TabsHandle`. Same wiring as `make_handle` but wraps the
 /// underlying `NavigatorHandle` so the type-system enforces "tabs
 /// only `.select(...)`, no `.push`".
-pub(crate) fn make_tab_handle(b: &WebBackend, node: &Node) -> TabsHandle {
-    TabsHandle::from_inner(make_handle(b, node))
+pub fn make_tab_handle(node: &Node) -> TabsHandle {
+    TabsHandle::from_inner(make_handle(node))
 }
 
 /// Make a `DrawerHandle`. The drawer's `is_open` probe lives behind
 /// an `Rc<Cell<bool>>` shared with the dispatcher; we hand the same
 /// Cell to every handle clone so they observe each other's writes.
-pub(crate) fn make_drawer_handle(b: &WebBackend, node: &Node) -> DrawerHandle {
-    let inner = make_handle(b, node);
+pub fn make_drawer_handle(node: &Node) -> DrawerHandle {
+    let inner = make_handle(node);
     // The probe `Cell` lives on the entry below. For now we use a
     // fresh `Cell` per handle — the authoritative state is the
     // signal carried in `DrawerNavigatorCallbacks::is_open`, which
@@ -827,15 +848,15 @@ pub(crate) fn make_drawer_handle(b: &WebBackend, node: &Node) -> DrawerHandle {
 
 /// Per-instance bundle stored on the backend so `make_handle` /
 /// `release` can find the right navigator at lookup time.
-pub(crate) struct NavigatorEntry {
-    pub(crate) instance: Rc<RefCell<NavigatorInstance>>,
-    pub(crate) control: Rc<NavigatorControl>,
+pub struct NavigatorEntry {
+    pub instance: Rc<RefCell<NavigatorInstance>>,
+    pub control: Rc<NavigatorControl>,
 }
 
 struct WebNavigatorOps;
 impl NavigatorOps for WebNavigatorOps {}
 
-pub(crate) type NavigatorInstances = HashMap<u32, NavigatorEntry>;
+pub type NavigatorInstances = HashMap<u32, NavigatorEntry>;
 
 // ---------------------------------------------------------------------------
 // URL + history helpers
@@ -910,17 +931,31 @@ fn history_back() {
 
 thread_local! {
     /// Live popstate listener. We hold one global listener registered
-    /// on `window`; it dispatches into every backend's nav instances
-    /// on each fire. Stored as a `Closure` so wasm-bindgen keeps the
-    /// JS function alive for the page's lifetime.
+    /// on `window`; it dispatches into every nav instance on each
+    /// fire. Stored as a `Closure` so wasm-bindgen keeps the JS
+    /// function alive for the page's lifetime.
     static POPSTATE_LISTENER: RefCell<Option<Closure<dyn FnMut(web_sys::PopStateEvent)>>> =
         const { RefCell::new(None) };
     /// Strong-Rc registry of every live navigator on the page. The
-    /// WebBackend's `navigator_instances` map holds another strong
-    /// Rc; `unregister_popstate_target` drops this list's entry so
-    /// release lifecycles complete normally.
+    /// `NAVIGATOR_INSTANCES` map below holds another strong Rc;
+    /// `unregister_popstate_target` drops this list's entry so release
+    /// lifecycles complete normally.
     static POPSTATE_TARGETS: RefCell<Vec<Rc<RefCell<NavigatorInstance>>>> =
         const { RefCell::new(Vec::new()) };
+    /// Per-instance bundle indexed by `data-navigator-id` attribute
+    /// on the navigator container. Mirrors what used to live on
+    /// `WebBackend.navigator_instances`; moved here so the SDK owns
+    /// it (backend-web has no nav-specific state anymore).
+    pub static NAVIGATOR_INSTANCES: RefCell<NavigatorInstances> =
+        RefCell::new(HashMap::new());
+    /// Monotonic counter for `data-navigator-id`. Mirrors
+    /// `WebBackend.next_navigator_id` from before the port. Never
+    /// reused — release frees the entry but the id is gone.
+    pub static NEXT_NAVIGATOR_ID: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// `true` once the navigator's CSS (`.ui-nav-root`,
+    /// `.ui-nav-screen`, `.ui-nav-hidden`) has been injected into
+    /// `<head>` once for the page's lifetime.
+    static NAVIGATOR_CSS_INJECTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 fn register_popstate_target(target: Rc<RefCell<NavigatorInstance>>) {
@@ -957,18 +992,22 @@ fn unregister_popstate_target(target: &Rc<RefCell<NavigatorInstance>>) {
 // One-shot CSS injection
 // ---------------------------------------------------------------------------
 
-fn ensure_navigator_css(b: &mut WebBackend) {
-    if b.navigator_css_injected {
-        return;
-    }
-    let css = ".ui-nav-root{position:relative;width:100%;height:100%;}\
-               .ui-nav-screen{position:absolute;inset:0;width:100%;height:100%;}\
-               .ui-nav-hidden{display:none;}";
-    if let Some(head) = b.doc.head() {
-        if let Ok(style) = b.doc.create_element("style") {
-            style.set_text_content(Some(css));
-            let _ = head.append_child(&style);
+fn ensure_navigator_css(_b: &mut WebBackend) {
+    NAVIGATOR_CSS_INJECTED.with(|injected| {
+        if injected.get() {
+            return;
         }
-    }
-    b.navigator_css_injected = true;
+        let css = ".ui-nav-root{position:relative;width:100%;height:100%;}\
+                   .ui-nav-screen{position:absolute;inset:0;width:100%;height:100%;}\
+                   .ui-nav-hidden{display:none;}";
+        let Some(win) = web_sys::window() else { return };
+        let Some(doc) = win.document() else { return };
+        if let Some(head) = doc.head() {
+            if let Ok(style) = doc.create_element("style") {
+                style.set_text_content(Some(css));
+                let _ = head.append_child(&style);
+            }
+        }
+        injected.set(true);
+    });
 }

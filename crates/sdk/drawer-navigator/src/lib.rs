@@ -24,7 +24,7 @@ use runtime_core::primitives::navigator::{
     ScreenBuilder, ScreenOptions,
 };
 use runtime_core::{
-    Bound, Color, HeaderStyle, IntoStyleSource, Primitive, Ref, RefFill, Signal, StyleApplication,
+    Bound, Color, HeaderStyle, IntoStyleSource, Primitive, Ref, RefFill, StyleApplication,
     StyleRules, StyleSheet, StyleSource, VariantSet,
 };
 use std::any::{Any, TypeId};

@@ -8,19 +8,25 @@
 use crate::{TabPresentation, TabPlacement, MountPolicy};
 use backend_web::WebBackend;
 use runtime_core::{
-    accessibility::AccessibilityProps, primitives::navigator::tabs::TabRegistration, Backend,
-    MountResult, NavigatorCallbacks, NavigatorHandler, NavigatorHost, TabNavigatorCallbacks,
+    primitives::navigator::tabs::TabRegistration, MountResult, NavigatorCallbacks,
+    NavigatorHandler, NavigatorHost, TabNavigatorCallbacks,
     TabPlacement as CoreTabPlacement, MountPolicy as CoreMountPolicy,
 };
 use std::any::Any;
 use std::rc::Rc;
 use web_sys::Node;
 
-pub struct WebTabHandler;
+pub struct WebTabHandler {
+    /// Container `Node` returned from `helpers::create_tab`. Same
+    /// posture as `WebStackHandler::container` — retained so the
+    /// post-init dispatch can look the instance up by
+    /// `data-navigator-id` later.
+    container: Option<Node>,
+}
 
 impl WebTabHandler {
     pub fn new() -> Self {
-        Self
+        Self { container: None }
     }
 }
 impl Default for WebTabHandler {
@@ -28,6 +34,9 @@ impl Default for WebTabHandler {
         Self::new()
     }
 }
+
+struct NoopTabOps;
+impl runtime_core::primitives::navigator::NavigatorOps for NoopTabOps {}
 
 /// Translate the SDK's `TabPlacement` enum to core's identical-shape
 /// `TabPlacement`. The SDK defines its own copy so the SDK doesn't
@@ -124,27 +133,41 @@ impl NavigatorHandler<WebBackend> for WebTabHandler {
             active_changed: active_changed_legacy,
         };
 
-        backend.create_tab_navigator(tab_callbacks, control, &AccessibilityProps::default())
+        let node = web_navigator_helpers::create_tab(backend, tab_callbacks, control);
+        self.container = Some(node.clone());
+        node
     }
 
     fn attach_initial(
         &mut self,
         _backend: &mut WebBackend,
-        _screen: Node,
-        _scope_id: u64,
+        screen: Node,
+        scope_id: u64,
         _options: runtime_core::ScreenOptions,
     ) {
-        unreachable!(
-            "WebTabHandler::attach_initial — WebBackend dispatches via \
-             navigator_attach_initial → uniform machinery"
-        );
+        if let Some(container) = self.container.as_ref() {
+            web_navigator_helpers::attach_initial(container, screen, scope_id);
+        }
     }
 
     fn on_command(&mut self, _cmd: runtime_core::NavCommand) {
         unreachable!(
-            "WebTabHandler::on_command — legacy tab dispatcher owns the \
-             control plane until Phase-2"
+            "WebTabHandler::on_command — helpers::create_tab owns the \
+             control-plane dispatcher"
         );
+    }
+
+    fn release(&mut self, _backend: &mut WebBackend) {
+        if let Some(container) = self.container.take() {
+            web_navigator_helpers::release(&container);
+        }
+    }
+
+    fn make_handle(&self) -> runtime_core::NavigatorHandle {
+        match self.container.as_ref() {
+            Some(c) => web_navigator_helpers::make_handle(c),
+            None => runtime_core::NavigatorHandle::new(Rc::new(()), &NoopTabOps),
+        }
     }
 }
 

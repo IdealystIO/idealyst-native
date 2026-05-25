@@ -866,20 +866,9 @@ where
                 let nav = self.lookup_node(navigator)?;
                 let screen_node = self.lookup_node(screen)?;
                 let opts = convert::wire_screen_options(&options, |id| self.handler_unit(id));
-                match state.kind {
-                    navigators::NavigatorKind::Stack => {
-                        self.backend.borrow_mut()
-                            .stack_navigator_attach_initial(&nav, screen_node, scope.0, opts);
-                    }
-                    navigators::NavigatorKind::Tab => {
-                        self.backend.borrow_mut()
-                            .tab_navigator_attach_initial(&nav, screen_node, scope.0, opts);
-                    }
-                    navigators::NavigatorKind::Drawer => {
-                        self.backend.borrow_mut()
-                            .drawer_navigator_attach_initial(&nav, screen_node, scope.0, opts);
-                    }
-                }
+                // Dev wire attach-initial stubbed pending protocol
+                // redesign; legacy Backend trait methods removed.
+                let _ = (state.kind, nav, screen_node, opts);
                 state.mounted_urls.borrow_mut().push(url);
                 *state.replay_pos.borrow_mut() = state.mounted_urls.borrow().len();
             }
@@ -998,11 +987,9 @@ where
                 root,
                 outlet,
             } => {
-                let nav = self.lookup_node(navigator)?;
-                let root_node = self.lookup_node(root)?;
-                let outlet_node = self.lookup_node(outlet)?;
-                self.backend.borrow_mut()
-                    .attach_navigator_layout(&nav, root_node, outlet_node);
+                // Dev wire layout attach stubbed pending protocol
+                // redesign; legacy Backend trait method removed.
+                let _ = (navigator, root, outlet);
             }
 
             // --- Drawer control plane ---
@@ -1012,14 +999,9 @@ where
                 // backend.drawer_navigator_attach_sidebar twice
                 // crashes DrawerLayout (two children with the same
                 // edge gravity).
-                if self
-                    .drawer_sidebars_attached
-                    .insert((navigator, sidebar))
-                {
-                    let nav = self.lookup_node(navigator)?;
-                    let sb = self.lookup_node(sidebar)?;
-                    self.backend.borrow_mut().drawer_navigator_attach_sidebar(&nav, sb);
-                }
+                // Dev wire drawer sidebar attach stubbed; legacy Backend
+                // trait method removed.
+                let _ = (navigator, sidebar);
             }
             Command::OpenDrawer { navigator } => {
                 let state = self
@@ -1053,50 +1035,24 @@ where
             }
 
             // --- Navigator chrome styles ---
-            Command::ApplyNavigatorHeaderStyle { navigator, style } => {
-                let n = self.lookup_node(navigator)?;
-                let s = self.lookup_style(style)?;
-                self.backend.borrow_mut().apply_navigator_header_style(&n, &s);
-            }
-            Command::ApplyNavigatorTitleStyle { navigator, style } => {
-                let n = self.lookup_node(navigator)?;
-                let s = self.lookup_style(style)?;
-                self.backend.borrow_mut().apply_navigator_title_style(&n, &s);
-            }
-            Command::ApplyNavigatorButtonStyle { navigator, style } => {
-                let n = self.lookup_node(navigator)?;
-                let s = self.lookup_style(style)?;
-                self.backend.borrow_mut().apply_navigator_button_style(&n, &s);
-            }
-            Command::ApplyNavigatorBodyStyle { navigator, style } => {
-                let n = self.lookup_node(navigator)?;
-                let s = self.lookup_style(style)?;
-                self.backend.borrow_mut().apply_navigator_body_style(&n, &s);
-            }
-            Command::ApplyDrawerSidebarStyle { navigator, style } => {
-                let n = self.lookup_node(navigator)?;
-                let s = self.lookup_style(style)?;
-                self.backend.borrow_mut().apply_drawer_sidebar_style(&n, &s);
-            }
-            Command::ApplyDrawerScrimStyle { navigator, style } => {
-                let n = self.lookup_node(navigator)?;
-                let s = self.lookup_style(style)?;
-                self.backend.borrow_mut().apply_drawer_scrim_style(&n, &s);
-            }
-            Command::ApplyTabBarStyle { navigator, style } => {
-                let n = self.lookup_node(navigator)?;
-                let s = self.lookup_style(style)?;
-                self.backend.borrow_mut().apply_tab_bar_style(&n, &s);
-            }
-            Command::ApplyTabIconStyle { navigator, style } => {
-                let n = self.lookup_node(navigator)?;
-                let s = self.lookup_style(style)?;
-                self.backend.borrow_mut().apply_tab_icon_style(&n, &s);
-            }
-            Command::ApplyTabLabelStyle { navigator, style } => {
-                let n = self.lookup_node(navigator)?;
-                let s = self.lookup_style(style)?;
-                self.backend.borrow_mut().apply_tab_label_style(&n, &s);
+            // Dev wire navigator chrome dispatch is stubbed pending
+            // protocol redesign for the SDK-based navigator model. The
+            // old Backend trait methods (apply_navigator_*_style etc.)
+            // were removed when the per-kind nav surface left core; the
+            // wire ops below remain in the protocol but no longer have
+            // a generic backend target. Wire navigators no-op until
+            // the protocol is reworked to drive through the SDK's
+            // `NavigatorHandler::apply_slot_style`.
+            Command::ApplyNavigatorHeaderStyle { .. }
+            | Command::ApplyNavigatorTitleStyle { .. }
+            | Command::ApplyNavigatorButtonStyle { .. }
+            | Command::ApplyNavigatorBodyStyle { .. }
+            | Command::ApplyDrawerSidebarStyle { .. }
+            | Command::ApplyDrawerScrimStyle { .. }
+            | Command::ApplyTabBarStyle { .. }
+            | Command::ApplyTabIconStyle { .. }
+            | Command::ApplyTabLabelStyle { .. } => {
+                // no-op: dev wire navigator chrome TBD post-SDK migration
             }
 
             // --- Virtualizer control plane ---
@@ -1337,14 +1293,16 @@ where
         // Build callbacks referencing the state Rc.
         let callbacks = state.build_stub_callbacks(route_static, path_static);
 
-        // Real backend create call. This installs the real backend's
-        // dispatcher onto control.
+        // Dev wire stack-navigator creation stubbed pending protocol
+        // redesign post-SDK migration. The legacy `Backend::create_stack_navigator`
+        // method was removed; per-kind nav construction now goes
+        // through SDK handlers, which the dev wire doesn't yet drive.
+        // Use the placeholder node we already minted so the rest of
+        // the bookkeeping has something to attach to.
+        let _ = (callbacks, &a11y);
         let a11y_props = self.a11y_props(a11y);
-        let nav_node = self.backend.borrow_mut().create_stack_navigator(
-            callbacks,
-            control.clone(),
-            &a11y_props,
-        );
+        let nav_node = self.backend.borrow_mut().create_view(&a11y_props);
+        let _ = control.clone(); // silence unused-variable warning
 
         // Reconstruct the state with the real node in place.
         let final_state = Rc::new(navigators::NavigatorAppState {
@@ -1425,12 +1383,12 @@ where
             resolved_placement,
             resolved_mount_policy,
         );
+        // Dev wire tab-navigator creation stubbed; see notes on
+        // `apply_create_stack_navigator`.
+        let _ = callbacks;
         let a11y_props = self.a11y_props(a11y);
-        let nav_node = self.backend.borrow_mut().create_tab_navigator(
-            callbacks,
-            control.clone(),
-            &a11y_props,
-        );
+        let nav_node = self.backend.borrow_mut().create_view(&a11y_props);
+        let _ = control.clone();
 
         let final_state = Rc::new(navigators::NavigatorAppState {
             kind: navigators::NavigatorKind::Tab,
@@ -1512,12 +1470,12 @@ where
             swipe_to_open,
             resolved_mount_policy,
         );
+        // Dev wire drawer-navigator creation stubbed; see notes on
+        // `apply_create_stack_navigator`.
+        let _ = callbacks;
         let a11y_props = self.a11y_props(a11y);
-        let nav_node = self.backend.borrow_mut().create_drawer_navigator(
-            callbacks,
-            control.clone(),
-            &a11y_props,
-        );
+        let nav_node = self.backend.borrow_mut().create_view(&a11y_props);
+        let _ = control.clone();
 
         let final_state = Rc::new(navigators::NavigatorAppState {
             kind: navigators::NavigatorKind::Drawer,

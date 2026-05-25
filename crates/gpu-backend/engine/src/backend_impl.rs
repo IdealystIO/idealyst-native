@@ -819,311 +819,6 @@ impl Backend for WgpuBackend {
     // strip around the active screen's rect.
     // -----------------------------------------------------------
 
-    fn create_stack_navigator(
-        &mut self,
-        callbacks: runtime_core::primitives::navigator::NavigatorCallbacks<Self::Node>,
-        control: Rc<runtime_core::primitives::navigator::NavigatorControl>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
-        let layout = self.layout.new_node();
-        // The navigator's container fills whatever box its parent
-        // hands it. Its screen children are `position: Absolute`
-        // with zero insets (see `mark_as_navigator_screen`), so
-        // they resolve their fill against this container's box —
-        // which needs definite dimensions for the percentage
-        // insets to mean "fill the navigator". As the framework's
-        // root this resolves against the viewport; wrapped inside
-        // another View, it fills that View.
-        self.layout.set_style(layout, &navigator_container_fill_rules());
-        // Consume any per-call animator override installed via
-        // `nav_anim::with_transition`. The override is one-shot
-        // per `create_stack_navigator` so nested navigators inside the
-        // initial-screen build don't accidentally inherit it.
-        let transition_anim = crate::nav_anim::take_transition_override()
-            .unwrap_or_else(crate::nav_anim::default_transition);
-        let node = new_node(
-            NodeKind::Navigator {
-                scope_ids: std::cell::RefCell::new(Vec::new()),
-                control: control.clone(),
-                transition: std::cell::RefCell::new(None),
-                transition_anim,
-                header_style: std::cell::RefCell::new(None),
-                title_style: std::cell::RefCell::new(None),
-                button_style: std::cell::RefCell::new(None),
-                body_style: std::cell::RefCell::new(None),
-            },
-            layout,
-        );
-        init_node_a11y(&node, a11y, PrimitiveKind::Navigator);
-        install_navigator_dispatcher(
-            &node,
-            callbacks,
-            control,
-            self.self_weak.get().expect("self_weak set in Host::new").clone(),
-        );
-        self.roots.push(node.clone());
-        node
-    }
-
-    fn make_stack_navigator_handle(
-        &self,
-        node: &Self::Node,
-    ) -> runtime_core::primitives::navigator::NavigatorHandle {
-        use runtime_core::primitives::navigator::NavigatorHandle;
-        if let NodeKind::Navigator { control, .. } = &node.borrow().kind {
-            // Empty `()` userdata — the trait default carries the
-            // same. The control is what makes `push` / `pop` /
-            // `replace` / `reset` reach our installed dispatcher;
-            // without it the handle returned here would be a
-            // silent no-op (the cause of the prior "push does
-            // nothing" symptom).
-            return NavigatorHandle::with_control(
-                Rc::new(()),
-                &WgpuNavigatorOps,
-                control.clone(),
-            );
-        }
-        NavigatorHandle::new(Rc::new(()), &WgpuNavigatorOps)
-    }
-
-    fn make_tab_navigator_handle(
-        &self,
-        node: &Self::Node,
-    ) -> runtime_core::primitives::navigator::TabsHandle {
-        use runtime_core::primitives::navigator::{NavigatorHandle, TabsHandle};
-        if let NodeKind::TabNavigator { control, .. } = &node.borrow().kind {
-            return TabsHandle::from_inner(NavigatorHandle::with_control(
-                Rc::new(()),
-                &WgpuNavigatorOps,
-                control.clone(),
-            ));
-        }
-        TabsHandle::from_inner(NavigatorHandle::new(Rc::new(()), &WgpuNavigatorOps))
-    }
-
-    fn make_drawer_navigator_handle(
-        &self,
-        node: &Self::Node,
-    ) -> runtime_core::primitives::navigator::DrawerHandle {
-        use runtime_core::primitives::navigator::{DrawerHandle, NavigatorHandle};
-        if let NodeKind::DrawerNavigator { control, is_open, .. } = &node.borrow().kind {
-            return DrawerHandle::from_inner(
-                NavigatorHandle::with_control(
-                    Rc::new(()),
-                    &WgpuNavigatorOps,
-                    control.clone(),
-                ),
-                is_open.clone(),
-            );
-        }
-        DrawerHandle::from_inner(
-            NavigatorHandle::new(Rc::new(()), &WgpuNavigatorOps),
-            Rc::new(std::cell::Cell::new(false)),
-        )
-    }
-
-    fn stack_navigator_attach_initial(
-        &mut self,
-        navigator: &Self::Node,
-        screen: Self::Node,
-        scope_id: u64,
-        options: runtime_core::primitives::navigator::ScreenOptions,
-    ) {
-        let parent_layout = navigator.borrow().layout;
-        let child_layout = screen.borrow().layout;
-        self.layout.add_child(parent_layout, child_layout);
-        navigator.borrow_mut().children.push(screen.clone());
-        if let NodeKind::Navigator { scope_ids, .. } = &navigator.borrow().kind {
-            scope_ids.borrow_mut().push(scope_id);
-        }
-        self.roots.retain(|n| !Rc::ptr_eq(n, &screen));
-        attach_screen_metadata(self, &screen, navigator, options);
-        mark_as_navigator_screen(&mut self.layout, &screen);
-        request_redraw();
-    }
-
-    fn create_tab_navigator(
-        &mut self,
-        callbacks: runtime_core::primitives::navigator::TabNavigatorCallbacks<Self::Node>,
-        control: Rc<runtime_core::primitives::navigator::NavigatorControl>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
-        let layout = self.layout.new_node();
-        // Seed `routes[0]` with the initial route's name and a
-        // placeholder scope_id. The framework calls
-        // `tab_navigator_attach_initial` immediately after this
-        // returns; that path patches the scope_id in-place. Storing
-        // the name up-front means the dispatcher can match
-        // `Select { name }` against routes without us having to
-        // thread the initial-route name through the attach call.
-        let initial_route = callbacks.navigator.initial_route;
-        let node = new_node(
-            NodeKind::TabNavigator {
-                active_tab: std::cell::Cell::new(0),
-                tab_count: std::cell::Cell::new(0),
-                routes: std::cell::RefCell::new(vec![crate::node::TabRoute {
-                    name: initial_route,
-                    scope_id: 0,
-                }]),
-                control: control.clone(),
-                bar_style: std::cell::RefCell::new(None),
-                icon_style: std::cell::RefCell::new(None),
-                label_style: std::cell::RefCell::new(None),
-            },
-            layout,
-        );
-        init_node_a11y(&node, a11y, PrimitiveKind::Navigator);
-        install_tab_dispatcher(
-            &node,
-            callbacks,
-            control,
-            self.self_weak.get().expect("self_weak set in Host::new").clone(),
-        );
-        self.roots.push(node.clone());
-        node
-    }
-
-    fn tab_navigator_attach_initial(
-        &mut self,
-        navigator: &Self::Node,
-        screen: Self::Node,
-        scope_id: u64,
-        options: runtime_core::primitives::navigator::ScreenOptions,
-    ) {
-        let parent_layout = navigator.borrow().layout;
-        let child_layout = screen.borrow().layout;
-        self.layout.add_child(parent_layout, child_layout);
-        navigator.borrow_mut().children.push(screen.clone());
-        if let NodeKind::TabNavigator { tab_count, routes, .. } = &navigator.borrow().kind
-        {
-            tab_count.set(tab_count.get() + 1);
-            // Patch the placeholder scope_id we seeded in
-            // `create_tab_navigator`. The dispatcher's `Select`
-            // path needs an accurate scope_id so a future
-            // mount-policy that disposes the previously-active tab
-            // can call `release_screen` with the right id.
-            if let Some(first) = routes.borrow_mut().first_mut() {
-                first.scope_id = scope_id;
-            }
-        }
-        self.roots.retain(|n| !Rc::ptr_eq(n, &screen));
-        attach_screen_metadata(self, &screen, navigator, options);
-        mark_as_navigator_screen(&mut self.layout, &screen);
-        request_redraw();
-    }
-
-    fn create_drawer_navigator(
-        &mut self,
-        callbacks: runtime_core::primitives::navigator::DrawerNavigatorCallbacks<Self::Node>,
-        control: Rc<runtime_core::primitives::navigator::NavigatorControl>,
-        a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
-        let layout = self.layout.new_node();
-        let initial_route = callbacks.navigator.initial_route;
-        let node = new_node(
-            NodeKind::DrawerNavigator {
-                is_open: Rc::new(std::cell::Cell::new(false)),
-                active_screen: std::cell::Cell::new(0),
-                routes: std::cell::RefCell::new(vec![crate::node::TabRoute {
-                    name: initial_route,
-                    scope_id: 0,
-                }]),
-                sidebar: std::cell::RefCell::new(None),
-                control: control.clone(),
-                anim_started_at: std::cell::Cell::new(None),
-                scrim_style: std::cell::RefCell::new(None),
-                sidebar_style: std::cell::RefCell::new(None),
-            },
-            layout,
-        );
-        init_node_a11y(&node, a11y, PrimitiveKind::Navigator);
-        install_drawer_dispatcher(
-            &node,
-            callbacks,
-            control,
-            self.self_weak.get().expect("self_weak set in Host::new").clone(),
-        );
-        self.roots.push(node.clone());
-        node
-    }
-
-    fn drawer_navigator_attach_initial(
-        &mut self,
-        navigator: &Self::Node,
-        screen: Self::Node,
-        scope_id: u64,
-        options: runtime_core::primitives::navigator::ScreenOptions,
-    ) {
-        let parent_layout = navigator.borrow().layout;
-        let child_layout = screen.borrow().layout;
-        self.layout.add_child(parent_layout, child_layout);
-        navigator.borrow_mut().children.push(screen.clone());
-        if let NodeKind::DrawerNavigator { routes, .. } = &navigator.borrow().kind {
-            // Same scope-id patch as tabs — see
-            // `tab_navigator_attach_initial`.
-            if let Some(first) = routes.borrow_mut().first_mut() {
-                first.scope_id = scope_id;
-            }
-        }
-        self.roots.retain(|n| !Rc::ptr_eq(n, &screen));
-        attach_screen_metadata(self, &screen, navigator, options);
-        mark_as_navigator_screen(&mut self.layout, &screen);
-        request_redraw();
-    }
-
-    fn drawer_navigator_attach_sidebar(
-        &mut self,
-        navigator: &Self::Node,
-        sidebar: Self::Node,
-    ) {
-        // Attach the sidebar as a Taffy child so its layout
-        // gets computed alongside the body, but pin it to
-        // absolute positioning + the drawer width so it stacks
-        // above the body. The renderer's drawer-aware walk
-        // filters it out of the in-flow paint and lifts it to
-        // the top-z overlay pass with the slide transform.
-        let parent_layout = navigator.borrow().layout;
-        let sidebar_layout = sidebar.borrow().layout;
-        self.layout.add_child(parent_layout, sidebar_layout);
-        let absolute_sidebar = StyleRules {
-            position: Some(runtime_core::Position::Absolute),
-            top: Some(Tokenized::Literal(runtime_core::Length::Px(0.0))),
-            bottom: Some(Tokenized::Literal(runtime_core::Length::Px(0.0))),
-            left: Some(Tokenized::Literal(runtime_core::Length::Px(0.0))),
-            ..Default::default()
-        };
-        self.layout.set_style(sidebar_layout, &absolute_sidebar);
-        self.roots.retain(|n| !Rc::ptr_eq(n, &sidebar));
-        // Append at the *end* of the children list so the
-        // drawer's stored "child index 0 = body, last = sidebar"
-        // convention holds.
-        navigator.borrow_mut().children.push(sidebar.clone());
-        if let NodeKind::DrawerNavigator { sidebar: slot, .. } = &navigator.borrow().kind {
-            *slot.borrow_mut() = Some(sidebar);
-        }
-        request_redraw();
-    }
-
-    // -----------------------------------------------------------
-    // Unsupported primitives — render a "not supported" panel.
-    // -----------------------------------------------------------
-
-    fn make_graphics_handle(
-        &self,
-        node: &Self::Node,
-    ) -> runtime_core::primitives::graphics::GraphicsHandle {
-        // Wrap the `WgpuNode` itself as the handle's userdata so
-        // `register_graphics_drawer` can downcast back to recover
-        // it. `WgpuNode = Rc<RefCell<NodeData>>`; the `Rc<dyn Any>`
-        // GraphicsHandle holds therefore points at a fresh Rc whose
-        // inner concrete type is `WgpuNode` (i.e.
-        // `Rc<RefCell<NodeData>>`). Downcast target on retrieval
-        // is the same `WgpuNode` type alias.
-        runtime_core::primitives::graphics::GraphicsHandle::new(
-            Rc::new(node.clone()) as Rc<dyn std::any::Any>,
-            &WgpuGraphicsOps,
-        )
-    }
 
     fn create_graphics(
         &mut self,
@@ -1381,28 +1076,6 @@ impl Backend for WgpuBackend {
         request_redraw();
     }
 
-    fn release_stack_navigator(&mut self, node: &Self::Node) {
-        // Drop every mounted screen's Taffy state + animator
-        // tweens + text store entries. The per-screen framework
-        // Scopes are owned by the dispatcher closure on the
-        // NavigatorControl, which drops alongside the user-
-        // facing scope — so we don't need to invoke release
-        // callbacks here. The backend's job is to clean the
-        // Taffy + render state.
-        self.clear_children(node);
-    }
-
-    fn release_tab_navigator(&mut self, node: &Self::Node) {
-        self.clear_children(node);
-    }
-
-    fn release_drawer_navigator(&mut self, node: &Self::Node) {
-        // Drawer's sidebar is also in `children`, so
-        // clear_children handles it. The framework's drawer
-        // open-state signal lives on the dispatcher closure and
-        // drops along with the navigator's enclosing scope.
-        self.clear_children(node);
-    }
 
     fn set_disabled(&mut self, node: &Self::Node, disabled: bool) {
         // The framework's state-overlay system handles the
@@ -1539,104 +1212,6 @@ impl Backend for WgpuBackend {
         request_redraw();
     }
 
-    fn apply_navigator_header_style(
-        &mut self,
-        navigator: &Self::Node,
-        style: &Rc<StyleRules>,
-    ) {
-        if let NodeKind::Navigator { header_style, .. } = &navigator.borrow().kind {
-            *header_style.borrow_mut() = Some(style.clone());
-            request_redraw();
-        }
-    }
-
-    fn apply_navigator_title_style(
-        &mut self,
-        navigator: &Self::Node,
-        style: &Rc<StyleRules>,
-    ) {
-        if let NodeKind::Navigator { title_style, .. } = &navigator.borrow().kind {
-            *title_style.borrow_mut() = Some(style.clone());
-            request_redraw();
-        }
-    }
-
-    fn apply_navigator_button_style(
-        &mut self,
-        navigator: &Self::Node,
-        style: &Rc<StyleRules>,
-    ) {
-        if let NodeKind::Navigator { button_style, .. } = &navigator.borrow().kind {
-            *button_style.borrow_mut() = Some(style.clone());
-            request_redraw();
-        }
-    }
-
-    fn apply_navigator_body_style(
-        &mut self,
-        navigator: &Self::Node,
-        style: &Rc<StyleRules>,
-    ) {
-        if let NodeKind::Navigator { body_style, .. } = &navigator.borrow().kind {
-            *body_style.borrow_mut() = Some(style.clone());
-            request_redraw();
-        }
-    }
-
-    fn apply_drawer_sidebar_style(
-        &mut self,
-        navigator: &Self::Node,
-        style: &Rc<StyleRules>,
-    ) {
-        if let NodeKind::DrawerNavigator { sidebar_style, .. } = &navigator.borrow().kind {
-            *sidebar_style.borrow_mut() = Some(style.clone());
-            request_redraw();
-        }
-    }
-
-    fn apply_drawer_scrim_style(
-        &mut self,
-        navigator: &Self::Node,
-        style: &Rc<StyleRules>,
-    ) {
-        if let NodeKind::DrawerNavigator { scrim_style, .. } = &navigator.borrow().kind {
-            *scrim_style.borrow_mut() = Some(style.clone());
-            request_redraw();
-        }
-    }
-
-    fn apply_tab_bar_style(
-        &mut self,
-        navigator: &Self::Node,
-        style: &Rc<StyleRules>,
-    ) {
-        if let NodeKind::TabNavigator { bar_style, .. } = &navigator.borrow().kind {
-            *bar_style.borrow_mut() = Some(style.clone());
-            request_redraw();
-        }
-    }
-
-    fn apply_tab_icon_style(
-        &mut self,
-        navigator: &Self::Node,
-        style: &Rc<StyleRules>,
-    ) {
-        if let NodeKind::TabNavigator { icon_style, .. } = &navigator.borrow().kind {
-            *icon_style.borrow_mut() = Some(style.clone());
-            request_redraw();
-        }
-    }
-
-    fn apply_tab_label_style(
-        &mut self,
-        navigator: &Self::Node,
-        style: &Rc<StyleRules>,
-    ) {
-        if let NodeKind::TabNavigator { label_style, .. } = &navigator.borrow().kind {
-            *label_style.borrow_mut() = Some(style.clone());
-            request_redraw();
-        }
-    }
 
     fn on_node_unstyled(&mut self, node: &Self::Node) {
         // Clear the setter so a stale closure can't fire on a
@@ -3189,5 +2764,440 @@ mod a11y_tests {
         let tree = b.dump_accessibility_tree().expect("tree");
         assert_eq!(tree.root.role, Role::Button);
         assert_eq!(tree.root.props.label.as_deref(), Some("Submit"));
+    }
+}
+
+// ==========================================================================
+// Legacy nav helpers — inherent methods invoked by per-kind SDK handlers.
+// NOT on the Backend trait.
+// ==========================================================================
+
+impl WgpuBackend {
+    pub fn create_stack_navigator(
+        &mut self,
+        callbacks: runtime_core::primitives::navigator::NavigatorCallbacks<WgpuNode>,
+        control: Rc<runtime_core::primitives::navigator::NavigatorControl>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> WgpuNode {
+        let layout = self.layout.new_node();
+        // The navigator's container fills whatever box its parent
+        // hands it. Its screen children are `position: Absolute`
+        // with zero insets (see `mark_as_navigator_screen`), so
+        // they resolve their fill against this container's box —
+        // which needs definite dimensions for the percentage
+        // insets to mean "fill the navigator". As the framework's
+        // root this resolves against the viewport; wrapped inside
+        // another View, it fills that View.
+        self.layout.set_style(layout, &navigator_container_fill_rules());
+        // Consume any per-call animator override installed via
+        // `nav_anim::with_transition`. The override is one-shot
+        // per `create_stack_navigator` so nested navigators inside the
+        // initial-screen build don't accidentally inherit it.
+        let transition_anim = crate::nav_anim::take_transition_override()
+            .unwrap_or_else(crate::nav_anim::default_transition);
+        let node = new_node(
+            NodeKind::Navigator {
+                scope_ids: std::cell::RefCell::new(Vec::new()),
+                control: control.clone(),
+                transition: std::cell::RefCell::new(None),
+                transition_anim,
+                header_style: std::cell::RefCell::new(None),
+                title_style: std::cell::RefCell::new(None),
+                button_style: std::cell::RefCell::new(None),
+                body_style: std::cell::RefCell::new(None),
+            },
+            layout,
+        );
+        init_node_a11y(&node, a11y, PrimitiveKind::Navigator);
+        install_navigator_dispatcher(
+            &node,
+            callbacks,
+            control,
+            self.self_weak.get().expect("self_weak set in Host::new").clone(),
+        );
+        self.roots.push(node.clone());
+        node
+    }
+
+    pub fn make_stack_navigator_handle(
+        &self,
+        node: &WgpuNode,
+    ) -> runtime_core::primitives::navigator::NavigatorHandle {
+        use runtime_core::primitives::navigator::NavigatorHandle;
+        if let NodeKind::Navigator { control, .. } = &node.borrow().kind {
+            // Empty `()` userdata — the trait default carries the
+            // same. The control is what makes `push` / `pop` /
+            // `replace` / `reset` reach our installed dispatcher;
+            // without it the handle returned here would be a
+            // silent no-op (the cause of the prior "push does
+            // nothing" symptom).
+            return NavigatorHandle::with_control(
+                Rc::new(()),
+                &WgpuNavigatorOps,
+                control.clone(),
+            );
+        }
+        NavigatorHandle::new(Rc::new(()), &WgpuNavigatorOps)
+    }
+
+    pub fn make_tab_navigator_handle(
+        &self,
+        node: &WgpuNode,
+    ) -> runtime_core::primitives::navigator::TabsHandle {
+        use runtime_core::primitives::navigator::{NavigatorHandle, TabsHandle};
+        if let NodeKind::TabNavigator { control, .. } = &node.borrow().kind {
+            return TabsHandle::from_inner(NavigatorHandle::with_control(
+                Rc::new(()),
+                &WgpuNavigatorOps,
+                control.clone(),
+            ));
+        }
+        TabsHandle::from_inner(NavigatorHandle::new(Rc::new(()), &WgpuNavigatorOps))
+    }
+
+    pub fn make_drawer_navigator_handle(
+        &self,
+        node: &WgpuNode,
+    ) -> runtime_core::primitives::navigator::DrawerHandle {
+        use runtime_core::primitives::navigator::{DrawerHandle, NavigatorHandle};
+        if let NodeKind::DrawerNavigator { control, is_open, .. } = &node.borrow().kind {
+            return DrawerHandle::from_inner(
+                NavigatorHandle::with_control(
+                    Rc::new(()),
+                    &WgpuNavigatorOps,
+                    control.clone(),
+                ),
+                is_open.clone(),
+            );
+        }
+        DrawerHandle::from_inner(
+            NavigatorHandle::new(Rc::new(()), &WgpuNavigatorOps),
+            Rc::new(std::cell::Cell::new(false)),
+        )
+    }
+
+    pub fn stack_navigator_attach_initial(
+        &mut self,
+        navigator: &WgpuNode,
+        screen: WgpuNode,
+        scope_id: u64,
+        options: runtime_core::primitives::navigator::ScreenOptions,
+    ) {
+        let parent_layout = navigator.borrow().layout;
+        let child_layout = screen.borrow().layout;
+        self.layout.add_child(parent_layout, child_layout);
+        navigator.borrow_mut().children.push(screen.clone());
+        if let NodeKind::Navigator { scope_ids, .. } = &navigator.borrow().kind {
+            scope_ids.borrow_mut().push(scope_id);
+        }
+        self.roots.retain(|n| !Rc::ptr_eq(n, &screen));
+        attach_screen_metadata(self, &screen, navigator, options);
+        mark_as_navigator_screen(&mut self.layout, &screen);
+        request_redraw();
+    }
+
+    pub fn create_tab_navigator(
+        &mut self,
+        callbacks: runtime_core::primitives::navigator::TabNavigatorCallbacks<WgpuNode>,
+        control: Rc<runtime_core::primitives::navigator::NavigatorControl>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> WgpuNode {
+        let layout = self.layout.new_node();
+        // Seed `routes[0]` with the initial route's name and a
+        // placeholder scope_id. The framework calls
+        // `tab_navigator_attach_initial` immediately after this
+        // returns; that path patches the scope_id in-place. Storing
+        // the name up-front means the dispatcher can match
+        // `Select { name }` against routes without us having to
+        // thread the initial-route name through the attach call.
+        let initial_route = callbacks.navigator.initial_route;
+        let node = new_node(
+            NodeKind::TabNavigator {
+                active_tab: std::cell::Cell::new(0),
+                tab_count: std::cell::Cell::new(0),
+                routes: std::cell::RefCell::new(vec![crate::node::TabRoute {
+                    name: initial_route,
+                    scope_id: 0,
+                }]),
+                control: control.clone(),
+                bar_style: std::cell::RefCell::new(None),
+                icon_style: std::cell::RefCell::new(None),
+                label_style: std::cell::RefCell::new(None),
+            },
+            layout,
+        );
+        init_node_a11y(&node, a11y, PrimitiveKind::Navigator);
+        install_tab_dispatcher(
+            &node,
+            callbacks,
+            control,
+            self.self_weak.get().expect("self_weak set in Host::new").clone(),
+        );
+        self.roots.push(node.clone());
+        node
+    }
+
+    pub fn tab_navigator_attach_initial(
+        &mut self,
+        navigator: &WgpuNode,
+        screen: WgpuNode,
+        scope_id: u64,
+        options: runtime_core::primitives::navigator::ScreenOptions,
+    ) {
+        let parent_layout = navigator.borrow().layout;
+        let child_layout = screen.borrow().layout;
+        self.layout.add_child(parent_layout, child_layout);
+        navigator.borrow_mut().children.push(screen.clone());
+        if let NodeKind::TabNavigator { tab_count, routes, .. } = &navigator.borrow().kind
+        {
+            tab_count.set(tab_count.get() + 1);
+            // Patch the placeholder scope_id we seeded in
+            // `create_tab_navigator`. The dispatcher's `Select`
+            // path needs an accurate scope_id so a future
+            // mount-policy that disposes the previously-active tab
+            // can call `release_screen` with the right id.
+            if let Some(first) = routes.borrow_mut().first_mut() {
+                first.scope_id = scope_id;
+            }
+        }
+        self.roots.retain(|n| !Rc::ptr_eq(n, &screen));
+        attach_screen_metadata(self, &screen, navigator, options);
+        mark_as_navigator_screen(&mut self.layout, &screen);
+        request_redraw();
+    }
+
+    pub fn create_drawer_navigator(
+        &mut self,
+        callbacks: runtime_core::primitives::navigator::DrawerNavigatorCallbacks<WgpuNode>,
+        control: Rc<runtime_core::primitives::navigator::NavigatorControl>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> WgpuNode {
+        let layout = self.layout.new_node();
+        let initial_route = callbacks.navigator.initial_route;
+        let node = new_node(
+            NodeKind::DrawerNavigator {
+                is_open: Rc::new(std::cell::Cell::new(false)),
+                active_screen: std::cell::Cell::new(0),
+                routes: std::cell::RefCell::new(vec![crate::node::TabRoute {
+                    name: initial_route,
+                    scope_id: 0,
+                }]),
+                sidebar: std::cell::RefCell::new(None),
+                control: control.clone(),
+                anim_started_at: std::cell::Cell::new(None),
+                scrim_style: std::cell::RefCell::new(None),
+                sidebar_style: std::cell::RefCell::new(None),
+            },
+            layout,
+        );
+        init_node_a11y(&node, a11y, PrimitiveKind::Navigator);
+        install_drawer_dispatcher(
+            &node,
+            callbacks,
+            control,
+            self.self_weak.get().expect("self_weak set in Host::new").clone(),
+        );
+        self.roots.push(node.clone());
+        node
+    }
+
+    pub fn drawer_navigator_attach_initial(
+        &mut self,
+        navigator: &WgpuNode,
+        screen: WgpuNode,
+        scope_id: u64,
+        options: runtime_core::primitives::navigator::ScreenOptions,
+    ) {
+        let parent_layout = navigator.borrow().layout;
+        let child_layout = screen.borrow().layout;
+        self.layout.add_child(parent_layout, child_layout);
+        navigator.borrow_mut().children.push(screen.clone());
+        if let NodeKind::DrawerNavigator { routes, .. } = &navigator.borrow().kind {
+            // Same scope-id patch as tabs — see
+            // `tab_navigator_attach_initial`.
+            if let Some(first) = routes.borrow_mut().first_mut() {
+                first.scope_id = scope_id;
+            }
+        }
+        self.roots.retain(|n| !Rc::ptr_eq(n, &screen));
+        attach_screen_metadata(self, &screen, navigator, options);
+        mark_as_navigator_screen(&mut self.layout, &screen);
+        request_redraw();
+    }
+
+    pub fn drawer_navigator_attach_sidebar(
+        &mut self,
+        navigator: &WgpuNode,
+        sidebar: WgpuNode,
+    ) {
+        // Attach the sidebar as a Taffy child so its layout
+        // gets computed alongside the body, but pin it to
+        // absolute positioning + the drawer width so it stacks
+        // above the body. The renderer's drawer-aware walk
+        // filters it out of the in-flow paint and lifts it to
+        // the top-z overlay pass with the slide transform.
+        let parent_layout = navigator.borrow().layout;
+        let sidebar_layout = sidebar.borrow().layout;
+        self.layout.add_child(parent_layout, sidebar_layout);
+        let absolute_sidebar = StyleRules {
+            position: Some(runtime_core::Position::Absolute),
+            top: Some(Tokenized::Literal(runtime_core::Length::Px(0.0))),
+            bottom: Some(Tokenized::Literal(runtime_core::Length::Px(0.0))),
+            left: Some(Tokenized::Literal(runtime_core::Length::Px(0.0))),
+            ..Default::default()
+        };
+        self.layout.set_style(sidebar_layout, &absolute_sidebar);
+        self.roots.retain(|n| !Rc::ptr_eq(n, &sidebar));
+        // Append at the *end* of the children list so the
+        // drawer's stored "child index 0 = body, last = sidebar"
+        // convention holds.
+        navigator.borrow_mut().children.push(sidebar.clone());
+        if let NodeKind::DrawerNavigator { sidebar: slot, .. } = &navigator.borrow().kind {
+            *slot.borrow_mut() = Some(sidebar);
+        }
+        request_redraw();
+    }
+
+    // -----------------------------------------------------------
+    // Unsupported primitives — render a "not supported" panel.
+    // -----------------------------------------------------------
+
+    pub fn make_graphics_handle(
+        &self,
+        node: &WgpuNode,
+    ) -> runtime_core::primitives::graphics::GraphicsHandle {
+        // Wrap the `WgpuNode` itself as the handle's userdata so
+        // `register_graphics_drawer` can downcast back to recover
+        // it. `WgpuNode = Rc<RefCell<NodeData>>`; the `Rc<dyn Any>`
+        // GraphicsHandle holds therefore points at a fresh Rc whose
+        // inner concrete type is `WgpuNode` (i.e.
+        // `Rc<RefCell<NodeData>>`). Downcast target on retrieval
+        // is the same `WgpuNode` type alias.
+        runtime_core::primitives::graphics::GraphicsHandle::new(
+            Rc::new(node.clone()) as Rc<dyn std::any::Any>,
+            &WgpuGraphicsOps,
+        )
+    }
+
+    pub fn release_stack_navigator(&mut self, node: &WgpuNode) {
+        // Drop every mounted screen's Taffy state + animator
+        // tweens + text store entries. The per-screen framework
+        // Scopes are owned by the dispatcher closure on the
+        // NavigatorControl, which drops alongside the user-
+        // facing scope — so we don't need to invoke release
+        // callbacks here. The backend's job is to clean the
+        // Taffy + render state.
+        self.clear_children(node);
+    }
+
+    pub fn release_tab_navigator(&mut self, node: &WgpuNode) {
+        self.clear_children(node);
+    }
+
+    pub fn release_drawer_navigator(&mut self, node: &WgpuNode) {
+        // Drawer's sidebar is also in `children`, so
+        // clear_children handles it. The framework's drawer
+        // open-state signal lives on the dispatcher closure and
+        // drops along with the navigator's enclosing scope.
+        self.clear_children(node);
+    }
+
+    pub fn apply_navigator_header_style(
+        &mut self,
+        navigator: &WgpuNode,
+        style: &Rc<StyleRules>,
+    ) {
+        if let NodeKind::Navigator { header_style, .. } = &navigator.borrow().kind {
+            *header_style.borrow_mut() = Some(style.clone());
+            request_redraw();
+        }
+    }
+
+    pub fn apply_navigator_title_style(
+        &mut self,
+        navigator: &WgpuNode,
+        style: &Rc<StyleRules>,
+    ) {
+        if let NodeKind::Navigator { title_style, .. } = &navigator.borrow().kind {
+            *title_style.borrow_mut() = Some(style.clone());
+            request_redraw();
+        }
+    }
+
+    pub fn apply_navigator_button_style(
+        &mut self,
+        navigator: &WgpuNode,
+        style: &Rc<StyleRules>,
+    ) {
+        if let NodeKind::Navigator { button_style, .. } = &navigator.borrow().kind {
+            *button_style.borrow_mut() = Some(style.clone());
+            request_redraw();
+        }
+    }
+
+    pub fn apply_navigator_body_style(
+        &mut self,
+        navigator: &WgpuNode,
+        style: &Rc<StyleRules>,
+    ) {
+        if let NodeKind::Navigator { body_style, .. } = &navigator.borrow().kind {
+            *body_style.borrow_mut() = Some(style.clone());
+            request_redraw();
+        }
+    }
+
+    pub fn apply_drawer_sidebar_style(
+        &mut self,
+        navigator: &WgpuNode,
+        style: &Rc<StyleRules>,
+    ) {
+        if let NodeKind::DrawerNavigator { sidebar_style, .. } = &navigator.borrow().kind {
+            *sidebar_style.borrow_mut() = Some(style.clone());
+            request_redraw();
+        }
+    }
+
+    pub fn apply_drawer_scrim_style(
+        &mut self,
+        navigator: &WgpuNode,
+        style: &Rc<StyleRules>,
+    ) {
+        if let NodeKind::DrawerNavigator { scrim_style, .. } = &navigator.borrow().kind {
+            *scrim_style.borrow_mut() = Some(style.clone());
+            request_redraw();
+        }
+    }
+
+    pub fn apply_tab_bar_style(
+        &mut self,
+        navigator: &WgpuNode,
+        style: &Rc<StyleRules>,
+    ) {
+        if let NodeKind::TabNavigator { bar_style, .. } = &navigator.borrow().kind {
+            *bar_style.borrow_mut() = Some(style.clone());
+            request_redraw();
+        }
+    }
+
+    pub fn apply_tab_icon_style(
+        &mut self,
+        navigator: &WgpuNode,
+        style: &Rc<StyleRules>,
+    ) {
+        if let NodeKind::TabNavigator { icon_style, .. } = &navigator.borrow().kind {
+            *icon_style.borrow_mut() = Some(style.clone());
+            request_redraw();
+        }
+    }
+
+    pub fn apply_tab_label_style(
+        &mut self,
+        navigator: &WgpuNode,
+        style: &Rc<StyleRules>,
+    ) {
+        if let NodeKind::TabNavigator { label_style, .. } = &navigator.borrow().kind {
+            *label_style.borrow_mut() = Some(style.clone());
+            request_redraw();
+        }
     }
 }

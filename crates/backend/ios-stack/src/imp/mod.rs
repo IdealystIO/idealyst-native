@@ -774,65 +774,6 @@ impl Backend for IosBackend {
     // Navigator
     // =================================================================
 
-    fn create_stack_navigator(
-        &mut self,
-        callbacks: NavigatorCallbacks<Self::Node>,
-        control: Rc<NavigatorControl>,
-        _a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
-        navigator::create_stack_navigator(self.mtm, &mut self.navigator_instances, callbacks, control)
-    }
-
-    fn stack_navigator_attach_initial(
-        &mut self,
-        navigator: &Self::Node,
-        screen: Self::Node,
-        scope_id: u64,
-        options: runtime_core::ScreenOptions,
-    ) {
-        navigator::stack_navigator_attach_initial(self.mtm, &self.navigator_instances, navigator, screen, scope_id, options)
-    }
-
-    fn apply_navigator_header_style(
-        &mut self,
-        navigator: &Self::Node,
-        style: &Rc<runtime_core::StyleRules>,
-    ) {
-        let key = navigator.view_key();
-        if let Some(entry) = self.navigator_instances.get(&key) {
-            navigator::apply_nav_header_style(&entry.controller, navigator.as_view(), style);
-        }
-    }
-
-    fn apply_navigator_title_style(
-        &mut self,
-        navigator: &Self::Node,
-        style: &Rc<runtime_core::StyleRules>,
-    ) {
-        let key = navigator.view_key();
-        if let Some(entry) = self.navigator_instances.get(&key) {
-            navigator::apply_nav_title_style(&entry.controller, style);
-        }
-    }
-
-    fn apply_navigator_button_style(
-        &mut self,
-        navigator: &Self::Node,
-        style: &Rc<runtime_core::StyleRules>,
-    ) {
-        let key = navigator.view_key();
-        if let Some(entry) = self.navigator_instances.get(&key) {
-            navigator::apply_nav_button_style(&entry.controller, style);
-        }
-    }
-
-    fn release_stack_navigator(&mut self, node: &Self::Node) {
-        navigator::release_stack_navigator(&mut self.navigator_instances, node)
-    }
-
-    fn make_stack_navigator_handle(&self, node: &Self::Node) -> NavigatorHandle {
-        navigator::make_stack_navigator_handle(&self.navigator_instances, node)
-    }
 
     // =================================================================
     // Portal
@@ -893,30 +834,104 @@ impl Backend for IosBackend {
     // Tab Navigator
     // =================================================================
 
-    fn create_tab_navigator(
+
+    fn finish(&mut self, root: Self::Node) {
+        if let Some(host) = &self.host_root {
+            pin_to_edges(host, root.as_view());
+        }
+    }
+}
+
+// ==========================================================================
+// Legacy nav helpers — inherent methods invoked by the per-kind SDK
+// handlers. NOT on the Backend trait.
+// ==========================================================================
+
+impl IosBackend {
+    pub fn create_stack_navigator(
         &mut self,
-        callbacks: TabNavigatorCallbacks<Self::Node>,
+        callbacks: NavigatorCallbacks<IosNode>,
         control: Rc<NavigatorControl>,
         _a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+    ) -> IosNode {
+        navigator::create_stack_navigator(self.mtm, &mut self.navigator_instances, callbacks, control)
+    }
+
+    pub fn stack_navigator_attach_initial(
+        &mut self,
+        navigator: &IosNode,
+        screen: IosNode,
+        scope_id: u64,
+        options: runtime_core::ScreenOptions,
+    ) {
+        navigator::stack_navigator_attach_initial(self.mtm, &self.navigator_instances, navigator, screen, scope_id, options)
+    }
+
+    pub fn apply_navigator_header_style(
+        &mut self,
+        navigator: &IosNode,
+        style: &Rc<runtime_core::StyleRules>,
+    ) {
+        let key = navigator.view_key();
+        if let Some(entry) = self.navigator_instances.get(&key) {
+            navigator::apply_nav_header_style(&entry.controller, navigator.as_view(), style);
+        }
+    }
+
+    pub fn apply_navigator_title_style(
+        &mut self,
+        navigator: &IosNode,
+        style: &Rc<runtime_core::StyleRules>,
+    ) {
+        let key = navigator.view_key();
+        if let Some(entry) = self.navigator_instances.get(&key) {
+            navigator::apply_nav_title_style(&entry.controller, style);
+        }
+    }
+
+    pub fn apply_navigator_button_style(
+        &mut self,
+        navigator: &IosNode,
+        style: &Rc<runtime_core::StyleRules>,
+    ) {
+        let key = navigator.view_key();
+        if let Some(entry) = self.navigator_instances.get(&key) {
+            navigator::apply_nav_button_style(&entry.controller, style);
+        }
+    }
+
+    pub fn release_stack_navigator(&mut self, node: &IosNode) {
+        navigator::release_stack_navigator(&mut self.navigator_instances, node)
+    }
+
+    pub fn make_stack_navigator_handle(&self, node: &IosNode) -> NavigatorHandle {
+        navigator::make_stack_navigator_handle(&self.navigator_instances, node)
+    }
+
+    pub fn create_tab_navigator(
+        &mut self,
+        callbacks: TabNavigatorCallbacks<IosNode>,
+        control: Rc<NavigatorControl>,
+        _a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> IosNode {
         tab_drawer::create_tab_navigator(self.mtm, &mut self.tab_drawer_instances, callbacks, control)
     }
 
-    fn tab_navigator_attach_initial(
+    pub fn tab_navigator_attach_initial(
         &mut self,
-        navigator: &Self::Node,
-        screen: Self::Node,
+        navigator: &IosNode,
+        screen: IosNode,
         scope_id: u64,
         options: runtime_core::ScreenOptions,
     ) {
         tab_drawer::tab_navigator_attach_initial(&self.tab_drawer_instances, navigator, screen, scope_id, options)
     }
 
-    fn release_tab_navigator(&mut self, node: &Self::Node) {
+    pub fn release_tab_navigator(&mut self, node: &IosNode) {
         tab_drawer::release_tab_navigator(&mut self.tab_drawer_instances, node)
     }
 
-    fn make_tab_navigator_handle(&self, node: &Self::Node) -> TabsHandle {
+    pub fn make_tab_navigator_handle(&self, node: &IosNode) -> TabsHandle {
         tab_drawer::make_tab_navigator_handle(&self.tab_drawer_instances, node)
     }
 
@@ -924,19 +939,19 @@ impl Backend for IosBackend {
     // Drawer Navigator
     // =================================================================
 
-    fn create_drawer_navigator(
+    pub fn create_drawer_navigator(
         &mut self,
-        callbacks: DrawerNavigatorCallbacks<Self::Node>,
+        callbacks: DrawerNavigatorCallbacks<IosNode>,
         control: Rc<NavigatorControl>,
         _a11y: &runtime_core::accessibility::AccessibilityProps,
-    ) -> Self::Node {
+    ) -> IosNode {
         tab_drawer::create_drawer_navigator(self.mtm, &mut self.tab_drawer_instances, callbacks, control)
     }
 
-    fn drawer_navigator_attach_initial(
+    pub fn drawer_navigator_attach_initial(
         &mut self,
-        navigator: &Self::Node,
-        screen: Self::Node,
+        navigator: &IosNode,
+        screen: IosNode,
         scope_id: u64,
         options: runtime_core::ScreenOptions,
     ) {
@@ -946,10 +961,10 @@ impl Backend for IosBackend {
         )
     }
 
-    fn drawer_navigator_attach_sidebar(
+    pub fn drawer_navigator_attach_sidebar(
         &mut self,
-        navigator: &Self::Node,
-        sidebar: Self::Node,
+        navigator: &IosNode,
+        sidebar: IosNode,
     ) {
         tab_drawer::drawer_navigator_attach_sidebar(
             self.mtm, &self.tab_drawer_instances, &mut self.callback_targets,
@@ -957,17 +972,17 @@ impl Backend for IosBackend {
         )
     }
 
-    fn release_drawer_navigator(&mut self, node: &Self::Node) {
+    pub fn release_drawer_navigator(&mut self, node: &IosNode) {
         tab_drawer::release_drawer_navigator(&mut self.tab_drawer_instances, node)
     }
 
-    fn make_drawer_navigator_handle(&self, node: &Self::Node) -> DrawerHandle {
+    pub fn make_drawer_navigator_handle(&self, node: &IosNode) -> DrawerHandle {
         tab_drawer::make_drawer_navigator_handle(&self.tab_drawer_instances, node)
     }
 
-    fn apply_drawer_sidebar_style(
+    pub fn apply_drawer_sidebar_style(
         &mut self,
-        navigator: &Self::Node,
+        navigator: &IosNode,
         style: &Rc<runtime_core::StyleRules>,
     ) {
         let key = navigator.view_key();
@@ -979,12 +994,6 @@ impl Backend for IosBackend {
                     sidebar.setBackgroundColor(Some(&c));
                 }
             }
-        }
-    }
-
-    fn finish(&mut self, root: Self::Node) {
-        if let Some(host) = &self.host_root {
-            pin_to_edges(host, root.as_view());
         }
     }
 }

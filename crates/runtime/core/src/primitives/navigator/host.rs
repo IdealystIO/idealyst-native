@@ -28,9 +28,16 @@
 //! concerns as typed methods on a single object, instead of routing
 //! everything through an opaque payload.
 
-use super::shared::{LayoutPlan, MountResult, NavCommand, NavState, NavigatorControl};
+use super::shared::{LayoutPlan, MountResult, NavCommand, NavState, NavigatorControl, NavigatorOps};
 use std::any::Any;
 use std::rc::Rc;
+
+/// No-op `NavigatorOps` used as the default reference inside
+/// [`NavigatorHandler::make_handle`]. Defined at module scope so a
+/// `&'static` reference is available.
+struct NoopHandlerOps;
+impl NavigatorOps for NoopHandlerOps {}
+static NOOP_HANDLER_OPS: NoopHandlerOps = NoopHandlerOps;
 
 /// Helper discriminant SDK handlers can use to tell their backend
 /// "this navigator I just created is of kind X". Backends with per-kind
@@ -226,6 +233,17 @@ pub trait NavigatorHandler<B: crate::Backend + 'static>: 'static {
     /// itself) don't need to override.
     #[allow(unused_variables)]
     fn release(&mut self, backend: &mut B) {}
+
+    /// Build the `NavigatorHandle` exposed to author code through
+    /// `Ref<H>` / `.bind(...)`. Backends route their
+    /// `Backend::make_navigator_handle` call through this so the
+    /// SDK can wire the control plane into the returned handle.
+    /// Default returns a no-op handle — handlers that store an
+    /// `Rc<NavigatorControl>` from `host.control` at `init` time
+    /// should override and call `NavigatorHandle::with_control(...)`.
+    fn make_handle(&self) -> super::shared::NavigatorHandle {
+        super::shared::NavigatorHandle::new(Rc::new(()), &NOOP_HANDLER_OPS)
+    }
 
     /// Apply a slot style update (e.g. header bar background,
     /// tab bar tint, drawer scrim color). `slot` is an SDK-defined
