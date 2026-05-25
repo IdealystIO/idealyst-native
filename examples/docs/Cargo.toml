@@ -24,6 +24,7 @@ dev-hot-reload = ["dep:dev-client", "backend-web/runtime-server"]
 runtime-core = { workspace = true, features = ["async-driver"] }
 idea-ui = { workspace = true }
 docs-macro = { workspace = true }
+drawer-navigator = { workspace = true }
 libc = "0.2"
 
 # Embedded preview stack used by the `Simulator` component:

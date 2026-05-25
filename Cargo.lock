@@ -1260,6 +1260,7 @@ dependencies = [
  "console_error_panic_hook",
  "dev-client",
  "docs-macro",
+ "drawer-navigator",
  "host-web",
  "idea-ui",
  "ios-sim",
@@ -2079,6 +2080,7 @@ dependencies = [
  "idea-ui",
  "lol_alloc",
  "runtime-core",
+ "stack-navigator",
  "wasm-bindgen",
  "web-sys",
 ]

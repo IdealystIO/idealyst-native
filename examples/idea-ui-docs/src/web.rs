@@ -27,7 +27,12 @@ thread_local! {
 #[wasm_bindgen(start)]
 pub fn start() {
     console_error_panic_hook::set_once();
-    let backend = Rc::new(RefCell::new(WebBackend::new("#app")));
+    let mut web = WebBackend::new("#app");
+    // Register navigator-SDK handlers so the app's
+    // `stack_navigator::Navigator` builders dispatch through
+    // `Backend::create_navigator_extension`.
+    stack_navigator::register(&mut web);
+    let backend = Rc::new(RefCell::new(web));
     let owner = runtime_core::render(backend, super::app());
     OWNER.with(|slot| *slot.borrow_mut() = Some(owner));
 }

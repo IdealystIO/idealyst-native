@@ -14,6 +14,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 runtime-core = { workspace = true }
 idea-ui = { workspace = true, features = ["docs"] }
+stack-navigator = { workspace = true }
 
 # Web-only deps. The cross-platform `app()` tree never references
 # these; the wasm-bindgen entry in `src/web.rs` is gated to wasm32.

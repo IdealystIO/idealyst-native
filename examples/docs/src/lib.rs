@@ -18,10 +18,8 @@
 //! `#[macro_use]` lifts those to crate-root scope so page modules
 //! can invoke them via the `ui!` DSL.
 
-use runtime_core::{
-    component, signal, ui, DrawerHandle, DrawerNavigator, HeaderStyle, Primitive, Ref, Screen,
-    Signal,
-};
+use runtime_core::{component, signal, ui, HeaderStyle, Primitive, Ref, Screen, Signal};
+use drawer_navigator::{DrawerBuilder, DrawerHandle, DrawerNavigator};
 use idea_ui::{idea_header, install_idea_theme, light_theme, IdeaTheme};
 
 pub mod meta;

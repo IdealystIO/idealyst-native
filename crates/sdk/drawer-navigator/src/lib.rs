@@ -23,7 +23,10 @@ use runtime_core::primitives::navigator::{
     DefaultLinkKind, NavigatorExtConfig, NavigatorHandle, Route, RouteEntry, RouteParams,
     ScreenBuilder, ScreenOptions,
 };
-use runtime_core::{Bound, IntoStyleSource, Primitive, Ref, RefFill, Signal, StyleSource};
+use runtime_core::{
+    Bound, Color, HeaderStyle, IntoStyleSource, Primitive, Ref, RefFill, Signal, StyleApplication,
+    StyleRules, StyleSheet, StyleSource, VariantSet,
+};
 use std::any::{Any, TypeId};
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -67,15 +70,11 @@ impl Default for MountPolicy {
     }
 }
 
-/// Drawer content props passed to the user's `.content(...)` closure.
-pub struct DrawerContentProps {
-    pub active_route: Signal<&'static str>,
-    pub is_open: Signal<bool>,
-    pub on_select: Rc<dyn Fn(&'static str)>,
-    pub on_close: Rc<dyn Fn()>,
-}
-
-pub type ContentBuilder = Rc<dyn Fn(DrawerContentProps) -> Primitive>;
+// Re-export `DrawerContentProps` / `ContentBuilder` from runtime-core
+// so authors can use a single canonical type regardless of whether
+// they're driving the legacy `Primitive::DrawerNavigator` or the new
+// SDK path. Same fields, same semantics.
+pub use runtime_core::{ContentBuilder, DrawerContentProps};
 
 /// Drawer-kind presentation payload.
 pub struct DrawerPresentation {
@@ -232,7 +231,64 @@ pub trait DrawerBuilder: Sized {
         F: Fn(runtime_core::primitives::navigator::LayoutProps) -> Primitive + 'static;
     fn sidebar_style(self, s: impl IntoStyleSource) -> Self;
     fn scrim_style(self, s: impl IntoStyleSource) -> Self;
+    /// Bundled header styling — decomposes a `HeaderStyle`-returning
+    /// closure into individual slot-style entries the handler dispatches
+    /// via `apply_navigator_extension_slot_style`. Each `Some(...)`
+    /// field on the initial probe becomes its own per-slot reactive
+    /// effect; fields that flip from `Some` to `None` at runtime
+    /// panic, matching the legacy `Navigator::header` contract.
+    ///
+    /// Theme reactivity comes from the closure itself reading from
+    /// theme signals — the resulting `StyleSource::Reactive` re-fires
+    /// when any signal touched inside the closure changes.
+    fn header<F>(self, f: F) -> Self
+    where
+        F: Fn() -> HeaderStyle + 'static;
     fn bind(self, r: Ref<DrawerHandle>) -> Self;
+}
+
+/// What CSS-level property a `HeaderStyle` Color drives through the
+/// slot-style pipeline.
+#[derive(Copy, Clone)]
+enum HeaderProp {
+    /// `rules.background` — backgrounds of the header bar and body.
+    Background,
+    /// `rules.color` — text/tint color (title text + button icons).
+    Color,
+}
+
+/// Build a `StyleSource::Reactive` that reads a specific `Color` field
+/// out of `f()`'s `HeaderStyle` and produces a single-property
+/// `StyleApplication`. Used by `.header(...)` to decompose a
+/// `Fn() -> HeaderStyle` closure into per-slot reactive style sources
+/// the SDK can dispatch via the standard slot-style pipeline.
+///
+/// `field_name` is purely for the panic message — it names the
+/// `HeaderStyle` field that's expected to stay `Some` for the
+/// navigator's lifetime.
+fn header_slot_source(
+    f: Rc<dyn Fn() -> HeaderStyle>,
+    getter: fn(&HeaderStyle) -> &Option<Color>,
+    prop: HeaderProp,
+    field_name: &'static str,
+) -> StyleSource {
+    StyleSource::Reactive(Box::new(move || {
+        let style = f();
+        let color = getter(&style).clone().unwrap_or_else(|| {
+            panic!(
+                "DrawerBuilder::header — HeaderStyle.{} must stay Some \
+                 after the initial probe (toggling to None at runtime \
+                 isn't supported).",
+                field_name
+            )
+        });
+        let sheet = Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules::default()));
+        let app = StyleApplication::new(sheet);
+        match prop {
+            HeaderProp::Background => app.override_background(color),
+            HeaderProp::Color => app.override_color(color),
+        }
+    }))
 }
 
 impl DrawerBuilder for Bound<DrawerHandle> {
@@ -334,6 +390,70 @@ impl DrawerBuilder for Bound<DrawerHandle> {
                 slot_styles.push(("scrim", s.into_style_source()));
             }
         });
+        self
+    }
+
+    fn header<F>(mut self, f: F) -> Self
+    where
+        F: Fn() -> HeaderStyle + 'static,
+    {
+        // Probe once to figure out which slots to wire — fields that
+        // are None on the initial probe stay platform-default and
+        // aren't re-evaluated. Matches the legacy contract.
+        let f: Rc<dyn Fn() -> HeaderStyle> = Rc::new(f);
+        let probe = f();
+        if probe.background.is_some() {
+            let src = header_slot_source(
+                f.clone(),
+                |hs| &hs.background,
+                HeaderProp::Background,
+                "background",
+            );
+            with_navigator_ext(&mut self, |p| {
+                if let Primitive::NavigatorExt { slot_styles, .. } = p {
+                    slot_styles.push(("header", src));
+                }
+            });
+        }
+        if probe.title.is_some() {
+            let src = header_slot_source(
+                f.clone(),
+                |hs| &hs.title,
+                HeaderProp::Color,
+                "title",
+            );
+            with_navigator_ext(&mut self, |p| {
+                if let Primitive::NavigatorExt { slot_styles, .. } = p {
+                    slot_styles.push(("title", src));
+                }
+            });
+        }
+        if probe.tint.is_some() {
+            let src = header_slot_source(
+                f.clone(),
+                |hs| &hs.tint,
+                HeaderProp::Color,
+                "tint",
+            );
+            with_navigator_ext(&mut self, |p| {
+                if let Primitive::NavigatorExt { slot_styles, .. } = p {
+                    slot_styles.push(("button", src));
+                }
+            });
+        }
+        if probe.body_background.is_some() {
+            let src = header_slot_source(
+                f.clone(),
+                |hs| &hs.body_background,
+                HeaderProp::Background,
+                "body_background",
+            );
+            with_navigator_ext(&mut self, |p| {
+                if let Primitive::NavigatorExt { slot_styles, .. } = p {
+                    slot_styles.push(("body", src));
+                }
+            });
+        }
         self
     }
 

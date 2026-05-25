@@ -52,7 +52,12 @@ pub fn start() {
 
     #[cfg(not(feature = "dev-hot-reload"))]
     {
-        let backend = Rc::new(RefCell::new(WebBackend::new("#app")));
+        let mut web = WebBackend::new("#app");
+        // Register navigator-SDK handlers so the app's
+        // `drawer_navigator::DrawerNavigator` builder dispatches through
+        // `Backend::create_navigator_extension`.
+        drawer_navigator::register(&mut web);
+        let backend = Rc::new(RefCell::new(web));
         let owner = runtime_core::render(backend, super::app());
         OWNER.with(|slot| *slot.borrow_mut() = Some(owner));
     }
@@ -110,7 +115,13 @@ mod dev_hot_reload {
     fn connect_attempt() {
         WIRE.with(|slot| {
             if slot.borrow().is_none() {
-                let real_backend = WebBackend::new(HOST_SELECTOR);
+                let mut real_backend = WebBackend::new(HOST_SELECTOR);
+                // The hot-reload-driven docs app still routes through
+                // the dev-server / wire path, but the local backend
+                // needs the SDK handler registered so any
+                // `Primitive::NavigatorExt` the wire carries can be
+                // realized locally. Match the non-hot-reload setup.
+                drawer_navigator::register(&mut real_backend);
                 let outbound = OutboundSender::new();
                 let wire = Rc::new(RefCell::new(WireBackend::new(real_backend, outbound)));
                 *slot.borrow_mut() = Some(wire);

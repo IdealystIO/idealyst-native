@@ -13,8 +13,9 @@
 //! - `styles.rs` — Local stylesheets for chrome only (not idea-ui).
 //! - `pages/*.rs` — One file per category page.
 
-use runtime_core::{component, signal, ui, Navigator, NavigatorHandle, Primitive, Ref, Signal};
+use runtime_core::{component, signal, ui, Primitive, Ref, Signal};
 use idea_ui::{install_idea_theme, light_theme};
+use stack_navigator::{Navigator, StackBuilder, StackHandle};
 
 mod pages;
 mod routes;
@@ -38,7 +39,7 @@ pub fn app() -> Primitive {
     // sidebar's dark-mode toggle. Owned at the top so each pushed
     // screen's per-screen scope can drop without losing it.
     let is_dark: Signal<bool> = signal!(false);
-    let nav: Ref<NavigatorHandle> = Ref::new();
+    let nav: Ref<StackHandle> = Ref::new();
 
     // Sidebar chrome is web-only: on mobile/desktop-native, navigation
     // is a stack with platform-native back gestures, not a persistent
