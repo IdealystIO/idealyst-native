@@ -8,31 +8,43 @@ use idea_ui::{
     ButtonKind, IntentTag, StackAxis, StackGap, TypographyKind, TypographyTone,
 };
 
-use crate::pages::common::page_header;
-use crate::shell::layout;
-use crate::styles::PagePad;
+use crate::pages::common::{page_header, page_section};
+use crate::shell::{layout_with_toc, TocEntry};
 
 pub fn page() -> Primitive {
-    let pad = PagePad();
+    const INTENTS: &str = "intents";
+    const KINDS: &str = "button-kinds";
+    const FEEDBACK: &str = "feedback";
+    const INPUTS: &str = "inputs";
+    const TYPOGRAPHY: &str = "typography";
+    const FOOTER: &str = "theres-more";
+
+    let toc = vec![
+        TocEntry { id: INTENTS, label: "Intents" },
+        TocEntry { id: KINDS, label: "Button kinds" },
+        TocEntry { id: FEEDBACK, label: "Feedback" },
+        TocEntry { id: INPUTS, label: "Inputs" },
+        TocEntry { id: TYPOGRAPHY, label: "Typography" },
+        TocEntry { id: FOOTER, label: "There's more" },
+    ];
+
     let content = ui! {
-        View(style = pad) {
-            Stack(gap = StackGap::Xl) {
-                { page_header(
-                    "Components",
-                    "A tour of the idea-ui library \u{2014} the cross-platform component \
-                     kit shipped alongside the framework. Every sample below renders the \
-                     same idea-ui primitive your app would use, on the same backend."
-                ) }
-                { intents() }
-                { button_kinds() }
-                { feedback() }
-                { inputs() }
-                { typography_demo() }
-                { footer() }
-            }
+        Stack(gap = StackGap::Xl) {
+            { page_header(
+                "Components",
+                "A tour of the idea-ui library \u{2014} the cross-platform component \
+                 kit shipped alongside the framework. Every sample below renders the \
+                 same idea-ui primitive your app would use, on the same backend."
+            ) }
+            { page_section(INTENTS, vec![intents()]) }
+            { page_section(KINDS, vec![button_kinds()]) }
+            { page_section(FEEDBACK, vec![feedback()]) }
+            { page_section(INPUTS, vec![inputs()]) }
+            { page_section(TYPOGRAPHY, vec![typography_demo()]) }
+            { page_section(FOOTER, vec![footer()]) }
         }
     };
-    layout(content)
+    layout_with_toc(content, toc)
 }
 
 fn intents() -> Primitive {

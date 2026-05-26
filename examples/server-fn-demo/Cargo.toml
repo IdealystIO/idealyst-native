@@ -1,0 +1,75 @@
+[package]
+name = "server-fn-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Full-stack server-functions demo:
+#
+#   - The web client is an idealyst app — `pub fn app() -> Primitive`,
+#     built via `idealyst build --web` into a wasm bundle in `pkg/`.
+#   - The server (`--bin server --features server`) hosts the API
+#     (`/_srv/*`) AND serves the static bundle at `/`, so the whole
+#     app — UI + API — comes from one process at
+#     `http://127.0.0.1:3000`.
+#   - The `#[server]` macro keys off the `server` cargo feature to
+#     emit real fn bodies vs RPC stubs; the wasm build uses default
+#     features (stubs); the server bin uses `--features server`
+#     (bodies + inventory registration).
+#
+# A small terminal-only client is retained as `--bin client` for a
+# zero-browser sanity check.
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+default = []
+server = [
+    "server/server",
+    "dep:axum",
+    "dep:tokio",
+    "dep:tower-http",
+]
+
+[dependencies]
+server = { workspace = true }
+net = { workspace = true }
+runtime-core = { workspace = true, features = ["async-driver"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Client-side UI: idea-ui + the framework's reactive primitives.
+# `idea-ui` is platform-agnostic; backend selection happens per
+# target below.
+idea-ui = { workspace = true }
+
+# Server-only deps. Gated by the `server` feature so the wasm build
+# never compiles axum/tokio/tower-http.
+axum = { version = "0.7", optional = true }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"], optional = true }
+tower-http = { version = "0.6", features = ["fs"], optional = true }
+
+# Per-target backend selection for the client UI. The CLI's
+# `idealyst build --web` generates a wrapper crate that calls
+# `register_extensions(&mut WebBackend)`; the equivalent applies
+# per platform.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+
+[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
+backend-ios-mobile = { workspace = true }
+
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))'.dependencies]
+backend-terminal = { workspace = true }
+
+[[bin]]
+name = "server"
+path = "src/bin/server.rs"
+required-features = ["server"]
+
+[package.metadata.idealyst.app]
+name      = "Server Fn Demo"
+bundle_id = "ai.truday.idealyst.server-fn-demo"
+version   = "0.0.1"
+targets   = ["web"]

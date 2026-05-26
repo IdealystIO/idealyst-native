@@ -32,9 +32,16 @@
 //! rounded-rect backgrounds with alpha; per-side borders; built-in
 //! 8x8 bitmap font; click hit-testing.
 //!
-//! Not yet implemented (TODO comments mark the trait stubs):
-//! gradients, images, icons, animation (per-frame interpolation),
-//! virtualizer, text input, presence transitions, raw touch.
+//! **Unsupported primitives render a visible placeholder text node**
+//! (`"<PrimitiveName> not supported on CPU backend"`), not a silent
+//! no-op. See the README for the full matrix. The deliberate
+//! placeholder posture comes from `feedback_cpu_unsupported_placeholders`:
+//! we want missing support to be SEEN on the device, not masked.
+//!
+//! Deferred (still in scope, can be added without breaking the
+//! MCU constraint): gradients are already in, image decode behind a
+//! feature flag, icon path rasterization, per-frame animation,
+//! raw-touch dispatch refinements.
 
 mod font_8x8;
 mod node;
@@ -771,6 +778,181 @@ impl Backend for CpuBackend {
             data.scroll_y = 0.0;
         }
         node
+    }
+
+    // ---------------------------------------------------------------------
+    // Unsupported-primitive placeholders.
+    //
+    // The CPU backend deliberately doesn't ship full input controls,
+    // virtualization, GPU canvas, external SDK overlays, modals, or
+    // navigators — those primitives don't fit the MCU constraint
+    // (no input infra on most boards, no GPU, no heap-heavy state,
+    // no async I/O). Author code that mounts them gets a visible
+    // text placeholder rendered through the existing 8×8 bitmap font
+    // path rather than the framework's default `unimplemented!()`
+    // panic. See `feedback_cpu_unsupported_placeholders` memory and
+    // the README's "What's supported" table.
+    //
+    // If you need any of these on a device with the capability,
+    // extend the backend deliberately — don't paper over with a
+    // hidden fallback. The placeholder is meant to be SEEN.
+    // ---------------------------------------------------------------------
+
+    fn create_image(
+        &mut self,
+        _src: &str,
+        _alt: Option<&str>,
+        _a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        self.alloc_node(
+            NodeKind::Text,
+            "Image not supported on CPU backend".to_string(),
+        )
+    }
+
+    fn create_icon(
+        &mut self,
+        _data: &IconData,
+        _color: Option<&runtime_core::Color>,
+        _a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        self.alloc_node(
+            NodeKind::Text,
+            "Icon not supported on CPU backend".to_string(),
+        )
+    }
+
+    fn create_text_input(
+        &mut self,
+        _initial_value: &str,
+        _placeholder: Option<&str>,
+        _on_change: Rc<dyn Fn(String)>,
+        _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        _a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        self.alloc_node(
+            NodeKind::Text,
+            "TextInput not supported on CPU backend".to_string(),
+        )
+    }
+
+    fn create_text_area(
+        &mut self,
+        _initial_value: &str,
+        _placeholder: Option<&str>,
+        _on_change: Rc<dyn Fn(String)>,
+        _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        _a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        self.alloc_node(
+            NodeKind::Text,
+            "TextArea not supported on CPU backend".to_string(),
+        )
+    }
+
+    fn create_toggle(
+        &mut self,
+        _initial_value: bool,
+        _on_change: Rc<dyn Fn(bool)>,
+        _a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        self.alloc_node(
+            NodeKind::Text,
+            "Toggle not supported on CPU backend".to_string(),
+        )
+    }
+
+    fn create_slider(
+        &mut self,
+        _initial_value: f32,
+        _min: f32,
+        _max: f32,
+        _step: Option<f32>,
+        _on_change: Rc<dyn Fn(f32)>,
+        _a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        self.alloc_node(
+            NodeKind::Text,
+            "Slider not supported on CPU backend".to_string(),
+        )
+    }
+
+    fn create_activity_indicator(
+        &mut self,
+        _size: runtime_core::primitives::activity_indicator::ActivityIndicatorSize,
+        _color: Option<&runtime_core::Color>,
+        _a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        self.alloc_node(
+            NodeKind::Text,
+            "ActivityIndicator not supported on CPU backend".to_string(),
+        )
+    }
+
+    fn create_virtualizer(
+        &mut self,
+        _callbacks: runtime_core::VirtualizerCallbacks<Self::Node>,
+        _overscan: f32,
+        _horizontal: bool,
+        _a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        self.alloc_node(
+            NodeKind::Text,
+            "Virtualizer not supported on CPU backend".to_string(),
+        )
+    }
+
+    fn create_graphics(
+        &mut self,
+        _on_ready: runtime_core::primitives::graphics::OnReady,
+        _on_resize: runtime_core::primitives::graphics::OnResize,
+        _on_lost: runtime_core::primitives::graphics::OnLost,
+        _a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        self.alloc_node(
+            NodeKind::Text,
+            "Graphics not supported on CPU backend".to_string(),
+        )
+    }
+
+    fn create_external(
+        &mut self,
+        _type_id: std::any::TypeId,
+        type_name: &'static str,
+        _payload: &Rc<dyn std::any::Any>,
+        _a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        self.alloc_node(
+            NodeKind::Text,
+            format!("External \"{type_name}\" not supported on CPU backend"),
+        )
+    }
+
+    fn create_portal(
+        &mut self,
+        _target: runtime_core::primitives::portal::PortalTarget,
+        _on_dismiss: Option<Rc<dyn Fn()>>,
+        _trap_focus: bool,
+        _a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        self.alloc_node(
+            NodeKind::Text,
+            "Portal not supported on CPU backend".to_string(),
+        )
+    }
+
+    fn create_navigator(
+        &mut self,
+        _type_id: std::any::TypeId,
+        type_name: &'static str,
+        _presentation: Rc<dyn std::any::Any>,
+        _host: runtime_core::primitives::navigator::NavigatorHost<Self::Node>,
+        _a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        self.alloc_node(
+            NodeKind::Text,
+            format!("Navigator \"{type_name}\" not supported on CPU backend"),
+        )
     }
 
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {

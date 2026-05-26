@@ -25,8 +25,43 @@ borders, alpha blending, opacity inheritance, and the built-in 8×8
 bitmap font. Click hit-testing routes through the same coordinate
 system the renderer paints with.
 
-Deferred (trait defaults stand in): gradients, images, icons, text
-inputs, animations, virtualizer, presence transitions, raw touch.
+## What's supported
+
+| Primitive            | Status                | Notes                                  |
+|----------------------|-----------------------|----------------------------------------|
+| View                 | Full                  | Backgrounds, borders, opacity, rounded corners |
+| Text                 | Full                  | 8×8 bitmap font, multi-line wrap       |
+| Button               | Full                  | Label + on_click; same chrome as iOS   |
+| Pressable            | Full                  | Hit-testing, no built-in chrome        |
+| ScrollView           | Functional            | Offset + clip; no momentum, no scrollbars |
+| Image                | Placeholder text      | No image decode pipeline on MCUs       |
+| Icon                 | Placeholder text      | No vector path rasterization yet       |
+| TextInput            | Placeholder text      | No input infra on most boards          |
+| TextArea             | Placeholder text      | Same constraint as TextInput           |
+| Toggle               | Placeholder text      | No bool-control affordance             |
+| Slider               | Placeholder text      | No drag affordance                     |
+| ActivityIndicator    | Placeholder text      | No tick-driven animation yet           |
+| Virtualizer          | Placeholder text      | No cell pool / windowing               |
+| Graphics             | Placeholder text      | No GPU                                 |
+| Portal               | Placeholder text      | No overlay layer                       |
+| External             | Placeholder text      | No SDK overlays                        |
+| Navigator            | Placeholder text      | No screen-management infra             |
+
+"Placeholder text" means the primitive renders the literal text
+`"<PrimitiveName> not supported on CPU backend"` through the
+existing 8×8 font path. Author code never panics, and the missing
+support is **visible** on the device. This is deliberate per the
+project's `feedback_cpu_unsupported_placeholders` posture — silent
+no-ops mask the gap, visible placeholders surface it.
+
+Deferred but in scope for later: Image decode (PNG behind a feature
+flag), Icon path rasterization (extends the gradient-fill pipeline),
+ActivityIndicator animation (per-frame dirty-rect raster).
+
+Out of scope on this backend: TextInput / TextArea, Toggle, Slider,
+Virtualizer, Graphics, External, Portal, Navigator. These don't fit
+the MCU constraint and shouldn't be silently fabricated on the CPU
+path.
 
 ## Desktop preview
 

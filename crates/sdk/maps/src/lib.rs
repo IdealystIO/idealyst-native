@@ -60,7 +60,10 @@ pub fn MapView(props: MapViewProps) -> Bound<ExternalHandle<MapViewProps>> {
 #[cfg(target_arch = "wasm32")]
 pub use maps_web::register;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
+pub use maps_ios::register;
+
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 pub fn register<B>(_backend: &mut B) {
     // No leaf available for this target — the framework will render
     // its "External MapViewProps not supported" placeholder at mount.

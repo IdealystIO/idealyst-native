@@ -3,31 +3,41 @@
 use runtime_core::{ui, Primitive};
 use idea_ui::{stack, typography, StackGap, TypographyKind};
 
-use crate::pages::common::{code_panel, page_header};
-use crate::shell::layout;
-use crate::styles::PagePad;
+use crate::pages::common::{code_panel, page_header, page_section};
+use crate::shell::{layout_with_toc, TocEntry};
 
 pub fn page() -> Primitive {
-    let pad = PagePad();
+    const REGISTRY: &str = "registry";
+    const E2E: &str = "e2e-tests";
+    const METHODS: &str = "methods-macro";
+    const MCP: &str = "mcp-server";
+    const BUILD: &str = "build-profile";
+
+    let toc = vec![
+        TocEntry { id: REGISTRY, label: "The introspection registry" },
+        TocEntry { id: E2E, label: "E2E test harnesses" },
+        TocEntry { id: METHODS, label: "methods! { ... }" },
+        TocEntry { id: MCP, label: "MCP server" },
+        TocEntry { id: BUILD, label: "Gated on a Cargo feature" },
+    ];
+
     let content = ui! {
-        View(style = pad) {
-            Stack(gap = StackGap::Xl) {
-                { page_header(
-                    "Robot & MCP",
-                    "First-class automation and agentic control baked into the framework \
-                     itself \u{2014} not bolted on after. One introspection registry \
-                     drives E2E test harnesses, IDE tooling, and an MCP server an LLM \
-                     can use as a tool surface."
-                ) }
-                { registry() }
-                { e2e_tests() }
-                { methods_macro() }
-                { mcp_server() }
-                { build_profile() }
-            }
+        Stack(gap = StackGap::Xl) {
+            { page_header(
+                "Robot & MCP",
+                "First-class automation and agentic control baked into the framework \
+                 itself \u{2014} not bolted on after. One introspection registry \
+                 drives E2E test harnesses, IDE tooling, and an MCP server an LLM \
+                 can use as a tool surface."
+            ) }
+            { page_section(REGISTRY, vec![registry()]) }
+            { page_section(E2E, vec![e2e_tests()]) }
+            { page_section(METHODS, vec![methods_macro()]) }
+            { page_section(MCP, vec![mcp_server()]) }
+            { page_section(BUILD, vec![build_profile()]) }
         }
     };
-    layout(content)
+    layout_with_toc(content, toc)
 }
 
 fn registry() -> Primitive {

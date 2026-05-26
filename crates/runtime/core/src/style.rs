@@ -338,6 +338,50 @@ pub enum Position {
     #[default]
     Relative,
     Absolute,
+    /// Acts like `Relative` until the element would scroll past one
+    /// of the edges of its enclosing scroll container, at which
+    /// point it pins to that edge. The pin threshold comes from
+    /// the matching side field on [`StyleRules`] — typically `top`,
+    /// less commonly `bottom` / `left` / `right`. With no side set,
+    /// pins to the leading edge of the scroll container.
+    ///
+    /// **Per-backend coverage**:
+    /// - **Web** — emits CSS `position: sticky`; the browser owns
+    ///   the pinning. Full support.
+    /// - **iOS** — walks up to the enclosing `UIScrollView` at
+    ///   `apply_style` time, registers a per-vsync
+    ///   `CADisplayLink` that applies a `CGAffineTransform`
+    ///   translate to pin the view at `top` from the scroll
+    ///   container's top edge once scrolled past the threshold.
+    ///   Vertical (`top`) only in v1; horizontal (`left`) is a
+    ///   follow-up. Falls back to `Relative` when no enclosing
+    ///   scroll view exists (matches CSS).
+    /// - **wgpu** — walks up to the enclosing `ScrollView` at
+    ///   `apply_style` time, registers the node in a per-backend
+    ///   sticky registry, and the render walker applies the pin
+    ///   translate at draw time. `refresh_layout_positions`
+    ///   refreshes cached natural-y values after each Taffy
+    ///   compute. Vertical (`top`) only in v1; falls back to
+    ///   `Relative` when there's no enclosing `ScrollView`.
+    /// - **Android** — same model as iOS but driven by a per-
+    ///   scroll-event `View.OnScrollChangeListener` (Android
+    ///   delivers scroll events only when the position actually
+    ///   changes, so per-event is strictly cheaper than the
+    ///   per-vsync display-link tick iOS uses). The Kotlin
+    ///   `RustStickyScrollListener` trampolines back into Rust
+    ///   via JNI and writes `View.setTranslationY` (device
+    ///   pixels, dp→px via the view's display density) on each
+    ///   registered sticky child. Walks up to the enclosing
+    ///   `ScrollView`/`HorizontalScrollView` at `apply_style`
+    ///   time; deferred to `insert` for first-mount children
+    ///   whose parent chain isn't yet wired up. Vertical (`top`)
+    ///   only in v1, same scope as iOS. Falls back to `Relative`
+    ///   when no enclosing scroll-view ancestor exists.
+    /// - **Terminal / Roku / CPU** — silently treated as `Relative`.
+    ///   Scrolling on these targets is either inapplicable
+    ///   (terminal) or driven by a different model (Roku
+    ///   SceneGraph, ESP32 displays).
+    Sticky,
 }
 
 // =============================================================================

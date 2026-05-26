@@ -6,6 +6,7 @@ pub(crate) mod handles;
 pub(crate) mod icon;
 pub(crate) mod image;
 pub(crate) mod portal;
+pub(crate) mod sticky;
 pub(crate) mod touch;
 pub(crate) mod virtualizer;
 
@@ -166,6 +167,24 @@ pub struct IosBackend {
     /// contentSize. Membership in this set opts a view into
     /// origin-preservation but out of the contentSize sync.
     pub(crate) collection_views: std::collections::HashSet<usize>,
+    /// `Position::Sticky` bookkeeping. Keyed by the enclosing
+    /// `UIScrollView`'s pointer; the entry holds a `CADisplayLink`
+    /// that re-evaluates each sticky child's translate against the
+    /// scroll view's live `contentOffset` per vsync. See
+    /// [`sticky`] for the rationale (side registry over UIScrollView
+    /// subclass).
+    pub(crate) sticky_registry: sticky::StickyRegistry,
+    /// Sticky views whose `apply_style` ran BEFORE their first
+    /// `insert`, so the superview walk couldn't yet find an
+    /// enclosing `UIScrollView`. The walker calls `apply_style`
+    /// (via `attach_style`) inside the per-primitive `build`, then
+    /// the parent's `insert_children` does `backend.insert(...)`
+    /// afterwards — so at apply-style time the child is still a
+    /// detached floating view. We stash `(view_ptr, threshold)`
+    /// here and complete the registration in `insert` once the
+    /// view is actually in a parent chain. The map empties as
+    /// each pending entry is promoted to the live registry.
+    pub(crate) pending_sticky: std::collections::HashMap<usize, f32>,
 }
 
 // =========================================================================
@@ -372,6 +391,42 @@ pub fn schedule_layout_pass() {
     }
 }
 
+/// Walk the subtree rooted at `view`, checking each subview's
+/// pointer against `pending_sticky`. Any pending entry whose view
+/// can now resolve a UIScrollView ancestor (i.e. the just-inserted
+/// subtree is now wired into one) gets promoted into the live
+/// registry via [`sticky::register`]. The view keys to remove from
+/// `pending_sticky` are collected in `to_remove` so the caller can
+/// drop them after the walk (avoids borrowing `pending_sticky`
+/// mutably across the recursion).
+///
+/// Subtree walk (not just the root view): a `Primitive::View`
+/// containing a `View { position: Sticky }` child will see the
+/// outer View as `child_view` in `insert`, with the sticky child
+/// nested inside. Both flagged in `pending_sticky` until this walk
+/// promotes them.
+fn promote_pending_sticky_recursive(
+    mtm: MainThreadMarker,
+    view: &UIView,
+    pending: &mut std::collections::HashMap<usize, f32>,
+    registry: &mut sticky::StickyRegistry,
+    to_remove: &mut Vec<usize>,
+) {
+    let key = view as *const UIView as usize;
+    if let Some(&threshold) = pending.get(&key) {
+        if sticky::register(mtm, registry, view, threshold) {
+            to_remove.push(key);
+        }
+        // If register returned false, the view STILL has no
+        // scroll ancestor — leave it in `pending` so a future
+        // re-parent (rare but possible) could pick it up.
+    }
+    let subs = view.subviews();
+    for sub in subs.iter() {
+        promote_pending_sticky_recursive(mtm, &sub, pending, registry, to_remove);
+    }
+}
+
 // =========================================================================
 // Helpers
 // =========================================================================
@@ -395,6 +450,8 @@ impl IosBackend {
             nav_handler_instances: HashMap::new(),
             virtualizer_instances: HashMap::new(),
             collection_views: std::collections::HashSet::new(),
+            sticky_registry: HashMap::new(),
+            pending_sticky: HashMap::new(),
         }
     }
 
@@ -1204,14 +1261,19 @@ impl Backend for IosBackend {
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         // Build the UICollectionView + flow layout + data source.
-        // Phase-1 MVP: vertical-scrolling, single-column, Known sizing.
-        // Phase-2 gaps (documented in `imp/virtualizer.rs`):
-        //   - horizontal scrolling (the `horizontal` param is parked).
-        //   - Measured sizing via `preferredLayoutAttributesFitting`.
-        //   - Sections + sticky headers.
+        // Supports vertical and horizontal single-section lists with
+        // `ItemSize::Known` sizing.
+        //
+        // Remaining gaps (documented in `imp/virtualizer.rs`):
+        //   - `ItemSize::Measured`: blocked on framework-core exposing
+        //     a measure-only pass over a detached subtree (cells live
+        //     outside the Taffy tree).
+        //   - Sections + sticky headers: blocked on a section-aware
+        //     `VirtualizerCallbacks` shape in framework-core.
         //   - `performBatchUpdates` instead of `reloadData` on data
         //     changes, for animated row mutations.
-        //   - Overscan tuning (UIKit's prefetch surface).
+        //   - Overscan tuning: UIKit's built-in prefetch covers the
+        //     common case; revisit if a list needs finer control.
         let view = virtualizer::create(
             self.mtm,
             &mut self.virtualizer_instances,
@@ -1548,6 +1610,30 @@ impl Backend for IosBackend {
         } else {
             schedule_layout_pass();
         }
+
+        // Retry pending sticky registrations now that this subtree
+        // is wired into the parent chain. The walker fires
+        // `apply_style` before `insert`, so any `Position::Sticky`
+        // child created in this build cycle deferred its
+        // registration to `pending_sticky`. We walk the
+        // just-inserted subtree's view tree (with the child as
+        // root) and promote each pending entry that can now
+        // resolve a scroll ancestor. Entries that still can't —
+        // genuinely no scroll-view ancestor — stay in the pending
+        // map until the view is removed; we don't keep churning
+        // because the per-walk cost is the subtree size, not the
+        // pending-map size.
+        let mut to_remove = Vec::new();
+        promote_pending_sticky_recursive(
+            self.mtm,
+            child_view,
+            &mut self.pending_sticky,
+            &mut self.sticky_registry,
+            &mut to_remove,
+        );
+        for k in to_remove {
+            self.pending_sticky.remove(&k);
+        }
     }
 
     fn update_text(&mut self, node: &Self::Node, content: &str) {
@@ -1616,6 +1702,47 @@ impl Backend for IosBackend {
         // gray `CodeBlock` background extending far past the actual
         // text in the new (shorter) branch.
         self.layout.mark_dirty(parent_layout);
+        // Drop any sticky bookkeeping for the entire subtree
+        // we're about to remove. Walk recursively so a sticky
+        // child nested inside an intermediate View also
+        // deregisters (otherwise its registry entry survives the
+        // unmount and the CADisplayLink keeps trying to apply
+        // transforms to a detached view). If any descendant IS a
+        // scroll view, deregister it as a scroll-host so its
+        // descendants' sticky bookkeeping is cleaned up too.
+        let scroll_class = objc2::class!(UIScrollView);
+        fn walk_and_deregister(
+            view: &UIView,
+            registry: &mut sticky::StickyRegistry,
+            pending: &mut std::collections::HashMap<usize, f32>,
+            scroll_class: &objc2::runtime::AnyClass,
+        ) {
+            sticky::deregister(registry, view);
+            // Also drop any pending entry — the view is about to
+            // be unmounted, so a deferred-not-yet-promoted entry
+            // would otherwise survive the unmount and try to
+            // attach to a stale pointer on a later re-parent
+            // attempt.
+            pending.remove(&(view as *const UIView as usize));
+            let is_scroll: bool =
+                unsafe { msg_send![view, isKindOfClass: scroll_class] };
+            if is_scroll {
+                sticky::deregister_scroll_view(registry, view);
+            }
+            let subs = view.subviews();
+            for sub in subs.iter() {
+                walk_and_deregister(&sub, registry, pending, scroll_class);
+            }
+        }
+        let subviews_for_sticky = parent.subviews();
+        for sub in subviews_for_sticky.iter() {
+            walk_and_deregister(
+                &sub,
+                &mut self.sticky_registry,
+                &mut self.pending_sticky,
+                scroll_class,
+            );
+        }
         // Now drop the UIKit subviews. Order matters: walk
         // `parent.subviews()` again because Taffy mutations don't
         // affect UIKit, and grabbing the list before the loop
@@ -1629,6 +1756,63 @@ impl Backend for IosBackend {
     fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
         let view = node.as_view();
         apply_style_to_view(view, style);
+
+        // Position::Sticky → register against the enclosing
+        // UIScrollView so the per-vsync sticky tick pins this view
+        // when scrolled past the threshold. Any other Position
+        // value (or `None`) must first deregister so a previous
+        // Sticky → Relative transition cleans up its registry
+        // entry + clears the carried transform. See `sticky.rs`.
+        //
+        // The walker fires `apply_style` (via `attach_style`)
+        // BEFORE the parent's `insert(parent, child)` call (see
+        // `walker/view.rs:124-126` — `build()` returns first, then
+        // `insert` runs). At that moment the child is still a
+        // floating UIView with no superview, so
+        // `sticky::register`'s superview walk can't find the
+        // scroll ancestor yet. We try anyway (it succeeds for
+        // re-applies on already-mounted views — stylesheet
+        // variant flips, theme changes) and fall back to
+        // recording in `pending_sticky` for the first-mount case.
+        // `insert` consults `pending_sticky` after attaching the
+        // subtree and promotes any entries it can now resolve.
+        let view_key = view as *const UIView as usize;
+        match style.position {
+            Some(runtime_core::Position::Sticky) => {
+                let threshold_top = style
+                    .top
+                    .as_ref()
+                    .map(|t| match t.resolve() {
+                        runtime_core::Length::Px(v) => v,
+                        // Percent / Auto for sticky's pin offset
+                        // isn't meaningful (the spec resolves
+                        // percent against the scroll container's
+                        // padding box on web, but there's no
+                        // common "the threshold is half the
+                        // container" use case). Treat as 0.
+                        _ => 0.0,
+                    })
+                    .unwrap_or(0.0);
+                let registered = sticky::register(
+                    self.mtm,
+                    &mut self.sticky_registry,
+                    view,
+                    threshold_top,
+                );
+                if !registered {
+                    // No enclosing scroll view *yet*. Could be a
+                    // first-mount (insert hasn't run) or a
+                    // genuinely-not-in-a-scroll-view view.
+                    // Record either way; `insert` retries and
+                    // `release_*` clears the entry.
+                    self.pending_sticky.insert(view_key, threshold_top);
+                }
+            }
+            _ => {
+                sticky::deregister(&mut self.sticky_registry, view);
+                self.pending_sticky.remove(&view_key);
+            }
+        }
 
         // Static `transform: …` ops from the stylesheet. iOS's
         // animation system composes a single `CGAffineTransform`
@@ -2421,6 +2605,19 @@ impl IosBackend {
                 let _: () = unsafe { msg_send![&scroll_view, setContentSize: size] };
             }
         }
+
+        // Refresh `natural_y` for every Position::Sticky child now
+        // that Taffy has re-laid out the tree. Without this, a
+        // tree rebuild (route switch, branch swap) leaves stale
+        // natural-y values and the sticky child pins to the wrong
+        // place — most visibly when the user scrolls a freshly-
+        // mounted screen for the first time. Cheap walk; the
+        // registry is tiny by construction.
+        sticky::refresh_layout_positions(
+            &mut self.sticky_registry,
+            &self.layout,
+            &self.view_to_layout,
+        );
     }
 
     /// Return the viewport size for layout. Tries host_root.bounds

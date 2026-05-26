@@ -155,35 +155,40 @@ fn expand(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
 
     // -----------------------------------------------------------------
     // Server side (feature = "server"): original body + registration.
+    //
+    // The `#[cfg]` attribute attaches to a single item, so we must
+    // apply it to BOTH the function AND the registration module
+    // independently — wrapping both inside a single `quote!` with one
+    // outer `#[cfg]` would leave the module compiled on the client
+    // build, where its `inventory::submit!`'s handler block can't
+    // satisfy the `Send` bound on `ServerFnEntry::handler` (the
+    // client body may capture `Rc`/`!Send` types from `runtime-core`
+    // wasm scheduling).
     // -----------------------------------------------------------------
-    let server_half = {
-        // Bind each tuple element to its declared name on entry to the
-        // handler, then call the function. Generated names mirror the
-        // user-declared bindings so error messages stay readable.
-        let bind_idents: Vec<_> = (0..arg_pats.len())
-            .map(|i| format_ident!("__arg{}", i))
-            .collect();
-        let call_args = bind_idents.iter();
-        quote! {
-            #(#attrs)*
-            #vis async fn #ident(#inputs) #output #body
+    let bind_idents: Vec<_> = (0..arg_pats.len())
+        .map(|i| format_ident!("__arg{}", i))
+        .collect();
+    let call_args: Vec<_> = bind_idents.iter().collect();
 
-            // Hide the registration behind a private module so the
-            // submitted item doesn't clutter the parent scope and the
-            // helper types it references are namespaced.
-            #[doc(hidden)]
-            mod #handler_mod {
-                use super::*;
-                ::server::__private::inventory::submit! {
-                    ::server::__private::ServerFnEntry {
-                        path: #wire_path,
-                        handler: |body_bytes| ::std::boxed::Box::pin(async move {
-                            let ( #( #bind_idents, )* ): ( #( #arg_tys, )* ) =
-                                ::server::__private::decode_args(&body_bytes)?;
-                            let result: #ret_ty = super::#ident( #( #call_args ),* ).await;
-                            ::server::__private::encode_result(&result)
-                        }),
-                    }
+    let server_fn = quote! {
+        #[cfg(feature = "server")]
+        #(#attrs)*
+        #vis async fn #ident(#inputs) #output #body
+    };
+    let server_register = quote! {
+        #[cfg(feature = "server")]
+        #[doc(hidden)]
+        mod #handler_mod {
+            use super::*;
+            ::server::__private::inventory::submit! {
+                ::server::__private::ServerFnEntry {
+                    path: #wire_path,
+                    handler: |body_bytes| ::std::boxed::Box::pin(async move {
+                        let ( #( #bind_idents, )* ): ( #( #arg_tys, )* ) =
+                            ::server::__private::decode_args(&body_bytes)?;
+                        let result: #ret_ty = super::#ident( #( #call_args ),* ).await;
+                        ::server::__private::encode_result(&result)
+                    }),
                 }
             }
         }
@@ -192,7 +197,8 @@ fn expand(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
     // -----------------------------------------------------------------
     // Client side (no `server` feature): args → POST → result.
     // -----------------------------------------------------------------
-    let client_half = quote! {
+    let client_fn = quote! {
+        #[cfg(not(feature = "server"))]
         #(#attrs)*
         #vis async fn #ident(#inputs) #output {
             let __args: ( #( #arg_tys, )* ) = ( #( #arg_pats, )* );
@@ -204,10 +210,8 @@ fn expand(attr: ServerAttr, func: ItemFn) -> syn::Result<TokenStream2> {
     };
 
     Ok(quote! {
-        #[cfg(feature = "server")]
-        #server_half
-
-        #[cfg(not(feature = "server"))]
-        #client_half
+        #server_fn
+        #server_register
+        #client_fn
     })
 }

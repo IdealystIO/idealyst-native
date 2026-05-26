@@ -19,6 +19,7 @@ mod pages;
 mod routes;
 mod shell;
 mod styles;
+mod typeface;
 
 use routes::{
     AGENTIC_ROUTE, BACKENDS_ROUTE, CONCEPTS_ROUTE, DEMO_ANIMATIONS_ROUTE, DEMO_COMPONENTS_ROUTE,
@@ -28,7 +29,18 @@ use routes::{
 
 #[component]
 pub fn app() -> Primitive {
-    install_idea_theme(light_theme());
+    // Override idea-ui's default type scale for the website. The
+    // marketing pages want bigger section headings than idea-ui's
+    // defaults (which are tuned for the dense docs app). Same
+    // theme trait, same downstream token names \u{2014} we just
+    // mutate the values before `install_idea_theme` registers
+    // them.
+    let mut theme = light_theme();
+    theme.typography.h1_size = 40.0;
+    theme.typography.h2_size = 34.0;
+    theme.typography.h3_size = 22.0;
+    theme.typography.body_lg_size = 19.0;
+    install_idea_theme(theme);
 
     let nav: Ref<DrawerHandle> = Ref::new();
     // App-level theme-toggle state — lives here (not inside a

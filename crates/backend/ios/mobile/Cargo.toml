@@ -30,6 +30,11 @@ async-driver = ["runtime-core/async-driver", "backend-ios-core/async-driver"]
 [dependencies]
 runtime-core = { workspace = true }
 runtime-layout = { workspace = true }
+# Cross-Apple substrate. Holds the shared SVG path parser used by
+# both `imp/icon.rs` here and the macOS Icon impl in
+# `backend-macos`. iOS/macOS render identical icons through this
+# single parser.
+backend-apple-core = { workspace = true }
 # Shared iOS/tvOS helpers (style + render loop driver). Same crate
 # is consumed by `backend-ios-tv`.
 backend-ios-core = { workspace = true }

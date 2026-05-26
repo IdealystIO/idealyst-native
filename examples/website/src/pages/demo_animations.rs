@@ -12,34 +12,51 @@ use runtime_core::animation::{AnimProp, AnimatedValue, SpringTo, TweenTo};
 use runtime_core::{node_ref, ui, Primitive, Ref, ViewHandle};
 use idea_ui::{btn, card, stack, typography, ButtonKind, IntentTag, StackAxis, StackGap, TypographyKind, TypographyTone};
 
-use crate::pages::common::{code_panel, page_header};
-use crate::shell::layout;
-use crate::styles::{DemoStage, DemoStageRow, PagePad};
+use crate::pages::common::{code_panel, page_header, page_section};
+use crate::shell::{layout_with_toc, TocEntry};
+use crate::styles::{DemoStage, DemoStageRow};
 
 pub fn page() -> Primitive {
-    let pad = PagePad();
+    const MODEL: &str = "model";
+    const FADE: &str = "fade-demo";
+    const SPRING_TWEEN: &str = "spring-vs-tween";
+    const ENTRANCE: &str = "entrance";
+    const COLOR: &str = "color-demo";
+    const WHEN: &str = "when-to-pick";
+    const WELCOME: &str = "welcome-scene";
+    const PERF: &str = "performance";
+
+    let toc = vec![
+        TocEntry { id: MODEL, label: "The model" },
+        TocEntry { id: FADE, label: "Fade toggle" },
+        TocEntry { id: SPRING_TWEEN, label: "Spring vs tween" },
+        TocEntry { id: ENTRANCE, label: "Multi-property entrance" },
+        TocEntry { id: COLOR, label: "Color tween" },
+        TocEntry { id: WHEN, label: "When to pick which" },
+        TocEntry { id: WELCOME, label: "The welcome scene" },
+        TocEntry { id: PERF, label: "What you don't pay for" },
+    ];
+
     let content = ui! {
-        View(style = pad) {
-            Stack(gap = StackGap::Xl) {
-                { page_header(
-                    "Animations",
-                    "Springs, tweens, and per-frame writes that dispatch native motion \
-                     primitives on every backend. The four demos below are real \
-                     `AnimatedValue`s bound to real `Ref<ViewHandle>`s \u{2014} click \
-                     the buttons and watch them move."
-                ) }
-                { model() }
-                { fade_demo() }
-                { spring_vs_tween_demo() }
-                { entrance_demo() }
-                { color_demo() }
-                { springs_vs_tweens_note() }
-                { welcome_breakdown() }
-                { performance() }
-            }
+        Stack(gap = StackGap::Xl) {
+            { page_header(
+                "Animations",
+                "Springs, tweens, and per-frame writes that dispatch native motion \
+                 primitives on every backend. The four demos below are real \
+                 `AnimatedValue`s bound to real `Ref<ViewHandle>`s \u{2014} click \
+                 the buttons and watch them move."
+            ) }
+            { page_section(MODEL, vec![model()]) }
+            { page_section(FADE, vec![fade_demo()]) }
+            { page_section(SPRING_TWEEN, vec![spring_vs_tween_demo()]) }
+            { page_section(ENTRANCE, vec![entrance_demo()]) }
+            { page_section(COLOR, vec![color_demo()]) }
+            { page_section(WHEN, vec![springs_vs_tweens_note()]) }
+            { page_section(WELCOME, vec![welcome_breakdown()]) }
+            { page_section(PERF, vec![performance()]) }
         }
     };
-    layout(content)
+    layout_with_toc(content, toc)
 }
 
 // =============================================================================

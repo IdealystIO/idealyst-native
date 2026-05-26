@@ -57,6 +57,7 @@ pub enum TextSource {
 ///     ],
 ///     initial_values: vec!["0".into()],
 ///     compute_fallback: Rc::new(move || format!("leaf {}: g={}", id, global.get())),
+///     stringifiers: vec![Rc::new(move || format!("{}", global.get()))],
 /// }
 /// ```
 ///
@@ -73,6 +74,16 @@ pub struct JsBindingSpec {
     /// bindings. Built from the same expression that
     /// `compute_fallback` would otherwise wrap.
     pub compute_fallback: std::rc::Rc<dyn Fn() -> String>,
+    /// Per-signal stringifiers — one closure per entry of
+    /// `signal_ids`, in the same order. Each reads the current
+    /// value of the matching signal and formats it the same way
+    /// the JS dispatcher will Display-format it. Web backend uses
+    /// these to install per-signal JS notifiers
+    /// (`runtime_core::register_signal_js_notifier`) at bind time
+    /// so subsequent `signal.set/update` calls ship the new value
+    /// across the wasm→JS boundary and the JS-side fan-out paints
+    /// the text. Backends without a JS bridge ignore them.
+    pub stringifiers: Vec<std::rc::Rc<dyn Fn() -> String>>,
 }
 
 /// Allows `text(...)` to accept strings, owned strings, or closures.

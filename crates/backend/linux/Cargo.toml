@@ -1,0 +1,41 @@
+[package]
+name = "backend-linux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Native GTK4 backend for `runtime_core::Backend`. Uses `gtk4-rs` to
+# create real GTK widgets — `gtk::Button`, `gtk::Label`,
+# `gtk::Entry` (TextInput), `gtk::Switch`, `gtk::Scale` (Slider) —
+# parented under a `gtk::Window` owned by the host shell.
+#
+# Status: scaffold. The crate is structured but most primitives are
+# placeholder labels — author code mounts without panicking and a
+# follow-up PR (driven by someone with a Linux+GTK test environment)
+# replaces each placeholder with the real GTK widget. The lib body
+# is gated on `cfg(target_os = "linux")` so workspace builds on
+# macOS / Windows hosts compile this to an empty rlib without
+# pulling `gtk4` into the dep graph.
+#
+# Test plan (when a Linux env is available):
+# 1. Install GTK 4 development headers via the distro package
+#    manager (`libgtk-4-dev` on Debian/Ubuntu, `gtk4-devel` on
+#    Fedora, etc.).
+# 2. `cargo check --target x86_64-unknown-linux-gnu -p backend-linux`
+# 3. Wire a tiny host that creates a `gtk::Application`, hands its
+#    `gtk::Window` to `LinuxBackend::new(window)`, and drives the
+#    framework's render loop.
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+runtime-core = { workspace = true }
+runtime-layout = { workspace = true }
+
+# `gtk4-rs` provides the safe Rust bindings to GTK4. The `v4_X` feature
+# flags gate API coverage by GTK version; `v4_12` is a reasonable
+# default (matches the version on current Ubuntu LTS, Debian stable,
+# Fedora). Adjust if the target environment ships an older GTK.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk4 = { version = "0.9", features = ["v4_12"] }

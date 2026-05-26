@@ -376,6 +376,56 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustSliderListener_native
 // Overlay dismiss
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Sticky scroll listener
+// ---------------------------------------------------------------------------
+
+/// `RustStickyScrollListener.onScrollChange` dispatch. Looks up the
+/// matching `StickyScrollEntry` in the backend's sticky registry by
+/// the scroll-view key (the JObject raw pointer of the ScrollView's
+/// GlobalRef — same key the registry uses) and runs the per-event
+/// translate recompute over its sticky children.
+///
+/// Reaches the backend through the same global-self handle the
+/// animation system uses; no-ops cleanly if no backend is installed
+/// or it's currently borrowed (the in-flight call will see the new
+/// scroll position on the next event).
+///
+/// Wrapped in `catch_unwind` because Rust panics across the JNI
+/// boundary are UB.
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustStickyScrollListener_nativeOnScrollChange(
+    _env: JNIEnv,
+    _this: JObject,
+    scroll_key: jlong,
+    scroll_x: jfloat,
+    scroll_y: jfloat,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let weak = crate::imp::ANDROID_BACKEND_SELF.with(|s| s.borrow().clone());
+        let Some(weak) = weak else { return };
+        let Some(rc) = weak.upgrade() else { return };
+        // Holding the `RefMut` across the `with_env` block needs an
+        // explicit local so the borrow drops on scope exit (not at
+        // the end of the outer closure). Without the named binding
+        // the `Result` temporary lives past `rc`'s drop and trips
+        // E0597.
+        let borrow = rc.try_borrow_mut();
+        if let Ok(mut b) = borrow {
+            crate::imp::with_env(|env| {
+                let registry = &mut b.sticky_registry;
+                crate::imp::sticky::on_scroll_event(
+                    env,
+                    registry,
+                    scroll_key as usize,
+                    scroll_x as f32,
+                    scroll_y as f32,
+                );
+            });
+        }
+    }));
+}
+
 /// `RustOverlayDismissListener.onCancel` dispatch. Fires the user's
 /// `on_dismiss` closure (if still set). `release_portal` clears the
 /// `inner` slot before tearing down the dialog, so framework-driven

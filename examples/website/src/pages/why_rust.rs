@@ -7,38 +7,63 @@
 use runtime_core::{ui, Primitive};
 use idea_ui::{stack, typography, StackGap, TypographyKind, TypographyTone};
 
-use crate::pages::common::{code_panel, page_header};
+use crate::pages::common::{code_panel, page_header, page_section};
 use crate::routes::QUICKSTART_ROUTE;
-use crate::shell::layout;
-use crate::styles::PagePad;
+use crate::shell::{layout_with_toc, TocEntry};
 
 pub fn page() -> Primitive {
-    let pad = PagePad();
+    // Section ids — referenced by `page_section(id, …)` and by the
+    // `TocEntry { id, … }` list below. Keeping them as
+    // `&'static str` constants so the two lists stay in sync.
+    const STANDARD: &str = "standard-story";
+    const PIVOT: &str = "shape-fits-ui";
+    const EXPRESSIONS: &str = "expressions";
+    const PATTERN: &str = "pattern-matching";
+    const ENUMS: &str = "enums";
+    const MACROS: &str = "macros";
+    const CLOSURES: &str = "closures";
+    const REFS: &str = "refs";
+    const TRAITS: &str = "traits";
+    const ZERO_COST: &str = "zero-cost";
+    const TRADEOFF: &str = "tradeoff";
+
+    let toc = vec![
+        TocEntry { id: STANDARD, label: "The boilerplate, briefly" },
+        TocEntry { id: PIVOT, label: "Shape of the language fits UI" },
+        TocEntry { id: EXPRESSIONS, label: "Expressions, not statements" },
+        TocEntry { id: PATTERN, label: "Pattern matching as render switch" },
+        TocEntry { id: ENUMS, label: "Enums and invalid states" },
+        TocEntry { id: MACROS, label: "Macros over explicit code" },
+        TocEntry { id: CLOSURES, label: "Closures with explicit capture" },
+        TocEntry { id: REFS, label: "Ownership for refs" },
+        TocEntry { id: TRAITS, label: "Traits, not inheritance" },
+        TocEntry { id: ZERO_COST, label: "The macro expansion IS the runtime" },
+        TocEntry { id: TRADEOFF, label: "The tradeoff" },
+    ];
+
     let content = ui! {
-        View(style = pad) {
-            Stack(gap = StackGap::Xl) {
-                { page_header(
-                    "Why Rust",
-                    "The standard answer is memory safety, no garbage collector, and native \
-                     compilation. That's true, and reason enough. But the deeper reason \
-                     idealyst is written in Rust is that the language's shape fits UI \
-                     authoring in ways most languages don't."
-                ) }
-                { standard_story() }
-                { pivot() }
-                { expressions_section() }
-                { pattern_matching_section() }
-                { enums_section() }
-                { macros_section() }
-                { closures_section() }
-                { refs_section() }
-                { traits_section() }
-                { zero_cost_section() }
-                { tradeoff_section() }
-            }
+        Stack(gap = StackGap::Xl) {
+            { page_header(
+                "Why Rust",
+                "The standard answer is memory safety, no garbage collector, and native \
+                 compilation. That's true, and reason enough. But the deeper reason \
+                 idealyst is written in Rust is that the language's shape fits UI \
+                 authoring in ways most languages don't."
+            ) }
+            { page_section(STANDARD, vec![standard_story()]) }
+            { page_section(PIVOT, vec![pivot()]) }
+            { page_section(EXPRESSIONS, vec![expressions_section()]) }
+            { page_section(PATTERN, vec![pattern_matching_section()]) }
+            { page_section(ENUMS, vec![enums_section()]) }
+            { page_section(MACROS, vec![macros_section()]) }
+            { page_section(CLOSURES, vec![closures_section()]) }
+            { page_section(REFS, vec![refs_section()]) }
+            { page_section(TRAITS, vec![traits_section()]) }
+            { page_section(ZERO_COST, vec![zero_cost_section()]) }
+            { page_section(TRADEOFF, vec![tradeoff_section()]) }
         }
     };
-    layout(content)
+    layout_with_toc(content, toc)
 }
 
 // =============================================================================
@@ -53,12 +78,14 @@ fn section(title: &str, paragraphs: Vec<&str>, code: Option<&str>) -> Primitive 
     });
     for p in paragraphs {
         let body = p.to_string();
-        children.push(ui! { Typography(content = body) });
+        children.push(ui! { Typography(content = body, kind = TypographyKind::BodyLg) });
     }
     if let Some(src) = code {
         children.push(code_panel(src));
     }
-    ui! { Stack(gap = StackGap::Md) { children } }
+    // `Lg` (16 px): comfortable gap between the H2 heading, body
+    // paragraphs, and the code panel within a single section.
+    ui! { Stack(gap = StackGap::Lg) { children } }
 }
 
 // =============================================================================

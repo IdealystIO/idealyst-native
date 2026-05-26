@@ -2,10 +2,11 @@
 //! syntax-highlighted code panel, the placeholder block used by
 //! stubbed-out screens.
 
+use runtime_core::accessibility::AccessibilityProps;
 use runtime_core::{switch, ui, Color, IntoPrimitive, Primitive, StyleApplication, Tokenized};
 use idea_ui::{stack, typography, StackGap, TypographyKind, TypographyTone};
 
-use crate::styles::{CodePanel, CodeText, PlaceholderBox};
+use crate::styles::{CodePanel, CodeText, PlaceholderBox, SectionWrap};
 
 /// Page title block — every page calls this at the top. The wrapper
 /// must be a flex-column container (here, `Stack`) so the H1 and the
@@ -18,9 +19,36 @@ pub fn page_header(title: &str, blurb: &str) -> Primitive {
     let blurb_text = blurb.to_string();
     let children: Vec<Primitive> = vec![
         ui! { Typography(content = title_text, kind = TypographyKind::H1) },
-        ui! { Typography(content = blurb_text, tone = TypographyTone::Muted) },
+        ui! { Typography(content = blurb_text, kind = TypographyKind::BodyLg, tone = TypographyTone::Muted) },
     ];
-    ui! { Stack(gap = StackGap::Sm) { children } }
+    // `Md` not `Sm`: the H1 + lead-body pair is the page's most
+    // important hierarchy moment, deserves a comfortable gap.
+    ui! { Stack(gap = StackGap::Md) { children } }
+}
+
+/// Wrap a section's children in a `View` whose
+/// `AccessibilityProps::identifier` is set to `id` (web emits this
+/// as the DOM `id` attribute). The site's table-of-contents column
+/// uses these ids for click-to-scroll AND for the
+/// `IntersectionObserver`-driven active-link highlight.
+///
+/// Pairs with `shell::layout_with_toc(...)` \u{2014} the same id
+/// strings the page hands to `layout_with_toc` as `TocEntry`s must
+/// be the ones wrapping each section here.
+pub fn page_section(id: &'static str, children: Vec<Primitive>) -> Primitive {
+    let wrap_style = SectionWrap();
+    let mut primitive = ui! { View(style = wrap_style) { children } };
+    // Stamp the DOM `id` (web) / `accessibilityIdentifier` (iOS) /
+    // resource name (Android) for the section so the TOC's
+    // click-to-scroll + scroll-spy can target it. `Bound<H>`
+    // doesn't expose an `accessibility(...)` chain method, so we
+    // reach into the Primitive variant directly \u{2014} the enum
+    // fields are public, and this is the documented escape hatch
+    // for cases the builder chain doesn't cover.
+    if let Primitive::View { accessibility, .. } = &mut primitive {
+        accessibility.identifier = Some(id.to_string());
+    }
+    primitive
 }
 
 // =============================================================================

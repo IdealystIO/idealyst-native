@@ -5,10 +5,11 @@
 //! tokio + tower; the client build sees none of this.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::extract::Path;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::Router;
@@ -16,6 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::__private::ServerFnEntry;
 use crate::error::ServerError;
+use crate::extractors::{RequestContext, REQUEST_CONTEXT};
 
 /// Build an `axum::Router` containing every `#[server]` function
 /// linked into the current binary.
@@ -38,7 +40,11 @@ pub fn router() -> Router {
         // regressions if the route table grows.
         .route("/_srv/_batch", post(batch_dispatch))
         .route("/_srv/*path", post(dispatch))
-        .fallback(not_found)
+    // Intentionally no `.fallback(...)`: composing this router with
+    // a static-file `ServeDir` (the demo's typical setup) needs the
+    // caller to install their own fallback. Unknown server-fn paths
+    // are still handled — the catch-all `/_srv/*path` matches them,
+    // and `dispatch` returns 404 when no inventory entry is found.
 }
 
 /// Bind a TCP listener on `addr` and serve the registered server
@@ -57,7 +63,12 @@ pub async fn serve(addr: SocketAddr) -> std::io::Result<()> {
 /// handler matching the requested path — fast enough at v0 sizes; if
 /// startup-cost matters we can hash into a `HashMap` once at first
 /// request and cache it in a `OnceLock`.
-async fn dispatch(Path(path): Path<String>, body: Bytes) -> Response {
+///
+/// Wraps the handler's future in a [`REQUEST_CONTEXT`] scope so the
+/// handler body can call [`use_request_headers`] /
+/// [`use_request_header`] (and future per-request extractors) and
+/// see the values for *this* request.
+async fn dispatch(headers: HeaderMap, Path(path): Path<String>, body: Bytes) -> Response {
     let Some(entry) = find_entry(&path) else {
         return (
             StatusCode::NOT_FOUND,
@@ -67,7 +78,12 @@ async fn dispatch(Path(path): Path<String>, body: Bytes) -> Response {
     };
 
     let body_vec = body.to_vec();
-    let result = (entry.handler)(body_vec).await;
+    let ctx = RequestContext {
+        headers: Arc::new(headers),
+    };
+    let result = REQUEST_CONTEXT
+        .scope(ctx, (entry.handler)(body_vec))
+        .await;
 
     match result {
         Ok(bytes) => (
@@ -125,13 +141,20 @@ enum BatchOutputEntry {
     Result(Result<serde_json::Value, ServerError>),
 }
 
-async fn batch_dispatch(body: Bytes) -> Response {
+async fn batch_dispatch(headers: HeaderMap, body: Bytes) -> Response {
     let calls: Vec<BatchInputEntry> = match serde_json::from_slice(&body) {
         Ok(v) => v,
         Err(e) => {
             return (StatusCode::BAD_REQUEST, format!("malformed batch body: {e}"))
                 .into_response();
         }
+    };
+
+    // Build the request context once and re-enter it per handler.
+    // Sharing the `Arc<HeaderMap>` avoids cloning headers N times
+    // for a batch of N entries.
+    let ctx = RequestContext {
+        headers: Arc::new(headers),
     };
 
     let mut results: Vec<BatchOutputEntry> = Vec::with_capacity(calls.len());
@@ -159,7 +182,9 @@ async fn batch_dispatch(body: Bytes) -> Response {
             }
         };
 
-        let handler_outcome = (entry.handler)(arg_bytes).await;
+        let handler_outcome = REQUEST_CONTEXT
+            .scope(ctx.clone(), (entry.handler)(arg_bytes))
+            .await;
         let slot = match handler_outcome {
             Ok(result_bytes) => {
                 // The handler returned a JSON-encoded

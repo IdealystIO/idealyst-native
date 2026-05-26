@@ -381,6 +381,21 @@ impl Renderer {
                 let id = overlay.borrow().layout;
                 backend.layout.compute(id, viewport[0], viewport[1]);
             }
+            // Refresh cached natural-y values for every
+            // `Position::Sticky` child now that Taffy has settled
+            // on this frame's frames. Without this step, the
+            // walker reads stale natural-y values after a tree
+            // rebuild (branch swap, hot patch, screen push) and
+            // pins to the wrong place — most visibly when the
+            // user scrolls a freshly-mounted screen for the first
+            // time. Mirrors iOS's `refresh_layout_positions`
+            // call at the end of its layout pass. Cheap; the
+            // sticky registry is tiny by construction.
+            let backend_ref: &mut crate::WgpuBackend = &mut backend;
+            crate::sticky::refresh_layout_positions(
+                &mut backend_ref.sticky_registry,
+                &backend_ref.layout,
+            );
         }
 
         // Hold the immutable borrows for the rest of the frame.
@@ -475,6 +490,7 @@ impl Renderer {
                 1.0,
                 1.0,
                 1.0,
+                None, // no enclosing scroll at the root
                 &mut rects,
                 &mut texts,
                 &mut text_barriers,
@@ -541,6 +557,11 @@ impl Renderer {
                 1.0,
                 1.0,
                 1.0,
+                // Nav-top re-walks start at a screen root; the
+                // enclosing scroll context from the main walk
+                // doesn't apply here (the slide-in screen has
+                // its own scroll containers, if any).
+                None,
                 &mut nav_top_rects,
                 &mut nav_top_texts,
                 &mut nav_top_text_barriers,
@@ -1233,6 +1254,15 @@ fn walk<'a>(
     acc_scale_x: f32,
     acc_scale_y: f32,
     acc_opacity: f32,
+    // Nearest enclosing `ScrollView` ancestor at this depth, or
+    // `None` if we're outside any scroll container. Set when the
+    // walk enters a `ScrollView`; cleared (set to the new
+    // enclosing scroll) at any re-entry point that doesn't
+    // inherit the same scroll context (overlays, nav transitions,
+    // drawer slots all render against the viewport, not a scroll
+    // container). Used by the `Position::Sticky` branch to look
+    // up its pin context — see `crate::sticky`.
+    enclosing_scroll: Option<crate::sticky::EnclosingScroll>,
     rects: &mut Vec<RectInstance>,
     texts: &mut Vec<StagedText<'a>>,
     // Parallel to `texts`: `text_barriers[i]` records
@@ -1285,7 +1315,45 @@ fn walk<'a>(
     let base_w = frame.width * acc_scale_x;
     let base_h = frame.height * acc_scale_y;
     let base_x = parent_x + frame.x * acc_scale_x;
-    let base_y = parent_y + frame.y * acc_scale_y;
+    let base_y_pre_sticky = parent_y + frame.y * acc_scale_y;
+    // `Position::Sticky` pin shift. When the node is in the
+    // sticky registry AND its enclosing scroll context matches
+    // the one we're currently walking inside of, add the pin
+    // translate computed by `sticky::compute_translate`. The
+    // shift propagates to children too (sticky pins the whole
+    // subtree, matching CSS).
+    //
+    // The translate is in pre-animation space (computed before
+    // the centered scale + animation translate below), so a
+    // sticky node can still carry a scale/opacity animation on
+    // top of the pin. Pre-multiplying by `acc_scale_y` matches
+    // how the layout-space `frame.y` was scaled into `base_y`.
+    //
+    // No-op when there's no scroll ancestor (registry entry's
+    // `scroll_layout` is `None`) or when the node isn't in the
+    // registry — matches the CSS "no scrolling parent ⇒
+    // relative" fall-back and the non-sticky default.
+    let sticky_translate_y = if let Some(scroll) = enclosing_scroll {
+        let key = std::rc::Rc::as_ptr(node) as usize;
+        backend
+            .sticky_registry
+            .get(&key)
+            .and_then(|child| {
+                if child.scroll_layout == Some(scroll.scroll_layout) {
+                    Some(crate::sticky::compute_translate(
+                        child.natural_y,
+                        child.threshold_top,
+                        scroll.scroll_offset_y,
+                    ) * acc_scale_y)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0.0)
+    } else {
+        0.0
+    };
+    let base_y = base_y_pre_sticky + sticky_translate_y;
     // Static transform from stylesheet `transform: [...]`. Translate
     // and scale only; percent translates resolve against the node's
     // pre-scale pixel size (`frame.width` / `frame.height`), matching
@@ -1342,6 +1410,7 @@ fn walk<'a>(
         NodeKind::Toggle { .. }
             | NodeKind::Slider { .. }
             | NodeKind::TextInput { .. }
+            | NodeKind::TextArea { .. }
             | NodeKind::ActivityIndicator { .. }
     );
 
@@ -1621,7 +1690,7 @@ fn walk<'a>(
                     rects,
                 );
             }
-            NodeKind::TextInput { value, .. } => {
+            NodeKind::TextInput { value, .. } | NodeKind::TextArea { value, .. } => {
                 let is_focused = focused_input_layout == Some(data.layout);
                 let is_placeholder = value.is_empty();
                 // Only paint the caret on the phase-on half of
@@ -1768,6 +1837,23 @@ fn walk<'a>(
             intersect_rect((x, y, w, h), clip),
         ),
         _ => (x, y, clip),
+    };
+
+    // Determine the enclosing scroll context to pass down to
+    // children. A ScrollView resets the context to itself (every
+    // descendant up to a nested ScrollView pins against THIS
+    // scroll, not the grandparent's); other kinds pass through
+    // the inherited context. Sticky descendants of a non-scrolled
+    // subtree carry `None` here, which is what makes
+    // sticky-in-non-scrolling-parent fall back to relative.
+    let child_enclosing_scroll = match &data.kind {
+        NodeKind::ScrollView { offset_y, .. } => {
+            Some(crate::sticky::EnclosingScroll {
+                scroll_layout: data.layout,
+                scroll_offset_y: *offset_y,
+            })
+        }
+        _ => enclosing_scroll,
     };
 
     // Capture scrollview offsets for the post-children scrollbar
@@ -1965,6 +2051,7 @@ fn walk<'a>(
             child_acc_scale_x,
             child_acc_scale_y,
             child_acc_opacity,
+            child_enclosing_scroll,
             rects,
             texts,
             text_barriers,
@@ -2266,6 +2353,10 @@ fn paint_drawer_overlay<'a>(
         1.0,
         1.0,
         1.0,
+        // Drawer sidebar walks the sidebar subtree against the
+        // navigator's rect; any sticky pinning inside lives
+        // inside its own ScrollView descendants if it has them.
+        None,
         rects,
         texts,
         &mut sub_text_barriers,
@@ -2519,6 +2610,9 @@ fn walk_overlay<'a>(
             1.0,
             1.0,
             1.0,
+            // Overlay sub-tree is anchored to the viewport; the
+            // outer walk's enclosing scroll doesn't extend here.
+            None,
             rects,
             texts,
             &mut nested_text_barriers,

@@ -1,31 +1,42 @@
-//! Microtask-coalesced batching for client-side server-fn calls.
+//! Tick-coalesced batching for client-side server-fn calls.
 //!
 //! When the macro's client stub fires, it doesn't immediately POST —
-//! it enqueues into a process-global pending queue and (if not already
-//! scheduled) spawns a "flusher" task. The flusher yields once to let
-//! sibling calls land in the same batch, then either:
+//! it enqueues into a process-global pending queue. The **first**
+//! caller to observe an empty queue becomes the *flusher*: it yields
+//! once (giving sibling calls a chance to enqueue into the same
+//! batch), then drains the queue and dispatches:
 //!
-//! - **N = 1**: sends a normal `POST /_srv/<path>` (the existing
-//!   single-call wire). Solo calls pay only the cost of a single
-//!   task yield.
-//! - **N > 1**: sends a single `POST /_srv/_batch` with the array of
-//!   `{path, args}` pairs and distributes the array of `Result`s
-//!   back to each call's `oneshot` channel.
+//! - **N = 1**: a normal `POST /_srv/<path>` (the existing
+//!   single-call wire). Solo calls pay only the cost of one task
+//!   yield.
+//! - **N > 1**: one `POST /_srv/_batch` with the array of
+//!   `{path, args}` pairs; the response is an array of `Result`s
+//!   the flusher distributes back to each call's `oneshot` channel.
 //!
 //! All transparent to the author — `add(2,3).await` looks the same.
 //! On an app-load fan-out (`use_query(get_user)` + `use_query(list_todos)`
 //! + ...), what used to be 10 HTTP requests becomes one.
 //!
+//! # Why "inline flusher" rather than `spawn_async`
+//!
+//! On native, `runtime_core::driver::spawn_async` falls back to
+//! `pollster::block_on` when no executor is installed — which is
+//! synchronous and deadlocks if the caller is already inside a
+//! tokio runtime (the common case for `net`'s reqwest transport).
+//! Driving the flush inline from the first enqueuer's await chain
+//! avoids that entirely and stays runtime-agnostic.
+//!
 //! Compiled only when the `server` feature is OFF (client builds);
 //! the server build never enqueues, it receives.
 
-use std::future::Future;
+use std::future::{poll_fn, Future};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::task::{Context, Poll};
 
 use futures_channel::oneshot;
+use net::CancelToken;
 use serde_json::Value;
 
 use crate::error::ServerError;
@@ -46,6 +57,10 @@ struct PendingCall {
     /// One-shot the flusher resolves with this call's result slot.
     /// The caller awaits the receiver half.
     response: oneshot::Sender<Result<Value, ServerError>>,
+    /// Cancellation token observed both before flush (filtered out
+    /// of the batch) and during flight (solo path aborts HTTP; batch
+    /// path resolves the awaiter early but lets the shared HTTP run).
+    cancel: Option<CancelToken>,
 }
 
 /// Process-wide queue. `OnceLock` makes it lazy (no init at static
@@ -66,55 +81,133 @@ static FLUSH_SCHEDULED: AtomicBool = AtomicBool::new(false);
 // Public entry point — used by `__private::call`.
 // -----------------------------------------------------------------------------
 
-/// Enqueue a call, schedule a flush, and await this call's slot.
+/// Enqueue a call. The first caller to observe an empty
+/// flush-scheduled flag becomes the flusher: it yields once for
+/// siblings, drains the queue, and dispatches. Other callers just
+/// await their oneshot slot.
 ///
 /// The returned `Result<Value, ServerError>` is whatever the server
 /// produced for this slot:
 /// - `Ok(value)` on success — the caller still needs to
 ///   `serde_json::from_value::<Ret>` it.
-/// - `Err(ServerError)` on transport / codec / 4xx-5xx failure.
+/// - `Err(ServerError)` on transport / codec / 4xx-5xx failure
+///   (including [`ServerError::Cancelled`] when the call's cancel
+///   token fired).
 pub(crate) async fn enqueue(path: &str, args: Value) -> Result<Value, ServerError> {
+    // Pick up the cancel token associated with the current `with_cancel`
+    // scope, if any. None means this call is not cancellable.
+    let cancel = crate::cancel::current_cancel();
+
+    // Short-circuit: if the token was already fired before we got
+    // here, don't even enqueue. Saves the queue insert + flush yield.
+    if let Some(t) = &cancel {
+        if t.is_cancelled() {
+            return Err(ServerError::Cancelled);
+        }
+    }
+
     let (tx, rx) = oneshot::channel();
     queue().lock().unwrap().push(PendingCall {
         path: path.to_string(),
         args,
         response: tx,
+        cancel: cancel.clone(),
     });
 
-    // Schedule a flusher if none is in flight. Lost races (two
-    // threads both swap-false-to-true) are impossible because `swap`
-    // is atomic — exactly one caller observes the prior `false`.
-    if !FLUSH_SCHEDULED.swap(true, Ordering::AcqRel) {
-        runtime_core::driver::spawn_async(async {
-            // Yield once so sibling calls enqueued in the same
-            // executor tick land in the same flush. After yielding,
-            // we clear the scheduled flag *before* taking the queue
-            // — any further enqueues after this point will spawn a
-            // fresh flusher.
-            yield_once().await;
-            FLUSH_SCHEDULED.store(false, Ordering::Release);
-            flush().await;
-        });
+    // Atomically claim the flusher role. `swap` returns the prior
+    // value; exactly one caller observes `false`, becoming the
+    // flusher for this batch. Subsequent callers (`prior == true`)
+    // simply enqueue and await — somebody else will dispatch them.
+    let am_flusher = !FLUSH_SCHEDULED.swap(true, Ordering::AcqRel);
+
+    if am_flusher {
+        // Give sibling calls a turn to enqueue. yield_once returns
+        // Pending the first poll (waking itself), Ready the second
+        // — between those polls the runtime can drive other ready
+        // tasks (including additional `enqueue` calls landing on
+        // the same tick).
+        yield_once().await;
+        // Clear the flag *before* taking the queue. Any further
+        // enqueues from this point start a fresh batch.
+        FLUSH_SCHEDULED.store(false, Ordering::Release);
+        let pending = std::mem::take(&mut *queue().lock().unwrap());
+        flush(pending).await;
+        // Our own oneshot has been resolved by `flush`; the rx.await
+        // below resolves on its next poll without yielding.
     }
 
-    match rx.await {
-        Ok(r) => r,
-        // The sender was dropped without sending — the flusher
-        // panicked or was cancelled. Surface as a Network error;
-        // it's not a codec problem and the user's domain error
-        // never got constructed.
-        Err(_) => Err(ServerError::Network(
-            "batch flusher dropped without responding".into(),
-        )),
+    // Awaiter race: settle on whichever of {response received, cancel
+    // fired} wins. Without a token this is just `rx.await`.
+    let recv_future = async move {
+        rx.await.unwrap_or_else(|_| {
+            Err(ServerError::Network(
+                "batch flusher dropped without responding".into(),
+            ))
+        })
+    };
+
+    match cancel {
+        None => recv_future.await,
+        Some(token) => race_recv_vs_cancel(recv_future, token).await,
     }
+}
+
+/// Race a `recv_future` against the cancel token. If cancel wins,
+/// return [`ServerError::Cancelled`] immediately — the flusher /
+/// HTTP request continues in the background but the caller has
+/// moved on. For solo calls (queue size 1 at flush time) the HTTP
+/// is also aborted via `net::RequestBuilder::cancel_on`; for
+/// batched calls the shared HTTP runs to completion so other
+/// non-cancelled siblings still get their results.
+async fn race_recv_vs_cancel<F>(recv_future: F, token: CancelToken) -> Result<Value, ServerError>
+where
+    F: Future<Output = Result<Value, ServerError>>,
+{
+    let mut fut = Box::pin(recv_future);
+    let mut cancel_fut = Box::pin(token.cancelled());
+    poll_fn(|cx| {
+        if let Poll::Ready(()) = Pin::new(&mut cancel_fut).poll(cx) {
+            return Poll::Ready(Err(ServerError::Cancelled));
+        }
+        if let Poll::Ready(result) = Pin::new(&mut fut).poll(cx) {
+            return Poll::Ready(result);
+        }
+        Poll::Pending
+    })
+    .await
 }
 
 // -----------------------------------------------------------------------------
 // Flush
 // -----------------------------------------------------------------------------
 
-async fn flush() {
-    let pending: Vec<PendingCall> = std::mem::take(&mut *queue().lock().unwrap());
+async fn flush(pending: Vec<PendingCall>) {
+    if pending.is_empty() {
+        return;
+    }
+
+    // Filter out calls whose cancel token already fired while they
+    // were waiting in the queue — those slots resolve as
+    // `Cancelled` immediately and don't contribute to the HTTP
+    // request (whether solo or batched). Saves bandwidth and
+    // avoids dispatching work the caller has already abandoned.
+    let pending: Vec<PendingCall> = pending
+        .into_iter()
+        .filter_map(|call| {
+            if call
+                .cancel
+                .as_ref()
+                .map(|t| t.is_cancelled())
+                .unwrap_or(false)
+            {
+                let _ = call.response.send(Err(ServerError::Cancelled));
+                None
+            } else {
+                Some(call)
+            }
+        })
+        .collect();
+
     if pending.is_empty() {
         return;
     }
@@ -122,25 +215,34 @@ async fn flush() {
     if pending.len() == 1 {
         // Solo path: existing single-call wire (POST /_srv/<path>).
         // Preserves backward compatibility and avoids the array
-        // overhead for a lone call.
+        // overhead for a lone call. Passes the cancel token through
+        // so the HTTP itself aborts if cancel fires mid-flight.
         let call = pending.into_iter().next().unwrap();
-        let result = send_single(&call.path, &call.args).await;
+        let result = send_single(&call.path, &call.args, call.cancel).await;
         let _ = call.response.send(result);
     } else {
         // Batch path: one HTTP request for N calls.
         let outcome = send_batch(&pending).await;
         match outcome {
-            Ok(results) => {
-                // Server is contractually required to return `results.len() == pending.len()`.
-                // If it doesn't, treat missing slots as a server error so each call still
-                // resolves (rather than silently dropping the oneshot sender).
-                let mut results = results.into_iter();
+            Ok(slots) => {
+                // Each slot is the raw `Result<T, ServerError>` JSON
+                // value for that call. Wrap as `Ok(value)` in the
+                // oneshot — `call_impl` deserializes the typed
+                // `Result<T, ServerError>` from it.
+                //
+                // Server is contractually required to return
+                // `slots.len() == pending.len()`. If it doesn't,
+                // treat missing slots as a codec error so each call
+                // still resolves (rather than silently dropping the
+                // oneshot sender).
+                let mut slots = slots.into_iter();
                 for call in pending {
-                    let r = results.next().unwrap_or_else(|| {
-                        Err(ServerError::Codec(
+                    let r = match slots.next() {
+                        Some(v) => Ok(v),
+                        None => Err(ServerError::Codec(
                             "batch response missing entry for this call".into(),
-                        ))
-                    });
+                        )),
+                    };
                     let _ = call.response.send(r);
                 }
             }
@@ -159,15 +261,25 @@ async fn flush() {
 // Single-call wire (N = 1 fast path).
 // -----------------------------------------------------------------------------
 
-async fn send_single(path: &str, args: &Value) -> Result<Value, ServerError> {
+async fn send_single(
+    path: &str,
+    args: &Value,
+    cancel: Option<CancelToken>,
+) -> Result<Value, ServerError> {
     use crate::client::{net_client, snapshot_config};
 
     let config = snapshot_config()?;
     let url = format!("{}/_srv/{}", config.base_url.trim_end_matches('/'), path);
 
-    let response = net_client()
-        .post(url)
-        .body(net::Json(args))
+    // Conditional `.cancel_on(...)` — we don't want to chain it
+    // unconditionally because that would always allocate a token
+    // slot in the builder even for non-cancellable solo calls.
+    let mut request = net_client().post(url).body(net::Json(args));
+    if let Some(token) = cancel {
+        request = request.cancel_on(token);
+    }
+
+    let response = request
         .send()
         .await
         .map_err(crate::client::map_net_error)?;
@@ -197,7 +309,7 @@ struct BatchEntry<'a> {
 
 async fn send_batch(
     pending: &[PendingCall],
-) -> Result<Vec<Result<Value, ServerError>>, ServerError> {
+) -> Result<Vec<Value>, ServerError> {
     use crate::client::{net_client, snapshot_config};
 
     let config = snapshot_config()?;
@@ -224,11 +336,16 @@ async fn send_batch(
         return Err(ServerError::Server { status, message });
     }
 
-    // Each slot in the response is the standard serde-serialised
-    // `Result<Value, ServerError>` produced by the server's handler
-    // (i.e. `{"Ok": value}` or `{"Err": {...}}`).
+    // Each slot is the raw JSON `Result<T, ServerError>` produced by
+    // the server-side handler — e.g. `{"Ok": 5}` or `{"Err": {...}}`.
+    // We keep slots as `Value` (rather than deserializing to
+    // `Result<Value, ServerError>` here) so the single-call wire
+    // path and the batch wire path return symmetric shapes through
+    // the queue: both put the full Result JSON into the
+    // `oneshot` channel, and `call_impl` deserializes the typed
+    // `Result<T, ServerError>` once at the consumer site.
     response
-        .json::<Vec<Result<Value, ServerError>>>()
+        .json::<Vec<Value>>()
         .await
         .map_err(|e| ServerError::Codec(e.to_string()))
 }

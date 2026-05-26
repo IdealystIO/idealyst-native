@@ -3,32 +3,44 @@
 use runtime_core::{ui, Primitive};
 use idea_ui::{stack, typography, StackGap, TypographyKind};
 
-use crate::pages::common::{code_panel, page_header};
+use crate::pages::common::{code_panel, page_header, page_section};
 use crate::routes::QUICKSTART_ROUTE;
-use crate::shell::layout;
-use crate::styles::PagePad;
+use crate::shell::{layout_with_toc, TocEntry};
 
 pub fn page() -> Primitive {
-    let pad = PagePad();
+    const PREREQS: &str = "prerequisites";
+    const INSTALL: &str = "install";
+    const VERIFY: &str = "verify";
+    const PER_PLATFORM: &str = "per-platform";
+    const DOCTOR: &str = "doctor";
+    const NEXT: &str = "next-steps";
+
+    let toc = vec![
+        TocEntry { id: PREREQS, label: "Prerequisites" },
+        TocEntry { id: INSTALL, label: "Install" },
+        TocEntry { id: VERIFY, label: "Verify" },
+        TocEntry { id: PER_PLATFORM, label: "Per-platform tooling" },
+        TocEntry { id: DOCTOR, label: "Diagnose with doctor" },
+        TocEntry { id: NEXT, label: "Next steps" },
+    ];
+
     let content = ui! {
-        View(style = pad) {
-            Stack(gap = StackGap::Xl) {
-                { page_header(
-                    "Install the CLI",
-                    "The `idealyst` CLI is the entry point for scaffolding projects, \
-                     running the dev server, building per-platform releases, and \
-                     diagnosing your toolchain. It's installed from source via cargo."
-                ) }
-                { prerequisites() }
-                { install() }
-                { verify() }
-                { per_platform() }
-                { doctor() }
-                { next_steps() }
-            }
+        Stack(gap = StackGap::Xl) {
+            { page_header(
+                "Install the CLI",
+                "The `idealyst` CLI is the entry point for scaffolding projects, \
+                 running the dev server, building per-platform releases, and \
+                 diagnosing your toolchain. It's installed from source via cargo."
+            ) }
+            { page_section(PREREQS, vec![prerequisites()]) }
+            { page_section(INSTALL, vec![install()]) }
+            { page_section(VERIFY, vec![verify()]) }
+            { page_section(PER_PLATFORM, vec![per_platform()]) }
+            { page_section(DOCTOR, vec![doctor()]) }
+            { page_section(NEXT, vec![next_steps()]) }
         }
     };
-    layout(content)
+    layout_with_toc(content, toc)
 }
 
 fn prerequisites() -> Primitive {

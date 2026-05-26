@@ -27,8 +27,8 @@ use crate::animation::{AnimProperty, Animator, TweenKey};
 use crate::node::{
     new_node, NodeData, NodeKind, WgpuNode, ACTIVITY_INDICATOR_LARGE_SIZE,
     ACTIVITY_INDICATOR_SMALL_SIZE, ICON_DEFAULT_SIZE, IMAGE_DEFAULT_SIZE,
-    SLIDER_DEFAULT_WIDTH, SLIDER_HEIGHT, TEXT_INPUT_DEFAULT_HEIGHT, TOGGLE_ANIM_MS,
-    TOGGLE_HEIGHT, TOGGLE_WIDTH,
+    SLIDER_DEFAULT_WIDTH, SLIDER_HEIGHT, TEXT_AREA_DEFAULT_HEIGHT,
+    TEXT_INPUT_DEFAULT_HEIGHT, TOGGLE_ANIM_MS, TOGGLE_HEIGHT, TOGGLE_WIDTH,
 };
 use crate::style_convert::parse_color;
 use crate::scheduler::request_redraw;
@@ -95,6 +95,73 @@ pub struct WgpuBackend {
     /// `docs/accessibility-design.md` §5 for the projection
     /// contract the future host shell must follow.
     pub(crate) pending_announcements: Vec<(String, LiveRegionPriority)>,
+    /// Active per-node presence tweens. Keyed by node pointer
+    /// (stable for the node's lifetime). Each tween interpolates
+    /// the four animatable presence properties (opacity,
+    /// translate_x, translate_y, scale) from a captured "from"
+    /// state to a target "to" state over `duration` with `easing`.
+    /// [`tick_presence_tweens`] (called from `host::tick`)
+    /// advances each tween, writes intermediate values to the
+    /// node's `AnimatedOverrides`, and drops finished entries.
+    pub(crate) presence_tweens: std::collections::HashMap<usize, PresenceTween>,
+    /// `Position::Sticky` bookkeeping. Keyed by sticky-node
+    /// pointer (`Rc::as_ptr(node) as usize`). Each entry carries
+    /// the pin threshold, the enclosing scroll view's Taffy id
+    /// (or `None` if there's no scrolling ancestor), and the
+    /// cached natural-y in the scroll view's content space.
+    ///
+    /// Populated by [`Backend::apply_style`] when a node's
+    /// `position` becomes `Sticky`; drained by [`drop_subtree`]
+    /// when the node is removed; refreshed (natural-y values
+    /// only) by [`crate::sticky::refresh_layout_positions`] after
+    /// every Taffy compute. The render walker consults this
+    /// registry per-node to decide whether to apply a pin
+    /// translate. See `crate::sticky` for the full design.
+    pub(crate) sticky_registry: crate::sticky::StickyRegistry,
+}
+
+/// Per-node presence interpolation entry. `node` is a strong ref so
+/// the tween survives even if the rest of the framework drops its
+/// last handle mid-animation — the framework drives drop via
+/// `clear_children`, which only fires after the exit animation's
+/// scheduled task completes (see [`crate::primitives::presence`]'s
+/// walker). The tween's lifetime is therefore upper-bounded by the
+/// duration, after which `tick_presence_tweens` removes the entry
+/// and drops the strong ref.
+pub(crate) struct PresenceTween {
+    pub(crate) node: WgpuNode,
+    pub(crate) from: PresenceSnapshot,
+    pub(crate) to: PresenceSnapshot,
+    pub(crate) started: Instant,
+    pub(crate) duration: std::time::Duration,
+    pub(crate) easing: Easing,
+}
+
+/// Concrete (non-`Option`) snapshot of the four animatable presence
+/// properties. `PresenceState` uses `Option` so authors can declare
+/// "only opacity changes"; the tween path resolves the `None`s to
+/// each field's identity value (1.0 / 0.0 / 1.0) before recording
+/// `from` / `to` so the interpolator doesn't need to special-case
+/// missing fields per frame.
+#[derive(Copy, Clone, Debug)]
+pub(crate) struct PresenceSnapshot {
+    pub(crate) opacity: f32,
+    pub(crate) translate_x: f32,
+    pub(crate) translate_y: f32,
+    pub(crate) scale: f32,
+}
+
+impl PresenceSnapshot {
+    /// "Rest" identity — the rendered values when no presence
+    /// override is active.
+    pub(crate) fn rest() -> Self {
+        Self {
+            opacity: 1.0,
+            translate_x: 0.0,
+            translate_y: 0.0,
+            scale: 1.0,
+        }
+    }
 }
 
 impl WgpuBackend {
@@ -115,6 +182,8 @@ impl WgpuBackend {
             skin,
             self_weak: std::cell::OnceCell::new(),
             pending_announcements: Vec::new(),
+            presence_tweens: std::collections::HashMap::new(),
+            sticky_registry: crate::sticky::StickyRegistry::new(),
         }
     }
 
@@ -350,6 +419,68 @@ impl Backend for WgpuBackend {
         let visible = {
             let mut data = node.borrow_mut();
             if let NodeKind::TextInput { value: stored, placeholder, .. } = &mut data.kind {
+                *stored = value.to_string();
+                if value.is_empty() {
+                    placeholder.clone().unwrap_or_default()
+                } else {
+                    value.to_string()
+                }
+            } else {
+                return;
+            }
+        };
+        {
+            let mut text = self.text.borrow_mut();
+            let mut fs = self.font_system.borrow_mut();
+            text.set_text(&mut fs, layout, &visible);
+        }
+        self.layout.mark_dirty(layout);
+        request_redraw();
+    }
+
+    fn create_text_area(
+        &mut self,
+        initial_value: &str,
+        placeholder: Option<&str>,
+        on_change: Rc<dyn Fn(String)>,
+        _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        // MVP: shape identical to TextInput, larger default height.
+        // The renderer + host treat NodeKind::TextArea the same as
+        // NodeKind::TextInput for now; multi-line wrap + caret are
+        // pending separate text-shaping work.
+        let layout = self.layout.new_node();
+        let visible = if initial_value.is_empty() {
+            placeholder.unwrap_or("")
+        } else {
+            initial_value
+        };
+        {
+            let mut text = self.text.borrow_mut();
+            let mut fs = self.font_system.borrow_mut();
+            text.create(&mut fs, layout, visible, 17.0);
+        }
+        self.layout
+            .set_intrinsic_size(layout, -1.0, TEXT_AREA_DEFAULT_HEIGHT);
+        let node = new_node(
+            NodeKind::TextArea {
+                value: initial_value.to_string(),
+                placeholder: placeholder.map(|s| s.to_string()),
+                on_change,
+            },
+            layout,
+        );
+        init_node_a11y(&node, a11y, PrimitiveKind::TextArea);
+        self.roots.push(node.clone());
+        node
+    }
+
+    fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {
+        let layout = node.borrow().layout;
+        let visible = {
+            let mut data = node.borrow_mut();
+            if let NodeKind::TextArea { value: stored, placeholder, .. } = &mut data.kind {
                 *stored = value.to_string();
                 if value.is_empty() {
                     placeholder.clone().unwrap_or_default()
@@ -787,6 +918,7 @@ impl Backend for WgpuBackend {
                 &self.text,
                 &mut self.animator,
                 &mut self.active_spinner_count,
+                &mut self.sticky_registry,
                 child,
             );
         }
@@ -955,6 +1087,7 @@ impl Backend for WgpuBackend {
                 &self.text,
                 &mut self.animator,
                 &mut self.active_spinner_count,
+                &mut self.sticky_registry,
                 child,
             );
         }
@@ -1050,6 +1183,77 @@ impl Backend for WgpuBackend {
         // build-tool resolves Bundled into a per-platform path that
         // the wgpu sim has no asset loader for, and Remote would
         // require an async fetch the renderer can't issue.
+    }
+
+    fn apply_presence(
+        &mut self,
+        node: &Self::Node,
+        state: runtime_core::primitives::presence::PresenceState,
+        transition: Option<(u32, Easing)>,
+    ) {
+        let node_key = Rc::as_ptr(node) as usize;
+
+        // The framework calls apply_presence with the new target on
+        // top of a possibly-in-flight previous animation. Capture the
+        // node's CURRENT rendered values (which the renderer reads
+        // from AnimatedOverrides) so a mid-animation reversal lerps
+        // from where we visually are, not from the previous start.
+        let current = read_presence_state(node);
+        let target = resolve_presence_target(state, current);
+
+        // Cancel any prior tween on this node — apply_presence is
+        // authoritative: the framework just decided where this node
+        // is going, and any prior interpolation toward a different
+        // target would visibly stutter.
+        self.presence_tweens.remove(&node_key);
+
+        match transition {
+            None => {
+                // Snap. Write the target values directly to the
+                // node's AnimatedOverrides; the renderer composites
+                // them with the stylesheet on the next frame.
+                write_presence_overrides(node, &state, target);
+                request_redraw();
+            }
+            Some((duration_ms, _easing)) if duration_ms == 0 => {
+                // Zero-duration transition is just a snap with
+                // overrides cleared/written. Don't insert a tween.
+                write_presence_overrides(node, &state, target);
+                request_redraw();
+            }
+            Some((duration_ms, easing)) => {
+                // Start a tween. The interpolator (driven by
+                // `tick_presence_tweens` via the host's per-frame
+                // tick) writes intermediate values until elapsed
+                // ≥ duration, then `tick_presence_tweens` removes
+                // the entry.
+                //
+                // Important: write the FROM state immediately so
+                // the next frame paints the captured starting
+                // values rather than whatever stale ones might
+                // have leaked through. The framework's enter
+                // sequence relies on this — it calls
+                // `apply_presence(state=enter, None)` to snap, then
+                // `apply_presence(state=rest, Some((ms, ease)))` one
+                // frame later to animate toward rest. Our snap
+                // already wrote the enter values; here we just
+                // queue the tween + redraw.
+                self.presence_tweens.insert(
+                    node_key,
+                    PresenceTween {
+                        node: node.clone(),
+                        from: current,
+                        to: target,
+                        started: Instant::now(),
+                        duration: std::time::Duration::from_millis(
+                            duration_ms as u64,
+                        ),
+                        easing,
+                    },
+                );
+                request_redraw();
+            }
+        }
     }
 
     fn set_animated_color(
@@ -1347,6 +1551,48 @@ impl Backend for WgpuBackend {
             );
         }
 
+        // Position::Sticky → register against the enclosing
+        // ScrollView so the render walker pins this node when
+        // scrolled past the threshold. Any other Position value
+        // (or `None`) deregisters so a previous Sticky →
+        // {Relative, Absolute} transition cleans up its registry
+        // entry. Mirrors iOS's `apply_style` sticky branch (see
+        // `backend/ios/mobile/src/imp/mod.rs`). Idempotent — the
+        // registry's `insert` replaces any existing entry, so a
+        // re-apply with a new `top` value updates the threshold.
+        //
+        // We register here (post-`set_style`) rather than at
+        // create-time so the lookup walks the freshly-applied
+        // style. The framework's walker fires `apply_style`
+        // BEFORE the parent's `insert(parent, child)` call, so on
+        // a first mount the ancestor walk won't yet find a
+        // scrolling parent — the registry entry's
+        // `scroll_layout` is `None`, the render walker no-ops,
+        // and once the tree settles a subsequent style re-apply
+        // (state overlay, theme swap, hot patch) re-registers
+        // with a populated `scroll_layout`. The fall-back-to-
+        // relative behaviour matches CSS in the meantime.
+        match style.position {
+            Some(runtime_core::Position::Sticky) => {
+                let threshold_top = crate::sticky::threshold_top_from_style(style);
+                // Split-borrow the registry against `layout` and
+                // `roots` — `register` walks Taffy parents to
+                // resolve the enclosing scroll view, which would
+                // otherwise alias `&mut self`.
+                let WgpuBackend { sticky_registry, layout, roots, .. } = self;
+                crate::sticky::register(
+                    sticky_registry,
+                    layout,
+                    roots,
+                    node,
+                    threshold_top,
+                );
+            }
+            _ => {
+                crate::sticky::deregister(&mut self.sticky_registry, node);
+            }
+        }
+
         if is_text {
             let mut text = self.text.borrow_mut();
             let mut fs = self.font_system.borrow_mut();
@@ -1624,16 +1870,24 @@ fn drop_subtree(
     text: &Rc<RefCell<TextStore>>,
     animator: &mut Animator,
     spinner_count: &mut u32,
+    sticky_registry: &mut crate::sticky::StickyRegistry,
     node: &WgpuNode,
 ) {
     let children: Vec<WgpuNode> = node.borrow().children.clone();
     for child in &children {
-        drop_subtree(layout, text, animator, spinner_count, child);
+        drop_subtree(layout, text, animator, spinner_count, sticky_registry, child);
     }
     let id = node.borrow().layout;
     if matches!(node.borrow().kind, NodeKind::ActivityIndicator { .. }) {
         *spinner_count = spinner_count.saturating_sub(1);
     }
+    // Drop the sticky registry entry (if any). Sticky entries
+    // hold a layout-id pair (`child_layout` + `scroll_layout`)
+    // that are about to be removed from Taffy below; leaving the
+    // entry behind would have `refresh_layout_positions` read
+    // stale slots on the next layout pass.
+    let node_key = Rc::as_ptr(node) as usize;
+    crate::sticky::deregister_by_ptr(sticky_registry, node_key);
     text.borrow_mut().remove(id);
     animator.drop_node(id);
     layout.remove_node(id);
@@ -1714,6 +1968,166 @@ pub(crate) fn tick_nav_transitions(
 /// See [`tick_nav_transitions`] for context.
 pub(crate) fn drawer_anim_alive(_backend: &Rc<RefCell<WgpuBackend>>) -> bool {
     false
+}
+
+/// Capture the four presence-animatable values currently rendered
+/// for `node`. Reads from `AnimatedOverrides` and falls back to each
+/// property's identity (1.0 / 0.0 / 1.0) when no override is active.
+///
+/// Used by `apply_presence` to establish the `from` end of a tween,
+/// so a mid-animation reversal lerps from the currently-visible
+/// state rather than the start state of the cancelled tween.
+fn read_presence_state(node: &WgpuNode) -> PresenceSnapshot {
+    let data = node.borrow();
+    let av = data.animated.as_deref();
+    PresenceSnapshot {
+        opacity: av.and_then(|a| a.opacity).unwrap_or(1.0),
+        translate_x: av.and_then(|a| a.translate_x).unwrap_or(0.0),
+        translate_y: av.and_then(|a| a.translate_y).unwrap_or(0.0),
+        // Read scale from the X axis — `apply_presence` always
+        // writes both axes from a single `state.scale`, so reading
+        // either is equivalent. Authors who set scale_x/scale_y
+        // independently via `set_animated_f32` will see the X axis
+        // as "the" presence scale at the next reversal; that's
+        // acceptable because the presence API exposes only uniform
+        // scale (per `PresenceState`'s field shape).
+        scale: av.and_then(|a| a.scale_x).unwrap_or(1.0),
+    }
+}
+
+/// Resolve a `PresenceState` against the current rendered state to
+/// produce a concrete `PresenceSnapshot` target. `None` fields in
+/// the input pull from the identity values, NOT from `current` —
+/// this matches the web leaf's behavior of "fields not declared on
+/// `state` snap back to rest" (web clears the inline `style`
+/// property, which reveals the stylesheet rest value).
+fn resolve_presence_target(
+    state: runtime_core::primitives::presence::PresenceState,
+    _current: PresenceSnapshot,
+) -> PresenceSnapshot {
+    let rest = PresenceSnapshot::rest();
+    PresenceSnapshot {
+        opacity: state.opacity.unwrap_or(rest.opacity),
+        translate_x: state.translate_x.unwrap_or(rest.translate_x),
+        translate_y: state.translate_y.unwrap_or(rest.translate_y),
+        scale: state.scale.unwrap_or(rest.scale),
+    }
+}
+
+/// Write a presence target snapshot to `node`'s AnimatedOverrides.
+/// Honors the original `PresenceState`'s `Option` shape: fields
+/// declared by the author get the resolved target value; fields
+/// the author left as `None` are cleared back to `None` on the
+/// override so the renderer falls through to the stylesheet rest
+/// value (identical to the web leaf's `style.remove_property`).
+fn write_presence_overrides(
+    node: &WgpuNode,
+    state: &runtime_core::primitives::presence::PresenceState,
+    target: PresenceSnapshot,
+) {
+    let mut data = node.borrow_mut();
+    let ov = data
+        .animated
+        .get_or_insert_with(|| Box::new(crate::node::AnimatedOverrides::default()));
+    ov.opacity = state.opacity.map(|_| target.opacity);
+    ov.translate_x = state.translate_x.map(|_| target.translate_x);
+    ov.translate_y = state.translate_y.map(|_| target.translate_y);
+    if state.scale.is_some() {
+        ov.scale_x = Some(target.scale);
+        ov.scale_y = Some(target.scale);
+    } else {
+        ov.scale_x = None;
+        ov.scale_y = None;
+    }
+}
+
+/// Per-frame interpolation step for active presence tweens. Returns
+/// `true` while any tween is still alive so the host's render loop
+/// keeps requesting redraws.
+///
+/// Called from [`crate::host::Host::tick`] before navigator
+/// transitions and momentum scrolling, so the per-tween writes are
+/// composited into the frame the host is about to submit.
+pub(crate) fn tick_presence_tweens(
+    backend: &Rc<RefCell<WgpuBackend>>,
+    now: Instant,
+) -> bool {
+    let b = backend.borrow();
+    if b.presence_tweens.is_empty() {
+        return false;
+    }
+    let mut done: Vec<usize> = Vec::new();
+    // Collect node + interpolated values first; we need to release
+    // the outer borrow on `b.presence_tweens` before reaching into
+    // each node's RefCell (a node can't be borrowed mutably while we
+    // also hold an immutable borrow on the tween map's iterator).
+    let mut updates: Vec<(WgpuNode, PresenceSnapshot, bool)> =
+        Vec::with_capacity(b.presence_tweens.len());
+    for (key, tween) in b.presence_tweens.iter() {
+        let elapsed = now.saturating_duration_since(tween.started);
+        let raw_t = if tween.duration.is_zero() {
+            1.0
+        } else {
+            (elapsed.as_secs_f32() / tween.duration.as_secs_f32()).clamp(0.0, 1.0)
+        };
+        let t = runtime_core::animation::apply_easing(raw_t, tween.easing);
+        let sample = PresenceSnapshot {
+            opacity: lerp(tween.from.opacity, tween.to.opacity, t),
+            translate_x: lerp(tween.from.translate_x, tween.to.translate_x, t),
+            translate_y: lerp(tween.from.translate_y, tween.to.translate_y, t),
+            scale: lerp(tween.from.scale, tween.to.scale, t),
+        };
+        let finished = elapsed >= tween.duration;
+        if finished {
+            done.push(*key);
+        }
+        updates.push((tween.node.clone(), sample, finished));
+    }
+    drop(b);
+
+    for (node, sample, finished) in updates {
+        let mut data = node.borrow_mut();
+        let ov = data
+            .animated
+            .get_or_insert_with(|| Box::new(crate::node::AnimatedOverrides::default()));
+        ov.opacity = Some(sample.opacity);
+        ov.translate_x = Some(sample.translate_x);
+        ov.translate_y = Some(sample.translate_y);
+        ov.scale_x = Some(sample.scale);
+        ov.scale_y = Some(sample.scale);
+        // On the final tick, clear overrides whose `to` matches the
+        // rest identity. Without this, a presence-driven exit would
+        // leave permanent `opacity = 1.0` / `translate = 0` writes
+        // that block subsequent stylesheet-driven changes from
+        // taking effect (the override always wins). Match what the
+        // web leaf does: at rest, remove the inline property so the
+        // node falls through to the stylesheet.
+        if finished {
+            if (sample.opacity - 1.0).abs() < f32::EPSILON {
+                ov.opacity = None;
+            }
+            if sample.translate_x.abs() < f32::EPSILON {
+                ov.translate_x = None;
+            }
+            if sample.translate_y.abs() < f32::EPSILON {
+                ov.translate_y = None;
+            }
+            if (sample.scale - 1.0).abs() < f32::EPSILON {
+                ov.scale_x = None;
+                ov.scale_y = None;
+            }
+        }
+    }
+
+    let mut b = backend.borrow_mut();
+    for key in done {
+        b.presence_tweens.remove(&key);
+    }
+    !b.presence_tweens.is_empty()
+}
+
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
 }
 
 // ---------------------------------------------------------------------------
@@ -1987,6 +2401,102 @@ mod a11y_tests {
         // tree — no caching means stale data can never lag.
         let tree2 = b.dump_accessibility_tree().expect("tree");
         assert_eq!(tree2.root.children[0].props.label.as_deref(), Some("Greetings, world"));
+    }
+
+    /// Regression: before this landed, `apply_presence` was the
+    /// `Backend` trait default no-op, so presence's enter/exit
+    /// state writes (opacity / translate / scale) silently did
+    /// nothing on the wgpu backend. The exit animation's snap to
+    /// the exit state, the rest-target tween — all dropped.
+    /// This test verifies that `apply_presence(None)` writes the
+    /// declared properties to `AnimatedOverrides`, and that the
+    /// `Some(transition)` path enrolls a tween.
+    #[test]
+    fn regression_wgpu_apply_presence_writes_overrides_and_enrolls_tween() {
+        use runtime_core::primitives::presence::PresenceState;
+
+        let mut b = make_backend();
+        let node = b.create_view(&AccessibilityProps::default());
+
+        // Snap path. `state.opacity = Some(0.0)` should land on
+        // `node.animated.opacity`; untouched fields stay None.
+        b.apply_presence(
+            &node,
+            PresenceState::rest().opacity(0.0),
+            None,
+        );
+        {
+            let data = node.borrow();
+            let ov = data
+                .animated
+                .as_ref()
+                .expect("snap must allocate AnimatedOverrides");
+            assert_eq!(
+                ov.opacity,
+                Some(0.0),
+                "apply_presence(None) must write opacity to the override"
+            );
+            assert!(
+                ov.translate_x.is_none(),
+                "fields the author didn't declare on PresenceState must stay None"
+            );
+        }
+
+        // Tween path. Should enroll an entry in `presence_tweens`,
+        // keyed by the node's pointer.
+        let key = Rc::as_ptr(&node) as usize;
+        b.apply_presence(
+            &node,
+            PresenceState::rest(),
+            Some((150, runtime_core::Easing::EaseInOut)),
+        );
+        assert!(
+            b.presence_tweens.contains_key(&key),
+            "Some(transition) must enroll a presence tween for this node"
+        );
+    }
+
+    /// Regression: before this landed, `create_text_area` hit the
+    /// framework's default `unimplemented!()`, so any author code
+    /// that mounted a `TextArea` on the wgpu backend crashed at
+    /// mount time. The minimal test is: call the method, verify it
+    /// returns a `NodeKind::TextArea` node without panicking, then
+    /// confirm `update_text_area_value` mutates the stored value
+    /// (proving the update path lines up with the create path's
+    /// NodeKind variant).
+    #[test]
+    fn regression_wgpu_text_area_creates_and_updates_without_panic() {
+        let mut b = make_backend();
+        let on_change_called: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let on_change_called_clone = on_change_called.clone();
+        let on_change: Rc<dyn Fn(String)> = Rc::new(move |s| {
+            on_change_called_clone.borrow_mut().push(s);
+        });
+        let node = b.create_text_area(
+            "initial",
+            Some("placeholder"),
+            on_change,
+            None,
+            &AccessibilityProps::default(),
+        );
+        assert!(
+            matches!(node.borrow().kind, NodeKind::TextArea { .. }),
+            "create_text_area must produce a NodeKind::TextArea, not a fallback"
+        );
+        b.update_text_area_value(&node, "updated");
+        match &node.borrow().kind {
+            NodeKind::TextArea { value, .. } => assert_eq!(value, "updated"),
+            other => panic!("expected NodeKind::TextArea after update, got {other:?}"),
+        }
+        // on_change is invoked from the host's key dispatch, not from
+        // update_text_area_value (which is the framework pushing
+        // authoritative value INTO the backend). So the change
+        // callback must NOT have been called by this code path —
+        // that's the whole point of the controlled-component pattern.
+        assert!(
+            on_change_called.borrow().is_empty(),
+            "update_text_area_value must not fire on_change (framework → backend pump only)"
+        );
     }
 
     #[test]

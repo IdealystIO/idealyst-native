@@ -218,6 +218,33 @@ pub fn emit(input: TextFmtInput) -> TokenStream2 {
     let initial_code = signal_names.iter().map(|n| quote! {
         ::runtime_core::untrack(|| (#n).get()).to_string()
     });
+    // Per-signal stringifier closures, one per `bind!(...)` arg in
+    // template-slot order. The web backend uses these at bind time
+    // to install a `register_signal_js_notifier` per signal so
+    // subsequent `signal.set`s ship the new value across the
+    // wasm→JS boundary; without them the JS-side fan-out for
+    // `text_fmt!` reactive text never fires.
+    //
+    // `Fn() -> String` (not FnOnce) — the signal handle is `Copy`
+    // (an arena id), so cloning it into the closure is free and the
+    // notifier can call the stringifier on every signal write.
+    // `untrack` mirrors `initial_code` above: stringification reads
+    // the current value but must not create a subscription (the
+    // binding's reactivity flows through the JS-side dispatcher, not
+    // a Rust Effect tracking this closure).
+    let stringifier_code = signal_names.iter().map(|n| quote! {
+        {
+            // `Signal<T>` is `Copy` (it's an arena id under the
+            // hood), so the move-closure captures by copy — no Rc
+            // cycle, no lifetime fuss. The same `#n` is also moved
+            // into `compute_fallback` below; since the type is Copy
+            // both call sites get independent copies.
+            let __sig = #n;
+            ::std::rc::Rc::new(move || {
+                ::runtime_core::untrack(|| ::std::format!("{}", __sig.get()))
+            }) as ::std::rc::Rc<dyn ::std::ops::Fn() -> ::std::string::String>
+        }
+    });
 
     // Compute fallback: re-evaluate the exact same format expression
     // on every fire. The closure captures every bound arg by move.
@@ -257,6 +284,7 @@ pub fn emit(input: TextFmtInput) -> TokenStream2 {
                 template_parts: ::std::vec![#(#parts_code),*],
                 initial_values: ::std::vec![#(#initial_code),*],
                 compute_fallback: #compute_code,
+                stringifiers: ::std::vec![#(#stringifier_code),*],
             },
         )
     }}

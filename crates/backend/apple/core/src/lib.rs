@@ -29,6 +29,14 @@ pub mod log;
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "macos"))]
 pub mod scheduler;
 
+/// SVG path parser, gated on Apple targets only so the host-build
+/// path stays empty. Pure-Rust logic — no platform dependencies —
+/// but kept inside the cfg to match the rest of the crate's
+/// posture (cross-host workspace builds shouldn't link any
+/// platform-specific code from here).
+#[cfg(any(target_os = "ios", target_os = "tvos", target_os = "macos"))]
+pub mod icon_path;
+
 // Convenience re-export — `apple_log!` macro callers don't need to
 // path through the module. Mirrors the prior `backend_ios_core::ios_log`
 // shape so the iOS-core re-export stays a one-line `pub use`.

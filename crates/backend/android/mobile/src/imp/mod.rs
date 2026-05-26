@@ -11,6 +11,7 @@ mod font;
 mod jni_exports;
 mod primitives;
 pub(crate) mod scheduler;
+pub(crate) mod sticky;
 mod style;
 // `view_screen_rect` lives here because it depends on this crate's
 // `with_env` / `JAVA_VM` state (owned by `JNI_OnLoad`, which is a
@@ -234,13 +235,31 @@ pub struct AndroidBackend {
     /// Typeface map per family). Consulted by the style applier to
     /// drive `TextView.setTypeface`.
     pub(crate) font_registry: font::FontRegistry,
+    /// `Position::Sticky` bookkeeping. Keyed by the enclosing
+    /// `ScrollView`/`HorizontalScrollView`'s JObject pointer; the
+    /// entry holds a Kotlin `RustStickyScrollListener` that
+    /// dispatches per-scroll-event recompute back into
+    /// [`sticky::on_scroll_event`]. See [`sticky`] for the rationale
+    /// (side registry over ScrollView subclass).
+    pub(crate) sticky_registry: sticky::StickyRegistry,
+    /// Sticky views whose `apply_style` ran BEFORE their first
+    /// `insert`, so the parent walk couldn't yet find an enclosing
+    /// scroll view. The walker calls `apply_style` (via
+    /// `attach_style`) inside the per-primitive `build`, then the
+    /// parent's `insert_children` does `backend.insert(...)`
+    /// afterwards — so at apply-style time the child is still a
+    /// detached floating view. We stash `(view_ptr, threshold)`
+    /// here and complete the registration in `insert` once the
+    /// view is actually in a parent chain. Mirrors iOS's
+    /// `pending_sticky`.
+    pub(crate) pending_sticky: HashMap<usize, f32>,
 }
 
 /// Read the device's `density` (screen-pixels-per-dp) from the
 /// host view's resources. `1.0` on the unlikely happy-path where
 /// the call fails (preserves the dp-as-pixel fallback in the rest
 /// of the style path).
-fn density_of(env: &mut JNIEnv, view: &JObject) -> Option<f32> {
+pub(crate) fn density_of(env: &mut JNIEnv, view: &JObject) -> Option<f32> {
     let resources = env
         .call_method(view, "getResources", "()Landroid/content/res/Resources;", &[])
         .and_then(|v| v.l())
@@ -356,6 +375,8 @@ impl AndroidBackend {
             navigator_handlers: runtime_core::NavigatorRegistry::new(),
             nav_handler_instances: HashMap::new(),
             font_registry: font::FontRegistry::new(),
+            sticky_registry: HashMap::new(),
+            pending_sticky: HashMap::new(),
         }
     }
 
@@ -665,6 +686,22 @@ impl AndroidBackend {
                     );
                 }
             }
+            // Refresh `layout_y` for every Position::Sticky child
+            // now that Taffy has re-laid out the tree. Without
+            // this, a tree rebuild (route switch, branch swap)
+            // leaves stale layout-y values and the sticky child
+            // pins to the wrong place — most visibly when the
+            // user scrolls a freshly-mounted screen for the first
+            // time. Cheap walk; the registry is tiny by
+            // construction. Mirrors iOS's
+            // `sticky::refresh_layout_positions` call in
+            // `run_layout_pass_global`.
+            sticky::refresh_layout_positions(
+                env,
+                &mut self.sticky_registry,
+                &self.layout,
+                &self.view_to_layout,
+            );
         });
     }
 
@@ -801,7 +838,7 @@ pub(crate) static ANDROID_TEXT_OPS: AndroidTextOps = AndroidTextOps;
 // ---------------------------------------------------------------------------
 
 thread_local! {
-    static ANDROID_BACKEND_SELF: std::cell::RefCell<Option<std::rc::Weak<std::cell::RefCell<AndroidBackend>>>> =
+    pub(crate) static ANDROID_BACKEND_SELF: std::cell::RefCell<Option<std::rc::Weak<std::cell::RefCell<AndroidBackend>>>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -870,6 +907,123 @@ fn read_system_bar_dimens(
         read_dimen(env, "status_bar_height"),
         read_dimen(env, "navigation_bar_height"),
     ))
+}
+
+/// Walk the subtree rooted at `view`, checking each view's pointer
+/// against `pending_sticky`. Any pending entry whose view can now
+/// resolve a ScrollView ancestor (i.e. the just-inserted subtree is
+/// now wired into one) gets promoted into the live registry via
+/// [`sticky::register`]. The view keys to remove from
+/// `pending_sticky` are collected in `to_remove` so the caller can
+/// drop them after the walk (avoids borrowing `pending_sticky`
+/// mutably across the recursion).
+///
+/// Subtree walk (not just the root view): a `Primitive::View`
+/// containing a `View { position: Sticky }` child will see the
+/// outer View as `child_view` in `insert`, with the sticky child
+/// nested inside. Both flagged in `pending_sticky` until this walk
+/// promotes them. Mirrors iOS's `promote_pending_sticky_recursive`.
+fn promote_pending_sticky_recursive(
+    env: &mut JNIEnv,
+    view: &GlobalRef,
+    pending: &mut HashMap<usize, f32>,
+    registry: &mut sticky::StickyRegistry,
+    to_remove: &mut Vec<usize>,
+) {
+    let key = view.as_obj().as_raw() as usize;
+    if let Some(&threshold) = pending.get(&key) {
+        if sticky::register(env, registry, view, threshold) {
+            to_remove.push(key);
+        }
+        // If register returned false, the view STILL has no scroll
+        // ancestor — leave it in `pending` so a future re-parent
+        // could pick it up.
+    }
+    // Walk children. `view.getChildCount()` + `view.getChildAt(i)`
+    // covers any ViewGroup; non-group views return 0.
+    let child_count = env
+        .call_method(view.as_obj(), "getChildCount", "()I", &[])
+        .and_then(|v| v.i())
+        .unwrap_or(0);
+    for i in 0..child_count {
+        let Ok(child_obj) = env
+            .call_method(
+                view.as_obj(),
+                "getChildAt",
+                "(I)Landroid/view/View;",
+                &[JValue::Int(i)],
+            )
+            .and_then(|v| v.l())
+        else {
+            continue;
+        };
+        if child_obj.is_null() {
+            continue;
+        }
+        // Need a `GlobalRef` to recurse (sticky::register takes
+        // `&GlobalRef`). Wrap the local — short-lived; dropped at
+        // end of the recursive call.
+        let Ok(child_global) = env.new_global_ref(&child_obj) else {
+            continue;
+        };
+        promote_pending_sticky_recursive(env, &child_global, pending, registry, to_remove);
+    }
+}
+
+/// Recursive cleanup helper used by `clear_children`. For each
+/// view in the subtree being removed: deregister it as a sticky
+/// child (if any), drop its `pending_sticky` entry (if any), and
+/// if it IS a scroll view, deregister it as a scroll-host so its
+/// descendants' sticky bookkeeping is cleaned up too. Mirrors iOS's
+/// `walk_and_deregister`.
+fn walk_and_deregister_sticky(
+    env: &mut JNIEnv,
+    view: &JObject,
+    registry: &mut sticky::StickyRegistry,
+    pending: &mut HashMap<usize, f32>,
+    sv_class: Option<&jni::objects::JClass>,
+    hsv_class: Option<&jni::objects::JClass>,
+) {
+    // Wrap into a temporary GlobalRef so we can reuse the
+    // GlobalRef-based deregister helpers. Dropping the ref at end
+    // of scope releases the temporary handle; the underlying
+    // Java view is still parented and reachable elsewhere.
+    let Ok(global) = env.new_global_ref(view) else {
+        return;
+    };
+    sticky::deregister(env, registry, &global);
+    let key = global.as_obj().as_raw() as usize;
+    pending.remove(&key);
+
+    // If this view itself is a scroll view, deregister the whole
+    // scroll-host entry so descendants under it are cleaned up.
+    let is_scroll = if let (Some(sv), Some(hsv)) = (sv_class, hsv_class) {
+        env.is_instance_of(view, sv).unwrap_or(false)
+            || env.is_instance_of(view, hsv).unwrap_or(false)
+    } else {
+        false
+    };
+    if is_scroll {
+        sticky::deregister_scroll_view(env, registry, &global);
+    }
+
+    // Recurse into children.
+    let child_count = env
+        .call_method(view, "getChildCount", "()I", &[])
+        .and_then(|v| v.i())
+        .unwrap_or(0);
+    for i in 0..child_count {
+        let Ok(child_obj) = env
+            .call_method(view, "getChildAt", "(I)Landroid/view/View;", &[JValue::Int(i)])
+            .and_then(|v| v.l())
+        else {
+            continue;
+        };
+        if child_obj.is_null() {
+            continue;
+        }
+        walk_and_deregister_sticky(env, &child_obj, registry, pending, sv_class, hsv_class);
+    }
 }
 
 /// Install the backend's self-reference. Called once by the host
@@ -1014,7 +1168,31 @@ impl Backend for AndroidBackend {
     }
 
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
-        primitives::view::insert(self, parent, child)
+        let child_for_sticky = child.clone();
+        primitives::view::insert(self, parent, child);
+        // Retry pending sticky registrations now that this subtree
+        // is wired into the parent chain. The walker fires
+        // `apply_style` before `insert`, so any `Position::Sticky`
+        // child created in this build cycle deferred its
+        // registration to `pending_sticky`. Walk the just-inserted
+        // subtree's view tree (with the child as root) and promote
+        // each pending entry that can now resolve a scroll
+        // ancestor. Entries that still can't — genuinely no
+        // scroll-view ancestor — stay in the pending map until the
+        // view is removed. Mirrors iOS's `promote_pending_sticky_recursive`.
+        let mut to_remove = Vec::new();
+        with_env(|env| {
+            promote_pending_sticky_recursive(
+                env,
+                &child_for_sticky,
+                &mut self.pending_sticky,
+                &mut self.sticky_registry,
+                &mut to_remove,
+            );
+        });
+        for k in to_remove {
+            self.pending_sticky.remove(&k);
+        }
     }
 
     fn install_touch_handler(
@@ -1486,6 +1664,28 @@ impl Backend for AndroidBackend {
     }
 
     fn clear_children(&mut self, node: &Self::Node) {
+        // Drop any sticky bookkeeping for the entire subtree we're
+        // about to remove BEFORE the native `removeAllViews` call.
+        // Walk recursively so a sticky child nested inside an
+        // intermediate View also deregisters (otherwise its
+        // registry entry survives the unmount and the scroll
+        // listener keeps trying to apply translations to a
+        // detached view). If any descendant IS a scroll view,
+        // deregister it as a scroll-host so its descendants'
+        // sticky bookkeeping is cleaned up too. Mirrors iOS's
+        // `walk_and_deregister`.
+        with_env(|env| {
+            let sv_class = env.find_class("android/widget/ScrollView").ok();
+            let hsv_class = env.find_class("android/widget/HorizontalScrollView").ok();
+            walk_and_deregister_sticky(
+                env,
+                &node.as_obj(),
+                &mut self.sticky_registry,
+                &mut self.pending_sticky,
+                sv_class.as_ref(),
+                hsv_class.as_ref(),
+            );
+        });
         primitives::view::clear_children(self, node)
     }
 
@@ -1568,6 +1768,57 @@ impl Backend for AndroidBackend {
             self.layout.set_style(layout_node, &text_style);
         } else {
             self.layout.set_style(layout_node, style);
+        }
+
+        // Position::Sticky → register against the enclosing
+        // ScrollView so the per-scroll-event sticky listener pins
+        // this view when scrolled past the threshold. Any other
+        // Position value (or `None`) must first deregister so a
+        // previous Sticky → Relative transition cleans up its
+        // registry entry + clears the carried translationY. See
+        // `sticky.rs`.
+        //
+        // The walker fires `apply_style` (via `attach_style`)
+        // BEFORE the parent's `insert(parent, child)` call. At that
+        // moment the child is still a floating View with no parent
+        // chain, so `sticky::register`'s `getParent` walk can't
+        // find the scroll ancestor yet. We try anyway (succeeds
+        // for re-applies on already-mounted views — stylesheet
+        // variant flips, theme changes) and fall back to recording
+        // in `pending_sticky` for the first-mount case. `insert`
+        // consults `pending_sticky` after attaching the subtree
+        // and promotes any entries it can now resolve.
+        match style.position {
+            Some(runtime_core::Position::Sticky) => {
+                let threshold_top = style
+                    .top
+                    .as_ref()
+                    .map(|t| match t.resolve() {
+                        runtime_core::Length::Px(v) => v,
+                        // Percent / Auto for sticky's pin offset
+                        // isn't meaningful — same rationale as
+                        // iOS's `_ => 0.0` fallthrough.
+                        _ => 0.0,
+                    })
+                    .unwrap_or(0.0);
+                let registered = with_env(|env| {
+                    sticky::register(env, &mut self.sticky_registry, node, threshold_top)
+                });
+                if !registered {
+                    // No enclosing scroll view *yet*. Could be a
+                    // first-mount (insert hasn't run) or genuinely
+                    // not in a scroll view. Record either way;
+                    // `insert` retries and `clear_children` /
+                    // `on_node_unstyled` clear the entry.
+                    self.pending_sticky.insert(key, threshold_top);
+                }
+            }
+            _ => {
+                with_env(|env| {
+                    sticky::deregister(env, &mut self.sticky_registry, node);
+                });
+                self.pending_sticky.remove(&key);
+            }
         }
     }
 
@@ -1718,6 +1969,16 @@ impl Backend for AndroidBackend {
     }
 
     fn on_node_unstyled(&mut self, node: &Self::Node) {
+        // Drop any sticky bookkeeping for this node. Covers both
+        // "I'm a sticky child being detached" (deregister from
+        // whatever scroll view owns me) and "I'm a scroll view
+        // being detached" (deregister my whole entry).
+        with_env(|env| {
+            sticky::deregister(env, &mut self.sticky_registry, node);
+            sticky::deregister_scroll_view(env, &mut self.sticky_registry, node);
+        });
+        let node_key = Self::node_key(node);
+        self.pending_sticky.remove(&node_key);
         // If this node is a ScrollView outer, drop our held inner
         // GlobalRef so the JVM can GC the inner LinearLayout once
         // the outer is released.

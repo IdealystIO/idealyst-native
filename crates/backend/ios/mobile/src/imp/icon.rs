@@ -13,6 +13,11 @@
 //!
 //! `create_icon` uses strategy 1. Strategy 2 is exposed as
 //! `render_to_uiimage` for use by the navigator/tab implementations.
+//!
+//! Both strategies share the same SVG-path parser from
+//! [`backend_apple_core::icon_path`]; the iOS-specific code here
+//! is just the UIBezierPath adapter for the parser's emitter trait
+//! plus the CAShapeLayer / UIGraphicsImageRenderer wiring.
 
 use runtime_core::primitives::icon::{FillRule, IconData};
 use runtime_core::Color;
@@ -22,8 +27,72 @@ use objc2::rc::Retained;
 use objc2_foundation::{CGFloat, CGPoint, CGRect, CGSize, MainThreadMarker, NSObject, NSString};
 use objc2_ui_kit::{UIColor, UIView};
 
+use backend_apple_core::icon_path::{parse_svg_path, PathEmitter};
 use backend_ios_core::style::color_to_uicolor;
 use super::IosNode;
+
+// =========================================================================
+// UIBezierPath PathEmitter adapter — bridges the shared
+// apple/core SVG parser to UIKit's path-construction selectors.
+// macOS uses a parallel CGPath emitter (see backend-macos/imp/icon.rs);
+// the parser itself is identical for both.
+// =========================================================================
+
+/// Wraps a `UIBezierPath` (held by-reference) so the shared SVG
+/// parser can append path commands by calling `PathEmitter` trait
+/// methods. The lifetime mirrors a `&'a NSObject` borrow — the
+/// emitter doesn't outlive the bezier path's owning scope.
+struct UIBezierEmitter<'a> {
+    bezier: &'a NSObject,
+}
+
+impl<'a> UIBezierEmitter<'a> {
+    fn new(bezier: &'a NSObject) -> Self {
+        Self { bezier }
+    }
+}
+
+impl<'a> PathEmitter for UIBezierEmitter<'a> {
+    fn move_to(&mut self, x: f64, y: f64) {
+        let pt = CGPoint::new(x as CGFloat, y as CGFloat);
+        let _: () = unsafe { msg_send![self.bezier, moveToPoint: pt] };
+    }
+
+    fn line_to(&mut self, x: f64, y: f64) {
+        let pt = CGPoint::new(x as CGFloat, y as CGFloat);
+        let _: () = unsafe { msg_send![self.bezier, addLineToPoint: pt] };
+    }
+
+    fn curve_to(&mut self, c1x: f64, c1y: f64, c2x: f64, c2y: f64, x: f64, y: f64) {
+        let cp1 = CGPoint::new(c1x as CGFloat, c1y as CGFloat);
+        let cp2 = CGPoint::new(c2x as CGFloat, c2y as CGFloat);
+        let pt = CGPoint::new(x as CGFloat, y as CGFloat);
+        let _: () = unsafe {
+            msg_send![
+                self.bezier,
+                addCurveToPoint: pt
+                controlPoint1: cp1
+                controlPoint2: cp2
+            ]
+        };
+    }
+
+    fn quad_to(&mut self, cx: f64, cy: f64, x: f64, y: f64) {
+        // UIBezierPath has a native quadratic — route through
+        // `addQuadCurveToPoint:controlPoint:` so we skip the
+        // parser's default cubic lift and let UIKit handle the
+        // curve directly.
+        let cp = CGPoint::new(cx as CGFloat, cy as CGFloat);
+        let pt = CGPoint::new(x as CGFloat, y as CGFloat);
+        let _: () = unsafe {
+            msg_send![self.bezier, addQuadCurveToPoint: pt controlPoint: cp]
+        };
+    }
+
+    fn close(&mut self) {
+        let _: () = unsafe { msg_send![self.bezier, closePath] };
+    }
+}
 
 // ==========================================================================
 // Strategy 1: CAShapeLayer (standalone icon primitive)
@@ -58,13 +127,19 @@ pub(crate) fn create_icon(
     let _: () = unsafe { msg_send![&w_c, setActive: true] };
     let _: () = unsafe { msg_send![&h_c, setActive: true] };
 
-    // Build UIBezierPath from icon path data.
+    // Build UIBezierPath from icon path data via the shared
+    // apple/core SVG parser. The same parser drives macOS's
+    // CGPath-backed path so iOS + macOS render identical icons
+    // without parser duplication.
     let bezier: Retained<NSObject> = unsafe {
         let cls = objc2::class!(UIBezierPath);
         msg_send_id![cls, bezierPath]
     };
-    for path_d in data.paths {
-        parse_svg_path_into(&bezier, path_d, sx, sy);
+    {
+        let mut emitter = UIBezierEmitter::new(&bezier);
+        for path_d in data.paths {
+            parse_svg_path(path_d, sx as f64, sy as f64, &mut emitter);
+        }
     }
 
     // Create CAShapeLayer.
@@ -324,13 +399,16 @@ fn render_to_uiimage_uncached(data: &IconData, size: CGFloat) -> Retained<NSObje
         msg_send_id![msg_send_id![cls, alloc], initWithSize: cg_size]
     };
 
-    // Build bezier path.
+    // Build bezier path via the shared SVG parser.
     let bezier: Retained<NSObject> = unsafe {
         let cls = objc2::class!(UIBezierPath);
         msg_send_id![cls, bezierPath]
     };
-    for path_d in data.paths {
-        parse_svg_path_into(&bezier, path_d, sx, sy);
+    {
+        let mut emitter = UIBezierEmitter::new(&bezier);
+        for path_d in data.paths {
+            parse_svg_path(path_d, sx as f64, sy as f64, &mut emitter);
+        }
     }
 
     let line_width: CGFloat = 2.0 * sx;
@@ -361,373 +439,4 @@ fn render_to_uiimage_uncached(data: &IconData, size: CGFloat) -> Retained<NSObje
     };
 
     template
-}
-
-// ==========================================================================
-// SVG path parser → UIBezierPath
-// ==========================================================================
-
-/// Parse an SVG path `d` string and append commands to `bezier`,
-/// scaled by `(sx, sy)`.
-fn parse_svg_path_into(
-    bezier: &NSObject,
-    d: &str,
-    sx: CGFloat,
-    sy: CGFloat,
-) {
-    let mut cur_x: CGFloat = 0.0;
-    let mut cur_y: CGFloat = 0.0;
-    let mut start_x: CGFloat = 0.0;
-    let mut start_y: CGFloat = 0.0;
-    let mut last_ctrl_x: CGFloat = 0.0;
-    let mut last_ctrl_y: CGFloat = 0.0;
-    let mut last_cmd: char = ' ';
-
-    let mut chars = d.chars().peekable();
-
-    while chars.peek().is_some() {
-        skip_ws_comma(&mut chars);
-        if chars.peek().is_none() {
-            break;
-        }
-
-        let cmd = if chars.peek().map_or(false, |c| c.is_ascii_alphabetic()) {
-            chars.next().unwrap()
-        } else {
-            if last_cmd == 'M' { 'L' }
-            else if last_cmd == 'm' { 'l' }
-            else { last_cmd }
-        };
-
-        match cmd {
-            'M' => {
-                let x = parse_number(&mut chars) * sx;
-                let y = parse_number(&mut chars) * sy;
-                let pt = CGPoint::new(x, y);
-                let _: () = unsafe { msg_send![bezier, moveToPoint: pt] };
-                cur_x = x; cur_y = y;
-                start_x = x; start_y = y;
-                last_ctrl_x = x; last_ctrl_y = y;
-            }
-            'm' => {
-                let dx = parse_number(&mut chars) * sx;
-                let dy = parse_number(&mut chars) * sy;
-                let x = cur_x + dx;
-                let y = cur_y + dy;
-                let pt = CGPoint::new(x, y);
-                let _: () = unsafe { msg_send![bezier, moveToPoint: pt] };
-                cur_x = x; cur_y = y;
-                start_x = x; start_y = y;
-                last_ctrl_x = x; last_ctrl_y = y;
-            }
-            'L' => {
-                let x = parse_number(&mut chars) * sx;
-                let y = parse_number(&mut chars) * sy;
-                let pt = CGPoint::new(x, y);
-                let _: () = unsafe { msg_send![bezier, addLineToPoint: pt] };
-                cur_x = x; cur_y = y;
-                last_ctrl_x = x; last_ctrl_y = y;
-            }
-            'l' => {
-                let dx = parse_number(&mut chars) * sx;
-                let dy = parse_number(&mut chars) * sy;
-                let x = cur_x + dx;
-                let y = cur_y + dy;
-                let pt = CGPoint::new(x, y);
-                let _: () = unsafe { msg_send![bezier, addLineToPoint: pt] };
-                cur_x = x; cur_y = y;
-                last_ctrl_x = x; last_ctrl_y = y;
-            }
-            'H' => {
-                let x = parse_number(&mut chars) * sx;
-                let pt = CGPoint::new(x, cur_y);
-                let _: () = unsafe { msg_send![bezier, addLineToPoint: pt] };
-                cur_x = x;
-                last_ctrl_x = x; last_ctrl_y = cur_y;
-            }
-            'h' => {
-                let dx = parse_number(&mut chars) * sx;
-                let x = cur_x + dx;
-                let pt = CGPoint::new(x, cur_y);
-                let _: () = unsafe { msg_send![bezier, addLineToPoint: pt] };
-                cur_x = x;
-                last_ctrl_x = x; last_ctrl_y = cur_y;
-            }
-            'V' => {
-                let y = parse_number(&mut chars) * sy;
-                let pt = CGPoint::new(cur_x, y);
-                let _: () = unsafe { msg_send![bezier, addLineToPoint: pt] };
-                cur_y = y;
-                last_ctrl_x = cur_x; last_ctrl_y = y;
-            }
-            'v' => {
-                let dy = parse_number(&mut chars) * sy;
-                let y = cur_y + dy;
-                let pt = CGPoint::new(cur_x, y);
-                let _: () = unsafe { msg_send![bezier, addLineToPoint: pt] };
-                cur_y = y;
-                last_ctrl_x = cur_x; last_ctrl_y = y;
-            }
-            'C' => {
-                let x1 = parse_number(&mut chars) * sx;
-                let y1 = parse_number(&mut chars) * sy;
-                let x2 = parse_number(&mut chars) * sx;
-                let y2 = parse_number(&mut chars) * sy;
-                let x = parse_number(&mut chars) * sx;
-                let y = parse_number(&mut chars) * sy;
-                let cp1 = CGPoint::new(x1, y1);
-                let cp2 = CGPoint::new(x2, y2);
-                let pt = CGPoint::new(x, y);
-                let _: () = unsafe {
-                    msg_send![bezier, addCurveToPoint: pt controlPoint1: cp1 controlPoint2: cp2]
-                };
-                cur_x = x; cur_y = y;
-                last_ctrl_x = x2; last_ctrl_y = y2;
-            }
-            'c' => {
-                let dx1 = parse_number(&mut chars) * sx;
-                let dy1 = parse_number(&mut chars) * sy;
-                let dx2 = parse_number(&mut chars) * sx;
-                let dy2 = parse_number(&mut chars) * sy;
-                let dx = parse_number(&mut chars) * sx;
-                let dy = parse_number(&mut chars) * sy;
-                let cp1 = CGPoint::new(cur_x + dx1, cur_y + dy1);
-                let cp2 = CGPoint::new(cur_x + dx2, cur_y + dy2);
-                let pt = CGPoint::new(cur_x + dx, cur_y + dy);
-                let _: () = unsafe {
-                    msg_send![bezier, addCurveToPoint: pt controlPoint1: cp1 controlPoint2: cp2]
-                };
-                last_ctrl_x = cur_x + dx2; last_ctrl_y = cur_y + dy2;
-                cur_x += dx; cur_y += dy;
-            }
-            'S' => {
-                let x1 = 2.0 * cur_x - last_ctrl_x;
-                let y1 = 2.0 * cur_y - last_ctrl_y;
-                let x2 = parse_number(&mut chars) * sx;
-                let y2 = parse_number(&mut chars) * sy;
-                let x = parse_number(&mut chars) * sx;
-                let y = parse_number(&mut chars) * sy;
-                let cp1 = CGPoint::new(x1, y1);
-                let cp2 = CGPoint::new(x2, y2);
-                let pt = CGPoint::new(x, y);
-                let _: () = unsafe {
-                    msg_send![bezier, addCurveToPoint: pt controlPoint1: cp1 controlPoint2: cp2]
-                };
-                cur_x = x; cur_y = y;
-                last_ctrl_x = x2; last_ctrl_y = y2;
-            }
-            's' => {
-                let x1 = 2.0 * cur_x - last_ctrl_x;
-                let y1 = 2.0 * cur_y - last_ctrl_y;
-                let dx2 = parse_number(&mut chars) * sx;
-                let dy2 = parse_number(&mut chars) * sy;
-                let dx = parse_number(&mut chars) * sx;
-                let dy = parse_number(&mut chars) * sy;
-                let cp1 = CGPoint::new(x1, y1);
-                let cp2 = CGPoint::new(cur_x + dx2, cur_y + dy2);
-                let pt = CGPoint::new(cur_x + dx, cur_y + dy);
-                let _: () = unsafe {
-                    msg_send![bezier, addCurveToPoint: pt controlPoint1: cp1 controlPoint2: cp2]
-                };
-                last_ctrl_x = cur_x + dx2; last_ctrl_y = cur_y + dy2;
-                cur_x += dx; cur_y += dy;
-            }
-            'Q' => {
-                let cx = parse_number(&mut chars) * sx;
-                let cy = parse_number(&mut chars) * sy;
-                let x = parse_number(&mut chars) * sx;
-                let y = parse_number(&mut chars) * sy;
-                let cp = CGPoint::new(cx, cy);
-                let pt = CGPoint::new(x, y);
-                let _: () = unsafe {
-                    msg_send![bezier, addQuadCurveToPoint: pt controlPoint: cp]
-                };
-                cur_x = x; cur_y = y;
-                last_ctrl_x = cx; last_ctrl_y = cy;
-            }
-            'q' => {
-                let dcx = parse_number(&mut chars) * sx;
-                let dcy = parse_number(&mut chars) * sy;
-                let dx = parse_number(&mut chars) * sx;
-                let dy = parse_number(&mut chars) * sy;
-                let cp = CGPoint::new(cur_x + dcx, cur_y + dcy);
-                let pt = CGPoint::new(cur_x + dx, cur_y + dy);
-                let _: () = unsafe {
-                    msg_send![bezier, addQuadCurveToPoint: pt controlPoint: cp]
-                };
-                last_ctrl_x = cur_x + dcx; last_ctrl_y = cur_y + dcy;
-                cur_x += dx; cur_y += dy;
-            }
-            'T' => {
-                let cx = 2.0 * cur_x - last_ctrl_x;
-                let cy = 2.0 * cur_y - last_ctrl_y;
-                let x = parse_number(&mut chars) * sx;
-                let y = parse_number(&mut chars) * sy;
-                let cp = CGPoint::new(cx, cy);
-                let pt = CGPoint::new(x, y);
-                let _: () = unsafe {
-                    msg_send![bezier, addQuadCurveToPoint: pt controlPoint: cp]
-                };
-                cur_x = x; cur_y = y;
-                last_ctrl_x = cx; last_ctrl_y = cy;
-            }
-            't' => {
-                let cx = 2.0 * cur_x - last_ctrl_x;
-                let cy = 2.0 * cur_y - last_ctrl_y;
-                let dx = parse_number(&mut chars) * sx;
-                let dy = parse_number(&mut chars) * sy;
-                let cp = CGPoint::new(cx, cy);
-                let pt = CGPoint::new(cur_x + dx, cur_y + dy);
-                let _: () = unsafe {
-                    msg_send![bezier, addQuadCurveToPoint: pt controlPoint: cp]
-                };
-                last_ctrl_x = cx; last_ctrl_y = cy;
-                cur_x += dx; cur_y += dy;
-            }
-            'A' | 'a' => {
-                let rx = parse_number(&mut chars).abs() * sx;
-                let ry = parse_number(&mut chars).abs() * sy;
-                let _x_rot = parse_number(&mut chars);
-                let large_arc = parse_number(&mut chars) != 0.0;
-                let sweep = parse_number(&mut chars) != 0.0;
-                let raw_x = parse_number(&mut chars);
-                let raw_y = parse_number(&mut chars);
-                let (ex, ey) = if cmd == 'a' {
-                    (cur_x + raw_x * sx, cur_y + raw_y * sy)
-                } else {
-                    (raw_x * sx, raw_y * sy)
-                };
-                arc_to_bezier(bezier, cur_x, cur_y, ex, ey, rx, ry, large_arc, sweep);
-                cur_x = ex; cur_y = ey;
-                last_ctrl_x = ex; last_ctrl_y = ey;
-            }
-            'Z' | 'z' => {
-                let _: () = unsafe { msg_send![bezier, closePath] };
-                cur_x = start_x; cur_y = start_y;
-                last_ctrl_x = start_x; last_ctrl_y = start_y;
-            }
-            _ => {}
-        }
-        last_cmd = cmd;
-    }
-}
-
-/// Approximate an SVG arc with cubic bezier curves.
-fn arc_to_bezier(
-    bezier: &NSObject,
-    x1: CGFloat, y1: CGFloat,
-    x2: CGFloat, y2: CGFloat,
-    rx: CGFloat, ry: CGFloat,
-    large_arc: bool, sweep: bool,
-) {
-    if rx < 1e-6 || ry < 1e-6 {
-        let pt = CGPoint::new(x2, y2);
-        let _: () = unsafe { msg_send![bezier, addLineToPoint: pt] };
-        return;
-    }
-
-    let dx = (x1 - x2) / 2.0;
-    let dy = (y1 - y2) / 2.0;
-
-    let mut rx = rx;
-    let mut ry = ry;
-
-    let check = (dx * dx) / (rx * rx) + (dy * dy) / (ry * ry);
-    if check > 1.0 {
-        let s = check.sqrt();
-        rx *= s;
-        ry *= s;
-    }
-
-    let rxsq = rx * rx;
-    let rysq = ry * ry;
-    let dxsq = dx * dx;
-    let dysq = dy * dy;
-
-    let num = (rxsq * rysq - rxsq * dysq - rysq * dxsq).max(0.0);
-    let den = rxsq * dysq + rysq * dxsq;
-    let sq = if den < 1e-10 { 0.0 } else { (num / den).sqrt() };
-
-    let sign = if large_arc == sweep { -1.0 } else { 1.0 };
-    let cx = sign * sq * (rx * dy / ry) + (x1 + x2) / 2.0;
-    let cy = sign * sq * -(ry * dx / rx) + (y1 + y2) / 2.0;
-
-    let theta1 = ((y1 - cy) / ry).atan2((x1 - cx) / rx);
-    let mut dtheta = ((y2 - cy) / ry).atan2((x2 - cx) / rx) - theta1;
-
-    if sweep && dtheta < 0.0 {
-        dtheta += 2.0 * std::f64::consts::PI as CGFloat;
-    } else if !sweep && dtheta > 0.0 {
-        dtheta -= 2.0 * std::f64::consts::PI as CGFloat;
-    }
-
-    let n_segs = (dtheta.abs() / (std::f64::consts::FRAC_PI_2 as CGFloat)).ceil() as usize;
-    if n_segs == 0 { return; }
-    let seg_angle = dtheta / n_segs as CGFloat;
-
-    let mut angle = theta1;
-    for _ in 0..n_segs {
-        let next_angle = angle + seg_angle;
-        let alpha = (seg_angle / 2.0).tan() * 4.0 / 3.0;
-
-        let cos_a = angle.cos();
-        let sin_a = angle.sin();
-        let cos_b = next_angle.cos();
-        let sin_b = next_angle.sin();
-
-        let p2x = cx + rx * cos_b;
-        let p2y = cy + ry * sin_b;
-
-        let cp1x = cx + rx * cos_a - alpha * rx * sin_a;
-        let cp1y = cy + ry * sin_a + alpha * ry * cos_a;
-        let cp2x = p2x + alpha * rx * sin_b;
-        let cp2y = p2y - alpha * ry * cos_b;
-
-        let cp1 = CGPoint::new(cp1x, cp1y);
-        let cp2 = CGPoint::new(cp2x, cp2y);
-        let pt = CGPoint::new(p2x, p2y);
-        let _: () = unsafe {
-            msg_send![bezier, addCurveToPoint: pt controlPoint1: cp1 controlPoint2: cp2]
-        };
-        angle = next_angle;
-    }
-}
-
-// --------------------------------------------------------------------------
-// Number parsing helpers
-// --------------------------------------------------------------------------
-
-fn skip_ws_comma(chars: &mut std::iter::Peekable<std::str::Chars>) {
-    while chars.peek().map_or(false, |&c| c == ' ' || c == ',' || c == '\t' || c == '\n' || c == '\r') {
-        chars.next();
-    }
-}
-
-fn parse_number(chars: &mut std::iter::Peekable<std::str::Chars>) -> CGFloat {
-    skip_ws_comma(chars);
-    let mut s = String::new();
-
-    if chars.peek() == Some(&'-') || chars.peek() == Some(&'+') {
-        s.push(chars.next().unwrap());
-    }
-    while chars.peek().map_or(false, |c| c.is_ascii_digit()) {
-        s.push(chars.next().unwrap());
-    }
-    if chars.peek() == Some(&'.') {
-        s.push(chars.next().unwrap());
-        while chars.peek().map_or(false, |c| c.is_ascii_digit()) {
-            s.push(chars.next().unwrap());
-        }
-    }
-    if chars.peek().map_or(false, |&c| c == 'e' || c == 'E') {
-        s.push(chars.next().unwrap());
-        if chars.peek() == Some(&'-') || chars.peek() == Some(&'+') {
-            s.push(chars.next().unwrap());
-        }
-        while chars.peek().map_or(false, |c| c.is_ascii_digit()) {
-            s.push(chars.next().unwrap());
-        }
-    }
-
-    s.parse::<CGFloat>().unwrap_or(0.0)
 }

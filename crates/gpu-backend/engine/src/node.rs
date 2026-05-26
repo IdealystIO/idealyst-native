@@ -138,6 +138,11 @@ pub const SLIDER_TRACK_HEIGHT: f32 = 4.0;
 /// `padding`/`background`) via style — but a sensible height keeps
 /// unstyled inputs visible in early bring-up.
 pub const TEXT_INPUT_DEFAULT_HEIGHT: f32 = 36.0;
+/// Default height for an unstyled `TextArea`. ≈4 lines at the
+/// default text-input metrics so multi-line content is visible
+/// without the author having to pin a height. Authors still
+/// override via style for forms that need a specific size.
+pub const TEXT_AREA_DEFAULT_HEIGHT: f32 = 144.0;
 /// Width of the blinking caret. Half-pixel widths render fuzzy on
 /// HiDPI; 1.5 splits the difference cleanly between thinness and
 /// visibility.
@@ -300,6 +305,17 @@ pub enum NodeKind {
     /// pushes value updates back through `update_text_input_value`.
     /// `placeholder` is shown when `value` is empty.
     TextInput {
+        value: String,
+        placeholder: Option<String>,
+        on_change: Rc<dyn Fn(String)>,
+    },
+    /// Editable multi-line text area. Same controlled-component
+    /// shape as `TextInput`; the engine paints it identically for
+    /// now and lets the host's keyboard router treat it the same
+    /// as `TextInput` for focus + key events. Multi-line caret
+    /// movement and visual line-wrapping are pending follow-ups
+    /// on the text-shaping side.
+    TextArea {
         value: String,
         placeholder: Option<String>,
         on_change: Rc<dyn Fn(String)>,
@@ -605,6 +621,7 @@ impl std::fmt::Debug for NodeKind {
             NodeKind::Pressable { .. } => f.write_str("Pressable"),
             NodeKind::Button { label, .. } => write!(f, "Button({label:?})"),
             NodeKind::TextInput { value, .. } => write!(f, "TextInput({value:?})"),
+            NodeKind::TextArea { value, .. } => write!(f, "TextArea({value:?})"),
             NodeKind::Toggle { value, .. } => write!(f, "Toggle({value})"),
             NodeKind::Slider { value, min, max, .. } => {
                 write!(f, "Slider({value} in {min}..={max})")

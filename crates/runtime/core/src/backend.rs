@@ -517,12 +517,25 @@ pub trait Backend {
     /// text on either side of each interpolation slot).
     /// `initial_values.len() == signal_ids.len()` (the starting
     /// value of each signal, stringified).
+    ///
+    /// `stringifiers` carries one `Fn() -> String` per entry of
+    /// `signal_ids` (parallel arrays) — each closure reads the
+    /// current value of the matching signal and Display-formats it
+    /// the same way the JS dispatcher will. Backends that ship
+    /// updates across an FFI bridge use these to install per-signal
+    /// notifiers at bind time so subsequent `signal.set/update`
+    /// calls flow through. Backends without a JS bridge ignore the
+    /// slice (the per-fire fan-out happens via `compute_fallback`'s
+    /// Effect path on those backends, and `register_reactive_text_binding`
+    /// isn't called for them — `supports_js_text_bindings()` is the
+    /// gate).
     fn register_reactive_text_binding(
         &mut self,
         _text_id: u32,
         _signal_ids: &[u64],
         _template_parts: &[&str],
         _initial_values: &[&str],
+        _stringifiers: &[Rc<dyn Fn() -> String>],
     ) {
         unreachable!(
             "register_reactive_text_binding called without an override; \

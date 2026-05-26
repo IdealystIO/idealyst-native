@@ -237,6 +237,7 @@ pub fn position_to_wire(p: Position) -> WirePosition {
     match p {
         Position::Relative => WirePosition::Relative,
         Position::Absolute => WirePosition::Absolute,
+        Position::Sticky => WirePosition::Sticky,
     }
 }
 

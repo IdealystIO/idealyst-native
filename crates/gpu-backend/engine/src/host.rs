@@ -570,6 +570,7 @@ impl Host {
         // on `std::time::Instant::now()`).
         let now = Instant::now();
         let any_anim = self.backend.borrow_mut().animator.tick(now);
+        let any_presence = crate::backend_impl::tick_presence_tweens(&self.backend, now);
         let any_momentum = self.tick_momentum(now);
         // Advance navigator push/pop slides. Returns true while a
         // transition is still in flight; on completion of a Pop
@@ -621,6 +622,7 @@ impl Host {
         // rotation phase.
         let spinner_alive = self.backend.borrow().active_spinner_count > 0;
         any_anim
+            || any_presence
             || any_momentum
             || kb_alive
             || caret_alive
@@ -1468,7 +1470,8 @@ impl Host {
         let (current_value, on_change) = {
             let data = node.borrow();
             match &data.kind {
-                NodeKind::TextInput { value, on_change, .. } => {
+                NodeKind::TextInput { value, on_change, .. }
+                | NodeKind::TextArea { value, on_change, .. } => {
                     (value.clone(), on_change.clone())
                 }
                 _ => return false,
@@ -1653,7 +1656,7 @@ fn pick_action(node: &WgpuNode) -> HitAction {
             step: *step,
             on_change: on_change.clone(),
         },
-        NodeKind::TextInput { .. } => HitAction::FocusInput,
+        NodeKind::TextInput { .. } | NodeKind::TextArea { .. } => HitAction::FocusInput,
         _ => HitAction::Nothing,
     }
 }
@@ -1791,6 +1794,7 @@ pub(crate) fn hit_test_node(
             | NodeKind::Toggle { .. }
             | NodeKind::Slider { .. }
             | NodeKind::TextInput { .. }
+            | NodeKind::TextArea { .. }
     );
     // Two components per axis:
     //   - the `44pt - size` correction so tiny controls grow to

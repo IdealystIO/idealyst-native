@@ -3,35 +3,51 @@
 use runtime_core::{ui, Primitive};
 use idea_ui::{stack, typography, StackGap, TypographyKind};
 
-use crate::pages::common::{code_panel, page_header};
+use crate::pages::common::{code_panel, page_header, page_section};
 use crate::routes::{BACKENDS_ROUTE, WHY_RUST_ROUTE};
-use crate::shell::layout;
-use crate::styles::PagePad;
+use crate::shell::{layout_with_toc, TocEntry};
 
 pub fn page() -> Primitive {
-    let pad = PagePad();
+    const APP_VS_HOST: &str = "app-vs-host";
+    const PRIMITIVES: &str = "primitives";
+    const REACTIVITY: &str = "reactivity";
+    const UI_MACRO: &str = "ui-macro";
+    const BUILDERS: &str = "builders";
+    const BACKEND: &str = "backend-trait";
+    const BUILDING: &str = "building-your-own";
+    const NEXT: &str = "where-next";
+
+    let toc = vec![
+        TocEntry { id: APP_VS_HOST, label: "App vs host crate" },
+        TocEntry { id: PRIMITIVES, label: "Primitives are the vocabulary" },
+        TocEntry { id: REACTIVITY, label: "Signals (reactivity)" },
+        TocEntry { id: UI_MACRO, label: "The ui! macro" },
+        TocEntry { id: BUILDERS, label: "Builders and Primitive" },
+        TocEntry { id: BACKEND, label: "The Backend trait" },
+        TocEntry { id: BUILDING, label: "Building your own" },
+        TocEntry { id: NEXT, label: "Where to go from here" },
+    ];
+
     let content = ui! {
-        View(style = pad) {
-            Stack(gap = StackGap::Xl) {
-                { page_header(
-                    "Core concepts",
-                    "The ideas you need to hold in your head to read or write idealyst \
-                     code: the app/host split, Primitive, signals, the `ui!` macro, the \
-                     builder/Primitive distinction, the Backend trait, and the path to \
-                     building your own component library and theme system on top."
-                ) }
-                { app_vs_host() }
-                { primitives() }
-                { reactivity() }
-                { ui_macro() }
-                { builders() }
-                { backend_trait() }
-                { building_your_own() }
-                { where_next() }
-            }
+        Stack(gap = StackGap::Xl) {
+            { page_header(
+                "Core concepts",
+                "The ideas you need to hold in your head to read or write idealyst \
+                 code: the app/host split, Primitive, signals, the `ui!` macro, the \
+                 builder/Primitive distinction, the Backend trait, and the path to \
+                 building your own component library and theme system on top."
+            ) }
+            { page_section(APP_VS_HOST, vec![app_vs_host()]) }
+            { page_section(PRIMITIVES, vec![primitives()]) }
+            { page_section(REACTIVITY, vec![reactivity()]) }
+            { page_section(UI_MACRO, vec![ui_macro()]) }
+            { page_section(BUILDERS, vec![builders()]) }
+            { page_section(BACKEND, vec![backend_trait()]) }
+            { page_section(BUILDING, vec![building_your_own()]) }
+            { page_section(NEXT, vec![where_next()]) }
         }
     };
-    layout(content)
+    layout_with_toc(content, toc)
 }
 
 fn app_vs_host() -> Primitive {

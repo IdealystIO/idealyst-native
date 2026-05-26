@@ -40,6 +40,21 @@
 #[cfg(target_os = "android")]
 mod imp;
 
+/// Pure-compute helpers + host-runnable regression coverage for
+/// `Position::Sticky` on Android. The full registry / JNI-driven
+/// pipeline lives in `imp::sticky` (target_os = "android"); this
+/// module mirrors the math + the lifecycle invariants in a form
+/// that compiles and runs on the host so `cargo test
+/// -p backend-android-mobile` exercises the regression coverage
+/// from any platform.
+///
+/// The iOS reference pins all of its sticky tests inside the
+/// `cfg(target_os = "ios")` `imp` gate, which means they don't
+/// run from host. We deliberately diverge here: the math
+/// regression and the empty-registry invariant don't need JNI
+/// types, so there's no reason to make them target-gated.
+mod sticky_compute;
+
 #[cfg(not(target_os = "android"))]
 mod stub;
 

@@ -51,7 +51,11 @@ pub use server_macros::server;
 #[cfg(not(feature = "server"))]
 mod batch;
 #[cfg(not(feature = "server"))]
+mod cancel;
+#[cfg(not(feature = "server"))]
 mod client;
+#[cfg(not(feature = "server"))]
+pub use cancel::{with_cancel, with_cancel_token, WithCancel};
 #[cfg(not(feature = "server"))]
 pub use client::{configure, ClientConfig};
 
@@ -60,7 +64,13 @@ pub use client::{configure, ClientConfig};
 // =============================================================================
 
 #[cfg(feature = "server")]
+mod extractors;
+#[cfg(feature = "server")]
 mod runtime;
+#[cfg(feature = "server")]
+pub use extractors::{
+    install_state, use_request_header, use_request_headers, use_state, RequestContext,
+};
 #[cfg(feature = "server")]
 pub use runtime::{router, serve};
 

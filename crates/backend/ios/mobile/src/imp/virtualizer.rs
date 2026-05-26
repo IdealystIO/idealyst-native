@@ -1,16 +1,18 @@
-//! `Primitive::Virtualizer` — `UICollectionView` with a single-section
-//! vertical flow layout that drives real cell recycling.
+//! `Primitive::Virtualizer` — `UICollectionView` with a flow layout
+//! that drives real cell recycling. Supports vertical and horizontal
+//! single-section lists.
 //!
 //! Architecture:
 //!
 //! - The collection view is plain `UICollectionView` (UIKit), built
-//!   with a `UICollectionViewFlowLayout` instance. Currently we ship
-//!   vertical-only, single-column flow. Phase-2 work: horizontal
-//!   scrolling, multi-column / grid, sections, sticky headers.
+//!   with a `UICollectionViewFlowLayout` instance. Scroll direction
+//!   is set from the `horizontal` flag handed to
+//!   `Backend::create_virtualizer`.
 //! - A custom `NSObject` subclass [`VirtualizerDataSource`] implements
 //!   `UICollectionViewDataSource` + `UICollectionViewDelegateFlowLayout`
 //!   and trampolines every lifecycle event back to the
-//!   `VirtualizerCallbacks` the framework handed us.
+//!   `VirtualizerCallbacks` the framework handed us. It also tracks
+//!   the orientation so `sizeForItemAt` returns axis-correct sizes.
 //! - A custom `UICollectionViewCell` subclass [`VirtualizerCell`] hosts
 //!   a single child UIView produced by `callbacks.mount_item(idx)`.
 //!   On reuse / display-end, the cell's host child is removed and
@@ -20,20 +22,39 @@
 //! ## Cell hosting
 //!
 //! Each cell carries a single hosted subview pinned to the cell's
-//! `contentView` via Auto Layout. The hosted view is the framework-
-//! produced node returned by `callbacks.mount_item(idx)`. UICollectionView
-//! recycles cells aggressively; on every `cellForItemAt`, if the cell
-//! still has a previously-hosted view, we first release that item's
-//! scope and detach the old subview, then mount a fresh one.
+//! `contentView` via the autoresizing mask. The hosted view is the
+//! framework-produced node returned by `callbacks.mount_item(idx)`.
+//! UICollectionView recycles cells aggressively; on every
+//! `cellForItemAt`, if the cell still has a previously-hosted view,
+//! we first release that item's scope and detach the old subview,
+//! then mount a fresh one.
 //!
 //! ## Item-size strategy
 //!
-//! Phase-1 supports `ItemSize::Known` only — the data source returns
-//! `callbacks.item_size(idx)` as the cell's height with a width equal
-//! to the collection view's bounds.width. `ItemSize::Measured` (which
-//! requires `preferredLayoutAttributesFitting`-driven self-sizing) is
-//! tracked as phase-2 work; for now Measured items render with their
-//! estimate and we don't update the framework via `set_measured_size`.
+//! Supports `ItemSize::Known` — the data source returns
+//! `callbacks.item_size(idx)` as the cell's main-axis size (height in
+//! vertical mode, width in horizontal mode). The cross-axis dimension
+//! is filled from the collection view's bounds minus content inset.
+//!
+//! `ItemSize::Measured` is still parked, but the blocker now is a
+//! framework-core gap rather than an iOS gap: cells live outside the
+//! framework's Taffy layout tree (UICollectionViewLayout owns cell
+//! sizing), so the hosted subtree never gets a Taffy measure pass
+//! and has no intrinsic-size we can read back via
+//! `systemLayoutSizeFittingSize:`. Implementing this needs the
+//! framework to expose a measure-only pass over a detached subtree;
+//! once that lands, the cell can override
+//! `preferredLayoutAttributesFittingAttributes:` to surface the
+//! measured size and fire `callbacks.set_measured_size`.
+//!
+//! ## Sections
+//!
+//! Multi-section lists (sticky headers, section insets, grouped data)
+//! also block on a framework-core gap: `VirtualizerCallbacks` is flat
+//! — `item_count` returns the global item count and `item_key` /
+//! `item_size` / `mount_item` are keyed by a flat `usize` index. The
+//! UICollectionView side trivially supports sections; the missing
+//! piece is a section-aware `VirtualizerCallbacks` shape.
 //!
 //! ## Ownership / safety
 //!
@@ -100,6 +121,13 @@ pub(crate) struct VirtualizerDataSourceIvars {
     /// every `reloadData()`, and we need a single check at the top
     /// of each entry point.
     alive: Rc<RefCell<bool>>,
+    /// `true` when the list scrolls horizontally — `sizeForItemAt`
+    /// swaps the axes so `item_size` controls the cell's width
+    /// instead of its height. Stored on the data source (not just
+    /// on the flow layout) so the delegate's size-callback has it
+    /// available without reaching back into the layout to read its
+    /// `scrollDirection`.
+    horizontal: bool,
 }
 
 declare_class!(
@@ -203,16 +231,23 @@ declare_class!(
             };
             let row: NSInteger = unsafe { msg_send![index_path, row] };
             let idx = if row < 0 { 0usize } else { row as usize };
-            let size_f = (cb.item_size)(idx);
-            // Vertical flow + single column → full available width,
-            // user-provided height. Read the collection view's
-            // bounds; subtract content insets so cells don't get
-            // clipped under nav bars / safe area when the user has
-            // set `contentInset`.
+            let size_f = (cb.item_size)(idx) as CGFloat;
+            // Read the collection view's bounds; subtract content
+            // insets so cells don't get clipped under nav bars / safe
+            // area when the user has set `contentInset`.
             let bounds: CGRect = unsafe { msg_send![cv, bounds] };
             let insets: UIEdgeInsets = unsafe { msg_send![cv, contentInset] };
-            let usable_w = (bounds.size.width - insets.left - insets.right).max(0.0);
-            CGSize::new(usable_w, size_f as CGFloat)
+            if self.ivars().horizontal {
+                // Horizontal flow → user `item_size` is the cell's
+                // width; cross-axis fills available height.
+                let usable_h = (bounds.size.height - insets.top - insets.bottom).max(0.0);
+                CGSize::new(size_f, usable_h)
+            } else {
+                // Vertical flow → user `item_size` is the cell's
+                // height; cross-axis fills available width.
+                let usable_w = (bounds.size.width - insets.left - insets.right).max(0.0);
+                CGSize::new(usable_w, size_f)
+            }
         }
     }
 );
@@ -346,12 +381,14 @@ impl VirtualizerDataSource {
     fn new(
         mtm: MainThreadMarker,
         callbacks: VirtualizerCallbacks<IosNode>,
+        horizontal: bool,
     ) -> Retained<Self> {
         let this = mtm.alloc::<Self>();
         let this = this.set_ivars(VirtualizerDataSourceIvars {
             callbacks: Rc::new(RefCell::new(Some(callbacks))),
             mounts: Rc::new(RefCell::new(HashMap::new())),
             alive: Rc::new(RefCell::new(true)),
+            horizontal,
         });
         unsafe { msg_send_id![super(this), init] }
     }
@@ -443,22 +480,26 @@ pub(crate) fn create(
     instances: &mut HashMap<usize, VirtualizerInstance>,
     callbacks: VirtualizerCallbacks<IosNode>,
     _overscan: f32,
-    _horizontal: bool,
+    horizontal: bool,
 ) -> Retained<UIView> {
-    // Phase-1 MVP: vertical flow layout, single column. Horizontal /
-    // sections / sticky headers / overscan tuning are phase-2.
+    // `overscan` is parked: UICollectionView's built-in cell prefetch
+    // (default-on since iOS 10) already overscans implicitly; exposing
+    // an exact-count knob would require either a custom
+    // UICollectionViewLayout subclass or fiddling with
+    // `isPrefetchingEnabled` heuristics. Revisit if a list shows up
+    // that the framework wants more aggressive prefetch on.
     let _ = _overscan;
-    let _ = _horizontal;
 
     // 1) Build the flow layout. We tune zero spacing between items
-    //    and sections so the user's `item_size` height is exactly the
-    //    rendered row pitch.
+    //    and sections so the user's `item_size` is exactly the
+    //    rendered row/column pitch.
     let layout_cls = objc2::class!(UICollectionViewFlowLayout);
     let layout: Retained<NSObject> = unsafe {
         msg_send_id![msg_send_id![layout_cls, alloc], init]
     };
-    // scrollDirection = vertical (0). Horizontal (1) is phase-2.
-    let _: () = unsafe { msg_send![&layout, setScrollDirection: 0i64] };
+    // UICollectionViewScrollDirection: 0 = vertical, 1 = horizontal.
+    let scroll_direction: i64 = if horizontal { 1 } else { 0 };
+    let _: () = unsafe { msg_send![&layout, setScrollDirection: scroll_direction] };
     let _: () = unsafe { msg_send![&layout, setMinimumLineSpacing: 0.0 as CGFloat] };
     let _: () = unsafe { msg_send![&layout, setMinimumInteritemSpacing: 0.0 as CGFloat] };
 
@@ -497,7 +538,7 @@ pub(crate) fn create(
     // 4) Build the data source + delegate. UIKit holds these weakly,
     //    so we keep the Retained ref in `instances` keyed by the
     //    collection view's pointer.
-    let data_source = VirtualizerDataSource::new(mtm, callbacks);
+    let data_source = VirtualizerDataSource::new(mtm, callbacks, horizontal);
     let _: () = unsafe { msg_send![&cv, setDataSource: &*data_source] };
     let _: () = unsafe { msg_send![&cv, setDelegate: &*data_source] };
 
@@ -601,6 +642,26 @@ mod tests {
     use super::*;
     use runtime_core::VirtualizerCallbacks;
 
+    /// Empty `VirtualizerCallbacks` for tests that exercise the
+    /// construction/teardown path. UIKit won't call `cellForItemAt`
+    /// when `item_count` returns 0, so `mount_item` is only invoked
+    /// in the unreachable path.
+    fn empty_callbacks() -> VirtualizerCallbacks<IosNode> {
+        VirtualizerCallbacks::<IosNode> {
+            item_count: Rc::new(|| 0usize),
+            item_key: Rc::new(|i| i as u64),
+            item_size: Rc::new(|_| 44.0_f32),
+            measure_sizes: false,
+            mount_item: Rc::new(|_| {
+                let mtm = unsafe { MainThreadMarker::new_unchecked() };
+                let view = unsafe { UIView::new(mtm) };
+                (IosNode::View(view), 0u64)
+            }),
+            release_item: Rc::new(|_| {}),
+            set_measured_size: Rc::new(|_, _| {}),
+        }
+    }
+
     /// `create_virtualizer` must return a node instead of panicking
     /// (the framework's default impl `unimplemented!()`s, which is
     /// the bug we just fixed). This test verifies the iOS backend's
@@ -616,29 +677,8 @@ mod tests {
         // misuse loudly.
         let mtm = unsafe { MainThreadMarker::new_unchecked() };
 
-        // Minimal callbacks: empty list, fixed size, mount/release
-        // no-ops. We're testing the construction path, not the
-        // mount loop — UIKit won't even call `cellForItemAt` until
-        // the collection view is attached to a window.
-        let callbacks = VirtualizerCallbacks::<IosNode> {
-            item_count: Rc::new(|| 0usize),
-            item_key: Rc::new(|i| i as u64),
-            item_size: Rc::new(|_| 44.0_f32),
-            measure_sizes: false,
-            mount_item: Rc::new(|_| {
-                // Unreachable in this test — item_count == 0 so UIKit
-                // never asks for a cell. Build a fresh UIView anyway
-                // so the closure's return type matches.
-                let mtm = unsafe { MainThreadMarker::new_unchecked() };
-                let view = unsafe { UIView::new(mtm) };
-                (IosNode::View(view), 0u64)
-            }),
-            release_item: Rc::new(|_| {}),
-            set_measured_size: Rc::new(|_, _| {}),
-        };
-
         let mut instances = HashMap::new();
-        let view = create(mtm, &mut instances, callbacks, 1.0, false);
+        let view = create(mtm, &mut instances, empty_callbacks(), 1.0, false);
 
         // The view must be a real UIView (UICollectionView is-a
         // UIView), and our side-state map must have exactly one
@@ -659,5 +699,42 @@ mod tests {
             "release() must remove the instance from the side map so the data source \
              drops and its captured framework callbacks are freed"
         );
+    }
+
+    /// Phase-2 regression: when `horizontal = true`, the flow layout
+    /// must be configured with `scrollDirection = horizontal (1)` and
+    /// the data source must record the orientation so its
+    /// `sizeForItemAt` returns axis-swapped sizes. The bug before this
+    /// landed was that the `horizontal` parameter was parked
+    /// (`let _ = _horizontal;`), so author-side `Virtualizer { horizontal:
+    /// true }` rendered identically to the vertical default.
+    #[test]
+    fn regression_ios_virtualizer_horizontal_sets_scroll_direction() {
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        let mut instances = HashMap::new();
+        let view = create(mtm, &mut instances, empty_callbacks(), 1.0, true);
+        let key = &*view as *const UIView as usize;
+        let instance = instances
+            .get(&key)
+            .expect("create() registers the instance");
+
+        // Read the flow layout's `scrollDirection`. 1 = horizontal.
+        let direction: NSInteger =
+            unsafe { msg_send![&instance.layout, scrollDirection] };
+        assert_eq!(
+            direction, 1,
+            "horizontal=true must set the flow layout's scrollDirection to 1 \
+             (UICollectionViewScrollDirectionHorizontal)"
+        );
+
+        // And the data source must remember the orientation so the
+        // size-callback reads the correct axis.
+        assert!(
+            instance.data_source.ivars().horizontal,
+            "horizontal=true must set the data source's `horizontal` ivar so \
+             `sizeForItemAt` returns axis-swapped sizes"
+        );
+
+        release(&mut instances, &view);
     }
 }

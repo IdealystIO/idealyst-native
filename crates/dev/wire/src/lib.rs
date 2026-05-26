@@ -1001,6 +1001,11 @@ pub struct WireStyleRules {
 pub enum WirePosition {
     Relative,
     Absolute,
+    /// Scroll-relative pinning. Wire counterpart of
+    /// `runtime_core::Position::Sticky`. Web clients honour this
+    /// directly via CSS; native clients fall back to `Relative`
+    /// until the per-platform scroll-listener implementation lands.
+    Sticky,
 }
 
 /// Wire mirror of `runtime_core::Overflow`. Currently `Visible` /

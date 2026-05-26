@@ -24,6 +24,8 @@ members = [
     "crates/backend/terminal",
     "crates/backend/cpu",
     "crates/backend/web",
+    "crates/backend/windows",
+    "crates/backend/linux",
     "crates/backend/posix-log-capture",
 
     # GPU Backend — composed of Host + Painter + Engine.
@@ -64,6 +66,7 @@ members = [
     "crates/sdk/maps-core",
     "crates/sdk/maps",
     "crates/sdk/maps-web",
+    "crates/sdk/maps-ios",
     "crates/sdk/idea-codeblock",
     "crates/sdk/webview",
     "crates/sdk/video",
@@ -113,6 +116,7 @@ members = [
     "examples/animation-test",
     "examples/welcome",
     "examples/stack-demo",
+    "examples/server-fn-demo",
     "examples/mcp-demo",
     "examples/fiddle",
     "examples/website",
@@ -183,6 +187,8 @@ backend-roku-transpile = { path = "crates/backend/roku/transpile" }
 backend-terminal = { path = "crates/backend/terminal" }
 backend-cpu = { path = "crates/backend/cpu" }
 backend-web = { path = "crates/backend/web" }
+backend-windows = { path = "crates/backend/windows" }
+backend-linux = { path = "crates/backend/linux" }
 render-api = { path = "crates/gpu-backend/api" }
 render-wgpu = { path = "crates/gpu-backend/engine" }
 ios-sim = { path = "crates/gpu-backend/painter/ios-sim" }
@@ -202,6 +208,7 @@ icons-lucide = { path = "crates/ui/icons-lucide" }
 maps-core = { path = "crates/sdk/maps-core" }
 maps = { path = "crates/sdk/maps" }
 maps-web = { path = "crates/sdk/maps-web" }
+maps-ios = { path = "crates/sdk/maps-ios" }
 idea-codeblock = { path = "crates/sdk/idea-codeblock" }
 webview = { path = "crates/sdk/webview" }
 video = { path = "crates/sdk/video" }

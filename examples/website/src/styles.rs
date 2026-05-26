@@ -17,6 +17,8 @@ use runtime_core::{
 };
 use idea_ui::IdeaThemeRef;
 
+use crate::typeface::INTER;
+
 // =============================================================================
 // Sidebar body
 //
@@ -45,6 +47,10 @@ stylesheet! {
             // divider line spans the whole viewport even when the
             // nav-link list is short.
             min_height: Length::pct(100.0),
+            // Inter for sidebar text; CSS inherits to every Text child.
+            // Sibling to the screen-scroll subtree, so we set it here
+            // too rather than relying on a shared ancestor.
+            font_family: &INTER,
         }
         transitions {
             background: 250ms EaseInOut,
@@ -118,6 +124,10 @@ stylesheet! {
             height: Length::pct(100.0),
             background: Tokenized::token("color-background", Color("#f7f5ef".into())),
             color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            // Inter for every screen. CSS-inherits down to every
+            // Text node unless an inner stylesheet overrides
+            // (currently only `CodeText`, which pins monospace).
+            font_family: &INTER,
         }
         transitions {
             background: 250ms EaseInOut,
@@ -128,13 +138,139 @@ stylesheet! {
 
 /// Padded wrapper for non-hero pages — gives them the same gutters
 /// the hero would use, without forcing it on the home page.
+///
+/// Numbers are literal-pixel (not theme-tokenized) because they're
+/// website-specific layout decisions, not theme tokens that should
+/// scale with `set_theme`. The values target a Material-UI-style
+/// reading experience: ~780 px max column for prose, 72 px between
+/// top-level sections (so H2 headings have a clear vertical gap
+/// from the preceding paragraph), 56 px outer padding so the column
+/// sits comfortably inside the drawer body.
 stylesheet! {
     pub PagePad<IdeaThemeRef> {
         base(_t) {
-            padding: Tokenized::token("spacing-xxl", Length::Px(32.0)),
-            gap: Tokenized::token("spacing-xl", Length::Px(24.0)),
+            padding: 56.0,
+            gap: 72.0,
             flex_direction: FlexDirection::Column,
-            max_width: 880.0,
+            max_width: 820.0,
+            // Centers the column within the screen-scroll wrapper.
+            // Without this the content sits flush-left against the
+            // sidebar's right edge; with it, the column gets equal
+            // gutters on both sides and reads as the intentional
+            // focal point.
+            align_self: runtime_core::AlignSelf::Center,
+            width: Length::pct(100.0),
+        }
+    }
+}
+
+// =============================================================================
+// Page row + table-of-contents panel
+//
+// `layout_with_toc(...)` (see `shell.rs`) wraps the page content in a
+// flex row: the PagePad column on the left, a sticky TOC on the
+// right. Wide-viewport docs sites (Material UI, the React docs, etc.)
+// have this pattern \u{2014} the TOC shows the H2/H3 outline and
+// highlights the section currently in view.
+// =============================================================================
+
+stylesheet! {
+    pub PageRow<IdeaThemeRef> {
+        base(_t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::FlexStart,
+            justify_content: JustifyContent::Center,
+            gap: 64.0,
+            padding: 56.0,
+            width: Length::pct(100.0),
+            max_width: 1200.0,
+            align_self: runtime_core::AlignSelf::Center,
+        }
+    }
+}
+
+stylesheet! {
+    pub PageColumn<IdeaThemeRef> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            gap: 72.0,
+            flex_basis: 0.0,
+            flex_grow: 1.0,
+            min_width: 0.0,
+            max_width: 820.0,
+        }
+    }
+}
+
+stylesheet! {
+    pub SectionWrap<IdeaThemeRef> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            gap: 16.0,
+        }
+    }
+}
+
+stylesheet! {
+    pub TocPanel<IdeaThemeRef> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            gap: Tokenized::token("spacing-xs", Length::Px(4.0)),
+            width: 220.0,
+            min_width: 220.0,
+            flex_shrink: 0.0,
+            padding_top: 8.0,
+            // Sticky positioning so the TOC stays in view as the
+            // page content scrolls. Web honours this directly; on
+            // native targets the SDK will fall back to Relative
+            // until the scroll-listener implementation lands (see
+            // `Position::Sticky` doc comment in runtime-core).
+            position: Position::Sticky,
+            top: Length::Px(32.0),
+        }
+    }
+}
+
+stylesheet! {
+    pub TocHeader<IdeaThemeRef> {
+        base(_t) {
+            color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+            font_size: 11.0,
+            font_weight: runtime_core::FontWeight::SemiBold,
+            letter_spacing: 0.8,
+            text_transform: runtime_core::TextTransform::Uppercase,
+            padding_bottom: 8.0,
+        }
+    }
+}
+
+stylesheet! {
+    pub TocLink<IdeaThemeRef> {
+        base(_t) {
+            padding_vertical: 6.0,
+            padding_left: 12.0,
+            border_left_width: 2.0,
+            border_left_color: Tokenized::token("color-border", Color("#e7e2d3".into())),
+            color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+            font_size: 13.0,
+            line_height: 18.0,
+            text_align: TextAlign::Left,
+        }
+        variant active {
+            #[default]
+            off(_t) {}
+            on(t) {
+                border_left_color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
+                color: Tokenized::token("intent-primary-fg", Color("#3947d6".into())),
+                font_weight: runtime_core::FontWeight::SemiBold,
+            }
+        }
+        state hovered(_t) {
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+        }
+        transitions {
+            color: 180ms EaseOut,
+            border_left_color: 180ms EaseOut,
         }
     }
 }
@@ -187,10 +323,10 @@ stylesheet! {
         base(_t) {
             position: Position::Relative,
             overflow: Overflow::Hidden,
-            padding_horizontal: 56.0,
-            padding_top: 96.0,
-            padding_bottom: 80.0,
-            gap: 24.0,
+            padding_horizontal: 64.0,
+            padding_top: 112.0,
+            padding_bottom: 96.0,
+            gap: 28.0,
             flex_direction: FlexDirection::Column,
             align_items: AlignItems::FlexStart,
             // Slight surface lift over the page background.
@@ -273,10 +409,10 @@ stylesheet! {
     pub HeroSubhead<IdeaThemeRef> {
         base(_t) {
             color: Tokenized::token("color-text-muted", Color("#5b5446".into())),
-            font_size: 20.0,
+            font_size: 21.0,
             font_weight: runtime_core::FontWeight::Normal,
-            line_height: 30.0,
-            max_width: 640.0,
+            line_height: 32.0,
+            max_width: 680.0,
         }
     }
 }
@@ -395,11 +531,11 @@ stylesheet! {
 stylesheet! {
     pub HomeSection<IdeaThemeRef> {
         base(_t) {
-            padding_horizontal: 56.0,
-            padding_vertical: 56.0,
-            gap: 24.0,
+            padding_horizontal: 64.0,
+            padding_vertical: 72.0,
+            gap: 28.0,
             flex_direction: FlexDirection::Column,
-            max_width: 1080.0,
+            max_width: 1120.0,
             align_self: runtime_core::AlignSelf::Center,
             width: Length::pct(100.0),
         }

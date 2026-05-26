@@ -1008,6 +1008,11 @@ fn position_css(v: runtime_core::Position) -> &'static str {
     match v {
         Position::Relative => "relative",
         Position::Absolute => "absolute",
+        // CSS `position: sticky` — the browser owns the pinning
+        // behavior entirely. The matching side fields on
+        // `StyleRules` (top / bottom / left / right) emit as
+        // standard CSS and tell the browser when to pin.
+        Position::Sticky => "sticky",
     }
 }
 

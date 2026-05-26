@@ -788,18 +788,20 @@ impl WebBackend {
     ///                       initial `nodeValue` synchronously
     ///                       inside this call (no empty-text flash).
     ///
-    /// **Each signal in `signal_ids` must have had
-    /// [`Self::register_signal_for_js`] called on it first** —
-    /// otherwise the binding registers but no signal change will
-    /// ever flow through to update it. This split (register signal
-    /// once, register binding per text node) avoids re-registering
-    /// the same per-signal stringifier on every binding.
+    /// Each signal in `signal_ids` should have a JS-side notifier
+    /// installed by the time this returns; the
+    /// [`runtime_core::Backend::register_reactive_text_binding`]
+    /// trait method that wraps this passes `stringifiers` and we
+    /// auto-register a notifier per signal here (only if one isn't
+    /// already installed — preserves notifiers a class-binding may
+    /// have set up on the same signal first).
     pub fn register_reactive_text_binding(
         &mut self,
         text_id: u32,
         signal_ids: &[u64],
         template_parts: &[&str],
         initial_values: &[&str],
+        stringifiers: &[std::rc::Rc<dyn Fn() -> String>],
     ) {
         use wasm_bindgen::JsValue;
         debug_assert_eq!(
@@ -812,7 +814,27 @@ impl WebBackend {
             signal_ids.len(),
             "initial_values must have one entry per signal id",
         );
+        debug_assert_eq!(
+            stringifiers.len(),
+            signal_ids.len(),
+            "stringifiers must have one entry per signal id",
+        );
         self.ensure_text_bindings_shim();
+
+        // Auto-install per-signal JS notifiers so writes to any
+        // bound signal flow through `__idealystOnSignalChanged` and
+        // the JS-side text dispatcher repaints the node. Skip
+        // signals that already have a notifier — a class binding
+        // (or an earlier text binding) may have set one up, and
+        // overwriting would stomp THEIR teardown path. The existing
+        // notifier still calls `__idealystOnSignalChanged`, which
+        // the text dispatcher taps regardless of who installed it.
+        for (sid, stringifier) in signal_ids.iter().zip(stringifiers.iter()) {
+            if !runtime_core::signal_has_js_notifier(*sid) {
+                let stringifier = stringifier.clone();
+                self.register_signal_for_js(*sid, move || stringifier());
+            }
+        }
         if self.binding_register_fn.is_none() {
             let window = web_sys::window().expect("no window");
             let f_val = js_sys::Reflect::get(
@@ -1644,6 +1666,7 @@ impl Backend for WebBackend {
         signal_ids: &[u64],
         template_parts: &[&str],
         initial_values: &[&str],
+        stringifiers: &[std::rc::Rc<dyn Fn() -> String>],
     ) {
         // Delegates to the inherent method on `WebBackend`. The
         // inherent method exists separately because it predates the
@@ -1655,6 +1678,7 @@ impl Backend for WebBackend {
             signal_ids,
             template_parts,
             initial_values,
+            stringifiers,
         )
     }
 

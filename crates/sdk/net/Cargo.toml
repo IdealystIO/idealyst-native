@@ -36,13 +36,43 @@ thiserror = "1"
 [target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))'.dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "http2"] }
 
-# Per-target transport deps are added alongside each transport's
-# real implementation:
-#   - Phase 2 (web):     gloo-net, wasm-bindgen, wasm-bindgen-futures
-#   - Phase 3 (iOS):     objc2, objc2-foundation, block2, futures-channel
-#   - Phase 4 (Android): jni, futures-channel
-# For now those targets compile against placeholder transports that
-# return `Error::Other("not yet implemented")` and need no extra deps.
+# Web (wasm) target: fetch via gloo-net + AbortController for cancel.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+gloo-net = { version = "0.6", features = ["http"] }
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["AbortController", "AbortSignal"] }
+
+# iOS / macOS / tvOS target: NSURLSession via objc2 + block2.
+# `futures-channel` bridges the completion callback to async/await.
+[target.'cfg(any(target_os = "ios", target_os = "macos", target_os = "tvos"))'.dependencies]
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = [
+    # Enables block-based method bindings (specifically
+    # `dataTaskWithRequest:completionHandler:` on NSURLSession).
+    "block2",
+    "NSURLSession",
+    "NSURLRequest",
+    "NSURLResponse",
+    "NSURL",
+    "NSString",
+    "NSData",
+    "NSError",
+    "NSDictionary",
+    "NSArray",
+    "NSEnumerator",
+    "NSObject",
+    "NSValue",
+] }
+block2 = "0.5"
+futures-channel = "0.3"
+
+# Android target: HttpURLConnection via JNI on a worker thread.
+# `ndk-context` exposes the host's JavaVM; `futures-channel` bridges
+# the worker thread's blocking call back to async.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+futures-channel = "0.3"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }

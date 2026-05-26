@@ -1,0 +1,44 @@
+[package]
+name = "backend-windows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Native Win32 backend for `runtime_core::Backend`. Uses raw HWND
+# subwindows for every framework primitive — Button HWND, Edit HWND
+# (TextInput), Static HWND (Text/Image), Trackbar (Slider), etc. —
+# mounted under a parent HWND owned by the host shell.
+#
+# Status: scaffold. The crate is structured but most primitives are
+# placeholder text — author code mounts without panicking and a
+# follow-up PR (driven by someone with a Windows test environment)
+# replaces each placeholder with the real Win32 widget. The lib
+# body is gated on `cfg(target_os = "windows")` so workspace builds
+# on macOS / Linux hosts compile this to an empty rlib without
+# pulling the `windows` crate into the dep graph.
+#
+# Test plan (when a VM/native env is available):
+# 1. `cargo check --target x86_64-pc-windows-msvc -p backend-windows`
+# 2. Create a tiny host that calls `WindowsBackend::new(hwnd)` and
+#    drives the framework's render loop.
+# 3. Confirm Text + Button render via real HWNDs (placeholder text
+#    is fine for everything else for now).
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+runtime-core = { workspace = true }
+runtime-layout = { workspace = true }
+
+# The `windows` crate ships pre-generated Win32 bindings. Feature
+# flags are per-namespace; we only need the minimum surface to host
+# child controls. More features can be added as primitives go from
+# placeholder → real widget.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Controls",
+] }

@@ -3,31 +3,43 @@
 use runtime_core::{ui, Primitive};
 use idea_ui::{stack, typography, StackGap, TypographyKind, TypographyTone};
 
-use crate::pages::common::{code_panel, page_header};
+use crate::pages::common::{code_panel, page_header, page_section};
 use crate::routes::CONCEPTS_ROUTE;
-use crate::shell::layout;
-use crate::styles::PagePad;
+use crate::shell::{layout_with_toc, TocEntry};
 
 pub fn page() -> Primitive {
-    let pad = PagePad();
+    const SCAFFOLD: &str = "scaffold";
+    const LAYOUT: &str = "project-layout";
+    const RUN_WEB: &str = "run-web";
+    const RUN_NATIVE: &str = "run-native";
+    const EDIT: &str = "make-a-change";
+    const NEXT: &str = "next";
+
+    let toc = vec![
+        TocEntry { id: SCAFFOLD, label: "Scaffold a project" },
+        TocEntry { id: LAYOUT, label: "Project layout" },
+        TocEntry { id: RUN_WEB, label: "Run on web" },
+        TocEntry { id: RUN_NATIVE, label: "Run on iOS / Android" },
+        TocEntry { id: EDIT, label: "Make a change" },
+        TocEntry { id: NEXT, label: "Next: understand the model" },
+    ];
+
     let content = ui! {
-        View(style = pad) {
-            Stack(gap = StackGap::Xl) {
-                { page_header(
-                    "Quickstart",
-                    "Scaffold a new project, edit one file, and watch it run on web, \
-                     iOS, and Android with hot-reload."
-                ) }
-                { scaffold() }
-                { layout_section() }
-                { run_web() }
-                { run_native() }
-                { edit_and_reload() }
-                { next() }
-            }
+        Stack(gap = StackGap::Xl) {
+            { page_header(
+                "Quickstart",
+                "Scaffold a new project, edit one file, and watch it run on web, \
+                 iOS, and Android with hot-reload."
+            ) }
+            { page_section(SCAFFOLD, vec![scaffold()]) }
+            { page_section(LAYOUT, vec![layout_section()]) }
+            { page_section(RUN_WEB, vec![run_web()]) }
+            { page_section(RUN_NATIVE, vec![run_native()]) }
+            { page_section(EDIT, vec![edit_and_reload()]) }
+            { page_section(NEXT, vec![next()]) }
         }
     };
-    layout(content)
+    layout_with_toc(content, toc)
 }
 
 fn scaffold() -> Primitive {

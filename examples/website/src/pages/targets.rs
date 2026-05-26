@@ -3,34 +3,52 @@
 use runtime_core::{ui, Primitive};
 use idea_ui::{stack, typography, StackGap, TypographyKind, TypographyTone};
 
-use crate::pages::common::page_header;
+use crate::pages::common::{page_header, page_section};
 use crate::routes::BACKENDS_ROUTE;
-use crate::shell::layout;
-use crate::styles::PagePad;
+use crate::shell::{layout_with_toc, TocEntry};
 
 pub fn page() -> Primitive {
-    let pad = PagePad();
+    const PHONES: &str = "phones";
+    const DESKTOPS: &str = "desktops";
+    const BROWSER: &str = "browsers";
+    const NATIVE_GPU: &str = "native-gpu";
+    const EMBEDDED: &str = "embedded";
+    const TTY: &str = "terminal";
+    const TV: &str = "television";
+    const EXTENDING: &str = "extending";
+    const STATUS: &str = "implementation-status";
+
+    let toc = vec![
+        TocEntry { id: PHONES, label: "Phones" },
+        TocEntry { id: DESKTOPS, label: "Desktops" },
+        TocEntry { id: BROWSER, label: "Browsers" },
+        TocEntry { id: NATIVE_GPU, label: "Native GPU rendering" },
+        TocEntry { id: EMBEDDED, label: "Embedded & custom" },
+        TocEntry { id: TTY, label: "Terminal" },
+        TocEntry { id: TV, label: "Television" },
+        TocEntry { id: EXTENDING, label: "Adding your own target" },
+        TocEntry { id: STATUS, label: "Implementation status" },
+    ];
+
     let content = ui! {
-        View(style = pad) {
-            Stack(gap = StackGap::Xl) {
-                { page_header(
-                    "Every target",
-                    "The full list of platforms idealyst runs on, plus the path to teach \
-                     it about a new one. If you can drive it from code, you can ship to it."
-                ) }
-                { phones() }
-                { desktops() }
-                { browser() }
-                { native_gpu() }
-                { embedded() }
-                { tty() }
-                { tv() }
-                { extending() }
-                { status_link() }
-            }
+        Stack(gap = StackGap::Xl) {
+            { page_header(
+                "Every target",
+                "The full list of platforms idealyst runs on, plus the path to teach \
+                 it about a new one. If you can drive it from code, you can ship to it."
+            ) }
+            { page_section(PHONES, vec![phones()]) }
+            { page_section(DESKTOPS, vec![desktops()]) }
+            { page_section(BROWSER, vec![browser()]) }
+            { page_section(NATIVE_GPU, vec![native_gpu()]) }
+            { page_section(EMBEDDED, vec![embedded()]) }
+            { page_section(TTY, vec![tty()]) }
+            { page_section(TV, vec![tv()]) }
+            { page_section(EXTENDING, vec![extending()]) }
+            { page_section(STATUS, vec![status_link()]) }
         }
     };
-    layout(content)
+    layout_with_toc(content, toc)
 }
 
 fn target_row(title: &str, blurb: &str) -> Primitive {

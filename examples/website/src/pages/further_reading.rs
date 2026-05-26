@@ -3,29 +3,37 @@
 use runtime_core::{ui, Primitive};
 use idea_ui::{stack, typography, StackGap, TypographyKind, TypographyTone};
 
-use crate::pages::common::page_header;
-use crate::shell::layout;
-use crate::styles::PagePad;
+use crate::pages::common::{page_header, page_section};
+use crate::shell::{layout_with_toc, TocEntry};
 
 pub fn page() -> Primitive {
-    let pad = PagePad();
+    const SOURCE: &str = "source";
+    const DOCS: &str = "design-docs";
+    const CRATES: &str = "crate-readmes";
+    const ACK: &str = "acknowledgements";
+
+    let toc = vec![
+        TocEntry { id: SOURCE, label: "Source" },
+        TocEntry { id: DOCS, label: "Design documents" },
+        TocEntry { id: CRATES, label: "Per-crate READMEs" },
+        TocEntry { id: ACK, label: "Acknowledgements" },
+    ];
+
     let content = ui! {
-        View(style = pad) {
-            Stack(gap = StackGap::Xl) {
-                { page_header(
-                    "Further reading",
-                    "Where to go for the long answers \u{2014} design docs, per-crate \
-                     READMEs, the GitHub repository, and the projects that inspired \
-                     this one."
-                ) }
-                { source_section() }
-                { docs_section() }
-                { crate_readmes() }
-                { acknowledgements() }
-            }
+        Stack(gap = StackGap::Xl) {
+            { page_header(
+                "Further reading",
+                "Where to go for the long answers \u{2014} design docs, per-crate \
+                 READMEs, the GitHub repository, and the projects that inspired \
+                 this one."
+            ) }
+            { page_section(SOURCE, vec![source_section()]) }
+            { page_section(DOCS, vec![docs_section()]) }
+            { page_section(CRATES, vec![crate_readmes()]) }
+            { page_section(ACK, vec![acknowledgements()]) }
         }
     };
-    layout(content)
+    layout_with_toc(content, toc)
 }
 
 fn source_section() -> Primitive {

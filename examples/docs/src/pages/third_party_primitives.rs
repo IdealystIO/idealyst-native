@@ -138,10 +138,13 @@ docs! {
             #[cfg(target_arch = "wasm32")]
             pub use maps_web::register;
 
+            #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
+            pub use maps_ios::register;
+
             // Fallback for platforms with no leaf. User code compiles
             // identically on every target; the framework renders its
             // "not supported" placeholder at runtime.
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
             pub fn register<B>(_backend: &mut B) {}
         "##),
 
@@ -155,6 +158,9 @@ docs! {
 
             [target.'cfg(target_arch = "wasm32")'.dependencies]
             maps-web = { workspace = true }
+
+            [target.'cfg(target_os = "ios")'.dependencies]
+            maps-ios = { workspace = true }
         "##),
     },
 

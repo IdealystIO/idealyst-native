@@ -5,28 +5,34 @@ use std::rc::Rc;
 use runtime_core::{bind, signal, text_fmt, ui, Primitive};
 use idea_ui::{btn, card, stack, typography, ButtonKind, IntentTag, StackGap, TypographyKind, TypographyTone};
 
-use crate::pages::common::{code_panel, page_header};
-use crate::shell::layout;
-use crate::styles::PagePad;
+use crate::pages::common::{code_panel, page_header, page_section};
+use crate::shell::{layout_with_toc, TocEntry};
 
 pub fn page() -> Primitive {
-    let pad = PagePad();
+    const LIVE: &str = "live-counter";
+    const SOURCE: &str = "whole-source";
+    const EXPLAIN: &str = "what-happened";
+
+    let toc = vec![
+        TocEntry { id: LIVE, label: "Live counter" },
+        TocEntry { id: SOURCE, label: "The whole source" },
+        TocEntry { id: EXPLAIN, label: "What just happened" },
+    ];
+
     let content = ui! {
-        View(style = pad) {
-            Stack(gap = StackGap::Xl) {
-                { page_header(
-                    "Counter",
-                    "The canonical reactive counter \u{2014} fifteen lines of code, no \
-                     virtual DOM, no re-render passes. Click the buttons; the framework \
-                     mutates exactly the text node bound to the count signal."
-                ) }
-                { live_demo() }
-                { source() }
-                { explanation() }
-            }
+        Stack(gap = StackGap::Xl) {
+            { page_header(
+                "Counter",
+                "The canonical reactive counter \u{2014} fifteen lines of code, no \
+                 virtual DOM, no re-render passes. Click the buttons; the framework \
+                 mutates exactly the text node bound to the count signal."
+            ) }
+            { page_section(LIVE, vec![live_demo()]) }
+            { page_section(SOURCE, vec![source()]) }
+            { page_section(EXPLAIN, vec![explanation()]) }
         }
     };
-    layout(content)
+    layout_with_toc(content, toc)
 }
 
 fn live_demo() -> Primitive {

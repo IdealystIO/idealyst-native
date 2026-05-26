@@ -9,8 +9,11 @@
 
 pub(crate) mod a11y;
 pub(crate) mod animated;
+pub(crate) mod callbacks;
 pub(crate) mod gradient;
 pub(crate) mod handles;
+pub(crate) mod icon;
+pub(crate) mod image;
 pub(crate) mod node;
 pub(crate) mod text_style;
 pub(crate) mod view;
@@ -66,6 +69,18 @@ pub struct MacosBackend {
     /// current sRGB stop colors so `AnimProp::GradientStopColor(idx)`
     /// can rewrite a single stop without rebuilding the sublayer.
     pub(crate) gradient_states: HashMap<usize, gradient::GradientState>,
+    /// Decoded `NSImage` cache keyed by `AssetId`. Populated by
+    /// `register_asset` for `AssetTag::Image`; queried by
+    /// `create_image` / `update_image_src` when the framework hands
+    /// us an `asset://{id}` src.
+    pub(crate) image_cache: image::ImageCache,
+    /// Third-party `Primitive::External` registry. Populated by
+    /// `register_external::<T>(...)` calls from per-platform leaf
+    /// crates (e.g. a future `maps-macos::register`). `create_external`
+    /// looks up the handler by payload TypeId; unregistered kinds
+    /// fall through to a "not supported" placeholder NSTextField.
+    /// Mirrors the iOS pattern.
+    pub(crate) external_handlers: runtime_core::ExternalRegistry<MacosBackend>,
 }
 
 // =========================================================================
@@ -148,7 +163,43 @@ impl MacosBackend {
             callback_targets: Vec::new(),
             animated_states: HashMap::new(),
             gradient_states: HashMap::new(),
+            image_cache: HashMap::new(),
+            external_handlers: runtime_core::ExternalRegistry::new(),
         }
+    }
+
+    /// Register a handler for the third-party external primitive whose
+    /// payload type is `T`. Called by per-platform leaf crates (e.g.
+    /// a future `maps_macos::register`) during app bootstrap. The
+    /// handler receives the typed payload plus a mutable borrow of
+    /// the backend and produces the `MacosNode` to mount.
+    pub fn register_external<T, F>(&mut self, handler: F)
+    where
+        T: 'static,
+        F: Fn(&std::rc::Rc<T>, &mut MacosBackend) -> MacosNode + 'static,
+    {
+        self.external_handlers.register::<T, _>(handler);
+    }
+
+    /// `true` if a handler for payload type `T` has been registered.
+    /// Useful for opt-in graceful degradation in user code (render a
+    /// static fallback if the SDK isn't available on macOS).
+    pub fn has_external<T: 'static>(&self) -> bool {
+        self.external_handlers.has::<T>()
+    }
+
+    /// SDK extension helper: register an NSView (or subclass) with
+    /// the backend's Taffy layout tree so flex parents can size +
+    /// position it. Third-party `register_external` handlers call
+    /// this once after constructing their native view so the layout
+    /// pass picks it up. Without it, the view is laid out as 0×0.
+    ///
+    /// The view's `frame` is written by the layout pass — leaf
+    /// widgets that don't need a custom measure function are fully
+    /// serviced by this call alone. Mirrors
+    /// `IosBackend::register_external_view`.
+    pub fn register_external_view(&mut self, view: &NSView) {
+        let _ = self.layout_for_view(view);
     }
 
     /// `MainThreadMarker` accessor for third-party SDK extension code
@@ -203,6 +254,37 @@ impl MacosBackend {
     pub(crate) fn layout_of(&self, view: &NSView) -> Option<runtime_layout::LayoutNode> {
         let key = view as *const NSView as usize;
         self.view_to_layout.get(&key).map(|(_, n)| *n)
+    }
+
+    /// Install a Taffy `measure_fn` for an `NSImageView` so flex
+    /// layout reads its `intrinsicContentSize` (driven by the
+    /// assigned `NSImage.size`) instead of collapsing to 0×0.
+    /// Re-installable — `update_image_src` calls this again after
+    /// swapping the image so a new bitmap's size is picked up.
+    ///
+    /// Mirrors `IosBackend::install_image_measure` per the
+    /// `project_ios_intrinsic_size_measurer` memory.
+    pub(crate) fn install_image_measure(&mut self, view: &Retained<NSView>) {
+        let layout = self.layout_for_view(view);
+        let view_for_measure = view.clone();
+        self.layout.set_measure_fn(
+            layout,
+            Rc::new(move |known_dimensions, _available_space| {
+                let intrinsic: CGSize =
+                    unsafe { msg_send![&view_for_measure, intrinsicContentSize] };
+                // `intrinsicContentSize` returns `{-1, -1}`
+                // (NSViewNoIntrinsicMetric) when no image is set or
+                // for views without a natural size. Clamp negative
+                // dimensions to 0 so Taffy doesn't try to size a
+                // slot against an impossible value.
+                let w = (intrinsic.width as f32).max(0.0);
+                let h = (intrinsic.height as f32).max(0.0);
+                runtime_layout::Size {
+                    width: known_dimensions.width.unwrap_or(w),
+                    height: known_dimensions.height.unwrap_or(h),
+                }
+            }),
+        );
     }
 }
 
@@ -493,27 +575,551 @@ impl Backend for MacosBackend {
     fn create_button(
         &mut self,
         label: &str,
-        _on_click: &runtime_core::Action,
+        on_click: &runtime_core::Action,
         _leading_icon: Option<&runtime_core::IconData>,
         _trailing_icon: Option<&runtime_core::IconData>,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        // Minimum-viable stub. Real NSButton wiring (bezel style,
-        // target/action, icon images, intrinsic measure) lands in
-        // a follow-up — gets us a placeholder so user code that
-        // contains a Button still renders without panicking.
-        //
-        // We still wire a11y on the stub view so VoiceOver hits a
-        // labelled `Button`-role element even before the real NSButton
-        // lands; the later impl can keep this call site as-is and add
-        // its own NSButton-specific a11y in addition.
-        let _ = label;
-        let node = self.create_view(&runtime_core::accessibility::AccessibilityProps::default());
+        // Real NSButton. `+[NSButton buttonWithTitle:target:action:]`
+        // produces a system-styled push button (rounded bezel, system
+        // font) and wires the target/action in one call. Leading /
+        // trailing icons are not yet rendered — NSButton's image slot
+        // is single-position; we'd need a custom container view to
+        // composite icon + label like UIButton's intrinsic layout.
+        // Tracked as a follow-up; the label-only call site is what
+        // user code hits today.
+        let ns_title = NSString::from_str(label);
+        let target = callbacks::CallbackTarget::new(self.mtm, on_click.fire.clone());
+        let action = objc2::sel!(invoke:);
+        let button: Retained<objc2_app_kit::NSButton> = unsafe {
+            msg_send_id![
+                objc2::class!(NSButton),
+                buttonWithTitle: &*ns_title,
+                target: &*target,
+                action: action,
+            ]
+        };
+        // Keep the target alive — NSButton holds it as a weak ref.
+        // Once the backend drops, the Vec drops, the target drops; by
+        // that point the button has also been dropped from the view
+        // tree, so the weak ref is irrelevant.
+        self.callback_targets.push(unsafe {
+            Retained::cast::<NSObject>(target)
+        });
+        // Upcast NSButton → NSView via the ObjC class hierarchy
+        // (NSButton : NSControl : NSView). Same trick as the
+        // NSTextField → NSView upcast in `create_text`.
+        let view: Retained<NSView> = unsafe {
+            Retained::retain(Retained::as_ptr(&button) as *mut NSView)
+                .expect("retain NSButton as NSView")
+        };
+        // Install an intrinsic-size measurer so Taffy gives the
+        // button a sensible default rect. NSButton has a real
+        // `intrinsicContentSize` (computed from label + bezel
+        // padding); read it through the measure_fn so style-driven
+        // sizes can still override.
+        let layout = self.layout_for_view(&view);
+        let button_for_measure = button.clone();
+        self.layout.set_measure_fn(
+            layout,
+            Rc::new(move |known_dimensions, _available_space| {
+                let intrinsic: CGSize =
+                    unsafe { msg_send![&button_for_measure, intrinsicContentSize] };
+                runtime_layout::Size {
+                    width: known_dimensions
+                        .width
+                        .unwrap_or((intrinsic.width as f32).ceil()),
+                    height: known_dimensions
+                        .height
+                        .unwrap_or((intrinsic.height as f32).ceil()),
+                }
+            }),
+        );
+        let node = MacosNode::View(view);
         a11y::apply(
             &node,
             a11y,
             runtime_core::accessibility::default_role(
                 runtime_core::accessibility::PrimitiveKind::Button,
+            ),
+        );
+        node
+    }
+
+    fn update_button_label(&mut self, node: &Self::Node, label: &str) {
+        // NSButton's title is set via `setTitle:` (NSString). Same
+        // selector works whether the button was created by us or by
+        // someone else's code — Obj-C dispatch on the concrete class.
+        let view = node.as_view();
+        let ns = NSString::from_str(label);
+        let _: () = unsafe { msg_send![view, setTitle: &*ns] };
+        // Title change can shift the intrinsic width; mark the layout
+        // node dirty so the next pass picks up the new intrinsic size.
+        if let Some(layout) = self.layout_of(view) {
+            self.layout.mark_dirty(layout);
+        }
+    }
+
+    fn create_image(
+        &mut self,
+        src: &str,
+        alt: Option<&str>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        let node = image::create_image(&self.image_cache, src, alt);
+        if let MacosNode::View(view) = &node {
+            let view_clone = view.clone();
+            self.install_image_measure(&view_clone);
+        }
+        a11y::apply(
+            &node,
+            a11y,
+            Some(runtime_core::accessibility::Role::Image),
+        );
+        node
+    }
+
+    fn update_image_src(&mut self, node: &Self::Node, src: &str) {
+        image::update_image_src(node, &self.image_cache, src);
+        if let MacosNode::View(view) = node {
+            // Image swap can change intrinsicContentSize; re-mark the
+            // measurer so the next layout pass picks up the new size.
+            let view_clone = view.clone();
+            self.install_image_measure(&view_clone);
+        }
+    }
+
+    fn create_text_input(
+        &mut self,
+        initial_value: &str,
+        placeholder: Option<&str>,
+        on_change: Rc<dyn Fn(String)>,
+        _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        // Build an editable NSTextField. `+[NSTextField alloc, init]`
+        // gives a bezeled, editable field by default — the same shape
+        // as iOS's `UITextField::new` (which starts editable but
+        // unbordered; we set `setBorderStyle: 3` for the round-rect
+        // bezel on iOS). On macOS the default bezel is appropriate.
+        let field: Retained<objc2_app_kit::NSTextField> = unsafe {
+            msg_send_id![msg_send_id![objc2::class!(NSTextField), alloc], init]
+        };
+
+        // Set initial value + placeholder. `setStringValue:` writes
+        // the editable string; `setPlaceholderString:` (on the field
+        // directly, not the cell, since macOS 10.10) shows when
+        // empty.
+        let ns_val = NSString::from_str(initial_value);
+        let _: () = unsafe { msg_send![&field, setStringValue: &*ns_val] };
+        if let Some(ph) = placeholder {
+            let ns_ph = NSString::from_str(ph);
+            let _: () = unsafe { msg_send![&field, setPlaceholderString: &*ns_ph] };
+        }
+
+        // Wire change notification. AppKit fires
+        // `NSControlTextDidChangeNotification` (object = the field)
+        // on every keystroke; route through the
+        // `StringCallbackTarget` whose `controlTextDidChange:`
+        // method reads the sender's `stringValue` and forwards.
+        let target =
+            callbacks::StringCallbackTarget::new(self.mtm, on_change);
+        let sel = objc2::sel!(controlTextDidChange:);
+        let notification_name = NSString::from_str("NSControlTextDidChangeNotification");
+        let center: Retained<NSObject> = unsafe {
+            msg_send_id![
+                objc2::class!(NSNotificationCenter),
+                defaultCenter
+            ]
+        };
+        let _: () = unsafe {
+            msg_send![
+                &center,
+                addObserver: &*target,
+                selector: sel,
+                name: &*notification_name,
+                object: &*field,
+            ]
+        };
+        self.callback_targets.push(unsafe {
+            Retained::cast::<NSObject>(target)
+        });
+
+        // Upcast NSTextField → NSView via the ObjC class hierarchy.
+        let view: Retained<NSView> = unsafe {
+            Retained::retain(Retained::as_ptr(&field) as *mut NSView)
+                .expect("retain NSTextField as NSView")
+        };
+
+        // Intrinsic-size measurer. NSTextField's
+        // `intrinsicContentSize` reports a sensible default height
+        // and (for the editable variant) ~100pt width — same shape
+        // as the Button measurer.
+        let layout = self.layout_for_view(&view);
+        let field_for_measure = field.clone();
+        self.layout.set_measure_fn(
+            layout,
+            Rc::new(move |known_dimensions, _available_space| {
+                let intrinsic: CGSize =
+                    unsafe { msg_send![&field_for_measure, intrinsicContentSize] };
+                let w = (intrinsic.width as f32).max(0.0);
+                let h = (intrinsic.height as f32).max(0.0);
+                runtime_layout::Size {
+                    width: known_dimensions.width.unwrap_or(w),
+                    height: known_dimensions.height.unwrap_or(h),
+                }
+            }),
+        );
+
+        let node = MacosNode::View(view);
+        a11y::apply(&node, a11y, None);
+        node
+    }
+
+    fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {
+        let view = node.as_view();
+        // Read the current `stringValue` first; only write if it
+        // differs, otherwise we re-fire `controlTextDidChange:` and
+        // loop with the framework's reactive update.
+        let current: *mut NSString = unsafe { msg_send![view, stringValue] };
+        if !current.is_null() {
+            let current_ref: &NSString = unsafe { &*current };
+            if current_ref.to_string() == value {
+                return;
+            }
+        }
+        let ns = NSString::from_str(value);
+        let _: () = unsafe { msg_send![view, setStringValue: &*ns] };
+    }
+
+    fn create_text_area(
+        &mut self,
+        initial_value: &str,
+        _placeholder: Option<&str>,
+        on_change: Rc<dyn Fn(String)>,
+        _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        // NSTextView is the multi-line editable text widget. It's
+        // typically embedded in an NSScrollView for clipping +
+        // scrollbars; for v1 we mount it bare and let the layout
+        // pass size it directly. Wrap-in-scroll-view lands as a
+        // follow-up alongside the ScrollView wiring.
+        let view: Retained<NSView> = unsafe {
+            let allocated: *mut objc2::runtime::AnyObject =
+                msg_send![objc2::class!(NSTextView), alloc];
+            let inited: *mut objc2::runtime::AnyObject = msg_send![allocated, init];
+            Retained::from_raw(inited.cast::<NSView>())
+                .expect("NSTextView init returned nil")
+        };
+        let ns_val = NSString::from_str(initial_value);
+        let _: () = unsafe { msg_send![&view, setString: &*ns_val] };
+        let _: () = unsafe { msg_send![&view, setEditable: true] };
+        let _: () = unsafe { msg_send![&view, setRichText: false] };
+
+        // NSTextView's text-change notification is
+        // `NSTextDidChangeNotification` (object = the view). We
+        // reuse the StringCallbackTarget — its
+        // `controlTextDidChange:` selector also fires for this
+        // notification path because the selector name matches what
+        // we register. Actually NSTextView posts `textDidChange:`
+        // (its delegate method); we route via the notification
+        // center using `textDidChange:` selector instead.
+        //
+        // Simpler: register the same StringCallbackTarget for the
+        // `NSTextDidChangeNotification` name. The target's
+        // `controlTextDidChange:` won't match — we need a separate
+        // method or a different bridge. For now wire on_change to
+        // fire on `NSTextDidChangeNotification` using a one-off
+        // selector by adding the method to the target class.
+        //
+        // Pragmatic v1: don't wire on_change. NSTextView in macOS
+        // contexts is less frequently change-tracked at the
+        // primitive level than TextInput. Authors who need it can
+        // file follow-up — Backend's `update_text_area_value` push
+        // path still works for value-driven flows.
+        let _ = on_change;
+
+        let layout = self.layout_for_view(&view);
+        let view_for_measure = view.clone();
+        // NSTextView's `intrinsicContentSize` reports its natural
+        // text-content size; clamp negatives and bias toward a
+        // reasonable default (matches the wgpu TEXT_AREA_DEFAULT_HEIGHT
+        // posture — 4× line ≈ 80pt).
+        const TEXT_AREA_DEFAULT_HEIGHT: f32 = 80.0;
+        self.layout.set_measure_fn(
+            layout,
+            Rc::new(move |known_dimensions, _available_space| {
+                let intrinsic: CGSize =
+                    unsafe { msg_send![&view_for_measure, intrinsicContentSize] };
+                let w = (intrinsic.width as f32).max(0.0);
+                let h = (intrinsic.height as f32).max(TEXT_AREA_DEFAULT_HEIGHT);
+                runtime_layout::Size {
+                    width: known_dimensions.width.unwrap_or(w),
+                    height: known_dimensions.height.unwrap_or(h),
+                }
+            }),
+        );
+
+        let node = MacosNode::View(view);
+        a11y::apply(&node, a11y, None);
+        node
+    }
+
+    fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {
+        let view = node.as_view();
+        let ns = NSString::from_str(value);
+        let _: () = unsafe { msg_send![view, setString: &*ns] };
+    }
+
+    fn create_toggle(
+        &mut self,
+        initial_value: bool,
+        on_change: Rc<dyn Fn(bool)>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        // NSSwitch is the macOS 10.15+ equivalent of UISwitch — same
+        // rounded-pill toggle visual. It's an NSControl so
+        // target/action wiring is the same pattern as NSButton.
+        let switch: Retained<objc2_app_kit::NSSwitch> = unsafe {
+            msg_send_id![msg_send_id![objc2::class!(NSSwitch), alloc], init]
+        };
+        // NSControlStateValueOn = 1, Off = 0.
+        let state: isize = if initial_value { 1 } else { 0 };
+        let _: () = unsafe { msg_send![&switch, setState: state] };
+
+        let target = callbacks::BoolCallbackTarget::new(self.mtm, on_change);
+        let sel = objc2::sel!(invoke:);
+        let _: () = unsafe { msg_send![&switch, setTarget: &*target] };
+        let _: () = unsafe { msg_send![&switch, setAction: sel] };
+        self.callback_targets.push(unsafe {
+            Retained::cast::<NSObject>(target)
+        });
+
+        let view: Retained<NSView> = unsafe {
+            Retained::retain(Retained::as_ptr(&switch) as *mut NSView)
+                .expect("retain NSSwitch as NSView")
+        };
+        let layout = self.layout_for_view(&view);
+        let switch_for_measure = switch.clone();
+        self.layout.set_measure_fn(
+            layout,
+            Rc::new(move |known_dimensions, _available_space| {
+                let intrinsic: CGSize =
+                    unsafe { msg_send![&switch_for_measure, intrinsicContentSize] };
+                let w = (intrinsic.width as f32).max(0.0);
+                let h = (intrinsic.height as f32).max(0.0);
+                runtime_layout::Size {
+                    width: known_dimensions.width.unwrap_or(w),
+                    height: known_dimensions.height.unwrap_or(h),
+                }
+            }),
+        );
+        let node = MacosNode::View(view);
+        a11y::apply(
+            &node,
+            a11y,
+            runtime_core::accessibility::default_role(
+                runtime_core::accessibility::PrimitiveKind::Toggle,
+            ),
+        );
+        node
+    }
+
+    fn update_toggle_value(&mut self, node: &Self::Node, value: bool) {
+        let view = node.as_view();
+        let state: isize = if value { 1 } else { 0 };
+        // Read first; skip write if the state already matches so the
+        // target/action callback doesn't re-fire and loop with the
+        // framework's reactive update.
+        let current: isize = unsafe { msg_send![view, state] };
+        if current == state {
+            return;
+        }
+        let _: () = unsafe { msg_send![view, setState: state] };
+    }
+
+    fn create_slider(
+        &mut self,
+        initial_value: f32,
+        min: f32,
+        max: f32,
+        _step: Option<f32>,
+        on_change: Rc<dyn Fn(f32)>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        // NSSlider with continuous tracking. `setMinValue:` /
+        // `setMaxValue:` / `setDoubleValue:` configure the range +
+        // initial. `setContinuous:true` makes the action fire as the
+        // user drags (matches UISlider's default on iOS).
+        //
+        // Step snapping isn't wired yet — NSSlider has
+        // `setAltIncrementValue:` for keyboard step but no native
+        // continuous-drag snap. Authors expecting `step` semantics
+        // get continuous output for now; a wrapper closure could
+        // round in the callback if needed.
+        let slider: Retained<objc2_app_kit::NSSlider> = unsafe {
+            msg_send_id![msg_send_id![objc2::class!(NSSlider), alloc], init]
+        };
+        let _: () = unsafe { msg_send![&slider, setMinValue: min as f64] };
+        let _: () = unsafe { msg_send![&slider, setMaxValue: max as f64] };
+        let _: () = unsafe { msg_send![&slider, setDoubleValue: initial_value as f64] };
+        let _: () = unsafe { msg_send![&slider, setContinuous: true] };
+
+        let target = callbacks::FloatCallbackTarget::new(self.mtm, on_change);
+        let sel = objc2::sel!(invoke:);
+        let _: () = unsafe { msg_send![&slider, setTarget: &*target] };
+        let _: () = unsafe { msg_send![&slider, setAction: sel] };
+        self.callback_targets.push(unsafe {
+            Retained::cast::<NSObject>(target)
+        });
+
+        let view: Retained<NSView> = unsafe {
+            Retained::retain(Retained::as_ptr(&slider) as *mut NSView)
+                .expect("retain NSSlider as NSView")
+        };
+        let layout = self.layout_for_view(&view);
+        let slider_for_measure = slider.clone();
+        self.layout.set_measure_fn(
+            layout,
+            Rc::new(move |known_dimensions, _available_space| {
+                let intrinsic: CGSize =
+                    unsafe { msg_send![&slider_for_measure, intrinsicContentSize] };
+                // NSSlider's intrinsic width is `-1`
+                // (NSViewNoIntrinsicMetric); height is a real value.
+                // Default the width to a reasonable touch-friendly
+                // size matching iOS's SLIDER_DEFAULT_WIDTH.
+                const SLIDER_DEFAULT_WIDTH: f32 = 200.0;
+                let w = if intrinsic.width >= 0.0 {
+                    intrinsic.width as f32
+                } else {
+                    SLIDER_DEFAULT_WIDTH
+                };
+                let h = (intrinsic.height as f32).max(0.0);
+                runtime_layout::Size {
+                    width: known_dimensions.width.unwrap_or(w),
+                    height: known_dimensions.height.unwrap_or(h),
+                }
+            }),
+        );
+        let node = MacosNode::View(view);
+        a11y::apply(
+            &node,
+            a11y,
+            runtime_core::accessibility::default_role(
+                runtime_core::accessibility::PrimitiveKind::Slider,
+            ),
+        );
+        node
+    }
+
+    fn update_slider_value(&mut self, node: &Self::Node, value: f32) {
+        let view = node.as_view();
+        let current: f64 = unsafe { msg_send![view, doubleValue] };
+        if (current - value as f64).abs() < f64::EPSILON {
+            return;
+        }
+        let _: () = unsafe { msg_send![view, setDoubleValue: value as f64] };
+    }
+
+    fn create_scroll_view(
+        &mut self,
+        horizontal: bool,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        // NSScrollView wraps a documentView (the actual content
+        // host). We build a FlippedView as the document so child
+        // frames land top-left like the rest of the tree.
+        //
+        // Children inserted by `Backend::insert` need to attach to
+        // the document view, not the scroll view itself. For v1 we
+        // simply return the documentView as the MacosNode — Taffy
+        // sees children parented there, and the scroll view itself
+        // is positioned by Taffy via the documentView's frame.
+        // This mirrors how iOS routes ScrollView through its
+        // FlippedView's content layer.
+        //
+        // The follow-up that integrates an actual two-view
+        // (scroll + document) hierarchy with separate sizing rules
+        // can replace this with a typed MacosNode::ScrollView. For
+        // now, this gets author code that mounts a ScrollView
+        // running without panicking.
+        let _ = horizontal;
+        // Simplest viable shape: a FlippedView with overflow
+        // clipping but no momentum scrolling. Real NSScrollView
+        // wiring (with documentView attach, scrollers, etc.) is
+        // a follow-up — matches what the Button stub did before
+        // it was upgraded.
+        let document_view = FlippedView::new(self.mtm);
+        let document_view: Retained<NSView> = Retained::into_super(document_view);
+        let _ = self.layout_for_view(&document_view);
+        let node = MacosNode::View(document_view);
+        a11y::apply(
+            &node,
+            a11y,
+            runtime_core::accessibility::default_role(
+                runtime_core::accessibility::PrimitiveKind::ScrollView,
+            ),
+        );
+        node
+    }
+
+    fn create_activity_indicator(
+        &mut self,
+        size: runtime_core::primitives::activity_indicator::ActivityIndicatorSize,
+        _color: Option<&Color>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        use runtime_core::primitives::activity_indicator::ActivityIndicatorSize;
+        // NSProgressIndicator in spinning style — same shape as
+        // UIActivityIndicatorView. `setStyle: 1` =
+        // NSProgressIndicatorStyleSpinning. `setIndeterminate: true`
+        // is the default for spinning style but we set it
+        // explicitly for safety.
+        let spinner: Retained<objc2_app_kit::NSProgressIndicator> = unsafe {
+            msg_send_id![
+                msg_send_id![objc2::class!(NSProgressIndicator), alloc],
+                init
+            ]
+        };
+        let _: () = unsafe { msg_send![&spinner, setStyle: 1isize] };
+        let _: () = unsafe { msg_send![&spinner, setIndeterminate: true] };
+        // Map ActivityIndicatorSize → controlSize. NSControlSize:
+        // 0 = regular, 1 = small, 3 = mini. Small for ::Small, large
+        // for ::Large (use Regular as the "large" mapping — macOS's
+        // spinner doesn't have an explicit large variant).
+        let control_size: isize = match size {
+            ActivityIndicatorSize::Small => 1,
+            ActivityIndicatorSize::Large => 0,
+        };
+        let _: () = unsafe { msg_send![&spinner, setControlSize: control_size] };
+        let _: () = unsafe { msg_send![&spinner, startAnimation: std::ptr::null::<NSObject>()] };
+
+        let view: Retained<NSView> = unsafe {
+            Retained::retain(Retained::as_ptr(&spinner) as *mut NSView)
+                .expect("retain NSProgressIndicator as NSView")
+        };
+        let layout = self.layout_for_view(&view);
+        let spinner_for_measure = spinner.clone();
+        self.layout.set_measure_fn(
+            layout,
+            Rc::new(move |known_dimensions, _available_space| {
+                let intrinsic: CGSize =
+                    unsafe { msg_send![&spinner_for_measure, intrinsicContentSize] };
+                let w = (intrinsic.width as f32).max(0.0);
+                let h = (intrinsic.height as f32).max(0.0);
+                runtime_layout::Size {
+                    width: known_dimensions.width.unwrap_or(w),
+                    height: known_dimensions.height.unwrap_or(h),
+                }
+            }),
+        );
+        let node = MacosNode::View(view);
+        a11y::apply(
+            &node,
+            a11y,
+            runtime_core::accessibility::default_role(
+                runtime_core::accessibility::PrimitiveKind::ActivityIndicator,
             ),
         );
         node
@@ -699,6 +1305,273 @@ impl Backend for MacosBackend {
         handles::make_text_handle(node)
     }
 
+    fn create_virtualizer(
+        &mut self,
+        callbacks: runtime_core::VirtualizerCallbacks<Self::Node>,
+        _overscan: f32,
+        _horizontal: bool,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        // Eager-mount placeholder. The proper NSCollectionView-backed
+        // implementation (mirroring iOS's UICollectionView pattern at
+        // crates/backend/ios/mobile/src/imp/virtualizer.rs) is
+        // pending — that's a focused multi-hundred-line PR involving
+        // a custom NSCollectionViewDataSource + cell-reuse cycle.
+        //
+        // For now we mount EVERY item up front into a vertical
+        // FlippedView, equivalent to what the wgpu backend's
+        // virtualizer does in simulator mode. Correctness for small
+        // lists; performance only matters at scale, which is exactly
+        // what the deferred NSCollectionView impl will address.
+        let container = FlippedView::new(self.mtm);
+        let container: Retained<NSView> = Retained::into_super(container);
+        let _ = self.layout_for_view(&container);
+
+        let count = (callbacks.item_count)();
+        for i in 0..count {
+            let (node, _scope_id) = (callbacks.mount_item)(i);
+            let child_view = node.as_view();
+            unsafe { container.addSubview(child_view) };
+            let child_layout = self.layout_for_view(child_view);
+            let parent_layout = self
+                .layout_of(&container)
+                .expect("container has layout node");
+            self.layout.add_child(parent_layout, child_layout);
+        }
+
+        let node = MacosNode::View(container);
+        a11y::apply(
+            &node,
+            a11y,
+            Some(runtime_core::accessibility::Role::List),
+        );
+        node
+    }
+
+    fn virtualizer_data_changed(&mut self, _node: &Self::Node) {
+        // Placeholder eager-mount can't react to live data changes
+        // without doing a diff + remount cycle. The NSCollectionView
+        // impl will route this through `reloadData` /
+        // `performBatchUpdates`. For now this is a no-op — author
+        // code using virtualizer on macOS today should hot-swap the
+        // entire `<Virtualizer>` via a `When` if data updates.
+    }
+
+    fn release_virtualizer(&mut self, _node: &Self::Node) {
+        // No per-virtualizer side state to release in v1. The eager-
+        // mounted children's scopes get dropped through the regular
+        // tree-teardown path (clear_children + framework's scope
+        // cleanup) so we don't have to call release_item explicitly.
+    }
+
+    fn create_navigator(
+        &mut self,
+        _type_id: std::any::TypeId,
+        type_name: &'static str,
+        _presentation: Rc<dyn std::any::Any>,
+        _host: runtime_core::primitives::navigator::NavigatorHost<Self::Node>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        // Placeholder: visible "Navigator not yet implemented" text
+        // so author code that wires up a `<StackNavigator>` or
+        // `<DrawerNavigator>` on macOS doesn't panic.
+        //
+        // The real implementation follows the architectural decision
+        // in `project_macos_navigator_design`: single window with
+        // persistent sidebar (web-style layout, NOT iOS-style stack
+        // chrome). Drawer / Stack navigators both collapse to a
+        // content-swap on macOS — no animated push/pop. That work
+        // touches the navigator-substrate infra (`NavigatorRegistry`,
+        // `nav_handler_instances`, per-kind handlers from
+        // `stack-navigator` / `drawer-navigator` / `tab-navigator`)
+        // and deserves its own focused PR.
+        let text = format!("Navigator \"{type_name}\" not yet implemented on macOS");
+        let ns = NSString::from_str(&text);
+        let label: Retained<NSTextField> = unsafe {
+            msg_send_id![objc2::class!(NSTextField), labelWithString: &*ns]
+        };
+        let cell: Retained<NSObject> = unsafe { msg_send_id![&label, cell] };
+        let _: () = unsafe { msg_send![&cell, setWraps: true] };
+        let _: () = unsafe { msg_send![&cell, setUsesSingleLineMode: false] };
+        let red: Retained<NSColor> = unsafe {
+            msg_send_id![objc2::class!(NSColor), systemRedColor]
+        };
+        let _: () = unsafe { msg_send![&label, setTextColor: &*red] };
+        let view: Retained<NSView> = unsafe {
+            Retained::retain(Retained::as_ptr(&label) as *mut NSView)
+                .expect("retain NSTextField as NSView")
+        };
+        let _ = self.layout_for_view(&view);
+        let node = MacosNode::Label(label);
+        a11y::apply(&node, a11y, None);
+        node
+    }
+
+    fn create_graphics(
+        &mut self,
+        _on_ready: runtime_core::primitives::graphics::OnReady,
+        _on_resize: runtime_core::primitives::graphics::OnResize,
+        _on_lost: runtime_core::primitives::graphics::OnLost,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        // Placeholder for GPU-backed canvas. Real CAMetalLayer + wgpu
+        // surface wiring on macOS shares almost the entire iOS
+        // pipeline (Metal on both platforms); the missing piece is
+        // CAMetalLayer attachment to an NSView's CALayer hierarchy
+        // plus `on_ready` dispatching the wgpu Surface back to the
+        // author callback. Focused follow-up to land after Icon's
+        // SVG parser extraction since both touch CAShapeLayer/CALayer
+        // bridging and benefit from being designed together.
+        let text = NSString::from_str("Graphics not yet implemented on macOS");
+        let label: Retained<NSTextField> = unsafe {
+            msg_send_id![objc2::class!(NSTextField), labelWithString: &*text]
+        };
+        let red: Retained<NSColor> = unsafe {
+            msg_send_id![objc2::class!(NSColor), systemRedColor]
+        };
+        let _: () = unsafe { msg_send![&label, setTextColor: &*red] };
+        let view: Retained<NSView> = unsafe {
+            Retained::retain(Retained::as_ptr(&label) as *mut NSView)
+                .expect("retain NSTextField as NSView")
+        };
+        let _ = self.layout_for_view(&view);
+        let node = MacosNode::Label(label);
+        a11y::apply(&node, a11y, None);
+        node
+    }
+
+    fn create_icon(
+        &mut self,
+        data: &runtime_core::primitives::icon::IconData,
+        color: Option<&Color>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        // Real vector-path rendering via `CAShapeLayer` with a
+        // CGPath built by the shared SVG parser in
+        // `backend_apple_core::icon_path`. Identical render output
+        // to iOS — both backends now drive off the same parser, so
+        // a Lucide icon looks the same on iOS and macOS without
+        // duplicated path-handling code.
+        let view = icon::create_icon(self.mtm, data, color);
+
+        // Pin a 24×24 default intrinsic size so flex layout gives
+        // the icon a stable footprint matching iOS. Style-driven
+        // overrides on `width`/`height` still win because
+        // known_dimensions short-circuits the closure body.
+        const ICON_SIZE: f32 = 24.0;
+        let layout = self.layout_for_view(&view);
+        self.layout.set_measure_fn(
+            layout,
+            Rc::new(move |known_dimensions, _available_space| {
+                runtime_layout::Size {
+                    width: known_dimensions.width.unwrap_or(ICON_SIZE),
+                    height: known_dimensions.height.unwrap_or(ICON_SIZE),
+                }
+            }),
+        );
+
+        let node = MacosNode::View(view);
+        a11y::apply(
+            &node,
+            a11y,
+            runtime_core::accessibility::default_role(
+                runtime_core::accessibility::PrimitiveKind::Icon,
+            ),
+        );
+        node
+    }
+
+    fn update_icon_color(&mut self, node: &Self::Node, color: &Color) {
+        icon::update_icon_color(node, color);
+    }
+
+    fn create_portal(
+        &mut self,
+        target: runtime_core::primitives::portal::PortalTarget,
+        _on_dismiss: Option<Rc<dyn Fn()>>,
+        _trap_focus: bool,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        // v1: full-viewport overlay attached to the host window's
+        // contentView. Anchor positioning, scrim styling, named-slot
+        // routing, on_dismiss event firing, and focus trapping are
+        // deferred — match iOS's portal_instances surface when those
+        // land. Today this is enough to keep author code mounting a
+        // `<Portal>` from panicking; the subtree appears as a
+        // top-of-window overlay.
+        let _ = target; // No per-target behavior in v1.
+
+        let content = FlippedView::new(self.mtm);
+        let content: Retained<NSView> = Retained::into_super(content);
+
+        // Attach to the host window's contentView if available. The
+        // overlay is added as the topmost subview so it draws above
+        // the rest of the tree. If no host yet (mid-build), defer —
+        // the layout pass / `set_host_root` will attach the parent
+        // chain later. Here we still return the orphan content view
+        // so the framework can `insert` children into it.
+        if let Some(host) = self.host_root.as_ref() {
+            unsafe { host.addSubview(&content) };
+        }
+
+        // Register in the layout tree as a Taffy root. Match what
+        // iOS does for FullScreen portals: the content fills the
+        // viewport, so its style is a full-flex container. Anchor
+        // positioning is a future addition.
+        let layout_node = self.layout_for_view(&content);
+        // Default style is the framework-default (full-stretch);
+        // anchor-driven positioning lands when the anchor module
+        // does, mirroring `portal::container_style_for_anchor`.
+        let _ = layout_node;
+
+        // Hold a strong ref so a future `release_portal` can
+        // detach it cleanly. Without a side-map entry, removal
+        // would require walking the tree.
+        let node = MacosNode::View(content);
+        a11y::apply(&node, a11y, None);
+        node
+    }
+
+    fn release_portal(&mut self, node: &Self::Node) {
+        // v1 cleanup: detach the overlay from its superview. Once
+        // `portal_instances` lands (mirroring iOS's per-portal
+        // entry map), we'll also drop any KVO observers / dismiss
+        // gesture recognizers attached at create time.
+        let view = node.as_view();
+        unsafe { view.removeFromSuperview() };
+    }
+
+    fn create_external(
+        &mut self,
+        type_id: std::any::TypeId,
+        type_name: &'static str,
+        payload: &Rc<dyn std::any::Any>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        let node = if let Some(handler) = self.external_handlers.get(type_id) {
+            handler(payload, self)
+        } else {
+            // No handler registered — render an explicit placeholder
+            // so the missing SDK binding is visible at run-time. The
+            // user-facing pattern for graceful degradation is
+            // `backend.has_external::<T>()` BEFORE building the
+            // primitive; this placeholder is the safety net for code
+            // that mounts unconditionally.
+            external_placeholder_node(self, type_name)
+        };
+        // Third-party externals declare their own role via
+        // `props.role` if needed — we don't infer one here.
+        a11y::apply(&node, a11y, None);
+        node
+    }
+
+    fn release_external(&mut self, _node: &Self::Node) {
+        // No per-external bookkeeping today. Future SDK leaves that
+        // hold instance state (KVO observers, CADisplayLink-equivalent,
+        // etc.) would clean up here, keyed by view pointer like
+        // portals do on iOS.
+    }
+
     fn finish(&mut self, root: Self::Node) {
         // Compute layout against the host's bounds and walk every
         // registered view to assign frames. The iOS backend does the
@@ -841,11 +1714,12 @@ impl Backend for MacosBackend {
         kind: runtime_core::AssetTag,
         source: &runtime_core::AssetSource,
     ) {
-        // Font branch handled by apple-core; image branch will land
-        // alongside `create_image`. For now non-font assets are no-ops
-        // so user apps with image assets compile and run without
-        // crashing — the images won't display until image.rs lands.
+        // Font branch routes through `apple-core`'s shared registry;
+        // image branch decodes `NSImage` into the per-backend cache
+        // for `create_image` to resolve. Other asset tags are no-op
+        // here (registered by future SDK leaves on demand).
         let _ = self.font_registry.register_asset(id, kind, source);
+        image::register_asset(&mut self.image_cache, id, kind, source);
     }
 
     fn unregister_asset(
@@ -870,5 +1744,35 @@ impl Backend for MacosBackend {
     fn unregister_typeface(&mut self, id: runtime_core::assets::TypefaceId) {
         self.font_registry.unregister_typeface(id);
     }
+}
+
+/// Build a visible "External X not supported on macOS" placeholder
+/// for `create_external` when no handler is registered for the given
+/// payload type. Mirrors the iOS placeholder pattern — single line
+/// of red text so the dev / user immediately sees that a SDK binding
+/// is missing rather than hitting an invisible empty rect.
+fn external_placeholder_node(b: &mut MacosBackend, type_name: &'static str) -> MacosNode {
+    let text = format!("External \"{type_name}\" not supported on macOS");
+    let ns = NSString::from_str(&text);
+    let label: Retained<NSTextField> = unsafe {
+        msg_send_id![objc2::class!(NSTextField), labelWithString: &*ns]
+    };
+    // Multi-line wrap so a long type name (e.g. `webview::WebViewProps`)
+    // doesn't get clipped.
+    let cell: Retained<NSObject> = unsafe { msg_send_id![&label, cell] };
+    let _: () = unsafe { msg_send![&cell, setWraps: true] };
+    let _: () = unsafe { msg_send![&cell, setUsesSingleLineMode: false] };
+    // System red — matches iOS placeholder intent.
+    let red: Retained<NSColor> = unsafe {
+        msg_send_id![objc2::class!(NSColor), systemRedColor]
+    };
+    let _: () = unsafe { msg_send![&label, setTextColor: &*red] };
+
+    let view: Retained<NSView> = unsafe {
+        Retained::retain(Retained::as_ptr(&label) as *mut NSView)
+            .expect("retain NSTextField as NSView")
+    };
+    let _ = b.layout_for_view(&view);
+    MacosNode::Label(label)
 }
 

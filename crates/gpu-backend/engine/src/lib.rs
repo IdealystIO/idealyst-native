@@ -41,6 +41,7 @@ pub mod pipeline;
 mod renderer;
 mod scheduler;
 mod painter;
+mod sticky;
 mod style_convert;
 pub mod text;
 pub mod widgets;

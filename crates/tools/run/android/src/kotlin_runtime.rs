@@ -150,6 +150,12 @@ const RUNTIME_KOTLIN_FILES: &[(&str, &str)] = &[
         ),
     ),
     (
+        "RustStickyScrollListener.kt",
+        include_str!(
+            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustStickyScrollListener.kt"
+        ),
+    ),
+    (
         "RustTextWatcher.kt",
         include_str!(
             "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustTextWatcher.kt"

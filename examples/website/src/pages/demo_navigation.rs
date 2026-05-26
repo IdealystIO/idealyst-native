@@ -3,31 +3,43 @@
 use runtime_core::{ui, Primitive};
 use idea_ui::{stack, typography, StackGap, TypographyKind};
 
-use crate::pages::common::{code_panel, page_header};
-use crate::shell::layout;
-use crate::styles::PagePad;
+use crate::pages::common::{code_panel, page_header, page_section};
+use crate::shell::{layout_with_toc, TocEntry};
 
 pub fn page() -> Primitive {
-    let pad = PagePad();
+    const SDKS: &str = "sdks";
+    const STACK: &str = "stack-navigator";
+    const DRAWER: &str = "drawer-navigator";
+    const TABS: &str = "tab-navigator";
+    const BACK: &str = "native-back";
+    const EXTENDING: &str = "extending";
+
+    let toc = vec![
+        TocEntry { id: SDKS, label: "Three navigator SDKs" },
+        TocEntry { id: STACK, label: "Stack navigator" },
+        TocEntry { id: DRAWER, label: "Drawer navigator" },
+        TocEntry { id: TABS, label: "Tab navigator" },
+        TocEntry { id: BACK, label: "Native back, for free" },
+        TocEntry { id: EXTENDING, label: "Adding a new navigator" },
+    ];
+
     let content = ui! {
-        View(style = pad) {
-            Stack(gap = StackGap::Xl) {
-                { page_header(
-                    "Navigation",
-                    "Stacks, drawers, and tabs \u{2014} the platform-native navigation \
-                     idioms surfaced through one cross-platform API. Native back gestures \
-                     work for free; the URL bar on web is real."
-                ) }
-                { sdks() }
-                { stack_pattern() }
-                { drawer_pattern() }
-                { tab_pattern() }
-                { native_back() }
-                { extending() }
-            }
+        Stack(gap = StackGap::Xl) {
+            { page_header(
+                "Navigation",
+                "Stacks, drawers, and tabs \u{2014} the platform-native navigation \
+                 idioms surfaced through one cross-platform API. Native back gestures \
+                 work for free; the URL bar on web is real."
+            ) }
+            { page_section(SDKS, vec![sdks()]) }
+            { page_section(STACK, vec![stack_pattern()]) }
+            { page_section(DRAWER, vec![drawer_pattern()]) }
+            { page_section(TABS, vec![tab_pattern()]) }
+            { page_section(BACK, vec![native_back()]) }
+            { page_section(EXTENDING, vec![extending()]) }
         }
     };
-    layout(content)
+    layout_with_toc(content, toc)
 }
 
 fn sdks() -> Primitive {

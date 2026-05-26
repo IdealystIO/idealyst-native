@@ -1,0 +1,32 @@
+[package]
+name = "maps-ios"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# iOS leaf for the `maps` umbrella. Provides
+# `pub fn register(backend: &mut IosBackend)` which installs a handler
+# for `MapViewProps` that mounts a native `MKMapView`.
+#
+# Reach `MKMapView` via raw `msg_send` to avoid the objc2-map-kit
+# dependency — mirrors the webview-ios pattern (see crates/sdk/webview
+# for the rationale). The MapKit framework is linked into the final
+# binary by the iOS host's link step; users get a runtime panic with a
+# clear message if MapKit isn't available.
+
+[lib]
+crate-type = ["rlib"]
+
+[target.'cfg(target_os = "ios")'.dependencies]
+maps-core = { workspace = true }
+backend-ios-mobile = { workspace = true }
+runtime-core = { workspace = true }
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = [
+    "NSString",
+    "NSGeometry",
+] }
+objc2-ui-kit = { version = "0.2", features = [
+    "UIView",
+    "UIResponder",
+] }

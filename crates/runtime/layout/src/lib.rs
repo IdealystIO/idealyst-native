@@ -703,6 +703,16 @@ impl LayoutTree {
             .map(|cs| cs.into_iter().map(LayoutNode).collect())
             .unwrap_or_default()
     }
+
+    /// Return `node`'s parent in the layout tree, or `None` if it's a
+    /// root. Used by backends that need to walk a subtree's resolved
+    /// frames upward — e.g. iOS's `Position::Sticky` impl sums Taffy
+    /// frame Y values from a sticky child to its enclosing scroll
+    /// view to derive the child's natural y in the scroll view's
+    /// content coordinate space (unaffected by UIKit transforms).
+    pub fn parent_of(&self, node: LayoutNode) -> Option<LayoutNode> {
+        self.tree.parent(node.0).map(LayoutNode)
+    }
 }
 
 impl Default for LayoutTree {

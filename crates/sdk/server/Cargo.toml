@@ -37,6 +37,9 @@ server = ["dep:axum", "dep:tokio", "dep:tower", "dep:http-body-util"]
 [dependencies]
 server-macros = { workspace = true }
 net = { workspace = true }
+# Brings in `ResourceCancel`. Async-driver gate already enabled by
+# whatever else in the workspace uses `resource()`; we only need the
+# token type itself, which is light and trait-free.
 runtime-core = { workspace = true, features = ["async-driver"] }
 
 serde = { version = "1", features = ["derive"] }
@@ -47,7 +50,7 @@ futures-channel = "0.3"
 
 # Server-only deps.
 axum = { version = "0.7", optional = true }
-tokio = { version = "1", features = ["net", "rt"], optional = true }
+tokio = { version = "1", features = ["net", "rt", "macros"], optional = true }
 tower = { version = "0.5", optional = true }
 http-body-util = { version = "0.1", optional = true }
 

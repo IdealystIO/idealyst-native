@@ -165,6 +165,7 @@ fn build_text<B: Backend + 'static>(
                         &spec.signal_ids,
                         &parts_refs,
                         &initials_refs,
+                        &spec.stringifiers,
                     );
                     let backend_for_release = backend.clone();
                     crate::on_cleanup(move || {

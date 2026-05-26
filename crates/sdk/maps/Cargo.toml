@@ -24,3 +24,6 @@ maps-core = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 maps-web = { workspace = true }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+maps-ios = { workspace = true }
