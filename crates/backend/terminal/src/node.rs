@@ -33,6 +33,14 @@ pub enum NodeKind {
     /// while focused. State lives in [`InputState`] on the
     /// `NodeData.input` field.
     TextInput,
+    /// A scrolling container. Children lay out at their natural
+    /// sizes; the renderer paints them with a `(scroll_x, scroll_y)`
+    /// offset and clips to the scroll view's frame. The
+    /// `NodeData.horizontal` flag selects the scroll axis.
+    /// `NodeData.scroll_x` / `scroll_y` carry the current offset in
+    /// cells, mutated by [`crate::TerminalBackend::dispatch_scroll`]
+    /// when the user wheels.
+    ScrollView,
 }
 
 /// Per-node data the backend stores in its `HashMap<u32, NodeData>`.
@@ -116,6 +124,17 @@ pub(crate) struct NodeData {
     /// kinds. Held boxed so `NodeData` stays slim for the common
     /// (non-input) case.
     pub input: Option<Box<InputState>>,
+    /// `true` when this `NodeKind::ScrollView` scrolls horizontally;
+    /// `false` (the default) is vertical. Ignored for non-ScrollView
+    /// kinds.
+    pub horizontal: bool,
+    /// Current horizontal scroll offset in cells. Subtracted from
+    /// child paint coordinates and clamped to
+    /// `[0, content_width - viewport_width]`. Only meaningful for
+    /// `NodeKind::ScrollView` (always 0 elsewhere).
+    pub scroll_x: f32,
+    /// Current vertical scroll offset in cells. See `scroll_x`.
+    pub scroll_y: f32,
 }
 
 /// Backend-flavoured gradient: stops resolved to `Rgba` so the

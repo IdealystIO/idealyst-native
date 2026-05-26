@@ -507,6 +507,46 @@ impl LayoutTree {
         let _ = self.tree.mark_dirty(node.0);
     }
 
+    /// Mark a node as a scroll container on the given axis. Maps to
+    /// Taffy's `overflow.x` / `overflow.y` = `Overflow::Scroll`, which
+    /// (a) gives the node a definite main-axis size from its parent's
+    /// constraint rather than from its children's content (so the
+    /// scroll viewport doesn't grow to fit its content) and (b)
+    /// disables children's contribution to the parent's intrinsic
+    /// size on the scroll axis.
+    ///
+    /// Backends that render their own scroll machinery (terminal's
+    /// cell-grid clip + offset; future hosts) call this at create
+    /// time so the Taffy layout matches the rendered scroll-viewport
+    /// behavior. Native backends with platform scroll views
+    /// (UIScrollView, etc.) don't need this — the scroll view's
+    /// native frame is set by its parent and its content has its own
+    /// coordinate space.
+    pub fn set_overflow_scroll(&mut self, node: LayoutNode, horizontal: bool) {
+        let _ = self.tree.set_style(node.0, {
+            let mut style = self
+                .tree
+                .style(node.0)
+                .cloned()
+                .unwrap_or(Style::default());
+            if horizontal {
+                style.overflow.x = taffy::Overflow::Scroll;
+            } else {
+                style.overflow.y = taffy::Overflow::Scroll;
+            }
+            // `flex_basis: 0` + `flex_grow: 1` tells Taffy "fill the
+            // available main-axis space from the parent" rather than
+            // "be as big as your content". Without this the ScrollView
+            // would size itself to its content (and so have zero
+            // scrollable area). Author styles can still override these
+            // — `set_style` preserves Taffy state and only writes the
+            // fields their `StyleRules` explicitly set.
+            style.flex_basis = taffy::Dimension::from_length(0.0);
+            style.flex_grow = 1.0;
+            style
+        });
+    }
+
     /// Set a node's intrinsic content size. Used by native backends
     /// to seed Text / Button / Image / etc. with the size their
     /// native widget would prefer (UIView.intrinsicContentSize,

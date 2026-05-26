@@ -40,6 +40,36 @@ impl Default for Cell {
 }
 
 /// Row-major 2D grid of cells. `cells[row * cols + col]`.
+/// Inclusive-min, exclusive-max cell rectangle. Used by `paint_node`
+/// to clip writes inside scroll views — every cell-write helper
+/// consults the active rect (passed down the paint recursion) and
+/// drops writes outside it. `None` means "no clip" (the default
+/// outside any scroll view's subtree).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ClipRect {
+    pub x0: i32,
+    pub y0: i32,
+    pub x1: i32,
+    pub y1: i32,
+}
+
+impl ClipRect {
+    pub(crate) fn contains(&self, col: i32, row: i32) -> bool {
+        col >= self.x0 && col < self.x1 && row >= self.y0 && row < self.y1
+    }
+
+    /// Intersect with `other`. Returns the tightest enclosing
+    /// clip — used when entering a nested scroll view.
+    pub(crate) fn intersect(&self, other: ClipRect) -> ClipRect {
+        ClipRect {
+            x0: self.x0.max(other.x0),
+            y0: self.y0.max(other.y0),
+            x1: self.x1.min(other.x1),
+            y1: self.y1.min(other.y1),
+        }
+    }
+}
+
 pub struct Grid {
     pub cols: u16,
     pub rows: u16,
@@ -91,7 +121,7 @@ impl TerminalBackend {
         // land back in cells.
         self.layout.compute(root_layout, cols as f32 * cw, rows as f32 * ch);
 
-        self.paint_node(root_id, 0.0, 0.0, 1.0, &mut grid);
+        self.paint_node(root_id, 0.0, 0.0, 1.0, None, &mut grid);
         grid
     }
 
@@ -101,6 +131,7 @@ impl TerminalBackend {
         parent_x: f32,
         parent_y: f32,
         parent_opacity: f32,
+        clip: Option<ClipRect>,
         grid: &mut Grid,
     ) {
         let Some(data) = self.nodes.get(&id) else { return };
@@ -158,11 +189,11 @@ impl TerminalBackend {
         //    stay circular even when the cell aspect ratio (~2:1
         //    height-to-width) would otherwise squash them.
         if let Some(gradient) = data.gradient.as_ref() {
-            paint_gradient(grid, x, y, w, h, effective_opacity, gradient, (cw, ch));
+            paint_gradient(grid, x, y, w, h, effective_opacity, gradient, (cw, ch), clip);
         } else if let Some(mut bg) = effective_bg {
             bg.a = ((bg.a as f32) * effective_opacity).round() as u8;
             if bg.a > 0 {
-                paint_rect_bg(grid, x, y, w, h, bg);
+                paint_rect_bg(grid, x, y, w, h, bg, clip);
             }
         }
 
@@ -173,7 +204,7 @@ impl TerminalBackend {
         if border_requested(data) {
             let mut color = effective_fg.unwrap_or(Rgba::new(180, 180, 180, 255));
             color.a = ((color.a as f32) * effective_opacity).round() as u8;
-            paint_border(grid, x, y, w, h, color, effective_bg);
+            paint_border(grid, x, y, w, h, color, effective_bg, clip);
         }
 
         // 3. Paint content. Views and Pressables don't carry content
@@ -182,7 +213,7 @@ impl TerminalBackend {
             NodeKind::Text | NodeKind::Button => {
                 let mut fg = effective_fg.unwrap_or(default_fg(data));
                 fg.a = ((fg.a as f32) * effective_opacity).round() as u8;
-                paint_text(grid, &data.content, x, y, w, h, fg, effective_bg);
+                paint_text(grid, &data.content, x, y, w, h, fg, effective_bg, clip);
             }
             NodeKind::Toggle => {
                 let fg = effective_fg.unwrap_or(Rgba::new(220, 220, 220, 255));
@@ -190,7 +221,7 @@ impl TerminalBackend {
                 let glyph = if data.toggle_value { '●' } else { ' ' };
                 let label = format!("[{}{}{}]", ' ', glyph, ' ');
                 let color = if data.toggle_value { on_color } else { fg };
-                paint_text(grid, &label, x, y, w, h, color, effective_bg);
+                paint_text(grid, &label, x, y, w, h, color, effective_bg, clip);
             }
             NodeKind::TextInput => {
                 let focused = self.focused_id == Some(id);
@@ -209,7 +240,7 @@ impl TerminalBackend {
                     } else {
                         (input.value.clone(), fg, false)
                     };
-                    paint_text(grid, &display, x, y, w, h, color, effective_bg);
+                    paint_text(grid, &display, x, y, w, h, color, effective_bg, clip);
                     // Cursor. Only draw when focused. We always paint
                     // it at `cursor` cells from the left edge — for
                     // inputs longer than the visible width this is a
@@ -219,23 +250,25 @@ impl TerminalBackend {
                     if focused {
                         let cursor_col = (x + input.cursor as f32).floor() as i32;
                         let cursor_row = y.floor() as i32;
-                        if let (Ok(c), Ok(r)) =
-                            (u16::try_from(cursor_col), u16::try_from(cursor_row))
-                        {
-                            if let Some(cell) = grid.cell_mut(c, r) {
-                                // Cursor cell: swap bg for cursor color
-                                // and recolor the glyph on top.
-                                cell.bg = Some(cursor_color);
-                                // If we drew over a placeholder, blank
-                                // the glyph so the cursor sits on an
-                                // empty cell. Otherwise keep the glyph
-                                // visible (caret-on-char style).
-                                if is_placeholder {
-                                    cell.glyph = ' ';
+                        if clip.map(|c| c.contains(cursor_col, cursor_row)).unwrap_or(true) {
+                            if let (Ok(c), Ok(r)) =
+                                (u16::try_from(cursor_col), u16::try_from(cursor_row))
+                            {
+                                if let Some(cell) = grid.cell_mut(c, r) {
+                                    // Cursor cell: swap bg for cursor color
+                                    // and recolor the glyph on top.
+                                    cell.bg = Some(cursor_color);
+                                    // If we drew over a placeholder, blank
+                                    // the glyph so the cursor sits on an
+                                    // empty cell. Otherwise keep the glyph
+                                    // visible (caret-on-char style).
+                                    if is_placeholder {
+                                        cell.glyph = ' ';
+                                    }
+                                    // Force the glyph's fg to readable
+                                    // contrast against the warm cursor.
+                                    cell.fg = Some(Rgba::new(10, 12, 17, 255));
                                 }
-                                // Force the glyph's fg to readable
-                                // contrast against the warm cursor.
-                                cell.fg = Some(Rgba::new(10, 12, 17, 255));
                             }
                         }
                     }
@@ -254,18 +287,96 @@ impl TerminalBackend {
                 let fg = effective_fg.unwrap_or(Rgba::new(127, 232, 214, 255));
                 // Center horizontally within the node's frame.
                 let cx = x + (w - 1.0) / 2.0;
-                paint_text(grid, &s, cx.floor(), y, 1.0, 1.0, fg, effective_bg);
+                paint_text(grid, &s, cx.floor(), y, 1.0, 1.0, fg, effective_bg, clip);
             }
-            NodeKind::View | NodeKind::Pressable => {}
+            NodeKind::View | NodeKind::Pressable | NodeKind::ScrollView => {}
         }
 
-        // 4. Recurse into children. Children paint OVER the parent's
+        // 4. Compute the clip + scroll offset passed down to children.
+        //
+        // Per [[feedback_terminal_minimalism]] the terminal applies
+        // `overflow: hidden` semantics by default — children always
+        // get clipped to their parent's frame. The other backends
+        // honor CSS `overflow: visible` (children can bleed outside
+        // the parent's box) because their layered rendering can deal
+        // with it; the cell grid can't (a half-visible row of glyphs
+        // outside a sidebar reads as broken layout). Authors who
+        // genuinely want a child to render outside its parent on
+        // terminal can opt in with `position: absolute` on a sibling
+        // at the appropriate ancestor level.
+        //
+        // ScrollViews additionally shift their children by
+        // `(-scroll_x, -scroll_y)` so wheeled content slides past
+        // the clip.
+        let frame_clip = ClipRect {
+            x0: x.floor() as i32,
+            y0: y.floor() as i32,
+            x1: (x + w).ceil() as i32,
+            y1: (y + h).ceil() as i32,
+        };
+        let combined_clip = match clip {
+            Some(outer) => outer.intersect(frame_clip),
+            None => frame_clip,
+        };
+        // Snap the parent-coords we pass down to integer cells.
+        // Without this, fractional Taffy y/x (common with the
+        // framework's px-based layout on cell_size != 1) drifts
+        // cumulatively — a Text two levels deep ends up painted
+        // at a row offset that varies with whether its grand-
+        // parent's y was 8.75 vs 11.0. With per-level flooring,
+        // each child's local position is computed against an
+        // already-snapped parent origin, so two identical button
+        // subtrees render with text in the same row relative to
+        // their bg regardless of where they landed in the parent
+        // layout.
+        let (child_clip, child_x, child_y) = if matches!(data.kind, NodeKind::ScrollView)
+        {
+            (
+                Some(combined_clip),
+                (x - data.scroll_x).floor(),
+                (y - data.scroll_y).floor(),
+            )
+        } else {
+            (Some(combined_clip), x.floor(), y.floor())
+        };
+
+        // 5. Recurse into children. Children paint OVER the parent's
         // background; siblings with higher `z_index` paint over
         // siblings with lower. Tree-insertion order is the
         // tiebreaker (matches every other backend's "siblings later
         // in the tree win when z-index is equal" posture).
         for cid in self.children_in_z_order(&data.children) {
-            self.paint_node(cid, x, y, effective_opacity, grid);
+            self.paint_node(cid, child_x, child_y, effective_opacity, child_clip, grid);
+        }
+
+        // 6. ScrollView overlay: paint a thin scrollbar at the trailing
+        // edge if content overflows. We sum each child's bottom/right
+        // extent in cell space (same shape as `apply_scroll_delta` uses
+        // for clamping) so the scrollbar matches the actual scrollable
+        // range. Painted OVER children and using the OUTER clip so the
+        // bar stays visible at the scroll view's edge regardless of
+        // child clipping/offset.
+        if matches!(data.kind, NodeKind::ScrollView) {
+            let mut content_w = 0.0f32;
+            let mut content_h = 0.0f32;
+            for cid in &data.children {
+                if let Some(c) = self.nodes.get(cid) {
+                    let f = self.layout.frame_of(c.layout);
+                    content_w = content_w.max((f.x + f.width) / cw);
+                    content_h = content_h.max((f.y + f.height) / ch);
+                }
+            }
+            paint_scrollbar(
+                grid,
+                x,
+                y,
+                w,
+                h,
+                data.horizontal,
+                if data.horizontal { data.scroll_x } else { data.scroll_y },
+                if data.horizontal { content_w } else { content_h },
+                combined_clip,
+            );
         }
     }
 }
@@ -326,6 +437,7 @@ fn paint_gradient(
     opacity: f32,
     gradient: &ResolvedGradient,
     cell_size: (f32, f32),
+    clip: Option<ClipRect>,
 ) {
     let (cw, ch) = cell_size;
     // Frame in layout-px space (matches GradientKind::Radial's
@@ -376,7 +488,7 @@ fn paint_gradient(
                     let d = (local_x_px * local_x_px + local_y_px * local_y_px).sqrt();
                     let t = (d / max_r).clamp(0.0, 1.0);
                     let color = sample_stops(&effective_stops, t, opacity);
-                    write_cell_bg(grid, col, row, color);
+                    write_cell_bg(grid, col, row, color, clip);
                 }
             }
         }
@@ -411,7 +523,7 @@ fn paint_gradient(
                     let p = local_x_px * dir_x + local_y_px * dir_y;
                     let t = ((p - min_p) / range).clamp(0.0, 1.0);
                     let color = sample_stops(&effective_stops, t, opacity);
-                    write_cell_bg(grid, col, row, color);
+                    write_cell_bg(grid, col, row, color, clip);
                 }
             }
         }
@@ -474,9 +586,14 @@ fn apply_opacity(c: Rgba, opacity: f32) -> Rgba {
 /// through as a colored character. Below the threshold the glyph
 /// stays (halo regions, vignette edges where text should remain
 /// legible).
-fn write_cell_bg(grid: &mut Grid, col: i32, row: i32, color: Rgba) {
+fn write_cell_bg(grid: &mut Grid, col: i32, row: i32, color: Rgba, clip: Option<ClipRect>) {
     if color.a == 0 {
         return;
+    }
+    if let Some(c) = clip {
+        if !c.contains(col, row) {
+            return;
+        }
     }
     if let (Ok(c), Ok(r)) = (u16::try_from(col), u16::try_from(row)) {
         if let Some(cell) = grid.cell_mut(c, r) {
@@ -506,13 +623,37 @@ fn write_cell_bg(grid: &mut Grid, col: i32, row: i32, color: Rgba) {
 /// readable.
 const GLYPH_HIDE_ALPHA: u8 = 128;
 
-fn paint_rect_bg(grid: &mut Grid, x: f32, y: f32, w: f32, h: f32, bg: Rgba) {
+fn paint_rect_bg(
+    grid: &mut Grid,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    bg: Rgba,
+    clip: Option<ClipRect>,
+) {
+    // Snap to whole-cell coverage with `floor(x) + ceil(w)` /
+    // `floor(y) + ceil(h)`, matching `paint_text` and the hit-test
+    // snap. The earlier `ceil(x+w)` / `ceil(y+h)` form added an
+    // extra row/column for fractional positions — e.g. a 32-px
+    // (= 2-cell) button at `y=1.75` painted rows 1-3 (three rows of
+    // bg) while a button at `y=2.0` painted rows 2-3 (two rows).
+    // That's the "buttons inconsistent in height" symptom: any
+    // button whose layout landed on a sub-cell boundary grew an
+    // extra row of background. Snapping by intrinsic size keeps
+    // the bg's footprint at exactly `ceil(h)` rows regardless of
+    // fractional y.
     let x0 = x.max(0.0).floor() as i32;
     let y0 = y.max(0.0).floor() as i32;
-    let x1 = (x + w).ceil() as i32;
-    let y1 = (y + h).ceil() as i32;
+    let x1 = x.floor() as i32 + w.ceil() as i32;
+    let y1 = y.floor() as i32 + h.ceil() as i32;
     for row in y0..y1 {
         for col in x0..x1 {
+            if let Some(c) = clip {
+                if !c.contains(col, row) {
+                    continue;
+                }
+            }
             if let (Ok(c), Ok(r)) = (u16::try_from(col), u16::try_from(row)) {
                 if let Some(cell) = grid.cell_mut(c, r) {
                     cell.bg = Some(bg);
@@ -534,16 +675,24 @@ fn paint_border(
     h: f32,
     fg: Rgba,
     bg: Option<Rgba>,
+    clip: Option<ClipRect>,
 ) {
+    // Same `floor(x) + ceil(w)` snap as paint_rect_bg / paint_text
+    // to keep the border's footprint matched with the bg's.
     let x0 = x.floor() as i32;
     let y0 = y.floor() as i32;
-    let x1 = (x + w).ceil() as i32 - 1;
-    let y1 = (y + h).ceil() as i32 - 1;
+    let x1 = x.floor() as i32 + w.ceil() as i32 - 1;
+    let y1 = y.floor() as i32 + h.ceil() as i32 - 1;
     if x1 <= x0 || y1 <= y0 {
         return;
     }
 
     let put = |grid: &mut Grid, col: i32, row: i32, ch: char| {
+        if let Some(c) = clip {
+            if !c.contains(col, row) {
+                return;
+            }
+        }
         if let (Ok(c), Ok(r)) = (u16::try_from(col), u16::try_from(row)) {
             if let Some(cell) = grid.cell_mut(c, r) {
                 cell.glyph = ch;
@@ -572,6 +721,100 @@ fn paint_border(
     put(grid, x1, y1, '╯');
 }
 
+/// Paint a 1-cell scrollbar on the trailing edge of a ScrollView.
+/// Vertical (`horizontal = false`) paints in the rightmost column of
+/// the frame; horizontal in the bottom row. No-op when content fits
+/// the viewport (nothing to scroll).
+///
+/// Visual: dim track + bright thumb using box-drawing glyphs. The
+/// thumb's size and position track the visible fraction of content —
+/// a small thumb means most of the content is off-screen; a thumb
+/// against the top means the user is at the start.
+fn paint_scrollbar(
+    grid: &mut Grid,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    horizontal: bool,
+    scroll: f32,
+    content_extent: f32,
+    clip: ClipRect,
+) {
+    let viewport = if horizontal { w } else { h };
+    if viewport < 2.0 || content_extent <= viewport {
+        return;
+    }
+    let track_color = Rgba::new(90, 90, 105, 255);
+    let thumb_color = Rgba::new(200, 200, 220, 255);
+
+    if horizontal {
+        let track_y = (y + h).floor() as i32 - 1;
+        let track_x0 = x.floor() as i32;
+        let track_x1 = (x + w).floor() as i32;
+        let track_len = (track_x1 - track_x0).max(1) as f32;
+        let thumb_len = ((viewport / content_extent) * track_len).max(1.0).round() as i32;
+        let max_scroll = content_extent - viewport;
+        let ratio = if max_scroll > 0.0 { scroll / max_scroll } else { 0.0 };
+        let thumb_x0 = track_x0
+            + (ratio * (track_len - thumb_len as f32)).round() as i32;
+        let thumb_x1 = thumb_x0 + thumb_len;
+        for col in track_x0..track_x1 {
+            let is_thumb = col >= thumb_x0 && col < thumb_x1;
+            let (glyph, fg) = if is_thumb {
+                ('━', thumb_color)
+            } else {
+                ('─', track_color)
+            };
+            write_glyph_clipped(grid, col, track_y, glyph, fg, clip);
+        }
+    } else {
+        let track_x = (x + w).floor() as i32 - 1;
+        let track_y0 = y.floor() as i32;
+        let track_y1 = (y + h).floor() as i32;
+        let track_len = (track_y1 - track_y0).max(1) as f32;
+        let thumb_len = ((viewport / content_extent) * track_len).max(1.0).round() as i32;
+        let max_scroll = content_extent - viewport;
+        let ratio = if max_scroll > 0.0 { scroll / max_scroll } else { 0.0 };
+        let thumb_y0 = track_y0
+            + (ratio * (track_len - thumb_len as f32)).round() as i32;
+        let thumb_y1 = thumb_y0 + thumb_len;
+        for row in track_y0..track_y1 {
+            let is_thumb = row >= thumb_y0 && row < thumb_y1;
+            let (glyph, fg) = if is_thumb {
+                ('┃', thumb_color)
+            } else {
+                ('│', track_color)
+            };
+            write_glyph_clipped(grid, track_x, row, glyph, fg, clip);
+        }
+    }
+}
+
+/// Write a single glyph + fg at (col, row), respecting the clip
+/// rect and grid bounds. Used by the scrollbar painter. Doesn't
+/// touch bg — preserves whatever the child painted underneath,
+/// which keeps the scrollbar visually overlaid on the content
+/// without painting its own background block.
+fn write_glyph_clipped(
+    grid: &mut Grid,
+    col: i32,
+    row: i32,
+    glyph: char,
+    fg: Rgba,
+    clip: ClipRect,
+) {
+    if !clip.contains(col, row) {
+        return;
+    }
+    if let (Ok(c), Ok(r)) = (u16::try_from(col), u16::try_from(row)) {
+        if let Some(cell) = grid.cell_mut(c, r) {
+            cell.glyph = glyph;
+            cell.fg = Some(fg);
+        }
+    }
+}
+
 /// Lay out `content` inside the rect `(x, y, w, h)`, wrapping at
 /// whitespace. Honors `\n`. Truncates if more lines than `h` are
 /// produced. Writes glyph + fg + bg into the matching cells.
@@ -584,6 +827,7 @@ fn paint_text(
     h: f32,
     fg: Rgba,
     bg: Option<Rgba>,
+    clip: Option<ClipRect>,
 ) {
     let x0 = x.floor() as i32;
     let y0 = y.floor() as i32;
@@ -633,6 +877,11 @@ fn paint_text(
         let row = y0 + row_idx as i32;
         for (col_idx, ch) in line.chars().take(max_cols as usize).enumerate() {
             let col = x0 + col_idx as i32;
+            if let Some(c) = clip {
+                if !c.contains(col, row) {
+                    continue;
+                }
+            }
             if let (Ok(c), Ok(r)) = (u16::try_from(col), u16::try_from(row)) {
                 if let Some(cell) = grid.cell_mut(c, r) {
                     cell.glyph = ch;

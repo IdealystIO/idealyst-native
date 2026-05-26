@@ -126,6 +126,10 @@ pub fn run(bus: DevBus, opts: RunOptions) -> Result<(), host_terminal::RunError>
     host_terminal::run(
         move || build_panel(bus_for_app.clone(), opts_for_app.clone()),
         host_opts,
+        // dev-tui's panel is built from plain primitives — no navigator
+        // SDKs to install. Pass a no-op closure for the new
+        // register_extensions hook.
+        |_| {},
     )
 }
 

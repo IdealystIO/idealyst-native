@@ -212,7 +212,11 @@ use {user_lib}::app;
 
 fn main() {{
     let mut opts = host_terminal::RunOptions::default();
-{cell_size_assign}    if let Err(e) = host_terminal::run(app, opts) {{
+{cell_size_assign}    // The user crate must expose
+    // `pub fn register_extensions(&mut TerminalBackend)` — same shape as
+    // the web/iOS/Android wrappers. Pass an empty body if the app has
+    // no navigator SDK or external-primitive registrations.
+    if let Err(e) = host_terminal::run(app, opts, {user_lib}::register_extensions) {{
         eprintln!("[{bin_name}] runtime error: {{e}}");
         std::process::exit(1);
     }}

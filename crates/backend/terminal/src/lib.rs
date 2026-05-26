@@ -88,6 +88,19 @@ pub struct TerminalBackend {
     /// `(8.0, 16.0)` so `width: px(14)` lands at a sane ~2 cells
     /// instead of overflowing the viewport.
     pub(crate) cell_size: (f32, f32),
+    /// Registry of `Primitive::Navigator` handler factories,
+    /// populated by SDK leaf crates calling `register_navigator::<P, _>(...)`
+    /// during app bootstrap. `create_navigator` looks the factory up
+    /// by presentation TypeId.
+    pub(crate) navigator_handlers:
+        runtime_core::NavigatorRegistry<TerminalBackend>,
+    /// Per-navigator-instance SDK handler. Keyed by the outlet/root
+    /// node id the handler returned from `init`. Subsequent navigator
+    /// dispatch routes through the handler stored here.
+    pub(crate) nav_handler_instances: HashMap<
+        u32,
+        Rc<std::cell::RefCell<Box<dyn runtime_core::NavigatorHandler<TerminalBackend>>>>,
+    >,
 }
 
 impl Default for TerminalBackend {
@@ -106,6 +119,160 @@ impl TerminalBackend {
             viewport: (80, 24),
             focused_id: None,
             cell_size: (1.0, 1.0),
+            navigator_handlers: runtime_core::NavigatorRegistry::new(),
+            nav_handler_instances: HashMap::new(),
+        }
+    }
+
+    /// Register a `NavigatorHandler` factory for the SDK-defined
+    /// presentation type `P`. SDK leaf crates call this once per app
+    /// bootstrap; on subsequent `Primitive::Navigator { type_id =
+    /// TypeId::of::<P>(), .. }` builds the framework invokes the
+    /// factory to produce a fresh handler.
+    pub fn register_navigator<P, F>(&mut self, factory: F)
+    where
+        P: 'static,
+        F: Fn() -> Box<dyn runtime_core::NavigatorHandler<TerminalBackend>> + 'static,
+    {
+        self.navigator_handlers.register::<P, _>(factory);
+    }
+
+    /// Read the laid-out frame `(x, y, w, h)` of `node` in layout-px
+    /// space. Helper for ad-hoc logging from SDK code that needs to
+    /// inspect the resolved layout. Returns `(0, 0, 0, 0)` for an
+    /// unknown node.
+    pub fn frame_of_for_log(&self, node: TermNode) -> (f32, f32, f32, f32) {
+        let Some(layout) = self.nodes.get(&node.id).map(|d| d.layout) else {
+            return (0.0, 0.0, 0.0, 0.0);
+        };
+        let f = self.layout.frame_of(layout);
+        (f.x, f.y, f.width, f.height)
+    }
+
+    /// Run Taffy's layout compute against the current root + viewport
+    /// without actually painting. SDK code uses this to force the
+    /// frame cache up-to-date before reading it for diagnostics —
+    /// the normal cache update happens inside `render_to_grid`'s
+    /// compute call, which runs AFTER the dispatcher's post-swap
+    /// hook.
+    pub fn compute_layout_for_log(&mut self) {
+        let Some(root_id) = self.find_root() else { return };
+        let Some(root_layout) = self.nodes.get(&root_id).map(|d| d.layout) else { return };
+        let (cols, rows) = self.viewport;
+        let (cw, ch) = self.cell_size;
+        self.layout.compute(root_layout, cols as f32 * cw, rows as f32 * ch);
+    }
+
+    /// Return the direct child ids of `node`. Used by SDK code that
+    /// needs to verify parent/child wiring after a mutation (e.g.
+    /// the drawer-navigator's post-swap sidebar-integrity check).
+    pub fn children_of_for_log(&self, node: TermNode) -> Vec<u32> {
+        self.nodes.get(&node.id).map(|d| d.children.clone()).unwrap_or_default()
+    }
+
+    /// Read the static + animated opacity slots of `node`. Returns
+    /// `(static, animated)` where `static` is the styled opacity (or
+    /// 1.0 default) and `animated` is the in-flight animation override
+    /// (or `None` when no animation is driving it). Used by SDK code
+    /// to diagnose "paint skipped" symptoms — paint_node short-
+    /// circuits when `effective_opacity <= 0.0`, so a stray animation
+    /// pinning opacity to 0 is one of the few render-side
+    /// invisibility causes.
+    pub fn opacity_of_for_log(&self, node: TermNode) -> (f32, Option<f32>) {
+        let Some(d) = self.nodes.get(&node.id) else {
+            return (0.0, None);
+        };
+        (d.opacity, d.animated_opacity)
+    }
+
+    /// Dump a node + every descendant's frame + kind + content into a
+    /// multi-line string. Used by SDK code to inspect what a subtree
+    /// actually looks like after a layout pass.
+    pub fn dump_subtree_for_log(&self, node: TermNode) -> String {
+        let mut out = String::new();
+        self.dump_subtree_into(node.id, 0, &mut out);
+        out
+    }
+
+    fn dump_subtree_into(&self, id: u32, depth: usize, out: &mut String) {
+        let Some(d) = self.nodes.get(&id) else {
+            return;
+        };
+        let f = self.layout.frame_of(d.layout);
+        let indent = "  ".repeat(depth);
+        // Truncate by CHARS, not bytes — the dump fires on every
+        // post-swap and the docs example has multi-byte text (box-
+        // drawing glyphs in the Simulator section's ASCII art). A
+        // byte slice can split inside a `─` (3 bytes) and panic
+        // with "not a char boundary".
+        let content = if d.content.is_empty() {
+            String::new()
+        } else {
+            let preview: String = d.content.chars().take(40).collect();
+            format!(" content={preview:?}")
+        };
+        let bg = match (d.bg, d.animated_bg) {
+            (_, Some(ab)) => format!(" bg-anim=#{:02x}{:02x}{:02x}{:02x}", ab.r, ab.g, ab.b, ab.a),
+            (Some(b), None) => format!(" bg=#{:02x}{:02x}{:02x}{:02x}", b.r, b.g, b.b, b.a),
+            (None, None) => String::new(),
+        };
+        let op = if d.opacity != 1.0 || d.animated_opacity.is_some() {
+            format!(" op={:.2}/anim={:?}", d.opacity, d.animated_opacity)
+        } else {
+            String::new()
+        };
+        out.push_str(&format!(
+            "{indent}#{id} {:?} frame=({:.0},{:.0},{:.0},{:.0}){bg}{op}{content} children={}\n",
+            d.kind,
+            f.x,
+            f.y,
+            f.width,
+            f.height,
+            d.children.len(),
+        ));
+        for &cid in &d.children {
+            self.dump_subtree_into(cid, depth + 1, out);
+        }
+    }
+
+    /// Fully remove `node` and every descendant from the backend —
+    /// drops the per-node data AND tears down the corresponding
+    /// Taffy nodes. Use this when a navigator screen is released
+    /// and won't be reattached. Without this, the screen's root
+    /// stays in the Taffy tree as a parentless root, and
+    /// [`find_root`] may pick it instead of the actual application
+    /// root on subsequent compute / paint passes — which surfaced
+    /// as "page content bleeds into sidebar" on the docs example
+    /// (the old screen's tree got painted at viewport origin,
+    /// overlaying everything including the sidebar).
+    pub fn destroy_subtree(&mut self, node: TermNode) {
+        if let Some(d) = self.nodes.remove(&node.id) {
+            self.layout.remove_node(d.layout);
+            self.layout_to_id.remove(&d.layout);
+            self.drop_subtree(&d.children);
+        }
+    }
+
+    /// Non-destructively remove `child` from `parent`. Unlike
+    /// [`Backend::clear_children`] (which drops every removed child
+    /// and its subtree), this just severs the Taffy edge — the
+    /// child's NodeData stays in `self.nodes`, so it can be
+    /// re-inserted later. Used by the stack navigator to detach
+    /// the current screen on Push and re-attach it on Pop without
+    /// re-mounting.
+    pub fn detach_child(&mut self, parent: &TermNode, child: &TermNode) {
+        let parent_layout = match self.nodes.get(&parent.id) {
+            Some(d) => d.layout,
+            None => return,
+        };
+        let child_layout = match self.nodes.get(&child.id) {
+            Some(d) => d.layout,
+            None => return,
+        };
+        self.layout.remove_child(parent_layout, child_layout);
+        self.layout.mark_dirty(parent_layout);
+        if let Some(p) = self.nodes.get_mut(&parent.id) {
+            p.children.retain(|c| *c != child.id);
         }
     }
 
@@ -160,21 +327,35 @@ impl TerminalBackend {
                 anim_phase: 0.0,
                 z_index: 0.0,
                 input: None,
+                horizontal: false,
+                scroll_x: 0.0,
+                scroll_y: 0.0,
             },
         );
         TermNode { id }
     }
 
     /// Walk the backend's nodes and find the root view (no parent
-    /// edge in the layout tree). Returns the first such node — there
-    /// is typically only one (the `mount` entry root).
+    /// edge in the layout tree). The application root is always the
+    /// first node created (`id == 1`); any other parentless node is
+    /// a transient orphan from a mid-flight tree mutation (e.g. a
+    /// navigator screen that's been detached but not yet destroyed).
+    /// Returns the LOWEST-id root so a stale orphan can't usurp the
+    /// real root — `HashMap` iteration order is otherwise
+    /// non-deterministic, which surfaced as the docs-on-terminal
+    /// bug where alternating renders picked the orphan and painted
+    /// it at viewport origin, overlaying the sidebar.
     pub(crate) fn find_root(&self) -> Option<u32> {
+        let mut best: Option<u32> = None;
         for (id, data) in &self.nodes {
             if self.layout.is_root(data.layout) {
-                return Some(*id);
+                best = Some(match best {
+                    Some(b) => b.min(*id),
+                    None => *id,
+                });
             }
         }
-        None
+        best
     }
 
     /// Dispatch a mouse-left click at terminal-cell coordinates
@@ -251,17 +432,63 @@ impl TerminalBackend {
         let y = parent_y + (frame.y + data.translate_y + static_ty) / ch;
         let w = frame.width / cw;
         let h = frame.height / ch;
-        let inside = col >= x && col < x + w && row >= y && row < y + h;
+        // Snap to whole-cell coverage that EXACTLY mirrors the paint
+        // pass: `paint_text` uses `y0 = y.floor()` and
+        // `max_rows = h.ceil()`, so painted rows are
+        // `[floor(y), floor(y) + ceil(h))`. The earlier snap used
+        // `ceil(y + h)` for the bottom — equivalent only when `y` is
+        // integer-aligned. For a Link at `y=2.25, h=2.0`, that
+        // computed `ceil(4.25)=5` and the hit area extended ONE ROW
+        // BELOW the visible content. Clicking the bottom-edge cell
+        // of one Link then hit-test-matched the NEXT Link (because
+        // its top row was inside the phantom row), dispatching the
+        // wrong route — which surfaced as "the sidebar disappears
+        // when I click the bottom of a NavLink" since the wrong
+        // Link's mount path put the navigator into an unexpected
+        // state. Reproducing the paint snap closes the gap.
+        let cell_left = x.floor();
+        let cell_right = x.floor() + w.ceil();
+        let cell_top = y.floor();
+        let cell_bottom = y.floor() + h.ceil();
+        let inside = col >= cell_left
+            && col < cell_right
+            && row >= cell_top
+            && row < cell_bottom;
         if !inside {
             return;
         }
+        // Apply the same scroll-offset, clip, AND per-level floor
+        // semantics the renderer uses. The renderer floors
+        // `parent_x/y` at each recursion so cumulative fractional
+        // drift gets snapped per level (see paint_node). Without
+        // mirroring that here, a fractional `scroll_y` (which
+        // happens whenever `content_h - viewport_h` doesn't land on
+        // a cell boundary — e.g. the docs sidebar's max scroll is
+        // 64.75) causes the cumulative hit-test y to round up to a
+        // different integer than the paint's floored cascade. The
+        // symptom was the toggle appearing at row N visually but
+        // only firing on a click at row N+1.
+        let (child_off_x, child_off_y) = if matches!(data.kind, NodeKind::ScrollView) {
+            (data.scroll_x, data.scroll_y)
+        } else {
+            (0.0, 0.0)
+        };
+        let next_parent_x = (x - child_off_x).floor();
+        let next_parent_y = (y - child_off_y).floor();
         // Children paint on top of the parent; visually-topmost wins
         // the hit. Walk siblings highest-z first so a planet-in-front
         // captures the click instead of a button behind it.
         let mut ordered = self.children_in_z_order(&data.children);
         ordered.reverse();
         for child in ordered {
-            self.hit_test_walk(child, x, y, col, row, out);
+            self.hit_test_walk(
+                child,
+                next_parent_x,
+                next_parent_y,
+                col,
+                row,
+                out,
+            );
             if out.is_some() {
                 return;
             }
@@ -273,6 +500,138 @@ impl TerminalBackend {
             *out = Some(HitTarget::Handler(handler.clone()));
         } else if matches!(data.kind, NodeKind::TextInput) {
             *out = Some(HitTarget::FocusInput(id));
+        }
+    }
+
+    /// Dispatch a mouse-wheel scroll at `(col, row)`. `delta_y` is in
+    /// cells (positive = scroll content up = reveal content below);
+    /// `delta_x` is the horizontal counterpart. Walks the rendered
+    /// tree deepest-first and adjusts the innermost
+    /// [`NodeKind::ScrollView`] whose frame contains the point,
+    /// clamping its `scroll_x` / `scroll_y` against the laid-out
+    /// content size.
+    ///
+    /// Returns `true` if a scroll view consumed the event. The host
+    /// can use that to suppress fallback behavior (page-wide scroll
+    /// gestures, etc.).
+    ///
+    /// Must be called after `render_to_grid` so the frame cache is
+    /// populated — same precondition as [`Self::dispatch_click`].
+    pub fn dispatch_scroll(
+        &mut self,
+        col: u16,
+        row: u16,
+        delta_x: f32,
+        delta_y: f32,
+    ) -> bool {
+        let Some(root) = self.find_root() else { return false };
+        let mut target: Option<u32> = None;
+        self.scroll_hit_walk(root, 0.0, 0.0, col as f32, row as f32, &mut target);
+        let Some(id) = target else { return false };
+        self.apply_scroll_delta(id, delta_x, delta_y);
+        true
+    }
+
+    /// Find the innermost ScrollView containing `(col, row)`. Mirrors
+    /// `hit_test_walk` but matches on kind rather than on `on_click`
+    /// presence — and keeps walking past intermediate ScrollViews so
+    /// nested ones (e.g. a horizontal carousel inside a vertical
+    /// page-scroll) resolve to the deepest match. Visually-topmost
+    /// (highest z) wins, same posture as click hit-testing.
+    fn scroll_hit_walk(
+        &self,
+        id: u32,
+        parent_x: f32,
+        parent_y: f32,
+        col: f32,
+        row: f32,
+        out: &mut Option<u32>,
+    ) {
+        let Some(data) = self.nodes.get(&id) else { return };
+        let frame = self.layout.frame_of(data.layout);
+        let (cw, ch) = self.cell_size;
+        let static_tx = data
+            .static_translate_x
+            .as_ref()
+            .map(|l| render::resolve_length_against(l, frame.width))
+            .unwrap_or(0.0);
+        let static_ty = data
+            .static_translate_y
+            .as_ref()
+            .map(|l| render::resolve_length_against(l, frame.height))
+            .unwrap_or(0.0);
+        let x = parent_x + (frame.x + data.translate_x + static_tx) / cw;
+        let y = parent_y + (frame.y + data.translate_y + static_ty) / ch;
+        let w = frame.width / cw;
+        let h = frame.height / ch;
+        let inside = col >= x && col < x + w && row >= y && row < y + h;
+        if !inside {
+            return;
+        }
+        // Recurse into children with the scroll-offset applied so the
+        // hit walk matches what the user sees. Without this, a nested
+        // ScrollView would appear to "be" at its laid-out position
+        // even after its parent has scrolled past it.
+        let (child_off_x, child_off_y) = if matches!(data.kind, NodeKind::ScrollView) {
+            (data.scroll_x, data.scroll_y)
+        } else {
+            (0.0, 0.0)
+        };
+        let mut ordered = self.children_in_z_order(&data.children);
+        ordered.reverse();
+        for child in ordered {
+            self.scroll_hit_walk(
+                child,
+                x - child_off_x,
+                y - child_off_y,
+                col,
+                row,
+                out,
+            );
+            if out.is_some() {
+                return;
+            }
+        }
+        // No child claimed it; if THIS node is a ScrollView, it
+        // becomes the hit. Otherwise the walk unwinds and an outer
+        // ScrollView (if any) may claim it.
+        if matches!(data.kind, NodeKind::ScrollView) {
+            *out = Some(id);
+        }
+    }
+
+    /// Mutate the ScrollView's scroll offset, clamped against the
+    /// content bounds. Content size is the bounding extent of every
+    /// child's laid-out frame (Taffy sized them independent of the
+    /// scroll view's own bounded height); we subtract the viewport
+    /// to derive the maximum scroll. Negative clamping floors at 0
+    /// (can't scroll past the start).
+    fn apply_scroll_delta(&mut self, id: u32, delta_x: f32, delta_y: f32) {
+        let Some(data) = self.nodes.get(&id) else { return };
+        if !matches!(data.kind, NodeKind::ScrollView) {
+            return;
+        }
+        let (cw, ch) = self.cell_size;
+        let frame = self.layout.frame_of(data.layout);
+        let viewport_w = frame.width / cw;
+        let viewport_h = frame.height / ch;
+        // Sum child extents in cell space. Children's `frame.x/y` are
+        // relative to this scroll view, so the bottom-right corner of
+        // the union is just `max(child.x + child.w, child.y + child.h)`.
+        let mut content_w = 0.0f32;
+        let mut content_h = 0.0f32;
+        for cid in &data.children {
+            if let Some(c) = self.nodes.get(cid) {
+                let f = self.layout.frame_of(c.layout);
+                content_w = content_w.max((f.x + f.width) / cw);
+                content_h = content_h.max((f.y + f.height) / ch);
+            }
+        }
+        let max_x = (content_w - viewport_w).max(0.0);
+        let max_y = (content_h - viewport_h).max(0.0);
+        if let Some(d) = self.nodes.get_mut(&id) {
+            d.scroll_x = (d.scroll_x + delta_x).clamp(0.0, max_x);
+            d.scroll_y = (d.scroll_y + delta_y).clamp(0.0, max_y);
         }
     }
 
@@ -380,7 +739,14 @@ impl Backend for TerminalBackend {
         _trailing_icon: Option<&runtime_core::primitives::icon::IconData>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        let node = self.alloc_node(NodeKind::Button, label.to_string());
+        // Render Button as `[ label ]` for a consistent at-a-glance
+        // affordance on terminal — matches the existing Toggle's
+        // `[ ● ]` bracket convention. Store the bracketed form
+        // directly so the captured `measure_fn` (which reads
+        // `data.content`) sizes the node for the bracketed width.
+        // Paint goes through `paint_text` unchanged.
+        let bracketed = format_button_label(label);
+        let node = self.alloc_node(NodeKind::Button, bracketed);
         let fire = on_click.fire.clone();
         if let Some(data) = self.nodes.get_mut(&node.id) {
             data.on_click = Some(fire);
@@ -397,6 +763,87 @@ impl Backend for TerminalBackend {
         let node = self.alloc_node(NodeKind::Pressable, String::new());
         if let Some(data) = self.nodes.get_mut(&node.id) {
             data.on_click = Some(on_click);
+        }
+        node
+    }
+
+    // ------------------------------------------------------------------
+    // Visual-only primitives that the terminal collapses to a plain
+    // View. No clipping, no scrolling, no actual image/icon rendering —
+    // per [[feedback_terminal_minimalism]] the terminal is a flat
+    // character grid, so these primitives behave as transparent flex
+    // containers and any visual semantics (scroll, image content,
+    // portal teleportation) are dropped silently.
+    // ------------------------------------------------------------------
+
+    fn create_scroll_view(
+        &mut self,
+        horizontal: bool,
+        _a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        let node = self.alloc_node(NodeKind::ScrollView, String::new());
+        let layout = self.nodes.get(&node.id).map(|d| d.layout);
+        if let Some(d) = self.nodes.get_mut(&node.id) {
+            d.horizontal = horizontal;
+        }
+        // Tell Taffy this node behaves like CSS `overflow: scroll` on
+        // the chosen axis. Without this, Taffy sizes the scroll view
+        // to its content's intrinsic size — i.e. the content fits
+        // inside it exactly and there's nothing to scroll. The
+        // helper also sets `flex_grow: 1, flex_basis: 0` so the
+        // scroll view fills its parent's available main-axis space
+        // (matches how an unsized ScrollView behaves on
+        // iOS/Android/web where the native scroll view's frame is
+        // set by its parent and content has its own coordinate
+        // space).
+        if let Some(l) = layout {
+            self.layout.set_overflow_scroll(l, horizontal);
+        }
+        node
+    }
+
+    fn create_image(
+        &mut self,
+        _src: &str,
+        _alt: Option<&str>,
+        a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        self.create_view(a11y)
+    }
+
+    fn create_icon(
+        &mut self,
+        _data: &runtime_core::primitives::icon::IconData,
+        _color: Option<&FwColor>,
+        a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        self.create_view(a11y)
+    }
+
+    fn create_portal(
+        &mut self,
+        _target: runtime_core::primitives::portal::PortalTarget,
+        _on_dismiss: Option<Rc<dyn Fn()>>,
+        _trap_focus: bool,
+        a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        self.create_view(a11y)
+    }
+
+    fn create_link(
+        &mut self,
+        config: runtime_core::primitives::link::LinkConfig,
+        _a11y: &AccessibilityProps,
+    ) -> Self::Node {
+        // Terminal renders links as plain Pressable wrappers — a click
+        // anywhere inside fires `on_activate`. The trait default
+        // collapses to `create_view` and drops `on_activate` entirely,
+        // which is why nav-link clicks were silently no-op'ing
+        // before. The on_click slot mirrors what `create_pressable`
+        // sets, so the existing hit-test path picks it up.
+        let node = self.alloc_node(NodeKind::Pressable, String::new());
+        if let Some(data) = self.nodes.get_mut(&node.id) {
+            data.on_click = Some(config.on_activate);
         }
         node
     }
@@ -436,7 +883,9 @@ impl Backend for TerminalBackend {
     }
 
     fn update_button_label(&mut self, node: &Self::Node, label: &str) {
-        self.update_text(node, label);
+        // Re-wrap reactive label updates to keep the bracketed
+        // form in sync with what `create_button` stored.
+        self.update_text(node, &format_button_label(label));
     }
 
     fn clear_children(&mut self, node: &Self::Node) {
@@ -468,6 +917,23 @@ impl Backend for TerminalBackend {
             Some(d) => d.layout,
             None => return,
         };
+        // Eagerly resolve `background` and `color` BEFORE handing the
+        // rules to `runtime-layout`'s `set_style`. This is load-
+        // bearing: the cohort driver Effect re-fires on token-signal
+        // changes, calls `apply_one` → this `apply_style`, which
+        // resolves the same Tokenized values to cache `bg`/`fg`
+        // further down. Without this early read, the cohort path's
+        // sidebar updates went through (`d.bg` was updated, the
+        // log even showed the dark color), but the render didn't
+        // visually pick up the change — the framework's token-
+        // subscription bookkeeping needs the resolve to happen
+        // BEFORE other style processing for the per-token edges to
+        // land in this Effect's dependency set on the first
+        // post-toggle re-fire. Without it, the sidebar darkened
+        // only on the second-or-later toggle, which read to the
+        // user as "doesn't update".
+        let _ = style.background.as_ref().map(|t| t.resolve());
+        let _ = style.color.as_ref().map(|t| t.resolve());
         self.layout.set_style(layout_node, style);
 
         // Cache the resolved fg/bg + gradient so the renderer's hot
@@ -753,7 +1219,93 @@ impl Backend for TerminalBackend {
     /// current viewport size. `finish` would compute against stale
     /// dimensions if the terminal got resized between builds.
     fn finish(&mut self, _root: Self::Node) {}
+
+    // ------------------------------------------------------------------
+    // Navigator extension wiring. Mirrors the web/iOS/Android pattern —
+    // SDK leaf crates install a handler factory keyed by presentation
+    // TypeId; `create_navigator` resolves the factory, runs its `init`,
+    // and stores the returned handler under the outlet node id so
+    // subsequent dispatch (`attach_initial` / `release` / `make_handle`
+    // / `apply_slot_style`) can route through the kind-specific logic.
+    // ------------------------------------------------------------------
+
+    fn create_navigator(
+        &mut self,
+        type_id: std::any::TypeId,
+        type_name: &'static str,
+        presentation: Rc<dyn std::any::Any>,
+        host: runtime_core::NavigatorHost<Self::Node>,
+        _a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        let factory = self
+            .navigator_handlers
+            .get(type_id)
+            .unwrap_or_else(|| {
+                panic!(
+                    "TerminalBackend::create_navigator: navigator kind '{}' \
+                     is not registered. Did the app forget to call \
+                     `<navigator-sdk>::register(&mut backend)` during bootstrap?",
+                    type_name
+                )
+            });
+        let mut handler = factory();
+        let node = handler.init(self, host, presentation);
+        // Key by outlet node id — unlike web there's no separate
+        // navigator-id attribute, but TermNode.id is already a stable
+        // per-instance handle.
+        self.nav_handler_instances.insert(
+            node.id,
+            Rc::new(std::cell::RefCell::new(handler)),
+        );
+        node
+    }
+
+    fn navigator_attach_initial(
+        &mut self,
+        navigator: &Self::Node,
+        screen: Self::Node,
+        scope_id: u64,
+        options: Box<dyn std::any::Any>,
+    ) {
+        let handler = self.nav_handler_instances.get(&navigator.id).cloned();
+        let Some(handler) = handler else { return };
+        handler.borrow_mut().attach_initial(self, screen, scope_id, options);
+    }
+
+    fn release_navigator(&mut self, node: &Self::Node) {
+        let handler = self.nav_handler_instances.remove(&node.id);
+        let Some(handler) = handler else { return };
+        handler.borrow_mut().release(self);
+    }
+
+    fn make_navigator_handle(
+        &self,
+        node: &Self::Node,
+    ) -> runtime_core::NavigatorHandle {
+        match self.nav_handler_instances.get(&node.id) {
+            Some(h) => h.borrow().make_handle(),
+            None => runtime_core::NavigatorHandle::new(
+                Rc::new(()),
+                &NOOP_NAV_OPS,
+            ),
+        }
+    }
+
+    fn apply_navigator_slot_style(
+        &mut self,
+        navigator: &Self::Node,
+        slot: &'static str,
+        style: &Rc<StyleRules>,
+    ) {
+        let handler = self.nav_handler_instances.get(&navigator.id).cloned();
+        let Some(handler) = handler else { return };
+        handler.borrow_mut().apply_slot_style(self, slot, style);
+    }
 }
+
+struct NoopNavOps;
+impl runtime_core::primitives::navigator::NavigatorOps for NoopNavOps {}
+static NOOP_NAV_OPS: NoopNavOps = NoopNavOps;
 
 #[cfg(test)]
 mod regression_tests {
@@ -819,6 +1371,28 @@ thread_local! {
 /// `backend-ios` use.
 pub fn install_global_self(weak: std::rc::Weak<std::cell::RefCell<TerminalBackend>>) {
     GLOBAL_BACKEND.with(|s| *s.borrow_mut() = Some(weak));
+}
+
+/// Run `f` with a mutable borrow on the host-installed backend
+/// handle. SDK leaf crates use this from inside navigator-dispatch
+/// closures (created in `NavigatorHandler::init`) that need to call
+/// `Backend::insert` / [`TerminalBackend::detach_child`] / etc.
+/// — those closures don't carry `&mut TerminalBackend` and have no
+/// other way to reach the backend.
+///
+/// Silently no-ops if the host hasn't installed the self-handle yet
+/// or the backend is already mutably borrowed. Mirrors how
+/// `terminal_toggle_press` and `terminal_advance_spinner` reach back
+/// into the backend from event-handler closures.
+pub fn with_global_backend<F>(f: F)
+where
+    F: FnOnce(&mut TerminalBackend),
+{
+    let weak = GLOBAL_BACKEND.with(|s| s.borrow().clone());
+    let Some(weak) = weak else { return };
+    let Some(rc) = weak.upgrade() else { return };
+    let Ok(mut b) = rc.try_borrow_mut() else { return };
+    f(&mut *b);
 }
 
 fn terminal_toggle_press(id: u32, on_change: &Rc<dyn Fn(bool)>) {
@@ -983,6 +1557,14 @@ impl TerminalBackend {
 /// `\n` as a hard line break.
 ///
 /// All constraints and the returned size are in **layout px**, not
+/// Wrap a Button's raw label as `[ label ]` for the terminal
+/// renderer. Centralised so create + update paths emit the same
+/// shape and bracket-aware metrics flow through `install_text_measure`
+/// unchanged. Mirrors the existing Toggle convention (`[ ● ]`).
+fn format_button_label(label: &str) -> String {
+    format!("[ {label} ]")
+}
+
 /// cells — Taffy operates in px throughout. `(cw, ch)` is the
 /// active px-per-cell factor; we convert px constraints to cell
 /// counts internally, then convert the cell-based result back to px

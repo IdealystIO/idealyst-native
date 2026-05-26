@@ -1279,6 +1279,7 @@ version = "0.0.1"
 dependencies = [
  "backend-android-mobile",
  "backend-ios-mobile",
+ "backend-terminal",
  "backend-web",
  "console_error_panic_hook",
  "dev-client",
@@ -1333,6 +1334,7 @@ dependencies = [
  "android-navigator-helpers",
  "backend-android-mobile",
  "backend-ios-mobile",
+ "backend-terminal",
  "backend-web",
  "ios-navigator-helpers",
  "jni 0.21.1",
@@ -4250,6 +4252,7 @@ dependencies = [
  "android-navigator-helpers",
  "backend-android-mobile",
  "backend-ios-mobile",
+ "backend-terminal",
  "backend-web",
  "ios-navigator-helpers",
  "jni 0.21.1",
@@ -5279,6 +5282,7 @@ name = "welcome"
 version = "0.0.1"
 dependencies = [
  "backend-ios-mobile",
+ "backend-terminal",
  "backend-web",
  "runtime-core",
 ]

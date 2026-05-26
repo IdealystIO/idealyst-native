@@ -28,6 +28,11 @@ backend-web = { workspace = true }
 [target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
 backend-ios-mobile = { workspace = true }
 
+# Terminal (TTY) target. Same `register_extensions(&mut TerminalBackend)`
+# contract — body is empty because welcome has no navigator/external SDKs.
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))'.dependencies]
+backend-terminal = { workspace = true }
+
 [package.metadata.idealyst.app]
 name      = "Welcome"
 bundle_id = "ai.truday.idealyst.welcome"

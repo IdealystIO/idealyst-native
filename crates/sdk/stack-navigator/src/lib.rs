@@ -439,13 +439,13 @@ mod ios;
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
 pub use ios::register;
 
+// Non-mobile, non-wasm hosts target the terminal backend. The
+// handler is minimalist (no chrome, no animations); see
+// [[feedback_terminal_minimalism]] and `terminal::TerminalStackHandler`.
 #[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
-mod fallback {
-    use runtime_core::Backend;
-    pub fn register<B: Backend>(_backend: &mut B) {}
-}
+mod terminal;
 #[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
-pub use fallback::register;
+pub use terminal::register;
 
 // =============================================================================
 // Prelude

@@ -72,6 +72,15 @@ pub fn register_extensions(backend: &mut backend_android::AndroidBackend) {
     drawer_navigator::register(backend);
 }
 
+// Terminal (TTY) equivalent — invoked from the CLI-generated terminal
+// wrapper before mount. Without it the first `create_navigator` call
+// panics because the drawer factory isn't in
+// `TerminalBackend::navigator_handlers`.
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
+pub fn register_extensions(backend: &mut backend_terminal::TerminalBackend) {
+    drawer_navigator::register(backend);
+}
+
 use routes::{
     ANIMATION_ROUTE, BACKENDS_ROUTE, CLI_ROUTE, COMPONENTS_ROUTE, DEV_TOOLS_ROUTE, ICONS_ROUTE,
     INTRODUCTION_ROUTE, LISTS_ROUTE, MACROS_ROUTE, NAVIGATION_ROUTE, OVERVIEW_ROUTE,

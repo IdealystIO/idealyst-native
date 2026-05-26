@@ -72,6 +72,12 @@ fn default_log_path() -> std::path::PathBuf {
 /// reported viewport reflects it.
 pub const DEFAULT_RUNTIME_SERVER_CELL_SIZE: (f32, f32) = (8.0, 16.0);
 
+/// Rows of scroll per mouse-wheel tick. Three matches the common
+/// browser default and feels right for a character-grid viewport
+/// (one row per tick is too laggy; the backend clamps to content
+/// bounds so over-scrolling is harmless).
+const SCROLL_STEP: f32 = 3.0;
+
 #[derive(Clone)]
 pub struct RunOptions {
     /// Cap on how many times per second the render loop wakes up.
@@ -124,9 +130,18 @@ impl std::error::Error for RunError {}
 
 /// Boot crossterm, mount `app`, and drive the render loop until the
 /// user quits. Restores the terminal state on return.
-pub fn run<F>(app: F, opts: RunOptions) -> Result<(), RunError>
+///
+/// `register_extensions` runs after the [`TerminalBackend`] is
+/// constructed and the global self-handle is installed, but before
+/// the first `mount(...)`. SDK leaf crates (drawer-navigator,
+/// stack-navigator, third-party `Primitive::External` providers) get
+/// installed here — mirrors the web/iOS/Android wrappers which call
+/// `<user_crate>::register_extensions(&mut backend)` at the same
+/// point. Pass `|_| {}` if the app has no SDKs to register.
+pub fn run<F, R>(app: F, opts: RunOptions, register_extensions: R) -> Result<(), RunError>
 where
     F: Fn() -> Primitive + 'static,
+    R: FnOnce(&mut TerminalBackend),
 {
     let mut stdout = io::stdout();
     // Steal stderr BEFORE raw mode so any framework/hot/runtime-
@@ -134,6 +149,54 @@ where
     // on crossterm's paint stream. Dropped on return, restoring
     // the original fd 2. See `stderr_redirect.rs` for the why.
     let _stderr = stderr_redirect::StderrRedirect::install(&default_log_path());
+
+    // Install a panic hook so panic info lands in the log alongside
+    // anything `eprintln!` writes. Without this, a runtime panic
+    // races with the raw-mode teardown — the alternate-screen exit
+    // executes mid-message and the terminal-log ends up with no
+    // diagnostic, leaving only the host's "exited with status 101"
+    // line in the build log.
+    //
+    // Defensive shape: the original panic message is written FIRST
+    // and on its own try (a) so the user always sees what actually
+    // failed, even if backtrace capture later panics. Backtrace
+    // capture is wrapped in `catch_unwind` because `force_capture`
+    // touches TLS, and during teardown the reactive-arena TLS may
+    // already be destroyed — a panic in the panic hook becomes a
+    // fatal runtime abort that swallows the real message (saw this
+    // when the dev-tui shutdown raced with effect cleanup).
+    let log_path = default_log_path();
+    std::panic::set_hook(Box::new(move |info| {
+        // (a) Write the panic info on its own. No TLS access here
+        //     beyond what `info`'s Display impl already does.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+            {
+                use std::io::Write;
+                let _ = writeln!(f, "[panic] {info}");
+            }
+        }));
+        // (b) Try the backtrace too, but tolerate failure. This
+        //     fires force_capture which uses TLS internally; during
+        //     thread shutdown that can itself panic with
+        //     AccessError. `catch_unwind` keeps the AccessError
+        //     from cascading into a double-panic abort.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let bt = std::backtrace::Backtrace::force_capture();
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+            {
+                use std::io::Write;
+                let _ = writeln!(f, "{bt}");
+            }
+        }));
+    }));
+
     enable_raw_mode()?;
     execute!(
         stdout,
@@ -155,6 +218,12 @@ where
     // backend without capturing it directly. Mirrors the
     // `install_global_self` pattern in `backend-macos`.
     backend_terminal::install_global_self(Rc::downgrade(&backend));
+
+    // Hand the bare backend to the user crate so it can install
+    // navigator-SDK / external-primitive handlers before mount.
+    // Same posture as the web wrapper's
+    // `{lib}::register_extensions(&mut web)` call.
+    register_extensions(&mut backend.borrow_mut());
 
     // Apply the host's chosen cell_size BEFORE the first mount —
     // measure_fns capture the value at install time, so changing
@@ -221,6 +290,42 @@ where
                         if let backend_terminal::ClickOutcome::HandlerFired(h) = outcome {
                             h();
                         }
+                    }
+                    Event::Mouse(MouseEvent {
+                        kind: MouseEventKind::ScrollDown,
+                        column,
+                        row,
+                        ..
+                    }) => {
+                        // Wheel scrolls by ~3 lines per tick — terminal
+                        // wheel deltas are unitless, so we pick a sane
+                        // step that feels like browser-default. The
+                        // backend clamps against content bounds.
+                        backend.borrow_mut().dispatch_scroll(column, row, 0.0, SCROLL_STEP);
+                    }
+                    Event::Mouse(MouseEvent {
+                        kind: MouseEventKind::ScrollUp,
+                        column,
+                        row,
+                        ..
+                    }) => {
+                        backend.borrow_mut().dispatch_scroll(column, row, 0.0, -SCROLL_STEP);
+                    }
+                    Event::Mouse(MouseEvent {
+                        kind: MouseEventKind::ScrollRight,
+                        column,
+                        row,
+                        ..
+                    }) => {
+                        backend.borrow_mut().dispatch_scroll(column, row, SCROLL_STEP, 0.0);
+                    }
+                    Event::Mouse(MouseEvent {
+                        kind: MouseEventKind::ScrollLeft,
+                        column,
+                        row,
+                        ..
+                    }) => {
+                        backend.borrow_mut().dispatch_scroll(column, row, -SCROLL_STEP, 0.0);
                     }
                     Event::Key(key) => {
                         if key.kind != KeyEventKind::Press
