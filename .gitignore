@@ -5,3 +5,4 @@ target/
 /examples/hello-roku/dist
 .claude/scheduled_tasks.lock
 /benchmark/runner/node_modules
+.idealyst/
