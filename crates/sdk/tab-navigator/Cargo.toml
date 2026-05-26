@@ -29,3 +29,9 @@ jni = "0.21"
 [target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
 backend-ios-mobile = { workspace = true }
 ios-navigator-helpers = { workspace = true }
+
+# macOS: tabbar + outlet layout per `project_macos_navigator_design`.
+# Uses only the public Backend trait surface plus
+# `backend_macos::with_global_backend` for microtask re-entry.
+[target.'cfg(all(target_os = "macos", not(target_arch = "wasm32")))'.dependencies]
+backend-macos = { workspace = true }

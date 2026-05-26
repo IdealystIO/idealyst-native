@@ -14,7 +14,8 @@ mod stub;
 
 #[cfg(target_os = "macos")]
 pub use imp::{
-    install_global_self, set_animated_color, set_animated_f32, MacosBackend, MacosNode,
+    install_global_self, set_animated_color, set_animated_f32, with_global_backend,
+    MacosBackend, MacosNode,
 };
 
 #[cfg(not(target_os = "macos"))]

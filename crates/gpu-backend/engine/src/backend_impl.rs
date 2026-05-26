@@ -127,6 +127,33 @@ pub struct WgpuBackend {
     /// by `AssetId` in their per-backend `ImageCache`.
     pub(crate) image_asset_bytes:
         std::collections::HashMap<runtime_core::AssetId, Vec<u8>>,
+    /// Third-party `Primitive::External` registry. Populated by
+    /// per-platform leaf crates at app bootstrap. wgpu apps wire
+    /// WebView / Maps / etc. by calling
+    /// `backend.register_external::<T, _>(handler)` on the wgpu
+    /// engine — the handler renders into the same engine surface
+    /// (no native overlay yet; the overlay-per-host story remains
+    /// pending). Same registry shape iOS / Android / macOS use.
+    pub(crate) external_handlers: runtime_core::ExternalRegistry<WgpuBackend>,
+    /// Registry of `Primitive::Navigator` handler factories. SDK
+    /// leaves (`stack_navigator`, `tab_navigator`, `drawer_navigator`)
+    /// call `register_navigator::<TheirPresentation, _>(factory)` at
+    /// bootstrap; `create_navigator` resolves the matching factory
+    /// and runs `init`, stashing the handler in
+    /// `nav_handler_instances` for follow-up dispatch.
+    pub(crate) navigator_handlers:
+        runtime_core::NavigatorRegistry<WgpuBackend>,
+    /// Per-navigator-instance handler, keyed by the
+    /// `WgpuNode`'s pointer. Subsequent trait methods
+    /// (`navigator_attach_initial`, `release_navigator`,
+    /// `make_navigator_handle`, `apply_navigator_slot_style`) look
+    /// the handler up here and delegate.
+    pub(crate) nav_handler_instances: std::collections::HashMap<
+        usize,
+        std::rc::Rc<
+            std::cell::RefCell<Box<dyn runtime_core::NavigatorHandler<WgpuBackend>>>,
+        >,
+    >,
 }
 
 /// Per-node presence interpolation entry. `node` is a strong ref so
@@ -194,7 +221,36 @@ impl WgpuBackend {
             presence_tweens: std::collections::HashMap::new(),
             sticky_registry: crate::sticky::StickyRegistry::new(),
             image_asset_bytes: std::collections::HashMap::new(),
+            external_handlers: runtime_core::ExternalRegistry::new(),
+            navigator_handlers: runtime_core::NavigatorRegistry::new(),
+            nav_handler_instances: std::collections::HashMap::new(),
         }
+    }
+
+    /// Register a handler for the third-party external primitive
+    /// whose payload type is `T`. Called by per-platform leaf crates
+    /// (e.g. a future `webview-wgpu`, `maps-wgpu`) at app bootstrap.
+    /// The handler receives the typed payload + a mutable borrow of
+    /// the backend and produces the `WgpuNode` to mount. Mirrors
+    /// `IosBackend::register_external` / `MacosBackend::register_external`.
+    pub fn register_external<T, F>(&mut self, handler: F)
+    where
+        T: 'static,
+        F: Fn(&std::rc::Rc<T>, &mut WgpuBackend) -> WgpuNode + 'static,
+    {
+        self.external_handlers.register::<T, _>(handler);
+    }
+
+    /// Register a `Primitive::Navigator` handler factory keyed by
+    /// presentation type `P`. SDK leaf crates call this once at
+    /// bootstrap. Mirrors `IosBackend::register_navigator` /
+    /// `MacosBackend::register_navigator`.
+    pub fn register_navigator<P, F>(&mut self, factory: F)
+    where
+        P: 'static,
+        F: Fn() -> Box<dyn runtime_core::NavigatorHandler<WgpuBackend>> + 'static,
+    {
+        self.navigator_handlers.register::<P, _>(factory);
     }
 
     /// Look up the raw bytes for a registered image asset. Returns
@@ -1670,46 +1726,133 @@ impl Backend for WgpuBackend {
 
     fn create_external(
         &mut self,
-        _type_id: std::any::TypeId,
+        type_id: std::any::TypeId,
         type_name: &'static str,
-        _payload: &Rc<dyn std::any::Any>,
+        payload: &Rc<dyn std::any::Any>,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        // Placeholder until the overlay-per-host wgpu External
-        // strategy lands (see `project_wgpu_external_strategy`).
-        // The full plan needs each host (`host-winit`, `host-web`,
-        // `host-appkit`) to expose a native overlay primitive the
-        // engine can hand to the registered external handler;
-        // WebView and Maps then mount real WebKit / MapKit / Google
-        // Maps views in those overlays. Until that machinery lands,
-        // render a visible "External X not supported on wgpu" text
-        // node so author code that mounts an external doesn't
-        // panic — matches the `backend-cpu` / `backend-macos`
-        // posture (see `feedback_cpu_unsupported_placeholders`).
-        let msg = format!("External \"{type_name}\" not yet implemented on wgpu");
+        // Consult the registry. SDK leaves (a future
+        // `webview-wgpu`, `maps-wgpu`, etc.) call
+        // `register_external::<TheirProps, _>(handler)` at bootstrap;
+        // when one matches, the handler renders via the engine's
+        // existing primitives (the overlay-per-host path is the
+        // separate `project_wgpu_external_strategy` follow-up that
+        // would mount real WebKit / MapKit views via native
+        // overlays — not needed for SDKs that draw their own
+        // visuals through wgpu).
+        //
+        // No-match: visible "kind X not registered" text so author
+        // code that mounted an external sees the missing wiring
+        // at runtime instead of an empty rect.
+        if let Some(handler) = self.external_handlers.get(type_id) {
+            let node = handler(payload, self);
+            init_node_a11y(&node, a11y, PrimitiveKind::External);
+            return node;
+        }
+        let msg = format!(
+            "External \"{type_name}\" not registered on wgpu \
+             — SDK leaf needs `register_external(&mut backend)` \
+             on wgpu targets"
+        );
         self.create_text(&msg, a11y)
+    }
+
+    fn release_external(&mut self, _node: &Self::Node) {
+        // No per-external bookkeeping today. Future SDKs that hold
+        // GPU resources (custom render targets, sampler caches) can
+        // clean up here keyed by the node's layout id.
     }
 
     fn create_navigator(
         &mut self,
-        _type_id: std::any::TypeId,
+        type_id: std::any::TypeId,
         type_name: &'static str,
-        _presentation: Rc<dyn std::any::Any>,
-        _host: runtime_core::primitives::navigator::NavigatorHost<Self::Node>,
+        presentation: Rc<dyn std::any::Any>,
+        host: runtime_core::primitives::navigator::NavigatorHost<Self::Node>,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        // Placeholder until the wgpu Navigator design lands. The
-        // architectural target follows the same single-window-with-
-        // sidebar shape as the macOS Navigator (per
-        // `project_macos_navigator_design`); the wgpu side then
-        // mirrors that layout via a Taffy-driven content swap
-        // rather than animated push/pop. Until that PR lands, emit
-        // a visible "Navigator not implemented" text instead of
-        // panicking through the framework default.
-        let msg = format!("Navigator \"{type_name}\" not yet implemented on wgpu");
+        // Same registry shape as macOS — `register_navigator`
+        // installs a factory keyed by presentation TypeId; we run
+        // `init`, stash the handler under the resolved node's
+        // pointer for follow-up dispatch.
+        if let Some(factory) = self.navigator_handlers.get(type_id) {
+            let mut handler: Box<dyn runtime_core::NavigatorHandler<WgpuBackend>> =
+                (factory)();
+            let node = handler.init(self, host, presentation);
+            let key = Rc::as_ptr(&node) as usize;
+            self.nav_handler_instances.insert(
+                key,
+                std::rc::Rc::new(std::cell::RefCell::new(handler)),
+            );
+            init_node_a11y(&node, a11y, PrimitiveKind::View);
+            return node;
+        }
+        let msg = format!(
+            "Navigator kind \"{type_name}\" not registered on wgpu \
+             — SDK leaf needs `register_navigator(&mut backend)` \
+             on wgpu targets"
+        );
         self.create_text(&msg, a11y)
     }
+
+    fn release_navigator(&mut self, node: &Self::Node) {
+        let key = Rc::as_ptr(node) as usize;
+        if let Some(handler_cell) = self.nav_handler_instances.remove(&key) {
+            handler_cell.borrow_mut().release(self);
+        }
+    }
+
+    fn navigator_attach_initial(
+        &mut self,
+        navigator: &Self::Node,
+        screen: Self::Node,
+        scope_id: u64,
+        options: Box<dyn std::any::Any>,
+    ) {
+        let key = Rc::as_ptr(navigator) as usize;
+        if let Some(handler_cell) = self.nav_handler_instances.get(&key).cloned() {
+            handler_cell
+                .borrow_mut()
+                .attach_initial(self, screen, scope_id, options);
+        }
+    }
+
+    fn apply_navigator_slot_style(
+        &mut self,
+        node: &Self::Node,
+        slot: &'static str,
+        style: &Rc<runtime_core::StyleRules>,
+    ) {
+        let key = Rc::as_ptr(node) as usize;
+        if let Some(handler_cell) = self.nav_handler_instances.get(&key).cloned() {
+            handler_cell
+                .borrow_mut()
+                .apply_slot_style(self, slot, style);
+        }
+    }
+
+    fn make_navigator_handle(
+        &self,
+        node: &Self::Node,
+    ) -> runtime_core::primitives::navigator::NavigatorHandle {
+        let key = Rc::as_ptr(node) as usize;
+        if let Some(handler_cell) = self.nav_handler_instances.get(&key) {
+            return handler_cell.borrow().make_handle();
+        }
+        runtime_core::primitives::navigator::NavigatorHandle::new(
+            std::rc::Rc::new(()),
+            &NOOP_WGPU_NAV_OPS,
+        )
+    }
 }
+
+/// Inert `NavigatorOps` for `make_navigator_handle` calls that land
+/// on a navigator container with no registered handler. Empty trait,
+/// so the impl is just a marker; handles built from this ignore all
+/// dispatch attempts.
+struct NoopWgpuNavOps;
+impl runtime_core::primitives::navigator::NavigatorOps for NoopWgpuNavOps {}
+static NOOP_WGPU_NAV_OPS: NoopWgpuNavOps = NoopWgpuNavOps;
 
 // =========================================================================
 // Accessibility — node-side stash + semantics-tree construction.

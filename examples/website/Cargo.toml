@@ -9,10 +9,29 @@ description = "Marketing site for idealyst-native — built with idealyst-native
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-runtime-core = { workspace = true }
+# `async-driver` is required by the embedded `Simulator` component
+# (home-page preview that runs `welcome::app()` through the wgpu
+# render backend). The Simulator uses `runtime_core::driver::spawn_async`
+# to wait on `host_web::mount` without blocking the build walker.
+runtime-core = { workspace = true, features = ["async-driver"] }
 idea-ui = { workspace = true }
 drawer-navigator = { workspace = true }
 idea-codeblock = { workspace = true }
+# Embedded `welcome` app — the canonical scaffold from `idealyst new`.
+# Re-mounted inside the home-page Simulator so visitors can preview
+# the scene without installing the CLI. Pure rlib, no platform-specific
+# code, compiles the same bytes everywhere.
+welcome = { workspace = true }
+
+# Embedded-Simulator preview stack. These crates self-gate their
+# wasm-only innards (see e.g. `host-web/src/lib.rs`'s `cfg(target_arch
+# = "wasm32")` blocks), so they compile to empty surfaces on
+# native targets and the `Simulator` component's compile-time
+# imports stay portable. Matches the docs example's Cargo wiring.
+host-web = { workspace = true }
+render-api = { workspace = true }
+ios-sim = { workspace = true }
+android-sim = { workspace = true }
 
 # Web target — wasm + DOM. The marketing site's primary surface.
 #

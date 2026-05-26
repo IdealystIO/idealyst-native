@@ -439,12 +439,30 @@ mod ios;
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
 pub use ios::register;
 
-// Non-mobile, non-wasm hosts target the terminal backend. The
-// handler is minimalist (no chrome, no animations); see
+// macOS: single-window outlet that swaps its child on Push/Pop/
+// Replace/Reset. No animated push/pop chrome — per
+// `project_macos_navigator_design`.
+#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+mod macos;
+#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+pub use macos::register;
+
+// Non-mobile, non-wasm, non-macOS hosts target the terminal backend.
+// The handler is minimalist (no chrome, no animations); see
 // [[feedback_terminal_minimalism]] and `terminal::TerminalStackHandler`.
-#[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
+#[cfg(not(any(
+    target_arch = "wasm32",
+    target_os = "android",
+    target_os = "ios",
+    target_os = "macos"
+)))]
 mod terminal;
-#[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
+#[cfg(not(any(
+    target_arch = "wasm32",
+    target_os = "android",
+    target_os = "ios",
+    target_os = "macos"
+)))]
 pub use terminal::register;
 
 // =============================================================================

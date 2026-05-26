@@ -195,7 +195,7 @@ fn configure_server() {
 pub fn register_extensions(_backend: &mut backend_web::WebBackend) {}
 
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
-pub fn register_extensions(_backend: &mut backend_ios_mobile::IosBackend) {}
+pub fn register_extensions(_backend: &mut backend_ios::IosBackend) {}
 
 #[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
 pub fn register_extensions(_backend: &mut backend_terminal::TerminalBackend) {}

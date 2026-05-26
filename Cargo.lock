@@ -1467,6 +1467,7 @@ dependencies = [
  "android-navigator-helpers",
  "backend-android-mobile",
  "backend-ios-mobile",
+ "backend-macos",
  "backend-terminal",
  "backend-web",
  "ios-navigator-helpers",
@@ -5351,6 +5352,7 @@ dependencies = [
  "android-navigator-helpers",
  "backend-android-mobile",
  "backend-ios-mobile",
+ "backend-macos",
  "backend-terminal",
  "backend-web",
  "ios-navigator-helpers",
@@ -5648,6 +5650,7 @@ dependencies = [
  "android-navigator-helpers",
  "backend-android-mobile",
  "backend-ios-mobile",
+ "backend-macos",
  "backend-web",
  "ios-navigator-helpers",
  "jni 0.21.1",
@@ -6641,17 +6644,22 @@ dependencies = [
 name = "website"
 version = "0.0.1"
 dependencies = [
+ "android-sim",
  "backend-android-mobile",
  "backend-ios-mobile",
  "backend-terminal",
  "backend-web",
  "drawer-navigator",
+ "host-web",
  "idea-codeblock",
  "idea-ui",
+ "ios-sim",
  "js-sys",
+ "render-api",
  "runtime-core",
  "wasm-bindgen",
  "web-sys",
+ "welcome",
 ]
 
 [[package]]

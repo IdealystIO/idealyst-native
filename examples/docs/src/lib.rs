@@ -82,10 +82,11 @@ pub fn register_extensions(backend: &mut backend_terminal::TerminalBackend) {
 }
 
 use routes::{
-    ANIMATION_ROUTE, BACKENDS_ROUTE, CLI_ROUTE, COMPONENTS_ROUTE, DEV_TOOLS_ROUTE, ICONS_ROUTE,
-    INTRODUCTION_ROUTE, LISTS_ROUTE, MACROS_ROUTE, NAVIGATION_ROUTE, OVERVIEW_ROUTE,
-    PLATFORMS_ROUTE, PRIMITIVES_ROUTE, QUICKSTART_ROUTE, REACTIVITY_ROUTE, REFS_ROUTE,
-    ROBOT_ROUTE, SIMULATOR_ROUTE, STYLES_ROUTE, BUILDING_A_THEME_SYSTEM_ROUTE, PORTAL_ROUTE,
+    ANIMATION_ROUTE, ASYNC_REACTIVITY_ROUTE, BACKENDS_ROUTE, CLI_ROUTE, COMPONENTS_ROUTE,
+    DEV_TOOLS_ROUTE, ICONS_ROUTE, INTRODUCTION_ROUTE, LISTS_ROUTE, MACROS_ROUTE,
+    NAVIGATION_ROUTE, NET_ROUTE, OVERVIEW_ROUTE, PLATFORMS_ROUTE, PRIMITIVES_ROUTE,
+    QUICKSTART_ROUTE, REACTIVITY_ROUTE, REFS_ROUTE, ROBOT_ROUTE, SERVER_FUNCTIONS_ROUTE,
+    SIMULATOR_ROUTE, STYLES_ROUTE, BUILDING_A_THEME_SYSTEM_ROUTE, PORTAL_ROUTE,
     REACTIVE_TEXT_BINDINGS_ROUTE, THIRD_PARTY_PRIMITIVES_ROUTE, UI_DSL_ROUTE,
     WGPU_NATIVE_API_ROUTE, WRITING_A_BACKEND_ROUTE,
 };
@@ -126,6 +127,12 @@ pub fn app() -> Primitive {
         .screen(REACTIVITY_ROUTE, |_| {
             Screen::new(pages::reactivity::page()).title("Reactivity")
         })
+        .screen(ASYNC_REACTIVITY_ROUTE, |_| {
+            Screen::new(pages::async_reactivity::page()).title("Async Reactivity")
+        })
+        .screen(SERVER_FUNCTIONS_ROUTE, |_| {
+            Screen::new(pages::server_functions::page()).title("Server Functions")
+        })
         .screen(UI_DSL_ROUTE, |_| Screen::new(pages::ui_dsl::page()).title("UI DSL"))
         .screen(PRIMITIVES_ROUTE, |_| {
             Screen::new(pages::primitives::page()).title("Primitives")
@@ -143,6 +150,7 @@ pub fn app() -> Primitive {
         .screen(PORTAL_ROUTE, |_| {
             Screen::new(pages::portal::page()).title("Portal & Overlays")
         })
+        .screen(NET_ROUTE, |_| Screen::new(pages::net::page()).title("Net"))
         .screen(ROBOT_ROUTE, |_| Screen::new(pages::robot::page()).title("Robot"))
         .screen(DEV_TOOLS_ROUTE, |_| {
             Screen::new(pages::dev_tools::page()).title("Dev Tools")

@@ -285,6 +285,30 @@ pub enum DocConcept {
     /// "closest provider" model React introduced, adapted for
     /// fine-grained reactivity.
     Context,
+    /// `mutation(handler)` — callback-driven async work as a reactive
+    /// primitive. Stores the last response on its own handle as
+    /// `MutationState<T, E>`. Sibling to [`Resource`] (dep-driven
+    /// reads) and [`AsyncReducer`] (callback-driven writes that fold
+    /// the response into external state).
+    Mutation,
+    /// `async_reducer(state, perform, apply)` — async dual of the
+    /// sync [`Reducer`]. Folds an async action's response into a
+    /// caller-owned `Signal<S>` via an `apply` closure. The
+    /// workhorse for mutations whose response is part of app state.
+    AsyncReducer,
+    /// `NetworkState<T, E>` — Idle/Loading/Success/Error enum
+    /// projection from [`Resource`]'s or [`Mutation`]'s richer
+    /// state struct. Precedence is `Loading > Error > Success >
+    /// Idle`.
+    NetworkState,
+    /// `AsyncStatus<E>` — Idle/Loading/Error lifecycle reported by
+    /// [`AsyncReducer`]. Notably no `Success(T)` variant — the
+    /// data lives in the caller's state signal.
+    AsyncStatus,
+    /// `ResourceCancel` — cancellation token handed to a
+    /// `resource()` fetcher. Fires on dep change or scope drop.
+    /// Bridged to `net::CancelToken` via `server::with_cancel`.
+    ResourceCancel,
 
     // ---- Reactive text bindings (web fast path) ----
     /// `TextSource::JsBinding` + `JsBindingSpec` — the structured
@@ -490,6 +514,58 @@ pub enum DocConcept {
     SafeArea,
     /// This very macro.
     DocsMacro,
+
+    // ---- Net (HTTP client SDK) ----
+    /// The `net` crate. Cross-platform async HTTP client; one
+    /// public surface, four per-target transports (reqwest /
+    /// fetch / NSURLSession / HttpURLConnection).
+    Net,
+    /// `net::Client` / `net::RequestBuilder` / `net::Response` —
+    /// the public surface.
+    NetClient,
+    /// `IntoBody` / `FromBody` traits — pluggable request/response
+    /// codecs. Built-in impls for `Vec<u8>`, `String`, `Json<T>`,
+    /// `Form<T>`. Server functions plug their own wire format in
+    /// via this trait without changing `net`.
+    BodyCodec,
+    /// `net::CancelToken` + `net::CancelHandle` — paired
+    /// cancellation primitive. Tokens attach to requests via
+    /// `RequestBuilder::cancel_on`; the handle's `cancel()`
+    /// aborts every attached request mid-flight.
+    NetCancelToken,
+
+    // ---- Server functions ----
+    /// `#[server]` — the attribute macro that turns one async fn
+    /// into a server-runs-body + client-calls-stub pair. Keys
+    /// off the `server` cargo feature to pick which half each
+    /// build sees.
+    ServerFn,
+    /// The `_srv/<path>` and `_srv/_batch` wire protocol.
+    /// Single + batched JSON calls, `Result<T, ServerError>`
+    /// payloads.
+    ServerFnWire,
+    /// Microtask coalescing: N concurrent server-fn calls fired
+    /// on the same tick collapse into one `_srv/_batch` HTTP
+    /// request.
+    ServerFnBatch,
+    /// `ServerError` enum (Failed/Network/Codec/Server/Cancelled)
+    /// + `ServerFnReturn` trait that lets transport failures
+    /// fold into the return type.
+    ServerError,
+    /// `server::install_state` + `server::use_state::<T>` —
+    /// app-level state registry, available inside any server fn
+    /// body.
+    ServerState,
+    /// `server::use_request_header` / `use_request_headers` —
+    /// per-request data made available via the dispatcher's
+    /// `tokio::task_local!` scope.
+    ServerExtractor,
+    /// `server::with_cancel` / `with_cancel_token` — bridges
+    /// `ResourceCancel` (or any explicit `net::CancelToken`) into
+    /// a thread-local read by the macro's client stub, so the
+    /// in-flight HTTP request aborts when a `resource` dep
+    /// changes.
+    ServerFnCancel,
 }
 
 impl DocConcept {
@@ -605,6 +681,22 @@ impl DocConcept {
             DocConcept::BuildCache => "Build cache",
             DocConcept::SafeArea => "Safe area",
             DocConcept::DocsMacro => "docs! macro",
+            DocConcept::Mutation => "mutation",
+            DocConcept::AsyncReducer => "async_reducer",
+            DocConcept::NetworkState => "NetworkState",
+            DocConcept::AsyncStatus => "AsyncStatus",
+            DocConcept::ResourceCancel => "ResourceCancel",
+            DocConcept::Net => "net",
+            DocConcept::NetClient => "net::Client",
+            DocConcept::BodyCodec => "IntoBody / FromBody",
+            DocConcept::NetCancelToken => "net::CancelToken",
+            DocConcept::ServerFn => "#[server]",
+            DocConcept::ServerFnWire => "Server-fn wire protocol",
+            DocConcept::ServerFnBatch => "Server-fn batching",
+            DocConcept::ServerError => "ServerError",
+            DocConcept::ServerState => "use_state / install_state",
+            DocConcept::ServerExtractor => "use_request_header",
+            DocConcept::ServerFnCancel => "server::with_cancel",
         }
     }
 
@@ -719,6 +811,22 @@ impl DocConcept {
             DocConcept::BuildCache => "build-cache",
             DocConcept::SafeArea => "safe-area",
             DocConcept::DocsMacro => "docs-macro",
+            DocConcept::Mutation => "mutation",
+            DocConcept::AsyncReducer => "async-reducer",
+            DocConcept::NetworkState => "network-state",
+            DocConcept::AsyncStatus => "async-status",
+            DocConcept::ResourceCancel => "resource-cancel",
+            DocConcept::Net => "net",
+            DocConcept::NetClient => "net-client",
+            DocConcept::BodyCodec => "body-codec",
+            DocConcept::NetCancelToken => "net-cancel-token",
+            DocConcept::ServerFn => "server-fn",
+            DocConcept::ServerFnWire => "server-fn-wire",
+            DocConcept::ServerFnBatch => "server-fn-batch",
+            DocConcept::ServerError => "server-error",
+            DocConcept::ServerState => "server-state",
+            DocConcept::ServerExtractor => "server-extractor",
+            DocConcept::ServerFnCancel => "server-fn-cancel",
         }
     }
 }

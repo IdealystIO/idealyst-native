@@ -18,6 +18,10 @@ pub const QUICKSTART_ROUTE: Route<()> = Route::<()>::new("quickstart", "/quickst
 // Core Concepts
 pub const COMPONENTS_ROUTE: Route<()> = Route::<()>::new("components", "/concepts/components");
 pub const REACTIVITY_ROUTE: Route<()> = Route::<()>::new("reactivity", "/concepts/reactivity");
+pub const ASYNC_REACTIVITY_ROUTE: Route<()> =
+    Route::<()>::new("async-reactivity", "/concepts/async-reactivity");
+pub const SERVER_FUNCTIONS_ROUTE: Route<()> =
+    Route::<()>::new("server-functions", "/concepts/server-functions");
 pub const UI_DSL_ROUTE: Route<()> = Route::<()>::new("ui-dsl", "/concepts/ui-dsl");
 pub const PRIMITIVES_ROUTE: Route<()> = Route::<()>::new("primitives", "/concepts/primitives");
 pub const STYLES_ROUTE: Route<()> = Route::<()>::new("styles", "/concepts/styles");
@@ -29,6 +33,7 @@ pub const LISTS_ROUTE: Route<()> = Route::<()>::new("lists", "/reference/lists")
 pub const ICONS_ROUTE: Route<()> = Route::<()>::new("icons", "/reference/icons");
 pub const REFS_ROUTE: Route<()> = Route::<()>::new("refs", "/reference/refs");
 pub const PORTAL_ROUTE: Route<()> = Route::<()>::new("portal", "/reference/portal");
+pub const NET_ROUTE: Route<()> = Route::<()>::new("net", "/reference/net");
 
 // Tooling
 pub const ROBOT_ROUTE: Route<()> = Route::<()>::new("robot", "/tools/robot");
@@ -88,6 +93,8 @@ pub const SECTIONS: &[IndexSection] = &[
         items: &[
             IndexEntry { name: "components", label: "Components" },
             IndexEntry { name: "reactivity", label: "Reactivity" },
+            IndexEntry { name: "async-reactivity", label: "Async Reactivity" },
+            IndexEntry { name: "server-functions", label: "Server Functions" },
             IndexEntry { name: "primitives", label: "Primitives" },
             IndexEntry { name: "styles", label: "Styles & Themes" },
             IndexEntry { name: "animation", label: "Animation" },
@@ -102,6 +109,7 @@ pub const SECTIONS: &[IndexSection] = &[
             IndexEntry { name: "icons", label: "Icons" },
             IndexEntry { name: "refs", label: "Refs" },
             IndexEntry { name: "portal", label: "Portal & Overlays" },
+            IndexEntry { name: "net", label: "Net (HTTP)" },
         ],
     },
     IndexSection {

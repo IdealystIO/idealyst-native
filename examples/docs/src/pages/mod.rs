@@ -8,6 +8,7 @@
 
 // Pages migrated to the `docs!` macro (one `docs! { ... }` per file).
 pub mod animation;
+pub mod async_reactivity;
 pub mod backends;
 pub mod building_a_theme_system;
 pub mod components;
@@ -16,6 +17,7 @@ pub mod icons;
 pub mod introduction;
 pub mod lists;
 pub mod navigation;
+pub mod net;
 pub mod overview;
 pub mod portal;
 pub mod primitives;
@@ -24,6 +26,7 @@ pub mod reactive_text_bindings;
 pub mod reactivity;
 pub mod refs;
 pub mod robot;
+pub mod server_functions;
 pub mod styles;
 pub mod third_party_primitives;
 pub mod wgpu_native_api;

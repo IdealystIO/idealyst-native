@@ -542,6 +542,20 @@ stylesheet! {
     }
 }
 
+/// Vertical stack that hosts the iOS/Android tab strip and the
+/// embedded Simulator preview. Centered horizontally so the preview
+/// canvas reads as the focal point of the section.
+stylesheet! {
+    pub SimulatorStage<IdeaThemeRef> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Center,
+            gap: 24.0,
+            padding_top: 8.0,
+        }
+    }
+}
+
 /// Stage for an animation demo: a fixed-size colored box that one
 /// or more `AnimatedValue`s push transform / opacity / color
 /// updates into. Centered inside a host View so its transform-origin

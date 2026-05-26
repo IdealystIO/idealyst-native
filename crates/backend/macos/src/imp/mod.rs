@@ -11,6 +11,7 @@ pub(crate) mod a11y;
 pub(crate) mod animated;
 pub(crate) mod callbacks;
 pub(crate) mod gradient;
+pub(crate) mod graphics;
 pub(crate) mod handles;
 pub(crate) mod icon;
 pub(crate) mod image;
@@ -91,6 +92,30 @@ pub struct MacosBackend {
     /// release count goes to zero.
     pub(crate) virtualizer_instances:
         HashMap<usize, virtualizer::VirtualizerInstance>,
+    /// Registry of `Primitive::Navigator` handler factories. SDK
+    /// leaf crates (`stack_navigator::register`, `tab_navigator::
+    /// register`, `drawer_navigator::register`, …) install factories
+    /// keyed by their presentation TypeId at app bootstrap. The
+    /// macOS handlers — once added to those SDKs — implement the
+    /// single-window-with-sidebar shape per
+    /// `project_macos_navigator_design`. Until those SDK leaves
+    /// land, `create_navigator` falls through to a "kind not
+    /// registered" placeholder text node.
+    pub(crate) navigator_handlers:
+        runtime_core::NavigatorRegistry<MacosBackend>,
+    /// Per-navigator-instance handler. Mirrors iOS's
+    /// `nav_handler_instances`. Keyed by the navigator container's
+    /// NSView pointer. `create_navigator` resolves the factory,
+    /// runs `init`, stashes the handler here so subsequent
+    /// `navigator_attach_initial` / `release_navigator` /
+    /// `apply_navigator_slot_style` trait methods can route through
+    /// it.
+    pub(crate) nav_handler_instances: HashMap<
+        usize,
+        std::rc::Rc<
+            std::cell::RefCell<Box<dyn runtime_core::NavigatorHandler<MacosBackend>>>,
+        >,
+    >,
 }
 
 // =========================================================================
@@ -158,6 +183,29 @@ pub fn set_animated_color(
     }
 }
 
+/// Re-enter the globally-installed backend from a deferred closure
+/// (microtask, NSTimer callback, NotificationCenter observer, …).
+/// Used by SDK leaves (drawer/stack/tab navigator handlers) whose
+/// per-frame work needs `&mut MacosBackend` but runs outside the
+/// framework's borrow window.
+///
+/// Quietly no-ops if no backend is installed (pre-render), if the
+/// install has been dropped (post-teardown), or if the backend is
+/// already borrowed (call site re-entered itself; the outer borrow
+/// will complete its own work).
+///
+/// Mirrors `backend_terminal::with_global_backend` and
+/// `backend_ios::with_backend`.
+pub fn with_global_backend<F: FnOnce(&mut MacosBackend)>(f: F) {
+    let weak = MACOS_BACKEND_SELF.with(|s| s.borrow().clone());
+    let Some(weak) = weak else { return };
+    let Some(rc) = weak.upgrade() else { return };
+    let borrow = rc.try_borrow_mut();
+    if let Ok(mut b) = borrow {
+        f(&mut *b);
+    }
+}
+
 // =========================================================================
 // Construction + host wiring
 // =========================================================================
@@ -176,7 +224,20 @@ impl MacosBackend {
             image_cache: HashMap::new(),
             external_handlers: runtime_core::ExternalRegistry::new(),
             virtualizer_instances: HashMap::new(),
+            navigator_handlers: runtime_core::NavigatorRegistry::new(),
+            nav_handler_instances: HashMap::new(),
         }
+    }
+
+    /// Register a `Primitive::Navigator` handler factory keyed by
+    /// the presentation type `P`. SDK leaf crates call this once at
+    /// bootstrap. Mirrors `IosBackend::register_navigator`.
+    pub fn register_navigator<P, F>(&mut self, factory: F)
+    where
+        P: 'static,
+        F: Fn() -> Box<dyn runtime_core::NavigatorHandler<MacosBackend>> + 'static,
+    {
+        self.navigator_handlers.register::<P, _>(factory);
     }
 
     /// Register a handler for the third-party external primitive whose
@@ -317,6 +378,14 @@ unsafe impl Encode for CGColorRef {
 /// Build an `NSColor` from a framework `Color`. Uses the shared
 /// apple-core color parser (sRGB float tuple) then routes through
 /// AppKit's RGB initializer.
+/// Inert `NavigatorOps` for `make_navigator_handle` callers that
+/// land on a navigator container with no registered handler. The
+/// trait is empty, so the inert impl is just a marker; the handle
+/// constructed against it ignores all dispatch attempts.
+struct NoopNavOps;
+impl runtime_core::primitives::navigator::NavigatorOps for NoopNavOps {}
+static NOOP_NAV_OPS: NoopNavOps = NoopNavOps;
+
 /// `true` if `view` is an `NSScrollView`. Used by `insert` to
 /// redirect children into the scroll view's documentView so
 /// the scroll machinery actually works. Implemented via
@@ -1484,26 +1553,51 @@ impl Backend for MacosBackend {
 
     fn create_navigator(
         &mut self,
-        _type_id: std::any::TypeId,
+        type_id: std::any::TypeId,
         type_name: &'static str,
-        _presentation: Rc<dyn std::any::Any>,
-        _host: runtime_core::primitives::navigator::NavigatorHost<Self::Node>,
+        presentation: Rc<dyn std::any::Any>,
+        host: runtime_core::primitives::navigator::NavigatorHost<Self::Node>,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        // Placeholder: visible "Navigator not yet implemented" text
-        // so author code that wires up a `<StackNavigator>` or
-        // `<DrawerNavigator>` on macOS doesn't panic.
+        // Consult the registry. SDK leaf crates (`drawer_navigator`,
+        // `stack_navigator`, `tab_navigator`) call
+        // `register_navigator::<TheirPresentation, _>(factory)` at
+        // bootstrap; when one matches, we run `init` and stash the
+        // handler under the returned view's pointer for subsequent
+        // `navigator_attach_initial` / `release_navigator` /
+        // `apply_navigator_slot_style` dispatches.
         //
-        // The real implementation follows the architectural decision
-        // in `project_macos_navigator_design`: single window with
-        // persistent sidebar (web-style layout, NOT iOS-style stack
-        // chrome). Drawer / Stack navigators both collapse to a
-        // content-swap on macOS — no animated push/pop. That work
-        // touches the navigator-substrate infra (`NavigatorRegistry`,
-        // `nav_handler_instances`, per-kind handlers from
-        // `stack-navigator` / `drawer-navigator` / `tab-navigator`)
-        // and deserves its own focused PR.
-        let text = format!("Navigator \"{type_name}\" not yet implemented on macOS");
+        // No-match: render a visible placeholder noting WHICH kind
+        // wasn't registered. This is the path for navigator SDKs
+        // that haven't shipped a macOS handler yet — author code
+        // running on macOS sees the missing wiring at runtime
+        // (matching the External + placeholder posture across the
+        // workspace; see `feedback_cpu_unsupported_placeholders`).
+        if let Some(factory) = self.navigator_handlers.get(type_id) {
+            let mut handler: Box<dyn runtime_core::NavigatorHandler<MacosBackend>> =
+                (factory)();
+            let node = handler.init(self, host, presentation);
+
+            // Stash the handler keyed by the resolved node's NSView
+            // pointer. Future trait calls
+            // (`navigator_attach_initial`, etc.) look the handler up
+            // by the same key.
+            let view = node.as_view();
+            let key = view as *const NSView as usize;
+            self.nav_handler_instances.insert(
+                key,
+                std::rc::Rc::new(std::cell::RefCell::new(handler)),
+            );
+
+            a11y::apply(&node, a11y, None);
+            return node;
+        }
+
+        let text = format!(
+            "Navigator kind \"{type_name}\" not registered for macOS \
+             — SDK leaf needs `register_navigator(&mut backend)` \
+             on macOS targets (per `project_macos_navigator_design`)"
+        );
         let ns = NSString::from_str(&text);
         let label: Retained<NSTextField> = unsafe {
             msg_send_id![objc2::class!(NSTextField), labelWithString: &*ns]
@@ -1525,35 +1619,92 @@ impl Backend for MacosBackend {
         node
     }
 
+    fn release_navigator(&mut self, node: &Self::Node) {
+        let view = node.as_view();
+        let key = view as *const NSView as usize;
+        if let Some(handler_cell) = self.nav_handler_instances.remove(&key) {
+            // Run the SDK's `release` so it can drop native
+            // resources. The handler's Box drops after the
+            // borrow_mut block returns (the Rc's strong count
+            // falls to zero once the map entry is gone).
+            handler_cell.borrow_mut().release(self);
+        }
+    }
+
+    fn navigator_attach_initial(
+        &mut self,
+        navigator: &Self::Node,
+        screen: Self::Node,
+        scope_id: u64,
+        options: Box<dyn std::any::Any>,
+    ) {
+        let view = navigator.as_view();
+        let key = view as *const NSView as usize;
+        if let Some(handler_cell) = self.nav_handler_instances.get(&key).cloned() {
+            handler_cell
+                .borrow_mut()
+                .attach_initial(self, screen, scope_id, options);
+        }
+    }
+
+    fn apply_navigator_slot_style(
+        &mut self,
+        node: &Self::Node,
+        slot: &'static str,
+        style: &Rc<runtime_core::StyleRules>,
+    ) {
+        let view = node.as_view();
+        let key = view as *const NSView as usize;
+        if let Some(handler_cell) = self.nav_handler_instances.get(&key).cloned() {
+            handler_cell
+                .borrow_mut()
+                .apply_slot_style(self, slot, style);
+        }
+    }
+
+    fn make_navigator_handle(
+        &self,
+        node: &Self::Node,
+    ) -> runtime_core::primitives::navigator::NavigatorHandle {
+        let view = node.as_view();
+        let key = view as *const NSView as usize;
+        if let Some(handler_cell) = self.nav_handler_instances.get(&key) {
+            return handler_cell.borrow().make_handle();
+        }
+        // No handler — return the trait's default inert handle.
+        // Author code that bound a `Ref<NavigatorHandle>` against
+        // an unregistered navigator kind silently gets a no-op
+        // handle (matches what the trait default would do).
+        runtime_core::primitives::navigator::NavigatorHandle::new(
+            std::rc::Rc::new(()),
+            &NOOP_NAV_OPS,
+        )
+    }
+
     fn create_graphics(
         &mut self,
-        _on_ready: runtime_core::primitives::graphics::OnReady,
-        _on_resize: runtime_core::primitives::graphics::OnResize,
-        _on_lost: runtime_core::primitives::graphics::OnLost,
+        on_ready: runtime_core::primitives::graphics::OnReady,
+        on_resize: runtime_core::primitives::graphics::OnResize,
+        on_lost: runtime_core::primitives::graphics::OnLost,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        // Placeholder for GPU-backed canvas. Real CAMetalLayer + wgpu
-        // surface wiring on macOS shares almost the entire iOS
-        // pipeline (Metal on both platforms); the missing piece is
-        // CAMetalLayer attachment to an NSView's CALayer hierarchy
-        // plus `on_ready` dispatching the wgpu Surface back to the
-        // author callback. Focused follow-up to land after Icon's
-        // SVG parser extraction since both touch CAShapeLayer/CALayer
-        // bridging and benefit from being designed together.
-        let text = NSString::from_str("Graphics not yet implemented on macOS");
-        let label: Retained<NSTextField> = unsafe {
-            msg_send_id![objc2::class!(NSTextField), labelWithString: &*text]
-        };
-        let red: Retained<NSColor> = unsafe {
-            msg_send_id![objc2::class!(NSColor), systemRedColor]
-        };
-        let _: () = unsafe { msg_send![&label, setTextColor: &*red] };
-        let view: Retained<NSView> = unsafe {
-            Retained::retain(Retained::as_ptr(&label) as *mut NSView)
-                .expect("retain NSTextField as NSView")
-        };
-        let _ = self.layout_for_view(&view);
-        let node = MacosNode::Label(label);
+        // CAMetalLayer-backed NSView wrapping a wgpu Surface.
+        // Mirrors the iOS `imp/graphics.rs` pattern — MetalView
+        // (NSView subclass with `-makeBackingLayer` returning
+        // CAMetalLayer) + `raw_window_handle::AppKitWindowHandle`
+        // provider + scheduled `on_ready` callback fired on the
+        // next runloop turn once AppKit's layout has assigned a
+        // real frame.
+        let node = graphics::create_graphics(
+            self.mtm,
+            &mut self.callback_targets,
+            on_ready,
+            on_resize,
+            on_lost,
+        );
+        if let MacosNode::View(view) = &node {
+            let _ = self.layout_for_view(view);
+        }
         a11y::apply(&node, a11y, None);
         node
     }

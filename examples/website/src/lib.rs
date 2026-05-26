@@ -15,6 +15,13 @@ use runtime_core::{component, effect, signal, ui, Color, Primitive, Ref, Signal,
 use drawer_navigator::{DrawerBuilder, DrawerHandle, DrawerNavigator};
 use idea_ui::{install_idea_theme, light_theme};
 
+// `#[macro_use]` lifts the `#[component]`-generated invocation macros
+// from `components::simulator` (and any future siblings) up to
+// crate-root scope, where the `ui!` DSL inside every page module can
+// resolve `Simulator(...)` to the local `simulator!` macro. Must
+// come BEFORE `mod pages` so the page modules see the lifted macros.
+#[macro_use]
+mod components;
 mod pages;
 mod routes;
 mod shell;

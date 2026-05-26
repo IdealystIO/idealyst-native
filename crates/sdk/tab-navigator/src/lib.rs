@@ -313,12 +313,30 @@ mod ios;
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
 pub use ios::register;
 
-#[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
+// macOS: tabbar (top or bottom per `TabPlacement`) + outlet that
+// swaps its child on Select. Per `project_macos_navigator_design`,
+// no animated tab transition.
+#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+mod macos;
+#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+pub use macos::register;
+
+#[cfg(not(any(
+    target_arch = "wasm32",
+    target_os = "android",
+    target_os = "ios",
+    target_os = "macos"
+)))]
 mod fallback {
     use runtime_core::Backend;
     pub fn register<B: Backend>(_backend: &mut B) {}
 }
-#[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
+#[cfg(not(any(
+    target_arch = "wasm32",
+    target_os = "android",
+    target_os = "ios",
+    target_os = "macos"
+)))]
 pub use fallback::register;
 
 // =============================================================================

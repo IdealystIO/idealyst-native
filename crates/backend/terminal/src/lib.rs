@@ -330,6 +330,7 @@ impl TerminalBackend {
                 horizontal: false,
                 scroll_x: 0.0,
                 scroll_y: 0.0,
+                on_scroll: None,
             },
         );
         TermNode { id }
@@ -629,9 +630,19 @@ impl TerminalBackend {
         }
         let max_x = (content_w - viewport_w).max(0.0);
         let max_y = (content_h - viewport_h).max(0.0);
-        if let Some(d) = self.nodes.get_mut(&id) {
+        // Apply the clamped offset; capture the resulting values +
+        // a clone of the callback so we can release the `&mut self`
+        // borrow before invoking the user callback (which may
+        // re-enter the backend through a Signal write).
+        let (new_x, new_y, cb) = if let Some(d) = self.nodes.get_mut(&id) {
             d.scroll_x = (d.scroll_x + delta_x).clamp(0.0, max_x);
             d.scroll_y = (d.scroll_y + delta_y).clamp(0.0, max_y);
+            (d.scroll_x, d.scroll_y, d.on_scroll.clone())
+        } else {
+            return;
+        };
+        if let Some(cb) = cb {
+            cb(new_x, new_y);
         }
     }
 
@@ -779,18 +790,23 @@ impl Backend for TerminalBackend {
     fn create_scroll_view(
         &mut self,
         horizontal: bool,
-        _on_scroll: Option<std::rc::Rc<dyn Fn(f32, f32)>>,
+        on_scroll: Option<std::rc::Rc<dyn Fn(f32, f32)>>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        // Terminal renders content statically — there's no native
-        // scroll affordance, so `on_scroll` is accepted but never
-        // fires. Matches the rest of the terminal backend's
-        // "structurally present, behaviourally inert" model for
-        // scroll-related primitives.
+        // Terminal owns its own mouse-wheel dispatch (see
+        // `dispatch_scroll` + `apply_scroll_delta`) which mutates
+        // each ScrollView's `(scroll_x, scroll_y)` in cell units.
+        // We stash the `on_scroll` callback on the node and fire it
+        // from `apply_scroll_delta` after the offset is clamped.
+        // Offsets are reported in cells \u{2014} the terminal's
+        // native unit \u{2014} matching the other backends'
+        // "current offset in native coordinate space" semantic
+        // (web pixels, iOS points, Android dp post-conversion).
         let node = self.alloc_node(NodeKind::ScrollView, String::new());
         let layout = self.nodes.get(&node.id).map(|d| d.layout);
         if let Some(d) = self.nodes.get_mut(&node.id) {
             d.horizontal = horizontal;
+            d.on_scroll = on_scroll;
         }
         // Tell Taffy this node behaves like CSS `overflow: scroll` on
         // the chosen axis. Without this, Taffy sizes the scroll view

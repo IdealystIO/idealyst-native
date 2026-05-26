@@ -6,9 +6,12 @@
 //! differentiators, and a "platforms" strip listing every supported
 //! target.
 
-use runtime_core::{ui, Primitive, Route, StyleApplication};
-use idea_ui::{typography, TypographyKind, TypographyTone};
+use std::rc::Rc;
 
+use runtime_core::{signal, switch, ui, Primitive, Route, Signal, StyleApplication};
+use idea_ui::{tabs, typography, Tab, TypographyKind, TypographyTone};
+
+use crate::components::simulator::{simulator, SimulatorProps};
 use crate::pages::common::code_panel;
 use crate::routes::{
     AGENTIC_ROUTE, BACKENDS_ROUTE, CONCEPTS_ROUTE, INSTALL_ROUTE, QUICKSTART_ROUTE, TARGETS_ROUTE,
@@ -17,13 +20,14 @@ use crate::routes::{
 use crate::shell::layout;
 use crate::styles::{
     hero_glare_sheet, Hero, HeroCtaRow, HeroHeadline, HeroSubhead, HeroText, HomeSection,
-    PillarCard, PillarCta, PillarGrid,
+    PillarCard, PillarCta, PillarGrid, SimulatorStage,
 };
 
 pub fn page() -> Primitive {
     let content = ui! {
         View {
             { hero() }
+            { simulator_section() }
             { quickstart_section() }
             { pillars_section() }
         }
@@ -70,6 +74,96 @@ fn hero() -> Primitive {
             View(style = text_style) { text_children }
         }
     }
+}
+
+// =============================================================================
+// Simulator — embedded wgpu preview of the `welcome` scaffold app,
+// with an iOS/Android skin toggle. The framework's `Graphics`
+// primitive surfaces a `<canvas>` element on web; `host-web` runs
+// the wgpu init + render loop inside it; `IosSim` / `AndroidSim` are
+// the two paint policies the toggle flips between.
+//
+// Skin changes force the entire Simulator subtree to unmount +
+// remount via `runtime_core::switch` keyed on the active tab. The
+// wgpu host's `Drop` tears the surface + render loop + reactive
+// scope back down in order; a fresh Simulator gets built with the
+// new skin baked into its on_ready closure. Cleaner than threading
+// reactive skin observers through the embedded host stack.
+// =============================================================================
+
+fn simulator_section() -> Primitive {
+    let section_style = HomeSection();
+    let stage_style = SimulatorStage();
+
+    // 0 = iOS, 1 = Android. Lives at the page-scope so the user's
+    // selection survives the simulator subtree rebuild.
+    let active: Signal<usize> = signal!(0_usize);
+    let on_change: Rc<dyn Fn(usize)> = Rc::new(move |idx| active.set(idx));
+
+    let tab_strip = ui! {
+        Tabs(
+            tabs = vec![
+                Tab { label: "iOS".to_string() },
+                Tab { label: "Android".to_string() },
+            ],
+            active = active,
+            on_change = on_change,
+        )
+    };
+
+    // `switch` re-runs the body closure when `active` changes,
+    // rebuilding the Simulator with the matching painter. The
+    // outgoing Simulator's `on_lost` fires as its Graphics surface
+    // tears down \u{2014} the wgpu host drops cleanly before the new
+    // one mounts.
+    let dynamic_sim = switch(
+        move || active.get(),
+        |&idx| {
+            let build_ui: Rc<dyn Fn() -> Primitive> = Rc::new(welcome::app);
+            #[cfg(target_arch = "wasm32")]
+            let skin: Option<Rc<dyn host_web::Painter>> = match idx {
+                1 => Some(Rc::new(android_sim::AndroidSim::new())),
+                _ => Some(Rc::new(ios_sim::IosSim::new())),
+            };
+            #[cfg(not(target_arch = "wasm32"))]
+            let skin = {
+                // The Simulator's wgpu path is web-only; on native
+                // targets the prop is unused (the Graphics surface
+                // still allocates but nothing drives it).
+                let _ = idx;
+                None
+            };
+            ui! {
+                Simulator(
+                    build_ui = build_ui,
+                    skin = skin,
+                )
+            }
+        },
+    );
+
+    let stage_children: Vec<Primitive> = vec![tab_strip, dynamic_sim];
+
+    let header_children: Vec<Primitive> = vec![
+        ui! {
+            Typography(
+                content = "See it running.".to_string(),
+                kind = TypographyKind::H2,
+            )
+        },
+        ui! {
+            Typography(
+                content = "The same app, two skins. The embedded preview is the \
+                    `welcome` scaffold project rendered through the wgpu backend with \
+                    a UIKit or Material-3 paint policy \u{2014} switch between them \
+                    and the entire surface rebuilds against the new skin.".to_string(),
+                tone = TypographyTone::Muted,
+            )
+        },
+        ui! { View(style = stage_style) { stage_children } },
+    ];
+
+    ui! { View(style = section_style) { header_children } }
 }
 
 // =============================================================================

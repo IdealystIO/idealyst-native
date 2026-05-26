@@ -114,6 +114,19 @@ pub struct AppMetadata {
     /// Empty when the user didn't declare any; the CLI errors out
     /// in that case unless an explicit platform flag was given.
     pub targets: Vec<Target>,
+    /// Optional cargo bin name to run as the project's server.
+    /// When set, `idealyst dev --web` builds the user's wasm bundle
+    /// into `pkg/` and then `cargo run`s this bin with
+    /// `--features server` instead of launching `dev-http`'s static
+    /// server — the user's bin is expected to serve both `/_srv/*`
+    /// and the static assets at `/` itself (the `server` SDK's
+    /// `router()` composed with a `ServeDir`). Set in TOML as:
+    /// ```toml
+    /// [package.metadata.idealyst.app]
+    /// server_bin = "server"
+    /// ```
+    /// Leave unset for client-only projects.
+    pub server_bin: Option<String>,
 }
 
 impl AppMetadata {
@@ -324,6 +337,8 @@ struct RawAppMetadata {
     splash: Option<RawSplashConfig>,
     #[serde(default)]
     targets: Option<Vec<String>>,
+    #[serde(default)]
+    server_bin: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
@@ -422,6 +437,7 @@ pub fn parse_manifest(project_dir: &Path) -> Result<Manifest> {
         version: app_raw.version.unwrap_or_else(|| "0.0.1".to_string()),
         splash,
         targets,
+        server_bin: app_raw.server_bin,
     };
 
     Ok(Manifest {
@@ -681,6 +697,7 @@ mod regression_tests {
                     duration_ms: 0,
                 },
                 targets: Vec::new(),
+                server_bin: None,
             },
         }
     }

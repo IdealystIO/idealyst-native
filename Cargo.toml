@@ -189,6 +189,7 @@ backend-cpu = { path = "crates/backend/cpu" }
 backend-web = { path = "crates/backend/web" }
 backend-windows = { path = "crates/backend/windows" }
 backend-linux = { path = "crates/backend/linux" }
+welcome = { path = "examples/welcome" }
 render-api = { path = "crates/gpu-backend/api" }
 render-wgpu = { path = "crates/gpu-backend/engine" }
 ios-sim = { path = "crates/gpu-backend/painter/ios-sim" }

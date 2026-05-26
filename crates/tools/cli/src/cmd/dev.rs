@@ -621,6 +621,17 @@ fn launch_web(dir: &Path, args: &Args) -> Result<()> {
 
     let source = crate::framework_source::resolve(dir)?;
 
+    // Full-stack projects (those declaring `server_bin` in their
+    // manifest) bypass the built-in static-file dev server entirely —
+    // their own server binary serves both the wasm bundle AND the
+    // `/_srv/*` API. We build the wasm into `pkg/` first (one-shot, no
+    // hot-reload yet for this path) then cargo-run the bin with
+    // `--features server`. Watch + restart on save is a follow-up.
+    let manifest = parse_manifest(dir)?;
+    if let Some(server_bin) = manifest.app.server_bin.clone() {
+        return launch_web_with_server_bin(dir, args, &source, &server_bin);
+    }
+
     if !args.local {
         // ── 1. wasm shim that connects to the runtime-server host ────────────
         if !args.no_build {
@@ -716,6 +727,137 @@ fn launch_web(dir: &Path, args: &Args) -> Result<()> {
         serve_static(&args.host, args.port, dir, Some(ctx), None)?;
         Ok(())
     }
+}
+
+/// Full-stack web launcher. Used when the project's manifest sets
+/// `[package.metadata.idealyst.app].server_bin = "<bin>"`.
+///
+/// The user's own binary serves both the API (`/_srv/*` via
+/// `server::router()`) AND the static wasm bundle at `/` (via
+/// `tower_http::services::ServeDir`). We:
+///
+/// 1. Build the wasm bundle into `pkg/` and `cargo run` the user's
+///    server bin against the project with `--features server`.
+/// 2. Use `dev_reload::start_with` to watch `src/` + `Cargo.toml`;
+///    every successful rebuild bumps a generation counter.
+/// 3. A polling loop on the main thread watches that counter and,
+///    on each bump, kills the cargo child and respawns it. Cargo
+///    sees its source changed and recompiles + reruns the server.
+///    Each rebuild = one full server restart (no hot reload — the
+///    server bin's process state is small enough that a kill-and-
+///    respawn is the right shape).
+fn launch_web_with_server_bin(
+    dir: &Path,
+    args: &Args,
+    source: &build_ios::FrameworkSource,
+    server_bin: &str,
+) -> Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
+
+    let package = parse_manifest(dir)?.name;
+
+    // Phase 1: initial wasm build + spawn the watcher. `start_with`
+    // also runs the build before returning, so by the time we move
+    // on, `pkg/` is populated and the watcher thread is live.
+    let gen = Arc::new(AtomicU64::new(0));
+    if !args.no_build {
+        crate::dlog!(
+            "dev web",
+            "full-stack: starting watcher for {} (server_bin = {})",
+            dir.display(),
+            server_bin,
+        );
+        let handle = dev_reload::start_with(
+            dir,
+            gen.clone(),
+            dev_reload::BuildOptions {
+                source: source.clone(),
+                features: Vec::new(),
+            },
+        )
+        .context("wasm initial build + watcher start failed")?;
+        // Hand the watcher thread to the runtime — it lives as long
+        // as the dev session. Dropping the JoinHandle here would NOT
+        // stop the thread (it's a detached child), but `mem::forget`
+        // makes the intent explicit and silences the unused warning.
+        std::mem::forget(handle);
+    }
+
+    // Phase 2: spawn the server bin. Captured so we can kill + respawn
+    // on each rebuild.
+    let mut child = spawn_server_bin(&package, server_bin)?;
+    crate::dlog!(
+        "dev web",
+        "full-stack: spawned `cargo run -p {} --bin {} --features server` (pid {})",
+        package,
+        server_bin,
+        child.id(),
+    );
+    let mut last_gen = gen.load(Ordering::Relaxed);
+
+    // Phase 3: poll the watcher's generation counter. dev_reload bumps
+    // it to 1 after the initial build and increments on every successful
+    // subsequent rebuild. Each bump = restart the server.
+    //
+    // 200ms poll is human-imperceptible and keeps CPU at the noise
+    // floor. A condvar-driven notification would be cleaner but
+    // requires modifying dev_reload's public surface; the polling
+    // approach lives entirely in the CLI.
+    loop {
+        std::thread::sleep(Duration::from_millis(200));
+
+        // Has the wasm rebuild bumped the generation?
+        let cur = gen.load(Ordering::Relaxed);
+        if cur != last_gen {
+            last_gen = cur;
+            eprintln!(
+                "[dev web] source change → restarting server bin `{}`",
+                server_bin,
+            );
+            let _ = child.kill();
+            let _ = child.wait();
+            child = match spawn_server_bin(&package, server_bin) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("[dev web] server respawn failed: {e:#}");
+                    // Try again on the next gen bump rather than
+                    // tearing down the whole dev session.
+                    continue;
+                }
+            };
+            continue;
+        }
+
+        // Did the server bin exit on its own (panic, port-in-use,
+        // ...)?  Surface the exit code and stop the dev session.
+        if let Some(status) = child.try_wait().ok().flatten() {
+            anyhow::bail!(
+                "server bin `{}` exited with {} — fix the issue and re-run `idealyst dev --web`",
+                server_bin,
+                status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "signal".into())
+            );
+        }
+    }
+}
+
+/// Spawn `cargo run -p <pkg> --bin <bin> --features server`, inheriting
+/// stdio so the user sees the server's log lines in real time.
+/// Returns the child for kill-on-restart bookkeeping.
+fn spawn_server_bin(package: &str, server_bin: &str) -> Result<std::process::Child> {
+    std::process::Command::new("cargo")
+        .arg("run")
+        .arg("-p")
+        .arg(package)
+        .arg("--bin")
+        .arg(server_bin)
+        .arg("--features")
+        .arg("server")
+        .spawn()
+        .with_context(|| format!("spawn `cargo run -p {} --bin {}`", package, server_bin))
 }
 
 /// Open the browser at the project's web URL once the server is
