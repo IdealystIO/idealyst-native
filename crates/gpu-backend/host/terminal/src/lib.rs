@@ -517,11 +517,61 @@ pub fn run_runtime_server(app_id: String, opts: RunOptions) -> Result<(), RunErr
                             h();
                         }
                     }
+                    Event::Mouse(MouseEvent {
+                        kind: MouseEventKind::ScrollDown,
+                        column,
+                        row,
+                        ..
+                    }) => {
+                        backend.borrow_mut().dispatch_scroll(column, row, 0.0, SCROLL_STEP);
+                    }
+                    Event::Mouse(MouseEvent {
+                        kind: MouseEventKind::ScrollUp,
+                        column,
+                        row,
+                        ..
+                    }) => {
+                        backend.borrow_mut().dispatch_scroll(column, row, 0.0, -SCROLL_STEP);
+                    }
+                    Event::Mouse(MouseEvent {
+                        kind: MouseEventKind::ScrollRight,
+                        column,
+                        row,
+                        ..
+                    }) => {
+                        backend.borrow_mut().dispatch_scroll(column, row, SCROLL_STEP, 0.0);
+                    }
+                    Event::Mouse(MouseEvent {
+                        kind: MouseEventKind::ScrollLeft,
+                        column,
+                        row,
+                        ..
+                    }) => {
+                        backend.borrow_mut().dispatch_scroll(column, row, -SCROLL_STEP, 0.0);
+                    }
                     Event::Key(key) => {
                         if key.kind != KeyEventKind::Press
                             && key.kind != KeyEventKind::Repeat
                         {
                             continue;
+                        }
+                        // Focused TextInput gets first crack — the
+                        // backend's TextInput primitive is local
+                        // bookkeeping (focus, cursor, value); typing
+                        // through the wire would round-trip every
+                        // keystroke through the sidecar. Same posture
+                        // as local-mount `run`: if dispatch_key returns
+                        // true the input swallowed it, so don't let it
+                        // also count as a quit shortcut.
+                        if let Some(tk) = to_terminal_key(&key) {
+                            if backend.borrow_mut().dispatch_key(&tk) {
+                                continue;
+                            }
+                        }
+                        if let Some(cb) = opts.on_key.as_ref() {
+                            if cb(&key) {
+                                continue;
+                            }
                         }
                         if is_quit_key(&key) {
                             quit = true;
