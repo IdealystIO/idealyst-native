@@ -105,6 +105,7 @@ members = [
     "examples/docs-macro",
     "examples/animation-test",
     "examples/welcome",
+    "examples/stack-demo",
     "examples/mcp-demo",
     "examples/fiddle",
     "benchmark",

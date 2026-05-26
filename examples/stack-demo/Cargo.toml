@@ -1,0 +1,32 @@
+[package]
+name = "stack-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Minimal stack-navigator demo — root page pushes detail screens, each non-root page has an in-content back button. Runs on every backend; the in-content back button is the portable affordance (native back chrome exists on iOS/Android/web but doesn't render on terminal where the navigator chrome is omitted)."
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+runtime-core = { workspace = true }
+stack-navigator = { workspace = true }
+idea-ui = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+
+[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
+backend-ios-mobile = { workspace = true }
+
+[target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
+backend-android-mobile = { workspace = true }
+
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))'.dependencies]
+backend-terminal = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "Stack Demo"
+bundle_id = "ai.truday.idealyst.stackdemo"
+version   = "0.0.1"
+targets   = ["web", "ios", "android"]

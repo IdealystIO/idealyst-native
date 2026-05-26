@@ -15,7 +15,7 @@
 use crate::StackPresentation;
 use backend_terminal::{TermNode, TerminalBackend};
 use runtime_core::primitives::navigator::{
-    NavCommand, NavigatorHandler, NavigatorHost, NavigatorOps,
+    NavCommand, NavigatorControl, NavigatorHandler, NavigatorHost, NavigatorOps,
 };
 use runtime_core::Backend;
 use std::any::Any;
@@ -37,6 +37,12 @@ pub struct TerminalStackHandler {
     outlet: Option<TermNode>,
     /// Frame stack. Last entry is the currently-attached screen.
     stack: Rc<RefCell<Vec<ScreenEntry>>>,
+    /// Shared control plane. Captured from `NavigatorHost` in `init` so
+    /// `make_handle` can hand author code a handle whose `dispatch`
+    /// actually reaches the SDK dispatcher. Without this, `nav.push()`
+    /// is a silent no-op because `NavigatorHandle::new` builds a
+    /// control-less handle.
+    control: Option<Rc<NavigatorControl>>,
 }
 
 impl TerminalStackHandler {
@@ -44,6 +50,7 @@ impl TerminalStackHandler {
         Self {
             outlet: None,
             stack: Rc::new(RefCell::new(Vec::new())),
+            control: None,
         }
     }
 }
@@ -66,6 +73,7 @@ impl NavigatorHandler<TerminalBackend> for TerminalStackHandler {
     ) -> TermNode {
         let outlet = backend.create_view(&Default::default());
         self.outlet = Some(outlet);
+        self.control = Some(host.control.clone());
 
         // Install the command dispatcher. Mount/detach work needs the
         // backend handle, which closures don't carry directly — the
@@ -186,10 +194,18 @@ impl NavigatorHandler<TerminalBackend> for TerminalStackHandler {
         // the layout tree and will be dropped when its parent is.
         self.stack.borrow_mut().clear();
         self.outlet = None;
+        self.control = None;
     }
 
     fn make_handle(&self) -> runtime_core::NavigatorHandle {
-        runtime_core::NavigatorHandle::new(Rc::new(()), &NOOP_STACK_OPS)
+        match self.control.as_ref() {
+            Some(c) => runtime_core::NavigatorHandle::with_control(
+                Rc::new(()),
+                &NOOP_STACK_OPS,
+                c.clone(),
+            ),
+            None => runtime_core::NavigatorHandle::new(Rc::new(()), &NOOP_STACK_OPS),
+        }
     }
 }
 

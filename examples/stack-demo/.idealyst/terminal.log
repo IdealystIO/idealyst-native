@@ -1,0 +1,3 @@
+[robot-bridge] WARN: requested port 9718 unavailable (Address already in use (os error 48)); falling back to ephemeral. Another idealyst app is likely already running on that port.
+[robot-bridge] listening on port 52896
+[robot-bridge] advertised via mDNS as app-52614._idealyst-robot._tcp.local. (port 52896, app=app)
