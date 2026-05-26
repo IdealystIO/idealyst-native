@@ -1,0 +1,20 @@
+[package]
+name = "server-macros"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Proc-macro half of the `server` SDK. Lives in its own crate
+# because Cargo forbids `proc-macro = true` from being mixed with
+# anything that imports the host crate at compile time. The macro
+# emits code that calls into the `server` crate's `__private`
+# module; the `server` crate re-exports `#[server]` for ergonomic
+# author imports.
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }

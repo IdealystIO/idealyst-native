@@ -1,9 +1,9 @@
 //! Platforms — what each backend looks like and where it runs.
 
 use runtime_core::{ui, Primitive};
-use idea_ui::{body, card, heading, BodyTone, HeadingKind};
+use idea_ui::{typography, card, TypographyTone, TypographyKind};
 
-use crate::shell::{page_body, page_header, section, PageBodyProps, PageHeaderProps, SectionProps};
+use crate::shell::{page_body, page_header, section, PageTypographyProps, PageHeaderProps, SectionProps};
 
 pub fn page() -> Primitive {
     ui! {
@@ -24,21 +24,21 @@ pub fn page() -> Primitive {
             )
 
             Card {
-                Heading(content = "Web (WASM)".to_string(), kind = HeadingKind::H2)
-                Body(
+                Typography(content = "Web (WASM)".to_string(), kind = TypographyKind::H2)
+                Typography(
                     content = "`backend-web` compiles to WebAssembly via `wasm-bindgen`. \
                                Primitives map to DOM nodes; stylesheets compile to CSS \
                                classes; navigators integrate with the History API so browser \
                                back/forward and deep links work. The dev server serves the \
                                WASM bundle and connects a hot-reload WebSocket for instant \
                                patching.".to_string(),
-                    tone = BodyTone::Muted,
+                    tone = TypographyTone::Muted,
                 )
             }
 
             Card {
-                Heading(content = "iOS (UIKit)".to_string(), kind = HeadingKind::H2)
-                Body(
+                Typography(content = "iOS (UIKit)".to_string(), kind = TypographyKind::H2)
+                Typography(
                     content = "The `backend-ios-*` family (`-core`, `-mobile`, `-tv`) \
                                binds to UIKit via the `objc2` crate. Views become \
                                `UIView`s; navigators wrap `UINavigationController`; \
@@ -46,39 +46,39 @@ pub fn page() -> Primitive {
                                because UIKit doesn't ship a stock drawer. Build via the CLI \
                                (`idealyst build --ios`) or open the materialized \
                                Xcode project under `target/idealyst/ios/`.".to_string(),
-                    tone = BodyTone::Muted,
+                    tone = TypographyTone::Muted,
                 )
             }
 
             Card {
-                Heading(content = "Android".to_string(), kind = HeadingKind::H2)
-                Body(
+                Typography(content = "Android".to_string(), kind = TypographyKind::H2)
+                Typography(
                     content = "The `backend-android-*` family (`-core`, `-mobile`, `-tv`) \
                                bridges to the native View hierarchy via JNI. The Rust \
                                crate compiles to a `.so` the Android app loads; the \
                                framework populates the layout when the activity hands \
                                it a root container. Drawer maps to `DrawerLayout`, tabs \
                                to `BottomNavigationView`, stack to `FragmentManager`.".to_string(),
-                    tone = BodyTone::Muted,
+                    tone = TypographyTone::Muted,
                 )
             }
 
             Card {
-                Heading(content = "Roku (BrightScript)".to_string(), kind = HeadingKind::H2)
-                Body(
+                Typography(content = "Roku (BrightScript)".to_string(), kind = TypographyKind::H2)
+                Typography(
                     content = "Roku has no Rust runtime — `backend-roku` is a code generator. \
                                Your Rust app is rebuilt as a declarative model, serialized, \
                                and shipped to the device alongside generated BrightScript \
                                glue that replays the tree against Roku's SceneGraph. The \
                                model handles reactivity via a small in-Roku runtime in \
                                `crates/build/roku/runtime/`.".to_string(),
-                    tone = BodyTone::Muted,
+                    tone = TypographyTone::Muted,
                 )
             }
 
             Card {
-                Heading(content = "runtime-server — App-as-Server".to_string(), kind = HeadingKind::H2)
-                Body(
+                Typography(content = "runtime-server — App-as-Server".to_string(), kind = TypographyKind::H2)
+                Typography(
                     content = "runtime-server runs the Rust app on a server and ships a wire-format \
                                command stream to thin clients. The server owns state and \
                                business logic; clients render. Fresh clients receive a \
@@ -87,7 +87,7 @@ pub fn page() -> Primitive {
                                uses runtime-server internally for hot-reload — your saves rebuild a \
                                dylib, the runtime-server server reloads it, and connected clients see \
                                the diff with no full reload.".to_string(),
-                    tone = BodyTone::Muted,
+                    tone = TypographyTone::Muted,
                 )
             }
 

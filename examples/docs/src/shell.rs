@@ -9,10 +9,7 @@ use std::rc::Rc;
 
 use runtime_core::{component, ui, Primitive, SafeAreaSides, Signal, StyleApplication};
 use drawer_navigator::DrawerSlotProps;
-use idea_ui::{
-    body, caption, card, dark_theme, divider, heading, light_theme, set_idea_theme, stack, switch,
-    BodyTone, HeadingKind, StackGap, StackPadding,
-};
+use idea_ui::{typography, card, dark_theme, divider, light_theme, set_idea_theme, stack, switch, TypographyTone, TypographyKind, StackGap, StackPadding};
 
 use crate::routes::SECTIONS;
 use crate::styles::{
@@ -40,11 +37,11 @@ fn drawer_content(active_route: Signal<&'static str>, is_dark: Signal<bool>) -> 
     let header_style = SidebarHeader();
 
     let header_children: Vec<Primitive> = vec![
-        ui! { Heading(content = "Idealyst".to_string(), kind = HeadingKind::H2) },
+        ui! { Typography(content = "Idealyst".to_string(), kind = TypographyKind::H2) },
         ui! {
-            Body(
+            Typography(
                 content = "Cross-platform Rust framework".to_string(),
-                tone = BodyTone::Muted,
+                tone = TypographyTone::Muted,
             )
         },
     ];
@@ -100,7 +97,7 @@ fn theme_toggle(is_dark: Signal<bool>) -> Primitive {
     });
 
     let row_children: Vec<Primitive> = vec![
-        ui! { Caption(content = "Theme".to_string()) },
+        ui! { Typography(content = "Theme".to_string(), kind = TypographyKind::Caption) },
         ui! {
             Switch(
                 label = Some("Dark mode".to_string()),
@@ -359,7 +356,7 @@ fn nav_link(
 // =============================================================================
 
 #[derive(Default)]
-pub struct PageBodyProps {
+pub struct PageTypographyProps {
     pub children: Vec<Primitive>,
 }
 
@@ -373,7 +370,7 @@ pub struct PageBodyProps {
 /// page layout. If you need a one-off override, hand-roll the
 /// `ScrollView { Stack(...) { ... } }` instead.
 #[component]
-pub fn page_body(props: PageBodyProps) -> Primitive {
+pub fn page_body(props: PageTypographyProps) -> Primitive {
     let children = props.children;
     ui! {
         ScrollView {
@@ -397,8 +394,8 @@ pub fn page_header(props: PageHeaderProps) -> Primitive {
     let title = props.title;
     let description = props.description;
     let children: Vec<Primitive> = vec![
-        ui! { Heading(content = title, kind = HeadingKind::H1) },
-        ui! { Body(content = description, tone = BodyTone::Muted) },
+        ui! { Typography(content = title, kind = TypographyKind::H1) },
+        ui! { Typography(content = description, tone = TypographyTone::Muted) },
     ];
     ui! {
         Stack(gap = StackGap::Sm) { children }
@@ -421,8 +418,8 @@ pub fn section(props: SectionProps) -> Primitive {
     let body_text = props.body;
     ui! {
         Card {
-            Heading(content = title, kind = HeadingKind::H2)
-            Body(content = body_text, tone = BodyTone::Muted)
+            Typography(content = title, kind = TypographyKind::H2)
+            Typography(content = body_text, tone = TypographyTone::Muted)
         }
     }
 }
@@ -446,8 +443,8 @@ pub fn section_with_code(props: SectionWithCodeProps) -> Primitive {
 
     ui! {
         Card {
-            Heading(content = title, kind = HeadingKind::H2)
-            Body(content = body_text, tone = BodyTone::Muted)
+            Typography(content = title, kind = TypographyKind::H2)
+            Typography(content = body_text, tone = TypographyTone::Muted)
             View(style = code_style) {
                 Text(style = code_text_style) { code_text }
             }

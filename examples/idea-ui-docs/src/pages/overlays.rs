@@ -10,10 +10,11 @@
 use std::rc::Rc;
 
 use runtime_core::primitives::overlay::BackdropMode;
-use runtime_core::primitives::portal::ViewportPlacement;
-use runtime_core::{signal, ui, Easing, Primitive, PresenceAnim, PresenceState, Signal};
+use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide, ViewportPlacement};
+use runtime_core::{signal, ui, Easing, PressableHandle, Primitive, PresenceAnim, PresenceState, Ref, Signal};
 use idea_ui::{
-    body, btn, card, heading, stack, BodyTone, ButtonKind, HeadingKind, IntentTag, StackGap,
+    btn, card, popover, stack, typography, ButtonKind, IntentTag, StackGap, TypographyKind,
+    TypographyTone,
 };
 
 use crate::shell::page_header;
@@ -30,6 +31,7 @@ pub fn page() -> Primitive {
 
             { modal_demo() }
             { drawer_demo() }
+            { popover_demo() }
         }
     }
 }
@@ -41,10 +43,10 @@ fn modal_demo() -> Primitive {
 
     ui! {
         Card {
-            Heading(content = "Modal".to_string(), kind = HeadingKind::H2)
-            Body(content = "Viewport-centered overlay with a dismiss-on-click scrim. \
+            Typography(content = "Modal".to_string(), kind = TypographyKind::H2)
+            Typography(content = "Viewport-centered overlay with a dismiss-on-click scrim. \
                               Press Escape or click outside to dismiss.".to_string(),
-                 tone = BodyTone::Muted)
+                 tone = TypographyTone::Muted)
             Btn(
                 label = "Open modal".to_string(),
                 on_click = on_open,
@@ -73,14 +75,68 @@ fn modal_demo() -> Primitive {
                     }
                 ) {
                     Card {
-                        Heading(content = "Confirm".to_string(), kind = HeadingKind::H3)
-                        Body(content = "Click outside or press Escape to dismiss.".to_string())
+                        Typography(content = "Confirm".to_string(), kind = TypographyKind::H3)
+                        Typography(content = "Click outside or press Escape to dismiss.".to_string())
                         Btn(
                             label = "OK".to_string(),
                             on_click = on_close.clone(),
                             intent = IntentTag::Primary,
                             kind = ButtonKind::Solid,
                         )
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn popover_demo() -> Primitive {
+    let open = signal!(false);
+    let trigger: Ref<PressableHandle> = Ref::new();
+    let on_toggle: Rc<dyn Fn()> = Rc::new(move || open.update(|v| *v = !*v));
+    let on_dismiss: Rc<dyn Fn()> = Rc::new(move || open.set(false));
+
+    ui! {
+        Card {
+            Typography(content = "Popover".to_string(), kind = TypographyKind::H2)
+            Typography(content = "Element-anchored overlay with no scrim. The trigger element \
+                              binds a `Ref<PressableHandle>`; the popover targets that ref \
+                              and follows it through scrolls / resizes.".to_string(),
+                 tone = TypographyTone::Muted)
+            Btn(
+                label = "Open menu".to_string(),
+                on_click = on_toggle,
+                intent = IntentTag::Neutral,
+                kind = ButtonKind::Soft,
+                bind_to = Some(trigger),
+            )
+            Presence(
+                present = move || open.get(),
+                enter = PresenceAnim::new(
+                    PresenceState::default().opacity(0.0).translate_y(-4.0),
+                    160,
+                    Easing::EaseOut,
+                ),
+                exit = PresenceAnim::new(
+                    PresenceState::default().opacity(0.0).translate_y(-4.0),
+                    120,
+                    Easing::EaseIn,
+                ),
+            ) {
+                Popover(
+                    target = Some(AnchorTarget::from(trigger)),
+                    side = ElementSide::Below,
+                    align = ElementAlign::Start,
+                    offset = 6.0,
+                    on_dismiss = Some({
+                        let d = on_dismiss.clone();
+                        Rc::new(move || (d)()) as Rc<dyn Fn()>
+                    })
+                ) {
+                    Stack(gap = StackGap::Xs) {
+                        Typography(content = "Edit".to_string())
+                        Typography(content = "Duplicate".to_string())
+                        Typography(content = "Delete".to_string(), tone = TypographyTone::Danger)
                     }
                 }
             }
@@ -95,10 +151,10 @@ fn drawer_demo() -> Primitive {
 
     ui! {
         Card {
-            Heading(content = "Drawer".to_string(), kind = HeadingKind::H2)
-            Body(content = "Same Overlay primitive, pinned to the right edge with a slide-in \
+            Typography(content = "Drawer".to_string(), kind = TypographyKind::H2)
+            Typography(content = "Same Overlay primitive, pinned to the right edge with a slide-in \
                               transition.".to_string(),
-                 tone = BodyTone::Muted)
+                 tone = TypographyTone::Muted)
             Btn(
                 label = "Open drawer".to_string(),
                 on_click = on_open,
@@ -127,8 +183,8 @@ fn drawer_demo() -> Primitive {
                     }
                 ) {
                     Card {
-                        Heading(content = "Drawer".to_string(), kind = HeadingKind::H3)
-                        Body(content = "Right-edge drawer content.".to_string())
+                        Typography(content = "Drawer".to_string(), kind = TypographyKind::H3)
+                        Typography(content = "Right-edge drawer content.".to_string())
                         Btn(
                             label = "Close".to_string(),
                             on_click = on_close.clone(),

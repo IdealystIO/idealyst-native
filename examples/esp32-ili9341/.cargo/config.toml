@@ -1,0 +1,38 @@
+# Cargo + cross-build configuration for the ESP32-C3 firmware.
+#
+# `target` here is what `cargo build` defaults to in this crate —
+# RISC-V 32-bit, instruction class `imc`, vendor `esp`, OS
+# `espidf`. The matching toolchain is installed by `espup install`
+# (see README).
+
+[build]
+target = "riscv32imc-esp-espidf"
+
+[target.riscv32imc-esp-espidf]
+# `ldproxy` is the wrapper linker the esp-idf-sys build system
+# needs to pass through esp-idf's own linker flags. Installed by
+# `cargo install ldproxy`.
+linker = "ldproxy"
+# Tell rustc to emit RISC-V atomics — esp-idf-svc and a few of its
+# deps rely on `core::sync::atomic::AtomicUsize` having a real
+# (not emulated) compare-exchange. Without this the link fails
+# with "undefined symbol __sync_*" errors.
+rustflags = [
+    "-C", "default-linker-libraries",
+    "--cfg", "espidf_time64",
+]
+
+[unstable]
+build-std = ["std", "panic_abort"]
+
+[env]
+# Pin the IDF tools version. This must match the version that
+# `espup install` placed on disk. Bump if the toolchain is
+# updated and the build complains about a missing tool.
+ESP_IDF_TOOLS_INSTALL_DIR = { value = "global" }
+# Make sure the build script picks up our `sdkconfig.defaults`
+# next to the manifest. Without an explicit value, esp-idf-sys
+# only checks `./sdkconfig.defaults` in the cargo build dir,
+# which is wrong for a `cargo build` invoked from a parent dir.
+ESP_IDF_SDKCONFIG_DEFAULTS = { value = "sdkconfig.defaults", relative = true }
+MCU = { value = "esp32c3" }

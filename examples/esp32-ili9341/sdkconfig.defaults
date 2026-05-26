@@ -1,0 +1,29 @@
+# ESP-IDF compile-time configuration overrides.
+#
+# These knobs land in the generated `sdkconfig` before the C SDK
+# build runs. Anything not listed here uses the IDF default for the
+# `esp32c3` MCU target.
+
+# Bump the main-task stack — the framework's render pass walks a
+# Taffy tree recursively, and the default 3 KB stack is uncomfortably
+# close on a non-trivial scene. 8 KB leaves plenty of headroom.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# Faster SPI clock — 40 MHz is the maximum the IDF SPI driver
+# supports without crystals/extra timing tricks. ILI9341 panels
+# happily accept it (per Adafruit's reference designs).
+CONFIG_SPI_MASTER_ISR_IN_IRAM=y
+
+# Wokwi's virtual flash chip is 4 MB by default. Stick with the
+# IDF default partition layout so the simulator's flash size
+# matches the firmware's partition table.
+
+# Disable Wi-Fi + Bluetooth — saves ~120 KB of binary size + 40 KB
+# of runtime SRAM. This demo doesn't use either; if you add
+# networking later, flip these back on.
+CONFIG_ESP_WIFI_ENABLED=n
+CONFIG_BT_ENABLED=n
+
+# Slightly louder logging so panic / display-init failures are
+# obvious in the Wokwi serial monitor.
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y

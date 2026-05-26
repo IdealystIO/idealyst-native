@@ -5,8 +5,8 @@
 //! ```ignore
 //! ui! {
 //!     Card(tone = CardTone::Elevated) {
-//!         Heading(content = "Stats", kind = HeadingKind::H2)
-//!         Body(content = "Today's activity")
+//!         Typography(content = "Stats", kind = TypographyKind::H2)
+//!         Typography(content = "Today's activity")
 //!     }
 //! }
 //! ```

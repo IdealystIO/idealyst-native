@@ -1,0 +1,51 @@
+[package]
+name = "net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Cross-platform async HTTP client SDK.
+#
+# Provides one async API — `Client::get(url).send().await?.json()` — that
+# compiles to the platform-native HTTP stack on each target:
+#   - web (wasm32):           fetch via gloo-net
+#   - iOS / macOS / tvOS:     NSURLSession via objc2
+#   - Android:                HttpURLConnection via JNI
+#   - everything else:        reqwest (rustls)
+#
+# The platform-agnostic shell (Client / RequestBuilder / Response,
+# Body traits, error type) lives in this crate's top-level modules.
+# Each cfg-gated `*.rs` module supplies the transport for one family.
+#
+# This crate is the foundation `idealyst-server` (server functions)
+# is built on, but is independently useful for any author hitting an
+# external API.
+
+[features]
+default = ["json", "form"]
+json = ["dep:serde_json"]
+form = ["dep:serde_urlencoded"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", optional = true }
+serde_urlencoded = { version = "0.7", optional = true }
+thiserror = "1"
+
+# Native targets: reqwest with rustls (no native-tls dep, no OpenSSL).
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "http2"] }
+
+# Per-target transport deps are added alongside each transport's
+# real implementation:
+#   - Phase 2 (web):     gloo-net, wasm-bindgen, wasm-bindgen-futures
+#   - Phase 3 (iOS):     objc2, objc2-foundation, block2, futures-channel
+#   - Phase 4 (Android): jni, futures-channel
+# For now those targets compile against placeholder transports that
+# return `Error::Other("not yet implemented")` and need no extra deps.
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"

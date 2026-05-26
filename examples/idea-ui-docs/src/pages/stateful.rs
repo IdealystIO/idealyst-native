@@ -4,9 +4,7 @@ use std::rc::Rc;
 
 use runtime_core::{signal, ui, Primitive};
 use idea_ui::doc_controls::DocControls;
-use idea_ui::{
-    avatar, body, card, heading, stack, tabs, AvatarProps, BodyTone, HeadingKind, StackGap, Tab,
-};
+use idea_ui::{avatar, typography, card, stack, tabs, AvatarProps, TypographyTone, TypographyKind, StackGap, Tab};
 
 use crate::shell::{demo_card, page_header};
 
@@ -63,31 +61,31 @@ fn tabs_demo() -> Primitive {
         |idx: &usize| match idx {
             0 => ui! {
                 Stack(gap = StackGap::Sm) {
-                    Heading(content = "Overview".to_string(), kind = HeadingKind::H3)
-                    Body(content = "High-level summary of the active project. The Overview \
+                    Typography(content = "Overview".to_string(), kind = TypographyKind::H3)
+                    Typography(content = "High-level summary of the active project. The Overview \
                                       tab is mounted whenever the active index is 0; switching \
                                       tabs disposes this subtree and mounts a fresh one for the \
                                       newly-active panel.".to_string(),
-                         tone = BodyTone::Muted)
+                         tone = TypographyTone::Muted)
                 }
             },
             1 => ui! {
                 Stack(gap = StackGap::Sm) {
-                    Heading(content = "Activity".to_string(), kind = HeadingKind::H3)
-                    Body(content = "Recent events would render here. Because the panel is \
+                    Typography(content = "Activity".to_string(), kind = TypographyKind::H3)
+                    Typography(content = "Recent events would render here. Because the panel is \
                                       rebuilt from scratch on every tab change, any signal \
                                       subscriptions inside it are released when the user \
                                       switches away — no stale effects accumulate.".to_string(),
-                         tone = BodyTone::Muted)
+                         tone = TypographyTone::Muted)
                 }
             },
             _ => ui! {
                 Stack(gap = StackGap::Sm) {
-                    Heading(content = "Settings".to_string(), kind = HeadingKind::H3)
-                    Body(content = "Per-project configuration would render here. The strip \
+                    Typography(content = "Settings".to_string(), kind = TypographyKind::H3)
+                    Typography(content = "Per-project configuration would render here. The strip \
                                       doesn't dictate panel layout — each branch can return \
                                       whatever primitive tree makes sense for that view.".to_string(),
-                         tone = BodyTone::Muted)
+                         tone = TypographyTone::Muted)
                 }
             },
         },
@@ -95,12 +93,12 @@ fn tabs_demo() -> Primitive {
 
     ui! {
         Card {
-            Heading(content = "Tabs".to_string(), kind = HeadingKind::H2)
-            Body(content = "Controlled by a `Signal<usize>` indexing the active tab. \
+            Typography(content = "Tabs".to_string(), kind = TypographyKind::H2)
+            Typography(content = "Controlled by a `Signal<usize>` indexing the active tab. \
                               Tap a tab to swap the panel below — panel content is wired \
                               by the caller via `runtime_core::switch`, keyed off the same \
                               signal that drives the strip's highlight.".to_string(),
-                 tone = BodyTone::Muted)
+                 tone = TypographyTone::Muted)
             Tabs(
                 active = active,
                 on_change = on_change,

@@ -1,0 +1,59 @@
+[package]
+name = "server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Server functions SDK — write a single `#[server]` async fn whose
+# body runs on the server, and whose call sites compile on the
+# client into typed RPC stubs.
+#
+# Inspired by Leptos `#[server]`, generalised across every idealyst
+# client target (web / iOS / Android / wgpu native / terminal) via
+# the `net` SDK as transport.
+#
+# Build modes are selected per-binary via the `server` feature:
+#   - Server binary:  `cargo build --features server`
+#                     → real function bodies + axum router
+#   - Client binary:  default                   (or `--no-default-features`)
+#                     → RPC stubs that POST args to the configured URL
+#
+# Workspace shape this SDK expects authors to use:
+#   shared/   lib crate containing `#[server]` fns + shared types
+#   server/   bin crate depending on shared with `features = ["server"]`
+#   client/   bin crate depending on shared with default features
+#
+# v0 surface is intentionally small — JSON-over-HTTP, no auth helpers,
+# no streaming, no extractors. Each of those is a planned follow-up.
+
+[features]
+default = []
+# Enables the server-side machinery: axum integration, router(),
+# serve(), the inventory collector for handler registration. Without
+# this, the crate compiles as a pure client (uses `net` to make RPC
+# calls).
+server = ["dep:axum", "dep:tokio", "dep:tower", "dep:http-body-util"]
+
+[dependencies]
+server-macros = { workspace = true }
+net = { workspace = true }
+runtime-core = { workspace = true, features = ["async-driver"] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+inventory = "0.3"
+futures-channel = "0.3"
+
+# Server-only deps.
+axum = { version = "0.7", optional = true }
+tokio = { version = "1", features = ["net", "rt"], optional = true }
+tower = { version = "0.5", optional = true }
+http-body-util = { version = "0.1", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+runtime-core = { workspace = true, features = ["async-driver"] }

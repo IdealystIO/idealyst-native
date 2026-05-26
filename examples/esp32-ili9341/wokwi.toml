@@ -1,0 +1,16 @@
+# Wokwi launcher config. The VS Code extension reads this to find
+# the firmware ELF + the simulator's circuit diagram.
+#
+# Update the two `firmware` / `elf` paths if you switch profiles —
+# Wokwi only loads the artifact the path points to.
+
+[wokwi]
+version = 1
+
+# Default = the release build, since debug builds of esp-idf
+# binaries routinely exceed the C3's 4 MB flash partition.
+firmware = 'target/riscv32imc-esp-espidf/release/esp32-ili9341'
+elf = 'target/riscv32imc-esp-espidf/release/esp32-ili9341'
+
+# Wokwi diagram describing the wiring (ESP32-C3 + ILI9341).
+# Maintained in `diagram.json` next to this file.

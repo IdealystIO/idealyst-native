@@ -7,9 +7,7 @@ use std::rc::Rc;
 
 use runtime_core::{ui, Primitive};
 use idea_ui::doc_controls::DocControls;
-use idea_ui::{
-    badge, btn, stack, BadgeProps, ButtonProps, IconButtonProps, StackGap, TagProps,
-};
+use idea_ui::{badge, btn, stack, BadgeProps, ButtonProps, IconButtonProps, StackGap, TagProps};
 // idea-ui's own component invocation macros must be in scope.
 use idea_ui::{icon_button, tag};
 

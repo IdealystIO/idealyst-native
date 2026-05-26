@@ -1,0 +1,53 @@
+[package]
+name = "website"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Marketing site for idealyst-native — built with idealyst-native itself. Sidebar nav on web, native stack nav on mobile."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+runtime-core = { workspace = true }
+idea-ui = { workspace = true }
+drawer-navigator = { workspace = true }
+idea-codeblock = { workspace = true }
+
+# Web target — wasm + DOM. The marketing site's primary surface.
+#
+# `web-sys` is pulled in directly (alongside the framework's own
+# web bindings) so `app()` can reach the document's `<body>` element
+# and keep its background in sync with the active theme. The
+# framework owns `#app` and below; everything outside that subtree
+# is the host page's responsibility.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+web-sys = { version = "0.3", features = ["Window", "Document", "HtmlElement", "CssStyleDeclaration"] }
+
+# iOS / Android targets — proving the cross-platform claim by having
+# the site itself ship to mobile. The chrome (sidebar) is web-only,
+# native targets render screens raw inside a UINavigationController /
+# FragmentManager.
+[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
+backend-ios-mobile = { workspace = true }
+
+[target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
+backend-android-mobile = { workspace = true }
+
+# Terminal fallback — all examples in this repo build on the terminal
+# backend by default, so the website does too.
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))'.dependencies]
+backend-terminal = { workspace = true }
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+[package.metadata.idealyst.app]
+name      = "Idealyst"
+bundle_id = "ai.truday.idealyst.website"
+version   = "0.0.1"
+targets   = ["web", "ios", "android"]
+
+[package.metadata.idealyst.app.splash]
+duration_ms = 0

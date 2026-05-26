@@ -286,55 +286,82 @@ stylesheet! {
 }
 
 // =============================================================================
-// Typography — Heading / Body / Caption
+// Typography — unified text component
+//
+// Single component for every kind of text on a page. The `kind` axis
+// picks the size + weight + spacing (Display, H1-H3, BodyXl/Lg/_/Sm,
+// Caption, Overline); the `tone` axis picks the color (Default,
+// Muted, Primary, Danger, Success, Warning, Info, Inverse); the
+// `align` axis picks horizontal alignment.
+//
+// Replaces the older Heading / Body / Caption split — keeping all
+// type styling in one place means an app's typography scale is one
+// theme block, not three components × three stylesheets.
 // =============================================================================
 
 stylesheet! {
-    pub Heading<IdeaThemeRef> {
+    pub Typography<IdeaThemeRef> {
         base(t) {
             color: Tokenized::token("color-text", Color("#1a1a1f".into())),
-            font_weight: FontWeight::SemiBold,
-            letter_spacing: -0.3,
+            font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
+            font_weight: FontWeight::Normal,
+            line_height: 20.0,
         }
         variant kind {
             display(t) {
-                font_size: Tokenized::token("typography-size-display", Length::Px(36.0)),
+                font_size: Tokenized::token("typography-display-size", Length::Px(56.0)),
+                font_weight: FontWeight::Bold,
+                letter_spacing: -1.4,
+                line_height: 60.0,
+            }
+            h1(t) {
+                font_size: Tokenized::token("typography-h1-size", Length::Px(36.0)),
                 font_weight: FontWeight::Bold,
                 letter_spacing: -1.0,
                 line_height: 42.0,
             }
-            #[default]
-            h1(t) {
-                font_size: Tokenized::token("typography-size-xxl", Length::Px(28.0)),
+            h2(t) {
+                font_size: Tokenized::token("typography-h2-size", Length::Px(28.0)),
+                font_weight: FontWeight::SemiBold,
+                letter_spacing: -0.3,
                 line_height: 34.0,
             }
-            h2(t) {
-                font_size: Tokenized::token("typography-size-xl", Length::Px(20.0)),
+            h3(t) {
+                font_size: Tokenized::token("typography-h3-size", Length::Px(20.0)),
+                font_weight: FontWeight::SemiBold,
+                letter_spacing: -0.2,
                 line_height: 26.0,
             }
-            h3(t) {
-                font_size: Tokenized::token("typography-size-lg", Length::Px(16.0)),
-                line_height: 22.0,
+            body_xl(t) {
+                font_size: Tokenized::token("typography-body-xl-size", Length::Px(20.0)),
+                line_height: 30.0,
             }
-        }
-        variant align {
+            body_lg(t) {
+                font_size: Tokenized::token("typography-body-lg-size", Length::Px(18.0)),
+                line_height: 26.0,
+            }
             #[default]
-            start(_t)  { text_align: TextAlign::Left }
-            center(_t) { text_align: TextAlign::Center }
-            end(_t)    { text_align: TextAlign::Right }
-        }
-        transitions {
-            color: 250ms EaseInOut,
-        }
-    }
-}
-
-stylesheet! {
-    pub Body<IdeaThemeRef> {
-        base(t) {
-            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
-            font_size: Tokenized::token("typography-size-md", Length::Px(14.0)),
-            line_height: 20.0,
+            body(t) {
+                font_size: Tokenized::token("typography-body-size", Length::Px(14.0)),
+                line_height: 20.0,
+            }
+            body_sm(t) {
+                font_size: Tokenized::token("typography-body-sm-size", Length::Px(13.0)),
+                line_height: 18.0,
+            }
+            caption(t) {
+                color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+                font_size: Tokenized::token("typography-caption-size", Length::Px(12.0)),
+                line_height: 16.0,
+            }
+            overline(t) {
+                color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+                font_size: Tokenized::token("typography-overline-size", Length::Px(11.0)),
+                font_weight: FontWeight::SemiBold,
+                letter_spacing: 0.8,
+                line_height: 16.0,
+                text_transform: TextTransform::Uppercase,
+            }
         }
         variant tone {
             #[default]
@@ -344,31 +371,8 @@ stylesheet! {
             danger(t)   { color: Tokenized::token("intent-danger-fg", Color("#b91c1c".into())) }
             success(t)  { color: Tokenized::token("intent-success-fg", Color("#107a37".into())) }
             warning(t)  { color: Tokenized::token("intent-warning-fg", Color("#b45309".into())) }
-        }
-        variant align {
-            #[default]
-            start(_t)  { text_align: TextAlign::Left }
-            center(_t) { text_align: TextAlign::Center }
-            end(_t)    { text_align: TextAlign::Right }
-        }
-        transitions {
-            color: 250ms EaseInOut,
-        }
-    }
-}
-
-stylesheet! {
-    pub Caption<IdeaThemeRef> {
-        base(t) {
-            color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
-            font_size: Tokenized::token("typography-size-sm", Length::Px(12.0)),
-            line_height: 16.0,
-        }
-        variant tone {
-            #[default]
-            default(t) { color: Tokenized::token("color-text-muted", Color("#6b7280".into())) }
-            danger(t)  { color: Tokenized::token("intent-danger-fg", Color("#b91c1c".into())) }
-            success(t) { color: Tokenized::token("intent-success-fg", Color("#107a37".into())) }
+            info(t)     { color: Tokenized::token("intent-info-fg", Color("#065e85".into())) }
+            inverse(t)  { color: Tokenized::token("color-text-inverse", Color("#ffffff".into())) }
         }
         variant align {
             #[default]

@@ -2,10 +2,7 @@
 
 use runtime_core::{signal, ui, Primitive};
 use idea_ui::doc_controls::DocControls;
-use idea_ui::{
-    body, card, field, heading, select, stack, switch, BodyTone, FieldProps, HeadingKind,
-    SelectOption, StackGap, SwitchProps,
-};
+use idea_ui::{typography, card, field, select, stack, switch, TypographyTone, FieldProps, TypographyKind, SelectOption, StackGap, SwitchProps};
 
 use crate::shell::{demo_card, page_header};
 
@@ -114,20 +111,20 @@ fn select_demo() -> Primitive {
         move || value.get(),
         |v: &String| {
             let label = format!("Current value: {}", v);
-            ui! { Body(content = label, tone = BodyTone::Muted) }
+            ui! { Typography(content = label, tone = TypographyTone::Muted) }
         },
     );
     let notes = ui! {
-        Body(content = "Click the trigger to open the menu, then pick an option. \
+        Typography(content = "Click the trigger to open the menu, then pick an option. \
                           The chosen id is written to a `Signal<String>` the host owns; \
                           the label shown on the trigger comes from looking that id up \
                           in the options list. Click outside or press Escape to \
                           dismiss without picking.".to_string(),
-             tone = BodyTone::Muted)
+             tone = TypographyTone::Muted)
     };
     let controls = ui! {
         Card {
-            Heading(content = "Notes".to_string(), kind = HeadingKind::H3)
+            Typography(content = "Notes".to_string(), kind = TypographyKind::H3)
             notes
             current
         }

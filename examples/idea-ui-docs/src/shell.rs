@@ -15,10 +15,7 @@ use runtime_core::{ui, ChildList, Primitive, Signal, StyleApplication, VariantEn
 // has been deleted alongside; the helper components below
 // (`sidebar`, `nav_link`) remain in case they're useful for a
 // drawer-navigator-based rewrite of this example.
-use idea_ui::{
-    body, caption, card, dark_theme, divider, heading, light_theme, set_idea_theme, stack, switch,
-    BodyTone, HeadingKind, IdeaThemeRef, StackGap,
-};
+use idea_ui::{typography, card, dark_theme, divider, light_theme, set_idea_theme, stack, switch, TypographyTone, TypographyKind, IdeaThemeRef, StackGap};
 
 use crate::routes::INDEX;
 use crate::styles::{Content, NavLink, PageRoot, Sidebar, SidebarHeader};
@@ -41,8 +38,8 @@ fn sidebar(
 ) -> Primitive {
     let header_style = SidebarHeader();
     let header_children: Vec<Primitive> = vec![
-        ui! { Heading(content = "idea-ui".to_string(), kind = HeadingKind::H2) },
-        ui! { Body(content = "Component reference".to_string(), tone = BodyTone::Muted) },
+        ui! { Typography(content = "idea-ui".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Component reference".to_string(), tone = TypographyTone::Muted) },
     ];
 
     let mut links: Vec<Primitive> = Vec::with_capacity(INDEX.len());
@@ -63,7 +60,7 @@ fn sidebar(
     // (handled by margin-top: auto on the theme switch row) →
     // theme switch.
     let theme_row_children: Vec<Primitive> = vec![
-        ui! { Caption(content = "Theme".to_string()) },
+        ui! { Typography(content = "Theme".to_string(), kind = TypographyKind::Caption) },
         ui! {
             Switch(
                 label = Some("Dark mode".to_string()),
@@ -224,12 +221,12 @@ pub fn demo_card(
     let body_node = if desc_text.is_empty() {
         ui! { View {} }
     } else {
-        ui! { Body(content = desc_text, tone = BodyTone::Muted) }
+        ui! { Typography(content = desc_text, tone = TypographyTone::Muted) }
     };
 
     ui! {
         View(style = card_style) {
-            Heading(content = title_text, kind = HeadingKind::H2)
+            Typography(content = title_text, kind = TypographyKind::H2)
             body_node
             row
         }
@@ -241,8 +238,8 @@ pub fn page_header(title: &str, description: &str) -> Primitive {
     let title_text = title.to_string();
     let desc_text = description.to_string();
     let children: Vec<Primitive> = vec![
-        ui! { Heading(content = title_text, kind = HeadingKind::H1) },
-        ui! { Body(content = desc_text, tone = BodyTone::Muted) },
+        ui! { Typography(content = title_text, kind = TypographyKind::H1) },
+        ui! { Typography(content = desc_text, tone = TypographyTone::Muted) },
     ];
     ui! {
         Stack(gap = StackGap::Sm) { children }

@@ -123,15 +123,28 @@ pub struct Radius {
     pub pill: f32,
 }
 
+/// Per-variant font size knobs. Each field corresponds to one
+/// `TypographyKind` variant on the `Typography` component. Themes
+/// override individual fields to retune the type scale without
+/// touching the rest of the stylesheet system.
+///
+/// Font weight, line height, and letter spacing are not theme-tokenized
+/// at this layer — they're encoded per-variant in the `Typography`
+/// stylesheet block. Tokenizing every property per variant would emit
+/// 40+ extra tokens per theme; sizes are by far the most-overridden
+/// knob, so they're the only thing pulled up to the theme struct.
 #[derive(Clone)]
 pub struct Typography {
-    pub size_xs: f32,
-    pub size_sm: f32,
-    pub size_md: f32,
-    pub size_lg: f32,
-    pub size_xl: f32,
-    pub size_xxl: f32,
-    pub size_display: f32,
+    pub display_size: f32,
+    pub h1_size: f32,
+    pub h2_size: f32,
+    pub h3_size: f32,
+    pub body_xl_size: f32,
+    pub body_lg_size: f32,
+    pub body_size: f32,
+    pub body_sm_size: f32,
+    pub caption_size: f32,
+    pub overline_size: f32,
 }
 
 // =============================================================================
@@ -252,14 +265,18 @@ impl ThemeTokens for IdeaThemeRef {
         out.push(len("radius-lg", r.lg));
         out.push(len("radius-pill", r.pill));
 
-        // Typography: one length token per Typography size.
-        out.push(len("typography-size-xs", ty.size_xs));
-        out.push(len("typography-size-sm", ty.size_sm));
-        out.push(len("typography-size-md", ty.size_md));
-        out.push(len("typography-size-lg", ty.size_lg));
-        out.push(len("typography-size-xl", ty.size_xl));
-        out.push(len("typography-size-xxl", ty.size_xxl));
-        out.push(len("typography-size-display", ty.size_display));
+        // Typography: one length token per variant. Names match the
+        // variant keys in the Typography stylesheet block.
+        out.push(len("typography-display-size", ty.display_size));
+        out.push(len("typography-h1-size", ty.h1_size));
+        out.push(len("typography-h2-size", ty.h2_size));
+        out.push(len("typography-h3-size", ty.h3_size));
+        out.push(len("typography-body-xl-size", ty.body_xl_size));
+        out.push(len("typography-body-lg-size", ty.body_lg_size));
+        out.push(len("typography-body-size", ty.body_size));
+        out.push(len("typography-body-sm-size", ty.body_sm_size));
+        out.push(len("typography-caption-size", ty.caption_size));
+        out.push(len("typography-overline-size", ty.overline_size));
 
         out
     }
@@ -313,13 +330,16 @@ const DEFAULT_RADIUS: Radius = Radius {
 };
 
 const DEFAULT_TYPOGRAPHY: Typography = Typography {
-    size_xs: 11.0,
-    size_sm: 12.0,
-    size_md: 14.0,
-    size_lg: 16.0,
-    size_xl: 20.0,
-    size_xxl: 28.0,
-    size_display: 36.0,
+    display_size: 56.0,
+    h1_size: 36.0,
+    h2_size: 28.0,
+    h3_size: 20.0,
+    body_xl_size: 20.0,
+    body_lg_size: 18.0,
+    body_size: 14.0,
+    body_sm_size: 13.0,
+    caption_size: 12.0,
+    overline_size: 11.0,
 };
 
 fn tok(name: &'static str, fallback: &str) -> Tokenized<Color> {
@@ -600,7 +620,7 @@ mod tests {
         let mut t = light_theme();
         t.spacing.sm = sm;
         t.radius.md = radius_md;
-        t.typography.size_md = body_size;
+        t.typography.body_size = body_size;
         t
     }
 
@@ -620,14 +640,17 @@ mod tests {
         assert_eq!(px(find_length(&toks, "radius-md")), 8.0);
         assert_eq!(px(find_length(&toks, "radius-lg")), 12.0);
         assert_eq!(px(find_length(&toks, "radius-pill")), 999.0);
-        // Typography.
-        assert_eq!(px(find_length(&toks, "typography-size-xs")), 11.0);
-        assert_eq!(px(find_length(&toks, "typography-size-sm")), 12.0);
-        assert_eq!(px(find_length(&toks, "typography-size-md")), 14.0);
-        assert_eq!(px(find_length(&toks, "typography-size-lg")), 16.0);
-        assert_eq!(px(find_length(&toks, "typography-size-xl")), 20.0);
-        assert_eq!(px(find_length(&toks, "typography-size-xxl")), 28.0);
-        assert_eq!(px(find_length(&toks, "typography-size-display")), 36.0);
+        // Typography — one token per Typography variant.
+        assert_eq!(px(find_length(&toks, "typography-display-size")), 56.0);
+        assert_eq!(px(find_length(&toks, "typography-h1-size")), 36.0);
+        assert_eq!(px(find_length(&toks, "typography-h2-size")), 28.0);
+        assert_eq!(px(find_length(&toks, "typography-h3-size")), 20.0);
+        assert_eq!(px(find_length(&toks, "typography-body-xl-size")), 20.0);
+        assert_eq!(px(find_length(&toks, "typography-body-lg-size")), 18.0);
+        assert_eq!(px(find_length(&toks, "typography-body-size")), 14.0);
+        assert_eq!(px(find_length(&toks, "typography-body-sm-size")), 13.0);
+        assert_eq!(px(find_length(&toks, "typography-caption-size")), 12.0);
+        assert_eq!(px(find_length(&toks, "typography-overline-size")), 11.0);
     }
 
     #[test]
@@ -648,9 +671,9 @@ mod tests {
         assert_eq!(px(find_length(&a_toks, "radius-md")), 8.0);
         assert_eq!(px(find_length(&b_toks, "radius-md")), 16.0);
 
-        // Typography.size_md changes shows up in `typography-size-md`.
-        assert_eq!(px(find_length(&a_toks, "typography-size-md")), 14.0);
-        assert_eq!(px(find_length(&b_toks, "typography-size-md")), 28.0);
+        // Typography.body_size changes shows up in `typography-body-size`.
+        assert_eq!(px(find_length(&a_toks, "typography-body-size")), 14.0);
+        assert_eq!(px(find_length(&b_toks, "typography-body-size")), 28.0);
     }
 
     /// Regression test for the `intent_colors` `Box::leak` audit finding.

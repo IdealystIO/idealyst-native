@@ -18,6 +18,6 @@ pub fn title(props: &TitleProps) -> Primitive {
     // idea-ui's `Heading` is a styled-text component; it takes its
     // string via the `content` prop, not as a `{ ... }` body.
     let label = props.label.clone();
-    ui! { Heading(content = label, kind = HeadingKind::H1) }
+    ui! { Typography(content = label, kind = TypographyKind::H1) }
 }
 

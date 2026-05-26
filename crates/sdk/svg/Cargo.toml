@@ -1,0 +1,94 @@
+[package]
+name = "svg"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Third-party SVG renderer SDK — one crate, cfg-gated per-backend impl
+# modules, matching the WebView SDK's single-crate pattern.
+#
+# # Renderer strategy
+#
+# - **Web**: native browser `<svg>` element via `innerHTML`. The
+#   browser is itself a spec-compliant vector SVG renderer.
+# - **iOS / Android**: `usvg` parses to a normalized tree; we then
+#   walk that tree and emit *native vector primitives* — UIBezierPath
+#   + CGContext on iOS, `android.graphics.Path` + `Canvas` recorded
+#   into a `Picture` on Android. No rasterization step. The view's
+#   `drawRect:` / `PictureDrawable.draw(canvas)` re-runs at the
+#   layout-time pixel resolution, so the output stays crisp at any
+#   scale and through transform animations.
+#
+# This honors the "backend impls diverge in mechanism, converge in
+# behavior" rule from CLAUDE.md §7: every backend renders the SVG
+# spec via vector primitives native to that platform.
+#
+# # v1 scope
+#
+# - Paths + fills (solid, linear gradient, radial gradient)
+# - Paths + strokes (width, linecap, linejoin, miter limit, dash array)
+# - Per-element opacity and fill-rule
+# - Nested groups (transforms compose through `Path::abs_transform`,
+#   which usvg pre-resolves)
+# - Reactive inline SVG markup. URL sources can be wrapped by author
+#   code (fetch bytes via the standard `Image` pipeline, pass the
+#   markup string here).
+#
+# Known gaps for v2:
+# - Filters (`feGaussianBlur`, color matrices, etc.) — skipped.
+# - Masks + clipPaths — skipped (paths still draw, but unclipped).
+# - Group opacity != 1 — applied directly to children's fills/strokes
+#   rather than via proper offscreen compositing.
+# - Embedded raster `<image>` elements — skipped.
+# - Text — usvg's `text` feature is off, so glyphs are dropped.
+#
+# The walker can be extended for any of these without touching the
+# per-backend painter surface — see `crates/sdk/svg/src/tree_walker.rs`
+# for the `SvgPainter` trait that bridges to native primitives.
+
+[dependencies]
+runtime-core = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+web-sys = { version = "0.3", features = [
+    "Document",
+    "Element",
+    "HtmlElement",
+    "SvgElement",
+    "Window",
+] }
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+
+# `usvg` is only used by the iOS and Android backends — the web
+# backend uses native browser SVG, and host builds fall through to
+# the no-op fallback. We pull in `text` + `system-fonts` so usvg
+# resolves and shapes <text> elements through whatever fonts the OS
+# exposes. The resulting `Text::flattened()` group is a tree of
+# paths the walker can render like any other group — no
+# text-specific path in the painter. No `resvg` or `tiny-skia` deps
+# — we're a *vector* renderer; the rasterizer is intentionally
+# absent.
+#
+# `fontdb` is exposed publicly so we can construct a `Database` and
+# load system fonts at `register(&mut backend)` time.
+[target.'cfg(any(target_os = "ios", target_os = "android"))'.dependencies]
+usvg = { version = "0.42", default-features = false, features = ["text", "system-fonts"] }
+fontdb = "0.18"
+
+[target.'cfg(target_os = "android")'.dependencies]
+backend-android-mobile = { workspace = true }
+backend-android-core = { workspace = true }
+jni = "0.21"
+
+[target.'cfg(target_os = "ios")'.dependencies]
+backend-ios-mobile = { workspace = true }
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = [
+    "NSGeometry",
+] }
+objc2-ui-kit = { version = "0.2", features = [
+    "UIView",
+    "UIResponder",
+] }

@@ -11,8 +11,8 @@
 //!     Pressable(label = "Open".to_string(), on_click = move || open.set(true), intent = Primary.into_rc())
 //!     if open.get() {
 //!         Modal(on_dismiss = move || open.set(false)) {
-//!             Heading(content = "Confirm".to_string(), kind = HeadingKind::H2)
-//!             Body(content = "Are you sure?".to_string())
+//!             Typography(content = "Confirm".to_string(), kind = TypographyKind::H2)
+//!             Typography(content = "Are you sure?".to_string())
 //!             Stack(axis = StackAxis::Row, gap = StackGap::Sm, justify = StackJustify::End) {
 //!                 Pressable(
 //!                     label = "Cancel".to_string(),

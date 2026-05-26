@@ -31,9 +31,9 @@
 //!     let count = signal!(0);
 //!     ui! {
 //!         Stack(gap = StackGap::Lg) {
-//!             Heading(content = "Hello, idea-ui".to_string())
+//!             Typography(content = "Hello, idea-ui".to_string(), kind = TypographyKind::H1)
 //!             Card {
-//!                 Body(content = format!("Count: {}", count.get()))
+//!                 Typography(content = format!("Count: {}", count.get()))
 //!                 // `Btn` is idea-ui's styled clickable. `Button` (capital B)
 //!                 // is the framework's `<button>` primitive — useful when
 //!                 // you need a native button without the idea-ui styling.
@@ -90,14 +90,11 @@ pub use intent::{
 pub use components::alert::{alert, AlertProps};
 pub use components::avatar::{avatar, AvatarColor, AvatarProps, AvatarSize};
 pub use components::badge::{badge, BadgeKind, BadgeProps};
-pub use components::body::{body, BodyProps};
 pub use components::button::{button, ButtonKind, ButtonProps, ButtonSize, IntentTag};
-pub use components::caption::{caption, CaptionProps};
 pub use components::card::{card, CardPadding, CardProps, CardTone};
 pub use components::center::{center, CenterProps};
 pub use components::divider::{divider, DividerAxis, DividerProps};
 pub use components::field::{field, FieldProps, FieldSize, FieldTone};
-pub use components::heading::{heading, HeadingProps};
 pub use components::icon_button::{icon_button, IconButtonProps, IconButtonSize};
 pub use components::modal::{modal, ModalProps};
 pub use components::popover::{popover, PopoverProps};
@@ -111,7 +108,8 @@ pub use components::stack::{
 pub use components::switch::{switch, SwitchProps};
 pub use components::tabs::{tabs, Tab, TabsProps};
 pub use components::tag::{tag, TagProps};
-
-pub use stylesheets::{
-    BodyAlign, BodyTone, CaptionAlign, CaptionTone, HeadingAlign, HeadingKind, TabPanel,
+pub use components::typography::{
+    typography, TypographyAlign, TypographyKind, TypographyProps, TypographyTone,
 };
+
+pub use stylesheets::TabPanel;

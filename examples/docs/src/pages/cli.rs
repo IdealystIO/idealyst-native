@@ -1,10 +1,10 @@
 //! CLI — the `idealyst` command-line tool.
 
 use runtime_core::{ui, Primitive};
-use idea_ui::{body, card, heading, BodyTone, HeadingKind};
+use idea_ui::{typography, card, TypographyTone, TypographyKind};
 
 use crate::shell::{
-    code_block, page_body, page_header, section, section_with_code, CodeBlockProps, PageBodyProps,
+    code_block, page_body, page_header, section, section_with_code, CodeBlockProps, PageTypographyProps,
     PageHeaderProps, SectionProps, SectionWithCodeProps,
 };
 
@@ -63,15 +63,15 @@ pub fn page() -> Primitive {
             )
 
             Card {
-                Heading(content = "Other commands".to_string(), kind = HeadingKind::H2)
-                Body(
+                Typography(content = "Other commands".to_string(), kind = TypographyKind::H2)
+                Typography(
                     content = "`check` runs `cargo check` across configured platforms. `clean` \
                                removes the build cache. `sync` regenerates derived assets \
                                (icons, splash screens) from the project config. `scaffold` \
                                materializes a per-platform wrapper project from the ephemeral \
                                build cache into the repo so you can hand-edit it. `brs` \
                                collects and emits BrightScript methods for the Roku backend.".to_string(),
-                    tone = BodyTone::Muted,
+                    tone = TypographyTone::Muted,
                 )
                 CodeBlock(
                     code = "idealyst check\n\

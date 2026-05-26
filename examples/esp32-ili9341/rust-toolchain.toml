@@ -1,0 +1,33 @@
+# ESP32-C3 is RISC-V — the upstream `nightly` rustc can target it
+# without the Xtensa-LLVM fork that ESP32 / ESP32-S3 require. We
+# pick nightly because `build-std` (used in `.cargo/config.toml`)
+# is nightly-only.
+#
+# Crucial: `riscv32imc-esp-espidf` is a Rust **tier-3** target —
+# rustup has no pre-built `rust-std` for it, so listing it under
+# `targets = [...]` makes `rustup` fail with "component 'rust-std'
+# for target 'riscv32imc-esp-espidf' is unavailable for download".
+# Instead, `rust-src` lets cargo's `-Z build-std` compile std from
+# source for this target on demand. That's why the section below
+# lists `rust-src` but NOT `targets`.
+#
+# Pin nightly to a recent-but-fixed date so the build is reproducible
+# — bump if a future esp-idf-sys / esp-idf-svc release requires
+# newer compiler features. Always keep a fixed pin; floating
+# `nightly` will quietly break.
+
+[toolchain]
+# rustc 1.90+ — recent enough that transitive deps with stricter
+# MSRVs (e.g. `home@0.5.12` requires rustc 1.88) resolve cleanly.
+# If a build error reports "rustc X is not supported by Y requires
+# rustc Z", bump this pin to the date after Z's stable release.
+#
+# `aarch64-apple-darwin` is **load-bearing on Apple Silicon**:
+# without it rustup falls back to the system-wide default toolchain
+# arch (often x86_64), and bindgen then `dlopen`s espup's native
+# libclang.dylib (arm64) from an x86_64 rustc process and fails
+# with "incompatible architecture (have 'arm64', need 'x86_64')".
+# Intel Macs would write `x86_64-apple-darwin` here instead — the
+# rule is "match your host arch".
+channel = "nightly-2025-09-01"
+components = ["rust-src", "rustfmt", "clippy"]

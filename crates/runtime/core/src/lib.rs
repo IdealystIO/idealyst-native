@@ -33,6 +33,17 @@ pub mod driver;
 #[cfg(feature = "async-driver")]
 mod resource;
 
+// `mutation()` — callback-driven async work as a reactive primitive.
+// Sibling to `resource()`; same async-driver gate.
+#[cfg(feature = "async-driver")]
+mod mutation;
+
+// `NetworkState` — collapsed enum projection of the state structs
+// owned by `resource` and `mutation`. Lives next to those modules
+// under the same async-driver gate so it can reference both.
+#[cfg(feature = "async-driver")]
+mod network_state;
+
 #[cfg(feature = "debug-stats")]
 pub mod debug;
 
@@ -107,6 +118,10 @@ pub use reactive::{
 };
 #[cfg(feature = "async-driver")]
 pub use resource::{resource, Resource, ResourceCancel, ResourceState};
+#[cfg(feature = "async-driver")]
+pub use mutation::{mutation, Mutation, MutationState};
+#[cfg(feature = "async-driver")]
+pub use network_state::NetworkState;
 pub use safe_area::{safe_area_insets, set_safe_area_insets, EdgeInsets, SafeAreaSides};
 pub use scheduling::{
     after_animation_frame, after_ms, after_ms_scoped, raf_loop, raf_loop_scoped,

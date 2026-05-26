@@ -203,6 +203,15 @@ impl<T: Clone + 'static, E: Clone + 'static> Resource<T, E> {
         self.state.get()
     }
 
+    /// Collapsed [`NetworkState`](crate::NetworkState) view of the
+    /// current state, suitable for direct `match` against in UI code.
+    /// Precedence: `Loading > Error > Success > Idle`; refetch-while-
+    /// stale collapses to `Loading`. Read the underlying [`Resource::state`]
+    /// directly for richer cases.
+    pub fn network_state(&self) -> crate::NetworkState<T, E> {
+        (&self.state.get()).into()
+    }
+
     /// Re-run the fetcher with the current deps. Useful for pull-to-
     /// refresh, retry-after-error, and external-event-driven
     /// invalidation. Triggers the same cancel-previous + spawn-fresh

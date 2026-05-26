@@ -234,8 +234,8 @@ fn emit_span_meta(span: &Span_) -> TokenStream2 {
 //           PageHeader(title, description)
 //           // Per section: a Card containing the section's blocks.
 //           Card {
-//               Heading(content = "...", kind = HeadingKind::H2)
-//               Body(content = "paragraph text", tone = BodyTone::Muted)
+//               Typography(content = "...", kind = TypographyKind::H2)
+//               Typography(content = "paragraph text", tone = TypographyTone::Muted)
 //               CodeBlock(code = "...")
 //               // Comparisons / notes / demos flatten inline for v1.
 //           }
@@ -290,9 +290,9 @@ fn emit_top_block_render(block: &TopBlock) -> Vec<TokenStream2> {
             let heading = s.heading.value();
             let mut card_children: Vec<TokenStream2> = Vec::new();
             card_children.push(quote! {
-                Heading(
+                Typography(
                     content = #heading.to_string(),
-                    kind = ::idea_ui::HeadingKind::H2,
+                    kind = ::idea_ui::TypographyKind::H2,
                 )
             });
             for b in &s.blocks {
@@ -327,9 +327,9 @@ fn emit_block_render(block: &Block) -> Vec<TokenStream2> {
         Block::Paragraph(spans) => {
             let text = spans_to_plain_text(spans);
             vec![quote! {
-                Body(
+                Typography(
                     content = #text.to_string(),
-                    tone = ::idea_ui::BodyTone::Muted,
+                    tone = ::idea_ui::TypographyTone::Muted,
                 )
             }]
         }
@@ -344,9 +344,9 @@ fn emit_block_render(block: &Block) -> Vec<TokenStream2> {
             .map(|spans| {
                 let text = format!("• {}", spans_to_plain_text(spans));
                 quote! {
-                    Body(
+                    Typography(
                         content = #text.to_string(),
-                        tone = ::idea_ui::BodyTone::Muted,
+                        tone = ::idea_ui::TypographyTone::Muted,
                     )
                 }
             })
@@ -357,9 +357,9 @@ fn emit_block_render(block: &Block) -> Vec<TokenStream2> {
             let framework_label = format!("From {}", c.from);
             let mut out = Vec::new();
             out.push(quote! {
-                Heading(
+                Typography(
                     content = #framework_label.to_string(),
-                    kind = ::idea_ui::HeadingKind::H3,
+                    kind = ::idea_ui::TypographyKind::H3,
                 )
             });
             for b in &c.blocks {
@@ -372,9 +372,9 @@ fn emit_block_render(block: &Block) -> Vec<TokenStream2> {
             let kind_label = format!("{}:", n.kind);
             let mut out = Vec::new();
             out.push(quote! {
-                Heading(
+                Typography(
                     content = #kind_label.to_string(),
-                    kind = ::idea_ui::HeadingKind::H3,
+                    kind = ::idea_ui::TypographyKind::H3,
                 )
             });
             for b in &n.blocks {
@@ -393,9 +393,9 @@ fn emit_compare_card(c: &Compare) -> TokenStream2 {
     let label = format!("From {}", c.from);
     let mut card_children: Vec<TokenStream2> = Vec::new();
     card_children.push(quote! {
-        Heading(
+        Typography(
             content = #label.to_string(),
-            kind = ::idea_ui::HeadingKind::H3,
+            kind = ::idea_ui::TypographyKind::H3,
         )
     });
     for b in &c.blocks {
@@ -412,9 +412,9 @@ fn emit_note_card(n: &Note) -> TokenStream2 {
     let label = format!("{}:", n.kind);
     let mut card_children: Vec<TokenStream2> = Vec::new();
     card_children.push(quote! {
-        Heading(
+        Typography(
             content = #label.to_string(),
-            kind = ::idea_ui::HeadingKind::H3,
+            kind = ::idea_ui::TypographyKind::H3,
         )
     });
     for b in &n.blocks {

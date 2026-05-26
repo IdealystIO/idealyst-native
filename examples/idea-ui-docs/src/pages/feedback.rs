@@ -2,9 +2,7 @@
 
 use runtime_core::{ui, Primitive};
 use idea_ui::doc_controls::DocControls;
-use idea_ui::{
-    alert, skeleton, spinner, stack, AlertProps, SkeletonProps, SpinnerProps, StackGap,
-};
+use idea_ui::{alert, skeleton, spinner, stack, AlertProps, SkeletonProps, SpinnerProps, StackGap};
 
 use crate::shell::{demo_card, page_header};
 

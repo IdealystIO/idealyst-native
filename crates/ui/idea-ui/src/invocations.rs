@@ -71,53 +71,23 @@ macro_rules! btn {
 }
 
 // =============================================================================
-// heading / body / caption — by-ref
+// typography — by-ref. The single text component covering every kind
+// of text on a page (Display, H1-H3, BodyXl/Lg/_/Sm, Caption, Overline)
+// via the `kind` axis. Replaces the older Heading/Body/Caption trio.
 // =============================================================================
 
 #[macro_export]
 #[doc(hidden)]
-macro_rules! heading {
+macro_rules! typography {
     () => {
-        $crate::components::heading::heading(
-            &<$crate::components::heading::HeadingProps as ::core::default::Default>::default(),
+        $crate::components::typography::typography(
+            &<$crate::components::typography::TypographyProps as ::core::default::Default>::default(),
         )
     };
     ( $( $field:ident = $value:expr ),+ $(,)? ) => {
-        $crate::components::heading::heading(&$crate::components::heading::HeadingProps {
+        $crate::components::typography::typography(&$crate::components::typography::TypographyProps {
             $( $field: $value, )+
-            ..<$crate::components::heading::HeadingProps as ::core::default::Default>::default()
-        })
-    };
-}
-
-#[macro_export]
-#[doc(hidden)]
-macro_rules! body {
-    () => {
-        $crate::components::body::body(
-            &<$crate::components::body::BodyProps as ::core::default::Default>::default(),
-        )
-    };
-    ( $( $field:ident = $value:expr ),+ $(,)? ) => {
-        $crate::components::body::body(&$crate::components::body::BodyProps {
-            $( $field: $value, )+
-            ..<$crate::components::body::BodyProps as ::core::default::Default>::default()
-        })
-    };
-}
-
-#[macro_export]
-#[doc(hidden)]
-macro_rules! caption {
-    () => {
-        $crate::components::caption::caption(
-            &<$crate::components::caption::CaptionProps as ::core::default::Default>::default(),
-        )
-    };
-    ( $( $field:ident = $value:expr ),+ $(,)? ) => {
-        $crate::components::caption::caption(&$crate::components::caption::CaptionProps {
-            $( $field: $value, )+
-            ..<$crate::components::caption::CaptionProps as ::core::default::Default>::default()
+            ..<$crate::components::typography::TypographyProps as ::core::default::Default>::default()
         })
     };
 }

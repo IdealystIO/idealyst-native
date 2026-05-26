@@ -1,10 +1,10 @@
 //! UI DSL — the `ui!` macro: syntax, control flow, reactive forms.
 
 use runtime_core::{ui, Primitive};
-use idea_ui::{body, card, heading, BodyTone, HeadingKind};
+use idea_ui::{typography, card, TypographyTone, TypographyKind};
 
 use crate::shell::{
-    code_block, page_body, page_header, section, CodeBlockProps, PageBodyProps, PageHeaderProps,
+    code_block, page_body, page_header, section, CodeBlockProps, PageTypographyProps, PageHeaderProps,
     SectionProps,
 };
 
@@ -24,78 +24,78 @@ pub fn page() -> Primitive {
             )
 
             Card {
-                Heading(content = "Component invocation".to_string(), kind = HeadingKind::H2)
-                Body(
+                Typography(content = "Component invocation".to_string(), kind = TypographyKind::H2)
+                Typography(
                     content = "Components are called as `Name(prop = expr, ...) { children }`. \
                                Identifiers starting with an uppercase ASCII letter are treated \
                                as component invocations; anything lowercase falls through as a \
                                plain Rust expression. The parens and the children block are \
                                both optional individually.".to_string(),
-                    tone = BodyTone::Muted,
+                    tone = TypographyTone::Muted,
                 )
                 CodeBlock(
                     code = "ui! {\n    \
                                 Stack(gap = StackGap::Md) {\n        \
-                                    Heading(content = \"Hello\".to_string(), kind = HeadingKind::H1)\n        \
-                                    Body(content = \"World\".to_string())\n    \
+                                    Typography(content = \"Hello\".to_string(), kind = TypographyKind::H1)\n        \
+                                    Typography(content = \"World\".to_string())\n    \
                                 }\n\
                             }".to_string(),
                 )
             }
 
             Card {
-                Heading(content = "Reactive `if`".to_string(), kind = HeadingKind::H2)
-                Body(
+                Typography(content = "Reactive `if`".to_string(), kind = TypographyKind::H2)
+                Typography(
                     content = "An `if` whose condition reads a signal (contains `.get()`) is \
                                lowered to a reactive `when(...)` call — the branch \
                                re-evaluates whenever the signal changes. An `if` with a plain \
                                boolean is evaluated once at build time and emits the selected \
                                branch.".to_string(),
-                    tone = BodyTone::Muted,
+                    tone = TypographyTone::Muted,
                 )
                 CodeBlock(
                     code = "let open = signal!(false);\n\
                             ui! {\n    \
                                 if open.get() {\n        \
-                                    Body(content = \"It's open!\".to_string())\n    \
+                                    Typography(content = \"It's open!\".to_string())\n    \
                                 } else {\n        \
-                                    Body(content = \"It's closed.\".to_string())\n    \
+                                    Typography(content = \"It's closed.\".to_string())\n    \
                                 }\n\
                             }".to_string(),
                 )
             }
 
             Card {
-                Heading(content = "Reactive `match`".to_string(), kind = HeadingKind::H2)
-                Body(
+                Typography(content = "Reactive `match`".to_string(), kind = TypographyKind::H2)
+                Typography(
                     content = "Same rule as `if`: a `match` whose scrutinee reads a signal \
                                lowers to a `switch(...)` call. Each arm's body is a UI block \
                                (always brace-delimited) so the parser stays unambiguous.".to_string(),
-                    tone = BodyTone::Muted,
+                    tone = TypographyTone::Muted,
                 )
                 CodeBlock(
                     code = "match status.get() {\n    \
                                 Status::Loading => { Spinner() }\n    \
-                                Status::Ready(value) => { Body(content = value) }\n    \
+                                Status::Ready(value) => { Typography(content = value) }\n    \
                                 Status::Failed(err) => { Alert(title = err, intent = IntentTag::Danger) }\n\
                             }".to_string(),
                 )
             }
 
             Card {
-                Heading(content = "`for` lists".to_string(), kind = HeadingKind::H2)
-                Body(
+                Typography(content = "`for` lists".to_string(), kind = TypographyKind::H2)
+                Typography(
                     content = "Iterate over any `IntoIterator`. The macro expands the loop into \
                                a `Vec<Primitive>` that flows into the surrounding children. A \
                                trailing `.style(...)` chain pins the row container's style for \
                                virtualized lists.".to_string(),
-                    tone = BodyTone::Muted,
+                    tone = TypographyTone::Muted,
                 )
                 CodeBlock(
                     code = "ui! {\n    \
                                 Stack(gap = StackGap::Sm) {\n        \
                                     for entry in items.iter() {\n            \
-                                        Card { Body(content = entry.title.clone()) }\n        \
+                                        Card { Typography(content = entry.title.clone()) }\n        \
                                     }\n    \
                                 }\n\
                             }".to_string(),

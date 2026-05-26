@@ -14,10 +14,7 @@
 use runtime_core::{
     component, signal, text, ui, IntoPrimitive, Primitive, Ref, Route, Screen, Signal,
 };
-use idea_ui::{
-    body, card, heading, install_idea_theme, light_theme, stack, BodyTone, HeadingKind, StackGap,
-    StackPadding,
-};
+use idea_ui::{typography, card, install_idea_theme, light_theme, stack, TypographyTone, TypographyKind, StackGap, StackPadding};
 use stack_navigator::{Navigator, StackBuilder, StackHandle, StackScreenExt};
 
 // ---------------------------------------------------------------------------
@@ -84,9 +81,9 @@ pub fn app() -> Primitive {
 // ---------------------------------------------------------------------------
 // Pages. Each is a plain function returning a `Primitive`. Children
 // are built into a `Vec<Primitive>` first to keep the `ui!` body
-// unambiguous — `Body(...)` followed by a `{ expr }` brace-block in
-// the same scope would otherwise be parsed as `Body(...) { children }`
-// and the macro errors because `BodyProps` has no `children` field.
+// unambiguous — `Typography(...)` followed by a `{ expr }` brace-block in
+// the same scope would otherwise be parsed as `Typography(...) { children }`
+// and the macro errors because `TypographyProps` has no `children` field.
 // ---------------------------------------------------------------------------
 
 fn home_page(nav: Ref<StackHandle>) -> Primitive {
@@ -95,11 +92,11 @@ fn home_page(nav: Ref<StackHandle>) -> Primitive {
     let go_counter = move || nav.get().map(|h| h.push(&COUNTER, ())).unwrap_or_default();
 
     let children: Vec<Primitive> = vec![
-        ui! { Heading(content = "Stack demo".to_string(), kind = HeadingKind::H1) },
+        ui! { Typography(content = "Stack demo".to_string(), kind = TypographyKind::H1) },
         ui! {
-            Body(
+            Typography(
                 content = "Tap a button to push a detail screen onto the stack. Each detail screen has a Back button that pops.".to_string(),
-                tone = BodyTone::Muted,
+                tone = TypographyTone::Muted,
             )
         },
         ui! { Button(label = "Open About".to_string(), on_click = go_about) },
@@ -114,11 +111,11 @@ fn home_page(nav: Ref<StackHandle>) -> Primitive {
 
 fn about_page(nav: Ref<StackHandle>) -> Primitive {
     let children: Vec<Primitive> = vec![
-        ui! { Heading(content = "About".to_string(), kind = HeadingKind::H1) },
+        ui! { Typography(content = "About".to_string(), kind = TypographyKind::H1) },
         ui! {
-            Body(
+            Typography(
                 content = "This screen was pushed onto the stack. Press Back to pop it.".to_string(),
-                tone = BodyTone::Muted,
+                tone = TypographyTone::Muted,
             )
         },
         back_button(nav),
@@ -130,13 +127,13 @@ fn about_page(nav: Ref<StackHandle>) -> Primitive {
 
 fn settings_page(nav: Ref<StackHandle>) -> Primitive {
     let card_children: Vec<Primitive> = vec![ui! {
-        Body(
+        Typography(
             content = "Imagine real settings here. The card is just to show that pages can carry their own layout.".to_string(),
-            tone = BodyTone::Muted,
+            tone = TypographyTone::Muted,
         )
     }];
     let children: Vec<Primitive> = vec![
-        ui! { Heading(content = "Settings".to_string(), kind = HeadingKind::H1) },
+        ui! { Typography(content = "Settings".to_string(), kind = TypographyKind::H1) },
         ui! { Card { card_children } },
         back_button(nav),
     ];
@@ -150,13 +147,13 @@ fn counter_page(nav: Ref<StackHandle>, count: Signal<i32>) -> Primitive {
     let decrement = move || count.update(|n| *n -= 1);
     // Reactive label — `text(closure)` returns a `Bound<TextHandle>`
     // primitive whose content re-resolves when `count` changes,
-    // unlike `Body(content = String)` which captures a string at
+    // unlike `Typography(content = String)` which captures a string at
     // build time. Keeps the demo wired correctly for the canonical
     // "stateful counter survives push/pop" pattern.
     let label = text(move || format!("Count: {}", count.get())).into_primitive();
 
     let children: Vec<Primitive> = vec![
-        ui! { Heading(content = "Counter".to_string(), kind = HeadingKind::H1) },
+        ui! { Typography(content = "Counter".to_string(), kind = TypographyKind::H1) },
         label,
         ui! { Button(label = "+".to_string(), on_click = increment) },
         ui! { Button(label = "-".to_string(), on_click = decrement) },

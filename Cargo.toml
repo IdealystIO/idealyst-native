@@ -22,6 +22,7 @@ members = [
     "crates/backend/roku/macros",
     "crates/backend/roku/transpile",
     "crates/backend/terminal",
+    "crates/backend/cpu",
     "crates/backend/web",
     "crates/backend/posix-log-capture",
 
@@ -66,6 +67,12 @@ members = [
     "crates/sdk/idea-codeblock",
     "crates/sdk/webview",
     "crates/sdk/video",
+    "crates/sdk/svg",
+
+    # SDK — utility (non-primitive) crates.
+    "crates/sdk/net",
+    "crates/sdk/server",
+    "crates/sdk/server-macros",
 
     # SDK — navigator-kind extensions (Primitive::NavigatorExt).
     "crates/sdk/stack-navigator",
@@ -108,6 +115,7 @@ members = [
     "examples/stack-demo",
     "examples/mcp-demo",
     "examples/fiddle",
+    "examples/website",
     "benchmark",
     "benchmark/idealyst-native/wasm",
     "benchmark/idealyst-native-anim/wasm",
@@ -120,6 +128,11 @@ members = [
 exclude = [
     "examples/fiddle/template",
     "examples/fiddle/webapp",
+    # ESP32-C3 firmware — target = `riscv32imc-esp-espidf`,
+    # requires the espup-installed toolchain + esp-idf SDK. Lives
+    # outside the host workspace entirely; see its README for the
+    # standalone build flow.
+    "examples/esp32-ili9341",
 ]
 
 [workspace.package]
@@ -168,6 +181,7 @@ backend-roku = { path = "crates/backend/roku" }
 backend-roku-macros = { path = "crates/backend/roku/macros" }
 backend-roku-transpile = { path = "crates/backend/roku/transpile" }
 backend-terminal = { path = "crates/backend/terminal" }
+backend-cpu = { path = "crates/backend/cpu" }
 backend-web = { path = "crates/backend/web" }
 render-api = { path = "crates/gpu-backend/api" }
 render-wgpu = { path = "crates/gpu-backend/engine" }
@@ -191,6 +205,10 @@ maps-web = { path = "crates/sdk/maps-web" }
 idea-codeblock = { path = "crates/sdk/idea-codeblock" }
 webview = { path = "crates/sdk/webview" }
 video = { path = "crates/sdk/video" }
+svg = { path = "crates/sdk/svg" }
+net = { path = "crates/sdk/net" }
+server = { path = "crates/sdk/server" }
+server-macros = { path = "crates/sdk/server-macros" }
 stack-navigator = { path = "crates/sdk/stack-navigator" }
 tab-navigator = { path = "crates/sdk/tab-navigator" }
 drawer-navigator = { path = "crates/sdk/drawer-navigator" }

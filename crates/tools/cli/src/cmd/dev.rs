@@ -3,15 +3,19 @@
 //!
 //! Two orthogonal axes:
 //!
-//! - **Mode**: local-render (default) or runtime-server (`--aas`).
-//!   - Local-render: each platform builds the user's `app()` for itself
-//!     with a file-watcher rebuild loop. Web uses livereload; native
-//!     platforms restart the app on rebuild.
-//!   - runtime-server: a single dev-server process runs the user's reactive
-//!     runtime; every platform's client connects over a WebSocket
-//!     and renders whatever wire commands arrive. Source changes
-//!     only rebuild the dev-host binary, the navigator stack
-//!     survives, every client stays in sync.
+//! - **Mode**: runtime-server (default) or local-render (`--local`).
+//!   - runtime-server (default): a single dev-server process runs the
+//!     user's reactive runtime; every platform's client connects over a
+//!     WebSocket and renders whatever wire commands arrive. Source
+//!     changes only rebuild the dev-host binary, the navigator stack
+//!     survives, every client stays in sync. This is the hot-reload
+//!     experience — saves apply in place with state preserved.
+//!   - `--local`: each platform builds the user's `app()` for itself
+//!     with a file-watcher rebuild loop. Web uses livereload (full
+//!     page reload on change); native platforms restart the app on
+//!     rebuild. State does not survive saves. Use when the workspace
+//!     isn't available for the runtime-server sidecar build, or to
+//!     bypass the wire protocol entirely.
 //!
 //! - **Targets**: `--web`, `--ios`, `--android`, `--macos`. If none
 //!   are passed explicitly, the active set comes from `[package
@@ -101,17 +105,21 @@ pub struct Args {
     #[arg(default_value = ".")]
     pub dir: PathBuf,
 
-    /// Run the runtime-server: a single dev process holds the user's
-    /// reactive tree, every platform client connects over WebSocket
-    /// and renders wire commands. The default (off) runs the app
-    /// natively on each platform with its own rebuild loop.
+    /// Opt out of the runtime-server: build + run the user's `app()`
+    /// natively on each platform with its own file-watcher rebuild
+    /// loop. Web uses livereload (full page reload on save); native
+    /// platforms restart the app. State does not survive saves.
     ///
-    /// `--aas` is accepted as a deprecated alias for one release —
-    /// originally the mode was called "runtime-server" (application-as-a-server)
-    /// before the project's runtime-server rename. Remove the alias
-    /// once external scaffolds stop referencing it.
-    #[arg(long, alias = "aas")]
-    pub runtime_server: bool,
+    /// The default (off) starts the runtime-server sidecar — a single
+    /// dev process holds the user's reactive tree and every platform
+    /// client connects over WebSocket. Source changes apply as
+    /// hot-patches with state preserved.
+    ///
+    /// Use `--local` when the framework workspace isn't reachable
+    /// for the sidecar build, or for a faster cold-start at the cost
+    /// of in-place saves.
+    #[arg(long)]
+    pub local: bool,
 
     /// Build and run the web target.
     #[arg(long)]
@@ -214,13 +222,36 @@ pub fn run(args: Args) -> Result<()> {
     crate::dlog!(
         "dev",
         "{} mode, targets: {}",
-        if args.runtime_server { "runtime-server" } else { "local" },
+        if args.local { "local" } else { "runtime-server" },
         active_targets
             .iter()
             .map(|t| t.as_str())
             .collect::<Vec<_>>()
             .join(", "),
     );
+
+    // Interactive mode: redirect stderr to a log file BEFORE we
+    // spawn any worker thread. Workers immediately kick off cargo
+    // builds via the platform `build-*` / `run-*` crates, which
+    // inherit our stdio — cargo's `Compiling …` chatter goes to
+    // stderr, which without this redirect lands on the TTY for the
+    // ~30s before host-terminal's own redirect installs inside
+    // `dev_tui::run`. The bytes look indistinguishable from a panic
+    // backtrace once they interleave with the eventual crossterm
+    // alternate-screen escapes. Held alive until the end of `run()`
+    // so the file stays the active stderr for the whole session.
+    //
+    // We keep fd 1 (stdout) on the TTY because crossterm writes its
+    // ANSI paint stream through `io::stdout()`. Subprocesses can
+    // still write to fd 1 (most don't — cargo / xcrun / simctl talk
+    // on stderr) but those bursts are rare and short. Real fix is
+    // plumbing a `Stdio` arg through the build crates; tracked as
+    // a follow-up.
+    let _stderr_guard = if interactive {
+        Some(EarlyStderrRedirect::install(&dir.join(".idealyst").join("dev.log")))
+    } else {
+        None
+    };
 
     // Child handles for cleanup-on-Ctrl-C. Each platform launcher
     // pushes any subprocesses it spawns here; the signal handler
@@ -246,15 +277,16 @@ pub fn run(args: Args) -> Result<()> {
         None
     };
 
-    // In runtime-server mode, start the dev-server once before launching any
-    // platform — all clients connect to the same server. The host
-    // self-execs on source change so we don't need to restart it.
+    // In runtime-server mode (the default), start the dev-server once
+    // before launching any platform — all clients connect to the same
+    // server. The host self-execs on source change so we don't need
+    // to restart it.
     //
     // We point the host at a sentinel file via
     // `IDEALYST_RUNTIME_SERVER_PORT_FILE`; it writes its bound port there so
     // platform launchers (Android in particular) can pick the
     // current port up reliably even when stale mDNS records linger.
-    if args.runtime_server {
+    if !args.local {
         let host_binary = build_runtime_server_host(&dir)?;
         let port_file = aas_port_file(&dir);
         // Clear any stale value from a previous session before
@@ -268,9 +300,13 @@ pub fn run(args: Args) -> Result<()> {
         // hot-patch applied …` chatter (every save!) would otherwise
         // splatter ANSI-escape-unaware bytes onto the same TTY where
         // crossterm is diff-painting the user's app, shredding the
-        // cell grid. Other targets keep inherited stdio so dev-host
-        // logs stay visible in the orchestrator's terminal.
-        if active_targets.contains(&Target::Terminal) {
+        // cell grid. Same reasoning applies to `--interactive`: the
+        // dev-tui panel paints over the same TTY, and inherited
+        // dev-host stdout looks like a panic backtrace once it
+        // interleaves with crossterm's ANSI sequences. Other targets
+        // keep inherited stdio so dev-host logs stay visible in the
+        // orchestrator's terminal.
+        if active_targets.contains(&Target::Terminal) || interactive {
             let log_dir = dir.join(".idealyst");
             let _ = std::fs::create_dir_all(&log_dir);
             let log_path = log_dir.join("dev-host.log");
@@ -386,12 +422,15 @@ pub fn run(args: Args) -> Result<()> {
         let opts = dev_tui::RunOptions {
             project_name,
             targets,
-            runtime_server: args.runtime_server,
+            runtime_server: !args.local,
         };
         // Blocks. host-terminal handles raw mode + alternate screen +
         // stderr redirect for the duration; on quit it restores
         // everything before returning.
-        let _ = dev_tui::run(bus, opts);
+        match dev_tui::run(bus, opts) {
+            Ok(()) => eprintln!("[dev] interactive panel exited cleanly"),
+            Err(e) => eprintln!("[dev] interactive panel errored: {:?}", e),
+        }
 
         // Clean up spawned subprocesses. Mirrors the terminal-target
         // path's drain-and-kill loop below.
@@ -539,10 +578,10 @@ fn launch_target(
 /// runtime-server clients. In local mode it mounts `app()` in
 /// process — same shape as the macOS local path.
 fn launch_terminal(dir: &Path, args: &Args) -> Result<()> {
-    let mode = if args.runtime_server {
-        run_terminal::RunMode::RuntimeServer
-    } else {
+    let mode = if args.local {
         run_terminal::RunMode::Local
+    } else {
+        run_terminal::RunMode::RuntimeServer
     };
     crate::dlog!(
         "dev terminal",
@@ -567,20 +606,22 @@ fn launch_terminal(dir: &Path, args: &Args) -> Result<()> {
 
 /// Web launcher.
 ///
-/// - runtime-server mode: build the wasm bundle with the `dev-hot-reload`
-///   feature, then start `web-dev-host` which serves the bundle +
-///   discovers the runtime-server server via Bonjour + injects
-///   `window.IDEALYST_RUNTIME_SERVER_URL` into served HTML.
-/// - Local mode: build the wasm bundle without `dev-hot-reload`,
-///   then serve via `dev-http::serve_static` with livereload
-///   polling. A file watcher rebuilds the bundle on source change
-///   and bumps the generation counter so the browser reloads.
+/// - runtime-server mode (default): build the wasm bundle with the
+///   `dev-hot-reload` feature, then start `web-dev-host` which serves
+///   the bundle + discovers the runtime-server server via Bonjour +
+///   injects `window.IDEALYST_RUNTIME_SERVER_URL` into served HTML.
+///   Source changes apply as hot-patches; the page survives saves.
+/// - `--local` mode: build the wasm bundle without `dev-hot-reload`,
+///   then serve via `dev-http::serve_static` with livereload polling.
+///   A file watcher rebuilds the bundle on source change and bumps
+///   the generation counter so the browser reloads (full page
+///   reload — state does not survive saves).
 fn launch_web(dir: &Path, args: &Args) -> Result<()> {
     use dev_http::{serve_static, AasContext, ReloadContext};
 
     let source = crate::framework_source::resolve(dir)?;
 
-    if args.runtime_server {
+    if !args.local {
         // ── 1. wasm shim that connects to the runtime-server host ────────────
         if !args.no_build {
             crate::dlog!(
@@ -742,16 +783,15 @@ fn open_url_in_browser(url: &str) {
 /// builds the staticlib (with or without the runtime-server shell feature),
 /// drops it into an Xcode bundle, and launches the simulator.
 ///
-/// Live local-mode hot reload isn't wired yet — `--ios` without
-/// `--aas` does a one-shot build + run; the user restarts when
-/// they want a new build. runtime-server mode is the live path: the dev-server
-/// already handles reload on source change, the iOS app re-renders
-/// automatically.
+/// Default (runtime-server) is the live path: the dev-server handles
+/// reload on source change, the iOS app re-renders automatically.
+/// `--local` does a one-shot build + run; the user restarts when they
+/// want a new build.
 fn launch_ios(dir: &Path, args: &Args) -> Result<()> {
-    let mode = if args.runtime_server {
-        run_ios::RunMode::RuntimeServer
-    } else {
+    let mode = if args.local {
         run_ios::RunMode::Local
+    } else {
+        run_ios::RunMode::RuntimeServer
     };
     crate::dlog!("dev ios", "building + launching simulator (mode: {:?})…", mode);
     let source = crate::framework_source::resolve(dir)?;
@@ -784,10 +824,10 @@ fn launch_ios(dir: &Path, args: &Args) -> Result<()> {
 /// Wi-Fi, runs a `Handler` tick into `drainRuntimeServer`). Local mode keeps
 /// the in-process mount path.
 fn launch_android(dir: &Path, args: &Args) -> Result<()> {
-    let mode = if args.runtime_server {
-        run_android::RunMode::RuntimeServer
-    } else {
+    let mode = if args.local {
         run_android::RunMode::Local
+    } else {
+        run_android::RunMode::RuntimeServer
     };
 
     // In runtime-server mode the Android emulator's QEMU NAT prevents Bonjour
@@ -805,7 +845,7 @@ fn launch_android(dir: &Path, args: &Args) -> Result<()> {
     // (path supplied via `IDEALYST_RUNTIME_SERVER_PORT_FILE` in `run`).
     // Sidesteps macOS's mDNS cache, which often holds onto stale
     // entries from previously-killed hosts.
-    let aas_port = if args.runtime_server {
+    let aas_port = if !args.local {
         read_host_port_file(&aas_port_file(dir), std::time::Duration::from_secs(10))
     } else {
         None
@@ -848,15 +888,15 @@ fn launch_android(dir: &Path, args: &Args) -> Result<()> {
 /// backend's first iteration is local-render only (see
 /// `docs/macos-backend-plan.md`).
 fn launch_macos(dir: &Path, args: &Args, children: Arc<Mutex<Vec<Child>>>) -> Result<()> {
-    let mode = if args.runtime_server {
-        run_macos::RunMode::RuntimeServer
-    } else {
+    let mode = if args.local {
         run_macos::RunMode::Local
-    };
-    let build_mode = if args.runtime_server {
-        build_macos::BuildMode::RuntimeServer
     } else {
+        run_macos::RunMode::RuntimeServer
+    };
+    let build_mode = if args.local {
         build_macos::BuildMode::Local
+    } else {
+        build_macos::BuildMode::RuntimeServer
     };
     crate::dlog!(
         "dev macos",
@@ -1089,7 +1129,7 @@ impl Args {
     fn shallow_clone(&self) -> Self {
         Self {
             dir: self.dir.clone(),
-            runtime_server: self.runtime_server,
+            local: self.local,
             web: self.web,
             ios: self.ios,
             android: self.android,
@@ -1101,6 +1141,75 @@ impl Args {
             no_build: self.no_build,
             bridge_port: self.bridge_port,
             interactive: self.interactive,
+        }
+    }
+}
+
+/// Dup2-based stderr redirect for the duration of an interactive
+/// dev session, installed before any worker thread spawns so cargo
+/// subprocess stderr lands in a file instead of corrupting the TTY
+/// host-terminal is about to paint into.
+///
+/// Mirrors `host_terminal::stderr_redirect::StderrRedirect`. Kept here
+/// (rather than reusing that one) so the CLI doesn't need a public
+/// dependency on host-terminal's internals. On drop, restores the
+/// saved original fd 2 — leaving the inner host-terminal redirect's
+/// own save/restore chain intact when the TUI exits.
+struct EarlyStderrRedirect {
+    #[cfg(unix)]
+    saved_fd: std::os::raw::c_int,
+}
+
+impl EarlyStderrRedirect {
+    fn install(log_path: &Path) -> Self {
+        #[cfg(unix)]
+        unsafe {
+            if let Some(parent) = log_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let saved_fd = libc::dup(libc::STDERR_FILENO);
+            if saved_fd < 0 {
+                return Self { saved_fd: -1 };
+            }
+            let c_path = match std::ffi::CString::new(log_path.to_string_lossy().as_bytes()) {
+                Ok(p) => p,
+                Err(_) => {
+                    libc::close(saved_fd);
+                    return Self { saved_fd: -1 };
+                }
+            };
+            let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC;
+            let mode: libc::mode_t = 0o644;
+            let log_fd = libc::open(c_path.as_ptr(), flags, mode as std::os::raw::c_int);
+            if log_fd < 0 {
+                libc::close(saved_fd);
+                return Self { saved_fd: -1 };
+            }
+            if libc::dup2(log_fd, libc::STDERR_FILENO) < 0 {
+                libc::close(log_fd);
+                libc::close(saved_fd);
+                return Self { saved_fd: -1 };
+            }
+            libc::close(log_fd);
+            Self { saved_fd }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = log_path;
+            Self {}
+        }
+    }
+}
+
+impl Drop for EarlyStderrRedirect {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        unsafe {
+            if self.saved_fd >= 0 {
+                libc::dup2(self.saved_fd, libc::STDERR_FILENO);
+                libc::close(self.saved_fd);
+                self.saved_fd = -1;
+            }
         }
     }
 }

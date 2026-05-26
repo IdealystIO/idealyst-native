@@ -3,10 +3,7 @@
 use std::rc::Rc;
 
 use runtime_core::{ui, Primitive, Signal};
-use idea_ui::{
-    badge, body, btn, card, heading, stack, BadgeKind, BodyTone, ButtonKind, HeadingKind,
-    IntentTag, StackAxis, StackGap,
-};
+use idea_ui::{badge, typography, btn, card, stack, BadgeKind, TypographyTone, ButtonKind, TypographyKind, IntentTag, StackAxis, StackGap};
 
 use crate::shell::page_header;
 
@@ -47,10 +44,10 @@ fn intent_grid() -> Primitive {
     }
     ui! {
         Card {
-            Heading(content = "Built-in intents".to_string(), kind = HeadingKind::H2)
-            Body(content = "Each row pairs a Button (Solid) and a Badge (Soft) for the same \
+            Typography(content = "Built-in intents".to_string(), kind = TypographyKind::H2)
+            Typography(content = "Each row pairs a Button (Solid) and a Badge (Soft) for the same \
                               intent. The intent is shared vocabulary; the kind picks the visual.".to_string(),
-                 tone = BodyTone::Muted)
+                 tone = TypographyTone::Muted)
             Stack(gap = StackGap::Sm) { rows }
         }
     }
@@ -59,12 +56,12 @@ fn intent_grid() -> Primitive {
 fn extension_section() -> Primitive {
     ui! {
         Card {
-            Heading(content = "Adding a custom intent".to_string(), kind = HeadingKind::H2)
-            Body(content = "v1's component props take a built-in `IntentTag` enum directly. \
+            Typography(content = "Adding a custom intent".to_string(), kind = TypographyKind::H2)
+            Typography(content = "v1's component props take a built-in `IntentTag` enum directly. \
                               Custom intents (a `Hype` brand color, a `Beta` flag color) plug in \
                               by implementing `Intent` and `IntentTag::Custom(\"hype\")` — \
                               support for that is a follow-up; for v1 use the seven built-ins.".to_string(),
-                 tone = BodyTone::Muted)
+                 tone = TypographyTone::Muted)
         }
     }
 }

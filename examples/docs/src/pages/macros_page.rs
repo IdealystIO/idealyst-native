@@ -2,10 +2,10 @@
 //! `signal!`, `stylesheet!`, `jsx!`.
 
 use runtime_core::{ui, Primitive};
-use idea_ui::{body, card, heading, BodyTone, HeadingKind};
+use idea_ui::{typography, card, TypographyTone, TypographyKind};
 
 use crate::shell::{
-    code_block, page_body, page_header, section, CodeBlockProps, PageBodyProps, PageHeaderProps,
+    code_block, page_body, page_header, section, CodeBlockProps, PageTypographyProps, PageHeaderProps,
     SectionProps,
 };
 
@@ -18,25 +18,25 @@ pub fn page() -> Primitive {
             )
 
             Card {
-                Heading(content = "`ui!`".to_string(), kind = HeadingKind::H2)
-                Body(
+                Typography(content = "`ui!`".to_string(), kind = TypographyKind::H2)
+                Typography(
                     content = "JSX-shaped DSL for declaring UI trees. Components, control flow \
                                (`if`, `for`, `match`), and pass-through Rust expressions all \
                                compose in a single block. See the UI DSL page for full \
                                syntax.".to_string(),
-                    tone = BodyTone::Muted,
+                    tone = TypographyTone::Muted,
                 )
             }
 
             Card {
-                Heading(content = "`#[component]`".to_string(), kind = HeadingKind::H2)
-                Body(
+                Typography(content = "`#[component]`".to_string(), kind = TypographyKind::H2)
+                Typography(
                     content = "Function attribute that turns `fn foo(props: &FooProps) -> \
                                Primitive` into a callable component. Generates a per-component \
                                invocation macro (`foo!(...)`), wires default values via \
                                `#[component(default(field = expr))]`, and registers the \
                                function in the hot-reload table when that feature is on.".to_string(),
-                    tone = BodyTone::Muted,
+                    tone = TypographyTone::Muted,
                 )
                 CodeBlock(
                     code = "#[derive(Default)]\n\
@@ -48,11 +48,11 @@ pub fn page() -> Primitive {
             }
 
             Card {
-                Heading(content = "`signal!`".to_string(), kind = HeadingKind::H2)
-                Body(
+                Typography(content = "`signal!`".to_string(), kind = TypographyKind::H2)
+                Typography(
                     content = "Shorthand for `Signal::new(value)`. Identical in every way; \
                                just less typing.".to_string(),
-                    tone = BodyTone::Muted,
+                    tone = TypographyTone::Muted,
                 )
                 CodeBlock(
                     code = "let count = signal!(0);\n\
@@ -61,24 +61,24 @@ pub fn page() -> Primitive {
             }
 
             Card {
-                Heading(content = "`stylesheet!`".to_string(), kind = HeadingKind::H2)
-                Body(
+                Typography(content = "`stylesheet!`".to_string(), kind = TypographyKind::H2)
+                Typography(
                     content = "Declares a typed stylesheet over a theme. Generates a builder, \
                                variant enums, state overlays, and an `IntoStyleSource` impl so \
                                the result drops into any `style = ...` slot. See Styles & \
                                Themes for a worked example.".to_string(),
-                    tone = BodyTone::Muted,
+                    tone = TypographyTone::Muted,
                 )
             }
 
             Card {
-                Heading(content = "`jsx!`".to_string(), kind = HeadingKind::H2)
-                Body(
+                Typography(content = "`jsx!`".to_string(), kind = TypographyKind::H2)
+                Typography(
                     content = "A sibling of `ui!` that accepts JSX-style angle-bracket syntax \
                                (`<Stack gap={StackGap::Md}>...</Stack>`). Same primitives, \
                                same reactivity, same control-flow rules — authors pick \
                                whichever feels more natural.".to_string(),
-                    tone = BodyTone::Muted,
+                    tone = TypographyTone::Muted,
                 )
             }
 

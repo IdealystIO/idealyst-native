@@ -218,18 +218,21 @@ pub struct NavigatorInstance {
     /// Active stack — top is the visible screen. Always non-empty
     /// while the navigator exists; `pop` of the only entry is a no-op.
     ///
-    /// In **no-layout mode** every push appends to `stack` and the
-    /// previous entry stays in the DOM (hidden via CSS class) so
-    /// scroll/form state survives navigation. In **layout mode**
-    /// the outlet holds exactly one child — `stack` has exactly
-    /// one entry at all times, and the URL history for "where to
-    /// go back to" is tracked separately in `url_history`.
+    /// Always exactly one entry — the currently-visible screen.
+    /// On push, the previous entry is detached (DOM removed, scope
+    /// released) before the new screen is mounted. On pop, the
+    /// previous URL is pulled from `url_history` and the resulting
+    /// screen is rebuilt fresh via `match_path`. This matches the
+    /// usual SPA convention (React Router, etc.) — back navigation
+    /// rebuilds rather than preserving scroll/form state of an
+    /// off-screen DOM tree. Native stack navigators (UIKit /
+    /// Android) get the opposite via their own platform machinery;
+    /// the web SDK doesn't try to mimic that.
     pub stack: Vec<ScreenEntry>,
-    /// Layout-mode-only: URLs of previously-visited screens, in
-    /// push order (top = most recently navigated away from). On
-    /// pop, the URL is matched back against the route table and
-    /// the resulting screen is rebuilt. In no-layout mode this
-    /// stays empty.
+    /// URLs of previously-visited screens, in push order (top =
+    /// most recently navigated away from). On pop, the top URL is
+    /// matched back against the route table and the resulting
+    /// screen is rebuilt and mounted.
     pub url_history: Vec<String>,
     /// `build_layout` closure, retained across the navigator's
     /// lifetime. The SDK's `build_layout` populates an internal
@@ -276,36 +279,33 @@ impl NavigatorInstance {
         self.outlet.as_ref().unwrap_or(&self.container)
     }
 
-    /// True when a user-supplied layout is in effect. In layout
-    /// mode the outlet holds exactly one child at a time
-    /// (React-Router-style); without a layout, screens stack with
-    /// hide/show classes so their DOM survives push/pop.
+    /// True when a user-supplied layout is in effect. The layout's
+    /// chrome (sidebar, top bar, etc.) wraps the navigator's
+    /// outlet; without a layout, the screen mounts directly into
+    /// the navigator's container with `position: absolute; inset: 0`.
+    /// Mount/unmount lifecycle is the same in both modes — pushes
+    /// detach the previous screen, pops rebuild from `url_history`.
     fn has_layout(&self) -> bool {
         self.outlet.is_some()
     }
 
-    /// Toggle hide/show on stacked screens. Only meaningful in
-    /// no-layout mode; in layout mode the outlet has a single child
-    /// and visibility is moot.
+    /// Mark the currently-visible screen as active. Vestigial now
+    /// that only one screen is mounted at a time — the `ui-nav-active`
+    /// class is left in place as a hook for app-level CSS that
+    /// wants to target the visible screen, but it's no longer
+    /// load-bearing for visibility.
     fn refocus(&self) {
-        if self.has_layout() {
-            return;
-        }
-        for (i, entry) in self.stack.iter().enumerate() {
-            let Ok(elem) = entry.node.clone().dyn_into::<web_sys::Element>() else {
-                continue;
-            };
-            let is_top = i == self.stack.len() - 1;
-            set_class_present(&elem, "ui-nav-hidden", !is_top);
-            set_class_present(&elem, "ui-nav-active", is_top);
+        if let Some(entry) = self.stack.last() {
+            if let Ok(elem) = entry.node.clone().dyn_into::<web_sys::Element>() {
+                set_class_present(&elem, "ui-nav-active", true);
+            }
         }
     }
 
-    /// Drop the current top screen's DOM + scope. Called by
-    /// layout-mode push/pop/replace/reset to clear the outlet
-    /// before mounting the next screen. The popped entry's URL is
-    /// preserved in the caller's local — we only clean up DOM +
-    /// scope here.
+    /// Drop the current top screen's DOM + scope. Called by every
+    /// transition (push/pop/replace/reset) before mounting the next
+    /// screen. The popped entry's URL is preserved in the caller's
+    /// local — we only clean up DOM + scope here.
     fn detach_top(&mut self) -> Option<ScreenEntry> {
         let top = self.stack.pop()?;
         let _ = self.mount_point().remove_child(&top.node);
@@ -357,16 +357,12 @@ impl NavigatorInstance {
         let node = result.node;
         let scope_id = result.scope_id;
         // The `ui-nav-screen` class adds `position:absolute; inset:0`
-        // so stacked screens overlap inside the `.ui-nav-root`
-        // container — the right behavior for no-layout mode, where
-        // the navigator's own div is the positioning context.
-        //
-        // In layout mode the screen is a normal child of the
+        // so the screen fills the `.ui-nav-root` container regardless
+        // of its intrinsic size. Only applied in no-layout mode —
+        // in layout mode the screen is a normal flow child of the
         // outlet (which lives somewhere inside the user's layout
-        // tree). Absolute-positioning to `.ui-nav-root` would
-        // teleport the screen out of the layout's bounds — so we
-        // skip the class entirely and let the screen flow as a
-        // regular block.
+        // tree); absolute-positioning to `.ui-nav-root` would
+        // teleport it out of the layout's bounds.
         if !self.has_layout() {
             Self::stamp_screen_class(&node);
         }
@@ -387,11 +383,10 @@ impl NavigatorInstance {
         (self.depth_changed)(self.logical_depth());
     }
 
-    /// Logical stack depth, including URL-only history entries
-    /// (layout mode). The framework's `depth` signal mirrors this
-    /// so `can_go_back` works regardless of whether previous
-    /// screens have DOM nodes still attached or are pending
-    /// rebuild from URL history.
+    /// Logical stack depth: currently-mounted screen (always 1 once
+    /// a screen is up) + URL history entries waiting to be rebuilt
+    /// on pop. Mirrored into the framework's `depth` signal so
+    /// `can_go_back` works.
     fn logical_depth(&self) -> usize {
         self.stack.len() + self.url_history.len()
     }
@@ -399,14 +394,10 @@ impl NavigatorInstance {
     fn push(&mut self, name: &'static str, params: Box<dyn Any>, url: String) {
         push_state(&url);
         *self.suppress_popstate.borrow_mut() = true;
-        if self.has_layout() {
-            // Layout mode: outlet holds one child at a time.
-            // Remember the URLs we've visited (for pop to rebuild
-            // from) by leaving them in `url_history`. The DOM +
-            // scope of the previous screen are dropped now.
-            if let Some(prev) = self.detach_top() {
-                self.url_history.push(prev.url);
-            }
+        // Drop the previous screen's DOM + scope, preserve its URL
+        // in `url_history` so pop can rebuild it from `match_path`.
+        if let Some(prev) = self.detach_top() {
+            self.url_history.push(prev.url);
         }
         self.mount_internal(name, params, url);
         *self.suppress_popstate.borrow_mut() = false;
@@ -424,11 +415,7 @@ impl NavigatorInstance {
 
     /// True if there's somewhere to go back to.
     fn can_pop(&self) -> bool {
-        if self.has_layout() {
-            !self.url_history.is_empty()
-        } else {
-            self.stack.len() > 1
-        }
+        !self.url_history.is_empty()
     }
 
     /// Pop the top screen without going through history.back. Used
@@ -437,23 +424,17 @@ impl NavigatorInstance {
         if !self.can_pop() {
             return;
         }
-        if self.has_layout() {
-            // Layout mode: outlet currently shows the active
-            // screen. Pop the previous URL off the history, drop
-            // the active screen, re-match the URL against the
-            // route table, and mount the result.
-            self.detach_top();
-            let prev_url = match self.url_history.pop() {
-                Some(u) => u,
-                None => return,
-            };
-            if let Some((name, params)) = (self.match_path)(&prev_url) {
-                self.mount_internal(name, params, prev_url);
-            }
-        } else {
-            self.detach_top();
-            self.refocus();
-            (self.depth_changed)(self.logical_depth());
+        // Drop the active screen, pop the previous URL off the
+        // history, re-match it against the route table, and mount
+        // the result. Previous screen state is NOT preserved — the
+        // rebuild produces a fresh subtree.
+        self.detach_top();
+        let prev_url = match self.url_history.pop() {
+            Some(u) => u,
+            None => return,
+        };
+        if let Some((name, params)) = (self.match_path)(&prev_url) {
+            self.mount_internal(name, params, prev_url);
         }
     }
 
@@ -480,65 +461,43 @@ impl NavigatorInstance {
 
     /// Called from the global `popstate` handler. Reconciles the
     /// current URL with our internal navigation state.
+    ///
+    /// Only one screen is mounted at a time; `url_history` tracks
+    /// where we've been so back navigation can rebuild. If
+    /// `current` matches a URL in `url_history`, the user hit back
+    /// — pop down to that URL. Otherwise they navigated forward,
+    /// push the new URL.
     fn on_popstate(&mut self) {
         if *self.suppress_popstate.borrow() {
             return;
         }
         let current = current_pathname();
 
-        if self.has_layout() {
-            // Layout mode: outlet has one active screen; the URL
-            // we navigated *from* sits at the top of url_history.
-            // If `current` matches a URL in url_history, the user
-            // hit back N times — pop down to that URL. Otherwise
-            // they navigated forward to a new URL, push it.
-            let pos = self
-                .url_history
-                .iter()
-                .rposition(|u| paths_equal(u, &current));
-            if let Some(idx) = pos {
-                // Drop the active screen, drop history entries
-                // above `idx`, mount the entry at `idx`.
-                self.detach_top();
-                let prev_url = self.url_history.remove(idx);
-                // Anything between idx and the end is now skipped
-                // — discard those entries too (the user could only
-                // skip forward to them via a `go(n)`-like call,
-                // which the browser collapses into a single
-                // popstate fire).
-                self.url_history.truncate(idx);
-                if let Some((name, params)) = (self.match_path)(&prev_url) {
-                    self.mount_internal(name, params, prev_url);
-                }
-                return;
-            }
-            // Forward navigation we haven't seen. Detach the
-            // current top, mount the new URL. The current URL
-            // goes into history.
-            if let Some((name, params)) = (self.match_path)(&current) {
-                if let Some(prev) = self.detach_top() {
-                    self.url_history.push(prev.url);
-                }
-                self.mount_internal(name, params, current);
-            }
-            return;
-        }
-
-        // No-layout mode: walk the visible stack and pop down to
-        // the matching URL if found.
-        let target_index = self
-            .stack
+        let pos = self
+            .url_history
             .iter()
-            .rposition(|entry| paths_equal(&entry.url, &current));
-        if let Some(idx) = target_index {
-            while self.stack.len() > idx + 1 {
-                self.pop_in_place();
+            .rposition(|u| paths_equal(u, &current));
+        if let Some(idx) = pos {
+            // Drop the active screen, drop history entries above
+            // `idx`, mount the entry at `idx`. Anything between
+            // idx and the end is skipped — the user could only
+            // reach those via a `go(n)`-like call, which the
+            // browser collapses into a single popstate fire.
+            self.detach_top();
+            let prev_url = self.url_history.remove(idx);
+            self.url_history.truncate(idx);
+            if let Some((name, params)) = (self.match_path)(&prev_url) {
+                self.mount_internal(name, params, prev_url);
             }
             return;
         }
-        // Unknown URL — forward navigation. Mount it as a fresh
-        // push.
+        // Forward navigation we haven't seen. Detach the current
+        // top, mount the new URL. The previous URL goes into
+        // history.
         if let Some((name, params)) = (self.match_path)(&current) {
+            if let Some(prev) = self.detach_top() {
+                self.url_history.push(prev.url);
+            }
             self.mount_internal(name, params, current);
         }
     }
@@ -879,7 +838,15 @@ pub fn create_drawer(
                         return;
                     }
                 }
-                instance.borrow_mut().replace(name, params, url.clone());
+                // `push` (not `replace`) so the browser back button
+                // walks back through visited screens. The drawer's
+                // structural model is "tabs-style" (one active
+                // screen + persistent sidebar), but on web the URL
+                // bar is real and users expect the back button to
+                // work. Without a real history entry the back
+                // button skips the entire site and goes to the
+                // previous origin.
+                instance.borrow_mut().push(name, params, url.clone());
                 active_changed(name, url);
                 // Auto-close the drawer on selection. The is_open
                 // signal is what the author's layout subscribes
@@ -916,14 +883,31 @@ pub fn create_drawer(
                     }
                 }
             }
-            NavCommand::Push { .. }
-            | NavCommand::Pop
-            | NavCommand::Replace { .. } => {
-                panic!(
-                    "DrawerNavigator received an unsupported NavCommand — \
-                     drawer accepts Select + Custom(DrawerCmd) (and \
-                     Reset for go-home)"
-                );
+            // Explicit author overrides via `Link.kind(NavKind::X)`.
+            // The drawer's default Link activation is `Select` (above)
+            // which already does the equivalent of `Push`; these arms
+            // exist so authors who want non-default semantics on a
+            // per-link basis aren't blocked by an SDK that refuses
+            // to honor their choice.
+            NavCommand::Push { name, url, params, .. } => {
+                instance.borrow_mut().push(name, params, url.clone());
+                active_changed(name, url);
+                is_open.set(false);
+                open_changed(false);
+            }
+            NavCommand::Replace { name, url, params, .. } => {
+                instance.borrow_mut().replace(name, params, url.clone());
+                active_changed(name, url);
+                is_open.set(false);
+                open_changed(false);
+            }
+            NavCommand::Pop => {
+                // "Back" gesture from author code (`nav.pop()` /
+                // `Link.kind(Pop)` if anyone ever wires that). The
+                // drawer rebuilds the previous URL from
+                // `url_history`, same flow as the browser back
+                // button hitting popstate.
+                instance.borrow_mut().pop_in_place();
             }
         }));
     });
@@ -1200,7 +1184,7 @@ thread_local! {
     /// reused — release frees the entry but the id is gone.
     pub static NEXT_NAVIGATOR_ID: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     /// `true` once the navigator's CSS (`.ui-nav-root`,
-    /// `.ui-nav-screen`, `.ui-nav-hidden`) has been injected into
+    /// `.ui-nav-screen`, `.ui-nav-drawer-*`) has been injected into
     /// `<head>` once for the page's lifetime.
     static NAVIGATOR_CSS_INJECTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -1244,8 +1228,9 @@ fn ensure_navigator_css(_b: &mut WebBackend) {
         if injected.get() {
             return;
         }
-        // `.ui-nav-root` — plain stack navigator container (single
-        // child stack of `.ui-nav-screen`s).
+        // `.ui-nav-root` — plain stack navigator container. Holds
+        // exactly one `.ui-nav-screen` at a time; navigation
+        // unmounts the previous and mounts the new.
         //
         // `.ui-nav-drawer-root` — drawer navigator on web pins the
         // sidebar to the left and the body (the screen outlet) takes
@@ -1253,9 +1238,18 @@ fn ensure_navigator_css(_b: &mut WebBackend) {
         // divs: `.ui-nav-drawer-sidebar` and `.ui-nav-drawer-body`.
         // Screens mount into the body, which is reused as the
         // navigator's outlet.
+        //
+        // `!important` on `.ui-nav-screen`'s position+inset: this
+        // stylesheet is injected at navigator-init time, BEFORE any
+        // framework per-node rule emitted by `rules_to_css`. If a
+        // screen's root view sets `position` in its own stylesheet,
+        // source order would win against the navigator and the
+        // screen would lose its full-bleed absolute placement.
+        // `!important` is the targeted defense — `.ui-nav-screen`
+        // is a navigator-controlled invariant, not a styling
+        // suggestion.
         let css = ".ui-nav-root{position:relative;width:100%;height:100%;}\
-                   .ui-nav-screen{position:absolute;inset:0;width:100%;height:100%;}\
-                   .ui-nav-hidden{display:none;}\
+                   .ui-nav-screen{position:absolute!important;inset:0!important;width:100%;height:100%;}\
                    .ui-nav-drawer-root{display:flex;flex-direction:row;width:100%;height:100%;}\
                    .ui-nav-drawer-sidebar{flex:0 0 auto;height:100%;overflow-y:auto;}\
                    .ui-nav-drawer-body{flex:1 1 auto;position:relative;height:100%;overflow:hidden;}";

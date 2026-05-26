@@ -6,7 +6,7 @@
 //! ```ignore
 //! ui! {
 //!     Stack(axis = StackAxis::Row) {
-//!         Heading(content = "Title".to_string())
+//!         Typography(content = "Title".to_string(), kind = TypographyKind::H1)
 //!         Spacer()
 //!         Pressable(label = "Save".to_string(), on_click = on_save)
 //!     }

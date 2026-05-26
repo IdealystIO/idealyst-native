@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+    <base href="/" />
+    <title>Idealyst — One Rust codebase, every platform</title>
+    <style>
+      html, body, #app { height: 100%; margin: 0; }
+      /*
+       * Body background is set by the app on mount and re-synced
+       * whenever the theme swaps (see `sync_body_background_to_theme`
+       * in src/lib.rs). The initial value here matches the light
+       * theme's `color-background` so first paint doesn't flash a
+       * different color before the effect runs.
+       */
+      body {
+        background: #f7f8fb;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", sans-serif;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      import init from "/pkg/website.js";
+      init();
+    </script>
+  </body>
+</html>

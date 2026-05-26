@@ -1,0 +1,134 @@
+[package]
+name = "esp32-ili9341"
+version = "0.0.1"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+# ESP32-C3 firmware that drives the `backend-cpu` software
+# rasterizer against an ILI9341 SPI display. Intended to be run in
+# the Wokwi simulator OR on a physical ESP32-C3 + ILI9341 panel
+# wired per the pin map in src/main.rs.
+#
+# This crate is intentionally OUTSIDE the root workspace — its
+# target triple (`riscv32imc-esp-espidf`), profile settings, and
+# build script wiring conflict with the host workspace. The root
+# `Cargo.toml` excludes it; building requires `cd`ing here first.
+#
+# See README.md for the toolchain install + simulator launch.
+
+[[bin]]
+name = "esp32-ili9341"
+path = "src/main.rs"
+
+# `embuild` reads the ESP-IDF link args that `esp-idf-sys`'s
+# build script stashed in env vars and re-emits them as
+# `cargo:rustc-link-arg=` for our binary. Without `build.rs`
+# + this build-dep, `ldproxy` is invoked with no arguments and
+# panics ("Cannot locate argument '--ldproxy-linker <linker>'").
+[build-dependencies]
+embuild = "0.33"
+
+[dependencies]
+# Idealyst CPU rasterizer + framework runtime. `default-features =
+# false` keeps the desktop `preview` feature (winit + softbuffer)
+# out of the embedded dep graph.
+backend-cpu  = { path = "../../crates/backend/cpu", default-features = false }
+runtime-core = { path = "../../crates/runtime/core" }
+
+# ESP-IDF Rust bindings + standard-library wrapper.
+# `esp-idf-svc` brings in `esp-idf-sys` + a `std`-compatible
+# runtime built on top of FreeRTOS.
+#
+# Pinning `0.51+` is load-bearing: older releases pulled in
+# `embuild 0.32`, which unconditionally added `--target=riscv32-none`
+# to `CMAKE_C_FLAGS` (a clang-only flag) even when the installed
+# toolchain is GCC. GCC rejects the flag and the C SDK never even
+# starts compiling. `embuild 0.33+` (shipped with `esp-idf-svc 0.51`)
+# detects GCC and omits the flag.
+esp-idf-svc = { version = "0.51", features = ["embassy-sync", "critical-section"] }
+esp-idf-hal = "0.45"
+
+# `esp-idf-sys` declared as a DIRECT dep even though we don't `use`
+# any of its symbols ourselves — it's already pulled transitively
+# by `esp-idf-svc`/`esp-idf-hal`. The direct dep matters because
+# `esp-idf-sys`'s build script emits `cargo:rustc-link-arg=` for
+# the ldproxy linker (`--ldproxy-linker`, the ESP-IDF link script,
+# the wrapped IDF static libs, etc.). Cargo only propagates those
+# directives to packages that *directly* depend on the emitting
+# crate. Without this line, ldproxy gets called with no args and
+# panics with "Cannot locate argument '--ldproxy-linker <linker>'".
+esp-idf-sys = "0.36"
+
+# Display driver — supports ILI9341, ST7789, ST7735, GC9A01 and a
+# handful of others through the same `mipidsi::Builder` API.
+mipidsi = "0.8"
+
+# SPI <-> display-interface adapter. `mipidsi` is generic over the
+# transport; we wrap the ESP-IDF SPI device driver in this to give
+# the display its byte-pipe.
+display-interface-spi = "0.5"
+
+# `display-interface` (the trait crate) and `embedded-hal` (the
+# generic HAL traits — `OutputPin` etc.) are pulled in transitively
+# by `mipidsi`, but the Rust 2021 namespace rules require a direct
+# dep declaration before we can `use` their items in our own code
+# (otherwise rustc errors with "use of unresolved module"). They
+# pin to the same versions mipidsi 0.8 itself depends on so cargo
+# resolves a single copy.
+display-interface = "0.5"
+embedded-hal = "1"
+
+# Provides the `Rgb565` color + `DrawTarget` trait that our
+# `Surface` impl bridges into.
+embedded-graphics = "0.8"
+
+# Pretty error reporting for `main`'s `?` operator.
+anyhow = "1"
+log = "0.4"
+
+# ESP32-C3 build profile — release mode is essential because the
+# debug build of esp-idf alone exceeds the chip's flash budget.
+# `opt-level = "z"` matches the workspace default and keeps the
+# binary small enough to OTA-update later.
+#
+# `lto = false` is load-bearing: with LTO on, rustc emits LLVM IR
+# bitcode in the rlib object files (`*.rcgu.o`) instead of ELF
+# objects. The ESP cross-linker `riscv32-esp-elf-ld` doesn't know
+# how to read LLVM bitcode and bails with "file format not
+# recognized: libcompiler_builtins-*.rlib". Enabling LTO here
+# would require also setting up rustc's linker-plugin LTO with
+# `liblto_plugin.so`, which the espup toolchain doesn't ship.
+[profile.release]
+opt-level = "z"
+lto = false
+codegen-units = 1
+debug = false
+overflow-checks = false
+
+[profile.dev]
+debug = true
+opt-level = "z"  # required even in dev — see profile.release notes
+lto = false
+
+# Keep cargo from descending into the workspace above us. Without
+# this, cargo walks up to the root `Cargo.toml`, picks up its
+# workspace settings, and gets confused by the target-triple
+# mismatch (workspace is host-only; this crate is RISC-V).
+[workspace]
+
+# `esp-idf-sys` build configuration. Intentionally LEFT EMPTY so
+# the crate uses its own internal default ESP-IDF version, which
+# is kept in sync with the C-toolchain `espup install` ships.
+#
+# Pinning an explicit `esp_idf_version = "v5.1.4"` (or any other
+# specific version) is a footgun: a mismatched IDF + GCC pair
+# emits clang-only CMake flags (`--target=riscv32-none`) that GCC
+# 12.2 rejects with "unrecognized command-line option". The
+# crate's default IDF version is co-released with each esp-idf-sys
+# version and tested against the matching toolchain, so leaving
+# it unpinned is the path of least friction.
+#
+# If you NEED to pin (e.g. to test against a specific IDF patch),
+# also pin the toolchain via `espup install --esp-idf-version`
+# so the two stay in lockstep.
+[package.metadata.esp-idf-sys]

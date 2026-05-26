@@ -1,0 +1,44 @@
+[package]
+name = "backend-cpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# CPU-rasterizer backend for `runtime_core::Backend`. Paints the
+# framework's primitive tree into a pixel framebuffer using a
+# pure-Rust software rasterizer. Output goes through the `Surface`
+# trait so the same backend can drive an in-memory buffer (tests,
+# headless), a desktop preview window (winit/softbuffer), an ESP32
+# SPI display, or any `embedded-graphics` target.
+#
+# No GPU, no native toolkit, no `std`-only deps in the hot path —
+# designed so that swapping `HashMap` for a small-allocator-friendly
+# alternative is the only surgery needed to compile against ESP32's
+# `esp-idf-hal` (still requires `std` via esp-idf, but heap pressure
+# is bounded).
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+default = []
+# `preview` pulls in the desktop windowing stack (winit + softbuffer)
+# so the `preview` example can live inside this crate without
+# polluting the embedded / no-window build path. Embedded targets
+# (ESP32, etc.) keep `default-features = false` to avoid bringing
+# the windowing libs into their dep graph.
+preview = ["dep:winit", "dep:softbuffer", "dep:pico-args"]
+
+[dependencies]
+runtime-core = { workspace = true }
+runtime-layout = { workspace = true }
+
+# Optional — desktop preview only.
+winit = { version = "0.30", optional = true }
+softbuffer = { version = "0.4", optional = true }
+pico-args = { version = "0.5", optional = true }
+
+[[example]]
+name = "preview"
+path = "examples/preview.rs"
+required-features = ["preview"]
