@@ -449,7 +449,7 @@ impl Backend for LinuxBackend {
     fn create_scroll_view(
         &mut self,
         horizontal: bool,
-        _on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
+        on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
         let scrolled = gtk4::ScrolledWindow::new();
@@ -469,6 +469,40 @@ impl Backend for LinuxBackend {
         // downcast-to-ScrolledWindow branch.
         let inner = gtk4::Fixed::new();
         scrolled.set_child(Some(&inner));
+
+        // Wire `on_scroll` via the ScrolledWindow's adjustments.
+        // GTK4 exposes one `gtk::Adjustment` per axis (`hadjustment` /
+        // `vadjustment`); the `value-changed` signal fires whenever
+        // the adjustment's `value` (the scroll offset, in widget
+        // coordinates) changes \u{2014} touchpad scroll, scroll bar
+        // drag, programmatic `set_value`, all of them.
+        //
+        // We connect to BOTH axes regardless of `horizontal` so the
+        // callback observes the disabled axis too (it stays at 0
+        // there, matching every other backend). The closure is
+        // cloned per signal since GTK's connect API takes `Fn` by
+        // ownership and we attach twice.
+        if let Some(cb) = on_scroll {
+            use gtk4::prelude::*;
+            let cb_for_h = cb.clone();
+            let scrolled_for_h = scrolled.clone();
+            scrolled
+                .hadjustment()
+                .connect_value_changed(move |adj| {
+                    let x = adj.value() as f32;
+                    let y = scrolled_for_h.vadjustment().value() as f32;
+                    cb_for_h(x, y);
+                });
+            let scrolled_for_v = scrolled.clone();
+            scrolled
+                .vadjustment()
+                .connect_value_changed(move |adj| {
+                    let x = scrolled_for_v.hadjustment().value() as f32;
+                    let y = adj.value() as f32;
+                    cb(x, y);
+                });
+        }
+
         self.wrap(scrolled.upcast::<gtk4::Widget>())
     }
 

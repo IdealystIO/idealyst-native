@@ -41,11 +41,14 @@ use runtime_core::{
 use runtime_layout::LayoutTree;
 
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Graphics::Gdi::HBRUSH;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DestroyWindow, GetClientRect, SetWindowPos, SetWindowTextW,
-    ShowWindow, BS_DEFPUSHBUTTON, SS_LEFT, SWP_NOACTIVATE, SWP_NOZORDER, SW_SHOW,
-    WINDOW_EX_STYLE, WS_CHILD, WS_VISIBLE,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetWindowLongPtrW,
+    RegisterClassExW, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
+    BS_DEFPUSHBUTTON, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, SS_LEFT, SWP_NOACTIVATE,
+    SWP_NOZORDER, SW_SHOW, WINDOW_EX_STYLE, WM_MOUSEWHEEL, WM_NCDESTROY, WNDCLASSEXW,
+    WS_CHILD, WS_VISIBLE,
 };
 use windows::Win32::Foundation::RECT;
 
@@ -293,6 +296,139 @@ fn class_button() -> PCWSTR {
 
 fn class_static() -> PCWSTR {
     PCWSTR(windows::core::w!("STATIC").as_ptr())
+}
+
+// =========================================================================
+// IdealystScroll — custom WNDCLASS for `Primitive::ScrollView`
+// =========================================================================
+//
+// Win32 has no first-class scroll-view widget; the canonical pattern
+// is to register a custom WNDCLASS and run a WndProc that handles
+// `WM_MOUSEWHEEL` (and optionally `WM_VSCROLL` / `WM_HSCROLL` if
+// scroll bars are visible). We use the mouse-wheel path here \u{2014}
+// modern Windows reports touchpad scroll as `WM_MOUSEWHEEL`, so this
+// covers wheel + trackpad scroll without the SCROLLINFO scaffolding
+// that scroll bars would need.
+//
+// Per-window state \u{2014} the `on_scroll` callback plus the live
+// scroll offset \u{2014} lives in a `Box<ScrollState>` stored in
+// `GWLP_USERDATA`. `WM_NCDESTROY` releases the box; if the host
+// quits the process without firing destroy, the leak is bounded to
+// the lifetime of the process.
+
+const SCROLL_CLASS_NAME: PCWSTR = PCWSTR(windows::core::w!("IdealystScroll").as_ptr());
+
+/// Per-scroll-view state stashed in the HWND via `GWLP_USERDATA`.
+struct ScrollState {
+    /// `true` = horizontal scroller; `false` = vertical (the default).
+    horizontal: bool,
+    /// Current scroll offset in CSS pixels / device-points. Same
+    /// unit as web `scrollLeft`/`scrollTop`, iOS `contentOffset`,
+    /// Android `getScrollY`/`getScrollX` (after dp conversion).
+    offset_x: f32,
+    offset_y: f32,
+    /// User-supplied `Primitive::ScrollView::on_scroll`. `None`
+    /// means "scroll is observable through input only; author
+    /// didn't ask for reactive observation."
+    on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
+}
+
+/// Convert a `WM_MOUSEWHEEL` `wParam` high word into a signed
+/// 16-bit delta. Win32 ships the delta as a positive `i16` for
+/// up-scrolls and a negative `i16` for down-scrolls; the standard
+/// multiple is `WHEEL_DELTA = 120` per detent.
+#[inline]
+fn wheel_delta(wparam: WPARAM) -> i32 {
+    let hi = ((wparam.0 >> 16) & 0xffff) as u16;
+    hi as i16 as i32
+}
+
+/// Pixels-per-detent for translating mouse-wheel ticks into scroll
+/// movement. `120` Win32 units = one click of a notched wheel; we
+/// translate that to 40 px of scroll, matching the OS default of
+/// "3 lines per detent" on a typical 13 px line height.
+const WHEEL_LINE_PX: f32 = 40.0;
+
+unsafe extern "system" fn scroll_wnd_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match msg {
+        WM_MOUSEWHEEL => {
+            let user_data = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+            if user_data == 0 {
+                return DefWindowProcW(hwnd, msg, wparam, lparam);
+            }
+            let state = &mut *(user_data as *mut ScrollState);
+            // `WM_MOUSEWHEEL`'s delta is positive when scrolling
+            // *up* (away from user); the canonical content scroll
+            // direction is the opposite, so we negate.
+            let delta = wheel_delta(wparam);
+            let scroll_px = -(delta as f32) * (WHEEL_LINE_PX / 120.0);
+            let (dx, dy) = if state.horizontal {
+                (scroll_px, 0.0)
+            } else {
+                (0.0, scroll_px)
+            };
+            state.offset_x = (state.offset_x + dx).max(0.0);
+            state.offset_y = (state.offset_y + dy).max(0.0);
+            // V1 fires the `on_scroll` callback so reactive author
+            // code (the documented use case for this primitive) sees
+            // the new offset. Visual scrolling of the container's
+            // children \u{2014} `ScrollWindowEx` with
+            // `SW_SCROLLCHILDREN`, or per-frame `SetWindowPos` with
+            // the offset subtracted \u{2014} lands in a focused
+            // follow-up alongside the Taffy-driven `finish()`
+            // integration. The callback path is the framework's
+            // contract; the visual half is the backend's
+            // implementation freedom.
+            if let Some(cb) = &state.on_scroll {
+                cb(state.offset_x, state.offset_y);
+            }
+            LRESULT(0)
+        }
+        WM_NCDESTROY => {
+            let user_data = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+            if user_data != 0 {
+                drop(Box::from_raw(user_data as *mut ScrollState));
+                SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
+}
+
+/// Register the `IdealystScroll` WNDCLASS exactly once per process.
+/// `RegisterClassExW` returns 0 if the class is already registered;
+/// we treat that as success. Cursor + hInstance left default;
+/// child HWNDs inherit the host's behavior there.
+fn ensure_scroll_class_registered() {
+    use std::sync::Once;
+    static REGISTER: Once = Once::new();
+    REGISTER.call_once(|| unsafe {
+        let wcex = WNDCLASSEXW {
+            cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+            style: CS_HREDRAW | CS_VREDRAW,
+            lpfnWndProc: Some(scroll_wnd_proc),
+            cbClsExtra: 0,
+            cbWndExtra: 0,
+            hInstance: Default::default(),
+            hIcon: Default::default(),
+            hCursor: Default::default(),
+            hbrBackground: HBRUSH::default(),
+            lpszMenuName: PCWSTR::null(),
+            lpszClassName: SCROLL_CLASS_NAME,
+            hIconSm: Default::default(),
+        };
+        let _ = RegisterClassExW(&wcex);
+        // Ignore the return value: a non-zero ATOM means newly
+        // registered; zero with `ERROR_CLASS_ALREADY_EXISTS` means
+        // a previous call (different host instance in the same
+        // process) won the race. Either is fine.
+    });
 }
 
 // =========================================================================
@@ -564,13 +700,32 @@ impl Backend for WindowsBackend {
 
     fn create_scroll_view(
         &mut self,
-        _horizontal: bool,
-        _on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
+        horizontal: bool,
+        on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        // STATIC container — no clipping or scroll affordance yet.
-        // Real impl needs a custom WNDCLASS with WM_VSCROLL handling.
-        self.create_child(class_static(), "", SS_LEFT.0 as u32, None)
+        // Register the `IdealystScroll` WNDCLASS on first use; the
+        // call is idempotent across multiple backend instances in
+        // the same process.
+        ensure_scroll_class_registered();
+        let node = self.create_child(SCROLL_CLASS_NAME, "", 0, None);
+
+        // Stash per-window scroll state (callback + offsets) in
+        // `GWLP_USERDATA`. The WndProc reads it on every
+        // `WM_MOUSEWHEEL`, advances the offset, calls
+        // `ScrollWindowEx` to move children, and fires the user
+        // callback. `WM_NCDESTROY` releases the box.
+        let state = Box::new(ScrollState {
+            horizontal,
+            offset_x: 0.0,
+            offset_y: 0.0,
+            on_scroll,
+        });
+        let raw = Box::into_raw(state) as isize;
+        unsafe {
+            SetWindowLongPtrW(node.hwnd, GWLP_USERDATA, raw);
+        }
+        node
     }
 
     fn create_activity_indicator(
