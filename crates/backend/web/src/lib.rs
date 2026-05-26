@@ -1841,9 +1841,10 @@ impl Backend for WebBackend {
     fn create_scroll_view(
         &mut self,
         horizontal: bool,
+        on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        let node = primitives::scroll_view::create(self, horizontal);
+        let node = primitives::scroll_view::create(self, horizontal, on_scroll);
         // ScrollView has no first-class ARIA role — it's a generic
         // container; the platform handles scroll affordances. Author
         // can override.

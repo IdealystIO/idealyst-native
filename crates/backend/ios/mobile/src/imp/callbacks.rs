@@ -3,7 +3,7 @@ use objc2::encode::{Encode, Encoding};
 use objc2::rc::Retained;
 use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
 use objc2_foundation::{CGFloat, MainThreadMarker, NSObject, NSRange, NSString};
-use objc2_ui_kit::{UITextField, UITextView, UIView};
+use objc2_ui_kit::{UIScrollView, UITextField, UITextView, UIView};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -585,5 +585,58 @@ impl TextKeyDelegate {
             KeyOutcome::PreventDefault => false,
             KeyOutcome::Default => true,
         }
+    }
+}
+
+// =========================================================================
+// ScrollDelegate — UIScrollViewDelegate bridge for `on_scroll`
+// =========================================================================
+//
+// Bridges `UIScrollViewDelegate::scrollViewDidScroll:` into a Rust
+// closure. The framework's `create_scroll_view` retains one delegate
+// per scroll view; UIKit calls `scrollViewDidScroll:` on every
+// `contentOffset` change (touch-driven, programmatic, or rubber-band
+// settle).
+
+pub(crate) struct ScrollDelegateIvars {
+    callback: RefCell<Option<Rc<dyn Fn(f32, f32)>>>,
+}
+
+declare_class!(
+    pub(crate) struct ScrollDelegate;
+
+    unsafe impl ClassType for ScrollDelegate {
+        type Super = NSObject;
+        type Mutability = mutability::InteriorMutable;
+        const NAME: &'static str = "IdealystScrollDelegate";
+    }
+
+    impl DeclaredClass for ScrollDelegate {
+        type Ivars = ScrollDelegateIvars;
+    }
+
+    unsafe impl ScrollDelegate {
+        #[method(scrollViewDidScroll:)]
+        fn scroll_view_did_scroll(&self, scroll_view: &UIScrollView) {
+            let ivars = self.ivars();
+            if let Some(cb) = ivars.callback.borrow().as_ref() {
+                let offset: objc2_foundation::CGPoint =
+                    unsafe { msg_send![scroll_view, contentOffset] };
+                cb(offset.x as f32, offset.y as f32);
+            }
+        }
+    }
+);
+
+impl ScrollDelegate {
+    pub(crate) fn new(
+        mtm: MainThreadMarker,
+        callback: Rc<dyn Fn(f32, f32)>,
+    ) -> Retained<Self> {
+        let this = mtm.alloc::<Self>();
+        let this = this.set_ivars(ScrollDelegateIvars {
+            callback: RefCell::new(Some(callback)),
+        });
+        unsafe { msg_send_id![super(this), init] }
     }
 }

@@ -1346,8 +1346,18 @@ impl Backend for WireRecordingBackend {
     fn create_scroll_view(
         &mut self,
         horizontal: bool,
+        _on_scroll: Option<std::rc::Rc<dyn Fn(f32, f32)>>,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
+        // `on_scroll` cannot cross the wire to a client \u{2014} the
+        // callback is a Rust closure with no serialized representation.
+        // For runtime-server mode the user's `on_scroll` is accepted
+        // but never fires; a future wire-protocol extension can
+        // surface client-side scroll positions back to the server
+        // for the user-callback dispatch. Sticky positioning
+        // (`Position::Sticky`) renders correctly on the client
+        // because the client backend handles scroll observation
+        // locally; this gap is purely the user-facing `on_scroll`.
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
         let wire_a11y = state.wire_a11y(a11y);

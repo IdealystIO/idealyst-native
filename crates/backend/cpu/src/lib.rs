@@ -763,6 +763,7 @@ impl Backend for CpuBackend {
     fn create_scroll_view(
         &mut self,
         horizontal: bool,
+        _on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
         let node = self.alloc_node(NodeKind::ScrollView, String::new());

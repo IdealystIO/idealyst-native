@@ -779,8 +779,14 @@ impl Backend for TerminalBackend {
     fn create_scroll_view(
         &mut self,
         horizontal: bool,
+        _on_scroll: Option<std::rc::Rc<dyn Fn(f32, f32)>>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
+        // Terminal renders content statically — there's no native
+        // scroll affordance, so `on_scroll` is accepted but never
+        // fires. Matches the rest of the terminal backend's
+        // "structurally present, behaviourally inert" model for
+        // scroll-related primitives.
         let node = self.alloc_node(NodeKind::ScrollView, String::new());
         let layout = self.nodes.get(&node.id).map(|d| d.layout);
         if let Some(d) = self.nodes.get_mut(&node.id) {

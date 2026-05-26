@@ -1,6 +1,6 @@
 //! Install the CLI — prerequisites, install command, verify, per-platform tooling.
 
-use runtime_core::{ui, Primitive};
+use runtime_core::{ui, Primitive, Ref, ViewHandle};
 use idea_ui::{stack, typography, StackGap, TypographyKind};
 
 use crate::pages::common::{code_panel, page_header, page_section};
@@ -8,20 +8,20 @@ use crate::routes::QUICKSTART_ROUTE;
 use crate::shell::{layout_with_toc, TocEntry};
 
 pub fn page() -> Primitive {
-    const PREREQS: &str = "prerequisites";
-    const INSTALL: &str = "install";
-    const VERIFY: &str = "verify";
-    const PER_PLATFORM: &str = "per-platform";
-    const DOCTOR: &str = "doctor";
-    const NEXT: &str = "next-steps";
+    let prereqs: Ref<ViewHandle> = Ref::new();
+    let install_ref: Ref<ViewHandle> = Ref::new();
+    let verify_ref: Ref<ViewHandle> = Ref::new();
+    let per_platform_ref: Ref<ViewHandle> = Ref::new();
+    let doctor_ref: Ref<ViewHandle> = Ref::new();
+    let next_ref: Ref<ViewHandle> = Ref::new();
 
     let toc = vec![
-        TocEntry { id: PREREQS, label: "Prerequisites" },
-        TocEntry { id: INSTALL, label: "Install" },
-        TocEntry { id: VERIFY, label: "Verify" },
-        TocEntry { id: PER_PLATFORM, label: "Per-platform tooling" },
-        TocEntry { id: DOCTOR, label: "Diagnose with doctor" },
-        TocEntry { id: NEXT, label: "Next steps" },
+        TocEntry { handle: prereqs, label: "Prerequisites" },
+        TocEntry { handle: install_ref, label: "Install" },
+        TocEntry { handle: verify_ref, label: "Verify" },
+        TocEntry { handle: per_platform_ref, label: "Per-platform tooling" },
+        TocEntry { handle: doctor_ref, label: "Diagnose with doctor" },
+        TocEntry { handle: next_ref, label: "Next steps" },
     ];
 
     let content = ui! {
@@ -32,12 +32,12 @@ pub fn page() -> Primitive {
                  running the dev server, building per-platform releases, and \
                  diagnosing your toolchain. It's installed from source via cargo."
             ) }
-            { page_section(PREREQS, vec![prerequisites()]) }
-            { page_section(INSTALL, vec![install()]) }
-            { page_section(VERIFY, vec![verify()]) }
-            { page_section(PER_PLATFORM, vec![per_platform()]) }
-            { page_section(DOCTOR, vec![doctor()]) }
-            { page_section(NEXT, vec![next_steps()]) }
+            { page_section(prereqs, vec![prerequisites()]) }
+            { page_section(install_ref, vec![install()]) }
+            { page_section(verify_ref, vec![verify()]) }
+            { page_section(per_platform_ref, vec![per_platform()]) }
+            { page_section(doctor_ref, vec![doctor()]) }
+            { page_section(next_ref, vec![next_steps()]) }
         }
     };
     layout_with_toc(content, toc)

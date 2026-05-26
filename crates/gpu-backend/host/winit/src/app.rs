@@ -424,6 +424,14 @@ struct App {
     /// its delegate weakly.
     #[cfg(target_os = "macos")]
     _aspect_lock: Option<objc2::rc::Retained<mac::AspectLock>>,
+    /// Optional AccessKit bridge — only present when the `a11y`
+    /// feature is enabled. Constructed inside `resumed` once the
+    /// window exists (AccessKit's adapter needs the window's
+    /// platform handles + a live `&ActiveEventLoop`). Synced after
+    /// every frame so the platform AX layer sees the wgpu
+    /// backend's parallel semantics tree.
+    #[cfg(feature = "a11y")]
+    a11y_bridge: Option<host_wgpu_accesskit::WgpuAccessKitBridge>,
 }
 
 impl App {
@@ -453,6 +461,8 @@ impl App {
             runtime_server_shell: None,
             #[cfg(target_os = "macos")]
             _aspect_lock: None,
+            #[cfg(feature = "a11y")]
+            a11y_bridge: None,
         }
     }
 
@@ -485,6 +495,8 @@ impl App {
             runtime_server_shell: None,
             #[cfg(target_os = "macos")]
             _aspect_lock: None,
+            #[cfg(feature = "a11y")]
+            a11y_bridge: None,
         }
     }
 
@@ -586,6 +598,49 @@ impl App {
             self.viewport.surface_rect(),
         );
         surface_tex.present();
+
+        // Project the wgpu backend's parallel a11y tree into the
+        // platform AX layer. Cheap on no-change frames (the bridge
+        // hashes the tree and skips identical pushes). Also drains
+        // any pending live-region announcements (`announce_for_
+        // accessibility` calls from the framework's effect handlers)
+        // so screen readers speak them right after the visual frame
+        // they correspond to.
+        //
+        // The bridge's `drain_announcements` API takes `&mut S` +
+        // `&B` so the source and backend can be different objects.
+        // When they're the same WgpuBackend instance, we'd need
+        // simultaneous `&mut` and `&` to the same RefCell borrow,
+        // which Rust rejects. Workaround: pre-drain into a local
+        // `Vec`, wrap it in a tiny `AnnouncementSource` that emits
+        // the pre-drained payload, then call the bridge with a
+        // disjoint borrow.
+        #[cfg(feature = "a11y")]
+        if let Some(bridge) = self.a11y_bridge.as_mut() {
+            use host_wgpu_accesskit::AnnouncementSource;
+            use runtime_core::accessibility::LiveRegionPriority;
+
+            struct PreDrained(Vec<(String, LiveRegionPriority)>);
+            impl AnnouncementSource for PreDrained {
+                fn drain(&mut self) -> Vec<(String, LiveRegionPriority)> {
+                    std::mem::take(&mut self.0)
+                }
+            }
+
+            let backend_rc = self.host.backend();
+            // Mut-borrow: drain announcements into a local Vec.
+            let pending = {
+                let mut be = backend_rc.borrow_mut();
+                be.drain_pending_announcements()
+            };
+            // Re-borrow as `&` for the tree dump + adapter push.
+            let backend = backend_rc.borrow();
+            bridge.sync(&*backend);
+            if !pending.is_empty() {
+                let mut source = PreDrained(pending);
+                bridge.drain_announcements(&mut source, &*backend);
+            }
+        }
 
         // If any tween / drawer needs another frame, route the
         // wake-up through the event-loop proxy
@@ -700,6 +755,25 @@ impl ApplicationHandler<AppEvent> for App {
         self.gpu = Some(gpu);
         self.renderer = Some(renderer);
         self.refresh_viewport();
+
+        // AccessKit bridge — must be constructed before the window
+        // is visible. The bridge owns its `accesskit_winit::Adapter`
+        // and routes the framework's parallel a11y tree into the
+        // platform AX layer (UIA / AT-SPI / NSAccessibility). The
+        // activation callback fires the first time a screen reader
+        // connects; we just log so the dev sees AT engagement, but
+        // the next `sync` call will push the tree regardless.
+        #[cfg(feature = "a11y")]
+        {
+            let window_ref = self.gpu.as_ref().expect("gpu set above").window.clone();
+            self.a11y_bridge = Some(host_wgpu_accesskit::WgpuAccessKitBridge::new(
+                event_loop,
+                &window_ref,
+                || {
+                    log::debug!("[a11y] AccessKit activation handler fired — AT connected");
+                },
+            ));
+        }
 
         // macOS: pin the window's content aspect ratio so every
         // drag tracks smoothly — the OS will constrain the
@@ -819,6 +893,21 @@ impl ApplicationHandler<AppEvent> for App {
         if matches!(event, WindowEvent::CloseRequested | WindowEvent::Destroyed) {
             eprintln!("[diag] window_event: {:?}", event);
         }
+
+        // Route every event through the AccessKit bridge first.
+        // The bridge needs to see focus/activation events to keep
+        // its window-status mirror current; today
+        // `process_event` returns `()` (no event consumption), so
+        // we always fall through to the app's own handling. The
+        // bool return shape is reserved for future AccessKit
+        // versions that may consume gesture events.
+        #[cfg(feature = "a11y")]
+        if let (Some(bridge), Some(gpu)) =
+            (self.a11y_bridge.as_mut(), self.gpu.as_ref())
+        {
+            let _ = bridge.handle_event(&gpu.window, &event);
+        }
+
         match event {
             WindowEvent::CloseRequested => {
                 eprintln!("[close] CloseRequested fired — shutting down");

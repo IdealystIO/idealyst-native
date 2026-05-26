@@ -17,6 +17,7 @@ pub(crate) mod image;
 pub(crate) mod node;
 pub(crate) mod text_style;
 pub(crate) mod view;
+pub(crate) mod virtualizer;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -81,6 +82,15 @@ pub struct MacosBackend {
     /// fall through to a "not supported" placeholder NSTextField.
     /// Mirrors the iOS pattern.
     pub(crate) external_handlers: runtime_core::ExternalRegistry<MacosBackend>,
+    /// Per-virtualizer side state. NSCollectionView's `dataSource`
+    /// and `delegate` are weak refs, so the data source needs to
+    /// outlive the collection view via this map. Keyed by the
+    /// outer NSScrollView's pointer (the mountable node).
+    /// `release_virtualizer` removes the entry; on map removal the
+    /// data source's Retained drops + the underlying Objective-C
+    /// release count goes to zero.
+    pub(crate) virtualizer_instances:
+        HashMap<usize, virtualizer::VirtualizerInstance>,
 }
 
 // =========================================================================
@@ -165,6 +175,7 @@ impl MacosBackend {
             gradient_states: HashMap::new(),
             image_cache: HashMap::new(),
             external_handlers: runtime_core::ExternalRegistry::new(),
+            virtualizer_instances: HashMap::new(),
         }
     }
 
@@ -306,6 +317,19 @@ unsafe impl Encode for CGColorRef {
 /// Build an `NSColor` from a framework `Color`. Uses the shared
 /// apple-core color parser (sRGB float tuple) then routes through
 /// AppKit's RGB initializer.
+/// `true` if `view` is an `NSScrollView`. Used by `insert` to
+/// redirect children into the scroll view's documentView so
+/// the scroll machinery actually works. Implemented via
+/// `isKindOfClass:` so subclasses (rare but possible) are also
+/// recognized.
+fn is_scroll_view(view: &NSView) -> bool {
+    let cls = match objc2::runtime::AnyClass::get("NSScrollView") {
+        Some(c) => c,
+        None => return false,
+    };
+    unsafe { msg_send![view, isKindOfClass: cls] }
+}
+
 pub(crate) fn color_to_nscolor(color: &Color) -> Retained<NSColor> {
     let (r, g, b, a) = parse_color(&color.0);
     unsafe { NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, a) }
@@ -817,28 +841,33 @@ impl Backend for MacosBackend {
         let _: () = unsafe { msg_send![&view, setEditable: true] };
         let _: () = unsafe { msg_send![&view, setRichText: false] };
 
-        // NSTextView's text-change notification is
-        // `NSTextDidChangeNotification` (object = the view). We
-        // reuse the StringCallbackTarget — its
-        // `controlTextDidChange:` selector also fires for this
-        // notification path because the selector name matches what
-        // we register. Actually NSTextView posts `textDidChange:`
-        // (its delegate method); we route via the notification
-        // center using `textDidChange:` selector instead.
-        //
-        // Simpler: register the same StringCallbackTarget for the
-        // `NSTextDidChangeNotification` name. The target's
-        // `controlTextDidChange:` won't match — we need a separate
-        // method or a different bridge. For now wire on_change to
-        // fire on `NSTextDidChangeNotification` using a one-off
-        // selector by adding the method to the target class.
-        //
-        // Pragmatic v1: don't wire on_change. NSTextView in macOS
-        // contexts is less frequently change-tracked at the
-        // primitive level than TextInput. Authors who need it can
-        // file follow-up — Backend's `update_text_area_value` push
-        // path still works for value-driven flows.
-        let _ = on_change;
+        // Wire change notification.
+        // `NSTextDidChangeNotification` fires every edit on the
+        // text view; the StringCallbackTarget's `textDidChange:`
+        // method reads the sender's `string` and forwards. The
+        // `notification.object` filter is the NSTextView itself,
+        // so a sibling TextArea's edits don't fire this handler.
+        let target = callbacks::StringCallbackTarget::new(self.mtm, on_change);
+        let sel = objc2::sel!(textDidChange:);
+        let notification_name = NSString::from_str("NSTextDidChangeNotification");
+        let center: Retained<NSObject> = unsafe {
+            msg_send_id![
+                objc2::class!(NSNotificationCenter),
+                defaultCenter
+            ]
+        };
+        let _: () = unsafe {
+            msg_send![
+                &center,
+                addObserver: &*target,
+                selector: sel,
+                name: &*notification_name,
+                object: &*view,
+            ]
+        };
+        self.callback_targets.push(unsafe {
+            Retained::cast::<NSObject>(target)
+        });
 
         let layout = self.layout_for_view(&view);
         let view_for_measure = view.clone();
@@ -1025,35 +1054,106 @@ impl Backend for MacosBackend {
     fn create_scroll_view(
         &mut self,
         horizontal: bool,
+        on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        // NSScrollView wraps a documentView (the actual content
-        // host). We build a FlippedView as the document so child
-        // frames land top-left like the rest of the tree.
+        // Real two-view shape: outer NSScrollView wraps a
+        // `FlippedView` documentView. Children mount inside the
+        // documentView (via `insert`'s scroll-view-aware
+        // redirect); the NSScrollView's clip view handles
+        // overflow + scroll-bar machinery.
         //
-        // Children inserted by `Backend::insert` need to attach to
-        // the document view, not the scroll view itself. For v1 we
-        // simply return the documentView as the MacosNode — Taffy
-        // sees children parented there, and the scroll view itself
-        // is positioned by Taffy via the documentView's frame.
-        // This mirrors how iOS routes ScrollView through its
-        // FlippedView's content layer.
-        //
-        // The follow-up that integrates an actual two-view
-        // (scroll + document) hierarchy with separate sizing rules
-        // can replace this with a typed MacosNode::ScrollView. For
-        // now, this gets author code that mounts a ScrollView
-        // running without panicking.
-        let _ = horizontal;
-        // Simplest viable shape: a FlippedView with overflow
-        // clipping but no momentum scrolling. Real NSScrollView
-        // wiring (with documentView attach, scrollers, etc.) is
-        // a follow-up — matches what the Button stub did before
-        // it was upgraded.
+        // We return the OUTER NSScrollView as the MacosNode so
+        // layout / style / hit-testing target the scrolling
+        // container (the framework's mental model). `insert`
+        // checks `documentView` and routes children into the
+        // documentView's subview tree + the Taffy graph.
         let document_view = FlippedView::new(self.mtm);
         let document_view: Retained<NSView> = Retained::into_super(document_view);
+
+        // Build NSScrollView via alloc/initWithFrame:CGRect.zero.
+        // Frame is set by the layout pass in `finish()`.
+        let scroll_view: Retained<NSView> = unsafe {
+            let allocated: *mut objc2::runtime::AnyObject =
+                msg_send![objc2::class!(NSScrollView), alloc];
+            let zero_rect = CGRect {
+                origin: objc2_foundation::CGPoint { x: 0.0, y: 0.0 },
+                size: CGSize { width: 0.0, height: 0.0 },
+            };
+            let inited: *mut objc2::runtime::AnyObject =
+                msg_send![allocated, initWithFrame: zero_rect];
+            Retained::from_raw(inited.cast::<NSView>())
+                .expect("NSScrollView init returned nil")
+        };
+
+        // Configure scrollers per axis. Vertical-default matches
+        // iOS's default ScrollView. NSScrollView's API:
+        //  - setHasVerticalScroller: / setHasHorizontalScroller:
+        //  - setAutohidesScrollers: true so the scrollers fade
+        //    when not actively scrolling (modern macOS feel).
+        let _: () = unsafe {
+            msg_send![&scroll_view, setHasVerticalScroller: !horizontal]
+        };
+        let _: () = unsafe {
+            msg_send![&scroll_view, setHasHorizontalScroller: horizontal]
+        };
+        let _: () = unsafe { msg_send![&scroll_view, setAutohidesScrollers: true] };
+
+        // Install the documentView. NSScrollView retains it; we
+        // can drop our local Retained after this call without
+        // losing the document.
+        let _: () = unsafe { msg_send![&scroll_view, setDocumentView: &*document_view] };
+
+        // Register BOTH views in the layout map. The outer
+        // NSScrollView is what Taffy positions; the inner
+        // documentView is what `insert` routes children into.
+        // The documentView's frame is sized by NSScrollView
+        // (via the content size we don't expose here — Taffy
+        // controls per-child frames inside the document, and
+        // NSScrollView's content size grows to fit).
+        let _ = self.layout_for_view(&scroll_view);
         let _ = self.layout_for_view(&document_view);
-        let node = MacosNode::View(document_view);
+
+        // Wire `on_scroll` via NSViewBoundsDidChangeNotification on
+        // the scroll view's contentView (the NSClipView). We flip
+        // `postsBoundsChangedNotifications` on, then register a
+        // ScrollObserverTarget against the default NotificationCenter
+        // keyed on the clip view. The target's `boundsDidChange:`
+        // selector reads the clip view's bounds.origin and forwards
+        // it as the (x, y) scroll offset \u{2014} same units as web
+        // (CSS pixels) and iOS (UIKit points), so author code reads
+        // identical values across platforms.
+        if let Some(cb) = on_scroll {
+            let target = crate::imp::callbacks::ScrollObserverTarget::new(self.mtm, cb);
+            let clip_view: *mut objc2::runtime::AnyObject =
+                unsafe { msg_send![&scroll_view, contentView] };
+            if !clip_view.is_null() {
+                let _: () =
+                    unsafe { msg_send![clip_view, setPostsBoundsChangedNotifications: true] };
+                let center: *mut objc2::runtime::AnyObject =
+                    unsafe { msg_send![objc2::class!(NSNotificationCenter), defaultCenter] };
+                let name: Retained<objc2_foundation::NSString> =
+                    objc2_foundation::NSString::from_str("NSViewBoundsDidChangeNotification");
+                let sel = objc2::sel!(boundsDidChange:);
+                let _: () = unsafe {
+                    msg_send![
+                        center,
+                        addObserver: &*target,
+                        selector: sel,
+                        name: &*name,
+                        object: clip_view,
+                    ]
+                };
+            }
+            // Retain across the backend's lifetime so the observer
+            // outlives the scroll view it watches. The notification
+            // center holds a non-owning ref \u{2014} same pattern as
+            // every other macOS callback target.
+            self.callback_targets
+                .push(unsafe { Retained::cast::<NSObject>(target) });
+        }
+
+        let node = MacosNode::View(scroll_view);
         a11y::apply(
             &node,
             a11y,
@@ -1129,16 +1229,44 @@ impl Backend for MacosBackend {
         let parent_view = parent.as_view();
         let child_view = child.as_view();
 
+        // ScrollView routing: if the framework's logical parent
+        // is an NSScrollView (created via `create_scroll_view`),
+        // children mount inside its documentView so they
+        // participate in the scroll machinery. `documentView`
+        // returns the inner FlippedView we installed. Without
+        // this redirect, addSubview would add the child to the
+        // scroll view's clip view at fixed coordinates and the
+        // scroll wouldn't take effect.
+        let target_view: Retained<NSView> = if is_scroll_view(parent_view) {
+            let doc_ptr: *mut NSView =
+                unsafe { msg_send![parent_view, documentView] };
+            if doc_ptr.is_null() {
+                // Defensive: fall back to the scroll view itself if
+                // documentView is somehow nil. Shouldn't happen
+                // because `create_scroll_view` always installs one.
+                unsafe { Retained::retain(parent_view as *const NSView as *mut NSView) }
+                    .unwrap()
+            } else {
+                unsafe { Retained::retain(doc_ptr) }
+                    .expect("NSScrollView documentView retain")
+            }
+        } else {
+            unsafe { Retained::retain(parent_view as *const NSView as *mut NSView) }
+                .unwrap()
+        };
+
         // AppKit: `addSubview:` mounts the child. Frame is determined
         // by the layout pass in `finish()`; here we just establish
         // the parent/child relationship in both the view tree AND
         // the Taffy tree.
-        unsafe { parent_view.addSubview(child_view) };
+        unsafe { target_view.addSubview(child_view) };
 
-        // Mirror the parenting in Taffy. If either node is missing
-        // from `view_to_layout`, fall back to creating one — defensive
-        // against early-render races.
-        let parent_layout = self.layout_for_view(parent_view);
+        // Mirror the parenting in Taffy against the same logical
+        // target — children of a ScrollView live under its
+        // documentView in Taffy too, so the layout pass sizes
+        // them inside the document's coordinate space rather
+        // than the outer scroll view's clip rect.
+        let parent_layout = self.layout_for_view(&target_view);
         let child_layout = self.layout_for_view(child_view);
         self.layout.add_child(parent_layout, child_layout);
     }
@@ -1308,38 +1436,25 @@ impl Backend for MacosBackend {
     fn create_virtualizer(
         &mut self,
         callbacks: runtime_core::VirtualizerCallbacks<Self::Node>,
-        _overscan: f32,
-        _horizontal: bool,
+        overscan: f32,
+        horizontal: bool,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
-        // Eager-mount placeholder. The proper NSCollectionView-backed
-        // implementation (mirroring iOS's UICollectionView pattern at
-        // crates/backend/ios/mobile/src/imp/virtualizer.rs) is
-        // pending — that's a focused multi-hundred-line PR involving
-        // a custom NSCollectionViewDataSource + cell-reuse cycle.
-        //
-        // For now we mount EVERY item up front into a vertical
-        // FlippedView, equivalent to what the wgpu backend's
-        // virtualizer does in simulator mode. Correctness for small
-        // lists; performance only matters at scale, which is exactly
-        // what the deferred NSCollectionView impl will address.
-        let container = FlippedView::new(self.mtm);
-        let container: Retained<NSView> = Retained::into_super(container);
-        let _ = self.layout_for_view(&container);
-
-        let count = (callbacks.item_count)();
-        for i in 0..count {
-            let (node, _scope_id) = (callbacks.mount_item)(i);
-            let child_view = node.as_view();
-            unsafe { container.addSubview(child_view) };
-            let child_layout = self.layout_for_view(child_view);
-            let parent_layout = self
-                .layout_of(&container)
-                .expect("container has layout node");
-            self.layout.add_child(parent_layout, child_layout);
-        }
-
-        let node = MacosNode::View(container);
+        // Real NSCollectionView wrap with cell reuse — see
+        // `imp/virtualizer.rs` for the AppKit-flavored adapter.
+        // Mirrors iOS's UICollectionView pattern: data source +
+        // delegate routed via a custom NSObject, items dequeued
+        // from a reuse pool, per-item Scope released on
+        // displayEnd / reuse / teardown.
+        let view = virtualizer::create(
+            self.mtm,
+            &mut self.virtualizer_instances,
+            callbacks,
+            overscan,
+            horizontal,
+        );
+        let _ = self.layout_for_view(&view);
+        let node = MacosNode::View(view);
         a11y::apply(
             &node,
             a11y,
@@ -1348,20 +1463,23 @@ impl Backend for MacosBackend {
         node
     }
 
-    fn virtualizer_data_changed(&mut self, _node: &Self::Node) {
-        // Placeholder eager-mount can't react to live data changes
-        // without doing a diff + remount cycle. The NSCollectionView
-        // impl will route this through `reloadData` /
-        // `performBatchUpdates`. For now this is a no-op — author
-        // code using virtualizer on macOS today should hot-swap the
-        // entire `<Virtualizer>` via a `When` if data updates.
+    fn virtualizer_data_changed(&mut self, node: &Self::Node) {
+        // Tell the NSCollectionView to `reloadData`. Future
+        // performBatchUpdates optimisation lands when the iOS
+        // counterpart does — same shape (key-keyed diff, batched
+        // insert/remove ops).
+        let view = node.as_view();
+        virtualizer::data_changed(view);
     }
 
-    fn release_virtualizer(&mut self, _node: &Self::Node) {
-        // No per-virtualizer side state to release in v1. The eager-
-        // mounted children's scopes get dropped through the regular
-        // tree-teardown path (clear_children + framework's scope
-        // cleanup) so we don't have to call release_item explicitly.
+    fn release_virtualizer(&mut self, node: &Self::Node) {
+        // Mirrors iOS's teardown — disconnect dataSource/delegate so
+        // queued AppKit events become no-ops, drain mounted scopes,
+        // drop the side-state entry. Without this, AppKit's lingering
+        // layout pass after the framework's scope drop would invoke
+        // released `Signal` closures and panic.
+        let view = node.as_view();
+        virtualizer::release(&mut self.virtualizer_instances, view);
     }
 
     fn create_navigator(

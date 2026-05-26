@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::{signal, ui, Primitive};
+use runtime_core::{signal, ui, Primitive, Ref, ViewHandle};
 use idea_ui::{
     alert, badge, btn, card, divider, field, stack, switch, tag, typography, BadgeKind,
     ButtonKind, IntentTag, StackAxis, StackGap, TypographyKind, TypographyTone,
@@ -12,20 +12,20 @@ use crate::pages::common::{page_header, page_section};
 use crate::shell::{layout_with_toc, TocEntry};
 
 pub fn page() -> Primitive {
-    const INTENTS: &str = "intents";
-    const KINDS: &str = "button-kinds";
-    const FEEDBACK: &str = "feedback";
-    const INPUTS: &str = "inputs";
-    const TYPOGRAPHY: &str = "typography";
-    const FOOTER: &str = "theres-more";
+    let intents_ref: Ref<ViewHandle> = Ref::new();
+    let kinds_ref: Ref<ViewHandle> = Ref::new();
+    let feedback_ref: Ref<ViewHandle> = Ref::new();
+    let inputs_ref: Ref<ViewHandle> = Ref::new();
+    let typography_ref: Ref<ViewHandle> = Ref::new();
+    let footer_ref: Ref<ViewHandle> = Ref::new();
 
     let toc = vec![
-        TocEntry { id: INTENTS, label: "Intents" },
-        TocEntry { id: KINDS, label: "Button kinds" },
-        TocEntry { id: FEEDBACK, label: "Feedback" },
-        TocEntry { id: INPUTS, label: "Inputs" },
-        TocEntry { id: TYPOGRAPHY, label: "Typography" },
-        TocEntry { id: FOOTER, label: "There's more" },
+        TocEntry { handle: intents_ref, label: "Intents" },
+        TocEntry { handle: kinds_ref, label: "Button kinds" },
+        TocEntry { handle: feedback_ref, label: "Feedback" },
+        TocEntry { handle: inputs_ref, label: "Inputs" },
+        TocEntry { handle: typography_ref, label: "Typography" },
+        TocEntry { handle: footer_ref, label: "There's more" },
     ];
 
     let content = ui! {
@@ -36,12 +36,12 @@ pub fn page() -> Primitive {
                  kit shipped alongside the framework. Every sample below renders the \
                  same idea-ui primitive your app would use, on the same backend."
             ) }
-            { page_section(INTENTS, vec![intents()]) }
-            { page_section(KINDS, vec![button_kinds()]) }
-            { page_section(FEEDBACK, vec![feedback()]) }
-            { page_section(INPUTS, vec![inputs()]) }
-            { page_section(TYPOGRAPHY, vec![typography_demo()]) }
-            { page_section(FOOTER, vec![footer()]) }
+            { page_section(intents_ref, vec![intents()]) }
+            { page_section(kinds_ref, vec![button_kinds()]) }
+            { page_section(feedback_ref, vec![feedback()]) }
+            { page_section(inputs_ref, vec![inputs()]) }
+            { page_section(typography_ref, vec![typography_demo()]) }
+            { page_section(footer_ref, vec![footer()]) }
         }
     };
     layout_with_toc(content, toc)

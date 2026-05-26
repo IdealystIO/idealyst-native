@@ -46,6 +46,7 @@ pub fn scroll_view(children: Vec<Primitive>) -> Bound<ScrollViewHandle> {
         style: None,
         ref_fill: None,
         safe_area_sides: crate::SafeAreaSides::NONE,
+        on_scroll: None,
         accessibility: crate::accessibility::AccessibilityProps::default(),
     })
 }
@@ -75,6 +76,24 @@ impl Bound<ScrollViewHandle> {
     pub fn safe_area(mut self, sides: crate::SafeAreaSides) -> Self {
         if let Primitive::ScrollView { safe_area_sides, .. } = &mut self.primitive {
             *safe_area_sides |= sides;
+        }
+        self
+    }
+
+    /// Register a callback that fires on every scroll offset change.
+    /// Receives `(scroll_left_px, scroll_top_px)` in CSS pixels /
+    /// native points. Uniform across backends \u{2014} the backend
+    /// binds this to its native scroll observer (web `scroll` event,
+    /// iOS `UIScrollViewDelegate::scrollViewDidScroll`, Android
+    /// `OnScrollChangeListener`, etc.).
+    ///
+    /// Use this to drive a scroll-position signal in author code
+    /// (`on_scroll = move |x, y| offset.set((x, y))`) and compose
+    /// against `ViewHandle::absolute_frame()` for cross-platform
+    /// scroll-spy / sticky-header / parallax patterns.
+    pub fn on_scroll<F: Fn(f32, f32) + 'static>(mut self, cb: F) -> Self {
+        if let Primitive::ScrollView { on_scroll, .. } = &mut self.primitive {
+            *on_scroll = Some(Rc::new(cb));
         }
         self
     }

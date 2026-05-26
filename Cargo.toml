@@ -197,6 +197,7 @@ host-winit = { path = "crates/gpu-backend/host/winit" }
 host-web = { path = "crates/gpu-backend/host/web" }
 host-appkit = { path = "crates/gpu-backend/host/appkit" }
 host-terminal = { path = "crates/gpu-backend/host/terminal" }
+host-wgpu-accesskit = { path = "crates/gpu-backend/host/wgpu-accesskit" }
 variant-phone = { path = "crates/gpu-backend/variant/phone" }
 variant-tablet = { path = "crates/gpu-backend/variant/tablet" }
 variant-tv = { path = "crates/gpu-backend/variant/tv" }

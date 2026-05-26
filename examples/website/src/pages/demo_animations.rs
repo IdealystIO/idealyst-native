@@ -17,24 +17,24 @@ use crate::shell::{layout_with_toc, TocEntry};
 use crate::styles::{DemoStage, DemoStageRow};
 
 pub fn page() -> Primitive {
-    const MODEL: &str = "model";
-    const FADE: &str = "fade-demo";
-    const SPRING_TWEEN: &str = "spring-vs-tween";
-    const ENTRANCE: &str = "entrance";
-    const COLOR: &str = "color-demo";
-    const WHEN: &str = "when-to-pick";
-    const WELCOME: &str = "welcome-scene";
-    const PERF: &str = "performance";
+    let model_ref: Ref<ViewHandle> = Ref::new();
+    let fade_ref: Ref<ViewHandle> = Ref::new();
+    let spring_tween_ref: Ref<ViewHandle> = Ref::new();
+    let entrance_ref: Ref<ViewHandle> = Ref::new();
+    let color_ref: Ref<ViewHandle> = Ref::new();
+    let when_ref: Ref<ViewHandle> = Ref::new();
+    let welcome_ref: Ref<ViewHandle> = Ref::new();
+    let perf_ref: Ref<ViewHandle> = Ref::new();
 
     let toc = vec![
-        TocEntry { id: MODEL, label: "The model" },
-        TocEntry { id: FADE, label: "Fade toggle" },
-        TocEntry { id: SPRING_TWEEN, label: "Spring vs tween" },
-        TocEntry { id: ENTRANCE, label: "Multi-property entrance" },
-        TocEntry { id: COLOR, label: "Color tween" },
-        TocEntry { id: WHEN, label: "When to pick which" },
-        TocEntry { id: WELCOME, label: "The welcome scene" },
-        TocEntry { id: PERF, label: "What you don't pay for" },
+        TocEntry { handle: model_ref, label: "The model" },
+        TocEntry { handle: fade_ref, label: "Fade toggle" },
+        TocEntry { handle: spring_tween_ref, label: "Spring vs tween" },
+        TocEntry { handle: entrance_ref, label: "Multi-property entrance" },
+        TocEntry { handle: color_ref, label: "Color tween" },
+        TocEntry { handle: when_ref, label: "When to pick which" },
+        TocEntry { handle: welcome_ref, label: "The welcome scene" },
+        TocEntry { handle: perf_ref, label: "What you don't pay for" },
     ];
 
     let content = ui! {
@@ -46,14 +46,14 @@ pub fn page() -> Primitive {
                  `AnimatedValue`s bound to real `Ref<ViewHandle>`s \u{2014} click \
                  the buttons and watch them move."
             ) }
-            { page_section(MODEL, vec![model()]) }
-            { page_section(FADE, vec![fade_demo()]) }
-            { page_section(SPRING_TWEEN, vec![spring_vs_tween_demo()]) }
-            { page_section(ENTRANCE, vec![entrance_demo()]) }
-            { page_section(COLOR, vec![color_demo()]) }
-            { page_section(WHEN, vec![springs_vs_tweens_note()]) }
-            { page_section(WELCOME, vec![welcome_breakdown()]) }
-            { page_section(PERF, vec![performance()]) }
+            { page_section(model_ref, vec![model()]) }
+            { page_section(fade_ref, vec![fade_demo()]) }
+            { page_section(spring_tween_ref, vec![spring_vs_tween_demo()]) }
+            { page_section(entrance_ref, vec![entrance_demo()]) }
+            { page_section(color_ref, vec![color_demo()]) }
+            { page_section(when_ref, vec![springs_vs_tweens_note()]) }
+            { page_section(welcome_ref, vec![welcome_breakdown()]) }
+            { page_section(perf_ref, vec![performance()]) }
         }
     };
     layout_with_toc(content, toc)

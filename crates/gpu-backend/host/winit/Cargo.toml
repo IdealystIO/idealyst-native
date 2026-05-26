@@ -21,6 +21,13 @@ default = []
 # inside winit's `RedrawRequested` handler. Off by default so the
 # local-mount build path pulls zero transport code.
 runtime-server = ["dep:runtime-server-shell-native", "runtime-server-shell-native/runtime-server"]
+# Optional AccessKit bridge: pulls in `host-wgpu-accesskit` and wires
+# the wgpu backend's parallel a11y tree into the platform AX layer
+# (UIA on Windows, AT-SPI on Linux, NSAccessibility on macOS).
+# Off by default so apps that don't need a11y don't pull AccessKit
+# + its platform bindings into the dep graph. Enable per app at the
+# binary's Cargo.toml.
+a11y = ["dep:host-wgpu-accesskit"]
 
 [dependencies]
 render-api = { workspace = true }
@@ -32,6 +39,11 @@ runtime-core = { workspace = true }
 # shell crate (same one iOS / Android / macOS / desktop AAS hosts
 # consume).
 runtime-server-shell-native = { workspace = true, optional = true }
+
+# Only used when `a11y` is on. Bridges the wgpu backend's parallel
+# semantics tree into AccessKit, which then drives the platform AX
+# layer. See `crates/gpu-backend/host/wgpu-accesskit/`.
+host-wgpu-accesskit = { workspace = true, optional = true }
 
 wgpu = "29"
 winit = { version = "0.30", features = ["rwh_06"] }

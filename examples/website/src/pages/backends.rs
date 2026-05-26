@@ -1,20 +1,20 @@
 //! Backends — implementation status per platform.
 
-use runtime_core::{ui, Primitive};
+use runtime_core::{ui, Primitive, Ref, ViewHandle};
 use idea_ui::{stack, typography, StackGap, TypographyKind, TypographyTone};
 
 use crate::pages::common::{page_header, page_section};
 use crate::shell::{layout_with_toc, TocEntry};
 
 pub fn page() -> Primitive {
-    const MATRIX: &str = "matrix";
-    const COVERAGE: &str = "coverage";
-    const ROADMAP: &str = "roadmap";
+    let matrix_ref: Ref<ViewHandle> = Ref::new();
+    let coverage_ref: Ref<ViewHandle> = Ref::new();
+    let roadmap_ref: Ref<ViewHandle> = Ref::new();
 
     let toc = vec![
-        TocEntry { id: MATRIX, label: "Backend status" },
-        TocEntry { id: COVERAGE, label: "Per-primitive coverage" },
-        TocEntry { id: ROADMAP, label: "Framework-level subsystems" },
+        TocEntry { handle: matrix_ref, label: "Backend status" },
+        TocEntry { handle: coverage_ref, label: "Per-primitive coverage" },
+        TocEntry { handle: roadmap_ref, label: "Framework-level subsystems" },
     ];
 
     let content = ui! {
@@ -25,9 +25,9 @@ pub fn page() -> Primitive {
                  The Backend trait is the framework's only seam to the platform; \
                  this page is the per-platform status of that seam."
             ) }
-            { page_section(MATRIX, vec![matrix()]) }
-            { page_section(COVERAGE, vec![coverage()]) }
-            { page_section(ROADMAP, vec![roadmap()]) }
+            { page_section(matrix_ref, vec![matrix()]) }
+            { page_section(coverage_ref, vec![coverage()]) }
+            { page_section(roadmap_ref, vec![roadmap()]) }
         }
     };
     layout_with_toc(content, toc)
@@ -38,12 +38,12 @@ fn matrix() -> Primitive {
         ("Web (WASM + DOM)", "Working", "Reference backend. Most complete primitive coverage."),
         ("Android (JNI + Views)", "Working", "Phone form factor. TV variant is a stub."),
         ("iOS (UIKit via objc2)", "Working", "Phone form factor. TV variant is a stub. Virtualizer supports vertical + horizontal single-section lists (measured-cells + sections pending framework-core API)."),
-        ("macOS (AppKit via objc2)", "Working", "All Backend primitives covered — no `unimplemented!()` panics. Real AppKit widgets for View, Text, Button, Image, TextInput, TextArea, Toggle, Slider, ActivityIndicator. Icon renders real vector paths via CAShapeLayer + shared `apple/core::icon_path` parser (same output as iOS). Portal mounts to host contentView. External registry mirrors iOS. Placeholder treatments (deferred to focused PRs): Virtualizer = eager-mount; Graphics + Navigator = visible red placeholder."),
+        ("macOS (AppKit via objc2)", "Working", "All Backend primitives covered — no `unimplemented!()` panics. Real AppKit widgets for View, Text, Button, Image, TextInput, TextArea (with on_change via NSTextDidChangeNotification), Toggle, Slider, ActivityIndicator. Icon renders real vector paths via CAShapeLayer + shared `apple/core::icon_path` parser. ScrollView wraps a real NSScrollView with a FlippedView documentView. Virtualizer wraps NSScrollView + NSCollectionView with real cell reuse via NSCollectionViewFlowLayout (mirrors the iOS UICollectionView pattern). Portal mounts to host contentView. External registry mirrors iOS. Placeholder treatments: Graphics + Navigator = visible red placeholder."),
         ("Roku (BrightScript transpile)", "Working", "Theme switching works via re-applied literal values; no runtime token layer on SceneGraph."),
-        ("Native GPU (wgpu)", "In progress", "Implements Backend over a GPU pipeline. `host-winit` is production-ready; `host-web`/`host-appkit`/`host-terminal` are WIP. Engine covers 19/21 primitives — TextArea routes through TextInput chrome (multi-line wrap pending); Presence enter/exit transitions tween natively via the host tick loop; Navigator + External still panic."),
+        ("Native GPU (wgpu)", "In progress", "Implements Backend over a GPU pipeline. `host-winit` is production-ready with optional AccessKit bridge (Windows UIA / Linux AT-SPI / macOS NSAccessibility via the `a11y` feature flag); `host-web` is the browser-canvas variant. All 21 primitives covered with no `unimplemented!()` panics. TextArea routes through TextInput chrome (multi-line wrap pending); Presence enter/exit transitions tween natively via the host tick loop. Navigator + External render visible placeholders pending the overlay-per-host strategy."),
         ("CPU graphics (Arduino, ESP32)", "Working (MVP)", "Software rasterizer with custom `Surface` trait. Full support for View, Text, Button, Pressable, ScrollView (gradients, rounded corners, hit-testing). Inputs, lists, GPU, modals, navigators render a visible placeholder text per `feedback_cpu_unsupported_placeholders` — missing support is SEEN on device, not silently no-op'd."),
-        ("Windows", "Scaffold", "Native Win32 backend via the `windows` crate. View/Text/Button/Pressable wire to real HWNDs (STATIC/BUTTON classes). Other primitives render visible placeholder labels. Compiles to empty rlib on non-Windows hosts; needs a Windows test env to exercise the actual widget rendering."),
-        ("Linux", "Scaffold", "Native GTK4 backend via `gtk4-rs`. View/Text/Button/Pressable/Toggle/Slider/ActivityIndicator/TextInput/TextArea/ScrollView all wire to real GTK widgets. Other primitives render placeholder labels. Compiles to empty rlib on non-Linux hosts; needs a Linux test env with `libgtk-4-dev` to exercise."),
+        ("Windows", "Scaffold", "Native Win32 backend via the `windows` crate. View/Text/Button/Pressable wire to real HWNDs (STATIC/BUTTON classes). `finish()` drives Taffy layout into `SetWindowPos`. `WM_COMMAND` dispatch is wired: control-ids allocated per Button/Pressable, host's WndProc forwards `LOWORD(wParam)` through `WindowsBackend::dispatch_command`. Other primitives render placeholder labels. Compiles to empty rlib on non-Windows hosts."),
+        ("Linux", "Scaffold", "Native GTK4 backend via `gtk4-rs`. Containers (View/Pressable/ScrollView) use `gtk::Fixed` for absolute positioning. View/Text/Button/Pressable/Toggle/Slider/ActivityIndicator/TextInput/TextArea/ScrollView all wire to real GTK widgets. `finish()` drives Taffy into `fixed.move_()` + `set_size_request()`. Other primitives render placeholder labels. Compiles to empty rlib on non-Linux hosts."),
         ("Terminal (TTY)", "Working", "crossterm-backed; no animations or auto-rendered header chrome (per terminal-minimalism convention)."),
     ];
 
@@ -75,33 +75,38 @@ fn coverage() -> Primitive {
     let children: Vec<Primitive> = vec![
         ui! { Typography(content = "Per-primitive coverage".to_string(), kind = TypographyKind::H2) },
         ui! {
-            Typography(content = "A blank in the per-primitive coverage matrix means the \
-                trait default panics with `unimplemented!()`. Author code that reaches \
-                for that primitive on that backend will crash at mount, not silently \
-                no-op.".to_string())
+            Typography(content = "Every backend now implements every Backend method — no \
+                `unimplemented!()` panics anywhere. Primitives that aren't yet fully \
+                rendered on a given backend render a visible placeholder (per \
+                `feedback_cpu_unsupported_placeholders`); the dev / user sees the gap \
+                instead of hitting a silent crash or empty rect.".to_string())
         },
         ui! { Typography(content = "Core primitives".to_string(), kind = TypographyKind::H3) },
         ui! {
-            Typography(content = "View, Text, Button: every backend.".to_string())
+            Typography(content = "View, Text, Button, Pressable: every backend.".to_string())
         },
-        ui! { Typography(content = "Inputs".to_string(), kind = TypographyKind::H3) },
+        ui! { Typography(content = "Inputs + media".to_string(), kind = TypographyKind::H3) },
         ui! {
-            Typography(content = "Image, TextInput, TextArea, Slider, Toggle, ActivityIndicator: \
-                every backend including macOS. ScrollView on macOS uses a flat document view \
-                (real NSScrollView wrap pending).".to_string())
+            Typography(content = "Image, TextInput, TextArea, Slider, Toggle, ActivityIndicator, \
+                Icon: web / iOS / Android / macOS / wgpu all render real widgets. Icon shares \
+                its SVG parser across iOS + macOS via `apple/core::icon_path`. CPU + Win32 + \
+                Linux scaffolds use placeholder text for the inputs they don't yet wire to \
+                native widgets.".to_string())
         },
         ui! { Typography(content = "Lists".to_string(), kind = TypographyKind::H3) },
         ui! {
-            Typography(content = "Virtualizer: web + Android + iOS (single-section, vertical \
-                or horizontal). macOS not yet wired.".to_string())
+            Typography(content = "Virtualizer: web + Android + iOS + macOS (single-section, \
+                vertical or horizontal; macOS via NSCollectionView with real cell reuse). \
+                wgpu mounts every item. CPU / Win32 / Linux render placeholder text.".to_string())
         },
         ui! { Typography(content = "External SDKs".to_string(), kind = TypographyKind::H3) },
         ui! {
-            Typography(content = "`Primitive::External` registry is wired on web + iOS + Android \
-                (macOS and Roku pending). Per-SDK leaves: Video (web/iOS/Android), \
+            Typography(content = "`Primitive::External` registry is wired on web + iOS + \
+                Android + macOS. Per-SDK leaves: Video (web/iOS/Android), \
                 WebView (web full / iOS full / Android URL-only — Kotlin shim pending), \
                 Maps (web/iOS via MKMapView — Android leaf pending), \
-                idea-codeblock (web only).".to_string())
+                idea-codeblock (web only). wgpu / CPU / Win32 / Linux render placeholders \
+                for any unregistered or unsupported external kind.".to_string())
         },
     ];
     ui! { Stack(gap = StackGap::Md) { children } }

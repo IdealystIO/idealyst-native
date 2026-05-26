@@ -346,6 +346,12 @@ pub enum NodeKind {
         horizontal: bool,
         offset_x: f32,
         offset_y: f32,
+        /// Optional user-supplied `Primitive::ScrollView::on_scroll`
+        /// callback. The renderer / host's scroll-event dispatch
+        /// invokes this whenever `offset_x` or `offset_y` is mutated
+        /// \u{2014} pan, fling, springback, programmatic `scroll_to`
+        /// \u{2014} via [`fire_on_scroll`](crate::node::fire_on_scroll).
+        on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
     },
     /// Stable parent for reactive `when`/`switch` branch swaps.
     /// Same shape as a View; named separately so the renderer can
@@ -626,7 +632,7 @@ impl std::fmt::Debug for NodeKind {
             NodeKind::Slider { value, min, max, .. } => {
                 write!(f, "Slider({value} in {min}..={max})")
             }
-            NodeKind::ScrollView { horizontal, offset_x, offset_y } => {
+            NodeKind::ScrollView { horizontal, offset_x, offset_y, .. } => {
                 write!(
                     f,
                     "ScrollView(horizontal={horizontal}, offset={offset_x},{offset_y})"
@@ -788,4 +794,30 @@ pub fn new_node(kind: NodeKind, layout: LayoutNode) -> WgpuNode {
         accessibility: AccessibilityProps::default(),
         inferred_role: None,
     }))
+}
+
+/// Invoke the `on_scroll` callback (if any) registered on a
+/// `NodeKind::ScrollView`. Call this *after* mutating `offset_x` /
+/// `offset_y` from any of the host's scroll-driving paths (pan,
+/// fling tick, springback, programmatic `scroll_to`). The callback
+/// receives the current `(offset_x, offset_y)` in CSS-pixel /
+/// point units \u{2014} same as web / iOS / Android.
+///
+/// Clones the `Rc` so the borrow on the node ends before the
+/// callback runs (the callback may write a signal whose
+/// subscribers reach back into the node tree).
+pub(crate) fn fire_on_scroll(node: &WgpuNode) {
+    let (cb, x, y) = {
+        let n = node.borrow();
+        match &n.kind {
+            NodeKind::ScrollView {
+                on_scroll: Some(cb),
+                offset_x,
+                offset_y,
+                ..
+            } => (cb.clone(), *offset_x, *offset_y),
+            _ => return,
+        }
+    };
+    cb(x, y);
 }

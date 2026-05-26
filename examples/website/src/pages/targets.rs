@@ -1,6 +1,6 @@
 //! Every target — user-facing list of platforms idealyst runs on.
 
-use runtime_core::{ui, Primitive};
+use runtime_core::{ui, Primitive, Ref, ViewHandle};
 use idea_ui::{stack, typography, StackGap, TypographyKind, TypographyTone};
 
 use crate::pages::common::{page_header, page_section};
@@ -8,26 +8,26 @@ use crate::routes::BACKENDS_ROUTE;
 use crate::shell::{layout_with_toc, TocEntry};
 
 pub fn page() -> Primitive {
-    const PHONES: &str = "phones";
-    const DESKTOPS: &str = "desktops";
-    const BROWSER: &str = "browsers";
-    const NATIVE_GPU: &str = "native-gpu";
-    const EMBEDDED: &str = "embedded";
-    const TTY: &str = "terminal";
-    const TV: &str = "television";
-    const EXTENDING: &str = "extending";
-    const STATUS: &str = "implementation-status";
+    let phones_ref: Ref<ViewHandle> = Ref::new();
+    let desktops_ref: Ref<ViewHandle> = Ref::new();
+    let browser_ref: Ref<ViewHandle> = Ref::new();
+    let native_gpu_ref: Ref<ViewHandle> = Ref::new();
+    let embedded_ref: Ref<ViewHandle> = Ref::new();
+    let tty_ref: Ref<ViewHandle> = Ref::new();
+    let tv_ref: Ref<ViewHandle> = Ref::new();
+    let extending_ref: Ref<ViewHandle> = Ref::new();
+    let status_ref: Ref<ViewHandle> = Ref::new();
 
     let toc = vec![
-        TocEntry { id: PHONES, label: "Phones" },
-        TocEntry { id: DESKTOPS, label: "Desktops" },
-        TocEntry { id: BROWSER, label: "Browsers" },
-        TocEntry { id: NATIVE_GPU, label: "Native GPU rendering" },
-        TocEntry { id: EMBEDDED, label: "Embedded & custom" },
-        TocEntry { id: TTY, label: "Terminal" },
-        TocEntry { id: TV, label: "Television" },
-        TocEntry { id: EXTENDING, label: "Adding your own target" },
-        TocEntry { id: STATUS, label: "Implementation status" },
+        TocEntry { handle: phones_ref, label: "Phones" },
+        TocEntry { handle: desktops_ref, label: "Desktops" },
+        TocEntry { handle: browser_ref, label: "Browsers" },
+        TocEntry { handle: native_gpu_ref, label: "Native GPU rendering" },
+        TocEntry { handle: embedded_ref, label: "Embedded & custom" },
+        TocEntry { handle: tty_ref, label: "Terminal" },
+        TocEntry { handle: tv_ref, label: "Television" },
+        TocEntry { handle: extending_ref, label: "Adding your own target" },
+        TocEntry { handle: status_ref, label: "Implementation status" },
     ];
 
     let content = ui! {
@@ -37,15 +37,15 @@ pub fn page() -> Primitive {
                 "The full list of platforms idealyst runs on, plus the path to teach \
                  it about a new one. If you can drive it from code, you can ship to it."
             ) }
-            { page_section(PHONES, vec![phones()]) }
-            { page_section(DESKTOPS, vec![desktops()]) }
-            { page_section(BROWSER, vec![browser()]) }
-            { page_section(NATIVE_GPU, vec![native_gpu()]) }
-            { page_section(EMBEDDED, vec![embedded()]) }
-            { page_section(TTY, vec![tty()]) }
-            { page_section(TV, vec![tv()]) }
-            { page_section(EXTENDING, vec![extending()]) }
-            { page_section(STATUS, vec![status_link()]) }
+            { page_section(phones_ref, vec![phones()]) }
+            { page_section(desktops_ref, vec![desktops()]) }
+            { page_section(browser_ref, vec![browser()]) }
+            { page_section(native_gpu_ref, vec![native_gpu()]) }
+            { page_section(embedded_ref, vec![embedded()]) }
+            { page_section(tty_ref, vec![tty()]) }
+            { page_section(tv_ref, vec![tv()]) }
+            { page_section(extending_ref, vec![extending()]) }
+            { page_section(status_ref, vec![status_link()]) }
         }
     };
     layout_with_toc(content, toc)

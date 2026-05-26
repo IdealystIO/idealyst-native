@@ -242,6 +242,19 @@ pub struct AndroidBackend {
     /// [`sticky::on_scroll_event`]. See [`sticky`] for the rationale
     /// (side registry over ScrollView subclass).
     pub(crate) sticky_registry: sticky::StickyRegistry,
+    /// User-supplied `on_scroll` callbacks for `Primitive::ScrollView`.
+    /// Keyed by the scroll view's JObject pointer. Lives parallel to
+    /// `sticky_registry` so both subsystems can ride the single
+    /// `setOnScrollChangeListener` slot Android allows per view \u{2014}
+    /// the JNI dispatch fans out to both registries on every scroll
+    /// event.
+    pub(crate) scroll_observers: std::collections::HashMap<usize, Rc<dyn Fn(f32, f32)>>,
+    /// Centralized "Kotlin `RustStickyScrollListener` attached to
+    /// this scroll view" map, refcounted across the sticky subsystem
+    /// and `on_scroll`. Both call into [`sticky::ensure_scroll_listener`]
+    /// to install once; the listener is detached only when both
+    /// subsystems release.
+    pub(crate) scroll_listeners: std::collections::HashMap<usize, jni::objects::GlobalRef>,
     /// Sticky views whose `apply_style` ran BEFORE their first
     /// `insert`, so the parent walk couldn't yet find an enclosing
     /// scroll view. The walker calls `apply_style` (via
@@ -376,6 +389,8 @@ impl AndroidBackend {
             nav_handler_instances: HashMap::new(),
             font_registry: font::FontRegistry::new(),
             sticky_registry: HashMap::new(),
+            scroll_observers: HashMap::new(),
+            scroll_listeners: HashMap::new(),
             pending_sticky: HashMap::new(),
         }
     }
@@ -928,11 +943,13 @@ fn promote_pending_sticky_recursive(
     view: &GlobalRef,
     pending: &mut HashMap<usize, f32>,
     registry: &mut sticky::StickyRegistry,
+    scroll_listeners: &mut HashMap<usize, GlobalRef>,
+    scroll_observers: &HashMap<usize, Rc<dyn Fn(f32, f32)>>,
     to_remove: &mut Vec<usize>,
 ) {
     let key = view.as_obj().as_raw() as usize;
     if let Some(&threshold) = pending.get(&key) {
-        if sticky::register(env, registry, view, threshold) {
+        if sticky::register(env, registry, scroll_listeners, view, threshold, scroll_observers) {
             to_remove.push(key);
         }
         // If register returned false, the view STILL has no scroll
@@ -966,7 +983,15 @@ fn promote_pending_sticky_recursive(
         let Ok(child_global) = env.new_global_ref(&child_obj) else {
             continue;
         };
-        promote_pending_sticky_recursive(env, &child_global, pending, registry, to_remove);
+        promote_pending_sticky_recursive(
+            env,
+            &child_global,
+            pending,
+            registry,
+            scroll_listeners,
+            scroll_observers,
+            to_remove,
+        );
     }
 }
 
@@ -980,6 +1005,8 @@ fn walk_and_deregister_sticky(
     env: &mut JNIEnv,
     view: &JObject,
     registry: &mut sticky::StickyRegistry,
+    scroll_listeners: &mut HashMap<usize, GlobalRef>,
+    scroll_observers: &mut HashMap<usize, Rc<dyn Fn(f32, f32)>>,
     pending: &mut HashMap<usize, f32>,
     sv_class: Option<&jni::objects::JClass>,
     hsv_class: Option<&jni::objects::JClass>,
@@ -991,7 +1018,7 @@ fn walk_and_deregister_sticky(
     let Ok(global) = env.new_global_ref(view) else {
         return;
     };
-    sticky::deregister(env, registry, &global);
+    sticky::deregister(env, registry, scroll_listeners, &global, scroll_observers);
     let key = global.as_obj().as_raw() as usize;
     pending.remove(&key);
 
@@ -1004,7 +1031,18 @@ fn walk_and_deregister_sticky(
         false
     };
     if is_scroll {
-        sticky::deregister_scroll_view(env, registry, &global);
+        // Drop any user-supplied on_scroll callback for this scroll
+        // view BEFORE we ask `deregister_scroll_view` to release the
+        // shared listener \u{2014} otherwise the listener slot stays
+        // pinned and the JVM-side listener leaks.
+        scroll_observers.remove(&key);
+        sticky::deregister_scroll_view(
+            env,
+            registry,
+            scroll_listeners,
+            &global,
+            scroll_observers,
+        );
     }
 
     // Recurse into children.
@@ -1022,7 +1060,16 @@ fn walk_and_deregister_sticky(
         if child_obj.is_null() {
             continue;
         }
-        walk_and_deregister_sticky(env, &child_obj, registry, pending, sv_class, hsv_class);
+        walk_and_deregister_sticky(
+            env,
+            &child_obj,
+            registry,
+            scroll_listeners,
+            scroll_observers,
+            pending,
+            sv_class,
+            hsv_class,
+        );
     }
 }
 
@@ -1187,6 +1234,8 @@ impl Backend for AndroidBackend {
                 &child_for_sticky,
                 &mut self.pending_sticky,
                 &mut self.sticky_registry,
+                &mut self.scroll_listeners,
+                &self.scroll_observers,
                 &mut to_remove,
             );
         });
@@ -1413,8 +1462,43 @@ impl Backend for AndroidBackend {
         crate::imp::scheduler::schedule_layout_pass_retry(0);
     }
 
-    fn create_scroll_view(&mut self, horizontal: bool, a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
+    fn create_scroll_view(
+        &mut self,
+        horizontal: bool,
+        on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
         let node = primitives::scroll_view::create(self, horizontal);
+
+        // Wire `on_scroll` via the shared Kotlin listener. The
+        // `setOnScrollChangeListener` slot is also used by
+        // `Position::Sticky` children; both subsystems install via
+        // [`sticky::ensure_scroll_listener`] which is idempotent.
+        // Scroll positions reported here are converted from device
+        // pixels (Android's native unit on `View.getScrollY()`) to
+        // dp via the scroll view's display density, so author code
+        // sees the same coordinate space across every backend.
+        if let Some(cb) = on_scroll {
+            let scroll_key = Self::node_key(&node);
+            // Density read up front \u{2014} reading per-event would
+            // hit JNI on every scroll tick.
+            let density = with_env(|env| density_of(env, &node.as_obj()).unwrap_or(1.0));
+            let density = if density <= 0.0 { 1.0 } else { density };
+            let wrapped: Rc<dyn Fn(f32, f32)> = Rc::new(move |x_px, y_px| {
+                cb(x_px / density, y_px / density);
+            });
+            self.scroll_observers.insert(scroll_key, wrapped);
+            let node_clone = node.clone();
+            with_env(|env| {
+                sticky::ensure_scroll_listener(
+                    env,
+                    &mut self.scroll_listeners,
+                    &node_clone,
+                    scroll_key,
+                );
+            });
+        }
+
         // ScrollView has no first-class role — Android handles scroll
         // chrome itself. apply() still writes author-set label / hint
         // / identifier when present.
@@ -1681,6 +1765,8 @@ impl Backend for AndroidBackend {
                 env,
                 &node.as_obj(),
                 &mut self.sticky_registry,
+                &mut self.scroll_listeners,
+                &mut self.scroll_observers,
                 &mut self.pending_sticky,
                 sv_class.as_ref(),
                 hsv_class.as_ref(),
@@ -1802,7 +1888,14 @@ impl Backend for AndroidBackend {
                     })
                     .unwrap_or(0.0);
                 let registered = with_env(|env| {
-                    sticky::register(env, &mut self.sticky_registry, node, threshold_top)
+                    sticky::register(
+                        env,
+                        &mut self.sticky_registry,
+                        &mut self.scroll_listeners,
+                        node,
+                        threshold_top,
+                        &self.scroll_observers,
+                    )
                 });
                 if !registered {
                     // No enclosing scroll view *yet*. Could be a
@@ -1815,7 +1908,13 @@ impl Backend for AndroidBackend {
             }
             _ => {
                 with_env(|env| {
-                    sticky::deregister(env, &mut self.sticky_registry, node);
+                    sticky::deregister(
+                        env,
+                        &mut self.sticky_registry,
+                        &mut self.scroll_listeners,
+                        node,
+                        &self.scroll_observers,
+                    );
                 });
                 self.pending_sticky.remove(&key);
             }
@@ -1973,11 +2072,28 @@ impl Backend for AndroidBackend {
         // "I'm a sticky child being detached" (deregister from
         // whatever scroll view owns me) and "I'm a scroll view
         // being detached" (deregister my whole entry).
-        with_env(|env| {
-            sticky::deregister(env, &mut self.sticky_registry, node);
-            sticky::deregister_scroll_view(env, &mut self.sticky_registry, node);
-        });
         let node_key = Self::node_key(node);
+        // Drop any user-supplied `on_scroll` callback for this node
+        // BEFORE asking the sticky deregister path to release the
+        // shared listener \u{2014} otherwise the listener slot stays
+        // pinned by the on_scroll registry.
+        self.scroll_observers.remove(&node_key);
+        with_env(|env| {
+            sticky::deregister(
+                env,
+                &mut self.sticky_registry,
+                &mut self.scroll_listeners,
+                node,
+                &self.scroll_observers,
+            );
+            sticky::deregister_scroll_view(
+                env,
+                &mut self.sticky_registry,
+                &mut self.scroll_listeners,
+                node,
+                &self.scroll_observers,
+            );
+        });
         self.pending_sticky.remove(&node_key);
         // If this node is a ScrollView outer, drop our held inner
         // GlobalRef so the JVM can GC the inner LinearLayout once

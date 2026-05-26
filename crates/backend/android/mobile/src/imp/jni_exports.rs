@@ -422,6 +422,15 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustStickyScrollListener_
                     scroll_y as f32,
                 );
             });
+            // Fan out to any user-supplied `on_scroll` callback
+            // registered for this scroll view. Cloning the `Rc` lets
+            // us drop the backend borrow before calling the closure
+            // \u{2014} the closure may write a `Signal` whose
+            // subscribers reach into the backend.
+            if let Some(cb) = b.scroll_observers.get(&(scroll_key as usize)).cloned() {
+                drop(b);
+                cb(scroll_x as f32, scroll_y as f32);
+            }
         }
     }));
 }

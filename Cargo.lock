@@ -2438,6 +2438,7 @@ dependencies = [
 name = "host-winit"
 version = "0.0.1"
 dependencies = [
+ "host-wgpu-accesskit",
  "log",
  "objc2 0.5.2",
  "objc2-app-kit",
@@ -5049,6 +5050,7 @@ dependencies = [
  "server",
  "tokio",
  "tower-http",
+ "web-sys",
 ]
 
 [[package]]

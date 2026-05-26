@@ -1,22 +1,22 @@
 //! Further reading — curated outbound links.
 
-use runtime_core::{ui, Primitive};
+use runtime_core::{ui, Primitive, Ref, ViewHandle};
 use idea_ui::{stack, typography, StackGap, TypographyKind, TypographyTone};
 
 use crate::pages::common::{page_header, page_section};
 use crate::shell::{layout_with_toc, TocEntry};
 
 pub fn page() -> Primitive {
-    const SOURCE: &str = "source";
-    const DOCS: &str = "design-docs";
-    const CRATES: &str = "crate-readmes";
-    const ACK: &str = "acknowledgements";
+    let source_ref: Ref<ViewHandle> = Ref::new();
+    let docs_ref: Ref<ViewHandle> = Ref::new();
+    let crates_ref: Ref<ViewHandle> = Ref::new();
+    let ack_ref: Ref<ViewHandle> = Ref::new();
 
     let toc = vec![
-        TocEntry { id: SOURCE, label: "Source" },
-        TocEntry { id: DOCS, label: "Design documents" },
-        TocEntry { id: CRATES, label: "Per-crate READMEs" },
-        TocEntry { id: ACK, label: "Acknowledgements" },
+        TocEntry { handle: source_ref, label: "Source" },
+        TocEntry { handle: docs_ref, label: "Design documents" },
+        TocEntry { handle: crates_ref, label: "Per-crate READMEs" },
+        TocEntry { handle: ack_ref, label: "Acknowledgements" },
     ];
 
     let content = ui! {
@@ -27,10 +27,10 @@ pub fn page() -> Primitive {
                  READMEs, the GitHub repository, and the projects that inspired \
                  this one."
             ) }
-            { page_section(SOURCE, vec![source_section()]) }
-            { page_section(DOCS, vec![docs_section()]) }
-            { page_section(CRATES, vec![crate_readmes()]) }
-            { page_section(ACK, vec![acknowledgements()]) }
+            { page_section(source_ref, vec![source_section()]) }
+            { page_section(docs_ref, vec![docs_section()]) }
+            { page_section(crates_ref, vec![crate_readmes()]) }
+            { page_section(ack_ref, vec![acknowledgements()]) }
         }
     };
     layout_with_toc(content, toc)

@@ -1,24 +1,24 @@
 //! Robot & MCP — first-class automation and agentic control.
 
-use runtime_core::{ui, Primitive};
+use runtime_core::{ui, Primitive, Ref, ViewHandle};
 use idea_ui::{stack, typography, StackGap, TypographyKind};
 
 use crate::pages::common::{code_panel, page_header, page_section};
 use crate::shell::{layout_with_toc, TocEntry};
 
 pub fn page() -> Primitive {
-    const REGISTRY: &str = "registry";
-    const E2E: &str = "e2e-tests";
-    const METHODS: &str = "methods-macro";
-    const MCP: &str = "mcp-server";
-    const BUILD: &str = "build-profile";
+    let registry_ref: Ref<ViewHandle> = Ref::new();
+    let e2e_ref: Ref<ViewHandle> = Ref::new();
+    let methods_ref: Ref<ViewHandle> = Ref::new();
+    let mcp_ref: Ref<ViewHandle> = Ref::new();
+    let build_ref: Ref<ViewHandle> = Ref::new();
 
     let toc = vec![
-        TocEntry { id: REGISTRY, label: "The introspection registry" },
-        TocEntry { id: E2E, label: "E2E test harnesses" },
-        TocEntry { id: METHODS, label: "methods! { ... }" },
-        TocEntry { id: MCP, label: "MCP server" },
-        TocEntry { id: BUILD, label: "Gated on a Cargo feature" },
+        TocEntry { handle: registry_ref, label: "The introspection registry" },
+        TocEntry { handle: e2e_ref, label: "E2E test harnesses" },
+        TocEntry { handle: methods_ref, label: "methods! { ... }" },
+        TocEntry { handle: mcp_ref, label: "MCP server" },
+        TocEntry { handle: build_ref, label: "Gated on a Cargo feature" },
     ];
 
     let content = ui! {
@@ -30,11 +30,11 @@ pub fn page() -> Primitive {
                  drives E2E test harnesses, IDE tooling, and an MCP server an LLM \
                  can use as a tool surface."
             ) }
-            { page_section(REGISTRY, vec![registry()]) }
-            { page_section(E2E, vec![e2e_tests()]) }
-            { page_section(METHODS, vec![methods_macro()]) }
-            { page_section(MCP, vec![mcp_server()]) }
-            { page_section(BUILD, vec![build_profile()]) }
+            { page_section(registry_ref, vec![registry()]) }
+            { page_section(e2e_ref, vec![e2e_tests()]) }
+            { page_section(methods_ref, vec![methods_macro()]) }
+            { page_section(mcp_ref, vec![mcp_server()]) }
+            { page_section(build_ref, vec![build_profile()]) }
         }
     };
     layout_with_toc(content, toc)

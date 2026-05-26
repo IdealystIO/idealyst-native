@@ -1055,7 +1055,12 @@ impl Backend for IosBackend {
         }
     }
 
-    fn create_scroll_view(&mut self, horizontal: bool, a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
+    fn create_scroll_view(
+        &mut self,
+        horizontal: bool,
+        on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
         // Plain UIScrollView, frame-based. Children are added
         // directly as subviews (no inner UIStackView). Their frames
         // come from Taffy via `apply_frames`. We sync the scroll
@@ -1072,6 +1077,16 @@ impl Backend for IosBackend {
             let _: () = unsafe { msg_send![&scroll, setAlwaysBounceHorizontal: true] };
         } else {
             let _: () = unsafe { msg_send![&scroll, setAlwaysBounceVertical: true] };
+        }
+
+        // Wire `on_scroll` via UIScrollViewDelegate. The delegate
+        // forwards `scrollViewDidScroll:` into the Rust closure with
+        // (contentOffset.x, contentOffset.y) in UIKit points \u{2014}
+        // same units as the web backend's CSS-pixel offset.
+        if let Some(cb) = on_scroll {
+            let delegate = crate::imp::callbacks::ScrollDelegate::new(self.mtm, cb);
+            let _: () = unsafe { msg_send![&scroll, setDelegate: &*delegate] };
+            self.retain_target(&delegate);
         }
 
         let _ = self.layout_for_view(&scroll);

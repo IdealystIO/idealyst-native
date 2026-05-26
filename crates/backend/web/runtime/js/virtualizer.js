@@ -124,53 +124,54 @@
                 this.keyToIdx.set(this.cb.itemKey(i), i);
             }
 
-            // Reconcile mounted set against the new data:
-            // unmount items whose key no longer exists.
+            // Reconcile mounted set against the new data in two
+            // passes. Phase 1: unmount any entry whose key is gone
+            // (the underlying item was removed) — this is the only
+            // place that drops DOM + per-item Rust scopes.
             for (const [oldIdx, entry] of this.mountedByIdx) {
                 if (!this.keyToIdx.has(entry.key)) {
                     this._unmountEntry(oldIdx);
                 }
             }
-            // Re-key surviving mounted entries — same scope, possibly
-            // new index.
-            const survivors = [];
-            for (const [_, entry] of this.mountedByIdx) {
+            // Phase 2: re-key every survivor by its NEW idx. Two
+            // groups:
+            //   - newIdx === entry.idx → item stayed in place; keep
+            //     the existing map entry untouched.
+            //   - newIdx !== entry.idx → item moved (reorder); we
+            //     need to move it to a new map slot AND update its
+            //     `entry.idx` field so subsequent `update()` calls
+            //     position it correctly.
+            //
+            // The pre-fix version collected ONLY the moved entries
+            // into `survivors`, then `mountedByIdx.clear()` wiped
+            // every still-in-place entry from the map. The next
+            // `update()` couldn't find them and called `mountItem`
+            // again — even though the DOM nodes were still attached
+            // — producing the doubled-render bug.
+            //
+            // Snapshot first so we can iterate while mutating the
+            // map. `entries()` returns a live iterator on Map, but
+            // we'd be deleting + inserting under the same iteration.
+            const snapshot = Array.from(this.mountedByIdx.entries());
+            const moved = [];
+            for (const [oldIdx, entry] of snapshot) {
                 const newIdx = this.keyToIdx.get(entry.key);
-                if (newIdx !== undefined && newIdx !== entry.idx) {
-                    survivors.push({ entry, newIdx });
+                if (newIdx === undefined) {
+                    // Already unmounted in phase 1. Nothing to do.
+                    continue;
+                }
+                if (newIdx !== oldIdx) {
+                    this.mountedByIdx.delete(oldIdx);
+                    moved.push({ entry, newIdx });
                 }
             }
-            // Rebuild the mountedByIdx map after collecting survivors,
-            // because we're going to change keys in place.
-            this.mountedByIdx.clear();
-            for (const [_, entry] of survivors.length === 0
-                ? [...this._rebuiltSurvivorMap()]
-                : this._withSurvivors(survivors)) {
-                this.mountedByIdx.set(entry.idx, entry);
+            for (const { entry, newIdx } of moved) {
+                entry.idx = newIdx;
+                this.mountedByIdx.set(newIdx, entry);
             }
             this.lastStart = -1;
             this.lastEnd = -1;
             this.update();
-        }
-
-        // Helper: yields current entries unchanged (for the no-reorder case).
-        *_rebuiltSurvivorMap() {
-            // After the keyToIdx pass above, mountedByIdx still holds
-            // entries from before — but we cleared it. Recover from the
-            // mounted DOM via mountedByIdx... wait, we cleared it. So
-            // we re-derive from the survivors list. If survivors is
-            // empty *and* we have nothing else, nothing to yield.
-            // (Practically: this path is the no-data-change path; the
-            // caller takes a different branch then.)
-            return;
-        }
-
-        // Helper: applies survivor reindex + emits entries.
-        *_withSurvivors(survivors) {
-            for (const { entry, newIdx } of survivors) {
-                entry.idx = newIdx;
-                yield [newIdx, entry];
-            }
         }
 
         /**

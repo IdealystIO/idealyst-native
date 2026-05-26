@@ -131,7 +131,13 @@ pub fn generate_wrapper(
     // on the wrapper to `manifest.lib_name`, which wasm-pack
     // prefers over the package name when present.
     let fcore_dep = source.dep("crates/runtime/core", &[]);
-    let bweb_dep = source.dep("crates/backend/web", &[]);
+    // The wrapper always installs `backend_web::install_async_executor()`
+    // so `runtime_core::driver::spawn_async` works inside any
+    // wasm app — required by `resource()`, `mutation()`, and the
+    // server-fn batch flusher. The export only exists when the
+    // `async-driver` feature on `backend-web` is on, so we enable
+    // it unconditionally here.
+    let bweb_dep = source.dep("crates/backend/web", &["async-driver"]);
     // `dev-client` is only needed in runtime-server mode. Declared as an
     // optional dep so plain wasm builds don't drag the `WireBackend`
     // replay engine into their bundle. We strip the outer braces from
@@ -277,9 +283,14 @@ thread_local! {{
 pub fn start() {{
     console_error_panic_hook::set_once();
 
-    // Scheduler + time source — both code paths need them.
+    // Scheduler + time source + async executor — all three code paths
+    // need them. The executor is what makes `runtime_core::driver::spawn_async`
+    // work on wasm; without it any async work (resource fetchers,
+    // server-fn calls, mutation triggers) panics at first poll with
+    // "no AsyncExecutor installed".
     backend_web::install_scheduler();
     backend_web::install_time_source();
+    backend_web::install_async_executor();
 
     #[cfg(feature = "runtime-server")]
     {{

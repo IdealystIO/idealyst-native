@@ -1,6 +1,6 @@
 //! Quickstart — scaffold a project and run it.
 
-use runtime_core::{ui, Primitive};
+use runtime_core::{ui, Primitive, Ref, ViewHandle};
 use idea_ui::{stack, typography, StackGap, TypographyKind, TypographyTone};
 
 use crate::pages::common::{code_panel, page_header, page_section};
@@ -8,20 +8,20 @@ use crate::routes::CONCEPTS_ROUTE;
 use crate::shell::{layout_with_toc, TocEntry};
 
 pub fn page() -> Primitive {
-    const SCAFFOLD: &str = "scaffold";
-    const LAYOUT: &str = "project-layout";
-    const RUN_WEB: &str = "run-web";
-    const RUN_NATIVE: &str = "run-native";
-    const EDIT: &str = "make-a-change";
-    const NEXT: &str = "next";
+    let scaffold_ref: Ref<ViewHandle> = Ref::new();
+    let layout_ref: Ref<ViewHandle> = Ref::new();
+    let run_web_ref: Ref<ViewHandle> = Ref::new();
+    let run_native_ref: Ref<ViewHandle> = Ref::new();
+    let edit_ref: Ref<ViewHandle> = Ref::new();
+    let next_ref: Ref<ViewHandle> = Ref::new();
 
     let toc = vec![
-        TocEntry { id: SCAFFOLD, label: "Scaffold a project" },
-        TocEntry { id: LAYOUT, label: "Project layout" },
-        TocEntry { id: RUN_WEB, label: "Run on web" },
-        TocEntry { id: RUN_NATIVE, label: "Run on iOS / Android" },
-        TocEntry { id: EDIT, label: "Make a change" },
-        TocEntry { id: NEXT, label: "Next: understand the model" },
+        TocEntry { handle: scaffold_ref, label: "Scaffold a project" },
+        TocEntry { handle: layout_ref, label: "Project layout" },
+        TocEntry { handle: run_web_ref, label: "Run on web" },
+        TocEntry { handle: run_native_ref, label: "Run on iOS / Android" },
+        TocEntry { handle: edit_ref, label: "Make a change" },
+        TocEntry { handle: next_ref, label: "Next: understand the model" },
     ];
 
     let content = ui! {
@@ -31,12 +31,12 @@ pub fn page() -> Primitive {
                 "Scaffold a new project, edit one file, and watch it run on web, \
                  iOS, and Android with hot-reload."
             ) }
-            { page_section(SCAFFOLD, vec![scaffold()]) }
-            { page_section(LAYOUT, vec![layout_section()]) }
-            { page_section(RUN_WEB, vec![run_web()]) }
-            { page_section(RUN_NATIVE, vec![run_native()]) }
-            { page_section(EDIT, vec![edit_and_reload()]) }
-            { page_section(NEXT, vec![next()]) }
+            { page_section(scaffold_ref, vec![scaffold()]) }
+            { page_section(layout_ref, vec![layout_section()]) }
+            { page_section(run_web_ref, vec![run_web()]) }
+            { page_section(run_native_ref, vec![run_native()]) }
+            { page_section(edit_ref, vec![edit_and_reload()]) }
+            { page_section(next_ref, vec![next()]) }
         }
     };
     layout_with_toc(content, toc)

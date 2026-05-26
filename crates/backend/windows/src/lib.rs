@@ -43,9 +43,11 @@ use runtime_layout::LayoutTree;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DestroyWindow, SetWindowTextW, ShowWindow, BS_DEFPUSHBUTTON,
-    SS_LEFT, SW_SHOW, WINDOW_EX_STYLE, WS_CHILD, WS_VISIBLE,
+    CreateWindowExW, DestroyWindow, GetClientRect, SetWindowPos, SetWindowTextW,
+    ShowWindow, BS_DEFPUSHBUTTON, SS_LEFT, SWP_NOACTIVATE, SWP_NOZORDER, SW_SHOW,
+    WINDOW_EX_STYLE, WS_CHILD, WS_VISIBLE,
 };
+use windows::Win32::Foundation::RECT;
 
 // =========================================================================
 // Node — opaque HWND wrapper so the Backend trait's `type Node` is Clone
@@ -90,17 +92,37 @@ pub struct WindowsBackend {
     /// `id → LayoutNode` mapping so finish() can walk every
     /// registered HWND and assign its frame.
     layout_for_id: HashMap<u64, runtime_layout::LayoutNode>,
+    /// Next available Win32 control id. Win32 reserves 0..100
+    /// (the IDOK / IDCANCEL / IDABORT family + standard control
+    /// ids); we start at 100 so our buttons don't collide with
+    /// anything the host might handle separately. u16 because
+    /// `WM_COMMAND` carries the control id in the low word of
+    /// wParam.
+    next_control_id: u16,
+    /// Click handlers keyed by Win32 control id. The host's
+    /// `WndProc` calls [`Self::dispatch_command`] from its
+    /// `WM_COMMAND` arm; we look up the closure and invoke it.
+    /// Stored as `Rc` so the same closure can also live on the
+    /// `NodeMeta`'s `on_click` slot for diagnostics + future
+    /// keyboard-activation routing.
+    command_handlers: HashMap<u16, Rc<dyn Fn()>>,
 }
 
 struct NodeMeta {
     /// HWND we created for this node.
     #[allow(dead_code)]
     hwnd: HWND,
-    /// On-click handler installed for Button / Pressable. Fired by
-    /// the host's `WM_COMMAND` dispatcher (TBD — placeholder hook
-    /// for the eventual control-id → handler map).
+    /// On-click handler. Same `Rc` is also registered in
+    /// [`WindowsBackend::command_handlers`] under
+    /// `command_id`. Held here too so Drop can clean both
+    /// stores in one place.
     #[allow(dead_code)]
     on_click: Option<Rc<dyn Fn()>>,
+    /// Win32 control id passed to `CreateWindowExW` via the
+    /// `hMenu` slot. `None` for non-interactive widgets
+    /// (Text labels, container Statics). Used by `Drop` to
+    /// retire the matching entry in `command_handlers`.
+    control_id: Option<u16>,
 }
 
 impl WindowsBackend {
@@ -115,6 +137,8 @@ impl WindowsBackend {
             nodes: HashMap::new(),
             layout: LayoutTree::new(),
             layout_for_id: HashMap::new(),
+            next_control_id: 100,
+            command_handlers: HashMap::new(),
         }
     }
 
@@ -124,15 +148,67 @@ impl WindowsBackend {
         id
     }
 
-    /// Create a child HWND of class `class_name` with `text` as its
-    /// initial window text, parented under the host HWND.
+    /// Allocate the next Win32 control id. Wraps at `u16::MAX`;
+    /// in practice apps allocate a few hundred at most, so the
+    /// 65 k id space is plenty. Wrap-around would silently
+    /// collide with a still-live handler — log a warning when
+    /// it happens so the failure mode is visible.
+    fn alloc_control_id(&mut self) -> u16 {
+        let id = self.next_control_id;
+        self.next_control_id = self.next_control_id.wrapping_add(1);
+        if self.next_control_id == 0 {
+            log::warn!(
+                "[backend-windows] control id allocator wrapped \
+                 — distinct controls may now share an id"
+            );
+            self.next_control_id = 100;
+        }
+        id
+    }
+
+    /// Fire the click handler registered for `control_id`. The
+    /// host shell calls this from its `WndProc`'s `WM_COMMAND`
+    /// arm with `LOWORD(wParam)` as the id; we look up the
+    /// closure and invoke it. Returns `true` if a handler was
+    /// found and fired, `false` if the id is unknown (which
+    /// means either a button has been released since the message
+    /// was queued, or the host received `WM_COMMAND` from
+    /// something we didn't create).
+    pub fn dispatch_command(&self, control_id: u16) -> bool {
+        if let Some(handler) = self.command_handlers.get(&control_id) {
+            (handler)();
+            return true;
+        }
+        false
+    }
+
+    /// Create a child HWND of class `class_name` with `text` as
+    /// its initial window text, parented under the host HWND.
+    ///
+    /// `control_id` is passed via `CreateWindowExW`'s `hMenu` slot
+    /// — when the window is a `WS_CHILD`, Win32 reinterprets that
+    /// slot as the child's control id, which is what
+    /// `WM_COMMAND` reports back in `LOWORD(wParam)`. `None`
+    /// means "no command routing needed" (Text labels, containers
+    /// that never fire WM_COMMAND).
     fn create_child(
         &mut self,
         class_name: PCWSTR,
         text: &str,
         style: u32,
+        control_id: Option<u16>,
     ) -> WindowsNode {
         let text_wide = to_pcwstr(text);
+        // hMenu carries the control id for WS_CHILD windows. The
+        // `windows` crate types it as `Option<HMENU>`; HMENU is a
+        // `HANDLE` newtype wrapping a pointer. Casting a u16
+        // through `usize` to a pointer gives Win32 the value it
+        // wants in the low word.
+        let hmenu = control_id.map(|cid| {
+            windows::Win32::UI::WindowsAndMessaging::HMENU(
+                cid as usize as *mut std::ffi::c_void,
+            )
+        });
         let hwnd = unsafe {
             CreateWindowExW(
                 WINDOW_EX_STYLE(0),
@@ -146,7 +222,7 @@ impl WindowsBackend {
                 0,
                 0,
                 Some(self.host_hwnd),
-                None,
+                hmenu,
                 None,
                 None,
             )
@@ -157,7 +233,10 @@ impl WindowsBackend {
         let id = self.alloc_id();
         let layout = self.layout.new_node();
         self.layout_for_id.insert(id, layout);
-        self.nodes.insert(id, NodeMeta { hwnd, on_click: None });
+        self.nodes.insert(
+            id,
+            NodeMeta { hwnd, on_click: None, control_id },
+        );
         WindowsNode { id, hwnd }
     }
 
@@ -165,15 +244,21 @@ impl WindowsBackend {
     /// "X not supported" text in a `STATIC` HWND. Routes through
     /// `create_child` so the layout tree picks it up too.
     fn placeholder(&mut self, message: &str) -> WindowsNode {
-        self.create_child(class_static(), message, SS_LEFT.0 as u32)
+        self.create_child(class_static(), message, SS_LEFT.0 as u32, None)
     }
 }
 
 impl Drop for WindowsBackend {
     fn drop(&mut self) {
         // DestroyWindow each child we created. The host's HWND is
-        // not ours to destroy.
+        // not ours to destroy. Drop the matching command handler
+        // entry too — if the host's WndProc fires `dispatch_command`
+        // with a now-stale id after the backend has dropped, we
+        // simply won't find a handler and the call returns false.
         for (_, meta) in self.nodes.drain() {
+            if let Some(cid) = meta.control_id {
+                self.command_handlers.remove(&cid);
+            }
             if !meta.hwnd.is_invalid() {
                 let _ = unsafe { DestroyWindow(meta.hwnd) };
             }
@@ -235,11 +320,11 @@ impl Backend for WindowsBackend {
         // STATIC class with no text — acts as a transparent
         // container. Real Win32 apps typically use a custom WNDCLASS
         // for layout containers; STATIC is fine as a scaffold.
-        self.create_child(class_static(), "", SS_LEFT.0 as u32)
+        self.create_child(class_static(), "", SS_LEFT.0 as u32, None)
     }
 
     fn create_text(&mut self, content: &str, _a11y: &AccessibilityProps) -> Self::Node {
-        self.create_child(class_static(), content, SS_LEFT.0 as u32)
+        self.create_child(class_static(), content, SS_LEFT.0 as u32, None)
     }
 
     fn create_button(
@@ -250,11 +335,23 @@ impl Backend for WindowsBackend {
         _trailing_icon: Option<&runtime_core::primitives::icon::IconData>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        let node = self.create_child(class_button(), label, BS_DEFPUSHBUTTON.0 as u32);
+        // Allocate a control id, install the handler in the
+        // dispatch table, and pass the id to `create_child` so
+        // CreateWindowExW records it on the HWND. The host's
+        // WndProc routes `WM_COMMAND` with `LOWORD(wParam)` ==
+        // this id back through `dispatch_command`.
+        let control_id = self.alloc_control_id();
+        let handler = on_click.fire.clone();
+        self.command_handlers.insert(control_id, handler.clone());
+        let node = self.create_child(
+            class_button(),
+            label,
+            BS_DEFPUSHBUTTON.0 as u32,
+            Some(control_id),
+        );
         if let Some(meta) = self.nodes.get_mut(&node.id) {
-            meta.on_click = Some(on_click.fire.clone());
+            meta.on_click = Some(handler);
         }
-        // TODO: wire WM_COMMAND → on_click via a control-id map.
         node
     }
 
@@ -263,7 +360,25 @@ impl Backend for WindowsBackend {
         on_click: Rc<dyn Fn()>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        let node = self.create_child(class_static(), "", SS_LEFT.0 as u32);
+        // STATIC controls don't fire WM_COMMAND natively, so the
+        // control-id approach doesn't help for Pressable as it
+        // does for BUTTON. A proper Pressable needs an `STN_*`
+        // notification (via `SS_NOTIFY` style + `WM_COMMAND`
+        // with `STN_CLICKED`) or a `WM_LBUTTONDOWN`-subclassed
+        // wndproc on the static. For the scaffold we allocate a
+        // control id and install `SS_NOTIFY` so the host's
+        // dispatcher path treats it like Button; the actual
+        // subclassing is a follow-up the host owns.
+        let control_id = self.alloc_control_id();
+        self.command_handlers.insert(control_id, on_click.clone());
+        let node = self.create_child(
+            class_static(),
+            "",
+            (SS_LEFT.0
+                | windows::Win32::UI::WindowsAndMessaging::SS_NOTIFY.0)
+                as u32,
+            Some(control_id),
+        );
         if let Some(meta) = self.nodes.get_mut(&node.id) {
             meta.on_click = Some(on_click);
         }
@@ -306,11 +421,75 @@ impl Backend for WindowsBackend {
         let _ = unsafe { SetWindowTextW(node.hwnd, wide.as_pcwstr()) };
     }
 
-    fn finish(&mut self, _root: Self::Node) {
-        // Real impl: compute layout, walk every registered HWND and
-        // SetWindowPos with the computed frame, request a redraw.
-        // Skipped in the scaffold — the host can drive this manually
-        // for now.
+    fn finish(&mut self, root: Self::Node) {
+        // Run Taffy against the host window's client rect, then
+        // walk every registered HWND and call SetWindowPos with
+        // its computed frame. Frames in Taffy are relative to the
+        // immediate parent; SetWindowPos takes coordinates
+        // relative to the parent HWND, and our `insert` reparents
+        // each child to its framework parent via `SetParent`, so
+        // the two coordinate systems line up directly.
+        let Some(root_layout) = self.layout_for_id.get(&root.id).copied() else {
+            return;
+        };
+
+        // Host client rect in pixels. GetClientRect can fail if the
+        // window has been destroyed; bail rather than feed garbage
+        // dimensions to the layout pass.
+        let mut rect = RECT::default();
+        if unsafe { GetClientRect(self.host_hwnd, &mut rect) }.is_err() {
+            return;
+        }
+        let width = (rect.right - rect.left).max(0) as f32;
+        let height = (rect.bottom - rect.top).max(0) as f32;
+        if width <= 0.0 || height <= 0.0 {
+            return;
+        }
+
+        self.layout.compute(root_layout, width, height);
+
+        // Collect (hwnd, frame) pairs first so we can release the
+        // borrow on `self.nodes` before issuing the Win32 calls.
+        // SetWindowPos is documented as safe to call from the
+        // owning thread; we issue them serially so the HWND tree
+        // doesn't see partial-state intermediate frames.
+        let mut updates: Vec<(HWND, i32, i32, i32, i32)> =
+            Vec::with_capacity(self.nodes.len());
+        for (id, meta) in &self.nodes {
+            let Some(layout) = self.layout_for_id.get(id).copied() else {
+                continue;
+            };
+            let frame = self.layout.frame_of(layout);
+            updates.push((
+                meta.hwnd,
+                frame.x.round() as i32,
+                frame.y.round() as i32,
+                frame.width.round() as i32,
+                frame.height.round() as i32,
+            ));
+        }
+        for (hwnd, x, y, w, h) in updates {
+            if hwnd.is_invalid() {
+                continue;
+            }
+            // `HWND_TOP` here would force every child to the top of
+            // the z-order on every layout pass — wasteful and
+            // visually disruptive. `SWP_NOZORDER` preserves whatever
+            // z-order the HWND already has. `SWP_NOACTIVATE` keeps
+            // input focus from jumping to whatever child we
+            // happen to move first.
+            let _ = unsafe {
+                SetWindowPos(
+                    hwnd,
+                    None,
+                    x,
+                    y,
+                    w,
+                    h,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                )
+            };
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -348,7 +527,7 @@ impl Backend for WindowsBackend {
         // Real Win32 EDIT control would land here. For the scaffold,
         // use a STATIC with the initial value so the field is at
         // least visible.
-        self.create_child(class_static(), initial_value, SS_LEFT.0 as u32)
+        self.create_child(class_static(), initial_value, SS_LEFT.0 as u32, None)
     }
 
     fn create_text_area(
@@ -359,7 +538,7 @@ impl Backend for WindowsBackend {
         _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        self.create_child(class_static(), initial_value, SS_LEFT.0 as u32)
+        self.create_child(class_static(), initial_value, SS_LEFT.0 as u32, None)
     }
 
     fn create_toggle(
@@ -386,11 +565,12 @@ impl Backend for WindowsBackend {
     fn create_scroll_view(
         &mut self,
         _horizontal: bool,
+        _on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // STATIC container — no clipping or scroll affordance yet.
         // Real impl needs a custom WNDCLASS with WM_VSCROLL handling.
-        self.create_child(class_static(), "", SS_LEFT.0 as u32)
+        self.create_child(class_static(), "", SS_LEFT.0 as u32, None)
     }
 
     fn create_activity_indicator(

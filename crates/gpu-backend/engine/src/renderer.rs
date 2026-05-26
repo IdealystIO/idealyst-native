@@ -320,14 +320,21 @@ impl Renderer {
     /// placeholder paint). Failures are remembered as
     /// `ImageCacheState::Failed`, so a broken `src` doesn't
     /// hit the file system every frame.
+    ///
+    /// `asset_bytes` lets the loader resolve `asset://{id}` srcs
+    /// against the backend's image-asset byte cache (populated by
+    /// `register_asset` for `AssetTag::Image`). Filesystem-path
+    /// srcs ignore this lookup and fall through to
+    /// [`decode_and_upload`]'s `std::fs::read` path.
     fn get_or_load_image(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         src: &str,
+        asset_bytes: Option<&[u8]>,
     ) -> Option<&ImageEntry> {
         if !self.image_cache.contains_key(src) {
-            let state = match decode_and_upload(device, queue, &self.image, src) {
+            let state = match decode_and_upload(device, queue, &self.image, src, asset_bytes) {
                 Some(entry) => ImageCacheState::Loaded(entry),
                 None => ImageCacheState::Failed,
             };
@@ -670,12 +677,22 @@ impl Renderer {
         // this frame. Each call mutably borrows `self.image_cache`,
         // so we do it as a separate pass before phase 2 collects
         // immutable references to the loaded bind groups.
+        //
+        // For `asset://{id}` sources we resolve the bytes from the
+        // backend's image-asset cache (populated by `register_asset`
+        // for `AssetTag::Image`); filesystem-path sources fall
+        // through to the cache's own resolver and `std::fs::read`.
         for req in image_requests
             .iter()
             .chain(nav_top_image_requests.iter())
             .chain(overlay_image_requests.iter())
         {
-            let _ = self.get_or_load_image(device, queue, &req.src);
+            let asset_bytes_owned: Option<Vec<u8>> =
+                resolve_asset_url(&req.src).and_then(|id| {
+                    backend.image_asset_bytes(id).map(|b| b.to_vec())
+                });
+            let asset_bytes: Option<&[u8]> = asset_bytes_owned.as_deref();
+            let _ = self.get_or_load_image(device, queue, &req.src, asset_bytes);
         }
         // Phase 2: resolve each request to either a real
         // textured-quad draw (cache hit / fresh load succeeded)
@@ -1859,7 +1876,7 @@ fn walk<'a>(
     // Capture scrollview offsets for the post-children scrollbar
     // overlay, computed before the borrow is released.
     let scrollbar_state: Option<(bool, f32, f32)> = match &data.kind {
-        NodeKind::ScrollView { horizontal, offset_x, offset_y } => {
+        NodeKind::ScrollView { horizontal, offset_x, offset_y, .. } => {
             Some((*horizontal, *offset_x, *offset_y))
         }
         _ => None,
@@ -3481,25 +3498,37 @@ fn render_epoch(now: Instant) -> Instant {
 /// decode failure — the caller caches that and falls back to
 /// the missing-image placeholder.
 ///
-/// `src` is currently treated as a filesystem path (absolute
-/// or relative to cwd). Future loaders (`http://`, embedded
-/// asset URIs) can branch on the scheme here without touching
-/// the cache or pipeline.
+/// Two source paths:
+/// - **`asset://{id}` URIs**: caller passes the pre-resolved
+///   bytes via `asset_bytes`. These come from the backend's
+///   image-asset cache populated by `register_asset`.
+/// - **Filesystem paths** (absolute or relative): fall through
+///   to [`resolve_asset_path`] + `std::fs::read`. Future
+///   `http://` loaders can branch here too.
 fn decode_and_upload(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     pipeline: &crate::image_pipeline::ImagePipeline,
     src: &str,
+    asset_bytes: Option<&[u8]>,
 ) -> Option<ImageEntry> {
-    let resolved = resolve_asset_path(src).or_else(|| {
-        log::warn!(
-            "image::resolve({src:?}) — not found in cwd, exe dir, or workspace root"
-        );
-        None
-    })?;
-    let bytes = std::fs::read(&resolved)
-        .map_err(|e| log::warn!("image::read({src:?} → {resolved:?}) failed: {e}"))
-        .ok()?;
+    let bytes: Vec<u8> = if let Some(asset_bytes) = asset_bytes {
+        // `asset://{id}` source — bytes already in memory. `to_vec`
+        // because the `image` crate's `load_from_memory` reads a
+        // slice and the caller's borrow can't necessarily outlive
+        // this function.
+        asset_bytes.to_vec()
+    } else {
+        let resolved = resolve_asset_path(src).or_else(|| {
+            log::warn!(
+                "image::resolve({src:?}) — not found in cwd, exe dir, or workspace root"
+            );
+            None
+        })?;
+        std::fs::read(&resolved)
+            .map_err(|e| log::warn!("image::read({src:?} → {resolved:?}) failed: {e}"))
+            .ok()?
+    };
     let decoded = image::load_from_memory(&bytes)
         .map_err(|e| log::warn!("image::decode({src:?}) failed: {e}"))
         .ok()?
@@ -3552,6 +3581,18 @@ fn decode_and_upload(
         ],
     });
     Some(ImageEntry { texture, view, bind_group, size: (w, h) })
+}
+
+/// Parse an `asset://{id}` URL into its numeric `AssetId`.
+/// Returns `None` for any other scheme (filesystem paths,
+/// `http://`, malformed input). The framework's
+/// `image_asset!()` macro emits `asset://{id}` srcs; the wgpu
+/// renderer routes those through the backend's image-asset byte
+/// cache instead of the filesystem resolver.
+fn resolve_asset_url(src: &str) -> Option<runtime_core::AssetId> {
+    src.strip_prefix("asset://")
+        .and_then(|rest| rest.parse::<u64>().ok())
+        .map(runtime_core::AssetId)
 }
 
 /// Resolve a user-supplied image path to an absolute path on

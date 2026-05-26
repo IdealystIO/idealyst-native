@@ -467,7 +467,13 @@ where
             Command::CreateScrollView { id, horizontal, a11y } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
                 let a11y = self.a11y_props(a11y);
-                let node = self.backend.borrow_mut().create_scroll_view(horizontal, &a11y);
+                // `on_scroll` is `None`: the wire protocol doesn't yet
+                // ferry user `on_scroll` callbacks across server/client
+                // boundary (it would need a per-scroll-event message
+                // back to the server). The client-side backend's own
+                // scroll affordance (Position::Sticky, scrollbars,
+                // etc.) still works because those are handled locally.
+                let node = self.backend.borrow_mut().create_scroll_view(horizontal, None, &a11y);
                 self.nodes.insert(id, node);
             }
             Command::CreateActivityIndicator { id, size, color, a11y } => {

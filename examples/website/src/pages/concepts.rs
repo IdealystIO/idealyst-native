@@ -1,6 +1,6 @@
 //! Core concepts — app vs host crates, Primitive, signals, ui!, the Backend trait.
 
-use runtime_core::{ui, Primitive};
+use runtime_core::{ui, Primitive, Ref, ViewHandle};
 use idea_ui::{stack, typography, StackGap, TypographyKind};
 
 use crate::pages::common::{code_panel, page_header, page_section};
@@ -8,24 +8,24 @@ use crate::routes::{BACKENDS_ROUTE, WHY_RUST_ROUTE};
 use crate::shell::{layout_with_toc, TocEntry};
 
 pub fn page() -> Primitive {
-    const APP_VS_HOST: &str = "app-vs-host";
-    const PRIMITIVES: &str = "primitives";
-    const REACTIVITY: &str = "reactivity";
-    const UI_MACRO: &str = "ui-macro";
-    const BUILDERS: &str = "builders";
-    const BACKEND: &str = "backend-trait";
-    const BUILDING: &str = "building-your-own";
-    const NEXT: &str = "where-next";
+    let app_vs_host_ref: Ref<ViewHandle> = Ref::new();
+    let primitives_ref: Ref<ViewHandle> = Ref::new();
+    let reactivity_ref: Ref<ViewHandle> = Ref::new();
+    let ui_macro_ref: Ref<ViewHandle> = Ref::new();
+    let builders_ref: Ref<ViewHandle> = Ref::new();
+    let backend_ref: Ref<ViewHandle> = Ref::new();
+    let building_ref: Ref<ViewHandle> = Ref::new();
+    let next_ref: Ref<ViewHandle> = Ref::new();
 
     let toc = vec![
-        TocEntry { id: APP_VS_HOST, label: "App vs host crate" },
-        TocEntry { id: PRIMITIVES, label: "Primitives are the vocabulary" },
-        TocEntry { id: REACTIVITY, label: "Signals (reactivity)" },
-        TocEntry { id: UI_MACRO, label: "The ui! macro" },
-        TocEntry { id: BUILDERS, label: "Builders and Primitive" },
-        TocEntry { id: BACKEND, label: "The Backend trait" },
-        TocEntry { id: BUILDING, label: "Building your own" },
-        TocEntry { id: NEXT, label: "Where to go from here" },
+        TocEntry { handle: app_vs_host_ref, label: "App vs host crate" },
+        TocEntry { handle: primitives_ref, label: "Primitives are the vocabulary" },
+        TocEntry { handle: reactivity_ref, label: "Signals (reactivity)" },
+        TocEntry { handle: ui_macro_ref, label: "The ui! macro" },
+        TocEntry { handle: builders_ref, label: "Builders and Primitive" },
+        TocEntry { handle: backend_ref, label: "The Backend trait" },
+        TocEntry { handle: building_ref, label: "Building your own" },
+        TocEntry { handle: next_ref, label: "Where to go from here" },
     ];
 
     let content = ui! {
@@ -37,14 +37,14 @@ pub fn page() -> Primitive {
                  builder/Primitive distinction, the Backend trait, and the path to \
                  building your own component library and theme system on top."
             ) }
-            { page_section(APP_VS_HOST, vec![app_vs_host()]) }
-            { page_section(PRIMITIVES, vec![primitives()]) }
-            { page_section(REACTIVITY, vec![reactivity()]) }
-            { page_section(UI_MACRO, vec![ui_macro()]) }
-            { page_section(BUILDERS, vec![builders()]) }
-            { page_section(BACKEND, vec![backend_trait()]) }
-            { page_section(BUILDING, vec![building_your_own()]) }
-            { page_section(NEXT, vec![where_next()]) }
+            { page_section(app_vs_host_ref, vec![app_vs_host()]) }
+            { page_section(primitives_ref, vec![primitives()]) }
+            { page_section(reactivity_ref, vec![reactivity()]) }
+            { page_section(ui_macro_ref, vec![ui_macro()]) }
+            { page_section(builders_ref, vec![builders()]) }
+            { page_section(backend_ref, vec![backend_trait()]) }
+            { page_section(building_ref, vec![building_your_own()]) }
+            { page_section(next_ref, vec![where_next()]) }
         }
     };
     layout_with_toc(content, toc)

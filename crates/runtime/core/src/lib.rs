@@ -38,6 +38,12 @@ mod resource;
 #[cfg(feature = "async-driver")]
 mod mutation;
 
+// `async_reducer()` — async dual of the sync `reducer()` in
+// `reactive.rs`. Bridges caller-owned `Signal<S>` state to an
+// async action via a reducer-shaped apply closure.
+#[cfg(feature = "async-driver")]
+mod async_reducer;
+
 // `NetworkState` — collapsed enum projection of the state structs
 // owned by `resource` and `mutation`. Lives next to those modules
 // under the same async-driver gate so it can reference both.
@@ -120,6 +126,8 @@ pub use reactive::{
 pub use resource::{resource, Resource, ResourceCancel, ResourceState};
 #[cfg(feature = "async-driver")]
 pub use mutation::{mutation, Mutation, MutationState};
+#[cfg(feature = "async-driver")]
+pub use async_reducer::{async_reducer, AsyncReducer, AsyncStatus};
 #[cfg(feature = "async-driver")]
 pub use network_state::NetworkState;
 pub use safe_area::{safe_area_insets, set_safe_area_insets, EdgeInsets, SafeAreaSides};

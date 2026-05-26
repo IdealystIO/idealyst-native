@@ -284,8 +284,8 @@ pub(super) fn build_inner<B: Backend + 'static>(
         Primitive::Toggle { value, on_change, style, ref_fill, accessibility, .. } => {
             toggle::build(backend, value, on_change, style, ref_fill, accessibility)
         }
-        Primitive::ScrollView { children, horizontal, style, ref_fill, safe_area_sides, accessibility, .. } => {
-            scroll_view::build(backend, children, horizontal, style, ref_fill, safe_area_sides, accessibility)
+        Primitive::ScrollView { children, horizontal, style, ref_fill, safe_area_sides, on_scroll, accessibility, .. } => {
+            scroll_view::build(backend, children, horizontal, style, ref_fill, safe_area_sides, on_scroll, accessibility)
         }
         Primitive::Slider { value, on_change, min, max, step, style, ref_fill, accessibility, .. } => {
             slider::build(backend, value, on_change, min, max, step, style, ref_fill, accessibility)

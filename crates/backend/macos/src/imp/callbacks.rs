@@ -204,6 +204,31 @@ declare_class!(
                 cb(ns_ref.to_string());
             }
         }
+
+        /// `NSTextDidChangeNotification` — fires for `NSTextView`
+        /// (multi-line editor backing our `TextArea` primitive)
+        /// on every edit. NSTextView is NOT an NSControl, so we
+        /// can't reach its content through `stringValue`; the
+        /// canonical accessor is `string` (returns `NSString*`).
+        /// Same callback Rc carries the value back to the
+        /// framework.
+        #[method(textDidChange:)]
+        fn text_did_change(&self, notification: &NSObjectRuntime) {
+            if let Some(cb) = self.ivars().callback.borrow().as_ref().cloned() {
+                let sender: *mut NSObjectRuntime =
+                    unsafe { msg_send![notification, object] };
+                if sender.is_null() {
+                    return;
+                }
+                let ns: *mut objc2_foundation::NSString =
+                    unsafe { msg_send![sender, string] };
+                if ns.is_null() {
+                    return;
+                }
+                let ns_ref: &objc2_foundation::NSString = unsafe { &*ns };
+                cb(ns_ref.to_string());
+            }
+        }
     }
 );
 
@@ -214,6 +239,71 @@ impl StringCallbackTarget {
     ) -> Retained<Self> {
         let this = mtm.alloc::<Self>();
         let this = this.set_ivars(StringCallbackTargetIvars {
+            callback: RefCell::new(Some(callback)),
+        });
+        unsafe { msg_send_id![super(this), init] }
+    }
+}
+
+// =========================================================================
+// ScrollObserverTarget — bridges `NSViewBoundsDidChangeNotification`
+// (fired on an NSScrollView's clipView whenever the user scrolls) to
+// a Rust `Fn(f32, f32)` closure.
+//
+// NSScrollView doesn't expose a delegate \u{2014} the canonical macOS
+// pattern is to flip the contentView's `postsBoundsChangedNotifications`
+// on, then observe `NSView.boundsDidChangeNotification` keyed on that
+// clipView. The observer reads the clipView's `documentVisibleRect`
+// origin to recover the current scroll offset.
+// =========================================================================
+
+pub(crate) struct ScrollObserverTargetIvars {
+    pub(crate) callback: RefCell<Option<Rc<dyn Fn(f32, f32)>>>,
+}
+
+declare_class!(
+    pub(crate) struct ScrollObserverTarget;
+
+    unsafe impl ClassType for ScrollObserverTarget {
+        type Super = NSObject;
+        type Mutability = mutability::MainThreadOnly;
+        const NAME: &'static str = "IdealystScrollObserverTarget";
+    }
+
+    impl DeclaredClass for ScrollObserverTarget {
+        type Ivars = ScrollObserverTargetIvars;
+    }
+
+    unsafe impl NSObjectProtocol for ScrollObserverTarget {}
+
+    unsafe impl ScrollObserverTarget {
+        #[method(boundsDidChange:)]
+        fn bounds_did_change(&self, notification: &NSObjectRuntime) {
+            let Some(cb) = self.ivars().callback.borrow().as_ref().cloned() else {
+                return;
+            };
+            // `notification.object` is the NSClipView whose bounds
+            // changed. Its `bounds.origin` is the current scroll
+            // offset in the clip view's coordinate space \u{2014}
+            // identical units to web/iOS (CSS pixels / points).
+            let clip: *mut objc2::runtime::AnyObject =
+                unsafe { msg_send![notification, object] };
+            if clip.is_null() {
+                return;
+            }
+            let bounds: objc2_foundation::CGRect = unsafe { msg_send![clip, bounds] };
+            cb(bounds.origin.x as f32, bounds.origin.y as f32);
+        }
+    }
+);
+
+impl ScrollObserverTarget {
+    pub(crate) fn new(
+        mtm: MainThreadMarker,
+        callback: Rc<dyn Fn(f32, f32)>,
+    ) -> Retained<Self> {
+        let this = mtm.alloc::<Self>();
+        let this = this.set_ivars(ScrollObserverTargetIvars {
             callback: RefCell::new(Some(callback)),
         });
         unsafe { msg_send_id![super(this), init] }

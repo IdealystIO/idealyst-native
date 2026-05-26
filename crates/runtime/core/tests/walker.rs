@@ -28,3 +28,5 @@ mod batched_repeat;
 mod control_flow;
 #[path = "walker/key_events.rs"]
 mod key_events;
+#[path = "walker/scroll_view_on_scroll.rs"]
+mod scroll_view_on_scroll;

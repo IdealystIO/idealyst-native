@@ -242,6 +242,14 @@ pub enum Primitive {
         /// scrolling content can pass under the status bar / home
         /// indicator while header/footer rows respect the inset.
         safe_area_sides: crate::SafeAreaSides,
+        /// Optional callback fired every time the user (or programmatic
+        /// `scroll_to`) changes the scroll offset. Arguments are
+        /// `(scroll_left_px, scroll_top_px)` in CSS pixels / native
+        /// points — uniform across every backend. Backends bind this
+        /// to their native scroll observer (web `scroll` event, iOS
+        /// `UIScrollViewDelegate::scrollViewDidScroll`, Android
+        /// `OnScrollChangeListener`, etc.).
+        on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         accessibility: AccessibilityProps,
     },
     /// Controlled numeric slider. Like `TextInput`/`Toggle`, the parent

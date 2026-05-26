@@ -83,9 +83,11 @@ pub(crate) struct StickyChild {
     pub(crate) last_translate: f32,
 }
 
-/// Per-scroll-view sticky state. Holds the
-/// `OnScrollChangeListener` `GlobalRef` while any child is
-/// registered; cleared and detached when the last child leaves.
+/// Per-scroll-view sticky state. Listener lifecycle lives in the
+/// `AndroidBackend::scroll_listeners` map \u{2014} the `Primitive::
+/// ScrollView` `on_scroll` callback rides the same Android
+/// `setOnScrollChangeListener` slot, so both subsystems coordinate
+/// install/detach through that shared registry.
 pub(crate) struct StickyScrollEntry {
     /// Global ref to the outer ScrollView/HorizontalScrollView.
     /// Retained so the listener-driven path can read its current
@@ -93,10 +95,6 @@ pub(crate) struct StickyScrollEntry {
     /// `view_to_layout` reference.
     pub(crate) scroll_view: GlobalRef,
     pub(crate) children: HashMap<usize, StickyChild>,
-    /// `Some` while any child is registered. Cleared when the last
-    /// child deregisters; the JVM-side `setOnScrollChangeListener(null)`
-    /// detaches the listener at the same time.
-    pub(crate) listener: Option<GlobalRef>,
 }
 
 /// Map from scroll view's JObject pointer → sticky bookkeeping.
@@ -209,27 +207,32 @@ fn key_of(node: &GlobalRef) -> usize {
 /// (possibly different) scroll view, we deregister first so the
 /// re-registration picks up any threshold or scroll-ancestor
 /// changes (e.g. the view moved between scroll containers).
+///
+/// `scroll_listeners` is the backend's shared "what scroll views
+/// already have the Kotlin listener attached" map. We consult it
+/// here and through `Primitive::ScrollView::on_scroll`'s wiring so
+/// both subsystems use a single `setOnScrollChangeListener` slot.
 pub(crate) fn register(
     env: &mut JNIEnv,
     registry: &mut StickyRegistry,
+    scroll_listeners: &mut HashMap<usize, GlobalRef>,
     view: &GlobalRef,
     threshold_top: f32,
+    on_scroll_observers: &HashMap<usize, std::rc::Rc<dyn Fn(f32, f32)>>,
 ) -> bool {
     let child_key = key_of(view);
 
     // Drop any stale registration first.
-    deregister(env, registry, view);
+    deregister(env, registry, scroll_listeners, view, on_scroll_observers);
 
     let Some(scroll_view) = find_enclosing_scroll_view(env, &view.as_obj()) else {
         return false;
     };
     let scroll_key = key_of(&scroll_view);
 
-    let needs_listener = !registry.contains_key(&scroll_key);
     let entry = registry.entry(scroll_key).or_insert_with(|| StickyScrollEntry {
         scroll_view: scroll_view.clone(),
         children: HashMap::new(),
-        listener: None,
     });
 
     entry.children.insert(
@@ -242,22 +245,7 @@ pub(crate) fn register(
         },
     );
 
-    if needs_listener {
-        // First child for this scroll view: install the Kotlin
-        // listener now so subsequent scroll events drive the
-        // recompute. We borrow back into the registry afterwards
-        // to stash the listener handle on the entry — the
-        // `or_insert_with` above already created the entry with
-        // `listener: None` and we'd need a second mutable borrow
-        // to write the listener through `entry`. Re-getting the
-        // entry by key is fine; the registry is a HashMap and we
-        // just inserted it.
-        if let Some(listener) = install_scroll_listener(env, &scroll_view, scroll_key) {
-            if let Some(e) = registry.get_mut(&scroll_key) {
-                e.listener = Some(listener);
-            }
-        }
-    }
+    ensure_scroll_listener(env, scroll_listeners, &scroll_view, scroll_key);
 
     true
 }
@@ -268,9 +256,17 @@ pub(crate) fn register(
 /// `position` changes from `Sticky` to something else.
 ///
 /// If removing this child empties the scroll view's child set, the
-/// scroll view's `OnScrollChangeListener` is detached and the
-/// `StickyScrollEntry` is removed from the registry.
-pub(crate) fn deregister(env: &mut JNIEnv, registry: &mut StickyRegistry, view: &GlobalRef) {
+/// scroll view's `OnScrollChangeListener` is detached \u{2014} but
+/// only if no `on_scroll` observer is still registered for the same
+/// scroll view (the listener is shared with the user-facing scroll
+/// callback).
+pub(crate) fn deregister(
+    env: &mut JNIEnv,
+    registry: &mut StickyRegistry,
+    scroll_listeners: &mut HashMap<usize, GlobalRef>,
+    view: &GlobalRef,
+    on_scroll_observers: &HashMap<usize, std::rc::Rc<dyn Fn(f32, f32)>>,
+) {
     let child_key = key_of(view);
 
     let mut emptied_scrolls = Vec::new();
@@ -293,20 +289,27 @@ pub(crate) fn deregister(env: &mut JNIEnv, registry: &mut StickyRegistry, view: 
     }
     for scroll_key in emptied_scrolls {
         if let Some(entry) = registry.remove(&scroll_key) {
-            detach_scroll_listener(env, &entry.scroll_view);
-            // Dropping `entry.listener` releases the GlobalRef; the
-            // JVM-side listener is no longer reachable from any view.
+            release_scroll_listener_if_unused(
+                env,
+                scroll_listeners,
+                &entry.scroll_view,
+                scroll_key,
+                registry,
+                on_scroll_observers,
+            );
         }
     }
 }
 
 /// Remove an entire scroll view's sticky bookkeeping. Used when the
 /// scroll view itself unmounts — clears each child's translation
-/// and detaches the listener.
+/// and releases the listener if nothing else is using it.
 pub(crate) fn deregister_scroll_view(
     env: &mut JNIEnv,
     registry: &mut StickyRegistry,
+    scroll_listeners: &mut HashMap<usize, GlobalRef>,
     scroll_view: &GlobalRef,
+    on_scroll_observers: &HashMap<usize, std::rc::Rc<dyn Fn(f32, f32)>>,
 ) {
     let scroll_key = key_of(scroll_view);
     let Some(mut entry) = registry.remove(&scroll_key) else {
@@ -320,46 +323,94 @@ pub(crate) fn deregister_scroll_view(
             &[JValue::Float(0.0)],
         );
     }
-    detach_scroll_listener(env, &entry.scroll_view);
-    let _ = entry.listener.take();
+    release_scroll_listener_if_unused(
+        env,
+        scroll_listeners,
+        &entry.scroll_view,
+        scroll_key,
+        registry,
+        on_scroll_observers,
+    );
 }
 
-/// Install the Kotlin `RustStickyScrollListener` on the given scroll
-/// view. The listener trampolines back into Rust on every scroll
-/// event with the scroll view's key, which the JNI export uses to
-/// find the matching registry entry and recompute each sticky
-/// child's translation.
-fn install_scroll_listener(
+/// Install the Kotlin `RustStickyScrollListener` on `scroll_view`
+/// if it isn't already attached. Idempotent: the second call from
+/// either subsystem (sticky-child registration or `on_scroll`
+/// wiring on `create_scroll_view`) is a no-op. Android allows only
+/// one listener per `setOnScrollChangeListener` slot, so both
+/// subsystems share the same Kotlin object \u{2014} the JNI dispatch
+/// fans out to both registries on every scroll event.
+pub(crate) fn ensure_scroll_listener(
     env: &mut JNIEnv,
+    scroll_listeners: &mut HashMap<usize, GlobalRef>,
     scroll_view: &GlobalRef,
     scroll_key: usize,
-) -> Option<GlobalRef> {
-    let listener_class = env
+) {
+    if scroll_listeners.contains_key(&scroll_key) {
+        return;
+    }
+    let Some(listener_class) = env
         .find_class("io/idealyst/runtime/RustStickyScrollListener")
-        .ok()?;
+        .ok()
+    else {
+        return;
+    };
     // Constructor takes a long (the scroll-view key). The key is
     // the JObject raw pointer — stable for the duration of the
     // GlobalRef the registry holds.
-    let listener = env
+    let Some(listener) = env
         .new_object(
             &listener_class,
             "(J)V",
             &[JValue::Long(scroll_key as jni::sys::jlong)],
         )
-        .ok()?;
-    let global = env.new_global_ref(&listener).ok()?;
+        .ok()
+    else {
+        return;
+    };
+    let Some(global) = env.new_global_ref(&listener).ok() else {
+        return;
+    };
     // Wire it as the scroll view's `OnScrollChangeListener`.
     // `View.setOnScrollChangeListener` has been on `View` since API
     // 23; ScrollView inherits it. The JNI sig uses the interface
     // type.
-    env.call_method(
-        scroll_view.as_obj(),
-        "setOnScrollChangeListener",
-        "(Landroid/view/View$OnScrollChangeListener;)V",
-        &[JValue::Object(&global.as_obj())],
-    )
-    .ok()?;
-    Some(global)
+    if env
+        .call_method(
+            scroll_view.as_obj(),
+            "setOnScrollChangeListener",
+            "(Landroid/view/View$OnScrollChangeListener;)V",
+            &[JValue::Object(&global.as_obj())],
+        )
+        .is_ok()
+    {
+        scroll_listeners.insert(scroll_key, global);
+    }
+}
+
+/// Detach the Kotlin listener from `scroll_view` if no subsystem
+/// still needs it \u{2014} i.e. no sticky child is registered AND no
+/// `on_scroll` observer is registered for the same scroll view. The
+/// listener slot is shared, so we have to consult both before
+/// pulling the plug.
+pub(crate) fn release_scroll_listener_if_unused(
+    env: &mut JNIEnv,
+    scroll_listeners: &mut HashMap<usize, GlobalRef>,
+    scroll_view: &GlobalRef,
+    scroll_key: usize,
+    sticky_registry: &StickyRegistry,
+    on_scroll_observers: &HashMap<usize, std::rc::Rc<dyn Fn(f32, f32)>>,
+) {
+    let sticky_in_use = sticky_registry
+        .get(&scroll_key)
+        .map(|e| !e.children.is_empty())
+        .unwrap_or(false);
+    let on_scroll_in_use = on_scroll_observers.contains_key(&scroll_key);
+    if sticky_in_use || on_scroll_in_use {
+        return;
+    }
+    detach_scroll_listener(env, scroll_view);
+    let _ = scroll_listeners.remove(&scroll_key);
 }
 
 /// Detach the scroll listener from a scroll view by passing `null`

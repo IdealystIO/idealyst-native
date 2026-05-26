@@ -1,26 +1,26 @@
 //! Navigation — stack / drawer / tab patterns + native back behavior.
 
-use runtime_core::{ui, Primitive};
+use runtime_core::{ui, Primitive, Ref, ViewHandle};
 use idea_ui::{stack, typography, StackGap, TypographyKind};
 
 use crate::pages::common::{code_panel, page_header, page_section};
 use crate::shell::{layout_with_toc, TocEntry};
 
 pub fn page() -> Primitive {
-    const SDKS: &str = "sdks";
-    const STACK: &str = "stack-navigator";
-    const DRAWER: &str = "drawer-navigator";
-    const TABS: &str = "tab-navigator";
-    const BACK: &str = "native-back";
-    const EXTENDING: &str = "extending";
+    let sdks_ref: Ref<ViewHandle> = Ref::new();
+    let stack_ref: Ref<ViewHandle> = Ref::new();
+    let drawer_ref: Ref<ViewHandle> = Ref::new();
+    let tabs_ref: Ref<ViewHandle> = Ref::new();
+    let back_ref: Ref<ViewHandle> = Ref::new();
+    let extending_ref: Ref<ViewHandle> = Ref::new();
 
     let toc = vec![
-        TocEntry { id: SDKS, label: "Three navigator SDKs" },
-        TocEntry { id: STACK, label: "Stack navigator" },
-        TocEntry { id: DRAWER, label: "Drawer navigator" },
-        TocEntry { id: TABS, label: "Tab navigator" },
-        TocEntry { id: BACK, label: "Native back, for free" },
-        TocEntry { id: EXTENDING, label: "Adding a new navigator" },
+        TocEntry { handle: sdks_ref, label: "Three navigator SDKs" },
+        TocEntry { handle: stack_ref, label: "Stack navigator" },
+        TocEntry { handle: drawer_ref, label: "Drawer navigator" },
+        TocEntry { handle: tabs_ref, label: "Tab navigator" },
+        TocEntry { handle: back_ref, label: "Native back, for free" },
+        TocEntry { handle: extending_ref, label: "Adding a new navigator" },
     ];
 
     let content = ui! {
@@ -31,12 +31,12 @@ pub fn page() -> Primitive {
                  idioms surfaced through one cross-platform API. Native back gestures \
                  work for free; the URL bar on web is real."
             ) }
-            { page_section(SDKS, vec![sdks()]) }
-            { page_section(STACK, vec![stack_pattern()]) }
-            { page_section(DRAWER, vec![drawer_pattern()]) }
-            { page_section(TABS, vec![tab_pattern()]) }
-            { page_section(BACK, vec![native_back()]) }
-            { page_section(EXTENDING, vec![extending()]) }
+            { page_section(sdks_ref, vec![sdks()]) }
+            { page_section(stack_ref, vec![stack_pattern()]) }
+            { page_section(drawer_ref, vec![drawer_pattern()]) }
+            { page_section(tabs_ref, vec![tab_pattern()]) }
+            { page_section(back_ref, vec![native_back()]) }
+            { page_section(extending_ref, vec![extending()]) }
         }
     };
     layout_with_toc(content, toc)

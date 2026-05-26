@@ -70,7 +70,7 @@ pub enum Event {
     CreateTextInput { placeholder: Option<String>, has_key_handler: bool },
     CreateTextArea { placeholder: Option<String>, has_key_handler: bool },
     CreateToggle { value: bool },
-    CreateScrollView { horizontal: bool },
+    CreateScrollView { horizontal: bool, has_on_scroll: bool },
     CreateSlider { value: f32, min: f32, max: f32, step: Option<f32> },
     CreateActivityIndicator,
     CreateVirtualizer { overscan: f32, horizontal: bool },
@@ -240,6 +240,11 @@ pub struct MockBackendCore {
     /// [`MockBackend::fire_key_event`] to synthesize a keydown without
     /// going through a real platform.
     pub(crate) key_handlers: Rc<RefCell<std::collections::HashMap<NodeId, runtime_core::primitives::key::KeyDownHandler>>>,
+    /// Registered `on_scroll` callbacks keyed by node id. Lets tests
+    /// call [`MockBackend::fire_scroll_event`] to synthesize a scroll
+    /// without driving an actual scroll event from a host.
+    pub(crate) scroll_handlers:
+        Rc<RefCell<std::collections::HashMap<NodeId, Rc<dyn Fn(f32, f32)>>>>,
 }
 
 impl Default for MockBackendCore {
@@ -248,6 +253,7 @@ impl Default for MockBackendCore {
             next_id: Rc::new(RefCell::new(0)),
             events: Rc::new(RefCell::new(Vec::new())),
             key_handlers: Rc::new(RefCell::new(std::collections::HashMap::new())),
+            scroll_handlers: Rc::new(RefCell::new(std::collections::HashMap::new())),
         }
     }
 }
@@ -344,6 +350,22 @@ impl MockBackend {
     ) -> Option<runtime_core::primitives::key::KeyOutcome> {
         let handler = self.core.key_handlers.borrow().get(&node).cloned()?;
         Some(handler(event))
+    }
+
+    /// Synthesize a scroll event on the registered `on_scroll`
+    /// handler for `node`. Returns `false` if no handler is
+    /// registered (i.e. the author didn't pass `on_scroll`). Used
+    /// by the regression test that proves `Primitive::ScrollView`'s
+    /// `on_scroll` callback fires through the Backend trait without
+    /// any backend-specific code in author land.
+    pub fn fire_scroll_event(&self, node: NodeId, x: f32, y: f32) -> bool {
+        let handler = self.core.scroll_handlers.borrow().get(&node).cloned();
+        if let Some(h) = handler {
+            h(x, y);
+            true
+        } else {
+            false
+        }
     }
 
     /// Count events matching a predicate.
@@ -644,10 +666,18 @@ impl Backend for MockBackend {
     fn create_scroll_view(
         &mut self,
         horizontal: bool,
+        on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         _a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let id = self.core.mint();
-        self.core.record(Event::CreateScrollView { horizontal });
+        let has_on_scroll = on_scroll.is_some();
+        if let Some(cb) = on_scroll {
+            self.core.scroll_handlers.borrow_mut().insert(id, cb);
+        }
+        self.core.record(Event::CreateScrollView {
+            horizontal,
+            has_on_scroll,
+        });
         id
     }
 

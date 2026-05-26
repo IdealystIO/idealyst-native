@@ -118,6 +118,15 @@ pub struct WgpuBackend {
     /// registry per-node to decide whether to apply a pin
     /// translate. See `crate::sticky` for the full design.
     pub(crate) sticky_registry: crate::sticky::StickyRegistry,
+    /// Cached image-asset bytes keyed by `AssetId`. Populated by
+    /// `register_asset` for `AssetTag::Image`. The renderer
+    /// resolves `asset://{id}` image sources by looking up the
+    /// bytes here and decoding through the same `image` crate
+    /// path as filesystem sources — same mount surface as iOS /
+    /// Android / macOS, which all store the decoded image keyed
+    /// by `AssetId` in their per-backend `ImageCache`.
+    pub(crate) image_asset_bytes:
+        std::collections::HashMap<runtime_core::AssetId, Vec<u8>>,
 }
 
 /// Per-node presence interpolation entry. `node` is a strong ref so
@@ -184,7 +193,21 @@ impl WgpuBackend {
             pending_announcements: Vec::new(),
             presence_tweens: std::collections::HashMap::new(),
             sticky_registry: crate::sticky::StickyRegistry::new(),
+            image_asset_bytes: std::collections::HashMap::new(),
         }
+    }
+
+    /// Look up the raw bytes for a registered image asset. Returns
+    /// `None` if no asset with that id was registered (the renderer
+    /// then falls back to its filesystem-path resolver). Exposed as
+    /// `pub` so the renderer in [`crate::renderer`] — which is in
+    /// the same crate but accesses `WgpuBackend` through `Host::
+    /// backend()` — can call without going through a private field.
+    pub fn image_asset_bytes(
+        &self,
+        id: runtime_core::AssetId,
+    ) -> Option<&[u8]> {
+        self.image_asset_bytes.get(&id).map(|v| v.as_slice())
     }
 
     /// Drain the live-region announcement queue accumulated by
@@ -615,6 +638,7 @@ impl Backend for WgpuBackend {
     fn create_scroll_view(
         &mut self,
         horizontal: bool,
+        on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let layout = self.layout.new_node();
@@ -637,6 +661,7 @@ impl Backend for WgpuBackend {
                 horizontal,
                 offset_x: 0.0,
                 offset_y: 0.0,
+                on_scroll,
             },
             layout,
         );
@@ -1155,34 +1180,61 @@ impl Backend for WgpuBackend {
 
     fn register_asset(
         &mut self,
-        _id: runtime_core::AssetId,
+        id: runtime_core::AssetId,
         kind: runtime_core::AssetTag,
         source: &runtime_core::AssetSource,
     ) {
-        // Only Font assets concern the wgpu backend's text path. Other
-        // asset kinds (Image, Audio, Blob) flow through their
-        // own pipelines or aren't supported yet — silently ignored.
-        if !matches!(kind, runtime_core::AssetTag::Font) {
-            return;
+        // Two paths: Font assets go into cosmic-text's font db so
+        // the text shaper can resolve them. Image assets go into
+        // our local byte cache so the renderer's `decode_and_upload`
+        // can resolve `asset://{id}` srcs against the same `image`
+        // crate decode path it uses for filesystem srcs. Other asset
+        // kinds (Audio, Blob) flow through their own pipelines or
+        // aren't supported yet — silently ignored.
+        match kind {
+            runtime_core::AssetTag::Font => {
+                if let runtime_core::AssetSource::Embedded { bytes, .. } = source {
+                    // `to_vec()` because `load_font_data` takes
+                    // ownership; the underlying bytes are
+                    // `'static` so the clone is cheap to amortize
+                    // (one-time per app font, not per shape).
+                    self.font_system
+                        .borrow_mut()
+                        .db_mut()
+                        .load_font_data(bytes.to_vec());
+                }
+                // Bundled / Remote font sources aren't supported
+                // here — the build-tool resolves Bundled into a
+                // per-platform path that the wgpu sim has no asset
+                // loader for, and Remote would require an async
+                // fetch the renderer can't issue.
+            }
+            runtime_core::AssetTag::Image => {
+                if let runtime_core::AssetSource::Embedded { bytes, .. } = source {
+                    // Store the raw bytes; the renderer decodes
+                    // lazily on first `asset://{id}` reference. The
+                    // image crate auto-detects PNG/JPEG/WebP/etc
+                    // from the bytes' magic, so no per-format
+                    // dispatch is needed here.
+                    self.image_asset_bytes.insert(id, bytes.to_vec());
+                }
+            }
+            _ => {}
         }
-        if let runtime_core::AssetSource::Embedded { bytes, .. } = source {
-            // Push the bytes into cosmic-text's font database. Once
-            // loaded, the family name baked into the font file is
-            // resolvable by `Attrs::family(Family::Name(...))` —
-            // which the text shaper picks up via the `font_family`
-            // resolved on `RenderStyle`. `to_vec()` because
-            // `load_font_data` takes ownership; the underlying
-            // bytes are `'static` so the clone is cheap to amortize
-            // (one-time per app font, not per shape).
-            self.font_system
-                .borrow_mut()
-                .db_mut()
-                .load_font_data(bytes.to_vec());
+    }
+
+    fn unregister_asset(
+        &mut self,
+        id: runtime_core::AssetId,
+        kind: runtime_core::AssetTag,
+    ) {
+        // Remove the cached bytes when the framework hot-reloads or
+        // explicitly retires an asset. Font removal can't be undone
+        // through cosmic-text's `load_font_data` API (the database
+        // is append-only), so we just drop our image-side entry.
+        if matches!(kind, runtime_core::AssetTag::Image) {
+            self.image_asset_bytes.remove(&id);
         }
-        // Bundled / Remote sources aren't supported here — the
-        // build-tool resolves Bundled into a per-platform path that
-        // the wgpu sim has no asset loader for, and Remote would
-        // require an async fetch the renderer can't issue.
     }
 
     fn apply_presence(
@@ -1614,6 +1666,48 @@ impl Backend for WgpuBackend {
             self.layout.mark_dirty(layout);
         }
         request_redraw();
+    }
+
+    fn create_external(
+        &mut self,
+        _type_id: std::any::TypeId,
+        type_name: &'static str,
+        _payload: &Rc<dyn std::any::Any>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        // Placeholder until the overlay-per-host wgpu External
+        // strategy lands (see `project_wgpu_external_strategy`).
+        // The full plan needs each host (`host-winit`, `host-web`,
+        // `host-appkit`) to expose a native overlay primitive the
+        // engine can hand to the registered external handler;
+        // WebView and Maps then mount real WebKit / MapKit / Google
+        // Maps views in those overlays. Until that machinery lands,
+        // render a visible "External X not supported on wgpu" text
+        // node so author code that mounts an external doesn't
+        // panic — matches the `backend-cpu` / `backend-macos`
+        // posture (see `feedback_cpu_unsupported_placeholders`).
+        let msg = format!("External \"{type_name}\" not yet implemented on wgpu");
+        self.create_text(&msg, a11y)
+    }
+
+    fn create_navigator(
+        &mut self,
+        _type_id: std::any::TypeId,
+        type_name: &'static str,
+        _presentation: Rc<dyn std::any::Any>,
+        _host: runtime_core::primitives::navigator::NavigatorHost<Self::Node>,
+        a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        // Placeholder until the wgpu Navigator design lands. The
+        // architectural target follows the same single-window-with-
+        // sidebar shape as the macOS Navigator (per
+        // `project_macos_navigator_design`); the wgpu side then
+        // mirrors that layout via a Taffy-driven content swap
+        // rather than animated push/pop. Until that PR lands, emit
+        // a visible "Navigator not implemented" text instead of
+        // panicking through the framework default.
+        let msg = format!("Navigator \"{type_name}\" not yet implemented on wgpu");
+        self.create_text(&msg, a11y)
     }
 }
 
@@ -2410,6 +2504,76 @@ mod a11y_tests {
     /// the exit state, the rest-target tween — all dropped.
     /// This test verifies that `apply_presence(None)` writes the
     /// declared properties to `AnimatedOverrides`, and that the
+    /// Regression: before this landed, the wgpu backend's
+    /// `register_asset` only handled `AssetTag::Font`. Image
+    /// assets from `image_asset!()` (which the framework emits as
+    /// `asset://{id}` URLs) silently dropped on the floor and the
+    /// renderer's filesystem resolver fell through to "not found"
+    /// → placeholder paint. This test verifies that
+    /// `register_asset` for an Image asset stashes the bytes and
+    /// `image_asset_bytes(id)` returns them. The renderer's
+    /// integration with `decode_and_upload` can't be exercised
+    /// without a real wgpu Device + Queue, so the visual decode
+    /// path remains a manual on-device check.
+    #[test]
+    fn regression_wgpu_register_asset_caches_image_bytes() {
+        use runtime_core::{AssetId, AssetSource, AssetTag};
+        let mut b = make_backend();
+        let id = AssetId(42);
+        const BYTES: &[u8] = b"hello-image-bytes";
+        b.register_asset(
+            id,
+            AssetTag::Image,
+            &AssetSource::Embedded { bytes: BYTES, extension: "png" },
+        );
+        assert_eq!(
+            b.image_asset_bytes(id),
+            Some(BYTES),
+            "register_asset(Image, Embedded) must populate the byte cache"
+        );
+
+        b.unregister_asset(id, AssetTag::Image);
+        assert!(
+            b.image_asset_bytes(id).is_none(),
+            "unregister_asset(Image) must clear the byte cache so hot-reload re-decodes"
+        );
+    }
+
+    /// Regression: before this landed, `create_external` fell
+    /// through to the framework's default `unimplemented!()`.
+    /// Author code mounting Maps / WebView / any other external
+    /// on a wgpu app crashed at mount. The fix is a visible
+    /// "External X not yet implemented on wgpu" text placeholder
+    /// so mounting succeeds even though the SDK rendering is
+    /// pending — overlay-per-host strategy lands later. This test
+    /// verifies the method produces a `NodeKind::Text` placeholder
+    /// without panicking.
+    ///
+    /// `create_navigator` has the same fix but isn't tested here
+    /// because constructing a real `NavigatorHost` requires
+    /// supplying ~10 fake `Rc<dyn Fn>` callbacks; we'd test the
+    /// scaffolding more than the behavior. The placeholder path
+    /// is shape-identical to External's, so a future Navigator-
+    /// substrate test can cover both at once.
+    #[test]
+    fn regression_wgpu_external_renders_placeholder_text() {
+        use std::any::TypeId;
+        use std::rc::Rc;
+
+        let mut b = make_backend();
+        let payload: Rc<dyn std::any::Any> = Rc::new(());
+        let ext_node = b.create_external(
+            TypeId::of::<()>(),
+            "test_external",
+            &payload,
+            &AccessibilityProps::default(),
+        );
+        assert!(
+            matches!(ext_node.borrow().kind, NodeKind::Text { .. }),
+            "wgpu create_external must produce a Text placeholder, not panic"
+        );
+    }
+
     /// `Some(transition)` path enrolls a tween.
     #[test]
     fn regression_wgpu_apply_presence_writes_overrides_and_enrolls_tween() {

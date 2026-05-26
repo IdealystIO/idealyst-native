@@ -741,6 +741,7 @@ impl Host {
                     *offset_x = cur_x + dx;
                     *offset_y = cur_y + dy;
                 }
+                crate::node::fire_on_scroll(&m.scrollview);
                 crate::scheduler::request_redraw();
                 let gap = ((target.0 - cur_x - dx).powi(2)
                     + (target.1 - cur_y - dy).powi(2))
@@ -755,6 +756,7 @@ impl Host {
                         *offset_x = target.0;
                         *offset_y = target.1;
                     }
+                    crate::node::fire_on_scroll(&m.scrollview);
                     return false;
                 }
             }
@@ -1339,6 +1341,7 @@ impl Host {
             horizontal,
             offset_x,
             offset_y,
+            ..
         } = &mut sv.borrow_mut().kind
         {
             if *horizontal {
@@ -1357,6 +1360,7 @@ impl Host {
                 };
             }
         }
+        crate::node::fire_on_scroll(sv);
         crate::scheduler::request_redraw();
     }
 

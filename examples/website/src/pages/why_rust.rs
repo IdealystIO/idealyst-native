@@ -4,7 +4,7 @@
 //! the page on the deeper argument: the language's *shape* fits UI
 //! authoring in ways most languages don't.
 
-use runtime_core::{ui, Primitive};
+use runtime_core::{ui, Primitive, Ref, ViewHandle};
 use idea_ui::{stack, typography, StackGap, TypographyKind, TypographyTone};
 
 use crate::pages::common::{code_panel, page_header, page_section};
@@ -12,33 +12,35 @@ use crate::routes::QUICKSTART_ROUTE;
 use crate::shell::{layout_with_toc, TocEntry};
 
 pub fn page() -> Primitive {
-    // Section ids — referenced by `page_section(id, …)` and by the
-    // `TocEntry { id, … }` list below. Keeping them as
-    // `&'static str` constants so the two lists stay in sync.
-    const STANDARD: &str = "standard-story";
-    const PIVOT: &str = "shape-fits-ui";
-    const EXPRESSIONS: &str = "expressions";
-    const PATTERN: &str = "pattern-matching";
-    const ENUMS: &str = "enums";
-    const MACROS: &str = "macros";
-    const CLOSURES: &str = "closures";
-    const REFS: &str = "refs";
-    const TRAITS: &str = "traits";
-    const ZERO_COST: &str = "zero-cost";
-    const TRADEOFF: &str = "tradeoff";
+    // One `Ref<ViewHandle>` per section. The same handle is stored
+    // in the `TocEntry` (so the spy can read its `absolute_frame`)
+    // and passed to `page_section(...)` (which binds it to the
+    // section's outer `View`). `Ref<H>` is `Copy`, so both reads
+    // share the same slot.
+    let standard: Ref<ViewHandle> = Ref::new();
+    let pivot_ref: Ref<ViewHandle> = Ref::new();
+    let expressions: Ref<ViewHandle> = Ref::new();
+    let pattern: Ref<ViewHandle> = Ref::new();
+    let enums: Ref<ViewHandle> = Ref::new();
+    let macros: Ref<ViewHandle> = Ref::new();
+    let closures: Ref<ViewHandle> = Ref::new();
+    let refs: Ref<ViewHandle> = Ref::new();
+    let traits: Ref<ViewHandle> = Ref::new();
+    let zero_cost: Ref<ViewHandle> = Ref::new();
+    let tradeoff: Ref<ViewHandle> = Ref::new();
 
     let toc = vec![
-        TocEntry { id: STANDARD, label: "The boilerplate, briefly" },
-        TocEntry { id: PIVOT, label: "Shape of the language fits UI" },
-        TocEntry { id: EXPRESSIONS, label: "Expressions, not statements" },
-        TocEntry { id: PATTERN, label: "Pattern matching as render switch" },
-        TocEntry { id: ENUMS, label: "Enums and invalid states" },
-        TocEntry { id: MACROS, label: "Macros over explicit code" },
-        TocEntry { id: CLOSURES, label: "Closures with explicit capture" },
-        TocEntry { id: REFS, label: "Ownership for refs" },
-        TocEntry { id: TRAITS, label: "Traits, not inheritance" },
-        TocEntry { id: ZERO_COST, label: "The macro expansion IS the runtime" },
-        TocEntry { id: TRADEOFF, label: "The tradeoff" },
+        TocEntry { handle: standard, label: "The boilerplate, briefly" },
+        TocEntry { handle: pivot_ref, label: "Shape of the language fits UI" },
+        TocEntry { handle: expressions, label: "Expressions, not statements" },
+        TocEntry { handle: pattern, label: "Pattern matching as render switch" },
+        TocEntry { handle: enums, label: "Enums and invalid states" },
+        TocEntry { handle: macros, label: "Macros over explicit code" },
+        TocEntry { handle: closures, label: "Closures with explicit capture" },
+        TocEntry { handle: refs, label: "Ownership for refs" },
+        TocEntry { handle: traits, label: "Traits, not inheritance" },
+        TocEntry { handle: zero_cost, label: "The macro expansion IS the runtime" },
+        TocEntry { handle: tradeoff, label: "The tradeoff" },
     ];
 
     let content = ui! {
@@ -50,17 +52,17 @@ pub fn page() -> Primitive {
                  idealyst is written in Rust is that the language's shape fits UI \
                  authoring in ways most languages don't."
             ) }
-            { page_section(STANDARD, vec![standard_story()]) }
-            { page_section(PIVOT, vec![pivot()]) }
-            { page_section(EXPRESSIONS, vec![expressions_section()]) }
-            { page_section(PATTERN, vec![pattern_matching_section()]) }
-            { page_section(ENUMS, vec![enums_section()]) }
-            { page_section(MACROS, vec![macros_section()]) }
-            { page_section(CLOSURES, vec![closures_section()]) }
-            { page_section(REFS, vec![refs_section()]) }
-            { page_section(TRAITS, vec![traits_section()]) }
-            { page_section(ZERO_COST, vec![zero_cost_section()]) }
-            { page_section(TRADEOFF, vec![tradeoff_section()]) }
+            { page_section(standard, vec![standard_story()]) }
+            { page_section(pivot_ref, vec![pivot()]) }
+            { page_section(expressions, vec![expressions_section()]) }
+            { page_section(pattern, vec![pattern_matching_section()]) }
+            { page_section(enums, vec![enums_section()]) }
+            { page_section(macros, vec![macros_section()]) }
+            { page_section(closures, vec![closures_section()]) }
+            { page_section(refs, vec![refs_section()]) }
+            { page_section(traits, vec![traits_section()]) }
+            { page_section(zero_cost, vec![zero_cost_section()]) }
+            { page_section(tradeoff, vec![tradeoff_section()]) }
         }
     };
     layout_with_toc(content, toc)

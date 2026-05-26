@@ -21,10 +21,11 @@ pub(super) fn build<B: Backend + 'static>(
     style: Option<StyleSource>,
     ref_fill: Option<RefFill>,
     safe_area_sides: crate::SafeAreaSides,
+    on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
     a11y: AccessibilityProps,
 ) -> B::Node {
     let mut n = time_backend_create(pkind!(ScrollView), || {
-        backend.borrow_mut().create_scroll_view(horizontal, &a11y)
+        backend.borrow_mut().create_scroll_view(horizontal, on_scroll, &a11y)
     });
     insert_children(backend, &mut n, children);
     if let Some(s) = style {

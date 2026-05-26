@@ -944,10 +944,18 @@ pub trait Backend {
 
     /// Create a scrolling container. `horizontal` selects the
     /// scrolling axis (false = vertical, the default; true = horizontal).
+    ///
+    /// `on_scroll`, if `Some`, fires on every scroll-offset change with
+    /// `(scroll_left_px, scroll_top_px)` in CSS pixels / native points.
+    /// Each backend binds this to its native scroll observer (web
+    /// `scroll` event, iOS `UIScrollViewDelegate::scrollViewDidScroll`,
+    /// Android `OnScrollChangeListener`, etc.). Backends with no scroll
+    /// concept (terminal, CPU graphics) ignore the callback.
     #[allow(unused_variables)]
     fn create_scroll_view(
         &mut self,
         horizontal: bool,
+        on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         a11y: &crate::accessibility::AccessibilityProps,
     ) -> Self::Node {
         unimplemented!("create_scroll_view not implemented for this backend")

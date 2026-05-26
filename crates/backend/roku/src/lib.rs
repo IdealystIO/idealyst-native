@@ -739,6 +739,7 @@ impl Backend for RokuBackend {
     fn create_scroll_view(
         &mut self,
         horizontal: bool,
+        _on_scroll: Option<std::rc::Rc<dyn Fn(f32, f32)>>,
         _a11y: &runtime_core::accessibility::AccessibilityProps,
     ) -> Self::Node {
         let id = self.mint_node();

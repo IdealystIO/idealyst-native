@@ -311,7 +311,17 @@ impl Backend for IosBackend {
         }
     }
 
-    fn create_scroll_view(&mut self, horizontal: bool, _a11y: &runtime_core::accessibility::AccessibilityProps) -> Self::Node {
+    fn create_scroll_view(
+        &mut self,
+        horizontal: bool,
+        _on_scroll: Option<std::rc::Rc<dyn Fn(f32, f32)>>,
+        _a11y: &runtime_core::accessibility::AccessibilityProps,
+    ) -> Self::Node {
+        // ios-stack is the legacy stack-only UIScrollView wrapper.
+        // `on_scroll` wiring lives on the main iOS backend (see
+        // `backend/ios/mobile/src/imp/callbacks.rs::ScrollDelegate`).
+        // ios-stack will pick it up when its delegate path is wired
+        // \u{2014} same UIScrollViewDelegate shape, different host.
         let scroll = unsafe { UIScrollView::new(self.mtm) };
 
         // UIScrollView has zero intrinsic content size, so a parent

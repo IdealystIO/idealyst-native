@@ -2,21 +2,21 @@
 
 use std::rc::Rc;
 
-use runtime_core::{bind, signal, text_fmt, ui, Primitive};
+use runtime_core::{bind, signal, text_fmt, ui, Primitive, Ref, ViewHandle};
 use idea_ui::{btn, card, stack, typography, ButtonKind, IntentTag, StackGap, TypographyKind, TypographyTone};
 
 use crate::pages::common::{code_panel, page_header, page_section};
 use crate::shell::{layout_with_toc, TocEntry};
 
 pub fn page() -> Primitive {
-    const LIVE: &str = "live-counter";
-    const SOURCE: &str = "whole-source";
-    const EXPLAIN: &str = "what-happened";
+    let live_ref: Ref<ViewHandle> = Ref::new();
+    let source_ref: Ref<ViewHandle> = Ref::new();
+    let explain_ref: Ref<ViewHandle> = Ref::new();
 
     let toc = vec![
-        TocEntry { id: LIVE, label: "Live counter" },
-        TocEntry { id: SOURCE, label: "The whole source" },
-        TocEntry { id: EXPLAIN, label: "What just happened" },
+        TocEntry { handle: live_ref, label: "Live counter" },
+        TocEntry { handle: source_ref, label: "The whole source" },
+        TocEntry { handle: explain_ref, label: "What just happened" },
     ];
 
     let content = ui! {
@@ -27,9 +27,9 @@ pub fn page() -> Primitive {
                  virtual DOM, no re-render passes. Click the buttons; the framework \
                  mutates exactly the text node bound to the count signal."
             ) }
-            { page_section(LIVE, vec![live_demo()]) }
-            { page_section(SOURCE, vec![source()]) }
-            { page_section(EXPLAIN, vec![explanation()]) }
+            { page_section(live_ref, vec![live_demo()]) }
+            { page_section(source_ref, vec![source()]) }
+            { page_section(explain_ref, vec![explanation()]) }
         }
     };
     layout_with_toc(content, toc)

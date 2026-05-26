@@ -67,11 +67,23 @@ impl std::fmt::Debug for LinuxNode {
 pub struct LinuxBackend {
     /// Top-level window owned by the host shell. The backend
     /// doesn't `show` or `destroy` it — that's the host's job.
-    #[allow(dead_code)]
-    host_window: gtk4::Window,
+    /// We also use it as the size source in `finish()` so Taffy
+    /// computes against the window's actual width × height.
+    pub(crate) host_window: gtk4::Window,
+    /// Root `gtk::Fixed` we install as the window's child once.
+    /// All top-level View / Pressable / ScrollView containers
+    /// attach as children of this root (re-parented in `insert`
+    /// once their framework parent attaches).
+    pub(crate) root_fixed: gtk4::Fixed,
     next_id: u64,
     pub(crate) layout: LayoutTree,
     layout_for_id: HashMap<u64, runtime_layout::LayoutNode>,
+    /// Every wrapped widget keyed by its node id — `finish()`
+    /// walks this to issue `fixed.move_()` + `set_size_request()`
+    /// per the Taffy frame. Stored as `Widget` (the GObject base)
+    /// because containers and leaves share the same positioning
+    /// surface in GTK4.
+    widgets: HashMap<u64, gtk4::Widget>,
 }
 
 impl LinuxBackend {
@@ -80,11 +92,22 @@ impl LinuxBackend {
     /// happen — typically the host calls `application.add_window()`
     /// and `window.present()` before handing the window in.
     pub fn new(host_window: gtk4::Window) -> Self {
+        // Install a root `gtk::Fixed` as the window's child. The
+        // framework's logical roots ride on top of this — they
+        // attach in `insert()` when the framework's root attaches
+        // to its parent, but the actual GTK parent for the
+        // top-most container is always this root_fixed. Without a
+        // single root we'd have no place to set the host window's
+        // size constraints from inside `finish()`.
+        let root_fixed = gtk4::Fixed::new();
+        host_window.set_child(Some(&root_fixed));
         Self {
             host_window,
+            root_fixed,
             next_id: 1,
             layout: LayoutTree::new(),
             layout_for_id: HashMap::new(),
+            widgets: HashMap::new(),
         }
     }
 
@@ -98,6 +121,7 @@ impl LinuxBackend {
         let id = self.alloc_id();
         let layout = self.layout.new_node();
         self.layout_for_id.insert(id, layout);
+        self.widgets.insert(id, widget.clone());
         LinuxNode { id, widget }
     }
 
@@ -132,10 +156,14 @@ impl Backend for LinuxBackend {
     }
 
     fn create_view(&mut self, _a11y: &AccessibilityProps) -> Self::Node {
-        // gtk::Box with orientation::Vertical — vertical-flex default
-        // matches the framework's default Taffy flex_direction. The
-        // layout pass will override per-node as styles resolve.
-        let widget = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        // gtk::Fixed — absolute-positioning container that takes
+        // its children's (x, y) from our own `finish()` layout
+        // pass. We deliberately don't use `gtk::Box` here because
+        // Box's auto-stacking fights Taffy's frame assignments;
+        // every container in the framework's flex tree needs to
+        // be Fixed so finish() can write the computed position
+        // directly via `fixed.move_()`.
+        let widget = gtk4::Fixed::new();
         self.wrap(widget.upcast::<gtk4::Widget>())
     }
 
@@ -165,10 +193,13 @@ impl Backend for LinuxBackend {
         on_click: Rc<dyn Fn()>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        // GTK's `GestureClick` controller gives us a press event on
-        // any widget. Use it against a transparent gtk::Box so the
-        // primitive looks like a plain View externally.
-        let widget = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        // Same container shape as `create_view` — a `gtk::Fixed`
+        // so children land at Taffy-computed coordinates — with a
+        // `GestureClick` controller mounted on top so the whole
+        // surface reports a press. The framework's Pressable is
+        // semantically a "transparent View that fires a callback"
+        // and that's exactly what this gives us.
+        let widget = gtk4::Fixed::new();
         let gesture = gtk4::GestureClick::new();
         let fire = on_click.clone();
         gesture.connect_released(move |_, _, _, _| (fire)());
@@ -184,26 +215,65 @@ impl Backend for LinuxBackend {
             return;
         };
         self.layout.add_child(parent_layout, child_layout);
-        // GTK4 dropped `Container::add` — children attach via
-        // widget-specific methods. `gtk::Box::append` is the closest
-        // analog for vertical-stacked children. For non-Box parents
-        // (Button, Label, etc.) this is a no-op; those primitives
-        // shouldn't have framework children mounted under them.
-        if let Some(box_) = parent.widget.downcast_ref::<gtk4::Box>() {
-            box_.append(&child.widget);
+
+        // GTK4 attach pattern: `gtk::Fixed::put(child, x, y)` adds
+        // a child at absolute (x, y) within the container.
+        // Initial coordinates are (0, 0); `finish()` walks every
+        // registered widget and calls `fixed.move_()` once Taffy
+        // has computed the real frame.
+        //
+        // For ScrolledWindow parents we route to the inner Fixed
+        // installed by `create_scroll_view` — the outer
+        // ScrolledWindow takes exactly one child (the scrollable
+        // document), and that child is always our Fixed. Author-
+        // supplied children mount inside the Fixed, NOT as a
+        // sibling document replacing it.
+        //
+        // Leaf widgets (Button, Label, etc.) aren't containers —
+        // author code shouldn't try to mount children inside
+        // them; if it does, this call is a no-op rather than a
+        // panic.
+        if let Some(fixed) = parent.widget.downcast_ref::<gtk4::Fixed>() {
+            fixed.put(&child.widget, 0.0, 0.0);
+        } else if let Some(scrolled) = parent.widget.downcast_ref::<gtk4::ScrolledWindow>() {
+            if let Some(inner) = scrolled
+                .child()
+                .and_then(|c| c.downcast::<gtk4::Fixed>().ok())
+            {
+                inner.put(&child.widget, 0.0, 0.0);
+            }
         }
     }
 
     fn clear_children(&mut self, node: &Self::Node) {
-        if let Some(box_) = node.widget.downcast_ref::<gtk4::Box>() {
-            // Walk children and remove. `gtk::Box::first_child` +
-            // `next_sibling` is the GTK4 iteration pattern after
-            // `Container` removal.
-            let mut child = box_.first_child();
+        // Walk + remove via the GTK4 `first_child`/`next_sibling`
+        // iteration. Works for any `gtk::Widget` that has children;
+        // the per-container removal API depends on the concrete
+        // type (Fixed::remove, Box::remove, ScrolledWindow::
+        // set_child(None)).
+        if let Some(fixed) = node.widget.downcast_ref::<gtk4::Fixed>() {
+            let mut child = fixed.first_child();
             while let Some(c) = child {
                 let next = c.next_sibling();
-                box_.remove(&c);
+                fixed.remove(&c);
                 child = next;
+            }
+        } else if let Some(scrolled) = node.widget.downcast_ref::<gtk4::ScrolledWindow>() {
+            // The inner document is our own `gtk::Fixed`. Clear
+            // its children but keep the Fixed itself — author code
+            // can still mount fresh children after a clear, and a
+            // ScrolledWindow with no document widget would lose
+            // its scrollbar slot machinery.
+            if let Some(inner) = scrolled
+                .child()
+                .and_then(|c| c.downcast::<gtk4::Fixed>().ok())
+            {
+                let mut child = inner.first_child();
+                while let Some(c) = child {
+                    let next = c.next_sibling();
+                    inner.remove(&c);
+                    child = next;
+                }
             }
         }
     }
@@ -220,12 +290,68 @@ impl Backend for LinuxBackend {
         }
     }
 
-    fn finish(&mut self, _root: Self::Node) {
-        // Real impl: compute layout, walk every registered widget,
-        // and call `widget.size_allocate(...)` with the computed
-        // frame. Skipped in the scaffold — GTK's own size-allocate
-        // pass via the container hierarchy still produces a usable
-        // initial layout, just not Taffy-driven.
+    fn finish(&mut self, root: Self::Node) {
+        // First mount: attach the framework's root container to our
+        // root `gtk::Fixed`. Only the first time — subsequent
+        // `finish()` calls (re-render after data changes) keep the
+        // same root attached, just re-position.
+        if root.widget.parent().is_none() {
+            self.root_fixed.put(&root.widget, 0.0, 0.0);
+        }
+
+        // Compute against the host window's allocated size. Before
+        // the window is realized + presented, `width()`/`height()`
+        // return 0; bail in that case so Taffy doesn't compute
+        // against a degenerate viewport. The framework will call
+        // `finish()` again after the first GTK allocate pass once
+        // the window has real bounds.
+        let width = self.host_window.width() as f32;
+        let height = self.host_window.height() as f32;
+        if width <= 0.0 || height <= 0.0 {
+            return;
+        }
+
+        let Some(root_layout) = self.layout_for_id.get(&root.id).copied() else {
+            return;
+        };
+        self.layout.compute(root_layout, width, height);
+
+        // Walk every registered widget and project its Taffy frame
+        // into GTK's positioning surface. `set_size_request`
+        // pins the widget's min size so GTK's own allocate pass
+        // honors the Taffy width × height. `fixed.move_()` repositions
+        // a child that's already attached to a Fixed parent.
+        //
+        // We split the walk into a collect-then-apply pass so the
+        // GTK calls don't alias the borrow on `self.widgets` /
+        // `self.layout_for_id`.
+        let mut updates: Vec<(gtk4::Widget, f32, f32, i32, i32)> =
+            Vec::with_capacity(self.widgets.len());
+        for (id, widget) in &self.widgets {
+            let Some(layout) = self.layout_for_id.get(id).copied() else {
+                continue;
+            };
+            let frame = self.layout.frame_of(layout);
+            updates.push((
+                widget.clone(),
+                frame.x,
+                frame.y,
+                frame.width.round() as i32,
+                frame.height.round() as i32,
+            ));
+        }
+        for (widget, x, y, w, h) in updates {
+            widget.set_size_request(w, h);
+            if let Some(parent) = widget.parent() {
+                if let Some(fixed) = parent.downcast_ref::<gtk4::Fixed>() {
+                    fixed.move_(&widget, x as f64, y as f64);
+                }
+                // Non-Fixed parents (Buttons accepting a Label
+                // child, ScrolledWindow holding our inner Fixed)
+                // don't have a coordinate concept — leave their
+                // positioning to GTK's own allocate pass.
+            }
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -323,6 +449,7 @@ impl Backend for LinuxBackend {
     fn create_scroll_view(
         &mut self,
         horizontal: bool,
+        _on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
         let scrolled = gtk4::ScrolledWindow::new();
@@ -333,16 +460,15 @@ impl Backend for LinuxBackend {
         } else {
             scrolled.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
         }
-        // Wrap a gtk::Box as the document so children attach via
-        // `insert`.
-        let inner = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        // Inner document = `gtk::Fixed` so children mount via the
+        // standard Fixed `put()`/`move_()` path. ScrolledWindow's
+        // `set_child` takes exactly one widget; that one widget is
+        // our document container. Author-supplied children attach
+        // to the framework's logical ScrollView, which the host's
+        // `insert` redirects to this inner Fixed via the
+        // downcast-to-ScrolledWindow branch.
+        let inner = gtk4::Fixed::new();
         scrolled.set_child(Some(&inner));
-        // Return the ScrolledWindow as the node; subsequent insert
-        // calls go through the gtk::Box downcast path which won't
-        // match — pending: track the inner Box separately so
-        // insert() routes to it. For the scaffold, children mount
-        // directly under the ScrolledWindow's set_child slot via a
-        // future refinement.
         self.wrap(scrolled.upcast::<gtk4::Widget>())
     }
 
