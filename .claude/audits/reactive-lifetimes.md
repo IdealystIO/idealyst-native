@@ -2,9 +2,9 @@
 name: reactive-lifetimes
 description: Scope, signal, and effect lifetime correctness — pruning, keepalive, and Rc cycles.
 targets:
-  - crates/framework/core
-  - crates/framework/reactive/arena
-  - crates/framework/reactive/refs
+  - crates/runtime/core
+  - crates/runtime/reactive/arena
+  - crates/runtime/reactive/refs
   - crates/ui/idea-ui
 severity: high
 ---

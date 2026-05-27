@@ -2,15 +2,15 @@
 name: accessibility-completeness
 description: The a11y surface (Role, PrimitiveKind, AccessibilityProps, WireAccessibilityProps, default_role) stays in lockstep across framework-core, every backend, and the wire protocol.
 targets:
-  - crates/framework/core/src/accessibility.rs
-  - crates/framework/core/src/backend.rs
-  - crates/framework/core/src/primitive.rs
-  - crates/framework/wire/src/lib.rs
+  - crates/runtime/core/src/accessibility.rs
+  - crates/runtime/core/src/backend.rs
+  - crates/runtime/core/src/primitive.rs
+  - crates/dev/wire/src/lib.rs
   - crates/backend/web
   - crates/backend/ios/mobile
   - crates/backend/android/mobile
   - crates/backend/macos
-  - crates/render/wgpu
+  - crates/gpu-backend/engine
   - crates/dev/server
   - crates/dev/client
 severity: high
@@ -35,7 +35,7 @@ backend. Reference impls:
 - iOS-mobile: `crates/backend/ios/mobile/src/imp/a11y.rs`
 - Android: `crates/backend/android/mobile/src/imp/a11y.rs`
 - macOS: `crates/backend/macos/src/imp/a11y.rs`
-- wgpu: `crates/render/wgpu/src/backend_impl.rs` (see `init_node_a11y`, `build_a11y_node`)
+- wgpu: `crates/gpu-backend/engine/src/backend_impl.rs` (see `init_node_a11y`, `build_a11y_node`)
 
 Roku is intentionally a no-op — see the separate
 [`backend-roku-a11y`](backend-roku-a11y.md) audit; the present audit
@@ -65,7 +65,7 @@ does NOT flag Roku's `_a11y` discipline.
 
 For each of `crates/backend/web`, `crates/backend/ios/mobile`,
 `crates/backend/android/mobile`, `crates/backend/macos`, and
-`crates/render/wgpu` — separately:
+`crates/gpu-backend/engine` — separately:
 
 - [ ] **No `_a11y` parameters in `create_*` methods** (Roku excluded).
       Grep `_a11y: &framework_core::accessibility::AccessibilityProps`
@@ -137,7 +137,7 @@ For each of `crates/backend/web`, `crates/backend/ios/mobile`,
       instead of trampolines) means AT-triggered AX actions on the
       app side never reach the dev-side closure.
 - [ ] **`WIRE_VERSION` bumped** when any of the above wire-shape
-      changes land. Check `crates/framework/wire/src/lib.rs` for the
+      changes land. Check `crates/dev/wire/src/lib.rs` for the
       current version; the design doc records v4 as the latest
       a11y-complete version (v3 added the props envelope; v4 added
       `HandlerId`-trampolined `AccessibilityAction` handlers). A
@@ -147,7 +147,7 @@ For each of `crates/backend/web`, `crates/backend/ios/mobile`,
 ### Tests
 
 - [ ] **`AccessibilityProps`/`WireAccessibilityProps` round-trip
-      tests still exist** (`crates/framework/wire/tests/roundtrip.rs`).
+      tests still exist** (`crates/dev/wire/tests/roundtrip.rs`).
 - [ ] **Each backend with a non-trivial `apply` has at least one test**
       that exercises the create + update + announce path. wgpu's
       `a11y_tests` module is the model.

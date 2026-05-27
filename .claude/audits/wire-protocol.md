@@ -2,8 +2,8 @@
 name: wire-protocol
 description: Wire variant additions stay in sync across SceneModel snapshot, dev-server, and dev-client.
 targets:
-  - crates/framework/wire
-  - crates/framework/dev-client
+  - crates/dev/wire
+  - crates/dev/client
   - crates/dev/server
   - crates/dev/http
   - crates/dev/reload

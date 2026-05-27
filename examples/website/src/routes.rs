@@ -23,6 +23,7 @@ pub const DEMO_NAVIGATION_ROUTE: Route<()> = Route::<()>::new("demo-navigation",
 // ---- Reference ----
 pub const BACKENDS_ROUTE: Route<()> = Route::<()>::new("backends", "/backends");
 pub const SERVER_FUNCTIONS_ROUTE: Route<()> = Route::<()>::new("server-functions", "/server-functions");
+pub const CODE_SPLITTING_ROUTE: Route<()> = Route::<()>::new("code-splitting", "/code-splitting");
 pub const AGENTIC_ROUTE: Route<()> = Route::<()>::new("agentic", "/agentic");
 pub const FURTHER_READING_ROUTE: Route<()> = Route::<()>::new("further-reading", "/further-reading");
 
@@ -93,6 +94,7 @@ pub const SECTIONS: &[IndexSection] = &[
         entries: &[
             IndexEntry { name: "backends", label: "Backends" },
             IndexEntry { name: "server-functions", label: "Server functions" },
+            IndexEntry { name: "code-splitting", label: "Code splitting" },
             IndexEntry { name: "agentic", label: "Robot & MCP" },
             IndexEntry { name: "further-reading", label: "Further reading" },
         ],

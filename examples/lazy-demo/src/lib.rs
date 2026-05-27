@@ -128,24 +128,14 @@ fn build_simulator(skin_idx: usize) -> Primitive {
     use runtime_core::driver::spawn_async;
     use runtime_core::{view, IntoPrimitive, Length, StyleRules, StyleSheet};
 
-    // CRITICAL: wasm-split shares memory across the parent's wasm
-    // module and chunk modules, but each module has its OWN globals
-    // and thread-locals. The parent's `start()` installs scheduler,
-    // render-loop, async-executor, viewport-observer into the
-    // PARENT's thread-locals — chunk code reading from the CHUNK's
-    // thread-locals sees empty slots and silently no-ops (no frames
-    // tick, no async futures run).
-    //
-    // Calls are idempotent (first-install-wins inside each module's
-    // local thread-local), so re-installing from the chunk is safe
-    // and necessary. Without this the canvas mounts but never
-    // paints — exactly the "white canvas, no errors" symptom.
-    //
-    // Logger must be installed before the first `log_*!` call below;
-    // before install, wasm32 silently drops messages.
+    // wasm-split shares linear memory across modules but each module
+    // has its own wasm globals and TLS. Anything installed into the
+    // parent's TLS-backed slots (scheduler, async executor, render
+    // loop, viewport observer, logger) is invisible to chunk code,
+    // which would read its OWN empty slots and silently no-op.
+    // Re-install on first chunk entry; the installers are
+    // first-write-wins so this is safe on subsequent calls.
     ensure_chunk_runtime_installed();
-
-    runtime_core::log_info!("[lazy-demo] build_simulator({skin_idx}) entry");
 
     let slot: Rc<std::cell::RefCell<Option<host_web::WebHostHandle>>> =
         Rc::new(std::cell::RefCell::new(None));
@@ -167,8 +157,7 @@ fn build_simulator(skin_idx: usize) -> Primitive {
     // Fixed-dimension wrapper. The web Graphics primitive forces
     // `width: 100%; height: 100%` INLINE on its canvas, so the
     // canvas's painted size comes from this wrapper. 0×0 means no
-    // wgpu surface ever paints — the on_ready event still fires
-    // but with a degenerate size, and the simulator stays blank.
+    // wgpu surface ever paints.
     let preview_w = 300.0_f32;
     let preview_h = preview_w * (profile.logical_size.1 as f32 / profile.logical_size.0 as f32);
     let wrapper_style = std::rc::Rc::new(StyleSheet::r#static(StyleRules {
@@ -178,39 +167,27 @@ fn build_simulator(skin_idx: usize) -> Primitive {
     }));
 
     let graphics = runtime_core::primitives::graphics::graphics(move |event: OnReadyEvent| {
-        runtime_core::log_info!("[lazy-demo] graphics on_ready fired; size={:?}", event.size);
         let painter = painter.clone();
         let profile = profile.clone();
         let surface = event.surface;
         let size = event.size;
         let slot = slot_ready.clone();
         spawn_async(async move {
-            runtime_core::log_info!("[lazy-demo] spawn_async body running; about to host_web::mount");
             let build_ui = || welcome::app();
-            match host_web::mount(surface, size, profile, painter, build_ui).await {
-                Ok(handle) => {
-                    runtime_core::log_info!("[lazy-demo] host_web::mount succeeded; handle stored");
-                    *slot.borrow_mut() = Some(handle);
-                }
-                Err(e) => {
-                    runtime_core::log_error!("[lazy-demo] host_web::mount FAILED: {e}");
-                }
+            if let Ok(handle) = host_web::mount(surface, size, profile, painter, build_ui).await {
+                *slot.borrow_mut() = Some(handle);
             }
         });
     })
     .on_resize(move |event: OnResizeEvent| {
-        runtime_core::log_debug!("[lazy-demo] graphics on_resize fired; size={:?}", event.size);
         if let Some(handle) = slot_resize.borrow().as_ref() {
             handle.resize(event.size);
         }
     })
     .on_lost(move || {
-        runtime_core::log_warn!("[lazy-demo] graphics on_lost fired");
         let stale = slot_lost.borrow_mut().take();
         drop(stale);
     });
-
-    runtime_core::log_info!("[lazy-demo] graphics primitive constructed; wrapping in sized View");
 
     // Wrap in a fixed-size View so the canvas has non-zero
     // dimensions to paint into.

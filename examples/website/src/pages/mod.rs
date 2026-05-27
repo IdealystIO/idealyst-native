@@ -3,6 +3,7 @@
 
 pub mod agentic;
 pub mod backends;
+pub mod code_splitting;
 pub mod concepts;
 pub mod demo_animations;
 pub mod demo_components;

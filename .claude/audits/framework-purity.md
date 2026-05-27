@@ -2,13 +2,13 @@
 name: framework-purity
 description: Framework crates must be free of platform-specific implementations — only traits, abstractions, and platform-agnostic logic.
 targets:
-  - crates/framework/core
-  - crates/framework/macros
-  - crates/framework/native-layout
-  - crates/framework/wire
-  - crates/framework/dev-client
-  - crates/framework/reactive/arena
-  - crates/framework/reactive/refs
+  - crates/runtime/core
+  - crates/runtime/macros
+  - crates/runtime/layout
+  - crates/dev/wire
+  - crates/dev/client
+  - crates/runtime/reactive/arena
+  - crates/runtime/reactive/refs
 severity: high
 ---
 
@@ -19,7 +19,7 @@ severity: high
 **The `framework/` layer must be completely void of platform-specific
 implementations.** Framework crates define traits, types, protocols, and
 platform-agnostic logic. Platform implementations live in `backend/`;
-build/run tooling lives in `crates/build/` and `crates/run/`.
+build/run tooling lives in `crates/tools/build/` and `crates/tools/run/`.
 
 ## Background
 
@@ -56,6 +56,36 @@ For each framework crate (especially runtime crates — `core`,
       would make the crate fail to compile on another platform, the
       gated code is platform-specific. Confirm it shouldn't be moved
       to a backend trait impl.
+- [ ] **`target_type` / variant-dispatch smell** — framework code
+      must not branch on *what kind of primitive/target* it has in
+      order to do rendering or behavior work. That decision belongs
+      on the `Backend` trait. Flag any of:
+      - A field, method, or accessor named `target_type` (or
+        `kind_name`, `node_type`, `primitive_type`) that returns a
+        `&str` / `String` — stringly-typed dispatch tags are the
+        worst form of this smell.
+      - Helpers that take `target_type: &str` / `kind: &str` and
+        `match`/`if` on the value.
+      - `match primitive { Primitive::X => …, Primitive::Y => … }`
+        or chained `if let Primitive::X { .. }` blocks in framework
+        code *outside* the canonical walker (the dispatch site
+        whose entire job is to call `backend.create_X(...)` per
+        variant — `crates/runtime/core/src/walker/*.rs` today). If
+        another file is matching on variant to do platform-shaped
+        work (compute a frame, decide an animation curve, pick a
+        layout strategy), that's a Backend method waiting to
+        happen.
+      - Per-variant branches that compensate for one backend's
+        quirk (see rule 7 in `CLAUDE.md`): the fix lives in the
+        backend, not behind a variant check in the framework.
+      
+      Allowed: typed `PrimitiveKind` enums used for *introspection*
+      (debug logging, accessibility-role inference, a11y trait
+      lookup) — these don't drive rendering. If you're not sure
+      which side of the line you're on, ask: "would a new backend
+      need this branch?" If yes, it's introspection. If only some
+      backends would, it's dispatch, and it belongs behind a
+      Backend method.
 
 ## Output format
 

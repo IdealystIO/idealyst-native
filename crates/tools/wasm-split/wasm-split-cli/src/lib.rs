@@ -443,6 +443,40 @@ impl<'a> Splitter<'a> {
             if let Node::Function(id) = func {
                 ifuncs.push(*id);
                 _idx += 1;
+
+                // PATCHED for idealyst (bug #5): also export each
+                // shared function from main, so post-split wasm-opt
+                // (run by build-web's `wasm_opt_pkg`) doesn't DCE
+                // them. The funcref-table element segment alone
+                // isn't a strong enough liveness signal for
+                // binaryen's `remove-unused-module-elements` pass —
+                // it removes the segment entries AND the function
+                // bodies when no main-module call_indirect targets
+                // the matching table index. Chunks call the
+                // function via call_indirect through the *shared*
+                // table, which lives across modules, so binaryen
+                // optimizing main in isolation can't see the
+                // cross-module liveness.
+                //
+                // Exporting makes the function externally
+                // observable, which binaryen's DCE treats as a
+                // root. Export names are tiny relative to function
+                // bodies, so the size cost is negligible.
+                //
+                // Symptom this fixes: a chunk's call into main
+                // (e.g. a stdlib generic like `Zip::new` shared
+                // between main and the lazy chunk) traps with
+                // `RuntimeError: unreachable` because main's body
+                // was stripped to a single `unreachable`
+                // instruction by wasm-opt.
+                let func_obj = out.funcs.get(*id);
+                let export_name = func_obj
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| format!("__wasm_split_shared_{}", id.index()));
+                if out.exports.get_exported_func(*id).is_none() {
+                    out.exports.add(&export_name, *id);
+                }
             }
         }
 
@@ -495,47 +529,41 @@ impl<'a> Splitter<'a> {
         // And then any actual symbols from the callgraph
         for symbol in unused_symbols.iter().cloned() {
             match symbol {
-                // PATCHED for idealyst (bug #2): replace function
-                // bodies with a single `unreachable` instruction
-                // instead of `funcs.delete(id)`. Walrus's emit and
-                // GC passes panic when other parts of the module
-                // (element segments, exports, indirect-call sites)
-                // still reference a deleted function. On
-                // idealyst-scale wasm with heavy trait dispatch the
-                // reference surface is large enough that some refs
-                // always survive `replace_segments_with_holes`.
+                // PATCHED for idealyst (bug #2 + #4): leave function
+                // bodies untouched in main. Two prior approaches
+                // failed:
                 //
-                // By keeping the function alive but trivial:
-                //   * walrus indices stay valid → emit doesn't panic
-                //   * GC sees the function reachable (still
-                //     referenced by element segments), so it doesn't
-                //     try to remove it → no dead-fn assertion
-                //   * the unreachable body shrinks under wasm-opt's
-                //     `-Oz` pass, which runs after wasm-split
-                //   * if the unreachable function ever IS called at
-                //     runtime, the wasm traps (loud failure rather
-                //     than silent wrong behavior)
-                Node::Function(id) => {
-                    let func = out.funcs.get_mut(id);
-                    if let walrus::FunctionKind::Local(local) = &mut func.kind {
-                        let ty = local.ty();
-                        let params = out.types.get(ty).params().to_vec();
-                        let results = out.types.get(ty).results().to_vec();
-                        let mut builder = walrus::FunctionBuilder::new(
-                            &mut out.types,
-                            &params,
-                            &results,
-                        );
-                        builder.func_body().unreachable();
-                        let local_ids: Vec<walrus::LocalId> = params
-                            .iter()
-                            .map(|ty| out.locals.add(*ty))
-                            .collect();
-                        let stub = builder.local_func(local_ids);
-                        out.funcs.get_mut(id).kind = walrus::FunctionKind::Local(stub);
-                    }
-                    // Imported funcs we leave alone — main needs to
-                    // import them anyway for stub fall-through.
+                //   * `funcs.delete(id)` (upstream) — panics walrus
+                //     during emit/GC when element segments, exports,
+                //     or indirect-call sites still reference the
+                //     deleted function. Triggers reliably on
+                //     idealyst-scale wasms with heavy trait dispatch.
+                //
+                //   * Replace body with `unreachable` — keeps walrus
+                //     happy, but main's data segments hold function
+                //     indices for trait-object vtables. When main
+                //     code dispatches through those (call_indirect
+                //     against an index into main's own data),
+                //     wasm-split's static call-graph analysis misses
+                //     the path (it can't trace through data) and
+                //     classifies the function as chunk-only.
+                //     Stubbing breaks runtime dispatch silently —
+                //     symptom was a wgpu Simulator inside a lazy
+                //     chunk that loaded, ran on_ready, called
+                //     host_web::mount, then trapped on a vtable
+                //     method that had been overwritten with
+                //     `unreachable` in main.
+                //
+                // Correctness-preserving alternative: leave the
+                // function intact. wasm-opt's DCE pass (runs after
+                // wasm-split) removes anything truly unreferenced;
+                // functions reachable through vtable data stay.
+                // Trade-off is a slightly larger main bundle, but
+                // these functions are real reachable code from
+                // main's perspective even if main's static call
+                // graph doesn't see them.
+                Node::Function(_id) => {
+                    // intentionally do nothing — see comment above.
                 }
 
                 // Otherwise, zero out the data segment, which should lead to elimination by wasm-opt

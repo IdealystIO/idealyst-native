@@ -5,6 +5,12 @@
 //!
 //! Apps add custom kinds (e.g. `SexySubtitle`, `BrandHeading`) by
 //! implementing [`super::TypographyKind`] on a marker struct.
+//!
+//! **Units note.** `line_height` and `letter_spacing` are interpreted
+//! as absolute pixels by the framework's web/native backends — these
+//! values are *px*, not CSS unitless multipliers. Old `line_height:
+//! 1.5` ratios would render as 1.5px and crush text lines on top of
+//! each other.
 
 use runtime_core::{FontWeight, Length, Tokenized};
 
@@ -17,8 +23,8 @@ macro_rules! builtin_kind {
         size_token = $size_tok:literal,
         size_fallback = $size_fallback:expr,
         weight = $weight:expr,
-        line_height = $lh:expr,
-        letter_spacing = $ls:expr $(,)?
+        line_height_px = $lh:expr,
+        letter_spacing_px = $ls:expr $(,)?
     ) => {
         /// Built-in typography variant.
         #[derive(Copy, Clone, Default)]
@@ -44,14 +50,17 @@ macro_rules! builtin_kind {
     };
 }
 
+// Px values mirror the original closed-enum Typography stylesheet so
+// the visual output is identical to the pre-migration baseline.
+
 builtin_kind!(
     Display,
     key = "display",
     size_token = "typography-display-size",
     size_fallback = 56.0,
     weight = FontWeight::Bold,
-    line_height = 1.05,
-    letter_spacing = -1.5,
+    line_height_px = 60.0,
+    letter_spacing_px = -1.4,
 );
 builtin_kind!(
     H1,
@@ -59,8 +68,8 @@ builtin_kind!(
     size_token = "typography-h1-size",
     size_fallback = 36.0,
     weight = FontWeight::Bold,
-    line_height = 1.15,
-    letter_spacing = -0.6,
+    line_height_px = 42.0,
+    letter_spacing_px = -1.0,
 );
 builtin_kind!(
     H2,
@@ -68,8 +77,8 @@ builtin_kind!(
     size_token = "typography-h2-size",
     size_fallback = 28.0,
     weight = FontWeight::SemiBold,
-    line_height = 1.2,
-    letter_spacing = -0.3,
+    line_height_px = 34.0,
+    letter_spacing_px = -0.3,
 );
 builtin_kind!(
     H3,
@@ -77,8 +86,8 @@ builtin_kind!(
     size_token = "typography-h3-size",
     size_fallback = 20.0,
     weight = FontWeight::SemiBold,
-    line_height = 1.3,
-    letter_spacing = 0.0,
+    line_height_px = 26.0,
+    letter_spacing_px = -0.2,
 );
 builtin_kind!(
     BodyXl,
@@ -86,8 +95,8 @@ builtin_kind!(
     size_token = "typography-body-xl-size",
     size_fallback = 20.0,
     weight = FontWeight::Normal,
-    line_height = 1.5,
-    letter_spacing = 0.0,
+    line_height_px = 30.0,
+    letter_spacing_px = 0.0,
 );
 builtin_kind!(
     BodyLg,
@@ -95,8 +104,8 @@ builtin_kind!(
     size_token = "typography-body-lg-size",
     size_fallback = 18.0,
     weight = FontWeight::Normal,
-    line_height = 1.5,
-    letter_spacing = 0.0,
+    line_height_px = 26.0,
+    letter_spacing_px = 0.0,
 );
 builtin_kind!(
     Body,
@@ -104,8 +113,8 @@ builtin_kind!(
     size_token = "typography-body-size",
     size_fallback = 14.0,
     weight = FontWeight::Normal,
-    line_height = 1.45,
-    letter_spacing = 0.0,
+    line_height_px = 20.0,
+    letter_spacing_px = 0.0,
 );
 builtin_kind!(
     BodySm,
@@ -113,8 +122,8 @@ builtin_kind!(
     size_token = "typography-body-sm-size",
     size_fallback = 13.0,
     weight = FontWeight::Normal,
-    line_height = 1.4,
-    letter_spacing = 0.0,
+    line_height_px = 18.0,
+    letter_spacing_px = 0.0,
 );
 builtin_kind!(
     Caption,
@@ -122,8 +131,8 @@ builtin_kind!(
     size_token = "typography-caption-size",
     size_fallback = 12.0,
     weight = FontWeight::Normal,
-    line_height = 1.35,
-    letter_spacing = 0.2,
+    line_height_px = 16.0,
+    letter_spacing_px = 0.0,
 );
 builtin_kind!(
     Overline,
@@ -131,6 +140,6 @@ builtin_kind!(
     size_token = "typography-overline-size",
     size_fallback = 11.0,
     weight = FontWeight::SemiBold,
-    line_height = 1.3,
-    letter_spacing = 1.2,
+    line_height_px = 16.0,
+    letter_spacing_px = 0.8,
 );

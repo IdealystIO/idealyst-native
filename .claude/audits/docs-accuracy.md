@@ -130,8 +130,8 @@ For each finding include:
   string from the doc as a short quote.
 - **Issue**: one-line description of the inaccuracy.
 - **Why**: cite the framework source of truth — the file/symbol that
-  contradicts the doc (e.g. "no such variant in `framework_core::Primitive`
-  at `crates/framework/core/src/lib.rs:NN`").
+  contradicts the doc (e.g. "no such variant in `runtime_core::Primitive`
+  at `crates/runtime/core/src/lib.rs:NN`").
 - **Suggested fix**: the corrected wording, symbol, or path — or
   "needs design discussion" if the doc reflects an intent that the
   framework hasn't caught up to.

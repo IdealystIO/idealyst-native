@@ -2,24 +2,20 @@
 name: file-size
 description: Source files stay at a reasonable size; large files are split along natural structural seams (modules, impl blocks, related primitives) rather than living as monoliths.
 targets:
-  - crates/framework/core
-  - crates/framework/macros
-  - crates/framework/wire
-  - crates/framework/dev-client
-  - crates/framework/native-layout
+  - crates/runtime/core
+  - crates/runtime/macros
+  - crates/dev/wire
+  - crates/dev/client
+  - crates/runtime/layout
   - crates/backend/ios/mobile
   - crates/backend/ios-stack
   - crates/backend/android/mobile
   - crates/backend/web
   - crates/backend/roku
-  - crates/render/wgpu
+  - crates/gpu-backend/engine
   - crates/dev/server
-  - crates/port/tsx
   - crates/ui/idea-ui
-  - crates/mcp-server
-  - crates/run/android
-  - crates/skin/android-sim
-  - crates/skin/ios-sim
+  - crates/mcp/server
 severity: low
 ---
 
@@ -114,7 +110,7 @@ Report findings as a Markdown list. For each finding include:
 
 - **Severity**: low / medium  (this audit does not produce `high`)
 - **Location**: `crate/src/file.rs` plus the current line count
-  (e.g. `crates/render/wgpu/src/renderer.rs (4 362 LOC)`)
+  (e.g. `crates/gpu-backend/engine/src/backend_impl.rs (4 362 LOC)`)
 - **Issue**: one-line description of the structural smell
 - **Why**: which checklist item triggered, and *what specifically* in the
   file makes it a candidate (e.g. "lines 800–1 600 are an `impl

@@ -25,6 +25,7 @@ use crate::backend::Backend;
 use crate::handles::RefFill;
 use crate::primitive::Primitive;
 use crate::primitives::lazy::{LazyLoader, LazyState};
+use crate::reactive;
 use crate::sources::StyleSource;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -68,6 +69,26 @@ pub(super) fn build<B: Backend + 'static>(
     // node releases through the standard cleanup path.
     let chunk_node: Rc<RefCell<Option<B::Node>>> = Rc::new(RefCell::new(None));
 
+    // The chunk's reactive state (Switch/When/Graphics cleanup
+    // effects, signals etc.) needs a scope to live in — otherwise
+    // every Effect::new called while walking the chunk's primitive
+    // tree has `owns = true`, drops immediately at the end of the
+    // building function, and cascades a teardown of anything it
+    // owned (the canonical symptom: a Graphics primitive inside the
+    // chunk gets created, its cleanup Effect is rootless, drop runs
+    // before the canvas's first rAF, the rAF then bails because the
+    // instance is already released → blank canvas).
+    //
+    // We synthesize a scope here, run `build_inner` inside it, and
+    // tie its lifetime to `_cleanup_effect` below so the surrounding
+    // scope's drop tears the chunk down at the right moment. Without
+    // this the bug only bites lazy/wasm-split because the
+    // non-lazy walker path is always already inside a host scope
+    // (app root or `when`/`switch` branch); spawn_async's body is
+    // run as a fresh JS task with no active scope.
+    let chunk_scope: Rc<RefCell<Option<Box<reactive::Scope>>>> =
+        Rc::new(RefCell::new(Some(Box::new(reactive::Scope::new()))));
+
     // Drive the loader inside an async task. The closure captures
     // the container node, the chunk slot, and the state callback.
     // On native the future resolves on first poll; on wasm the
@@ -86,10 +107,20 @@ pub(super) fn build<B: Backend + 'static>(
         let backend_for_async = backend.clone();
         let container = n.clone();
         let chunk_slot = chunk_node.clone();
+        let chunk_scope_for_async = chunk_scope.clone();
         let state_cb = on_state.clone();
         crate::driver::spawn_async(async move {
             let chunk_primitive = (loader)().await;
-            let child_node = super::build_inner(&backend_for_async, chunk_primitive);
+            let child_node = {
+                let mut scope_borrow = chunk_scope_for_async.borrow_mut();
+                let scope = scope_borrow
+                    .as_mut()
+                    .expect("chunk scope dropped before chunk loaded")
+                    .as_mut();
+                reactive::with_scope(scope, || {
+                    super::build_inner(&backend_for_async, chunk_primitive)
+                })
+            };
             // Clear the placeholder + insert the chunk's content.
             // The container stays; only its children swap.
             {
@@ -111,17 +142,20 @@ pub(super) fn build<B: Backend + 'static>(
     {
         // Suppress unused warnings; the loader is dropped (chunk
         // never loads) and Rendered is never fired.
-        let _ = (loader, &chunk_node);
+        let _ = (loader, &chunk_node, &chunk_scope);
     }
 
-    // Hold the chunk_node slot for cleanup-on-scope-drop. The slot
-    // is captured by an Effect that lives on the surrounding scope;
-    // when the scope drops, the Effect's drop fires, dropping the
-    // slot, which drops the chunk's `B::Node` (triggering whatever
-    // release path the backend has registered for nodes — typically
-    // a `Drop` impl on the node type itself).
+    // Hold the chunk_node slot + chunk's reactive scope for
+    // cleanup-on-surrounding-scope-drop. When the surrounding scope
+    // drops, this Effect drops, its closure drops, dropping both
+    // captured Rcs. The chunk_scope's last Rc holder is this
+    // closure (the spawn_async closure dropped its clone after
+    // mount), so dropping it frees the chunk's `Scope`, which frees
+    // every Effect / Signal / cleanup the chunk registered — that's
+    // where `release_graphics` correctly fires.
     let _cleanup_effect = crate::reactive::Effect::new(move || {
         let _ = &chunk_node;
+        let _ = &chunk_scope;
     });
 
     n

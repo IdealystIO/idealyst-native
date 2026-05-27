@@ -11,7 +11,7 @@ targets:
   - crates/backend/android/tv
   - crates/backend/roku
   - crates/backend/web
-  - arena/idealyst-native/wasm
+  - benchmark/idealyst-native/wasm
 severity: high
 ---
 

@@ -30,9 +30,10 @@ mod styles;
 mod typeface;
 
 use routes::{
-    AGENTIC_ROUTE, BACKENDS_ROUTE, CONCEPTS_ROUTE, DEMO_ANIMATIONS_ROUTE, DEMO_COMPONENTS_ROUTE,
-    DEMO_COUNTER_ROUTE, DEMO_NAVIGATION_ROUTE, FURTHER_READING_ROUTE, HOME_ROUTE, INSTALL_ROUTE,
-    QUICKSTART_ROUTE, SERVER_FUNCTIONS_ROUTE, TARGETS_ROUTE, WHY_RUST_ROUTE,
+    AGENTIC_ROUTE, BACKENDS_ROUTE, CODE_SPLITTING_ROUTE, CONCEPTS_ROUTE, DEMO_ANIMATIONS_ROUTE,
+    DEMO_COMPONENTS_ROUTE, DEMO_COUNTER_ROUTE, DEMO_NAVIGATION_ROUTE, FURTHER_READING_ROUTE,
+    HOME_ROUTE, INSTALL_ROUTE, QUICKSTART_ROUTE, SERVER_FUNCTIONS_ROUTE, TARGETS_ROUTE,
+    WHY_RUST_ROUTE,
 };
 
 #[component]
@@ -89,6 +90,7 @@ pub fn app() -> Primitive {
         .screen(DEMO_NAVIGATION_ROUTE, move |_| pages::demo_navigation::page())
         .screen(BACKENDS_ROUTE, move |_| pages::backends::page())
         .screen(SERVER_FUNCTIONS_ROUTE, move |_| pages::server_functions::page())
+        .screen(CODE_SPLITTING_ROUTE, move |_| pages::code_splitting::page())
         .screen(AGENTIC_ROUTE, move |_| pages::agentic::page())
         .screen(FURTHER_READING_ROUTE, move |_| pages::further_reading::page())
         .screen(TARGETS_ROUTE, move |_| pages::targets::page())
