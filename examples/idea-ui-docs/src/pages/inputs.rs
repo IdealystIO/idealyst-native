@@ -2,7 +2,7 @@
 
 use runtime_core::{signal, ui, Primitive};
 use idea_ui::doc_controls::DocControls;
-use idea_ui::{typography, card, field, select, stack, switch, TypographyTone, FieldProps, TypographyKind, SelectOption, StackGap, SwitchProps};
+use idea_ui::{typography, card, field, select, stack, switch, FieldProps, SelectOption, StackGap, SwitchProps};
 
 use crate::shell::{demo_card, page_header};
 
@@ -111,7 +111,7 @@ fn select_demo() -> Primitive {
         move || value.get(),
         |v: &String| {
             let label = format!("Current value: {}", v);
-            ui! { Typography(content = label, tone = TypographyTone::Muted) }
+            ui! { Typography(content = label, muted = true) }
         },
     );
     let notes = ui! {
@@ -120,11 +120,11 @@ fn select_demo() -> Primitive {
                           the label shown on the trigger comes from looking that id up \
                           in the options list. Click outside or press Escape to \
                           dismiss without picking.".to_string(),
-             tone = TypographyTone::Muted)
+             muted = true)
     };
     let controls = ui! {
         Card {
-            Typography(content = "Notes".to_string(), kind = TypographyKind::H3)
+            Typography(content = "Notes".to_string(), kind = idea_ui::typography_kind::H3.into())
             notes
             current
         }

@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use runtime_core::{component, ui, Primitive, SafeAreaSides, Signal, StyleApplication};
 use drawer_navigator::DrawerSlotProps;
-use idea_ui::{typography, card, dark_theme, divider, light_theme, set_idea_theme, stack, switch, TypographyTone, TypographyKind, StackGap, StackPadding};
+use idea_ui::{typography, card, dark_theme, divider, light_theme, set_idea_theme, stack, switch, StackGap, StackPadding};
 
 use crate::routes::SECTIONS;
 use crate::styles::{
@@ -37,11 +37,11 @@ fn drawer_content(active_route: Signal<&'static str>, is_dark: Signal<bool>) -> 
     let header_style = SidebarHeader();
 
     let header_children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Idealyst".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Idealyst".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(
                 content = "Cross-platform Rust framework".to_string(),
-                tone = TypographyTone::Muted,
+                muted = true,
             )
         },
     ];
@@ -97,7 +97,7 @@ fn theme_toggle(is_dark: Signal<bool>) -> Primitive {
     });
 
     let row_children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Theme".to_string(), kind = TypographyKind::Caption) },
+        ui! { Typography(content = "Theme".to_string(), kind = idea_ui::typography_kind::Caption.into()) },
         ui! {
             Switch(
                 label = Some("Dark mode".to_string()),
@@ -394,8 +394,8 @@ pub fn page_header(props: PageHeaderProps) -> Primitive {
     let title = props.title;
     let description = props.description;
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = title, kind = TypographyKind::H1) },
-        ui! { Typography(content = description, tone = TypographyTone::Muted) },
+        ui! { Typography(content = title, kind = idea_ui::typography_kind::H1.into()) },
+        ui! { Typography(content = description, muted = true) },
     ];
     ui! {
         Stack(gap = StackGap::Sm) { children }
@@ -418,8 +418,8 @@ pub fn section(props: SectionProps) -> Primitive {
     let body_text = props.body;
     ui! {
         Card {
-            Typography(content = title, kind = TypographyKind::H2)
-            Typography(content = body_text, tone = TypographyTone::Muted)
+            Typography(content = title, kind = idea_ui::typography_kind::H2.into())
+            Typography(content = body_text, muted = true)
         }
     }
 }
@@ -443,8 +443,8 @@ pub fn section_with_code(props: SectionWithCodeProps) -> Primitive {
 
     ui! {
         Card {
-            Typography(content = title, kind = TypographyKind::H2)
-            Typography(content = body_text, tone = TypographyTone::Muted)
+            Typography(content = title, kind = idea_ui::typography_kind::H2.into())
+            Typography(content = body_text, muted = true)
             View(style = code_style) {
                 Text(style = code_text_style) { code_text }
             }

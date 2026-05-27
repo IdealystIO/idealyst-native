@@ -1,7 +1,7 @@
 //! Quickstart — scaffold a project and run it.
 
 use runtime_core::{ui, Primitive, Ref, ViewHandle};
-use idea_ui::{stack, typography, StackGap, TypographyKind, TypographyTone};
+use idea_ui::{stack, typography, StackGap};
 
 use crate::pages::common::{code_panel, page_header, page_section};
 use crate::routes::CONCEPTS_ROUTE;
@@ -45,7 +45,7 @@ pub fn page() -> Primitive {
 fn scaffold() -> Primitive {
     let snippet = "idealyst new my-app\ncd my-app";
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Scaffold a project".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Scaffold a project".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "`idealyst new` creates a fresh Rust crate seeded \
                 with the welcome example \u{2014} a complete reactive app the CLI knows \
@@ -67,7 +67,7 @@ fn layout_section() -> Primitive {
                        app.rs            # the root component\n    \
                        components/       # one file per ui! element";
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Project layout".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Project layout".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "Your crate is platform-agnostic Rust. There's no \
                 web.rs / ios.rs / android.rs split, and there are no Xcode or Gradle \
@@ -83,7 +83,7 @@ fn layout_section() -> Primitive {
                     Gradle project (for App Store releases, custom native code, etc.) \
                     is a planned follow-up. Today the CLI is the build pipeline; \
                     tomorrow you'll be able to eject.".to_string(),
-                tone = TypographyTone::Muted,
+                muted = true,
             )
         },
     ];
@@ -93,7 +93,7 @@ fn layout_section() -> Primitive {
 fn run_web() -> Primitive {
     let snippet = "idealyst dev          # hot-reload at http://localhost:8080";
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Run on web".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Run on web".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "`idealyst dev` is the hot-reload dev server. It \
                 builds the wasm bundle, starts a static file server, and opens your \
@@ -109,7 +109,7 @@ fn run_native() -> Primitive {
     let snippet = "idealyst run ios       # boot in iOS simulator\n\
                    idealyst run android   # install on emulator or USB device";
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Run on iOS / Android".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Run on iOS / Android".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "iOS and Android use the same source tree. The CLI \
                 produces the platform binary, generates the Xcode / Gradle wrapper as \
@@ -139,7 +139,7 @@ fn edit_and_reload() -> Primitive {
                        }\n\
                    }";
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Make a change".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Make a change".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "Open `src/app.rs` and replace it with the canonical \
                 counter. Save and the running app updates in place \u{2014} on web, in \
@@ -152,7 +152,7 @@ fn edit_and_reload() -> Primitive {
 
 fn next() -> Primitive {
     let title = ui! {
-        Typography(content = "Next: understand the model".to_string(), kind = TypographyKind::H2)
+        Typography(content = "Next: understand the model".to_string(), kind = idea_ui::typography_kind::H2.into())
     };
     let para = ui! {
         Typography(content = "If you want to know why the app crate compiles for every \

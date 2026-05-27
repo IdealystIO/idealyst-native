@@ -3,9 +3,8 @@
 use runtime_core::{ui, Primitive};
 use idea_ui::doc_controls::DocControls;
 use idea_ui::{
-    badge, btn, card, center, divider, spacer, stack, typography, BadgeKind, BadgeProps,
-    ButtonKind, CardProps, DividerProps, IntentTag, StackAxis, StackGap, StackProps,
-    TypographyKind, TypographyTone,
+    badge, btn, card, center, divider, spacer, stack, typography,
+    CardProps, DividerProps, StackAxis, StackGap, StackProps,
 };
 
 use crate::shell::{demo_card, page_header};
@@ -30,9 +29,9 @@ pub fn page() -> Primitive {
 
 fn filler_children() -> Vec<Primitive> {
     vec![
-        ui! { Badge(label = "one".to_string(), intent = IntentTag::Primary, kind = BadgeKind::Soft) },
-        ui! { Badge(label = "two".to_string(), intent = IntentTag::Success, kind = BadgeKind::Soft) },
-        ui! { Badge(label = "three".to_string(), intent = IntentTag::Warning, kind = BadgeKind::Soft) },
+        ui! { Badge(label = "one".to_string(), tone = idea_ui::tone::Primary.into(), variant = idea_ui::variant::Soft.into()) },
+        ui! { Badge(label = "two".to_string(), tone = idea_ui::tone::Success.into(), variant = idea_ui::variant::Soft.into()) },
+        ui! { Badge(label = "three".to_string(), tone = idea_ui::tone::Warning.into(), variant = idea_ui::variant::Soft.into()) },
     ]
 }
 
@@ -67,11 +66,11 @@ fn stack_demo() -> Primitive {
 fn card_demo() -> Primitive {
     let state = CardProps::init_state();
     let preview = CardProps::reactive_preview(&state, |props| {
-        let tone = props.tone;
+        let variant = props.variant;
         let padding = props.padding;
         ui! {
-            Card(tone = tone, padding = padding) {
-                Typography(content = "Card heading".to_string(), kind = TypographyKind::H3)
+            Card(variant = variant, padding = padding) {
+                Typography(content = "Card heading".to_string(), kind = idea_ui::typography_kind::H3.into())
                 Typography(content = "Cards group related content. Tone variants pick the surface; \
                                 padding controls the inner spacing.".to_string())
             }
@@ -110,8 +109,8 @@ fn center_demo() -> Primitive {
         Center {
             Badge(
                 label = "Centered".to_string(),
-                intent = IntentTag::Primary,
-                kind = BadgeKind::Soft,
+                tone = idea_ui::tone::Primary.into(),
+                variant = idea_ui::variant::Soft.into(),
             )
         }
     };
@@ -121,7 +120,7 @@ fn center_demo() -> Primitive {
                        Stack with align: center, justify: center \u{2014} the shorthand exists so \
                        the common case (empty-state icon, spinner) doesn't need a one-off \
                        stylesheet.".to_string(),
-            tone = TypographyTone::Muted,
+            muted = true,
         )
     };
     demo_card("Center", "Two-axis centering container.", preview, notes)
@@ -134,13 +133,13 @@ fn spacer_demo() -> Primitive {
     let noop: std::rc::Rc<dyn Fn()> = std::rc::Rc::new(|| {});
     let preview = ui! {
         Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
-            Typography(content = "Title".to_string(), kind = TypographyKind::H3)
+            Typography(content = "Title".to_string(), kind = idea_ui::typography_kind::H3.into())
             Spacer()
             Btn(
                 label = "Save".to_string(),
                 on_click = noop,
-                intent = IntentTag::Primary,
-                kind = ButtonKind::Solid,
+                tone = idea_ui::tone::Primary.into(),
+                variant = idea_ui::variant::Filled.into(),
             )
         }
     };
@@ -149,7 +148,7 @@ fn spacer_demo() -> Primitive {
             content = "Empty flex item that grows to fill the available space. Drop one between \
                        siblings inside a row Stack to push them to opposite ends without \
                        computing margins.".to_string(),
-            tone = TypographyTone::Muted,
+            muted = true,
         )
     };
     demo_card("Spacer", "Flex grow filler.", preview, notes)

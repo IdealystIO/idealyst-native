@@ -1,34 +1,23 @@
-//! `Select` — a controlled dropdown.
-//!
-//! Visually: a trigger button showing the current option's label.
-//! Clicking opens a popover-anchored menu listing every option;
-//! clicking an option updates the bound signal + closes the menu.
-//!
-//! Same shape as `Tabs`: string-keyed for type-system simplicity.
-//! Hosts that want a typed enum on top wrap that themselves —
-//! generic component types don't play well with idea-ui's
-//! invocation-macro pattern.
+//! `Select` — controlled dropdown. Ported to the extensible
+//! namespace; same API as the closed-enum
+//! [`crate::components::select`]. The component's only stylable axis
+//! today is `size` (trigger height) — adding a Tone trait would let
+//! authors color the trigger when the value carries semantic meaning
+//! (e.g. selecting an alert level). Not wired yet; lands here when
+//! there's a concrete use case.
 //!
 //! ```ignore
-//! let value = signal!("pear".to_string());
-//! let on_change: Rc<dyn Fn(String)> = Rc::new(move |v| value.set(v));
 //! ui! {
 //!     Select(
 //!         value = value,
 //!         on_change = on_change,
 //!         options = vec![
-//!             SelectOption::new("apple",  "Apple"),
-//!             SelectOption::new("pear",   "Pear"),
-//!             SelectOption::new("banana", "Banana"),
-//!         ]
+//!             SelectOption::new("apple", "Apple"),
+//!             SelectOption::new("pear", "Pear"),
+//!         ],
 //!     )
 //! }
 //! ```
-//!
-//! Dismiss semantics: `BackdropMode::None` keeps the page behind
-//! interactive, but the web backend's click-outside listener fires
-//! `on_dismiss` when the user clicks anywhere outside the menu.
-//! Escape closes too. No focus trap.
 
 use std::rc::Rc;
 
@@ -39,13 +28,12 @@ use runtime_core::{
     VariantEnum,
 };
 
+use idea_theme::theme::IdeaThemeRef;
+
 use crate::stylesheets::{SelectMenu, SelectOption as SelectOptionStyle, SelectTrigger};
-use crate::theme::IdeaThemeRef;
 
 pub use crate::stylesheets::SelectTriggerSize as SelectSize;
 
-/// One choice in the menu. `id` is the value written to the bound
-/// signal when the user picks this option; `label` is what's shown.
 #[derive(Clone)]
 pub struct SelectOption {
     pub id: String,
@@ -58,20 +46,11 @@ impl SelectOption {
     }
 }
 
-#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct SelectProps {
-    /// Controlled — the host owns this signal. `Select` reads it
-    /// to decide which option's label to show on the trigger, and
-    /// writes to it via `on_change` on pick.
     pub value: Signal<String>,
     pub on_change: Rc<dyn Fn(String)>,
-    /// The menu's choices. Empty list ⇒ menu has no rows; trigger
-    /// shows the placeholder (or empty if none was set).
     pub options: Vec<SelectOption>,
-    /// Trigger size — sm / md / lg, matching Field.
     pub size: SelectSize,
-    /// Shown on the trigger when `value` doesn't match any option's
-    /// id. Useful for "Choose..." prompts.
     pub placeholder: Option<String>,
 }
 
@@ -92,23 +71,11 @@ pub fn select(props: SelectProps) -> Primitive {
     let on_change = props.on_change.clone();
     let size = props.size;
     let placeholder = props.placeholder.clone();
-    // Shared across the trigger's label closure + the menu's
-    // option rows; cheap-clone of `Rc<Vec<SelectOption>>`.
     let options = Rc::new(props.options);
 
-    // Per-instance state.
     let open: Signal<bool> = signal!(false);
     let trigger_ref: Ref<PressableHandle> = Ref::new();
 
-    // ---- Trigger ----
-    //
-    // Built on the framework's `pressable` primitive (a tappable
-    // `<div>`, no `<button>` UA chrome) so the SelectTrigger
-    // stylesheet drives the whole visual without fighting any
-    // browser defaults. The label is a reactive `Text` child whose
-    // closure reads `value` and resolves it through the option
-    // list, so the trigger label updates whenever the selection
-    // flips programmatically.
     let label_options = options.clone();
     let label_placeholder = placeholder.clone();
     let label_source: runtime_core::TextSource = runtime_core::IntoTextSource::into_text_source(
@@ -121,15 +88,9 @@ pub fn select(props: SelectProps) -> Primitive {
                 .unwrap_or_default()
         },
     );
-    // Use runtime-core's `text` builder rather than constructing
-    // `Primitive::Text` directly: feature-gated fields like
-    // `test_id` (added when `runtime-core/robot` is on) get
-    // initialized inside runtime-core, so this crate never has
-    // to know about them.
-    use runtime_core::IntoPrimitive;
     let label_child = runtime_core::text(label_source).into_primitive();
     let trigger_style = move || {
-        let _ = crate::theme_runtime::active_theme()
+        let _ = idea_theme::active_theme()
             .downcast_ref::<IdeaThemeRef>()
             .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
         StyleApplication::new(SelectTrigger::sheet())
@@ -141,13 +102,6 @@ pub fn select(props: SelectProps) -> Primitive {
         .bind(trigger_ref)
         .into_primitive();
 
-    // ---- Menu ----
-    //
-    // Gated by `when(open.get(), …, …)`: only mounts while open.
-    // Each open-flip rebuilds the menu from scratch, which means
-    // the row-state lives inside the menu's per-open scope and
-    // drops cleanly on close. Builder closures live in
-    // `menu_build` below to keep the surrounding code readable.
     let menu_options = options.clone();
     let menu_on_change = on_change.clone();
     let menu_close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
@@ -173,10 +127,6 @@ pub fn select(props: SelectProps) -> Primitive {
     }
 }
 
-/// Build the menu primitive for a single open cycle. The `when`
-/// branch flip calls this each time `open` goes false → true, so
-/// the menu's scope (including per-row event closures) frees on
-/// close + re-mounts on reopen.
 fn menu_build(
     value: Signal<String>,
     options: Rc<Vec<SelectOption>>,
@@ -198,22 +148,17 @@ fn menu_build(
             }
         });
 
-        // The row's active-variant style closure reads `value` so
-        // the highlight flips reactively when the selection
-        // changes — no row rebuild required.
         let opt_id_for_style = opt_id.clone();
         let row_style = move || {
-            let _ = crate::theme_runtime::active_theme()
+            let _ = idea_theme::active_theme()
                 .downcast_ref::<IdeaThemeRef>()
                 .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
             let variant = if value.get() == opt_id_for_style { "on" } else { "off" };
-            StyleApplication::new(SelectOptionStyle::sheet())
-                .with("active", variant.to_string())
+            StyleApplication::new(SelectOptionStyle::sheet()).with("active", variant.to_string())
         };
 
         let label_child =
-            runtime_core::text(runtime_core::TextSource::Static(opt_label))
-                .into_primitive();
+            runtime_core::text(runtime_core::TextSource::Static(opt_label)).into_primitive();
         let row = runtime_core::pressable(vec![label_child], move || (on_click)())
             .with_style(row_style)
             .into_primitive();
@@ -225,11 +170,11 @@ fn menu_build(
         AnchorTarget::from(trigger_ref),
         vec![ui! { View(style = menu_style) { rows } }],
     )
-        .side(ElementSide::Below)
-        .align(ElementAlign::Start)
-        .offset(4.0)
-        .backdrop(BackdropMode::None)
-        .trap_focus(false)
-        .on_dismiss(move || (menu_close)())
-        .into_primitive()
+    .side(ElementSide::Below)
+    .align(ElementAlign::Start)
+    .offset(4.0)
+    .backdrop(BackdropMode::None)
+    .trap_focus(false)
+    .on_dismiss(move || (menu_close)())
+    .into_primitive()
 }

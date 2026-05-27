@@ -58,12 +58,12 @@ fn alert_demo() -> Primitive {
     let preview = AlertProps::reactive_preview(&state, |props| {
         let title = props.title;
         let body = props.body;
-        let intent = props.intent;
+        let tone = props.tone;
         ui! {
             Alert(
                 title = title,
                 body = body,
-                intent = intent
+                tone = tone
             )
         }
     });

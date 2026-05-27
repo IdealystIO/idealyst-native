@@ -1,33 +1,41 @@
-//! `Tag` — a labelled pill, optionally dismissable. Same intent +
-//! kind vocabulary as [`Badge`](super::badge::Badge).
+//! `Tag` — labelled pill with optional close button, built on the
+//! extensible Tone + Variant trait surface.
 //!
 //! ```ignore
 //! use std::rc::Rc;
+//! use idea_ui::extensible::tag::{tag, TagProps};
+//! use idea_theme::extensible::{tone, variant};
 //!
 //! ui! {
 //!     Tag(
-//!         label = "Rust".to_string(),
-//!         intent = IntentTag::Primary,
-//!         kind = BadgeKind::Soft,
-//!         on_remove = Some(Rc::new(move || remove("Rust")))
+//!         label = "Rust",
+//!         tone = tone::Primary,
+//!         variant = variant::Soft,
+//!         on_remove = Some(Rc::new(move || remove("Rust"))),
 //!     )
 //! }
 //! ```
+//!
+//! Same Tone + Variant axes as [`badge`](super::badge::badge) — the
+//! only difference is the optional close affordance. Reuses
+//! [`Tag`](crate::stylesheets::Tag) base sheet for the container
+//! and [`TagLabel`](crate::stylesheets::TagLabel)/[`TagClose`](crate::stylesheets::TagClose)
+//! for the children.
 
 use std::rc::Rc;
 
-use runtime_core::{ui, IntoPrimitive, Primitive, StyleApplication};
+use runtime_core::{ui, IntoPrimitive, Primitive, StyleApplication, StyleRules};
 
-use crate::components::badge::BadgeKind;
-use crate::components::button::IntentTag;
-use crate::stylesheets::{Tag, TagClose, TagLabel};
-use crate::theme::IdeaThemeRef;
+use idea_theme::extensible::{tone, variant, ResolutionCtx, ToneRef, VariantRef};
+use idea_theme::theme::IdeaThemeRef;
+
+use crate::stylesheets::{Tag as TagSheet, TagClose, TagLabel};
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct TagProps {
     pub label: String,
-    pub intent: IntentTag,
-    pub kind: BadgeKind,
+    pub tone: ToneRef,
+    pub variant: VariantRef,
     /// When `Some`, a close button renders to the right of the label.
     pub on_remove: Option<Rc<dyn Fn()>>,
 }
@@ -36,8 +44,8 @@ impl Default for TagProps {
     fn default() -> Self {
         Self {
             label: String::new(),
-            intent: IntentTag::Neutral,
-            kind: BadgeKind::Soft,
+            tone: tone::Neutral.into(),
+            variant: variant::Soft.into(),
             on_remove: None,
         }
     }
@@ -45,17 +53,33 @@ impl Default for TagProps {
 
 pub fn tag(props: &TagProps) -> Primitive {
     let label = props.label.clone();
-    let intent = props.intent;
-    let kind = props.kind;
-    let appearance = format!("{}_{}", intent.as_str(), kind.as_str());
+    let tone = props.tone.clone();
+    let variant = props.variant.clone();
+
+    let cache_key = format!("tag+{}+{}", variant.key(), tone.key());
 
     let container_style = {
-        let appearance = appearance.clone();
+        let tone = tone.clone();
+        let variant = variant.clone();
+        let cache_key = cache_key.clone();
         move || {
-            let _ = crate::theme_runtime::active_theme()
+            let _ = idea_theme::active_theme()
                 .downcast_ref::<IdeaThemeRef>()
                 .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
-            StyleApplication::new(Tag::sheet()).with("appearance", appearance.clone())
+            let var = variant.clone();
+            let tn = tone.clone();
+            let compute = move || -> StyleRules {
+                let theme = idea_theme::active_theme();
+                let theme_ref = theme
+                    .downcast_ref::<IdeaThemeRef>()
+                    .expect("idea-ui: no IdeaTheme installed");
+                let ctx = ResolutionCtx {
+                    theme: theme_ref,
+                    tone: &*tn,
+                };
+                var.render(&ctx)
+            };
+            StyleApplication::new(TagSheet::sheet()).with_computed(cache_key.clone(), compute)
         }
     };
 
@@ -64,10 +88,6 @@ pub fn tag(props: &TagProps) -> Primitive {
 
     match props.on_remove.clone() {
         Some(on_remove) => {
-            // Close × built on the framework's pressable primitive,
-            // not `Button(...)` — the ui!-side `Button` tag is now
-            // idea-ui's styled Button, and we want a bare clickable
-            // here that the TagClose stylesheet fully owns.
             let close_text = runtime_core::text("×".to_string()).into_primitive();
             let close = runtime_core::pressable(vec![close_text], move || (on_remove)())
                 .with_style(close_style)

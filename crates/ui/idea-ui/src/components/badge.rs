@@ -1,81 +1,86 @@
-//! `Badge` — small pill-shaped status indicator. Same intent +
-//! kind vocabulary as [`Button`](super::button::Button); kinds are
-//! limited to Solid / Soft / Outlined (Ghost doesn't apply — a badge
-//! needs a visible surface to read as a chip).
+//! `Badge` — small pill-shaped status indicator, built on the
+//! extensible Tone + Variant trait surface.
 //!
 //! ```ignore
-//! ui! { Badge(label = "New", intent = IntentTag::Success, kind = BadgeKind::Soft) }
+//! use idea_ui::extensible::badge::{badge, BadgeProps};
+//! use idea_theme::extensible::{tone, variant};
+//!
+//! ui! {
+//!     Badge(
+//!         label = "New",
+//!         tone = tone::Success,
+//!         variant = variant::Soft,
+//!     )
+//! }
 //! ```
+//!
+//! Badge has no Size or Shape axis — it's intrinsically small with a
+//! fixed pill radius (those values live in the base stylesheet). Just
+//! Tone + Variant. The four built-in variants all compose; `Ghost`
+//! makes a transparent borderless chip which is rarely useful but
+//! not invalid.
 
-use runtime_core::{ui, Primitive, StyleApplication};
+use runtime_core::{text, IntoPrimitive, Primitive, StyleApplication, StyleRules};
 
-use crate::components::button::IntentTag;
-use crate::stylesheets::Badge;
-use crate::theme::IdeaThemeRef;
+use idea_theme::extensible::{tone, variant, ResolutionCtx, ToneRef, VariantRef};
+use idea_theme::theme::IdeaThemeRef;
 
-/// Visual treatment for a Badge. No Ghost — a borderless transparent
-/// chip would be invisible.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
-pub enum BadgeKind {
-    Solid,
-    #[default]
-    Soft,
-    Outlined,
-}
-
-impl BadgeKind {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Solid => "solid",
-            Self::Soft => "soft",
-            Self::Outlined => "outlined",
-        }
-    }
-    pub fn all() -> &'static [BadgeKind] {
-        &[BadgeKind::Solid, BadgeKind::Soft, BadgeKind::Outlined]
-    }
-}
-
-impl runtime_core::VariantEnum for BadgeKind {
-    fn as_variant_str(self) -> &'static str {
-        self.as_str()
-    }
-    fn all_variants() -> &'static [Self] {
-        Self::all()
-    }
-}
+use crate::stylesheets::Badge as BadgeSheet;
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct BadgeProps {
     pub label: String,
-    pub intent: IntentTag,
-    pub kind: BadgeKind,
+    pub tone: ToneRef,
+    pub variant: VariantRef,
 }
 
 impl Default for BadgeProps {
     fn default() -> Self {
         Self {
             label: String::new(),
-            // Default to Neutral/Soft — the most generic "this is a
-            // status chip" look.
-            intent: IntentTag::Neutral,
-            kind: BadgeKind::Soft,
+            // Neutral/Soft = the most generic "this is a status chip"
+            // look. Matches the default of the closed-enum Badge.
+            tone: tone::Neutral.into(),
+            variant: variant::Soft.into(),
         }
     }
 }
 
 pub fn badge(props: &BadgeProps) -> Primitive {
     let label = props.label.clone();
-    let intent = props.intent;
-    let kind = props.kind;
-    let appearance = format!("{}_{}", intent.as_str(), kind.as_str());
+    let tone = props.tone.clone();
+    let variant = props.variant.clone();
+
+    // Cache key: same (tone, variant) pair shares a class. Badge has
+    // no Size/Shape axis so the key is two parts not four.
+    let cache_key = format!("badge+{}+{}", variant.key(), tone.key());
 
     let style = move || {
-        let _ = crate::theme_runtime::active_theme()
+        // Touch the active theme so the apply-style Effect subscribes
+        // to swaps.
+        let _ = idea_theme::active_theme()
             .downcast_ref::<IdeaThemeRef>()
             .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
-        StyleApplication::new(Badge::sheet()).with("appearance", appearance.clone())
+
+        let var = variant.clone();
+        let tn = tone.clone();
+        let compute = move || -> StyleRules {
+            let theme = idea_theme::active_theme();
+            let theme_ref = theme
+                .downcast_ref::<IdeaThemeRef>()
+                .expect("idea-ui: no IdeaTheme installed");
+            // No `modifier_defaults` — Badge's padding/font/radius live
+            // in the base stylesheet. The variant only contributes the
+            // tone-driven skeleton (bg, color, optional border).
+            let ctx = ResolutionCtx {
+                theme: theme_ref,
+                tone: &*tn,
+            };
+            var.render(&ctx)
+        };
+
+        StyleApplication::new(BadgeSheet::sheet()).with_computed(cache_key.clone(), compute)
     };
 
-    ui! { Text(style = style) { label } }
+    text(label).with_style(style).into_primitive()
 }

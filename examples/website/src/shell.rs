@@ -22,7 +22,7 @@ use runtime_core::{
 use drawer_navigator::SlotProps;
 use idea_ui::{
     current_breakpoint, dark_theme, light_theme, set_idea_theme, spacer, switch, typography,
-    Breakpoint, TypographyKind, TypographyTone,
+    Breakpoint,
 };
 
 use crate::routes::{
@@ -513,11 +513,11 @@ pub fn sidebar(slot: SlotProps, is_dark: Signal<bool>) -> Primitive {
     let footer_style = SidebarFooter();
 
     let header_children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Idealyst".to_string(), kind = TypographyKind::H3) },
+        ui! { Typography(content = "Idealyst".to_string(), kind = idea_ui::typography_kind::H3.into()) },
         ui! {
             Typography(
                 content = "One codebase, native everywhere.".to_string(),
-                tone = TypographyTone::Muted,
+                muted = true,
             )
         },
     ];

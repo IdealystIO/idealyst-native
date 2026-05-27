@@ -3,7 +3,7 @@
 //! stub. Companion to the `#[server]` macro + `crates/sdk/server`.
 
 use runtime_core::{ui, Primitive, Ref, ViewHandle};
-use idea_ui::{stack, typography, StackGap, TypographyKind};
+use idea_ui::{stack, typography, StackGap};
 
 use crate::pages::common::{code_panel, page_header, page_section};
 use crate::routes::CONCEPTS_ROUTE;
@@ -78,7 +78,7 @@ fn pitch() -> Primitive {
                    // In the very same crate, in your UI component:\n\
                    let todos = list_todos(current_user.id).await?;";
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "What server functions are".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "What server functions are".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "You write the function once. The body runs database \
                 queries, reads request headers, touches whatever server-side state your \
@@ -120,7 +120,7 @@ fn how_macro_splits() -> Primitive {
                               server::__private::call::<(i32, i32), _>(\"add\", &(a, b)).await\n\
                           }";
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "How the macro splits".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "How the macro splits".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "`#[server]` is an attribute macro. It expands the \
                 async fn into two cfg-gated halves and keys off the `server` cargo \
@@ -150,7 +150,7 @@ fn wire_protocol() -> Primitive {
                    [{\"path\": \"add\",     \"args\": [2, 3]},\n \
                     {\"path\": \"v1/ping\", \"args\": null}]   →  [{\"Ok\": 5}, {\"Ok\": \"pong\"}]";
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "The wire".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "The wire".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "JSON over HTTP. Two routes: single and batched. The \
                 framework picks single vs batch automatically based on how many calls \
@@ -184,7 +184,7 @@ fn project_layout() -> Primitive {
                        #[cfg(feature = \"server\")]\n\
                        use diesel::prelude::*;";
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Project layout".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Project layout".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "The recommended layout is three crates. The `shared/` \
                 crate is the dual-feature one \u{2014} it compiles twice, once with \
@@ -223,7 +223,7 @@ fn extractors() -> Primitive {
                               Ok(format!(\"authenticated as: {auth}\"))\n\
                           }";
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "App state and per-request data".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "App state and per-request data".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "Server-side code gets two flavors of context. \
                 App-level state (DB pool, config, S3 client) is registered once at \
@@ -256,7 +256,7 @@ fn batching() -> Primitive {
                    \n\
                    // → one POST /_srv/_batch on the wire, not three.";
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Batching, for free".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Batching, for free".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "Multiple server-fn calls fired in the same tick \
                 coalesce into a single HTTP request. The mechanism is inline microtask \
@@ -290,7 +290,7 @@ fn cancellation() -> Primitive {
                    //   3. the actual network read (reqwest drops / browser aborts / iOS \n\
                    //      task.cancel / Android conn.disconnect)";
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Cancellation, end-to-end".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Cancellation, end-to-end".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "When a `resource` fetcher's deps change, the \
                 in-flight server-fn call should actually abort \u{2014} not just have \
@@ -327,7 +327,7 @@ fn reactive_integration() -> Primitive {
                        |list, new_todo| list.push(new_todo),\n\
                    );";
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Wiring into the UI".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Wiring into the UI".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "Server functions are async fns. They compose with \
                 every reactive async primitive: `resource()` for dep-driven reads, \
@@ -355,7 +355,7 @@ fn cli_flow() -> Primitive {
                    # one command — builds wasm, runs the server bin, watches src/ for changes:\n\
                    idealyst dev --web --local my-app";
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Running it".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Running it".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "Declare `server_bin = \"<name>\"` in your manifest \
                 and the CLI runs the full stack with one command \u{2014} builds the \
@@ -376,7 +376,7 @@ fn cli_flow() -> Primitive {
 
 fn where_next() -> Primitive {
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Where to go from here".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Where to go from here".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "Server functions plug into the rest of the framework \
                 through the same reactive primitives you'd use for any async work. If \
@@ -386,7 +386,7 @@ fn where_next() -> Primitive {
         ui! {
             Link(route = &CONCEPTS_ROUTE, params = ()) {
                 Typography(content = "Read \u{2192} Core concepts".to_string(),
-                           kind = TypographyKind::BodyLg)
+                           kind = idea_ui::typography_kind::BodyLg.into())
             }
         },
         ui! {

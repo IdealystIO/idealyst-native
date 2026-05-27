@@ -2,7 +2,7 @@
 //! `signal!`, `stylesheet!`, `jsx!`.
 
 use runtime_core::{ui, Primitive};
-use idea_ui::{typography, card, TypographyTone, TypographyKind};
+use idea_ui::{typography, card};
 
 use crate::shell::{
     code_block, page_body, page_header, section, CodeBlockProps, PageTypographyProps, PageHeaderProps,
@@ -18,25 +18,25 @@ pub fn page() -> Primitive {
             )
 
             Card {
-                Typography(content = "`ui!`".to_string(), kind = TypographyKind::H2)
+                Typography(content = "`ui!`".to_string(), kind = idea_ui::typography_kind::H2.into())
                 Typography(
                     content = "JSX-shaped DSL for declaring UI trees. Components, control flow \
                                (`if`, `for`, `match`), and pass-through Rust expressions all \
                                compose in a single block. See the UI DSL page for full \
                                syntax.".to_string(),
-                    tone = TypographyTone::Muted,
+                    muted = true,
                 )
             }
 
             Card {
-                Typography(content = "`#[component]`".to_string(), kind = TypographyKind::H2)
+                Typography(content = "`#[component]`".to_string(), kind = idea_ui::typography_kind::H2.into())
                 Typography(
                     content = "Function attribute that turns `fn foo(props: &FooProps) -> \
                                Primitive` into a callable component. Generates a per-component \
                                invocation macro (`foo!(...)`), wires default values via \
                                `#[component(default(field = expr))]`, and registers the \
                                function in the hot-reload table when that feature is on.".to_string(),
-                    tone = TypographyTone::Muted,
+                    muted = true,
                 )
                 CodeBlock(
                     code = "#[derive(Default)]\n\
@@ -48,11 +48,11 @@ pub fn page() -> Primitive {
             }
 
             Card {
-                Typography(content = "`signal!`".to_string(), kind = TypographyKind::H2)
+                Typography(content = "`signal!`".to_string(), kind = idea_ui::typography_kind::H2.into())
                 Typography(
                     content = "Shorthand for `Signal::new(value)`. Identical in every way; \
                                just less typing.".to_string(),
-                    tone = TypographyTone::Muted,
+                    muted = true,
                 )
                 CodeBlock(
                     code = "let count = signal!(0);\n\
@@ -61,24 +61,24 @@ pub fn page() -> Primitive {
             }
 
             Card {
-                Typography(content = "`stylesheet!`".to_string(), kind = TypographyKind::H2)
+                Typography(content = "`stylesheet!`".to_string(), kind = idea_ui::typography_kind::H2.into())
                 Typography(
                     content = "Declares a typed stylesheet over a theme. Generates a builder, \
                                variant enums, state overlays, and an `IntoStyleSource` impl so \
                                the result drops into any `style = ...` slot. See Styles & \
                                Themes for a worked example.".to_string(),
-                    tone = TypographyTone::Muted,
+                    muted = true,
                 )
             }
 
             Card {
-                Typography(content = "`jsx!`".to_string(), kind = TypographyKind::H2)
+                Typography(content = "`jsx!`".to_string(), kind = idea_ui::typography_kind::H2.into())
                 Typography(
                     content = "A sibling of `ui!` that accepts JSX-style angle-bracket syntax \
                                (`<Stack gap={StackGap::Md}>...</Stack>`). Same primitives, \
                                same reactivity, same control-flow rules — authors pick \
                                whichever feels more natural.".to_string(),
-                    tone = TypographyTone::Muted,
+                    muted = true,
                 )
             }
 

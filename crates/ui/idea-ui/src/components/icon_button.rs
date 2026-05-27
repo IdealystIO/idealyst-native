@@ -1,35 +1,42 @@
-//! `IconButton` — square clickable for a single glyph. Same
-//! `intent` + `kind` + `size` axes as [`Button`](super::button::Button);
-//! the only differences are square dimensions and the glyph string in
-//! place of a label.
+//! `IconButton` — square clickable for a glyph, built on the
+//! extensible Tone + Variant trait surface.
 //!
 //! ```ignore
+//! use idea_ui::extensible::icon_button::{icon_button, IconButtonProps, IconButtonSize};
+//! use idea_theme::extensible::{tone, variant};
+//!
 //! ui! {
 //!     IconButton(
-//!         glyph = "×".to_string(),
+//!         glyph = "×",
 //!         on_click = on_dismiss,
-//!         intent = IntentTag::Neutral,
-//!         kind = ButtonKind::Ghost,
+//!         tone = tone::Neutral,
+//!         variant = variant::Ghost,
+//!         size = IconButtonSize::Md,
 //!     )
 //! }
 //! ```
+//!
+//! Tone + Variant are extensible (trait objects); `size` stays a
+//! closed enum because it controls the square's width/height — a
+//! continuous extension would require additional theme tokens that
+//! aren't part of the `ButtonSize` slot vocabulary.
 
 use std::rc::Rc;
 
-use runtime_core::{text, IntoPrimitive, Primitive, StyleApplication, VariantEnum};
+use runtime_core::{text, IntoPrimitive, Primitive, StyleApplication, StyleRules, VariantEnum};
 
-use crate::components::button::{ButtonKind, IntentTag};
-use crate::stylesheets::IconButton;
-use crate::theme::IdeaThemeRef;
+use idea_theme::extensible::{tone, variant, ResolutionCtx, ToneRef, VariantRef};
+use idea_theme::theme::IdeaThemeRef;
 
+use crate::stylesheets::IconButton as IconButtonSheet;
 pub use crate::stylesheets::IconButtonSize;
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct IconButtonProps {
     pub glyph: String,
     pub on_click: Rc<dyn Fn()>,
-    pub intent: IntentTag,
-    pub kind: ButtonKind,
+    pub tone: ToneRef,
+    pub variant: VariantRef,
     pub size: IconButtonSize,
     pub disabled: Option<Rc<dyn Fn() -> bool>>,
 }
@@ -39,11 +46,8 @@ impl Default for IconButtonProps {
         Self {
             glyph: String::new(),
             on_click: Rc::new(|| {}),
-            // IconButton defaults to Neutral/Solid — a "+", "×", or
-            // similar in a card or toolbar usually shouldn't have a
-            // semantic emphasis baked in.
-            intent: IntentTag::Neutral,
-            kind: ButtonKind::Solid,
+            tone: tone::Neutral.into(),
+            variant: variant::Filled.into(),
             size: IconButtonSize::default(),
             disabled: None,
         }
@@ -53,19 +57,42 @@ impl Default for IconButtonProps {
 pub fn icon_button(props: &IconButtonProps) -> Primitive {
     let glyph = props.glyph.clone();
     let on_click = props.on_click.clone();
+    let tone = props.tone.clone();
+    let variant = props.variant.clone();
     let size = props.size;
-    let intent = props.intent;
-    let kind = props.kind;
     let disabled = props.disabled.clone();
 
-    let appearance = format!("{}_{}", intent.as_str(), kind.as_str());
+    // Cache key reflects every input that affects the resolved style:
+    // size (via stylesheet variant axis) + tone + variant (via computed
+    // layer). The stylesheet's `size` axis handles width/height; the
+    // computed layer handles tone-driven appearance.
+    let cache_key = format!(
+        "icon-button+{}+{}+{}",
+        variant.key(),
+        tone.key(),
+        size.as_variant_str(),
+    );
+
     let style = move || {
-        let _ = crate::theme_runtime::active_theme()
+        let _ = idea_theme::active_theme()
             .downcast_ref::<IdeaThemeRef>()
             .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
-        StyleApplication::new(IconButton::sheet())
+        let var = variant.clone();
+        let tn = tone.clone();
+        let compute = move || -> StyleRules {
+            let theme = idea_theme::active_theme();
+            let theme_ref = theme
+                .downcast_ref::<IdeaThemeRef>()
+                .expect("idea-ui: no IdeaTheme installed");
+            let ctx = ResolutionCtx {
+                theme: theme_ref,
+                tone: &*tn,
+            };
+            var.render(&ctx)
+        };
+        StyleApplication::new(IconButtonSheet::sheet())
             .with("size", size.as_variant_str().to_string())
-            .with("appearance", appearance.clone())
+            .with_computed(cache_key.clone(), compute)
     };
 
     let glyph_child = text(glyph).into_primitive();

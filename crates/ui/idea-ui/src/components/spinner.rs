@@ -1,8 +1,11 @@
-//! `Spinner` — themed wrapper around the `ActivityIndicator` primitive.
+//! `Spinner` — passthrough to the framework's `ActivityIndicator`
+//! primitive with a small/large size knob.
 //!
-//! The framework primitive already handles platform-native spinner
-//! animation; this wrapper just adds size tokens so call sites don't
-//! reach into runtime-core for the underlying enum.
+//! No tone/variant axes — the framework primitive's color is
+//! platform-native. When the framework primitive grows a tint hook,
+//! a Tone axis would land here (so `Spinner(tone = tone::Primary)`
+//! could tint the wheel). Until then this is identical to the
+//! closed-enum [`crate::components::spinner`].
 
 use runtime_core::primitives::activity_indicator::ActivityIndicatorSize;
 use runtime_core::{ui, Primitive, VariantEnum};
@@ -14,10 +17,6 @@ pub enum SpinnerSize {
     Large,
 }
 
-// Hand-rolled `VariantEnum` impl so the `DocControls` derive can
-// surface this enum as a Pressable-row picker. The `stylesheet!`
-// macro would generate this automatically; for hand-rolled enums
-// we mirror the shape ourselves.
 impl VariantEnum for SpinnerSize {
     fn as_variant_str(self) -> &'static str {
         match self {

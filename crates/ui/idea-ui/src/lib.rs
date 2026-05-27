@@ -60,7 +60,6 @@ pub mod breakpoint;
 pub mod components;
 #[cfg(feature = "docs")]
 pub mod doc_controls;
-pub mod extensible;
 pub mod intent;
 pub mod invocations;
 pub mod stylesheets;
@@ -94,12 +93,12 @@ pub use breakpoint::{
 
 pub use components::alert::{alert, AlertProps};
 pub use components::avatar::{avatar, AvatarColor, AvatarProps, AvatarSize};
-pub use components::badge::{badge, BadgeKind, BadgeProps};
-pub use components::button::{button, ButtonKind, ButtonProps, ButtonSize, IntentTag};
-pub use components::card::{card, CardPadding, CardProps, CardTone};
+pub use components::badge::{badge, BadgeProps};
+pub use components::button::{button, ButtonProps};
+pub use components::card::{card, CardPadding, CardProps};
 pub use components::center::{center, CenterProps};
 pub use components::divider::{divider, DividerAxis, DividerProps};
-pub use components::field::{field, FieldProps, FieldSize, FieldTone};
+pub use components::field::{field, FieldProps, FieldSize};
 pub use components::icon_button::{icon_button, IconButtonProps, IconButtonSize};
 pub use components::modal::{modal, ModalProps};
 pub use components::popover::{popover, PopoverProps};
@@ -113,8 +112,21 @@ pub use components::stack::{
 pub use components::switch::{switch, SwitchProps};
 pub use components::tabs::{tabs, Tab, TabsProps};
 pub use components::tag::{tag, TagProps};
-pub use components::typography::{
-    typography, TypographyAlign, TypographyKind, TypographyProps, TypographyTone,
+pub use components::typography::{typography, TypographyProps};
+
+// The trait surface + built-in modifier ZSTs come from idea-theme.
+// Re-exported at the crate root so apps can write
+// `use idea_ui::{tone, variant, size, shape, typography_kind}` for
+// the namespaces.
+pub use idea_theme::extensible::{
+    tone, variant, size, shape, typography as typography_kind,
+    ButtonSize, ButtonSizeRef, ResolutionCtx, Shape, ShapeRef, Tone, ToneRef, TypographyKind,
+    TypographyKindRef, Variant, VariantRef,
 };
+// Macros from idea-theme. `#[macro_export]` macros live at the
+// defining crate's root; re-exported here for convenience. The
+// modifier macros (`tone!`, `variant!`) live in idea-theme's macro
+// namespace; `app_theme!` bundles an app theme.
+pub use idea_theme::{app_theme, color_token, tone, variant};
 
 pub use stylesheets::TabPanel;

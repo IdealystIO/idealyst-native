@@ -9,12 +9,23 @@ description = "Demo of `lazy! { ... }` — the framework's code-splitting primit
 crate-type = ["rlib"]
 
 [dependencies]
-runtime-core = { workspace = true }
+runtime-core = { workspace = true, features = ["async-driver"] }
+# Heavy deps for the stress-test `lazy!` block — same set the
+# website's Simulator hero pulls in. Exercising wasm-split's
+# extraction on the wgpu / welcome stack without going through
+# idea-ui (which has unrelated WIP compile issues).
+welcome = { workspace = true }
+host-web = { workspace = true }
+render-api = { workspace = true }
+ios-sim = { workspace = true }
+android-sim = { workspace = true }
 
 # Target-gated backend deps mirror the welcome example. Per-target
 # `register_extensions` lives in `src/lib.rs`.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-backend-web = { workspace = true }
+# async-driver here for the same reason the website needs it —
+# host-web's wgpu init goes through spawn_async + the render loop.
+backend-web = { workspace = true, features = ["async-driver"] }
 # `lazy!` expands to `#[wasm_split]`-annotated functions on wasm32.
 # The `wasm-split` runtime is needed only on wasm — the macro is
 # transparent on native targets (no dep reference there).

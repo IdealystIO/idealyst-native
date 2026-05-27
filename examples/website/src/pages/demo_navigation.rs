@@ -1,7 +1,7 @@
 //! Navigation — stack / drawer / tab patterns + native back behavior.
 
 use runtime_core::{ui, Primitive, Ref, ViewHandle};
-use idea_ui::{stack, typography, StackGap, TypographyKind};
+use idea_ui::{stack, typography, StackGap};
 
 use crate::pages::common::{code_panel, page_header, page_section};
 use crate::shell::{layout_with_toc, TocEntry};
@@ -44,7 +44,7 @@ pub fn page() -> Primitive {
 
 fn sdks() -> Primitive {
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Three navigator SDKs".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Three navigator SDKs".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "Navigation isn't built into the framework core. Each \
                 navigator (stack, drawer, tab) is a separate SDK crate that plugs in \
@@ -69,7 +69,7 @@ fn stack_pattern() -> Primitive {
                    \n\
                    ui! { builder.bind(nav) }";
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Stack navigator".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Stack navigator".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "Push/pop screens onto a stack. On iOS this is a \
                 `UINavigationController` with native back gestures and headers; on \
@@ -97,7 +97,7 @@ fn drawer_pattern() -> Primitive {
                    \n\
                    ui! { builder.bind(nav) }";
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Drawer navigator".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Drawer navigator".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "A persistent sidebar slot + a swappable body. On mobile \
                 the sidebar becomes a slide-out drawer with native chrome; on web (large \
@@ -117,7 +117,7 @@ fn drawer_pattern() -> Primitive {
 
 fn tab_pattern() -> Primitive {
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Tab navigator".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Tab navigator".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "Bottom-tab navigation \u{2014} the iOS / Android idiom \
                 for top-level sections. The tab bar lives at the bottom (or on the side, \
@@ -130,7 +130,7 @@ fn tab_pattern() -> Primitive {
 
 fn native_back() -> Primitive {
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Native back, for free".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Native back, for free".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "The platform's back affordance just works. iOS swipe-from-left, \
                 Android system back button, browser back button \u{2014} all route through \
@@ -149,7 +149,7 @@ fn native_back() -> Primitive {
 
 fn extending() -> Primitive {
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Adding a new navigator".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Adding a new navigator".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "Navigators are plug-in extensions. Each SDK crate is \
                 ~200\u{2013}500 lines: a typed presentation struct, a per-backend handler, \

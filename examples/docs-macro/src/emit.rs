@@ -292,7 +292,7 @@ fn emit_top_block_render(block: &TopBlock) -> Vec<TokenStream2> {
             card_children.push(quote! {
                 Typography(
                     content = #heading.to_string(),
-                    kind = ::idea_ui::TypographyKind::H2,
+                    kind = ::idea_ui::typography_kind::H2.into(),
                 )
             });
             for b in &s.blocks {
@@ -329,7 +329,7 @@ fn emit_block_render(block: &Block) -> Vec<TokenStream2> {
             vec![quote! {
                 Typography(
                     content = #text.to_string(),
-                    tone = ::idea_ui::TypographyTone::Muted,
+                    muted = true,
                 )
             }]
         }
@@ -346,7 +346,7 @@ fn emit_block_render(block: &Block) -> Vec<TokenStream2> {
                 quote! {
                     Typography(
                         content = #text.to_string(),
-                        tone = ::idea_ui::TypographyTone::Muted,
+                        muted = true,
                     )
                 }
             })
@@ -359,7 +359,7 @@ fn emit_block_render(block: &Block) -> Vec<TokenStream2> {
             out.push(quote! {
                 Typography(
                     content = #framework_label.to_string(),
-                    kind = ::idea_ui::TypographyKind::H3,
+                    kind = ::idea_ui::typography_kind::H3.into(),
                 )
             });
             for b in &c.blocks {
@@ -374,7 +374,7 @@ fn emit_block_render(block: &Block) -> Vec<TokenStream2> {
             out.push(quote! {
                 Typography(
                     content = #kind_label.to_string(),
-                    kind = ::idea_ui::TypographyKind::H3,
+                    kind = ::idea_ui::typography_kind::H3.into(),
                 )
             });
             for b in &n.blocks {
@@ -395,7 +395,7 @@ fn emit_compare_card(c: &Compare) -> TokenStream2 {
     card_children.push(quote! {
         Typography(
             content = #label.to_string(),
-            kind = ::idea_ui::TypographyKind::H3,
+            kind = ::idea_ui::typography_kind::H3.into(),
         )
     });
     for b in &c.blocks {
@@ -414,7 +414,7 @@ fn emit_note_card(n: &Note) -> TokenStream2 {
     card_children.push(quote! {
         Typography(
             content = #label.to_string(),
-            kind = ::idea_ui::TypographyKind::H3,
+            kind = ::idea_ui::typography_kind::H3.into(),
         )
     });
     for b in &n.blocks {

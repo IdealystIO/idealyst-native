@@ -5,7 +5,7 @@
 //! authoring in ways most languages don't.
 
 use runtime_core::{ui, Primitive, Ref, ViewHandle};
-use idea_ui::{stack, typography, StackGap, TypographyKind, TypographyTone};
+use idea_ui::{stack, typography, StackGap};
 
 use crate::pages::common::{code_panel, page_header, page_section};
 use crate::routes::QUICKSTART_ROUTE;
@@ -76,11 +76,11 @@ fn section(title: &str, paragraphs: Vec<&str>, code: Option<&str>) -> Primitive 
     let mut children: Vec<Primitive> = Vec::new();
     let title_text = title.to_string();
     children.push(ui! {
-        Typography(content = title_text, kind = TypographyKind::H2)
+        Typography(content = title_text, kind = idea_ui::typography_kind::H2.into())
     });
     for p in paragraphs {
         let body = p.to_string();
-        children.push(ui! { Typography(content = body, kind = TypographyKind::BodyLg) });
+        children.push(ui! { Typography(content = body, kind = idea_ui::typography_kind::BodyLg.into()) });
     }
     if let Some(src) = code {
         children.push(code_panel(src));
@@ -317,12 +317,12 @@ fn tradeoff_section() -> Primitive {
         Link(route = &QUICKSTART_ROUTE, params = ()) {
             Typography(
                 content = "Try the Quickstart \u{2192}".to_string(),
-                tone = TypographyTone::Primary,
+                tone = Some(idea_ui::tone::Primary.into()),
             )
         }
     };
     let title = ui! {
-        Typography(content = "The tradeoff".to_string(), kind = TypographyKind::H2)
+        Typography(content = "The tradeoff".to_string(), kind = idea_ui::typography_kind::H2.into())
     };
     let para_1 = ui! {
         Typography(content = "Rust costs something. You need the toolchain installed (rustup is one command, but it's \

@@ -856,89 +856,89 @@ fn run_wasm_split(
         );
     }
 
-    let tmp = pkg_dir.join("__wasm_split_tmp");
-    if tmp.exists() {
-        fs::remove_dir_all(&tmp).ok();
-    }
-    fs::create_dir_all(&tmp)
-        .with_context(|| format!("create {}", tmp.display()))?;
+    let original = fs::read(original_wasm)
+        .with_context(|| format!("read {}", original_wasm.display()))?;
+    let bindgened = fs::read(&bindgened_wasm)
+        .with_context(|| format!("read {}", bindgened_wasm.display()))?;
 
-    let status = Command::new("wasm-split-cli")
-        .arg("split")
-        .arg(original_wasm)
-        .arg(&bindgened_wasm)
-        .arg(&tmp)
-        .status()
-        .with_context(|| {
-            "exec wasm-split-cli — is it on PATH? (`cargo install wasm-split-cli`)"
-        })?;
-    if !status.success() {
-        anyhow::bail!("wasm-split-cli exited with {status}");
-    }
-
-    // Always present after a successful split.
-    let main_wasm = tmp.join("main.wasm");
-    if !main_wasm.is_file() {
-        anyhow::bail!("wasm-split-cli succeeded but main.wasm is missing");
-    }
+    // Library API — calls into our vendored wasm-split-cli, so
+    // patches we apply land automatically without users needing a
+    // separate `cargo install`.
+    let splitter = wasm_split_cli::Splitter::new(&original, &bindgened)
+        .context("wasm-split: parse module")?;
+    let output = splitter.emit().context("wasm-split: emit chunks")?;
 
     // Replace the bindgened wasm with the split-extracted main.
-    fs::rename(&main_wasm, &bindgened_wasm).with_context(|| {
-        format!("replace {} with split main.wasm", bindgened_wasm.display())
+    fs::write(&bindgened_wasm, &output.main.bytes).with_context(|| {
+        format!("write split main to {}", bindgened_wasm.display())
     })?;
 
-    // Move every chunk/module wasm into pkg_dir alongside the main.
-    // wasm-split's __wasm_split.js references them by basename (after
-    // we strip its hard-coded `/harness/split/` prefix below).
+    // Drop each chunk + module wasm into pkg_dir alongside the main.
+    // Naming mirrors what the CLI binary used to emit, so the
+    // generated JS shim's URLs still match.
     let mut chunk_count = 0;
-    for entry in fs::read_dir(&tmp)? {
-        let entry = entry?;
-        let from = entry.path();
-        let Some(name) = from.file_name() else { continue };
-        let name_str = name.to_string_lossy();
-        if name_str.ends_with(".wasm") {
-            fs::rename(&from, pkg_dir.join(&name))?;
-            chunk_count += 1;
-        } else if name_str == "__wasm_split.js" {
-            // Read, rewrite, write to final location.
-            let raw = fs::read_to_string(&from)?;
-            let rewritten = raw
-                // Default shim imports `./main.js` — wasm-bindgen
-                // shim is `<lib>.js`. Patch the import.
-                .replace(
-                    "from \"./main.js\"",
-                    &format!("from \"./{lib_name}.js\""),
-                )
-                // Chunk URLs use a hard-coded `/harness/split/`
-                // prefix. Rewrite to a `./` relative prefix.
-                .replace("/harness/split/", "./")
-                // Critical: the rewritten `./<chunk>.wasm` paths
-                // are document-relative when handed to `fetch()`
-                // — so a page at `/` ends up fetching
-                // `/<chunk>.wasm` instead of the actual
-                // `/pkg/<chunk>.wasm` location. Wrap the fetch URL
-                // in `new URL(url, import.meta.url)` so the chunk
-                // path is resolved relative to the shim's own
-                // module URL (i.e., `/pkg/`). Works regardless of
-                // where the bundle is mounted.
-                .replace(
-                    "const response = await fetch(url);",
-                    "const response = await fetch(new URL(url, import.meta.url));",
-                );
-            fs::write(pkg_dir.join(name), rewritten)?;
-        } else {
-            // Unknown artifact — drop. Future versions may emit
-            // other helpers; revisit if so.
-        }
+    for (idx, chunk) in output.chunks.iter().enumerate() {
+        let name = format!("chunk_{idx}_{}.wasm", chunk.module_name);
+        fs::write(pkg_dir.join(&name), &chunk.bytes)
+            .with_context(|| format!("write chunk {name}"))?;
+        chunk_count += 1;
     }
-    // Remove the now-empty temp dir.
-    let _ = fs::remove_dir_all(&tmp);
+    for (idx, module) in output.modules.iter().enumerate() {
+        let cname = module
+            .component_name
+            .as_deref()
+            .unwrap_or(module.module_name.as_str());
+        let name = format!("module_{idx}_{cname}.wasm");
+        fs::write(pkg_dir.join(&name), &module.bytes)
+            .with_context(|| format!("write module {name}"))?;
+        chunk_count += 1;
+    }
 
-    // wasm-bindgen's main JS shim imports `default` from
-    // `./<lib>.js` — we leave it untouched. The split shim
-    // (`__wasm_split.js`) imports `initSync` from `./<lib>.js` for
-    // memory access. Both share the same wasm-bindgen-generated
-    // file, so no patching of the bindgen shim is needed.
+    // JS loader shim. wasm-split-cli's MAKE_LOAD_JS is just the
+    // `makeLoad` factory; the per-chunk `export const
+    // __wasm_split_load_…` declarations are appended at runtime by
+    // the CLI binary. We replicate that here (build-web equivalent
+    // of wasm-split-cli's `emit_js`).
+    use std::fmt::Write as _;
+    let mut shim = format!(
+        "import {{ initSync }} from \"./{lib_name}.js\";\n{}",
+        wasm_split_cli::MAKE_LOAD_JS,
+    );
+    for (idx, chunk) in output.chunks.iter().enumerate() {
+        writeln!(
+            shim,
+            "export const __wasm_split_load_chunk_{idx} = \
+             makeLoad(\"./chunk_{idx}_{name}.wasm\", [], fusedImports, initSync);",
+            name = chunk.module_name,
+        )?;
+    }
+    for (idx, module) in output.modules.iter().enumerate() {
+        let cname = module
+            .component_name
+            .as_deref()
+            .unwrap_or(module.module_name.as_str());
+        let hash_id = module.hash_id.as_deref().unwrap_or("");
+        let deps = module
+            .relies_on_chunks
+            .iter()
+            .map(|i| format!("__wasm_split_load_chunk_{i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        writeln!(
+            shim,
+            "export const __wasm_split_load_{mname}_{hash_id}_{cname} = \
+             makeLoad(\"./module_{idx}_{cname}.wasm\", [{deps}], fusedImports, initSync);",
+            mname = module.module_name,
+        )?;
+    }
+    // Wrap `fetch(url)` to resolve module-relative — without this
+    // the chunk URLs (rewritten to `./`) resolve against the page
+    // URL, not against __wasm_split.js's own location.
+    let shim = shim.replace(
+        "const response = await fetch(url);",
+        "const response = await fetch(new URL(url, import.meta.url));",
+    );
+    fs::write(pkg_dir.join("__wasm_split.js"), shim)?;
 
     eprintln!(
         "[build-web] wasm-split: {} chunk wasm(s) emitted alongside {}_bg.wasm",

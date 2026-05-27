@@ -212,6 +212,6 @@ pub mod __rt {
     // idea-ui's higher-level components, so snippets default to
     // the styled shape rather than building everything out of bare
     // `View` + per-instance stylesheets.
-    pub use idea_ui::{typography, card, stack, TypographyTone, CardPadding, CardTone, TypographyKind, StackAlign, StackAxis, StackGap, StackJustify, StackPadding};
+    pub use idea_ui::{typography, card, stack, CardPadding, StackAlign, StackAxis, StackGap, StackJustify, StackPadding};
     pub use std::rc::Rc;
 }

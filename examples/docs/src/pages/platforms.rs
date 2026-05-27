@@ -1,7 +1,7 @@
 //! Platforms — what each backend looks like and where it runs.
 
 use runtime_core::{ui, Primitive};
-use idea_ui::{typography, card, TypographyTone, TypographyKind};
+use idea_ui::{typography, card};
 
 use crate::shell::{page_body, page_header, section, PageTypographyProps, PageHeaderProps, SectionProps};
 
@@ -24,7 +24,7 @@ pub fn page() -> Primitive {
             )
 
             Card {
-                Typography(content = "Web (WASM)".to_string(), kind = TypographyKind::H2)
+                Typography(content = "Web (WASM)".to_string(), kind = idea_ui::typography_kind::H2.into())
                 Typography(
                     content = "`backend-web` compiles to WebAssembly via `wasm-bindgen`. \
                                Primitives map to DOM nodes; stylesheets compile to CSS \
@@ -32,12 +32,12 @@ pub fn page() -> Primitive {
                                back/forward and deep links work. The dev server serves the \
                                WASM bundle and connects a hot-reload WebSocket for instant \
                                patching.".to_string(),
-                    tone = TypographyTone::Muted,
+                    muted = true,
                 )
             }
 
             Card {
-                Typography(content = "iOS (UIKit)".to_string(), kind = TypographyKind::H2)
+                Typography(content = "iOS (UIKit)".to_string(), kind = idea_ui::typography_kind::H2.into())
                 Typography(
                     content = "The `backend-ios-*` family (`-core`, `-mobile`, `-tv`) \
                                binds to UIKit via the `objc2` crate. Views become \
@@ -46,12 +46,12 @@ pub fn page() -> Primitive {
                                because UIKit doesn't ship a stock drawer. Build via the CLI \
                                (`idealyst build --ios`) or open the materialized \
                                Xcode project under `target/idealyst/ios/`.".to_string(),
-                    tone = TypographyTone::Muted,
+                    muted = true,
                 )
             }
 
             Card {
-                Typography(content = "Android".to_string(), kind = TypographyKind::H2)
+                Typography(content = "Android".to_string(), kind = idea_ui::typography_kind::H2.into())
                 Typography(
                     content = "The `backend-android-*` family (`-core`, `-mobile`, `-tv`) \
                                bridges to the native View hierarchy via JNI. The Rust \
@@ -59,12 +59,12 @@ pub fn page() -> Primitive {
                                framework populates the layout when the activity hands \
                                it a root container. Drawer maps to `DrawerLayout`, tabs \
                                to `BottomNavigationView`, stack to `FragmentManager`.".to_string(),
-                    tone = TypographyTone::Muted,
+                    muted = true,
                 )
             }
 
             Card {
-                Typography(content = "Roku (BrightScript)".to_string(), kind = TypographyKind::H2)
+                Typography(content = "Roku (BrightScript)".to_string(), kind = idea_ui::typography_kind::H2.into())
                 Typography(
                     content = "Roku has no Rust runtime — `backend-roku` is a code generator. \
                                Your Rust app is rebuilt as a declarative model, serialized, \
@@ -72,12 +72,12 @@ pub fn page() -> Primitive {
                                glue that replays the tree against Roku's SceneGraph. The \
                                model handles reactivity via a small in-Roku runtime in \
                                `crates/build/roku/runtime/`.".to_string(),
-                    tone = TypographyTone::Muted,
+                    muted = true,
                 )
             }
 
             Card {
-                Typography(content = "runtime-server — App-as-Server".to_string(), kind = TypographyKind::H2)
+                Typography(content = "runtime-server — App-as-Server".to_string(), kind = idea_ui::typography_kind::H2.into())
                 Typography(
                     content = "runtime-server runs the Rust app on a server and ships a wire-format \
                                command stream to thin clients. The server owns state and \
@@ -87,7 +87,7 @@ pub fn page() -> Primitive {
                                uses runtime-server internally for hot-reload — your saves rebuild a \
                                dylib, the runtime-server server reloads it, and connected clients see \
                                the diff with no full reload.".to_string(),
-                    tone = TypographyTone::Muted,
+                    muted = true,
                 )
             }
 

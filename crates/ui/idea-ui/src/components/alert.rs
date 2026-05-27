@@ -1,38 +1,43 @@
-//! `Alert` — a banner conveying a notable message. Same intent +
-//! kind vocabulary as [`Badge`](super::badge::Badge); kinds are
-//! Solid / Soft / Outlined (no Ghost — an alert needs a visible
-//! surface).
+//! `Alert` — banner with title + optional body and dismiss button,
+//! built on the extensible Tone + Variant trait surface.
 //!
 //! ```ignore
 //! use std::rc::Rc;
+//! use idea_ui::extensible::alert::{alert, AlertProps};
+//! use idea_theme::extensible::{tone, variant};
 //!
 //! ui! {
 //!     Alert(
-//!         title = "Couldn't save".to_string(),
+//!         title = "Couldn't save",
 //!         body = Some("Server returned 503.".to_string()),
-//!         intent = IntentTag::Danger,
-//!         kind = BadgeKind::Soft,
-//!         on_dismiss = Some(Rc::new(move || hide_alert()))
+//!         tone = tone::Danger,
+//!         variant = variant::Soft,
+//!         on_dismiss = Some(Rc::new(move || hide_alert())),
 //!     )
 //! }
 //! ```
+//!
+//! Same Tone + Variant axes as [`badge`](super::badge::badge). Alert
+//! has its own padding/font/radius in the base stylesheet, so no
+//! Size/Shape axis — adding one would imply a continuous range of
+//! banner densities which we don't have a use for yet.
 
 use std::rc::Rc;
 
-use runtime_core::{ui, IntoPrimitive, Primitive, StyleApplication};
+use runtime_core::{ui, IntoPrimitive, Primitive, StyleApplication, StyleRules};
 
-use crate::components::badge::BadgeKind;
-use crate::components::button::IntentTag;
-use crate::stylesheets::{Alert, AlertBody, AlertTitle, TagClose};
-use crate::theme::IdeaThemeRef;
+use idea_theme::extensible::{tone, variant, ResolutionCtx, ToneRef, VariantRef};
+use idea_theme::theme::IdeaThemeRef;
+
+use crate::stylesheets::{Alert as AlertSheet, AlertBody, AlertTitle, TagClose};
 
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct AlertProps {
     pub title: String,
     /// Optional second-line detail text. Rendered beneath the title.
     pub body: Option<String>,
-    pub intent: IntentTag,
-    pub kind: BadgeKind,
+    pub tone: ToneRef,
+    pub variant: VariantRef,
     /// When `Some`, a close affordance appears in the top-right.
     pub on_dismiss: Option<Rc<dyn Fn()>>,
 }
@@ -42,10 +47,10 @@ impl Default for AlertProps {
         Self {
             title: String::new(),
             body: None,
-            // Default to Info/Soft — informational alerts are the
-            // common case; "use Danger/Solid for breaking news".
-            intent: IntentTag::Info,
-            kind: BadgeKind::Soft,
+            // Info/Soft = the common informational alert. Use Danger/Filled
+            // for breaking news, Warning/Soft for cautionary, etc.
+            tone: tone::Info.into(),
+            variant: variant::Soft.into(),
             on_dismiss: None,
         }
     }
@@ -54,17 +59,33 @@ impl Default for AlertProps {
 pub fn alert(props: &AlertProps) -> Primitive {
     let title = props.title.clone();
     let body = props.body.clone();
-    let intent = props.intent;
-    let kind = props.kind;
-    let appearance = format!("{}_{}", intent.as_str(), kind.as_str());
+    let tone = props.tone.clone();
+    let variant = props.variant.clone();
+
+    let cache_key = format!("alert+{}+{}", variant.key(), tone.key());
 
     let container_style = {
-        let appearance = appearance.clone();
+        let tone = tone.clone();
+        let variant = variant.clone();
+        let cache_key = cache_key.clone();
         move || {
-            let _ = crate::theme_runtime::active_theme()
+            let _ = idea_theme::active_theme()
                 .downcast_ref::<IdeaThemeRef>()
                 .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
-            StyleApplication::new(Alert::sheet()).with("appearance", appearance.clone())
+            let var = variant.clone();
+            let tn = tone.clone();
+            let compute = move || -> StyleRules {
+                let theme = idea_theme::active_theme();
+                let theme_ref = theme
+                    .downcast_ref::<IdeaThemeRef>()
+                    .expect("idea-ui: no IdeaTheme installed");
+                let ctx = ResolutionCtx {
+                    theme: theme_ref,
+                    tone: &*tn,
+                };
+                var.render(&ctx)
+            };
+            StyleApplication::new(AlertSheet::sheet()).with_computed(cache_key.clone(), compute)
         }
     };
 
@@ -76,7 +97,6 @@ pub fn alert(props: &AlertProps) -> Primitive {
     let body_node: Option<Primitive> = body.map(|b| ui! { Text(style = body_style) { b } });
 
     let close_node: Option<Primitive> = props.on_dismiss.clone().map(|on_dismiss| {
-        // Bare-clickable close × — see Tag for the same reasoning.
         let close_text = runtime_core::text("×".to_string()).into_primitive();
         runtime_core::pressable(vec![close_text], move || (on_dismiss)())
             .with_style(close_style)

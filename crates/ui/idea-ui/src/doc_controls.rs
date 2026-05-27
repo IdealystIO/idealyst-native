@@ -50,7 +50,6 @@ use runtime_core::{ui, ChildList, Primitive, Signal, VariantEnum};
 #[allow(unused_imports)]
 use crate::{
     card, field, select, stack, switch, typography, SelectOption as IdeaSelectOption, StackGap,
-    TypographyKind,
 };
 
 pub use idea_ui_docs_derive::DocControls;
@@ -122,7 +121,7 @@ pub trait DocControls: Sized {
 /// panel.
 pub fn control_row(label: &str, control: Primitive) -> Primitive {
     let label_text = label.to_string();
-    let label_node = ui! { Typography(content = label_text, kind = TypographyKind::Caption) };
+    let label_node = ui! { Typography(content = label_text, kind = crate::typography_kind::Caption.into()) };
     let children = vec![label_node, control];
     ui! {
         Stack(gap = StackGap::Xs) { children }
@@ -134,7 +133,7 @@ pub fn control_row(label: &str, control: Primitive) -> Primitive {
 /// below.
 pub fn controls_panel(rows: Vec<Primitive>) -> Primitive {
     let mut children: Vec<Primitive> = Vec::with_capacity(rows.len() + 1);
-    children.push(ui! { Typography(content = "Controls".to_string(), kind = TypographyKind::H3) });
+    children.push(ui! { Typography(content = "Controls".to_string(), kind = crate::typography_kind::H3.into()) });
     for r in rows {
         ChildList::append_to(r, &mut children);
     }

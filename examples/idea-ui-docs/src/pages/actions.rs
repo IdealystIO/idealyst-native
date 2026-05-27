@@ -37,16 +37,16 @@ fn button_demo() -> Primitive {
 
     let preview = ButtonProps::reactive_preview(&state, |props| {
         let label = props.label;
-        let intent = props.intent;
-        let kind = props.kind;
+        let tone = props.tone;
+        let variant = props.variant;
         let size = props.size;
         let on_click: Rc<dyn Fn()> = Rc::new(|| {});
         ui! {
             Btn(
                 label = label,
                 on_click = on_click,
-                intent = intent,
-                kind = kind,
+                tone = tone,
+                variant = variant,
                 size = size,
             )
         }
@@ -67,16 +67,16 @@ fn icon_button_demo() -> Primitive {
 
     let preview = IconButtonProps::reactive_preview(&state, |props| {
         let glyph = props.glyph;
-        let intent = props.intent;
-        let kind = props.kind;
+        let tone = props.tone;
+        let variant = props.variant;
         let size = props.size;
         let on_click: Rc<dyn Fn()> = Rc::new(|| {});
         ui! {
             IconButton(
                 glyph = glyph,
                 on_click = on_click,
-                intent = intent,
-                kind = kind,
+                tone = tone,
+                variant = variant,
                 size = size,
             )
         }
@@ -97,9 +97,9 @@ fn badge_demo() -> Primitive {
 
     let preview = BadgeProps::reactive_preview(&state, |props| {
         let label = props.label;
-        let intent = props.intent;
-        let kind = props.kind;
-        ui! { Badge(label = label, intent = intent, kind = kind) }
+        let tone = props.tone;
+        let variant = props.variant;
+        ui! { Badge(label = label, tone = tone, variant = variant) }
     });
     let controls = BadgeProps::render_controls(&state);
     demo_card(
@@ -117,9 +117,9 @@ fn tag_demo() -> Primitive {
 
     let preview = TagProps::reactive_preview(&state, |props| {
         let label = props.label;
-        let intent = props.intent;
-        let kind = props.kind;
-        ui! { Tag(label = label, intent = intent, kind = kind) }
+        let tone = props.tone;
+        let variant = props.variant;
+        ui! { Tag(label = label, tone = tone, variant = variant) }
     });
     let controls = TagProps::render_controls(&state);
     demo_card(

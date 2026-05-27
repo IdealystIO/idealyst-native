@@ -235,7 +235,7 @@ macro_rules! tone {
 ///   each listed extension's `tokens()` output.
 ///
 /// ```ignore
-/// theme! {
+/// app_theme! {
 ///     pub MyTheme {
 ///         idea: IdeaThemeDefaults,
 ///         tones: [Hype, Beta],
@@ -247,6 +247,9 @@ macro_rules! tone {
 /// // For dark mode:
 /// set_idea_theme(MyTheme { idea: dark_theme() });
 /// ```
+///
+/// (Named `app_theme!` rather than `theme!` to avoid a name collision
+/// with the `theme` *module* re-exported at the same path.)
 ///
 /// The `tones: [...]` list is optional. Anything with a static
 /// `fn tokens() -> Vec<TokenEntry>` works — most commonly tones built
@@ -263,7 +266,7 @@ macro_rules! tone {
 /// missing function — exactly the slot-completeness guarantee you'd
 /// expect.
 #[macro_export]
-macro_rules! theme {
+macro_rules! app_theme {
     (
         $vis:vis $name:ident {
             idea: $idea_ty:ty

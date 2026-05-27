@@ -14,7 +14,7 @@
 use runtime_core::{
     component, signal, text, ui, IntoPrimitive, Primitive, Ref, Route, Screen, Signal,
 };
-use idea_ui::{typography, card, install_idea_theme, light_theme, stack, TypographyTone, TypographyKind, StackGap, StackPadding};
+use idea_ui::{typography, card, install_idea_theme, light_theme, stack, StackGap, StackPadding};
 use stack_navigator::{Navigator, StackBuilder, StackHandle, StackScreenExt};
 
 // ---------------------------------------------------------------------------
@@ -92,11 +92,11 @@ fn home_page(nav: Ref<StackHandle>) -> Primitive {
     let go_counter = move || nav.get().map(|h| h.push(&COUNTER, ())).unwrap_or_default();
 
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Stack demo".to_string(), kind = TypographyKind::H1) },
+        ui! { Typography(content = "Stack demo".to_string(), kind = idea_ui::typography_kind::H1.into()) },
         ui! {
             Typography(
                 content = "Tap a button to push a detail screen onto the stack. Each detail screen has a Back button that pops.".to_string(),
-                tone = TypographyTone::Muted,
+                muted = true,
             )
         },
         ui! { Button(label = "Open About".to_string(), on_click = go_about) },
@@ -111,11 +111,11 @@ fn home_page(nav: Ref<StackHandle>) -> Primitive {
 
 fn about_page(nav: Ref<StackHandle>) -> Primitive {
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "About".to_string(), kind = TypographyKind::H1) },
+        ui! { Typography(content = "About".to_string(), kind = idea_ui::typography_kind::H1.into()) },
         ui! {
             Typography(
                 content = "This screen was pushed onto the stack. Press Back to pop it.".to_string(),
-                tone = TypographyTone::Muted,
+                muted = true,
             )
         },
         back_button(nav),
@@ -129,11 +129,11 @@ fn settings_page(nav: Ref<StackHandle>) -> Primitive {
     let card_children: Vec<Primitive> = vec![ui! {
         Typography(
             content = "Imagine real settings here. The card is just to show that pages can carry their own layout.".to_string(),
-            tone = TypographyTone::Muted,
+            muted = true,
         )
     }];
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Settings".to_string(), kind = TypographyKind::H1) },
+        ui! { Typography(content = "Settings".to_string(), kind = idea_ui::typography_kind::H1.into()) },
         ui! { Card { card_children } },
         back_button(nav),
     ];
@@ -153,7 +153,7 @@ fn counter_page(nav: Ref<StackHandle>, count: Signal<i32>) -> Primitive {
     let label = text(move || format!("Count: {}", count.get())).into_primitive();
 
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Counter".to_string(), kind = TypographyKind::H1) },
+        ui! { Typography(content = "Counter".to_string(), kind = idea_ui::typography_kind::H1.into()) },
         label,
         ui! { Button(label = "+".to_string(), on_click = increment) },
         ui! { Button(label = "-".to_string(), on_click = decrement) },

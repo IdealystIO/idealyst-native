@@ -1,7 +1,7 @@
 //! Install the CLI — prerequisites, install command, verify, per-platform tooling.
 
 use runtime_core::{ui, Primitive, Ref, ViewHandle};
-use idea_ui::{stack, typography, StackGap, TypographyKind};
+use idea_ui::{stack, typography, StackGap};
 
 use crate::pages::common::{code_panel, page_header, page_section};
 use crate::routes::QUICKSTART_ROUTE;
@@ -47,7 +47,7 @@ fn prerequisites() -> Primitive {
     let snippet = "# rustup is the standard Rust installer\n\
                    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh";
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Prerequisites".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Prerequisites".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "You need a Rust toolchain (stable 1.78+) and git. \
                 The CLI itself has no platform dependencies \u{2014} per-platform tooling \
@@ -69,7 +69,7 @@ fn install() -> Primitive {
                       cargo install --git https://github.com/IdealystIO/idealyst-native --tag <tag>    idealyst-cli\n\
                       cargo install --git https://github.com/IdealystIO/idealyst-native --branch <br>  idealyst-cli";
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Install".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Install".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "Fetch the latest commit on master, compile in release mode, \
                 and drop the `idealyst` binary into `~/.cargo/bin/` (which is on your PATH if \
@@ -90,7 +90,7 @@ fn install() -> Primitive {
 fn verify() -> Primitive {
     let snippet = "idealyst --help";
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Verify".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Verify".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "Confirm the binary is on your PATH and prints the \
                 subcommand list:".to_string())
@@ -106,25 +106,25 @@ fn verify() -> Primitive {
 
 fn per_platform() -> Primitive {
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Per-platform tooling".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Per-platform tooling".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "You only need a platform's tooling when you actually \
                 build for that platform. The CLI is platform-agnostic; `idealyst doctor` \
                 tells you what each enabled target is missing.".to_string())
         },
-        ui! { Typography(content = "iOS".to_string(), kind = TypographyKind::H3) },
+        ui! { Typography(content = "iOS".to_string(), kind = idea_ui::typography_kind::H3.into()) },
         ui! {
             Typography(content = "Xcode (App Store) + Xcode Command Line Tools. Both \
                 ship together. `xcrun simctl` and `xcodebuild` need to be available on \
                 your PATH \u{2014} they are by default once Xcode is installed.".to_string())
         },
-        ui! { Typography(content = "Android".to_string(), kind = TypographyKind::H3) },
+        ui! { Typography(content = "Android".to_string(), kind = idea_ui::typography_kind::H3.into()) },
         ui! {
             Typography(content = "Android Studio (or the SDK + NDK installed separately). \
                 The CLI looks for `ANDROID_HOME` and `ANDROID_NDK_ROOT`; if neither is \
                 set, `idealyst doctor` will tell you. You also need `adb` on your PATH.".to_string())
         },
-        ui! { Typography(content = "Web".to_string(), kind = TypographyKind::H3) },
+        ui! { Typography(content = "Web".to_string(), kind = idea_ui::typography_kind::H3.into()) },
         ui! {
             Typography(content = "Nothing extra. The CLI pulls in wasm-pack as part of \
                 its own build, and the wasm32 target compiles via your existing Rust \
@@ -137,7 +137,7 @@ fn per_platform() -> Primitive {
 fn doctor() -> Primitive {
     let snippet = "idealyst doctor";
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Diagnose with `doctor`".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Diagnose with `doctor`".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "When something goes wrong, `idealyst doctor` walks \
                 each enabled target's toolchain and reports what's missing, with \
@@ -149,7 +149,7 @@ fn doctor() -> Primitive {
 }
 
 fn next_steps() -> Primitive {
-    let title = ui! { Typography(content = "Next steps".to_string(), kind = TypographyKind::H2) };
+    let title = ui! { Typography(content = "Next steps".to_string(), kind = idea_ui::typography_kind::H2.into()) };
     let para = ui! {
         Typography(content = "With the CLI installed, scaffold your first project and \
             run it on all three platforms in a few commands.".to_string())

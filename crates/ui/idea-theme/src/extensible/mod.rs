@@ -107,24 +107,44 @@ pub trait Tone: 'static {
     fn focus_ring(&self, theme: &dyn IdeaTheme) -> Tokenized<Color>;
 }
 
-/// Ergonomic conversion: `Primary.into_rc()` → `Rc<dyn Tone>`. Used at
-/// component prop sites to wrap a built-in or custom marker without
-/// the `Rc::new(...)` ceremony.
+/// Typed handle wrapping `Rc<dyn Tone>` so prop fields accept
+/// `impl Into<ToneRef>` and call sites just write `tone: Hype.into()`.
 ///
-/// (Rust's orphan rule blocks a blanket `From<T: Tone> for Rc<dyn Tone>`
-/// — the trait parameter must be covered by a local type, which an
-/// `Rc<dyn Trait>` Self type isn't. The explicit conversion trait is
-/// the standard workaround and matches the existing `IntoRcIntent`
-/// pattern in `intent.rs`.)
-pub trait IntoRcTone {
-    fn into_rc(self) -> Rc<dyn Tone>;
-}
+/// The newtype routes around the orphan rule — a blanket
+/// `impl<T: Tone> From<T> for Rc<dyn Tone>` isn't allowed because `Rc`
+/// is foreign and not `#[fundamental]`. `ToneRef` is local, so we get
+/// the From blanket here.
+///
+/// `Deref<Target = dyn Tone>` makes the wrapper transparent at use
+/// sites — call methods on it directly (`tone.fill_bg(theme)`),
+/// no `.0`.
+#[derive(Clone)]
+pub struct ToneRef(pub Rc<dyn Tone>);
 
-impl<T: Tone> IntoRcTone for T {
-    fn into_rc(self) -> Rc<dyn Tone> {
-        Rc::new(self)
+impl<T: Tone> From<T> for ToneRef {
+    fn from(t: T) -> Self {
+        ToneRef(Rc::new(t))
     }
 }
+
+impl std::ops::Deref for ToneRef {
+    type Target = dyn Tone;
+    fn deref(&self) -> &Self::Target {
+        &*self.0
+    }
+}
+
+impl Default for ToneRef {
+    fn default() -> Self {
+        ToneRef(Rc::new(tone::Primary))
+    }
+}
+
+// Note: a blanket `From<T: Tone> for Option<ToneRef>` would let
+// components with an optional tone accept `tone: Hype.into()` without
+// `Some(...)`, but Rust's orphan rule rejects it — `Option` isn't
+// `#[fundamental]`. Affected components (Field) require an explicit
+// `Some(Hype.into())`. One extra `Some(...)` per call site.
 
 // =============================================================================
 // Variant — skeleton (which surfaces fill, stroke, or are transparent)
@@ -152,14 +172,27 @@ pub trait Variant: 'static {
     fn render(&self, ctx: &ResolutionCtx) -> StyleRules;
 }
 
-/// Ergonomic conversion mirroring [`IntoRcTone`].
-pub trait IntoRcVariant {
-    fn into_rc(self) -> Rc<dyn Variant>;
+/// Typed handle wrapping `Rc<dyn Variant>`. See [`ToneRef`] for the
+/// rationale.
+#[derive(Clone)]
+pub struct VariantRef(pub Rc<dyn Variant>);
+
+impl<V: Variant> From<V> for VariantRef {
+    fn from(v: V) -> Self {
+        VariantRef(Rc::new(v))
+    }
 }
 
-impl<V: Variant> IntoRcVariant for V {
-    fn into_rc(self) -> Rc<dyn Variant> {
-        Rc::new(self)
+impl std::ops::Deref for VariantRef {
+    type Target = dyn Variant;
+    fn deref(&self) -> &Self::Target {
+        &*self.0
+    }
+}
+
+impl Default for VariantRef {
+    fn default() -> Self {
+        VariantRef(Rc::new(variant::Filled))
     }
 }
 
@@ -181,14 +214,26 @@ pub trait ButtonSize: 'static {
     fn font_size(&self) -> Tokenized<Length>;
 }
 
-/// Ergonomic conversion mirroring [`IntoRcTone`].
-pub trait IntoRcButtonSize {
-    fn into_rc(self) -> Rc<dyn ButtonSize>;
+/// Typed handle wrapping `Rc<dyn ButtonSize>`. See [`ToneRef`].
+#[derive(Clone)]
+pub struct ButtonSizeRef(pub Rc<dyn ButtonSize>);
+
+impl<S: ButtonSize> From<S> for ButtonSizeRef {
+    fn from(s: S) -> Self {
+        ButtonSizeRef(Rc::new(s))
+    }
 }
 
-impl<S: ButtonSize> IntoRcButtonSize for S {
-    fn into_rc(self) -> Rc<dyn ButtonSize> {
-        Rc::new(self)
+impl std::ops::Deref for ButtonSizeRef {
+    type Target = dyn ButtonSize;
+    fn deref(&self) -> &Self::Target {
+        &*self.0
+    }
+}
+
+impl Default for ButtonSizeRef {
+    fn default() -> Self {
+        ButtonSizeRef(Rc::new(size::Md))
     }
 }
 
@@ -204,14 +249,26 @@ pub trait Shape: 'static {
     fn border_radius(&self) -> Tokenized<Length>;
 }
 
-/// Ergonomic conversion mirroring [`IntoRcTone`].
-pub trait IntoRcShape {
-    fn into_rc(self) -> Rc<dyn Shape>;
+/// Typed handle wrapping `Rc<dyn Shape>`. See [`ToneRef`].
+#[derive(Clone)]
+pub struct ShapeRef(pub Rc<dyn Shape>);
+
+impl<S: Shape> From<S> for ShapeRef {
+    fn from(s: S) -> Self {
+        ShapeRef(Rc::new(s))
+    }
 }
 
-impl<S: Shape> IntoRcShape for S {
-    fn into_rc(self) -> Rc<dyn Shape> {
-        Rc::new(self)
+impl std::ops::Deref for ShapeRef {
+    type Target = dyn Shape;
+    fn deref(&self) -> &Self::Target {
+        &*self.0
+    }
+}
+
+impl Default for ShapeRef {
+    fn default() -> Self {
+        ShapeRef(Rc::new(shape::Md))
     }
 }
 
@@ -231,14 +288,26 @@ pub trait TypographyKind: 'static {
     fn letter_spacing(&self) -> Tokenized<f32>;
 }
 
-/// Ergonomic conversion mirroring [`IntoRcTone`].
-pub trait IntoRcTypographyKind {
-    fn into_rc(self) -> Rc<dyn TypographyKind>;
+/// Typed handle wrapping `Rc<dyn TypographyKind>`. See [`ToneRef`].
+#[derive(Clone)]
+pub struct TypographyKindRef(pub Rc<dyn TypographyKind>);
+
+impl<K: TypographyKind> From<K> for TypographyKindRef {
+    fn from(k: K) -> Self {
+        TypographyKindRef(Rc::new(k))
+    }
 }
 
-impl<K: TypographyKind> IntoRcTypographyKind for K {
-    fn into_rc(self) -> Rc<dyn TypographyKind> {
-        Rc::new(self)
+impl std::ops::Deref for TypographyKindRef {
+    type Target = dyn TypographyKind;
+    fn deref(&self) -> &Self::Target {
+        &*self.0
+    }
+}
+
+impl Default for TypographyKindRef {
+    fn default() -> Self {
+        TypographyKindRef(Rc::new(typography::Body))
     }
 }
 
@@ -312,16 +381,27 @@ mod tests {
     use crate::extensible::{shape, size, tone, variant};
     use runtime_core::{Color, FontWeight, Length, Tokenized};
 
-    /// Sanity: `.into_rc()` wraps any built-in ZST into an
-    /// `Rc<dyn Trait>` at the prop boundary.
+    /// Sanity: `.into()` wraps any built-in ZST into its typed
+    /// `*Ref` handle. This is the standard call-site idiom — prop
+    /// fields use `impl Into<...Ref>` so users never write `Rc::new`.
     #[test]
-    fn builtin_zsts_wrap_into_trait_objects() {
-        let _t: Rc<dyn Tone> = tone::Primary.into_rc();
-        let _t: Rc<dyn Tone> = tone::Danger.into_rc();
-        let _v: Rc<dyn Variant> = variant::Filled.into_rc();
-        let _v: Rc<dyn Variant> = variant::Outlined.into_rc();
-        let _s: Rc<dyn ButtonSize> = size::Md.into_rc();
-        let _h: Rc<dyn Shape> = shape::Pill.into_rc();
+    fn builtin_zsts_wrap_into_ref_handles() {
+        let _t: ToneRef = tone::Primary.into();
+        let _t: ToneRef = tone::Danger.into();
+        let _v: VariantRef = variant::Filled.into();
+        let _v: VariantRef = variant::Outlined.into();
+        let _s: ButtonSizeRef = size::Md.into();
+        let _h: ShapeRef = shape::Pill.into();
+        let _k: TypographyKindRef = typography::H1.into();
+    }
+
+    /// Optional tone fields (Field's `tone: Option<ToneRef>`) require
+    /// an explicit `Some(...)` wrap. Orphan rule blocks a blanket
+    /// `From<T: Tone> for Option<ToneRef>`.
+    #[test]
+    fn optional_tone_wrap_is_explicit() {
+        let opt: Option<ToneRef> = Some(tone::Danger.into());
+        assert!(opt.is_some());
     }
 
     /// `modifier_defaults` (the free function) emits padding,
@@ -552,7 +632,7 @@ mod tests {
             }
             other => panic!("expected token, got {:?}", other),
         }
-        let _: Rc<dyn TypographyKind> = SexySubtitle.into_rc();
+        let _: TypographyKindRef = SexySubtitle.into();
     }
 
     // ----- Theme bundle composition ----------------------------------------
@@ -562,7 +642,7 @@ mod tests {
     // tokens from extension tones. Adding a new brand tone to your
     // app is a one-line change in the `tones: [...]` list.
 
-    crate::theme! {
+    crate::app_theme! {
         pub MyTheme {
             idea: crate::theme::IdeaThemeDefaults,
             tones: [Hype],

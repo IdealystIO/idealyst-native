@@ -22,7 +22,6 @@
 
 use idea_ui::{
     install_idea_theme, light_theme, stack, typography, StackGap, StackPadding,
-    TypographyKind, TypographyTone,
 };
 use runtime_core::{
     async_reducer, component, fixed_size, flat_list, signal, ui, AsyncReducer, AsyncStatus,
@@ -293,13 +292,13 @@ pub fn app() -> Primitive {
     let on_add_demo = make_adder(create.clone(), "Demo idealyst");
 
     let header: Vec<Primitive> = vec![
-        ui! { Typography(content = "Server-fn todos".to_string(), kind = TypographyKind::H1) },
+        ui! { Typography(content = "Server-fn todos".to_string(), kind = idea_ui::typography_kind::H1.into()) },
         ui! {
             Typography(
                 content = "Every interaction is a #[server] call. Open the network tab \
                 — adds/toggles/deletes are single HTTP requests; their response folds \
                 straight into local state via `async_reducer`, no second refetch.".to_string(),
-                tone = TypographyTone::Muted,
+                muted = true,
             )
         },
         status_line,

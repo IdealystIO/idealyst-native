@@ -15,6 +15,10 @@ flate2 = { workspace = true }
 # Emit `chunk_manifest.json` for the web Lazy primitive's runtime
 # chunk URL lookup.
 serde_json = "1"
+# Vendored wasm-split toolchain. Called as a library (not a
+# subprocess) so our patches apply automatically without users
+# needing to install a separate binary on PATH.
+wasm-split-cli = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

@@ -9,7 +9,7 @@
 use std::rc::Rc;
 
 use runtime_core::{lazy, signal, switch, ui, IntoPrimitive, Primitive, Route, Signal, StyleApplication};
-use idea_ui::{tabs, typography, Tab, TypographyKind, TypographyTone};
+use idea_ui::{tabs, typography, Tab};
 
 use crate::components::simulator::{simulator, SimulatorProps};
 use crate::pages::common::code_panel;
@@ -200,13 +200,13 @@ fn quickstart_section() -> Primitive {
     // sibling in the same `ui!` scope would otherwise be parsed as
     // children of Body, which doesn't have a `children` field.
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Build an iOS, Web, and Android app in five commands.".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Build an iOS, Web, and Android app in five commands.".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(
                 content = "The same `app()` function runs unchanged on web, iOS, and \
                            Android. The CLI handles the build pipeline and the per-target \
                            wrappers \u{2014} your code stays platform-agnostic.".to_string(),
-                tone = TypographyTone::Muted,
+                muted = true,
             )
         },
         code_panel(install_snippet),
@@ -266,7 +266,7 @@ fn pillars_section() -> Primitive {
     }
 
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "What makes it different".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "What makes it different".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! { View(style = grid_style) { cards } },
     ];
 
@@ -279,8 +279,8 @@ fn pillar_card(title: &str, blurb: &str, route: &'static Route<()>) -> Primitive
     let title_text = title.to_string();
     let blurb_text = blurb.to_string();
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = title_text, kind = TypographyKind::H3) },
-        ui! { Typography(content = blurb_text, tone = TypographyTone::Muted) },
+        ui! { Typography(content = title_text, kind = idea_ui::typography_kind::H3.into()) },
+        ui! { Typography(content = blurb_text, muted = true) },
         ui! {
             Link(route = route, params = ()) {
                 Text(style = cta_style) { "Read more \u{2192}" }

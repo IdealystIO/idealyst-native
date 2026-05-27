@@ -1,7 +1,7 @@
 //! Further reading — curated outbound links.
 
 use runtime_core::{ui, Primitive, Ref, ViewHandle};
-use idea_ui::{stack, typography, StackGap, TypographyKind, TypographyTone};
+use idea_ui::{stack, typography, StackGap};
 
 use crate::pages::common::{page_header, page_section};
 use crate::shell::{layout_with_toc, TocEntry};
@@ -38,7 +38,7 @@ pub fn page() -> Primitive {
 
 fn source_section() -> Primitive {
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Source".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Source".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "github.com/IdealystIO/idealyst-native".to_string())
         },
@@ -46,7 +46,7 @@ fn source_section() -> Primitive {
             Typography(content = "The whole framework, the CLI, the example apps, and \
                 this website. Open issues here; the issue tracker is the canonical place \
                 for bug reports and feature discussion.".to_string(),
-                tone = TypographyTone::Muted)
+                muted = true)
         },
     ];
     ui! { Stack(gap = StackGap::Md) { children } }
@@ -63,11 +63,11 @@ fn docs_section() -> Primitive {
     ];
     let mut rows: Vec<Primitive> = Vec::with_capacity(entries.len() * 2);
     for (path, desc) in entries {
-        rows.push(ui! { Typography(content = path.to_string(), kind = TypographyKind::H3) });
-        rows.push(ui! { Typography(content = desc.to_string(), tone = TypographyTone::Muted) });
+        rows.push(ui! { Typography(content = path.to_string(), kind = idea_ui::typography_kind::H3.into()) });
+        rows.push(ui! { Typography(content = desc.to_string(), muted = true) });
     }
     let mut children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Design documents".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Design documents".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "Long-form design rationale and reference material. \
                 These live in the `docs/` directory of the repo.".to_string())
@@ -88,11 +88,11 @@ fn crate_readmes() -> Primitive {
     ];
     let mut rows: Vec<Primitive> = Vec::with_capacity(entries.len() * 2);
     for (path, desc) in entries {
-        rows.push(ui! { Typography(content = path.to_string(), kind = TypographyKind::H3) });
-        rows.push(ui! { Typography(content = desc.to_string(), tone = TypographyTone::Muted) });
+        rows.push(ui! { Typography(content = path.to_string(), kind = idea_ui::typography_kind::H3.into()) });
+        rows.push(ui! { Typography(content = desc.to_string(), muted = true) });
     }
     let mut children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Per-crate READMEs".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Per-crate READMEs".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "When a crate has non-obvious wiring or behavioural \
                 quirks, it has its own README. The most useful entry points:".to_string())
@@ -104,7 +104,7 @@ fn crate_readmes() -> Primitive {
 
 fn acknowledgements() -> Primitive {
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Acknowledgements".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Acknowledgements".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "Dioxus is another Rust cross-platform UI initiative. \
                 Idealyst's iOS and Android backends use Taffy, one of their tools, as \
@@ -119,7 +119,7 @@ fn acknowledgements() -> Primitive {
             Typography(content = "Idealyst's earlier React Native incarnation \u{2014} the \
                 project's original form before this Rust rewrite \u{2014} lives at \
                 github.com/IdealystIO/idealyst-framework.".to_string(),
-                tone = TypographyTone::Muted)
+                muted = true)
         },
     ];
     ui! { Stack(gap = StackGap::Md) { children } }

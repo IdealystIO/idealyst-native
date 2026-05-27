@@ -3,7 +3,7 @@
 //! stubbed-out screens.
 
 use runtime_core::{switch, ui, Color, IntoPrimitive, Primitive, Ref, StyleApplication, Tokenized, ViewHandle};
-use idea_ui::{stack, typography, StackGap, TypographyKind, TypographyTone};
+use idea_ui::{stack, typography, StackGap};
 
 use crate::styles::{CodePanel, CodeText, PlaceholderBox, SectionWrap};
 
@@ -17,8 +17,8 @@ pub fn page_header(title: &str, blurb: &str) -> Primitive {
     let title_text = title.to_string();
     let blurb_text = blurb.to_string();
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = title_text, kind = TypographyKind::H1) },
-        ui! { Typography(content = blurb_text, kind = TypographyKind::BodyLg, tone = TypographyTone::Muted) },
+        ui! { Typography(content = title_text, kind = idea_ui::typography_kind::H1.into()) },
+        ui! { Typography(content = blurb_text, kind = idea_ui::typography_kind::BodyLg.into(), muted = true) },
     ];
     // `Md` not `Sm`: the H1 + lead-body pair is the page's most
     // important hierarchy moment, deserves a comfortable gap.
@@ -223,7 +223,7 @@ pub fn placeholder_block(text: &str) -> Primitive {
     let style = PlaceholderBox();
     let label = text.to_string();
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = label, tone = TypographyTone::Muted) },
+        ui! { Typography(content = label, muted = true) },
     ];
     ui! { View(style = style) { children } }
 }

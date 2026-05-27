@@ -6,7 +6,7 @@
 
 use runtime_core::{ui, Primitive};
 use idea_ui::doc_controls::DocControls;
-use idea_ui::{typography, card, stack, TypographyKind, TypographyProps, TypographyTone, StackGap};
+use idea_ui::{typography, card, stack, TypographyKindRef, TypographyProps, StackGap};
 
 use crate::shell::{demo_card, page_header};
 
@@ -33,27 +33,27 @@ pub fn page() -> Primitive {
 
 fn variant_gallery() -> Primitive {
     let rows: Vec<Primitive> = vec![
-        variant_row("Display", "The quick brown fox", TypographyKind::Display),
-        variant_row("H1", "The quick brown fox", TypographyKind::H1),
-        variant_row("H2", "The quick brown fox", TypographyKind::H2),
-        variant_row("H3", "The quick brown fox", TypographyKind::H3),
-        variant_row("BodyXl", "The quick brown fox jumps over the lazy dog.", TypographyKind::BodyXl),
-        variant_row("BodyLg", "The quick brown fox jumps over the lazy dog.", TypographyKind::BodyLg),
-        variant_row("Body", "The quick brown fox jumps over the lazy dog.", TypographyKind::Body),
-        variant_row("BodySm", "The quick brown fox jumps over the lazy dog.", TypographyKind::BodySm),
-        variant_row("Caption", "Helper text under a control", TypographyKind::Caption),
-        variant_row("Overline", "Section label", TypographyKind::Overline),
+        variant_row("Display", "The quick brown fox", idea_ui::typography_kind::Display.into()),
+        variant_row("H1", "The quick brown fox", idea_ui::typography_kind::H1.into()),
+        variant_row("H2", "The quick brown fox", idea_ui::typography_kind::H2.into()),
+        variant_row("H3", "The quick brown fox", idea_ui::typography_kind::H3.into()),
+        variant_row("BodyXl", "The quick brown fox jumps over the lazy dog.", idea_ui::typography_kind::BodyXl.into()),
+        variant_row("BodyLg", "The quick brown fox jumps over the lazy dog.", idea_ui::typography_kind::BodyLg.into()),
+        variant_row("Body", "The quick brown fox jumps over the lazy dog.", idea_ui::typography_kind::Body.into()),
+        variant_row("BodySm", "The quick brown fox jumps over the lazy dog.", idea_ui::typography_kind::BodySm.into()),
+        variant_row("Caption", "Helper text under a control", idea_ui::typography_kind::Caption.into()),
+        variant_row("Overline", "Section label", idea_ui::typography_kind::Overline.into()),
     ];
 
     let label = ui! {
-        Typography(content = "Variant gallery".to_string(), kind = TypographyKind::H2)
+        Typography(content = "Variant gallery".to_string(), kind = idea_ui::typography_kind::H2.into())
     };
     let blurb = ui! {
         Typography(
             content = "Every `TypographyKind` rendered at its native size. The size scale \
                        is theme-tokenized (`typography-{kind}-size`); apps can retune by \
                        overriding individual fields on the `Typography` theme struct.".to_string(),
-            tone = TypographyTone::Muted,
+            muted = true,
         )
     };
     let mut children: Vec<Primitive> = Vec::with_capacity(rows.len() + 2);
@@ -67,13 +67,12 @@ fn variant_gallery() -> Primitive {
     }
 }
 
-fn variant_row(name: &str, sample: &str, kind: TypographyKind) -> Primitive {
-    let name_text = format!("{:?}", kind);
-    // Render the kind name in muted Caption so it doesn't fight the
+fn variant_row(name: &str, sample: &str, kind: TypographyKindRef) -> Primitive {
+    let name_text = name.to_string();
+    // Render the kind name in muted Overline so it doesn't fight the
     // sample line above it.
-    let _ = name;
     let label = ui! {
-        Typography(content = name_text, kind = TypographyKind::Overline, tone = TypographyTone::Muted)
+        Typography(content = name_text, kind = idea_ui::typography_kind::Overline.into(), muted = true)
     };
     let sample_line = ui! {
         Typography(content = sample.to_string(), kind = kind)
@@ -117,30 +116,44 @@ fn interactive_demo() -> Primitive {
 // =============================================================================
 
 fn tone_gallery() -> Primitive {
-    let tones = [
-        ("Default", TypographyTone::Default),
-        ("Muted", TypographyTone::Muted),
-        ("Primary", TypographyTone::Primary),
-        ("Danger", TypographyTone::Danger),
-        ("Success", TypographyTone::Success),
-        ("Warning", TypographyTone::Warning),
-        ("Info", TypographyTone::Info),
+    use idea_ui::ToneRef;
+    enum ToneCell {
+        Default,
+        Muted,
+        Color(ToneRef),
+    }
+    let tones: Vec<(&'static str, ToneCell)> = vec![
+        ("Default", ToneCell::Default),
+        ("Muted", ToneCell::Muted),
+        ("Primary", ToneCell::Color(idea_ui::tone::Primary.into())),
+        ("Danger", ToneCell::Color(idea_ui::tone::Danger.into())),
+        ("Success", ToneCell::Color(idea_ui::tone::Success.into())),
+        ("Warning", ToneCell::Color(idea_ui::tone::Warning.into())),
+        ("Info", ToneCell::Color(idea_ui::tone::Info.into())),
     ];
     let mut rows: Vec<Primitive> = Vec::with_capacity(tones.len());
-    for (label, tone) in tones {
+    for (label, cell) in tones {
         let sample = format!("{} — readable on both light and dark surfaces.", label);
-        rows.push(ui! {
-            Typography(content = sample, tone = tone)
+        rows.push(match cell {
+            ToneCell::Default => ui! {
+                Typography(content = sample)
+            },
+            ToneCell::Muted => ui! {
+                Typography(content = sample, muted = true)
+            },
+            ToneCell::Color(t) => ui! {
+                Typography(content = sample, tone = Some(t))
+            },
         });
     }
     let label = ui! {
-        Typography(content = "Tone gallery".to_string(), kind = TypographyKind::H2)
+        Typography(content = "Tone gallery".to_string(), kind = idea_ui::typography_kind::H2.into())
     };
     let blurb = ui! {
         Typography(
             content = "Each tone reads a different theme color token. `Inverse` is omitted \
                        here because it's white-on-dark — visible only against a dark surface.".to_string(),
-            tone = TypographyTone::Muted,
+            muted = true,
         )
     };
     let mut children: Vec<Primitive> = Vec::with_capacity(rows.len() + 2);

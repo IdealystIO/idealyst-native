@@ -1,7 +1,7 @@
 //! Robot & MCP — first-class automation and agentic control.
 
 use runtime_core::{ui, Primitive, Ref, ViewHandle};
-use idea_ui::{stack, typography, StackGap, TypographyKind};
+use idea_ui::{stack, typography, StackGap};
 
 use crate::pages::common::{code_panel, page_header, page_section};
 use crate::shell::{layout_with_toc, TocEntry};
@@ -42,7 +42,7 @@ pub fn page() -> Primitive {
 
 fn registry() -> Primitive {
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "The introspection registry".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "The introspection registry".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "Every mounted primitive registers itself with a shared \
                 registry. Each entry carries a stable handle, a `test_id`, a label, and a \
@@ -65,7 +65,7 @@ fn e2e_tests() -> Primitive {
                    let count = robot.signal_value::<i32>(\"counter\")?;\n\
                    assert_eq!(count, 1);";
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "E2E test harnesses".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "E2E test harnesses".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "Query by `test_id`, click buttons, type into inputs, \
                 read signals, snapshot the tree. The same `Robot` API drives web, iOS, \
@@ -96,7 +96,7 @@ fn methods_macro() -> Primitive {
                        // ...the rest of the component\n\
                    }";
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "`methods! { ... }`".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "`methods! { ... }`".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "Inside a `#[component]` body, a `methods! { ... }` block \
                 exposes named methods that the registry registers as JSON-callable. \
@@ -121,7 +121,7 @@ fn mcp_server() -> Primitive {
                        }\n  }\n\
                    }";
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "MCP server".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "MCP server".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "`idealyst-mcp` is a stdio MCP server that turns each \
                 registry capability into an MCP tool. Drop it into a Claude Desktop \
@@ -140,7 +140,7 @@ fn mcp_server() -> Primitive {
 
 fn build_profile() -> Primitive {
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Gated on a Cargo feature".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Gated on a Cargo feature".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "The Robot bridge + registry compile in only when the \
                 `robot` feature is on. Production release builds leave it off; there's \

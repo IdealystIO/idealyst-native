@@ -1,7 +1,7 @@
 //! Every target — user-facing list of platforms idealyst runs on.
 
 use runtime_core::{ui, Primitive, Ref, ViewHandle};
-use idea_ui::{stack, typography, StackGap, TypographyKind, TypographyTone};
+use idea_ui::{stack, typography, StackGap};
 
 use crate::pages::common::{page_header, page_section};
 use crate::routes::BACKENDS_ROUTE;
@@ -55,8 +55,8 @@ fn target_row(title: &str, blurb: &str) -> Primitive {
     let title_text = title.to_string();
     let blurb_text = blurb.to_string();
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = title_text, kind = TypographyKind::H3) },
-        ui! { Typography(content = blurb_text, tone = TypographyTone::Muted) },
+        ui! { Typography(content = title_text, kind = idea_ui::typography_kind::H3.into()) },
+        ui! { Typography(content = blurb_text, muted = true) },
     ];
     ui! { Stack(gap = StackGap::Xs) { children } }
 }
@@ -77,7 +77,7 @@ fn phones() -> Primitive {
         ),
     ];
     let mut children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Phones".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Phones".to_string(), kind = idea_ui::typography_kind::H2.into()) },
     ];
     children.extend(rows);
     ui! { Stack(gap = StackGap::Md) { children } }
@@ -103,7 +103,7 @@ fn desktops() -> Primitive {
         ),
     ];
     let mut children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Desktops".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Desktops".to_string(), kind = idea_ui::typography_kind::H2.into()) },
     ];
     children.extend(rows);
     ui! { Stack(gap = StackGap::Md) { children } }
@@ -119,7 +119,7 @@ fn browser() -> Primitive {
         ),
     ];
     let mut children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Browsers".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Browsers".to_string(), kind = idea_ui::typography_kind::H2.into()) },
     ];
     children.extend(rows);
     ui! { Stack(gap = StackGap::Md) { children } }
@@ -143,7 +143,7 @@ fn native_gpu() -> Primitive {
         ),
     ];
     let mut children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Native GPU rendering".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Native GPU rendering".to_string(), kind = idea_ui::typography_kind::H2.into()) },
     ];
     children.extend(rows);
     ui! { Stack(gap = StackGap::Md) { children } }
@@ -167,7 +167,7 @@ fn embedded() -> Primitive {
         ),
     ];
     let mut children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Embedded & custom".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Embedded & custom".to_string(), kind = idea_ui::typography_kind::H2.into()) },
     ];
     children.extend(rows);
     ui! { Stack(gap = StackGap::Md) { children } }
@@ -184,7 +184,7 @@ fn tty() -> Primitive {
         ),
     ];
     let mut children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Terminal".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Terminal".to_string(), kind = idea_ui::typography_kind::H2.into()) },
     ];
     children.extend(rows);
     ui! { Stack(gap = StackGap::Md) { children } }
@@ -207,7 +207,7 @@ fn tv() -> Primitive {
         ),
     ];
     let mut children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Television".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Television".to_string(), kind = idea_ui::typography_kind::H2.into()) },
     ];
     children.extend(rows);
     ui! { Stack(gap = StackGap::Md) { children } }
@@ -215,7 +215,7 @@ fn tv() -> Primitive {
 
 fn extending() -> Primitive {
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Adding your own target".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Adding your own target".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "Adding a new target is implementing the Backend trait. \
                 A trait. One file's worth of contract.".to_string())
@@ -227,7 +227,7 @@ fn extending() -> Primitive {
                 it's a fixed surface; the framework doesn't ask the backend to know about \
                 routing, theming, components, or any higher-level concept. Get the \
                 primitive surface right and everything else just works.".to_string(),
-                tone = TypographyTone::Muted)
+                muted = true)
         },
     ];
     ui! { Stack(gap = StackGap::Md) { children } }
@@ -235,7 +235,7 @@ fn extending() -> Primitive {
 
 fn status_link() -> Primitive {
     let title = ui! {
-        Typography(content = "Implementation status".to_string(), kind = TypographyKind::H2)
+        Typography(content = "Implementation status".to_string(), kind = idea_ui::typography_kind::H2.into())
     };
     let para = ui! {
         Typography(content = "Per-backend implementation status \u{2014} which primitives \

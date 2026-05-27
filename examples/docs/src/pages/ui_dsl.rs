@@ -1,7 +1,7 @@
 //! UI DSL — the `ui!` macro: syntax, control flow, reactive forms.
 
 use runtime_core::{ui, Primitive};
-use idea_ui::{typography, card, TypographyTone, TypographyKind};
+use idea_ui::{typography, card};
 
 use crate::shell::{
     code_block, page_body, page_header, section, CodeBlockProps, PageTypographyProps, PageHeaderProps,
@@ -24,14 +24,14 @@ pub fn page() -> Primitive {
             )
 
             Card {
-                Typography(content = "Component invocation".to_string(), kind = TypographyKind::H2)
+                Typography(content = "Component invocation".to_string(), kind = idea_ui::typography_kind::H2.into())
                 Typography(
                     content = "Components are called as `Name(prop = expr, ...) { children }`. \
                                Identifiers starting with an uppercase ASCII letter are treated \
                                as component invocations; anything lowercase falls through as a \
                                plain Rust expression. The parens and the children block are \
                                both optional individually.".to_string(),
-                    tone = TypographyTone::Muted,
+                    muted = true,
                 )
                 CodeBlock(
                     code = "ui! {\n    \
@@ -44,14 +44,14 @@ pub fn page() -> Primitive {
             }
 
             Card {
-                Typography(content = "Reactive `if`".to_string(), kind = TypographyKind::H2)
+                Typography(content = "Reactive `if`".to_string(), kind = idea_ui::typography_kind::H2.into())
                 Typography(
                     content = "An `if` whose condition reads a signal (contains `.get()`) is \
                                lowered to a reactive `when(...)` call — the branch \
                                re-evaluates whenever the signal changes. An `if` with a plain \
                                boolean is evaluated once at build time and emits the selected \
                                branch.".to_string(),
-                    tone = TypographyTone::Muted,
+                    muted = true,
                 )
                 CodeBlock(
                     code = "let open = signal!(false);\n\
@@ -66,12 +66,12 @@ pub fn page() -> Primitive {
             }
 
             Card {
-                Typography(content = "Reactive `match`".to_string(), kind = TypographyKind::H2)
+                Typography(content = "Reactive `match`".to_string(), kind = idea_ui::typography_kind::H2.into())
                 Typography(
                     content = "Same rule as `if`: a `match` whose scrutinee reads a signal \
                                lowers to a `switch(...)` call. Each arm's body is a UI block \
                                (always brace-delimited) so the parser stays unambiguous.".to_string(),
-                    tone = TypographyTone::Muted,
+                    muted = true,
                 )
                 CodeBlock(
                     code = "match status.get() {\n    \
@@ -83,13 +83,13 @@ pub fn page() -> Primitive {
             }
 
             Card {
-                Typography(content = "`for` lists".to_string(), kind = TypographyKind::H2)
+                Typography(content = "`for` lists".to_string(), kind = idea_ui::typography_kind::H2.into())
                 Typography(
                     content = "Iterate over any `IntoIterator`. The macro expands the loop into \
                                a `Vec<Primitive>` that flows into the surrounding children. A \
                                trailing `.style(...)` chain pins the row container's style for \
                                virtualized lists.".to_string(),
-                    tone = TypographyTone::Muted,
+                    muted = true,
                 )
                 CodeBlock(
                     code = "ui! {\n    \

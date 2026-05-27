@@ -90,6 +90,13 @@ members = [
 
     # Tools — CLI + per-platform build/run + source porters.
     "crates/tools/cli",
+    # wasm-split toolchain (vendored from DioxusLabs/dioxus alpha-0.8.0
+    # — we own the snapshot, fix bugs as they fire on our codebase).
+    # See `crates/tools/wasm-split/README.md`.
+    "crates/tools/wasm-split/wasm-split",
+    "crates/tools/wasm-split/wasm-split-cli",
+    "crates/tools/wasm-split/wasm-split-macro",
+    "crates/tools/wasm-split/wasm-used",
     "crates/tools/build/runtime-server",
     "crates/tools/build/android",
     "crates/tools/build/ios",
@@ -239,18 +246,40 @@ ios-navigator-helpers = { path = "crates/sdk/ios-navigator-helpers" }
 # it as a direct dep of build-web doesn't widen the workspace.
 flate2 = "1"
 
-# Code-splitting primitive (`lazy! { ... }`). Same shape as the
-# `taffy` / `subsecond` deps — standalone tools from the Dioxus team
-# that we pull in independently of the rest of their framework. The
-# CLI half (`wasm-split-cli`) is invoked as a separate binary from
-# our build pipeline; install via `cargo install wasm-split-cli`.
+# Code-splitting toolchain — vendored from DioxusLabs/dioxus into
+# `crates/tools/wasm-split/`. The published-crate equivalents
+# (`wasm-splitter`, `wasm-split-macro`, `wasm-split-cli`, `wasm-used`)
+# fall over on idealyst-shaped wasm — heavy generics, deep trait
+# dispatch — so we own the source and patch as bugs surface.
 #
-# The runtime crate is published as `wasm-splitter` (because Google
-# owns the `wasm-split` name on crates.io), but the Dioxus
-# `#[wasm_split]` macro emits paths referencing `wasm_split` —
-# aliasing via `package =` makes both happy: cargo pulls from
-# `wasm-splitter`, the symbol is callable as `wasm_split`.
-wasm-split = { version = "0.8.0-alpha.0", package = "wasm-splitter" }
+# The runtime crate's published name is `wasm-splitter` (because
+# Google owns `wasm-split` on crates.io). We keep the alias via
+# `package =` so the `#[wasm_split]` macro's emitted `wasm_split::…`
+# paths resolve to our vendored copy.
+wasm-split = { path = "crates/tools/wasm-split/wasm-split", package = "wasm-splitter" }
+wasm-split-macro = { path = "crates/tools/wasm-split/wasm-split-macro" }
+wasm-split-cli = { path = "crates/tools/wasm-split/wasm-split-cli" }
+wasm-used = { path = "crates/tools/wasm-split/wasm-used" }
+
+# Third-party deps the vendored wasm-split crates need from the
+# workspace. Keep these in one place so version bumps land
+# atomically across all four.
+anyhow = "1"
+itertools = "0.13"
+walrus = { version = "0.23", features = ["parallel"] }
+wasmparser = "0.224"
+id-arena = "2"
+rayon = "1.10"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+clap = { version = "4", features = ["derive"] }
+async-once-cell = { version = "0.5", features = ["std"] }
+base16 = "0.2"
+digest = "0.10"
+sha2 = "0.10"
+quote = "1"
+syn = { version = "2", features = ["full"] }
+proc-macro2 = "1"
 
 # Dev profile: `opt-level = "z"` works around a wasm OOB seen at
 # opt-level = 0 (the default). Root cause is likely an UB somewhere

@@ -1,7 +1,7 @@
 //! Core concepts — app vs host crates, Primitive, signals, ui!, the Backend trait.
 
 use runtime_core::{ui, Primitive, Ref, ViewHandle};
-use idea_ui::{stack, typography, StackGap, TypographyKind};
+use idea_ui::{stack, typography, StackGap};
 
 use crate::pages::common::{code_panel, page_header, page_section};
 use crate::routes::{BACKENDS_ROUTE, WHY_RUST_ROUTE};
@@ -52,7 +52,7 @@ pub fn page() -> Primitive {
 
 fn app_vs_host() -> Primitive {
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "App crate vs host crate".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "App crate vs host crate".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "Your code lives in an app crate that depends only on \
                 `runtime-core`. It declares components, styles, and a root tree, and knows \
@@ -79,7 +79,7 @@ fn primitives() -> Primitive {
                    Slider · Toggle · Icon · Link · ActivityIndicator · Graphics\n\
                    Video · Virtualizer · Navigator · External (third-party SDKs)";
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Primitives are the vocabulary".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Primitives are the vocabulary".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "Every UI tree is built from a fixed set of `Primitive` \
                 variants. The framework tells each backend \"create one of these, \
@@ -107,7 +107,7 @@ fn reactivity() -> Primitive {
                    // Update fires every subscribed dependent and nothing else:\n\
                    count.update(|n| *n += 1);";
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Signals (the reactive layer)".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Signals (the reactive layer)".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "`Signal<T>` is the framework's reactive primitive. Reads \
                 inside a reactive scope (a component body, an effect, a style closure) \
@@ -144,7 +144,7 @@ fn ui_macro() -> Primitive {
                        }),\n\
                    ])";
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "The `ui!` macro".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "The `ui!` macro".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "`ui!` is the declarative authoring syntax. It's a \
                 proc-macro that desugars to plain function calls against props structs \
@@ -175,7 +175,7 @@ fn builders() -> Primitive {
                   // `label` is now a Primitive \u{2014} can go into a Vec<Primitive>\n\
                   // or be passed as a child.";
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Builders and `Primitive`".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Builders and `Primitive`".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "The `ui!` macro hides one detail you'll meet the \
                 moment you step outside it. Primitive constructors don't return \
@@ -225,7 +225,7 @@ fn backend_trait() -> Primitive {
                        // ...one method per primitive + property update path\n\
                    }";
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "The Backend trait".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "The Backend trait".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "The framework's only seam to the platform. Implement \
                 this trait once per target and the entire existing app surface runs \
@@ -279,14 +279,14 @@ fn building_your_own() -> Primitive {
                          // 3. The app installs a concrete implementation at bootstrap.\n\
                          install_theme(MyConcreteTheme::default());";
     let children: Vec<Primitive> = vec![
-        ui! { Typography(content = "Building your own".to_string(), kind = TypographyKind::H2) },
+        ui! { Typography(content = "Building your own".to_string(), kind = idea_ui::typography_kind::H2.into()) },
         ui! {
             Typography(content = "The framework's core is small on purpose. Most of what \
                 idealyst-the-shipping-product is \u{2014} `idea-ui`, the navigator SDKs, \
                 the icon registry \u{2014} sits on top of the framework as ordinary user \
                 code. Your own component library and theme system slot in the same way.".to_string())
         },
-        ui! { Typography(content = "Custom component libraries".to_string(), kind = TypographyKind::H3) },
+        ui! { Typography(content = "Custom component libraries".to_string(), kind = idea_ui::typography_kind::H3.into()) },
         ui! {
             Typography(content = "A component library is a crate full of `#[component]` \
                 functions. Each one takes a props struct, builds a `ui!` tree, returns a \
@@ -301,7 +301,7 @@ fn building_your_own() -> Primitive {
                 composed; there's no framework-side registration step, no metadata to \
                 ship, no plugin manifest.".to_string())
         },
-        ui! { Typography(content = "Custom theme systems".to_string(), kind = TypographyKind::H3) },
+        ui! { Typography(content = "Custom theme systems".to_string(), kind = idea_ui::typography_kind::H3.into()) },
         ui! {
             Typography(content = "A theme is a trait, not a struct. Your library defines \
                 the trait \u{2014} which colors / sizes / weights / radii it reads from \
@@ -328,7 +328,7 @@ fn building_your_own() -> Primitive {
 }
 
 fn where_next() -> Primitive {
-    let title = ui! { Typography(content = "Where to go from here".to_string(), kind = TypographyKind::H2) };
+    let title = ui! { Typography(content = "Where to go from here".to_string(), kind = idea_ui::typography_kind::H2.into()) };
     let para_a = ui! {
         Typography(content = "If you want the language-shape argument \u{2014} why this is \
             written in Rust rather than TypeScript or Kotlin \u{2014} read the Why Rust page.".to_string())
