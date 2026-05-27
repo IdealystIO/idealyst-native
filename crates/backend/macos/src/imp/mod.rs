@@ -289,6 +289,17 @@ impl MacosBackend {
         self.host_root = Some(view);
     }
 
+    /// Borrow the host's root NSView. Third-party SDK extensions that
+    /// need to reach the containing `NSWindow` (e.g. the `toolbar` SDK
+    /// attaching an `NSToolbar` to window chrome) walk up via
+    /// `host_root.window` — the contentView's `window` property is
+    /// already set by the host's `setContentView:` before render
+    /// starts, so this reaches the window even before
+    /// `makeKeyAndOrderFront:`.
+    pub fn host_root(&self) -> Option<&NSView> {
+        self.host_root.as_deref()
+    }
+
     /// Convenience for host crates: construct a flipped NSView the
     /// host can mount as its NSWindow contentView. The host then
     /// calls [`MacosBackend::set_host_root`] with the same view so
@@ -515,9 +526,21 @@ fn apply_style_to_view(view: &NSView, style: &StyleRules) {
 /// view's now-laid-out bounds. Mirrors `backend_ios_core::style::
 /// sync_corner_radius`.
 fn sync_corner_radius(view: &NSView) {
-    let layer: Retained<NSObject> = unsafe { msg_send_id![view, layer] };
+    // NSView is layer-optional on AppKit. A view without a layer
+    // can't have a stashed `idealyst_requested_corner_radius` either
+    // (the apply-style path that writes the key calls `setWantsLayer`
+    // first), so the sync is a no-op for unlayered views. Use raw
+    // `msg_send!` + null-check instead of `msg_send_id!` (which
+    // asserts non-nil and panics on the unlayered case — hit by
+    // every external-primitive placeholder and any root NSView that
+    // hasn't gone through `apply_style_to_view` yet).
+    let layer_ptr: *mut NSObject = unsafe { msg_send![view, layer] };
+    if layer_ptr.is_null() {
+        return;
+    }
+    let layer: &NSObject = unsafe { &*layer_ptr };
     let key = NSString::from_str("idealyst_requested_corner_radius");
-    let value_ptr: *mut NSObject = unsafe { msg_send![&layer, valueForKey: &*key] };
+    let value_ptr: *mut NSObject = unsafe { msg_send![layer, valueForKey: &*key] };
     if value_ptr.is_null() {
         return;
     }
@@ -531,7 +554,7 @@ fn sync_corner_radius(view: &NSView) {
     let half_h = bounds.size.height / 2.0;
     let cap = half_w.min(half_h);
     let effective = requested.min(cap.max(0.0));
-    let _: () = unsafe { msg_send![&layer, setCornerRadius: effective] };
+    let _: () = unsafe { msg_send![layer, setCornerRadius: effective] };
 }
 
 fn length_to_px(len: &runtime_core::Length) -> CGFloat {

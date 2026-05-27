@@ -18,8 +18,12 @@
 //! helper engine to mount alongside the screen outlet.
 
 use crate::{
-    DrawerCmd, DrawerPresentation, DrawerSide, DrawerSlotProps, DrawerType, MountPolicy,
+    DrawerCmd, DrawerPresentation, DrawerSide, DrawerSlotProps, DrawerType, LeadingIntent,
+    MountPolicy, SlotProps, TopSlot, TrailingIntent,
 };
+use runtime_core::Signal;
+use wasm_bindgen::closure::Closure;
+use wasm_bindgen::JsCast;
 use backend_web::WebBackend;
 use runtime_core::primitives::navigator::{
     MountResult, NavCommand, NavigatorHandler, NavigatorHost,
@@ -139,84 +143,152 @@ impl NavigatorHandler<WebBackend> for WebDrawerHandler {
             Rc::new(move |o| signal.set(o))
         };
 
-        // Build a `build_content` closure for the helpers crate. The
-        // SDK's `SidebarBuilder` takes typed `DrawerSlotProps` and
-        // returns a `Primitive`; the helpers crate's slot expects a
-        // `Fn() -> Node` (no args, returns the materialized node
-        // directly). Bridge the two:
-        //   1. Pull the SDK's `SidebarBuilder` out of the presentation
-        //      slot. It's wrapped in `RefCell<Option<...>>` so the
-        //      closure can `take()` on first invocation (sidebars are
-        //      built exactly once per navigator lifetime).
-        //   2. Synthesize `DrawerSlotProps` from the substrate's
-        //      reactive `nav_state` + the shared `is_open` signal +
-        //      a `Select` dispatcher + a close callback.
-        //   3. Invoke `host.build_node` to materialize the SDK's
-        //      returned `Primitive` into a Node.
+        // ---- Shared SlotProps + dispatchers for every new-API slot ----
         //
-        // `host.build_node` MUST be called outside the outer
-        // `backend.borrow_mut()` window (per its docstring). The
-        // helpers crate already defers its layout-build closure to a
-        // microtask before invoking it — so the closure body here runs
-        // post-borrow and the synchronous `build_node` call is safe.
-        let build_content: Option<Rc<dyn Fn() -> Node>> = {
+        // Built once at navigator init. Each slot closure clones the
+        // `SlotProps` to invoke its builder with. Dispatcher closures
+        // hold the navigator's `NavigatorControl` so calling
+        // `slot.open_drawer()` dispatches the helper's `DrawerCmd`
+        // verbatim (the helper's `Custom` downcast accepts the
+        // helpers-crate enum; the SDK's own `DrawerCmd` mismatches —
+        // see memory note `project_drawer_helpers_cmd_enum`).
+        let on_select: Rc<dyn Fn(&'static str)> = {
+            let control = control.clone();
+            Rc::new(move |name| {
+                control.dispatch(NavCommand::Select {
+                    name,
+                    url: String::new(),
+                    params: Box::new(()),
+                    state: None,
+                });
+            })
+        };
+        let open_drawer_fn: Rc<dyn Fn()> = {
+            let control = control.clone();
+            Rc::new(move || {
+                control.dispatch(NavCommand::Custom(Rc::new(HelpersDrawerCmd::Open)));
+            })
+        };
+        let close_drawer_fn: Rc<dyn Fn()> = {
+            let control = control.clone();
+            Rc::new(move || {
+                control.dispatch(NavCommand::Custom(Rc::new(HelpersDrawerCmd::Close)));
+            })
+        };
+        let pop_fn: Rc<dyn Fn()> = {
+            let control = control.clone();
+            Rc::new(move || {
+                control.dispatch(NavCommand::Pop);
+            })
+        };
+
+        // For drawer-only screens these intents never change (no
+        // inner stack pushes to switch leading from `OpenDrawer` to
+        // `PopStack`). When the framework grows composable
+        // navigators these signals will be driven by the SDK in
+        // response to depth changes. `screen_title` is a placeholder
+        // for now — Phase-2 doesn't yet hook
+        // `DrawerScreenOptions::title` through to it.
+        let leading_intent_sig = Signal::new(LeadingIntent::OpenDrawer);
+        let trailing_intent_sig = Signal::new(TrailingIntent::None);
+        let screen_title_sig = Signal::new(String::new());
+
+        // Body scroll signal — populated from the navigator's
+        // body div via a `scroll` event listener installed below
+        // (after the helpers create the body DOM). At slot-build
+        // time the listener isn't installed yet; reads see 0.0
+        // until the first scroll event. `scroll_to_y` will look
+        // the body up via class selector at call time.
+        let body_scroll_y_sig = Signal::new(0.0_f32);
+        let scroll_to_y_fn: Rc<dyn Fn(f32)> = Rc::new(|y: f32| {
+            if let Some(win) = web_sys::window() {
+                if let Some(doc) = win.document() {
+                    if let Ok(Some(body)) =
+                        doc.query_selector(".ui-nav-drawer-body-scrolls,.ui-nav-drawer-body")
+                    {
+                        body.set_scroll_top(y as i32);
+                    }
+                }
+            }
+        });
+
+        // Publish the body-scroll signal + scroll-to dispatcher so
+        // screens (which don't have direct `SlotProps` access) can
+        // drive scroll-spy effects.
+        crate::_publish_active_body_scroll(body_scroll_y_sig, scroll_to_y_fn.clone());
+
+        let slot_props = SlotProps {
+            active_route: nav_state.active_route,
+            active_path: nav_state.active_path.clone(),
+            depth: nav_state.depth,
+            can_go_back: nav_state.can_go_back,
+            is_open,
+            leading_intent: leading_intent_sig,
+            trailing_intent: trailing_intent_sig,
+            screen_title: screen_title_sig,
+            on_select: on_select.clone(),
+            open_drawer: open_drawer_fn.clone(),
+            close_drawer: close_drawer_fn.clone(),
+            pop: pop_fn.clone(),
+            body_scroll_y: body_scroll_y_sig,
+            scroll_to_y: scroll_to_y_fn,
+        };
+
+        // ---- Slot builder factory ----
+        //
+        // Each slot's `Fn(SlotProps) -> Primitive` closure is
+        // curried into the helper's expected `Fn() -> Node` shape:
+        // capture the props + build_node + control, push the
+        // navigator onto the ambient stack so Links inside the
+        // slot's primitive tree resolve to this navigator, then
+        // invoke the user's builder and materialize the result.
+        let mk_slot_cb = |
+            builder: Box<dyn Fn(SlotProps) -> runtime_core::Primitive>,
+        | -> Rc<dyn Fn() -> Node> {
+            let build_node = build_node.clone();
+            let control = control.clone();
+            let props = slot_props.clone();
+            Rc::new(move || {
+                let _ambient =
+                    runtime_core::primitives::navigator::AmbientNavGuard::push(
+                        control.clone(),
+                    );
+                let prim = builder(props.clone());
+                build_node(prim)
+            })
+        };
+
+        // ---- Leading (sidebar) slot ----
+        //
+        // Prefer the new `leading_slot` (SlotProps-based) over the
+        // legacy `sidebar` builder. Both populate the helpers'
+        // `build_content` field — same DOM position, two API
+        // surfaces during the migration window.
+        let leading_slot_owned = presentation.leading_slot.borrow_mut().take();
+        let build_content: Option<Rc<dyn Fn() -> Node>> = if let Some(builder) =
+            leading_slot_owned
+        {
+            Some(mk_slot_cb(builder))
+        } else {
+            // Legacy fallback: `sidebar_with(DrawerSlotProps)`.
             let sidebar_slot = presentation.sidebar.borrow().clone();
             sidebar_slot.map(|sidebar_builder| {
                 let build_node = build_node.clone();
                 let nav_state = nav_state.clone();
                 let is_open = is_open;
                 let control = control.clone();
+                let on_select_for_legacy = on_select.clone();
+                let on_close_for_legacy = close_drawer_fn.clone();
                 let cb: Rc<dyn Fn() -> Node> = Rc::new(move || {
-                    let on_select: Rc<dyn Fn(&'static str)> = {
-                        let control = control.clone();
-                        Rc::new(move |name| {
-                            // The sidebar's `on_select` is a click
-                            // handler the author hooks up to drawer
-                            // items. The natural verb is `Select` —
-                            // tabs use the same shape. Path/params
-                            // are empty here because the substrate
-                            // only knows the route name at this
-                            // callback level; richer flows go
-                            // through `DrawerHandle::select` from
-                            // the author's code.
-                            control.dispatch(NavCommand::Select {
-                                name,
-                                url: String::new(),
-                                params: Box::new(()),
-                                state: None,
-                            });
-                        })
-                    };
-                    let on_close: Rc<dyn Fn()> = {
-                        let control = control.clone();
-                        Rc::new(move || {
-                            // Dispatch the HELPERS DrawerCmd, not the
-                            // SDK's — the dispatcher installed inside
-                            // `create_drawer` downcasts the Custom
-                            // payload to `web_navigator_helpers::DrawerCmd`.
-                            // Mismatched types silently no-op.
-                            control.dispatch(NavCommand::Custom(
-                                Rc::new(HelpersDrawerCmd::Close),
-                            ));
-                        })
-                    };
                     let props = DrawerSlotProps {
                         active_route: nav_state.active_route,
                         active_path: nav_state.active_path.clone(),
                         depth: nav_state.depth,
                         can_go_back: nav_state.can_go_back,
                         is_open,
-                        on_select,
-                        on_close,
+                        on_select: on_select_for_legacy.clone(),
+                        on_close: on_close_for_legacy.clone(),
                     };
-                    // Push this navigator onto the ambient stack so
-                    // any `Link` primitives built inside `sidebar_builder`
-                    // capture it as their dispatch target. The sidebar
-                    // is built outside any `mount_screen` (via
-                    // `build_node`) so `ambient_navigator()` would
-                    // otherwise return `None` and every Link's
-                    // `on_activate` would silently no-op. Same fix
-                    // applied to iOS/Android drawer handlers.
                     let _ambient =
                         runtime_core::primitives::navigator::AmbientNavGuard::push(
                             control.clone(),
@@ -228,6 +300,38 @@ impl NavigatorHandler<WebBackend> for WebDrawerHandler {
             })
         };
 
+        // ---- Top slot ----
+        //
+        // Currently only `TopSlot::Custom` is materialized on web.
+        // `TopSlot::Filled` is reserved for Phase-3 — its
+        // platform-conventional layout (leading buttons + title +
+        // trailing buttons) maps directly to UIBarButtonItem /
+        // Toolbar on iOS/Android, but the web rendering path needs
+        // a default toolbar stylesheet that hasn't been designed
+        // yet. Filled-mode top slots no-op with a console warning.
+        let top_slot_owned = presentation.top_slot.borrow_mut().take();
+        let build_top: Option<Rc<dyn Fn() -> Node>> = match top_slot_owned {
+            Some(TopSlot::Custom(builder)) => Some(mk_slot_cb(builder)),
+            Some(TopSlot::Filled { .. }) => {
+                web_sys::console::warn_1(
+                    &"drawer-navigator: TopSlot::Filled is not yet \
+                      implemented on the web backend; use TopSlot::Custom \
+                      for now"
+                        .into(),
+                );
+                None
+            }
+            None => None,
+        };
+
+        let bottom_slot_owned = presentation.bottom_slot.borrow_mut().take();
+        let build_bottom: Option<Rc<dyn Fn() -> Node>> =
+            bottom_slot_owned.map(mk_slot_cb);
+
+        let trailing_slot_owned = presentation.trailing_slot.borrow_mut().take();
+        let build_trailing: Option<Rc<dyn Fn() -> Node>> =
+            trailing_slot_owned.map(mk_slot_cb);
+
         let drawer_callbacks = WebDrawerCallbacks {
             navigator,
             side: side_to_helpers(presentation.side),
@@ -236,12 +340,53 @@ impl NavigatorHandler<WebBackend> for WebDrawerHandler {
             mount_policy: mount_policy_to_helpers(presentation.mount_policy),
             is_open,
             build_content,
+            build_top,
+            build_bottom,
+            build_trailing,
             active_changed,
             open_changed,
             background_color: None,
+            bottom_in_scroll: presentation.bottom_in_scroll,
         };
 
         let node = web_navigator_helpers::create_drawer(backend, drawer_callbacks, control);
+
+        // Install the body-scroll listener once the helpers have
+        // created the body DOM. Defer to a microtask: the helpers'
+        // microtask runs the layout-build closures (which run the
+        // slot builders) before the navigator's first mount; we
+        // hook the body's `scroll` event afterward so slot-mount
+        // doesn't race the listener.
+        let scroll_sig = body_scroll_y_sig;
+        runtime_core::schedule_microtask(move || {
+            let Some(win) = web_sys::window() else { return };
+            let Some(doc) = win.document() else { return };
+            // Either class identifies the body — whichever mode is
+            // active. The `,` selector matches either.
+            let Ok(Some(body_el)) =
+                doc.query_selector(".ui-nav-drawer-body-scrolls,.ui-nav-drawer-body")
+            else {
+                return;
+            };
+            let cb = Closure::wrap(Box::new(move |_: web_sys::Event| {
+                if let Some(win) = web_sys::window() {
+                    if let Some(doc) = win.document() {
+                        if let Ok(Some(body)) =
+                            doc.query_selector(".ui-nav-drawer-body-scrolls,.ui-nav-drawer-body")
+                        {
+                            scroll_sig.set(body.scroll_top() as f32);
+                        }
+                    }
+                }
+            }) as Box<dyn FnMut(web_sys::Event)>);
+            let _ = body_el.add_event_listener_with_callback(
+                "scroll",
+                cb.as_ref().unchecked_ref(),
+            );
+            // Page-lifetime listener; the navigator's body never
+            // unmounts before the page unloads.
+            cb.forget();
+        });
         self.container = Some(node.clone());
         node
     }

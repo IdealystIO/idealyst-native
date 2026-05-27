@@ -12,7 +12,7 @@
 //! repo's terminal-minimalism convention).
 
 use runtime_core::{component, effect, signal, ui, Color, Primitive, Ref, Signal, Tokenized};
-use drawer_navigator::{DrawerBuilder, DrawerHandle, DrawerNavigator};
+use drawer_navigator::{DrawerBuilder, DrawerHandle, DrawerNavigator, TopSlot};
 use idea_ui::{install_idea_theme, light_theme};
 
 // `#[macro_use]` lifts the `#[component]`-generated invocation macros
@@ -69,14 +69,13 @@ pub fn app() -> Primitive {
     // bg follows.
     sync_body_background_to_theme();
 
-    // Responsive chrome — drawer-sidebar overlay on narrow viewports
-    // plus the imperative hamburger button + backdrop. The CSS
-    // injection is a no-op on non-web targets; the observer is
-    // installed lazily from inside `sidebar_with` below (the
-    // SDK's `Signal<bool>` for open-state is exposed through
-    // `DrawerSlotProps`, not reachable from out here).
+    // Responsive chrome — drawer-sidebar overlay on narrow viewports.
+    // The CSS injection is a no-op on non-web targets. The new slot
+    // system delivers `open_drawer` / `close_drawer` / `active_route`
+    // directly through `SlotProps` so the legacy thread-local
+    // dispatchers (`set_open_drawer`, `install_active_route_observer`)
+    // are no longer needed.
     responsive::install_responsive_css();
-    responsive::set_open_drawer(nav);
 
     let builder = DrawerNavigator::new(&HOME_ROUTE)
         .screen(HOME_ROUTE, move |_| pages::home::page())
@@ -94,21 +93,25 @@ pub fn app() -> Primitive {
         .screen(FURTHER_READING_ROUTE, move |_| pages::further_reading::page())
         .screen(TARGETS_ROUTE, move |_| pages::targets::page())
         .drawer_width(260.0)
-        .sidebar_with(move |slot| {
-            // The sidebar builder runs inside an active reactive
-            // scope (the navigator's sidebar scope), which is what
-            // the observer's effect anchors to. Install the
-            // overlay-mirror observer here so it captures the SDK's
-            // real `is_open` signal AND lives as long as the
-            // navigator's sidebar does.
+        // Leading slot — the persistent sidebar. Runs ONCE at
+        // navigator init; survives every screen swap.
+        .leading_with(move |slot| {
+            // The slot builder runs inside an active reactive scope
+            // (the navigator's leading-slot scope). Install the
+            // backdrop class-toggle observer here so it anchors to
+            // a scope that lives as long as the navigator does.
             responsive::install_drawer_open_observer(slot.is_open, nav);
-            // Mirror the SDK's `active_route` into our long-lived
-            // signal so the in-tree mobile header (built from any
-            // screen's scope) can subscribe to a stable handle
-            // even on its first build.
-            responsive::install_active_route_observer(slot.active_route);
             shell::sidebar(slot, is_dark)
-        });
+        })
+        // Top slot — mobile header. Persistent across screens, so
+        // the menu icon, title, etc. don't rebuild on every nav.
+        // The closure renders a reactive `when()` that mounts the
+        // header only at narrow widths and empty otherwise.
+        .top_with(TopSlot::Custom(Box::new(|slot| shell::mobile_header(slot))))
+        // Bottom slot — site footer. Always shown; provides
+        // scroll space for the TOC at long pages and link grid
+        // for project / resource pages.
+        .bottom_with(|_slot| shell::footer());
 
     ui! { builder.bind(nav) }
 }

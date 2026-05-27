@@ -105,6 +105,27 @@ pub struct WebTabCallbacks<N: Clone + 'static> {
 /// Drawer-navigator-specific callbacks. Same screen-swap engine as
 /// tabs, plus the `is_open` signal the author's layout subscribes to
 /// and the open/close notification callback.
+///
+/// **Persistent chrome slots.** `build_content` (legacy sidebar)
+/// plus the four named slots (`build_top` / `build_bottom` /
+/// `build_trailing` — and `build_content` doubles as `leading`)
+/// each materialize ONCE at navigator init and survive every
+/// screen swap. The drawer's create-time code assembles them
+/// around the screen outlet as:
+///
+/// ```text
+/// drawer-root  (column)
+/// ├ top slot          (if build_top is Some)
+/// ├ middle row
+/// │   ├ sidebar       (if build_content is Some — leading)
+/// │   ├ outlet/body   (the screen container; always)
+/// │   └ trailing      (if build_trailing is Some)
+/// └ bottom slot       (if build_bottom is Some)
+/// ```
+///
+/// All four optional slots default to `None` — drawers that only
+/// set `build_content` get the historical row layout with no
+/// rebuild penalty.
 pub struct WebDrawerCallbacks<N: Clone + 'static> {
     pub navigator: WebNavCallbacks<N>,
     pub side: DrawerSide,
@@ -112,10 +133,31 @@ pub struct WebDrawerCallbacks<N: Clone + 'static> {
     pub drawer_width: f32,
     pub mount_policy: MountPolicy,
     pub is_open: Signal<bool>,
+    /// Sidebar / leading slot — historical name; the SDK's
+    /// `sidebar_with` and `leading_with` builders both populate
+    /// this. Materializes once at init.
     pub build_content: Option<Rc<dyn Fn() -> N>>,
+    /// Top bar slot — header chrome that pins above the outlet
+    /// and survives navigations.
+    pub build_top: Option<Rc<dyn Fn() -> N>>,
+    /// Bottom bar slot — footer / toolbar chrome that pins below
+    /// the outlet.
+    pub build_bottom: Option<Rc<dyn Fn() -> N>>,
+    /// Trailing slot — utility panel / inspector on the right.
+    pub build_trailing: Option<Rc<dyn Fn() -> N>>,
     pub active_changed: Rc<dyn Fn(&'static str, String)>,
     pub open_changed: Rc<dyn Fn(bool)>,
     pub background_color: Option<String>,
+    /// When `true` (the default), the drawer's `body` div becomes
+    /// the scroll context and the bottom slot mounts INSIDE the
+    /// body, as a flow sibling AFTER the screen — so the footer
+    /// scrolls with content. Screens drop their own
+    /// `ScrollView` wrappers and render directly as flow content
+    /// of the body. When `false`, the body has `overflow: hidden`
+    /// and the bottom slot mounts as a viewport-pinned sibling
+    /// of the middle row (historical behavior). Authors set this
+    /// via [`DrawerBuilder::bottom_pinned`] in the SDK.
+    pub bottom_in_scroll: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -215,6 +257,13 @@ pub struct NavigatorInstance {
     /// into that instead of the container. `None` means no layout
     /// — screens go into `container`.
     pub outlet: Option<Node>,
+    /// When set, screen mounts call `insertBefore(screen, anchor)`
+    /// instead of `appendChild(screen)`. The anchor stays in the
+    /// outlet across navigations — a typical use is a persistent
+    /// footer node parked after the screen-mount position so each
+    /// new screen lands above it. Set by the SDK at create time
+    /// (e.g., drawer's `bottom_in_scroll` mode).
+    pub screen_anchor: Option<Node>,
     /// Active stack — top is the visible screen. Always non-empty
     /// while the navigator exists; `pop` of the only entry is a no-op.
     ///
@@ -289,6 +338,16 @@ impl NavigatorInstance {
         self.outlet.is_some()
     }
 
+    /// Mount a screen node into `mount_point()`. When `screen_anchor`
+    /// is set (e.g., drawer's `bottom_in_scroll` mode parks a
+    /// footer node at the end of the outlet), the screen is
+    /// inserted *before* the anchor so persistent chrome stays
+    /// after the screen content. When no anchor is set, this is
+    /// equivalent to `appendChild`.
+    fn insert_screen_node(&self, node: &Node) -> Result<Node, wasm_bindgen::JsValue> {
+        self.mount_point().insert_before(node, self.screen_anchor.as_ref())
+    }
+
     /// Mark the currently-visible screen as active. Vestigial now
     /// that only one screen is mounted at a time — the `ui-nav-active`
     /// class is left in place as a hook for app-level CSS that
@@ -339,9 +398,8 @@ impl NavigatorInstance {
         if !self.has_layout() {
             Self::stamp_screen_class(&screen);
         }
-        self.mount_point()
-            .append_child(&screen)
-            .expect("append_child screen failed (attach_initial)");
+        self.insert_screen_node(&screen)
+            .expect("insert screen failed (attach_initial)");
         self.stack.push(ScreenEntry {
             node: screen,
             scope_id,
@@ -366,9 +424,8 @@ impl NavigatorInstance {
         if !self.has_layout() {
             Self::stamp_screen_class(&node);
         }
-        self.mount_point()
-            .append_child(&node)
-            .expect("append_child screen failed");
+        self.insert_screen_node(&node)
+            .expect("insert screen failed");
         // Update the reactive nav-state to match the newly visible
         // screen. `NavigatorControl::dispatch` sets these on
         // Push/Replace/Reset commands, but it can't on Pop — and
@@ -572,6 +629,7 @@ where
     let instance = Rc::new(RefCell::new(NavigatorInstance {
         container: container_node.clone(),
         outlet: None,
+        screen_anchor: None,
         stack: Vec::new(),
         url_history: Vec::new(),
         mount_screen: callbacks.mount_screen.clone(),
@@ -807,6 +865,10 @@ pub fn create_drawer(
         open_changed,
         active_changed,
         build_content,
+        build_top,
+        build_bottom,
+        build_trailing,
+        bottom_in_scroll,
         ..
     } = callbacks;
     // Rewrite default `Link` activation to `Select` — without this
@@ -912,12 +974,15 @@ pub fn create_drawer(
         }));
     });
 
-    // Drawer-on-web layout: tag the root with the drawer-specific CSS
-    // class (flex row), then create two child divs — a sidebar pinned
-    // to the leading edge and a body taking the rest of the width.
-    // Materialize the SDK-supplied `build_content` into the sidebar;
-    // make the body the navigator's outlet so subsequent screen mounts
-    // land in the right column rather than over the sidebar.
+    // Drawer-on-web layout: column flex with optional top + bottom
+    // wrappers and a middle row containing optional sidebar + the
+    // mandatory body outlet + optional trailing column. See the
+    // diagram in `ensure_navigator_css` for the structure.
+    //
+    // Each slot's content is invoked in a microtask AFTER the
+    // create-time `backend.borrow_mut()` window closes (the slot
+    // builder closures synchronously call `build_node`, which
+    // wants the backend borrow-free).
     if let Some(container_elem) = container.dyn_ref::<web_sys::Element>() {
         let _ = container_elem.set_attribute(
             "class",
@@ -928,33 +993,139 @@ pub fn create_drawer(
         .expect("window")
         .document()
         .expect("document");
-    let sidebar_div = doc
+
+    // --- TOP slot (optional) ---
+    let top_div = if build_top.is_some() {
+        let d = doc.create_element("div").expect("create_element drawer top failed");
+        let _ = d.set_attribute("class", "ui-nav-drawer-top");
+        let _ = container.append_child(&d).expect("append drawer top");
+        Some(d)
+    } else {
+        None
+    };
+
+    // --- MIDDLE row (always — contains body outlet) ---
+    let middle_div = doc
         .create_element("div")
-        .expect("create_element drawer sidebar failed");
-    let _ = sidebar_div.set_attribute("class", "ui-nav-drawer-sidebar");
+        .expect("create_element drawer middle failed");
+    let _ = middle_div.set_attribute("class", "ui-nav-drawer-middle");
+    let _ = container.append_child(&middle_div).expect("append drawer middle");
+
+    // Sidebar (leading) — created only if there's a builder; gives
+    // the middle row a clean two-or-three-cell layout when no
+    // sidebar is configured.
+    let sidebar_div = if build_content.is_some() {
+        let d = doc.create_element("div").expect("create_element drawer sidebar failed");
+        let _ = d.set_attribute("class", "ui-nav-drawer-sidebar");
+        let _ = middle_div.append_child(&d).expect("append drawer sidebar");
+        Some(d)
+    } else {
+        None
+    };
+
+    // Body outlet — always present. In `bottom_in_scroll` mode
+    // it's the scroll context; otherwise overflow:hidden and each
+    // screen's own `ScrollView` provides scrolling.
     let body_div = doc
         .create_element("div")
         .expect("create_element drawer body failed");
-    let _ = body_div.set_attribute("class", "ui-nav-drawer-body");
-    let _ = container
-        .append_child(&sidebar_div)
-        .expect("append drawer sidebar");
+    let body_class = if bottom_in_scroll {
+        "ui-nav-drawer-body ui-nav-drawer-body-scrolls"
+    } else {
+        "ui-nav-drawer-body"
+    };
+    let _ = body_div.set_attribute("class", body_class);
+    let _ = middle_div.append_child(&body_div).expect("append drawer body");
     let body_node: Node = body_div.unchecked_into();
-    let _ = container
-        .append_child(&body_node)
-        .expect("append drawer body");
+
+    // Trailing slot (optional).
+    let trailing_div = if build_trailing.is_some() {
+        let d = doc.create_element("div").expect("create_element drawer trailing failed");
+        let _ = d.set_attribute("class", "ui-nav-drawer-trailing");
+        let _ = middle_div.append_child(&d).expect("append drawer trailing");
+        Some(d)
+    } else {
+        None
+    };
+
+    // --- BOTTOM slot (optional) ---
+    //
+    // In `bottom_in_scroll` mode, the footer mounts INSIDE the
+    // body (as the last child) and screens insert_before it via
+    // `NavigatorInstance::screen_anchor`. The body's overflow:auto
+    // (set on `.ui-nav-drawer-body-scrolls`) makes both the
+    // screen and footer scroll together — the footer slides up
+    // from below as the user scrolls down through the content,
+    // matching the iOS / Safari / docs-site convention.
+    //
+    // In `bottom_pinned` mode (legacy), the footer is a sibling
+    // of `.ui-nav-drawer-middle` and stays pinned at the viewport
+    // bottom regardless of scroll.
+    let bottom_div = if let Some(_) = &build_bottom {
+        let d = doc.create_element("div").expect("create_element drawer bottom failed");
+        let _ = d.set_attribute("class", "ui-nav-drawer-bottom");
+        if bottom_in_scroll {
+            // Goes inside body so it scrolls with content.
+            let _ = body_node.append_child(&d).expect("append drawer bottom (in scroll)");
+        } else {
+            // Goes outside the middle row so it pins to the
+            // viewport bottom.
+            let _ = container.append_child(&d).expect("append drawer bottom (pinned)");
+        }
+        Some(d)
+    } else {
+        None
+    };
 
     let nav_id = navigator_id_of(&container).expect("nav id stamped by create_inner");
     let instance_rc = NAVIGATOR_INSTANCES
         .with(|m| m.borrow().get(&nav_id).map(|e| e.instance.clone()))
         .expect("instance registered by create_inner");
-    instance_rc.borrow_mut().outlet = Some(body_node);
+    {
+        let mut inst = instance_rc.borrow_mut();
+        inst.outlet = Some(body_node.clone());
+        if bottom_in_scroll {
+            // Park the footer node as the insertion anchor so
+            // every subsequent screen mount lands BEFORE it. New
+            // screens flow naturally above the footer; the footer
+            // node itself is never detached.
+            inst.screen_anchor = bottom_div.as_ref().map(|d| {
+                let n: Node = d.clone().unchecked_into();
+                n
+            });
+        }
+    }
 
-    if let Some(build_content) = build_content {
-        let sidebar_parent: Node = sidebar_div.unchecked_into();
+    // Mount every slot's content in a single microtask so the
+    // SDK's `build_node` calls happen outside the create-time
+    // backend borrow. Each builder is a no-arg `Fn() -> Node`
+    // already curried by the SDK over the typed `SlotProps`.
+    {
+        let build_content = build_content;
+        let build_top = build_top;
+        let build_bottom = build_bottom;
+        let build_trailing = build_trailing;
         runtime_core::schedule_microtask(move || {
-            let sidebar_node = build_content();
-            let _ = sidebar_parent.append_child(&sidebar_node);
+            if let (Some(parent), Some(builder)) =
+                (sidebar_div.map(|d| -> Node { d.unchecked_into() }), build_content)
+            {
+                let _ = parent.append_child(&builder());
+            }
+            if let (Some(parent), Some(builder)) =
+                (top_div.map(|d| -> Node { d.unchecked_into() }), build_top)
+            {
+                let _ = parent.append_child(&builder());
+            }
+            if let (Some(parent), Some(builder)) =
+                (bottom_div.map(|d| -> Node { d.unchecked_into() }), build_bottom)
+            {
+                let _ = parent.append_child(&builder());
+            }
+            if let (Some(parent), Some(builder)) =
+                (trailing_div.map(|d| -> Node { d.unchecked_into() }), build_trailing)
+            {
+                let _ = parent.append_child(&builder());
+            }
         });
     }
 
@@ -1248,11 +1419,52 @@ fn ensure_navigator_css(_b: &mut WebBackend) {
         // `!important` is the targeted defense — `.ui-nav-screen`
         // is a navigator-controlled invariant, not a styling
         // suggestion.
+        // Drawer chrome layout — column-of-rows:
+        //
+        // ```
+        // .ui-nav-drawer-root      (column flex, full viewport)
+        // ├ .ui-nav-drawer-top     (auto-height; mounted only when a top slot is set)
+        // ├ .ui-nav-drawer-middle  (row flex, fills remaining vertical space)
+        // │   ├ .ui-nav-drawer-sidebar    (leading; flex:0 0 auto; optional)
+        // │   ├ .ui-nav-drawer-body       (outlet; flex:1; always present)
+        // │   └ .ui-nav-drawer-trailing   (flex:0 0 auto; optional)
+        // └ .ui-nav-drawer-bottom  (auto-height; mounted only when bottom slot set)
+        // ```
+        //
+        // The old layout was a single row with sidebar + body as
+        // direct children of root. The new layout keeps that
+        // structure visible when only the sidebar slot is set
+        // (the middle row degenerates to "sidebar | body"); adding
+        // top/bottom/trailing slots populates the surrounding
+        // wrappers. Authors that only use `sidebar_with` get the
+        // same visual result with one extra wrapper div (the
+        // middle row).
+        // Drawer body has two modes:
+        //   - `.ui-nav-drawer-body` (default `bottom_pinned` mode)
+        //     keeps the historical `overflow: hidden` behavior;
+        //     screens fill the body via their own `ScrollView`,
+        //     and the footer pins to the viewport bottom as a
+        //     sibling of `.ui-nav-drawer-middle`.
+        //   - `.ui-nav-drawer-body-scrolls` (new default
+        //     `bottom_in_scroll` mode) makes the body the scroll
+        //     context; the footer is a flow sibling AFTER the
+        //     screen inside the body. Screens drop their inner
+        //     `ScrollView` since the body now provides scrolling.
+        //
+        // The new mode's `min-height: 100%` ensures short screens
+        // still fill the viewport vertically so the footer sits at
+        // the bottom of the visible area (not floating mid-screen).
         let css = ".ui-nav-root{position:relative;width:100%;height:100%;}\
                    .ui-nav-screen{position:absolute!important;inset:0!important;width:100%;height:100%;}\
-                   .ui-nav-drawer-root{display:flex;flex-direction:row;width:100%;height:100%;}\
+                   .ui-nav-drawer-root{display:flex;flex-direction:column;width:100%;height:100%;}\
+                   .ui-nav-drawer-top{flex:0 0 auto;width:100%;}\
+                   .ui-nav-drawer-bottom{flex:0 0 auto;width:100%;}\
+                   .ui-nav-drawer-middle{flex:1 1 auto;display:flex;flex-direction:row;width:100%;min-height:0;}\
                    .ui-nav-drawer-sidebar{flex:0 0 auto;height:100%;overflow-y:auto;}\
-                   .ui-nav-drawer-body{flex:1 1 auto;position:relative;height:100%;overflow:hidden;}";
+                   .ui-nav-drawer-trailing{flex:0 0 auto;height:100%;overflow-y:auto;}\
+                   .ui-nav-drawer-body{flex:1 1 auto;position:relative;height:100%;overflow:hidden;}\
+                   .ui-nav-drawer-body-scrolls{flex:1 1 auto;position:relative;height:100%;overflow-y:auto;display:flex;flex-direction:column;}\
+                   .ui-nav-drawer-body-scrolls>*{flex-shrink:0;}";
         let Some(win) = web_sys::window() else { return };
         let Some(doc) = win.document() else { return };
         if let Some(head) = doc.head() {

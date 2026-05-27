@@ -19,7 +19,7 @@ use runtime_core::{
     effect, pressable, signal, text, ui, view, when, IntoPrimitive, Primitive, Ref, Signal,
     StyleApplication, ViewHandle,
 };
-use drawer_navigator::DrawerSlotProps;
+use drawer_navigator::SlotProps;
 use idea_ui::{
     current_breakpoint, dark_theme, light_theme, set_idea_theme, spacer, switch, typography,
     Breakpoint, TypographyKind, TypographyTone,
@@ -31,9 +31,10 @@ use crate::routes::{
     HOME_ROUTE, INSTALL_ROUTE, QUICKSTART_ROUTE, SECTIONS, SERVER_FUNCTIONS_ROUTE, WHY_RUST_ROUTE,
 };
 use crate::styles::{
-    MobileHeader, MobileHeaderButton, MobileHeaderTitle, MobileHeaderTitleWrap, NavLink,
-    PageColumn, PageRow, ScreenScroll, SidebarBody, SidebarFooter, SidebarHeader, SidebarSection,
-    TocHeader, TocLink, TocPanel,
+    Footer, FooterBottom, FooterBrand, FooterColumn, FooterCopy, FooterGrid, FooterLink,
+    FooterTagline, FooterTitle, FooterWordmark, MobileHeader, MobileHeaderButton,
+    MobileHeaderTitle, MobileHeaderTitleWrap, NavLink, PageColumn, PageRow, ScreenScroll,
+    SidebarBody, SidebarFooter, SidebarHeader, SidebarSection, TocHeader, TocLink, TocPanel,
 };
 
 /// One entry in a page's table-of-contents. `handle` is a
@@ -50,44 +51,42 @@ pub struct TocEntry {
     pub label: &'static str,
 }
 
-/// Wrap a page's content in a `ScrollView` sized to the drawer
-/// body. The drawer-navigator's `.ui-nav-drawer-body` div has
-/// `overflow: hidden`, so the screen needs its own scroll context
-/// for long content. On native targets where the drawer SDK
-/// supplies the scroll affordance (UIScrollView / Android
-/// NestedScrollView), the `ScrollView` is the same primitive —
-/// one author tree, every backend.
+/// Render a screen's content directly — no `ScrollView` wrapper.
 ///
-/// At narrow viewports the layout also mounts a [`mobile_header`]
-/// pinned to the screen top — the `when()` is reactive on
-/// `current_breakpoint()`, so a window resize across the
-/// `Md`/`Sm` boundary mounts / unmounts the bar without rebuilding
-/// the rest of the screen.
+/// The drawer navigator's default `bottom_in_scroll` mode makes
+/// the navigator's body div the scroll context. Screens render as
+/// flow content; the body scrolls them along with the persistent
+/// footer (in the `bottom` slot) as a single column. Wrapping in
+/// a per-screen `ScrollView` would create a nested scroll surface
+/// and the footer would never come into view.
+///
+/// The mobile header and site footer live in the navigator's
+/// `top` and `bottom` slots — see `lib.rs`'s `.top_with(...)` /
+/// `.bottom_with(...)`. This function just returns the page
+/// content wrapped in a styled `View` (background, font).
 pub fn layout(content: Primitive) -> Primitive {
-    let scroll_style = crate::responsive::responsive_style(ScreenScroll::sheet());
-    let header = when(
-        || matches!(current_breakpoint().get(), Breakpoint::Xs | Breakpoint::Sm),
-        mobile_header,
-        || view(Vec::<Primitive>::new()).into_primitive(),
-    );
+    let style = ScreenScroll();
     ui! {
-        View {
-            header
-            ScrollView(style = scroll_style) {
-                content
-            }
-        }
+        View(style = style) { content }
     }
 }
 
-/// Y-line (in viewport coords, relative to the scroll view's top)
-/// where a section is considered "active" once its own top crosses
-/// past. Matches the MUI / docs-site convention of ~25 % of the
-/// reading area. Constant rather than a fraction of the actual
-/// scroll viewport because we don't want to query layout from inside
-/// the reactive effect \u{2014} a fixed band is good enough for the
-/// docs reading pattern (sections of roughly comparable length).
-const ACTIVE_BAND_Y: f32 = 160.0;
+/// Fraction of the body viewport where the "active band" sits — a
+/// section becomes active once its top scrolls above this line.
+/// 30 % from the top is the MUI / Tailwind-docs / VitePress
+/// convention: high enough that the user clearly sees the section
+/// they just scrolled to (the heading is *above* their reading
+/// point), low enough that short sections still pass through the
+/// band as the user scrolls.
+const ACTIVE_BAND_FRACTION: f32 = 0.30;
+
+/// Pixel threshold for "scrolled to the bottom" — within this many
+/// pixels of the body's `scrollHeight - clientHeight`, the spy
+/// force-selects the last TOC entry. Without this, a final
+/// section shorter than `clientHeight * (1 - ACTIVE_BAND_FRACTION)`
+/// would never become active, because the user can't scroll
+/// further once they hit the end of the body.
+const END_OF_SCROLL_EPSILON: f32 = 8.0;
 
 /// Variant of [`layout`] that adds a Material-UI-style table-of-
 /// contents column to the right of the page. Each `TocEntry::handle`
@@ -105,17 +104,17 @@ pub fn layout_with_toc(content: Primitive, entries: Vec<TocEntry>) -> Primitive 
     let row_style = crate::responsive::responsive_style(PageRow::sheet());
     let column_style = PageColumn();
 
-    // `Signal<f32>` written by the ScrollView's `on_scroll`
-    // callback. Reads inside the active-link effect subscribe; the
-    // effect re-runs every scroll tick and recomputes which section
-    // sits in the active band.
-    let scroll_y: Signal<f32> = signal!(0.0_f32);
-    // The currently-active TocEntry index. `None` while we're above
-    // the first section; otherwise `Some(i)`.
+    // Read the navigator's body-scroll signal directly — the
+    // drawer publishes it via `drawer_navigator::active_body_scroll_y`.
+    // No per-screen `ScrollView` needed since the navigator's
+    // body div is now the scroll context. If the publication
+    // isn't ready yet (very early build), fall back to a local
+    // signal so the effect compiles; in practice
+    // `active_body_scroll_y` is `Some` by the time any screen
+    // builds.
+    let scroll_y: Signal<f32> = drawer_navigator::active_body_scroll_y()
+        .unwrap_or_else(|| signal!(0.0_f32));
     let active_idx: Signal<Option<usize>> = signal!(None);
-    // Handle to the page's own ScrollView \u{2014} used by `toc_link`
-    // to dispatch programmatic scrolls when the user clicks an entry.
-    let scroll_ref: Ref<ScrollViewHandle> = Ref::new();
 
     install_scroll_spy(entries.clone(), scroll_y, active_idx);
 
@@ -124,78 +123,175 @@ pub fn layout_with_toc(content: Primitive, entries: Vec<TocEntry>) -> Primitive 
     // between the TOC subtree and an empty placeholder reactively,
     // so a window resize across the threshold mounts/unmounts the
     // TOC + its scroll-spy effect rather than just hiding via CSS.
-    // Capture the closure inputs by value (entries.clone(), Copy
-    // signals/refs) so the cond/then closures are 'static.
     let toc_entries = entries;
     let toc = when(
         move || {
-            // Read inside the derived so the layout's reactive scope
-            // subscribes to the breakpoint signal — when it crosses
-            // the threshold, the `when` re-evaluates and mounts /
-            // unmounts the TOC subtree.
             matches!(current_breakpoint().get(), Breakpoint::Lg | Breakpoint::Xl)
         },
-        move || render_toc(toc_entries.clone(), active_idx, scroll_ref, scroll_y),
+        move || render_toc(toc_entries.clone(), active_idx, scroll_y),
         || view(Vec::<Primitive>::new()).into_primitive(),
     );
 
-    let body = ui! {
-        View(style = row_style) {
-            View(style = column_style) { content }
-            toc
+    let body_style = ScreenScroll();
+    ui! {
+        View(style = body_style) {
+            View(style = row_style) {
+                View(style = column_style) { content }
+                toc
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Footer
+// =============================================================================
+
+/// Project GitHub URL — referenced from the install snippet on
+/// `/install` too. Keep both in sync if the repo ever moves.
+const GITHUB_URL: &str = "https://github.com/IdealystIO/idealyst-native";
+const GITHUB_ISSUES_URL: &str = "https://github.com/IdealystIO/idealyst-native/issues";
+const GITHUB_DISCUSSIONS_URL: &str =
+    "https://github.com/IdealystIO/idealyst-native/discussions";
+
+/// Pressable that opens `url` in a new tab on web; no-op elsewhere.
+/// Lives here (not in `routes.rs`) because it needs `web_sys`, which
+/// the website only depends on under `cfg(target_arch = "wasm32")`.
+fn external_link(label: &'static str, url: &'static str) -> Primitive {
+    let label_text = label.to_string();
+    let style = move || StyleApplication::new(FooterLink::sheet());
+    let text_node: Primitive = ui! { Text(style = style) { label_text } };
+    pressable(vec![text_node], move || {
+        #[cfg(target_arch = "wasm32")]
+        {
+            if let Some(win) = web_sys::window() {
+                // `_blank` opens a new tab; without a target arg the
+                // navigation replaces the current page, which would
+                // unmount the framework and waste the visitor's
+                // place in the docs.
+                let _ = win.open_with_url_and_target(url, "_blank");
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = url; // suppress unused warning
+    })
+    .into_primitive()
+}
+
+/// Internal link to a framework route — same styling as
+/// `external_link` so the footer reads uniformly. Uses `Link` (not
+/// `pressable + nav.push`) so the SDK's link-activator dispatches
+/// the right command for the active navigator (drawer = Select).
+fn internal_link(label: &'static str, route: &'static runtime_core::Route<()>) -> Primitive {
+    let label_text = label.to_string();
+    let style = move || StyleApplication::new(FooterLink::sheet());
+    ui! {
+        Link(route = route, params = ()) {
+            Text(style = style) { label_text }
+        }
+    }
+}
+
+/// Build the site-wide footer. Inlined into every screen by
+/// [`layout`] / [`layout_with_toc`] inside the screen's ScrollView,
+/// so it scrolls with content. Mounted unconditionally; CSS variant
+/// switching handles narrow-viewport stacking via the `size`
+/// variant on the footer stylesheets.
+pub fn footer() -> Primitive {
+    let footer_style = crate::responsive::responsive_style(Footer::sheet());
+    let grid_style = crate::responsive::responsive_style(FooterGrid::sheet());
+    let bottom_style = FooterBottom();
+    let wordmark_style = move || StyleApplication::new(FooterWordmark::sheet());
+    let tagline_style = move || StyleApplication::new(FooterTagline::sheet());
+    let title_style = move || StyleApplication::new(FooterTitle::sheet());
+    let copy_style = move || StyleApplication::new(FooterCopy::sheet());
+
+    // `FooterColumn()` / `FooterBrand()` etc return move-only style
+    // sources, so each View call site needs its own instance.
+
+    let brand = ui! {
+        View(style = FooterBrand()) {
+            Text(style = wordmark_style) { "Idealyst" }
+            Text(style = tagline_style) { "One codebase, native everywhere." }
         }
     };
 
-    let scroll = scroll_view(vec![body])
-        .bind(scroll_ref)
-        .on_scroll(move |_x, y| scroll_y.set(y))
-        .with_style(crate::responsive::responsive_style(ScreenScroll::sheet()))
-        .into_primitive();
+    let project_column = ui! {
+        View(style = FooterColumn()) {
+            Text(style = title_style) { "Project" }
+            { external_link("GitHub", GITHUB_URL) }
+            { external_link("Issues", GITHUB_ISSUES_URL) }
+            { external_link("Discussions", GITHUB_DISCUSSIONS_URL) }
+        }
+    };
 
-    // Mobile header is reactive on the breakpoint just like the
-    // non-TOC `layout()` above. Mounts only at narrow widths.
-    let header = when(
-        || matches!(current_breakpoint().get(), Breakpoint::Xs | Breakpoint::Sm),
-        mobile_header,
-        || view(Vec::<Primitive>::new()).into_primitive(),
-    );
-    ui! { View { header scroll } }
+    let resources_column = ui! {
+        View(style = FooterColumn()) {
+            Text(style = title_style) { "Resources" }
+            { internal_link("Quickstart", &QUICKSTART_ROUTE) }
+            { internal_link("Core concepts", &CONCEPTS_ROUTE) }
+            { internal_link("Why Rust", &WHY_RUST_ROUTE) }
+            { internal_link("Backends", &BACKENDS_ROUTE) }
+        }
+    };
+
+    let grid = ui! {
+        View(style = grid_style) {
+            brand
+            project_column
+            resources_column
+        }
+    };
+
+    let bottom = ui! {
+        View(style = bottom_style) {
+            Text(style = copy_style) { "© Idealyst contributors" }
+        }
+    };
+
+    ui! {
+        View(style = footer_style) {
+            grid
+            bottom
+        }
+    }
 }
 
-/// Mobile-style top bar — menu button on the left, current screen's
-/// title centered (well, leading-aligned in the available space) on
-/// the right. Pinned to the screen top via `position: absolute` from
-/// the `MobileHeader` stylesheet; visible only at narrow widths via
-/// the reactive `when(...)` gate in [`layout`] / [`layout_with_toc`].
+/// Mobile-style top bar — menu button on the left, current
+/// screen's title leading-aligned. Lives in the navigator's
+/// `top` slot, so it mounts ONCE at navigator init and survives
+/// every screen swap.
 ///
-/// The title text is reactive on the SDK's `active_route` signal —
-/// captured into a thread-local in
-/// [`crate::responsive::set_active_route`] (called from the sidebar
-/// builder where the SDK passes it through). Pre-bind (before the
-/// navigator's first build), the title is empty rather than panic.
+/// Visibility: the bar is rendered unconditionally, but its
+/// `MobileHeader` stylesheet has a `size` variant — at wide
+/// viewports it's `display: none` via the `min-height: 0` trick
+/// (height 0, padding 0). Below the sidebar-collapse breakpoint
+/// it expands to the 56-px bar shown in the screenshots.
 ///
-/// The trailing slot is intentionally empty for now; the function
-/// can take `Option<Primitive>` arguments when the site grows a
-/// per-screen action (share, link to source, etc.).
-pub fn mobile_header() -> Primitive {
-    let header_style = MobileHeader();
+/// Reactive title: reads `slot.active_route` directly — no
+/// thread-local mirror needed since `SlotProps` already carries
+/// the SDK's authoritative signal. Reading inside the
+/// `text(closure)` source subscribes the bar's reactive scope to
+/// every navigation.
+///
+/// Menu dispatch: reads `slot.open_drawer` (pre-bound by the SDK
+/// to dispatch `DrawerCmd::Open`). No more thread-local
+/// `OPEN_FN` round-trip.
+pub fn mobile_header(slot: SlotProps) -> Primitive {
+    let header_style = crate::responsive::responsive_style(MobileHeader::sheet());
     let title_wrap_style = MobileHeaderTitleWrap();
     let title_style = move || StyleApplication::new(MobileHeaderTitle::sheet());
     let button_style = move || StyleApplication::new(MobileHeaderButton::sheet());
 
     // --- menu button (leading) ---
     let menu_icon: Primitive = ui! { Text(style = button_style) { "\u{2630}" } };
-    let menu_button = pressable(vec![menu_icon], || crate::responsive::open_drawer())
+    let open_drawer = slot.open_drawer.clone();
+    let menu_button = pressable(vec![menu_icon], move || open_drawer())
         .into_primitive();
 
-    // --- title (center) ---
-    // Reading `active_route_signal()` returns the stable mirror;
-    // `.get()` subscribes the surrounding text-reactive scope so
-    // the title re-renders on every navigation.
-    let title_source = || {
-        let sig = crate::responsive::active_route_signal();
-        label_for_route(sig.get()).to_string()
-    };
+    // --- title (center) — reactive on the navigator's active_route ---
+    let active_route = slot.active_route;
+    let title_source = move || label_for_route(active_route.get()).to_string();
     let title_view: Primitive = text(title_source).with_style(title_style).into_primitive();
     let title_node = ui! {
         View(style = title_wrap_style) { title_view }
@@ -210,12 +306,12 @@ pub fn mobile_header() -> Primitive {
 }
 
 /// Render the TOC panel. The active highlight is driven by
-/// `active_idx`; clicks dispatch `scroll_ref.scroll_to(...)`
-/// computed from each section's `absolute_frame()`.
+/// `active_idx`; clicks call the drawer's
+/// [`drawer_navigator::active_scroll_to_y`] dispatcher to scroll
+/// the body to the matching section.
 fn render_toc(
     entries: Vec<TocEntry>,
     active_idx: Signal<Option<usize>>,
-    scroll_ref: Ref<ScrollViewHandle>,
     scroll_y: Signal<f32>,
 ) -> Primitive {
     let panel_style = TocPanel();
@@ -226,22 +322,20 @@ fn render_toc(
         Text(style = header_style) { "On this page" }
     });
     for (i, entry) in entries.iter().enumerate() {
-        children.push(toc_link(i, *entry, active_idx, scroll_ref, scroll_y));
+        children.push(toc_link(i, *entry, active_idx, scroll_y));
     }
 
     ui! { View(style = panel_style) { children } }
 }
 
 /// One TOC link. The style closure reads `active_idx` reactively
-/// to flip the `active` variant. Click computes the target offset
-/// from the section's current viewport position and the current
-/// scroll y, then calls `scroll_ref.scroll_to(0, target)` \u{2014}
-/// all via framework primitives.
+/// to flip the `active` variant. Click computes the target Y in
+/// the navigator-body's scroll coords and dispatches via
+/// [`drawer_navigator::active_scroll_to_y`].
 fn toc_link(
     index: usize,
     entry: TocEntry,
     active_idx: Signal<Option<usize>>,
-    scroll_ref: Ref<ScrollViewHandle>,
     scroll_y: Signal<f32>,
 ) -> Primitive {
     let label_text = entry.label.to_string();
@@ -252,10 +346,10 @@ fn toc_link(
     let children: Vec<Primitive> = vec![ui! { Text(style = style) { label_text } }];
 
     let bound = runtime_core::pressable(children, move || {
-        // Section's current Y in window-coords (moves as user scrolls).
-        // Subtract `ACTIVE_BAND_Y` so the section ends up at the same
-        // line the spy's active band uses \u{2014} click + spy stay in
-        // sync.
+        // Section's current Y in viewport-coords (relative to the
+        // body's top edge). Subtract the active-band offset so the
+        // section lands at the same line the scroll-spy treats as
+        // active — click + spy stay in sync.
         let section_y = entry
             .handle
             .with(|h| h.absolute_frame())
@@ -263,8 +357,11 @@ fn toc_link(
             .map(|r| r.y)
             .unwrap_or(0.0);
         let current_scroll = scroll_y.get();
-        let target = (current_scroll + section_y - ACTIVE_BAND_Y).max(0.0);
-        let _ = scroll_ref.with(|h| h.scroll_to(0.0, target));
+        let (band_y, _) = read_body_scroll_dims(current_scroll);
+        let target = (current_scroll + section_y - band_y).max(0.0);
+        if let Some(scroll_to) = drawer_navigator::active_scroll_to_y() {
+            scroll_to(target);
+        }
     });
     runtime_core::IntoPrimitive::into_primitive(bound)
 }
@@ -279,6 +376,43 @@ fn toc_link(
 /// One author tree, every backend \u{2014} the per-platform plumbing
 /// is the `ScrollView::on_scroll` callback and
 /// `ViewHandle::absolute_frame()`, both Backend-trait primitives.
+/// Returns `(band_y, near_bottom)` from the drawer-body's live
+/// dimensions on web:
+///
+/// - `band_y` — the viewport Y at which a section flips to active;
+///   `clientHeight * ACTIVE_BAND_FRACTION`.
+/// - `near_bottom` — `true` when `scrollTop + clientHeight` is
+///   within `END_OF_SCROLL_EPSILON` of `scrollHeight` (the user
+///   has reached the end of the scrollable body).
+///
+/// On non-web targets, falls back to a sensible default — a 160 px
+/// fixed band and "never near bottom". The website only mounts on
+/// web (the drawer's body scroll signal is web-only too), so the
+/// fallback never runs in practice; it's there only so this file
+/// compiles for `cargo check` on native targets.
+fn read_body_scroll_dims(current_scroll: f32) -> (f32, bool) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let dims = web_sys::window()
+            .and_then(|w| w.document())
+            .and_then(|d| {
+                d.query_selector(".ui-nav-drawer-body-scrolls,.ui-nav-drawer-body")
+                    .ok()
+                    .flatten()
+            })
+            .map(|el| (el.client_height() as f32, el.scroll_height() as f32));
+        if let Some((client_h, scroll_h)) = dims {
+            let band_y = (client_h * ACTIVE_BAND_FRACTION).max(80.0);
+            let near_bottom = scroll_h > 0.0
+                && current_scroll + client_h >= scroll_h - END_OF_SCROLL_EPSILON;
+            return (band_y, near_bottom);
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = current_scroll;
+    (160.0, false)
+}
+
 fn install_scroll_spy(
     entries: Vec<TocEntry>,
     scroll_y: Signal<f32>,
@@ -288,7 +422,25 @@ fn install_scroll_spy(
         // Subscribe to scroll position. The `get()` registers this
         // effect as a dependent; subsequent `set()` calls from the
         // `on_scroll` callback retrigger.
-        let _ = scroll_y.get();
+        let current_scroll = scroll_y.get();
+
+        // Read the body's live dimensions for two viewport-relative
+        // calculations: (a) place the active band at
+        // `ACTIVE_BAND_FRACTION` of the body height (so short
+        // sections still catch a moment of activity instead of
+        // requiring `clientHeight * (1 - fraction)` of scroll to
+        // cross a fixed band), and (b) detect "at the bottom of
+        // scroll" so the last entry force-selects even if it's
+        // shorter than the band-to-bottom gap.
+        let (band_y, near_bottom) = read_body_scroll_dims(current_scroll);
+
+        if near_bottom && !entries.is_empty() {
+            let last = Some(entries.len() - 1);
+            if active_idx.get() != last {
+                active_idx.set(last);
+            }
+            return;
+        }
 
         let mut best: Option<usize> = None;
         let mut best_top: f32 = f32::NEG_INFINITY;
@@ -296,7 +448,7 @@ fn install_scroll_spy(
             let Some(rect) = entry.handle.with(|h| h.absolute_frame()).flatten() else {
                 continue;
             };
-            if rect.y <= ACTIVE_BAND_Y && rect.y > best_top {
+            if rect.y <= band_y && rect.y > best_top {
                 best_top = rect.y;
                 best = Some(i);
             }
@@ -322,7 +474,7 @@ fn install_scroll_spy(
 /// screen would reset on every push). Toggling it both flips the
 /// signal AND swaps the installed idea-ui theme via
 /// `set_idea_theme(...)`.
-pub fn sidebar(slot: DrawerSlotProps, is_dark: Signal<bool>) -> Primitive {
+pub fn sidebar(slot: SlotProps, is_dark: Signal<bool>) -> Primitive {
     let body_style = SidebarBody();
     let header_style = SidebarHeader();
     let footer_style = SidebarFooter();

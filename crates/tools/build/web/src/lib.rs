@@ -25,11 +25,14 @@
 //! `./pkg/<lib>.js`) keeps working without changes.
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
 use build_ios::{parse_manifest, FrameworkSource, Manifest};
+use flate2::write::GzEncoder;
+use flate2::Compression;
 
 #[derive(Clone, Debug)]
 pub struct BuildOptions {
@@ -47,6 +50,20 @@ pub struct BuildOptions {
     /// with `-- --features <list>` so those features are active.
     /// Empty means "default features" — the common case.
     pub user_features: Vec<String>,
+    /// When `Some`, after the normal in-project `pkg/` sync also stage
+    /// a self-contained static-site bundle at this path. The bundle
+    /// contains `index.html`, the fresh `pkg/`, and every top-level
+    /// asset directory the user keeps in their project root (anything
+    /// that isn't `src/`, `target/`, `tests/`, Cargo metadata, or a
+    /// dotfile). When `None`, the bundle step is skipped — the build
+    /// behaves exactly as before.
+    pub bundle_out_dir: Option<PathBuf>,
+    /// Pre-gzip every text-ish file in the staged bundle, writing
+    /// gzipped bytes under the original filename. Only meaningful
+    /// when `bundle_out_dir` is `Some`; ignored otherwise. The static
+    /// host must send `Content-Encoding: gzip` on these responses for
+    /// the browser to inflate them transparently.
+    pub gzip: bool,
 }
 
 #[derive(Debug)]
@@ -58,6 +75,9 @@ pub struct BuildArtifact {
     /// Path to the generated wrapper crate. Useful for debugging and
     /// for a future `idealyst scaffold web` command.
     pub wrapper_dir: PathBuf,
+    /// Path to the staged static-site bundle, when `bundle_out_dir`
+    /// was set on the build options. `None` otherwise.
+    pub bundle_dir: Option<PathBuf>,
 }
 
 /// Build the user's project at `project_dir` for the web target.
@@ -83,19 +103,217 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
 
     wasm_pack_build(&wrapper_dir, opts.release, &opts.user_features)?;
 
-    // wasm-pack writes its output under `<wrapper_dir>/pkg/`. Copy it
-    // over to `<project_dir>/pkg/` so the user's existing
-    // `index.html` (which loads `./pkg/<lib>.js`) keeps working
-    // without knowing the wrapper exists.
+    // wasm-pack writes its output under `<wrapper_dir>/pkg/`. Two
+    // destinations from here:
+    //   * No bundle (dev loop, legacy "open index.html locally" flow):
+    //     sync into `<project_dir>/pkg/` so the user's `index.html`
+    //     (which loads `./pkg/<lib>.js`) and the dev HTTP server can
+    //     find the freshly built JS / wasm at the path they expect.
+    //   * Bundle requested: copy straight into `<bundle>/pkg/`. We
+    //     deliberately do NOT also sync to `<project_dir>/pkg/` —
+    //     bundling is for deployment, and littering the user's
+    //     project root with build artifacts is a footgun (and was
+    //     a complaint).
     let wrapper_pkg = wrapper_dir.join("pkg");
-    let project_pkg = project_dir.join("pkg");
-    sync_pkg_dir(&wrapper_pkg, &project_pkg)
-        .with_context(|| format!("sync {} → {}", wrapper_pkg.display(), project_pkg.display()))?;
+    let (pkg_dir, bundle_dir) = if let Some(out) = opts.bundle_out_dir.as_ref() {
+        let staged = stage_bundle(&project_dir, out).with_context(|| {
+            format!("stage static bundle at {}", out.display())
+        })?;
+        let staged_pkg = staged.join("pkg");
+        sync_pkg_dir(&wrapper_pkg, &staged_pkg).with_context(|| {
+            format!("sync {} → {}", wrapper_pkg.display(), staged_pkg.display())
+        })?;
+        strip_wasm_pack_metadata(&staged_pkg);
+        if opts.gzip {
+            gzip_bundle(&staged)
+                .with_context(|| format!("gzip bundle at {}", staged.display()))?;
+        }
+        (staged_pkg, Some(staged))
+    } else {
+        let project_pkg = project_dir.join("pkg");
+        sync_pkg_dir(&wrapper_pkg, &project_pkg).with_context(|| {
+            format!("sync {} → {}", wrapper_pkg.display(), project_pkg.display())
+        })?;
+        (project_pkg, None)
+    };
 
     Ok(BuildArtifact {
-        pkg_dir: project_pkg,
+        pkg_dir,
         wrapper_dir,
+        bundle_dir,
     })
+}
+
+/// Stage a deployable static-site bundle at `out_dir`. Copies
+/// `index.html` (required) and every top-level entry in the project
+/// that isn't Rust source, build metadata, a dotfile, or `pkg/`
+/// itself. `pkg/` is populated separately by the caller, straight
+/// from the wasm-pack output dir — that way the project root never
+/// has to carry a `pkg/` for the bundle's sake. `out_dir` is fully
+/// cleared first so stale files from a prior bundle (renamed wasm,
+/// removed assets) never linger.
+///
+/// Returns the canonicalized bundle path. Errors when `index.html`
+/// is missing — without it there's nothing to serve.
+pub fn stage_bundle(project_dir: &Path, out_dir: &Path) -> Result<PathBuf> {
+    let index = project_dir.join("index.html");
+    if !index.is_file() {
+        anyhow::bail!(
+            "cannot stage web bundle: {} missing (a web bundle needs an index.html at the \
+             project root that loads ./pkg/<lib>.js)",
+            index.display(),
+        );
+    }
+    if out_dir.exists() {
+        fs::remove_dir_all(out_dir)
+            .with_context(|| format!("clear stale bundle {}", out_dir.display()))?;
+    }
+    fs::create_dir_all(out_dir)
+        .with_context(|| format!("create bundle dir {}", out_dir.display()))?;
+
+    for entry in fs::read_dir(project_dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if is_excluded_from_bundle(&name_str) {
+            continue;
+        }
+        let from = entry.path();
+        let to = out_dir.join(&name);
+        if from.is_dir() {
+            copy_dir(&from, &to)
+                .with_context(|| format!("copy dir {} → {}", from.display(), to.display()))?;
+        } else if from.is_file() {
+            fs::copy(&from, &to)
+                .with_context(|| format!("copy file {} → {}", from.display(), to.display()))?;
+        }
+    }
+
+    fs::canonicalize(out_dir).with_context(|| format!("canonicalize {}", out_dir.display()))
+}
+
+/// Drop wasm-pack housekeeping files from a staged `pkg/`. They're
+/// build artifacts that have no place in a deployed bundle:
+/// `package.json` makes some CDNs mis-guess directory MIME types,
+/// and `.d.ts` files just bloat the wire for browsers that don't
+/// touch them.
+fn strip_wasm_pack_metadata(staged_pkg: &Path) {
+    for stem in ["package.json", ".gitignore", "README.md"] {
+        let _ = fs::remove_file(staged_pkg.join(stem));
+    }
+    if let Ok(read) = fs::read_dir(staged_pkg) {
+        for entry in read.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("ts") {
+                let _ = fs::remove_file(&path);
+            }
+        }
+    }
+}
+
+/// Top-level entries that never belong in a deployable bundle. Source
+/// trees, build outputs, VCS metadata, IDE state, package-manager
+/// caches, dotfiles in general. Anything not on this list ships —
+/// keeps the rule "drop a folder in your project root and it
+/// auto-deploys" working for `fonts/`, `assets/`, `public/`,
+/// `images/`, etc., without an explicit allowlist.
+fn is_excluded_from_bundle(name: &str) -> bool {
+    if name.starts_with('.') {
+        return true;
+    }
+    matches!(
+        name,
+        "src"
+            | "target"
+            | "tests"
+            | "benches"
+            | "examples"
+            | "node_modules"
+            | "dist"
+            | "pkg"
+            | "Cargo.toml"
+            | "Cargo.lock"
+    ) || name.ends_with(".rs")
+}
+
+fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        let ft = entry.file_type()?;
+        if ft.is_dir() {
+            copy_dir(&from, &to)?;
+        } else if ft.is_file() {
+            fs::copy(&from, &to)?;
+        }
+        // Symlinks intentionally ignored — bundles are meant to be
+        // self-contained and portable to remote object storage.
+    }
+    Ok(())
+}
+
+/// Replace every compressible file in `bundle_dir` with its gzipped
+/// bytes (keeps the original filename). Skips formats that are already
+/// compressed — re-gzipping wastes bytes and CPU and would force the
+/// host to advertise the wrong Content-Type.
+fn gzip_bundle(bundle_dir: &Path) -> Result<()> {
+    fn walk(dir: &Path, on_file: &mut dyn FnMut(&Path) -> Result<()>) -> Result<()> {
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let ft = entry.file_type()?;
+            if ft.is_dir() {
+                walk(&path, on_file)?;
+            } else if ft.is_file() {
+                on_file(&path)?;
+            }
+        }
+        Ok(())
+    }
+    walk(bundle_dir, &mut |path| {
+        if is_already_compressed(path) {
+            return Ok(());
+        }
+        let bytes = fs::read(path)
+            .with_context(|| format!("read {} for gzip", path.display()))?;
+        let mut enc = GzEncoder::new(Vec::with_capacity(bytes.len()), Compression::best());
+        enc.write_all(&bytes)
+            .with_context(|| format!("gzip {}", path.display()))?;
+        let gz = enc
+            .finish()
+            .with_context(|| format!("finalize gzip {}", path.display()))?;
+        fs::write(path, gz)
+            .with_context(|| format!("write gzipped {}", path.display()))?;
+        Ok(())
+    })
+}
+
+fn is_already_compressed(path: &Path) -> bool {
+    let Some(ext) = path.extension().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "png" | "jpg"
+            | "jpeg"
+            | "gif"
+            | "webp"
+            | "avif"
+            | "ico"
+            | "woff"
+            | "woff2"
+            | "mp4"
+            | "mov"
+            | "webm"
+            | "mp3"
+            | "ogg"
+            | "m4a"
+            | "zip"
+            | "gz"
+            | "br"
+    )
 }
 
 /// Materialize the wrapper crate at `wrapper_dir`. Idempotent —
@@ -571,6 +789,7 @@ mod regression_tests {
                     duration_ms: 0,
                 },
                 targets: Vec::new(),
+                server_bin: None,
             },
         }
     }
@@ -622,5 +841,193 @@ mod regression_tests {
              local-mount bundle that won't connect to the dev-host. Got {:?}",
             entries,
         );
+    }
+}
+
+#[cfg(test)]
+mod bundle_tests {
+    //! Coverage for `idealyst build --web --gzip --out-dir`. These
+    //! tests don't run wasm-pack — they drive `stage_bundle` /
+    //! `gzip_bundle` against a synthetic project layout, so they
+    //! stay fast (<10ms) and don't need a wasm toolchain on CI.
+
+    use super::*;
+    use std::io::Read as _;
+
+    fn fake_project(tmp: &Path) -> PathBuf {
+        let project = tmp.join("proj");
+        fs::create_dir_all(project.join("src")).unwrap();
+        fs::create_dir_all(project.join("target/debug")).unwrap();
+        // A stale project-root pkg/ left over from a previous build —
+        // bundling must NOT pick it up (the freshly built pkg comes
+        // straight from the wasm-pack output dir).
+        fs::create_dir_all(project.join("pkg")).unwrap();
+        fs::create_dir_all(project.join("fonts")).unwrap();
+        fs::create_dir_all(project.join("assets/images")).unwrap();
+        fs::create_dir_all(project.join(".git")).unwrap();
+        fs::write(project.join("Cargo.toml"), b"[package]\nname = 'demo'\n").unwrap();
+        fs::write(project.join("Cargo.lock"), b"").unwrap();
+        fs::write(project.join("index.html"), b"<html><body>hi</body></html>").unwrap();
+        fs::write(project.join("src/lib.rs"), b"pub fn app() {}").unwrap();
+        fs::write(project.join("target/debug/junk"), b"big-binary").unwrap();
+        fs::write(project.join("pkg/STALE_FROM_OLD_BUILD.wasm"), b"old-bytes").unwrap();
+        fs::write(project.join("fonts/Inter.ttf"), b"font-bytes").unwrap();
+        fs::write(project.join("assets/images/logo.png"), b"png-bytes").unwrap();
+        project
+    }
+
+    fn read_gzipped(path: &Path) -> Vec<u8> {
+        let raw = fs::read(path).expect("read gz");
+        let mut dec = flate2::read::GzDecoder::new(&raw[..]);
+        let mut out = Vec::new();
+        dec.read_to_end(&mut out).expect("decode gz");
+        out
+    }
+
+    #[test]
+    fn stage_bundle_keeps_assets_skips_sources_and_pkg() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = fake_project(tmp.path());
+        let out = tmp.path().join("dist");
+
+        stage_bundle(&project, &out).expect("stage");
+
+        assert!(out.join("index.html").is_file(), "index.html must be copied");
+        assert!(
+            out.join("fonts/Inter.ttf").is_file(),
+            "top-level asset dir (fonts/) must auto-ship",
+        );
+        assert!(
+            out.join("assets/images/logo.png").is_file(),
+            "nested asset paths must auto-ship",
+        );
+        assert!(!out.join("src").exists(), "src/ must be skipped");
+        assert!(!out.join("target").exists(), "target/ must be skipped");
+        assert!(!out.join(".git").exists(), "dotdirs must be skipped");
+        assert!(!out.join("Cargo.toml").exists(), "Cargo.toml must be skipped");
+        // Bundling owns pkg/ — it gets populated from wasm-pack output
+        // by the caller, NOT scraped out of the project root. A stale
+        // project-root pkg/ from a previous build must not leak in,
+        // or deployments would ship outdated wasm.
+        assert!(
+            !out.join("pkg").exists(),
+            "stage_bundle must not copy project/pkg/ — the caller copies wrapper_pkg straight in",
+        );
+    }
+
+    #[test]
+    fn stage_bundle_errors_without_index_html() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("proj");
+        fs::create_dir_all(&project).unwrap();
+        let err = stage_bundle(&project, &tmp.path().join("dist")).unwrap_err();
+        assert!(
+            err.to_string().contains("index.html"),
+            "missing-index error should mention index.html, got: {err}",
+        );
+    }
+
+    #[test]
+    fn stage_bundle_replaces_prior_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = fake_project(tmp.path());
+        let out = tmp.path().join("dist");
+
+        // Pretend a previous build left a stale artifact behind.
+        fs::create_dir_all(&out).unwrap();
+        fs::write(out.join("ghost.wasm"), b"old").unwrap();
+
+        stage_bundle(&project, &out).expect("stage");
+        assert!(
+            !out.join("ghost.wasm").exists(),
+            "stale files from a prior bundle must be cleared so renamed/removed assets don't leak",
+        );
+    }
+
+    #[test]
+    fn strip_wasm_pack_metadata_drops_housekeeping_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = tmp.path().join("pkg");
+        fs::create_dir_all(&pkg).unwrap();
+        fs::write(pkg.join("demo_bg.wasm"), b"wasm").unwrap();
+        fs::write(pkg.join("demo.js"), b"js").unwrap();
+        fs::write(pkg.join("demo.d.ts"), b"types").unwrap();
+        fs::write(pkg.join("demo_bg.wasm.d.ts"), b"types").unwrap();
+        fs::write(pkg.join("package.json"), b"{}").unwrap();
+        fs::write(pkg.join("README.md"), b"# pkg").unwrap();
+
+        strip_wasm_pack_metadata(&pkg);
+
+        assert!(pkg.join("demo_bg.wasm").is_file(), ".wasm must stay");
+        assert!(pkg.join("demo.js").is_file(), ".js must stay");
+        assert!(!pkg.join("demo.d.ts").exists(), ".d.ts must be stripped");
+        assert!(!pkg.join("demo_bg.wasm.d.ts").exists(), ".d.ts must be stripped");
+        assert!(!pkg.join("package.json").exists(), "package.json must be stripped");
+        assert!(!pkg.join("README.md").exists(), "README.md must be stripped");
+    }
+
+    #[test]
+    fn gzip_bundle_compresses_text_skips_binaries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = fake_project(tmp.path());
+        let out = tmp.path().join("dist");
+        stage_bundle(&project, &out).expect("stage");
+
+        // Drop in a synthetic pkg/ the way `build()` would after
+        // copying from `wrapper_pkg`. Wasm body is intentionally
+        // long-and-repetitive so gzip noticeably shrinks it; without
+        // that the test could flake on tiny inputs where the gzip
+        // header outweighs the savings.
+        let pkg = out.join("pkg");
+        fs::create_dir_all(&pkg).unwrap();
+        let wasm_raw = "abcdefgh".repeat(2000).into_bytes();
+        fs::write(pkg.join("demo_bg.wasm"), &wasm_raw).unwrap();
+        fs::write(pkg.join("demo.js"), b"export default function init() {}").unwrap();
+        let png_raw = fs::read(out.join("assets/images/logo.png")).unwrap();
+
+        gzip_bundle(&out).expect("gzip");
+
+        // Compressible: wasm replaced by gzip bytes; filename unchanged
+        // so the same `Content-Encoding: gzip` response can serve them.
+        let wasm_after = fs::read(out.join("pkg/demo_bg.wasm")).unwrap();
+        assert_ne!(
+            wasm_raw, wasm_after,
+            "wasm must be replaced by gzipped bytes (filename preserved)",
+        );
+        assert!(
+            wasm_after.len() < wasm_raw.len(),
+            "gzip must shrink the wasm (was {}, now {})",
+            wasm_raw.len(),
+            wasm_after.len(),
+        );
+        assert_eq!(
+            read_gzipped(&out.join("pkg/demo_bg.wasm")),
+            wasm_raw,
+            "gzipped wasm must round-trip back to the original bytes",
+        );
+
+        // Pre-compressed formats must be left alone — re-gzipping
+        // wastes bytes and would confuse the host's Content-Type
+        // routing.
+        assert_eq!(
+            fs::read(out.join("assets/images/logo.png")).unwrap(),
+            png_raw,
+            ".png must not be re-compressed",
+        );
+    }
+
+    #[test]
+    fn is_already_compressed_covers_common_web_assets() {
+        // Sanity: the skip-list keys off lowercase extension. A
+        // capital-letter extension (.PNG from a careless author) must
+        // still skip.
+        assert!(is_already_compressed(Path::new("a.png")));
+        assert!(is_already_compressed(Path::new("a.PNG")));
+        assert!(is_already_compressed(Path::new("a.woff2")));
+        assert!(is_already_compressed(Path::new("a.mp4")));
+        assert!(!is_already_compressed(Path::new("a.wasm")));
+        assert!(!is_already_compressed(Path::new("a.js")));
+        assert!(!is_already_compressed(Path::new("a.html")));
+        assert!(!is_already_compressed(Path::new("a.ttf")));
     }
 }

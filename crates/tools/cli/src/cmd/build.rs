@@ -65,6 +65,20 @@ pub struct Args {
     /// simulator.
     #[arg(long)]
     pub device: bool,
+
+    /// Web only: pre-gzip every text-ish file in the staged bundle.
+    /// Filenames stay the same — the bytes are gzipped. The host
+    /// must send `Content-Encoding: gzip` on those responses for the
+    /// browser to inflate. Skip this if a CDN in front of the bucket
+    /// already does on-the-fly compression. Has no effect on non-web
+    /// targets.
+    #[arg(long)]
+    pub gzip: bool,
+
+    /// Web only: override where the bundle is written. Default is
+    /// `<project>/dist`. Has no effect on non-web targets.
+    #[arg(long, value_name = "PATH")]
+    pub out_dir: Option<PathBuf>,
 }
 
 pub fn run(args: Args) -> Result<()> {
@@ -175,15 +189,42 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<()> {
     // it, and the resulting `pkg/` is copied into the user project
     // so existing `index.html` references keep working.
     let source = crate::framework_source::resolve(dir)?;
+
+    // `idealyst build --web` always stages a self-contained bundle at
+    // `<project>/dist` (override with `--out-dir`). The bundle is what
+    // gets deployed; nothing lands in the project root anymore. The
+    // older "pkg/ in project dir" path is still used by the dev loop
+    // (`idealyst dev --web`, which calls `build_web::build` with
+    // `bundle_out_dir: None`) so the dev HTTP server can serve from
+    // the project tree.
+    let bundle_out_dir = Some(args.out_dir.clone().unwrap_or_else(|| dir.join("dist")));
+
     let artifact = build_web::build(
         dir,
         build_web::BuildOptions {
             release: args.release,
             source,
             user_features: Vec::new(),
+            bundle_out_dir,
+            gzip: args.gzip,
         },
     )?;
-    eprintln!("[build web] success → {}", artifact.pkg_dir.display());
+    let bundle = artifact
+        .bundle_dir
+        .as_deref()
+        .expect("CLI always sets bundle_out_dir for --web; this Option is for the dev-loop path");
+    eprintln!(
+        "[build web] bundle{} → {}",
+        if args.gzip { " (gzipped)" } else { "" },
+        bundle.display(),
+    );
+    if args.gzip {
+        eprintln!(
+            "[build web] serve with `Content-Encoding: gzip` on every response (the bundle's \
+             filenames are unchanged but their bytes are gzipped). See \
+             examples/website/scripts/export-static.sh for a reference S3 upload."
+        );
+    }
     Ok(())
 }
 

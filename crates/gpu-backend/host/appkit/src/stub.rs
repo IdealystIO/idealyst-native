@@ -41,6 +41,19 @@ pub fn run<F: FnOnce() -> Primitive>(_app: F, _opts: RunOptions) -> Result<(), R
     Err(RunError::NotMacos)
 }
 
+/// Cross-host stub for [`crate::run_with`]. The `R` extension callback
+/// is never invoked since the run loop can't boot off-macOS; takes the
+/// same shape as the real impl so consumer code type-checks
+/// uniformly. The bound is intentionally generic over `R` rather than
+/// fixing a concrete `&mut MacosBackend` parameter — MacosBackend
+/// isn't even compiled here.
+pub fn run_with<F, R>(_app: F, _opts: RunOptions, _register_extensions: R) -> Result<(), RunError>
+where
+    F: FnOnce() -> Primitive,
+{
+    Err(RunError::NotMacos)
+}
+
 #[cfg(feature = "runtime-server")]
 pub fn run_aas(_app_id: &str, _opts: RunOptions) -> Result<(), RunError> {
     Err(RunError::NotMacos)

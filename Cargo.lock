@@ -805,6 +805,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "build-ios",
+ "flate2",
  "tempfile",
  "toml 0.8.23",
 ]
@@ -1473,6 +1474,7 @@ dependencies = [
  "ios-navigator-helpers",
  "jni 0.21.1",
  "runtime-core",
+ "wasm-bindgen",
  "web-navigator-helpers",
  "web-sys",
 ]
@@ -5965,6 +5967,26 @@ name = "toml_writer"
 version = "1.1.1+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "756daf9b1013ebe47a8776667b466417e2d4c5679d441c26230efd9ef78692db"
+
+[[package]]
+name = "toolbar"
+version = "0.0.1"
+dependencies = [
+ "backend-macos",
+ "objc2 0.5.2",
+ "objc2-app-kit",
+ "objc2-foundation 0.2.2",
+ "runtime-core",
+]
+
+[[package]]
+name = "toolbar-demo"
+version = "0.0.1"
+dependencies = [
+ "host-appkit",
+ "runtime-core",
+ "toolbar",
+]
 
 [[package]]
 name = "tower"

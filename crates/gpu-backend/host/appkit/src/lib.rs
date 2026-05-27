@@ -16,7 +16,7 @@ mod app;
 mod app_delegate;
 
 #[cfg(target_os = "macos")]
-pub use app::{run, RunError, RunOptions};
+pub use app::{run, run_with, RunError, RunOptions};
 
 // runtime-server variant. Mirrors `run` but, instead of mounting the user's
 // app() locally, connects to an runtime-server dev-server and applies the
@@ -30,7 +30,7 @@ pub use app::run_aas;
 mod stub;
 
 #[cfg(not(target_os = "macos"))]
-pub use stub::{run, RunError, RunOptions};
+pub use stub::{run, run_with, RunError, RunOptions};
 
 #[cfg(all(not(target_os = "macos"), feature = "runtime-server"))]
 pub use stub::run_aas;

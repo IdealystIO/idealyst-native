@@ -20,36 +20,67 @@ use idea_ui::IdeaThemeRef;
 use crate::typeface::INTER;
 
 // =============================================================================
+// Layout root — the View that wraps `mobile_header` + the screen's
+// ScrollView. Fills the screen so the ScrollView's `height: 100%`
+// has a real reference; `position: Relative` (framework default,
+// stated explicitly) makes it the positioning context for the
+// `position: Absolute` mobile header.
+// =============================================================================
+
+stylesheet! {
+    pub LayoutRoot<IdeaThemeRef> {
+        base(_t) {
+            width: Length::pct(100.0),
+            height: Length::pct(100.0),
+            position: Position::Relative,
+            flex_direction: FlexDirection::Column,
+        }
+    }
+}
+
+// =============================================================================
 // Mobile header — narrow-viewport top bar
 //
-// Position:Absolute on top of the screen, anchored to top/left/right
-// with a fixed height. The screen is wrapped by the navigator's
-// `.ui-nav-screen { position: absolute; inset: 0 }` so the header
-// pins to the viewport top via its nearest positioned ancestor.
+// Lives in the navigator's `top` slot (set via
+// `.top_with(TopSlot::Custom(...))` in `lib.rs`). The slot mounts
+// ONCE at navigator init and survives every screen swap — the
+// header doesn't rebuild on navigation any more.
 //
-// Visibility is controlled by `when(narrow, header, empty)` in
-// `shell::layout` — at wide breakpoints the header subtree isn't
-// mounted at all (no idle press handlers, no extra DOM). The
-// `ScreenScroll` narrow variant adds 56 px of padding-top so the
-// content doesn't start under the header.
+// Visibility is controlled via the `size` variant:
+//   - `wide`: height 0, padding 0, border 0 — the
+//     `.ui-nav-drawer-top` flex parent (`flex: 0 0 auto`)
+//     collapses to zero height and the bar effectively disappears.
+//   - `narrow`: the visible 56-px bar.
+// We don't conditionally mount/unmount the subtree because the
+// outer slot is already persistent — and CSS-collapsing is
+// cheaper than re-running a `when()` branch on every breakpoint
+// transition.
 // =============================================================================
 
 stylesheet! {
     pub MobileHeader<IdeaThemeRef> {
         base(_t) {
-            position: Position::Absolute,
-            top: Length::Px(0.0),
-            left: Length::Px(0.0),
-            right: Length::Px(0.0),
-            height: 56.0,
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::Center,
-            padding_horizontal: 8.0,
             gap: 4.0,
             background: Tokenized::token("color-surface", Color("#ffffff".into())),
-            border_bottom_width: 1.0,
             border_bottom_color: Tokenized::token("color-border", Color("#e7e2d3".into())),
             font_family: &INTER,
+            width: Length::pct(100.0),
+            overflow: runtime_core::Overflow::Hidden,
+        }
+        variant size {
+            #[default]
+            wide(_t) {
+                height: 0.0,
+                padding_horizontal: 0.0,
+                border_bottom_width: 0.0,
+            }
+            narrow(_t) {
+                height: 56.0,
+                padding_horizontal: 8.0,
+                border_bottom_width: 1.0,
+            }
         }
         transitions {
             background: 250ms EaseInOut,
@@ -208,32 +239,18 @@ stylesheet! {
 stylesheet! {
     pub ScreenScroll<IdeaThemeRef> {
         base(_t) {
-            // Each screen wraps its content in a `ScrollView` that
-            // claims the full drawer-body. The drawer body has
-            // `overflow: hidden`, so this is the scroll context
-            // for the page content. `height: 100%` pins to the
-            // body's height; `width: 100%` ensures full-bleed
-            // children (the hero) span the viewport.
+            // Screen container — flow content inside the drawer
+            // navigator's scrollable body. No `height: 100%` (that
+            // would clip content above body height and prevent
+            // body-level scroll). `width: 100%` ensures full-bleed
+            // children (hero, footer) span the viewport.
+            // Background + font are inherited by every Text/View
+            // descendant of the screen.
             flex_direction: FlexDirection::Column,
             width: Length::pct(100.0),
-            height: Length::pct(100.0),
             background: Tokenized::token("color-background", Color("#f7f5ef".into())),
             color: Tokenized::token("color-text", Color("#1a1a1f".into())),
-            // Inter for every screen. CSS-inherits down to every
-            // Text node unless an inner stylesheet overrides
-            // (currently only `CodeText`, which pins monospace).
             font_family: &INTER,
-        }
-        variant size {
-            #[default]
-            wide(_t) {}
-            narrow(_t) {
-                // Make room for the fixed-height mobile header that
-                // overlays the screen at narrow widths. The header
-                // height (56 px) lives in `MobileHeader` below; keep
-                // them in sync.
-                padding_top: 56.0,
-            }
         }
         transitions {
             background: 250ms EaseInOut,
@@ -701,6 +718,197 @@ stylesheet! {
             font_size: 13.0,
             font_weight: runtime_core::FontWeight::SemiBold,
             margin_top: Length::Px(8.0),
+        }
+    }
+}
+
+// =============================================================================
+// Footer — full-bleed band at the bottom of every screen, inside the
+// ScrollView so it scrolls with content. Provides extra scroll
+// height for the sticky TOC's spy logic, and a place for project
+// links / copyright.
+// =============================================================================
+
+stylesheet! {
+    pub Footer<IdeaThemeRef> {
+        base(_t) {
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            border_top_width: 1.0,
+            border_top_color: Tokenized::token("color-border", Color("#e7e2d3".into())),
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Center,
+            width: Length::pct(100.0),
+        }
+        variant size {
+            #[default]
+            wide(_t) {
+                padding_horizontal: 64.0,
+                padding_vertical: 56.0,
+                gap: 40.0,
+            }
+            narrow(_t) {
+                padding_horizontal: 24.0,
+                padding_vertical: 40.0,
+                gap: 32.0,
+            }
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            border_top_color: 250ms EaseInOut,
+        }
+    }
+}
+
+/// Inner column-grid: at wide, the brand block sits on the left
+/// and the link columns flex along the right; at narrow they stack
+/// vertically. `max_width` caps the grid so on ultrawides the
+/// columns don't drift apart.
+stylesheet! {
+    pub FooterGrid<IdeaThemeRef> {
+        base(_t) {
+            width: Length::pct(100.0),
+            max_width: 1120.0,
+            align_self: runtime_core::AlignSelf::Center,
+        }
+        variant size {
+            #[default]
+            wide(_t) {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::FlexStart,
+                gap: 64.0,
+            }
+            narrow(_t) {
+                flex_direction: FlexDirection::Column,
+                gap: 32.0,
+            }
+        }
+    }
+}
+
+/// Brand block on the left of the footer grid. Slightly wider than
+/// the link columns so the tagline can breathe.
+stylesheet! {
+    pub FooterBrand<IdeaThemeRef> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            gap: 8.0,
+            flex_basis: 0.0,
+            flex_grow: 1.5,
+            min_width: 0.0,
+            max_width: 320.0,
+        }
+    }
+}
+
+/// One link column. Equal flex on the right side of the grid.
+stylesheet! {
+    pub FooterColumn<IdeaThemeRef> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            gap: 10.0,
+            flex_basis: 0.0,
+            flex_grow: 1.0,
+            min_width: 140.0,
+        }
+    }
+}
+
+/// Section header above each link column ("Project", "Resources").
+stylesheet! {
+    pub FooterTitle<IdeaThemeRef> {
+        base(_t) {
+            color: Tokenized::token("color-text-muted", Color("#8a8270".into())),
+            font_size: 11.0,
+            font_weight: runtime_core::FontWeight::SemiBold,
+            letter_spacing: 0.8,
+            text_transform: runtime_core::TextTransform::Uppercase,
+            padding_bottom: 4.0,
+        }
+        transitions {
+            color: 250ms EaseInOut,
+        }
+    }
+}
+
+/// Footer link text. Same hover-brighten pattern as `NavLink` so
+/// the footer reads as "more nav" rather than "ad surface".
+stylesheet! {
+    pub FooterLink<IdeaThemeRef> {
+        base(_t) {
+            color: Tokenized::token("color-text-muted", Color("#6b7280".into())),
+            font_size: 14.0,
+            line_height: 20.0,
+            text_align: TextAlign::Left,
+        }
+        state hovered(_t) {
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+        }
+        transitions {
+            color: 180ms EaseOut,
+        }
+    }
+}
+
+/// "Idealyst" wordmark in the brand block — slightly larger than
+/// the tagline. Reuses the typography H3 size token so dark-mode
+/// + theme-typography overrides apply consistently.
+stylesheet! {
+    pub FooterWordmark<IdeaThemeRef> {
+        base(_t) {
+            color: Tokenized::token("color-text", Color("#0a0c11".into())),
+            font_size: Tokenized::token("typography-h3-size", Length::Px(22.0)),
+            font_weight: runtime_core::FontWeight::SemiBold,
+        }
+        transitions {
+            color: 250ms EaseInOut,
+        }
+    }
+}
+
+stylesheet! {
+    pub FooterTagline<IdeaThemeRef> {
+        base(_t) {
+            color: Tokenized::token("color-text-muted", Color("#5b5446".into())),
+            font_size: 14.0,
+            line_height: 20.0,
+        }
+        transitions {
+            color: 250ms EaseInOut,
+        }
+    }
+}
+
+/// Bottom strip with the copyright line. Sits below the grid,
+/// separated by a thin top border that runs the full width of the
+/// content max-width.
+stylesheet! {
+    pub FooterBottom<IdeaThemeRef> {
+        base(_t) {
+            width: Length::pct(100.0),
+            max_width: 1120.0,
+            align_self: runtime_core::AlignSelf::Center,
+            padding_top: 24.0,
+            border_top_width: 1.0,
+            border_top_color: Tokenized::token("color-border", Color("#e7e2d3".into())),
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+        }
+        transitions {
+            border_top_color: 250ms EaseInOut,
+        }
+    }
+}
+
+stylesheet! {
+    pub FooterCopy<IdeaThemeRef> {
+        base(_t) {
+            color: Tokenized::token("color-text-muted", Color("#8a8270".into())),
+            font_size: 12.0,
+            text_align: TextAlign::Center,
+        }
+        transitions {
+            color: 250ms EaseInOut,
         }
     }
 }

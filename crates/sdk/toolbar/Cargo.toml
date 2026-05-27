@@ -1,0 +1,43 @@
+[package]
+name = "toolbar"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Third-party `Toolbar` SDK — native window-chrome toolbars on desktop
+# hosts (macOS today; Windows/Linux scaffolds that no-op until their
+# backends grow `register_external`). Other platforms (iOS, Android,
+# web, terminal, wgpu, ESP) `register` to a no-op and the framework's
+# `External` placeholder is invisible since the Toolbar primitive's
+# in-tree footprint is always zero-size — matches the design where
+# toolbars are window chrome, not view content.
+#
+# Single-crate cfg-gated impl, matching the `webview` SDK pattern
+# (the canonical shape future SDKs should follow per the comment in
+# `crates/sdk/webview/Cargo.toml`).
+
+[dependencies]
+runtime-core = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+backend-macos = { workspace = true }
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = [
+    "NSString",
+    "NSArray",
+    "NSObject",
+] }
+# NSView typed binding so we can call `b.register_external_view(&v)` —
+# that method takes `&NSView` from `objc2-app-kit`, so the SDK has to
+# speak the same major version. Just `NSView` + `NSResponder` (its
+# direct superclass) is enough; NSToolbar isn't a feature in
+# objc2-app-kit 0.2 anyway, so we reach it via raw `msg_send`.
+objc2-app-kit = { version = "0.2", features = [
+    "NSResponder",
+    "NSView",
+] }
+# NSWindow + NSToolbar typed bindings stay out of the dep — we reach
+# both at the Obj-C runtime layer via `class!()` + `msg_send`, same
+# as `maps-ios` does for MKMapView. `objc2-app-kit` 0.2 doesn't ship
+# an `NSToolbar` feature anyway; the runtime path is the only option
+# without bumping to 0.3 (which conflicts with backend-macos's 0.2).

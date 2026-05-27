@@ -1,41 +1,50 @@
 # Server functions
 
-A server function is a Rust async fn whose body runs on a backend
-process and whose call sites compile, on the client, into typed
-HTTP stubs. You write one function. The framework produces two
-artifacts that talk to each other over the wire — no schema file,
-no protobuf, no codegen step you run by hand. The types in the
-signature are the contract.
+Server functions exist to collapse a particular kind of busywork:
+maintaining a client API, a server API, and a DTO crate in lockstep
+forever. The point isn't that the framework hands you a slightly
+nicer HTTP client — it's that **server logic, including database
+queries, can be defined directly inside your app**, and the compiler
+figures out where each piece runs.
 
 ```rust
 use server::{server, ServerError};
 
 #[server]
-async fn add(a: i32, b: i32) -> Result<i32, ServerError> {
-    Ok(a + b)
+async fn list_todos(user_id: u64) -> Result<Vec<Todo>, ServerError> {
+    let db = server::use_state::<Arc<Db>>()
+        .ok_or_else(|| ServerError::failed("Db not installed"))?;
+    db.query("SELECT * FROM todos WHERE user_id = $1", &[&user_id]).await
 }
 
-// Same call site on both sides:
-let sum = add(2, 3).await?;          // == 5
+// In a UI component in the SAME crate:
+let todos = list_todos(current_user.id).await?;
 ```
 
-On the server, the body runs. On the client, the body is replaced
-with a `POST /_srv/add` that ships `[2, 3]` as JSON, awaits the
-response, and decodes it back into `Result<i32, ServerError>`.
+The call site reads as if the client were running that body
+directly. Under the hood, the `#[server]` macro splits the function
+based on the build target:
 
-## The pitch
+- **Server build** (`--features server`): the body compiles
+  verbatim and a handler gets auto-registered at
+  `/_srv/list_todos`. Imports like `diesel::prelude::*` (cfg-gated
+  to the server build) are visible to that body.
+- **Client build** (default): the body is **discarded**. The call
+  site compiles into a typed RPC stub — `list_todos(uid)` becomes
+  a `POST /_srv/list_todos` that ships `[uid]` as JSON, awaits the
+  response, and decodes it back into `Result<Vec<Todo>, ServerError>`.
 
-A normal full-stack workflow looks like:
+The Rust types you wrote in the signature **are** the wire contract.
+No IDL, no protobuf, no `cargo generate-types` step you have to
+remember. The compiler verifies the contract holds on both sides
+of the network boundary because the same source file is the
+authority for both.
 
-1. Author API endpoint on the server.
-2. Author DTO types in a shared library.
-3. Author client wrapper that serialises the request and parses the
-   response.
-4. Keep three things in sync forever.
-
-Server functions collapse steps 1, 3, and 4 into one declaration.
-DTO types (step 2) still exist — they're the args + return — but
-nothing else gets to drift.
+That last point is the part that compounds. The cost the framework
+absorbs isn't "one fewer codegen step" — it's the entire
+client-API + server-API + types-in-the-middle ceremony that most
+full-stack codebases pay forever. Here the boundary is a
+compile-time decision, not a code-organization tax.
 
 ## The macro split
 

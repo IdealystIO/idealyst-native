@@ -165,6 +165,10 @@ fn build_wasm(dir: &Path, opts: &BuildOptions) -> Result<()> {
             release: false,
             source: opts.source.clone(),
             user_features: opts.features.clone(),
+            // Dev loop never stages a deploy bundle — that's only for
+            // `idealyst build --web --gzip` / `--out-dir`.
+            bundle_out_dir: None,
+            gzip: false,
         },
     )
     .map(|_| ())

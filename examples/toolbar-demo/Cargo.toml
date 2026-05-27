@@ -1,0 +1,24 @@
+[package]
+name = "toolbar-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Smoke-test binary for the `toolbar` SDK. Boots a host-appkit window with an NSToolbar attached, demonstrating the reactive items + click handler shape end-to-end."
+
+# Plain bin — runs via `cargo run -p toolbar-demo`. No app bundle,
+# no Info.plist; NSApp is activated via `setActivationPolicy` in the
+# host so the window shows up regardless. For a "real" macOS app
+# you'd go through `idealyst dev --macos` (auto-bundles); this is
+# just a developer-loop check that the SDK + host hook + macOS
+# backend all line up.
+
+[[bin]]
+name = "toolbar-demo"
+path = "src/main.rs"
+
+[dependencies]
+runtime-core = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+host-appkit = { workspace = true }
+toolbar = { workspace = true }

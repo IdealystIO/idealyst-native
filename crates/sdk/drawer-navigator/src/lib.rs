@@ -122,6 +122,246 @@ pub struct DrawerSlotProps {
 pub type SidebarBuilder = Rc<dyn Fn(DrawerSlotProps) -> Primitive>;
 
 // =============================================================================
+// Next-gen slot system: leading / top / bottom / trailing
+//
+// `sidebar_with` (above) is the original API — a single closure
+// receiving `DrawerSlotProps`. The four named slots below
+// generalize it into uniform "chrome positions" around the screen
+// outlet that any navigator kind can opt into. Each slot is
+// optional and per-backend honor is also optional (iOS/Android
+// drawer handlers may ignore `top` and `bottom` in favor of native
+// chrome).
+//
+// The chrome built by these slot closures **mounts ONCE** at
+// navigator init and persists across screen swaps — fixing the
+// per-navigation rebuild problem the original `sidebar_with` model
+// also has for stateful chrome.
+// =============================================================================
+
+/// Reactive props every slot closure receives.
+///
+/// Carries the framework's nav-state mirrors (`active_route`,
+/// `depth`, etc.), the drawer-specific `is_open` signal, semantic
+/// **intent** signals that describe what the leading/trailing
+/// positions currently represent (hamburger? back arrow?
+/// nothing?), the default screen title, and pre-bound dispatchers
+/// (`open_drawer`, `close_drawer`, `pop`, `on_select`) the
+/// renderer can wire straight to pressables.
+///
+/// Cross-navigator stability: every navigator kind (drawer, stack,
+/// tab) hands slot closures the same `SlotProps` shape. Fields
+/// without semantic meaning for a particular navigator stay valid
+/// (e.g., `is_open` on a stack navigator is a const-false signal).
+/// This lets author code write a single chrome closure that works
+/// across navigator kinds.
+///
+/// `Clone` is cheap — every field is either `Copy` (Signals) or
+/// an `Rc`. The drawer SDK constructs one `SlotProps` per
+/// navigator init and clones into each slot's closure invocation.
+#[derive(Clone)]
+pub struct SlotProps {
+    pub active_route: Signal<&'static str>,
+    pub active_path: Signal<String>,
+    pub depth: Signal<usize>,
+    pub can_go_back: Signal<bool>,
+    /// Drawer's open/close state. Const-false on non-drawer
+    /// navigators — present so slot signatures stay uniform.
+    pub is_open: Signal<bool>,
+    /// What the leading bar position semantically *is* on the
+    /// current screen — re-evaluated on nav state changes.
+    pub leading_intent: Signal<LeadingIntent>,
+    /// Mirror of `leading_intent` for the trailing position.
+    pub trailing_intent: Signal<TrailingIntent>,
+    /// The title `TopSlot::Filled { title: BarTitle::Default }`
+    /// would show. Custom renderers read this for parity. Driven
+    /// by the active screen's `DrawerScreenOptions::title`
+    /// (empty string if unset).
+    pub screen_title: Signal<String>,
+    /// Dispatch a `Select` command on the ambient navigator —
+    /// "tap this nav link". Used by sidebars / leading slots.
+    pub on_select: Rc<dyn Fn(&'static str)>,
+    /// Open the drawer. No-op on navigators without an open state.
+    pub open_drawer: Rc<dyn Fn()>,
+    /// Close the drawer. No-op on navigators without an open state.
+    pub close_drawer: Rc<dyn Fn()>,
+    /// Pop the stack. No-op on navigators without a stack.
+    pub pop: Rc<dyn Fn()>,
+    /// Current vertical scroll offset of the navigator's body
+    /// scroll context, in CSS pixels. Reactive — every native
+    /// `scroll` event the body emits updates this signal. Use
+    /// from a `top`/`bottom`/`leading`/`trailing` slot to drive
+    /// behavior tied to scroll (a parallax header, a fade-on-
+    /// scroll separator, a TOC scroll-spy). On navigators
+    /// without a single body scroll context (legacy
+    /// `bottom_pinned` drawer mode, where each screen owns its
+    /// own ScrollView), the signal stays at `0.0` — slots that
+    /// rely on it should fall back gracefully.
+    pub body_scroll_y: Signal<f32>,
+    /// Scroll the navigator's body to the given Y offset in CSS
+    /// pixels. No-op on navigators without a single body scroll
+    /// context (see [`Self::body_scroll_y`] for the caveat).
+    pub scroll_to_y: Rc<dyn Fn(f32)>,
+}
+
+/// What the *leading* (left in LTR) bar position semantically does
+/// on the current screen. Slot renderers read this to pick the
+/// right button + dispatcher; the SDK populates it from the active
+/// nav state.
+///
+/// Third-party navigator SDKs register custom intents via
+/// [`LeadingIntent::Custom`] — Filled-mode renderers fall back to
+/// "no default button" on unknown intents; Custom renderers
+/// `match` on the string tag.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum LeadingIntent {
+    /// No conventional leading button on this screen.
+    None,
+    /// Hamburger that opens the drawer. Dispatcher is
+    /// [`SlotProps::open_drawer`].
+    OpenDrawer,
+    /// Back arrow that pops the stack. Dispatcher is
+    /// [`SlotProps::pop`].
+    PopStack,
+    /// SDK-extension hook — string is the third-party SDK's
+    /// chosen tag (e.g. `"close_modal"`).
+    Custom(&'static str),
+}
+
+/// Same idea as [`LeadingIntent`] for the trailing (right in LTR)
+/// position. Most screens use `None`; SDKs that conventionally
+/// put a button on the right populate `Custom` with their tag.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum TrailingIntent {
+    None,
+    Custom(&'static str),
+}
+
+/// Icon-backed pressable for [`TopSlot::Filled`]'s
+/// `leading` / `trailing` arrays. Same shape as [`BarButton`]
+/// (which the original per-screen `header_left` / `header_right`
+/// uses) but the icon is the framework's typed
+/// [`runtime_core::IconData`] rather than a string name — the same
+/// vocabulary `idea-ui`'s `Icon` component uses. We use a separate
+/// type during the migration so existing `BarButton` callers
+/// (`stack-navigator`, `DrawerScreenOptions`) keep working
+/// unchanged.
+#[derive(Clone)]
+pub struct SlotBarButton {
+    pub icon: runtime_core::IconData,
+    pub on_press: Rc<dyn Fn()>,
+    pub tint: Option<Color>,
+}
+
+impl SlotBarButton {
+    pub fn new(icon: runtime_core::IconData, on_press: impl Fn() + 'static) -> Self {
+        Self { icon, on_press: Rc::new(on_press), tint: None }
+    }
+
+    pub fn tint(mut self, color: Color) -> Self {
+        self.tint = Some(color);
+        self
+    }
+}
+
+/// What text/view to render in the center of [`TopSlot::Filled`].
+pub enum BarTitle {
+    /// Use the active screen's `DrawerScreenOptions::title`
+    /// (delivered via [`SlotProps::screen_title`]). Updates
+    /// reactively on navigation. This is the default when
+    /// `BarTitle` is left unset.
+    Default,
+    /// Override with an author-controlled reactive string.
+    Text(Signal<String>),
+    /// Author-supplied view — search input, breadcrumb, logo, etc.
+    View(Box<dyn Fn(SlotProps) -> Primitive>),
+}
+
+impl Default for BarTitle {
+    fn default() -> Self {
+        Self::Default
+    }
+}
+
+/// Top slot's rendering mode.
+///
+/// `Filled` is the path with cross-platform native-chrome parity:
+/// leading buttons → UIBarButtonItems / Toolbar items, title →
+/// UINavigationItem.titleView, trailing buttons → same as leading
+/// but on the right. Per-backend drawer handlers can either
+/// render this themselves (web) or translate to native chrome
+/// (iOS/Android — pass-2).
+///
+/// `Custom` is the escape hatch where the author owns the bar's
+/// pixel layout. Receives [`SlotProps`] so the closure can read
+/// `leading_intent` / `screen_title` and wire the dispatchers
+/// itself. On iOS/Android, opting into Custom *replaces* the
+/// native nav bar — the handler honors the closure and disables
+/// UIKit/Material chrome for that navigator.
+pub enum TopSlot {
+    Filled {
+        leading: Vec<SlotBarButton>,
+        title: BarTitle,
+        trailing: Vec<SlotBarButton>,
+    },
+    Custom(Box<dyn Fn(SlotProps) -> Primitive>),
+}
+
+/// Closure type for the slot variants that don't have a Filled /
+/// Custom split. `leading`, `bottom`, and `trailing` each take one
+/// of these because there's no conventional platform-native widget
+/// shape to mirror — every author wants different pixels in those
+/// positions, so the SDK doesn't impose a structure beyond the
+/// `SlotProps` it hands in.
+pub type SlotBuilder = Box<dyn Fn(SlotProps) -> Primitive>;
+
+// ---------------------------------------------------------------------------
+// Active drawer's body-scroll publication
+//
+// Screens that need to react to body scroll (e.g., a TOC's
+// "highlight the section currently in view" spy) can't reach into
+// `SlotProps` — they're built outside any slot's reactive scope.
+// The SDK's per-backend `init` publishes the navigator's body
+// scroll signal + scroll-to dispatcher into these thread-locals
+// so any screen can read them via `active_body_scroll_y()` /
+// `active_scroll_to_y()`.
+//
+// Limitation: stores the *most recently registered* drawer's
+// signal — in a multi-drawer app the published signal points at
+// whichever drawer's web handler ran `init` last. The website
+// only ever instantiates one drawer so this is fine for now.
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    static ACTIVE_BODY_SCROLL_Y: RefCell<Option<Signal<f32>>> = const { RefCell::new(None) };
+    static ACTIVE_SCROLL_TO_Y: RefCell<Option<Rc<dyn Fn(f32)>>> = const { RefCell::new(None) };
+}
+
+/// Read the active drawer's body-scroll signal. Returns `None`
+/// before any drawer navigator has been mounted — screens that
+/// need this should fall back gracefully (e.g., skip scroll-spy
+/// effects).
+pub fn active_body_scroll_y() -> Option<Signal<f32>> {
+    ACTIVE_BODY_SCROLL_Y.with(|c| *c.borrow())
+}
+
+/// Read the active drawer's scroll-to-y dispatcher. Use this from
+/// a screen's primitive subtree (e.g., a TOC link's `on_press`)
+/// to programmatically scroll the navigator's body.
+pub fn active_scroll_to_y() -> Option<Rc<dyn Fn(f32)>> {
+    ACTIVE_SCROLL_TO_Y.with(|c| c.borrow().clone())
+}
+
+/// Internal — called by per-backend handlers (currently only the
+/// web handler) at `init` to publish the body-scroll signal and
+/// the scroll-to dispatcher for the screen-accessible helpers
+/// above.
+#[doc(hidden)]
+pub fn _publish_active_body_scroll(sig: Signal<f32>, to_fn: Rc<dyn Fn(f32)>) {
+    ACTIVE_BODY_SCROLL_Y.with(|c| *c.borrow_mut() = Some(sig));
+    ACTIVE_SCROLL_TO_Y.with(|c| *c.borrow_mut() = Some(to_fn));
+}
+
+// =============================================================================
 // DrawerScreenOptions — per-screen typed options
 // =============================================================================
 
@@ -255,7 +495,41 @@ pub struct DrawerPresentation {
     /// Shared open-state signal — read by both the SDK handler's
     /// dispatcher (writes Open/Close/Toggle) and the sidebar builder
     /// via `DrawerSlotProps.is_open`.
+    ///
+    /// Authors can supply their own via [`DrawerBuilder::is_open`]
+    /// to control drawer open/close from outside the navigator
+    /// (e.g., a button in the app shell). When unset, the SDK's
+    /// constructor-allocated signal is used.
     pub is_open: Signal<bool>,
+    // ---- next-gen slot system ----
+    /// Persistent chrome at the leading (left in LTR) position.
+    /// Set via [`DrawerBuilder::leading_with`]. Eventually
+    /// replaces `sidebar` — for now both coexist and the
+    /// per-backend handler prefers `leading_slot` when both are
+    /// set.
+    pub leading_slot: RefCell<Option<SlotBuilder>>,
+    /// Persistent top bar. Set via [`DrawerBuilder::top_with`].
+    /// On iOS/Android, `TopSlot::Filled` translates to native nav
+    /// chrome (pass-2); `TopSlot::Custom` replaces it.
+    pub top_slot: RefCell<Option<TopSlot>>,
+    /// Persistent bottom bar / footer. Set via
+    /// [`DrawerBuilder::bottom_with`]. No native-chrome conflict
+    /// on iOS/Android — there's no convention to override.
+    pub bottom_slot: RefCell<Option<SlotBuilder>>,
+    /// Persistent trailing (right in LTR) column. Set via
+    /// [`DrawerBuilder::trailing_with`]. Uncommon but available
+    /// for utility-panel layouts.
+    pub trailing_slot: RefCell<Option<SlotBuilder>>,
+    /// When `true` (the default), the drawer's body div is the
+    /// scroll context and the bottom slot mounts inside it as a
+    /// flow sibling AFTER the screen — the footer scrolls with
+    /// content. Screens drop their own `ScrollView` wrappers and
+    /// render directly. Set to `false` via
+    /// [`DrawerBuilder::bottom_pinned`] for the historical
+    /// behavior: body has `overflow: hidden`, each screen owns
+    /// its own scroll context via `ScrollView`, and the bottom
+    /// slot pins to the viewport bottom.
+    pub bottom_in_scroll: bool,
 }
 
 impl DrawerPresentation {
@@ -268,6 +542,11 @@ impl DrawerPresentation {
             mount_policy: MountPolicy::default(),
             sidebar: RefCell::new(None),
             is_open: Signal::new(false),
+            leading_slot: RefCell::new(None),
+            top_slot: RefCell::new(None),
+            bottom_slot: RefCell::new(None),
+            trailing_slot: RefCell::new(None),
+            bottom_in_scroll: true,
         }
     }
 }
@@ -441,6 +720,59 @@ pub trait DrawerBuilder: Sized {
     where
         F: Fn() -> HeaderStyle + 'static;
     fn bind(self, r: Ref<DrawerHandle>) -> Self;
+
+    // ---- next-gen slot builders ----
+
+    /// Mount persistent chrome at the leading edge — sidebar slot.
+    /// Replaces `sidebar_with(...)` going forward; both currently
+    /// work and the handler prefers `leading_with` if set. The
+    /// closure runs once at navigator init and returns a
+    /// [`Primitive`] that survives every screen swap.
+    fn leading_with<F>(self, f: F) -> Self
+    where
+        F: Fn(SlotProps) -> Primitive + 'static;
+
+    /// Mount the persistent top bar. Pass [`TopSlot::Filled`] for
+    /// the platform-conventional shape (leading buttons + title +
+    /// trailing buttons), or [`TopSlot::Custom`] to own the bar's
+    /// pixels with a closure that receives [`SlotProps`].
+    fn top_with(self, slot: TopSlot) -> Self;
+
+    /// Mount persistent chrome at the bottom — footer / toolbar.
+    /// Closure runs once at init.
+    fn bottom_with<F>(self, f: F) -> Self
+    where
+        F: Fn(SlotProps) -> Primitive + 'static;
+
+    /// Mount persistent chrome at the trailing edge — utility
+    /// panel / inspector. Closure runs once at init.
+    fn trailing_with<F>(self, f: F) -> Self
+    where
+        F: Fn(SlotProps) -> Primitive + 'static;
+
+    /// Supply an author-owned `Signal<bool>` for the drawer's
+    /// open state. Without this, the SDK allocates one internally
+    /// (visible via `DrawerHandle::is_open_signal()` after bind).
+    /// Use this when the open state needs to be driven from
+    /// outside the navigator — e.g., a button in the app shell, a
+    /// keyboard shortcut, or unit tests setting state directly.
+    fn is_open(self, sig: Signal<bool>) -> Self;
+
+    /// Switch the drawer to "bottom slot pins to the viewport"
+    /// mode (the legacy behavior). The default is
+    /// `bottom_in_scroll`: the body div is the scroll context,
+    /// the bottom slot mounts inside it, and the footer scrolls
+    /// with content — typical for docs sites and content-heavy
+    /// drawers. Use `bottom_pinned()` when the footer must stay
+    /// visible regardless of scroll position (e.g., a persistent
+    /// command bar / status strip).
+    ///
+    /// Effect on screens: in `bottom_pinned` mode the body is
+    /// `overflow: hidden` and each screen must provide its own
+    /// scroll context (typically a `ScrollView` wrapper). In the
+    /// default `bottom_in_scroll` mode the body provides
+    /// scrolling and screens render as flow content.
+    fn bottom_pinned(self) -> Self;
 }
 
 #[derive(Copy, Clone)]
@@ -630,6 +962,64 @@ impl DrawerBuilder for Bound<DrawerHandle> {
         });
         self
     }
+
+    fn leading_with<F>(mut self, f: F) -> Self
+    where
+        F: Fn(SlotProps) -> Primitive + 'static,
+    {
+        let builder: SlotBuilder = Box::new(f);
+        with_presentation(&mut self, |p| {
+            *p.leading_slot.borrow_mut() = Some(builder);
+        });
+        self
+    }
+
+    fn top_with(mut self, slot: TopSlot) -> Self {
+        with_presentation(&mut self, |p| {
+            *p.top_slot.borrow_mut() = Some(slot);
+        });
+        self
+    }
+
+    fn bottom_with<F>(mut self, f: F) -> Self
+    where
+        F: Fn(SlotProps) -> Primitive + 'static,
+    {
+        let builder: SlotBuilder = Box::new(f);
+        with_presentation(&mut self, |p| {
+            *p.bottom_slot.borrow_mut() = Some(builder);
+        });
+        self
+    }
+
+    fn trailing_with<F>(mut self, f: F) -> Self
+    where
+        F: Fn(SlotProps) -> Primitive + 'static,
+    {
+        let builder: SlotBuilder = Box::new(f);
+        with_presentation(&mut self, |p| {
+            *p.trailing_slot.borrow_mut() = Some(builder);
+        });
+        self
+    }
+
+    fn is_open(mut self, sig: Signal<bool>) -> Self {
+        // Overwrite the SDK-allocated signal with the author's.
+        // Done via `_mut` because Signal is Copy and we're
+        // replacing the field, not mutating through interior
+        // mutability.
+        with_presentation_mut(&mut self, |p| {
+            p.is_open = sig;
+        });
+        self
+    }
+
+    fn bottom_pinned(mut self) -> Self {
+        with_presentation_mut(&mut self, |p| {
+            p.bottom_in_scroll = false;
+        });
+        self
+    }
 }
 
 // =============================================================================
@@ -685,8 +1075,9 @@ pub use terminal::register;
 
 pub mod prelude {
     pub use super::{
-        register, BarButton, DrawerBuilder, DrawerCmd, DrawerHandle, DrawerNavigator,
+        register, BarButton, BarTitle, DrawerBuilder, DrawerCmd, DrawerHandle, DrawerNavigator,
         DrawerPresentation, DrawerScreenExt, DrawerScreenOptions, DrawerSide, DrawerSlotProps,
-        DrawerType, HeaderStyle, MountPolicy,
+        DrawerType, HeaderStyle, LeadingIntent, MountPolicy, SlotBarButton, SlotBuilder,
+        SlotProps, TopSlot, TrailingIntent,
     };
 }

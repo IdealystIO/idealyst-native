@@ -8,6 +8,10 @@ description = "Web build orchestration: generates an ephemeral cdylib wrapper ar
 [dependencies]
 anyhow = "1"
 build-ios = { workspace = true }
+# `--gzip` support for `idealyst build --web`. Writes the bundle's
+# files as gzipped bytes under their original filenames so a static
+# host can serve them with `Content-Encoding: gzip`.
+flate2 = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

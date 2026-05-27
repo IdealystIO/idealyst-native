@@ -20,7 +20,8 @@ runtime-core = { workspace = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }
 web-navigator-helpers = { workspace = true }
-web-sys = "0.3"
+web-sys = { version = "0.3", features = ["Event", "EventTarget", "Element"] }
+wasm-bindgen = "0.2"
 
 [target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
 backend-android-mobile = { workspace = true }

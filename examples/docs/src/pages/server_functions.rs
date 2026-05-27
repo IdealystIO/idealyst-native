@@ -10,7 +10,7 @@ docs! {
     slug = "server-functions",
     title = "Server functions",
     category = Foundation,
-    description = "One async fn, two compilations: the body runs on the server; client call sites compile into typed HTTP stubs.",
+    description = "Define server logic — database queries included — directly inside your app. The compiler splits client and server paths at build time; the signature is the wire contract.",
     related = ["async-reactivity", "net"],
     concepts = [
         ServerFn,
@@ -23,27 +23,49 @@ docs! {
     ],
 
     section(heading = "Overview") {
-        p("A server function is a Rust async fn whose body runs on a backend \
-           process and whose call sites compile, on the client, into typed HTTP \
-           stubs. You write one function. The framework produces two artifacts \
-           that talk to each other over the wire — no schema file, no protobuf, \
-           no codegen step you run by hand. The types in the signature are the \
-           contract."),
+        p("Server functions exist to collapse a particular kind of busywork: \
+           maintaining a client API, a server API, and a DTO crate in lockstep \
+           forever. The point isn't that the framework hands you a nicer HTTP \
+           client — it's that ", code("server logic, including database queries,"),
+          " can be defined directly inside your app, and the compiler figures out \
+           where each piece runs."),
         code(rust, r##"
             use server::{server, ServerError};
 
             #[server]
-            async fn add(a: i32, b: i32) -> Result<i32, ServerError> {
-                Ok(a + b)
+            async fn list_todos(user_id: u64) -> Result<Vec<Todo>, ServerError> {
+                let db = server::use_state::<Arc<Db>>()
+                    .ok_or_else(|| ServerError::failed("Db not installed"))?;
+                db.query("SELECT * FROM todos WHERE user_id = $1", &[&user_id]).await
             }
 
-            // Same call site on both sides:
-            let sum = add(2, 3).await?;          // == 5
+            // In a UI component in the SAME crate:
+            let todos = list_todos(current_user.id).await?;
         "##),
-        p("On the server, the body runs. On the client, the body is replaced with \
-           a ", code("POST /_srv/add"), " that ships ", code("[2, 3]"),
-          " as JSON, awaits the response, and decodes it back into ",
-          code("Result<i32, ServerError>"), "."),
+        p("The call site reads as if the client were running that body directly. \
+           Under the hood, the ", code("#[server]"),
+          " macro splits the function based on the build target:"),
+        list(
+            ["Server build (", code("--features server"),
+             "): the body compiles verbatim and a handler gets auto-registered at ",
+             code("/_srv/list_todos"), ". Imports like ", code("diesel::prelude::*"),
+             " — cfg-gated to the server build — are visible to that body."],
+            ["Client build (default): the body is DISCARDED. The call site compiles \
+              into a typed RPC stub — ", code("list_todos(uid)"), " becomes a ",
+             code("POST /_srv/list_todos"),
+             " that ships the args as JSON, awaits the response, and decodes it \
+              back into ", code("Result<Vec<Todo>, ServerError>"), "."],
+        ),
+        p("The Rust types you wrote in the signature ARE the wire contract. No IDL, \
+           no protobuf, no ", code("cargo generate-types"),
+          " step you have to remember. The compiler verifies the contract on both \
+           sides of the network boundary because the same source file is the \
+           authority for both."),
+        p("That last point compounds: the cost the framework absorbs isn't \"one \
+           fewer codegen step\" — it's the entire client-API + server-API + \
+           types-in-the-middle ceremony that most full-stack codebases pay forever. \
+           Here the boundary is a compile-time decision, not a code-organization \
+           tax."),
     },
 
     section(heading = "The macro split") {

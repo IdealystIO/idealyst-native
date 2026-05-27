@@ -213,8 +213,19 @@ fn write_colors_from_srgb(layer: &NSObject, stops: &[[f32; 4]]) {
 /// doesn't drive automatic sublayer resizing in practice, so we
 /// mirror the resize here.
 pub(crate) fn sync_gradient_sublayer(view: &NSView) {
-    let layer: Retained<NSObject> = unsafe { objc2::msg_send_id![view, layer] };
-    let sublayers_ptr: *mut NSObject = unsafe { msg_send![&layer, sublayers] };
+    // NSView is layer-optional on AppKit (unlike UIView, which is
+    // layer-mandatory). `[view layer]` returns nil unless something
+    // earlier set `wantsLayer=true` — and views without a layer can't
+    // own an `idealyst_gradient` sublayer in the first place, so the
+    // sync is a no-op for them. Use raw `msg_send!` + null-check
+    // instead of `msg_send_id!` (which asserts non-nil and panics
+    // when this function runs against an unstyled NSView in the
+    // layout pass).
+    let layer_ptr: *mut NSObject = unsafe { msg_send![view, layer] };
+    if layer_ptr.is_null() {
+        return;
+    }
+    let sublayers_ptr: *mut NSObject = unsafe { msg_send![layer_ptr, sublayers] };
     if sublayers_ptr.is_null() {
         return;
     }

@@ -23,12 +23,11 @@
 //!
 //! Everything except `set_open_drawer` is a no-op outside `wasm32`.
 
-use std::cell::{OnceCell, RefCell};
 use std::rc::Rc;
 
 use drawer_navigator::DrawerHandle;
 use idea_ui::{current_breakpoint, Breakpoint};
-use runtime_core::{Effect, Ref, Signal, StyleApplication, StyleSheet};
+use runtime_core::{Ref, Signal, StyleApplication, StyleSheet};
 
 /// Width below which the sidebar collapses into an overlay. The
 /// stylesheet variant choices in [`crate::shell`] and
@@ -75,103 +74,13 @@ pub fn responsive_style(
     }
 }
 
-thread_local! {
-    /// Captures the "open the drawer" closure derived from the bound
-    /// `Ref<DrawerHandle>`. The in-tree mobile-header menu button
-    /// reads this on press. `RefCell<Option<...>>` so a hot-reload
-    /// rebuild can overwrite the previous binding.
-    static OPEN_FN: RefCell<Option<Rc<dyn Fn()>>> = const { RefCell::new(None) };
-
-    /// Long-lived `Signal<&'static str>` mirroring the SDK's
-    /// `active_route`. Lazily allocated on first read so the mobile
-    /// header's reactive text closure can subscribe to a *stable*
-    /// signal handle from any screen scope, even before the
-    /// sidebar-build closure has run and installed the mirror
-    /// observer. After `install_active_route_observer` runs, an
-    /// effect copies the SDK's signal value into this signal on
-    /// every change.
-    ///
-    /// We can't store the SDK's `Signal<&'static str>` directly
-    /// here and have screens subscribe to it: at mobile-header
-    /// mount time the SDK's signal might not yet be set, the
-    /// header's text closure would read `None` and never
-    /// subscribe (closures only subscribe to signals they actually
-    /// `.get()`). The mirror is the standard "place an indirection
-    /// signal whose value is updated by an effect" pattern.
-    static ACTIVE_ROUTE_MIRROR: OnceCell<Signal<&'static str>> = const { OnceCell::new() };
-}
-
-/// Stash the "open" closure for the imperative hamburger DOM
-/// element to call. Invoked once from `app()` after the navigator
-/// is built.
-///
-/// We flip the SDK's shared `is_open` signal directly rather than
-/// going through `nav.open()` — the SDK's `DrawerHandle::open` /
-/// `close` dispatch the SDK's `DrawerCmd` enum, but the web
-/// navigator-helper's command dispatcher downcasts to its OWN
-/// (distinct-Rust-type) `DrawerCmd`, so the SDK-dispatched
-/// commands are silently dropped. See memory note
-/// `project_drawer_helpers_cmd_enum`. Flipping the signal is
-/// equivalent to what the helper's dispatcher would do on a
-/// successful match (it just `is_open.set(true)` + fires
-/// `open_changed` — but `open_changed` is itself just another
-/// `is_open.set(...)` in the wiring at `web.rs` line ~138).
-pub fn set_open_drawer(nav: Ref<DrawerHandle>) {
-    let opener: Rc<dyn Fn()> = Rc::new(move || {
-        // Pull the signal handle out via `nav.with` (which holds an
-        // ARENA borrow) BEFORE calling `.set(true)` — `set` fires
-        // dependent effects synchronously, and our observer effect
-        // reads from the same ARENA via `query_selector` /
-        // `class_list` JS interop that's safe but also re-enters Rust
-        // signal reads. Doing both inside `nav.with` triggers a
-        // RefCell already-borrowed panic in `reactive.rs`.
-        let sig = nav.with(|h| h.is_open_signal());
-        if let Some(sig) = sig {
-            sig.set(true);
-        }
-    });
-    OPEN_FN.with(|slot| *slot.borrow_mut() = Some(opener));
-}
-
-/// Trigger an open of the drawer from anywhere — called by the
-/// in-tree mobile header's menu-button press handler. No-ops if
-/// the navigator hasn't been bound yet (pre-mount).
-pub fn open_drawer() {
-    let cb = OPEN_FN.with(|slot| slot.borrow().clone());
-    if let Some(cb) = cb {
-        cb();
-    }
-}
-
-/// Stable `Signal<&'static str>` that always returns the current
-/// active route. The signal is lazily allocated on first call;
-/// subsequent calls return the same handle. The mobile header
-/// reads via this so its text closure subscribes to a known
-/// signal even before the SDK's `active_route` becomes available
-/// through `install_active_route_observer`.
-pub fn active_route_signal() -> Signal<&'static str> {
-    ACTIVE_ROUTE_MIRROR.with(|cell| *cell.get_or_init(|| Signal::new("")))
-}
-
-/// Mirror the SDK's `active_route` into our long-lived signal.
-/// Called once from inside the sidebar builder closure (an active
-/// reactive scope), passing `slot.active_route`. The effect copies
-/// every SDK update into the mirror; mobile-header subscribers
-/// re-fire on each navigation.
-///
-/// The effect is **forgotten** — it must outlive the sidebar
-/// builder closure that installed it. Same posture as
-/// [`install_drawer_open_observer`].
-pub fn install_active_route_observer(source: Signal<&'static str>) {
-    let target = active_route_signal();
-    let effect = Effect::new(move || {
-        let next = source.get();
-        if target.get() != next {
-            target.set(next);
-        }
-    });
-    std::mem::forget(effect);
-}
+// Open-drawer dispatcher + active-route mirror used to live here as
+// thread-locals while the website built its chrome inside per-screen
+// `layout()` calls and had no direct access to the navigator's slot
+// signals. After the slot refactor, the navigator hands `SlotProps`
+// (with `open_drawer` / `active_route` / `is_open` directly) to the
+// `top_with` / `leading_with` / etc. closures, so the thread-locals
+// became dead intermediaries and were removed.
 
 // ---------------------------------------------------------------------------
 // CSS injection — keyed on stable nav-helper classes + our own DOM

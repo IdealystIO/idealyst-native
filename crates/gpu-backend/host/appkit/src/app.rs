@@ -66,7 +66,38 @@ impl std::error::Error for RunError {}
 ///
 /// Returns only when the user quits the application (NSApp's
 /// `run` returns to the caller cleanly on `terminate:`).
+///
+/// Equivalent to [`run_with`] with a no-op `register_extensions`
+/// callback. Apps that need to install third-party SDK extensions
+/// (`toolbar::register`, `webview::register`, …) should use
+/// [`run_with`] so they get a `&mut MacosBackend` to register against
+/// before the render path starts.
 pub fn run<F: FnOnce() -> Primitive>(app: F, opts: RunOptions) -> Result<(), RunError> {
+    run_with(app, opts, |_| {})
+}
+
+/// Like [`run`], but invokes `register_extensions` with a mutable
+/// reference to the freshly constructed `MacosBackend` before the
+/// render pass starts. Third-party SDKs whose `register(&mut B)` adds
+/// `Primitive::External` handlers (`toolbar`, `webview`, future
+/// `maps-macos`) must run before render so the framework sees the
+/// handler when it first walks the tree.
+///
+/// ```ignore
+/// host_appkit::run_with(
+///     app,
+///     host_appkit::RunOptions::default(),
+///     |backend| {
+///         toolbar::register(backend);
+///         // webview::register(backend);
+///     },
+/// )?;
+/// ```
+pub fn run_with<F, R>(app: F, opts: RunOptions, register_extensions: R) -> Result<(), RunError>
+where
+    F: FnOnce() -> Primitive,
+    R: FnOnce(&mut MacosBackend),
+{
     let Some(mtm) = MainThreadMarker::new() else {
         return Err(RunError::NotMainThread);
     };
@@ -170,6 +201,15 @@ pub fn run<F: FnOnce() -> Primitive>(app: F, opts: RunOptions) -> Result<(), Run
     let host_root_ref: &NSView = &*host_root;
     window.setContentView(Some(host_root_ref));
     backend.set_host_root(host_root.clone());
+
+    // ── Third-party SDK registration ──────────────────────────────
+    // Fired AFTER `set_host_root` (so `host_root.window` is reachable
+    // from inside SDK handlers — the toolbar SDK walks up that chain
+    // to attach NSToolbar) and BEFORE the Rc<RefCell> wrap (so the
+    // callback gets a plain `&mut MacosBackend` without re-borrow
+    // gymnastics). Defaults to a no-op for callers of `run` that
+    // don't need any extensions.
+    register_extensions(&mut backend);
 
     // ── Backend handoff ───────────────────────────────────────────
     // Wrap in Rc<RefCell<>> + install the global self-ref. Mirrors
