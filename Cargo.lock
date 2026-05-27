@@ -3066,6 +3066,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "lazy-demo"
+version = "0.0.1"
+dependencies = [
+ "backend-android-mobile",
+ "backend-ios-mobile",
+ "backend-terminal",
+ "backend-web",
+ "lazy-demo-chunk",
+ "runtime-core",
+ "serde",
+]
+
+[[package]]
+name = "lazy-demo-chunk"
+version = "0.0.1"
+dependencies = [
+ "runtime-core",
+ "serde",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3310,6 +3331,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "menu"
+version = "0.0.1"
+dependencies = [
+ "backend-macos",
+ "objc2 0.5.2",
+ "objc2-foundation 0.2.2",
+ "runtime-core",
+]
+
+[[package]]
+name = "menu-demo"
+version = "0.0.1"
+dependencies = [
+ "host-appkit",
+ "menu",
+ "runtime-core",
 ]
 
 [[package]]

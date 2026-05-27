@@ -88,6 +88,16 @@ const ACTIVE_BAND_FRACTION: f32 = 0.30;
 /// further once they hit the end of the body.
 const END_OF_SCROLL_EPSILON: f32 = 8.0;
 
+/// Pixel tolerance for the band-compare in the scroll-spy. When a
+/// click programmatically scrolls a section to exactly `band_y`,
+/// rounding (browser `scrollTop` is integer; signals are `f32`)
+/// can put the section 1–4 px BELOW the band line — failing a
+/// strict `<= band_y` check and handing active state to the
+/// previous section. Padding the band by this much keeps the
+/// clicked section highlighted across the click-and-spy
+/// round-trip.
+const BAND_COMPARE_TOLERANCE: f32 = 8.0;
+
 /// Variant of [`layout`] that adds a Material-UI-style table-of-
 /// contents column to the right of the page. Each `TocEntry::handle`
 /// must match the `Ref<ViewHandle>` passed to the corresponding
@@ -104,15 +114,14 @@ pub fn layout_with_toc(content: Primitive, entries: Vec<TocEntry>) -> Primitive 
     let row_style = crate::responsive::responsive_style(PageRow::sheet());
     let column_style = PageColumn();
 
-    // Read the navigator's body-scroll signal directly — the
-    // drawer publishes it via `drawer_navigator::active_body_scroll_y`.
-    // No per-screen `ScrollView` needed since the navigator's
-    // body div is now the scroll context. If the publication
-    // isn't ready yet (very early build), fall back to a local
-    // signal so the effect compiles; in practice
-    // `active_body_scroll_y` is `Some` by the time any screen
-    // builds.
-    let scroll_y: Signal<f32> = drawer_navigator::active_body_scroll_y()
+    // Read the navigator's scroll signal directly via the
+    // framework's ambient scroll context. No per-screen
+    // `ScrollView` needed since the drawer's body is the scroll
+    // context. Falls back to a local signal if the ambient isn't
+    // published yet (very early build); in practice it's
+    // published by the time any screen builds.
+    let scroll_y: Signal<f32> = runtime_core::primitives::navigator::ambient_scroll_context()
+        .map(|ctx| ctx.scroll_y)
         .unwrap_or_else(|| signal!(0.0_f32));
     let active_idx: Signal<Option<usize>> = signal!(None);
 
@@ -306,9 +315,9 @@ pub fn mobile_header(slot: SlotProps) -> Primitive {
 }
 
 /// Render the TOC panel. The active highlight is driven by
-/// `active_idx`; clicks call the drawer's
-/// [`drawer_navigator::active_scroll_to_y`] dispatcher to scroll
-/// the body to the matching section.
+/// `active_idx`; clicks call the navigator's ambient
+/// [`ScrollContext::scroll_to`] dispatcher to scroll the body to
+/// the matching section.
 fn render_toc(
     entries: Vec<TocEntry>,
     active_idx: Signal<Option<usize>>,
@@ -330,8 +339,8 @@ fn render_toc(
 
 /// One TOC link. The style closure reads `active_idx` reactively
 /// to flip the `active` variant. Click computes the target Y in
-/// the navigator-body's scroll coords and dispatches via
-/// [`drawer_navigator::active_scroll_to_y`].
+/// the navigator-body's scroll coords and dispatches via the
+/// ambient `ScrollContext`.
 fn toc_link(
     index: usize,
     entry: TocEntry,
@@ -346,21 +355,33 @@ fn toc_link(
     let children: Vec<Primitive> = vec![ui! { Text(style = style) { label_text } }];
 
     let bound = runtime_core::pressable(children, move || {
-        // Section's current Y in viewport-coords (relative to the
-        // body's top edge). Subtract the active-band offset so the
-        // section lands at the same line the scroll-spy treats as
-        // active — click + spy stay in sync.
-        let section_y = entry
+        // Pin the clicked entry as active right away — the spy
+        // re-fires on the impending scroll and *should* land on
+        // the same entry, but if rounding nudges it 1 px off
+        // we'd briefly highlight a neighbour and then snap back.
+        // Explicit set + the spy's `BAND_COMPARE_TOLERANCE` keep
+        // the click-and-stay UX rock-solid.
+        active_idx.set(Some(index));
+
+        // `absolute_frame()` returns the section's position in
+        // *window* coordinates. To compute the target scrollTop
+        // for the body, translate into body-relative coordinates
+        // first by subtracting `body_viewport_top` — otherwise
+        // the offset added by any chrome above the body (mobile
+        // header at narrow widths) makes us over-scroll and clip
+        // the section's top.
+        let section_window_y = entry
             .handle
             .with(|h| h.absolute_frame())
             .flatten()
             .map(|r| r.y)
             .unwrap_or(0.0);
         let current_scroll = scroll_y.get();
-        let (band_y, _) = read_body_scroll_dims(current_scroll);
-        let target = (current_scroll + section_y - band_y).max(0.0);
-        if let Some(scroll_to) = drawer_navigator::active_scroll_to_y() {
-            scroll_to(target);
+        let dims = read_body_scroll_dims(current_scroll);
+        let section_body_y = section_window_y - dims.body_viewport_top;
+        let target = (current_scroll + section_body_y - dims.band_y).max(0.0);
+        if let Some(ctx) = runtime_core::primitives::navigator::ambient_scroll_context() {
+            (ctx.scroll_to)(0.0, target);
         }
     });
     runtime_core::IntoPrimitive::into_primitive(bound)
@@ -376,41 +397,43 @@ fn toc_link(
 /// One author tree, every backend \u{2014} the per-platform plumbing
 /// is the `ScrollView::on_scroll` callback and
 /// `ViewHandle::absolute_frame()`, both Backend-trait primitives.
-/// Returns `(band_y, near_bottom)` from the drawer-body's live
-/// dimensions on web:
+/// Snapshot of the navigator-body metrics needed for scroll-spy
+/// math, derived from the framework-level
+/// [`runtime_core::primitives::navigator::ambient_scroll_context`].
+/// No `web_sys`, no `cfg(target_arch)` — the navigator is the
+/// abstraction boundary.
 ///
-/// - `band_y` — the viewport Y at which a section flips to active;
-///   `clientHeight * ACTIVE_BAND_FRACTION`.
-/// - `near_bottom` — `true` when `scrollTop + clientHeight` is
-///   within `END_OF_SCROLL_EPSILON` of `scrollHeight` (the user
-///   has reached the end of the scrollable body).
-///
-/// On non-web targets, falls back to a sensible default — a 160 px
-/// fixed band and "never near bottom". The website only mounts on
-/// web (the drawer's body scroll signal is web-only too), so the
-/// fallback never runs in practice; it's there only so this file
-/// compiles for `cargo check` on native targets.
-fn read_body_scroll_dims(current_scroll: f32) -> (f32, bool) {
-    #[cfg(target_arch = "wasm32")]
-    {
-        let dims = web_sys::window()
-            .and_then(|w| w.document())
-            .and_then(|d| {
-                d.query_selector(".ui-nav-drawer-body-scrolls,.ui-nav-drawer-body")
-                    .ok()
-                    .flatten()
-            })
-            .map(|el| (el.client_height() as f32, el.scroll_height() as f32));
-        if let Some((client_h, scroll_h)) = dims {
-            let band_y = (client_h * ACTIVE_BAND_FRACTION).max(80.0);
-            let near_bottom = scroll_h > 0.0
-                && current_scroll + client_h >= scroll_h - END_OF_SCROLL_EPSILON;
-            return (band_y, near_bottom);
-        }
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    let _ = current_scroll;
-    (160.0, false)
+/// Returns sane defaults when the ambient scroll context isn't
+/// published yet (no scrollable navigator mounted): a 160 px
+/// fixed band, "never near bottom", and a zero viewport top.
+/// These never run in practice on a real page (by the time a
+/// screen mounts, the drawer's web handler has run its initial
+/// measurement) — they exist so the spy effect's first read is
+/// well-defined.
+struct ScrollDims {
+    band_y: f32,
+    near_bottom: bool,
+    /// Body's top edge in window coordinates. Subtract from a
+    /// section's `absolute_frame().y` (also window-relative) to
+    /// get the section's body-relative Y.
+    body_viewport_top: f32,
+}
+
+fn read_body_scroll_dims(current_scroll: f32) -> ScrollDims {
+    let Some(ctx) = runtime_core::primitives::navigator::ambient_scroll_context() else {
+        return ScrollDims { band_y: 160.0, near_bottom: false, body_viewport_top: 0.0 };
+    };
+    let height = ctx.height.get();
+    let scroll_h = ctx.scroll_height.get();
+    let viewport_top = ctx.viewport_top.get();
+    let band_y = if height > 0.0 {
+        (height * ACTIVE_BAND_FRACTION).max(80.0)
+    } else {
+        160.0
+    };
+    let near_bottom = scroll_h > 0.0
+        && current_scroll + height >= scroll_h - END_OF_SCROLL_EPSILON;
+    ScrollDims { band_y, near_bottom, body_viewport_top: viewport_top }
 }
 
 fn install_scroll_spy(
@@ -432,9 +455,9 @@ fn install_scroll_spy(
         // cross a fixed band), and (b) detect "at the bottom of
         // scroll" so the last entry force-selects even if it's
         // shorter than the band-to-bottom gap.
-        let (band_y, near_bottom) = read_body_scroll_dims(current_scroll);
+        let dims = read_body_scroll_dims(current_scroll);
 
-        if near_bottom && !entries.is_empty() {
+        if dims.near_bottom && !entries.is_empty() {
             let last = Some(entries.len() - 1);
             if active_idx.get() != last {
                 active_idx.set(last);
@@ -442,14 +465,24 @@ fn install_scroll_spy(
             return;
         }
 
+        // Both `band_y` and the section rect are in the same
+        // coordinate space (body-relative) once we subtract the
+        // body's viewport top from the window-relative
+        // `absolute_frame()` result. The `+ BAND_COMPARE_TOLERANCE`
+        // covers rounding error from the click-scroll round-trip
+        // — a section the click placed at exactly the band can
+        // measure slightly below it on the spy's next read.
         let mut best: Option<usize> = None;
         let mut best_top: f32 = f32::NEG_INFINITY;
         for (i, entry) in entries.iter().enumerate() {
             let Some(rect) = entry.handle.with(|h| h.absolute_frame()).flatten() else {
                 continue;
             };
-            if rect.y <= band_y && rect.y > best_top {
-                best_top = rect.y;
+            let section_body_y = rect.y - dims.body_viewport_top;
+            if section_body_y <= dims.band_y + BAND_COMPARE_TOLERANCE
+                && section_body_y > best_top
+            {
+                best_top = section_body_y;
                 best = Some(i);
             }
         }

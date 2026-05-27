@@ -72,6 +72,7 @@ members = [
     "crates/sdk/video",
     "crates/sdk/svg",
     "crates/sdk/toolbar",
+    "crates/sdk/menu",
 
     # SDK — utility (non-primitive) crates.
     "crates/sdk/net",
@@ -122,6 +123,9 @@ members = [
     "examples/fiddle",
     "examples/website",
     "examples/toolbar-demo",
+    "examples/menu-demo",
+    "examples/lazy-demo",
+    "examples/lazy-demo-chunk",
     "benchmark",
     "benchmark/idealyst-native/wasm",
     "benchmark/idealyst-native-anim/wasm",
@@ -218,6 +222,7 @@ webview = { path = "crates/sdk/webview" }
 video = { path = "crates/sdk/video" }
 svg = { path = "crates/sdk/svg" }
 toolbar = { path = "crates/sdk/toolbar" }
+menu = { path = "crates/sdk/menu" }
 net = { path = "crates/sdk/net" }
 server = { path = "crates/sdk/server" }
 server-macros = { path = "crates/sdk/server-macros" }

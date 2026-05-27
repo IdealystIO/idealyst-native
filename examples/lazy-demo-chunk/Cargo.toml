@@ -1,0 +1,13 @@
+[package]
+name = "lazy-demo-chunk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Chunk crate for the lazy-primitive demo. Exposes `app(props)` returning a UI that renders the greeting from props — the parent demo crate lazy-loads this via `Primitive::Lazy`."
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+runtime-core = { workspace = true }
+serde = { version = "1", features = ["derive"] }

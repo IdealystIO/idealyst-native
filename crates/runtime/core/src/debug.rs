@@ -63,6 +63,7 @@ pub enum PrimitiveKind {
     Portal,
     External,
     Presence,
+    Lazy,
 }
 
 /// One recorded telemetry event. `at_us` is monotonic microseconds

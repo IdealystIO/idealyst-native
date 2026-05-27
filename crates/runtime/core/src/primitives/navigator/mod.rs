@@ -20,10 +20,12 @@
 
 pub mod host;
 pub mod registry;
+pub mod scroll;
 pub mod shared;
 
 pub use host::{NavigatorHandler, NavigatorHost};
 pub use registry::{NavigatorHandlerFactory, NavigatorRegistry};
+pub use scroll::{ambient_scroll_context, ScrollContext};
 pub use shared::{
     ambient_navigator, current_screen_state, match_pattern, AmbientNavGuard, MountResult,
     NavCommand, NavState, NavigatorConfig, NavigatorControl, NavigatorHandle, NavigatorOps,

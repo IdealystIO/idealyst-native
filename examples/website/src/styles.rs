@@ -643,10 +643,18 @@ stylesheet! {
             // wraps at narrow viewports so nothing is actually lost.
             min_width: 0.0,
         }
-        transitions {
-            background: 250ms EaseInOut,
-            border_color: 250ms EaseInOut,
-        }
+        // No background/border transitions on the panel.
+        //
+        // The framework's per-node style emission re-emits the
+        // panel's CSS rule when the screen mounts (class-swap
+        // semantics during build), which makes the panel briefly
+        // start at a different background/border color and animate
+        // to the final value — visible as a "fade-in" every time
+        // a screen with code blocks mounts. Theme-switch fades
+        // would have been nice for parity with the other surfaces,
+        // but mount-time fade > theme-switch fade in terms of
+        // perceived jank. Re-add transitions once the framework
+        // grows a "no transitions on first apply" mechanism.
     }
 }
 

@@ -1,0 +1,37 @@
+[package]
+name = "menu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Third-party SDK for the OS-level menu bar — `NSApplication.mainMenu`
+# on macOS, `HMENU` via `SetMenu` on Windows, `GtkPopoverMenuBar` on
+# GTK. Unlike the `toolbar` SDK (which mounts an `NSToolbar` per
+# window via `Primitive::External`), the system menu bar is a
+# process-level chrome surface — there's exactly one across the app,
+# it doesn't live in any window's view tree. The API reflects that:
+# `menu::install(&mut backend, spec)` runs once at bootstrap rather
+# than as an in-tree primitive.
+#
+# On non-desktop targets (iOS, Android, web, terminal, wgpu, ESP)
+# `install` is a no-op — those platforms either have a different
+# menu paradigm (iOS keyboard shortcut palette, Android overflow
+# menu, web `<menu>` element) or no menu surface at all. Native-
+# parity ports will land per-platform as separate follow-ups.
+
+[dependencies]
+runtime-core = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+backend-macos = { workspace = true }
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = [
+    "NSString",
+    "NSObject",
+] }
+# NSMenu / NSMenuItem / NSApplication aren't gated by objc2-app-kit
+# 0.2 features individually — we reach them at the Obj-C runtime layer
+# via `class!()` + `msg_send`, same posture the `toolbar` SDK takes
+# for NSToolbar. NSApplication IS in the backend-macos feature set,
+# but to keep the SDK self-contained on its dep surface we don't lean
+# on backend-macos re-exports here.

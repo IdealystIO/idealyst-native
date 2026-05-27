@@ -666,7 +666,15 @@ fn launch_web(dir: &Path, args: &Args) -> Result<()> {
                     //    user crate must compile with the same
                     //    flavor as the runtime-server sidecar.
                     features: vec![
-                        "runtime-server".to_string(),
+                        // Wrapper-local feature that flips `start()` to
+                        // WireBackend + connect_web mode. Named `aas` in
+                        // the wrapper template; this string MUST match
+                        // the template's declaration or the
+                        // `user_feature_forwards` filter would emit
+                        // `runtime-server = ["<user>/runtime-server"]`
+                        // and require every user crate to declare an
+                        // unused `runtime-server` feature.
+                        "aas".to_string(),
                         "runtime-core/hot-reload".to_string(),
                     ],
                 },

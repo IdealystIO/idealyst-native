@@ -28,7 +28,7 @@
 
 use runtime_core::primitives::navigator::{
     NavCommand, NavigatorConfig, NavigatorHandle, NavigatorOps, Route, RouteEntry, RouteParams,
-    Screen, ScreenBuilder,
+    Screen, ScreenBuilder, ScrollContext,
 };
 use runtime_core::{
     Bound, Color, IntoStyleSource, Primitive, Ref, RefFill, Signal, StyleApplication, StyleRules,
@@ -186,21 +186,23 @@ pub struct SlotProps {
     pub close_drawer: Rc<dyn Fn()>,
     /// Pop the stack. No-op on navigators without a stack.
     pub pop: Rc<dyn Fn()>,
-    /// Current vertical scroll offset of the navigator's body
-    /// scroll context, in CSS pixels. Reactive — every native
-    /// `scroll` event the body emits updates this signal. Use
-    /// from a `top`/`bottom`/`leading`/`trailing` slot to drive
-    /// behavior tied to scroll (a parallax header, a fade-on-
-    /// scroll separator, a TOC scroll-spy). On navigators
-    /// without a single body scroll context (legacy
-    /// `bottom_pinned` drawer mode, where each screen owns its
-    /// own ScrollView), the signal stays at `0.0` — slots that
-    /// rely on it should fall back gracefully.
-    pub body_scroll_y: Signal<f32>,
-    /// Scroll the navigator's body to the given Y offset in CSS
-    /// pixels. No-op on navigators without a single body scroll
-    /// context (see [`Self::body_scroll_y`] for the caveat).
-    pub scroll_to_y: Rc<dyn Fn(f32)>,
+    /// The navigator's scroll surface, when the drawer's body is
+    /// itself the scroll context (default `bottom_in_scroll`
+    /// mode). All the dimension + offset signals (viewport top,
+    /// height/width, scroll x/y, scroll-height/width) plus the
+    /// programmatic `scroll_to` dispatcher live on this typed
+    /// bundle — see [`runtime_core::primitives::navigator::ScrollContext`].
+    ///
+    /// `None` for navigators / modes that don't own a single
+    /// scroll surface (legacy `bottom_pinned` drawer mode, where
+    /// each screen carries its own `ScrollView`). Slots should
+    /// guard accordingly.
+    ///
+    /// Author code in **screens** can read the same bundle via
+    /// the framework-level
+    /// [`runtime_core::primitives::navigator::ambient_scroll_context`]
+    /// — no `SlotProps` plumbing needed.
+    pub scroll: Option<ScrollContext>,
 }
 
 /// What the *leading* (left in LTR) bar position semantically does
@@ -314,52 +316,15 @@ pub enum TopSlot {
 /// `SlotProps` it hands in.
 pub type SlotBuilder = Box<dyn Fn(SlotProps) -> Primitive>;
 
-// ---------------------------------------------------------------------------
-// Active drawer's body-scroll publication
-//
-// Screens that need to react to body scroll (e.g., a TOC's
-// "highlight the section currently in view" spy) can't reach into
-// `SlotProps` — they're built outside any slot's reactive scope.
-// The SDK's per-backend `init` publishes the navigator's body
-// scroll signal + scroll-to dispatcher into these thread-locals
-// so any screen can read them via `active_body_scroll_y()` /
-// `active_scroll_to_y()`.
-//
-// Limitation: stores the *most recently registered* drawer's
-// signal — in a multi-drawer app the published signal points at
-// whichever drawer's web handler ran `init` last. The website
-// only ever instantiates one drawer so this is fine for now.
-// ---------------------------------------------------------------------------
-
-thread_local! {
-    static ACTIVE_BODY_SCROLL_Y: RefCell<Option<Signal<f32>>> = const { RefCell::new(None) };
-    static ACTIVE_SCROLL_TO_Y: RefCell<Option<Rc<dyn Fn(f32)>>> = const { RefCell::new(None) };
-}
-
-/// Read the active drawer's body-scroll signal. Returns `None`
-/// before any drawer navigator has been mounted — screens that
-/// need this should fall back gracefully (e.g., skip scroll-spy
-/// effects).
-pub fn active_body_scroll_y() -> Option<Signal<f32>> {
-    ACTIVE_BODY_SCROLL_Y.with(|c| *c.borrow())
-}
-
-/// Read the active drawer's scroll-to-y dispatcher. Use this from
-/// a screen's primitive subtree (e.g., a TOC link's `on_press`)
-/// to programmatically scroll the navigator's body.
-pub fn active_scroll_to_y() -> Option<Rc<dyn Fn(f32)>> {
-    ACTIVE_SCROLL_TO_Y.with(|c| c.borrow().clone())
-}
-
-/// Internal — called by per-backend handlers (currently only the
-/// web handler) at `init` to publish the body-scroll signal and
-/// the scroll-to dispatcher for the screen-accessible helpers
-/// above.
-#[doc(hidden)]
-pub fn _publish_active_body_scroll(sig: Signal<f32>, to_fn: Rc<dyn Fn(f32)>) {
-    ACTIVE_BODY_SCROLL_Y.with(|c| *c.borrow_mut() = Some(sig));
-    ACTIVE_SCROLL_TO_Y.with(|c| *c.borrow_mut() = Some(to_fn));
-}
+// Screens / SDK-foreign code that want to react to the drawer's
+// scroll surface should call
+// [`runtime_core::primitives::navigator::ambient_scroll_context`]
+// — the framework owns the ambient lookup. This SDK no longer
+// publishes its own thread-locals (an earlier version did,
+// duplicating what's now the framework primitive); the web
+// handler still measures the body and constructs a
+// [`ScrollContext`] at `init`, then hands it to the framework
+// via the per-backend handler's setup.
 
 // =============================================================================
 // DrawerScreenOptions — per-screen typed options

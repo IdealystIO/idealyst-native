@@ -243,6 +243,17 @@ pub struct ScreenEntry {
     url: String,
 }
 
+/// One entry in [`NavigatorInstance::url_history`] — a previously-
+/// visited screen the navigator can rebuild on browser back. Beyond
+/// the URL itself we record the scroll position at the moment the
+/// user navigated AWAY from it, so popstate-driven returns land
+/// the user where they last looked (standard browser convention).
+struct HistoryEntry {
+    url: String,
+    scroll_y: f32,
+    scroll_x: f32,
+}
+
 /// Per-navigator instance state. Lives in the thread-local
 /// `NAVIGATOR_INSTANCES` registry, keyed by the container's
 /// `data-navigator-id`.
@@ -278,11 +289,12 @@ pub struct NavigatorInstance {
     /// Android) get the opposite via their own platform machinery;
     /// the web SDK doesn't try to mimic that.
     pub stack: Vec<ScreenEntry>,
-    /// URLs of previously-visited screens, in push order (top =
-    /// most recently navigated away from). On pop, the top URL is
+    /// Previously-visited screens, in push order (top = most
+    /// recently navigated away from). On pop, the top entry is
     /// matched back against the route table and the resulting
-    /// screen is rebuilt and mounted.
-    pub url_history: Vec<String>,
+    /// screen is rebuilt and mounted with its recorded scroll
+    /// position restored.
+    url_history: Vec<HistoryEntry>,
     /// `build_layout` closure, retained across the navigator's
     /// lifetime. The SDK's `build_layout` populates an internal
     /// scope slot during the microtask call; the closure itself
@@ -346,6 +358,29 @@ impl NavigatorInstance {
     /// equivalent to `appendChild`.
     fn insert_screen_node(&self, node: &Node) -> Result<Node, wasm_bindgen::JsValue> {
         self.mount_point().insert_before(node, self.screen_anchor.as_ref())
+    }
+
+    /// Current scroll position of the outlet (or 0/0 if the outlet
+    /// isn't a scrollable element). Used to snapshot the screen
+    /// the user is navigating AWAY from, so a future browser-back
+    /// restores it.
+    fn current_outlet_scroll(&self) -> (f32, f32) {
+        self.mount_point()
+            .dyn_ref::<web_sys::Element>()
+            .map(|el| (el.scroll_left() as f32, el.scroll_top() as f32))
+            .unwrap_or((0.0, 0.0))
+    }
+
+    /// Apply a scroll position to the outlet. No-op on outlets
+    /// that aren't `Element`s or that don't scroll
+    /// (`overflow: hidden`). Always sets — even setting to
+    /// `(0, 0)` is meaningful, since `mount_internal` relies on
+    /// this for "fresh screen starts at top."
+    fn set_outlet_scroll(&self, x: f32, y: f32) {
+        if let Some(el) = self.mount_point().dyn_ref::<web_sys::Element>() {
+            el.set_scroll_left(x as i32);
+            el.set_scroll_top(y as i32);
+        }
     }
 
     /// Mark the currently-visible screen as active. Vestigial now
@@ -426,6 +461,23 @@ impl NavigatorInstance {
         }
         self.insert_screen_node(&node)
             .expect("insert screen failed");
+        // Reset the outlet's scroll position to the top — standard
+        // web/iOS UX is "a fresh screen starts at the top," but
+        // when the navigator owns a persistent scroll container
+        // (drawer's `bottom_in_scroll` mode, where the body
+        // outlives every push) the previous screen's scroll
+        // position would otherwise carry over and the user would
+        // land mid-page.
+        //
+        // Browser back/forward restores scroll by overwriting this
+        // AFTER `mount_internal` returns — see `pop_in_place` /
+        // `on_popstate`. Mount-time reset is the default; restore
+        // is the explicit caller opt-in.
+        //
+        // Harmless when the outlet isn't a scroll surface
+        // (`overflow: hidden`) — setting scrollTop on a clipped
+        // container is a no-op.
+        self.set_outlet_scroll(0.0, 0.0);
         // Update the reactive nav-state to match the newly visible
         // screen. `NavigatorControl::dispatch` sets these on
         // Push/Replace/Reset commands, but it can't on Pop — and
@@ -451,10 +503,20 @@ impl NavigatorInstance {
     fn push(&mut self, name: &'static str, params: Box<dyn Any>, url: String) {
         push_state(&url);
         *self.suppress_popstate.borrow_mut() = true;
+        // Snapshot the current screen's scroll position BEFORE we
+        // detach it so a future browser-back can restore where the
+        // user was looking. Read happens against the live outlet,
+        // which is still showing the about-to-be-popped screen.
+        let (scroll_x, scroll_y) = self.current_outlet_scroll();
         // Drop the previous screen's DOM + scope, preserve its URL
-        // in `url_history` so pop can rebuild it from `match_path`.
+        // + scroll position in `url_history` so pop can rebuild it
+        // from `match_path` AND restore the scroll.
         if let Some(prev) = self.detach_top() {
-            self.url_history.push(prev.url);
+            self.url_history.push(HistoryEntry {
+                url: prev.url,
+                scroll_y,
+                scroll_x,
+            });
         }
         self.mount_internal(name, params, url);
         *self.suppress_popstate.borrow_mut() = false;
@@ -481,17 +543,20 @@ impl NavigatorInstance {
         if !self.can_pop() {
             return;
         }
-        // Drop the active screen, pop the previous URL off the
-        // history, re-match it against the route table, and mount
-        // the result. Previous screen state is NOT preserved — the
-        // rebuild produces a fresh subtree.
+        // Drop the active screen, pop the previous entry off
+        // history, re-match it against the route table, mount, and
+        // restore the recorded scroll position. Subtree itself is
+        // rebuilt fresh; only the scroll offset survives.
         self.detach_top();
-        let prev_url = match self.url_history.pop() {
-            Some(u) => u,
+        let entry = match self.url_history.pop() {
+            Some(e) => e,
             None => return,
         };
-        if let Some((name, params)) = (self.match_path)(&prev_url) {
-            self.mount_internal(name, params, prev_url);
+        if let Some((name, params)) = (self.match_path)(&entry.url) {
+            self.mount_internal(name, params, entry.url.clone());
+            // `mount_internal` resets to (0,0); overwrite with the
+            // recorded position to restore the user's last spot.
+            self.set_outlet_scroll(entry.scroll_x, entry.scroll_y);
         }
     }
 
@@ -533,7 +598,7 @@ impl NavigatorInstance {
         let pos = self
             .url_history
             .iter()
-            .rposition(|u| paths_equal(u, &current));
+            .rposition(|e| paths_equal(&e.url, &current));
         if let Some(idx) = pos {
             // Drop the active screen, drop history entries above
             // `idx`, mount the entry at `idx`. Anything between
@@ -541,19 +606,27 @@ impl NavigatorInstance {
             // reach those via a `go(n)`-like call, which the
             // browser collapses into a single popstate fire.
             self.detach_top();
-            let prev_url = self.url_history.remove(idx);
+            let entry = self.url_history.remove(idx);
             self.url_history.truncate(idx);
-            if let Some((name, params)) = (self.match_path)(&prev_url) {
-                self.mount_internal(name, params, prev_url);
+            if let Some((name, params)) = (self.match_path)(&entry.url) {
+                self.mount_internal(name, params, entry.url.clone());
+                // Restore the scroll the user was at when they
+                // navigated away from this URL.
+                self.set_outlet_scroll(entry.scroll_x, entry.scroll_y);
             }
             return;
         }
-        // Forward navigation we haven't seen. Detach the current
-        // top, mount the new URL. The previous URL goes into
-        // history.
+        // Forward navigation we haven't seen. Snapshot the current
+        // screen's scroll (so a future back to this same URL can
+        // restore it), detach the current top, mount the new URL.
+        let (scroll_x, scroll_y) = self.current_outlet_scroll();
         if let Some((name, params)) = (self.match_path)(&current) {
             if let Some(prev) = self.detach_top() {
-                self.url_history.push(prev.url);
+                self.url_history.push(HistoryEntry {
+                    url: prev.url,
+                    scroll_y,
+                    scroll_x,
+                });
             }
             self.mount_internal(name, params, current);
         }
@@ -726,7 +799,14 @@ where
                 //   pop can rebuild it later from match_path.
                 replace_state(initial_path);
                 if inst.has_layout() {
-                    inst.url_history.push(initial_path.to_string());
+                    // Deep-link cold start has no prior screen
+                    // visible, so there's no real scroll to
+                    // record — initial entry uses (0, 0).
+                    inst.url_history.push(HistoryEntry {
+                        url: initial_path.to_string(),
+                        scroll_y: 0.0,
+                        scroll_x: 0.0,
+                    });
                     push_state(&current);
                     inst.mount_internal(name, params, current);
                 } else {

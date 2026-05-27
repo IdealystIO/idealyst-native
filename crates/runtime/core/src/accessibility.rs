@@ -388,6 +388,7 @@ pub enum PrimitiveKind {
     Presence,
     External,
     Navigator,
+    Lazy,
 }
 
 /// Default a11y role inferred from the primitive type. Author-supplied
@@ -429,6 +430,7 @@ pub fn default_role(kind: PrimitiveKind) -> Option<Role> {
         PrimitiveKind::Graphics => None, // GPU-rendered content lives in dump_accessibility_tree
         PrimitiveKind::External => None, // third-party content sets its own role
         PrimitiveKind::Navigator => None, // navigator container is transparent; screens carry their own role
+        PrimitiveKind::Lazy => None,      // transparent; the chunk's mounted root carries its own role
     }
 }
 
@@ -463,6 +465,7 @@ pub fn primitive_kind(p: &crate::Primitive) -> Option<PrimitiveKind> {
         Primitive::Presence { .. } => Some(PrimitiveKind::Presence),
         Primitive::External { .. } => Some(PrimitiveKind::External),
         Primitive::Navigator { .. } => Some(PrimitiveKind::Navigator),
+        Primitive::Lazy { .. } => Some(PrimitiveKind::Lazy),
         // Control flow — transparent.
         Primitive::When { .. } | Primitive::Switch { .. } | Primitive::Repeat { .. } => None,
     }

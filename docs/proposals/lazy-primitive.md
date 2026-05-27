@@ -55,8 +55,12 @@ use runtime_core::ui;
 // It exports `pub fn app(props: SimulatorProps) -> Primitive`.
 use simulator_chunk::SimulatorProps;
 
+// Auto-generated constants from the manifest — see "ChunkId codegen"
+// below. Author uses these, not raw strings.
+use crate::chunks;
+
 ui! {
-    Lazy::<SimulatorProps>("simulator", SimulatorProps {
+    Lazy::<SimulatorProps>(chunks::SIMULATOR, SimulatorProps {
         skin: skin_kind,
         device: device_profile,
     })
@@ -66,9 +70,70 @@ ui! {
 ```
 
 The first type argument names the chunk's prop type — it must match
-what the chunk crate's `app(props: T)` declares. The string
-identifier (`"simulator"`) maps to a chunk URL the build pipeline
-emits (`/pkg-simulator/simulator_chunk.js`).
+what the chunk crate's `app(props: T)` declares. `chunks::SIMULATOR`
+is a `ChunkId` constant emitted by the framework's `chunks!()` macro
+from the project manifest; the macro also emits `register_chunks`
+for native targets (see "ChunkId codegen" below). Typos at the call
+site fail at compile time — `chunks::SIMULATR` errors.
+
+### `ChunkId` codegen
+
+`ChunkId` is a thin newtype around `&'static str` declared once in
+`runtime_core::primitives::lazy`:
+
+```rust
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct ChunkId(&'static str);
+
+impl ChunkId {
+    pub const fn new(name: &'static str) -> Self { Self(name) }
+    pub fn as_str(&self) -> &'static str { self.0 }
+}
+```
+
+A proc macro `runtime_core::chunks!()` (lives in
+`crates/runtime/macros/`) reads `[package.metadata.idealyst.chunks]`
+from the calling crate's `Cargo.toml` at macro-expansion time and
+emits:
+
+```rust
+// `runtime_core::chunks!();` at crate root expands to:
+pub mod chunks {
+    use runtime_core::primitives::lazy::ChunkId;
+    pub const SIMULATOR: ChunkId = ChunkId::new("simulator");
+    pub const ADMIN: ChunkId = ChunkId::new("admin");
+
+    /// On non-wasm targets, wires every declared chunk into the
+    /// backend's lazy registry so `Primitive::Lazy` can dispatch
+    /// inline. On wasm this is a no-op — chunks load dynamically.
+    pub fn register(backend: &mut impl runtime_core::primitives::lazy::LazyRegistry) {
+        #[cfg(not(target_arch = "wasm32"))] {
+            backend.register_lazy(SIMULATOR, |p| {
+                ::website_simulator::app(
+                    p.downcast::<SimulatorProps>().expect("SimulatorProps").clone()
+                )
+            });
+            backend.register_lazy(ADMIN, |p| { /* ... */ });
+        }
+        let _ = backend;
+    }
+}
+```
+
+The macro tracks `Cargo.toml` via `proc_macro::tracked_path` so
+adding/removing chunks triggers a rebuild. Bookkeeping is zero —
+author declares the chunk in the manifest, calls
+`chunks::register(&mut backend)` once in `register_extensions`, and
+references the chunks by typed constant everywhere else.
+
+Manifest entries default the Rust crate name to the logical name
+with `-` swapped per cargo convention; explicit override is allowed:
+
+```toml
+[package.metadata.idealyst.chunks]
+simulator = { path = "../website-simulator", crate = "website_simulator" }
+admin = { path = "../admin-chunk" }  # crate inferred as "admin"
+```
 
 ### `LazyState` lifecycle
 
@@ -184,18 +249,12 @@ primitive inline. State callback fires `Rendered` immediately. No
 state machine, no loading, no error path (compile-time guarantees
 the chunk crate is present).
 
-A typed thunk needs to bridge the dynamic chunk name + props back
-to the static cargo dep call. Two options:
-
-- **A. Codegen via a build script.** The CLI generates a `chunks.rs`
-  in the parent crate listing each chunk → `Fn(props) -> Primitive`.
-  Backend dispatches by chunk name.
-- **B. A static registry the author populates.** At bootstrap:
-  `lazy_registry::register("simulator", |props| simulator_chunk::app(props))`.
-  Backend dispatches via this registry on native.
-
-B is simpler and explicit, matches existing `register_external`
-patterns. A is more ergonomic but introduces codegen.
+The wiring from chunk identifier → static cargo dep call is
+codegen'd by the `runtime_core::chunks!()` macro described above.
+The author calls `chunks::register(&mut backend)` once in
+`register_extensions`; on non-wasm targets the macro emits a
+registration call per declared chunk, and the framework's native
+`Primitive::Lazy` handler dispatches via that registry.
 
 ### Roku and other generator backends
 
@@ -352,16 +411,43 @@ dist/
 
 ### Filename hashing
 
-Chunks are content-addressable for cache busting. The build emits
-hashed filenames (e.g. `simulator_chunk_a3b8.js`) and the runtime
-chunk registry resolves the logical name to the hashed URL. This
-is a cache-correctness requirement, not an optional feature —
-without it a deploy of an updated chunk will be invisible to users
-with the old URL cached.
+Every bundle file gets a content hash in its filename — the main
+bundle's wasm + JS, and every chunk's wasm + JS. This fixes a
+pre-existing cache-correctness problem: today the user's
+`index.html` references `/pkg/<lib>.js` literally, browsers and
+CloudFront cache that aggressively, and a fresh deploy is invisible
+to users for hours. With content hashing, each deploy = new URLs,
+cache becomes correct by construction.
 
-For v1 we can emit a `chunk_manifest.json` next to the main bundle
-that maps logical → hashed name; the runtime fetches it lazily on
-first `Lazy` use.
+Hashing pipeline (post-`wasm-pack`, pre-bundle-stage):
+
+1. Hash `<lib>_bg.wasm` content (first 8 hex chars of sha256).
+2. Rename to `<lib>_bg.<hash>.wasm`.
+3. Find/replace the literal `<lib>_bg.wasm` reference inside the
+   wasm-pack-emitted `<lib>.js` shim. wasm-pack emits this in a
+   known shape (`new URL('./<lib>_bg.wasm', import.meta.url)`),
+   so the substitution is precise.
+4. Hash the modified JS shim, rename to `<lib>.<hash>.js`.
+5. Repeat for each chunk.
+6. Copy the user's `index.html` to `dist/`, rewriting
+   `/pkg/<lib>.js` → `/pkg/<lib>.<hash>.js`. Same for any
+   user-authored references to chunk URLs (rare; usually only the
+   main bundle is referenced from `index.html`).
+7. Emit `dist/chunk_manifest.json` mapping logical chunk name →
+   hashed URL. The web backend fetches this lazily on first
+   `Primitive::Lazy` mount (one fetch per page load; the file is
+   tiny).
+
+`index.html` itself stays at `dist/index.html` (unhashed) with
+`Cache-Control: max-age=0, must-revalidate`. It's the discovery
+doc; every other file's URL changes when content does, so HTML
+cache lifetime should be zero.
+
+Dev mode (`idealyst dev --web`) is exempt — the dev HTTP server
+already sends `no-store` headers, dev rebuilds don't need cache
+busting, and the wrapper's stable filename keeps the in-place
+`/pkg/<lib>.js` reference in the user's `index.html` working
+without rewrite.
 
 ---
 
@@ -447,25 +533,21 @@ v1's design doesn't lock us out.
 
 ## Open questions
 
-1. **Identifier type.** String name (`"simulator"`) is cheapest;
-   compile-time-checked marker type prevents typos. Suggest string
-   for v1, with a future macro that emits typed markers from the
-   manifest.
-2. **Sharing a chunk across multiple mount sites.** One wasm instance
+1. **Sharing a chunk across multiple mount sites.** One wasm instance
    per chunk per page, multiple mount calls — confirmed feasible
    per wasm-bindgen module semantics. Verify before commit.
-3. **Hot reload.** Dev mode currently rebuilds + reloads the whole
+2. **Hot reload.** Dev mode currently rebuilds + reloads the whole
    bundle. Chunks should rebuild independently and the page should
    only reload the affected chunk. Reasonable but adds complexity
    to the dev loop; OK to ship v1 with "any chunk change reloads
    everything" and refine.
-4. **Mobile bundle size impact.** On native, the chunk crate is a
+3. **Mobile bundle size impact.** On native, the chunk crate is a
    normal dep — the bundle includes everything. We should still
    measure: does compiling Simulator into the native app's binary
    inflate it meaningfully? Probably not (no wgpu on mobile native
    target — the chunk's heavy deps are wasm-gated), but worth a
    look.
-5. **What if the chunk crate uses primitives the parent doesn't?**
+4. **What if the chunk crate uses primitives the parent doesn't?**
    Each backend owns its own primitive registry (External /
    Navigator handlers). A chunk that uses, say, the `maps` SDK
    needs `maps::register(&mut backend)` called in the CHUNK's
@@ -473,7 +555,7 @@ v1's design doesn't lock us out.
    `start_chunk_internals()` where it does this. Author code: the
    chunk crate exposes `pub fn register_extensions(&mut WebBackend)`
    same as a main crate does.
-6. **`Send + Sync` bounds on the chunk thunk.** The native
+5. **`Send + Sync` bounds on the chunk thunk.** The native
    registry holds `Box<dyn Fn(Rc<dyn Any>) -> Primitive>`. The
    `Rc` makes it `!Send`. That's fine — the registry is
    thread-local. State this explicitly in the API doc.
@@ -528,20 +610,41 @@ every non-home page drops by ~3x.
 
 ---
 
-## Decision points needed before implementation
+## Resolved decisions
 
-1. **Identifier scheme** — string name or typed marker for v1?
-   (Suggest string; lower friction.)
-2. **Native dispatch** — `register_lazy(name, thunk)` registry or
-   codegen-emitted `chunks.rs`?
-   (Suggest registry; matches existing patterns.)
-3. **Chunk manifest format** — `[package.metadata.idealyst.chunks]`
-   inline, or a separate `chunks.toml`?
-   (Suggest inline; one less file.)
-4. **Where does `LazyState` live?** A new
-   `crates/runtime/core/src/primitives/lazy.rs` module, sibling to
-   `link.rs` / `portal.rs`.
-5. **Confirm bundle filename hashing requirement** — is it OK to
-   defer to v1.1 with a known cache-correctness bug, or must v1
-   ship with hashed filenames?
-   (Suggest deferring; document the gotcha.)
+1. **Identifier scheme** — typed `ChunkId` constants emitted by the
+   `runtime_core::chunks!()` proc macro from manifest metadata.
+2. **Native dispatch** — codegen'd `chunks::register(&mut backend)`,
+   author calls once in `register_extensions`.
+3. **Manifest format** — inline `[package.metadata.idealyst.chunks]`.
+4. **Module location** — `crates/runtime/core/src/primitives/lazy.rs`.
+5. **Filename hashing** — yes, content-hashed names for every bundle
+   file (main + chunks), automatic `index.html` rewrite, chunk
+   manifest for runtime lookup.
+
+## Implementation order
+
+1. **Primitive scaffolding** — `Primitive::Lazy` variant,
+   `LazyState`, `ChunkId`, `LazyBridge`, `LazyRegistry` trait,
+   `lazy::<T>(id, props)` constructor. Backend handlers stubbed
+   ("not implemented" panic). Unit tests for the constructor.
+2. **`chunks!()` proc macro** — reads `[package.metadata.idealyst.chunks]`,
+   emits typed constants + `register()`. Tracks Cargo.toml.
+3. **Native handler** — `LazyRegistry` impl on the native backends,
+   `Primitive::Lazy` lowers to a `chunk_app(props)` thunk call and
+   mounts inline. End-to-end test with a fake chunk crate.
+4. **Build pipeline: chunk discovery + multi-bundle** — CLI walks
+   the chunks list, runs `build-web::build` per chunk, writes to
+   `dist/pkg-<name>/`. Wrapper template gains chunk mode (exports
+   `mount_chunk` / `update_chunk` / `unmount_chunk`, no
+   `#[wasm_bindgen(start)]`).
+5. **Content hashing + index.html rewrite** — post-build hash step
+   on every bundle file, rewrites JS shim cross-refs and
+   `index.html` references, emits `chunk_manifest.json`.
+6. **Web handler** — backend handler for `Primitive::Lazy`: reads
+   manifest, dynamic `import()`, mounts via `mount_chunk`, fires
+   state callbacks, cleans up via `unmount_chunk` on detach.
+7. **Migrate the website Simulator** — first real user of the
+   primitive. Create `examples/website-simulator/`, move heavy
+   deps out of `examples/website/`, rewrite the `Simulator`
+   component as a `Lazy` wrapper.

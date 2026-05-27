@@ -1,0 +1,17 @@
+[package]
+name = "menu-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Smoke-test binary for the `menu` SDK. Boots a host-appkit window with a system menu bar (File / Edit / View) installed via NSApplication.mainMenu."
+
+[[bin]]
+name = "menu-demo"
+path = "src/main.rs"
+
+[dependencies]
+runtime-core = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+host-appkit = { workspace = true }
+menu = { workspace = true }
