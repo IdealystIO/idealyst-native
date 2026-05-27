@@ -262,3 +262,58 @@ where
 // Legacy IntentKind / intent_control removed: doc-controls now use
 // `IntentTag` directly through the generic `variant_enum_control`
 // path, since `IntentTag` implements `VariantEnum`.
+
+/// Generic picker over a typed `*Ref` handle (`ToneRef`,
+/// `VariantRef`, `ButtonSizeRef`, `ShapeRef`, `TypographyKindRef`).
+/// Renders a Select populated from the type's `builtins_list()` —
+/// users see one row per built-in modifier and clicking changes the
+/// active selection.
+///
+/// App code with custom modifier types implements
+/// [`idea_theme::extensible::RefBuiltins`] on the relevant `*Ref`
+/// wrapper to plug into this same picker.
+pub fn ref_picker_control<T: idea_theme::extensible::RefBuiltins>(
+    value: Signal<T>,
+) -> Primitive {
+    use runtime_core::Effect;
+
+    let builtins = T::builtins_list();
+    let options: Vec<IdeaSelectOption> = builtins
+        .iter()
+        .map(|(name, _)| IdeaSelectOption::new(*name, *name))
+        .collect();
+
+    // Same shadow-signal pattern as `variant_enum_control` — the
+    // Select binds to a `Signal<String>` while the typed `*Ref` value
+    // is mirrored via an Effect.
+    let initial = value.get().current_key().to_string();
+    let shadow: Signal<String> = Signal::new(initial);
+
+    let e_typed_to_shadow = Effect::new(move || {
+        let s = value.get().current_key().to_string();
+        if shadow.get() != s {
+            shadow.set(s);
+        }
+    });
+    std::mem::forget(e_typed_to_shadow);
+
+    let on_change: Rc<dyn Fn(String)> = Rc::new(move |picked: String| {
+        // Re-enumerate per call so we can return owned `T` from the
+        // matched arm without lifetime headaches over `&builtins`.
+        for (name, t_ref) in T::builtins_list() {
+            if name == picked {
+                value.set(t_ref);
+                break;
+            }
+        }
+    });
+
+    ui! {
+        Select(
+            value = shadow,
+            on_change = on_change,
+            options = options,
+            placeholder = Some("Pick".to_string())
+        )
+    }
+}

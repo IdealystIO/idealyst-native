@@ -3174,7 +3174,9 @@ dependencies = [
  "ios-sim",
  "render-api",
  "runtime-core",
+ "wasm-bindgen",
  "wasm-splitter",
+ "web-sys",
  "welcome",
 ]
 

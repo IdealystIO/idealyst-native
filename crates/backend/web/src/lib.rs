@@ -48,6 +48,7 @@ mod defaults;
 #[cfg(feature = "runtime-server")]
 pub mod dev_transport;
 pub mod drop_deferral;
+pub mod logger;
 mod phase_timer;
 mod primitives;
 #[cfg(feature = "async-driver")]
@@ -62,6 +63,7 @@ pub use async_executor::install_async_executor;
 #[cfg(feature = "runtime-server")]
 pub use dev_transport::{connect_web, WebClientHandle};
 pub use drop_deferral::install_drop_deferral;
+pub use logger::install_logger;
 #[cfg(feature = "async-driver")]
 pub use render_loop::install_render_loop;
 pub use scheduler::install_scheduler;

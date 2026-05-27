@@ -30,6 +30,10 @@ backend-web = { workspace = true, features = ["async-driver"] }
 # The `wasm-split` runtime is needed only on wasm — the macro is
 # transparent on native targets (no dep reference there).
 wasm-split = { workspace = true }
+# For diagnostic console.log — eprintln on wasm32-unknown-unknown
+# is a silent no-op.
+web-sys = { version = "0.3", features = ["console"] }
+wasm-bindgen = "0.2"
 
 [target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
 backend-ios-mobile = { workspace = true }

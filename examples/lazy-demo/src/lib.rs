@@ -128,6 +128,25 @@ fn build_simulator(skin_idx: usize) -> Primitive {
     use runtime_core::driver::spawn_async;
     use runtime_core::{view, IntoPrimitive, Length, StyleRules, StyleSheet};
 
+    // CRITICAL: wasm-split shares memory across the parent's wasm
+    // module and chunk modules, but each module has its OWN globals
+    // and thread-locals. The parent's `start()` installs scheduler,
+    // render-loop, async-executor, viewport-observer into the
+    // PARENT's thread-locals — chunk code reading from the CHUNK's
+    // thread-locals sees empty slots and silently no-ops (no frames
+    // tick, no async futures run).
+    //
+    // Calls are idempotent (first-install-wins inside each module's
+    // local thread-local), so re-installing from the chunk is safe
+    // and necessary. Without this the canvas mounts but never
+    // paints — exactly the "white canvas, no errors" symptom.
+    //
+    // Logger must be installed before the first `log_*!` call below;
+    // before install, wasm32 silently drops messages.
+    ensure_chunk_runtime_installed();
+
+    runtime_core::log_info!("[lazy-demo] build_simulator({skin_idx}) entry");
+
     let slot: Rc<std::cell::RefCell<Option<host_web::WebHostHandle>>> =
         Rc::new(std::cell::RefCell::new(None));
     let slot_ready = slot.clone();
@@ -159,32 +178,39 @@ fn build_simulator(skin_idx: usize) -> Primitive {
     }));
 
     let graphics = runtime_core::primitives::graphics::graphics(move |event: OnReadyEvent| {
+        runtime_core::log_info!("[lazy-demo] graphics on_ready fired; size={:?}", event.size);
         let painter = painter.clone();
         let profile = profile.clone();
         let surface = event.surface;
         let size = event.size;
         let slot = slot_ready.clone();
         spawn_async(async move {
+            runtime_core::log_info!("[lazy-demo] spawn_async body running; about to host_web::mount");
             let build_ui = || welcome::app();
             match host_web::mount(surface, size, profile, painter, build_ui).await {
                 Ok(handle) => {
+                    runtime_core::log_info!("[lazy-demo] host_web::mount succeeded; handle stored");
                     *slot.borrow_mut() = Some(handle);
                 }
                 Err(e) => {
-                    eprintln!("lazy-demo: host-web mount failed: {e}");
+                    runtime_core::log_error!("[lazy-demo] host_web::mount FAILED: {e}");
                 }
             }
         });
     })
     .on_resize(move |event: OnResizeEvent| {
+        runtime_core::log_debug!("[lazy-demo] graphics on_resize fired; size={:?}", event.size);
         if let Some(handle) = slot_resize.borrow().as_ref() {
             handle.resize(event.size);
         }
     })
     .on_lost(move || {
+        runtime_core::log_warn!("[lazy-demo] graphics on_lost fired");
         let stale = slot_lost.borrow_mut().take();
         drop(stale);
     });
+
+    runtime_core::log_info!("[lazy-demo] graphics primitive constructed; wrapping in sized View");
 
     // Wrap in a fixed-size View so the canvas has non-zero
     // dimensions to paint into.
@@ -200,6 +226,28 @@ fn build_simulator(skin_idx: usize) -> Primitive {
 fn _refer_lazy_split() {
     let _ = lazy_split::<fn() -> _>;
 }
+
+// Re-install the framework's per-module installables inside the
+// chunk's wasm runtime. See `build_simulator` for why this is
+// required. Wasm-only; native targets share a single binary so
+// the parent's install is what runs.
+#[cfg(target_arch = "wasm32")]
+fn ensure_chunk_runtime_installed() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static INSTALLED: AtomicBool = AtomicBool::new(false);
+    if INSTALLED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    backend_web::install_scheduler();
+    backend_web::install_time_source();
+    backend_web::install_async_executor();
+    backend_web::install_render_loop();
+    backend_web::install_viewport_observer();
+    backend_web::install_logger();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn ensure_chunk_runtime_installed() {}
 
 #[cfg(target_arch = "wasm32")]
 pub fn register_extensions(_backend: &mut backend_web::WebBackend) {}

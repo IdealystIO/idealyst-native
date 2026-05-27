@@ -140,6 +140,24 @@ impl Default for ToneRef {
     }
 }
 
+impl ToneRef {
+    /// All built-in tones as `(key, ref)` pairs. Used by docs-tooling
+    /// to render an interactive picker over the seven canonical
+    /// intents. Apps that ship custom tones can extend their docs
+    /// surface with their own enumeration helper.
+    pub fn builtins() -> Vec<(&'static str, ToneRef)> {
+        vec![
+            ("primary", ToneRef(Rc::new(tone::Primary))),
+            ("secondary", ToneRef(Rc::new(tone::Secondary))),
+            ("neutral", ToneRef(Rc::new(tone::Neutral))),
+            ("success", ToneRef(Rc::new(tone::Success))),
+            ("danger", ToneRef(Rc::new(tone::Danger))),
+            ("warning", ToneRef(Rc::new(tone::Warning))),
+            ("info", ToneRef(Rc::new(tone::Info))),
+        ]
+    }
+}
+
 // Note: a blanket `From<T: Tone> for Option<ToneRef>` would let
 // components with an optional tone accept `tone: Hype.into()` without
 // `Some(...)`, but Rust's orphan rule rejects it — `Option` isn't
@@ -196,6 +214,17 @@ impl Default for VariantRef {
     }
 }
 
+impl VariantRef {
+    pub fn builtins() -> Vec<(&'static str, VariantRef)> {
+        vec![
+            ("filled", VariantRef(Rc::new(variant::Filled))),
+            ("soft", VariantRef(Rc::new(variant::Soft))),
+            ("outlined", VariantRef(Rc::new(variant::Outlined))),
+            ("ghost", VariantRef(Rc::new(variant::Ghost))),
+        ]
+    }
+}
+
 // =============================================================================
 // ButtonSize — scale modifier for the Button family
 // =============================================================================
@@ -237,6 +266,16 @@ impl Default for ButtonSizeRef {
     }
 }
 
+impl ButtonSizeRef {
+    pub fn builtins() -> Vec<(&'static str, ButtonSizeRef)> {
+        vec![
+            ("sm", ButtonSizeRef(Rc::new(size::Sm))),
+            ("md", ButtonSizeRef(Rc::new(size::Md))),
+            ("lg", ButtonSizeRef(Rc::new(size::Lg))),
+        ]
+    }
+}
+
 // =============================================================================
 // Shape — corner radius
 // =============================================================================
@@ -269,6 +308,17 @@ impl std::ops::Deref for ShapeRef {
 impl Default for ShapeRef {
     fn default() -> Self {
         ShapeRef(Rc::new(shape::Md))
+    }
+}
+
+impl ShapeRef {
+    pub fn builtins() -> Vec<(&'static str, ShapeRef)> {
+        vec![
+            ("sm", ShapeRef(Rc::new(shape::Sm))),
+            ("md", ShapeRef(Rc::new(shape::Md))),
+            ("lg", ShapeRef(Rc::new(shape::Lg))),
+            ("pill", ShapeRef(Rc::new(shape::Pill))),
+        ]
     }
 }
 
@@ -308,6 +358,78 @@ impl std::ops::Deref for TypographyKindRef {
 impl Default for TypographyKindRef {
     fn default() -> Self {
         TypographyKindRef(Rc::new(typography::Body))
+    }
+}
+
+/// Uniform handle over the five `*Ref` newtypes for docs-tooling.
+/// Lets a single generic picker render any modifier axis without one
+/// hardcoded function per type.
+///
+/// Apps with custom modifier types can implement this trait to plug
+/// into the same docs-controls surface.
+pub trait RefBuiltins: Clone + 'static {
+    /// Built-in (key, instance) pairs the picker enumerates.
+    fn builtins_list() -> Vec<(&'static str, Self)>;
+    /// The stable key of the current selection — used to drive the
+    /// picker's active highlight.
+    fn current_key(&self) -> &'static str;
+}
+
+impl RefBuiltins for ToneRef {
+    fn builtins_list() -> Vec<(&'static str, Self)> {
+        ToneRef::builtins()
+    }
+    fn current_key(&self) -> &'static str {
+        self.key()
+    }
+}
+impl RefBuiltins for VariantRef {
+    fn builtins_list() -> Vec<(&'static str, Self)> {
+        VariantRef::builtins()
+    }
+    fn current_key(&self) -> &'static str {
+        self.key()
+    }
+}
+impl RefBuiltins for ButtonSizeRef {
+    fn builtins_list() -> Vec<(&'static str, Self)> {
+        ButtonSizeRef::builtins()
+    }
+    fn current_key(&self) -> &'static str {
+        self.key()
+    }
+}
+impl RefBuiltins for ShapeRef {
+    fn builtins_list() -> Vec<(&'static str, Self)> {
+        ShapeRef::builtins()
+    }
+    fn current_key(&self) -> &'static str {
+        self.key()
+    }
+}
+impl RefBuiltins for TypographyKindRef {
+    fn builtins_list() -> Vec<(&'static str, Self)> {
+        TypographyKindRef::builtins()
+    }
+    fn current_key(&self) -> &'static str {
+        self.key()
+    }
+}
+
+impl TypographyKindRef {
+    pub fn builtins() -> Vec<(&'static str, TypographyKindRef)> {
+        vec![
+            ("display", TypographyKindRef(Rc::new(typography::Display))),
+            ("h1", TypographyKindRef(Rc::new(typography::H1))),
+            ("h2", TypographyKindRef(Rc::new(typography::H2))),
+            ("h3", TypographyKindRef(Rc::new(typography::H3))),
+            ("body-xl", TypographyKindRef(Rc::new(typography::BodyXl))),
+            ("body-lg", TypographyKindRef(Rc::new(typography::BodyLg))),
+            ("body", TypographyKindRef(Rc::new(typography::Body))),
+            ("body-sm", TypographyKindRef(Rc::new(typography::BodySm))),
+            ("caption", TypographyKindRef(Rc::new(typography::Caption))),
+            ("overline", TypographyKindRef(Rc::new(typography::Overline))),
+        ]
     }
 }
 

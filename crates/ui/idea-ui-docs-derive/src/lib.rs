@@ -195,6 +195,36 @@ pub fn derive_doc_controls(input: TokenStream) -> TokenStream {
                 });
                 key_reads.push(quote! { state.#f_ident.get() });
             }
+            FieldKind::RefHandle(ty) => {
+                // Same shape as VariantEnum but routed through the
+                // generic `ref_picker_control`, which uses the
+                // `RefBuiltins` trait impl on the *Ref type.
+                state_fields.push(quote! {
+                    pub #f_ident: ::runtime_core::Signal<#ty>
+                });
+                init_field_inits.push(quote! {
+                    #f_ident: ::runtime_core::Signal::new(
+                        <#ty as ::core::default::Default>::default(),
+                    )
+                });
+                from_state_overrides.push(quote! {
+                    props.#f_ident = state.#f_ident.get();
+                });
+                control_rows.push(quote! {
+                    ::idea_ui::doc_controls::control_row(
+                        #f_label,
+                        ::idea_ui::doc_controls::ref_picker_control::<#ty>(state.#f_ident),
+                    )
+                });
+                // Ref handles don't implement PartialEq directly —
+                // hash the current_key instead for the resolution
+                // cache key.
+                key_reads.push(quote! {
+                    <#ty as ::idea_theme::extensible::RefBuiltins>::current_key(
+                        &state.#f_ident.get()
+                    ).to_string()
+                });
+            }
             FieldKind::Unknown => {
                 // Fields we can't reflect on don't appear in the
                 // state or controls — the whole-struct
@@ -276,6 +306,12 @@ enum FieldKind {
     /// A type expected to implement `VariantEnum`. The generated
     /// code uses `all_variants()` on it.
     VariantEnum(Type),
+    /// A `*Ref` newtype handle from `idea_theme::extensible`
+    /// (`ToneRef`, `VariantRef`, `ButtonSizeRef`, `ShapeRef`,
+    /// `TypographyKindRef`, or any app-defined `*Ref` implementing
+    /// `idea_theme::extensible::RefBuiltins`). Generated code uses
+    /// the generic `ref_picker_control` to enumerate built-ins.
+    RefHandle(Type),
     /// Type we don't have a control for. Field is filled by
     /// `Default::default()` and gets no panel entry.
     Unknown,
@@ -295,6 +331,17 @@ fn classify_field_type(ty: &Type) -> FieldKind {
     }
     if is_rc_dyn_intent(ty) {
         return FieldKind::Intent;
+    }
+    // *Ref newtype handles (ToneRef, VariantRef, ButtonSizeRef,
+    // ShapeRef, TypographyKindRef, or app-defined). Detected by name
+    // suffix — the type must implement `idea_theme::extensible::RefBuiltins`
+    // for the generated control to compile, which the suffix
+    // convention enforces by surface contract.
+    if let Some(ident) = simple_path_ident(ty) {
+        let s = ident.to_string();
+        if s.ends_with("Ref") && s != "Ref" {
+            return FieldKind::RefHandle(ty.clone());
+        }
     }
     // Variant-enum fallback: simple path types whose name ends in a
     // suffix the stylesheet macro generates (look like

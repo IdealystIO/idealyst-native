@@ -11,6 +11,7 @@ mod derive;
 mod external;
 mod handles;
 mod identity;
+pub mod logging;
 mod primitive;
 mod reactive;
 mod safe_area;
@@ -145,6 +146,7 @@ pub use scheduling::{
     after_animation_frame, after_ms, after_ms_scoped, raf_loop, raf_loop_scoped,
     schedule_microtask, RafLoop, ScheduledTask,
 };
+pub use logging::{install_logger, is_logger_installed, log, LogLevel, Logger};
 
 pub use style::{
     derived, install_tokens, pregenerate, resolve as resolve_style,
