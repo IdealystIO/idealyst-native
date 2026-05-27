@@ -247,41 +247,48 @@ impl<K: TypographyKind> IntoRcTypographyKind for K {
 // =============================================================================
 
 /// The active modifier set a [`Variant`] composes against. Variants
-/// pull semantic colors from `tone`, layout from `size`, corners from
-/// `shape`, and may consult `theme` for non-intent neutrals (focus
-/// ring, page background, etc.).
+/// pull semantic colors from `tone` and may consult `theme` for
+/// non-intent neutrals (focus ring, page background, etc.).
+///
+/// **Variants only see tone + theme** — size and shape contributions
+/// (padding, font-size, border-radius) live in the *component*'s
+/// compose closure via [`modifier_defaults`]. This keeps variants
+/// pure skeletons and lets components like Badge or Tag (which have
+/// their own intrinsic dimensions, not the Button scale) compose
+/// without dragging in irrelevant size/shape axes.
 pub struct ResolutionCtx<'a> {
     pub theme: &'a dyn IdeaTheme,
     pub tone: &'a dyn Tone,
-    pub size: &'a dyn ButtonSize,
-    pub shape: &'a dyn Shape,
 }
 
-impl<'a> ResolutionCtx<'a> {
-    /// Property contributions from non-Variant modifiers: padding and
-    /// font-size from `size`, border-radius from `shape`. Variants
-    /// typically start from this and overlay their own properties.
-    ///
-    /// Returned as a `StyleRules` so variants can either:
-    /// - merge it under their own variant-specific rules (variant
-    ///   properties win), or
-    /// - take it as a base and selectively replace individual fields.
-    pub fn modifier_defaults(&self) -> StyleRules {
-        let p_v = self.size.padding_vertical();
-        let p_h = self.size.padding_horizontal();
-        let r = self.shape.border_radius();
-        StyleRules {
-            padding_top: Some(p_v.clone()),
-            padding_bottom: Some(p_v),
-            padding_left: Some(p_h.clone()),
-            padding_right: Some(p_h),
-            font_size: Some(self.size.font_size()),
-            border_top_left_radius: Some(r.clone()),
-            border_top_right_radius: Some(r.clone()),
-            border_bottom_left_radius: Some(r.clone()),
-            border_bottom_right_radius: Some(r),
-            ..Default::default()
-        }
+/// Property contributions from the Size and Shape modifiers: padding
+/// and font-size from `size`, border-radius from `shape`.
+///
+/// Components that have a Size/Shape axis (Button, IconButton) call
+/// this and merge it with the variant's render output:
+///
+/// ```ignore
+/// let mut rules = modifier_defaults(&*size, &*shape);
+/// rules = rules.merge(&variant.render(&ctx));  // variant skeleton on top
+/// ```
+///
+/// Components without a Size/Shape axis (Badge, Tag) skip this — their
+/// intrinsic padding/font lives in a base stylesheet.
+pub fn modifier_defaults(size: &dyn ButtonSize, shape: &dyn Shape) -> StyleRules {
+    let p_v = size.padding_vertical();
+    let p_h = size.padding_horizontal();
+    let r = shape.border_radius();
+    StyleRules {
+        padding_top: Some(p_v.clone()),
+        padding_bottom: Some(p_v),
+        padding_left: Some(p_h.clone()),
+        padding_right: Some(p_h),
+        font_size: Some(size.font_size()),
+        border_top_left_radius: Some(r.clone()),
+        border_top_right_radius: Some(r.clone()),
+        border_bottom_left_radius: Some(r.clone()),
+        border_bottom_right_radius: Some(r),
+        ..Default::default()
     }
 }
 
@@ -317,22 +324,13 @@ mod tests {
         let _h: Rc<dyn Shape> = shape::Pill.into_rc();
     }
 
-    /// Modifier defaults emit padding, font-size, and border-radius
-    /// from the Size/Shape modifiers — exactly the slots Variant
-    /// impls expect to start from.
+    /// `modifier_defaults` (the free function) emits padding,
+    /// font-size, and border-radius from a Size/Shape pair. Used by
+    /// components like Button that have those axes; components like
+    /// Badge skip it entirely.
     #[test]
     fn modifier_defaults_populate_expected_slots() {
-        let t = tone::Primary;
-        let s = size::Md;
-        let sh = shape::Md;
-        let theme = crate::theme::light_theme();
-        let ctx = ResolutionCtx {
-            theme: &theme,
-            tone: &t,
-            size: &s,
-            shape: &sh,
-        };
-        let r = ctx.modifier_defaults();
+        let r = modifier_defaults(&size::Md, &shape::Md);
         assert!(r.padding_top.is_some());
         assert!(r.padding_bottom.is_some());
         assert!(r.padding_left.is_some());
@@ -413,8 +411,6 @@ mod tests {
         let ctx = ResolutionCtx {
             theme: &theme,
             tone: &Hype,
-            size: &size::Md,
-            shape: &shape::Md,
         };
         let rules = variant::Filled.render(&ctx);
         assert_eq!(
@@ -451,16 +447,20 @@ mod tests {
         pub Elevated {
             key = "elevated",
             render(ctx) {
-                let mut s = ctx.modifier_defaults();
-                s.background = Some(ctx.tone.fill_bg(ctx.theme));
-                s.color = Some(ctx.tone.fill_fg(ctx.theme));
-                s.shadow = Some(runtime_core::Shadow {
-                    x: 0.0,
-                    y: 2.0,
-                    blur: 8.0,
-                    color: Color("rgba(0,0,0,0.18)".into()),
-                });
-                s
+                // Variants are pure skeletons now — they don't touch
+                // padding/font/radius. Just tone-driven properties +
+                // whatever distinguishes this variant (shadow here).
+                runtime_core::StyleRules {
+                    background: Some(ctx.tone.fill_bg(ctx.theme)),
+                    color: Some(ctx.tone.fill_fg(ctx.theme)),
+                    shadow: Some(runtime_core::Shadow {
+                        x: 0.0,
+                        y: 2.0,
+                        blur: 8.0,
+                        color: Color("rgba(0,0,0,0.18)".into()),
+                    }),
+                    ..Default::default()
+                }
             }
         }
     }
@@ -471,8 +471,6 @@ mod tests {
         let ctx = ResolutionCtx {
             theme: &theme,
             tone: &tone::Primary,
-            size: &size::Md,
-            shape: &shape::Md,
         };
         let rules = Elevated.render(&ctx);
         assert!(rules.background.is_some());
@@ -504,14 +502,7 @@ mod tests {
 
     #[test]
     fn custom_size_flows_through_modifier_defaults() {
-        let theme = crate::theme::light_theme();
-        let ctx = ResolutionCtx {
-            theme: &theme,
-            tone: &tone::Primary,
-            size: &Xxxxs,
-            shape: &shape::Md,
-        };
-        let r = ctx.modifier_defaults();
+        let r = modifier_defaults(&Xxxxs, &shape::Md);
         // padding_top picks up `Xxxxs::padding_vertical`'s 1.0 fallback.
         match r.padding_top.as_ref().expect("padding_top set") {
             Tokenized::Token { name, fallback } => {
@@ -612,25 +603,25 @@ mod tests {
 
     #[test]
     fn all_custom_modifiers_compose_simultaneously() {
+        // Compose like a component would: Size/Shape contributions
+        // first, then variant skeleton on top.
         let theme = crate::theme::light_theme();
         let ctx = ResolutionCtx {
             theme: &theme,
             tone: &Hype,
-            size: &Xxxxs,
-            shape: &shape::Pill,
         };
-        let rules = Elevated.render(&ctx);
-        // Background from custom Tone.
+        let rules = modifier_defaults(&Xxxxs, &shape::Pill).merge(&Elevated.render(&ctx));
+        // Background from custom Tone (via the Elevated variant).
         assert_eq!(
             rules.background.as_ref().and_then(|t| t.name()),
             Some("tone-hype-fill-bg"),
         );
-        // Padding from custom Size.
+        // Padding from custom Size (via modifier_defaults).
         assert_eq!(
             rules.padding_top.as_ref().and_then(|t| t.name()),
             Some("spacing-xxxxs"),
         );
-        // Border radius from built-in Pill Shape.
+        // Border radius from built-in Pill Shape (via modifier_defaults).
         assert_eq!(
             rules
                 .border_top_left_radius

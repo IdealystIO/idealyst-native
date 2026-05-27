@@ -8,5 +8,14 @@
 //! [`crate::components`] — both ship for now. The extensible variants
 //! are the direction the library is moving.
 
+pub mod alert;
+pub mod badge;
 pub mod button;
+pub mod card;
+pub mod field;
+pub mod icon_button;
+pub mod select;
+pub mod spinner;
+pub mod switch;
+pub mod tag;
 pub mod typography;

@@ -27,7 +27,9 @@ use runtime_core::{
     Tokenized,
 };
 
-use idea_theme::extensible::{shape, size, tone, variant, ButtonSize, ResolutionCtx, Shape, Tone, Variant};
+use idea_theme::extensible::{
+    modifier_defaults, shape, size, tone, variant, ButtonSize, ResolutionCtx, Shape, Tone, Variant,
+};
 use idea_theme::theme::IdeaThemeRef;
 use crate::stylesheets::Button as ButtonSheet;
 
@@ -107,13 +109,16 @@ pub fn button(props: &ButtonProps) -> Primitive {
             let theme_ref = theme
                 .downcast_ref::<IdeaThemeRef>()
                 .expect("idea-ui: no IdeaTheme installed");
+            // Button composes both axes: Size + Shape contribute
+            // padding/font-size/border-radius via `modifier_defaults`;
+            // Variant contributes the tone-driven skeleton (bg, color,
+            // border) on top. Merge order = variant wins where they
+            // overlap.
             let ctx = ResolutionCtx {
                 theme: theme_ref,
                 tone: &*tn,
-                size: &*sz,
-                shape: &*sh,
             };
-            var.render(&ctx)
+            modifier_defaults(&*sz, &*sh).merge(&var.render(&ctx))
         };
 
         // Base sheet carries the uniform Button properties (text

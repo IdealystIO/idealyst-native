@@ -1,17 +1,13 @@
-//! Built-in variants — skeletons for button-like interactive surfaces.
-//!
-//! Four canonical forms:
+//! Built-in variants — pure skeletons for tone-aware surfaces. Each
+//! sets ONLY tone-driven properties (background, text color, optional
+//! border). Padding/font/border-radius are the component's job.
 //!
 //! | Variant | Background | Border | Text |
 //! |---|---|---|---|
 //! | [`Filled`]  | tone's `fill_bg` | none | tone's `fill_fg` |
-//! | [`Soft`]    | tinted fill_bg (alpha) | none | tone's `stroke_fg` |
+//! | [`Soft`]    | tone's `soft_bg` (tinted) | none | tone's `soft_fg` |
 //! | [`Outlined`]| transparent | tone's `stroke_color` (1px) | tone's `stroke_fg` |
 //! | [`Ghost`]   | transparent | none | tone's `ghost_fg` |
-//!
-//! Each starts from `ctx.modifier_defaults()` (padding + font-size from
-//! `size`, border-radius from `shape`) and overlays variant-specific
-//! properties (`background`, `color`, optional border).
 
 use runtime_core::{Color, StyleRules, Tokenized};
 
@@ -26,10 +22,11 @@ impl Variant for Filled {
         "filled"
     }
     fn render(&self, ctx: &ResolutionCtx) -> StyleRules {
-        let mut s = ctx.modifier_defaults();
-        s.background = Some(ctx.tone.fill_bg(ctx.theme));
-        s.color = Some(ctx.tone.fill_fg(ctx.theme));
-        s
+        StyleRules {
+            background: Some(ctx.tone.fill_bg(ctx.theme)),
+            color: Some(ctx.tone.fill_fg(ctx.theme)),
+            ..Default::default()
+        }
     }
 }
 
@@ -44,10 +41,11 @@ impl Variant for Soft {
         "soft"
     }
     fn render(&self, ctx: &ResolutionCtx) -> StyleRules {
-        let mut s = ctx.modifier_defaults();
-        s.background = Some(ctx.tone.soft_bg(ctx.theme));
-        s.color = Some(ctx.tone.soft_fg(ctx.theme));
-        s
+        StyleRules {
+            background: Some(ctx.tone.soft_bg(ctx.theme)),
+            color: Some(ctx.tone.soft_fg(ctx.theme)),
+            ..Default::default()
+        }
     }
 }
 
@@ -60,20 +58,21 @@ impl Variant for Outlined {
         "outlined"
     }
     fn render(&self, ctx: &ResolutionCtx) -> StyleRules {
-        let mut s = ctx.modifier_defaults();
-        s.background = Some(Tokenized::Literal(Color("transparent".into())));
-        s.color = Some(ctx.tone.stroke_fg(ctx.theme));
         let stroke = ctx.tone.stroke_color(ctx.theme);
         let one_px = Tokenized::Literal(1.0);
-        s.border_top_width = Some(one_px.clone());
-        s.border_right_width = Some(one_px.clone());
-        s.border_bottom_width = Some(one_px.clone());
-        s.border_left_width = Some(one_px);
-        s.border_top_color = Some(stroke.clone());
-        s.border_right_color = Some(stroke.clone());
-        s.border_bottom_color = Some(stroke.clone());
-        s.border_left_color = Some(stroke);
-        s
+        StyleRules {
+            background: Some(Tokenized::Literal(Color("transparent".into()))),
+            color: Some(ctx.tone.stroke_fg(ctx.theme)),
+            border_top_width: Some(one_px.clone()),
+            border_right_width: Some(one_px.clone()),
+            border_bottom_width: Some(one_px.clone()),
+            border_left_width: Some(one_px),
+            border_top_color: Some(stroke.clone()),
+            border_right_color: Some(stroke.clone()),
+            border_bottom_color: Some(stroke.clone()),
+            border_left_color: Some(stroke),
+            ..Default::default()
+        }
     }
 }
 
@@ -86,9 +85,10 @@ impl Variant for Ghost {
         "ghost"
     }
     fn render(&self, ctx: &ResolutionCtx) -> StyleRules {
-        let mut s = ctx.modifier_defaults();
-        s.background = Some(Tokenized::Literal(Color("transparent".into())));
-        s.color = Some(ctx.tone.ghost_fg(ctx.theme));
-        s
+        StyleRules {
+            background: Some(Tokenized::Literal(Color("transparent".into()))),
+            color: Some(ctx.tone.ghost_fg(ctx.theme)),
+            ..Default::default()
+        }
     }
 }
