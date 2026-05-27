@@ -1,136 +1,109 @@
-//! Built-in typography kinds. Each kind carries its full set of
-//! per-variant characteristics (font size, weight, line height, letter
-//! spacing) so apps that add a new kind specify everything in one
-//! place — no implicit fallbacks.
+//! `Typography` — text component driven by the extensible
+//! [`TypographyKind`](super::TypographyKind) trait.
 //!
-//! Apps add custom kinds (e.g. `SexySubtitle`, `BrandHeading`) by
-//! implementing [`super::TypographyKind`] on a marker struct.
+//! ```ignore
+//! use idea_ui::extensible::{typography, typography_component::TypographyProps};
+//!
+//! ui! {
+//!     Typography(
+//!         content = "Welcome".into(),
+//!         kind = typography::H1,
+//!     )
+//! }
+//! ```
+//!
+//! The `kind` axis carries the full per-variant character — font size,
+//! weight, line height, letter spacing — so apps add a `SexySubtitle`
+//! kind by implementing the trait on a marker type without re-deriving
+//! anything.
+//!
+//! Color: defaults to `theme.colors().text`. Set `muted = true` to use
+//! `theme.colors().text_muted`. Intent-colored text (e.g. a Danger
+//! heading) is a future axis — for now apps that need it can wrap the
+//! call in a colored container.
 
-use runtime_core::{FontWeight, Length, Tokenized};
+use std::rc::Rc;
 
-use super::TypographyKind;
+use runtime_core::{text, IntoPrimitive, Primitive, StyleApplication, StyleRules, TextAlign};
 
-macro_rules! builtin_kind {
-    (
-        $name:ident,
-        key = $key:literal,
-        size_token = $size_tok:literal,
-        size_fallback = $size_fallback:expr,
-        weight = $weight:expr,
-        line_height = $lh:expr,
-        letter_spacing = $ls:expr $(,)?
-    ) => {
-        /// Built-in typography variant.
-        #[derive(Copy, Clone, Default)]
-        pub struct $name;
+use idea_theme::active_theme;
+use idea_theme::extensible::{typography as kinds, TypographyKind};
+use idea_theme::theme::{IdeaTheme, IdeaThemeRef};
+use crate::stylesheets::Typography as TypographySheet;
 
-        impl TypographyKind for $name {
-            fn key(&self) -> &'static str {
-                $key
-            }
-            fn font_size(&self) -> Tokenized<Length> {
-                Tokenized::token($size_tok, Length::Px($size_fallback))
-            }
-            fn font_weight(&self) -> FontWeight {
-                $weight
-            }
-            fn line_height(&self) -> Tokenized<f32> {
-                Tokenized::Literal($lh)
-            }
-            fn letter_spacing(&self) -> Tokenized<f32> {
-                Tokenized::Literal($ls)
-            }
-        }
-    };
+/// Props for the extensible Typography. `kind` is a trait object so
+/// the prop accepts any `TypographyKind` impl — built-in or custom.
+pub struct TypographyProps {
+    pub content: String,
+    pub kind: Rc<dyn TypographyKind>,
+    /// When `true`, render with the theme's muted text color instead
+    /// of the default text color.
+    pub muted: bool,
+    pub align: TextAlign,
 }
 
-builtin_kind!(
-    Display,
-    key = "display",
-    size_token = "typography-display-size",
-    size_fallback = 56.0,
-    weight = FontWeight::Bold,
-    line_height = 1.05,
-    letter_spacing = -1.5,
-);
-builtin_kind!(
-    H1,
-    key = "h1",
-    size_token = "typography-h1-size",
-    size_fallback = 36.0,
-    weight = FontWeight::Bold,
-    line_height = 1.15,
-    letter_spacing = -0.6,
-);
-builtin_kind!(
-    H2,
-    key = "h2",
-    size_token = "typography-h2-size",
-    size_fallback = 28.0,
-    weight = FontWeight::SemiBold,
-    line_height = 1.2,
-    letter_spacing = -0.3,
-);
-builtin_kind!(
-    H3,
-    key = "h3",
-    size_token = "typography-h3-size",
-    size_fallback = 20.0,
-    weight = FontWeight::SemiBold,
-    line_height = 1.3,
-    letter_spacing = 0.0,
-);
-builtin_kind!(
-    BodyXl,
-    key = "body-xl",
-    size_token = "typography-body-xl-size",
-    size_fallback = 20.0,
-    weight = FontWeight::Normal,
-    line_height = 1.5,
-    letter_spacing = 0.0,
-);
-builtin_kind!(
-    BodyLg,
-    key = "body-lg",
-    size_token = "typography-body-lg-size",
-    size_fallback = 18.0,
-    weight = FontWeight::Normal,
-    line_height = 1.5,
-    letter_spacing = 0.0,
-);
-builtin_kind!(
-    Body,
-    key = "body",
-    size_token = "typography-body-size",
-    size_fallback = 14.0,
-    weight = FontWeight::Normal,
-    line_height = 1.45,
-    letter_spacing = 0.0,
-);
-builtin_kind!(
-    BodySm,
-    key = "body-sm",
-    size_token = "typography-body-sm-size",
-    size_fallback = 13.0,
-    weight = FontWeight::Normal,
-    line_height = 1.4,
-    letter_spacing = 0.0,
-);
-builtin_kind!(
-    Caption,
-    key = "caption",
-    size_token = "typography-caption-size",
-    size_fallback = 12.0,
-    weight = FontWeight::Normal,
-    line_height = 1.35,
-    letter_spacing = 0.2,
-);
-builtin_kind!(
-    Overline,
-    key = "overline",
-    size_token = "typography-overline-size",
-    size_fallback = 11.0,
-    weight = FontWeight::SemiBold,
-    line_height = 1.3,
-    letter_spacing = 1.2,
-);
+impl Default for TypographyProps {
+    fn default() -> Self {
+        Self {
+            content: String::new(),
+            kind: Rc::new(kinds::Body),
+            muted: false,
+            align: TextAlign::Left,
+        }
+    }
+}
+
+/// Render Typography. The computed layer pulls font-size, font-weight,
+/// line-height, letter-spacing from the `kind` and text-align from the
+/// prop. Color is read from the theme directly so it follows theme
+/// swap without needing a per-instance token.
+pub fn typography(props: &TypographyProps) -> Primitive {
+    let content = props.content.clone();
+    let kind = props.kind.clone();
+    let muted = props.muted;
+    let align = props.align;
+
+    // The computed cache key — every (kind, muted, align) combination
+    // gets its own resolved StyleRules. Sharing keys across instances
+    // is what makes the same Typography call site materialize one CSS
+    // class regardless of how many times it renders.
+    let cache_key = format!(
+        "{}+{}+{:?}",
+        kind.key(),
+        if muted { "muted" } else { "default" },
+        align,
+    );
+
+    let style = move || {
+        // Subscribe to theme changes so the apply Effect re-runs on swap.
+        let _ = active_theme()
+            .downcast_ref::<IdeaThemeRef>()
+            .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
+
+        let k = kind.clone();
+        let compute = move || -> StyleRules {
+            let theme = active_theme();
+            let theme_ref = theme
+                .downcast_ref::<IdeaThemeRef>()
+                .expect("idea-ui: no IdeaTheme installed");
+            let color = if muted {
+                theme_ref.colors().text_muted.clone()
+            } else {
+                theme_ref.colors().text.clone()
+            };
+            StyleRules {
+                font_size: Some(k.font_size()),
+                font_weight: Some(k.font_weight()),
+                line_height: Some(k.line_height()),
+                letter_spacing: Some(k.letter_spacing()),
+                color: Some(color),
+                text_align: Some(align),
+                ..Default::default()
+            }
+        };
+
+        StyleApplication::new(TypographySheet::sheet()).with_computed(cache_key.clone(), compute)
+    };
+
+    text(content).with_style(style).into_primitive()
+}

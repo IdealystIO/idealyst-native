@@ -58,6 +58,7 @@ members = [
     "crates/mcp/robot-proxy",
 
     # UI — component library + extras.
+    "crates/ui/idea-theme",
     "crates/ui/idea-ui",
     "crates/ui/idea-ui-docs-derive",
     "crates/ui/icons-lucide",
@@ -209,6 +210,7 @@ variant-tablet = { path = "crates/gpu-backend/variant/tablet" }
 variant-tv = { path = "crates/gpu-backend/variant/tv" }
 runtime-server-shell-native = { path = "crates/dev/runtime-server-shell" }
 posix-log-capture = { path = "crates/backend/posix-log-capture" }
+idea-theme = { path = "crates/ui/idea-theme" }
 idea-ui = { path = "crates/ui/idea-ui" }
 idea-ui-docs-derive = { path = "crates/ui/idea-ui-docs-derive" }
 icons-lucide = { path = "crates/ui/icons-lucide" }

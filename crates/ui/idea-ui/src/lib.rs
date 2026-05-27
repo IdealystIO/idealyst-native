@@ -67,29 +67,29 @@ pub mod stylesheets;
 pub mod theme;
 mod theme_runtime;
 
-pub use breakpoint::{
-    breakpoints, current_breakpoint, install_breakpoints, Breakpoint, Breakpoints,
-};
-pub use theme::{
+// `theme`, `intent`, `theme_runtime`, and the extensible-system trait
+// surface now live in the sibling crate `idea-theme`. The local
+// `theme`/`intent`/`theme_runtime` modules above are thin shims so
+// that internal code and existing consumers can keep using
+// `idea_ui::theme::*` / `idea_ui::intent::*` paths unchanged.
+
+// Convenience re-exports at the crate root — mirror the API surface
+// that existed before the split so apps using `use idea_ui::Btn,
+// install_idea_theme, IntentTag` keep compiling.
+pub use idea_theme::theme::{
     dark_theme, idea_color, idea_header, install_idea_theme, light_theme, set_idea_theme, Colors,
     IdeaTheme, IdeaThemeDefaults, IdeaThemeRef, IntentColors, Intents, Radius, Spacing, Typography,
 };
-
-// Generic theme-as-struct runtime. Re-exported at the crate root so
-// authors with their own typed theme structs (not built on idea-ui's
-// `IdeaTheme`) can install + swap them through the same APIs that
-// idea-ui's own helpers use under the hood.
-pub use theme_runtime::{
+pub use idea_theme::{
     active_theme, install_theme, install_themes, set_theme, ThemeTokens, TokenEntry, TokenValue,
     Tokenized,
 };
-
-// The `Intent` trait + 7 built-in marker types still exist for apps
-// that want to author custom intents. Component props now take an
-// `IntentTag` enum directly — that's the public, ergonomic surface.
-// The trait is only for advanced theme extensions.
-pub use intent::{
+pub use idea_theme::{
     Danger, Info, Intent, IntoRcIntent, Neutral, Primary, Secondary, Success, Warning,
+};
+
+pub use breakpoint::{
+    breakpoints, current_breakpoint, install_breakpoints, Breakpoint, Breakpoints,
 };
 
 pub use components::alert::{alert, AlertProps};

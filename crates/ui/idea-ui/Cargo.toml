@@ -19,4 +19,5 @@ docs = ["dep:idea-ui-docs-derive"]
 
 [dependencies]
 runtime-core = { workspace = true }
+idea-theme = { workspace = true }
 idea-ui-docs-derive = { workspace = true, optional = true }

@@ -756,6 +756,16 @@ fn wasm_bindgen_build(
         .args(["--target", "web"])
         .arg("--keep-lld-exports")
         .arg("--keep-debug")
+        // CRITICAL: --no-demangle. wasm-bindgen demangles Rust
+        // symbol names by default. wasm-split-cli matches reloc
+        // records (which carry MANGLED names from rustc) against
+        // the bindgened wasm's symbol table — demangled names
+        // there mean nothing matches, so wasm-split conservatively
+        // keeps everything in main and emits empty chunks. Without
+        // this flag the website's `lazy! { Simulator(…) }` chunk
+        // measured 469 bytes; with it, the wgpu/welcome/sim stack
+        // actually moves out of main.
+        .arg("--no-demangle")
         .args(["--out-name", lib_name])
         .args(["--out-dir"])
         .arg(out_dir)

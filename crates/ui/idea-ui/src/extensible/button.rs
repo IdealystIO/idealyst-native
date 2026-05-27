@@ -27,9 +27,9 @@ use runtime_core::{
     Tokenized,
 };
 
-use super::{shape, size, tone, variant, ButtonSize, ResolutionCtx, Shape, Tone, Variant};
+use idea_theme::extensible::{shape, size, tone, variant, ButtonSize, ResolutionCtx, Shape, Tone, Variant};
+use idea_theme::theme::IdeaThemeRef;
 use crate::stylesheets::Button as ButtonSheet;
-use crate::theme::IdeaThemeRef;
 
 /// Props for the extensible Button. Each modifier axis is a typed
 /// trait object; defaults route to the built-in variants.
@@ -91,7 +91,7 @@ pub fn button(props: &ButtonProps) -> Primitive {
         // Touch the active theme so the apply-style Effect subscribes
         // to theme swaps. The downcast also gives us a typed
         // IdeaThemeRef for the inner `compute` closure to walk through.
-        let _ = crate::theme_runtime::active_theme()
+        let _ = idea_theme::active_theme()
             .downcast_ref::<IdeaThemeRef>()
             .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
 
@@ -103,7 +103,7 @@ pub fn button(props: &ButtonProps) -> Primitive {
         let sz = size.clone();
         let sh = shape.clone();
         let compute = move || -> StyleRules {
-            let theme = crate::theme_runtime::active_theme();
+            let theme = idea_theme::active_theme();
             let theme_ref = theme
                 .downcast_ref::<IdeaThemeRef>()
                 .expect("idea-ui: no IdeaTheme installed");

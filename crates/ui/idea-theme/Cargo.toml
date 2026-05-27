@@ -1,0 +1,12 @@
+[package]
+name = "idea-theme"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Theming abstraction + extensibility for the idealyst design system"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+runtime-core = { workspace = true }

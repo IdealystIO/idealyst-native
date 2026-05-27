@@ -2719,9 +2719,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "idea-theme"
+version = "0.0.1"
+dependencies = [
+ "runtime-core",
+]
+
+[[package]]
 name = "idea-ui"
 version = "0.0.1"
 dependencies = [
+ "idea-theme",
  "idea-ui-docs-derive",
  "runtime-core",
 ]
