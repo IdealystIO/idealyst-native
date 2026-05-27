@@ -283,14 +283,24 @@ thread_local! {{
 pub fn start() {{
     console_error_panic_hook::set_once();
 
-    // Scheduler + time source + async executor — all three code paths
-    // need them. The executor is what makes `runtime_core::driver::spawn_async`
-    // work on wasm; without it any async work (resource fetchers,
-    // server-fn calls, mutation triggers) panics at first poll with
-    // "no AsyncExecutor installed".
+    // Scheduler + time source + async executor + render loop -- every
+    // code path needs them. The async executor is what makes
+    // `runtime_core::driver::spawn_async` work on wasm; without it any
+    // async work (resource fetchers, server-fn calls, mutation
+    // triggers) panics at first poll with "no AsyncExecutor
+    // installed". The render-loop driver is what makes
+    // `runtime_core::driver::render_loop` tick frames; without it,
+    // host-web's per-frame paint closure (the wgpu Simulator preview,
+    // every future host-driven animation surface) gets a `NoopHandle`
+    // and never paints -- the canvas mounts but stays blank.
     backend_web::install_scheduler();
     backend_web::install_time_source();
     backend_web::install_async_executor();
+    backend_web::install_render_loop();
+    // Push `window.innerWidth/innerHeight` into the framework's
+    // reactive viewport signal on initial install + every `resize`
+    // event. Author code reads via `runtime_core::viewport_size()`.
+    backend_web::install_viewport_observer();
 
     #[cfg(feature = "runtime-server")]
     {{

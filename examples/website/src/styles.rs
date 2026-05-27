@@ -12,12 +12,107 @@
 
 use runtime_core::stylesheet;
 use runtime_core::{
-    AlignItems, Color, FlexDirection, Gradient, GradientKind, GradientStop, JustifyContent, Length,
+    AlignItems, Color, FlexDirection, Gradient, GradientKind, GradientStop, JustifyContent, Length, Shadow,
     Overflow, Position, RadialExtent, TextAlign, Tokenized, Transform,
 };
 use idea_ui::IdeaThemeRef;
 
 use crate::typeface::INTER;
+
+// =============================================================================
+// Mobile header — narrow-viewport top bar
+//
+// Position:Absolute on top of the screen, anchored to top/left/right
+// with a fixed height. The screen is wrapped by the navigator's
+// `.ui-nav-screen { position: absolute; inset: 0 }` so the header
+// pins to the viewport top via its nearest positioned ancestor.
+//
+// Visibility is controlled by `when(narrow, header, empty)` in
+// `shell::layout` — at wide breakpoints the header subtree isn't
+// mounted at all (no idle press handlers, no extra DOM). The
+// `ScreenScroll` narrow variant adds 56 px of padding-top so the
+// content doesn't start under the header.
+// =============================================================================
+
+stylesheet! {
+    pub MobileHeader<IdeaThemeRef> {
+        base(_t) {
+            position: Position::Absolute,
+            top: Length::Px(0.0),
+            left: Length::Px(0.0),
+            right: Length::Px(0.0),
+            height: 56.0,
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            padding_horizontal: 8.0,
+            gap: 4.0,
+            background: Tokenized::token("color-surface", Color("#ffffff".into())),
+            border_bottom_width: 1.0,
+            border_bottom_color: Tokenized::token("color-border", Color("#e7e2d3".into())),
+            font_family: &INTER,
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            border_bottom_color: 250ms EaseInOut,
+        }
+    }
+}
+
+/// Pressable button for the leading menu / trailing action slot.
+/// Square 40x40 touch target, rounded, subtle hover dim.
+stylesheet! {
+    pub MobileHeaderButton<IdeaThemeRef> {
+        base(_t) {
+            width: 40.0,
+            height: 40.0,
+            border_radius: Tokenized::token("radius-md", Length::Px(8.0)),
+            background: Color("transparent".into()),
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            font_size: 22.0,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            flex_shrink: 0.0,
+        }
+        state hovered(_t) {
+            background: Tokenized::token("color-surface-alt", Color("#f4eedb".into())),
+        }
+        transitions {
+            background: 150ms EaseOut,
+        }
+    }
+}
+
+/// Title wrapper — grows to fill the space between leading + trailing
+/// slots; the title text inside is left-aligned (a center-aligned
+/// header competes with the menu button visually on short titles).
+stylesheet! {
+    pub MobileHeaderTitleWrap<IdeaThemeRef> {
+        base(_t) {
+            flex_basis: 0.0,
+            flex_grow: 1.0,
+            min_width: 0.0,
+            padding_horizontal: 4.0,
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+        }
+    }
+}
+
+stylesheet! {
+    pub MobileHeaderTitle<IdeaThemeRef> {
+        base(_t) {
+            color: Tokenized::token("color-text", Color("#1a1a1f".into())),
+            font_size: 17.0,
+            font_weight: runtime_core::FontWeight::SemiBold,
+            text_align: TextAlign::Left,
+            // Single-line; long titles ellipsize via the
+            // browser-default for inline overflow.
+        }
+        transitions {
+            color: 250ms EaseInOut,
+        }
+    }
+}
 
 // =============================================================================
 // Sidebar body
@@ -129,6 +224,17 @@ stylesheet! {
             // (currently only `CodeText`, which pins monospace).
             font_family: &INTER,
         }
+        variant size {
+            #[default]
+            wide(_t) {}
+            narrow(_t) {
+                // Make room for the fixed-height mobile header that
+                // overlays the screen at narrow widths. The header
+                // height (56 px) lives in `MobileHeader` below; keep
+                // them in sync.
+                padding_top: 56.0,
+            }
+        }
         transitions {
             background: 250ms EaseInOut,
             color: 250ms EaseInOut,
@@ -149,8 +255,6 @@ stylesheet! {
 stylesheet! {
     pub PagePad<IdeaThemeRef> {
         base(_t) {
-            padding: 56.0,
-            gap: 72.0,
             flex_direction: FlexDirection::Column,
             max_width: 820.0,
             // Centers the column within the screen-scroll wrapper.
@@ -160,6 +264,17 @@ stylesheet! {
             // focal point.
             align_self: runtime_core::AlignSelf::Center,
             width: Length::pct(100.0),
+        }
+        variant size {
+            #[default]
+            wide(_t) {
+                padding: 56.0,
+                gap: 72.0,
+            }
+            narrow(_t) {
+                padding: 24.0,
+                gap: 48.0,
+            }
         }
     }
 }
@@ -177,14 +292,27 @@ stylesheet! {
 stylesheet! {
     pub PageRow<IdeaThemeRef> {
         base(_t) {
-            flex_direction: FlexDirection::Row,
             align_items: AlignItems::FlexStart,
             justify_content: JustifyContent::Center,
-            gap: 64.0,
-            padding: 56.0,
             width: Length::pct(100.0),
             max_width: 1200.0,
             align_self: runtime_core::AlignSelf::Center,
+        }
+        variant size {
+            #[default]
+            wide(_t) {
+                flex_direction: FlexDirection::Row,
+                gap: 64.0,
+                padding: 56.0,
+            }
+            narrow(_t) {
+                // Single-column stack on narrow viewports — the
+                // PageColumn loses its TOC sibling, so a row layout
+                // adds nothing but extra side gutters.
+                flex_direction: FlexDirection::Column,
+                gap: 32.0,
+                padding: 24.0,
+            }
         }
     }
 }
@@ -317,22 +445,34 @@ stylesheet! {
 // Hero — full-bleed top section on the Home page
 // =============================================================================
 
-/// Hero band — the first thing on / .
+/// Hero band — the first thing on / . Embeds a live wgpu simulator
+/// alongside the headline, so vertical padding is tighter than a
+/// text-only hero would use (the device's ~700 px height carries the
+/// vertical rhythm).
 stylesheet! {
     pub Hero<IdeaThemeRef> {
         base(_t) {
             position: Position::Relative,
             overflow: Overflow::Hidden,
-            padding_horizontal: 64.0,
-            padding_top: 112.0,
-            padding_bottom: 96.0,
-            gap: 28.0,
             flex_direction: FlexDirection::Column,
-            align_items: AlignItems::FlexStart,
+            align_items: AlignItems::Center,
             // Slight surface lift over the page background.
             background: Tokenized::token("color-surface", Color("#ffffff".into())),
             border_bottom_width: 1.0,
             border_bottom_color: Tokenized::token("color-border", Color("#e7e2d3".into())),
+        }
+        variant size {
+            #[default]
+            wide(_t) {
+                padding_horizontal: 64.0,
+                padding_top: 72.0,
+                padding_bottom: 72.0,
+            }
+            narrow(_t) {
+                padding_horizontal: 24.0,
+                padding_top: 48.0,
+                padding_bottom: 48.0,
+            }
         }
         transitions {
             background: 250ms EaseInOut,
@@ -381,14 +521,21 @@ pub fn hero_glare_sheet() -> std::rc::Rc<runtime_core::StyleSheet> {
 }
 
 /// Headline wrapper so the text claims the column width without the
-/// glare overlapping it visually.
+/// glare overlapping it visually. Inside `HeroRow`, this is the
+/// LEFT column \u{2014} `flex_basis: 0` + `flex_grow: 1` so it
+/// absorbs whatever width the device column doesn't claim;
+/// `min_width: 0` so long subhead lines wrap inside the column
+/// instead of forcing horizontal scroll.
 stylesheet! {
     pub HeroText<IdeaThemeRef> {
         base(_t) {
             position: Position::Relative,
-            max_width: 720.0,
             gap: 16.0,
             flex_direction: FlexDirection::Column,
+            flex_basis: 0.0,
+            flex_grow: 1.0,
+            min_width: 0.0,
+            max_width: 720.0,
         }
     }
 }
@@ -397,10 +544,20 @@ stylesheet! {
     pub HeroHeadline<IdeaThemeRef> {
         base(_t) {
             color: Tokenized::token("color-text", Color("#0a0c11".into())),
-            font_size: 56.0,
             font_weight: runtime_core::FontWeight::Bold,
-            letter_spacing: -1.4,
-            line_height: 60.0,
+        }
+        variant size {
+            #[default]
+            wide(_t) {
+                font_size: 56.0,
+                letter_spacing: -1.4,
+                line_height: 60.0,
+            }
+            narrow(_t) {
+                font_size: 36.0,
+                letter_spacing: -0.8,
+                line_height: 42.0,
+            }
         }
     }
 }
@@ -409,10 +566,19 @@ stylesheet! {
     pub HeroSubhead<IdeaThemeRef> {
         base(_t) {
             color: Tokenized::token("color-text-muted", Color("#5b5446".into())),
-            font_size: 21.0,
             font_weight: runtime_core::FontWeight::Normal,
-            line_height: 32.0,
             max_width: 680.0,
+        }
+        variant size {
+            #[default]
+            wide(_t) {
+                font_size: 21.0,
+                line_height: 32.0,
+            }
+            narrow(_t) {
+                font_size: 17.0,
+                line_height: 26.0,
+            }
         }
     }
 }
@@ -447,6 +613,18 @@ stylesheet! {
             border_radius: Tokenized::token("radius-lg", Length::Px(12.0)),
             padding: 20.0,
             overflow: Overflow::Hidden,
+            // Without this, the flexbox default `min-width: auto` on
+            // the panel equals its content's intrinsic min-content —
+            // and the inner `<pre>`'s no-wrap text has min-content of
+            // "the entire longest code line" (~650 px). The panel
+            // then refuses to shrink below that, pushing its parent
+            // column wider than the viewport on narrow screens.
+            // Setting `min_width: 0` lets the panel shrink to fit
+            // its parent; `overflow: Hidden` (above) clips the
+            // overflowing code text. Paired with the responsive
+            // `<pre>` wrap rule in `responsive.rs`'s CSS, the code
+            // wraps at narrow viewports so nothing is actually lost.
+            min_width: 0.0,
         }
         transitions {
             background: 250ms EaseInOut,
@@ -531,20 +709,32 @@ stylesheet! {
 stylesheet! {
     pub HomeSection<IdeaThemeRef> {
         base(_t) {
-            padding_horizontal: 64.0,
-            padding_vertical: 72.0,
             gap: 28.0,
             flex_direction: FlexDirection::Column,
             max_width: 1120.0,
             align_self: runtime_core::AlignSelf::Center,
             width: Length::pct(100.0),
         }
+        variant size {
+            #[default]
+            wide(_t) {
+                padding_horizontal: 64.0,
+                padding_vertical: 72.0,
+            }
+            narrow(_t) {
+                padding_horizontal: 24.0,
+                padding_vertical: 48.0,
+            }
+        }
     }
 }
 
 /// Vertical stack that hosts the iOS/Android tab strip and the
-/// embedded Simulator preview. Centered horizontally so the preview
-/// canvas reads as the focal point of the section.
+/// embedded Simulator preview. Stays narrow so its parent
+/// `SimulatorRow` can sit it alongside an explanatory copy column
+/// instead of stacking the preview above/below the text. Width is
+/// `auto` (the canvas wrapper's own fixed 300 px provides the
+/// inner dimension).
 stylesheet! {
     pub SimulatorStage<IdeaThemeRef> {
         base(_t) {
@@ -552,6 +742,80 @@ stylesheet! {
             align_items: AlignItems::Center,
             gap: 24.0,
             padding_top: 8.0,
+            flex_shrink: 0.0,
+        }
+    }
+}
+
+/// Horizontal row inside the Hero band: headline + CTA column on
+/// the left, embedded Simulator on the right. `align_items: Center`
+/// vertically centers the text column against the taller device,
+/// so the headline lands at the device's mid-height; `gap: 72`
+/// separates the two columns without competing with the hero's own
+/// horizontal padding.
+stylesheet! {
+    pub HeroRow<IdeaThemeRef> {
+        base(_t) {
+            width: Length::pct(100.0),
+            // Sits above the absolutely-positioned glare gradient
+            // (which has `position: Absolute` + no z-index) so the
+            // text and device both render in front of the wash.
+            position: Position::Relative,
+        }
+        variant size {
+            #[default]
+            wide(_t) {
+                // Side-by-side: headline + CTAs on the left, simulator
+                // on the right.
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                gap: 72.0,
+            }
+            narrow(_t) {
+                // Stacked: headline on top, simulator below. Keep the
+                // device centered horizontally so it doesn't read as
+                // mis-anchored against the left-aligned text column.
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                gap: 32.0,
+            }
+        }
+    }
+}
+
+/// Bezel that wraps the embedded wgpu canvas. The simulator's
+/// painter draws the *inner* bezel (the strip immediately around
+/// the screen); this stylesheet adds the *outer* chassis around
+/// THAT so the two read as one continuous device.
+///
+/// Chassis color is BLACK regardless of skin. The wgpu engine's
+/// `device_frame_pipeline` paints opaque black on the canvas
+/// outside the screen's rounded rect on every skin (see
+/// `gpu-backend/engine/src/renderer.rs::device_frame`) \u{2014} the
+/// painters' `BEZEL_TITANIUM` / `BEZEL_GRAPHITE` constants are
+/// internal classification only and don't reach the canvas pixels.
+/// Using titanium here would leave a visible color seam between the
+/// chassis and the canvas's black outer band.
+stylesheet! {
+    pub SimulatorBezel<IdeaThemeRef> {
+        base(_t) {
+            background: Color("#000000".to_string()),
+            border_radius: 44.0,
+            padding: 12.0,
+            // `overflow: Hidden` so the canvas + painter chrome
+            // clip to the bezel's rounded corners. Without it the
+            // painter's edge-to-edge fills (sun-glare gradient,
+            // background washes) bleed past the chassis curve and
+            // the device reads as a square canvas under a
+            // rounded-frame overlay.
+            overflow: Overflow::Hidden,
+            shadow: Shadow {
+                x: 0.0,
+                y: 18.0,
+                blur: 48.0,
+                color: Color("rgba(15, 17, 30, 0.28)".to_string()),
+            },
+            flex_shrink: 0.0,
         }
     }
 }

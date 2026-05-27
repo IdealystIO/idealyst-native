@@ -291,6 +291,16 @@ impl TerminalBackend {
     /// uses the new size for the layout pass.
     pub fn set_viewport(&mut self, cols: u16, rows: u16) {
         self.viewport = (cols, rows);
+        // Mirror into the framework's reactive viewport signal. The
+        // terminal backend's "logical px" is one cell, so we push raw
+        // cell counts. Cell-aware author code can multiply by
+        // `cell_size` if it needs sub-cell math; the breakpoint use
+        // case ("is the terminal wide enough for a sidebar?")
+        // generally only cares about cell counts.
+        runtime_core::set_viewport_size(runtime_core::ViewportSize {
+            width: cols as f32,
+            height: rows as f32,
+        });
     }
 
     pub fn viewport(&self) -> (u16, u16) {

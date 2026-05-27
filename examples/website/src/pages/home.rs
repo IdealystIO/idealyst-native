@@ -20,14 +20,13 @@ use crate::routes::{
 use crate::shell::layout;
 use crate::styles::{
     hero_glare_sheet, Hero, HeroCtaRow, HeroHeadline, HeroSubhead, HeroText, HomeSection,
-    PillarCard, PillarCta, PillarGrid, SimulatorStage,
+    PillarCard, PillarCta, PillarGrid,
 };
 
 pub fn page() -> Primitive {
     let content = ui! {
         View {
             { hero() }
-            { simulator_section() }
             { quickstart_section() }
             { pillars_section() }
         }
@@ -40,11 +39,11 @@ pub fn page() -> Primitive {
 // =============================================================================
 
 fn hero() -> Primitive {
-    let hero_style = Hero();
+    let hero_style = crate::responsive::responsive_style(Hero::sheet());
     let glare_style = hero_glare_sheet();
     let text_style = HeroText();
-    let headline_style = move || StyleApplication::new(HeroHeadline::sheet());
-    let subhead_style = move || StyleApplication::new(HeroSubhead::sheet());
+    let headline_style = crate::responsive::responsive_style(HeroHeadline::sheet());
+    let subhead_style = crate::responsive::responsive_style(HeroSubhead::sheet());
     let cta_style = HeroCtaRow();
 
     let text_children: Vec<Primitive> = vec![
@@ -67,36 +66,45 @@ fn hero() -> Primitive {
             }
         },
     ];
+    let text_column = ui! { View(style = text_style) { text_children } };
 
+    // Live preview: an embedded wgpu simulator running the `welcome`
+    // scaffold project, with an iOS/Android skin toggle. The same
+    // visual proof the headline claims \u{2014} "native everywhere"
+    // \u{2014} sits right next to the words.
+    let device_column = hero_simulator();
+
+    // Row layout: headline + CTAs on the left, live device on the
+    // right. The hero band's overall padding + the row's gap
+    // separate the two columns. The glare gradient stays as an
+    // absolute-positioned sibling so it can still wash the corner
+    // behind both columns.
+    let row_style = crate::responsive::responsive_style(crate::styles::HeroRow::sheet());
     ui! {
         View(style = hero_style) {
             View(style = glare_style) {}
-            View(style = text_style) { text_children }
+            View(style = row_style) {
+                text_column
+                device_column
+            }
         }
     }
 }
 
 // =============================================================================
-// Simulator — embedded wgpu preview of the `welcome` scaffold app,
-// with an iOS/Android skin toggle. The framework's `Graphics`
-// primitive surfaces a `<canvas>` element on web; `host-web` runs
-// the wgpu init + render loop inside it; `IosSim` / `AndroidSim` are
-// the two paint policies the toggle flips between.
-//
-// Skin changes force the entire Simulator subtree to unmount +
-// remount via `runtime_core::switch` keyed on the active tab. The
-// wgpu host's `Drop` tears the surface + render loop + reactive
-// scope back down in order; a fresh Simulator gets built with the
-// new skin baked into its on_ready closure. Cleaner than threading
-// reactive skin observers through the embedded host stack.
+// Hero simulator — the live wgpu preview that sits next to the
+// headline. iOS/Android tab toggle on top + the bezel-wrapped canvas
+// below. Same wiring as the standalone simulator-section pattern,
+// just inlined into the hero so the headline + device read as one
+// visual unit.
 // =============================================================================
 
-fn simulator_section() -> Primitive {
-    let section_style = HomeSection();
-    let stage_style = SimulatorStage();
+fn hero_simulator() -> Primitive {
+    let stage_style = crate::styles::SimulatorStage();
 
-    // 0 = iOS, 1 = Android. Lives at the page-scope so the user's
-    // selection survives the simulator subtree rebuild.
+    // 0 = iOS, 1 = Android. Survives the simulator subtree rebuild
+    // because the signal is allocated in `hero_simulator`'s scope,
+    // which is the page's scope (the hero is built once on mount).
     let active: Signal<usize> = signal!(0_usize);
     let on_change: Rc<dyn Fn(usize)> = Rc::new(move |idx| active.set(idx));
 
@@ -111,11 +119,11 @@ fn simulator_section() -> Primitive {
         )
     };
 
-    // `switch` re-runs the body closure when `active` changes,
+    // `switch` re-runs the body closure when the tab changes,
     // rebuilding the Simulator with the matching painter. The
     // outgoing Simulator's `on_lost` fires as its Graphics surface
-    // tears down \u{2014} the wgpu host drops cleanly before the new
-    // one mounts.
+    // tears down so the wgpu host drops cleanly before the new one
+    // mounts.
     let dynamic_sim = switch(
         move || active.get(),
         |&idx| {
@@ -127,9 +135,6 @@ fn simulator_section() -> Primitive {
             };
             #[cfg(not(target_arch = "wasm32"))]
             let skin = {
-                // The Simulator's wgpu path is web-only; on native
-                // targets the prop is unused (the Graphics surface
-                // still allocates but nothing drives it).
                 let _ = idx;
                 None
             };
@@ -142,28 +147,14 @@ fn simulator_section() -> Primitive {
         },
     );
 
-    let stage_children: Vec<Primitive> = vec![tab_strip, dynamic_sim];
+    // Outer chassis: black so it blends with the wgpu engine's
+    // device_frame_pipeline (which paints opaque black on the canvas
+    // outside the screen). See `SimulatorBezel`'s doc.
+    let bezel_style = crate::styles::SimulatorBezel();
+    let bezel = ui! { View(style = bezel_style) { dynamic_sim } };
 
-    let header_children: Vec<Primitive> = vec![
-        ui! {
-            Typography(
-                content = "See it running.".to_string(),
-                kind = TypographyKind::H2,
-            )
-        },
-        ui! {
-            Typography(
-                content = "The same app, two skins. The embedded preview is the \
-                    `welcome` scaffold project rendered through the wgpu backend with \
-                    a UIKit or Material-3 paint policy \u{2014} switch between them \
-                    and the entire surface rebuilds against the new skin.".to_string(),
-                tone = TypographyTone::Muted,
-            )
-        },
-        ui! { View(style = stage_style) { stage_children } },
-    ];
-
-    ui! { View(style = section_style) { header_children } }
+    let stage_children: Vec<Primitive> = vec![tab_strip, bezel];
+    ui! { View(style = stage_style) { stage_children } }
 }
 
 // =============================================================================
@@ -171,7 +162,7 @@ fn simulator_section() -> Primitive {
 // =============================================================================
 
 fn quickstart_section() -> Primitive {
-    let section_style = HomeSection();
+    let section_style = crate::responsive::responsive_style(HomeSection::sheet());
 
     let install_snippet =
         "# Install the CLI from the GitHub repo\n\
@@ -210,7 +201,7 @@ fn quickstart_section() -> Primitive {
 // =============================================================================
 
 fn pillars_section() -> Primitive {
-    let section_style = HomeSection();
+    let section_style = crate::responsive::responsive_style(HomeSection::sheet());
     let grid_style = PillarGrid();
 
     // (title, blurb, destination)
@@ -276,3 +267,4 @@ fn pillar_card(title: &str, blurb: &str, route: &'static Route<()>) -> Primitive
     ];
     ui! { View(style = card_style) { children } }
 }
+

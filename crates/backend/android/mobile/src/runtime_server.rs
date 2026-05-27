@@ -270,9 +270,19 @@ pub fn report_viewport(width_px: jni::sys::jint, height_px: jni::sys::jint, dens
     if width_px <= 0 || height_px <= 0 || density <= 0.0 {
         return;
     }
+    let width_dp = width_px as f32 / density;
+    let height_dp = height_px as f32 / density;
+    // Mirror into the framework's reactive viewport signal — same dp
+    // unit the wire protocol uses, so `viewport_size()` subscribers
+    // see the same numbers a wire-replay backend would compute
+    // against.
+    runtime_core::set_viewport_size(runtime_core::ViewportSize {
+        width: width_dp,
+        height: height_dp,
+    });
     let viewport = runtime_server_shell_native::WireViewport {
-        width: width_px as f32 / density,
-        height: height_px as f32 / density,
+        width: width_dp,
+        height: height_dp,
     };
     SHELL.with(|slot| {
         if let Some(shell) = slot.borrow().as_ref() {

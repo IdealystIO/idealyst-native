@@ -15,21 +15,25 @@
 use std::rc::Rc;
 
 use runtime_core::primitives::scroll_view::{scroll_view, ScrollViewHandle};
-use runtime_core::{effect, signal, ui, IntoPrimitive, Primitive, Ref, Signal, StyleApplication, ViewHandle};
+use runtime_core::{
+    effect, pressable, signal, text, ui, view, when, IntoPrimitive, Primitive, Ref, Signal,
+    StyleApplication, ViewHandle,
+};
 use drawer_navigator::DrawerSlotProps;
 use idea_ui::{
-    dark_theme, light_theme, set_idea_theme, spacer, switch, typography, TypographyKind,
-    TypographyTone,
+    current_breakpoint, dark_theme, light_theme, set_idea_theme, spacer, switch, typography,
+    Breakpoint, TypographyKind, TypographyTone,
 };
 
 use crate::routes::{
-    AGENTIC_ROUTE, BACKENDS_ROUTE, CONCEPTS_ROUTE, DEMO_ANIMATIONS_ROUTE, DEMO_COMPONENTS_ROUTE,
-    DEMO_COUNTER_ROUTE, DEMO_NAVIGATION_ROUTE, FURTHER_READING_ROUTE, HOME_ROUTE, INSTALL_ROUTE,
-    QUICKSTART_ROUTE, SECTIONS, WHY_RUST_ROUTE,
+    label_for_route, AGENTIC_ROUTE, BACKENDS_ROUTE, CONCEPTS_ROUTE, DEMO_ANIMATIONS_ROUTE,
+    DEMO_COMPONENTS_ROUTE, DEMO_COUNTER_ROUTE, DEMO_NAVIGATION_ROUTE, FURTHER_READING_ROUTE,
+    HOME_ROUTE, INSTALL_ROUTE, QUICKSTART_ROUTE, SECTIONS, SERVER_FUNCTIONS_ROUTE, WHY_RUST_ROUTE,
 };
 use crate::styles::{
-    NavLink, PageColumn, PageRow, ScreenScroll, SidebarBody, SidebarFooter, SidebarHeader,
-    SidebarSection, TocHeader, TocLink, TocPanel,
+    MobileHeader, MobileHeaderButton, MobileHeaderTitle, MobileHeaderTitleWrap, NavLink,
+    PageColumn, PageRow, ScreenScroll, SidebarBody, SidebarFooter, SidebarHeader, SidebarSection,
+    TocHeader, TocLink, TocPanel,
 };
 
 /// One entry in a page's table-of-contents. `handle` is a
@@ -53,11 +57,25 @@ pub struct TocEntry {
 /// supplies the scroll affordance (UIScrollView / Android
 /// NestedScrollView), the `ScrollView` is the same primitive —
 /// one author tree, every backend.
+///
+/// At narrow viewports the layout also mounts a [`mobile_header`]
+/// pinned to the screen top — the `when()` is reactive on
+/// `current_breakpoint()`, so a window resize across the
+/// `Md`/`Sm` boundary mounts / unmounts the bar without rebuilding
+/// the rest of the screen.
 pub fn layout(content: Primitive) -> Primitive {
-    let scroll_style = ScreenScroll();
+    let scroll_style = crate::responsive::responsive_style(ScreenScroll::sheet());
+    let header = when(
+        || matches!(current_breakpoint().get(), Breakpoint::Xs | Breakpoint::Sm),
+        mobile_header,
+        || view(Vec::<Primitive>::new()).into_primitive(),
+    );
     ui! {
-        ScrollView(style = scroll_style) {
-            content
+        View {
+            header
+            ScrollView(style = scroll_style) {
+                content
+            }
         }
     }
 }
@@ -84,7 +102,7 @@ const ACTIVE_BAND_Y: f32 = 160.0;
 /// `Signal<f32>`, read each section's `ViewHandle::absolute_frame()`
 /// inside an `effect!`, set the active index.
 pub fn layout_with_toc(content: Primitive, entries: Vec<TocEntry>) -> Primitive {
-    let row_style = PageRow();
+    let row_style = crate::responsive::responsive_style(PageRow::sheet());
     let column_style = PageColumn();
 
     // `Signal<f32>` written by the ScrollView's `on_scroll`
@@ -101,7 +119,25 @@ pub fn layout_with_toc(content: Primitive, entries: Vec<TocEntry>) -> Primitive 
 
     install_scroll_spy(entries.clone(), scroll_y, active_idx);
 
-    let toc = render_toc(entries, active_idx, scroll_ref, scroll_y);
+    // The TOC ("On this page") column is only rendered at Lg or
+    // wider — below that it crowds the prose. `when(...)` swaps
+    // between the TOC subtree and an empty placeholder reactively,
+    // so a window resize across the threshold mounts/unmounts the
+    // TOC + its scroll-spy effect rather than just hiding via CSS.
+    // Capture the closure inputs by value (entries.clone(), Copy
+    // signals/refs) so the cond/then closures are 'static.
+    let toc_entries = entries;
+    let toc = when(
+        move || {
+            // Read inside the derived so the layout's reactive scope
+            // subscribes to the breakpoint signal — when it crosses
+            // the threshold, the `when` re-evaluates and mounts /
+            // unmounts the TOC subtree.
+            matches!(current_breakpoint().get(), Breakpoint::Lg | Breakpoint::Xl)
+        },
+        move || render_toc(toc_entries.clone(), active_idx, scroll_ref, scroll_y),
+        || view(Vec::<Primitive>::new()).into_primitive(),
+    );
 
     let body = ui! {
         View(style = row_style) {
@@ -110,11 +146,67 @@ pub fn layout_with_toc(content: Primitive, entries: Vec<TocEntry>) -> Primitive 
         }
     };
 
-    scroll_view(vec![body])
+    let scroll = scroll_view(vec![body])
         .bind(scroll_ref)
         .on_scroll(move |_x, y| scroll_y.set(y))
-        .with_style(move || StyleApplication::new(ScreenScroll::sheet()))
-        .into_primitive()
+        .with_style(crate::responsive::responsive_style(ScreenScroll::sheet()))
+        .into_primitive();
+
+    // Mobile header is reactive on the breakpoint just like the
+    // non-TOC `layout()` above. Mounts only at narrow widths.
+    let header = when(
+        || matches!(current_breakpoint().get(), Breakpoint::Xs | Breakpoint::Sm),
+        mobile_header,
+        || view(Vec::<Primitive>::new()).into_primitive(),
+    );
+    ui! { View { header scroll } }
+}
+
+/// Mobile-style top bar — menu button on the left, current screen's
+/// title centered (well, leading-aligned in the available space) on
+/// the right. Pinned to the screen top via `position: absolute` from
+/// the `MobileHeader` stylesheet; visible only at narrow widths via
+/// the reactive `when(...)` gate in [`layout`] / [`layout_with_toc`].
+///
+/// The title text is reactive on the SDK's `active_route` signal —
+/// captured into a thread-local in
+/// [`crate::responsive::set_active_route`] (called from the sidebar
+/// builder where the SDK passes it through). Pre-bind (before the
+/// navigator's first build), the title is empty rather than panic.
+///
+/// The trailing slot is intentionally empty for now; the function
+/// can take `Option<Primitive>` arguments when the site grows a
+/// per-screen action (share, link to source, etc.).
+pub fn mobile_header() -> Primitive {
+    let header_style = MobileHeader();
+    let title_wrap_style = MobileHeaderTitleWrap();
+    let title_style = move || StyleApplication::new(MobileHeaderTitle::sheet());
+    let button_style = move || StyleApplication::new(MobileHeaderButton::sheet());
+
+    // --- menu button (leading) ---
+    let menu_icon: Primitive = ui! { Text(style = button_style) { "\u{2630}" } };
+    let menu_button = pressable(vec![menu_icon], || crate::responsive::open_drawer())
+        .into_primitive();
+
+    // --- title (center) ---
+    // Reading `active_route_signal()` returns the stable mirror;
+    // `.get()` subscribes the surrounding text-reactive scope so
+    // the title re-renders on every navigation.
+    let title_source = || {
+        let sig = crate::responsive::active_route_signal();
+        label_for_route(sig.get()).to_string()
+    };
+    let title_view: Primitive = text(title_source).with_style(title_style).into_primitive();
+    let title_node = ui! {
+        View(style = title_wrap_style) { title_view }
+    };
+
+    ui! {
+        View(style = header_style) {
+            menu_button
+            title_node
+        }
+    }
 }
 
 /// Render the TOC panel. The active highlight is driven by
@@ -368,6 +460,11 @@ fn nav_link(
         },
         "backends" => ui! {
             Link(route = &BACKENDS_ROUTE, params = ()) {
+                Text(style = style) { label_text }
+            }
+        },
+        "server-functions" => ui! {
+            Link(route = &SERVER_FUNCTIONS_ROUTE, params = ()) {
                 Text(style = style) { label_text }
             }
         },

@@ -12,6 +12,7 @@ pub mod further_reading;
 pub mod home;
 pub mod install;
 pub mod quickstart;
+pub mod server_functions;
 pub mod targets;
 pub mod why_rust;
 

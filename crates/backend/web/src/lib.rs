@@ -55,6 +55,7 @@ pub mod render_loop;
 pub mod scheduler;
 mod style;
 pub mod time_source;
+mod viewport_observer;
 
 #[cfg(feature = "async-driver")]
 pub use async_executor::install_async_executor;
@@ -65,6 +66,7 @@ pub use drop_deferral::install_drop_deferral;
 pub use render_loop::install_render_loop;
 pub use scheduler::install_scheduler;
 pub use time_source::install_time_source;
+pub use viewport_observer::install_viewport_observer;
 
 /// Install a `Weak` self-handle for the active `WebBackend`. Required
 /// by any code path that needs `&mut WebBackend` from outside the

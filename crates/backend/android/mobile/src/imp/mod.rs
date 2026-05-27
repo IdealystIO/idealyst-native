@@ -468,7 +468,7 @@ impl AndroidBackend {
     /// pixels. Taffy works in dp so the layout pass needs the host
     /// size in the same units the rest of the style path uses.
     fn viewport_size(&self) -> (f32, f32) {
-        with_env(|env| {
+        let (w, h) = with_env(|env| {
             let host = self.root.as_obj();
             let (w_px, h_px) = (
                 env.call_method(host, "getWidth", "()I", &[])
@@ -486,7 +486,21 @@ impl AndroidBackend {
             // unit the StyleRules use.
             let density = density_of(env, host).unwrap_or(1.0);
             (w_px as f32 / density, h_px as f32 / density)
-        })
+        });
+        // Mirror into the framework's reactive viewport signal so
+        // `viewport_size()` subscribers (breakpoint hooks, responsive
+        // containers) re-fire on size changes. Dedup-by-equality
+        // inside `set_viewport_size` keeps the per-layout-pass sample
+        // cheap when the host didn't actually resize. Skip pushing
+        // when both dims are zero — pre-layout reads shouldn't
+        // overwrite a previously-valid value.
+        if w > 0.0 && h > 0.0 {
+            runtime_core::set_viewport_size(runtime_core::ViewportSize {
+                width: w,
+                height: h,
+            });
+        }
+        (w, h)
     }
 
     /// Public wrapper around [`Self::run_layout_pass`]. Used by the

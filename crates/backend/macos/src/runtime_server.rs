@@ -116,10 +116,14 @@ pub fn teardown() {
 fn sample_viewport(view: &Retained<NSView>) -> Option<WireViewport> {
     let bounds: CGRect = unsafe { msg_send![view, bounds] };
     if bounds.size.width > 0.0 && bounds.size.height > 0.0 {
-        Some(WireViewport {
-            width: bounds.size.width as f32,
-            height: bounds.size.height as f32,
-        })
+        let width = bounds.size.width as f32;
+        let height = bounds.size.height as f32;
+        // Mirror the wire-side report into the framework's reactive
+        // viewport signal. `set_viewport_size` dedupes by equality so
+        // the per-tick sample only re-fires subscribers on actual
+        // resize.
+        runtime_core::set_viewport_size(runtime_core::ViewportSize { width, height });
+        Some(WireViewport { width, height })
     } else {
         None
     }

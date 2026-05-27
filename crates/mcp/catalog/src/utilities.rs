@@ -143,11 +143,11 @@ inventory::submit! {
 inventory::submit! {
     UtilityEntry {
         name: "viewport_size",
-        module_path: "runtime_core::layout",
-        docs: "Current viewport size in device-independent pixels. Tracks rotation / window-resize / browser-resize reactively.",
+        module_path: "runtime_core",
+        docs: "Reactive `Signal<ViewportSize>` carrying the host window / root view's logical size in device-independent pixels. Updates on rotation / window-resize / browser-resize. Read inside an effect or derived to subscribe; build a `current_breakpoint()`-style helper on top by comparing width against the theme's thresholds.",
         params: &[],
-        return_type: "Size<f32>",
-        return_type_short: "Size",
+        return_type: "Signal<ViewportSize>",
+        return_type_short: "Signal<ViewportSize>",
         category: UtilityCategory::Layout,
         _seal: (),
     }

@@ -118,8 +118,7 @@ fn acknowledgements() -> Primitive {
         ui! {
             Typography(content = "Idealyst's earlier React Native incarnation \u{2014} the \
                 project's original form before this Rust rewrite \u{2014} lives at \
-                github.com/IdealystIO/idealyst-framework. The Rust framework took shape \
-                after years of running the RN version in production.".to_string(),
+                github.com/IdealystIO/idealyst-framework.".to_string(),
                 tone = TypographyTone::Muted)
         },
     ];

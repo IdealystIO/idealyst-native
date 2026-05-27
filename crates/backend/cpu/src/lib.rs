@@ -135,6 +135,16 @@ impl CpuBackend {
     /// Taffy compute.
     pub fn set_viewport(&mut self, width: u32, height: u32) {
         self.viewport = (width, height);
+        // Mirror into the framework's reactive viewport signal.
+        // Reactive subscribers (breakpoint hooks, responsive
+        // containers) re-fire here even though the CPU backend has
+        // no native resize event to drive this — the host is in
+        // charge of calling `set_viewport` and so the host is in
+        // charge of when the signal updates.
+        runtime_core::set_viewport_size(runtime_core::ViewportSize {
+            width: width as f32,
+            height: height as f32,
+        });
     }
 
     /// Current viewport dimensions in pixels — `(width, height)`.

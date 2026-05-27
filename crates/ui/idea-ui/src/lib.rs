@@ -56,6 +56,7 @@
 #[cfg(feature = "docs")]
 extern crate self as idea_ui;
 
+pub mod breakpoint;
 pub mod components;
 #[cfg(feature = "docs")]
 pub mod doc_controls;
@@ -65,6 +66,9 @@ pub mod stylesheets;
 pub mod theme;
 mod theme_runtime;
 
+pub use breakpoint::{
+    breakpoints, current_breakpoint, install_breakpoints, Breakpoint, Breakpoints,
+};
 pub use theme::{
     dark_theme, idea_color, idea_header, install_idea_theme, light_theme, set_idea_theme, Colors,
     IdeaTheme, IdeaThemeDefaults, IdeaThemeRef, IntentColors, Intents, Radius, Spacing, Typography,

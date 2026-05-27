@@ -22,6 +22,7 @@ pub const DEMO_NAVIGATION_ROUTE: Route<()> = Route::<()>::new("demo-navigation",
 
 // ---- Reference ----
 pub const BACKENDS_ROUTE: Route<()> = Route::<()>::new("backends", "/backends");
+pub const SERVER_FUNCTIONS_ROUTE: Route<()> = Route::<()>::new("server-functions", "/server-functions");
 pub const AGENTIC_ROUTE: Route<()> = Route::<()>::new("agentic", "/agentic");
 pub const FURTHER_READING_ROUTE: Route<()> = Route::<()>::new("further-reading", "/further-reading");
 
@@ -41,6 +42,25 @@ pub struct IndexEntry {
 pub struct IndexSection {
     pub title: &'static str,
     pub entries: &'static [IndexEntry],
+}
+
+/// Resolve a route name to a display label by walking `SECTIONS`.
+/// Used by the mobile-header to mirror the sidebar's vocabulary so
+/// the in-bar title agrees with the sidebar's selected link. Falls
+/// back to the route name itself for tangent pages not in the
+/// sidebar (e.g. `/targets`) — better than blanking the header.
+pub fn label_for_route(name: &str) -> &'static str {
+    for section in SECTIONS {
+        for entry in section.entries {
+            if entry.name == name {
+                return entry.label;
+            }
+        }
+    }
+    match name {
+        "targets" => "Targets",
+        _ => "",
+    }
 }
 
 /// Sidebar layout — `title` is the section header; entries render in
@@ -72,6 +92,7 @@ pub const SECTIONS: &[IndexSection] = &[
         title: "Reference",
         entries: &[
             IndexEntry { name: "backends", label: "Backends" },
+            IndexEntry { name: "server-functions", label: "Server functions" },
             IndexEntry { name: "agentic", label: "Robot & MCP" },
             IndexEntry { name: "further-reading", label: "Further reading" },
         ],

@@ -280,6 +280,16 @@ declare_class!(
             let changed = (lw - w).abs() > 0.5 || (lh - h).abs() > 0.5;
             if changed {
                 self.ivars().last_size.set((w, h));
+                // Push to the framework's reactive viewport signal so
+                // `viewport_size()` subscribers (responsive containers,
+                // breakpoint hooks) re-fire. We do this on the FIRST
+                // measurement too — unlike the layout-pass kick below
+                // — because author code may want the initial value
+                // even on the very first frame.
+                runtime_core::set_viewport_size(runtime_core::ViewportSize {
+                    width: w,
+                    height: h,
+                });
                 if lw != 0.0 || lh != 0.0 {
                     crate::imp::schedule_layout_pass();
                 }

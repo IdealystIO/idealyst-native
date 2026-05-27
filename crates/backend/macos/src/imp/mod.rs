@@ -1894,6 +1894,15 @@ impl Backend for MacosBackend {
             width: bounds.size.width as f32,
             height: bounds.size.height as f32,
         };
+        // Mirror into the framework's reactive viewport signal so
+        // `viewport_size()` subscribers (breakpoint hooks, responsive
+        // containers) re-fire on window resize. Dedup-by-equality
+        // inside `set_viewport_size` keeps this cheap when bounds
+        // didn't actually change.
+        runtime_core::set_viewport_size(runtime_core::ViewportSize {
+            width: viewport.width,
+            height: viewport.height,
+        });
         if viewport.width <= 0.0 || viewport.height <= 0.0 {
             // Still nothing — nothing to compute against. The next
             // window resize will trigger a layout pass with real

@@ -14,6 +14,7 @@ mod identity;
 mod primitive;
 mod reactive;
 mod safe_area;
+mod viewport;
 pub mod scheduling;
 pub mod session;
 pub mod time;
@@ -131,6 +132,7 @@ pub use async_reducer::{async_reducer, AsyncReducer, AsyncStatus};
 #[cfg(feature = "async-driver")]
 pub use network_state::NetworkState;
 pub use safe_area::{safe_area_insets, set_safe_area_insets, EdgeInsets, SafeAreaSides};
+pub use viewport::{set_viewport_size, viewport_size, ViewportSize};
 pub use scheduling::{
     after_animation_frame, after_ms, after_ms_scoped, raf_loop, raf_loop_scoped,
     schedule_microtask, RafLoop, ScheduledTask,
