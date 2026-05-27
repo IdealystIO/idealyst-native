@@ -2,8 +2,16 @@ target/
 .playwright-mcp/
 .DS_Store
 /examples/hello-ios/ios/build
-/examples/hello-roku/dist
-/examples/website/dist
+dist/
+# wasm-pack output. Dev mode writes here so the dev HTTP server can
+# serve it directly; `idealyst build --web` stages into `dist/`
+# instead. Either way the contents are 100% generated — never
+# commit them.
+pkg/
+# Pre-wasm-split chunk-output dirs from the old separate-crate
+# chunk machinery. Kept as a rule in case anyone has stale local
+# copies lying around.
+pkg-*/
 .claude/scheduled_tasks.lock
 /benchmark/runner/node_modules
 .idealyst/

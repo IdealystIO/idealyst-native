@@ -46,11 +46,21 @@ use windows::Win32::Graphics::Gdi::HBRUSH;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetWindowLongPtrW,
     RegisterClassExW, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
-    BS_DEFPUSHBUTTON, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, SS_LEFT, SWP_NOACTIVATE,
+    BS_DEFPUSHBUTTON, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HMENU, SWP_NOACTIVATE,
     SWP_NOZORDER, SW_SHOW, WINDOW_EX_STYLE, WM_MOUSEWHEEL, WM_NCDESTROY, WNDCLASSEXW,
     WS_CHILD, WS_VISIBLE,
 };
 use windows::Win32::Foundation::RECT;
+
+// STATIC control style constants. The `windows` crate dropped these
+// from its `WindowsAndMessaging` re-exports somewhere between 0.5x and
+// 0.58 (they're not part of the metadata Microsoft ships anymore;
+// only the BS_* button-style family survived). Per Win32 headers
+// (winuser.h): SS_LEFT = 0x00000000, SS_NOTIFY = 0x00000100. These
+// are plain bit-flags, not WINDOW_STYLE struct constants, so they
+// don't need `.0` field access — just `|` them into the style u32.
+const SS_LEFT: i32 = 0x0000_0000;
+const SS_NOTIFY: i32 = 0x0000_0100;
 
 // =========================================================================
 // Node — opaque HWND wrapper so the Backend trait's `type Node` is Clone
@@ -64,6 +74,21 @@ use windows::Win32::Foundation::RECT;
 pub struct WindowsNode {
     pub(crate) id: u64,
     pub(crate) hwnd: HWND,
+}
+
+impl WindowsNode {
+    /// Access the underlying HWND for SDK extensions that need to
+    /// send Win32 messages directly (e.g. toolbar leaf's
+    /// `SendMessageW` for TB_ADDBUTTONS).
+    pub fn hwnd(&self) -> HWND {
+        self.hwnd
+    }
+
+    /// Internal id allocator output. Useful for SDK code that needs
+    /// to correlate a node back to backend-side metadata.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
 }
 
 impl std::fmt::Debug for WindowsNode {
@@ -109,6 +134,13 @@ pub struct WindowsBackend {
     /// `NodeMeta`'s `on_click` slot for diagnostics + future
     /// keyboard-activation routing.
     command_handlers: HashMap<u16, Rc<dyn Fn()>>,
+    /// Third-party `Primitive::External` registry. Populated by
+    /// `register_external::<T>(...)` calls from per-platform leaf
+    /// crates (e.g. `toolbar::register_windows`). `create_external`
+    /// looks up the handler by payload TypeId; unregistered kinds
+    /// fall through to a "not supported" placeholder. Mirrors the
+    /// iOS / macOS pattern.
+    pub(crate) external_handlers: runtime_core::ExternalRegistry<WindowsBackend>,
 }
 
 struct NodeMeta {
@@ -142,7 +174,78 @@ impl WindowsBackend {
             layout_for_id: HashMap::new(),
             next_control_id: 100,
             command_handlers: HashMap::new(),
+            external_handlers: runtime_core::ExternalRegistry::new(),
         }
+    }
+
+    /// Borrow the host HWND. Third-party SDK extensions (the `menu`
+    /// SDK's HMENU attach via `SetMenu`, future toolbar leaf's
+    /// child-window parent) reach the host window through this.
+    pub fn host_hwnd(&self) -> HWND {
+        self.host_hwnd
+    }
+
+    /// Register a handler for the third-party external primitive whose
+    /// payload type is `T`. Called by per-platform leaf crates during
+    /// app bootstrap (`toolbar::register(&mut backend)`). The handler
+    /// receives the typed payload + a mutable borrow of the backend
+    /// and produces the `WindowsNode` to mount. Mirrors the iOS /
+    /// macOS pattern.
+    pub fn register_external<T, F>(&mut self, handler: F)
+    where
+        T: 'static,
+        F: Fn(&Rc<T>, &mut WindowsBackend) -> WindowsNode + 'static,
+    {
+        self.external_handlers.register::<T, _>(handler);
+    }
+
+    /// `true` if a handler for payload type `T` has been registered.
+    /// Useful for opt-in graceful degradation in user code.
+    pub fn has_external<T: 'static>(&self) -> bool {
+        self.external_handlers.has::<T>()
+    }
+
+    /// SDK extension helper: allocate a fresh Win32 control id +
+    /// install `on_click` as its WM_COMMAND handler. Returns the id
+    /// for use as the lParam/hMenu/menu-item-id of whatever native
+    /// control fires WM_COMMAND with that id. Used by the `menu`
+    /// SDK to wire HMENU command items into the same dispatch path
+    /// buttons use — host's WndProc calls
+    /// [`Self::dispatch_command`] with `LOWORD(wParam)` and our
+    /// stored closure fires.
+    pub fn register_command_handler(&mut self, on_click: Rc<dyn Fn()>) -> u16 {
+        let id = self.alloc_control_id();
+        self.command_handlers.insert(id, on_click);
+        id
+    }
+
+    /// Install a `WM_COMMAND` handler under a caller-supplied id.
+    /// Used by SDK leaves (`toolbar::flush_pending`) that allocate
+    /// ids out of their own namespace — e.g. the toolbar SDK uses
+    /// 40000+ to avoid colliding with the backend's own 100+ pool
+    /// for buttons. Overwrites any existing handler at that id.
+    pub fn install_command_handler_with_id(&mut self, id: u16, on_click: Rc<dyn Fn()>) {
+        self.command_handlers.insert(id, on_click);
+    }
+
+    /// SDK extension helper: register an HWND with the backend's
+    /// layout tree so flex parents can size + position it. Third-
+    /// party `register_external` handlers call this once after
+    /// constructing their native child window so the layout pass
+    /// picks it up. Without it, the HWND is laid out as 0×0.
+    pub fn register_external_view(&mut self, hwnd: HWND) -> WindowsNode {
+        let id = self.alloc_id();
+        let layout = self.layout.new_node();
+        self.layout_for_id.insert(id, layout);
+        self.nodes.insert(
+            id,
+            NodeMeta {
+                hwnd,
+                on_click: None,
+                control_id: None,
+            },
+        );
+        WindowsNode { id, hwnd }
     }
 
     fn alloc_id(&mut self) -> u64 {
@@ -160,7 +263,7 @@ impl WindowsBackend {
         let id = self.next_control_id;
         self.next_control_id = self.next_control_id.wrapping_add(1);
         if self.next_control_id == 0 {
-            log::warn!(
+            eprintln!(
                 "[backend-windows] control id allocator wrapped \
                  — distinct controls may now share an id"
             );
@@ -202,16 +305,18 @@ impl WindowsBackend {
         control_id: Option<u16>,
     ) -> WindowsNode {
         let text_wide = to_pcwstr(text);
-        // hMenu carries the control id for WS_CHILD windows. The
-        // `windows` crate types it as `Option<HMENU>`; HMENU is a
-        // `HANDLE` newtype wrapping a pointer. Casting a u16
-        // through `usize` to a pointer gives Win32 the value it
-        // wants in the low word.
-        let hmenu = control_id.map(|cid| {
-            windows::Win32::UI::WindowsAndMessaging::HMENU(
-                cid as usize as *mut std::ffi::c_void,
-            )
-        });
+        // hMenu carries the control id for WS_CHILD windows. HMENU is a
+        // HANDLE newtype wrapping a pointer; casting a u16 through
+        // `usize` to a pointer gives Win32 the value it wants in the
+        // low word. When there's no control id (Text labels, etc.)
+        // we pass a null HMENU instead — windows 0.58 dropped the
+        // `Option<HMENU>` parameter shape in favor of plain `HMENU`
+        // with `HMENU(null)` meaning "no menu", same as the Win32 C
+        // API takes a literal `NULL` pointer.
+        let hmenu: HMENU = match control_id {
+            Some(cid) => HMENU(cid as usize as *mut std::ffi::c_void),
+            None => HMENU(std::ptr::null_mut()),
+        };
         let hwnd = unsafe {
             CreateWindowExW(
                 WINDOW_EX_STYLE(0),
@@ -224,7 +329,11 @@ impl WindowsBackend {
                 0,
                 0,
                 0,
-                Some(self.host_hwnd),
+                // windows 0.58 changed CreateWindowExW's parent/hMenu
+                // parameters from `Option<HWND>` / `Option<HMENU>` to
+                // `Param<HWND>` / `Param<HMENU>`. Plain values now;
+                // null when you want "none", not `None`.
+                self.host_hwnd,
                 hmenu,
                 None,
                 None,
@@ -247,7 +356,7 @@ impl WindowsBackend {
     /// "X not supported" text in a `STATIC` HWND. Routes through
     /// `create_child` so the layout tree picks it up too.
     fn placeholder(&mut self, message: &str) -> WindowsNode {
-        self.create_child(class_static(), message, SS_LEFT.0 as u32, None)
+        self.create_child(class_static(), message, SS_LEFT as u32, None)
     }
 }
 
@@ -456,11 +565,11 @@ impl Backend for WindowsBackend {
         // STATIC class with no text — acts as a transparent
         // container. Real Win32 apps typically use a custom WNDCLASS
         // for layout containers; STATIC is fine as a scaffold.
-        self.create_child(class_static(), "", SS_LEFT.0 as u32, None)
+        self.create_child(class_static(), "", SS_LEFT as u32, None)
     }
 
     fn create_text(&mut self, content: &str, _a11y: &AccessibilityProps) -> Self::Node {
-        self.create_child(class_static(), content, SS_LEFT.0 as u32, None)
+        self.create_child(class_static(), content, SS_LEFT as u32, None)
     }
 
     fn create_button(
@@ -482,7 +591,7 @@ impl Backend for WindowsBackend {
         let node = self.create_child(
             class_button(),
             label,
-            BS_DEFPUSHBUTTON.0 as u32,
+            BS_DEFPUSHBUTTON as u32,
             Some(control_id),
         );
         if let Some(meta) = self.nodes.get_mut(&node.id) {
@@ -510,9 +619,7 @@ impl Backend for WindowsBackend {
         let node = self.create_child(
             class_static(),
             "",
-            (SS_LEFT.0
-                | windows::Win32::UI::WindowsAndMessaging::SS_NOTIFY.0)
-                as u32,
+            (SS_LEFT | SS_NOTIFY) as u32,
             Some(control_id),
         );
         if let Some(meta) = self.nodes.get_mut(&node.id) {
@@ -533,9 +640,11 @@ impl Backend for WindowsBackend {
         // walks reach this node. Without it, the framework's
         // logical parent/child differs from Win32's HWND tree.
         unsafe {
+            // windows 0.58 dropped the `Option<HWND>` parent param;
+            // it's now `Param<HWND>`. Pass the bare HWND.
             let _ = windows::Win32::UI::WindowsAndMessaging::SetParent(
                 child.hwnd,
-                Some(parent.hwnd),
+                parent.hwnd,
             );
         }
     }
@@ -663,7 +772,7 @@ impl Backend for WindowsBackend {
         // Real Win32 EDIT control would land here. For the scaffold,
         // use a STATIC with the initial value so the field is at
         // least visible.
-        self.create_child(class_static(), initial_value, SS_LEFT.0 as u32, None)
+        self.create_child(class_static(), initial_value, SS_LEFT as u32, None)
     }
 
     fn create_text_area(
@@ -674,7 +783,7 @@ impl Backend for WindowsBackend {
         _on_key_down: Option<runtime_core::primitives::key::KeyDownHandler>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        self.create_child(class_static(), initial_value, SS_LEFT.0 as u32, None)
+        self.create_child(class_static(), initial_value, SS_LEFT as u32, None)
     }
 
     fn create_toggle(
@@ -759,13 +868,26 @@ impl Backend for WindowsBackend {
 
     fn create_external(
         &mut self,
-        _type_id: std::any::TypeId,
+        type_id: std::any::TypeId,
         type_name: &'static str,
-        _payload: &Rc<dyn std::any::Any>,
+        payload: &Rc<dyn std::any::Any>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
+        // Look up the registered handler for `type_id`. If found,
+        // invoke it with the typed payload + `&mut self`; if not,
+        // fall through to the labeled placeholder so the missing
+        // SDK is visible at runtime (matches the iOS / macOS posture
+        // for unregistered externals).
+        //
+        // Clone the registry slot out before mutably borrowing
+        // `self` for the handler call — `ExternalRegistry` stores
+        // its handlers as `Rc<dyn ErasedHandler<_>>`, so the clone
+        // is cheap and breaks the borrow conflict.
+        if let Some(handler) = self.external_handlers.get(type_id) {
+            return handler(payload, self);
+        }
         self.placeholder(&format!(
-            "External \"{type_name}\" not yet implemented on Windows backend"
+            "External \"{type_name}\" not registered on Windows backend"
         ))
     }
 

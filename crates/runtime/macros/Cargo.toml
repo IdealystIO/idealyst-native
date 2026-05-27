@@ -41,3 +41,6 @@ quote = "1"
 # field is still emitted so a future stable Rust will light it up
 # automatically. See mcp_emit.rs / mcp_catalog::EdgeRef.
 proc-macro2 = { version = "1", features = ["span-locations"] }
+# Stable hashing for `lazy! { … }`'s generated function / split-module
+# names. Per-call-site uniqueness comes from the block's token text.
+sha2 = "0.10"

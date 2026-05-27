@@ -256,7 +256,6 @@ docs! {
             [code("create_image"), ", ", code("update_image_src")],
             [code("create_icon"), ", ", code("update_icon_color"), ", ",
              code("update_icon_stroke"), ", ", code("animate_icon_stroke")],
-            [code("create_video"), ", ", code("update_video_src")],
             [code("create_activity_indicator")],
         ),
         p("The walker only calls these if your app uses the corresponding \

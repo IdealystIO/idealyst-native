@@ -388,6 +388,7 @@ mod regression_tests {
                     duration_ms: 0,
                 },
                 targets: Vec::new(),
+                server_bin: None,
             },
         }
     }

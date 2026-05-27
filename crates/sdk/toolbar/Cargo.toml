@@ -19,6 +19,17 @@ license.workspace = true
 [dependencies]
 runtime-core = { workspace = true }
 
+[target.'cfg(target_os = "windows")'.dependencies]
+backend-windows = { workspace = true }
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+backend-linux = { workspace = true }
+gtk4 = "0.9"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 backend-macos = { workspace = true }
 objc2 = "0.5"

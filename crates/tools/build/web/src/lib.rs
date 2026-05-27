@@ -101,20 +101,37 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         &opts.user_features,
     )?;
 
-    wasm_pack_build(&wrapper_dir, opts.release, &opts.user_features)?;
-
-    // wasm-pack writes its output under `<wrapper_dir>/pkg/`. Two
-    // destinations from here:
-    //   * No bundle (dev loop, legacy "open index.html locally" flow):
-    //     sync into `<project_dir>/pkg/` so the user's `index.html`
-    //     (which loads `./pkg/<lib>.js`) and the dev HTTP server can
-    //     find the freshly built JS / wasm at the path they expect.
-    //   * Bundle requested: copy straight into `<bundle>/pkg/`. We
-    //     deliberately do NOT also sync to `<project_dir>/pkg/` —
-    //     bundling is for deployment, and littering the user's
-    //     project root with build artifacts is a footgun (and was
-    //     a complaint).
+    // Direct pipeline (no wasm-pack), so we can hit the flag matrix
+    // wasm-split-cli needs to actually extract chunks:
+    //
+    //   1. `cargo build` with `RUSTFLAGS="-C link-args=--emit-relocs"`
+    //      so the rustc-emitted wasm has the relocation info wasm-split
+    //      needs to rewrite indirect calls.
+    //   2. `wasm-bindgen --keep-lld-exports` so wasm-bindgen preserves
+    //      the LLD-emitted exports wasm-split's reachability walker
+    //      uses to identify chunk-only code.
+    //   3. `wasm-split-cli split` rewrites the bindgened wasm into a
+    //      lean base + per-chunk wasms + a `__wasm_split.js` loader.
+    //   4. `wasm-opt -Oz` runs LAST, per-file, on the base + every
+    //      chunk. wasm-pack ran it BEFORE wasm-bindgen which mangled
+    //      symbols wasm-split needed — that's why my earlier
+    //      website measurements showed 0 KB chunks even when the
+    //      lazy! body was clearly extractable.
     let wrapper_pkg = wrapper_dir.join("pkg");
+    let original_wasm = wrapper_dir
+        .join("target/wasm32-unknown-unknown")
+        .join(if opts.release { "release" } else { "debug" })
+        .join(format!("{}.wasm", manifest.lib_name));
+    cargo_build_wasm(&wrapper_dir, opts.release, &opts.user_features)?;
+    wasm_bindgen_build(&original_wasm, &wrapper_pkg, &manifest.lib_name)
+        .with_context(|| "wasm-bindgen")?;
+    run_wasm_split(&original_wasm, &wrapper_pkg, &manifest.lib_name)
+        .with_context(|| "wasm-split-cli post-build")?;
+    if opts.release {
+        wasm_opt_pkg(&wrapper_pkg)
+            .with_context(|| "wasm-opt post-split")?;
+    }
+
     let (pkg_dir, bundle_dir) = if let Some(out) = opts.bundle_out_dir.as_ref() {
         let staged = stage_bundle(&project_dir, out).with_context(|| {
             format!("stage static bundle at {}", out.display())
@@ -428,11 +445,32 @@ lol_alloc = "0.4"
 aas = ["dep:dev-client", "backend-web/runtime-server"]
 {user_feature_forwards}
 {patch_block}
-# wasm-opt's bundled binaryen rejects bulk-memory ops emitted by recent
-# rustc; pass the enable flags explicitly. `-Oz` prioritizes size like
-# `opt-level = "z"` does for rustc.
-[package.metadata.wasm-pack.profile.release]
-wasm-opt = ["-Oz", "--strip-debug", "--strip-producers", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]
+# Wrapper-level release profile. wasm-pack is no longer in the
+# pipeline (build-web invokes cargo + wasm-bindgen + wasm-split +
+# wasm-opt directly), so the wrapper's [profile.release] is what
+# governs release builds.
+#
+# Key choices, all in service of letting wasm-split-cli actually do
+# its job:
+#   * `lto = "off"` — `"fat"` LTO inlines `#[wasm_split]` annotated
+#     functions back into their callers, which puts their body code
+#     in main and shrinks the chunk to a stub. "off" preserves the
+#     function boundary; wasm-opt's per-chunk pass recovers most of
+#     the LTO size win anyway.
+#   * `codegen-units = 1` — fewer cross-unit indirections in the
+#     emitted wasm gives wasm-split's reachability walker more
+#     precision (it's pessimistic across CU boundaries).
+#   * `strip = "none"` — symbol names alive for wasm-split's
+#     call-graph matching; wasm-opt strips them as a final step.
+#   * `debug = "limited"` — line tables stay so wasm-split can match
+#     calls to their reloc records; stripped by wasm-opt.
+[profile.release]
+opt-level = "z"
+codegen-units = 1
+lto = "off"
+panic = "abort"
+strip = "none"
+debug = "limited"
 "#,
         wrapper_name = wrapper_name,
         lib_name = manifest.lib_name,
@@ -497,8 +535,14 @@ thread_local! {{
         const {{ RefCell::new(None) }};
 }}
 
+// Named `main` (not `start`) because `wasm-split-cli` looks for a
+// function called `main` as the entry point of the call graph it
+// walks to decide what's reachable from the base bundle vs. only
+// from a lazy chunk. The `#[wasm_bindgen(start)]` attribute is what
+// actually marks it as the JS-init entry — the function name is
+// arbitrary as far as wasm-bindgen is concerned.
 #[wasm_bindgen(start)]
-pub fn start() {{
+pub fn main() {{
     console_error_panic_hook::set_once();
 
     // Scheduler + time source + async executor + render loop -- every
@@ -635,41 +679,262 @@ fn read_aas_url() -> Option<String> {{
     Ok(())
 }
 
-fn wasm_pack_build(
+
+/// Run `cargo build --target wasm32-unknown-unknown` against the
+/// wrapper crate. `RUSTFLAGS="-C link-args=--emit-relocs"` is set
+/// (composing with any user-supplied RUSTFLAGS) so the rustc-emitted
+/// wasm carries the relocation info wasm-split-cli needs to identify
+/// indirect-call targets per chunk. Cost is a few KB of metadata
+/// pre-bindgen; stripped from the final bundle by wasm-opt.
+fn cargo_build_wasm(
     wrapper_dir: &Path,
     release: bool,
     user_features: &[String],
 ) -> Result<()> {
-    let mut cmd = Command::new("wasm-pack");
+    let mut cmd = Command::new("cargo");
     cmd.current_dir(wrapper_dir)
         .arg("build")
-        .args(["--target", "web"]);
+        .args(["--target", "wasm32-unknown-unknown"]);
     if release {
         cmd.arg("--release");
-    } else {
-        cmd.arg("--dev");
     }
-    // `--` separates wasm-pack flags from cargo flags it forwards.
-    // Features go on the cargo side — the wrapper's `[features]`
-    // block re-exports each one to the user crate so this turns the
-    // feature on for the actual compile.
     if !user_features.is_empty() {
-        cmd.arg("--")
-            .arg("--features")
-            .arg(user_features.join(","));
+        cmd.arg("--features").arg(user_features.join(","));
     }
+    let existing_rustflags = std::env::var("RUSTFLAGS").unwrap_or_default();
+    let combined = if existing_rustflags.is_empty() {
+        "-C link-args=--emit-relocs".to_string()
+    } else {
+        format!("{existing_rustflags} -C link-args=--emit-relocs")
+    };
+    cmd.env("RUSTFLAGS", combined);
 
     eprintln!(
-        "[build-web] wasm-pack build --target web{} (in {})",
-        if release { " --release" } else { " --dev" },
+        "[build-web] cargo build --target wasm32-unknown-unknown{} (in {})",
+        if release { " --release" } else { "" },
         wrapper_dir.display(),
     );
     let status = cmd
         .status()
-        .with_context(|| "exec wasm-pack — is it on PATH? (cargo install wasm-pack)")?;
+        .with_context(|| "exec cargo")?;
     if !status.success() {
-        anyhow::bail!("wasm-pack exited with {status}");
+        anyhow::bail!("cargo exited with {status}");
     }
+    Ok(())
+}
+
+/// Run `wasm-bindgen --target web --keep-lld-exports` to turn the
+/// rustc-emitted wasm into the JS-callable wasm-bindgen output.
+///
+/// `--keep-lld-exports` is the critical flag: without it,
+/// wasm-bindgen strips the LLD-emitted exports that wasm-split-cli
+/// uses to identify per-chunk reachable code. With them stripped,
+/// wasm-split conservatively keeps everything in the main bundle —
+/// which is exactly what was happening to the website's bundle in
+/// the wasm-pack pipeline.
+///
+/// We also pass `--keep-debug` so wasm-split has the symbol info it
+/// needs to match function references across the relocations. The
+/// final wasm-opt pass strips debug info, so this doesn't bloat the
+/// shipped bundle.
+fn wasm_bindgen_build(
+    original_wasm: &Path,
+    out_dir: &Path,
+    lib_name: &str,
+) -> Result<()> {
+    if out_dir.exists() {
+        fs::remove_dir_all(out_dir)
+            .with_context(|| format!("clear {}", out_dir.display()))?;
+    }
+    fs::create_dir_all(out_dir)
+        .with_context(|| format!("create {}", out_dir.display()))?;
+    eprintln!(
+        "[build-web] wasm-bindgen --target web --keep-lld-exports --keep-debug → {}",
+        out_dir.display(),
+    );
+    let status = Command::new("wasm-bindgen")
+        .args(["--target", "web"])
+        .arg("--keep-lld-exports")
+        .arg("--keep-debug")
+        .args(["--out-name", lib_name])
+        .args(["--out-dir"])
+        .arg(out_dir)
+        .arg(original_wasm)
+        .status()
+        .with_context(|| {
+            "exec wasm-bindgen — is it on PATH? (cargo install wasm-bindgen-cli --version <matching>)"
+        })?;
+    if !status.success() {
+        anyhow::bail!("wasm-bindgen exited with {status}");
+    }
+    Ok(())
+}
+
+/// Run `wasm-opt -Oz` on every .wasm in `pkg_dir` (the base + each
+/// chunk). Runs LAST in the pipeline — after wasm-split — so the
+/// optimizer doesn't strip the symbols / reloc info wasm-split
+/// needed. Per-chunk optimization keeps chunks lean independently.
+fn wasm_opt_pkg(pkg_dir: &Path) -> Result<()> {
+    for entry in fs::read_dir(pkg_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("wasm") {
+            continue;
+        }
+        let tmp = path.with_extension("wasm.opt");
+        let status = Command::new("wasm-opt")
+            .arg("-Oz")
+            .arg("--strip-debug")
+            .arg("--strip-producers")
+            .arg("--enable-bulk-memory")
+            .arg("--enable-nontrapping-float-to-int")
+            .arg("-o")
+            .arg(&tmp)
+            .arg(&path)
+            .status()
+            .with_context(|| {
+                "exec wasm-opt — is binaryen installed? (`brew install binaryen` / apt etc.)"
+            })?;
+        if !status.success() {
+            anyhow::bail!("wasm-opt failed on {}: {status}", path.display());
+        }
+        fs::rename(&tmp, &path)?;
+        eprintln!("[build-web] wasm-opt → {}", path.display());
+    }
+    Ok(())
+}
+
+/// Run `wasm-split-cli split` against the wasm-pack output to extract
+/// `#[wasm_split]`-annotated functions into separate chunk wasms.
+///
+/// Inputs:
+/// - `original_wasm`: the rustc-emitted wasm (in the wrapper's
+///   `target/wasm32-unknown-unknown/<profile>/<lib>.wasm`). Carries
+///   the `linking` / `reloc.*` sections wasm-split-cli needs.
+/// - `pkg_dir`: the wasm-bindgen output directory. Contains
+///   `<lib>_bg.wasm` (the bindgened binary) and `<lib>.js` (the JS
+///   shim). After this fn returns, `<lib>_bg.wasm` is REPLACED by
+///   wasm-split's `main.wasm` and chunk wasms + a `__wasm_split.js`
+///   shim are added alongside.
+///
+/// The emitted `__wasm_split.js` uses some default placeholder URLs
+/// for the chunk wasm files (`/harness/split/...`); we rewrite those
+/// to relative paths that resolve against wherever the bundle is
+/// served. Same for its `import { initSync } from "./main.js"` —
+/// rewritten to `./<lib>.js` so it lands on the wasm-bindgen shim.
+///
+/// Skips silently when the wasm has no `#[wasm_split]` annotations
+/// (wasm-split-cli will emit just `main.wasm` with no chunks; we
+/// detect that and leave the pkg dir alone).
+fn run_wasm_split(
+    original_wasm: &Path,
+    pkg_dir: &Path,
+    lib_name: &str,
+) -> Result<()> {
+    let bindgened_wasm = pkg_dir.join(format!("{lib_name}_bg.wasm"));
+    if !bindgened_wasm.is_file() {
+        anyhow::bail!(
+            "wasm-split: wasm-bindgen output not found at {}",
+            bindgened_wasm.display(),
+        );
+    }
+    if !original_wasm.is_file() {
+        anyhow::bail!(
+            "wasm-split: rustc-emitted wasm not found at {} \
+             (--emit-relocs may not have been applied — RUSTFLAGS issue?)",
+            original_wasm.display(),
+        );
+    }
+
+    let tmp = pkg_dir.join("__wasm_split_tmp");
+    if tmp.exists() {
+        fs::remove_dir_all(&tmp).ok();
+    }
+    fs::create_dir_all(&tmp)
+        .with_context(|| format!("create {}", tmp.display()))?;
+
+    let status = Command::new("wasm-split-cli")
+        .arg("split")
+        .arg(original_wasm)
+        .arg(&bindgened_wasm)
+        .arg(&tmp)
+        .status()
+        .with_context(|| {
+            "exec wasm-split-cli — is it on PATH? (`cargo install wasm-split-cli`)"
+        })?;
+    if !status.success() {
+        anyhow::bail!("wasm-split-cli exited with {status}");
+    }
+
+    // Always present after a successful split.
+    let main_wasm = tmp.join("main.wasm");
+    if !main_wasm.is_file() {
+        anyhow::bail!("wasm-split-cli succeeded but main.wasm is missing");
+    }
+
+    // Replace the bindgened wasm with the split-extracted main.
+    fs::rename(&main_wasm, &bindgened_wasm).with_context(|| {
+        format!("replace {} with split main.wasm", bindgened_wasm.display())
+    })?;
+
+    // Move every chunk/module wasm into pkg_dir alongside the main.
+    // wasm-split's __wasm_split.js references them by basename (after
+    // we strip its hard-coded `/harness/split/` prefix below).
+    let mut chunk_count = 0;
+    for entry in fs::read_dir(&tmp)? {
+        let entry = entry?;
+        let from = entry.path();
+        let Some(name) = from.file_name() else { continue };
+        let name_str = name.to_string_lossy();
+        if name_str.ends_with(".wasm") {
+            fs::rename(&from, pkg_dir.join(&name))?;
+            chunk_count += 1;
+        } else if name_str == "__wasm_split.js" {
+            // Read, rewrite, write to final location.
+            let raw = fs::read_to_string(&from)?;
+            let rewritten = raw
+                // Default shim imports `./main.js` — wasm-bindgen
+                // shim is `<lib>.js`. Patch the import.
+                .replace(
+                    "from \"./main.js\"",
+                    &format!("from \"./{lib_name}.js\""),
+                )
+                // Chunk URLs use a hard-coded `/harness/split/`
+                // prefix. Rewrite to a `./` relative prefix.
+                .replace("/harness/split/", "./")
+                // Critical: the rewritten `./<chunk>.wasm` paths
+                // are document-relative when handed to `fetch()`
+                // — so a page at `/` ends up fetching
+                // `/<chunk>.wasm` instead of the actual
+                // `/pkg/<chunk>.wasm` location. Wrap the fetch URL
+                // in `new URL(url, import.meta.url)` so the chunk
+                // path is resolved relative to the shim's own
+                // module URL (i.e., `/pkg/`). Works regardless of
+                // where the bundle is mounted.
+                .replace(
+                    "const response = await fetch(url);",
+                    "const response = await fetch(new URL(url, import.meta.url));",
+                );
+            fs::write(pkg_dir.join(name), rewritten)?;
+        } else {
+            // Unknown artifact — drop. Future versions may emit
+            // other helpers; revisit if so.
+        }
+    }
+    // Remove the now-empty temp dir.
+    let _ = fs::remove_dir_all(&tmp);
+
+    // wasm-bindgen's main JS shim imports `default` from
+    // `./<lib>.js` — we leave it untouched. The split shim
+    // (`__wasm_split.js`) imports `initSync` from `./<lib>.js` for
+    // memory access. Both share the same wasm-bindgen-generated
+    // file, so no patching of the bindgen shim is needed.
+
+    eprintln!(
+        "[build-web] wasm-split: {} chunk wasm(s) emitted alongside {}_bg.wasm",
+        chunk_count,
+        lib_name,
+    );
     Ok(())
 }
 
@@ -743,15 +1008,13 @@ fn sync_pkg_dir(src: &Path, dst: &Path) -> Result<()> {
     }
     fs::create_dir_all(dst)
         .with_context(|| format!("create {}", dst.display()))?;
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let from = entry.path();
-        let to = dst.join(entry.file_name());
-        if from.is_file() {
-            fs::copy(&from, &to)
-                .with_context(|| format!("copy {} → {}", from.display(), to.display()))?;
-        }
-    }
+    // Recurse so wasm-pack subdirs (notably `snippets/<crate>-<hash>/`
+    // for `#[wasm_bindgen(inline_js = ...)]` blocks) come along.
+    // Missing snippets/ shows up at runtime as a 404 for
+    // `pkg/snippets/.../inline*.js` which the main shim's `import`
+    // tries to resolve. `pkg/` is small (a few hundred KB) so
+    // straight copy stays cheap.
+    copy_dir(src, dst)?;
     Ok(())
 }
 

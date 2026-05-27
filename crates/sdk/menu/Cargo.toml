@@ -35,3 +35,27 @@ objc2-foundation = { version = "0.2", features = [
 # for NSToolbar. NSApplication IS in the backend-macos feature set,
 # but to keep the SDK self-contained on its dep surface we don't lean
 # on backend-macos re-exports here.
+
+[target.'cfg(target_os = "windows")'.dependencies]
+backend-windows = { workspace = true }
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+backend-linux = { workspace = true }
+gtk4 = "0.9"
+
+[target.'cfg(target_os = "ios")'.dependencies]
+backend-ios-mobile = { workspace = true }
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = [
+    "NSString",
+    "NSArray",
+    "NSObject",
+] }
+block2 = "0.5"
+# UIKit menu APIs (UIMenu/UIAction/UIMenuSystem) aren't gated by
+# objc2-ui-kit 0.2 features — we reach them via class!()/msg_send,
+# same posture the iOS webview leaf takes for WKWebView.

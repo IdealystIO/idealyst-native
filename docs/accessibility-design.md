@@ -363,7 +363,7 @@ fn create_button(
 ) -> Self::Node;
 // ... and every other create_*: create_image, create_pressable,
 // create_text_input, create_text_area, create_toggle, create_slider,
-// create_scroll_view, create_video, create_activity_indicator,
+// create_scroll_view, create_activity_indicator,
 // create_virtualizer, create_link, create_navigator, create_portal,
 // create_external — all grow the parameter.
 ```

@@ -84,6 +84,12 @@ pub struct LinuxBackend {
     /// because containers and leaves share the same positioning
     /// surface in GTK4.
     widgets: HashMap<u64, gtk4::Widget>,
+    /// Third-party `Primitive::External` registry. Populated by
+    /// `register_external::<T>(...)` calls from per-platform leaf
+    /// crates. `create_external` looks the handler up by payload
+    /// TypeId; unregistered kinds fall through to a "not supported"
+    /// placeholder label. Mirrors the iOS / macOS / Windows pattern.
+    pub(crate) external_handlers: runtime_core::ExternalRegistry<LinuxBackend>,
 }
 
 impl LinuxBackend {
@@ -108,7 +114,42 @@ impl LinuxBackend {
             layout: LayoutTree::new(),
             layout_for_id: HashMap::new(),
             widgets: HashMap::new(),
+            external_handlers: runtime_core::ExternalRegistry::new(),
         }
+    }
+
+    /// Borrow the host `gtk::Window`. SDK extensions (the `menu`
+    /// SDK installing a GMenu via `set_show_menubar` / future
+    /// toolbar leaf packing buttons into a `GtkHeaderBar`) reach
+    /// the window through this.
+    pub fn host_window(&self) -> &gtk4::Window {
+        &self.host_window
+    }
+
+    /// Register a handler for the third-party external primitive
+    /// whose payload type is `T`. Called by per-platform leaf crates
+    /// during app bootstrap (`toolbar::register(&mut backend)`).
+    /// Mirrors the iOS / macOS / Windows pattern.
+    pub fn register_external<T, F>(&mut self, handler: F)
+    where
+        T: 'static,
+        F: Fn(&Rc<T>, &mut LinuxBackend) -> LinuxNode + 'static,
+    {
+        self.external_handlers.register::<T, _>(handler);
+    }
+
+    /// `true` if a handler for payload type `T` has been registered.
+    pub fn has_external<T: 'static>(&self) -> bool {
+        self.external_handlers.has::<T>()
+    }
+
+    /// SDK extension helper: register an existing widget with the
+    /// backend's layout tree so flex parents can size + position it.
+    /// Returns the wrapped LinuxNode. Mirrors
+    /// `IosBackend::register_external_view` /
+    /// `WindowsBackend::register_external_view`.
+    pub fn register_external_view(&mut self, widget: gtk4::Widget) -> LinuxNode {
+        self.wrap(widget)
     }
 
     fn alloc_id(&mut self) -> u64 {
@@ -540,13 +581,20 @@ impl Backend for LinuxBackend {
 
     fn create_external(
         &mut self,
-        _type_id: std::any::TypeId,
+        type_id: std::any::TypeId,
         type_name: &'static str,
-        _payload: &Rc<dyn std::any::Any>,
+        payload: &Rc<dyn std::any::Any>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
+        // Look up the registered handler for `type_id`; if found,
+        // invoke with the typed payload + `&mut self`; otherwise
+        // render a labeled placeholder so the missing SDK is visible.
+        // Mirrors the iOS / macOS / Windows posture.
+        if let Some(handler) = self.external_handlers.get(type_id) {
+            return handler(payload, self);
+        }
         self.placeholder(&format!(
-            "External \"{type_name}\" not yet implemented on Linux backend"
+            "External \"{type_name}\" not registered on Linux backend"
         ))
     }
 

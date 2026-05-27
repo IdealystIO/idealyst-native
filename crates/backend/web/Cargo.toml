@@ -99,6 +99,9 @@ features = [
     "PopStateEvent",
     "Url",
     "ResizeObserver",
+    # `Response` powers the `Primitive::Lazy` web loader's
+    # `chunk_manifest.json` fetch.
+    "Response",
     "WebSocket",
     "Window",
     # `Navigator` powers `browser_device_label()`'s `userAgent` read;

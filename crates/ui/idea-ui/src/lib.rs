@@ -60,6 +60,7 @@ pub mod breakpoint;
 pub mod components;
 #[cfg(feature = "docs")]
 pub mod doc_controls;
+pub mod extensible;
 pub mod intent;
 pub mod invocations;
 pub mod stylesheets;

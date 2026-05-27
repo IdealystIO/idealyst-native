@@ -391,12 +391,8 @@ pub fn parse_manifest(project_dir: &Path) -> Result<Manifest> {
         .and_then(|l| l.name.clone())
         .unwrap_or_else(|| name.replace('-', "_"));
 
-    let app_raw = parsed
-        .package
-        .metadata
-        .idealyst
-        .and_then(|i| i.app)
-        .unwrap_or_default();
+    let idealyst_raw = parsed.package.metadata.idealyst.unwrap_or_default();
+    let app_raw = idealyst_raw.app.unwrap_or_default();
     // bundle_id is read but not validated here — platforms that
     // need it (iOS, Android, runtime-server, dev) call
     // `manifest.app.require_bundle_id()` so the error is platform-

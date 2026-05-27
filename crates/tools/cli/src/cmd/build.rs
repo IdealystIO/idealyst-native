@@ -203,9 +203,9 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<()> {
         dir,
         build_web::BuildOptions {
             release: args.release,
-            source,
+            source: source.clone(),
             user_features: Vec::new(),
-            bundle_out_dir,
+            bundle_out_dir: bundle_out_dir.clone(),
             gzip: args.gzip,
         },
     )?;
@@ -218,6 +218,11 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<()> {
         if args.gzip { " (gzipped)" } else { "" },
         bundle.display(),
     );
+
+    // TODO(lazy-primitive): post-cargo wasm-split-cli step here.
+    // Read the wasm-pack output, run wasm-split-cli to extract
+    // chunks, emit them into `<bundle>/pkg/`. Coming up next.
+
     if args.gzip {
         eprintln!(
             "[build web] serve with `Content-Encoding: gzip` on every response (the bundle's \

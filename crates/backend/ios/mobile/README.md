@@ -76,7 +76,6 @@ author code), stop. The fix belongs in this backend. See
 Not all primitives are implemented yet. As of this README, the iOS backend
 is missing:
 
-- **`create_video`**: no `AVPlayerLayer` wiring yet.
 - **`create_virtualizer`**: no `UICollectionView`-backed list yet, even
   though the framework's `FlatList` / `Virtualizer` works on web and Android.
 

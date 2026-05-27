@@ -680,6 +680,10 @@ fn launch_web(dir: &Path, args: &Args) -> Result<()> {
                 },
             )
             .context("web build failed (aas + runtime-core/hot-reload)")?;
+
+            // TODO(lazy-primitive): wasm-split-cli post-build step.
+            // Splits the wasm-pack output into base + chunks, emits
+            // chunks into <project>/pkg/. Coming up next.
         }
 
         // ── 2. mDNS browser thread fills `AasContext.aas_url` so
@@ -724,6 +728,11 @@ fn launch_web(dir: &Path, args: &Args) -> Result<()> {
                 },
             )?;
             std::mem::forget(handle);
+
+            // TODO(lazy-primitive): wasm-split-cli post-build step
+            // for the local-mode dev path. Splits the wasm-pack
+            // output into base + chunks, emits chunks into
+            // <project>/pkg/. Mirrors the build path; coming up next.
         }
         let ctx = ReloadContext { gen };
         crate::dlog!(

@@ -324,6 +324,7 @@ mod regression_tests {
                     duration_ms: 0,
                 },
                 targets,
+                server_bin: None,
             },
         }
     }

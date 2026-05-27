@@ -64,6 +64,14 @@ pub mod robot;
 #[doc(hidden)]
 pub use serde_json as __serde_json;
 
+/// Re-export of `wasm-split` (the runtime crate, published as
+/// `wasm-splitter` and aliased back via `package =`) so the `lazy!`
+/// macro's expansion can reach the `#[wasm_split]` attribute without
+/// forcing every author crate to add the dep to its own
+/// `[dependencies]`. Same pattern as `__serde_json` above.
+#[doc(hidden)]
+pub use wasm_split as __wasm_split;
+
 pub use assets::{
     Asset, AssetId, AssetKind, AssetSource, AssetTag, SystemFallback, Typeface, TypefaceFace,
     TypefaceId,
@@ -149,7 +157,7 @@ pub use style::{
 };
 
 pub use runtime_macros::{
-    component, jsx, stylesheet, text_fmt, ui,
+    component, jsx, lazy, stylesheet, text_fmt, ui,
 };
 
 /// MCP-only macros (`#[idealyst_tool]` + `#[derive(IdealystSchema)]`).

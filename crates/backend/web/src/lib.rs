@@ -1508,6 +1508,17 @@ impl Backend for WebBackend {
         node
     }
 
+    /// Set the HTML `id` attribute on the underlying element. Used
+    /// by `Primitive::Lazy`'s web handler to give the placeholder
+    /// container a stable id the chunk's `mount_chunk` can root its
+    /// own `WebBackend` against.
+    fn attach_html_id(&self, node: &Self::Node, id: &str) {
+        use wasm_bindgen::JsCast;
+        if let Some(el) = node.dyn_ref::<web_sys::Element>() {
+            let _ = el.set_attribute("id", id);
+        }
+    }
+
     fn create_reactive_anchor(&mut self) -> Self::Node {
         primitives::view::create_reactive_anchor(self)
     }

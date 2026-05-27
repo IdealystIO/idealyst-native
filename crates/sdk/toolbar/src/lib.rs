@@ -315,20 +315,32 @@ pub use macos::register;
 #[cfg(target_os = "macos")]
 static OPS: &dyn ToolbarOps = macos::OPS;
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+mod windows;
+#[cfg(target_os = "windows")]
+pub use windows::{flush_pending, register};
+#[cfg(target_os = "windows")]
+static OPS: &dyn ToolbarOps = windows::OPS;
+
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+pub use linux::register;
+#[cfg(target_os = "linux")]
+static OPS: &dyn ToolbarOps = linux::OPS;
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 mod fallback {
     use runtime_core::Backend;
 
-    /// No-op register for targets without a native toolbar impl.
-    /// User code calls this unconditionally; on iOS/Android/web/etc.
-    /// it's the right thing — toolbars are a desktop concept. On
-    /// Windows/Linux it's a temporary no-op until those backends
-    /// grow `register_external` + a real toolbar handler.
+    /// No-op register for targets with no toolbar concept (iOS,
+    /// Android, web, terminal, wgpu, ESP, CPU). User code calls
+    /// this unconditionally; the fallback ignores it.
     pub fn register<B: Backend>(_backend: &mut B) {}
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 pub use fallback::register;
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 static OPS: &dyn ToolbarOps = &UnsupportedOps;

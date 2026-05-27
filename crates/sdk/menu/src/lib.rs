@@ -49,12 +49,12 @@
 //!
 //! # Reactive updates
 //!
-//! V1 is install-once. Authors who need dynamic menus (e.g. recently-
-//! opened files) should call [`install`] again with the new spec —
-//! the macOS impl detaches the previous main menu and replaces it.
-//! A future revision can offer a reactive variant that subscribes to
-//! signals via `Effect::new`, mirroring the toolbar SDK's reactive
-//! `items` closure shape.
+//! [`install`] is a one-shot call — call again with a new spec to
+//! swap the bar. For specs that depend on signals (Save enabled only
+//! when dirty, recent-files submenu populated from a `Signal<Vec>`,
+//! checkmarks on view modes), use [`install_reactive`] which takes a
+//! closure and re-fires whenever any signal it reads changes. Same
+//! shape as the toolbar SDK's reactive `items` closure.
 
 use std::rc::Rc;
 
@@ -255,22 +255,96 @@ impl std::ops::BitOr for Modifiers {
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
-pub use macos::install;
+pub use macos::{install, install_reactive};
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+mod windows;
+#[cfg(target_os = "windows")]
+pub use windows::install;
+
+#[cfg(target_os = "windows")]
+/// On Windows, `install_reactive` is best-effort: it calls `spec_fn`
+/// once and installs the result. True reactivity (re-install on
+/// signal change) needs a global-backend hook on `WindowsBackend`
+/// — tracked as a follow-up. The one-shot behavior matches what
+/// `install(backend, spec_fn())` would do.
+pub fn install_reactive<F>(backend: &mut backend_windows::WindowsBackend, spec_fn: F)
+where
+    F: Fn() -> MenuBarSpec + 'static,
+{
+    install(backend, spec_fn());
+}
+
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+pub use linux::install;
+
+#[cfg(target_os = "linux")]
+/// On Linux, `install_reactive` is best-effort: it calls `spec_fn`
+/// once and installs the result. True reactivity (re-install on
+/// signal change) needs a global-backend hook on `LinuxBackend` —
+/// tracked as a follow-up.
+pub fn install_reactive<F>(backend: &mut backend_linux::LinuxBackend, spec_fn: F)
+where
+    F: Fn() -> MenuBarSpec + 'static,
+{
+    install(backend, spec_fn());
+}
+
+#[cfg(target_os = "ios")]
+mod ios;
+#[cfg(target_os = "ios")]
+pub use ios::{apply_to_builder, force_rebuild, idealyst_menu_apply_to_builder, install};
+
+#[cfg(target_os = "ios")]
+/// On iOS, `install_reactive` is best-effort: it calls `spec_fn`
+/// once and installs the result, then forces UIKit to rebuild. The
+/// rebuild reads the stored spec via `apply_to_builder`, so any
+/// signals the closure read will reflect their **current** values
+/// at that moment — but the closure isn't re-run on subsequent
+/// signal changes. True reactivity needs `Effect::new` + a
+/// re-trigger of `force_rebuild` on signal change, which is a
+/// follow-up.
+pub fn install_reactive<F>(backend: &mut backend_ios::IosBackend, spec_fn: F)
+where
+    F: Fn() -> MenuBarSpec + 'static,
+{
+    install(backend, spec_fn());
+}
+
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "ios",
+)))]
 mod fallback {
     use super::MenuBarSpec;
     use runtime_core::Backend;
 
-    /// No-op `install` for targets without a menu-bar backend yet.
-    /// User code calls this unconditionally; on iOS / Android / web /
-    /// etc. it's the right thing (no menu bar exists), on Windows /
-    /// Linux it's a temporary no-op until those backends land.
+    /// No-op `install` for targets with no menu-bar concept. User
+    /// code calls this unconditionally; on iOS / Android / web /
+    /// etc. it's the right thing (no menu bar exists).
     pub fn install<B: Backend>(_backend: &mut B, _spec: MenuBarSpec) {}
+
+    /// No-op reactive `install` for the same targets. Drops the
+    /// closure without calling it; user code that mounts shortcuts
+    /// inside the closure gets nothing on these platforms.
+    pub fn install_reactive<B: Backend, F: Fn() -> MenuBarSpec + 'static>(
+        _backend: &mut B,
+        _spec_fn: F,
+    ) {
+    }
 }
 
-#[cfg(not(target_os = "macos"))]
-pub use fallback::install;
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "ios",
+)))]
+pub use fallback::{install, install_reactive};
 
 // ============================================================================
 // Prelude
@@ -279,6 +353,7 @@ pub use fallback::install;
 /// `use menu::prelude::*;` brings the common types into scope.
 pub mod prelude {
     pub use super::{
-        install, Menu, MenuBarSpec, MenuCommand, MenuItem, Modifiers, Shortcut,
+        install, install_reactive, Menu, MenuBarSpec, MenuCommand, MenuItem, Modifiers,
+        Shortcut,
     };
 }

@@ -8,7 +8,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::{signal, switch, ui, Primitive, Route, Signal, StyleApplication};
+use runtime_core::{lazy, signal, switch, ui, IntoPrimitive, Primitive, Route, Signal, StyleApplication};
 use idea_ui::{tabs, typography, Tab, TypographyKind, TypographyTone};
 
 use crate::components::simulator::{simulator, SimulatorProps};
@@ -100,61 +100,83 @@ fn hero() -> Primitive {
 // =============================================================================
 
 fn hero_simulator() -> Primitive {
-    let stage_style = crate::styles::SimulatorStage();
+    // Wrap the entire simulator subtree in `lazy! { … }` — on web,
+    // wasm-split-cli post-build hoists the body (and its transitive
+    // wgpu / welcome / ios_sim / android_sim deps) into a separate
+    // chunk wasm loaded on demand. On native targets the macro is
+    // transparent: the body compiles inline and runs synchronously.
+    //
+    // The tab strip lives inside the lazy block too — it controls
+    // the simulator's painter, and the framework's current `lazy!`
+    // v1 doesn't support captures across the boundary. A future
+    // version can hoist the tab UI out and pass `active` through
+    // via wasm-split's shared memory (chunks can read parent-owned
+    // signals directly — that's the whole point of wasm-split vs.
+    // serde-bridged chunks). For now, the user sees the placeholder
+    // briefly while the chunk loads, then the chrome + simulator
+    // mount together.
+    lazy! {
+        let stage_style = crate::styles::SimulatorStage();
+        let active: Signal<usize> = signal!(0_usize);
+        let on_change: Rc<dyn Fn(usize)> = Rc::new(move |idx| active.set(idx));
 
-    // 0 = iOS, 1 = Android. Survives the simulator subtree rebuild
-    // because the signal is allocated in `hero_simulator`'s scope,
-    // which is the page's scope (the hero is built once on mount).
-    let active: Signal<usize> = signal!(0_usize);
-    let on_change: Rc<dyn Fn(usize)> = Rc::new(move |idx| active.set(idx));
+        let tab_strip = ui! {
+            Tabs(
+                tabs = vec![
+                    Tab { label: "iOS".to_string() },
+                    Tab { label: "Android".to_string() },
+                ],
+                active = active,
+                on_change = on_change,
+            )
+        };
 
-    let tab_strip = ui! {
-        Tabs(
-            tabs = vec![
-                Tab { label: "iOS".to_string() },
-                Tab { label: "Android".to_string() },
-            ],
-            active = active,
-            on_change = on_change,
-        )
-    };
+        // `switch` re-runs the body closure when the tab changes,
+        // rebuilding the Simulator with the matching painter. The
+        // outgoing Simulator's `on_lost` fires as its Graphics surface
+        // tears down so the wgpu host drops cleanly before the new one
+        // mounts.
+        let dynamic_sim = switch(
+            move || active.get(),
+            |&idx| {
+                let build_ui: Rc<dyn Fn() -> Primitive> = Rc::new(welcome::app);
+                #[cfg(target_arch = "wasm32")]
+                let skin: Option<Rc<dyn host_web::Painter>> = match idx {
+                    1 => Some(Rc::new(android_sim::AndroidSim::new())),
+                    _ => Some(Rc::new(ios_sim::IosSim::new())),
+                };
+                #[cfg(not(target_arch = "wasm32"))]
+                let skin = {
+                    let _ = idx;
+                    None
+                };
+                ui! {
+                    Simulator(
+                        build_ui = build_ui,
+                        skin = skin,
+                    )
+                }
+            },
+        );
 
-    // `switch` re-runs the body closure when the tab changes,
-    // rebuilding the Simulator with the matching painter. The
-    // outgoing Simulator's `on_lost` fires as its Graphics surface
-    // tears down so the wgpu host drops cleanly before the new one
-    // mounts.
-    let dynamic_sim = switch(
-        move || active.get(),
-        |&idx| {
-            let build_ui: Rc<dyn Fn() -> Primitive> = Rc::new(welcome::app);
-            #[cfg(target_arch = "wasm32")]
-            let skin: Option<Rc<dyn host_web::Painter>> = match idx {
-                1 => Some(Rc::new(android_sim::AndroidSim::new())),
-                _ => Some(Rc::new(ios_sim::IosSim::new())),
-            };
-            #[cfg(not(target_arch = "wasm32"))]
-            let skin = {
-                let _ = idx;
-                None
-            };
-            ui! {
-                Simulator(
-                    build_ui = build_ui,
-                    skin = skin,
-                )
-            }
-        },
-    );
+        // Outer chassis: black so it blends with the wgpu engine's
+        // device_frame_pipeline (which paints opaque black on the canvas
+        // outside the screen). See `SimulatorBezel`'s doc.
+        let bezel_style = crate::styles::SimulatorBezel();
+        let bezel = ui! { View(style = bezel_style) { dynamic_sim } };
 
-    // Outer chassis: black so it blends with the wgpu engine's
-    // device_frame_pipeline (which paints opaque black on the canvas
-    // outside the screen). See `SimulatorBezel`'s doc.
-    let bezel_style = crate::styles::SimulatorBezel();
-    let bezel = ui! { View(style = bezel_style) { dynamic_sim } };
-
-    let stage_children: Vec<Primitive> = vec![tab_strip, bezel];
-    ui! { View(style = stage_style) { stage_children } }
+        let stage_children: Vec<Primitive> = vec![tab_strip, bezel];
+        ui! { View(style = stage_style) { stage_children } }
+    }
+    // While the chunk loads, render an empty View styled to the
+    // stage so the surrounding layout doesn't reflow when the
+    // simulator pops in. Recomputing the style fn (it's a cheap
+    // const-ish lookup) since the `lazy!` body is a fn item and
+    // can't capture from the outer scope.
+    .placeholder(|| {
+        ui! { View(style = crate::styles::SimulatorStage()) }.into_primitive()
+    })
+    .into_primitive()
 }
 
 // =============================================================================

@@ -1,20 +1,22 @@
 //! `Primitive::Lazy` build path.
 //!
-//! **Status**: native dispatch works today via the thread-local
-//! [`primitives::lazy::register`](crate::primitives::lazy::register)
-//! registry. Web dispatch is still the placeholder fallback (full
-//! dynamic-import handler lands in PR 6).
+//! Mounts the placeholder synchronously, then spawns an async task
+//! that drives the loader. When the loader's future resolves with
+//! the chunk's `Primitive`, we build it and replace the
+//! placeholder's children with the chunk's content.
 //!
-//! Flow:
+//! - **Wasm**: the loader is `wasm-split`'s generated wrapper. Its
+//!   future awaits the chunk fetch + the chunk's async fn before
+//!   yielding the `Primitive`.
+//! - **Native**: the loader's future resolves synchronously on
+//!   first poll because the chunk's async fn is just a regular
+//!   async function compiled into the same binary.
 //!
-//! - **Non-wasm**: look up the chunk in the thread-local registry.
-//!   If registered, build the chunk's `Primitive` inline as a child
-//!   of the container view and fire `Loaded` → `Rendered`. If not
-//!   registered, fire `Error("chunk not registered")` and render
-//!   the placeholder.
-//! - **Wasm**: render the placeholder, fire `Loading` once. The
-//!   chunk doesn't actually load yet (PR 6 wires the dynamic
-//!   `import()` + `mount_chunk` lifecycle).
+//! The on_state callback fires `Loading` synchronously on mount,
+//! then `Rendered` when the chunk's primitive is built (or `Error`
+//! if the load fails). `Loaded` is skipped — the gap between fetch
+//! completion and primitive resolution is below the resolution of
+//! a human-observable transition.
 
 use super::debug::time_backend_create;
 use super::style::attach_style;
@@ -22,29 +24,23 @@ use crate::accessibility::AccessibilityProps;
 use crate::backend::Backend;
 use crate::handles::RefFill;
 use crate::primitive::Primitive;
-use crate::primitives::lazy::{ChunkId, LazyBridge, LazyState};
+use crate::primitives::lazy::{LazyLoader, LazyState};
 use crate::sources::StyleSource;
-use std::any::{Any, TypeId};
 use std::cell::RefCell;
 use std::rc::Rc;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build<B: Backend + 'static>(
     backend: &Rc<RefCell<B>>,
-    chunk: ChunkId,
-    _type_id: TypeId,
-    _type_name: &'static str,
-    payload: Rc<dyn Any>,
-    _bridge: LazyBridge,
+    loader: LazyLoader,
     on_state: Option<Rc<dyn Fn(LazyState)>>,
     placeholder: Option<Box<dyn Fn() -> Primitive>>,
     style: Option<StyleSource>,
     _ref_fill: Option<RefFill>,
     a11y: AccessibilityProps,
 ) -> B::Node {
-    // Container view that hosts either the chunk (native) or the
-    // placeholder (web fallback today; PR 6 swaps it for the
-    // dynamically loaded chunk).
+    // Container view that hosts the placeholder first, then the
+    // chunk's content once the loader resolves.
     let mut n =
         time_backend_create(pkind!(Lazy), || backend.borrow_mut().create_view(&a11y));
 
@@ -52,86 +48,81 @@ pub(super) fn build<B: Backend + 'static>(
         attach_style(backend, &n, s);
     }
 
-    // --- Native dispatch ---------------------------------------------------
-    //
-    // The chunk crate is a normal cargo dep, so its `app(props)` is
-    // reachable through the thread-local registry. We dispatch
-    // synchronously and mount the resulting primitive inline. The
-    // state callback fires `Loaded` → `Rendered` so author-driven
-    // state UI behaves uniformly across native + web (web will fire
-    // the same sequence asynchronously once PR 6 lands).
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        if let Some(chunk_primitive) =
-            crate::primitives::lazy::dispatch(chunk, payload.clone())
-        {
-            let child_node = super::build_inner(backend, chunk_primitive);
-            backend.borrow_mut().insert(&mut n, child_node);
-            if let Some(cb) = on_state.as_ref() {
-                cb(LazyState::Loaded);
-                cb(LazyState::Rendered);
-            }
-            return n;
-        }
-        // No thunk registered. Fire `Error` so author UI can surface
-        // the misconfiguration. Render the placeholder as the
-        // visible state. This is almost always a missed
-        // `chunks::register(&mut backend)` call at bootstrap.
-        if let Some(cb) = on_state.as_ref() {
-            cb(LazyState::Error(format!(
-                "no chunk registered for ChunkId(\"{chunk}\"); did you call \
-                 `chunks::register(&mut backend)` (or the manual \
-                 `runtime_core::primitives::lazy::register(...)`) at bootstrap?"
-            )));
-        }
-        mount_placeholder(backend, &mut n, placeholder.as_deref());
-        return n;
+    // Fire Loading synchronously so author UI sees a consistent
+    // first event whether the loader is async (web) or resolves on
+    // first poll (native).
+    if let Some(cb) = on_state.as_ref() {
+        cb(LazyState::Loading);
     }
 
-    // --- Web fallback ------------------------------------------------------
-    //
-    // The dynamic-import handler ships in PR 6. Until then we render
-    // the placeholder and fire `Loading` exactly once, so author
-    // state UI sees a coherent (if stuck) lifecycle.
-    #[cfg(target_arch = "wasm32")]
-    {
-        mount_placeholder(backend, &mut n, placeholder.as_deref());
-        if let Some(cb) = on_state.as_ref() {
-            cb(LazyState::Loading);
-        }
-        warn_once(chunk);
-        n
-    }
-}
-
-fn mount_placeholder<B: Backend + 'static>(
-    backend: &Rc<RefCell<B>>,
-    container: &mut B::Node,
-    placeholder: Option<&dyn Fn() -> Primitive>,
-) {
-    if let Some(build) = placeholder {
+    // Mount the placeholder as a child of the container.
+    if let Some(build) = placeholder.as_ref() {
         let child = build();
         let child_node = super::build_inner(backend, child);
-        backend.borrow_mut().insert(container, child_node);
+        backend.borrow_mut().insert(&mut n, child_node);
     }
-}
 
-/// Print a one-shot warning the first time a `Primitive::Lazy`
-/// mounts on web. Prevents spam while still surfacing the "chunk
-/// isn't actually loading" reality during development. Removed by
-/// PR 6 when the web handler ships.
-#[cfg(target_arch = "wasm32")]
-fn warn_once(chunk: ChunkId) {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    static WARNED: AtomicBool = AtomicBool::new(false);
-    if WARNED.swap(true, Ordering::Relaxed) {
-        return;
+    // Track the chunk's mounted node so we can release it on scope
+    // drop — the surrounding `Effect` adopts the slot's RAII via
+    // capture, so when the parent scope drops, the chunk's backend
+    // node releases through the standard cleanup path.
+    let chunk_node: Rc<RefCell<Option<B::Node>>> = Rc::new(RefCell::new(None));
+
+    // Drive the loader inside an async task. The closure captures
+    // the container node, the chunk slot, and the state callback.
+    // On native the future resolves on first poll; on wasm the
+    // `wasm-split` runtime drives the dynamic import + chunk
+    // function invocation before the future yields a Primitive.
+    //
+    // Requires the `async-driver` feature on runtime-core. Without
+    // it the chunk never loads (placeholder stays visible
+    // indefinitely) — Lazy is an async-by-nature primitive, so we
+    // don't pretend to support a non-async build cleanly. The
+    // wrapper template enables async-driver unconditionally; this
+    // gate is purely so the framework itself still compiles in
+    // minimal configurations (the audit + ports may not enable it).
+    #[cfg(feature = "async-driver")]
+    {
+        let backend_for_async = backend.clone();
+        let container = n.clone();
+        let chunk_slot = chunk_node.clone();
+        let state_cb = on_state.clone();
+        crate::driver::spawn_async(async move {
+            let chunk_primitive = (loader)().await;
+            let child_node = super::build_inner(&backend_for_async, chunk_primitive);
+            // Clear the placeholder + insert the chunk's content.
+            // The container stays; only its children swap.
+            {
+                let mut be = backend_for_async.borrow_mut();
+                be.clear_children(&container);
+            }
+            {
+                let mut be = backend_for_async.borrow_mut();
+                let mut container_mut = container.clone();
+                be.insert(&mut container_mut, child_node.clone());
+            }
+            *chunk_slot.borrow_mut() = Some(child_node);
+            if let Some(cb) = state_cb.as_ref() {
+                cb(LazyState::Rendered);
+            }
+        });
     }
-    let msg = format!(
-        "[idealyst::lazy] Primitive::Lazy(chunk={chunk}) mounted on web. The web \
-         chunk-loader is not yet implemented (lands in PR 6); the placeholder \
-         will render but the chunk itself will not load. Native targets work today."
-    );
-    // Don't pull web-sys in here — keep runtime-core platform-free.
-    eprintln!("{msg}");
+    #[cfg(not(feature = "async-driver"))]
+    {
+        // Suppress unused warnings; the loader is dropped (chunk
+        // never loads) and Rendered is never fired.
+        let _ = (loader, &chunk_node);
+    }
+
+    // Hold the chunk_node slot for cleanup-on-scope-drop. The slot
+    // is captured by an Effect that lives on the surrounding scope;
+    // when the scope drops, the Effect's drop fires, dropping the
+    // slot, which drops the chunk's `B::Node` (triggering whatever
+    // release path the backend has registered for nodes — typically
+    // a `Drop` impl on the node type itself).
+    let _cleanup_effect = crate::reactive::Effect::new(move || {
+        let _ = &chunk_node;
+    });
+
+    n
 }

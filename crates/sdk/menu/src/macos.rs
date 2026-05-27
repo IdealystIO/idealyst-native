@@ -39,6 +39,83 @@ use std::rc::Rc;
 /// per the docs — call it once at bootstrap, or again any time you
 /// want to swap the entire bar.
 pub fn install(backend: &mut MacosBackend, spec: MenuBarSpec) {
+    install_impl(backend, spec);
+}
+
+/// Reactive variant: takes a closure that returns a fresh
+/// `MenuBarSpec` each time it's invoked. Wraps the call in
+/// `runtime_core::Effect::new(...)` so any signal the closure reads
+/// re-fires the closure (and re-installs the menu bar) on change.
+///
+/// On macOS the re-fire re-acquires `&mut MacosBackend` through the
+/// global self-handle (`backend_macos::with_global_backend`), so the
+/// host must have called `backend_macos::install_global_self(...)`
+/// before this — `host_appkit::run_with` does this by default, so
+/// app code using the standard host gets reactive behavior for free.
+///
+/// # Example
+/// ```ignore
+/// let is_dirty = signal!(false);
+/// menu::install_reactive(backend, move || MenuBarSpec {
+///     menus: vec![
+///         Menu::new("File").items(vec![
+///             MenuItem::command("Save")
+///                 .enabled(is_dirty.get())
+///                 .shortcut(Shortcut::cmd('s'))
+///                 .on_click(|| log::info!("save"))
+///                 .into(),
+///         ]),
+///     ],
+/// });
+/// // Later, somewhere else in the app:
+/// is_dirty.set(true);
+/// // → Save becomes enabled, the menu bar re-renders.
+/// ```
+pub fn install_reactive<F>(backend: &mut MacosBackend, spec_fn: F)
+where
+    F: Fn() -> MenuBarSpec + 'static,
+{
+    // Initial install runs against the real `&mut backend` we hold.
+    // The reactive closure thereafter re-borrows through the global
+    // self-handle.
+    let initial_spec = spec_fn();
+    install_impl(backend, initial_spec);
+
+    // Re-fire path: Effect closure runs whenever a signal that
+    // `spec_fn` reads changes. We can't hold `&mut MacosBackend`
+    // across re-fires; instead, route through the per-thread global
+    // backend handle (`backend_macos::install_global_self`) the host
+    // installs as part of `host_appkit::run_with`'s setup. The
+    // global handle isn't live yet at the moment THIS function runs
+    // (host installs it AFTER `register_extensions`), so the
+    // closure's FIRST call would no-op — but the initial install
+    // already happened synchronously above, so skipping the first
+    // fire is the right behavior anyway. Effect::new always invokes
+    // its closure once synchronously to record dependencies, so a
+    // per-effect cell tracks that first invocation and skips
+    // re-install on it (while still calling spec_fn so the dep set
+    // captures every signal it reads).
+    let first_fire = std::cell::Cell::new(true);
+    let _effect = runtime_core::Effect::new(move || {
+        let fresh_spec = spec_fn();
+        if first_fire.get() {
+            first_fire.set(false);
+            return;
+        }
+        backend_macos::with_global_backend(|backend| {
+            install_impl(backend, fresh_spec);
+        });
+    });
+    // `Effect::new` returns a handle whose drop frees the slot when
+    // no scope is active. install_reactive is called from outside
+    // any reactive scope (host bootstrap), so the handle owns the
+    // slot; leak it so the effect survives the function return.
+    // The leak is bounded — at most one per install_reactive call
+    // per app lifetime.
+    std::mem::forget(_effect);
+}
+
+fn install_impl(backend: &mut MacosBackend, spec: MenuBarSpec) {
     let mtm = backend.mtm();
 
     // Build the delegate first; we register every command's callback

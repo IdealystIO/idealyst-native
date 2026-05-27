@@ -1536,15 +1536,21 @@ impl VariantSet {
 /// `Some(...)` property):
 ///
 /// 1. **Base**: the stylesheet's `new(|theme| ...)` closure output.
-/// 2. **Variants**: each active variant's overlay closure output.
-/// 3. **Overrides**: per-call-site continuous values (this struct's
-///    `overrides` field). Used for values that can't be enumerated as
-///    discrete variants — e.g. a user-controlled font scale.
+/// 2. **Variants**: each active variant's overlay closure output —
+///    the *closed* matrix declared at `stylesheet!` macro time.
+/// 3. **Computed**: a runtime closure that returns `StyleRules`, paired
+///    with a caller-supplied cache key. Used by *open-extension*
+///    variant systems (e.g. idea-ui's trait-based Variant/Tone/Size)
+///    where the modifier set isn't enumerable at compile time. The
+///    closure runs once per unique key per theme; results are memoized
+///    in `RESOLUTION_CACHE` alongside variant/override resolutions.
+/// 4. **Overrides**: per-call-site continuous values. Used for values
+///    that can't be keyed at all — e.g. a user-controlled font scale.
 ///
 /// The backend sees the merged result; it doesn't know which layer
 /// contributed what. Backend caches (web CSS classes, etc.) key on the
 /// resolved content so each unique combination still gets its own
-/// entry — overrides preserve cacheability without inline styles.
+/// entry.
 #[derive(Clone)]
 pub struct StyleApplication {
     pub sheet: Rc<StyleSheet>,
@@ -1556,6 +1562,33 @@ pub struct StyleApplication {
     /// are no overrides — the common case for stylesheet-only
     /// styling. On 10k styled rows this saved ~80ms.
     has_overrides: bool,
+    /// Optional runtime-computed layer. When present, the closure is
+    /// invoked between the variant and override merges, and its key
+    /// becomes part of the resolution cache key so identical modifier
+    /// sets across instances share a single class.
+    computed: Option<ComputedLayer>,
+}
+
+/// A runtime-evaluated `StyleRules` contribution, paired with a stable
+/// cache key. The framework treats `(sheet, variants, computed.key,
+/// overrides)` as the resolution-cache identity — equal keys reuse the
+/// previously-computed `Rc<StyleRules>`; the closure runs only on cache
+/// misses (first apply or after `update_tokens` invalidates the cache).
+///
+/// Cloneable because the `compute` field is an `Rc`; the closure itself
+/// is heap-allocated once and shared.
+#[derive(Clone)]
+pub struct ComputedLayer {
+    /// Stable identifier for what this closure produces. Two closures
+    /// that yield equivalent `StyleRules` MUST share the same key; two
+    /// closures that yield different outputs MUST have different keys.
+    /// Caller's responsibility — typically derived from the
+    /// modifier-set identity (e.g. `"filled+danger+md+pill"`).
+    pub key: String,
+    /// Returns the property contributions for this layer. Called
+    /// inside the active apply-style `Effect`, so reactive reads
+    /// (token resolutions, signal `.get()` calls) subscribe correctly.
+    pub compute: Rc<dyn Fn() -> StyleRules>,
 }
 
 impl StyleApplication {
@@ -1565,6 +1598,7 @@ impl StyleApplication {
             variants: VariantSet::new(),
             overrides: StyleRules::default(),
             has_overrides: false,
+            computed: None,
         }
     }
 
@@ -1573,6 +1607,41 @@ impl StyleApplication {
     /// empty string) and the full content-keyed path.
     pub fn has_overrides(&self) -> bool {
         self.has_overrides
+    }
+
+    /// Attach a computed layer — a closure that produces `StyleRules`
+    /// at apply time, paired with a stable cache key. The framework
+    /// invokes the closure between the variant and override merges and
+    /// memoizes the result in the resolution cache keyed by `key`.
+    ///
+    /// Typical use: open-extension variant systems where the modifier
+    /// matrix isn't enumerable at compile time. The closure pulls
+    /// property values from the active theme (via whatever theme
+    /// runtime the consumer uses) and returns a `StyleRules`. Two
+    /// `StyleApplication`s with the same `key` share a cached result —
+    /// so identical modifier sets across many element instances yield
+    /// one class on the backend, not N.
+    ///
+    /// The closure runs:
+    /// - On first apply for a given `(sheet, variants, key, overrides)`
+    ///   combination.
+    /// - Again after `update_tokens` (a theme swap) wipes the cache, so
+    ///   theme-dependent reads inside the closure pick up new values.
+    pub fn with_computed(
+        mut self,
+        key: impl Into<String>,
+        compute: impl Fn() -> StyleRules + 'static,
+    ) -> Self {
+        self.computed = Some(ComputedLayer {
+            key: key.into(),
+            compute: Rc::new(compute),
+        });
+        self
+    }
+
+    /// Read-only access to the attached computed layer, if any.
+    pub fn computed(&self) -> Option<&ComputedLayer> {
+        self.computed.as_ref()
     }
 
     pub fn with(
@@ -1893,6 +1962,13 @@ struct Registration {
 struct ResolutionKey {
     sheet: *const StyleSheet,
     variants: VariantSet,
+    /// The computed layer's caller-supplied key, or empty string when
+    /// no computed layer is attached. Two `StyleApplication`s with the
+    /// same `(sheet, variants, computed_key, overrides)` reuse the
+    /// cached `Rc<StyleRules>`; differing `computed_key`s produce
+    /// distinct cache entries so the closure runs once per unique
+    /// modifier set per theme.
+    computed_key: String,
     /// Overrides are part of the cache key — same sheet + variants
     /// but different override values yield different rules and must
     /// be cached separately. Serialized to a content key so we have a
@@ -2267,6 +2343,7 @@ pub fn ensure_registered_with<R, U, I, UPD, RA, RT>(
             let cache_key = ResolutionKey {
                 sheet: sheet_ptr,
                 variants: variants.clone(),
+                computed_key: String::new(),
                 overrides: String::new(),
             };
             cache.insert(cache_key, rc.clone());
@@ -2348,8 +2425,10 @@ pub(crate) fn pregenerate_keyed(sheet: &StyleSheet) -> Vec<(VariantSet, Rc<Style
 /// Cache entries are strong `Rc`s — that's what makes back-to-back
 /// applies of the same style hit the cache.
 pub fn resolve(app: &StyleApplication) -> Rc<StyleRules> {
-    // Fast path: no overrides + pre-registered variants.
-    if !app.has_overrides {
+    // Fast path: no overrides, no computed layer, pre-registered
+    // variants. Skips the full ResolutionKey hash and goes straight
+    // to the stylesheet's pre-resolved arm map.
+    if !app.has_overrides && app.computed.is_none() {
         #[cfg(feature = "debug-stats")]
         let _t_fast = crate::debug::now_micros();
         if let Some(rc) = app.sheet.lookup_variant(&app.variants) {
@@ -2377,9 +2456,15 @@ pub fn resolve(app: &StyleApplication) -> Rc<StyleRules> {
     } else {
         String::new()
     };
+    let computed_key = app
+        .computed
+        .as_ref()
+        .map(|c| c.key.clone())
+        .unwrap_or_default();
     let key = ResolutionKey {
         sheet: Rc::as_ptr(&app.sheet),
         variants: app.variants.clone(),
+        computed_key,
         overrides: overrides_key,
     };
 
@@ -2393,8 +2478,15 @@ pub fn resolve(app: &StyleApplication) -> Rc<StyleRules> {
     crate::debug::record_style_cache_miss();
 
     // Miss. Resolve fresh and stash a strong Rc.
-    let base_and_variants = app.sheet.resolve(&app.variants);
-    let final_rules = base_and_variants.merge(&app.overrides);
+    //
+    // Merge order matches the four-layer model: base+variants form
+    // the floor, then the computed closure's output layers on top,
+    // then per-call-site overrides have the final say.
+    let mut rules = app.sheet.resolve(&app.variants);
+    if let Some(comp) = &app.computed {
+        rules = rules.merge(&(comp.compute)());
+    }
+    let final_rules = rules.merge(&app.overrides);
     let resolved = Rc::new(final_rules);
 
     RESOLUTION_CACHE.with(|c| {
@@ -2633,6 +2725,162 @@ mod tests {
         );
         assert_eq!(r4.font_size, Some(Tokenized::Literal(Length::Px(99.0))));
         assert!(!Rc::ptr_eq(&r3, &r4));
+    }
+
+    // ------------------------------------------------------------------
+    // Computed layer — runtime-evaluated `StyleRules` between variants
+    // and overrides. Used by open-extension variant systems where the
+    // modifier matrix isn't enumerable at compile time.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn computed_layer_merges_between_variants_and_overrides() {
+        let sheet = Rc::new(
+            StyleSheet::new(|_vs: &VariantSet| StyleRules {
+                background: Some(Tokenized::token("surface", Color("#fff".into()))),
+                color: Some(Tokenized::Literal(Color("#111".into()))),
+                font_size: Some(Tokenized::Literal(Length::Px(14.0))),
+                ..Default::default()
+            })
+            .variant("size", "large", |_vs: &VariantSet| StyleRules {
+                font_size: Some(Tokenized::Literal(Length::Px(20.0))),
+                ..Default::default()
+            }),
+        );
+
+        // Computed layer sets background + color. Variant sets font_size.
+        // Override sets font_size to a third value. Result should pick:
+        //   background ← computed (since base+variants didn't override)
+        //   color ← computed (since base set it, computed overrides)
+        //   font_size ← override (override is last layer)
+        let app = StyleApplication::new(sheet.clone())
+            .with("size", "large")
+            .with_computed("filled+danger", || StyleRules {
+                background: Some(Tokenized::Literal(Color("#e5484d".into()))),
+                color: Some(Tokenized::Literal(Color("#ffffff".into()))),
+                ..Default::default()
+            })
+            .override_font_size(99.0);
+        let r = resolve(&app);
+        color_eq(&r.background, "#e5484d");
+        color_eq(&r.color, "#ffffff");
+        assert_eq!(r.font_size, Some(Tokenized::Literal(Length::Px(99.0))));
+    }
+
+    #[test]
+    fn computed_layer_shares_cache_entry_across_equivalent_keys() {
+        let sheet = Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules {
+            ..Default::default()
+        }));
+
+        // Two separate apps with the same computed key produce closures
+        // that return equivalent StyleRules. The framework must reuse a
+        // single cached Rc<StyleRules> — that's what makes 1000 buttons
+        // with `tone=Danger, variant=Filled, size=Md` materialize one
+        // class on the backend, not 1000.
+        let make_app = || {
+            StyleApplication::new(sheet.clone()).with_computed("filled+danger+md", || StyleRules {
+                background: Some(Tokenized::Literal(Color("#e5484d".into()))),
+                ..Default::default()
+            })
+        };
+        let r1 = resolve(&make_app());
+        let r2 = resolve(&make_app());
+        assert!(
+            Rc::ptr_eq(&r1, &r2),
+            "equal computed keys must share the cached Rc<StyleRules>",
+        );
+    }
+
+    #[test]
+    fn computed_layer_distinct_keys_produce_distinct_cache_entries() {
+        let sheet = Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules {
+            ..Default::default()
+        }));
+
+        let app_a = StyleApplication::new(sheet.clone()).with_computed("filled+danger", || StyleRules {
+            background: Some(Tokenized::Literal(Color("#e5484d".into()))),
+            ..Default::default()
+        });
+        let app_b = StyleApplication::new(sheet.clone()).with_computed("filled+success", || StyleRules {
+            background: Some(Tokenized::Literal(Color("#3ba55d".into()))),
+            ..Default::default()
+        });
+
+        let r_a = resolve(&app_a);
+        let r_b = resolve(&app_b);
+        assert!(!Rc::ptr_eq(&r_a, &r_b));
+        color_eq(&r_a.background, "#e5484d");
+        color_eq(&r_b.background, "#3ba55d");
+    }
+
+    #[test]
+    fn computed_layer_reruns_after_token_update() {
+        // Closure reads a token-backed value. After `update_tokens`
+        // wipes the cache, the next resolve must re-run the closure so
+        // theme-dependent reads pick up the new value. This is the
+        // mechanism that makes a custom Tone re-render correctly on
+        // light/dark swap.
+        let sheet = Rc::new(StyleSheet::new(|_vs: &VariantSet| StyleRules {
+            ..Default::default()
+        }));
+        let app = StyleApplication::new(sheet).with_computed("hype-tone", || StyleRules {
+            background: Some(Tokenized::token(
+                "tone-hype-fill-bg",
+                Color("#ff00aa".into()),
+            )),
+            ..Default::default()
+        });
+
+        let r1 = resolve(&app);
+        // Same key + no cache wipe → same Rc.
+        let r2 = resolve(&app);
+        assert!(Rc::ptr_eq(&r1, &r2));
+
+        // Token update wipes the cache. The closure re-runs; the
+        // returned `StyleRules` carries the same token name (so the
+        // resolved class name is theme-stable), but its `Rc` identity
+        // is fresh.
+        update_tokens(&[TokenEntry {
+            name: "tone-hype-fill-bg",
+            value: TokenValue::Color(Color("#cc0088".into())),
+        }]);
+        let r3 = resolve(&app);
+        assert!(!Rc::ptr_eq(&r1, &r3));
+        // Token name is preserved (theme-stable identity) even though
+        // a fresh closure execution constructed the value.
+        assert_eq!(
+            r3.background.as_ref().and_then(|t| t.name()),
+            Some("tone-hype-fill-bg"),
+        );
+    }
+
+    #[test]
+    fn computed_layer_fast_path_disabled_when_attached() {
+        // The fast path (sheet.lookup_variant) skips the resolution
+        // cache entirely and would miss the computed layer. The fast
+        // path must therefore be disabled whenever a computed layer is
+        // present — verify by attaching a computed layer that shadows a
+        // variant's property and confirming the computed value wins.
+        let sheet = Rc::new(
+            StyleSheet::new(|_vs: &VariantSet| StyleRules {
+                color: Some(Tokenized::Literal(Color("#000000".into()))),
+                ..Default::default()
+            })
+            .variant("size", "large", |_vs: &VariantSet| StyleRules {
+                color: Some(Tokenized::Literal(Color("#222222".into()))),
+                ..Default::default()
+            }),
+        );
+
+        let app = StyleApplication::new(sheet)
+            .with("size", "large")
+            .with_computed("custom-color", || StyleRules {
+                color: Some(Tokenized::Literal(Color("#ff00aa".into()))),
+                ..Default::default()
+            });
+        let r = resolve(&app);
+        color_eq(&r.color, "#ff00aa");
     }
 
     #[test]

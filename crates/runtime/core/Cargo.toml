@@ -118,6 +118,10 @@ bitflags = "2"
 # (wgpu, glow, vello, softbuffer, …) on top. Tiny dep — a handful of
 # enums and traits, no platform code.
 raw-window-handle = "0.6"
+# Runtime for `lazy! { ... }` — see the workspace dep declaration for
+# the alias rationale. Re-exported below as `__wasm_split` so the
+# `lazy!` macro's expansion in author crates can reach it.
+wasm-split = { workspace = true }
 
 # Native deps for the optional `async-driver` feature. `pollster`
 # drives the future returned from `spawn_async` on every non-wasm

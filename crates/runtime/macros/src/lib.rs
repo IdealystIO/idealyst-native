@@ -23,6 +23,7 @@ mod case;
 mod component_attr;
 mod invocation_macro;
 mod jsx;
+mod lazy;
 #[cfg(feature = "mcp")]
 mod mcp_emit;
 #[cfg(feature = "mcp")]
@@ -91,6 +92,18 @@ pub fn idealyst_tool(_attr: TokenStream, item: TokenStream) -> TokenStream {
 pub fn ui(input: TokenStream) -> TokenStream {
     let parsed = parse_macro_input!(input as ui::Ui);
     ui::emit(parsed).into()
+}
+
+/// `lazy! { … }` — inline code-splitting boundary. The block's UI
+/// is hoisted into a `#[wasm_split]` async fn so the build-time
+/// wasm-split step can extract it into a separate wasm chunk
+/// loaded on demand. Native targets compile the block inline
+/// (wasm-split's macro is transparent off-wasm).
+///
+/// See the [`lazy`] module for details, constraints, and naming.
+#[proc_macro]
+pub fn lazy(input: TokenStream) -> TokenStream {
+    lazy::emit(input)
 }
 
 /// `jsx! { ... }` — JSX-flavored variant of `ui!`. Same emission backend,

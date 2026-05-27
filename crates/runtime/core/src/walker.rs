@@ -385,29 +385,13 @@ pub(super) fn build_inner<B: Backend + 'static>(
             presence::build(backend, child, present, enter, exit, ref_fill, accessibility)
         }
         Primitive::Lazy {
-            chunk,
-            type_id,
-            type_name,
-            payload,
-            bridge,
+            loader,
             on_state,
             placeholder,
             style,
             ref_fill,
             accessibility,
-        } => lazy::build(
-            backend,
-            chunk,
-            type_id,
-            type_name,
-            payload,
-            bridge,
-            on_state,
-            placeholder,
-            style,
-            ref_fill,
-            accessibility,
-        ),
+        } => lazy::build(backend, loader, on_state, placeholder, style, ref_fill, accessibility),
         Primitive::Repeat { .. } => {
             // `Repeat` represents N sibling nodes, not a single
             // node. It can only appear inside a parent's children

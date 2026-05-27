@@ -125,7 +125,6 @@ members = [
     "examples/toolbar-demo",
     "examples/menu-demo",
     "examples/lazy-demo",
-    "examples/lazy-demo-chunk",
     "benchmark",
     "benchmark/idealyst-native/wasm",
     "benchmark/idealyst-native-anim/wasm",
@@ -237,6 +236,19 @@ ios-navigator-helpers = { path = "crates/sdk/ios-navigator-helpers" }
 # Already in the dep graph transitively (reqwest, ureq, etc.) so adding
 # it as a direct dep of build-web doesn't widen the workspace.
 flate2 = "1"
+
+# Code-splitting primitive (`lazy! { ... }`). Same shape as the
+# `taffy` / `subsecond` deps — standalone tools from the Dioxus team
+# that we pull in independently of the rest of their framework. The
+# CLI half (`wasm-split-cli`) is invoked as a separate binary from
+# our build pipeline; install via `cargo install wasm-split-cli`.
+#
+# The runtime crate is published as `wasm-splitter` (because Google
+# owns the `wasm-split` name on crates.io), but the Dioxus
+# `#[wasm_split]` macro emits paths referencing `wasm_split` —
+# aliasing via `package =` makes both happy: cargo pulls from
+# `wasm-splitter`, the symbol is callable as `wasm_split`.
+wasm-split = { version = "0.8.0-alpha.0", package = "wasm-splitter" }
 
 # Dev profile: `opt-level = "z"` works around a wasm OOB seen at
 # opt-level = 0 (the default). Root cause is likely an UB somewhere

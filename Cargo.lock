@@ -334,6 +334,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-once-cell"
+version = "0.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4288f83726785267c6f2ef073a3d83dc3f9b81464e9f99898240cced85fce35a"
+
+[[package]]
 name = "async-trait"
 version = "0.1.89"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -616,6 +622,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "base16"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d27c3610c36aee21ce8ac510e6224498de4228ad772a171ed65643a24693a5a8"
+
+[[package]]
 name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -806,6 +818,7 @@ dependencies = [
  "anyhow",
  "build-ios",
  "flate2",
+ "serde_json",
  "tempfile",
  "toml 0.8.23",
 ]
@@ -3073,17 +3086,8 @@ dependencies = [
  "backend-ios-mobile",
  "backend-terminal",
  "backend-web",
- "lazy-demo-chunk",
  "runtime-core",
- "serde",
-]
-
-[[package]]
-name = "lazy-demo-chunk"
-version = "0.0.1"
-dependencies = [
- "runtime-core",
- "serde",
+ "wasm-splitter",
 ]
 
 [[package]]
@@ -3337,10 +3341,16 @@ dependencies = [
 name = "menu"
 version = "0.0.1"
 dependencies = [
+ "backend-ios-mobile",
+ "backend-linux",
  "backend-macos",
+ "backend-windows",
+ "block2 0.5.1",
+ "gtk4",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "runtime-core",
+ "windows 0.58.0",
 ]
 
 [[package]]
@@ -4743,6 +4753,7 @@ dependencies = [
  "runtime-macros",
  "serde",
  "serde_json",
+ "wasm-splitter",
 ]
 
 [[package]]
@@ -4759,6 +4770,7 @@ version = "0.0.1"
 dependencies = [
  "proc-macro2",
  "quote",
+ "sha2",
  "syn",
 ]
 
@@ -6012,11 +6024,15 @@ checksum = "756daf9b1013ebe47a8776667b466417e2d4c5679d441c26230efd9ef78692db"
 name = "toolbar"
 version = "0.0.1"
 dependencies = [
+ "backend-linux",
  "backend-macos",
+ "backend-windows",
+ "gtk4",
  "objc2 0.5.2",
  "objc2-app-kit",
  "objc2-foundation 0.2.2",
  "runtime-core",
+ "windows 0.58.0",
 ]
 
 [[package]]
@@ -6533,6 +6549,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4f4d8ae7ad5440360e9799dfd42857d126454a88441ddf72d288ef83fa47f527"
 
 [[package]]
+name = "wasm-split-macro"
+version = "0.8.0-alpha.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d54debda5edb4ceb2ff3bbb0d0f01e8077f10cdfcfa2ae03f73e0ca47837270"
+dependencies = [
+ "base16",
+ "digest",
+ "proc-macro2",
+ "quote",
+ "sha2",
+ "syn",
+]
+
+[[package]]
+name = "wasm-splitter"
+version = "0.8.0-alpha.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad1133d99f7794577bc88d42688da817bc20569765edda2246e357dc1b3eba9b"
+dependencies = [
+ "async-once-cell",
+ "wasm-split-macro",
+]
+
+[[package]]
 name = "wasm-streams"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6720,6 +6760,7 @@ dependencies = [
  "render-api",
  "runtime-core",
  "wasm-bindgen",
+ "wasm-splitter",
  "web-sys",
  "welcome",
 ]

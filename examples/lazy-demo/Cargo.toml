@@ -3,31 +3,22 @@ name = "lazy-demo"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Demo of `Primitive::Lazy` (the framework's code-splitting primitive). Parent app lazy-mounts `lazy-demo-chunk::app(props)` and renders its lifecycle state. Today: native dispatches inline; web renders the placeholder + fires Loading (full web handler ships in PR 6 of the lazy-primitive series)."
+description = "Demo of `lazy! { ... }` — the framework's code-splitting primitive. The marked UI subtree is hoisted into a separate wasm bundle on web (via wasm-split) and inlined as a regular function call on native."
 
 [lib]
 crate-type = ["rlib"]
 
 [dependencies]
 runtime-core = { workspace = true }
-serde = { version = "1", features = ["derive"] }
-
-# The chunk crate is a normal cargo dep on every non-wasm target —
-# on native, `Primitive::Lazy` dispatches through a registered
-# thunk that calls into this dep. On web (lands in PR 6) the chunk
-# will be built as a separate wasm bundle and loaded dynamically,
-# so we'll target-gate it out of the wasm build later. For now,
-# while web is still a stub, having it as an unconditional dep
-# also keeps `lazy-demo-chunk::ChunkProps` reachable from the
-# parent's `lazy::<ChunkProps>(...)` call site (the props type
-# itself isn't platform-specific — it's just data).
-lazy-demo-chunk = { path = "../lazy-demo-chunk" }
 
 # Target-gated backend deps mirror the welcome example. Per-target
-# `register_extensions` lives in `src/lib.rs`; that's where the
-# chunk-registration call goes too.
+# `register_extensions` lives in `src/lib.rs`.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }
+# `lazy!` expands to `#[wasm_split]`-annotated functions on wasm32.
+# The `wasm-split` runtime is needed only on wasm — the macro is
+# transparent on native targets (no dep reference there).
+wasm-split = { workspace = true }
 
 [target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
 backend-ios-mobile = { workspace = true }
@@ -44,11 +35,3 @@ name      = "Lazy Demo"
 bundle_id = "ai.truday.idealyst.lazy_demo"
 version   = "0.0.1"
 targets   = ["web", "ios", "android"]
-
-# Forward-looking — declared so PR 2 (`chunks!()` macro) has
-# something to read once it lands, AND so PR 4 (build-pipeline
-# multi-bundle) knows to emit `pkg-demo/` alongside `pkg/` on web.
-# Today nothing actually consumes this table; it just documents
-# the chunk shape until the macro + build steps catch up.
-[package.metadata.idealyst.chunks]
-demo = { path = "../lazy-demo-chunk", crate = "lazy_demo_chunk" }

@@ -527,39 +527,24 @@ pub enum Primitive {
         accessibility: AccessibilityProps,
     },
     /// Lazy — code-splitting boundary. The subtree is shipped as a
-    /// separate wasm chunk on web and loaded on first mount; on
-    /// native targets the chunk crate is a normal cargo dep and the
-    /// content is rendered inline. See
+    /// separate wasm chunk on web (via `wasm-split`) and inlined
+    /// as a regular function call on native targets. See
     /// [`primitives::lazy`](crate::primitives::lazy) and the design
     /// proposal at `docs/proposals/lazy-primitive.md`.
     ///
-    /// `chunk` identifies the chunk in the project's
-    /// `[package.metadata.idealyst.chunks]` table; author code
-    /// references it via the codegen'd `chunks::*` constants for
-    /// compile-time typo protection.
-    ///
-    /// `payload` carries the props passed to the chunk crate's
-    /// `app(props)`. The framework type-erases via `Rc<dyn Any>`;
-    /// the web backend serializes through `bridge.serialize` for
-    /// transport across the wasm boundary, the native backend
-    /// hands `payload` to the registered thunk for direct dispatch.
+    /// `loader` is a closure that returns a `Future<Output = Primitive>`.
+    /// On native this resolves synchronously; on wasm it awaits the
+    /// `wasm-split` runtime's chunk fetch + async function call
+    /// before yielding the chunk's `Primitive`. The walker mounts
+    /// `placeholder` immediately, drives the loader inside an
+    /// `Effect`, then mounts the resolved primitive when it arrives.
     Lazy {
-        chunk: primitives::lazy::ChunkId,
-        type_id: std::any::TypeId,
-        type_name: &'static str,
-        payload: Rc<dyn Any>,
-        /// Codegen'd serializer + dispatch helpers. See
-        /// [`LazyBridge`](primitives::lazy::LazyBridge).
-        bridge: primitives::lazy::LazyBridge,
-        /// Reactive observer of lifecycle transitions. `None`
-        /// when the author doesn't care about loading / error
-        /// states (rare — at minimum most apps want to render a
-        /// spinner).
+        loader: primitives::lazy::LazyLoader,
+        /// Reactive observer of lifecycle transitions. `None` when
+        /// the author doesn't care about loading / error states.
         on_state: Option<Rc<dyn Fn(primitives::lazy::LazyState)>>,
         /// Subtree mounted immediately as a fallback while the
-        /// chunk loads (web) or as a placeholder slot that's
-        /// instantly replaced (native). `None` renders an empty
-        /// view.
+        /// chunk loads. `None` renders an empty view.
         placeholder: Option<Box<dyn Fn() -> Primitive>>,
         style: Option<StyleSource>,
         ref_fill: Option<RefFill>,

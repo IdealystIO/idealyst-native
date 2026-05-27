@@ -243,6 +243,21 @@ pub trait Backend {
     }
 
     fn create_view(&mut self, a11y: &crate::accessibility::AccessibilityProps) -> Self::Node;
+
+    /// Stamp a stable identifier on `node` that JS code can find via
+    /// `document.getElementById` (web) or analogous mechanisms
+    /// elsewhere. Used by `Primitive::Lazy`'s web handler: the chunk
+    /// loader needs a known DOM id so the chunk's `mount_chunk`
+    /// export can root its own `WebBackend` at the placeholder
+    /// container.
+    ///
+    /// Default impl is a no-op — only the web backend has a real
+    /// implementation. Other backends (iOS, Android, terminal, …)
+    /// don't need DOM ids; their `Primitive::Lazy` dispatch path
+    /// runs inline through the thread-local registry and the node
+    /// itself is the mount target.
+    #[allow(unused_variables)]
+    fn attach_html_id(&self, node: &Self::Node, id: &str) {}
     fn create_text(
         &mut self,
         content: &str,

@@ -30,8 +30,6 @@ pub trait Backend {
     fn create_toggle(&mut self, …) -> Self::Node { unimplemented!() }
     fn create_scroll_view(&mut self, horizontal: bool) -> Self::Node { unimplemented!() }
     fn create_slider(&mut self, …) -> Self::Node { unimplemented!() }
-    fn create_web_view(&mut self, url: &str) -> Self::Node { unimplemented!() }
-    fn create_video(&mut self, …) -> Self::Node { unimplemented!() }
     fn create_activity_indicator(&mut self, …) -> Self::Node { unimplemented!() }
     fn create_virtualizer(&mut self, callbacks: VirtualizerCallbacks<Self::Node>, …) -> Self::Node { unimplemented!() }
     fn create_graphics(&mut self, …) -> Self::Node { unimplemented!() }
